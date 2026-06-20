@@ -35,3 +35,4 @@ D:\Personal\payroll\Payroll.API\bin\Debug\net8.0\Dapper.dll
 D:\Personal\payroll\Payroll.API\bin\Debug\net8.0\Microsoft.Extensions.DependencyInjection.Abstractions.dll
 D:\Personal\payroll\Payroll.API\bin\Debug\net8.0\Microsoft.Extensions.Logging.Abstractions.dll
 D:\Personal\payroll\Payroll.API\bin\Debug\net8.0\MySqlConnector.dll
+D:\Personal\payroll\Payroll.API\obj\Debug\net8.0\Payroll.API.sourcelink.json
