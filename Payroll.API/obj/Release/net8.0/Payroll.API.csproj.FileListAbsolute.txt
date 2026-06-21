@@ -36,3 +36,4 @@ D:\Personal\payroll\Payroll.API\obj\Release\net8.0\refint\Payroll.API.dll
 D:\Personal\payroll\Payroll.API\obj\Release\net8.0\Payroll.API.pdb
 D:\Personal\payroll\Payroll.API\obj\Release\net8.0\Payroll.API.genruntimeconfig.cache
 D:\Personal\payroll\Payroll.API\obj\Release\net8.0\ref\Payroll.API.dll
+D:\Personal\payroll\Payroll.API\bin\Release\net8.0\ExcelDataReader.dll

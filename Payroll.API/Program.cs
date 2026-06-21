@@ -1,5 +1,6 @@
 using Payroll.API.Models;
 using Payroll.API.Repositories;
+using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -25,6 +26,7 @@ builder.Services.AddSingleton<EmployeeRepository>();
 builder.Services.AddSingleton<PayRunRepository>();
 builder.Services.AddSingleton<AuthRepository>();
 builder.Services.AddSingleton<LeaveAttendanceRepository>();
+builder.Services.AddSingleton<LeaveBalanceImportRepository>();
 
 var app = builder.Build();
 
@@ -261,6 +263,125 @@ app.MapPut("/api/leave-attendance/setup/{stepCode}", async (LeaveAttendanceRepos
     return setup is null ? Results.BadRequest(new { error = "Invalid setup step/status, or mandatory General Settings cannot be disabled." }) : Results.Ok(setup);
 })
 .WithName("UpdateLeaveAttendanceSetupStep")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/preferences", async (LeaveAttendanceRepository repository) =>
+    Results.Ok(await repository.GetPreferencesAsync()))
+.WithName("GetLeaveAttendancePreferences")
+.WithOpenApi();
+
+app.MapPost("/api/leave-attendance/preferences", async (LeaveAttendanceRepository repository, SaveLeaveAttendancePreferencesRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (preferences, error) = await repository.SavePreferencesAsync(request);
+    return preferences is null ? Results.BadRequest(new { error }) : Results.Ok(preferences);
+})
+.WithName("SaveLeaveAttendancePreferences")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/attendance-settings", async (LeaveAttendanceRepository repository) =>
+    Results.Ok(await repository.GetAttendanceSettingsAsync()))
+.WithName("GetAttendanceSettings")
+.WithOpenApi();
+
+app.MapPost("/api/leave-attendance/attendance-settings", async (LeaveAttendanceRepository repository, SaveAttendanceSettingsRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (settings, error) = await repository.SaveAttendanceSettingsAsync(request);
+    return settings is null ? Results.BadRequest(new { error }) : Results.Ok(settings);
+})
+.WithName("SaveAttendanceSettings")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/leave-types", async (LeaveAttendanceRepository repository) =>
+    Results.Ok(await repository.GetLeaveTypesAsync()))
+.WithName("GetLeaveTypes")
+.WithOpenApi();
+
+app.MapPost("/api/leave-attendance/leave-types", async (LeaveAttendanceRepository repository, SaveLeaveTypeRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (leaveType, error) = await repository.SaveLeaveTypeAsync(request);
+    return leaveType is null ? Results.BadRequest(new { error }) : Results.Ok(leaveType);
+})
+.WithName("SaveLeaveType")
+.WithOpenApi();
+
+app.MapPost("/api/leave-attendance/leave-types/{id:int}/status", async (LeaveAttendanceRepository repository, int id, bool isActive, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var leaveType = await repository.SetLeaveTypeActiveAsync(id, isActive);
+    return leaveType is null ? Results.NotFound() : Results.Ok(leaveType);
+})
+.WithName("UpdateLeaveTypeStatus")
+.WithOpenApi();
+
+app.MapDelete("/api/leave-attendance/leave-types/{id:int}", async (LeaveAttendanceRepository repository, int id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return await repository.DeleteLeaveTypeAsync(id) ? Results.NoContent() : Results.NotFound();
+})
+.WithName("DeleteLeaveType")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/holidays", async (LeaveAttendanceRepository repository, int? year, int? workLocationId) =>
+    Results.Ok(await repository.GetHolidaysAsync(year, workLocationId)))
+.WithName("GetHolidays")
+.WithOpenApi();
+
+app.MapPost("/api/leave-attendance/holidays", async (LeaveAttendanceRepository repository, SaveHolidayRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (holiday, error) = await repository.SaveHolidayAsync(request);
+    return holiday is null ? Results.BadRequest(new { error }) : Results.Ok(holiday);
+})
+.WithName("SaveHoliday")
+.WithOpenApi();
+
+app.MapDelete("/api/leave-attendance/holidays/{id:int}", async (LeaveAttendanceRepository repository, int id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return await repository.DeleteHolidayAsync(id) ? Results.NoContent() : Results.NotFound();
+})
+.WithName("DeleteHoliday")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/import-balances/sample", () =>
+{
+    const string csv = "Employee Number,Leave Type,Date,Count\r\nACME001,Casual Leave,2026-04-01,12\r\nACME002,Sick Leave,2026-04-01,8";
+    return Results.File(System.Text.Encoding.UTF8.GetBytes(csv), "text/csv", "leave-balance-import-sample.csv");
+})
+.WithName("DownloadLeaveBalanceImportSample")
+.WithOpenApi();
+
+app.MapPost("/api/leave-attendance/import-balances/preview", async (LeaveBalanceImportRepository repository, [FromForm] IFormFile file, [FromForm] string encoding, [FromForm] string? mappingJson, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (file.Length == 0)
+        return Results.BadRequest(new { error = "Select a CSV, XLS or XLSX file." });
+    var preview = await repository.PreviewAsync(file, encoding, mappingJson);
+    return Results.Ok(preview);
+})
+.DisableAntiforgery()
+.WithName("PreviewLeaveBalanceImport")
+.ExcludeFromDescription();
+
+app.MapPost("/api/leave-attendance/import-balances/finalize", async (LeaveBalanceImportRepository repository, FinalizeLeaveBalanceImportRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var result = await repository.ImportAsync(request, CurrentUser(context).Email);
+    return Results.Ok(result);
+})
+.WithName("FinalizeLeaveBalanceImport")
 .WithOpenApi();
 
 app.MapGet("/api/clients", async (OrganizationRepository repository) =>

@@ -243,3 +243,150 @@ CREATE TABLE IF NOT EXISTS ModuleSetupProgress (
     UNIQUE KEY UX_ModuleSetupProgress_Module_Step (ModuleCode, StepCode),
     INDEX IX_ModuleSetupProgress_ModuleCode (ModuleCode)
 );
+
+CREATE TABLE IF NOT EXISTS leave_attendance_preferences (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    attendance_cycle_start_day INT NOT NULL DEFAULT 1,
+    attendance_cycle_end_day INT NOT NULL DEFAULT 25,
+    payroll_report_generation_day INT NOT NULL DEFAULT 28,
+    include_leave_encashment_in_pay_run BOOLEAN NOT NULL DEFAULT FALSE,
+    leave_encashment_salary_component_id INT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS attendance_settings (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    check_in_time TIME NOT NULL DEFAULT '09:00:00',
+    check_out_time TIME NOT NULL DEFAULT '18:00:00',
+    working_hours_calculation VARCHAR(80) NOT NULL DEFAULT 'First check-in and last check-out',
+    minimum_hours_for_half_day DECIMAL(5,2) NOT NULL DEFAULT 4,
+    minimum_hours_for_full_day DECIMAL(5,2) NOT NULL DEFAULT 8,
+    maximum_hours_allowed_for_full_day DECIMAL(5,2) NOT NULL DEFAULT 12,
+    allow_regularization_requests BOOLEAN NOT NULL DEFAULT TRUE,
+    regularization_window VARCHAR(40) NOT NULL DEFAULT 'Anytime',
+    past_days_allowed INT NOT NULL DEFAULT 7,
+    restrict_regularization_requests_per_month BOOLEAN NOT NULL DEFAULT FALSE,
+    max_regularization_requests_per_month INT NOT NULL DEFAULT 3,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS leave_types (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(180) NOT NULL,
+    code VARCHAR(40) NOT NULL,
+    type VARCHAR(20) NOT NULL DEFAULT 'Paid',
+    description VARCHAR(800),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_leave_types_code (code)
+);
+
+CREATE TABLE IF NOT EXISTS leave_type_policies (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    leave_type_id INT NOT NULL,
+    entitlement DECIMAL(10,2) NOT NULL DEFAULT 0,
+    entitlement_period VARCHAR(20) NOT NULL DEFAULT 'Yearly',
+    pro_rate_for_new_joinees BOOLEAN NOT NULL DEFAULT FALSE,
+    reset_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    reset_frequency VARCHAR(20) NOT NULL DEFAULT 'Yearly',
+    carry_forward_unused_leaves BOOLEAN NOT NULL DEFAULT FALSE,
+    max_carry_forward_limit DECIMAL(10,2) NULL,
+    encash_unused_leaves BOOLEAN NOT NULL DEFAULT FALSE,
+    max_encashment_limit DECIMAL(10,2) NULL,
+    allow_negative_leave_balance BOOLEAN NOT NULL DEFAULT FALSE,
+    negative_balance_handling VARCHAR(50) NOT NULL DEFAULT 'Mark as LOP',
+    allow_past_dates BOOLEAN NOT NULL DEFAULT FALSE,
+    past_date_limit_type VARCHAR(30) NOT NULL DEFAULT 'No limit',
+    past_date_limit_days INT NULL,
+    allow_future_dates BOOLEAN NOT NULL DEFAULT FALSE,
+    future_date_limit_type VARCHAR(30) NOT NULL DEFAULT 'No limit',
+    future_date_limit_days INT NULL,
+    effective_from DATE NOT NULL,
+    expires_on DATE NULL,
+    postpone_credits_for_new_employees BOOLEAN NOT NULL DEFAULT FALSE,
+    postpone_credit_value INT NULL,
+    postpone_credit_unit VARCHAR(20) NOT NULL DEFAULT 'Days',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_leave_type_policies_leave_type (leave_type_id),
+    CONSTRAINT FK_leave_type_policies_type FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS leave_type_applicability (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    leave_type_id INT NOT NULL,
+    applicability_mode VARCHAR(40) NOT NULL DEFAULT 'All employees',
+    work_location VARCHAR(150),
+    department VARCHAR(150),
+    designation VARCHAR(150),
+    gender VARCHAR(40),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_leave_type_applicability_leave_type (leave_type_id),
+    CONSTRAINT FK_leave_type_applicability_type FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS holidays (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(180) NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    description VARCHAR(800),
+    all_locations BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX IX_holidays_dates (start_date, end_date)
+);
+
+CREATE TABLE IF NOT EXISTS holiday_locations (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    holiday_id INT NOT NULL,
+    work_location_id INT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_holiday_locations_holiday_location (holiday_id, work_location_id),
+    INDEX IX_holiday_locations_location (work_location_id),
+    CONSTRAINT FK_holiday_locations_holiday FOREIGN KEY (holiday_id) REFERENCES holidays(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS employee_leave_balances (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    employee_id INT NOT NULL,
+    leave_type_id INT NOT NULL,
+    balance_date DATE NOT NULL,
+    balance_count DECIMAL(10,2) NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_employee_leave_balances_employee_type_date (employee_id, leave_type_id, balance_date),
+    INDEX IX_employee_leave_balances_employee (employee_id),
+    CONSTRAINT FK_employee_leave_balances_employee FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE,
+    CONSTRAINT FK_employee_leave_balances_leave_type FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS leave_balance_import_logs (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    file_name VARCHAR(260) NOT NULL,
+    encoding VARCHAR(80) NOT NULL,
+    total_records INT NOT NULL DEFAULT 0,
+    imported_records INT NOT NULL DEFAULT 0,
+    skipped_records INT NOT NULL DEFAULT 0,
+    mapping_json JSON NULL,
+    created_by VARCHAR(180),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    import_log_id INT NOT NULL,
+    row_no INT NOT NULL,
+    employee_number VARCHAR(80),
+    leave_type VARCHAR(180),
+    date_text VARCHAR(80),
+    count_text VARCHAR(80),
+    error_message VARCHAR(1000) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_leave_balance_import_errors_log (import_log_id),
+    CONSTRAINT FK_leave_balance_import_errors_log FOREIGN KEY (import_log_id) REFERENCES leave_balance_import_logs(id) ON DELETE CASCADE
+);

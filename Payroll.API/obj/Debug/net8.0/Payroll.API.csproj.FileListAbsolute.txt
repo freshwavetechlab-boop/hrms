@@ -36,3 +36,4 @@ D:\Personal\payroll\Payroll.API\bin\Debug\net8.0\Microsoft.Extensions.Dependency
 D:\Personal\payroll\Payroll.API\bin\Debug\net8.0\Microsoft.Extensions.Logging.Abstractions.dll
 D:\Personal\payroll\Payroll.API\bin\Debug\net8.0\MySqlConnector.dll
 D:\Personal\payroll\Payroll.API\obj\Debug\net8.0\Payroll.API.sourcelink.json
+D:\Personal\payroll\Payroll.API\bin\Debug\net8.0\ExcelDataReader.dll
