@@ -8,13 +8,14 @@ const AuthSessionContext = createContext<AuthSession | null>(null)
 export const useAuthSession = () => useContext(AuthSessionContext)
 
 export default function AuthGate({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(null), [email, setEmail] = useState('admin@paymint.local'), [password, setPassword] = useState('Admin@12345')
+  const [user, setUser] = useState<AuthUser | null>(null), [email, setEmail] = useState(import.meta.env.DEV ? 'admin@paymint.local' : ''), [password, setPassword] = useState(import.meta.env.DEV ? 'Admin@12345' : '')
   const [loading, setLoading] = useState(true), [error, setError] = useState(''), [accountOpen, setAccountOpen] = useState(false)
 
   useEffect(() => {
-    const token = localStorage.getItem('payroll.auth.token')
-    if (!token) { setLoading(false); return }
-    void getCurrentUser().then(data => { if (data) setUser(data); else localStorage.removeItem('payroll.auth.token') }).finally(() => setLoading(false))
+    const expire = () => { sessionStorage.removeItem('payroll.auth.token'); localStorage.removeItem('payroll.auth.token'); localStorage.removeItem('payroll.auth.user'); setUser(null) }
+    window.addEventListener('payroll:unauthorized', expire)
+    void getCurrentUser().then(data => { if (data) setUser(data); else expire() }).finally(() => setLoading(false))
+    return () => window.removeEventListener('payroll:unauthorized', expire)
   }, [])
 
   const login = async (event: FormEvent) => {
@@ -22,19 +23,21 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     setError('')
     const data = await authenticate(email, password)
     if (!data) { setError('Invalid email or password.'); return }
-    localStorage.setItem('payroll.auth.token', data.token)
-    localStorage.setItem('payroll.auth.user', JSON.stringify(data.user))
+    sessionStorage.setItem('payroll.auth.token', data.token)
+    localStorage.removeItem('payroll.auth.token')
+    localStorage.removeItem('payroll.auth.user')
     setUser(data.user)
   }
 
   const logout = async () => {
     await endSession()
+    sessionStorage.removeItem('payroll.auth.token')
     localStorage.removeItem('payroll.auth.token')
     localStorage.removeItem('payroll.auth.user')
     setUser(null)
   }
 
-  if (loading) return <main className="auth-shell"><section className="auth-card"><h1>Paymint</h1><p>Restoring secure workspace...</p></section></main>
-  if (!user) return <main className="auth-shell"><section className="auth-card"><span className="eyebrow purple">Secure Workspace</span><h1>Sign in to Paymint</h1><p>Enterprise payroll requires authenticated, auditable access before any setup, employee, or payroll operation.</p><form onSubmit={login}><label>Email<input value={email} onChange={event => setEmail(event.target.value)} autoComplete="username" /></label><label>Password<input type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" /></label>{error && <strong className="auth-error">{error}</strong>}<button>Sign in</button></form><small>Bootstrap admin: admin@paymint.local / Admin@12345</small></section></main>
+  if (loading) return <main className="auth-shell"><section className="auth-card"><h1>Frevo One HR</h1><p>Restoring secure workspace...</p></section></main>
+  if (!user) return <main className="auth-shell"><section className="auth-card"><span className="eyebrow purple">Secure Workspace</span><h1>Sign in to Frevo One HR</h1><p>Enterprise payroll requires authenticated, auditable access before any setup, employee, or payroll operation.</p><form onSubmit={login}><label>Email<input value={email} onChange={event => setEmail(event.target.value)} autoComplete="username" /></label><label>Password<input type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" /></label>{error && <strong className="auth-error">{error}</strong>}<button>Sign in</button></form>{import.meta.env.DEV && <small>Bootstrap admin: admin@paymint.local / Admin@12345</small>}</section></main>
   return <AuthSessionContext.Provider value={{ user, logout }}><div className="auth-session"><button className="auth-avatar" type="button" aria-label="Open account menu" aria-expanded={accountOpen} onClick={() => setAccountOpen(open => !open)}>{user.displayName.split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase()}</button>{accountOpen && <div className="auth-dropdown"><strong>{user.displayName}</strong><small>{user.email}</small><span>{user.roles.join(', ')}</span><button type="button" onClick={() => void logout()}>Logout</button></div>}</div>{children}</AuthSessionContext.Provider>
 }

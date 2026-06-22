@@ -1,14 +1,14 @@
 import type { AuthUser } from '../types/payroll'
-import { api } from './apiClient'
+import { apiRequest, postEmpty, postJson } from './apiClient'
 
 export async function getCurrentUser() {
-  const response = await fetch(`${api}/api/auth/me`)
+  const response = await apiRequest('/api/auth/me')
   return response.ok ? response.json() as Promise<AuthUser> : null
 }
 
 export async function login(email: string, password: string) {
-  const response = await fetch(`${api}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
-  return response.ok ? response.json() as Promise<{ token: string; user: AuthUser }> : null
+  const response = await postJson('/api/auth/login', { email, password }, null as { token: string; user: AuthUser } | null)
+  return response.ok ? response.data : null
 }
 
-export const logout = () => fetch(`${api}/api/auth/logout`, { method: 'POST' })
+export const logout = () => postEmpty('/api/auth/logout', null)

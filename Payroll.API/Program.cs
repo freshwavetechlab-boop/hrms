@@ -15,7 +15,13 @@ builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.AllowAnyOrigin()
+        policy.SetIsOriginAllowed(origin =>
+              {
+                  if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+                  return uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                         || uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase);
+              })
+              .AllowCredentials()
               .AllowAnyHeader()
               .AllowAnyMethod();
     });
@@ -33,6 +39,7 @@ builder.Services.AddSingleton<EssMssRepository>();
 builder.Services.AddSingleton<WorkflowRepository>();
 
 var app = builder.Build();
+const string AuthCookieName = "payroll_auth";
 
 using (var scope = app.Services.CreateScope())
 {
@@ -70,8 +77,7 @@ app.Use(async (context, next) =>
     }
 
     var authRepository = context.RequestServices.GetRequiredService<AuthRepository>();
-    var authorization = context.Request.Headers.Authorization.ToString();
-    var token = authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? authorization["Bearer ".Length..].Trim() : string.Empty;
+    var token = ReadAuthToken(context, AuthCookieName);
     var user = string.IsNullOrWhiteSpace(token) ? null : await authRepository.GetUserByTokenAsync(token);
     if (user is null)
     {
@@ -102,6 +108,8 @@ app.MapPost("/api/auth/login", async (AuthRepository repository, LoginRequest re
     if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Password))
         return Results.BadRequest(new { error = "Email and password are required." });
     var result = await repository.LoginAsync(request, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    if (result is not null)
+        WriteAuthCookie(context, AuthCookieName, result.Token, result.ExpiresAt);
     return result is null ? Results.Unauthorized() : Results.Ok(result);
 })
 .WithName("Login")
@@ -161,9 +169,9 @@ app.MapPost("/api/ess/leave/requests", async (EssMssRepository repository, Workf
 
 app.MapPost("/api/auth/logout", async (AuthRepository repository, HttpContext context) =>
 {
-    var authorization = context.Request.Headers.Authorization.ToString();
-    var token = authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? authorization["Bearer ".Length..].Trim() : string.Empty;
+    var token = ReadAuthToken(context, AuthCookieName);
     await repository.LogoutAsync(token, CurrentUser(context), context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    ClearAuthCookie(context, AuthCookieName);
     return Results.NoContent();
 })
 .WithName("Logout")
@@ -682,5 +690,36 @@ static AuthUser CurrentUser(HttpContext context) =>
 
 static bool HasPermission(HttpContext context, string permission) =>
     CurrentUser(context).Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
+
+static string ReadAuthToken(HttpContext context, string cookieName)
+{
+    var authorization = context.Request.Headers.Authorization.ToString();
+    if (authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        return authorization["Bearer ".Length..].Trim();
+    return context.Request.Cookies.TryGetValue(cookieName, out var token) ? token : string.Empty;
+}
+
+static void WriteAuthCookie(HttpContext context, string cookieName, string token, DateTime expiresAt)
+{
+    context.Response.Cookies.Append(cookieName, token, new CookieOptions
+    {
+        HttpOnly = true,
+        Secure = context.Request.IsHttps,
+        SameSite = SameSiteMode.Lax,
+        Expires = new DateTimeOffset(DateTime.SpecifyKind(expiresAt, DateTimeKind.Utc)),
+        Path = "/"
+    });
+}
+
+static void ClearAuthCookie(HttpContext context, string cookieName)
+{
+    context.Response.Cookies.Delete(cookieName, new CookieOptions
+    {
+        HttpOnly = true,
+        Secure = context.Request.IsHttps,
+        SameSite = SameSiteMode.Lax,
+        Path = "/"
+    });
+}
 
 app.Run();

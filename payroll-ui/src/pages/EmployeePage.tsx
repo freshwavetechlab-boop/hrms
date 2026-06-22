@@ -7,6 +7,7 @@ import { getClients, getEmployees } from '../services/payrollService'
 import { getDropdowns, getSetup, getWorkLocations, saveEmployee as persistEmployee } from '../services/settingsService'
 import type { Client, Component, Drop, Employee, Setup, Structure, WorkLocation } from '../types/payroll'
 import { calculateSalaryJson, calculateSalaryTotals, money } from '../utils/salary'
+import { safeJsonRecord } from '../shared/json'
 import '../TemplateDesigner.css'
 
 const employeeTabs = ['Basics', 'Salary', 'Personal', 'Payment'] as const
@@ -17,10 +18,10 @@ export default function EmployeePage() {
   const [modalOpen, setModalOpen] = useState(false), [clientFilter, setClientFilter] = useState(0), [query, setQuery] = useState('')
   const clientStructure = setup.salaryStructures.find(item => !!employee.clientId && item.clientId.split(':')[0] === String(employee.clientId))
   const chosenStructure = setup.salaryStructures.find(item => String(item.id) === employee.salaryStructureId) ?? clientStructure
-  const rawEmployeeSalary = JSON.parse(employee.salaryJson || '{}') as Record<string, string>
+  const rawEmployeeSalary = safeJsonRecord(employee.salaryJson)
   const structureLineIds = chosenStructure?.lines.map(line => line.componentId) ?? []
   const linkedSalaryHasCurrentIds = structureLineIds.some(id => rawEmployeeSalary[id] !== undefined)
-  const employeeSalary = linkedSalaryHasCurrentIds || !chosenStructure || !employee.annualCtc ? rawEmployeeSalary : JSON.parse(calculateSalaryJson(employee.annualCtc, setup.salaryComponents, chosenStructure)) as Record<string, string>
+  const employeeSalary = linkedSalaryHasCurrentIds || !chosenStructure || !employee.annualCtc ? rawEmployeeSalary : safeJsonRecord(calculateSalaryJson(employee.annualCtc, setup.salaryComponents, chosenStructure))
   const structureComponents = setup.salaryComponents.filter(component => component.active && structureLineIds.includes(String(component.id))).sort((a, b) => structureLineIds.indexOf(String(a.id)) - structureLineIds.indexOf(String(b.id)) || Number(a.priority) - Number(b.priority))
   const deps = drops.filter(item => item.type === 'Department' && item.isActive).map(item => item.value), desigs = drops.filter(item => item.type === 'Designation' && item.isActive).map(item => item.value)
 
@@ -35,12 +36,12 @@ export default function EmployeePage() {
   const normalizeEmployeeSalary = (row: Employee) => {
     const salaryStructure = setup.salaryStructures.find(item => String(item.id) === row.salaryStructureId) ?? setup.salaryStructures.find(item => !!row.clientId && item.clientId.split(':')[0] === String(row.clientId))
     if (!salaryStructure || !row.annualCtc) return row
-    const existing = JSON.parse(row.salaryJson || '{}') as Record<string, string>
+    const existing = safeJsonRecord(row.salaryJson)
     const hasCurrentIds = salaryStructure.lines.some(line => existing[line.componentId] !== undefined)
     const normalized = String(row.salaryStructureId) === String(salaryStructure.id) ? row : { ...row, salaryStructureId: String(salaryStructure.id) }
     return hasCurrentIds ? normalized : { ...normalized, salaryJson: calcSalary(row.annualCtc, salaryStructure) }
   }
-  const empLine = (componentId: string, value: string) => { const lines = JSON.parse(employee.salaryJson || '{}'); lines[componentId] = value; setEmployee({ ...employee, salaryJson: JSON.stringify(lines) }) }
+  const empLine = (componentId: string, value: string) => { const lines = safeJsonRecord(employee.salaryJson); lines[componentId] = value; setEmployee({ ...employee, salaryJson: JSON.stringify(lines) }) }
   const empMonthly = (component: Component) => Number(employeeSalary[String(component.id)] || 0)
   const applyStructure = (id: string) => { const selectedId = id.split(':')[0]; const selectedStructure = setup.salaryStructures.find(item => String(item.id) === selectedId); const ctc = Number(selectedStructure?.annualCtc || employee.annualCtc || 0); setEmployee({ ...employee, salaryStructureId: selectedId, annualCtc: ctc, salaryJson: calcSalary(ctc, selectedStructure) }) }
   const applyCtc = (ctc: number) => setEmployee({ ...employee, salaryStructureId: chosenStructure ? String(chosenStructure.id) : employee.salaryStructureId, annualCtc: ctc, salaryJson: calcSalary(ctc) })
@@ -82,7 +83,7 @@ function EmployeeDirectory(p: { clients: Client[]; employees: Employee[]; allCou
 }
 
 function EmployeePanel(p: { employee: Employee; setEmployee: (employee: Employee) => void; employeeTab: 'Basics' | 'Salary' | 'Personal' | 'Payment'; setEmployeeTab: (tab: 'Basics' | 'Salary' | 'Personal' | 'Payment') => void; clients: Client[]; locations: WorkLocation[]; templates: Structure[]; deps: string[]; desigs: string[]; applyClient: (value: string) => void; applyStructure: (value: string) => void; applyCtc: (value: number) => void; structureComponents: Component[]; employeeSalary: Record<string, string>; empLine: (id: string, value: string) => void; empMonthly: (component: Component) => number; saveEmployee: () => void; closeModal: () => void }) {
-  const personal = JSON.parse(p.employee.personalJson || '{}'), payment = JSON.parse(p.employee.paymentJson || '{}')
+  const personal = safeJsonRecord(p.employee.personalJson), payment = safeJsonRecord(p.employee.paymentJson)
   const salaryRows = p.structureComponents.map(component => ({ component, monthly: p.empMonthly(component), annual: p.empMonthly(component) * 12 }))
   const totals = calculateSalaryTotals(salaryRows.map(row => ({ line: { componentId: String(row.component.id), value: '' }, ...row })))
   const badgeClass = (category: string) => category.toLowerCase().replace(/\s+/g, '-')

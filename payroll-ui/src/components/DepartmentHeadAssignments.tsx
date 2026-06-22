@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, getJson } from '../services/apiClient'
+import { getJson, postJson } from '../services/apiClient'
 import { getClients } from '../services/payrollService'
 import type { Client } from '../types/payroll'
 import DataTable from './DataTable'
@@ -43,11 +43,7 @@ export default function DepartmentHeadAssignments() {
       setMessage('Choose a client, department, and user.')
       return
     }
-    const response = await fetch(`${api}/api/workflows/department-heads`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientId, department, userId: Number(userId) })
-    })
+    const response = await postJson('/api/workflows/department-heads', { clientId, department, userId: Number(userId) }, null)
     if (!response.ok) {
       setMessage('Unable to save assignment.')
       return

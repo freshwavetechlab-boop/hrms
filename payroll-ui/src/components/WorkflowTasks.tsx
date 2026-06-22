@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api } from '../services/apiClient'
+import { getJson, postJson } from '../services/apiClient'
 import DataTable from './DataTable'
 
 type Task = { id: number; instanceId: number; stageName: string; resourceType: string; resourceId: string; payloadJson: string; createdAt: string }
@@ -20,13 +20,13 @@ export default function WorkflowTasks() {
   const [selected, setSelected] = useState<Task | null>(null)
   const [remark, setRemark] = useState('')
   const [message, setMessage] = useState('')
-  const load = () => fetch(`${api}/api/workflows/tasks/pending`).then(response => response.ok ? response.json() : []).then(setRows)
+  const load = () => getJson<Task[]>('/api/workflows/tasks/pending', []).then(setRows)
 
   useEffect(() => { void load() }, [])
 
   const action = async (actionName: string) => {
     if (!selected) return
-    const response = await fetch(`${api}/api/workflows/tasks/${selected.id}/${actionName}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ comment: remark.trim() }) })
+    const response = await postJson(`/api/workflows/tasks/${selected.id}/${actionName}`, { comment: remark.trim() }, null)
     setMessage(response.ok ? `Task ${actionName.toLowerCase()}.` : 'Unable to update task.')
     if (response.ok) {
       setSelected(null)

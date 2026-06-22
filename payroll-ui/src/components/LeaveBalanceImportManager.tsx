@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { finalizeLeaveBalanceImport, leaveBalanceSampleUrl, previewLeaveBalanceImport } from '../services/leaveAttendanceService'
+import { downloadLeaveBalanceSample, finalizeLeaveBalanceImport, previewLeaveBalanceImport } from '../services/leaveAttendanceService'
 import type { LeaveBalanceImportMapping, LeaveBalanceImportPreview } from '../types/payroll'
 import DataTable, { type Column } from './DataTable'
 
@@ -23,7 +23,7 @@ export default function LeaveBalanceImportManager({ clientId, onMessage }: { cli
     if (response.ok && response.data) { onMessage(`Imported ${response.data.importedCount} rows. Skipped ${response.data.skippedCount}. Log #${response.data.logId}`); setPreview(null); setFile(null) } else setError(response.error || 'Import failed.')
     setBusy(false)
   }
-  const downloadSample = async () => { const response = await fetch(leaveBalanceSampleUrl(clientId)); if (!response.ok) { setError('Unable to download the selected client sample.'); return }; const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'leave-balance-import-sample.csv'; link.click(); URL.revokeObjectURL(url) }
+  const downloadSample = async () => { const response = await downloadLeaveBalanceSample(clientId); if (!response.ok || !response.data) { setError('Unable to download the selected client sample.'); return }; const url = URL.createObjectURL(response.data); const link = document.createElement('a'); link.href = url; link.download = 'leave-balance-import-sample.csv'; link.click(); URL.revokeObjectURL(url) }
   return <section className="leave-import"><div className="card"><header><i className="blue">I</i><div><h3>Import Employee Leave Balance</h3><p>Upload opening balances, map fields, preview errors and import valid rows.</p></div></header><div className="import-steps"><span className={file ? 'done' : 'active'}>1 Upload</span><span className={preview ? 'done' : ''}>2 Mapping</span><span className={preview ? 'active' : ''}>3 Preview</span><span>4 Import</span></div><div className="grid"><label><span>Select file</span><input type="file" accept=".csv,.xls,.xlsx" onChange={event => setFile(event.target.files?.[0] ?? null)} /></label><label><span>Character encoding</span><select value={encoding} onChange={event => setEncoding(event.target.value)}>{encodings.map(item => <option key={item}>{item}</option>)}</select></label></div><div className="actions"><p>Required columns: Employee Number, Leave Type, Date, Count.</p><span><button type="button" className="secondary" onClick={() => void downloadSample()}>Download Sample File</button><button type="button" disabled={busy || !file} onClick={() => void upload()}>{busy ? 'Parsing...' : 'Upload & Auto-map'}</button></span></div>{error && <div className="form-errors"><p>{error}</p></div>}</div>{preview && <MappingCard preview={preview} mapping={mapping} setMapping={setMapping} remap={() => void upload(mapping)} busy={busy} />}{preview && <PreviewCard preview={preview} importRows={importRows} busy={busy} />}</section>
 }
 

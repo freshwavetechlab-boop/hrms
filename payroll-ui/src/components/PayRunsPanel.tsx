@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { type ChangeEvent, useEffect, useMemo, useState } from 'react'
 import { getMonthlyAttendance } from '../services/leaveAttendanceService'
 import { cancelPayrollAdjustment, createPayRun, exportPayRunUrl, getClients, getEmployees, getPayRun, getPayrollAdjustments, getPayRuns, runPayRunAction, savePayrollAdjustment, updatePayRunEmployee } from '../services/payrollService'
 import { getSetup } from '../services/settingsService'
@@ -6,6 +6,7 @@ import type { Client, Component, Employee, EmployeeMonthlyAttendance, PayRun, Pa
 import { setup0 } from '../data/payrollDefaults'
 import { money } from '../utils/salary'
 import PageTabs from './PageTabs'
+import { componentToAdjustmentType, prepareAdjustmentImports, type AdjustmentImportMode } from '../features/payroll/adjustmentImport'
 
 const currentPeriod = new Date().toISOString().slice(0, 7)
 type PayrollTab = 'Regular Run' | 'Adjustments' | 'Off-cycle Run'
@@ -100,6 +101,23 @@ export default function PayRunsPanel({ mode = 'payrun' }: { mode?: 'payrun' | 'a
     }
   }
 
+  const importAdjustments = async (event: ChangeEvent<HTMLInputElement>, mode: AdjustmentImportMode) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    if (!clientId) return setMessage('Select client before importing adjustments.')
+    if (file.size > 1024 * 1024) return setMessage('Import file is too large. Keep CSV under 1 MB.')
+    const prepared = prepareAdjustmentImports({ text: await file.text(), mode, employees: clientEmployees, components: variableComponents, clientId, period, seed: adjustment0 })
+    if (!prepared.rows.length && !prepared.skipped) return setMessage('CSV has no import rows.')
+    let imported = 0, skipped = prepared.skipped
+    for (const row of prepared.rows) {
+      const response = await savePayrollAdjustment(row)
+      response.ok ? imported += 1 : skipped += 1
+    }
+    setMessage(`${mode === 'arrears' ? 'Arrears' : 'Scheduled earning'} import completed. Imported ${imported}, skipped ${skipped}.${prepared.errors[0] ? ` ${prepared.errors[0]}` : ''}`)
+    await load()
+  }
+
   const updateEmployee = async (employee: RunEmployee, change: Partial<RunEmployee>) => {
     if (!selected || selected.status !== 'Draft') return
     await updatePayRunEmployee(selected.id, { ...employee, ...change })
@@ -117,7 +135,7 @@ export default function PayRunsPanel({ mode = 'payrun' }: { mode?: 'payrun' | 'a
 
   const chooseComponent = (id: number) => {
     const component = variableComponents.find(item => item.id === id)
-    if (component) setAdjustment({ ...adjustment, componentId: component.id, componentCode: component.code, componentName: component.name, adjustmentType: component.category === 'Deduction' ? 'Deduction' : component.category === 'Reimbursement' ? 'Reimbursement' : 'Earning', taxable: component.taxable })
+    if (component) setAdjustment({ ...adjustment, componentId: component.id, componentCode: component.code, componentName: component.name, adjustmentType: componentToAdjustmentType(component), taxable: component.taxable })
   }
 
   const visibleTabs: readonly PayrollTab[] = mode === 'adjustments' ? ['Adjustments', 'Off-cycle Run'] : ['Regular Run', 'Off-cycle Run']
@@ -128,7 +146,7 @@ export default function PayRunsPanel({ mode = 'payrun' }: { mode?: 'payrun' | 'a
     <section className="payroll-command-grid">
       <div className="card payroll-control-panel"><header><i className="blue">1</i><div><h3>Run context</h3><p>Client, period and statutory working days are shared across payroll operations.</p></div></header><div className="pay-run-form enterprise"><label>Client<select value={clientId} onChange={event => changeClient(Number(event.target.value))}>{clients.filter(client => client.isActive).map(client => <option value={client.id} key={client.id}>{client.name}</option>)}</select></label><label>Pay period<input type="month" value={period} onChange={event => setPeriod(event.target.value)} /></label><label>Working days<input type="number" min="1" max="31" value={workingDays} onChange={event => setWorkingDays(Number(event.target.value))} /></label>{tab === 'Regular Run' && <button onClick={() => void createRegular()} disabled={busy || !clientId || includedCount === 0 || !attendanceReady}>{busy ? 'Preparing...' : 'Run regular draft'}</button>}{tab === 'Off-cycle Run' && <button onClick={() => void createOffcycle()} disabled={busy || !clientId || (offcycleEmployeeIds.length === 0 && offcycleAdjustmentIds.length === 0)}>{busy ? 'Preparing...' : 'Create off-cycle draft'}</button>}</div>{!attendanceReady && tab === 'Regular Run' && <p className="payment-warning">Attendance review must be clean before regular payroll can run. Off-cycle can be used for missed/reimbursement-only payments.</p>}<div className="payroll-kpis"><div><span>Regular employees</span><strong>{includedCount}/{clientEmployees.length}</strong></div><div><span>Approved adjustments</span><strong>{pendingAdjustments.length}</strong></div><div><span>Estimated monthly cost</span><strong>{money(estimatedMonthlyCost)}</strong></div><div><span>Current draft net</span><strong>{money(selected?.netPay)}</strong></div></div></div>
       {tab === 'Regular Run' && <RosterCard employees={clientEmployees} includedIds={includedIds} setIncludedIds={setIncludedIds} adjustments={regularAdjustments} />}
-      {tab === 'Adjustments' && <AdjustmentCard adjustment={adjustment} setAdjustment={setAdjustment} employees={clientEmployees} components={variableComponents} adjustments={adjustments.filter(item => item.clientId === clientId && item.payPeriod === period)} chooseComponent={chooseComponent} saveAdjustment={saveAdjustment} edit={row => setAdjustment({ ...row, amount: Number(row.amount) })} cancel={async id => { await cancelPayrollAdjustment(id); await load() }} />}
+      {tab === 'Adjustments' && <><AdjustmentCard adjustment={adjustment} setAdjustment={setAdjustment} employees={clientEmployees} components={variableComponents} adjustments={adjustments.filter(item => item.clientId === clientId && item.payPeriod === period)} chooseComponent={chooseComponent} saveAdjustment={saveAdjustment} edit={row => setAdjustment({ ...row, amount: Number(row.amount) })} cancel={async id => { await cancelPayrollAdjustment(id); await load() }} /><AdjustmentImportPanel importScheduled={event => void importAdjustments(event, 'scheduled')} importArrears={event => void importAdjustments(event, 'arrears')} /></>}
       {tab === 'Off-cycle Run' && <OffcycleCard employees={clientEmployees} selectedIds={offcycleEmployeeIds} setSelectedIds={setOffcycleEmployeeIds} adjustments={offcycleAdjustments} selectedAdjustmentIds={offcycleAdjustmentIds} setSelectedAdjustmentIds={setOffcycleAdjustmentIds} name={offcycleName} setName={setOffcycleName} reason={offcycleReason} setReason={setOffcycleReason} />}
     </section>
     {selected && <PayRunReview selected={selected} busy={busy} updateEmployee={updateEmployee} action={action} materialVarianceCount={materialVarianceCount} />}
@@ -141,6 +159,10 @@ function RosterCard(p: { employees: Employee[]; includedIds: number[]; setInclud
 
 function AdjustmentCard(p: { adjustment: PayrollAdjustment; setAdjustment: (row: PayrollAdjustment) => void; employees: Employee[]; components: Component[]; adjustments: PayrollAdjustment[]; chooseComponent: (id: number) => void; saveAdjustment: () => void; edit: (row: PayrollAdjustment) => void; cancel: (id: number) => Promise<void> }) {
   return <div className="card payroll-adjustments"><header><i className="blue">2</i><div><h3>{p.adjustment.id ? 'Edit adjustment entry' : 'Variable earning / adjustment entry'}</h3><p>Use approved one-time entries for overtime, arrears, bonus, reimbursements and recoveries.</p></div></header><div className="adjustment-form"><label>Employee<select value={p.adjustment.employeeId} onChange={event => p.setAdjustment({ ...p.adjustment, employeeId: Number(event.target.value) })}><option value="0">Select employee</option>{p.employees.map(employee => <option value={employee.id} key={employee.id}>{employee.firstName} {employee.lastName} / {employee.employeeCode}</option>)}</select></label><label>Component<select value={p.adjustment.componentId} onChange={event => p.chooseComponent(Number(event.target.value))}><option value="0">Select variable component</option>{p.components.map(component => <option value={component.id} key={component.id}>{component.name} / {component.category}</option>)}</select></label><label>Pay Run Type<select value={p.adjustment.payRunType} onChange={event => p.setAdjustment({ ...p.adjustment, payRunType: event.target.value })}><option>Regular</option><option>Off Cycle</option></select></label><label>Adjustment Type<select value={p.adjustment.adjustmentType} onChange={event => p.setAdjustment({ ...p.adjustment, adjustmentType: event.target.value })}><option>Earning</option><option>Reimbursement</option><option>Deduction</option></select></label><label>Amount<input type="number" min="0" value={p.adjustment.amount || ''} onChange={event => p.setAdjustment({ ...p.adjustment, amount: Number(event.target.value) })} /></label><label>Reason<select value={p.adjustment.reasonCode} onChange={event => p.setAdjustment({ ...p.adjustment, reasonCode: event.target.value })}><option>Overtime</option><option>Arrears</option><option>Bonus/Incentive</option><option>Missed Salary</option><option>Reimbursement</option><option>Recovery/Correction</option></select></label><label className="wide">Notes<input value={p.adjustment.notes} onChange={event => p.setAdjustment({ ...p.adjustment, notes: event.target.value })} placeholder="Business justification, approval reference or reimbursement details" /></label><button type="button" onClick={p.saveAdjustment}>{p.adjustment.id ? 'Update adjustment' : 'Save approved adjustment'}</button></div><AdjustmentMini rows={p.adjustments} title="Adjustment register" edit={p.edit} cancel={p.cancel} /></div>
+}
+
+function AdjustmentImportPanel(p: { importScheduled: (event: ChangeEvent<HTMLInputElement>) => void; importArrears: (event: ChangeEvent<HTMLInputElement>) => void }) {
+  return <div className="card adjustment-import-panel"><header><i className="blue">3</i><div><h3>Bulk adjustment imports</h3><p>Import rows become approved adjustment entries and are picked by regular or off-cycle payroll based on Pay Run Type.</p></div></header><div className="adjustment-import-grid"><article><h3>Scheduled earnings import</h3><p>Use for planned bonuses, incentives, overtime or one-time reimbursements.</p><small>CSV columns: employeeCode, componentCode, amount, payPeriod, payRunType, reason, notes</small><input type="file" accept=".csv,text/csv" onChange={p.importScheduled} /></article><article><h3>Automatic arrears from revision</h3><p>Use salary-revision differences to generate arrears without manual amount calculation.</p><small>CSV columns: employeeCode, componentCode, oldMonthly, newMonthly, months, payPeriod, payRunType, notes</small><input type="file" accept=".csv,text/csv" onChange={p.importArrears} /></article></div></div>
 }
 
 function OffcycleCard(p: { employees: Employee[]; selectedIds: number[]; setSelectedIds: (fn: number[] | ((ids: number[]) => number[])) => void; adjustments: PayrollAdjustment[]; selectedAdjustmentIds: number[]; setSelectedAdjustmentIds: (fn: number[] | ((ids: number[]) => number[])) => void; name: string; setName: (value: string) => void; reason: string; setReason: (value: string) => void }) {
@@ -162,5 +184,5 @@ function attendanceIssue(row: EmployeeMonthlyAttendance) {
 }
 
 function isAdjustmentComponent(component: Component) {
-  return component.active && ['Earning', 'Deduction', 'Reimbursement'].includes(component.category)
+  return component.active && ['Earning', 'Deduction', 'Reimbursement', 'Benefit', 'Correction'].includes(component.category)
 }

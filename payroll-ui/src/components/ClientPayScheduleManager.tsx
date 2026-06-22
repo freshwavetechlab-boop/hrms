@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { saveClient } from '../services/settingsService'
+import { safeJsonObject } from '../shared/json'
 import DataTable from './DataTable'
 import { useToast } from './ToastProvider'
 
 type Client = { id: number; name: string; code: string; contactPerson: string; email: string; phone: string; address: string; payScheduleJson: string; isActive: boolean }
 type Schedule = { workWeek: string; salaryDays: string; fixedDays: string; payDay: string; firstPayPeriod: string }
 const empty: Schedule = { workWeek: 'Monday - Friday', salaryDays: 'Actual days', fixedDays: '30', payDay: 'Last working day', firstPayPeriod: new Date().toISOString().slice(0, 7) }
-const read = (client: Client): Schedule => { try { return { ...empty, ...JSON.parse(client.payScheduleJson || '{}') } } catch { return empty } }
+const read = (client: Client): Schedule => safeJsonObject(client.payScheduleJson, empty)
 
 export default function ClientPayScheduleManager({ clients, reload }: { clients: Client[]; reload: () => Promise<void> }) {
   const toast = useToast()

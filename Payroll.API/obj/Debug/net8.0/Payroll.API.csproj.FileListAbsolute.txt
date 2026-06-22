@@ -60,3 +60,9 @@ D:\Personal\payroll\tmp-api-build\Payroll.API.deps.json
 D:\Personal\payroll\tmp-api-build\Payroll.API.runtimeconfig.json
 D:\Personal\payroll\tmp-api-build\Payroll.API.dll
 D:\Personal\payroll\tmp-api-build\Payroll.API.pdb
+D:\Personal\payroll\tmp-api-build-loginfix\appsettings.Development.json
+D:\Personal\payroll\tmp-api-build-loginfix\appsettings.json
+D:\Personal\payroll\tmp-api-build-loginfix\Payroll.API.deps.json
+D:\Personal\payroll\tmp-api-build-loginfix\Payroll.API.runtimeconfig.json
+D:\Personal\payroll\tmp-api-build-loginfix\Payroll.API.dll
+D:\Personal\payroll\tmp-api-build-loginfix\Payroll.API.pdb

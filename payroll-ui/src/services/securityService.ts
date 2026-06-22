@@ -1,5 +1,5 @@
 import type { AuditLog, AuthPermission, AuthRole, AuthUser, Client, Employee } from '../types/payroll'
-import { api, getJson, readError } from './apiClient'
+import { getJson, postJson } from './apiClient'
 
 export const loadSecurityData = async () => ({
   users: await getJson<AuthUser[]>('/api/security/users', []),
@@ -11,11 +11,11 @@ export const loadSecurityData = async () => ({
 })
 
 export async function saveSecurityUser(body: unknown) {
-  const response = await fetch(`${api}/api/security/users`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-  return { ok: response.ok, error: response.ok ? '' : await readError(response) }
+  const response = await postJson('/api/security/users', body, null)
+  return { ok: response.ok, error: response.error }
 }
 
 export async function saveSecurityRole(body: unknown) {
-  const response = await fetch(`${api}/api/security/roles`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-  return { ok: response.ok, error: response.ok ? '' : await readError(response) }
+  const response = await postJson('/api/security/roles', body, null)
+  return { ok: response.ok, error: response.error }
 }

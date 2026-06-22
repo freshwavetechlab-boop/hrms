@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, getJson } from '../services/apiClient'
+import { getJson, postJson } from '../services/apiClient'
 import { getClients } from '../services/payrollService'
 import type { Client } from '../types/payroll'
 import DataTable from './DataTable'
@@ -15,7 +15,7 @@ export default function WorkflowAdmin() {
   const [clients, setClients] = useState<Client[]>([])
   const [approvers, setApprovers] = useState<Approver[]>([])
   const [message, setMessage] = useState('')
-  const load = () => fetch(`${api}/api/workflows`).then(response => response.ok ? response.json() : []).then(setRows)
+  const load = () => getJson<Flow[]>('/api/workflows', []).then(setRows)
 
   useEffect(() => {
     void load()
@@ -33,7 +33,7 @@ export default function WorkflowAdmin() {
       setMessage('Select an assigned user for every Specific User stage.')
       return
     }
-    const response = await fetch(`${api}/api/workflows`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...flow, stages: flow.stages.map((stage, index) => ({ ...stage, stageOrder: index + 1 })) }) })
+    const response = await postJson('/api/workflows', { ...flow, stages: flow.stages.map((stage, index) => ({ ...stage, stageOrder: index + 1 })) }, null)
     if (!response.ok) {
       setMessage('Unable to save workflow. Check the details and try again.')
       return

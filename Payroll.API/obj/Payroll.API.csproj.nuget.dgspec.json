@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "D:\\Personal\\payroll\\Payroll.API\\Payroll.API.csproj": {}
+    "D:\\Personal\\payroll\\payroll.api\\Payroll.API.csproj": {}
   },
   "projects": {
-    "D:\\Personal\\payroll\\Payroll.API\\Payroll.API.csproj": {
+    "D:\\Personal\\payroll\\payroll.api\\Payroll.API.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "D:\\Personal\\payroll\\Payroll.API\\Payroll.API.csproj",
+        "projectUniqueName": "D:\\Personal\\payroll\\payroll.api\\Payroll.API.csproj",
         "projectName": "Payroll.API",
-        "projectPath": "D:\\Personal\\payroll\\Payroll.API\\Payroll.API.csproj",
+        "projectPath": "D:\\Personal\\payroll\\payroll.api\\Payroll.API.csproj",
         "packagesPath": "C:\\Users\\niranjan.kumar\\.nuget\\packages\\",
-        "outputPath": "D:\\Personal\\payroll\\Payroll.API\\obj\\",
+        "outputPath": "D:\\Personal\\payroll\\payroll.api\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "C:\\Users\\niranjan.kumar\\AppData\\Roaming\\NuGet\\NuGet.Config"
