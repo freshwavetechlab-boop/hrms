@@ -34,6 +34,7 @@ public class PayRunEmployee
     public decimal StatutoryDeductions { get; set; }
     public decimal OneTimeEarnings { get; set; }
     public decimal OneTimeDeductions { get; set; }
+    public decimal ManualTds { get; set; }
     public decimal NetPay { get; set; }
     public bool IsSkipped { get; set; }
     public string PaymentStatus { get; set; } = "Pending";
@@ -59,6 +60,7 @@ public class UpdatePayRunEmployeeRequest
     public int PresentDays { get; set; }
     public decimal OneTimeEarnings { get; set; }
     public decimal OneTimeDeductions { get; set; }
+    public decimal ManualTds { get; set; }
     public bool IsSkipped { get; set; }
 }
 

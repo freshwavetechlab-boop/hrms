@@ -50,3 +50,63 @@ select {
     font-size: 15px;
   }
 }
+
+.auth-session { position: fixed !important; top: 14px !important; right: 24px !important; bottom: auto !important; left: auto !important; z-index: 90 !important; display: inline-flex !important; width: auto !important; min-width: 0 !important; height: auto !important; min-height: 0 !important; max-width: calc(100vw - 32px) !important; align-items: center !important; padding: 0 !important; border: 0 !important; background: transparent !important; box-shadow: none !important; }
+.auth-session .auth-avatar { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: #eeeaff; color: #5133cc; font-size: .68rem; font-weight: 800; }
+.auth-dropdown { position: absolute; top: 38px; right: 0; display: grid; gap: 3px; width: 220px; padding: 12px; border: 1px solid #e5e8f0; border-radius: 10px; background: #fff; box-shadow: 0 10px 30px #17213620; }
+.auth-dropdown strong { font-size: .8rem; color: #172136; }
+.auth-dropdown small, .auth-dropdown span { color: #7b8496; font-size: .66rem; }
+.auth-dropdown button { margin-top: 7px; border: 1px solid #dfe2ea; border-radius: 7px; background: #fff; padding: 7px 8px; font-size: .7rem; font-weight: 800; text-align: left; }
+.app-launcher { position: fixed !important; left: 170px; bottom: 16px; z-index: 20; margin: 0 !important; }
+.nav-collapsed .app-launcher { left: 10px; }
+.topbar > b { display: none; }
+
+.reporting-page { display: grid; gap: 12px; max-width: 1180px; }
+.report-browser { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 18px; align-items: start; }
+.report-browser > header { grid-column: 1 / -1; }
+.report-client { grid-column: 1; }
+.report-list { grid-column: 2; display: grid; border: 1px solid #e5e8f0; border-radius: 9px; overflow: hidden; }
+.report-list button { display: grid; grid-template-columns: minmax(0, 1fr) 62px 16px; align-items: center; gap: 12px; min-height: 54px; padding: 9px 12px; border: 0; border-bottom: 1px solid #eef0f4; background: #fff; color: #172136; text-align: left; }
+.report-list button:last-child { border-bottom: 0; }
+.report-list button:hover, .report-list button.active { background: #f7f5ff; }
+.report-list button.active { box-shadow: inset 3px 0 0 #6546e8; }
+.report-title { display: grid; gap: 2px; font-weight: 800; font-size: .8rem; }
+.report-title small { color: #7b8496; font-size: .66rem; font-weight: 500; }
+.report-state { border-radius: 999px; padding: 3px 6px; background: #f1f5f9; color: #64748b; font-size: .61rem; font-weight: 800; text-align: center; }
+.report-state.live { background: #ecfdf5; color: #047857; }
+.report-list b { color: #8b77e8; font-size: 1.1rem; }
+.report-result > header button { min-height: 32px; border: 1px solid #cfc6f5; border-radius: 7px; background: #fff; color: #5133cc; font-weight: 800; padding: 0 10px; }
+.report-empty { max-width: 760px; }
+@media (max-width: 760px) { .report-browser { grid-template-columns: 1fr; } .report-browser > header, .report-client, .report-list { grid-column: 1; } .report-client { max-width: none; } }
+.report-nav-group { display: grid; gap: 2px; }
+.report-nav-submenu { display: grid; gap: 1px; margin: 1px 0 5px 12px; padding-left: 8px; border-left: 1px solid #ddd8f6; }
+.app-sidebar .report-nav-submenu button { padding: 5px 7px; color: #69758c; font-size: .7rem; font-weight: 600; line-height: 1.25; }
+.app-sidebar .report-nav-submenu button.active { color: #5133cc; background: #f3f0ff; }
+.report-workspace { max-width: 920px; }
+.report-workspace > header { align-items: flex-start; }
+.report-workspace h3 { margin-top: 4px !important; font-size: 1.1rem !important; }
+.report-workspace header button { min-height: 34px; border: 1px solid #cfc6f5; border-radius: 7px; background: #fff; color: #5133cc; font-weight: 800; padding: 0 10px; }
+.report-filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+.report-filters .report-client { min-width: 180px; }
+.report-filters input, .report-filters select { height: 36px; border: 1px solid #dfe2ea; border-radius: 8px; padding: 0 10px; background: #fff; }
+.report-count { margin: 0 0 10px; color: #7b8496; font-size: .72rem; }
+.smart-table { display: grid; gap: 8px; margin-top: 12px; }
+.smart-table-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.smart-table-toolbar > div { display: grid; gap: 1px; margin-right: auto; }
+.smart-table-toolbar strong { color: #172136; font-size: .82rem; }
+.smart-table-toolbar span { color: #7b8496; font-size: .66rem; }
+.smart-table-toolbar input { max-width: 250px; }
+.smart-table-toolbar button { min-height: 32px; border: 1px solid #dfe2ea; border-radius: 7px; background: #fff; color: #465067; padding: 0 10px; font-size: .72rem; font-weight: 800; }
+.smart-table-toolbar button:last-child { border-color: #cfc6f5; color: #5133cc; }
+.smart-table-toolbar button:disabled { opacity: .45; }
+.smart-table-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; padding: 10px; border: 1px solid #e5e8f0; border-radius: 9px; background: #fafbfc; }
+.smart-table-filters label { display: grid; gap: 4px; color: #64748b; font-size: .66rem; font-weight: 800; }
+.smart-table-filters select { height: 31px; border: 1px solid #dfe2ea; border-radius: 7px; background: #fff; padding: 0 8px; font-size: .72rem; }
+.smart-table-scroll { overflow: auto; border: 1px solid #e5e8f0; border-radius: 10px; background: #fff; }
+.smart-table table { width: 100%; border-collapse: separate; border-spacing: 0; background: #fff; }
+.smart-table th, .smart-table td { padding: 8px 9px; border-bottom: 1px solid #e5e8f0; text-align: left; white-space: nowrap; font-size: .74rem; }
+.smart-table th { position: sticky; top: 0; z-index: 1; background: #f8fafc; color: #64748b; cursor: pointer; font-size: .64rem; font-weight: 900; text-transform: uppercase; letter-spacing: .04em; }
+.smart-table th b { margin-left: 6px; color: #5133cc; font-size: .58rem; text-transform: lowercase; }
+.smart-table td button { min-height: 30px; border: 1px solid #dfe2ea; border-radius: 7px; background: #fff; padding: 0 8px; font-weight: 800; }
+.smart-table td small { display: block; color: #7b8496; font-size: .64rem; }
+@media (max-width: 700px) { .auth-session { right: 10px; top: 8px; } .auth-session > div { display: none; } }

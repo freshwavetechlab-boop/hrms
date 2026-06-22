@@ -2,11 +2,11 @@ import { useEffect, useState } from 'react'
 import { getAttendanceSettings, saveAttendanceSettings } from '../services/leaveAttendanceService'
 import type { AttendanceSettings } from '../types/payroll'
 
-const initial: AttendanceSettings = { id: 0, checkInTime: '09:00:00', checkOutTime: '18:00:00', workingHoursCalculation: 'First check-in and last check-out', minimumHoursForHalfDay: 4, minimumHoursForFullDay: 8, maximumHoursAllowedForFullDay: 12, allowRegularizationRequests: true, regularizationWindow: 'Anytime', pastDaysAllowed: 7, restrictRegularizationRequestsPerMonth: false, maxRegularizationRequestsPerMonth: 3 }
+const initial: AttendanceSettings = { id: 0, clientId: 0, checkInTime: '09:00:00', checkOutTime: '18:00:00', workingHoursCalculation: 'First check-in and last check-out', minimumHoursForHalfDay: 4, minimumHoursForFullDay: 8, maximumHoursAllowedForFullDay: 12, allowRegularizationRequests: true, regularizationWindow: 'Anytime', pastDaysAllowed: 7, restrictRegularizationRequestsPerMonth: false, maxRegularizationRequestsPerMonth: 3 }
 
-export default function AttendanceSettingsForm({ onSaved }: { onSaved: (message: string) => void }) {
+export default function AttendanceSettingsForm({ clientId, onSaved }: { clientId: number; onSaved: (message: string) => void }) {
   const [form, setForm] = useState<AttendanceSettings>(initial), [errors, setErrors] = useState<string[]>([]), [saving, setSaving] = useState(false)
-  useEffect(() => { void getAttendanceSettings().then(data => setForm(normalizeTimes(data))) }, [])
+  useEffect(() => { void getAttendanceSettings(clientId).then(data => setForm(normalizeTimes(data))) }, [clientId])
   const set = <K extends keyof AttendanceSettings>(key: K, value: AttendanceSettings[K]) => { setErrors([]); setForm(current => ({ ...current, [key]: value })) }
   const validate = () => {
     const next: string[] = []
@@ -23,7 +23,7 @@ export default function AttendanceSettingsForm({ onSaved }: { onSaved: (message:
   const save = async () => {
     if (!validate()) return
     setSaving(true)
-    const response = await saveAttendanceSettings(form)
+    const response = await saveAttendanceSettings({ ...form, clientId })
     setSaving(false)
     if (response.ok) { setForm(normalizeTimes(response.data)); onSaved('Attendance settings saved.') } else setErrors([response.error || 'Unable to save attendance settings.'])
   }

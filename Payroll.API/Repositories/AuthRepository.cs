@@ -208,7 +208,9 @@ ORDER BY r.Name;");
             ("hiring.manage", "Manage hiring", "Hiring"),
             ("ess.self", "Employee self service", "ESS"),
             ("security.manage", "Manage security", "Security"),
-            ("audit.view", "View audit logs", "Security")
+            ("audit.view", "View audit logs", "Security"),
+            ("reports.view", "View and export reports", "Reporting")
+            ,("workflow.manage", "Manage workflows", "Workflow"),("workflow.approve", "Approve workflow tasks", "Workflow")
         };
 
         foreach (var permission in permissions)
@@ -226,8 +228,8 @@ ON DUPLICATE KEY UPDATE Name = VALUES(Name), Description = VALUES(Description), 
 
         await GrantAsync(connection, "super_admin", permissions.Select(permission => permission.Item1).ToArray());
         await GrantAsync(connection, "payroll_maker", ["payroll.run", "employees.manage"]);
-        await GrantAsync(connection, "payroll_approver", ["payroll.approve", "audit.view"]);
-        await GrantAsync(connection, "hr_manager", ["employees.manage", "clients.manage"]);
+        await GrantAsync(connection, "payroll_approver", ["payroll.approve", "audit.view", "reports.view"]);
+        await GrantAsync(connection, "hr_manager", ["employees.manage", "clients.manage", "reports.view", "workflow.manage", "workflow.approve"]);
         await GrantAsync(connection, "hiring_manager", ["hiring.manage"]);
         await GrantAsync(connection, "employee", ["ess.self"]);
 

@@ -1,0 +1,88 @@
+import { useEffect, useState } from 'react'
+import { api, getJson } from '../services/apiClient'
+import { getClients } from '../services/payrollService'
+import type { Client } from '../types/payroll'
+import DataTable from './DataTable'
+
+type Approver = { id: number; displayName: string; email: string; clientId?: number | null }
+type Assignment = { id: number; department: string; userName: string }
+
+export default function DepartmentHeadAssignments() {
+  const [clients, setClients] = useState<Client[]>([])
+  const [clientId, setClientId] = useState(0)
+  const [departments, setDepartments] = useState<string[]>([])
+  const [assignments, setAssignments] = useState<Assignment[]>([])
+  const [approvers, setApprovers] = useState<Approver[]>([])
+  const [department, setDepartment] = useState('')
+  const [userId, setUserId] = useState('')
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    void getClients().then(setClients)
+    void getJson<Approver[]>('/api/workflows/approvers', []).then(setApprovers)
+  }, [])
+
+  const load = (id: number) => {
+    void getJson<string[]>(`/api/workflows/departments?clientId=${id}`, []).then(setDepartments)
+    void getJson<Assignment[]>(`/api/workflows/department-heads?clientId=${id}`, []).then(setAssignments)
+  }
+
+  const selectClient = (id: number) => {
+    setClientId(id)
+    setDepartment('')
+    setUserId('')
+    if (id) load(id)
+    else {
+      setDepartments([])
+      setAssignments([])
+    }
+  }
+
+  const save = async () => {
+    if (!clientId || !department || !userId) {
+      setMessage('Choose a client, department, and user.')
+      return
+    }
+    const response = await fetch(`${api}/api/workflows/department-heads`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientId, department, userId: Number(userId) })
+    })
+    if (!response.ok) {
+      setMessage('Unable to save assignment.')
+      return
+    }
+    setMessage('Department head assignment saved.')
+    setDepartment('')
+    setUserId('')
+    load(clientId)
+  }
+
+  const eligibleUsers = approvers.filter(user => !user.clientId || user.clientId === clientId)
+
+  return (
+    <section className="card department-heads">
+      <header>
+        <div>
+          <h3>Department Head Assignments</h3>
+          <p>Map each department to its approval user. The employee designation is not used.</p>
+        </div>
+      </header>
+      {message && <p className="form-warning">{message}</p>}
+      <div className="department-heads-form">
+        <label><span>Client</span><select value={clientId} onChange={event => selectClient(Number(event.target.value))}><option value="0">Select client</option>{clients.filter(client => client.isActive).map(client => <option key={client.id} value={client.id}>{client.name}</option>)}</select></label>
+        <label><span>Department</span><select value={department} onChange={event => setDepartment(event.target.value)} disabled={!clientId}><option value="">Select department</option>{departments.map(value => <option key={value}>{value}</option>)}</select></label>
+        <label><span>Department head user</span><select value={userId} onChange={event => setUserId(event.target.value)} disabled={!clientId}><option value="">Select user</option>{eligibleUsers.map(user => <option key={user.id} value={user.id}>{user.displayName} - {user.email}</option>)}</select></label>
+        <button type="button" onClick={() => void save()}>Save assignment</button>
+      </div>
+      {clientId > 0 && (
+        <DataTable
+          rows={assignments}
+          emptyText="No department heads mapped for this client."
+          exportFileName="department-heads"
+          columns={[{ key: 'department', label: 'Department' }, { key: 'userName', label: 'Assigned user' }]}
+        />
+      )}
+    </section>
+  )
+}

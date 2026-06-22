@@ -3,17 +3,18 @@ import { drop0, location0 } from '../data/payrollDefaults'
 import { deleteLeaveType, getLeaveTypes, saveLeaveType, setLeaveTypeStatus } from '../services/leaveAttendanceService'
 import { getDropdowns, getWorkLocations } from '../services/settingsService'
 import type { Drop, LeaveType, WorkLocation } from '../types/payroll'
+import DataTable from './DataTable'
 
 const today = new Date().toISOString().slice(0, 10)
-const blank: LeaveType = { id: 0, name: '', code: '', type: 'Paid', description: '', entitlement: 0, entitlementPeriod: 'Yearly', proRateForNewJoinees: false, resetEnabled: false, resetFrequency: 'Yearly', carryForwardUnusedLeaves: false, maxCarryForwardLimit: null, encashUnusedLeaves: false, maxEncashmentLimit: null, allowNegativeLeaveBalance: false, negativeBalanceHandling: 'Mark as LOP', allowPastDates: false, pastDateLimitType: 'No limit', pastDateLimitDays: null, allowFutureDates: true, futureDateLimitType: 'No limit', futureDateLimitDays: null, applicabilityMode: 'All employees', workLocation: '', department: '', designation: '', gender: '', effectiveFrom: today, expiresOn: '', postponeCreditsForNewEmployees: false, postponeCreditValue: null, postponeCreditUnit: 'Days', isActive: true }
+const blank: LeaveType = { id: 0, clientId: 0, name: '', code: '', type: 'Paid', description: '', entitlement: 0, entitlementPeriod: 'Yearly', proRateForNewJoinees: false, resetEnabled: false, resetFrequency: 'Yearly', carryForwardUnusedLeaves: false, maxCarryForwardLimit: null, encashUnusedLeaves: false, maxEncashmentLimit: null, allowNegativeLeaveBalance: false, negativeBalanceHandling: 'Mark as LOP', allowPastDates: false, pastDateLimitType: 'No limit', pastDateLimitDays: null, allowFutureDates: true, futureDateLimitType: 'No limit', futureDateLimitDays: null, applicabilityMode: 'All employees', workLocation: '', department: '', designation: '', gender: '', effectiveFrom: today, expiresOn: '', postponeCreditsForNewEmployees: false, postponeCreditValue: null, postponeCreditUnit: 'Days', isActive: true }
 
-export default function LeaveTypesManager({ onMessage }: { onMessage: (message: string) => void }) {
+export default function LeaveTypesManager({ clientId, onMessage }: { clientId: number; onMessage: (message: string) => void }) {
   const [rows, setRows] = useState<LeaveType[]>([]), [form, setForm] = useState<LeaveType>(blank), [editing, setEditing] = useState(false), [errors, setErrors] = useState<string[]>([]), [busy, setBusy] = useState(false)
   const [drops, setDrops] = useState<Drop[]>([]), [locations, setLocations] = useState<WorkLocation[]>([])
   const departments = useMemo(() => drops.filter(item => item.type === 'Department' && item.isActive).map(item => item.value), [drops])
   const designations = useMemo(() => drops.filter(item => item.type === 'Designation' && item.isActive).map(item => item.value), [drops])
-  const load = async () => { const [leaveTypes, dropdowns, workLocations] = await Promise.all([getLeaveTypes(), getDropdowns(), getWorkLocations()]); setRows(leaveTypes); setDrops(dropdowns.length ? dropdowns : [drop0]); setLocations(workLocations.length ? workLocations : [location0]) }
-  useEffect(() => { void load() }, [])
+  const load = async () => { const [leaveTypes, dropdowns, workLocations] = await Promise.all([getLeaveTypes(clientId), getDropdowns(), getWorkLocations()]); setRows(leaveTypes); setDrops(dropdowns.length ? dropdowns : [drop0]); setLocations(workLocations.length ? workLocations : [location0]); setForm({ ...blank, clientId }) }
+  useEffect(() => { void load() }, [clientId])
   const set = <K extends keyof LeaveType>(key: K, value: LeaveType[K]) => { setErrors([]); setForm(current => ({ ...current, [key]: value })) }
   const validate = () => {
     const next: string[] = []
@@ -28,20 +29,27 @@ export default function LeaveTypesManager({ onMessage }: { onMessage: (message: 
   const save = async () => {
     if (!validate()) return
     setBusy(true)
-    const response = await saveLeaveType({ ...form, code: form.code.trim().toUpperCase(), name: form.name.trim() })
+    const response = await saveLeaveType({ ...form, clientId, code: form.code.trim().toUpperCase(), name: form.name.trim() })
     setBusy(false)
     if (response.ok) { setForm(blank); setEditing(false); onMessage('Leave type saved.'); await load() }
     else setErrors([response.error || 'Unable to save leave type. Check code uniqueness and required fields.'])
   }
-  const toggle = async (row: LeaveType) => { const response = await setLeaveTypeStatus(row.id, !row.isActive); if (response.ok) { onMessage(row.isActive ? 'Leave type disabled.' : 'Leave type enabled.'); await load() } }
-  const remove = async (row: LeaveType) => { if (!window.confirm(`Delete ${row.name}?`)) return; const response = await deleteLeaveType(row.id); if (response.ok) { onMessage('Leave type deleted.'); await load() } }
+  const toggle = async (row: LeaveType) => { const response = await setLeaveTypeStatus(clientId, row.id, !row.isActive); if (response.ok) { onMessage(row.isActive ? 'Leave type disabled.' : 'Leave type enabled.'); await load() } }
+  const remove = async (row: LeaveType) => { if (!window.confirm(`Delete ${row.name}?`)) return; const response = await deleteLeaveType(clientId, row.id); if (response.ok) { onMessage('Leave type deleted.'); await load() } }
   const edit = (row: LeaveType) => { setForm({ ...blank, ...row, effectiveFrom: String(row.effectiveFrom).slice(0, 10), expiresOn: row.expiresOn ? String(row.expiresOn).slice(0, 10) : '' }); setEditing(true); setErrors([]) }
 
   return <section className="leave-types"><div className="card"><header><i className="blue">L</i><div><h3>Leave Types</h3><p>Create paid/unpaid leave policies, reset rules and applicability criteria.</p></div></header><LeaveTypesTable rows={rows} edit={edit} toggle={toggle} remove={remove} /></div><LeaveTypeForm form={form} editing={editing} errors={errors} busy={busy} departments={departments} designations={designations} locations={locations} set={set} save={save} cancel={() => { setForm(blank); setEditing(false); setErrors([]) }} /></section>
 }
 
 function LeaveTypesTable(p: { rows: LeaveType[]; edit: (row: LeaveType) => void; toggle: (row: LeaveType) => void; remove: (row: LeaveType) => void }) {
-  return <div className="leave-type-table"><table><thead><tr><th>Leave Type Name</th><th>Code</th><th>Paid/Unpaid</th><th>Entitlement</th><th>Reset Policy</th><th>Status</th><th>Actions</th></tr></thead><tbody>{p.rows.map(row => <tr key={row.id}><td>{row.name}</td><td>{row.code}</td><td>{row.type}</td><td>{row.entitlement} / {row.entitlementPeriod}</td><td>{row.resetEnabled ? `${row.resetFrequency}${row.carryForwardUnusedLeaves ? ' + CF' : ''}${row.encashUnusedLeaves ? ' + Encash' : ''}` : 'No reset'}</td><td><span className={`setup-status ${row.isActive ? 'completed' : 'disabled'}`}>{row.isActive ? 'Active' : 'Disabled'}</span></td><td><button type="button" onClick={() => p.edit(row)}>Edit</button><button type="button" onClick={() => void p.toggle(row)}>{row.isActive ? 'Disable' : 'Enable'}</button><button type="button" className="danger" onClick={() => void p.remove(row)}>Delete</button></td></tr>)}</tbody></table>{!p.rows.length && <p className="empty">No leave types configured.</p>}</div>
+  return <DataTable rows={p.rows} emptyText="No leave types configured." exportFileName="leave-types" columns={[
+    { key: 'name', label: 'Leave Type Name' },
+    { key: 'code', label: 'Code' },
+    { key: 'type', label: 'Paid/Unpaid' },
+    { key: 'entitlementText', label: 'Entitlement', value: row => `${row.entitlement} / ${row.entitlementPeriod}` },
+    { key: 'resetPolicy', label: 'Reset Policy', value: row => row.resetEnabled ? `${row.resetFrequency}${row.carryForwardUnusedLeaves ? ' + CF' : ''}${row.encashUnusedLeaves ? ' + Encash' : ''}` : 'No reset' },
+    { key: 'status', label: 'Status', value: row => row.isActive ? 'Active' : 'Disabled', render: row => <span className={`setup-status ${row.isActive ? 'completed' : 'disabled'}`}>{row.isActive ? 'Active' : 'Disabled'}</span> }
+  ]} actions={row => <><button type="button" onClick={() => p.edit(row)}>Edit</button><button type="button" onClick={() => void p.toggle(row)}>{row.isActive ? 'Disable' : 'Enable'}</button><button type="button" className="danger" onClick={() => void p.remove(row)}>Delete</button></>} />
 }
 
 function LeaveTypeForm(p: { form: LeaveType; editing: boolean; errors: string[]; busy: boolean; departments: string[]; designations: string[]; locations: WorkLocation[]; set: <K extends keyof LeaveType>(key: K, value: LeaveType[K]) => void; save: () => void; cancel: () => void }) {

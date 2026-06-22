@@ -2,31 +2,38 @@ import { useEffect, useMemo, useState } from 'react'
 import { deleteHoliday, getHolidays, saveHoliday } from '../services/leaveAttendanceService'
 import { getWorkLocations } from '../services/settingsService'
 import type { Holiday, WorkLocation } from '../types/payroll'
+import DataTable from './DataTable'
 
 const today = new Date().toISOString().slice(0, 10)
-const blank: Holiday = { id: 0, name: '', startDate: today, endDate: today, description: '', allLocations: true, workLocationIds: [], workLocations: 'All locations' }
+const blank: Holiday = { id: 0, clientId: 0, name: '', startDate: today, endDate: today, description: '', allLocations: true, workLocationIds: [], workLocations: 'All locations' }
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-export default function HolidayManager({ onMessage }: { onMessage: (message: string) => void }) {
+export default function HolidayManager({ clientId, onMessage }: { clientId: number; onMessage: (message: string) => void }) {
   const currentYear = new Date().getFullYear()
   const [rows, setRows] = useState<Holiday[]>([]), [locations, setLocations] = useState<WorkLocation[]>([]), [form, setForm] = useState<Holiday>(blank), [errors, setErrors] = useState<string[]>([])
   const [year, setYear] = useState(currentYear), [workLocationId, setWorkLocationId] = useState(0), [view, setView] = useState<'Table' | 'Calendar'>('Table')
   const years = Array.from({ length: 7 }, (_, index) => currentYear - 3 + index)
   const calendar = useMemo(() => monthNames.map((month, index) => ({ month, holidays: rows.filter(row => new Date(row.startDate).getMonth() === index || new Date(row.endDate).getMonth() === index) })), [rows])
-  const load = async () => { const [holidays, workLocations] = await Promise.all([getHolidays(year, workLocationId || undefined), getWorkLocations()]); setRows(holidays); setLocations(workLocations.filter(location => location.isActive)) }
-  useEffect(() => { void load() }, [year, workLocationId])
+  const load = async () => { const [holidays, workLocations] = await Promise.all([getHolidays(clientId, year, workLocationId || undefined), getWorkLocations()]); setRows(holidays); setLocations(workLocations.filter(location => location.isActive)); setForm(current => current.id ? current : { ...blank, clientId }) }
+  useEffect(() => { void load() }, [clientId, year, workLocationId])
   const set = <K extends keyof Holiday>(key: K, value: Holiday[K]) => setForm(current => ({ ...current, [key]: value }))
   const toggleLocation = (id: number) => set('workLocationIds', form.workLocationIds.includes(id) ? form.workLocationIds.filter(item => item !== id) : [...form.workLocationIds, id])
   const validate = () => { const next = []; if (!form.name.trim()) next.push('Holiday name is required.'); if (form.endDate < form.startDate) next.push('End date cannot be before start date.'); if (!form.allLocations && form.workLocationIds.length === 0) next.push('Select at least one work location.'); setErrors(next); return next.length === 0 }
-  const save = async () => { if (!validate()) return; const response = await saveHoliday(form); if (response.ok) { setForm(blank); setErrors([]); onMessage('Holiday saved.'); await load() } else setErrors([response.error || 'Unable to save holiday.']) }
+  const save = async () => { if (!validate()) return; const response = await saveHoliday({ ...form, clientId }); if (response.ok) { setForm({ ...blank, clientId }); setErrors([]); onMessage('Holiday saved.'); await load() } else setErrors([response.error || 'Unable to save holiday.']) }
   const edit = (row: Holiday) => { setForm({ ...blank, ...row, startDate: String(row.startDate).slice(0, 10), endDate: String(row.endDate).slice(0, 10), workLocationIds: row.workLocationIds || [] }); setErrors([]) }
-  const remove = async (row: Holiday) => { if (!window.confirm(`Delete ${row.name}?`)) return; const response = await deleteHoliday(row.id); if (response.ok) { onMessage('Holiday deleted.'); await load() } }
+  const remove = async (row: Holiday) => { if (!window.confirm(`Delete ${row.name}?`)) return; const response = await deleteHoliday(clientId, row.id); if (response.ok) { onMessage('Holiday deleted.'); await load() } }
 
   return <section className="holiday-manager"><div className="card"><header><i className="blue">H</i><div><h3>Holiday Management</h3><p>Maintain location-wise holidays and prevent duplicate date overlaps.</p></div></header><div className="holiday-toolbar"><label><span>Year</span><select value={year} onChange={event => setYear(Number(event.target.value))}>{years.map(item => <option key={item}>{item}</option>)}</select></label><label><span>Work Location</span><select value={workLocationId} onChange={event => setWorkLocationId(Number(event.target.value))}><option value={0}>All locations</option>{locations.map(location => <option value={location.id} key={location.id}>{location.name}</option>)}</select></label><div className="tabs"><button type="button" className={view === 'Table' ? 'on' : ''} onClick={() => setView('Table')}>Table</button><button type="button" className={view === 'Calendar' ? 'on' : ''} onClick={() => setView('Calendar')}>Calendar</button></div></div>{view === 'Table' ? <HolidayTable rows={rows} edit={edit} remove={remove} /> : <div className="holiday-calendar">{calendar.map(item => <article key={item.month}><h4>{item.month}</h4>{item.holidays.length ? item.holidays.map(holiday => <button type="button" key={holiday.id} onClick={() => edit(holiday)}><strong>{holiday.name}</strong><span>{dateRange(holiday)}</span><small>{holiday.workLocations}</small></button>) : <p>No holidays</p>}</article>)}</div>}</div><HolidayForm form={form} locations={locations} errors={errors} set={set} toggleLocation={toggleLocation} save={save} cancel={() => { setForm(blank); setErrors([]) }} /></section>
 }
 
 function HolidayTable({ rows, edit, remove }: { rows: Holiday[]; edit: (row: Holiday) => void; remove: (row: Holiday) => void }) {
-  return <div className="holiday-table"><table><thead><tr><th>Holiday Name</th><th>Start Date</th><th>End Date</th><th>Work Locations</th><th>Description</th><th>Actions</th></tr></thead><tbody>{rows.map(row => <tr key={row.id}><td>{row.name}</td><td>{formatDate(row.startDate)}</td><td>{formatDate(row.endDate)}</td><td>{row.workLocations}</td><td>{row.description}</td><td><button type="button" onClick={() => edit(row)}>Edit</button><button type="button" className="danger" onClick={() => void remove(row)}>Delete</button></td></tr>)}</tbody></table>{!rows.length && <p className="empty">No holidays configured for this filter.</p>}</div>
+  return <DataTable rows={rows} emptyText="No holidays configured for this filter." exportFileName="holidays" columns={[
+    { key: 'name', label: 'Holiday Name' },
+    { key: 'startDate', label: 'Start Date', value: row => formatDate(row.startDate) },
+    { key: 'endDate', label: 'End Date', value: row => formatDate(row.endDate) },
+    { key: 'workLocations', label: 'Work Locations' },
+    { key: 'description', label: 'Description' }
+  ]} actions={row => <><button type="button" onClick={() => edit(row)}>Edit</button><button type="button" className="danger" onClick={() => void remove(row)}>Delete</button></>} />
 }
 
 function HolidayForm(p: { form: Holiday; locations: WorkLocation[]; errors: string[]; set: <K extends keyof Holiday>(key: K, value: Holiday[K]) => void; toggleLocation: (id: number) => void; save: () => void; cancel: () => void }) {

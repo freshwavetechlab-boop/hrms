@@ -7,8 +7,8 @@ import type { Component, LeaveAttendancePreferences } from '../types/payroll'
 const dayOptions = Array.from({ length: 31 }, (_, index) => index + 1)
 const bufferDays = (endDay: number, reportDay: number) => reportDay >= endDay ? reportDay - endDay : reportDay + 31 - endDay
 
-export default function LeaveAttendancePreferencesForm({ onSaved }: { onSaved: (message: string) => void }) {
-  const [preferences, setPreferences] = useState<LeaveAttendancePreferences>({ id: 0, attendanceCycleStartDay: 1, attendanceCycleEndDay: 25, payrollReportGenerationDay: 28, includeLeaveEncashmentInPayRun: false, leaveEncashmentSalaryComponentId: null })
+export default function LeaveAttendancePreferencesForm({ clientId, onSaved }: { clientId: number; onSaved: (message: string) => void }) {
+  const [preferences, setPreferences] = useState<LeaveAttendancePreferences>({ id: 0, clientId, attendanceCycleStartDay: 1, attendanceCycleEndDay: 25, payrollReportGenerationDay: 28, includeLeaveEncashmentInPayRun: false, leaveEncashmentSalaryComponentId: null })
   const [components, setComponents] = useState<Component[]>([]), [errors, setErrors] = useState<string[]>([]), [saving, setSaving] = useState(false)
   const selectedComponent = components.find(component => component.id === Number(preferences.leaveEncashmentSalaryComponentId || 0))
   const isFormulaBased = selectedComponent?.calculationType === 'Formula'
@@ -16,11 +16,11 @@ export default function LeaveAttendancePreferencesForm({ onSaved }: { onSaved: (
   const warning = preferences.includeLeaveEncashmentInPayRun && selectedComponent && !isFormulaBased ? 'Leave encashment can only be enabled for formula-based salary components.' : ''
 
   useEffect(() => {
-    void Promise.all([getLeaveAttendancePreferences(), getSetup(setup0)]).then(([saved, setup]) => {
+    void Promise.all([getLeaveAttendancePreferences(clientId), getSetup(setup0)]).then(([saved, setup]) => {
       setPreferences(saved)
       setComponents(setup.salaryComponents?.length ? setup.salaryComponents : demoComponents)
     })
-  }, [])
+  }, [clientId])
 
   const validate = () => {
     const nextErrors: string[] = []
@@ -34,7 +34,7 @@ export default function LeaveAttendancePreferencesForm({ onSaved }: { onSaved: (
   const save = async () => {
     if (!validate()) return
     setSaving(true)
-    const response = await saveLeaveAttendancePreferences({
+    const response = await saveLeaveAttendancePreferences({ clientId,
       attendanceCycleStartDay: preferences.attendanceCycleStartDay,
       attendanceCycleEndDay: preferences.attendanceCycleEndDay,
       payrollReportGenerationDay: preferences.payrollReportGenerationDay,

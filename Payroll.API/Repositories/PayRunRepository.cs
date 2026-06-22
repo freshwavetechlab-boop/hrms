@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS PayRunEmployees (
         await EnsureColumnAsync(connection, "PayRunEmployees", "PaymentDate", "DATE NULL");
         await EnsureColumnAsync(connection, "PayRunEmployees", "ClientId", "INT NOT NULL DEFAULT 0");
         await EnsureColumnAsync(connection, "PayRunEmployees", "ClientName", "VARCHAR(250) NULL");
+        await EnsureColumnAsync(connection, "PayRunEmployees", "ManualTds", "DECIMAL(18,2) NOT NULL DEFAULT 0");
         await EnsureColumnAsync(connection, "PayRuns", "ClientId", "INT NOT NULL DEFAULT 0");
         await EnsureColumnAsync(connection, "PayRuns", "ClientName", "VARCHAR(250) NULL");
         await EnsurePayRunIndexAsync(connection);
@@ -116,11 +117,16 @@ INSERT INTO PayRuns (ClientId, ClientName, PayPeriod, PayDate, TotalWorkingDays)
 SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays }, transaction);
         var setupJson = await connection.ExecuteScalarAsync<string?>("SELECT SetupJson FROM PayrollSetups ORDER BY Id LIMIT 1", transaction: transaction) ?? "{}";
         var employees = await connection.QueryAsync<PayRunSourceEmployee>("SELECT e.*, c.Name AS ClientName FROM Employees e LEFT JOIN Clients c ON c.Id = e.ClientId WHERE e.IsActive = TRUE AND e.ClientId = @ClientId ORDER BY e.FirstName, e.LastName", new { request.ClientId }, transaction);
+        var attendance = (await connection.QueryAsync<PayRunAttendance>(@"SELECT employee_id AS EmployeeId, present_days AS PresentDays, payable_days AS PayableDays
+FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=@Month", new { request.ClientId, Month = request.PayPeriod }, transaction)).ToDictionary(row => row.EmployeeId);
 
         var excludedEmployeeIds = request.ExcludedEmployeeIds.ToHashSet();
         foreach (var employee in employees)
         {
-            var row = BuildEmployee(payRunId, employee, setupJson, request.TotalWorkingDays, request.TotalWorkingDays, 0, 0, excludedEmployeeIds.Contains(employee.Id));
+            var attendanceRow = attendance.GetValueOrDefault(employee.Id);
+            var presentDays = attendanceRow is null ? request.TotalWorkingDays : (int)Math.Round(Math.Clamp(attendanceRow.PresentDays, 0, request.TotalWorkingDays), MidpointRounding.AwayFromZero);
+            var payableDays = attendanceRow is null ? request.TotalWorkingDays : (int)Math.Round(Math.Clamp(attendanceRow.PayableDays, 0, request.TotalWorkingDays), MidpointRounding.AwayFromZero);
+            var row = BuildEmployee(payRunId, employee, setupJson, request.TotalWorkingDays, presentDays, payableDays, 0, 0, 0, excludedEmployeeIds.Contains(employee.Id));
             await SaveEmployeeAsync(connection, transaction, row);
         }
 
@@ -143,7 +149,7 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             return null;
         var setupJson = await connection.ExecuteScalarAsync<string?>("SELECT SetupJson FROM PayrollSetups ORDER BY Id LIMIT 1", transaction: transaction) ?? "{}";
         var presentDays = Math.Clamp(request.PresentDays, 0, payRun.TotalWorkingDays);
-        var row = BuildEmployee(payRunId, employee, setupJson, payRun.TotalWorkingDays, presentDays, Math.Max(0, request.OneTimeEarnings), Math.Max(0, request.OneTimeDeductions), request.IsSkipped);
+        var row = BuildEmployee(payRunId, employee, setupJson, payRun.TotalWorkingDays, presentDays, presentDays, Math.Max(0, request.OneTimeEarnings), Math.Max(0, request.OneTimeDeductions), Math.Max(0, request.ManualTds), request.IsSkipped);
         await SaveEmployeeAsync(connection, transaction, row);
         await RefreshTotalsAsync(connection, transaction, payRunId);
         await transaction.CommitAsync();
@@ -204,11 +210,12 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         return await GetAsync(id);
     }
 
-    private static PayRunEmployee BuildEmployee(int payRunId, PayRunSourceEmployee employee, string setupJson, int totalWorkingDays, int presentDays, decimal oneTimeEarnings, decimal oneTimeDeductions, bool isSkipped)
+    private static PayRunEmployee BuildEmployee(int payRunId, PayRunSourceEmployee employee, string setupJson, int totalWorkingDays, int presentDays, int payableDays, decimal oneTimeEarnings, decimal oneTimeDeductions, decimal manualTds, bool isSkipped)
     {
+        if (employee.ClientId == 6) return BuildReclEmployee(payRunId, employee, totalWorkingDays, payableDays, oneTimeEarnings, oneTimeDeductions, manualTds, isSkipped);
         var components = ReadComponents(setupJson);
         var salary = JsonSerializer.Deserialize<Dictionary<string, decimal>>(employee.SalaryJson, new JsonSerializerOptions { NumberHandling = JsonNumberHandling.AllowReadingFromString }) ?? [];
-        var factor = totalWorkingDays == 0 ? 0 : (decimal)presentDays / totalWorkingDays;
+        var factor = totalWorkingDays == 0 ? 0 : (decimal)payableDays / totalWorkingDays;
         var lines = new List<object>();
         decimal monthlyGross = 0, grossPay = 0, deductions = 0;
 
@@ -238,7 +245,7 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             EmployeeName = $"{employee.FirstName} {employee.LastName}".Trim(),
             Department = employee.Department,
             PresentDays = presentDays,
-            PayableDays = isSkipped ? 0 : presentDays,
+            PayableDays = isSkipped ? 0 : payableDays,
             MonthlyGross = monthlyGross,
             GrossPay = grossPay,
             StatutoryDeductions = deductions,
@@ -248,6 +255,39 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             IsSkipped = isSkipped,
             DetailsJson = JsonSerializer.Serialize(lines)
         };
+    }
+
+    private static PayRunEmployee BuildReclEmployee(int payRunId, PayRunSourceEmployee employee, int payrollDays, int payableDays, decimal taDa, decimal recovery, decimal manualTds, bool isSkipped)
+    {
+        var salary = JsonSerializer.Deserialize<Dictionary<string, decimal>>(employee.SalaryJson, new JsonSerializerOptions { NumberHandling = JsonNumberHandling.AllowReadingFromString }) ?? [];
+        var gross = salary.TryGetValue("GROSS", out var sourceGross) ? sourceGross : new[] { "401", "402", "403", "404", "405", "406", "407" }.Sum(key => salary.GetValueOrDefault(key));
+        if (gross <= 0 && employee.AnnualCtc > 0) gross = decimal.Round(employee.AnnualCtc / 12m, 2);
+        var basic = decimal.Round(gross * .50m, 2);
+        var hra = decimal.Round(basic * .40m, 2);
+        var telephonic = 2000m;
+        var bonus = decimal.Floor(basic * .0833m);
+        var medical = 1250m;
+        var other = gross - (basic + hra + bonus + telephonic + medical);
+        var laptop = isSkipped ? 0m : 2000m;
+        var factor = payrollDays == 0 || isSkipped ? 0 : (decimal)payableDays / payrollDays;
+        var basicEarned = decimal.Round(basic * factor, 2);
+        var hraEarned = decimal.Round(hra * factor, 2);
+        var telephonicEarned = decimal.Round(telephonic * factor, 2);
+        var bonusEarned = decimal.Round(bonus * factor, 2);
+        var medicalEarned = decimal.Round(medical * factor, 2);
+        var otherEarned = decimal.Round(other * factor, 2);
+        var grossEarned = basicEarned + hraEarned + telephonicEarned + bonusEarned + medicalEarned + otherEarned + laptop + (isSkipped ? 0 : taDa);
+        var pf = Math.Min(decimal.Round(basicEarned * .12m, 2), 1800m);
+        var pt = grossEarned < 6000 ? 0m : grossEarned < 9000 ? 80m : grossEarned < 12000 ? 150m : 200m;
+        var tds = isSkipped ? 0m : manualTds;
+        var employerPf = pf;
+        var pfAdmin = decimal.Round(employerPf * .0004167m, 2);
+        var edli = decimal.Round(employerPf * .0004167m, 2);
+        var employerCost = employerPf + pfAdmin + edli;
+        var deductions = pf + pt + tds;
+        var net = Math.Max(0, grossEarned - deductions - (isSkipped ? 0 : recovery));
+        var lines = new[] { ("BASIC", "Basic", "Earning", basic), ("HRA", "HRA", "Earning", hra), ("TA_DA", "TA / DA", "Earning", taDa), ("BASIC_EARNED", "Basic Earned", "Earning", basicEarned), ("HRA_EARNED", "HRA Earned", "Earning", hraEarned), ("TELEPHONIC_EARNED", "Telephonic Earned", "Earning", telephonicEarned), ("BONUS_EARNED", "Bonus Earned", "Earning", bonusEarned), ("MEDICAL_EARNED", "Medical Earned", "Earning", medicalEarned), ("OTHER_ALLOWANCE_EARNED", "Other Allowance Earned", "Earning", otherEarned), ("LAPTOP_ALLOWANCE", "Laptop Allowance", "Earning", laptop), ("EMPLOYEE_PF", "Employee PF", "Deduction", pf), ("ESIC", "ESIC", "Deduction", 0m), ("PT", "Professional Tax", "Deduction", pt), ("TDS", "TDS", "Deduction", tds), ("RECOVERY", "Recovery", "Deduction", recovery), ("GROSS_EARNED", "Gross Earned", "Summary", grossEarned), ("NET_PAY", "Net Pay", "Summary", net), ("EMPLOYER_COST", "Employer Cost", "Employer Contribution", employerCost) }.Select(line => new { Id = line.Item1, Name = line.Item2, Category = line.Item3, monthlyAmount = line.Item4, amount = line.Item4, ProRata = line.Item1.Contains("EARNED") }).ToList();
+        return new PayRunEmployee { PayRunId = payRunId, EmployeeId = employee.Id, ClientId = employee.ClientId, ClientName = employee.ClientName, EmployeeCode = employee.EmployeeCode, EmployeeName = $"{employee.FirstName} {employee.LastName}".Trim(), Department = employee.Department, PresentDays = payableDays, PayableDays = isSkipped ? 0 : payableDays, MonthlyGross = gross + laptop, GrossPay = grossEarned, StatutoryDeductions = deductions, OneTimeEarnings = isSkipped ? 0 : taDa, OneTimeDeductions = isSkipped ? 0 : recovery, ManualTds = tds, NetPay = net, IsSkipped = isSkipped, DetailsJson = JsonSerializer.Serialize(lines) };
     }
 
     private static Dictionary<string, PayrollComponent> ReadComponents(string setupJson)
@@ -267,9 +307,9 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
     private static async Task SaveEmployeeAsync(MySqlConnection connection, MySqlTransaction transaction, PayRunEmployee row)
     {
         await connection.ExecuteAsync(@"
-INSERT INTO PayRunEmployees (PayRunId, EmployeeId, ClientId, ClientName, EmployeeCode, EmployeeName, Department, PresentDays, PayableDays, MonthlyGross, GrossPay, StatutoryDeductions, OneTimeEarnings, OneTimeDeductions, NetPay, IsSkipped, DetailsJson)
-VALUES (@PayRunId, @EmployeeId, @ClientId, @ClientName, @EmployeeCode, @EmployeeName, @Department, @PresentDays, @PayableDays, @MonthlyGross, @GrossPay, @StatutoryDeductions, @OneTimeEarnings, @OneTimeDeductions, @NetPay, @IsSkipped, @DetailsJson)
-ON DUPLICATE KEY UPDATE ClientId=@ClientId, ClientName=@ClientName, EmployeeCode=@EmployeeCode, EmployeeName=@EmployeeName, Department=@Department, PresentDays=@PresentDays, PayableDays=@PayableDays, MonthlyGross=@MonthlyGross, GrossPay=@GrossPay, StatutoryDeductions=@StatutoryDeductions, OneTimeEarnings=@OneTimeEarnings, OneTimeDeductions=@OneTimeDeductions, NetPay=@NetPay, IsSkipped=@IsSkipped, DetailsJson=@DetailsJson;", row, transaction);
+INSERT INTO PayRunEmployees (PayRunId, EmployeeId, ClientId, ClientName, EmployeeCode, EmployeeName, Department, PresentDays, PayableDays, MonthlyGross, GrossPay, StatutoryDeductions, OneTimeEarnings, OneTimeDeductions, ManualTds, NetPay, IsSkipped, DetailsJson)
+VALUES (@PayRunId, @EmployeeId, @ClientId, @ClientName, @EmployeeCode, @EmployeeName, @Department, @PresentDays, @PayableDays, @MonthlyGross, @GrossPay, @StatutoryDeductions, @OneTimeEarnings, @OneTimeDeductions, @ManualTds, @NetPay, @IsSkipped, @DetailsJson)
+ON DUPLICATE KEY UPDATE ClientId=@ClientId, ClientName=@ClientName, EmployeeCode=@EmployeeCode, EmployeeName=@EmployeeName, Department=@Department, PresentDays=@PresentDays, PayableDays=@PayableDays, MonthlyGross=@MonthlyGross, GrossPay=@GrossPay, StatutoryDeductions=@StatutoryDeductions, OneTimeEarnings=@OneTimeEarnings, OneTimeDeductions=@OneTimeDeductions, ManualTds=@ManualTds, NetPay=@NetPay, IsSkipped=@IsSkipped, DetailsJson=@DetailsJson;", row, transaction);
     }
 
     private static Task RefreshTotalsAsync(MySqlConnection connection, MySqlTransaction transaction, int payRunId) =>
@@ -314,6 +354,7 @@ LIMIT 1;", new { payRun.ClientId, payRun.PayPeriod });
     }
 
     private sealed record PayrollComponent(string Id, string Name, string Category, bool ProRata);
+    private sealed record PayRunAttendance(int EmployeeId, decimal PresentDays, decimal PayableDays);
     private sealed class PayRunSourceEmployee : Employee { public string ClientName { get; set; } = string.Empty; }
 
     private static async Task EnsureColumnAsync(MySqlConnection connection, string tableName, string columnName, string definition)

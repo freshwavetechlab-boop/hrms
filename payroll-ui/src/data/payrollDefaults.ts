@@ -19,5 +19,7 @@ export const drop0: Drop = { id: 0, type: 'Department', value: '', isActive: tru
 export const settingsMenus = ['Organization', 'Clients', 'Work Locations', 'Dropdown Masters', 'Tax', 'Pay Schedule', 'Statutory', 'Salary Components', 'Salary Templates', 'Payslip Templates'] as const
 export const securityMenus = ['Users', 'Roles', 'Audit'] as const
 export const leaveAttendanceMenus = ['Preferences', 'Leave Types', 'Holiday', 'Attendance', 'Import Balance'] as const
+export const reportingMenus = ['Payroll Reports', 'Employee Reports', 'Attendance Reports', 'Leave Reports', 'Recruitment Reports', 'Onboarding Reports', 'Separation Reports', 'Compliance Reports', 'Tax Reports', 'Loan & Advance Reports', 'Cost Center Reports', 'Department Reports', 'Location Reports', 'Contractor Reports', 'Audit Reports', 'MIS Reports', 'Executive Dashboards', 'Scheduled Reports', 'Report Builder'] as const
+export const workflowMenus = ['Workflow Setup', 'Department Head Assignments', 'My Tasks', 'Workflow History'] as const
 export const dropTypes = ['Department', 'Designation', 'Employment Type', 'Employee Grade', 'Cost Center', 'Location Tag']
 export const states = ['Delhi', 'Gujarat', 'Karnataka', 'Maharashtra', 'Tamil Nadu', 'Telangana', 'Uttar Pradesh', 'West Bengal']

@@ -1,11 +1,15 @@
-import { useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { getCurrentUser, login as authenticate, logout as endSession } from '../services/authService'
 import type { AuthUser } from '../types/payroll'
 
+type AuthSession = { user: AuthUser; logout: () => Promise<void> }
+const AuthSessionContext = createContext<AuthSession | null>(null)
+export const useAuthSession = () => useContext(AuthSessionContext)
+
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null), [email, setEmail] = useState('admin@paymint.local'), [password, setPassword] = useState('Admin@12345')
-  const [loading, setLoading] = useState(true), [error, setError] = useState('')
+  const [loading, setLoading] = useState(true), [error, setError] = useState(''), [accountOpen, setAccountOpen] = useState(false)
 
   useEffect(() => {
     const token = localStorage.getItem('payroll.auth.token')
@@ -32,5 +36,5 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
   if (loading) return <main className="auth-shell"><section className="auth-card"><h1>Paymint</h1><p>Restoring secure workspace...</p></section></main>
   if (!user) return <main className="auth-shell"><section className="auth-card"><span className="eyebrow purple">Secure Workspace</span><h1>Sign in to Paymint</h1><p>Enterprise payroll requires authenticated, auditable access before any setup, employee, or payroll operation.</p><form onSubmit={login}><label>Email<input value={email} onChange={event => setEmail(event.target.value)} autoComplete="username" /></label><label>Password<input type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" /></label>{error && <strong className="auth-error">{error}</strong>}<button>Sign in</button></form><small>Bootstrap admin: admin@paymint.local / Admin@12345</small></section></main>
-  return <><div className="auth-session"><span>{user.displayName}</span><small>{user.roles.join(', ')}</small><button type="button" onClick={() => void logout()}>Logout</button></div>{children}</>
+  return <AuthSessionContext.Provider value={{ user, logout }}><div className="auth-session"><button className="auth-avatar" type="button" aria-label="Open account menu" aria-expanded={accountOpen} onClick={() => setAccountOpen(open => !open)}>{user.displayName.split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase()}</button>{accountOpen && <div className="auth-dropdown"><strong>{user.displayName}</strong><small>{user.email}</small><span>{user.roles.join(', ')}</span><button type="button" onClick={() => void logout()}>Logout</button></div>}</div>{children}</AuthSessionContext.Provider>
 }

@@ -2,6 +2,7 @@ namespace Payroll.API.Models;
 
 public class LeaveAttendanceSetup
 {
+    public int ClientId { get; set; }
     public bool IsEnabled { get; set; }
     public List<LeaveAttendanceSetupStep> Steps { get; set; } = [];
 }
@@ -19,17 +20,20 @@ public class LeaveAttendanceSetupStep
 
 public class UpdateLeaveAttendanceModuleRequest
 {
+    public int ClientId { get; set; }
     public bool IsEnabled { get; set; }
 }
 
 public class UpdateLeaveAttendanceStepRequest
 {
+    public int ClientId { get; set; }
     public string Status { get; set; } = string.Empty;
 }
 
 public class LeaveAttendancePreferences
 {
     public int Id { get; set; }
+    public int ClientId { get; set; }
     public int AttendanceCycleStartDay { get; set; } = 1;
     public int AttendanceCycleEndDay { get; set; } = 25;
     public int PayrollReportGenerationDay { get; set; } = 28;
@@ -41,6 +45,7 @@ public class LeaveAttendancePreferences
 
 public class SaveLeaveAttendancePreferencesRequest
 {
+    public int ClientId { get; set; }
     public int AttendanceCycleStartDay { get; set; }
     public int AttendanceCycleEndDay { get; set; }
     public int PayrollReportGenerationDay { get; set; }
@@ -51,6 +56,7 @@ public class SaveLeaveAttendancePreferencesRequest
 public class AttendanceSettings
 {
     public int Id { get; set; }
+    public int ClientId { get; set; }
     public TimeSpan CheckInTime { get; set; } = new(9, 0, 0);
     public TimeSpan CheckOutTime { get; set; } = new(18, 0, 0);
     public string WorkingHoursCalculation { get; set; } = "First check-in and last check-out";
@@ -68,9 +74,51 @@ public class AttendanceSettings
 
 public class SaveAttendanceSettingsRequest : AttendanceSettings { }
 
+public class EmployeeMonthlyAttendance
+{
+    public int EmployeeId { get; set; }
+    public string EmployeeCode { get; set; } = string.Empty;
+    public string EmployeeName { get; set; } = string.Empty;
+    public string Department { get; set; } = string.Empty;
+    public string Month { get; set; } = string.Empty;
+    public decimal WorkingDays { get; set; }
+    public decimal PresentDays { get; set; }
+    public decimal PayableDays { get; set; }
+    public decimal LopDays { get; set; }
+    public string SourceType { get; set; } = "Monthly";
+    public string Remarks { get; set; } = string.Empty;
+}
+
+public class SaveMonthlyAttendanceRequest
+{
+    public int ClientId { get; set; }
+    public string Month { get; set; } = string.Empty;
+    public List<EmployeeMonthlyAttendance> Rows { get; set; } = [];
+}
+
+public class EmployeeDailyAttendance
+{
+    public int Id { get; set; }
+    public int ClientId { get; set; }
+    public int EmployeeId { get; set; }
+    public DateTime AttendanceDate { get; set; }
+    public string Status { get; set; } = "Present";
+    public decimal PayableValue { get; set; } = 1;
+    public string Remarks { get; set; } = string.Empty;
+}
+
+public class SaveDailyAttendanceRequest
+{
+    public int ClientId { get; set; }
+    public int EmployeeId { get; set; }
+    public string Month { get; set; } = string.Empty;
+    public List<EmployeeDailyAttendance> Rows { get; set; } = [];
+}
+
 public class LeaveType
 {
     public int Id { get; set; }
+    public int ClientId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Code { get; set; } = string.Empty;
     public string Type { get; set; } = "Paid";
@@ -112,6 +160,7 @@ public class SaveLeaveTypeRequest : LeaveType { }
 public class Holiday
 {
     public int Id { get; set; }
+    public int ClientId { get; set; }
     public string Name { get; set; } = string.Empty;
     public DateTime StartDate { get; set; } = DateTime.Today;
     public DateTime EndDate { get; set; } = DateTime.Today;
@@ -156,6 +205,7 @@ public class LeaveBalanceImportPreview
 
 public class FinalizeLeaveBalanceImportRequest
 {
+    public int ClientId { get; set; }
     public string FileName { get; set; } = string.Empty;
     public string Encoding { get; set; } = "UTF-8";
     public LeaveBalanceImportMapping Mapping { get; set; } = new();

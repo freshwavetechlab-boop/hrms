@@ -24,7 +24,20 @@ public class LeaveBalanceImportRepository(IConfiguration configuration)
         return new MySqlConnection(connectionString);
     }
 
-    public async Task<LeaveBalanceImportPreview> PreviewAsync(IFormFile file, string encodingName, string? mappingJson)
+    public async Task<string> GetSampleCsvAsync(int clientId)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("USE payroll;");
+        var employees = (await connection.QueryAsync<string>("SELECT EmployeeCode FROM Employees WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY EmployeeCode LIMIT 3", new { ClientId = clientId })).ToList();
+        var leaveTypes = (await connection.QueryAsync<string>("SELECT Name FROM leave_types WHERE client_id=@ClientId AND is_active=TRUE ORDER BY Name LIMIT 3", new { ClientId = clientId })).ToList();
+        var rows = new List<string> { "Employee Number,Leave Type,Date,Count" };
+        for (var index = 0; index < Math.Min(employees.Count, leaveTypes.Count); index++)
+            rows.Add($"\"{employees[index].Replace("\"", "\"\"")}\",\"{leaveTypes[index].Replace("\"", "\"\"")}\",{DateTime.Today:yyyy-MM-dd},{(index == 0 ? 12 : 6)}");
+        return string.Join(Environment.NewLine, rows);
+    }
+
+    public async Task<LeaveBalanceImportPreview> PreviewAsync(int clientId, IFormFile file, string encodingName, string? mappingJson)
     {
         var rows = await ParseFileAsync(file, encodingName);
         var columns = rows.FirstOrDefault() ?? [];
@@ -34,8 +47,8 @@ public class LeaveBalanceImportRepository(IConfiguration configuration)
             : JsonSerializer.Deserialize<LeaveBalanceImportMapping>(mappingJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? AutoMap(columns);
         var preview = new LeaveBalanceImportPreview { FileName = file.FileName, Columns = columns, Mapping = mapping, UnmappedFields = GetUnmappedFields(mapping) };
         if (preview.UnmappedFields.Count > 0) return preview;
-        var employees = await GetEmployeesAsync();
-        var leaveTypes = await GetLeaveTypesAsync();
+        var employees = await GetEmployeesAsync(clientId);
+        var leaveTypes = await GetLeaveTypesAsync(clientId);
         foreach (var row in dataRows.Select((values, index) => BuildRow(index + 2, columns, values, mapping)))
             ValidateRow(row, employees, leaveTypes);
         preview.ValidRecords = dataRows.Select((values, index) => BuildRow(index + 2, columns, values, mapping)).ToList();
@@ -48,8 +61,8 @@ public class LeaveBalanceImportRepository(IConfiguration configuration)
 
     public async Task<LeaveBalanceImportResult> ImportAsync(FinalizeLeaveBalanceImportRequest request, string userEmail)
     {
-        var employees = await GetEmployeesAsync();
-        var leaveTypes = await GetLeaveTypesAsync();
+        var employees = await GetEmployeesAsync(request.ClientId);
+        var leaveTypes = await GetLeaveTypesAsync(request.ClientId);
         foreach (var row in request.ValidRecords)
             ValidateRow(row, employees, leaveTypes);
         var validRows = request.ValidRecords.Where(row => row.IsValid).ToList();
@@ -58,17 +71,17 @@ public class LeaveBalanceImportRepository(IConfiguration configuration)
         await connection.OpenAsync();
         await connection.ExecuteAsync("USE payroll;");
         await using var transaction = await connection.BeginTransactionAsync();
-        var logId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO leave_balance_import_logs (file_name, encoding, total_records, imported_records, skipped_records, mapping_json, created_by)
-VALUES (@FileName, @Encoding, @TotalRecords, @ImportedRecords, @SkippedRecords, @MappingJson, @CreatedBy); SELECT LAST_INSERT_ID();", new { request.FileName, request.Encoding, TotalRecords = validRows.Count + errors.Count, ImportedRecords = validRows.Count, SkippedRecords = errors.Count, MappingJson = JsonSerializer.Serialize(request.Mapping), CreatedBy = userEmail }, transaction);
+        var logId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO leave_balance_import_logs (client_id, file_name, encoding, total_records, imported_records, skipped_records, mapping_json, created_by)
+VALUES (@ClientId, @FileName, @Encoding, @TotalRecords, @ImportedRecords, @SkippedRecords, @MappingJson, @CreatedBy); SELECT LAST_INSERT_ID();", new { request.ClientId, request.FileName, request.Encoding, TotalRecords = validRows.Count + errors.Count, ImportedRecords = validRows.Count, SkippedRecords = errors.Count, MappingJson = JsonSerializer.Serialize(request.Mapping), CreatedBy = userEmail }, transaction);
         foreach (var row in validRows)
         {
             var employee = employees[Normalize(row.EmployeeNumber)];
             var leaveType = leaveTypes[Normalize(row.LeaveType)];
             var balanceDate = ParseDate(row.Date)!.Value;
             var count = decimal.Parse(row.Count, NumberStyles.Number, CultureInfo.InvariantCulture);
-            await connection.ExecuteAsync(@"INSERT INTO employee_leave_balances (employee_id, leave_type_id, balance_date, balance_count)
-VALUES (@EmployeeId, @LeaveTypeId, @BalanceDate, @BalanceCount)
-ON DUPLICATE KEY UPDATE balance_count=VALUES(balance_count);", new { EmployeeId = employee.Id, LeaveTypeId = leaveType.Id, BalanceDate = balanceDate, BalanceCount = count }, transaction);
+            await connection.ExecuteAsync(@"INSERT INTO employee_leave_balances (client_id, employee_id, leave_type_id, balance_date, balance_count)
+VALUES (@ClientId, @EmployeeId, @LeaveTypeId, @BalanceDate, @BalanceCount)
+ON DUPLICATE KEY UPDATE balance_count=VALUES(balance_count);", new { request.ClientId, EmployeeId = employee.Id, LeaveTypeId = leaveType.Id, BalanceDate = balanceDate, BalanceCount = count }, transaction);
         }
         foreach (var error in errors)
             await connection.ExecuteAsync(@"INSERT INTO leave_balance_import_errors (import_log_id, row_no, employee_number, leave_type, date_text, count_text, error_message)
@@ -77,21 +90,21 @@ VALUES (@LogId, @RowNumber, @EmployeeNumber, @LeaveType, @Date, @Count, @ErrorMe
         return new LeaveBalanceImportResult { LogId = logId, ImportedCount = validRows.Count, SkippedCount = errors.Count };
     }
 
-    private async Task<Dictionary<string, EmployeeRef>> GetEmployeesAsync()
+    private async Task<Dictionary<string, EmployeeRef>> GetEmployeesAsync(int clientId)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await connection.ExecuteAsync("USE payroll;");
-        var rows = await connection.QueryAsync<EmployeeRef>("SELECT Id, EmployeeCode FROM Employees WHERE IsActive = TRUE");
+        var rows = await connection.QueryAsync<EmployeeRef>("SELECT Id, EmployeeCode FROM Employees WHERE IsActive = TRUE AND ClientId=@ClientId", new { ClientId = clientId });
         return rows.GroupBy(row => Normalize(row.EmployeeCode)).ToDictionary(group => group.Key, group => group.First());
     }
 
-    private async Task<Dictionary<string, LeaveTypeRef>> GetLeaveTypesAsync()
+    private async Task<Dictionary<string, LeaveTypeRef>> GetLeaveTypesAsync(int clientId)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await connection.ExecuteAsync("USE payroll;");
-        var rows = await connection.QueryAsync<LeaveTypeRef>("SELECT Id, Code, Name FROM leave_types WHERE is_active = TRUE");
+        var rows = await connection.QueryAsync<LeaveTypeRef>("SELECT Id, Code, Name FROM leave_types WHERE is_active = TRUE AND client_id=@ClientId", new { ClientId = clientId });
         return rows.SelectMany(row => new[] { (Key: Normalize(row.Code), Value: row), (Key: Normalize(row.Name), Value: row) }).GroupBy(row => row.Key).ToDictionary(group => group.Key, group => group.First().Value);
     }
 
