@@ -20,6 +20,11 @@ export async function postEmpty<TResult>(path: string, fallback: TResult): Promi
   return { ok: response.ok, data: response.ok ? await response.json() : fallback }
 }
 
+export async function deleteJson<TResult>(path: string, fallback: TResult): Promise<{ ok: boolean; data: TResult }> {
+  const response = await fetch(`${api}${path}`, { method: 'DELETE' })
+  return { ok: response.ok, data: response.ok ? await response.json() : fallback }
+}
+
 export async function readError(response: Response) {
   try {
     const data = await response.json()

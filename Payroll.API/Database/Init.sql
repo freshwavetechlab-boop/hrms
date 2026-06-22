@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS Organizations (
     Industry VARCHAR(150),
     HasRunPayrollThisYear BOOLEAN NOT NULL DEFAULT FALSE,
     SetupCompleted BOOLEAN NOT NULL DEFAULT FALSE,
+    LogoDataUrl LONGTEXT,
     PAN VARCHAR(50),
     GSTIN VARCHAR(50),
     FiscalYearStart VARCHAR(50),
@@ -101,6 +102,10 @@ CREATE TABLE IF NOT EXISTS PayRuns (
     ClientId INT NOT NULL DEFAULT 0,
     ClientName VARCHAR(250),
     PayPeriod VARCHAR(7) NOT NULL,
+    RunCode VARCHAR(40) NOT NULL DEFAULT 'REGULAR',
+    RunType VARCHAR(30) NOT NULL DEFAULT 'Regular',
+    RunName VARCHAR(120) NOT NULL DEFAULT '',
+    Reason VARCHAR(500) NOT NULL DEFAULT '',
     PayDate DATE NOT NULL,
     TotalWorkingDays INT NOT NULL,
     Status VARCHAR(30) NOT NULL DEFAULT 'Draft',
@@ -108,7 +113,7 @@ CREATE TABLE IF NOT EXISTS PayRuns (
     NetPay DECIMAL(18,2) NOT NULL DEFAULT 0,
     CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY UX_PayRuns_Client_Period (ClientId, PayPeriod)
+    UNIQUE KEY UX_PayRuns_Client_Period_Code (ClientId, PayPeriod, RunCode)
 );
 
 CREATE TABLE IF NOT EXISTS PayRunEmployees (
@@ -134,6 +139,31 @@ CREATE TABLE IF NOT EXISTS PayRunEmployees (
     DetailsJson JSON NOT NULL,
     UNIQUE KEY UX_PayRunEmployees_Run_Employee (PayRunId, EmployeeId),
     CONSTRAINT FK_PayRunEmployees_PayRuns FOREIGN KEY (PayRunId) REFERENCES PayRuns(Id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS PayrollAdjustments (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    EmployeeId INT NOT NULL,
+    EmployeeName VARCHAR(250) NOT NULL DEFAULT '',
+    EmployeeCode VARCHAR(50) NOT NULL DEFAULT '',
+    ComponentId INT NOT NULL DEFAULT 0,
+    ComponentCode VARCHAR(50) NOT NULL DEFAULT '',
+    ComponentName VARCHAR(150) NOT NULL,
+    AdjustmentType VARCHAR(30) NOT NULL,
+    Amount DECIMAL(18,2) NOT NULL,
+    PayPeriod VARCHAR(7) NOT NULL,
+    PayRunType VARCHAR(30) NOT NULL DEFAULT 'Regular',
+    ReasonCode VARCHAR(80) NOT NULL DEFAULT '',
+    Notes VARCHAR(500) NOT NULL DEFAULT '',
+    Taxable BOOLEAN NOT NULL DEFAULT TRUE,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Approved',
+    PayRunId INT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX IX_PayrollAdjustments_Client_Period_Status (ClientId, PayPeriod, Status),
+    CONSTRAINT FK_PayrollAdjustments_Employees FOREIGN KEY (EmployeeId) REFERENCES Employees(Id),
+    CONSTRAINT FK_PayrollAdjustments_PayRuns FOREIGN KEY (PayRunId) REFERENCES PayRuns(Id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS AuthUsers (

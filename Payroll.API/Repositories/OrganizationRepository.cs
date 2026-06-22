@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS Organizations (
     Industry VARCHAR(150),
     HasRunPayrollThisYear BOOLEAN NOT NULL DEFAULT FALSE,
     SetupCompleted BOOLEAN NOT NULL DEFAULT FALSE,
+    LogoDataUrl LONGTEXT,
     PAN VARCHAR(50),
     GSTIN VARCHAR(50),
     FiscalYearStart VARCHAR(50),
@@ -136,6 +137,7 @@ CREATE TABLE IF NOT EXISTS Employees (
         await EnsureColumnAsync(connection, "Industry", "VARCHAR(150) NULL");
         await EnsureColumnAsync(connection, "HasRunPayrollThisYear", "BOOLEAN NOT NULL DEFAULT FALSE");
         await EnsureColumnAsync(connection, "SetupCompleted", "BOOLEAN NOT NULL DEFAULT FALSE");
+        await EnsureColumnAsync(connection, "LogoDataUrl", "LONGTEXT NULL");
         await EnsureTableColumnAsync(connection, "Clients", "PayScheduleJson", "JSON NULL");
     }
 
@@ -230,6 +232,7 @@ INSERT INTO Organizations (
     Industry,
     HasRunPayrollThisYear,
     SetupCompleted,
+    LogoDataUrl,
     PAN,
     GSTIN,
     FiscalYearStart,
@@ -250,6 +253,7 @@ INSERT INTO Organizations (
     @Industry,
     @HasRunPayrollThisYear,
     @SetupCompleted,
+    @LogoDataUrl,
     @Pan,
     @Gstin,
     @FiscalYearStart,
@@ -280,6 +284,7 @@ UPDATE Organizations SET
     Industry = @Industry,
     HasRunPayrollThisYear = @HasRunPayrollThisYear,
     SetupCompleted = @SetupCompleted,
+    LogoDataUrl = @LogoDataUrl,
     PAN = @Pan,
     GSTIN = @Gstin,
     FiscalYearStart = @FiscalYearStart,

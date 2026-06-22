@@ -2,7 +2,10 @@ import { useEffect, useState } from 'react'
 import DataTable from './DataTable'
 import type { Client, Component, Structure } from '../types/payroll'
 import { calculateSalaryDetails, calculateSalaryTotals } from '../utils/salary'
+import PageTabs from './PageTabs'
 import '../TemplateDesigner.css'
+
+const componentTabs = ['Earning', 'Deduction', 'Reimbursement'] as const
 
 export default function SalaryTemplateDesigner({ clients, components, structure, setStructure, templates, saveTemplate }: { clients: Client[]; components: Component[]; structure: Structure; setStructure: (s: Structure) => void; templates: Structure[]; saveTemplate: () => void }) {
   const [tab, setTab] = useState<'Earning' | 'Deduction' | 'Reimbursement'>('Earning')
@@ -46,7 +49,7 @@ export default function SalaryTemplateDesigner({ clients, components, structure,
       </div>
       <div className="salary-template-workbench">
         <section className="salary-component-palette">
-          <div className="salary-tabs">{(['Earning', 'Deduction', 'Reimbursement'] as const).map(item => <button type="button" className={tab === item ? 'on' : ''} onClick={() => setTab(item)} key={item}>{item}s</button>)}</div>
+          <PageTabs items={componentTabs} value={tab} onChange={setTab} label="Salary template component categories" className="salary-tabs" getLabel={item => `${item}s`} />
           <div className="salary-palette-list">{library.map(component => <article className="salary-palette-item" draggable onDragStart={() => setDragId(String(component.id))} key={component.id}>
             <div><b title={component.code}>{component.code}</b><span title={component.name}>{component.name}</span><small>{component.calculationType}</small></div>
             <button type="button" onClick={() => add(String(component.id))}>Add</button>

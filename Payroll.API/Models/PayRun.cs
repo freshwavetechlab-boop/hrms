@@ -6,6 +6,10 @@ public class PayRun
     public int ClientId { get; set; }
     public string ClientName { get; set; } = string.Empty;
     public string PayPeriod { get; set; } = string.Empty;
+    public string RunCode { get; set; } = string.Empty;
+    public string RunType { get; set; } = "Regular";
+    public string RunName { get; set; } = string.Empty;
+    public string Reason { get; set; } = string.Empty;
     public DateTime PayDate { get; set; }
     public int TotalWorkingDays { get; set; }
     public string Status { get; set; } = "Draft";
@@ -52,7 +56,12 @@ public class CreatePayRunRequest
     public string PayPeriod { get; set; } = string.Empty;
     public DateOnly PayDate { get; set; }
     public int TotalWorkingDays { get; set; }
+    public string RunType { get; set; } = "Regular";
+    public string RunName { get; set; } = string.Empty;
+    public string Reason { get; set; } = string.Empty;
     public List<int> ExcludedEmployeeIds { get; set; } = [];
+    public List<int> IncludedEmployeeIds { get; set; } = [];
+    public List<int> AdjustmentIds { get; set; } = [];
 }
 
 public class UpdatePayRunEmployeeRequest
@@ -68,4 +77,27 @@ public class RecordPaymentRequest
 {
     public List<int> EmployeeIds { get; set; } = [];
     public DateOnly PaymentDate { get; set; }
+}
+
+public class PayrollAdjustment
+{
+    public int Id { get; set; }
+    public int ClientId { get; set; }
+    public int EmployeeId { get; set; }
+    public string EmployeeName { get; set; } = string.Empty;
+    public string EmployeeCode { get; set; } = string.Empty;
+    public int ComponentId { get; set; }
+    public string ComponentCode { get; set; } = string.Empty;
+    public string ComponentName { get; set; } = string.Empty;
+    public string AdjustmentType { get; set; } = "Earning";
+    public decimal Amount { get; set; }
+    public string PayPeriod { get; set; } = string.Empty;
+    public string PayRunType { get; set; } = "Regular";
+    public string ReasonCode { get; set; } = string.Empty;
+    public string Notes { get; set; } = string.Empty;
+    public bool Taxable { get; set; }
+    public string Status { get; set; } = "Approved";
+    public int? PayRunId { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
 }

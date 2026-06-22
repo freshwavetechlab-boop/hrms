@@ -59,6 +59,7 @@ select {
 .auth-dropdown button { margin-top: 7px; border: 1px solid #dfe2ea; border-radius: 7px; background: #fff; padding: 7px 8px; font-size: .7rem; font-weight: 800; text-align: left; }
 .app-launcher { position: fixed !important; left: 170px; bottom: 16px; z-index: 20; margin: 0 !important; }
 .nav-collapsed .app-launcher { left: 10px; }
+.topbar-actions .app-launcher { position: fixed !important; top: 14px !important; right: 62px !important; bottom: auto !important; left: auto !important; z-index: 89 !important; margin: 0 !important; }
 .topbar > b { display: none; }
 
 .reporting-page { display: grid; gap: 12px; max-width: 1180px; }
@@ -109,4 +110,4 @@ select {
 .smart-table th b { margin-left: 6px; color: #5133cc; font-size: .58rem; text-transform: lowercase; }
 .smart-table td button { min-height: 30px; border: 1px solid #dfe2ea; border-radius: 7px; background: #fff; padding: 0 8px; font-weight: 800; }
 .smart-table td small { display: block; color: #7b8496; font-size: .64rem; }
-@media (max-width: 700px) { .auth-session { right: 10px; top: 8px; } .auth-session > div { display: none; } }
+@media (max-width: 700px) { .auth-session { right: 10px; top: 8px; } .auth-session > div { display: none; } .topbar-actions .app-launcher { top: 8px !important; right: 48px !important; } }

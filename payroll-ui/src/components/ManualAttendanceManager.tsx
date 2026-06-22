@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { EmployeeDailyAttendance, EmployeeMonthlyAttendance } from '../types/payroll'
 import { getDailyAttendance, getMonthlyAttendance, saveDailyAttendance, saveMonthlyAttendance } from '../services/leaveAttendanceService'
+import PageTabs from './PageTabs'
 
 type Props = { clientId: number; onMessage: (message: string) => void }
 type DailyStatus = EmployeeDailyAttendance['status']
@@ -9,6 +10,7 @@ type ReviewStatus = 'Ready' | 'Missing attendance' | 'Check values'
 type AttendanceTab = 'summary' | 'employees' | 'daily'
 
 const statuses: DailyStatus[] = ['Present', 'Absent', 'Half Day', 'Paid Leave', 'Weekly Off', 'Holiday']
+const attendanceTabs = ['summary', 'employees', 'daily'] as const
 
 const currentMonth = () => new Date().toISOString().slice(0, 7)
 const toNumber = (value: number | string) => Number.isFinite(Number(value)) ? Number(value) : 0
@@ -214,11 +216,7 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
         </div>
       </div>
 
-      <nav className="attendance-tabs" aria-label="Attendance review sections">
-        <button type="button" className={activeTab === 'summary' ? 'active' : ''} onClick={() => setActiveTab('summary')}>Summary</button>
-        <button type="button" className={activeTab === 'employees' ? 'active' : ''} onClick={() => setActiveTab('employees')}>Employees</button>
-        <button type="button" className={activeTab === 'daily' ? 'active' : ''} onClick={() => setActiveTab('daily')}>Daily Attendance</button>
-      </nav>
+      <PageTabs items={attendanceTabs} value={activeTab} onChange={setActiveTab} label="Attendance review sections" getLabel={item => item === 'daily' ? 'Daily Attendance' : item[0].toUpperCase() + item.slice(1)} />
 
       {activeTab === 'summary' && (
         <section className="attendance-panel">

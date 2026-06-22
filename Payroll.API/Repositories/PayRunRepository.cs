@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS PayRuns (
     ClientId INT NOT NULL DEFAULT 0,
     ClientName VARCHAR(250),
     PayPeriod VARCHAR(7) NOT NULL,
+    RunCode VARCHAR(40) NOT NULL DEFAULT 'REGULAR',
+    RunType VARCHAR(30) NOT NULL DEFAULT 'Regular',
+    RunName VARCHAR(120) NOT NULL DEFAULT '',
+    Reason VARCHAR(500) NOT NULL DEFAULT '',
     PayDate DATE NOT NULL,
     TotalWorkingDays INT NOT NULL,
     Status VARCHAR(30) NOT NULL DEFAULT 'Draft',
@@ -33,7 +37,7 @@ CREATE TABLE IF NOT EXISTS PayRuns (
     NetPay DECIMAL(18,2) NOT NULL DEFAULT 0,
     CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY UX_PayRuns_Client_Period (ClientId, PayPeriod)
+    UNIQUE KEY UX_PayRuns_Client_Period_Code (ClientId, PayPeriod, RunCode)
 );
 CREATE TABLE IF NOT EXISTS PayRunEmployees (
     Id INT PRIMARY KEY AUTO_INCREMENT,
@@ -57,6 +61,30 @@ CREATE TABLE IF NOT EXISTS PayRunEmployees (
     DetailsJson JSON NOT NULL,
     UNIQUE KEY UX_PayRunEmployees_Run_Employee (PayRunId, EmployeeId),
     CONSTRAINT FK_PayRunEmployees_PayRuns FOREIGN KEY (PayRunId) REFERENCES PayRuns(Id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS PayrollAdjustments (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    EmployeeId INT NOT NULL,
+    EmployeeName VARCHAR(250) NOT NULL DEFAULT '',
+    EmployeeCode VARCHAR(50) NOT NULL DEFAULT '',
+    ComponentId INT NOT NULL DEFAULT 0,
+    ComponentCode VARCHAR(50) NOT NULL DEFAULT '',
+    ComponentName VARCHAR(150) NOT NULL,
+    AdjustmentType VARCHAR(30) NOT NULL,
+    Amount DECIMAL(18,2) NOT NULL,
+    PayPeriod VARCHAR(7) NOT NULL,
+    PayRunType VARCHAR(30) NOT NULL DEFAULT 'Regular',
+    ReasonCode VARCHAR(80) NOT NULL DEFAULT '',
+    Notes VARCHAR(500) NOT NULL DEFAULT '',
+    Taxable BOOLEAN NOT NULL DEFAULT TRUE,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Approved',
+    PayRunId INT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX IX_PayrollAdjustments_Client_Period_Status (ClientId, PayPeriod, Status),
+    CONSTRAINT FK_PayrollAdjustments_Employees FOREIGN KEY (EmployeeId) REFERENCES Employees(Id),
+    CONSTRAINT FK_PayrollAdjustments_PayRuns FOREIGN KEY (PayRunId) REFERENCES PayRuns(Id) ON DELETE SET NULL
 );" );
         await EnsureColumnAsync(connection, "PayRunEmployees", "PaymentDate", "DATE NULL");
         await EnsureColumnAsync(connection, "PayRunEmployees", "ClientId", "INT NOT NULL DEFAULT 0");
@@ -64,6 +92,10 @@ CREATE TABLE IF NOT EXISTS PayRunEmployees (
         await EnsureColumnAsync(connection, "PayRunEmployees", "ManualTds", "DECIMAL(18,2) NOT NULL DEFAULT 0");
         await EnsureColumnAsync(connection, "PayRuns", "ClientId", "INT NOT NULL DEFAULT 0");
         await EnsureColumnAsync(connection, "PayRuns", "ClientName", "VARCHAR(250) NULL");
+        await EnsureColumnAsync(connection, "PayRuns", "RunCode", "VARCHAR(40) NOT NULL DEFAULT 'REGULAR'");
+        await EnsureColumnAsync(connection, "PayRuns", "RunType", "VARCHAR(30) NOT NULL DEFAULT 'Regular'");
+        await EnsureColumnAsync(connection, "PayRuns", "RunName", "VARCHAR(120) NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, "PayRuns", "Reason", "VARCHAR(500) NOT NULL DEFAULT ''");
         await EnsurePayRunIndexAsync(connection);
         await connection.ExecuteAsync(@"UPDATE PayRunEmployees p JOIN Employees e ON e.Id = p.EmployeeId LEFT JOIN Clients c ON c.Id = e.ClientId SET p.ClientId = e.ClientId, p.ClientName = c.Name WHERE p.ClientId = 0 OR p.ClientName IS NULL;");
     }
@@ -78,7 +110,7 @@ SELECT r.*, COUNT(e.Id) AS EmployeeCount
 FROM PayRuns r
 LEFT JOIN PayRunEmployees e ON e.PayRunId = r.Id AND e.IsSkipped = FALSE
 GROUP BY r.Id
-ORDER BY r.PayPeriod DESC;");
+ORDER BY r.PayPeriod DESC, r.Id DESC;");
     }
 
     public async Task<PayRun?> GetAsync(int id)
@@ -108,27 +140,45 @@ SELECT * FROM PayRunEmployees WHERE PayRunId = @Id ORDER BY EmployeeName;", new 
         await using var transaction = await connection.BeginTransactionAsync();
         var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM Clients WHERE Id = @Id AND IsActive = TRUE", new { Id = request.ClientId }, transaction);
         if (client is null) return null;
-        var existing = await connection.ExecuteScalarAsync<int?>("SELECT Id FROM PayRuns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId", new { request.PayPeriod, request.ClientId }, transaction);
+        var runType = string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
+        var runCode = runType == "Regular" ? "REGULAR" : $"OFF-{DateTime.UtcNow:yyyyMMddHHmmss}";
+        var runName = string.IsNullOrWhiteSpace(request.RunName) ? (runType == "Regular" ? "Regular payroll" : "Off-cycle payroll") : request.RunName.Trim();
+        var existing = runType == "Regular" ? await connection.ExecuteScalarAsync<int?>("SELECT Id FROM PayRuns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = 'REGULAR'", new { request.PayPeriod, request.ClientId }, transaction) : null;
         if (existing is not null)
             return null;
 
         var payRunId = (int)await connection.ExecuteScalarAsync<long>(@"
-INSERT INTO PayRuns (ClientId, ClientName, PayPeriod, PayDate, TotalWorkingDays) VALUES (@ClientId, @ClientName, @PayPeriod, @PayDate, @TotalWorkingDays);
-SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays }, transaction);
+INSERT INTO PayRuns (ClientId, ClientName, PayPeriod, RunCode, RunType, RunName, Reason, PayDate, TotalWorkingDays) VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays);
+SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, RunType = runType, RunName = runName, Reason = request.Reason.Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays }, transaction);
         var setupJson = await connection.ExecuteScalarAsync<string?>("SELECT SetupJson FROM PayrollSetups ORDER BY Id LIMIT 1", transaction: transaction) ?? "{}";
         var employees = await connection.QueryAsync<PayRunSourceEmployee>("SELECT e.*, c.Name AS ClientName FROM Employees e LEFT JOIN Clients c ON c.Id = e.ClientId WHERE e.IsActive = TRUE AND e.ClientId = @ClientId ORDER BY e.FirstName, e.LastName", new { request.ClientId }, transaction);
         var attendance = (await connection.QueryAsync<PayRunAttendance>(@"SELECT employee_id AS EmployeeId, present_days AS PresentDays, payable_days AS PayableDays
 FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=@Month", new { request.ClientId, Month = request.PayPeriod }, transaction)).ToDictionary(row => row.EmployeeId);
 
-        var excludedEmployeeIds = request.ExcludedEmployeeIds.ToHashSet();
+        var selectedAdjustmentIds = request.AdjustmentIds.Distinct().ToArray();
+        var adjustments = await GetApplicableAdjustmentsAsync(connection, transaction, request.ClientId, request.PayPeriod, runType, selectedAdjustmentIds);
+        var adjustmentByEmployee = adjustments.GroupBy(item => item.EmployeeId).ToDictionary(group => group.Key, group => new AdjustmentTotal(group.Sum(item => IsDeduction(item) ? 0 : item.Amount), group.Sum(item => IsDeduction(item) ? item.Amount : 0)));
+        var includedEmployeeIds = runType == "Off Cycle"
+            ? request.IncludedEmployeeIds.Concat(adjustments.Select(item => item.EmployeeId)).Distinct().ToHashSet()
+            : employees.Select(employee => employee.Id).Except(request.ExcludedEmployeeIds).ToHashSet();
+        if (runType == "Off Cycle" && includedEmployeeIds.Count == 0)
+        {
+            await transaction.RollbackAsync();
+            return null;
+        }
+
         foreach (var employee in employees)
         {
+            var includeEmployee = includedEmployeeIds.Contains(employee.Id);
             var attendanceRow = attendance.GetValueOrDefault(employee.Id);
-            var presentDays = attendanceRow is null ? request.TotalWorkingDays : (int)Math.Round(Math.Clamp(attendanceRow.PresentDays, 0, request.TotalWorkingDays), MidpointRounding.AwayFromZero);
-            var payableDays = attendanceRow is null ? request.TotalWorkingDays : (int)Math.Round(Math.Clamp(attendanceRow.PayableDays, 0, request.TotalWorkingDays), MidpointRounding.AwayFromZero);
-            var row = BuildEmployee(payRunId, employee, setupJson, request.TotalWorkingDays, presentDays, payableDays, 0, 0, 0, excludedEmployeeIds.Contains(employee.Id));
+            var presentDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? request.TotalWorkingDays : (int)Math.Round(Math.Clamp(attendanceRow.PresentDays, 0, request.TotalWorkingDays), MidpointRounding.AwayFromZero);
+            var payableDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? request.TotalWorkingDays : (int)Math.Round(Math.Clamp(attendanceRow.PayableDays, 0, request.TotalWorkingDays), MidpointRounding.AwayFromZero);
+            var adjustment = adjustmentByEmployee.GetValueOrDefault(employee.Id);
+            var row = BuildEmployee(payRunId, employee, setupJson, request.TotalWorkingDays, presentDays, payableDays, adjustment.Earnings, adjustment.Deductions, 0, !includeEmployee);
             await SaveEmployeeAsync(connection, transaction, row);
         }
+        if (adjustments.Count > 0)
+            await connection.ExecuteAsync("UPDATE PayrollAdjustments SET Status = 'Applied', PayRunId = @PayRunId WHERE Id IN @Ids", new { PayRunId = payRunId, Ids = adjustments.Select(item => item.Id).ToArray() }, transaction);
 
         await RefreshTotalsAsync(connection, transaction, payRunId);
         await transaction.CommitAsync();
@@ -154,6 +204,59 @@ FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=
         await RefreshTotalsAsync(connection, transaction, payRunId);
         await transaction.CommitAsync();
         return row;
+    }
+
+    public async Task<IEnumerable<PayrollAdjustment>> GetAdjustmentsAsync(int? clientId, string? payPeriod, string? status)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("USE payroll;");
+        return await connection.QueryAsync<PayrollAdjustment>(@"
+SELECT a.*, CONCAT(e.FirstName, ' ', e.LastName) AS EmployeeName, e.EmployeeCode
+FROM PayrollAdjustments a
+JOIN Employees e ON e.Id = a.EmployeeId
+WHERE (@ClientId IS NULL OR a.ClientId = @ClientId)
+  AND (@PayPeriod IS NULL OR a.PayPeriod = @PayPeriod)
+  AND (@Status IS NULL OR a.Status = @Status)
+ORDER BY a.PayPeriod DESC, a.CreatedAt DESC;", new { ClientId = clientId, PayPeriod = string.IsNullOrWhiteSpace(payPeriod) ? null : payPeriod, Status = string.IsNullOrWhiteSpace(status) ? null : status });
+    }
+
+    public async Task<PayrollAdjustment?> SaveAdjustmentAsync(PayrollAdjustment adjustment)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("USE payroll;");
+        var employee = await connection.QueryFirstOrDefaultAsync<Employee>("SELECT * FROM Employees WHERE Id = @Id AND ClientId = @ClientId AND IsActive = TRUE", new { Id = adjustment.EmployeeId, adjustment.ClientId });
+        if (employee is null || adjustment.Amount <= 0 || string.IsNullOrWhiteSpace(adjustment.PayPeriod)) return null;
+        adjustment.EmployeeName = $"{employee.FirstName} {employee.LastName}".Trim();
+        adjustment.EmployeeCode = employee.EmployeeCode;
+        adjustment.AdjustmentType = NormalizeAdjustmentType(adjustment.AdjustmentType);
+        adjustment.PayRunType = string.Equals(adjustment.PayRunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
+        adjustment.Status = string.IsNullOrWhiteSpace(adjustment.Status) ? "Approved" : adjustment.Status;
+        if (adjustment.Id == 0)
+        {
+            var id = (int)await connection.ExecuteScalarAsync<long>(@"
+INSERT INTO PayrollAdjustments (ClientId, EmployeeId, EmployeeName, EmployeeCode, ComponentId, ComponentCode, ComponentName, AdjustmentType, Amount, PayPeriod, PayRunType, ReasonCode, Notes, Taxable, Status)
+VALUES (@ClientId, @EmployeeId, @EmployeeName, @EmployeeCode, @ComponentId, @ComponentCode, @ComponentName, @AdjustmentType, @Amount, @PayPeriod, @PayRunType, @ReasonCode, @Notes, @Taxable, @Status);
+SELECT LAST_INSERT_ID();", adjustment);
+            adjustment.Id = id;
+        }
+        else
+        {
+            var rows = await connection.ExecuteAsync(@"
+UPDATE PayrollAdjustments SET ClientId=@ClientId, EmployeeId=@EmployeeId, EmployeeName=@EmployeeName, EmployeeCode=@EmployeeCode, ComponentId=@ComponentId, ComponentCode=@ComponentCode, ComponentName=@ComponentName, AdjustmentType=@AdjustmentType, Amount=@Amount, PayPeriod=@PayPeriod, PayRunType=@PayRunType, ReasonCode=@ReasonCode, Notes=@Notes, Taxable=@Taxable, Status=@Status
+WHERE Id=@Id AND Status != 'Applied';", adjustment);
+            if (rows == 0) return null;
+        }
+        return adjustment;
+    }
+
+    public async Task<bool> CancelAdjustmentAsync(int id)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("USE payroll;");
+        return await connection.ExecuteAsync("UPDATE PayrollAdjustments SET Status = 'Cancelled' WHERE Id = @Id AND Status != 'Applied'", new { Id = id }) == 1;
     }
 
     public async Task<PayRun?> SubmitForApprovalAsync(int id)
@@ -353,6 +456,23 @@ LIMIT 1;", new { payRun.ClientId, payRun.PayPeriod });
         }
     }
 
+    private static async Task<List<PayrollAdjustment>> GetApplicableAdjustmentsAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, string payPeriod, string runType, int[] adjustmentIds)
+    {
+        var sql = adjustmentIds.Length > 0
+            ? @"SELECT * FROM PayrollAdjustments WHERE ClientId=@ClientId AND PayPeriod=@PayPeriod AND Status='Approved' AND Id IN @AdjustmentIds"
+            : @"SELECT * FROM PayrollAdjustments WHERE ClientId=@ClientId AND PayPeriod=@PayPeriod AND Status='Approved' AND PayRunType=@RunType";
+        var rows = await connection.QueryAsync<PayrollAdjustment>(sql, new { ClientId = clientId, PayPeriod = payPeriod, RunType = runType, AdjustmentIds = adjustmentIds }, transaction);
+        return rows.ToList();
+    }
+
+    private static bool IsDeduction(PayrollAdjustment adjustment) =>
+        adjustment.AdjustmentType.Equals("Deduction", StringComparison.OrdinalIgnoreCase) || adjustment.AdjustmentType.Equals("Recovery", StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeAdjustmentType(string value) =>
+        value.Equals("Deduction", StringComparison.OrdinalIgnoreCase) || value.Equals("Recovery", StringComparison.OrdinalIgnoreCase) ? "Deduction" :
+        value.Equals("Reimbursement", StringComparison.OrdinalIgnoreCase) ? "Reimbursement" : "Earning";
+
+    private readonly record struct AdjustmentTotal(decimal Earnings, decimal Deductions);
     private sealed record PayrollComponent(string Id, string Name, string Category, bool ProRata);
     private sealed record PayRunAttendance(int EmployeeId, decimal PresentDays, decimal PayableDays);
     private sealed class PayRunSourceEmployee : Employee { public string ClientName { get; set; } = string.Empty; }
@@ -369,5 +489,9 @@ LIMIT 1;", new { payRun.ClientId, payRun.PayPeriod });
         if (oldIndex > 0) await connection.ExecuteAsync("ALTER TABLE PayRuns DROP INDEX UX_PayRuns_PayPeriod");
         var newIndex = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = 'payroll' AND TABLE_NAME = 'PayRuns' AND INDEX_NAME = 'UX_PayRuns_Client_Period'");
         if (newIndex == 0) await connection.ExecuteAsync("ALTER TABLE PayRuns ADD UNIQUE KEY UX_PayRuns_Client_Period (ClientId, PayPeriod)");
+        var clientPeriodIndex = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = 'payroll' AND TABLE_NAME = 'PayRuns' AND INDEX_NAME = 'UX_PayRuns_Client_Period'");
+        if (clientPeriodIndex > 0) await connection.ExecuteAsync("ALTER TABLE PayRuns DROP INDEX UX_PayRuns_Client_Period");
+        var runCodeIndex = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = 'payroll' AND TABLE_NAME = 'PayRuns' AND INDEX_NAME = 'UX_PayRuns_Client_Period_Code'");
+        if (runCodeIndex == 0) await connection.ExecuteAsync("ALTER TABLE PayRuns ADD UNIQUE KEY UX_PayRuns_Client_Period_Code (ClientId, PayPeriod, RunCode)");
     }
 }

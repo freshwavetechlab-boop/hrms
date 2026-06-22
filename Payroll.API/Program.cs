@@ -575,10 +575,38 @@ app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunReq
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (request.ClientId == 0 || !System.Text.RegularExpressions.Regex.IsMatch(request.PayPeriod ?? "", @"^\d{4}-(0[1-9]|1[0-2])$") || request.TotalWorkingDays is < 1 or > 31)
         return Results.BadRequest(new { error = "Select a client and enter a valid pay period with 1 to 31 working days." });
+    if (string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) && request.IncludedEmployeeIds.Count == 0 && request.AdjustmentIds.Count == 0)
+        return Results.BadRequest(new { error = "Off-cycle payroll needs at least one employee or approved adjustment." });
     var payRun = await repository.CreateAsync(request);
     return payRun is null ? Results.Conflict(new { error = "A pay run already exists for this period." }) : Results.Created($"/api/pay-runs/{payRun.Id}", payRun);
 })
 .WithName("CreatePayRun")
+.WithOpenApi();
+
+app.MapGet("/api/payroll-adjustments", async (PayRunRepository repository, int? clientId, string? payPeriod, string? status) =>
+    Results.Ok(await repository.GetAdjustmentsAsync(clientId, payPeriod, status)))
+.WithName("GetPayrollAdjustments")
+.WithOpenApi();
+
+app.MapPost("/api/payroll-adjustments", async (PayRunRepository repository, PayrollAdjustment adjustment, HttpContext context) =>
+{
+    if (!HasPermission(context, "payroll.run"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (adjustment.ClientId == 0 || adjustment.EmployeeId == 0 || adjustment.Amount <= 0 || !System.Text.RegularExpressions.Regex.IsMatch(adjustment.PayPeriod ?? "", @"^\d{4}-(0[1-9]|1[0-2])$"))
+        return Results.BadRequest(new { error = "Client, employee, pay period and positive amount are required." });
+    var saved = await repository.SaveAdjustmentAsync(adjustment);
+    return saved is null ? Results.BadRequest(new { error = "Adjustment could not be saved or has already been applied." }) : Results.Ok(saved);
+})
+.WithName("SavePayrollAdjustment")
+.WithOpenApi();
+
+app.MapDelete("/api/payroll-adjustments/{id:int}", async (PayRunRepository repository, int id, HttpContext context) =>
+{
+    if (!HasPermission(context, "payroll.run"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return await repository.CancelAdjustmentAsync(id) ? Results.NoContent() : Results.BadRequest(new { error = "Applied adjustments cannot be cancelled." });
+})
+.WithName("CancelPayrollAdjustment")
 .WithOpenApi();
 
 app.MapPut("/api/pay-runs/{payRunId:int}/employees/{employeeId:int}", async (PayRunRepository repository, int payRunId, int employeeId, UpdatePayRunEmployeeRequest request, HttpContext context) =>

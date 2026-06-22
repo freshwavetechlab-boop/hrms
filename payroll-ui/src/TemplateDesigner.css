@@ -5,9 +5,8 @@
 .salary-template-head button{height:34px;border:0;border-radius:8px;background:#6546e8;color:#fff;font-weight:800}
 .salary-template-workbench{display:grid;grid-template-columns:280px minmax(0,1fr);gap:12px;align-items:start}
 .salary-component-palette,.salary-template-canvas{min-width:0;border:1px solid #e5e8f0;border-radius:10px;background:#fafbfc;padding:10px}
-.salary-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:8px}
-.salary-tabs button{min-width:0;border:1px solid #dfe2ea;border-radius:999px;background:#fff;padding:6px 8px;color:#5d6680;font-size:.7rem;font-weight:800;white-space:nowrap}
-.salary-tabs button.on{border-color:#6546e8;background:#6546e8;color:#fff}
+.salary-tabs.page-tabs{display:flex;grid-template-columns:none;gap:2px;margin-bottom:10px}
+.salary-tabs.page-tabs button{min-width:max-content;border-radius:8px 8px 0 0;padding:0 10px;font-size:.7rem;white-space:nowrap}
 .salary-palette-list{display:grid;gap:7px;max-height:560px;overflow:auto;padding-right:2px}
 .salary-palette-item{display:grid;grid-template-columns:minmax(0,1fr) 44px;gap:8px;align-items:center;padding:8px;border:1px solid #e5e8f0;border-radius:9px;background:#fff;cursor:grab}
 .salary-palette-item div{display:grid;grid-template-columns:minmax(74px,.7fr) minmax(0,1fr);gap:2px 8px;min-width:0}

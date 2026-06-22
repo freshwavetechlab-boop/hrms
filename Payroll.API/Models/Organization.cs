@@ -10,6 +10,7 @@ public class Organization
     public string Industry { get; set; } = string.Empty;
     public bool HasRunPayrollThisYear { get; set; }
     public bool SetupCompleted { get; set; }
+    public string LogoDataUrl { get; set; } = string.Empty;
     public string Pan { get; set; } = string.Empty;
     public string Gstin { get; set; } = string.Empty;
     public string FiscalYearStart { get; set; } = string.Empty;
