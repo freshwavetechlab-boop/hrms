@@ -56,7 +56,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     reader.readAsDataURL(file)
   }
   const saveAll = async (event: FormEvent) => { event.preventDefault(); setSaving(true); await saveOrganization(org); await saveSetup(setup); onMessage('Settings saved.'); setSaving(false) }
-  const saveClient = async () => { if (!client.name.trim()) return; await persistClient(client); setClient(client0); await load(); onMessage('Client saved.') }
+  const saveClient = async () => { if (!client.name.trim()) return; const response = await persistClient(client); onMessage(response.ok ? 'Client saved.' : response.error); if (response.ok) { setClient(client0); await load() } }
   const saveLocation = async () => { if (!location.name.trim()) return; const response = await saveWorkLocation(location); onMessage(response.ok ? 'Work location saved.' : 'Location fields check karo.'); if (response.ok) { setLocation(location0); await load() } }
   const saveDrop = async () => { if (!drop.value.trim()) return; const response = await saveDropdown(drop); onMessage(response.ok ? 'Dropdown value saved.' : 'Dropdown fields check karo.'); if (response.ok) { setDrop({ ...drop0, type: drop.type }); await load() } }
   const openNewComponent = () => { setComponent({ ...component0, category: componentTab }); setComponentDrawerOpen(true) }

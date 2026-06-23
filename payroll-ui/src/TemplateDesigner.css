@@ -66,7 +66,12 @@
 @media(max-width:900px){.employee-salary-controls,.employee-salary-summary{grid-template-columns:1fr}.employee-salary-row{grid-template-columns:160px 180px 105px 112px 104px;min-width:700px}}
 .employee-master{display:grid;gap:12px;max-width:1240px}
 .employee-directory>header{align-items:center}
-.employee-directory>header button{margin-left:auto;height:34px;border:0;border-radius:8px;background:#6546e8;color:#fff;padding:0 13px;font-weight:800}
+.employee-directory-head-actions{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.employee-directory-head-actions button,.employee-directory-head-actions a,.employee-directory-head-actions label{height:34px;border:0;border-radius:8px;background:#6546e8;color:#fff;padding:0 13px;font-weight:800;display:inline-flex;align-items:center;text-decoration:none;cursor:pointer}
+.employee-directory-head-actions .secondary{border:1px solid #cfc6f5;background:#fff;color:#5133cc}
+.employee-directory-head-actions .disabled{opacity:.5;pointer-events:none}
+.employee-directory-head-actions input{display:none}
+.employee-import-message{margin:0 0 8px;color:#5133cc;font-size:.74rem;font-weight:800}
 .employee-directory-tools{display:grid;grid-template-columns:220px minmax(260px,1fr) 120px;gap:10px;align-items:end;margin-bottom:10px}
 .employee-directory-tools label{display:grid;gap:4px;color:#465067;font-size:.72rem;font-weight:800}
 .employee-directory-tools input,.employee-directory-tools select{height:34px}

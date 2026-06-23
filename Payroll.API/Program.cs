@@ -30,6 +30,7 @@ builder.Services.AddCors(options =>
 builder.Services.AddSingleton<OrganizationRepository>();
 builder.Services.AddSingleton<SettingsRepository>();
 builder.Services.AddSingleton<EmployeeRepository>();
+builder.Services.AddSingleton<EmployeeImportRepository>();
 builder.Services.AddSingleton<PayRunRepository>();
 builder.Services.AddSingleton<AuthRepository>();
 builder.Services.AddSingleton<LeaveAttendanceRepository>();
@@ -563,6 +564,20 @@ app.MapPost("/api/employees", async (EmployeeRepository repository, Employee emp
 })
 .WithName("SaveEmployee")
 .WithOpenApi();
+
+app.MapGet("/api/employees/import/sample", () =>
+    Results.File(EmployeeImportRepository.SampleExcel(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "employee-import-sample.xlsx"))
+.WithName("DownloadEmployeeImportSample")
+.WithOpenApi();
+
+app.MapPost("/api/employees/import", async (EmployeeImportRepository repository, [FromForm] int clientId, [FromForm] IFormFile file) =>
+{
+    if (file.Length == 0) return Results.BadRequest(new { error = "Select a CSV, XLS or XLSX file." });
+    return Results.Ok(await repository.ImportAsync(clientId, file));
+})
+.DisableAntiforgery()
+.WithName("ImportEmployees")
+.ExcludeFromDescription();
 
 app.MapGet("/api/pay-runs", async (PayRunRepository repository) =>
     Results.Ok(await repository.GetAllAsync()))

@@ -337,6 +337,8 @@ WHERE Id = @Id;";
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
+        if (string.IsNullOrWhiteSpace(client.PayScheduleJson))
+            client.PayScheduleJson = "{}";
         if (client.Id == 0)
         {
             const string sql = "INSERT INTO Clients (Name, Code, ContactPerson, Email, Phone, Address, PayScheduleJson, IsActive) VALUES (@Name, @Code, @ContactPerson, @Email, @Phone, @Address, @PayScheduleJson, @IsActive); SELECT LAST_INSERT_ID();";

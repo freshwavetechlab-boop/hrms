@@ -4,7 +4,7 @@ import DataTable from '../components/DataTable'
 import PageTabs from '../components/PageTabs'
 import { demoComponents, demoStructures, employee0, setup0 } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
-import { getDropdowns, getSetup, getWorkLocations, saveEmployee as persistEmployee } from '../services/settingsService'
+import { downloadEmployeeImportSample, getDropdowns, getSetup, getWorkLocations, importEmployees, saveEmployee as persistEmployee } from '../services/settingsService'
 import type { Client, Component, Drop, Employee, Setup, Structure, WorkLocation } from '../types/payroll'
 import { calculateSalaryJson, calculateSalaryTotals, money } from '../utils/salary'
 import { safeJsonRecord } from '../shared/json'
@@ -15,7 +15,7 @@ const employeeTabs = ['Basics', 'Salary', 'Personal', 'Payment'] as const
 export default function EmployeePage() {
   const [clients, setClients] = useState<Client[]>([]), [locations, setLocations] = useState<WorkLocation[]>([]), [drops, setDrops] = useState<Drop[]>([]), [setup, setSetup] = useState<Setup>(setup0)
   const [employees, setEmployees] = useState<Employee[]>([]), [employee, setEmployee] = useState(employee0), [employeeTab, setEmployeeTab] = useState<'Basics' | 'Salary' | 'Personal' | 'Payment'>('Basics')
-  const [modalOpen, setModalOpen] = useState(false), [clientFilter, setClientFilter] = useState(0), [query, setQuery] = useState('')
+  const [modalOpen, setModalOpen] = useState(false), [clientFilter, setClientFilter] = useState(0), [query, setQuery] = useState(''), [importing, setImporting] = useState(false), [importMessage, setImportMessage] = useState('')
   const clientStructure = setup.salaryStructures.find(item => !!employee.clientId && item.clientId.split(':')[0] === String(employee.clientId))
   const chosenStructure = setup.salaryStructures.find(item => String(item.id) === employee.salaryStructureId) ?? clientStructure
   const rawEmployeeSalary = safeJsonRecord(employee.salaryJson)
@@ -55,10 +55,27 @@ export default function EmployeePage() {
   const editEmployee = (row: Employee) => { setEmployee(normalizeEmployeeSalary(row)); setEmployeeTab('Basics'); setModalOpen(true) }
   const closeModal = () => { setModalOpen(false); setEmployee(employee0); setEmployeeTab('Basics') }
   const saveEmployee = async () => { const response = await persistEmployee(normalizeEmployeeSalary(employee)); if (response.ok) { closeModal(); await load() } }
+  const importFile = async (file: File) => {
+    setImporting(true)
+    const response = await importEmployees(clientFilter, file)
+    setImporting(false)
+    if (!response.ok) { setImportMessage(response.error); return }
+    const data = response.data
+    setImportMessage(`Imported ${data.importedCount}, updated ${data.updatedCount}, skipped ${data.skippedCount}.`)
+    await load()
+  }
+  const downloadSample = async () => {
+    const response = await downloadEmployeeImportSample()
+    if (!response.ok || !response.data) { setImportMessage(response.error); return }
+    const url = URL.createObjectURL(response.data)
+    const link = document.createElement('a')
+    link.href = url; link.download = 'employee-import-sample.xlsx'; link.click()
+    URL.revokeObjectURL(url)
+  }
   const visibleEmployees = employees.filter(row => (!clientFilter || row.clientId === clientFilter) && `${row.employeeCode} ${row.firstName} ${row.lastName} ${row.department} ${row.designation} ${row.workEmail}`.toLowerCase().includes(query.toLowerCase()))
 
   return <section className="employee-master">
-    <EmployeeDirectory clients={clients} employees={visibleEmployees} allCount={employees.length} clientFilter={clientFilter} setClientFilter={setClientFilter} query={query} setQuery={setQuery} onNew={newEmployee} onEdit={editEmployee} />
+    <EmployeeDirectory clients={clients} employees={visibleEmployees} allCount={employees.length} clientFilter={clientFilter} setClientFilter={setClientFilter} query={query} setQuery={setQuery} importing={importing} importMessage={importMessage} onSample={downloadSample} onImport={importFile} onNew={newEmployee} onEdit={editEmployee} />
     {modalOpen && <div className="employee-modal-backdrop" onClick={closeModal}>
       <section className="employee-modal" role="dialog" aria-modal="true" aria-label="Employee details" onClick={event => event.stopPropagation()}>
         <EmployeePanel employee={employee} setEmployee={row => setEmployee(normalizeEmployeeSalary(row))} employeeTab={employeeTab} setEmployeeTab={setEmployeeTab} clients={clients} locations={locations} templates={setup.salaryStructures} deps={deps} desigs={desigs} applyClient={applyClient} applyStructure={applyStructure} applyCtc={applyCtc} structureComponents={structureComponents} employeeSalary={employeeSalary} empLine={empLine} empMonthly={empMonthly} saveEmployee={saveEmployee} closeModal={closeModal} />
@@ -67,10 +84,11 @@ export default function EmployeePage() {
   </section>
 }
 
-function EmployeeDirectory(p: { clients: Client[]; employees: Employee[]; allCount: number; clientFilter: number; setClientFilter: (id: number) => void; query: string; setQuery: (value: string) => void; onNew: () => void; onEdit: (employee: Employee) => void }) {
+function EmployeeDirectory(p: { clients: Client[]; employees: Employee[]; allCount: number; clientFilter: number; setClientFilter: (id: number) => void; query: string; setQuery: (value: string) => void; importing: boolean; importMessage: string; onSample: () => void; onImport: (file: File) => void; onNew: () => void; onEdit: (employee: Employee) => void }) {
   const clientName = (id: number) => p.clients.find(client => client.id === id)?.name ?? `Client #${id || '-'}`
-  return <section className="card employee-directory"><header><i className="blue">E</i><div><h3>Employee master</h3><p>Search client-wise employees. Create or edit details in a focused popup.</p></div><button type="button" onClick={p.onNew}>New employee</button></header>
+  return <section className="card employee-directory"><header><i className="blue">E</i><div><h3>Employee master</h3><p>Search client-wise employees. Create or edit details in a focused popup.</p></div><div className="employee-directory-head-actions"><button type="button" className="secondary" onClick={p.onSample}>Sample Excel</button><label className="secondary">Import<input type="file" accept=".csv,.xlsx,.xls" disabled={p.importing} onChange={event => { const file = event.target.files?.[0]; if (file) p.onImport(file); event.target.value = '' }} /></label><button type="button" onClick={p.onNew}>New employee</button></div></header>
     <div className="employee-directory-tools"><label><span>Client</span><select value={p.clientFilter} onChange={event => p.setClientFilter(Number(event.target.value))}><option value="0">All clients</option>{p.clients.map(client => <option value={client.id} key={client.id}>{client.name}</option>)}</select></label><label><span>Search</span><input value={p.query} onChange={event => p.setQuery(event.target.value)} placeholder="Code, name, department, email..." /></label><div><span>Showing</span><b>{p.employees.length} / {p.allCount}</b></div></div>
+    {p.importMessage && <p className="employee-import-message">{p.importing ? 'Importing...' : p.importMessage}</p>}
     <DataTable rows={p.employees} onEdit={p.onEdit} emptyText="No employees found for the selected filters." exportFileName="employees" columns={[
       { key: 'employeeName', label: 'Employee', value: row => `${row.firstName} ${row.lastName}`.trim(), render: row => <><strong>{row.firstName} {row.lastName}</strong><small>{row.employeeCode}</small></> },
       { key: 'clientName', label: 'Client', value: row => clientName(row.clientId) },
