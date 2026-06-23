@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Payroll.API")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+c5986191838d8a6dba7fbd3e897d66602007cd2c")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2ac672d802ca2b91f83a6c3c33b571bcb5ae7767")]
 [assembly: System.Reflection.AssemblyProductAttribute("Payroll.API")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Payroll.API")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
