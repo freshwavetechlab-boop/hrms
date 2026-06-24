@@ -1,21 +1,17 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
-
 WORKDIR /src
 
+# This copies everything from your root repository into the /src directory
 COPY . .
 
-RUN dotnet restore Payroll.API.csproj
-
-RUN dotnet publish Payroll.API.csproj -c Release -o /app/publish
+# Since everything was copied from the root, specify the subfolder path to the .csproj
+RUN dotnet restore "Payroll.API/Payroll.API.csproj"
+RUN dotnet publish "Payroll.API/Payroll.API.csproj" -c Release -o /app/publish
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
-
 WORKDIR /app
-
 COPY --from=build /app/publish .
 
 ENV ASPNETCORE_URLS=http://+:8080
-
 EXPOSE 8080
-
 ENTRYPOINT ["dotnet", "Payroll.API.dll"]
