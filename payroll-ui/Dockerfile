@@ -1,9 +1,11 @@
 # Step 1: Build the React application
 FROM node:22-alpine AS build
 WORKDIR /app
-COPY payroll-ui/package*.json ./
+
+# Change these to look locally in the current directory
+COPY package*.json ./
 RUN npm ci
-COPY payroll-ui/ ./
+COPY . ./
 RUN npm run build
 
 # Step 2: Serve the static files with Nginx
