@@ -10,7 +10,7 @@ namespace Payroll.API.Repositories;
 
 public class LeaveBalanceImportRepository(IConfiguration configuration)
 {
-    private static readonly string[] RequiredFields = ["Employee Number", "Leave Type", "Date", "Count"];
+    private static readonly string[] RequiredFields = ["Employee Number", "Leave Type Code", "Balance As Of Date", "Opening Balance"];
 
     static LeaveBalanceImportRepository()
     {
@@ -29,11 +29,10 @@ public class LeaveBalanceImportRepository(IConfiguration configuration)
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await connection.ExecuteAsync("USE payroll;");
-        var employees = (await connection.QueryAsync<string>("SELECT EmployeeCode FROM Employees WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY EmployeeCode LIMIT 3", new { ClientId = clientId })).ToList();
-        var leaveTypes = (await connection.QueryAsync<string>("SELECT Name FROM leave_types WHERE client_id=@ClientId AND is_active=TRUE ORDER BY Name LIMIT 3", new { ClientId = clientId })).ToList();
-        var rows = new List<string> { "Employee Number,Leave Type,Date,Count" };
-        for (var index = 0; index < Math.Min(employees.Count, leaveTypes.Count); index++)
-            rows.Add($"\"{employees[index].Replace("\"", "\"\"")}\",\"{leaveTypes[index].Replace("\"", "\"\"")}\",{DateTime.Today:yyyy-MM-dd},{(index == 0 ? 12 : 6)}");
+        var leaveTypes = (await connection.QueryAsync<string>("SELECT Code FROM leave_types WHERE client_id=@ClientId AND is_active=TRUE ORDER BY Name", new { ClientId = clientId })).ToList();
+        var rows = new List<string> { "Employee Number,Leave Type Code,Balance As Of Date,Opening Balance" };
+        foreach (var leaveType in leaveTypes)
+            rows.Add($"\"\",\"{leaveType.Replace("\"", "\"\"")}\",,");
         return string.Join(Environment.NewLine, rows);
     }
 
@@ -49,11 +48,8 @@ public class LeaveBalanceImportRepository(IConfiguration configuration)
         if (preview.UnmappedFields.Count > 0) return preview;
         var employees = await GetEmployeesAsync(clientId);
         var leaveTypes = await GetLeaveTypesAsync(clientId);
-        foreach (var row in dataRows.Select((values, index) => BuildRow(index + 2, columns, values, mapping)))
-            ValidateRow(row, employees, leaveTypes);
         preview.ValidRecords = dataRows.Select((values, index) => BuildRow(index + 2, columns, values, mapping)).ToList();
-        foreach (var row in preview.ValidRecords)
-            ValidateRow(row, employees, leaveTypes);
+        ValidateRows(preview.ValidRecords, employees, leaveTypes);
         preview.ErrorRecords = preview.ValidRecords.Where(row => !row.IsValid).ToList();
         preview.ValidRecords = preview.ValidRecords.Where(row => row.IsValid).ToList();
         return preview;
@@ -63,8 +59,7 @@ public class LeaveBalanceImportRepository(IConfiguration configuration)
     {
         var employees = await GetEmployeesAsync(request.ClientId);
         var leaveTypes = await GetLeaveTypesAsync(request.ClientId);
-        foreach (var row in request.ValidRecords)
-            ValidateRow(row, employees, leaveTypes);
+        ValidateRows(request.ValidRecords, employees, leaveTypes);
         var validRows = request.ValidRecords.Where(row => row.IsValid).ToList();
         var errors = request.ErrorRecords.Concat(request.ValidRecords.Where(row => !row.IsValid)).ToList();
         await using var connection = CreateConnection();
@@ -95,7 +90,11 @@ VALUES (@LogId, @RowNumber, @EmployeeNumber, @LeaveType, @Date, @Count, @ErrorMe
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await connection.ExecuteAsync("USE payroll;");
-        var rows = await connection.QueryAsync<EmployeeRef>("SELECT Id, EmployeeCode FROM Employees WHERE IsActive = TRUE AND ClientId=@ClientId", new { ClientId = clientId });
+        var rows = await connection.QueryAsync<EmployeeRef>(@"SELECT e.Id, e.EmployeeCode, e.IsActive, COALESCE(e.Department, '') AS Department,
+COALESCE(e.Designation, '') AS Designation, COALESCE(e.Gender, '') AS Gender, COALESCE(w.Name, '') AS WorkLocation
+FROM Employees e
+LEFT JOIN worklocations w ON w.Id=e.WorkLocationId
+WHERE e.ClientId=@ClientId", new { ClientId = clientId });
         return rows.GroupBy(row => Normalize(row.EmployeeCode)).ToDictionary(group => group.Key, group => group.First());
     }
 
@@ -104,7 +103,15 @@ VALUES (@LogId, @RowNumber, @EmployeeNumber, @LeaveType, @Date, @Count, @ErrorMe
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await connection.ExecuteAsync("USE payroll;");
-        var rows = await connection.QueryAsync<LeaveTypeRef>("SELECT Id, Code, Name FROM leave_types WHERE is_active = TRUE AND client_id=@ClientId", new { ClientId = clientId });
+        var rows = await connection.QueryAsync<LeaveTypeRef>(@"SELECT lt.Id, lt.Code, lt.Name, lt.Is_Active AS IsActive,
+COALESCE(p.entitlement, 0) AS Entitlement, COALESCE(p.carry_forward_unused_leaves, FALSE) AS CarryForwardUnusedLeaves,
+p.max_carry_forward_limit AS MaxCarryForwardLimit, p.effective_from AS EffectiveFrom, p.expires_on AS ExpiresOn,
+COALESCE(a.applicability_mode, 'All employees') AS ApplicabilityMode, COALESCE(a.work_location, '') AS WorkLocation,
+COALESCE(a.department, '') AS Department, COALESCE(a.designation, '') AS Designation, COALESCE(a.gender, '') AS Gender
+FROM leave_types lt
+LEFT JOIN leave_type_policies p ON p.leave_type_id=lt.Id
+LEFT JOIN leave_type_applicability a ON a.leave_type_id=lt.Id
+WHERE lt.client_id=@ClientId", new { ClientId = clientId });
         return rows.SelectMany(row => new[] { (Key: Normalize(row.Code), Value: row), (Key: Normalize(row.Name), Value: row) }).GroupBy(row => row.Key).ToDictionary(group => group.Key, group => group.First().Value);
     }
 
@@ -134,16 +141,22 @@ VALUES (@LogId, @RowNumber, @EmployeeNumber, @LeaveType, @Date, @Count, @ErrorMe
     private static LeaveBalanceImportMapping AutoMap(List<string> columns)
     {
         string find(params string[] names) => columns.FirstOrDefault(column => names.Any(name => Normalize(column) == Normalize(name))) ?? string.Empty;
-        return new LeaveBalanceImportMapping { EmployeeNumber = find("Employee Number", "Employee Code", "Employee No"), LeaveType = find("Leave Type", "Leave Code"), Date = find("Date", "Balance Date"), Count = find("Count", "Balance", "Leave Count") };
+        return new LeaveBalanceImportMapping
+        {
+            EmployeeNumber = find("Employee Number", "Employee Code", "Employee No"),
+            LeaveType = find("Leave Type Code", "Leave Type", "Leave Code"),
+            Date = find("Balance As Of Date", "Balance Date", "Date"),
+            Count = find("Opening Balance", "Count", "Balance", "Leave Count")
+        };
     }
 
     private static List<string> GetUnmappedFields(LeaveBalanceImportMapping mapping)
     {
         var missing = new List<string>();
         if (string.IsNullOrWhiteSpace(mapping.EmployeeNumber)) missing.Add("Employee Number");
-        if (string.IsNullOrWhiteSpace(mapping.LeaveType)) missing.Add("Leave Type");
-        if (string.IsNullOrWhiteSpace(mapping.Date)) missing.Add("Date");
-        if (string.IsNullOrWhiteSpace(mapping.Count)) missing.Add("Count");
+        if (string.IsNullOrWhiteSpace(mapping.LeaveType)) missing.Add("Leave Type Code");
+        if (string.IsNullOrWhiteSpace(mapping.Date)) missing.Add("Balance As Of Date");
+        if (string.IsNullOrWhiteSpace(mapping.Count)) missing.Add("Opening Balance");
         return missing;
     }
 
@@ -153,19 +166,72 @@ VALUES (@LogId, @RowNumber, @EmployeeNumber, @LeaveType, @Date, @Count, @ErrorMe
         return new LeaveBalanceImportRow { RowNumber = rowNumber, EmployeeNumber = value(mapping.EmployeeNumber), LeaveType = value(mapping.LeaveType), Date = value(mapping.Date), Count = value(mapping.Count) };
     }
 
+    private static void ValidateRows(List<LeaveBalanceImportRow> rows, Dictionary<string, EmployeeRef> employees, Dictionary<string, LeaveTypeRef> leaveTypes)
+    {
+        foreach (var row in rows) ValidateRow(row, employees, leaveTypes);
+        foreach (var duplicateGroup in rows
+            .Where(row => !string.IsNullOrWhiteSpace(row.EmployeeNumber) && !string.IsNullOrWhiteSpace(row.LeaveType) && ParseDate(row.Date) is not null)
+            .GroupBy(row => $"{Normalize(row.EmployeeNumber)}|{Normalize(row.LeaveType)}|{ParseDate(row.Date):yyyy-MM-dd}")
+            .Where(group => group.Count() > 1))
+        {
+            foreach (var row in duplicateGroup)
+            {
+                row.Errors.Add($"Duplicate opening balance for employee '{row.EmployeeNumber}', leave type '{row.LeaveType}' and date '{ParseDate(row.Date):yyyy-MM-dd}'.");
+                row.IsValid = false;
+            }
+        }
+    }
+
     private static void ValidateRow(LeaveBalanceImportRow row, Dictionary<string, EmployeeRef> employees, Dictionary<string, LeaveTypeRef> leaveTypes)
     {
         row.Errors.Clear();
-        if (string.IsNullOrWhiteSpace(row.EmployeeNumber) || !employees.ContainsKey(Normalize(row.EmployeeNumber))) row.Errors.Add("Employee number does not exist.");
-        if (string.IsNullOrWhiteSpace(row.LeaveType) || !leaveTypes.ContainsKey(Normalize(row.LeaveType))) row.Errors.Add("Leave type does not exist.");
-        if (ParseDate(row.Date) is null) row.Errors.Add("Date format is invalid.");
-        if (!decimal.TryParse(row.Count, NumberStyles.Number, CultureInfo.InvariantCulture, out _)) row.Errors.Add("Count must be numeric.");
+        EmployeeRef? employee = null;
+        LeaveTypeRef? leaveType = null;
+        if (string.IsNullOrWhiteSpace(row.EmployeeNumber)) row.Errors.Add("Employee Number is required.");
+        else if (!employees.TryGetValue(Normalize(row.EmployeeNumber), out employee)) row.Errors.Add($"Employee Number '{row.EmployeeNumber}' does not exist for the selected client.");
+        else if (!employee.IsActive) row.Errors.Add($"Employee '{row.EmployeeNumber}' is inactive.");
+
+        if (string.IsNullOrWhiteSpace(row.LeaveType)) row.Errors.Add("Leave Type Code is required.");
+        else if (!leaveTypes.TryGetValue(Normalize(row.LeaveType), out leaveType)) row.Errors.Add($"Leave Type Code '{row.LeaveType}' does not exist for the selected client.");
+        else if (!leaveType.IsActive) row.Errors.Add($"Leave Type '{leaveType.Code}' ({leaveType.Name}) is inactive.");
+
+        var balanceDate = ParseDate(row.Date);
+        if (string.IsNullOrWhiteSpace(row.Date)) row.Errors.Add("Balance As Of Date is required.");
+        else if (balanceDate is null) row.Errors.Add($"Balance As Of Date '{row.Date}' is invalid. Use YYYY-MM-DD.");
+        else if (leaveType is not null)
+        {
+            if (leaveType.EffectiveFrom is not null && balanceDate.Value < leaveType.EffectiveFrom.Value.Date)
+                row.Errors.Add($"Balance As Of Date cannot be before {leaveType.Code} effective date {leaveType.EffectiveFrom:yyyy-MM-dd}.");
+            if (leaveType.ExpiresOn is not null && balanceDate.Value > leaveType.ExpiresOn.Value.Date)
+                row.Errors.Add($"Balance As Of Date cannot be after {leaveType.Code} expiry date {leaveType.ExpiresOn:yyyy-MM-dd}.");
+        }
+
+        if (string.IsNullOrWhiteSpace(row.Count)) row.Errors.Add("Opening Balance is required.");
+        else if (!decimal.TryParse(row.Count, NumberStyles.Number, CultureInfo.InvariantCulture, out var count)) row.Errors.Add($"Opening Balance '{row.Count}' must be numeric.");
+        else
+        {
+            if (count < 0) row.Errors.Add("Opening Balance cannot be negative.");
+            if (leaveType is not null && leaveType.Entitlement > 0)
+            {
+                var maxAllowed = leaveType.Entitlement + (leaveType.CarryForwardUnusedLeaves ? leaveType.MaxCarryForwardLimit ?? 0 : 0);
+                if (count > maxAllowed)
+                    row.Errors.Add($"Opening Balance {count:0.##} exceeds {leaveType.Code} maximum allowed balance {maxAllowed:0.##} (entitlement {leaveType.Entitlement:0.##}{(leaveType.CarryForwardUnusedLeaves ? $" + carry-forward {leaveType.MaxCarryForwardLimit.GetValueOrDefault():0.##}" : "")}).");
+            }
+        }
+
+        if (employee is not null && leaveType is not null && leaveType.ApplicabilityMode != "All employees")
+        {
+            if (!Matches(leaveType.WorkLocation, employee.WorkLocation)) row.Errors.Add($"{leaveType.Code} applies only to work location '{leaveType.WorkLocation}', but employee is in '{employee.WorkLocation}'.");
+            if (!Matches(leaveType.Department, employee.Department)) row.Errors.Add($"{leaveType.Code} applies only to department '{leaveType.Department}', but employee is in '{employee.Department}'.");
+            if (!Matches(leaveType.Designation, employee.Designation)) row.Errors.Add($"{leaveType.Code} applies only to designation '{leaveType.Designation}', but employee designation is '{employee.Designation}'.");
+            if (!Matches(leaveType.Gender, employee.Gender)) row.Errors.Add($"{leaveType.Code} applies only to gender '{leaveType.Gender}', but employee gender is '{employee.Gender}'.");
+        }
         row.IsValid = row.Errors.Count == 0;
     }
 
     private static DateTime? ParseDate(string value)
     {
-        if (DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)) return date.Date;
+        if (DateTime.TryParseExact(value.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)) return date.Date;
         return double.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var oaDate) && oaDate > 20000 ? DateTime.FromOADate(oaDate).Date : null;
     }
 
@@ -194,6 +260,7 @@ VALUES (@LogId, @RowNumber, @EmployeeNumber, @LeaveType, @Date, @Count, @ErrorMe
 
     private static string FormatCell(object? value) => value switch { null => "", DateTime date => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? "" };
     private static string Normalize(string value) => new(value.Trim().ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
-    private sealed class EmployeeRef { public int Id { get; set; } public string EmployeeCode { get; set; } = string.Empty; }
-    private sealed class LeaveTypeRef { public int Id { get; set; } public string Code { get; set; } = string.Empty; public string Name { get; set; } = string.Empty; }
+    private static bool Matches(string criterion, string actual) => string.IsNullOrWhiteSpace(criterion) || Normalize(criterion) == Normalize(actual);
+    private sealed class EmployeeRef { public int Id { get; set; } public string EmployeeCode { get; set; } = string.Empty; public bool IsActive { get; set; } public string WorkLocation { get; set; } = string.Empty; public string Department { get; set; } = string.Empty; public string Designation { get; set; } = string.Empty; public string Gender { get; set; } = string.Empty; }
+    private sealed class LeaveTypeRef { public int Id { get; set; } public string Code { get; set; } = string.Empty; public string Name { get; set; } = string.Empty; public bool IsActive { get; set; } public decimal Entitlement { get; set; } public bool CarryForwardUnusedLeaves { get; set; } public decimal? MaxCarryForwardLimit { get; set; } public DateTime? EffectiveFrom { get; set; } public DateTime? ExpiresOn { get; set; } public string ApplicabilityMode { get; set; } = "All employees"; public string WorkLocation { get; set; } = string.Empty; public string Department { get; set; } = string.Empty; public string Designation { get; set; } = string.Empty; public string Gender { get; set; } = string.Empty; }
 }

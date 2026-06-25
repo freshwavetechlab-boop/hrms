@@ -62,6 +62,40 @@ export async function postForm<TResult>(path: string, body: FormData, fallback: 
   return mutateJson(path, { method: 'POST', body }, fallback)
 }
 
+export function postFormWithProgress<TResult>(path: string, body: FormData, fallback: TResult, onProgress: (percent: number) => void): Promise<ApiResult<TResult>> {
+  return new Promise(resolve => {
+    const request = new XMLHttpRequest()
+    const legacyToken = sessionStorage.getItem(legacyTokenKey) || localStorage.getItem(legacyTokenKey)
+    request.open('POST', apiUrl(path))
+    request.withCredentials = true
+    if (legacyToken) request.setRequestHeader('Authorization', `Bearer ${legacyToken}`)
+    request.upload.onprogress = event => {
+      if (event.lengthComputable) onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)))
+    }
+    request.onload = () => {
+      if (request.status === 401) {
+        sessionStorage.removeItem(legacyTokenKey)
+        localStorage.removeItem(legacyTokenKey)
+        window.dispatchEvent(new CustomEvent('payroll:unauthorized'))
+      }
+      if (request.status >= 200 && request.status < 300) {
+        try {
+          resolve({ ok: true, data: request.responseText ? JSON.parse(request.responseText) as TResult : fallback, error: '', status: request.status })
+        } catch (error) {
+          resolve({ ok: false, data: fallback, error: error instanceof Error ? error.message : 'Invalid server response.', status: request.status })
+        }
+        return
+      }
+      resolve({ ok: false, data: fallback, error: readErrorText(request.responseText, request.status), status: request.status })
+    }
+    request.onerror = () => resolve({ ok: false, data: fallback, error: 'Network error: unable to reach the API.', status: 0 })
+    request.onabort = () => resolve({ ok: false, data: fallback, error: 'Upload was cancelled.', status: 0 })
+    request.ontimeout = () => resolve({ ok: false, data: fallback, error: 'Upload timed out.', status: 0 })
+    request.timeout = 120000
+    request.send(body)
+  })
+}
+
 export async function getBlob(path: string): Promise<ApiResult<Blob | null>> {
   try {
     const response = await apiRequest(path)
@@ -74,9 +108,19 @@ export async function getBlob(path: string): Promise<ApiResult<Blob | null>> {
 export async function readError(response: Response) {
   try {
     const data = await response.json()
-    return data.error || data.message || `Request failed with status ${response.status}.`
+    return data.error || data.detail || data.message || (data.errors ? JSON.stringify(data.errors) : '') || `Request failed with status ${response.status}.`
   } catch {
     return `Request failed with status ${response.status}.`
+  }
+}
+
+function readErrorText(text: string, status: number) {
+  if (!text) return `Request failed with status ${status}.`
+  try {
+    const data = JSON.parse(text)
+    return data.error || data.detail || data.message || (data.errors ? JSON.stringify(data.errors) : '') || text
+  } catch {
+    return text
   }
 }
 
