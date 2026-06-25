@@ -3,11 +3,20 @@ using Payroll.API.Repositories;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 using Dapper;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+ValidateConfiguration(builder.Configuration, builder.Environment);
+Dapper.SqlMapper.Settings.CommandTimeout = int.TryParse(builder.Configuration["Database:CommandTimeoutSeconds"], out var timeout) ? timeout : 30;
 
-builder.Logging.ClearProviders();
-builder.Logging.AddConsole();
+builder.Host.UseSerilog((context, configuration) => configuration
+    .ReadFrom.Configuration(context.Configuration)
+    .Enrich.FromLogContext()
+    .WriteTo.Console()
+    .WriteTo.File(
+        path: context.Configuration["Logging:FilePath"] ?? "logs/payroll-api-.log",
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 14));
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -15,12 +24,16 @@ builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.SetIsOriginAllowed(origin =>
-              {
-                  if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
-                  return uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-                         || uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase);
-              })
+        var origins = AllowedOrigins(builder.Configuration);
+        if (origins.Length > 0) policy.WithOrigins(origins);
+        else policy.SetIsOriginAllowed(origin =>
+        {
+            if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+            return builder.Environment.IsDevelopment()
+                   && (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                       || uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase));
+        });
+        policy
               .AllowCredentials()
               .AllowAnyHeader()
               .AllowAnyMethod();
@@ -38,27 +51,37 @@ builder.Services.AddSingleton<LeaveBalanceImportRepository>();
 builder.Services.AddSingleton<ReportingRepository>();
 builder.Services.AddSingleton<EssMssRepository>();
 builder.Services.AddSingleton<WorkflowRepository>();
+builder.Services.AddSingleton<DatabaseMigrationRepository>();
 
 var app = builder.Build();
 const string AuthCookieName = "payroll_auth";
 
-using (var scope = app.Services.CreateScope())
+if (!string.Equals(app.Configuration["Database:InitializeOnStartup"], "false", StringComparison.OrdinalIgnoreCase))
 {
-    var repository = scope.ServiceProvider.GetRequiredService<OrganizationRepository>();
-    await repository.InitializeAsync();
-    var payRunRepository = scope.ServiceProvider.GetRequiredService<PayRunRepository>();
-    await payRunRepository.InitializeAsync();
-    var authRepository = scope.ServiceProvider.GetRequiredService<AuthRepository>();
-    await authRepository.InitializeAsync();
-    var leaveAttendanceRepository = scope.ServiceProvider.GetRequiredService<LeaveAttendanceRepository>();
-    await leaveAttendanceRepository.InitializeAsync();
-    var workflowRepository = scope.ServiceProvider.GetRequiredService<WorkflowRepository>();
-    await workflowRepository.InitializeAsync();
-    await using var workflowDb = new MySqlConnector.MySqlConnection(builder.Configuration.GetConnectionString("Default"));
-    await workflowDb.OpenAsync(); await workflowDb.ExecuteAsync("USE payroll; CREATE TABLE IF NOT EXISTS EssLeaveRequests (Id BIGINT PRIMARY KEY AUTO_INCREMENT,EmployeeId INT NOT NULL,ClientId INT NOT NULL,LeaveTypeId INT NOT NULL,FromDate DATE NOT NULL,ToDate DATE NOT NULL,Days DECIMAL(8,2) NOT NULL,Reason VARCHAR(1000),Status VARCHAR(40) NOT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);");
-    var essRepository = scope.ServiceProvider.GetRequiredService<EssMssRepository>();
-    await essRepository.InitializeAsync();
-    await essRepository.ReconcileLeaveWorkflowStatusesAsync();
+    try
+    {
+        using var scope = app.Services.CreateScope();
+        var migrations = scope.ServiceProvider.GetRequiredService<DatabaseMigrationRepository>();
+        await migrations.RunAsync("001_organization", () => scope.ServiceProvider.GetRequiredService<OrganizationRepository>().InitializeAsync());
+        await migrations.RunAsync("002_pay_runs", () => scope.ServiceProvider.GetRequiredService<PayRunRepository>().InitializeAsync());
+        await migrations.RunAsync("003_auth", () => scope.ServiceProvider.GetRequiredService<AuthRepository>().InitializeAsync());
+        await migrations.RunAsync("004_leave_attendance", () => scope.ServiceProvider.GetRequiredService<LeaveAttendanceRepository>().InitializeAsync());
+        await migrations.RunAsync("005_workflows", () => scope.ServiceProvider.GetRequiredService<WorkflowRepository>().InitializeAsync());
+        await migrations.RunAsync("006_ess_leave_requests", async () =>
+        {
+            await using var workflowDb = new MySqlConnector.MySqlConnection(builder.Configuration.GetConnectionString("Default"));
+            await workflowDb.OpenAsync();
+            await workflowDb.ExecuteAsync("USE payroll; CREATE TABLE IF NOT EXISTS EssLeaveRequests (Id BIGINT PRIMARY KEY AUTO_INCREMENT,EmployeeId INT NOT NULL,ClientId INT NOT NULL,LeaveTypeId INT NOT NULL,FromDate DATE NOT NULL,ToDate DATE NOT NULL,Days DECIMAL(8,2) NOT NULL,Reason VARCHAR(1000),Status VARCHAR(40) NOT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);");
+        });
+        var essRepository = scope.ServiceProvider.GetRequiredService<EssMssRepository>();
+        await migrations.RunAsync("007_ess_mss", essRepository.InitializeAsync);
+        await essRepository.ReconcileLeaveWorkflowStatusesAsync();
+    }
+    catch (Exception exception)
+    {
+        app.Logger.LogCritical(exception, "Database initialization failed.");
+        throw;
+    }
 }
 
 if (app.Environment.IsDevelopment())
@@ -67,8 +90,46 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.MapGet("/health", () => Results.Ok(new { status = "ok", utc = DateTime.UtcNow }))
+.WithName("Health");
+
+app.MapGet("/ready", async (IConfiguration configuration) =>
+{
+    try
+    {
+        await using var db = new MySqlConnector.MySqlConnection(configuration.GetConnectionString("Default"));
+        await db.OpenAsync();
+        await db.ExecuteAsync("USE payroll;");
+        var migrations = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM SchemaMigrations;");
+        return Results.Ok(new { status = "ready", migrations });
+    }
+    catch (Exception exception)
+    {
+        return Results.Json(new { status = "not_ready", error = exception.Message }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+})
+.WithName("Readiness");
+
 app.UseHttpsRedirection();
 app.UseCors();
+app.UseSerilogRequestLogging();
+
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (Exception exception)
+    {
+        context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("GlobalException").LogError(exception, "Unhandled request error.");
+        if (!context.Response.HasStarted)
+        {
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            await context.Response.WriteAsJsonAsync(new { error = "Unexpected server error.", traceId = context.TraceIdentifier });
+        }
+    }
+});
 
 app.Use(async (context, next) =>
 {
@@ -545,6 +606,11 @@ app.MapPost("/api/clients", async (OrganizationRepository repository, Client cli
 .WithName("SaveClient")
 .WithOpenApi();
 
+app.MapDelete("/api/clients/{id:int}", async (OrganizationRepository repository, int id) =>
+    await repository.DeleteClientAsync(id) ? Results.NoContent() : Results.NotFound())
+.WithName("DeleteClient")
+.WithOpenApi();
+
 app.MapGet("/api/work-locations", async (OrganizationRepository repository) =>
     Results.Ok(await repository.GetWorkLocationsAsync()))
 .WithName("GetWorkLocations")
@@ -560,6 +626,11 @@ app.MapPost("/api/work-locations", async (OrganizationRepository repository, Wor
     return Results.Ok(new { id });
 })
 .WithName("SaveWorkLocation")
+.WithOpenApi();
+
+app.MapDelete("/api/work-locations/{id:int}", async (OrganizationRepository repository, int id) =>
+    await repository.DeleteWorkLocationAsync(id) ? Results.NoContent() : Results.NotFound())
+.WithName("DeleteWorkLocation")
 .WithOpenApi();
 
 app.MapGet("/api/dropdowns", async (OrganizationRepository repository) =>
@@ -579,6 +650,11 @@ app.MapPost("/api/dropdowns", async (OrganizationRepository repository, Dropdown
 .WithName("SaveDropdownMaster")
 .WithOpenApi();
 
+app.MapDelete("/api/dropdowns/{id:int}", async (OrganizationRepository repository, int id) =>
+    await repository.DeleteDropdownMasterAsync(id) ? Results.NoContent() : Results.NotFound())
+.WithName("DeleteDropdownMaster")
+.WithOpenApi();
+
 app.MapGet("/api/employees", async (EmployeeRepository repository) =>
     Results.Ok(await repository.GetAsync()))
 .WithName("GetEmployees")
@@ -595,6 +671,11 @@ app.MapPost("/api/employees", async (EmployeeRepository repository, Employee emp
     return Results.Ok(new { id });
 })
 .WithName("SaveEmployee")
+.WithOpenApi();
+
+app.MapDelete("/api/employees/{id:int}", async (EmployeeRepository repository, int id) =>
+    await repository.DeleteAsync(id) ? Results.NoContent() : Results.NotFound())
+.WithName("DeleteEmployee")
 .WithOpenApi();
 
 app.MapGet("/api/employees/import/sample", () =>
@@ -751,8 +832,8 @@ static void WriteAuthCookie(HttpContext context, string cookieName, string token
     context.Response.Cookies.Append(cookieName, token, new CookieOptions
     {
         HttpOnly = true,
-        Secure = context.Request.IsHttps,
-        SameSite = SameSiteMode.Lax,
+        Secure = CookieSecure(context),
+        SameSite = SameSiteMode.Strict,
         Expires = new DateTimeOffset(DateTime.SpecifyKind(expiresAt, DateTimeKind.Utc)),
         Path = "/"
     });
@@ -763,10 +844,30 @@ static void ClearAuthCookie(HttpContext context, string cookieName)
     context.Response.Cookies.Delete(cookieName, new CookieOptions
     {
         HttpOnly = true,
-        Secure = context.Request.IsHttps,
-        SameSite = SameSiteMode.Lax,
+        Secure = CookieSecure(context),
+        SameSite = SameSiteMode.Strict,
         Path = "/"
     });
 }
 
 app.Run();
+
+static string[] AllowedOrigins(IConfiguration configuration)
+{
+    var configured = configuration.GetSection("Cors:AllowedOrigins").GetChildren().Select(x => x.Value).Where(x => !string.IsNullOrWhiteSpace(x));
+    var env = (configuration["CORS_ALLOWED_ORIGINS"] ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    return configured.Concat(env).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()!;
+}
+
+static bool CookieSecure(HttpContext context) =>
+    context.Request.IsHttps || string.Equals(context.RequestServices.GetRequiredService<IConfiguration>()["Auth:CookieSecure"], "true", StringComparison.OrdinalIgnoreCase);
+
+static void ValidateConfiguration(IConfiguration configuration, IWebHostEnvironment environment)
+{
+    if (string.IsNullOrWhiteSpace(configuration.GetConnectionString("Default")))
+        throw new InvalidOperationException("ConnectionStrings__Default is required.");
+    if (!environment.IsDevelopment() && AllowedOrigins(configuration).Length == 0)
+        throw new InvalidOperationException("Production requires Cors:AllowedOrigins or CORS_ALLOWED_ORIGINS.");
+    if (!environment.IsDevelopment() && !string.Equals(configuration["Auth:CookieSecure"], "true", StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException("Production requires Auth:CookieSecure=true.");
+}

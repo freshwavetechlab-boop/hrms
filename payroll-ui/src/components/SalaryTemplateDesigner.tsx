@@ -7,7 +7,7 @@ import '../TemplateDesigner.css'
 
 const componentTabs = ['Earning', 'Deduction', 'Reimbursement'] as const
 
-export default function SalaryTemplateDesigner({ clients, components, structure, setStructure, templates, saveTemplate }: { clients: Client[]; components: Component[]; structure: Structure; setStructure: (s: Structure) => void; templates: Structure[]; saveTemplate: () => void }) {
+export default function SalaryTemplateDesigner({ clients, components, structure, setStructure, templates, saveTemplate, removeTemplate }: { clients: Client[]; components: Component[]; structure: Structure; setStructure: (s: Structure) => void; templates: Structure[]; saveTemplate: () => void; removeTemplate: (row: Structure) => void }) {
   const [tab, setTab] = useState<'Earning' | 'Deduction' | 'Reimbursement'>('Earning')
   const [dragId, setDragId] = useState('')
   const [dragLineId, setDragLineId] = useState('')
@@ -74,7 +74,7 @@ export default function SalaryTemplateDesigner({ clients, components, structure,
         </section>
       </div>
     </div>
-    <DataTable rows={templates} onEdit={setStructure} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client' }, { key: 'annualCtc', label: 'Annual CTC' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} />
+    <DataTable rows={templates} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client' }, { key: 'annualCtc', label: 'Annual CTC' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} actions={row => <span className="row-actions"><button type="button" onClick={() => setStructure(row)}>Edit</button><button type="button" className="danger" onClick={() => removeTemplate(row)}>Delete</button></span>} />
   </Card>
 }
 

@@ -1,5 +1,8 @@
+using System.Data;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using Dapper;
 using MySqlConnector;
 using Payroll.API.Models;
@@ -317,14 +320,23 @@ WHERE Id=@Id AND Status != 'Applied';", adjustment);
     {
         if (employee.ClientId == 6) return BuildReclEmployee(payRunId, employee, totalWorkingDays, payableDays, oneTimeEarnings, oneTimeDeductions, manualTds, isSkipped);
         var components = ReadComponents(setupJson);
-        var salary = JsonSerializer.Deserialize<Dictionary<string, decimal>>(employee.SalaryJson, new JsonSerializerOptions { NumberHandling = JsonNumberHandling.AllowReadingFromString }) ?? [];
+        var salary = CalculateSalaryFromSetup(setupJson, employee);
+        var employeeSalary = JsonSerializer.Deserialize<Dictionary<string, decimal>>(employee.SalaryJson, new JsonSerializerOptions { NumberHandling = JsonNumberHandling.AllowReadingFromString }) ?? [];
+        foreach (var item in employeeSalary.Where(item => item.Value != 0))
+            salary[item.Key] = item.Value;
+        if (salary.Count == 0 && employee.AnnualCtc > 0)
+        {
+            var fallback = components.Values.FirstOrDefault(component => component.Code.Equals("BASIC", StringComparison.OrdinalIgnoreCase) && component.Active)
+                ?? components.Values.FirstOrDefault(component => component.Category.Equals("Earning", StringComparison.OrdinalIgnoreCase) && component.Active);
+            salary[fallback?.Id ?? "GROSS"] = decimal.Round(employee.AnnualCtc / 12m, 2);
+        }
         var factor = totalWorkingDays == 0 ? 0 : (decimal)payableDays / totalWorkingDays;
         var lines = new List<object>();
         decimal monthlyGross = 0, grossPay = 0, deductions = 0;
 
         foreach (var (id, amount) in salary)
         {
-            var component = components.GetValueOrDefault(id, new PayrollComponent(id, "Component", "Earning", true));
+            var component = components.GetValueOrDefault(id, new PayrollComponent(id, id, "Component", "Earning", true, true, "Flat Amount", "", "", "", 100));
             var calculatedAmount = component.ProRata ? decimal.Round(amount * factor, 2) : amount;
             lines.Add(new { component.Id, component.Name, component.Category, monthlyAmount = amount, amount = calculatedAmount, component.ProRata });
             if (component.Category.Equals("Deduction", StringComparison.OrdinalIgnoreCase))
@@ -395,17 +407,143 @@ WHERE Id=@Id AND Status != 'Applied';", adjustment);
 
     private static Dictionary<string, PayrollComponent> ReadComponents(string setupJson)
     {
-        using var document = JsonDocument.Parse(setupJson);
-        if (!document.RootElement.TryGetProperty("salaryComponents", out var components))
+        using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(setupJson) ? "{}" : setupJson);
+        if (!document.RootElement.TryGetProperty("salaryComponents", out var components) || components.ValueKind != JsonValueKind.Array)
             return [];
-        return components.EnumerateArray().ToDictionary(
-            component => component.GetProperty("id").ToString(),
-            component => new PayrollComponent(
+        return components.EnumerateArray()
+            .Where(component => component.TryGetProperty("id", out _))
+            .Select(component => new PayrollComponent(
                 component.GetProperty("id").ToString(),
+                component.TryGetProperty("code", out var code) ? code.GetString() ?? component.GetProperty("id").ToString() : component.GetProperty("id").ToString(),
                 component.TryGetProperty("name", out var name) ? name.GetString() ?? "Component" : "Component",
                 component.TryGetProperty("category", out var category) ? category.GetString() ?? "Earning" : "Earning",
-                !component.TryGetProperty("proRata", out var proRata) || proRata.GetBoolean()));
+                !component.TryGetProperty("proRata", out var proRata) || proRata.GetBoolean(),
+                !component.TryGetProperty("active", out var active) || active.GetBoolean(),
+                component.TryGetProperty("calculationType", out var calculationType) ? calculationType.GetString() ?? "Flat Amount" : "Flat Amount",
+                component.TryGetProperty("value", out var value) ? value.GetString() ?? "" : "",
+                component.TryGetProperty("formula", out var formula) ? formula.GetString() ?? "" : "",
+                component.TryGetProperty("baseComponent", out var baseComponent) ? baseComponent.GetString() ?? "" : "",
+                int.TryParse(component.TryGetProperty("priority", out var priority) ? priority.GetString() : "", out var order) ? order : 100))
+            .ToDictionary(component => component.Id);
     }
+
+    private static Dictionary<string, decimal> CalculateSalaryFromSetup(string setupJson, PayRunSourceEmployee employee)
+    {
+        if (employee.AnnualCtc <= 0) return [];
+        var components = ReadComponents(setupJson);
+        if (components.Count == 0) return [];
+        var lines = ReadSalaryLines(setupJson, employee, components.Values).ToList();
+        var monthlyCtc = employee.AnnualCtc / 12m;
+        var values = new Dictionary<string, decimal>();
+        var byCode = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["CTC"] = monthlyCtc,
+            ["GROSS"] = monthlyCtc,
+            ["MONTHLY_CTC"] = monthlyCtc,
+            ["ANNUAL_CTC"] = employee.AnnualCtc,
+            ["PAYROLL_DAYS"] = 30,
+            ["PAYABLE_DAYS"] = 30,
+            ["PRESENT_DAYS"] = 30,
+            ["LOP_DAYS"] = 0
+        };
+
+        foreach (var line in lines)
+        {
+            if (!components.TryGetValue(line.ComponentId, out var component) || !component.Active) continue;
+            var source = FirstText(line.Value, component.Formula, component.Value);
+            var amount = CalculateComponentAmount(component, source, monthlyCtc, values, components, byCode);
+            values[component.Id] = amount;
+            byCode[component.Code] = amount;
+        }
+        return values;
+    }
+
+    private static IEnumerable<SalaryLine> ReadSalaryLines(string setupJson, PayRunSourceEmployee employee, IEnumerable<PayrollComponent> components)
+    {
+        using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(setupJson) ? "{}" : setupJson);
+        if (document.RootElement.TryGetProperty("salaryStructures", out var structures) && structures.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var structure in structures.EnumerateArray())
+            {
+                var structureId = structure.TryGetProperty("id", out var id) ? id.ToString() : "";
+                var client = structure.TryGetProperty("clientId", out var clientId) ? clientId.GetString() ?? "" : "";
+                if ((!string.IsNullOrWhiteSpace(employee.SalaryStructureId) && structureId == employee.SalaryStructureId)
+                    || (!string.IsNullOrWhiteSpace(client) && client.Split(':')[0] == employee.ClientId.ToString()))
+                {
+                    if (structure.TryGetProperty("lines", out var lines) && lines.ValueKind == JsonValueKind.Array)
+                        return lines.EnumerateArray().Select(line => new SalaryLine(
+                            line.TryGetProperty("componentId", out var componentId) ? componentId.ToString() : "",
+                            line.TryGetProperty("value", out var value) ? value.GetString() ?? "" : ""))
+                            .Where(line => !string.IsNullOrWhiteSpace(line.ComponentId));
+                }
+            }
+        }
+        return components
+            .Where(component => component.Active && component.Category is "Earning" or "Deduction" or "Reimbursement")
+            .OrderBy(component => component.Priority)
+            .ThenBy(component => component.Name)
+            .Select(component => new SalaryLine(component.Id, FirstText(component.Formula, component.Value)));
+    }
+
+    private static decimal CalculateComponentAmount(PayrollComponent component, string source, decimal monthlyCtc, Dictionary<string, decimal> values, Dictionary<string, PayrollComponent> components, Dictionary<string, decimal> byCode)
+    {
+        if (component.CalculationType.Equals("Percentage of CTC", StringComparison.OrdinalIgnoreCase))
+        {
+            var percent = ReadNumber(FirstText(source, component.Value));
+            return percent > 0 && !source.Contains("CTC", StringComparison.OrdinalIgnoreCase)
+                ? decimal.Round(monthlyCtc * percent / 100m, 2)
+                : decimal.Round(EvaluateFormula(source, byCode), 2);
+        }
+        if (component.CalculationType.Equals("Percentage of Component", StringComparison.OrdinalIgnoreCase))
+        {
+            if (HasFormula(source)) return decimal.Round(EvaluateFormula(source, byCode), 2);
+            var baseAmount = byCode.GetValueOrDefault(component.BaseComponent);
+            return decimal.Round(baseAmount * ReadNumber(FirstText(source, component.Value)) / 100m, 2);
+        }
+        if (component.CalculationType.Equals("Formula", StringComparison.OrdinalIgnoreCase))
+            return decimal.Round(EvaluateFormula(source, byCode), 2);
+        if (component.CalculationType.Equals("Balancing Amount", StringComparison.OrdinalIgnoreCase))
+        {
+            var used = values.Where(item => components.TryGetValue(item.Key, out var row) && row.Category.Equals("Earning", StringComparison.OrdinalIgnoreCase)).Sum(item => item.Value);
+            return Math.Max(0, decimal.Round(monthlyCtc - used, 2));
+        }
+        return decimal.Round(ReadNumber(source), 2);
+    }
+
+    private static decimal EvaluateFormula(string source, Dictionary<string, decimal> byCode)
+    {
+        if (string.IsNullOrWhiteSpace(source)) return 0;
+        var formula = source.ToUpperInvariant();
+        formula = Regex.Replace(formula, @"(\d+(?:\.\d+)?)\s*%\s*OF\s*([A-Z0-9_]+)", "$2*$1/100");
+        formula = Regex.Replace(formula, @"([A-Z0-9_]+)\s*\*\s*(\d+(?:\.\d+)?)\s*%", "$1*$2/100");
+        formula = Regex.Replace(formula, @"(\d+(?:\.\d+)?)\s*%\s*\*\s*([A-Z0-9_]+)", "$1/100*$2");
+        formula = Regex.Replace(formula, @"(\d+(?:\.\d+)?)%", "$1/100");
+        foreach (var item in byCode.OrderByDescending(item => item.Key.Length))
+            formula = Regex.Replace(formula, $@"(?<![A-Z0-9_]){Regex.Escape(item.Key)}(?![A-Z0-9_])", item.Value.ToString(CultureInfo.InvariantCulture), RegexOptions.IgnoreCase);
+        var function = new Regex(@"\b(MIN|MAX)\(([^(),]+),([^(),]+)\)", RegexOptions.IgnoreCase);
+        while (function.IsMatch(formula))
+        {
+            formula = function.Replace(formula, match =>
+            {
+                var left = EvaluateArithmetic(match.Groups[2].Value);
+                var right = EvaluateArithmetic(match.Groups[3].Value);
+                return (match.Groups[1].Value.Equals("MIN", StringComparison.OrdinalIgnoreCase) ? Math.Min(left, right) : Math.Max(left, right)).ToString(CultureInfo.InvariantCulture);
+            });
+        }
+        return EvaluateArithmetic(formula);
+    }
+
+    private static decimal EvaluateArithmetic(string formula)
+    {
+        formula = Regex.Replace(formula, @"\s+", "");
+        if (string.IsNullOrWhiteSpace(formula) || !Regex.IsMatch(formula, @"^[0-9+\-*/().]+$")) return 0;
+        try { return Convert.ToDecimal(new DataTable().Compute(formula, ""), CultureInfo.InvariantCulture); }
+        catch { return 0; }
+    }
+
+    private static string FirstText(params string[] values) => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "";
+    private static bool HasFormula(string value) => Regex.IsMatch(value ?? "", @"[-+*/()%A-Z_]", RegexOptions.IgnoreCase);
+    private static decimal ReadNumber(string value) => decimal.TryParse((value ?? "").Replace(",", "").Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var number) ? number : 0;
 
     private static async Task SaveEmployeeAsync(MySqlConnection connection, MySqlTransaction transaction, PayRunEmployee row)
     {
@@ -473,7 +611,8 @@ LIMIT 1;", new { payRun.ClientId, payRun.PayPeriod });
         value.Equals("Reimbursement", StringComparison.OrdinalIgnoreCase) ? "Reimbursement" : "Earning";
 
     private readonly record struct AdjustmentTotal(decimal Earnings, decimal Deductions);
-    private sealed record PayrollComponent(string Id, string Name, string Category, bool ProRata);
+    private sealed record PayrollComponent(string Id, string Code, string Name, string Category, bool ProRata, bool Active, string CalculationType, string Value, string Formula, string BaseComponent, int Priority);
+    private sealed record SalaryLine(string ComponentId, string Value);
     private sealed record PayRunAttendance(int EmployeeId, decimal PresentDays, decimal PayableDays);
     private sealed class PayRunSourceEmployee : Employee { public string ClientName { get; set; } = string.Empty; }
 

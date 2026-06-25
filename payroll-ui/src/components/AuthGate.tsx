@@ -12,7 +12,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true), [error, setError] = useState(''), [accountOpen, setAccountOpen] = useState(false)
 
   useEffect(() => {
-    const expire = () => { sessionStorage.removeItem('payroll.auth.token'); localStorage.removeItem('payroll.auth.token'); localStorage.removeItem('payroll.auth.user'); setUser(null) }
+    const expire = () => setUser(null)
     window.addEventListener('payroll:unauthorized', expire)
     void getCurrentUser().then(data => { if (data) setUser(data); else expire() }).finally(() => setLoading(false))
     return () => window.removeEventListener('payroll:unauthorized', expire)
@@ -23,17 +23,11 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     setError('')
     const data = await authenticate(email, password)
     if (!data) { setError('Invalid email or password.'); return }
-    sessionStorage.setItem('payroll.auth.token', data.token)
-    localStorage.removeItem('payroll.auth.token')
-    localStorage.removeItem('payroll.auth.user')
     setUser(data.user)
   }
 
   const logout = async () => {
     await endSession()
-    sessionStorage.removeItem('payroll.auth.token')
-    localStorage.removeItem('payroll.auth.token')
-    localStorage.removeItem('payroll.auth.user')
     setUser(null)
   }
 

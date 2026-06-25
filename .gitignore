@@ -1,1 +1,10 @@
 .mysql-data/
+.mysql-runtime*/
+**/bin/
+**/obj/
+payroll-ui/dist/
+payroll-ui/.env
+*.user
+logs/
+Payroll.API/logs/
+.runtime-logs/

@@ -349,6 +349,14 @@ WHERE Id = @Id;";
         return client.Id;
     }
 
+    public async Task<bool> DeleteClientAsync(int id)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await PrepareDatabaseAsync(connection);
+        return await connection.ExecuteAsync("DELETE FROM Clients WHERE Id=@Id", new { Id = id }) > 0;
+    }
+
     public async Task<IEnumerable<WorkLocation>> GetWorkLocationsAsync()
     {
         await using var connection = CreateConnection();
@@ -370,6 +378,14 @@ WHERE Id = @Id;";
         return location.Id;
     }
 
+    public async Task<bool> DeleteWorkLocationAsync(int id)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await PrepareDatabaseAsync(connection);
+        return await connection.ExecuteAsync("DELETE FROM WorkLocations WHERE Id=@Id", new { Id = id }) > 0;
+    }
+
     public async Task<IEnumerable<DropdownMaster>> GetDropdownMastersAsync()
     {
         await using var connection = CreateConnection();
@@ -387,6 +403,14 @@ WHERE Id = @Id;";
             return (int)await connection.ExecuteScalarAsync<long>("INSERT INTO DropdownMasters (Type, Value, IsActive) VALUES (@Type, @Value, @IsActive); SELECT LAST_INSERT_ID();", item);
         await connection.ExecuteAsync("UPDATE DropdownMasters SET Type=@Type, Value=@Value, IsActive=@IsActive WHERE Id=@Id", item);
         return item.Id;
+    }
+
+    public async Task<bool> DeleteDropdownMasterAsync(int id)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await PrepareDatabaseAsync(connection);
+        return await connection.ExecuteAsync("DELETE FROM DropdownMasters WHERE Id=@Id", new { Id = id }) > 0;
     }
 
     public async Task<IEnumerable<Employee>> GetEmployeesAsync()

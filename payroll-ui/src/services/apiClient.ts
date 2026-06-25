@@ -1,9 +1,8 @@
-export const api = import.meta.env.VITE_API_URL ?? 'http://localhost:5062'
+export const api = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
 
 type ApiOptions = RequestInit & { timeoutMs?: number }
 type ApiResult<TResult> = { ok: boolean; data: TResult; error: string; status: number }
 
-const legacyTokenKey = 'payroll.auth.token'
 const jsonContent = 'application/json'
 
 export function apiUrl(path: string) {
@@ -15,16 +14,12 @@ export async function apiRequest(path: string, options: ApiOptions = {}) {
   const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? 30000)
   const headers = new Headers(options.headers)
   const isFormData = options.body instanceof FormData
-  const legacyToken = sessionStorage.getItem(legacyTokenKey) || localStorage.getItem(legacyTokenKey)
 
   if (options.body && !isFormData && !headers.has('Content-Type')) headers.set('Content-Type', jsonContent)
-  if (legacyToken && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${legacyToken}`)
 
   try {
     const response = await fetch(apiUrl(path), { ...options, headers, credentials: 'include', signal: options.signal ?? controller.signal })
     if (response.status === 401) {
-      sessionStorage.removeItem(legacyTokenKey)
-      localStorage.removeItem(legacyTokenKey)
       window.dispatchEvent(new CustomEvent('payroll:unauthorized'))
     }
     return response

@@ -11,9 +11,12 @@ const numberFrom = (value: string | number | undefined) => {
   return Number(text) || Number.parseFloat(text) || 0
 }
 
-const hasFormulaSyntax = (value: string) => /[-+*/()%A-Z_]/i.test(value)
+const normalizeFormulaText = (value: string) => value.replace(/[–—]/g, '-')
+const formulaKey = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+const hasFormulaSyntax = (value: string) => /[-+*/()%A-Z_]/i.test(normalizeFormulaText(value))
 const sourceFor = (line: Structure['lines'][number], component: Component) => line.value || component.formula || component.value
 const isSummaryCode = (code: string) => ['GROSS_EARNED', 'NET_PAY', 'EMPLOYER_COST'].includes(code.toUpperCase())
+const payComponentCategories = new Set(['Earning', 'Deduction', 'Reimbursement'])
 
 function slabValue(source: string, baseAmount: number) {
   for (const slab of source.split(';')) {
@@ -31,11 +34,20 @@ export function calculateSalaryDetails(ctc: number, components: Component[], sal
   const monthlyCtc = ctc / 12
   const values: Record<string, string> = {}
   const componentById = new Map(components.map(component => [String(component.id), component]))
-  const structureLines = salaryStructure?.lines ?? []
+  const defaultLines = components
+    .filter(component => component.active && payComponentCategories.has(component.category))
+    .sort((a, b) => Number(a.priority) - Number(b.priority) || a.name.localeCompare(b.name))
+    .map(component => ({ componentId: String(component.id), value: component.formula || component.value || '' }))
+  const structureLines = salaryStructure?.lines?.length ? salaryStructure.lines : defaultLines
   const ordered = structureLines.map(line => ({ line, component: componentById.get(String(line.componentId)) })).filter((item): item is { line: { componentId: string; value: string }; component: Component } => !!item.component?.active)
+  const referencesFromValues = () => Object.fromEntries(Object.entries(values).flatMap(([id, value]) => {
+    const component = componentById.get(id)
+    const amount = numberFrom(value)
+    return component ? [[component.code.toUpperCase(), amount], [formulaKey(component.name), amount]] : [[id, amount]]
+  }))
   const evaluate = (text: string, byCode: Record<string, number>) => {
     const references = { GROSS: monthlyCtc, CTC: monthlyCtc, MONTHLY_CTC: monthlyCtc, ANNUAL_CTC: ctc, PAYROLL_DAYS: 30, PAYABLE_DAYS: 30, PRESENT_DAYS: 30, LOP_DAYS: 0, ...byCode }
-    let formula = text.toUpperCase()
+    let formula = normalizeFormulaText(text).toUpperCase()
       .replace(/(\d+(?:\.\d+)?)\s*%\s*OF\s*([A-Z0-9_]+)/g, '$2*$1/100')
       .replace(/([A-Z0-9_]+)\s*\*\s*(\d+(?:\.\d+)?)\s*%/g, '$1*$2/100')
       .replace(/(\d+(?:\.\d+)?)%/g, '$1/100')
@@ -53,7 +65,7 @@ export function calculateSalaryDetails(ctc: number, components: Component[], sal
   }
   const rows: SalaryCalculationRow[] = []
   for (const { line, component } of ordered) {
-    const byCode = Object.fromEntries(Object.entries(values).map(([id, value]) => [componentById.get(id)?.code.toUpperCase() ?? id, numberFrom(value)]))
+    const byCode = referencesFromValues()
     const source = sourceFor(line, component)
     let monthly = 0
     if (component.calculationType === 'Manual Entry') monthly = 0
@@ -74,6 +86,16 @@ export function calculateSalaryDetails(ctc: number, components: Component[], sal
     }
     values[component.id] = String(monthly)
     rows.push({ line, component, monthly, annual: monthly * 12 })
+  }
+  for (const row of rows) {
+    const source = sourceFor(row.line, row.component)
+    if (row.component.calculationType === 'Formula' && hasFormulaSyntax(source)) row.monthly = evaluate(source, referencesFromValues())
+    if (row.component.calculationType === 'Balancing Amount') {
+      const used = rows.filter(item => item !== row && item.component.category === 'Earning').reduce((sum, item) => sum + item.monthly, 0)
+      row.monthly = Math.max(0, Math.round(monthlyCtc - used))
+    }
+    row.annual = row.monthly * 12
+    values[row.component.id] = String(row.monthly)
   }
   return rows
 }

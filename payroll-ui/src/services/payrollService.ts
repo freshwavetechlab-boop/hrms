@@ -1,5 +1,5 @@
 import type { Client, Employee, PayRun, PayrollAdjustment, RunEmployee } from '../types/payroll'
-import { deleteJson, getJson, postEmpty, postJson, putJson } from './apiClient'
+import { apiUrl, deleteJson, getJson, postEmpty, postJson, putJson } from './apiClient'
 
 export const getClients = () => getJson<Client[]>('/api/clients', [])
 export const getEmployees = () => getJson<Employee[]>('/api/employees', [])
@@ -9,7 +9,7 @@ export const createPayRun = (body: { clientId: number; payPeriod: string; payDat
 export const updatePayRunEmployee = (payRunId: number, employee: RunEmployee) => putJson(`/api/pay-runs/${payRunId}/employees/${employee.employeeId}`, { presentDays: employee.presentDays, oneTimeEarnings: employee.oneTimeEarnings, oneTimeDeductions: employee.oneTimeDeductions, manualTds: employee.manualTds, isSkipped: employee.isSkipped }, null)
 export const runPayRunAction = (id: number, path: string) => postEmpty<PayRun | null>(`/api/pay-runs/${id}/${path}`, null)
 export const recordPayRunPayments = (id: number, body: { employeeIds: number[]; paymentDate: string }) => postJson<typeof body, PayRun | null>(`/api/pay-runs/${id}/payments`, body, null)
-export const exportPayRunUrl = (id: number) => `${import.meta.env.VITE_API_URL ?? 'http://localhost:5062'}/api/pay-runs/${id}/export`
+export const exportPayRunUrl = (id: number) => apiUrl(`/api/pay-runs/${id}/export`)
 export const getPayrollAdjustments = (query: { clientId?: number; payPeriod?: string; status?: string } = {}) => {
   const params = new URLSearchParams()
   if (query.clientId) params.set('clientId', String(query.clientId))
