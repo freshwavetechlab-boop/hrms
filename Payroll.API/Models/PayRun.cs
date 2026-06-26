@@ -44,10 +44,20 @@ public class PayRunEmployee
     public string PaymentStatus { get; set; } = "Pending";
     public DateTime? PaymentDate { get; set; }
     public string DetailsJson { get; set; } = "[]";
+    public List<PayRunLeaveBreakdown> LeaveBreakdown { get; set; } = [];
     public decimal? PreviousNetPay { get; set; }
     public decimal? NetPayVariance { get; set; }
     public decimal? VariancePercent { get; set; }
     public string VarianceReason { get; set; } = string.Empty;
+}
+
+public class PayRunLeaveBreakdown
+{
+    public string Code { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string Type { get; set; } = string.Empty;
+    public decimal Days { get; set; }
+    public decimal PayableDays { get; set; }
 }
 
 public class CreatePayRunRequest

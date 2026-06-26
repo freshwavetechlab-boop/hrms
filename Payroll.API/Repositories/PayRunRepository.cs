@@ -127,6 +127,7 @@ SELECT * FROM PayRunEmployees WHERE PayRunId = @Id ORDER BY EmployeeName;", new 
         if (payRun is not null)
         {
             payRun.Employees = (await results.ReadAsync<PayRunEmployee>()).ToList();
+            await ApplyLeaveBreakdownAsync(connection, payRun);
             await ApplyPreviousRunComparisonAsync(connection, payRun);
         }
         return payRun;
@@ -456,6 +457,39 @@ LIMIT 1;", new { payRun.ClientId, payRun.PayPeriod });
         }
     }
 
+    private static async Task ApplyLeaveBreakdownAsync(MySqlConnection connection, PayRun payRun)
+    {
+        if (payRun.RunType == "Off Cycle" || payRun.Employees.Count == 0)
+            return;
+
+        var employeeIds = payRun.Employees.Select(employee => employee.EmployeeId).Distinct().ToArray();
+        var rows = await connection.QueryAsync<LeaveBreakdownRow>(@"
+SELECT a.employee_id AS EmployeeId,
+       a.status AS Code,
+       COALESCE(lt.name, a.status) AS Name,
+       COALESCE(lt.type, CASE WHEN a.payable_value > 0 THEN 'Paid' ELSE 'Unpaid' END) AS Type,
+       COUNT(*) AS Days,
+       COALESCE(SUM(a.payable_value), 0) AS PayableDays
+FROM employee_daily_attendance a
+LEFT JOIN leave_types lt ON lt.client_id = a.client_id AND lt.code = a.status
+WHERE a.client_id = @ClientId
+  AND DATE_FORMAT(a.attendance_date, '%Y-%m') = @PayPeriod
+  AND a.employee_id IN @EmployeeIds
+  AND a.status <> 'Present'
+GROUP BY a.employee_id, a.status, lt.name, lt.type
+ORDER BY a.employee_id, a.status;", new { payRun.ClientId, payRun.PayPeriod, EmployeeIds = employeeIds });
+
+        var byEmployee = rows.GroupBy(row => row.EmployeeId).ToDictionary(group => group.Key, group => group
+            .Select(row => new PayRunLeaveBreakdown { Code = row.Code, Name = row.Name, Type = row.Type, Days = row.Days, PayableDays = row.PayableDays })
+            .ToList());
+
+        foreach (var employee in payRun.Employees)
+        {
+            if (byEmployee.TryGetValue(employee.EmployeeId, out var breakdown))
+                employee.LeaveBreakdown = breakdown;
+        }
+    }
+
     private static async Task<List<PayrollAdjustment>> GetApplicableAdjustmentsAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, string payPeriod, string runType, int[] adjustmentIds)
     {
         var sql = adjustmentIds.Length > 0
@@ -475,6 +509,7 @@ LIMIT 1;", new { payRun.ClientId, payRun.PayPeriod });
     private readonly record struct AdjustmentTotal(decimal Earnings, decimal Deductions);
     private sealed record PayrollComponent(string Id, string Name, string Category, bool ProRata);
     private sealed record PayRunAttendance(int EmployeeId, decimal PresentDays, decimal PayableDays);
+    private sealed record LeaveBreakdownRow(int EmployeeId, string Code, string Name, string Type, decimal Days, decimal PayableDays);
     private sealed class PayRunSourceEmployee : Employee { public string ClientName { get; set; } = string.Empty; }
 
     private static async Task EnsureColumnAsync(MySqlConnection connection, string tableName, string columnName, string definition)
