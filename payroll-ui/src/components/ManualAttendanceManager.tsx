@@ -1,26 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { EmployeeDailyAttendance, EmployeeMonthlyAttendance } from '../types/payroll'
-import { getDailyAttendance, getMonthlyAttendance, saveDailyAttendance, saveMonthlyAttendance } from '../services/leaveAttendanceService'
+import type { EmployeeDailyAttendance, EmployeeMonthlyAttendance, LeaveType } from '../types/payroll'
+import { getDailyAttendance, getLeaveTypes, getMonthlyAttendance, saveDailyAttendance, saveMonthlyAttendance } from '../services/leaveAttendanceService'
 import PageTabs from './PageTabs'
 
 type Props = { clientId: number; onMessage: (message: string) => void }
-type DailyStatus = EmployeeDailyAttendance['status']
+type DailyStatus = string
 type DailyUiRow = EmployeeDailyAttendance & { isMissing?: boolean }
 type ReviewStatus = 'Ready' | 'Missing attendance' | 'Check values'
 type AttendanceTab = 'summary' | 'employees' | 'daily'
 
-const statuses: DailyStatus[] = ['Present', 'Absent', 'Half Day', 'Paid Leave', 'Weekly Off', 'Holiday']
 const attendanceTabs = ['summary', 'employees', 'daily'] as const
 
 const currentMonth = () => new Date().toISOString().slice(0, 7)
 const toNumber = (value: number | string) => Number.isFinite(Number(value)) ? Number(value) : 0
 const isoDate = (value: string) => value.slice(0, 10)
-
-const defaultPayable = (status: DailyStatus) => {
-  if (status === 'Absent') return 0
-  if (status === 'Half Day') return 0.5
-  return 1
-}
 
 const monthDates = (month: string) => {
   const [year, monthNumber] = month.split('-').map(Number)
@@ -47,6 +40,7 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
   const [monthlyRows, setMonthlyRows] = useState<EmployeeMonthlyAttendance[]>([])
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<number>(0)
   const [dailyRows, setDailyRows] = useState<DailyUiRow[]>([])
+  const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([])
   const [loadingMonthly, setLoadingMonthly] = useState(false)
   const [loadingDaily, setLoadingDaily] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -82,22 +76,27 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
 
   const missingDailyCount = useMemo(() => dailyRows.filter((row) => row.isMissing).length, [dailyRows])
   const issueRows = useMemo(() => monthlyRows.filter((row) => reviewStatus(row) !== 'Ready'), [monthlyRows])
+  const activeLeaveTypes = useMemo(() => leaveTypes.filter((leaveType) => leaveType.isActive), [leaveTypes])
+  const payableForStatus = (status: DailyStatus) => status === 'Present' ? 1 : activeLeaveTypes.find((leaveType) => leaveType.code === status)?.type === 'Paid' ? 1 : 0
 
-  const buildDailyMonth = (employeeId: number, rows: EmployeeDailyAttendance[]) => {
+  const buildDailyMonth = (employeeId: number, rows: EmployeeDailyAttendance[], availableLeaveTypes = activeLeaveTypes) => {
+    const availableCodes = new Set(availableLeaveTypes.filter((leaveType) => leaveType.isActive).map((leaveType) => leaveType.code))
     const byDate = new Map(rows.map((row) => [isoDate(row.attendanceDate), row]))
     return monthDates(month).map((attendanceDate) => {
       const existing = byDate.get(attendanceDate)
-      if (existing) return { ...existing, attendanceDate: isoDate(existing.attendanceDate), isMissing: false }
-      const day = new Date(`${attendanceDate}T00:00:00`)
-      const weekend = day.getDay() === 0
-      const status: DailyStatus = weekend ? 'Weekly Off' : 'Present'
+      if (existing) {
+        const status = existing.status === 'Present' || availableCodes.has(existing.status) ? existing.status : 'Present'
+        const leaveType = availableLeaveTypes.find((item) => item.code === status)
+        return { ...existing, attendanceDate: isoDate(existing.attendanceDate), status, payableValue: status === 'Present' || leaveType?.type === 'Paid' ? 1 : 0, isMissing: false }
+      }
+      const status: DailyStatus = 'Present'
       return {
         id: 0,
         clientId,
         employeeId,
         attendanceDate,
         status,
-        payableValue: defaultPayable(status),
+        payableValue: payableForStatus(status),
         remarks: '',
         isMissing: true
       }
@@ -125,8 +124,10 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
     }
     setLoadingDaily(true)
     try {
-      const rows = await getDailyAttendance(clientId, employeeId, month)
-      setDailyRows(buildDailyMonth(employeeId, rows))
+      const [rows, leaveTypeRows] = await Promise.all([getDailyAttendance(clientId, employeeId, month), getLeaveTypes(clientId)])
+      const activeTypes = leaveTypeRows.filter((leaveType) => leaveType.isActive)
+      setLeaveTypes(leaveTypeRows)
+      setDailyRows(buildDailyMonth(employeeId, rows, activeTypes))
     } catch (error) {
       onMessage(error instanceof Error ? error.message : 'Unable to load daily attendance')
     } finally {
@@ -150,14 +151,14 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
     setDailyRows((rows) => rows.map((row) => {
       if (row.attendanceDate !== date) return row
       const next = { ...row, ...patch, isMissing: false }
-      if (patch.status) next.payableValue = defaultPayable(patch.status)
+      if (patch.status) next.payableValue = payableForStatus(patch.status)
       return next
     }))
   }
 
   const fillMissing = (status: DailyStatus) => {
     setDailyRows((rows) => rows.map((row) => row.isMissing
-      ? { ...row, status, payableValue: defaultPayable(status), remarks: row.remarks || 'Filled during payroll attendance review', isMissing: false }
+      ? { ...row, status, payableValue: payableForStatus(status), remarks: row.remarks || 'Filled during payroll attendance review', isMissing: false }
       : row
     ))
   }
@@ -234,7 +235,7 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
             <span>Ready<b>{summary.ready}</b></span>
             <span>Missing<b>{summary.missing}</b></span>
             <span>Check values<b>{summary.check}</b></span>
-            <span>Payable<b>{summary.payableDays.toFixed(1)}</b></span>
+            <span>Payable Days<b>{summary.payableDays.toFixed(1)}</b></span>
             <span>LOP<b>{summary.lopDays.toFixed(1)}</b></span>
           </div>
           <div className="attendance-next-actions">
@@ -247,7 +248,7 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
                 <tr>
                   <th>Employee</th>
                   <th>Issue</th>
-                  <th>Payable</th>
+                  <th>Payable Days</th>
                   <th>LOP</th>
                   <th>Action</th>
                 </tr>
@@ -293,10 +294,10 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
               <thead>
                 <tr>
                   <th>Employee</th>
-                  <th>Status</th>
+                  <th>Attendance Status</th>
                   <th>Work</th>
                   <th>Present</th>
-                  <th>Payable</th>
+                  <th>Payable Days</th>
                   <th>LOP</th>
                   <th>Action</th>
                 </tr>
@@ -359,7 +360,6 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
           </div>
           <div className="attendance-quick-actions">
             <button type="button" onClick={() => fillMissing('Present')} disabled={!missingDailyCount}>Mark missing present</button>
-            <button type="button" onClick={() => fillMissing('Weekly Off')} disabled={!missingDailyCount}>Mark missing weekly off</button>
             <button type="button" className="primary" onClick={saveDaily} disabled={saving || loadingDaily || !selectedEmployeeId}>Save daily month</button>
           </div>
           <div className="manual-attendance-table attendance-date-table">
@@ -369,8 +369,8 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
                   <th>Date</th>
                   <th>Day</th>
                   <th>Record</th>
-                  <th>Status</th>
-                  <th>Payable</th>
+                  <th>Attendance Status</th>
+                  <th>Payable Days</th>
                   <th>Remarks</th>
                 </tr>
               </thead>
@@ -383,11 +383,12 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
                       <td>{day}</td>
                       <td><span className={row.isMissing ? 'attendance-status risk' : 'attendance-status'}>{row.isMissing ? 'Missing' : 'Saved'}</span></td>
                       <td>
-                        <select value={row.status} onChange={(event) => updateDaily(row.attendanceDate, { status: event.target.value as DailyStatus })}>
-                          {statuses.map((status) => <option key={status} value={status}>{status}</option>)}
+                        <select value={row.status === 'Present' || activeLeaveTypes.some((leaveType) => leaveType.code === row.status) ? row.status : 'Present'} onChange={(event) => updateDaily(row.attendanceDate, { status: event.target.value })}>
+                          <option value="Present">Present</option>
+                          {activeLeaveTypes.map((leaveType) => <option key={leaveType.id} value={leaveType.code}>{leaveType.name}</option>)}
                         </select>
                       </td>
-                      <td><input type="number" min="0" max="1" step="0.5" value={row.payableValue} onChange={(event) => updateDaily(row.attendanceDate, { payableValue: toNumber(event.target.value) })} /></td>
+                      <td><input type="number" min="0" max="1" step="1" value={row.payableValue} readOnly title="Automatically derived from the selected attendance or leave payroll rule." /></td>
                       <td><input value={row.remarks} onChange={(event) => updateDaily(row.attendanceDate, { remarks: event.target.value })} placeholder="Optional note" /></td>
                     </tr>
                   )

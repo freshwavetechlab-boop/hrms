@@ -1,5 +1,5 @@
 import type { AttendanceSettings, EmployeeDailyAttendance, EmployeeMonthlyAttendance, GeoFenceRule, GeoFenceScope, Holiday, LeaveAttendancePreferences, LeaveAttendanceSetup, LeaveBalanceImportMapping, LeaveBalanceImportPreview, LeaveBalanceImportResult, LeaveType, SetupStatus } from '../types/payroll'
-import { apiUrl, deleteJson, getBlob, getJson, postForm, postJson, putJson } from './apiClient'
+import { apiUrl, deleteJson, getBlob, getJson, postFormWithProgress, postJson, putJson } from './apiClient'
 
 const fallback: LeaveAttendanceSetup = { clientId: 0, isEnabled: false, steps: [] }
 const preferencesFallback: LeaveAttendancePreferences = { id: 0, clientId: 0, attendanceCycleStartDay: 1, attendanceCycleEndDay: 25, payrollReportGenerationDay: 28, includeLeaveEncashmentInPayRun: false, leaveEncashmentSalaryComponentId: null }
@@ -55,13 +55,13 @@ export async function deleteHoliday(clientId: number, id: number) {
 }
 export const leaveBalanceSampleUrl = (clientId: number) => apiUrl(`/api/leave-attendance/import-balances/sample?clientId=${clientId}`)
 export const downloadLeaveBalanceSample = (clientId: number) => getBlob(`/api/leave-attendance/import-balances/sample?clientId=${clientId}`)
-export async function previewLeaveBalanceImport(clientId: number, file: File, encoding: string, mapping?: LeaveBalanceImportMapping) {
+export async function previewLeaveBalanceImport(clientId: number, file: File, encoding: string, mapping?: LeaveBalanceImportMapping, onProgress: (percent: number) => void = () => {}) {
   const body = new FormData()
   body.append('file', file)
   body.append('encoding', encoding)
   body.append('clientId', String(clientId))
   if (mapping) body.append('mappingJson', JSON.stringify(mapping))
-  return postForm('/api/leave-attendance/import-balances/preview', body, null as LeaveBalanceImportPreview | null)
+  return postFormWithProgress('/api/leave-attendance/import-balances/preview', body, null as LeaveBalanceImportPreview | null, onProgress)
 }
 export async function finalizeLeaveBalanceImport(clientId: number, preview: LeaveBalanceImportPreview, encoding: string) {
   return postJson('/api/leave-attendance/import-balances/finalize', { clientId, fileName: preview.fileName, encoding, mapping: preview.mapping, validRecords: preview.validRecords, errorRecords: preview.errorRecords }, null as LeaveBalanceImportResult | null)

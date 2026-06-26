@@ -4,16 +4,24 @@ import type { LeaveBalanceImportMapping, LeaveBalanceImportPreview } from '../ty
 import DataTable, { type Column } from './DataTable'
 
 const encodings = ['UTF-8', 'Windows-1252', 'ISO-8859-1']
-const required: { key: keyof LeaveBalanceImportMapping; label: string }[] = [{ key: 'employeeNumber', label: 'Employee Number' }, { key: 'leaveType', label: 'Leave Type' }, { key: 'date', label: 'Date' }, { key: 'count', label: 'Count' }]
+const required: { key: keyof LeaveBalanceImportMapping; label: string }[] = [{ key: 'employeeNumber', label: 'Employee Number' }, { key: 'leaveType', label: 'Leave Type Code' }, { key: 'date', label: 'Balance As Of Date' }, { key: 'count', label: 'Opening Balance' }]
 
 export default function LeaveBalanceImportManager({ clientId, onMessage }: { clientId: number; onMessage: (message: string) => void }) {
   const [file, setFile] = useState<File | null>(null), [encoding, setEncoding] = useState('UTF-8'), [preview, setPreview] = useState<LeaveBalanceImportPreview | null>(null)
-  const [mapping, setMapping] = useState<LeaveBalanceImportMapping>({ employeeNumber: '', leaveType: '', date: '', count: '' }), [busy, setBusy] = useState(false), [error, setError] = useState('')
+  const [mapping, setMapping] = useState<LeaveBalanceImportMapping>({ employeeNumber: '', leaveType: '', date: '', count: '' }), [busy, setBusy] = useState(false), [error, setError] = useState(''), [uploadProgress, setUploadProgress] = useState(0), [uploadStage, setUploadStage] = useState('')
   const upload = async (manualMapping?: LeaveBalanceImportMapping) => {
     if (!file) { setError('Select a CSV, XLS or XLSX file.'); return }
-    setBusy(true); setError('')
-    const response = await previewLeaveBalanceImport(clientId, file, encoding, manualMapping)
-    if (response.ok && response.data) { setPreview(response.data); setMapping(response.data.mapping); onMessage('File parsed. Review mapping and preview records.') } else setError(response.error || 'Unable to parse file.')
+    setBusy(true); setError(''); setUploadProgress(0); setUploadStage('Uploading file...')
+    const response = await previewLeaveBalanceImport(clientId, file, encoding, manualMapping, percent => { setUploadProgress(percent); if (percent === 100) setUploadStage('Upload complete. Validating file...') })
+    if (response.ok && response.data) {
+      setUploadProgress(100)
+      const hasValidationIssues = response.data.unmappedFields.length > 0 || response.data.errorRecords.length > 0
+      setUploadStage(hasValidationIssues ? `Upload complete. Validation found ${response.data.errorRecords.length || response.data.unmappedFields.length} issue(s).` : 'Upload and validation successful.')
+      setPreview(response.data)
+      setMapping(response.data.mapping)
+      onMessage(hasValidationIssues ? 'File uploaded, but validation issues need correction.' : 'File parsed successfully. Review mapping and preview records.')
+    }
+    else { setUploadStage('Upload failed.'); setError(response.error || 'Unable to parse file.') }
     setBusy(false)
   }
   const importRows = async () => {
@@ -24,7 +32,8 @@ export default function LeaveBalanceImportManager({ clientId, onMessage }: { cli
     setBusy(false)
   }
   const downloadSample = async () => { const response = await downloadLeaveBalanceSample(clientId); if (!response.ok || !response.data) { setError('Unable to download the selected client sample.'); return }; const url = URL.createObjectURL(response.data); const link = document.createElement('a'); link.href = url; link.download = 'leave-balance-import-sample.csv'; link.click(); URL.revokeObjectURL(url) }
-  return <section className="leave-import"><div className="card"><header><i className="blue">I</i><div><h3>Import Employee Leave Balance</h3><p>Upload opening balances, map fields, preview errors and import valid rows.</p></div></header><div className="import-steps"><span className={file ? 'done' : 'active'}>1 Upload</span><span className={preview ? 'done' : ''}>2 Mapping</span><span className={preview ? 'active' : ''}>3 Preview</span><span>4 Import</span></div><div className="grid"><label><span>Select file</span><input type="file" accept=".csv,.xls,.xlsx" onChange={event => setFile(event.target.files?.[0] ?? null)} /></label><label><span>Character encoding</span><select value={encoding} onChange={event => setEncoding(event.target.value)}>{encodings.map(item => <option key={item}>{item}</option>)}</select></label></div><div className="actions"><p>Required columns: Employee Number, Leave Type, Date, Count.</p><span><button type="button" className="secondary" onClick={() => void downloadSample()}>Download Sample File</button><button type="button" disabled={busy || !file} onClick={() => void upload()}>{busy ? 'Parsing...' : 'Upload & Auto-map'}</button></span></div>{error && <div className="form-errors"><p>{error}</p></div>}</div>{preview && <MappingCard preview={preview} mapping={mapping} setMapping={setMapping} remap={() => void upload(mapping)} busy={busy} />}{preview && <PreviewCard preview={preview} importRows={importRows} busy={busy} />}</section>
+  const hasValidationIssues = Boolean(preview && (preview.errorRecords.length > 0 || preview.unmappedFields.length > 0))
+  return <section className="leave-import"><div className="card"><header><i className="blue">I</i><div><h3>Import Employee Leave Balance</h3><p>Upload opening balances, map fields, preview errors and import valid rows.</p></div></header><div className="import-steps"><span className={file ? 'done' : 'active'}>1 Upload</span><span className={preview && !hasValidationIssues ? 'done' : ''}>2 Mapping</span><span className={preview ? 'active' : ''}>3 Preview</span><span>4 Import</span></div><div className="grid"><label><span>Select file</span><input type="file" accept=".csv,.xls,.xlsx" onChange={event => { setFile(event.target.files?.[0] ?? null); setUploadProgress(0); setUploadStage(''); setError(''); setPreview(null) }} /></label><label><span>Character encoding</span><select value={encoding} onChange={event => setEncoding(event.target.value)}>{encodings.map(item => <option key={item}>{item}</option>)}</select></label></div>{uploadStage && <div className={`import-upload-progress ${error ? 'failed' : hasValidationIssues ? 'warning' : uploadProgress === 100 && !busy ? 'complete' : ''}`}><div><strong>{uploadStage}</strong><span className="import-progress-meta"><b>{uploadProgress}% uploaded</b><button type="button" aria-label="Close upload status" onClick={() => { setUploadStage(''); setUploadProgress(0) }}>×</button></span></div><span><i style={{ width: `${uploadProgress}%` }} /></span></div>}<div className="actions"><p>Required: Employee Number, Leave Type Code, Balance As Of Date (YYYY-MM-DD), Opening Balance.</p><span><button type="button" className="secondary" onClick={() => void downloadSample()}>Download Sample File</button><button type="button" disabled={busy || !file} onClick={() => void upload()}>{busy ? `${uploadProgress}% Uploading...` : 'Upload & Auto-map'}</button></span></div>{error && <div className="form-errors runtime-error" role="alert"><strong>Runtime error</strong><p>{error}</p></div>}</div>{preview && <MappingCard preview={preview} mapping={mapping} setMapping={setMapping} remap={() => void upload(mapping)} busy={busy} />}{preview && <PreviewCard preview={preview} importRows={importRows} busy={busy} />}</section>
 }
 
 function MappingCard(p: { preview: LeaveBalanceImportPreview; mapping: LeaveBalanceImportMapping; setMapping: (mapping: LeaveBalanceImportMapping) => void; remap: () => void; busy: boolean }) {
@@ -40,9 +49,9 @@ function RecordTable(p: { rows: LeaveBalanceImportPreview['validRecords']; showE
   const columns: Column<ImportRow>[] = [
     { key: 'rowNumber', label: 'Row' },
     { key: 'employeeNumber', label: 'Employee Number' },
-    { key: 'leaveType', label: 'Leave Type' },
-    { key: 'date', label: 'Date' },
-    { key: 'count', label: 'Count' }
+    { key: 'leaveType', label: 'Leave Type Code' },
+    { key: 'date', label: 'Balance As Of Date' },
+    { key: 'count', label: 'Opening Balance' }
   ]
   return <div><DataTable rows={p.rows.slice(0, 50)} getRowId={row => row.rowNumber} emptyText="No records." rowClassName={row => row.isValid ? '' : 'error'} exportFileName={p.showErrors ? 'leave-balance-import-errors' : 'leave-balance-import-valid'} columns={p.showErrors ? [...columns, { key: 'errors', label: 'Errors', value: row => row.errors.join('; ') }] : columns} />{p.rows.length > 50 && <p className="empty">Showing first 50 records.</p>}</div>
 }

@@ -509,7 +509,18 @@ ORDER BY attendance_date;", new { ClientId = clientId, EmployeeId = employeeId, 
         await connection.ExecuteAsync("USE payroll;");
         var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM Employees WHERE Id=@EmployeeId AND ClientId=@ClientId AND IsActive=TRUE", new { request.EmployeeId, request.ClientId });
         if (exists == 0) return (null, "Employee was not found for the selected client.");
-        var rows = request.Rows.Where(row => row.AttendanceDate.ToString("yyyy-MM") == request.Month).Select(row => new { request.ClientId, request.EmployeeId, AttendanceDate = row.AttendanceDate.Date, Status = CleanStatus(row.Status), PayableValue = Math.Clamp(row.PayableValue, 0, 1), Remarks = row.Remarks ?? string.Empty }).ToList();
+        var activeLeaveTypes = (await connection.QueryAsync<(string Code, string Type)>(@"SELECT code AS Code, type AS Type
+FROM leave_types
+WHERE client_id=@ClientId AND is_active=TRUE;", new { request.ClientId }))
+            .ToDictionary(row => row.Code, row => row.Type, StringComparer.OrdinalIgnoreCase);
+        var invalidStatus = request.Rows.FirstOrDefault(row => !string.Equals(row.Status, "Present", StringComparison.OrdinalIgnoreCase) && !activeLeaveTypes.ContainsKey(row.Status));
+        if (invalidStatus is not null) return (null, $"Attendance status '{invalidStatus.Status}' is not an active leave type.");
+        var rows = request.Rows.Where(row => row.AttendanceDate.ToString("yyyy-MM") == request.Month).Select(row =>
+        {
+            var status = string.Equals(row.Status, "Present", StringComparison.OrdinalIgnoreCase) ? "Present" : activeLeaveTypes.Keys.First(code => string.Equals(code, row.Status, StringComparison.OrdinalIgnoreCase));
+            var payableValue = status == "Present" || string.Equals(activeLeaveTypes[status], "Paid", StringComparison.OrdinalIgnoreCase) ? 1m : 0m;
+            return new { request.ClientId, request.EmployeeId, AttendanceDate = row.AttendanceDate.Date, Status = status, PayableValue = payableValue, Remarks = row.Remarks ?? string.Empty };
+        }).ToList();
         await connection.ExecuteAsync(@"INSERT INTO employee_daily_attendance (client_id, employee_id, attendance_date, status, payable_value, remarks)
 VALUES (@ClientId, @EmployeeId, @AttendanceDate, @Status, @PayableValue, @Remarks)
 ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), remarks=VALUES(remarks);", rows);
@@ -762,13 +773,10 @@ FROM attendance_geo_fence_rule_employees WHERE geo_fence_rule_id IN @Ids", new {
         return null;
     }
 
-    private static string CleanStatus(string status) =>
-        status is "Present" or "Absent" or "Half Day" or "Paid Leave" or "Weekly Off" or "Holiday" ? status : "Present";
-
     private static async Task RollupDailyAttendanceAsync(MySqlConnection connection, int clientId, int employeeId, string month)
     {
         var summary = await connection.QuerySingleAsync<(decimal WorkingDays, decimal PresentDays, decimal PayableDays)>(@"SELECT COUNT(*) AS WorkingDays,
-COALESCE(SUM(CASE WHEN status IN ('Present','Paid Leave','Weekly Off','Holiday') THEN 1 WHEN status='Half Day' THEN .5 ELSE 0 END), 0) AS PresentDays,
+COALESCE(SUM(payable_value), 0) AS PresentDays,
 COALESCE(SUM(payable_value), 0) AS PayableDays
 FROM employee_daily_attendance
 WHERE client_id=@ClientId AND employee_id=@EmployeeId AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month;", new { ClientId = clientId, EmployeeId = employeeId, Month = month });
