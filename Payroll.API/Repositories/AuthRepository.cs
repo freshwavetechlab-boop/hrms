@@ -60,16 +60,12 @@ CREATE TABLE IF NOT EXISTS AuthPermissions (
 CREATE TABLE IF NOT EXISTS AuthUserRoles (
     UserId INT NOT NULL,
     RoleId INT NOT NULL,
-    PRIMARY KEY (UserId, RoleId),
-    CONSTRAINT FK_AuthUserRoles_User FOREIGN KEY (UserId) REFERENCES AuthUsers(Id) ON DELETE CASCADE,
-    CONSTRAINT FK_AuthUserRoles_Role FOREIGN KEY (RoleId) REFERENCES AuthRoles(Id) ON DELETE CASCADE
+    PRIMARY KEY (UserId, RoleId)
 );
 CREATE TABLE IF NOT EXISTS AuthRolePermissions (
     RoleId INT NOT NULL,
     PermissionId INT NOT NULL,
-    PRIMARY KEY (RoleId, PermissionId),
-    CONSTRAINT FK_AuthRolePermissions_Role FOREIGN KEY (RoleId) REFERENCES AuthRoles(Id) ON DELETE CASCADE,
-    CONSTRAINT FK_AuthRolePermissions_Permission FOREIGN KEY (PermissionId) REFERENCES AuthPermissions(Id) ON DELETE CASCADE
+    PRIMARY KEY (RoleId, PermissionId)
 );
 CREATE TABLE IF NOT EXISTS AuthSessions (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -81,8 +77,7 @@ CREATE TABLE IF NOT EXISTS AuthSessions (
     RevokedAt DATETIME NULL,
     CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY UX_AuthSessions_TokenHash (TokenHash),
-    INDEX IX_AuthSessions_User (UserId),
-    CONSTRAINT FK_AuthSessions_User FOREIGN KEY (UserId) REFERENCES AuthUsers(Id) ON DELETE CASCADE
+    INDEX IX_AuthSessions_User (UserId)
 );
 CREATE TABLE IF NOT EXISTS AuditLogs (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -101,6 +96,11 @@ CREATE TABLE IF NOT EXISTS AuditLogs (
     INDEX IX_AuditLogs_UserId (UserId),
     INDEX IX_AuditLogs_Action (Action)
 );");
+        await EnsureForeignKeyAsync(connection, "AuthUserRoles", "FK_AuthUserRoles_User", "FOREIGN KEY (UserId) REFERENCES AuthUsers(Id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "AuthUserRoles", "FK_AuthUserRoles_Role", "FOREIGN KEY (RoleId) REFERENCES AuthRoles(Id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "AuthRolePermissions", "FK_AuthRolePermissions_Role", "FOREIGN KEY (RoleId) REFERENCES AuthRoles(Id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "AuthRolePermissions", "FK_AuthRolePermissions_Permission", "FOREIGN KEY (PermissionId) REFERENCES AuthPermissions(Id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "AuthSessions", "FK_AuthSessions_User", "FOREIGN KEY (UserId) REFERENCES AuthUsers(Id) ON DELETE CASCADE");
         await EnsureColumnAsync(connection, "AuthUsers", "EmployeeId", "INT NULL");
 
         await SeedSecurityAsync(connection);
@@ -330,6 +330,18 @@ SELECT @RoleId, Id FROM AuthPermissions WHERE Code IN @Permissions;", new { Role
     {
         var exists = await connection.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'payroll' AND TABLE_NAME = @TableName AND COLUMN_NAME = @ColumnName", new { TableName = tableName, ColumnName = columnName });
         if (exists == 0) await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition}");
+    }
+
+    private static async Task EnsureForeignKeyAsync(MySqlConnection connection, string tableName, string constraintName, string definition)
+    {
+        var exists = await connection.ExecuteScalarAsync<int>(@"
+SELECT COUNT(*)
+FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+WHERE CONSTRAINT_SCHEMA = 'payroll'
+  AND CONSTRAINT_NAME = @ConstraintName;", new { ConstraintName = constraintName });
+
+        if (exists == 0)
+            await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD CONSTRAINT `{constraintName}` {definition}");
     }
 
     private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();

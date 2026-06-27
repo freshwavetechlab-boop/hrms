@@ -92,8 +92,7 @@ CREATE TABLE IF NOT EXISTS employee_monthly_attendance (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY UX_monthly_attendance_employee_month (client_id, employee_id, attendance_month),
-    INDEX IX_monthly_attendance_client_month (client_id, attendance_month),
-    CONSTRAINT FK_monthly_attendance_employee FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE
+    INDEX IX_monthly_attendance_client_month (client_id, attendance_month)
 );
 CREATE TABLE IF NOT EXISTS employee_daily_attendance (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -106,8 +105,7 @@ CREATE TABLE IF NOT EXISTS employee_daily_attendance (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY UX_daily_attendance_employee_date (client_id, employee_id, attendance_date),
-    INDEX IX_daily_attendance_client_date (client_id, attendance_date),
-    CONSTRAINT FK_daily_attendance_employee FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE
+    INDEX IX_daily_attendance_client_date (client_id, attendance_date)
 );
 CREATE TABLE IF NOT EXISTS leave_types (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -147,8 +145,7 @@ CREATE TABLE IF NOT EXISTS leave_type_policies (
     postpone_credit_unit VARCHAR(20) NOT NULL DEFAULT 'Days',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY UX_leave_type_policies_leave_type (leave_type_id),
-    CONSTRAINT FK_leave_type_policies_type FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE
+    UNIQUE KEY UX_leave_type_policies_leave_type (leave_type_id)
 );
 CREATE TABLE IF NOT EXISTS leave_type_applicability (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -160,8 +157,7 @@ CREATE TABLE IF NOT EXISTS leave_type_applicability (
     gender VARCHAR(40),
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY UX_leave_type_applicability_leave_type (leave_type_id),
-    CONSTRAINT FK_leave_type_applicability_type FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE
+    UNIQUE KEY UX_leave_type_applicability_leave_type (leave_type_id)
 );
 CREATE TABLE IF NOT EXISTS holidays (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -180,8 +176,7 @@ CREATE TABLE IF NOT EXISTS holiday_locations (
     work_location_id INT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY UX_holiday_locations_holiday_location (holiday_id, work_location_id),
-    INDEX IX_holiday_locations_location (work_location_id),
-    CONSTRAINT FK_holiday_locations_holiday FOREIGN KEY (holiday_id) REFERENCES holidays(id) ON DELETE CASCADE
+    INDEX IX_holiday_locations_location (work_location_id)
 );
 CREATE TABLE IF NOT EXISTS employee_leave_balances (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -192,9 +187,7 @@ CREATE TABLE IF NOT EXISTS employee_leave_balances (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY UX_employee_leave_balances_employee_type_date (employee_id, leave_type_id, balance_date),
-    INDEX IX_employee_leave_balances_employee (employee_id),
-    CONSTRAINT FK_employee_leave_balances_employee FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE,
-    CONSTRAINT FK_employee_leave_balances_leave_type FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE
+    INDEX IX_employee_leave_balances_employee (employee_id)
 );
 CREATE TABLE IF NOT EXISTS leave_balance_import_logs (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -217,9 +210,16 @@ CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
     count_text VARCHAR(80),
     error_message VARCHAR(1000) NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX IX_leave_balance_import_errors_log (import_log_id),
-    CONSTRAINT FK_leave_balance_import_errors_log FOREIGN KEY (import_log_id) REFERENCES leave_balance_import_logs(id) ON DELETE CASCADE
+    INDEX IX_leave_balance_import_errors_log (import_log_id)
 );");
+        await EnsureForeignKeyAsync(connection, "employee_monthly_attendance", "FK_monthly_attendance_employee", "FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "employee_daily_attendance", "FK_daily_attendance_employee", "FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "leave_type_policies", "FK_leave_type_policies_type", "FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "leave_type_applicability", "FK_leave_type_applicability_type", "FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "holiday_locations", "FK_holiday_locations_holiday", "FOREIGN KEY (holiday_id) REFERENCES holidays(id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "employee_leave_balances", "FK_employee_leave_balances_employee", "FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "employee_leave_balances", "FK_employee_leave_balances_leave_type", "FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "leave_balance_import_errors", "FK_leave_balance_import_errors_log", "FOREIGN KEY (import_log_id) REFERENCES leave_balance_import_logs(id) ON DELETE CASCADE");
         await EnsureClientScopeAsync(connection);
         await SeedAsync(connection);
     }
@@ -720,6 +720,18 @@ SELECT @ClientId, '09:00:00', '18:00:00', 'First check-in and last check-out', 4
 WHERE table_schema = DATABASE() AND table_name = @TableName AND column_name = 'client_id'", new { TableName = table });
         if (exists == 0)
             await connection.ExecuteAsync($"ALTER TABLE `{table}` ADD COLUMN client_id INT NULL");
+    }
+
+    private static async Task EnsureForeignKeyAsync(MySqlConnection connection, string tableName, string constraintName, string definition)
+    {
+        var exists = await connection.ExecuteScalarAsync<int>(@"
+SELECT COUNT(*)
+FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+WHERE CONSTRAINT_SCHEMA = 'payroll'
+  AND CONSTRAINT_NAME = @ConstraintName;", new { ConstraintName = constraintName });
+
+        if (exists == 0)
+            await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD CONSTRAINT `{constraintName}` {definition}");
     }
 
     private static async Task CreateIndexIfMissingAsync(MySqlConnection connection, string table, string indexName, string createSql)
