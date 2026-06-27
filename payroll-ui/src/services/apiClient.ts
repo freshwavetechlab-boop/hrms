@@ -45,16 +45,16 @@ export async function getJson<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
-export async function postJson<TBody, TResult>(path: string, body: TBody, fallback: TResult): Promise<ApiResult<TResult>> {
-  return mutateJson(path, { method: 'POST', body: JSON.stringify(body) }, fallback)
+export async function postJson<TBody, TResult>(path: string, body: TBody, fallback: TResult, options: ApiOptions = {}): Promise<ApiResult<TResult>> {
+  return mutateJson(path, { ...options, method: 'POST', body: JSON.stringify(body) }, fallback)
 }
 
 export async function putJson<TBody, TResult>(path: string, body: TBody, fallback: TResult): Promise<ApiResult<TResult>> {
   return mutateJson(path, { method: 'PUT', body: JSON.stringify(body) }, fallback)
 }
 
-export async function postEmpty<TResult>(path: string, fallback: TResult): Promise<ApiResult<TResult>> {
-  return mutateJson(path, { method: 'POST' }, fallback)
+export async function postEmpty<TResult>(path: string, fallback: TResult, options: ApiOptions = {}): Promise<ApiResult<TResult>> {
+  return mutateJson(path, { ...options, method: 'POST' }, fallback)
 }
 
 export async function deleteJson<TResult>(path: string, fallback: TResult): Promise<ApiResult<TResult>> {

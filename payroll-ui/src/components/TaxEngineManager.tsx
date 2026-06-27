@@ -118,8 +118,9 @@ export default function TaxEngineManager({ clients, onMessage, mode = 'company' 
 
   if (mode === 'statutory' && !canManageStatutory) return <Card t="Statutory rules"><p className="tax-note">You do not have access to statutory tax rule maintenance.</p></Card>
 
-  return <Card t={mode === 'statutory' ? 'Super Admin / Statutory Rules' : 'Payroll / Income Tax Settings'}>
+  return <Card t={mode === 'statutory' ? 'Statutory Setup' : 'Tax Engine'}>
     <div className="page-tabs tax-tabs">{tabs.map(item => <button type="button" className={tab === item ? 'active' : ''} onClick={() => setTab(item)} key={item}>{item}</button>)}</div>
+    <div className="component-guide tax-guide"><b>{mode === 'statutory' ? 'Statutory rule book' : 'Client tax controls'}</b><span>{mode === 'statutory' ? 'Maintain FY-wise slabs, surcharges, declaration sections and audit references used by payroll tax calculation.' : 'Configure client-wise regime windows, declaration/POI release and TDS reminder rules.'}</span></div>
 
     {tab === 'Company Settings' && <>
       <div className="tax-rule-layout">
