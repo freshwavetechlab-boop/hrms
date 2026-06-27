@@ -200,6 +200,7 @@ ORDER BY r.Name;");
         var permissions = new[]
         {
             ("settings.manage", "Manage settings", "Settings"),
+            ("tax.statutory.manage", "Manage statutory income tax rules", "Tax"),
             ("clients.manage", "Manage clients", "Clients"),
             ("employees.manage", "Manage employees", "Employees"),
             ("payroll.run", "Run payroll", "Payroll"),

@@ -420,3 +420,160 @@ CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
     INDEX IX_leave_balance_import_errors_log (import_log_id),
     CONSTRAINT FK_leave_balance_import_errors_log FOREIGN KEY (import_log_id) REFERENCES leave_balance_import_logs(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS tax_client_settings (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    client_id INT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    financial_year VARCHAR(10) NOT NULL,
+    default_regime VARCHAR(10) NOT NULL DEFAULT 'New',
+    allow_employee_regime_selection BOOLEAN NOT NULL DEFAULT TRUE,
+    regime_selection_window_open BOOLEAN NOT NULL DEFAULT FALSE,
+    regime_selection_cutoff DATE NULL,
+    allow_declarations BOOLEAN NOT NULL DEFAULT TRUE,
+    planned_declaration_window_open BOOLEAN NOT NULL DEFAULT FALSE,
+    actual_declaration_window_open BOOLEAN NOT NULL DEFAULT FALSE,
+    declaration_window_start DATE NULL,
+    declaration_window_end DATE NULL,
+    planned_declaration_start DATE NULL,
+    planned_declaration_end DATE NULL,
+    actual_declaration_start DATE NULL,
+    actual_declaration_end DATE NULL,
+    poi_processing_month VARCHAR(7) NOT NULL DEFAULT '',
+    require_proof_upload BOOLEAN NOT NULL DEFAULT TRUE,
+    require_approval BOOLEAN NOT NULL DEFAULT TRUE,
+    tax_deduction_component_code VARCHAR(40) NOT NULL DEFAULT 'TDS',
+    project_monthly_tds BOOLEAN NOT NULL DEFAULT TRUE,
+    lock_after_approval BOOLEAN NOT NULL DEFAULT TRUE,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_tax_client_fy (client_id, financial_year)
+);
+
+CREATE TABLE IF NOT EXISTS tax_slabs (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    financial_year VARCHAR(10) NOT NULL DEFAULT '',
+    regime VARCHAR(10) NOT NULL,
+    income_from DECIMAL(14,2) NOT NULL DEFAULT 0,
+    income_to DECIMAL(14,2) NULL,
+    rate_percent DECIMAL(6,2) NOT NULL DEFAULT 0,
+    effective_from DATE NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tax_surcharges (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    financial_year VARCHAR(10) NOT NULL DEFAULT '',
+    income_from DECIMAL(14,2) NOT NULL DEFAULT 0,
+    income_to DECIMAL(14,2) NULL,
+    surcharge_percent DECIMAL(6,2) NOT NULL DEFAULT 0,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tax_final_adjustments (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    financial_year VARCHAR(10) NOT NULL DEFAULT '',
+    label VARCHAR(120) NOT NULL,
+    value_type VARCHAR(20) NOT NULL DEFAULT 'Percent',
+    value DECIMAL(14,4) NOT NULL DEFAULT 0,
+    apply_order INT NOT NULL DEFAULT 100,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tax_declaration_sections (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    financial_year VARCHAR(10) NOT NULL DEFAULT '',
+    code VARCHAR(40) NOT NULL,
+    name VARCHAR(180) NOT NULL,
+    regime VARCHAR(10) NOT NULL DEFAULT 'Old',
+    limit_amount DECIMAL(14,2) NULL,
+    proof_required BOOLEAN NOT NULL DEFAULT TRUE,
+    requires_approval BOOLEAN NOT NULL DEFAULT TRUE,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_tax_section_code_fy (financial_year, code)
+);
+
+CREATE TABLE IF NOT EXISTS tax_activity_windows (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    client_setting_id INT NULL,
+    client_id INT NOT NULL,
+    financial_year VARCHAR(10) NOT NULL,
+    activity_code VARCHAR(40) NOT NULL,
+    is_open BOOLEAN NOT NULL DEFAULT FALSE,
+    start_date DATE NULL,
+    end_date DATE NULL,
+    cutoff_date DATE NULL,
+    processing_month VARCHAR(7) NOT NULL DEFAULT '',
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_tax_activity_client_fy (client_id, financial_year, activity_code)
+);
+
+CREATE TABLE IF NOT EXISTS employee_tax_regime_selections (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    employee_id INT NOT NULL,
+    client_id INT NOT NULL,
+    financial_year VARCHAR(10) NOT NULL,
+    regime VARCHAR(10) NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'Submitted',
+    submitted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    approved_by_user_id INT NULL,
+    approved_at DATETIME NULL,
+    UNIQUE KEY UX_employee_tax_regime (employee_id, financial_year)
+);
+
+CREATE TABLE IF NOT EXISTS employee_tax_declaration_headers (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    employee_id INT NOT NULL,
+    client_id INT NOT NULL,
+    financial_year VARCHAR(10) NOT NULL,
+    activity_code VARCHAR(40) NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'Draft',
+    submitted_at DATETIME NULL,
+    approved_by_user_id INT NULL,
+    approved_at DATETIME NULL,
+    remarks VARCHAR(1000) NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_employee_tax_declaration_header (employee_id, financial_year, activity_code)
+);
+
+CREATE TABLE IF NOT EXISTS employee_tax_declaration_lines (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    header_id BIGINT NOT NULL,
+    section_id INT NOT NULL,
+    amount DECIMAL(14,2) NOT NULL DEFAULT 0,
+    approved_amount DECIMAL(14,2) NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'Draft',
+    remarks VARCHAR(1000) NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_employee_tax_declaration_line (header_id, section_id)
+);
+
+CREATE TABLE IF NOT EXISTS employee_tax_declarations (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    employee_id INT NOT NULL,
+    client_id INT NOT NULL,
+    financial_year VARCHAR(10) NOT NULL,
+    section_id INT NOT NULL,
+    declared_amount DECIMAL(14,2) NOT NULL DEFAULT 0,
+    approved_amount DECIMAL(14,2) NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'Draft',
+    planned_amount DECIMAL(14,2) NOT NULL DEFAULT 0,
+    actual_amount DECIMAL(14,2) NOT NULL DEFAULT 0,
+    remarks VARCHAR(1000),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_employee_tax_declaration_section (employee_id, financial_year, section_id)
+);

@@ -1,0 +1,6 @@
+import type { View } from '../types'
+
+export function PlaceholderPage({ view, manager }: { view: View; manager: boolean }) {
+  const copy: Record<Exclude<View, 'Dashboard'>, string> = { 'My Tasks': '', 'My Profile': 'Keep your personal, contact, and payment information accurate. Changes that require verification will be routed to HR.', Leave: '', Attendance: manager ? 'Review team attendance exceptions and take action on regularization requests.' : 'Review daily attendance, correct exceptions, and submit regularization when permitted.', Pay: 'Access published payslips, compensation details, and tax documents when released by payroll.', Tax: 'Select tax regime and submit declarations when payroll opens the configured windows.', Team: 'View direct reports, their core details, availability, and upcoming leave.', Approvals: 'Review requests assigned to you. Decisions will be recorded in the audit trail.' }
+  return <section className="feature-page"><div className="feature-heading"><span className="eyebrow">{view}</span><h3>{view} workspace</h3><p>{copy[view as Exclude<View, 'Dashboard'>]}</p></div><div className="empty-work"><b>This feature is ready for activation.</b><span>The navigation, access boundary, user guidance, and workspace layout are in place. The next implementation will connect the relevant ESS/MSS API workflow.</span></div></section>
+}
