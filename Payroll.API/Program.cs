@@ -52,6 +52,7 @@ builder.Services.AddSingleton<ReportingRepository>();
 builder.Services.AddSingleton<EssMssRepository>();
 builder.Services.AddSingleton<WorkflowRepository>();
 builder.Services.AddSingleton<DatabaseMigrationRepository>();
+builder.Services.AddSingleton<TaxEngineRepository>();
 
 var app = builder.Build();
 const string AuthCookieName = "payroll_auth";
@@ -75,6 +76,7 @@ if (!string.Equals(app.Configuration["Database:InitializeOnStartup"], "false", S
         });
         var essRepository = scope.ServiceProvider.GetRequiredService<EssMssRepository>();
         await migrations.RunAsync("007_ess_mss", essRepository.InitializeAsync);
+        await migrations.RunAsync("008_tax_engine", () => scope.ServiceProvider.GetRequiredService<TaxEngineRepository>().InitializeAsync());
         await essRepository.ReconcileLeaveWorkflowStatusesAsync();
     }
     catch (Exception exception)
@@ -224,10 +226,15 @@ app.MapGet("/api/ess/profile", async (EssMssRepository repository, HttpContext c
 .WithOpenApi();
 
 app.MapGet("/api/ess/leave/requests", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetLeaveRequestsAsync(user.EmployeeId.Value,user.ClientId)); });
+app.MapGet("/api/ess/leave/requests/{id:long}/trail", async (EssMssRepository repository, long id, HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var trail=await repository.GetLeaveRequestTrailAsync(id,user.EmployeeId.Value,user.ClientId); return trail is null ? Results.NotFound() : Results.Ok(trail); });
 app.MapGet("/api/ess/pay/payslips", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetPayslipsAsync(user.EmployeeId.Value,user.ClientId)); });
+app.MapGet("/api/ess/tax", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetTaxPortalAsync(user.EmployeeId.Value,user.ClientId)); });
+app.MapPost("/api/ess/tax/regime", async (EssMssRepository repository, SaveEssTaxRegimeRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(ok,error)=await repository.SaveTaxRegimeAsync(user.EmployeeId.Value,user.ClientId,request); return ok ? Results.NoContent() : Results.BadRequest(new{error}); });
+app.MapPost("/api/ess/tax/declarations", async (EssMssRepository repository, SaveEssTaxDeclarationsRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(ok,error)=await repository.SaveTaxDeclarationsAsync(user.EmployeeId.Value,user.ClientId,request); return ok ? Results.NoContent() : Results.BadRequest(new{error}); });
 app.MapGet("/api/ess/dashboard/attendance", async (EssMssRepository repository, string month, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetAttendanceSummaryAsync(user.EmployeeId.Value,user.ClientId,month)); });
 app.MapPost("/api/ess/attendance/punch/validate", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); return Results.Ok(await repository.ValidateAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request)); });
 app.MapPost("/api/ess/attendance/punch", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var result=await repository.RecordAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request); return result.PunchRecorded ? Results.Created($"/api/ess/attendance/punch/{result.PunchId}",result) : Results.BadRequest(result); });
+app.MapGet("/api/ess/dashboard/attendance/daily", async (EssMssRepository repository, string month, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetDailyAttendanceAsync(user.EmployeeId.Value,user.ClientId,month)); });
 app.MapGet("/api/ess/dashboard/holidays", async (EssMssRepository repository, string month, HttpContext context) => Results.Ok(await repository.GetHolidaysAsync(CurrentUser(context).ClientId,month)));
 app.MapGet("/api/ess/dashboard/birthdays", async (EssMssRepository repository, HttpContext context) => Results.Ok(await repository.GetTodaysBirthdaysAsync(CurrentUser(context).ClientId)));
 app.MapPost("/api/ess/leave/requests", async (EssMssRepository repository, WorkflowRepository workflows, CreateEssLeaveRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(result,error)=await repository.CreateLeaveRequestAsync(user.EmployeeId.Value,user.ClientId,request); if(result is null)return Results.BadRequest(new{error}); var workflowId=await workflows.GetDefaultIdAsync("LeaveRequest",user.ClientId); if(workflowId is not null) await workflows.StartAsync(new StartWorkflowRequest{WorkflowId=workflowId.Value,ResourceType="LeaveRequest",ResourceId=result.Id.ToString(),PayloadJson=System.Text.Json.JsonSerializer.Serialize(result)},user.Id); return Results.Created($"/api/ess/leave/requests/{result.Id}",result); });
@@ -379,6 +386,15 @@ app.MapPost("/api/setup", async (SettingsRepository repository, JsonElement setu
 })
 .WithName("SavePayrollSetup")
 .WithOpenApi();
+
+app.MapGet("/api/tax-engine", async (TaxEngineRepository repository, HttpContext context) => HasPermission(context, "settings.manage") || HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403));
+app.MapPost("/api/tax-engine/client-settings", async (TaxEngineRepository repository, ClientTaxSetting request, HttpContext context) => HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveClientSettingAsync(request)) : Results.StatusCode(403));
+app.MapPost("/api/tax-engine/slabs", async (TaxEngineRepository repository, TaxSlab request, HttpContext context) => HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.SaveSlabAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+app.MapPost("/api/tax-engine/surcharges", async (TaxEngineRepository repository, TaxSurcharge request, HttpContext context) => HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.SaveSurchargeAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+app.MapPost("/api/tax-engine/final-adjustments", async (TaxEngineRepository repository, TaxFinalAdjustment request, HttpContext context) => HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.SaveFinalAdjustmentAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+app.MapPost("/api/tax-engine/sections", async (TaxEngineRepository repository, TaxDeclarationSection request, HttpContext context) => HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.SaveSectionAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+app.MapPost("/api/tax-engine/compute", async (TaxEngineRepository repository, TaxComputationRequest request, HttpContext context) => HasPermission(context, "payroll.run") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.ComputeAsync(request)) : Results.StatusCode(403));
+app.MapDelete("/api/tax-engine/{kind}/{id:int}", async (TaxEngineRepository repository, string kind, int id, HttpContext context) => { var clientKind = kind == "client-settings"; if (!(clientKind ? HasPermission(context, "settings.manage") : HasPermission(context, "tax.statutory.manage"))) return Results.StatusCode(403); await repository.DeleteAsync(kind, id); return Results.NoContent(); });
 
 app.MapGet("/api/leave-attendance/setup", async (LeaveAttendanceRepository repository, int clientId) =>
     clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetAsync(clientId)))

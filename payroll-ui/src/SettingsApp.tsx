@@ -15,6 +15,7 @@ import type { ReportDefinition, ReportingMenu } from './pages/ReportingPage'
 import WorkflowPage from './pages/WorkflowPage'
 import type { WorkflowMenu } from './pages/WorkflowPage'
 import WorkflowTasks from './components/WorkflowTasks'
+import { useAuthSession } from './components/AuthGate'
 import SettingsPage from './pages/SettingsPage'
 import './OrganizationSetup.css'
 import './ModuleDrawer.css'
@@ -22,9 +23,9 @@ import './ModuleDrawer.css'
 type ModuleCode = 'Settings' | 'Employees' | 'Payroll' | 'LeaveAttendance' | 'Security' | 'Reports' | 'Workflows'
 type SettingsTab = (typeof settingsMenus)[number]
 type SecurityTab = (typeof securityMenus)[number]
-type PayrollTab = 'Pay Run' | 'Adjustments'
+type PayrollTab = 'Regular Run' | 'Off-cycle Run' | 'Adjustments'
 type SettingsSection = 'General' | 'LeaveAttendance'
-const payrollSetupMenus: SettingsTab[] = ['Pay Schedule', 'Salary Components', 'Salary Templates', 'Payslip Templates']
+const allPayrollSetupMenus: SettingsTab[] = ['Pay Schedule', 'Tax Engine', 'Statutory Setup', 'Salary Components', 'Salary Templates', 'Payslip Templates']
 
 const modules: { code: ModuleCode | 'Reports'; label: string; icon: IconName; description: string; disabled?: boolean }[] = [
   { code: 'Payroll', label: 'Payroll', icon: 'payruns', description: 'Run payroll, compare variances and review history.' },
@@ -37,6 +38,8 @@ const modules: { code: ModuleCode | 'Reports'; label: string; icon: IconName; de
 ]
 
 export default function SettingsApp() {
+  const session = useAuthSession()
+  const canManageStatutory = Boolean(session?.user.permissions.includes('tax.statutory.manage'))
   const routeLocation = useLocation()
   const isPayHistory = routeLocation.pathname === '/pay-runs/history'
   const savedTab = localStorage.getItem('payroll.tab') as SettingsTab | null
@@ -45,14 +48,15 @@ export default function SettingsApp() {
   const savedLeaveAttendanceTab = localStorage.getItem('payroll.leaveAttendanceTab') as LeaveAttendanceMenu | null
   const savedReportingTab = localStorage.getItem('payroll.reportingTab') as ReportingMenu | null
   const savedWorkflowTab = localStorage.getItem('payroll.workflowTab') as WorkflowMenu | null
+  const payrollSetupMenus = allPayrollSetupMenus.filter(item => item !== 'Statutory Setup' || canManageStatutory)
   const initialModule: ModuleCode = isPayHistory || savedModule === 'Payroll' || savedModule === 'Pay Runs' ? 'Payroll' : savedModule === 'LeaveAttendance' ? 'LeaveAttendance' : savedModule === 'Employees' ? 'Employees' : savedModule === 'Security' ? 'Security' : savedModule === 'Reports' ? 'Reports' : savedModule === 'Workflows' ? 'Workflows' : 'Settings'
-  const [tab, setActiveTab] = useState<SettingsTab>(savedTab && settingsMenus.includes(savedTab) ? savedTab : 'Organization')
+  const [tab, setActiveTab] = useState<SettingsTab>(savedTab && settingsMenus.includes(savedTab) && (savedTab !== 'Statutory Setup' || canManageStatutory) ? savedTab : 'Organization')
   const [navOpen, setNavOpen] = useState(true), [appDrawerOpen, setAppDrawerOpen] = useState(false), [showMyTasks, setShowMyTasks] = useState(false)
-  const [payrollSetupOpen, setPayrollSetupOpen] = useState(() => payrollSetupMenus.includes(savedTab ?? 'Organization'))
+  const [payrollSetupOpen, setPayrollSetupOpen] = useState(() => allPayrollSetupMenus.includes(savedTab ?? 'Organization'))
   const [leaveAttendanceOpen, setLeaveAttendanceOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('General')
   const [securityTab, setSecurityTab] = useState<SecurityTab>(savedSecurityTab && securityMenus.includes(savedSecurityTab) ? savedSecurityTab : 'Users')
-  const [payrollTab, setPayrollTab] = useState<PayrollTab>((localStorage.getItem('payroll.payrollTab') as PayrollTab | null) === 'Adjustments' ? 'Adjustments' : 'Pay Run')
+  const [payrollTab, setPayrollTab] = useState<PayrollTab>((localStorage.getItem('payroll.payrollTab') as PayrollTab | null) ?? 'Regular Run')
   const [leaveAttendanceTab, setLeaveAttendanceTab] = useState<LeaveAttendanceMenu>(savedLeaveAttendanceTab && leaveAttendanceMenus.includes(savedLeaveAttendanceTab) ? savedLeaveAttendanceTab : 'Preferences')
   const [reportingTab, setReportingTab] = useState<ReportingMenu>(savedReportingTab && reportingMenus.includes(savedReportingTab) ? savedReportingTab : 'Payroll Reports')
   const [workflowTab, setWorkflowTab] = useState<WorkflowMenu>(savedWorkflowTab && workflowMenus.includes(savedWorkflowTab) ? savedWorkflowTab : 'Workflow Setup')
@@ -60,7 +64,6 @@ export default function SettingsApp() {
   const [mainModule, setMainModule] = useState<ModuleCode>(initialModule), [settingsMessage, setSettingsMessage] = useState('Settings ready.')
   const activeModule = modules.find(module => module.code === mainModule)!
   const pageTitle = showMyTasks ? 'My Tasks' : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? 'Employee Master' : mainModule === 'Security' ? securityTab : mainModule === 'Reports' ? reportingTab : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
-  const pageDescription = mainModule === 'LeaveAttendance' ? 'Review client attendance, resolve discrepancies, then run payroll.' : mainModule === 'Payroll' ? isPayHistory ? 'All client-wise draft, approved and paid payroll runs.' : payrollTab === 'Adjustments' ? 'Maintain one-time variable payments, recoveries and off-cycle payouts.' : 'Draft, review and approve monthly payroll.' : mainModule === 'Security' ? 'Manage identities, roles, permissions and audit evidence.' : mainModule === 'Employees' ? 'Maintain client-linked employee records, salary profiles and payment details.' : mainModule === 'Settings' && settingsSection === 'LeaveAttendance' ? 'Setup leave types, holidays, attendance preferences and opening balances.' : settingsMessage
 
   const setTab = (nextTab: SettingsTab) => { setShowMyTasks(false); setSettingsSection('General'); localStorage.setItem('payroll.module', 'Settings'); localStorage.setItem('payroll.tab', nextTab); setActiveTab(nextTab) }
   const setModule = (nextModule: ModuleCode) => { setShowMyTasks(false); localStorage.setItem('payroll.module', nextModule); setMainModule(nextModule) }
@@ -76,7 +79,7 @@ export default function SettingsApp() {
       const payrollSetupActive = payrollSetupMenus.includes(tab)
       return <>{tasks}{generalSettings.map(item => <button className={settingsSection === 'General' && tab === item ? 'active' : ''} type="button" onClick={() => setTab(item)} key={item}>{item}</button>)}<div className={`settings-nav-group ${payrollSetupOpen ? 'expanded' : ''}`}><button className={settingsSection === 'General' && payrollSetupActive ? 'active' : ''} type="button" aria-expanded={payrollSetupOpen} onClick={() => setPayrollSetupOpen(open => !open)}><span>Payroll Setup</span><small>{payrollSetupOpen ? '−' : '+'}</small></button>{payrollSetupOpen && <div className="settings-nav-submenu">{payrollSetupMenus.map(item => <button className={settingsSection === 'General' && tab === item ? 'active' : ''} type="button" onClick={() => setTab(item)} key={item}><span>{item}</span>{item === 'Salary Templates' && <small>Client-wise</small>}</button>)}</div>}</div><div className={`settings-nav-group ${leaveAttendanceOpen ? 'expanded' : ''}`}><button className={settingsSection === 'LeaveAttendance' ? 'active' : ''} type="button" aria-expanded={leaveAttendanceOpen} onClick={() => setLeaveAttendanceOpen(open => !open)}><span>Leave & Attendance</span><small>{leaveAttendanceOpen ? '−' : '+'}</small></button>{leaveAttendanceOpen && <div className="settings-nav-submenu">{leaveAttendanceMenus.map(item => <button className={settingsSection === 'LeaveAttendance' && leaveAttendanceTab === item ? 'active' : ''} type="button" onClick={() => setLeaveAttendanceSettingsTab(item)} key={item}>{item}</button>)}</div>}</div></>
     }
-    if (mainModule === 'Payroll') return <>{tasks}<Link className={!isPayHistory && payrollTab === 'Pay Run' ? 'active' : ''} to="/" onClick={() => setPayrollModuleTab('Pay Run')}>Pay Run<small>Regular / off-cycle</small></Link><Link className={!isPayHistory && payrollTab === 'Adjustments' ? 'active' : ''} to="/" onClick={() => setPayrollModuleTab('Adjustments')}>Adjustments<small>Variable pay</small></Link><Link className={isPayHistory ? 'active' : ''} to="/pay-runs/history" onClick={() => setModule('Payroll')}>Pay History</Link></>
+    if (mainModule === 'Payroll') return <>{tasks}<Link className={!isPayHistory && payrollTab === 'Adjustments' ? 'active' : ''} to="/" onClick={() => setPayrollModuleTab('Adjustments')}>Adjustments<small>Variable pay</small></Link><div className="settings-nav-group expanded"><button className={!isPayHistory && payrollTab !== 'Adjustments' ? 'active' : ''} type="button"><span>Pay Run</span></button><div className="settings-nav-submenu"><Link className={!isPayHistory && payrollTab === 'Regular Run' ? 'active' : ''} to="/" onClick={() => setPayrollModuleTab('Regular Run')}>Regular Run</Link><Link className={!isPayHistory && payrollTab === 'Off-cycle Run' ? 'active' : ''} to="/" onClick={() => setPayrollModuleTab('Off-cycle Run')}>Off-cycle Run</Link></div></div><Link className={isPayHistory ? 'active' : ''} to="/pay-runs/history" onClick={() => setModule('Payroll')}>Pay History</Link></>
     if (mainModule === 'LeaveAttendance') return <>{tasks}<Link className="active" to="/" onClick={() => setModule('LeaveAttendance')}>Attendance Review<small>Pre-payroll</small></Link></>
     if (mainModule === 'Security') return <>{tasks}{securityMenus.map(item => <button className={securityTab === item ? 'active' : ''} type="button" onClick={() => setSecurityModuleTab(item)} key={item}>{item}</button>)}</>
     if (mainModule === 'Reports') return <>{tasks}{reportingMenus.map(item => <div className="report-nav-group" key={item}><button className={reportingTab === item ? 'active' : ''} type="button" onClick={() => setReportingModuleTab(item)}>{item}</button>{reportingTab === item && <div className="report-nav-submenu">{reportItems(item).map(report => <button className={reportingReport.name === report.name ? 'active' : ''} type="button" onClick={() => setReportingReport(report)} key={report.name}>{report.name}</button>)}</div>}</div>)}</>
@@ -87,12 +90,13 @@ export default function SettingsApp() {
     if (showMyTasks) return <WorkflowTasks />
     if (mainModule === 'Security') return <SecurityPanel initialTab={securityTab} />
     if (mainModule === 'LeaveAttendance') return <PayrollAttendancePage />
-    if (mainModule === 'Payroll') return isPayHistory ? <PayHistoryPage /> : <PayrollPage key={payrollTab} mode={payrollTab === 'Adjustments' ? 'adjustments' : 'payrun'} />
+    if (mainModule === 'Payroll') return isPayHistory ? <PayHistoryPage /> : <PayrollPage key={payrollTab} mode={payrollTab === 'Adjustments' ? 'adjustments' : 'payrun'} runType={payrollTab === 'Off-cycle Run' ? 'Off-cycle Run' : 'Regular Run'} />
     if (mainModule === 'Employees') return <EmployeePage />
     if (mainModule === 'Reports') return <ReportingPage activeMenu={reportingTab} activeReport={reportingReport} />
     if (mainModule === 'Workflows') return <WorkflowPage activeMenu={workflowTab} />
-    return settingsSection === 'LeaveAttendance' ? <LeaveAttendancePage activeMenu={leaveAttendanceTab} onSelectMenu={setLeaveAttendanceSettingsTab} /> : <SettingsPage tab={tab} onMessage={setSettingsMessage} />
+    return settingsSection === 'LeaveAttendance' ? <LeaveAttendancePage activeMenu={leaveAttendanceTab} onSelectMenu={setLeaveAttendanceSettingsTab} /> : <SettingsPage tab={tab} onMessage={() => undefined} />
   }
 
-  return <div className={`payroll-app compact module-shell ${navOpen ? '' : 'nav-collapsed'} ${appDrawerOpen ? 'drawer-open' : ''}`}><aside className="app-sidebar"><div className="side-head"><a className="brand"><i>F</i><span>Frevo One HR</span></a><button className="sidebar-toggle" type="button" title={navOpen ? 'Collapse sidebar' : 'Expand sidebar'} aria-label={navOpen ? 'Collapse sidebar' : 'Expand sidebar'} onClick={() => setNavOpen(open => !open)}><AppIcon name={navOpen ? 'collapse' : 'expand'} /></button></div><div className="sidebar-context"><span className="eyebrow purple">Current Module</span><strong>{activeModule.label}</strong><small>{activeModule.description}</small></div><nav><div className="submenu context-menu">{renderContextMenu()}</div></nav></aside><main className="compact-main"><header className="topbar"><div><span className="eyebrow purple">{mainModule} / {pageTitle}</span><h2>{pageTitle}</h2><p>{pageDescription}</p></div><div className="topbar-actions"><button className="app-launcher" type="button" title="Open app modules" aria-label="Open app modules" onClick={() => setAppDrawerOpen(true)}><AppIcon name="apps" /></button></div><b>NK</b></header>{renderPage()}</main>{appDrawerOpen && <div className="drawer-scrim" onClick={() => setAppDrawerOpen(false)} />}<aside className="module-drawer" aria-hidden={!appDrawerOpen}><header><div><span className="eyebrow purple">App Launcher</span><h3>Choose module</h3></div><button type="button" aria-label="Close app modules" onClick={() => setAppDrawerOpen(false)}>×</button></header>{modules.map(module => <button className={mainModule === module.code ? 'active' : ''} type="button" disabled={module.disabled} onClick={() => { if (!module.disabled) { setModule(module.code as ModuleCode); setAppDrawerOpen(false) } }} key={module.code}><AppIcon name={module.icon} /><strong>{module.label}</strong><small>{module.description}</small></button>)}</aside></div>
+  return <div className={`payroll-app compact module-shell ${navOpen ? '' : 'nav-collapsed'} ${appDrawerOpen ? 'drawer-open' : ''}`}><aside className="app-sidebar"><div className="side-head"><a className="brand"><i>F</i><span>Frevo One HR</span></a><button className="sidebar-toggle" type="button" title={navOpen ? 'Collapse sidebar' : 'Expand sidebar'} aria-label={navOpen ? 'Collapse sidebar' : 'Expand sidebar'} onClick={() => setNavOpen(open => !open)}><AppIcon name={navOpen ? 'collapse' : 'expand'} /></button></div><div className="sidebar-context"><i><AppIcon name={activeModule.icon} /></i><div><span>Module</span><strong>{activeModule.label}</strong></div></div><nav><div className="submenu context-menu">{renderContextMenu()}</div></nav></aside><main className="compact-main"><header className="topbar app-topbar"><div className="topbar-title"><span>{mainModule}</span><h2>{pageTitle}</h2></div><div className="topbar-tools"><label className="global-search"><input placeholder="Search..." /><span>⌘K</span></label><button type="button" className="notification-btn" aria-label="Notifications">🔔</button><button className="app-launcher" type="button" title="Open app modules" aria-label="Open app modules" onClick={() => setAppDrawerOpen(true)}><AppIcon name="apps" /></button></div></header>{renderPage()}</main>{appDrawerOpen && <div className="drawer-scrim" onClick={() => setAppDrawerOpen(false)} />}<aside className="module-drawer" aria-hidden={!appDrawerOpen}><header><div><span className="eyebrow purple">App Launcher</span><h3>Choose module</h3></div><button type="button" aria-label="Close app modules" onClick={() => setAppDrawerOpen(false)}>×</button></header>{modules.map(module => <button className={mainModule === module.code ? 'active' : ''} type="button" disabled={module.disabled} onClick={() => { if (!module.disabled) { setModule(module.code as ModuleCode); setAppDrawerOpen(false) } }} key={module.code}><AppIcon name={module.icon} /><strong>{module.label}</strong><small>{module.description}</small></button>)}</aside></div>
 }
+

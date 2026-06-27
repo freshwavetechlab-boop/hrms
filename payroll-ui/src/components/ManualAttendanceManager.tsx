@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import type { EmployeeDailyAttendance, EmployeeMonthlyAttendance, LeaveType } from '../types/payroll'
 import { getDailyAttendance, getLeaveTypes, getMonthlyAttendance, saveDailyAttendance, saveMonthlyAttendance } from '../services/leaveAttendanceService'
 import PageTabs from './PageTabs'
+import type { ToastType } from './ToastProvider'
 
-type Props = { clientId: number; onMessage: (message: string) => void }
+type Props = { clientId: number; onMessage: (message: string, type?: ToastType) => void }
 type DailyStatus = string
 type DailyUiRow = EmployeeDailyAttendance & { isMissing?: boolean }
 type ReviewStatus = 'Ready' | 'Missing attendance' | 'Check values'
@@ -111,7 +112,7 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
       const preferred = rows.find((row) => reviewStatus(row) !== 'Ready') ?? rows[0]
       setSelectedEmployeeId((current) => rows.some((row) => row.employeeId === current) ? current : preferred?.employeeId ?? 0)
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'Unable to load monthly attendance')
+      onMessage(error instanceof Error ? error.message : 'Unable to load monthly attendance', 'error')
     } finally {
       setLoadingMonthly(false)
     }
@@ -129,7 +130,7 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
       setLeaveTypes(leaveTypeRows)
       setDailyRows(buildDailyMonth(employeeId, rows, activeTypes))
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'Unable to load daily attendance')
+      onMessage(error instanceof Error ? error.message : 'Unable to load daily attendance', 'error')
     } finally {
       setLoadingDaily(false)
     }
@@ -173,11 +174,9 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
     try {
       const response = await saveMonthlyAttendance(clientId, month, monthlyRows)
       if (!response.ok) {
-        onMessage(response.error || 'Unable to save monthly attendance')
         return
       }
       setMonthlyRows(response.data)
-      onMessage('Monthly attendance saved.')
     } finally {
       setSaving(false)
     }
@@ -186,7 +185,7 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
   const saveDaily = async () => {
     if (!selectedEmployeeId) return
     if (missingDailyCount > 0) {
-      onMessage('Resolve missing dates before saving daily attendance.')
+      onMessage('Resolve missing dates before saving daily attendance.', 'warning')
       return
     }
     setSaving(true)
@@ -194,12 +193,10 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
       const payload = dailyRows.map(({ isMissing, ...row }) => row)
       const response = await saveDailyAttendance(clientId, selectedEmployeeId, month, payload)
       if (!response.ok) {
-        onMessage(response.error || 'Unable to save daily attendance')
         return
       }
       setDailyRows(buildDailyMonth(selectedEmployeeId, response.data))
       await loadMonthly()
-      onMessage('Daily attendance saved and monthly summary refreshed.')
     } finally {
       setSaving(false)
     }
