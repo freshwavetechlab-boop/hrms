@@ -1,6 +1,9 @@
+import { toast } from '../components/ToastProvider'
+
 export const api = import.meta.env.VITE_API_URL ?? 'http://localhost:5062'
 
-type ApiOptions = RequestInit & { timeoutMs?: number }
+type ToastMode = boolean | 'error-only'
+type ApiOptions = RequestInit & { timeoutMs?: number; toast?: ToastMode; successMessage?: string }
 type ApiResult<TResult> = { ok: boolean; data: TResult; error: string; status: number }
 
 const legacyTokenKey = 'payroll.auth.token'
@@ -80,17 +83,22 @@ export function postFormWithProgress<TResult>(path: string, body: FormData, fall
       }
       if (request.status >= 200 && request.status < 300) {
         try {
+          notifyMutation('POST', true, '')
           resolve({ ok: true, data: request.responseText ? JSON.parse(request.responseText) as TResult : fallback, error: '', status: request.status })
         } catch (error) {
-          resolve({ ok: false, data: fallback, error: error instanceof Error ? error.message : 'Invalid server response.', status: request.status })
+          const message = error instanceof Error ? error.message : 'Invalid server response.'
+          notifyMutation('POST', false, message)
+          resolve({ ok: false, data: fallback, error: message, status: request.status })
         }
         return
       }
-      resolve({ ok: false, data: fallback, error: readErrorText(request.responseText, request.status), status: request.status })
+      const message = readErrorText(request.responseText, request.status)
+      notifyMutation('POST', false, message)
+      resolve({ ok: false, data: fallback, error: message, status: request.status })
     }
-    request.onerror = () => resolve({ ok: false, data: fallback, error: 'Network error: unable to reach the API.', status: 0 })
-    request.onabort = () => resolve({ ok: false, data: fallback, error: 'Upload was cancelled.', status: 0 })
-    request.ontimeout = () => resolve({ ok: false, data: fallback, error: 'Upload timed out.', status: 0 })
+    request.onerror = () => { const message = 'Network error: unable to reach the API.'; notifyMutation('POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
+    request.onabort = () => { const message = 'Upload was cancelled.'; notifyMutation('POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
+    request.ontimeout = () => { const message = 'Upload timed out.'; notifyMutation('POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
     request.timeout = 120000
     request.send(body)
   })
@@ -127,9 +135,13 @@ function readErrorText(text: string, status: number) {
 async function mutateJson<TResult>(path: string, options: ApiOptions, fallback: TResult): Promise<ApiResult<TResult>> {
   try {
     const response = await apiRequest(path, options)
-    return { ok: response.ok, data: response.ok ? await readJson<TResult>(response, fallback) : fallback, error: response.ok ? '' : await readError(response), status: response.status }
+    const error = response.ok ? '' : await readError(response)
+    notifyMutation(options.method, response.ok, error, options)
+    return { ok: response.ok, data: response.ok ? await readJson<TResult>(response, fallback) : fallback, error, status: response.status }
   } catch (error) {
-    return { ok: false, data: fallback, error: error instanceof Error ? error.message : 'Request failed.', status: 0 }
+    const message = error instanceof Error ? error.message : 'Request failed.'
+    notifyMutation(options.method, false, message, options)
+    return { ok: false, data: fallback, error: message, status: 0 }
   }
 }
 
@@ -137,4 +149,21 @@ async function readJson<T>(response: Response, fallback: T) {
   if (response.status === 204) return fallback
   const text = await response.text()
   return text ? JSON.parse(text) as T : fallback
+}
+
+function notifyMutation(method = 'POST', ok: boolean, error: string, options: ApiOptions = {}) {
+  if (options.toast === false) return
+  if (!ok) {
+    toast.error(error || 'Request failed.')
+    return
+  }
+  if (options.toast === 'error-only') return
+  toast.success(options.successMessage || successText(method))
+}
+
+function successText(method: string) {
+  const verb = method.toUpperCase()
+  if (verb === 'DELETE') return 'Deleted successfully.'
+  if (verb === 'PUT') return 'Updated successfully.'
+  return 'Saved successfully.'
 }

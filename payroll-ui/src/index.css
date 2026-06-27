@@ -108,6 +108,23 @@ select {
 .smart-table th, .smart-table td { padding: 8px 9px; border-bottom: 1px solid #e5e8f0; text-align: left; white-space: nowrap; font-size: .74rem; }
 .smart-table th { position: sticky; top: 0; z-index: 1; background: #f8fafc; color: #64748b; cursor: pointer; font-size: .64rem; font-weight: 900; text-transform: uppercase; letter-spacing: .04em; }
 .smart-table th b { margin-left: 6px; color: #5133cc; font-size: .58rem; text-transform: lowercase; }
+.smart-table th { position: sticky; overflow: visible; }
+.table-head-cell { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.table-head-cell b { min-width: 12px; margin-left: 2px!important; font-size: .72rem!important; line-height: 1; }
+.column-filter { float: right; width: 24px; height: 24px; margin: -3px 0 -3px 6px; border: 1px solid #dfe2ea; border-radius: 8px; background: #fff; color: #64748b; cursor: pointer; display: inline-grid; place-items: center; }
+.column-filter span{width:12px;height:12px;display:block;background:currentColor;clip-path:polygon(8% 12%,92% 12%,60% 52%,60% 88%,40% 88%,40% 52%)}
+.column-filter.active { border-color: #6546e8; background: #f3f0ff; color: #5133cc; }
+.column-filter-menu { position: fixed; z-index: 999; width: 240px; max-height: 280px; overflow: auto; display: grid; gap: 4px; padding: 10px; border: 1px solid #e5e8f0; border-radius: 12px; background: #fff; box-shadow: 0 20px 50px #1721362b; text-transform: none; letter-spacing: 0; cursor: default; }
+.filter-menu-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 6px; border-bottom: 1px solid #eef0f4; }
+.filter-menu-head strong { color: #172136; font-size: .76rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filter-menu-head button { min-height: 26px; border: 1px solid #ddd6fe; border-radius: 7px; background: #f8f6ff; color: #5133cc; padding: 0 8px; font-size: .66rem; font-weight: 800; }
+.column-filter-menu label { display: flex!important; align-items: center; gap: 8px; margin: 0; padding: 7px 8px; border-radius: 8px; color: #334155; font-size: .74rem; font-weight: 700; }
+.column-filter-menu label:hover,.column-filter-menu label.active { background: #f3f0ff; color: #5133cc; }
+.column-filter-menu input { width: 14px!important; height: 14px!important; flex: none; accent-color: #6546e8; }
+.column-filter-menu span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .smart-table td button { min-height: 30px; border: 1px solid #dfe2ea; border-radius: 7px; background: #fff; padding: 0 8px; font-weight: 800; }
 .smart-table td small { display: block; color: #7b8496; font-size: .64rem; }
-@media (max-width: 700px) { .auth-session { right: 10px; top: 8px; } .auth-session > div { display: none; } .topbar-actions .app-launcher { top: 8px !important; right: 48px !important; } }
+.smart-table-pager { display: flex; align-items: center; justify-content: flex-end; gap: 8px; color: #64748b; font-size: .72rem; }
+.smart-table-pager select { width: auto; height: 31px; border-radius: 7px; font-size: .72rem; }
+.smart-table-pager button { min-height: 31px; border: 1px solid #dfe2ea; border-radius: 7px; background: #fff; padding: 0 10px; font-weight: 800; }
+@media (max-width: 700px) { .auth-session { right: 10px; top: 8px; } .auth-session > div { display: none; } .topbar-actions .app-launcher { top: 8px !important; right: 56px !important; } }
