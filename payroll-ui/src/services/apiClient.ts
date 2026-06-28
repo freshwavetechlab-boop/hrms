@@ -3,7 +3,7 @@ import { toast } from '../components/ToastProvider'
 export const api = import.meta.env.VITE_API_URL ?? 'http://localhost:5062'
 
 type ToastMode = boolean | 'error-only'
-type ApiOptions = RequestInit & { timeoutMs?: number; toast?: ToastMode; successMessage?: string }
+export type ApiOptions = RequestInit & { timeoutMs?: number; toast?: ToastMode; successMessage?: string }
 type ApiResult<TResult> = { ok: boolean; data: TResult; error: string; status: number }
 
 const legacyTokenKey = 'payroll.auth.token'
@@ -45,20 +45,20 @@ export async function getJson<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
-export async function postJson<TBody, TResult>(path: string, body: TBody, fallback: TResult): Promise<ApiResult<TResult>> {
-  return mutateJson(path, { method: 'POST', body: JSON.stringify(body) }, fallback)
+export async function postJson<TBody, TResult>(path: string, body: TBody, fallback: TResult, options: ApiOptions = {}): Promise<ApiResult<TResult>> {
+  return mutateJson(path, { ...options, method: 'POST', body: JSON.stringify(body) }, fallback)
 }
 
 export async function putJson<TBody, TResult>(path: string, body: TBody, fallback: TResult): Promise<ApiResult<TResult>> {
   return mutateJson(path, { method: 'PUT', body: JSON.stringify(body) }, fallback)
 }
 
-export async function postEmpty<TResult>(path: string, fallback: TResult): Promise<ApiResult<TResult>> {
-  return mutateJson(path, { method: 'POST' }, fallback)
+export async function postEmpty<TResult>(path: string, fallback: TResult, options: ApiOptions = {}): Promise<ApiResult<TResult>> {
+  return mutateJson(path, { ...options, method: 'POST' }, fallback)
 }
 
-export async function deleteJson<TResult>(path: string, fallback: TResult): Promise<ApiResult<TResult>> {
-  return mutateJson(path, { method: 'DELETE' }, fallback)
+export async function deleteJson<TResult>(path: string, fallback: TResult, options: ApiOptions = {}): Promise<ApiResult<TResult>> {
+  return mutateJson(path, { ...options, method: 'DELETE' }, fallback)
 }
 
 export async function postForm<TResult>(path: string, body: FormData, fallback: TResult): Promise<ApiResult<TResult>> {

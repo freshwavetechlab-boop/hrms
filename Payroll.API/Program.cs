@@ -68,7 +68,7 @@ using (var scope = app.Services.CreateScope())
     var taxEngineRepository = scope.ServiceProvider.GetRequiredService<TaxEngineRepository>();
     await taxEngineRepository.InitializeAsync();
     await using var workflowDb = new MySqlConnector.MySqlConnection(builder.Configuration.GetConnectionString("Default"));
-    await workflowDb.OpenAsync(); await workflowDb.ExecuteAsync("USE payroll; CREATE TABLE IF NOT EXISTS EssLeaveRequests (Id BIGINT PRIMARY KEY AUTO_INCREMENT,EmployeeId INT NOT NULL,ClientId INT NOT NULL,LeaveTypeId INT NOT NULL,FromDate DATE NOT NULL,ToDate DATE NOT NULL,Days DECIMAL(8,2) NOT NULL,Reason VARCHAR(1000),Status VARCHAR(40) NOT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);");
+    await workflowDb.OpenAsync(); await workflowDb.ExecuteAsync("USE payroll; CREATE TABLE IF NOT EXISTS essleaverequests (Id BIGINT PRIMARY KEY AUTO_INCREMENT,EmployeeId INT NOT NULL,ClientId INT NOT NULL,LeaveTypeId INT NOT NULL,FromDate DATE NOT NULL,ToDate DATE NOT NULL,Days DECIMAL(8,2) NOT NULL,Reason VARCHAR(1000),Status VARCHAR(40) NOT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);");
     var essRepository = scope.ServiceProvider.GetRequiredService<EssMssRepository>();
     await essRepository.ReconcileLeaveWorkflowStatusesAsync();
 }
@@ -549,7 +549,9 @@ app.MapPost("/api/work-locations", async (OrganizationRepository repository, Wor
 {
     if (string.IsNullOrWhiteSpace(location.Name))
         return Results.BadRequest(new { error = "Work location name is required." });
-    if (!System.Text.RegularExpressions.Regex.IsMatch(location.PostalCode ?? "", @"^[1-9][0-9]{5}$"))
+    if (location.ClientId <= 0)
+        return Results.BadRequest(new { error = "Client is required for work location." });
+    if (!string.IsNullOrWhiteSpace(location.PostalCode) && !System.Text.RegularExpressions.Regex.IsMatch(location.PostalCode, @"^[1-9][0-9]{5}$"))
         return Results.BadRequest(new { error = "Enter a valid 6-digit PIN code." });
     var id = await repository.SaveWorkLocationAsync(location);
     return Results.Ok(new { id });

@@ -1,0 +1,28 @@
+# Build outputs
+bin/
+obj/
+
+# .NET
+*.user
+*.suo
+*.rsuser
+*.userosscache
+*.sln.docstates
+TestResults/
+
+# Node / Vite
+node_modules/
+dist/
+coverage/
+
+# Logs and local environment
+*.log
+.env
+.env.*
+!.env.example
+.bootstrap/
+.build/
+
+# IDE
+.vs/
+.vscode/

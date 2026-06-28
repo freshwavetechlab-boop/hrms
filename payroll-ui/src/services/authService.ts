@@ -7,8 +7,8 @@ export async function getCurrentUser() {
 }
 
 export async function login(email: string, password: string) {
-  const response = await postJson('/api/auth/login', { email, password }, null as { token: string; user: AuthUser } | null)
+  const response = await postJson('/api/auth/login', { email, password }, null as { token: string; user: AuthUser } | null, { toast: false })
   return response.ok ? response.data : null
 }
 
-export const logout = () => postEmpty('/api/auth/logout', null)
+export const logout = () => postEmpty('/api/auth/logout', null, { toast: false })
