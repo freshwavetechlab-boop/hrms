@@ -1,15 +1,15 @@
 import { useEffect, useState } from 'react'
 import AttendanceSettingsForm from '../components/AttendanceSettingsForm'
-import GeoFenceManager from '../components/GeoFenceManager'
 import HolidayManager from '../components/HolidayManager'
 import LeaveAttendancePreferencesForm from '../components/LeaveAttendancePreferencesForm'
 import LeaveBalanceImportManager from '../components/LeaveBalanceImportManager'
 import LeaveTypesManager from '../components/LeaveTypesManager'
+import SearchSelect from '../components/SearchSelect'
 import { useToast } from '../components/ToastProvider'
 import { getClients } from '../services/payrollService'
 import type { Client } from '../types/payroll'
 
-export type LeaveAttendanceMenu = 'Preferences' | 'Leave Types' | 'Holiday' | 'Attendance' | 'Geo-Fencing' | 'Import Balance'
+export type LeaveAttendanceMenu = 'Preferences' | 'Leave Types' | 'Holiday' | 'Attendance' | 'Import Balance'
 
 export default function LeaveAttendancePage({ activeMenu }: { activeMenu: LeaveAttendanceMenu; onSelectMenu: (menu: LeaveAttendanceMenu) => void }) {
   const toast = useToast()
@@ -18,20 +18,17 @@ export default function LeaveAttendancePage({ activeMenu }: { activeMenu: LeaveA
 
   useEffect(() => {
     void getClients().then(rows => {
-      setClients(rows)
-      setClientId(current => {
-        if (rows.some(row => row.id === current)) return current
-        return rows.find(row => row.isActive)?.id || rows[0]?.id || 0
-      })
+      const active = rows.filter(row => row.isActive)
+      setClients(active)
+      setClientId(current => current || active[0]?.id || 0)
     })
   }, [])
 
-  if (!clientId) return <section className="leave-attendance empty-state"><div><span className="eyebrow purple">Leave & Attendance</span><h3>No client found</h3><p>Create a client before configuring Leave & Attendance.</p></div></section>
+  if (!clientId) return <section className="leave-attendance empty-state"><div><span className="eyebrow purple">Leave & Attendance</span><h3>No active client</h3><p>Create an active client before configuring Leave & Attendance.</p></div></section>
 
-  const selectedClient = clients.find(client => client.id === clientId)
   const showMessage = (text: string) => toast(text, /error|unable|failed|required|resolve|select/i.test(text) ? 'error' : 'success')
-  const clientFilter = <div className="card leave-client-filter"><label className="leave-dropdown-field"><span>Client</span><div className="leave-select-shell leave-select-shell-display"><select value={clientId} onChange={event => setClientId(Number(event.target.value))} aria-label="Select client"><option value="0" disabled>Select client</option>{clients.map(client => <option value={client.id} key={client.id}>{client.name} ({client.code}){client.isActive ? '' : ' - Inactive'}</option>)}</select><span className="leave-select-display-value">{selectedClient?.name || 'Select client'}</span></div></label></div>
-  const content = activeMenu === 'Preferences' ? <LeaveAttendancePreferencesForm clientId={clientId} onSaved={showMessage} /> : activeMenu === 'Leave Types' ? <LeaveTypesManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Holiday' ? <HolidayManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Attendance' ? <AttendanceSettingsForm clientId={clientId} onSaved={showMessage} /> : activeMenu === 'Geo-Fencing' ? <GeoFenceManager clientId={clientId} clientName={selectedClient?.name || ''} onMessage={showMessage} /> : <LeaveBalanceImportManager clientId={clientId} onMessage={showMessage} />
+  const clientFilter = <div className="card leave-client-filter"><label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label></div>
+  const content = activeMenu === 'Preferences' ? <LeaveAttendancePreferencesForm clientId={clientId} onSaved={showMessage} /> : activeMenu === 'Leave Types' ? <LeaveTypesManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Holiday' ? <HolidayManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Attendance' ? <AttendanceSettingsForm clientId={clientId} onSaved={showMessage} /> : <LeaveBalanceImportManager clientId={clientId} onMessage={showMessage} />
 
   return <section className="leave-attendance">{clientFilter}{content}</section>
 }

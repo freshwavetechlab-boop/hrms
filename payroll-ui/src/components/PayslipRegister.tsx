@@ -3,6 +3,7 @@ import { getClients, getPayRun, getPayRuns } from '../services/payrollService'
 import type { Client, PayRun, RunEmployee } from '../types/payroll'
 import { money } from '../utils/salary'
 import DataTable from './DataTable'
+import SearchSelect, { selectOptions } from './SearchSelect'
 import './PayslipRegister.css'
 
 export default function PayslipRegister() {
@@ -48,8 +49,8 @@ export default function PayslipRegister() {
       <section className="card report-workspace">
         <header><div><span className="eyebrow purple">Payroll reports</span><h3>Payslip Register</h3><p>Published payroll results by employee. Preview or download an individual payslip record.</p></div></header>
         <div className="payslip-filters">
-          <label><span>Client</span><select value={clientId} onChange={event => setClientId(Number(event.target.value))}>{clients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}</select></label>
-          <label><span>Pay period</span><select value={runId} onChange={event => setRunId(Number(event.target.value))}><option value="0">Select approved pay run</option>{clientRuns.map(item => <option key={item.id} value={item.id}>{item.payPeriod} - {item.status}</option>)}</select></label>
+          <label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label>
+          <label><span>Pay period</span><SearchSelect value={runId} onChange={value => setRunId(Number(value))} options={selectOptions(clientRuns.map(item => ({ value: item.id, label: `${item.payPeriod} - ${item.status}` })), 'Select approved pay run', 0)} /></label>
         </div>
       </section>
       {run && <section className="card payslip-list"><DataTable rows={run.employees.filter(employee => !employee.isSkipped)} getRowId={row => row.employeeId} exportFileName={`payslip-register-${run.payPeriod}`} columns={[

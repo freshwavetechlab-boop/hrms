@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { EmployeeDailyAttendance, EmployeeMonthlyAttendance, LeaveType } from '../types/payroll'
 import { getDailyAttendance, getLeaveTypes, getMonthlyAttendance, saveDailyAttendance, saveMonthlyAttendance } from '../services/leaveAttendanceService'
 import PageTabs from './PageTabs'
+import SearchSelect from './SearchSelect'
 import type { ToastType } from './ToastProvider'
 
 type Props = { clientId: number; onMessage: (message: string, type?: ToastType) => void }
@@ -347,12 +348,7 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
           <div className="attendance-daily-picker">
             <label>
               Employee
-              <select value={selectedEmployeeId} onChange={(event) => setSelectedEmployeeId(Number(event.target.value))}>
-                <option value={0}>Select employee</option>
-                {monthlyRows.map((row) => (
-                  <option key={row.employeeId} value={row.employeeId}>{row.employeeName} - {reviewStatus(row)}</option>
-                ))}
-              </select>
+              <SearchSelect value={selectedEmployeeId} onChange={(value) => setSelectedEmployeeId(Number(value))} options={[{ value: 0, label: 'Select employee' }, ...monthlyRows.map((row) => ({ value: row.employeeId, label: `${row.employeeName} - ${reviewStatus(row)}` }))]} />
             </label>
           </div>
           <div className="attendance-quick-actions">
@@ -380,10 +376,7 @@ export default function ManualAttendanceManager({ clientId, onMessage }: Props) 
                       <td>{day}</td>
                       <td><span className={row.isMissing ? 'attendance-status risk' : 'attendance-status'}>{row.isMissing ? 'Missing' : 'Saved'}</span></td>
                       <td>
-                        <select value={row.status === 'Present' || activeLeaveTypes.some((leaveType) => leaveType.code === row.status) ? row.status : 'Present'} onChange={(event) => updateDaily(row.attendanceDate, { status: event.target.value })}>
-                          <option value="Present">Present</option>
-                          {activeLeaveTypes.map((leaveType) => <option key={leaveType.id} value={leaveType.code}>{leaveType.name}</option>)}
-                        </select>
+                        <SearchSelect value={row.status === 'Present' || activeLeaveTypes.some((leaveType) => leaveType.code === row.status) ? row.status : 'Present'} onChange={(value) => updateDaily(row.attendanceDate, { status: value })} options={[{ value: 'Present', label: 'Present' }, ...activeLeaveTypes.map((leaveType) => ({ value: leaveType.code, label: leaveType.name }))]} />
                       </td>
                       <td><input type="number" min="0" max="1" step="1" value={row.payableValue} readOnly title="Automatically derived from the selected attendance or leave payroll rule." /></td>
                       <td><input value={row.remarks} onChange={(event) => updateDaily(row.attendanceDate, { remarks: event.target.value })} placeholder="Optional note" /></td>

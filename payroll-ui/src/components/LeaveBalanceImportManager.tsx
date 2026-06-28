@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { downloadLeaveBalanceSample, finalizeLeaveBalanceImport, previewLeaveBalanceImport } from '../services/leaveAttendanceService'
 import type { LeaveBalanceImportMapping, LeaveBalanceImportPreview } from '../types/payroll'
 import DataTable, { type Column } from './DataTable'
+import FileDropZone from './FileDropZone'
+import SearchSelect, { selectOptions } from './SearchSelect'
 
 const encodings = ['UTF-8', 'Windows-1252', 'ISO-8859-1']
 const required: { key: keyof LeaveBalanceImportMapping; label: string }[] = [{ key: 'employeeNumber', label: 'Employee Number' }, { key: 'leaveType', label: 'Leave Type Code' }, { key: 'date', label: 'Balance As Of Date' }, { key: 'count', label: 'Opening Balance' }]
@@ -20,8 +22,7 @@ export default function LeaveBalanceImportManager({ clientId, onMessage }: { cli
       setPreview(response.data)
       setMapping(response.data.mapping)
       onMessage(hasValidationIssues ? 'File uploaded, but validation issues need correction.' : 'File parsed successfully. Review mapping and preview records.')
-    }
-    else { setUploadStage('Upload failed.'); setError(response.error || 'Unable to parse file.') }
+    } else { setUploadStage('Upload failed.'); setError(response.error || 'Unable to parse file.') }
     setBusy(false)
   }
   const importRows = async () => {
@@ -33,11 +34,22 @@ export default function LeaveBalanceImportManager({ clientId, onMessage }: { cli
   }
   const downloadSample = async () => { const response = await downloadLeaveBalanceSample(clientId); if (!response.ok || !response.data) { setError('Unable to download the selected client sample.'); return }; const url = URL.createObjectURL(response.data); const link = document.createElement('a'); link.href = url; link.download = 'leave-balance-import-sample.csv'; link.click(); URL.revokeObjectURL(url) }
   const hasValidationIssues = Boolean(preview && (preview.errorRecords.length > 0 || preview.unmappedFields.length > 0))
-  return <section className="leave-import"><div className="card"><header><i className="blue">I</i><div><h3>Import Employee Leave Balance</h3><p>Upload opening balances, map fields, preview errors and import valid rows.</p></div></header><div className="import-steps"><span className={file ? 'done' : 'active'}>1 Upload</span><span className={preview && !hasValidationIssues ? 'done' : ''}>2 Mapping</span><span className={preview ? 'active' : ''}>3 Preview</span><span>4 Import</span></div><div className="grid"><label><span>Select file</span><input type="file" accept=".csv,.xls,.xlsx" onChange={event => { setFile(event.target.files?.[0] ?? null); setUploadProgress(0); setUploadStage(''); setError(''); setPreview(null) }} /></label><label><span>Character encoding</span><select value={encoding} onChange={event => setEncoding(event.target.value)}>{encodings.map(item => <option key={item}>{item}</option>)}</select></label></div>{uploadStage && <div className={`import-upload-progress ${error ? 'failed' : hasValidationIssues ? 'warning' : uploadProgress === 100 && !busy ? 'complete' : ''}`}><div><strong>{uploadStage}</strong><span className="import-progress-meta"><b>{uploadProgress}% uploaded</b><button type="button" aria-label="Close upload status" onClick={() => { setUploadStage(''); setUploadProgress(0) }}>×</button></span></div><span><i style={{ width: `${uploadProgress}%` }} /></span></div>}<div className="actions"><p>Required: Employee Number, Leave Type Code, Balance As Of Date (YYYY-MM-DD), Opening Balance.</p><span><button type="button" className="secondary" onClick={() => void downloadSample()}>Download Sample File</button><button type="button" disabled={busy || !file} onClick={() => void upload()}>{busy ? `${uploadProgress}% Uploading...` : 'Upload & Auto-map'}</button></span></div>{error && <div className="form-errors runtime-error" role="alert"><strong>Runtime error</strong><p>{error}</p></div>}</div>{preview && <MappingCard preview={preview} mapping={mapping} setMapping={setMapping} remap={() => void upload(mapping)} busy={busy} />}{preview && <PreviewCard preview={preview} importRows={importRows} busy={busy} />}</section>
+  return <section className="leave-import">
+    <div className="card">
+      <header><i className="blue">I</i><div><h3>Import Employee Leave Balance</h3><p>Upload opening balances, map fields, preview errors and import valid rows.</p></div></header>
+      <div className="import-steps"><span className={file ? 'done' : 'active'}>1 Upload</span><span className={preview && !hasValidationIssues ? 'done' : ''}>2 Mapping</span><span className={preview ? 'active' : ''}>3 Preview</span><span>4 Import</span></div>
+      <div className="grid"><label className="wide"><span>Select file</span><FileDropZone accept=".csv,.xls,.xlsx" fileName={file?.name} title="Drop CSV/XLSX here or browse" hint="Supports .csv, .xls and .xlsx leave balance files." onFile={next => { setFile(next); setUploadProgress(0); setUploadStage(''); setError(''); setPreview(null) }} /></label><label><span>Character encoding</span><SearchSelect value={encoding} onChange={setEncoding} options={selectOptions(encodings)} /></label></div>
+      {uploadStage && <div className={`import-upload-progress ${error ? 'failed' : hasValidationIssues ? 'warning' : uploadProgress === 100 && !busy ? 'complete' : ''}`}><div><strong>{uploadStage}</strong><span className="import-progress-meta"><b>{uploadProgress}% uploaded</b><button type="button" aria-label="Close upload status" onClick={() => { setUploadStage(''); setUploadProgress(0) }}>×</button></span></div><span><i style={{ width: `${uploadProgress}%` }} /></span></div>}
+      <div className="actions"><p>Required: Employee Number, Leave Type Code, Balance As Of Date (YYYY-MM-DD), Opening Balance.</p><span><button type="button" className="secondary" onClick={() => void downloadSample()}>Download Sample File</button><button type="button" disabled={busy || !file} onClick={() => void upload()}>{busy ? `${uploadProgress}% Uploading...` : 'Upload & Auto-map'}</button></span></div>
+      {error && <div className="form-errors runtime-error" role="alert"><strong>Runtime error</strong><p>{error}</p></div>}
+    </div>
+    {preview && <MappingCard preview={preview} mapping={mapping} setMapping={setMapping} remap={() => void upload(mapping)} busy={busy} />}
+    {preview && <PreviewCard preview={preview} importRows={importRows} busy={busy} />}
+  </section>
 }
 
 function MappingCard(p: { preview: LeaveBalanceImportPreview; mapping: LeaveBalanceImportMapping; setMapping: (mapping: LeaveBalanceImportMapping) => void; remap: () => void; busy: boolean }) {
-  return <section className="card import-mapping"><header><i className="blue">M</i><div><h3>Column Mapping</h3><p>Auto-mapped columns can be manually adjusted before preview.</p></div></header><div className="grid">{required.map(field => <label className={p.preview.unmappedFields.includes(field.label) ? 'unmapped' : ''} key={field.key}><span>{field.label}</span><select value={p.mapping[field.key]} onChange={event => p.setMapping({ ...p.mapping, [field.key]: event.target.value })}><option value="">Unmapped</option>{p.preview.columns.map(column => <option key={column}>{column}</option>)}</select></label>)}</div>{p.preview.unmappedFields.length > 0 && <div className="form-warning">Unmapped fields: {p.preview.unmappedFields.join(', ')}</div>}<div className="actions"><p>Click re-preview after changing mapping.</p><button type="button" disabled={p.busy} onClick={p.remap}>Re-preview</button></div></section>
+  return <section className="card import-mapping"><header><i className="blue">M</i><div><h3>Column Mapping</h3><p>Auto-mapped columns can be manually adjusted before preview.</p></div></header><div className="grid">{required.map(field => <label className={p.preview.unmappedFields.includes(field.label) ? 'unmapped' : ''} key={field.key}><span>{field.label}</span><SearchSelect value={p.mapping[field.key]} onChange={value => p.setMapping({ ...p.mapping, [field.key]: value })} options={selectOptions(p.preview.columns, 'Unmapped')} /></label>)}</div>{p.preview.unmappedFields.length > 0 && <div className="form-warning">Unmapped fields: {p.preview.unmappedFields.join(', ')}</div>}<div className="actions"><p>Click re-preview after changing mapping.</p><button type="button" disabled={p.busy} onClick={p.remap}>Re-preview</button></div></section>
 }
 
 function PreviewCard(p: { preview: LeaveBalanceImportPreview; importRows: () => void; busy: boolean }) {

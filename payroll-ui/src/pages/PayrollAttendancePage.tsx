@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import ManualAttendanceManager from '../components/ManualAttendanceManager'
+import SearchSelect from '../components/SearchSelect'
 import { useToast, type ToastType } from '../components/ToastProvider'
 import { getClients } from '../services/payrollService'
 import type { Client } from '../types/payroll'
@@ -20,7 +21,7 @@ export default function PayrollAttendancePage() {
   if (!clientId) return <section className="pay-runs"><div className="card report-empty"><p>Create an active client before entering payroll attendance.</p></div></section>
 
   return <section className="pay-runs payroll-attendance-page">
-    <div className="card leave-client-filter"><label><span>Client</span><select value={clientId} onChange={event => setClientId(Number(event.target.value))}>{clients.map(client => <option value={client.id} key={client.id}>{client.name}</option>)}</select></label></div>
+    <div className="card leave-client-filter"><label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label></div>
     <ManualAttendanceManager clientId={clientId} onMessage={(message, type: ToastType = 'success') => toast(message, type)} />
   </section>
 }
