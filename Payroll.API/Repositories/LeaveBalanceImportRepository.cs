@@ -92,7 +92,7 @@ VALUES (@LogId, @RowNumber, @EmployeeNumber, @LeaveType, @Date, @Count, @ErrorMe
         await connection.ExecuteAsync("USE payroll;");
         var rows = await connection.QueryAsync<EmployeeRef>(@"SELECT e.Id, e.EmployeeCode, e.IsActive, COALESCE(e.Department, '') AS Department,
 COALESCE(e.Designation, '') AS Designation, COALESCE(e.Gender, '') AS Gender, COALESCE(w.Name, '') AS WorkLocation
-FROM Employees e
+FROM employees e
 LEFT JOIN worklocations w ON w.Id=e.WorkLocationId
 WHERE e.ClientId=@ClientId", new { ClientId = clientId });
         return rows.GroupBy(row => Normalize(row.EmployeeCode)).ToDictionary(group => group.Key, group => group.First());

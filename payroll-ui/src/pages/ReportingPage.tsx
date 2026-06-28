@@ -17,7 +17,7 @@ const catalogue: Record<ReportingMenu, ReportDefinition[]> = {
   'Recruitment Reports': [{ name: 'Open Requisitions' }, { name: 'Recruitment Funnel' }, { name: 'Candidate Pipeline' }, { name: 'Time To Hire' }, { name: 'Cost Per Hire' }],
   'Onboarding Reports': [{ name: 'Joining Tracker' }, { name: 'Documentation Status' }, { name: 'Induction Completion' }, { name: 'Pending Onboarding Tasks' }],
   'Separation Reports': [{ name: 'Resignation Report' }, { name: 'Attrition Report' }, { name: 'Full & Final Tracker' }, { name: 'Notice Period Tracker' }],
-  'Compliance Reports': [{ name: 'PF Report', code: 'pf-register' }, { name: 'PF ECR Report' }, { name: 'ESI Report', code: 'esi-register' }, { name: 'PT Report' }, { name: 'Statutory Deduction Summary', code: 'net-pay-estimate' }],
+  'Compliance Reports': [{ name: 'PF Report', code: 'pf-register' }, { name: 'PF ECR Report' }, { name: 'ESI Report', code: 'esi-register' }, { name: 'PT Report', code: 'pt-register' }, { name: 'Statutory Deduction Summary', code: 'net-pay-estimate' }],
   'Tax Reports': [{ name: 'TDS Register', code: 'tds-register' }, { name: 'Employee Tax Projection' }, { name: 'Form 16 Register' }, { name: 'Tax Liability Report', code: 'tds-register' }],
   'Loan & Advance Reports': [{ name: 'Loan Register' }, { name: 'Loan Outstanding Report' }, { name: 'EMI Recovery Report' }, { name: 'Salary Advance Report' }],
   'Cost Center Reports': [{ name: 'Cost Center Salary Cost' }, { name: 'Cost Center Headcount' }, { name: 'Cost Center Variance' }, { name: 'Cost Allocation Report' }],
@@ -36,7 +36,7 @@ export default function ReportingPage({ activeMenu, activeReport }: { activeMenu
   const [clients, setClients] = useState<Client[]>([]), [clientId, setClientId] = useState(0), [result, setResult] = useState<ReportResult>({ title: '', columns: [], rows: [] })
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7)), [fromDate, setFromDate] = useState(`${new Date().toISOString().slice(0, 7)}-01`), [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10))
   const periodCodes = ['daily-attendance', 'attendance-trend', 'leave-utilization', 'leave-approval-status']
-  const monthCodes = ['monthly-attendance', 'attendance-exception', 'salary-register']
+  const monthCodes = ['monthly-attendance', 'attendance-exception', 'salary-register', 'pt-register']
   const showPeriod = !!activeReport.code && periodCodes.includes(activeReport.code)
   const showMonth = !!activeReport.code && monthCodes.includes(activeReport.code)
   useEffect(() => { void getClients().then(rows => { const active = rows.filter(x => x.isActive); setClients(active); setClientId(current => current || active[0]?.id || 0) }) }, [])
