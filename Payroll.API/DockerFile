@@ -1,12 +1,12 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-# This copies everything from your root repository into the /src directory
+# Copies the contents of hrms/Payroll.API into /src
 COPY . .
 
-# Since everything was copied from the root, specify the subfolder path to the .csproj
-RUN dotnet restore "Payroll.API/Payroll.API.csproj"
-RUN dotnet publish "Payroll.API/Payroll.API.csproj" -c Release -o /app/publish
+# Look for the project file directly in the current directory
+RUN dotnet restore "Payroll.API.csproj"
+RUN dotnet publish "Payroll.API.csproj" -c Release -o /app/publish
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app

@@ -20,6 +20,21 @@ builder.Host.UseSerilog((context, configuration) => configuration
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+// builder.Services.AddCors(options =>
+// {
+//     options.AddDefaultPolicy(policy =>
+//     {
+//         policy.SetIsOriginAllowed(origin =>
+//               {
+//                   if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+//                   return uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+//                          || uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase);
+//               })
+//               .AllowCredentials()
+//               .AllowAnyHeader()
+//               .AllowAnyMethod();
+//     });
+// });
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>

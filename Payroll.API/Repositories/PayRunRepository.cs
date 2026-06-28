@@ -62,8 +62,7 @@ CREATE TABLE IF NOT EXISTS PayRunEmployees (
     IsSkipped BOOLEAN NOT NULL DEFAULT FALSE,
     PaymentStatus VARCHAR(30) NOT NULL DEFAULT 'Pending',
     DetailsJson JSON NOT NULL,
-    UNIQUE KEY UX_PayRunEmployees_Run_Employee (PayRunId, EmployeeId),
-    CONSTRAINT FK_PayRunEmployees_PayRuns FOREIGN KEY (PayRunId) REFERENCES PayRuns(Id) ON DELETE CASCADE
+    UNIQUE KEY UX_PayRunEmployees_Run_Employee (PayRunId, EmployeeId)
 );
 CREATE TABLE IF NOT EXISTS PayrollAdjustments (
     Id INT PRIMARY KEY AUTO_INCREMENT,
@@ -85,10 +84,11 @@ CREATE TABLE IF NOT EXISTS PayrollAdjustments (
     PayRunId INT NULL,
     CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX IX_PayrollAdjustments_Client_Period_Status (ClientId, PayPeriod, Status),
-    CONSTRAINT FK_PayrollAdjustments_Employees FOREIGN KEY (EmployeeId) REFERENCES Employees(Id),
-    CONSTRAINT FK_PayrollAdjustments_PayRuns FOREIGN KEY (PayRunId) REFERENCES PayRuns(Id) ON DELETE SET NULL
+    INDEX IX_PayrollAdjustments_Client_Period_Status (ClientId, PayPeriod, Status)
 );" );
+        await EnsureForeignKeyAsync(connection, "PayRunEmployees", "FK_PayRunEmployees_PayRuns", "FOREIGN KEY (PayRunId) REFERENCES PayRuns(Id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "PayrollAdjustments", "FK_PayrollAdjustments_Employees", "FOREIGN KEY (EmployeeId) REFERENCES Employees(Id)");
+        await EnsureForeignKeyAsync(connection, "PayrollAdjustments", "FK_PayrollAdjustments_PayRuns", "FOREIGN KEY (PayRunId) REFERENCES PayRuns(Id) ON DELETE SET NULL");
         await EnsureColumnAsync(connection, "PayRunEmployees", "PaymentDate", "DATE NULL");
         await EnsureColumnAsync(connection, "PayRunEmployees", "ClientId", "INT NOT NULL DEFAULT 0");
         await EnsureColumnAsync(connection, "PayRunEmployees", "ClientName", "VARCHAR(250) NULL");
@@ -655,6 +655,18 @@ ORDER BY a.employee_id, a.status;", new { payRun.ClientId, payRun.PayPeriod, Emp
     {
         var exists = await connection.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'payroll' AND TABLE_NAME = @TableName AND COLUMN_NAME = @ColumnName", new { TableName = tableName, ColumnName = columnName });
         if (exists == 0) await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition}");
+    }
+
+    private static async Task EnsureForeignKeyAsync(MySqlConnection connection, string tableName, string constraintName, string definition)
+    {
+        var exists = await connection.ExecuteScalarAsync<int>(@"
+SELECT COUNT(*)
+FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+WHERE CONSTRAINT_SCHEMA = 'payroll'
+  AND CONSTRAINT_NAME = @ConstraintName;", new { ConstraintName = constraintName });
+
+        if (exists == 0)
+            await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD CONSTRAINT `{constraintName}` {definition}");
     }
 
     private static async Task EnsurePayRunIndexAsync(MySqlConnection connection)

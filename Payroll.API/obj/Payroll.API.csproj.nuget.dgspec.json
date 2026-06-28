@@ -1,20 +1,20 @@
 {
   "format": 1,
   "restore": {
-    "C:\\hrms\\Payroll.API\\Payroll.API.csproj": {}
+    "D:\\Personal\\payroll\\Payroll.API\\Payroll.API.csproj": {}
   },
   "projects": {
-    "C:\\hrms\\Payroll.API\\Payroll.API.csproj": {
+    "D:\\Personal\\payroll\\Payroll.API\\Payroll.API.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "C:\\hrms\\Payroll.API\\Payroll.API.csproj",
+        "projectUniqueName": "D:\\Personal\\payroll\\Payroll.API\\Payroll.API.csproj",
         "projectName": "Payroll.API",
-        "projectPath": "C:\\hrms\\Payroll.API\\Payroll.API.csproj",
-        "packagesPath": "C:\\Users\\kinsh.000\\.nuget\\packages\\",
-        "outputPath": "C:\\hrms\\Payroll.API\\obj\\",
+        "projectPath": "D:\\Personal\\payroll\\Payroll.API\\Payroll.API.csproj",
+        "packagesPath": "C:\\Users\\niranjan.kumar\\.nuget\\packages\\",
+        "outputPath": "D:\\Personal\\payroll\\Payroll.API\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
-          "C:\\Users\\kinsh.000\\AppData\\Roaming\\NuGet\\NuGet.Config"
+          "C:\\Users\\niranjan.kumar\\AppData\\Roaming\\NuGet\\NuGet.Config"
         ],
         "originalTargetFrameworks": [
           "net8.0"
@@ -58,14 +58,6 @@
             "MySqlConnector": {
               "target": "Package",
               "version": "[2.6.0, )"
-            },
-            "Serilog.AspNetCore": {
-              "target": "Package",
-              "version": "[8.0.3, )"
-            },
-            "Serilog.Sinks.File": {
-              "target": "Package",
-              "version": "[5.0.0, )"
             },
             "Swashbuckle.AspNetCore": {
               "target": "Package",
