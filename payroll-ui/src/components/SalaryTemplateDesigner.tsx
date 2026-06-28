@@ -3,6 +3,7 @@ import DataTable from './DataTable'
 import type { Client, Component, Structure } from '../types/payroll'
 import { calculateSalaryDetails, calculateSalaryTotals } from '../utils/salary'
 import PageTabs from './PageTabs'
+import SearchSelect, { selectOptions } from './SearchSelect'
 import '../TemplateDesigner.css'
 
 const componentTabs = ['Earning', 'Deduction', 'Reimbursement'] as const
@@ -42,7 +43,7 @@ export default function SalaryTemplateDesigner({ clients, components, structure,
   return <Card title="Enterprise salary template designer">
     <div className="salary-template-designer">
       <div className="salary-template-head">
-        <label>Client<select value={structure.clientId} onChange={event => setStructure({ ...structure, clientId: event.target.value })}><option value="">Select</option>{clients.map(client => <option value={`${client.id}:${client.name}`} key={client.id}>{client.name}</option>)}</select></label>
+        <label>Client<SearchSelect value={structure.clientId} onChange={value => setStructure({ ...structure, clientId: value })} options={selectOptions(clients.map(client => ({ value: `${client.id}:${client.name}`, label: client.name })), 'Select client')} /></label>
         <label>Template<input value={structure.name} onChange={event => setStructure({ ...structure, name: event.target.value })} /></label>
         <label>Annual CTC<input value={structure.annualCtc} onChange={event => setStructure({ ...structure, annualCtc: event.target.value.replace(/\D/g, '') })} /></label>
         <button type="button" onClick={saveTemplate}>Save Template</button>

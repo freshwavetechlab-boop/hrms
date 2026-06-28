@@ -3,7 +3,7 @@ import { toast } from '../components/ToastProvider'
 export const api = import.meta.env.VITE_API_URL ?? 'http://localhost:5062'
 
 type ToastMode = boolean | 'error-only'
-type ApiOptions = RequestInit & { timeoutMs?: number; toast?: ToastMode; successMessage?: string }
+export type ApiOptions = RequestInit & { timeoutMs?: number; toast?: ToastMode; successMessage?: string }
 type ApiResult<TResult> = { ok: boolean; data: TResult; error: string; status: number }
 
 const legacyTokenKey = 'payroll.auth.token'

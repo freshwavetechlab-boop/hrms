@@ -60,6 +60,7 @@ using (var scope = app.Services.CreateScope())
     await workflowDb.OpenAsync(); await workflowDb.ExecuteAsync("USE payroll; CREATE TABLE IF NOT EXISTS EssLeaveRequests (Id BIGINT PRIMARY KEY AUTO_INCREMENT,EmployeeId INT NOT NULL,ClientId INT NOT NULL,LeaveTypeId INT NOT NULL,FromDate DATE NOT NULL,ToDate DATE NOT NULL,Days DECIMAL(8,2) NOT NULL,Reason VARCHAR(1000),Status VARCHAR(40) NOT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);");
     var essRepository = scope.ServiceProvider.GetRequiredService<EssMssRepository>();
     await essRepository.ReconcileLeaveWorkflowStatusesAsync();
+    await DatabaseBootstrapper.RunIfEnabledAsync(builder.Configuration, app.Environment.ContentRootPath, app.Logger);
 }
 
 if (app.Environment.IsDevelopment())

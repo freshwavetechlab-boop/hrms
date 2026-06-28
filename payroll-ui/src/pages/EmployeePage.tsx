@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Chk, F, Sel } from '../components/FormPrimitives'
 import DataTable from '../components/DataTable'
 import PageTabs from '../components/PageTabs'
+import SearchSelect, { selectOptions } from '../components/SearchSelect'
 import { demoComponents, demoStructures, employee0, setup0 } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
 import { getDropdowns, getSetup, getWorkLocations, saveEmployee as persistEmployee } from '../services/settingsService'
@@ -70,7 +71,7 @@ export default function EmployeePage() {
 function EmployeeDirectory(p: { clients: Client[]; employees: Employee[]; allCount: number; clientFilter: number; setClientFilter: (id: number) => void; query: string; setQuery: (value: string) => void; onNew: () => void; onEdit: (employee: Employee) => void }) {
   const clientName = (id: number) => p.clients.find(client => client.id === id)?.name ?? `Client #${id || '-'}`
   return <section className="card employee-directory"><header><i className="blue">E</i><div><h3>Employee master</h3><p>Search client-wise employees. Create or edit details in a focused popup.</p></div><button type="button" onClick={p.onNew}>New employee</button></header>
-    <div className="employee-directory-tools"><label><span>Client</span><select value={p.clientFilter} onChange={event => p.setClientFilter(Number(event.target.value))}><option value="0">All clients</option>{p.clients.map(client => <option value={client.id} key={client.id}>{client.name}</option>)}</select></label><label><span>Search</span><input value={p.query} onChange={event => p.setQuery(event.target.value)} placeholder="Code, name, department, email..." /></label><div><span>Showing</span><b>{p.employees.length} / {p.allCount}</b></div></div>
+    <div className="employee-directory-tools"><label><span>Client</span><SearchSelect value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={selectOptions(p.clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label><label><span>Search</span><input value={p.query} onChange={event => p.setQuery(event.target.value)} placeholder="Code, name, department, email..." /></label><div><span>Showing</span><b>{p.employees.length} / {p.allCount}</b></div></div>
     <DataTable rows={p.employees} onEdit={p.onEdit} emptyText="No employees found for the selected filters." exportFileName="employees" columns={[
       { key: 'employeeName', label: 'Employee', value: row => `${row.firstName} ${row.lastName}`.trim(), render: row => <><strong>{row.firstName} {row.lastName}</strong><small>{row.employeeCode}</small></> },
       { key: 'clientName', label: 'Client', value: row => clientName(row.clientId) },

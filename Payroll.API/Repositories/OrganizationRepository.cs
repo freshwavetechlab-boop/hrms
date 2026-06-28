@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS Employees (
         await EnsureColumnAsync(connection, "SetupCompleted", "BOOLEAN NOT NULL DEFAULT FALSE");
         await EnsureColumnAsync(connection, "LogoDataUrl", "LONGTEXT NULL");
         await EnsureTableColumnAsync(connection, "Clients", "PayScheduleJson", "JSON NULL");
+        await PayrollDataTableStore.EnsureAsync(connection);
     }
 
     private static async Task EnsureColumnAsync(MySqlConnection connection, string columnName, string definition)
@@ -187,6 +188,7 @@ WHERE TABLE_SCHEMA = 'payroll'
             await connection.ExecuteAsync(@"INSERT INTO DropdownMasters (Type, Value) VALUES ('Department','Engineering'),('Department','Finance'),('Department','HR'),('Designation','Software Engineer'),('Designation','Payroll Executive'),('Designation','Manager'),('Employment Type','Full Time'),('Employee Grade','L1'),('Employee Grade','L2'),('Cost Center','CC-TECH');");
 
         var setupJson = @"{""salaryComponents"":[{""id"":101,""code"":""BASIC"",""componentType"":""Basic"",""category"":""Earning"",""name"":""Basic"",""payType"":""Fixed Pay"",""calculationType"":""Percentage of CTC"",""value"":""40"",""formula"":""CTC * 40%"",""baseComponent"":""CTC"",""taxable"":true,""ctc"":true,""proRata"":true,""fbp"":false,""restrictFbp"":false,""epf"":""Always"",""esi"":true,""recurring"":true,""scheduled"":false,""investmentType"":"""",""correctionOf"":"""",""active"":true,""priority"":""10""},{""id"":102,""code"":""HRA"",""componentType"":""House Rent Allowance"",""category"":""Earning"",""name"":""House Rent Allowance"",""payType"":""Fixed Pay"",""calculationType"":""Formula"",""value"":"""",""formula"":""BASIC * 50%"",""baseComponent"":""BASIC"",""taxable"":true,""ctc"":true,""proRata"":true,""fbp"":false,""restrictFbp"":false,""epf"":""Never"",""esi"":true,""recurring"":true,""scheduled"":false,""investmentType"":"""",""correctionOf"":"""",""active"":true,""priority"":""20""},{""id"":103,""code"":""SPAL"",""componentType"":""Custom Allowance"",""category"":""Earning"",""name"":""Special Allowance"",""payType"":""Fixed Pay"",""calculationType"":""Balancing Amount"",""value"":"""",""formula"":""CTC - SUM(Fixed Earnings)"",""baseComponent"":""CTC"",""taxable"":true,""ctc"":true,""proRata"":true,""fbp"":false,""restrictFbp"":false,""epf"":""Never"",""esi"":true,""recurring"":true,""scheduled"":false,""investmentType"":"""",""correctionOf"":"""",""active"":true,""priority"":""90""},{""id"":104,""code"":""PF"",""componentType"":""Provident Fund"",""category"":""Deduction"",""name"":""Provident Fund"",""payType"":""Fixed Pay"",""calculationType"":""Formula"",""value"":"""",""formula"":""MIN(BASIC,15000)*12%"",""baseComponent"":""BASIC"",""taxable"":false,""ctc"":true,""proRata"":true,""fbp"":false,""restrictFbp"":false,""epf"":""Never"",""esi"":false,""recurring"":true,""scheduled"":false,""investmentType"":"""",""correctionOf"":"""",""active"":true,""priority"":""110""}],""salaryStructures"":[{""id"":201,""clientId"":""1:Acme Technologies"",""name"":""Acme Default CTC"",""annualCtc"":""900000"",""lines"":[{""componentId"":""101"",""value"":""40% of CTC""},{""componentId"":""102"",""value"":""50% of BASIC""},{""componentId"":""103"",""value"":""Balance""},{""componentId"":""104"",""value"":""MIN(BASIC,15000)*12%""}],""active"":true}],""payslipTemplates"":[{""id"":301,""clientId"":""1:Acme Technologies"",""name"":""Acme Classic Payslip"",""theme"":""Classic"",""showLogo"":true,""showClient"":true,""showYtd"":true,""showBank"":true,""note"":""This is a system generated payslip."",""active"":true}],""tax"":{""pan"":""ABCDE1234F"",""tan"":""ABCD12345E"",""aoCode"":""BLR/W/123/1"",""frequency"":""Monthly""},""schedule"":{""workWeek"":""Monday - Friday"",""salaryDays"":""Actual days"",""fixedDays"":""30"",""payDay"":""Last working day"",""firstPayPeriod"":""2026-06""},""statutory"":{""epf"":true,""epfNumber"":""BG/BNG/1234567"",""epfCtc"":true,""abry"":false,""epfContribution"":""Both Employee and Employer"",""restrictPf"":true,""esi"":false,""esiNumber"":"""",""pt"":true,""ptNumber"":""PT-KA-12345"",""ptState"":""Karnataka"",""ptCycle"":""Monthly"",""ptSlabs"":""Up to 15000: 0\n15001 and above: 200"",""lwf"":true,""lwfState"":""Karnataka"",""lwfCycle"":""Half-yearly"",""lwfEligibilityLimit"":""15000"",""lwfEmployeeContribution"":""20"",""lwfEmployerContribution"":""40""}}";
+        setupJson = DefaultSetupJson;
         var hasSetup = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM PayrollSetups");
         if (hasSetup == 0)
             await connection.ExecuteAsync("INSERT INTO PayrollSetups (SetupJson) VALUES (@setupJson)", new { setupJson });
@@ -308,8 +310,7 @@ WHERE Id = @Id;";
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
-        return await connection.ExecuteScalarAsync<string?>("SELECT SetupJson FROM PayrollSetups ORDER BY Id LIMIT 1")
-            ?? "{}";
+        return await PayrollDataTableStore.GetSetupJsonAsync(connection);
     }
 
     public async Task SaveSetupAsync(string setupJson)
@@ -317,11 +318,7 @@ WHERE Id = @Id;";
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
-        var id = await connection.ExecuteScalarAsync<int?>("SELECT Id FROM PayrollSetups ORDER BY Id LIMIT 1");
-        if (id is null)
-            await connection.ExecuteAsync("INSERT INTO PayrollSetups (SetupJson) VALUES (@SetupJson);", new { SetupJson = setupJson });
-        else
-            await connection.ExecuteAsync("UPDATE PayrollSetups SET SetupJson = @SetupJson WHERE Id = @Id;", new { SetupJson = setupJson, Id = id });
+        await PayrollDataTableStore.SaveSetupJsonAsync(connection, setupJson);
     }
 
     public async Task<IEnumerable<Client>> GetClientsAsync()
@@ -329,7 +326,9 @@ WHERE Id = @Id;";
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
-        return await connection.QueryAsync<Client>("SELECT * FROM Clients ORDER BY Name");
+        var clients = (await connection.QueryAsync<Client>("SELECT * FROM Clients ORDER BY Name")).ToList();
+        await PayrollDataTableStore.ApplyClientPaySchedulesAsync(connection, clients);
+        return clients;
     }
 
     public async Task<int> SaveClientAsync(Client client)
@@ -340,10 +339,13 @@ WHERE Id = @Id;";
         if (client.Id == 0)
         {
             const string sql = "INSERT INTO Clients (Name, Code, ContactPerson, Email, Phone, Address, PayScheduleJson, IsActive) VALUES (@Name, @Code, @ContactPerson, @Email, @Phone, @Address, @PayScheduleJson, @IsActive); SELECT LAST_INSERT_ID();";
-            return (int)await connection.ExecuteScalarAsync<long>(sql, client);
+            client.Id = (int)await connection.ExecuteScalarAsync<long>(sql, client);
+            await PayrollDataTableStore.SyncClientPayScheduleAsync(connection, client.Id, client.PayScheduleJson);
+            return client.Id;
         }
 
         await connection.ExecuteAsync("UPDATE Clients SET Name=@Name, Code=@Code, ContactPerson=@ContactPerson, Email=@Email, Phone=@Phone, Address=@Address, PayScheduleJson=@PayScheduleJson, IsActive=@IsActive WHERE Id=@Id", client);
+        await PayrollDataTableStore.SyncClientPayScheduleAsync(connection, client.Id, client.PayScheduleJson);
         return client.Id;
     }
 
@@ -392,7 +394,9 @@ WHERE Id = @Id;";
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
-        return await connection.QueryAsync<Employee>("SELECT * FROM Employees ORDER BY FirstName, LastName");
+        var employees = (await connection.QueryAsync<Employee>("SELECT * FROM Employees ORDER BY FirstName, LastName")).ToList();
+        await PayrollDataTableStore.ApplyEmployeeTablesAsync(connection, employees);
+        return employees;
     }
 
     public async Task<int> SaveEmployeeAsync(Employee employee)
@@ -401,8 +405,14 @@ WHERE Id = @Id;";
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
         if (employee.Id == 0)
-            return (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO Employees (ClientId, EmployeeCode, FirstName, LastName, Gender, DateOfJoining, WorkEmail, Department, Designation, WorkLocationId, ReportingManagerId, PortalAccess, SalaryStructureId, AnnualCtc, SalaryJson, PersonalJson, PaymentJson, IsActive) VALUES (@ClientId, @EmployeeCode, @FirstName, @LastName, @Gender, @DateOfJoining, @WorkEmail, @Department, @Designation, @WorkLocationId, @ReportingManagerId, @PortalAccess, @SalaryStructureId, @AnnualCtc, @SalaryJson, @PersonalJson, @PaymentJson, @IsActive); SELECT LAST_INSERT_ID();", employee);
-        await connection.ExecuteAsync(@"UPDATE Employees SET ClientId=@ClientId, EmployeeCode=@EmployeeCode, FirstName=@FirstName, LastName=@LastName, Gender=@Gender, DateOfJoining=@DateOfJoining, WorkEmail=@WorkEmail, Department=@Department, Designation=@Designation, WorkLocationId=@WorkLocationId, ReportingManagerId=@ReportingManagerId, PortalAccess=@PortalAccess, SalaryStructureId=@SalaryStructureId, AnnualCtc=@AnnualCtc, SalaryJson=@SalaryJson, PersonalJson=@PersonalJson, PaymentJson=@PaymentJson, IsActive=@IsActive WHERE Id=@Id", employee);
+            employee.Id = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO Employees (ClientId, EmployeeCode, FirstName, LastName, Gender, DateOfJoining, WorkEmail, Department, Designation, WorkLocationId, ReportingManagerId, PortalAccess, SalaryStructureId, AnnualCtc, SalaryJson, PersonalJson, PaymentJson, IsActive) VALUES (@ClientId, @EmployeeCode, @FirstName, @LastName, @Gender, @DateOfJoining, @WorkEmail, @Department, @Designation, @WorkLocationId, @ReportingManagerId, @PortalAccess, @SalaryStructureId, @AnnualCtc, @SalaryJson, @PersonalJson, @PaymentJson, @IsActive); SELECT LAST_INSERT_ID();", employee);
+        else
+            await connection.ExecuteAsync(@"UPDATE Employees SET ClientId=@ClientId, EmployeeCode=@EmployeeCode, FirstName=@FirstName, LastName=@LastName, Gender=@Gender, DateOfJoining=@DateOfJoining, WorkEmail=@WorkEmail, Department=@Department, Designation=@Designation, WorkLocationId=@WorkLocationId, ReportingManagerId=@ReportingManagerId, PortalAccess=@PortalAccess, SalaryStructureId=@SalaryStructureId, AnnualCtc=@AnnualCtc, SalaryJson=@SalaryJson, PersonalJson=@PersonalJson, PaymentJson=@PaymentJson, IsActive=@IsActive WHERE Id=@Id", employee);
+        await PayrollDataTableStore.SyncEmployeeTablesAsync(connection, employee);
         return employee.Id;
     }
+
+    private static string DefaultSetupJson => """
+{"salaryComponents":[{"id":101,"code":"BASIC","componentType":"Basic","category":"Earning","name":"Basic","payType":"Fixed Pay","calculationType":"Formula","value":"","formula":"GROSS * 50%","baseComponent":"GROSS","taxable":true,"ctc":true,"proRata":true,"fbp":false,"restrictFbp":false,"epf":"Always","esi":true,"recurring":true,"scheduled":false,"investmentType":"","correctionOf":"","active":true,"priority":"10"},{"id":102,"code":"HRA","componentType":"House Rent Allowance","category":"Earning","name":"HRA","payType":"Fixed Pay","calculationType":"Formula","value":"","formula":"BASIC * 40%","baseComponent":"BASIC","taxable":true,"ctc":true,"proRata":true,"fbp":false,"restrictFbp":false,"epf":"Never","esi":true,"recurring":true,"scheduled":false,"investmentType":"","correctionOf":"","active":true,"priority":"20"},{"id":103,"code":"TEL_ALLOW","componentType":"Telephone","category":"Earning","name":"Telephonic Allowance","payType":"Fixed Pay","calculationType":"Fixed Amount","value":"2000","formula":"","baseComponent":"","taxable":true,"ctc":true,"proRata":true,"fbp":false,"restrictFbp":false,"epf":"Never","esi":true,"recurring":true,"scheduled":false,"investmentType":"","correctionOf":"","active":true,"priority":"30"},{"id":104,"code":"STAT_BONUS","componentType":"Bonus","category":"Earning","name":"Statutory Bonus","payType":"Fixed Pay","calculationType":"Formula","value":"","formula":"ROUNDDOWN(BASIC * 8.33%)","baseComponent":"BASIC","taxable":true,"ctc":true,"proRata":true,"fbp":false,"restrictFbp":false,"epf":"Never","esi":true,"recurring":true,"scheduled":false,"investmentType":"","correctionOf":"","active":true,"priority":"40"},{"id":105,"code":"MED_ALLOW","componentType":"Medical Allowance","category":"Earning","name":"Medical Allowance","payType":"Fixed Pay","calculationType":"Fixed Amount","value":"1250","formula":"","baseComponent":"","taxable":true,"ctc":true,"proRata":true,"fbp":false,"restrictFbp":false,"epf":"Never","esi":true,"recurring":true,"scheduled":false,"investmentType":"","correctionOf":"","active":true,"priority":"50"},{"id":106,"code":"OTHER_ALLOW","componentType":"Custom Allowance","category":"Earning","name":"Other Allowance","payType":"Fixed Pay","calculationType":"Residual / Balancing","value":"","formula":"GROSS - SUM(Fixed Earnings)","baseComponent":"GROSS","taxable":true,"ctc":true,"proRata":true,"fbp":false,"restrictFbp":false,"epf":"Never","esi":true,"recurring":true,"scheduled":false,"investmentType":"","correctionOf":"","active":true,"priority":"60"},{"id":107,"code":"LAPTOP_ALLOW","componentType":"Custom Allowance","category":"Earning","name":"Laptop Allowance","payType":"Fixed Pay","calculationType":"Fixed Amount","value":"2000","formula":"","baseComponent":"","taxable":true,"ctc":true,"proRata":true,"fbp":false,"restrictFbp":false,"epf":"Never","esi":true,"recurring":true,"scheduled":false,"investmentType":"","correctionOf":"","active":true,"priority":"70"},{"id":108,"code":"TA_DA","componentType":"Custom Allowance","category":"Earning","name":"TA/DA","payType":"Variable Pay","calculationType":"Manual / Variable","value":"","formula":"","baseComponent":"","taxable":true,"ctc":false,"proRata":true,"fbp":false,"restrictFbp":false,"epf":"Never","esi":true,"recurring":false,"scheduled":true,"investmentType":"","correctionOf":"","active":true,"priority":"80"},{"id":109,"code":"PF","componentType":"Provident Fund","category":"Deduction","name":"Provident Fund","payType":"Fixed Pay","calculationType":"Formula","value":"","formula":"MIN(BASIC, 15000) * 12%","baseComponent":"BASIC","taxable":false,"ctc":true,"proRata":true,"fbp":false,"restrictFbp":false,"epf":"Never","esi":false,"recurring":true,"scheduled":false,"investmentType":"","correctionOf":"","active":true,"priority":"110"}],"salaryStructures":[{"id":201,"clientId":"1:Acme Technologies","name":"Acme Default CTC","annualCtc":"900000","lines":[{"componentId":"101","value":"GROSS * 50%"},{"componentId":"102","value":"BASIC * 40%"},{"componentId":"103","value":"2000"},{"componentId":"104","value":"ROUNDDOWN(BASIC * 8.33%)"},{"componentId":"105","value":"1250"},{"componentId":"106","value":"GROSS - SUM(Fixed Earnings)"},{"componentId":"107","value":"2000"},{"componentId":"108","value":""},{"componentId":"109","value":"MIN(BASIC,15000)*12%"}],"active":true}],"payslipTemplates":[{"id":301,"clientId":"1:Acme Technologies","name":"Acme Classic Payslip","theme":"Classic","showLogo":true,"showClient":true,"showYtd":true,"showBank":true,"note":"This is a system generated payslip.","active":true}],"tax":{"pan":"ABCDE1234F","tan":"ABCD12345E","aoCode":"BLR/W/123/1","frequency":"Monthly"},"schedule":{"workWeek":"Monday - Friday","salaryDays":"Actual days","fixedDays":"30","payDay":"Last working day","firstPayPeriod":"2026-06"},"statutory":{"epf":true,"epfNumber":"BG/BNG/1234567","epfCtc":true,"abry":false,"epfContribution":"Both Employee and Employer","restrictPf":true,"esi":false,"esiNumber":"","pt":true,"ptNumber":"PT-KA-12345","ptState":"Karnataka","ptCycle":"Monthly","ptSlabs":"Up to 15000: 0\n15001 and above: 200","lwf":true,"lwfState":"Karnataka","lwfCycle":"Half-yearly","lwfEligibilityLimit":"15000","lwfEmployeeContribution":"20","lwfEmployerContribution":"40"}}
+""";
 }

@@ -662,13 +662,7 @@ FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id = lt.id JOIN l
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await connection.ExecuteAsync("USE payroll;");
-        var setupJson = await connection.ExecuteScalarAsync<string?>("SELECT SetupJson FROM PayrollSetups ORDER BY Id LIMIT 1") ?? "{}";
-        using var document = JsonDocument.Parse(setupJson);
-        if (!document.RootElement.TryGetProperty("salaryComponents", out var components)) return false;
-        return components.EnumerateArray().Any(component =>
-            component.TryGetProperty("id", out var id) && id.GetInt32() == componentId &&
-            component.TryGetProperty("calculationType", out var calculationType) &&
-            calculationType.GetString()?.Equals("Formula", StringComparison.OrdinalIgnoreCase) == true);
+        return await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM SalaryComponents WHERE Id=@componentId AND CalculationType='Formula'", new { componentId }) > 0;
     }
 
     private static bool IsValidStatus(string status) =>

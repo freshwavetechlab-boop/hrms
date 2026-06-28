@@ -3,6 +3,7 @@ import { getJson, postJson } from '../services/apiClient'
 import { getClients } from '../services/payrollService'
 import type { Client } from '../types/payroll'
 import DataTable from './DataTable'
+import SearchSelect, { selectOptions } from './SearchSelect'
 
 type Approver = { id: number; displayName: string; email: string; clientId?: number | null }
 type Assignment = { id: number; department: string; userName: string }
@@ -66,9 +67,9 @@ export default function DepartmentHeadAssignments() {
       </header>
       {message && <p className="form-warning">{message}</p>}
       <div className="department-heads-form">
-        <label><span>Client</span><select value={clientId} onChange={event => selectClient(Number(event.target.value))}><option value="0">Select client</option>{clients.filter(client => client.isActive).map(client => <option key={client.id} value={client.id}>{client.name}</option>)}</select></label>
-        <label><span>Department</span><select value={department} onChange={event => setDepartment(event.target.value)} disabled={!clientId}><option value="">Select department</option>{departments.map(value => <option key={value}>{value}</option>)}</select></label>
-        <label><span>Department head user</span><select value={userId} onChange={event => setUserId(event.target.value)} disabled={!clientId}><option value="">Select user</option>{eligibleUsers.map(user => <option key={user.id} value={user.id}>{user.displayName} - {user.email}</option>)}</select></label>
+        <label><span>Client</span><SearchSelect value={clientId} onChange={value => selectClient(Number(value))} options={selectOptions(clients.filter(client => client.isActive).map(client => ({ value: client.id, label: client.name })), 'Select client', 0)} /></label>
+        <label><span>Department</span><SearchSelect value={department} onChange={setDepartment} disabled={!clientId} options={selectOptions(departments, 'Select department')} /></label>
+        <label><span>Department head user</span><SearchSelect value={userId} onChange={setUserId} disabled={!clientId} options={selectOptions(eligibleUsers.map(user => ({ value: user.id, label: `${user.displayName} - ${user.email}` })), 'Select user')} /></label>
         <button type="button" onClick={() => void save()}>Save assignment</button>
       </div>
       {clientId > 0 && (

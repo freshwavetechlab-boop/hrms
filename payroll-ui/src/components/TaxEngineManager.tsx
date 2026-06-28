@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import DataTable from './DataTable'
+import PageTabs from './PageTabs'
 import { Card, Chk, F, Sel } from './FormPrimitives'
 import { useAuthSession } from './AuthGate'
 import type { Client, ClientTaxSetting, TaxDeclarationSection, TaxFinalAdjustment, TaxSlab, TaxSurcharge } from '../types/payroll'
@@ -15,7 +16,7 @@ const section0: TaxDeclarationSection = { id: 0, financialYear: fy, code: '', na
 export default function TaxEngineManager({ clients, onMessage, mode = 'company' }: { clients: Client[]; onMessage: (message: string) => void; mode?: 'company' | 'statutory' }) {
   const session = useAuthSession()
   const canManageStatutory = Boolean(session?.user.permissions.includes('tax.statutory.manage'))
-  const tabs = mode === 'statutory' && canManageStatutory ? ['Financial Years', 'Rule Versions', 'Tax Slabs', 'Tax Surcharges', 'Final Adjustments', 'Declaration Sections', 'HRA Rules', 'Source References', 'Audit Log', 'Engine Preview'] : ['Company Settings']
+  const tabs = useMemo(() => mode === 'statutory' && canManageStatutory ? ['Financial Years', 'Rule Versions', 'Tax Slabs', 'Tax Surcharges', 'Final Adjustments', 'Declaration Sections', 'HRA Rules', 'Source References', 'Audit Log', 'Engine Preview'] : ['Company Settings'], [canManageStatutory, mode])
   const [tab, setTab] = useState<string>(mode === 'statutory' ? 'Financial Years' : 'Company Settings')
   const [tax, setTax] = useState<TaxEngineSetup>({ financialYears: [], ruleVersions: [], regimes: [], clientSettings: [], slabs: [], surcharges: [], finalAdjustments: [], declarationSections: [], deductionOptions: [], standardDeductions: [], rebateRules: [], exemptionRules: [], hraRules: [], sourceReferences: [], auditLogs: [] })
   const [clientRule, setClientRule] = useState<ClientTaxSetting>(clientTax0)
@@ -26,7 +27,7 @@ export default function TaxEngineManager({ clients, onMessage, mode = 'company' 
   const clientOptions = clients.map(client => `${client.id}:${client.name}`)
   const load = async () => setTax(await getTaxEngineSetup())
   useEffect(() => { void load() }, [])
-  useEffect(() => { if (!tabs.includes(tab)) setTab(mode === 'statutory' ? 'Financial Years' : 'Company Settings') }, [canManageStatutory, mode])
+  useEffect(() => { if (!tabs.includes(tab)) setTab(mode === 'statutory' ? 'Financial Years' : 'Company Settings') }, [mode, tab, tabs])
 
   const selectedRule = useMemo(() => tax.clientSettings.find(item => item.clientId === clientRule.clientId && item.financialYear === clientRule.financialYear), [clientRule, tax.clientSettings])
   const clientRuleErrors = validateClientRule(clientRule)
@@ -119,7 +120,7 @@ export default function TaxEngineManager({ clients, onMessage, mode = 'company' 
   if (mode === 'statutory' && !canManageStatutory) return <Card t="Statutory rules"><p className="tax-note">You do not have access to statutory tax rule maintenance.</p></Card>
 
   return <Card t={mode === 'statutory' ? 'Statutory Setup' : 'Tax Engine'}>
-    <div className="page-tabs tax-tabs">{tabs.map(item => <button type="button" className={tab === item ? 'active' : ''} onClick={() => setTab(item)} key={item}>{item}</button>)}</div>
+    <PageTabs items={tabs} value={tab} onChange={setTab} label="Tax engine sections" className="tax-tabs" />
     <div className="component-guide tax-guide"><b>{mode === 'statutory' ? 'Statutory rule book' : 'Client tax controls'}</b><span>{mode === 'statutory' ? 'Maintain FY-wise slabs, surcharges, declaration sections and audit references used by payroll tax calculation.' : 'Configure client-wise regime windows, declaration/POI release and TDS reminder rules.'}</span></div>
 
     {tab === 'Company Settings' && <>
