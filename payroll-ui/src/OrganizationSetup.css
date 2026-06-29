@@ -45,6 +45,12 @@ textarea{width:100%;padding:12px 13px;border:1px solid #dfe2ea;border-radius:9px
 .workflow-review,.workflow-trail{display:grid;gap:12px;margin-top:14px;padding:14px;border:1px solid #ddd6fe;border-radius:10px;background:#faf9ff}.workflow-review>header,.workflow-trail>header{display:flex;align-items:start;justify-content:space-between;padding-bottom:9px;border-bottom:1px solid #e5e8f0}.workflow-review h3,.workflow-trail h3,.workflow-trail h4{margin:0}.workflow-review header p,.workflow-trail header p{margin:3px 0 0;color:#64748b;font-size:.72rem}.workflow-review textarea{min-height:78px}.request-details{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}.request-details div{padding:8px;border:1px solid #e5e8f0;border-radius:8px;background:#fff}.request-details span,.request-details b{display:block}.request-details span{color:#7b8496;font-size:.66rem}.request-details b{margin-top:3px;font-size:.76rem;word-break:break-word}.workflow-review-actions{display:flex;gap:8px;justify-content:flex-end}.workflow-review-actions button{height:34px;border:0;border-radius:7px;background:#6546e8;color:#fff;padding:0 12px;font-weight:800}.workflow-review-actions .secondary{border:1px solid #cfc6f5;background:#fff;color:#5133cc}.workflow-review-actions .danger{background:#be123c}.trail-event{padding:9px;border-left:3px solid #8b77e8;background:#fff}.trail-event b,.trail-event span{display:block}.trail-event b{font-size:.78rem}.trail-event span{margin-top:2px;color:#64748b;font-size:.67rem}.trail-event p{margin:5px 0 0;font-size:.74rem}@media(max-width:600px){.workflow-review-actions{display:grid;grid-template-columns:1fr}.workflow-review-actions button{width:100%}}
 .attendance-review-layout{display:grid;grid-template-columns:minmax(480px,1.08fr) minmax(420px,.92fr);gap:12px;align-items:start}.attendance-employee-list,.attendance-drilldown{display:grid;gap:10px;min-width:0}.attendance-employee-list>header,.attendance-drill-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:12px;border:1px solid #e5e8f0;border-radius:10px;background:#fff}.attendance-employee-list h3,.attendance-drill-head h3{margin:0;font-size:.92rem}.attendance-employee-list p,.attendance-drill-head p{margin:3px 0 0;color:#64748b;font-size:.72rem}.attendance-row-active{outline:2px solid #cfc6f5;outline-offset:-2px;background:#f8f6ff!important}.manual-attendance-table tr{cursor:pointer}.manual-attendance-table input,.manual-attendance-table select{border:1px solid #dfe2ea;border-radius:7px;background:#fff;padding:0 8px;color:#172136}.attendance-drilldown .manual-attendance-table{max-height:560px}.attendance-quick-actions{display:flex;gap:8px;flex-wrap:wrap}.attendance-quick-actions button{height:32px;border:1px solid #dfe2ea;border-radius:8px;background:#fff;padding:0 10px;font-weight:800}.attendance-quick-actions button.primary{border-color:#6546e8;background:#6546e8;color:#fff}.attendance-quick-actions button:disabled{opacity:.48}.missing-day{background:#fff7ed}.missing-day td{border-bottom-color:#fed7aa!important}.attendance-date-table td:first-child strong{font-size:.72rem}@media(max-width:1100px){.attendance-review-layout{grid-template-columns:1fr}.attendance-drilldown .manual-attendance-table{max-height:460px}}@media(max-width:760px){.attendance-employee-list>header,.attendance-drill-head{display:grid}.attendance-quick-actions{display:grid;grid-template-columns:1fr}.attendance-quick-actions button{width:100%}}
 .attendance-simple-toolbar{grid-template-columns:190px auto}.attendance-tabs{display:flex;gap:6px;border-bottom:1px solid #e5e8f0}.attendance-tabs button{height:38px;border:0;border-bottom:3px solid transparent;background:transparent;color:#64748b;padding:0 14px;font-weight:800}.attendance-tabs button.active{border-color:#6546e8;color:#5133cc}.attendance-panel{display:grid;gap:12px;padding:14px;border:1px solid #e5e8f0;border-radius:12px;background:#fff}.attendance-panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.attendance-panel-head h3{margin:0;font-size:1rem}.attendance-panel-head p{margin:3px 0 0;color:#64748b;font-size:.74rem}.attendance-next-actions{display:flex;gap:8px;flex-wrap:wrap}.attendance-next-actions button,.attendance-primary-button,.attendance-simple-table button,.manual-attendance-table button{height:32px;border:1px solid #dfe2ea;border-radius:8px;background:#fff;padding:0 10px;font-weight:800}.attendance-next-actions .primary,.attendance-primary-button{border-color:#6546e8;background:#6546e8;color:#fff}.attendance-daily-picker{max-width:420px}.attendance-daily-picker label{display:grid;gap:5px;color:#465067;font-size:.72rem;font-weight:800}.attendance-daily-picker select{height:34px;border:1px solid #dfe2ea;border-radius:8px;background:#fff;padding:0 10px}.attendance-simple-table{max-height:360px}@media(max-width:760px){.attendance-simple-toolbar,.attendance-panel-head{grid-template-columns:1fr;display:grid}.attendance-tabs{overflow:auto}.attendance-tabs button{white-space:nowrap}.attendance-next-actions{display:grid}.attendance-next-actions button,.attendance-primary-button{width:100%}}
+.attendance-filterbar{display:grid;grid-template-columns:minmax(180px,1fr) 190px 170px;gap:8px}.attendance-filterbar input{height:34px;border:1px solid #dfe2ea;border-radius:8px;background:#fff;padding:0 10px;color:#172136}.attendance-calendar-grid{max-height:520px;overflow:auto;border:1px solid #d7dde8;border-radius:10px;background:#fff}.attendance-calendar-grid table{width:100%;min-width:max-content;border-collapse:separate;border-spacing:0}.attendance-calendar-grid th,.attendance-calendar-grid td{height:34px;min-width:44px;padding:4px 6px;border-right:1px solid #dfe6ef;border-bottom:1px solid #dfe6ef;text-align:center;font-size:.68rem;white-space:nowrap}.attendance-calendar-grid thead th{position:sticky;top:0;z-index:3;background:#eef4fb;color:#42647f}.attendance-calendar-grid thead th b,.attendance-calendar-grid thead th span{display:block}.attendance-calendar-grid .employee-col{position:sticky;left:0;z-index:4;min-width:240px;text-align:left;background:#f8fbff}.attendance-calendar-grid tbody .employee-col{z-index:2;background:#fff}.attendance-calendar-grid .employee-col button{width:100%;height:auto;display:grid;gap:2px;border:0;background:transparent;text-align:left;padding:4px;box-shadow:none}.attendance-calendar-grid .employee-col strong,.attendance-calendar-grid .employee-col small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.attendance-calendar-grid .employee-col small{color:#64748b;font-size:.62rem}.attendance-calendar-grid td.present{background:#8db7a2;color:#fff}.attendance-calendar-grid td.paid{background:#668fc0;color:#fff}.attendance-calendar-grid td.absent{background:#c87575;color:#fff}.attendance-calendar-grid td.missing{background:#eef1f5;color:#7b8496}@media(max-width:760px){.attendance-filterbar{grid-template-columns:1fr}.attendance-calendar-grid .employee-col{min-width:190px}}
+.attendance-file-action{height:32px;display:inline-grid;place-items:center;border:1px solid #dfe2ea;border-radius:8px;background:#fff;padding:0 10px;color:#172136;font-size:.78rem;font-weight:800;cursor:pointer}.attendance-file-action input{display:none}.attendance-next-actions>.app-search-select{width:180px!important}.attendance-calendar-grid td{cursor:pointer}.attendance-cell-label{width:100%;height:100%;border:0!important;background:transparent!important;color:inherit!important;padding:0!important;font-size:.68rem!important;font-weight:800!important;box-shadow:none!important}.attendance-cell-select{width:132px}.attendance-cell-select .app-search-select .ant-select-selector{height:26px!important;min-height:26px!important;padding:0 5px!important}.attendance-cell-select .app-search-select .ant-select-selection-item,.attendance-cell-select .app-search-select .ant-select-selection-placeholder{line-height:24px!important;font-size:.65rem!important}.employee-attendance-line{display:flex;gap:4px;flex-wrap:wrap;margin-top:3px}.employee-attendance-line b,.employee-attendance-line i{display:inline-flex!important;align-items:center;height:18px;border-radius:999px;padding:0 6px;font-style:normal;font-size:.58rem;font-weight:900}.attendance-grid-ready .employee-attendance-line b{background:#dcfce7;color:#166534}.attendance-grid-warn .employee-attendance-line b{background:#fef3c7;color:#92400e}.attendance-grid-danger .employee-attendance-line b{background:#fee2e2;color:#991b1b}.employee-attendance-line i{background:#f1f5f9;color:#475569}.attendance-grid-ready .employee-col{box-shadow:inset 4px 0 #22c55e}.attendance-grid-warn .employee-col{box-shadow:inset 4px 0 #f59e0b}.attendance-grid-danger .employee-col{box-shadow:inset 4px 0 #ef4444}.attendance-calendar-grid td.present{background:#22c55e!important}.attendance-calendar-grid td.paid{background:#3b82f6!important}.attendance-calendar-grid td.absent{background:#ef4444!important}.attendance-calendar-grid td.missing{background:#facc15!important;color:#713f12!important}
+.attendance-bulk-date{width:142px!important;height:32px!important;border-radius:8px!important}.attendance-calendar-grid thead th button{width:100%;height:100%;display:grid;place-items:center;border:0!important;background:transparent!important;color:inherit!important;padding:0!important;font:inherit!important;box-shadow:none!important}.attendance-calendar-grid thead th button.bulk-date-on{background:#fff7ed!important;color:#9a3412!important;border-radius:6px!important}
+.attendance-calendar-grid td.weekoff{background:#cbd5e1!important;color:#334155!important}.attendance-calendar-grid td.holiday{background:#14b8a6!important;color:#fff!important}.attendance-calendar-grid td.half{background:#facc15!important;color:#713f12!important}.attendance-calendar-grid td.short{background:#fb923c!important;color:#7c2d12!important}.attendance-cell-label{display:grid!important;place-items:center;gap:1px;line-height:1.05!important}.attendance-cell-label span,.attendance-cell-label small{display:block}.attendance-cell-label span{font-weight:900}.attendance-cell-label small{font-size:.54rem;font-weight:800;opacity:.9}.attendance-cell-editor{width:126px;display:block;padding:3px;background:#fff;border:1px solid #cbd5e1;border-radius:8px;box-shadow:0 8px 18px #0f172a22}.attendance-cell-editor .app-search-select{width:100%!important;min-width:0!important}.attendance-cell-editor .app-search-select .ant-select-selector{height:28px!important;min-height:28px!important;padding:0 5px!important}.attendance-cell-editor .app-search-select .ant-select-selection-item,.attendance-cell-editor .app-search-select .ant-select-selection-placeholder{line-height:26px!important;font-size:.66rem!important}
+.attendance-calendar-grid td{position:relative}.attendance-calendar-grid td[data-tip]:hover::after{content:attr(data-tip);position:absolute;left:50%;top:-30px;z-index:20;transform:translateX(-50%);max-width:180px;padding:5px 8px;border-radius:7px;background:#111827;color:#fff;font-size:.66rem;font-weight:800;white-space:nowrap;box-shadow:0 8px 18px #0f172a33;pointer-events:none}
+.attendance-calendar-grid .employee-col .employee-cell{width:100%;display:grid;gap:2px;text-align:left;padding:4px}.attendance-calendar-grid .employee-col .employee-cell strong,.attendance-calendar-grid .employee-col .employee-cell small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.employee-attendance-line .row-apply{width:auto!important;height:18px!important;border:1px solid #cbd5e1!important;border-radius:999px!important;background:#fff!important;color:#334155!important;padding:0 7px!important;font-size:.58rem!important;font-weight:900!important;box-shadow:none!important}
 .module-shell .app-sidebar{display:flex;flex-direction:column;overflow:hidden}.module-shell .app-sidebar nav{min-height:0;overflow:auto}.module-shell .app-sidebar>.app-launcher{position:static!important;left:auto!important;bottom:auto!important;z-index:auto;margin:12px 0 0 auto!important;flex:none}.module-shell .sidebar-toggle{flex:none;color:#5133cc}.nav-collapsed .app-sidebar{align-items:center}.nav-collapsed .app-sidebar nav{display:none}.nav-collapsed .side-head{width:100%;margin-bottom:0}.nav-collapsed .side-head button.sidebar-toggle{width:38px;height:38px;border-color:#cfc6f5;background:#f6f3ff;color:#5133cc}.nav-collapsed .side-head button.sidebar-toggle .ui-icon{width:18px;height:18px}.nav-collapsed .app-sidebar>.app-launcher{width:38px;height:38px;margin:12px auto 0!important}.nav-collapsed .compact-main{min-width:0}@media(max-width:900px){.nav-collapsed.module-shell{grid-template-columns:1fr}.module-shell .app-sidebar{display:block;overflow:visible}.module-shell .app-sidebar>.app-launcher{position:fixed!important;left:auto!important;right:14px;bottom:14px!important;z-index:20;margin:0!important}.nav-collapsed .app-sidebar{align-items:stretch;width:auto}.nav-collapsed .app-sidebar nav{display:grid}.nav-collapsed .side-head button.sidebar-toggle{width:26px;height:26px}.nav-collapsed .brand span{display:inline}.nav-collapsed .submenu{display:grid}.nav-collapsed .sidebar-context{display:block}}
 .page-tabs{display:flex;gap:2px;align-items:flex-end;margin:0 0 14px;border-bottom:1px solid #dfe2ea;overflow:auto;scrollbar-width:thin}.page-tabs button{position:relative;min-width:max-content;height:36px;border:1px solid transparent;border-bottom:0;border-radius:8px 8px 0 0;background:transparent;color:#64748b;padding:0 13px;font-weight:800}.page-tabs button:hover{color:#5133cc;background:#f8f6ff}.page-tabs button.active{border-color:#dfe2ea;background:#fff;color:#5133cc;box-shadow:0 -1px 0 #fff inset}.page-tabs button.active:after{position:absolute;left:10px;right:10px;bottom:0;height:3px;border-radius:999px;background:#6546e8;content:''}.logo-uploader{display:grid;grid-template-columns:86px minmax(0,1fr);gap:12px;align-items:center;padding:10px;border:1px solid #e5e8f0;border-radius:10px;background:#fafbfc}.logo-uploader>span,.logo-uploader img{width:86px;height:58px;border:1px dashed #cfd5df;border-radius:8px;background:#fff}.logo-uploader>span{display:grid;place-items:center;color:#8e96a6;font-size:.68rem;font-weight:800}.logo-uploader img{object-fit:contain;padding:6px}.logo-uploader div{display:grid;gap:6px}.logo-uploader input{height:auto;padding:7px;background:#fff}.logo-uploader small{color:#7b8496;font-size:.66rem}.logo-uploader button.secondary{justify-self:start;min-width:0;height:30px;border:1px solid #fecaca;border-radius:7px;background:#fff;color:#be123c;padding:0 9px;font-weight:800}@media(max-width:620px){.page-tabs button{height:34px;padding:0 11px}.logo-uploader{grid-template-columns:1fr}.logo-uploader>span,.logo-uploader img{width:100%;height:80px}}
 .pt-slab-manager{display:grid;gap:10px;margin-top:14px;padding:12px;border:1px solid #e5e8f0;border-radius:10px;background:#fafbfc}.pt-slab-manager h3{margin:0!important;font-size:.92rem!important}.pt-slab-manager>.grid{padding:10px;border:1px solid #eef0f4;border-radius:9px;background:#fff}.pt-slab-manager>.grid>button{align-self:end;height:34px;border:0;border-radius:8px;background:#6546e8;color:#fff;padding:0 12px;font-weight:800}.pt-slab-manager .data-table{margin-top:0}
@@ -236,4 +242,448 @@ textarea{width:100%;padding:12px 13px;border:1px solid #dfe2ea;border-radius:9px
 
 /* App-wide searchable AntD selects */
 .app-search-select{width:100%!important}.app-search-select .ant-select-selector{height:34px!important;min-height:34px!important;border:1px solid #dfe2ea!important;border-radius:7px!important;background:#fff!important;padding:0 9px!important;box-shadow:none!important}.app-search-select .ant-select-selection-search-input{height:32px!important}.app-search-select .ant-select-selection-item,.app-search-select .ant-select-selection-placeholder{line-height:32px!important;font-size:.78rem!important;color:#172136!important}.app-search-select.ant-select-focused .ant-select-selector{border-color:#8975e9!important;box-shadow:0 0 0 3px #6546e815!important}.app-search-select-dropdown .ant-select-item{font-size:.78rem!important}.app-search-select-dropdown .ant-select-item-option-selected{background:#f3f0ff!important;color:#5133cc!important}
+
+/* Ant Design SaaS shell normalization */
+.portal-shell-mounted body,.payroll-app.module-shell{font-family:Inter,Geist,'DM Sans',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif!important;background:#f7f8fb!important;color:#182033!important}
+.payroll-app.module-shell,.payroll-app.module-shell.nav-collapsed{display:grid!important;grid-template-columns:272px minmax(0,1fr)!important;min-height:100vh!important;gap:0!important}
+.payroll-app.module-shell.nav-collapsed{grid-template-columns:72px minmax(0,1fr)!important}
+.module-shell .app-sidebar{grid-column:1!important;position:sticky!important;top:0!important;width:272px!important;height:100vh!important;border-right:1px solid #e5e7eb!important;background:#fff!important;box-shadow:none!important;border-radius:0!important}
+.module-shell.nav-collapsed .app-sidebar{width:72px!important}
+.module-shell .compact-main{grid-column:2!important;width:100%!important;max-width:none!important;min-width:0!important;padding:0!important;overflow-x:hidden!important}
+.compact-main>.app-topbar{height:64px!important;margin:0!important;padding:0 24px!important;border-bottom:1px solid #e5e7eb!important;background:#fff!important;box-shadow:none!important;border-radius:0!important;position:sticky!important;top:0!important;z-index:20!important}
+.nav-collapsed.module-shell .compact-main>.app-topbar,.nav-collapsed.module-shell .compact-main>.topbar{margin:0!important;padding-left:24px!important}
+.module-content{width:100%!important;max-width:none!important;padding:24px!important;display:grid!important;gap:16px!important}
+.topbar-title h2{font-size:1.35rem!important;letter-spacing:-.02em!important}.topbar-breadcrumb{font-size:.75rem!important}
+
+/* Ant Design attendance workspace */
+.pay-runs.payroll-attendance-page{width:100%!important;max-width:none!important;display:block!important}
+.manual-attendance{width:100%!important;max-width:none!important;display:grid!important;gap:16px!important}
+.attendance-toolbar.attendance-simple-toolbar{display:flex!important;align-items:flex-end!important;gap:12px!important;min-height:40px!important;margin:0!important}
+.attendance-toolbar.attendance-simple-toolbar label,.attendance-client-control{display:grid!important;gap:6px!important;width:220px!important;color:#475569!important;font-size:12px!important;font-weight:600!important}
+.attendance-toolbar.attendance-simple-toolbar label>span,.attendance-client-control>span{margin:0!important;color:#475569!important;font-size:12px!important;font-weight:600!important}
+.attendance-toolbar.attendance-simple-toolbar .ant-input,.attendance-toolbar.attendance-simple-toolbar .app-search-select .ant-select-selector{height:38px!important;min-height:38px!important;border-radius:8px!important}
+.attendance-toolbar.attendance-simple-toolbar .ant-btn{height:38px!important;border-radius:8px!important}
+.attendance-panel.ant-card{border-radius:12px!important;border:1px solid #e5e7eb!important;box-shadow:none!important;overflow:hidden!important;background:#fff!important}
+.attendance-panel.ant-card .ant-card-head{min-height:64px!important;padding:0 20px!important;border-bottom:1px solid #eef2f7!important}
+.attendance-panel.ant-card .ant-card-head-title{padding:14px 0!important}.attendance-panel.ant-card .ant-card-extra{padding:14px 0!important}
+.attendance-panel.ant-card .ant-card-body{display:grid!important;gap:16px!important;padding:18px 20px 20px!important}
+.attendance-panel .ant-typography{margin:0!important}.attendance-panel h4.ant-typography{font-size:18px!important;line-height:1.25!important}
+.attendance-status{border:1px solid #bbf7d0!important;background:#f0fdf4!important;color:#15803d!important;border-radius:999px!important;padding:4px 10px!important;font-size:12px!important;font-weight:600!important}
+.attendance-status.risk{border-color:#fecaca!important;background:#fff1f2!important;color:#be123c!important}
+.attendance-summary{display:grid!important;grid-template-columns:repeat(6,minmax(120px,1fr))!important;gap:12px!important}
+.attendance-summary span{padding:12px!important;border:1px solid #e5e7eb!important;border-radius:10px!important;background:#fbfcfe!important;color:#64748b!important;font-size:11px!important;font-weight:600!important;letter-spacing:.02em!important;text-transform:uppercase!important}
+.attendance-summary b{margin-top:6px!important;color:#111827!important;font-size:20px!important;font-weight:650!important;line-height:1!important}
+.attendance-next-actions.ant-space{width:100%!important}.attendance-next-actions .ant-space-item{min-width:160px!important}.attendance-next-actions .ant-space-item:nth-last-child(-n+2){min-width:auto!important}
+.attendance-next-actions .app-search-select{width:220px!important}.attendance-next-actions .ant-btn,.attendance-next-actions .ant-input,.attendance-next-actions .app-search-select .ant-select-selector{height:38px!important;border-radius:8px!important}
+.attendance-filterbar{display:grid!important;grid-template-columns:minmax(260px,1fr) 220px 180px!important;gap:12px!important}
+.attendance-filterbar .ant-input,.attendance-filterbar .app-search-select .ant-select-selector{height:38px!important;min-height:38px!important;border-radius:8px!important}
+.attendance-table-head{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;padding-top:2px!important}
+.attendance-table-head strong{display:block;color:#111827!important;font-size:14px!important;font-weight:650!important}.attendance-table-head span{display:block;color:#64748b!important;font-size:12px!important}
+.attendance-table-actions .ant-btn,.attendance-file-action.ant-btn{height:34px!important;display:inline-flex!important;align-items:center!important;gap:7px!important;border-radius:8px!important;color:#475569!important;font-size:13px!important;font-weight:500!important;box-shadow:none!important}
+.attendance-file-action input{display:none!important}
+.attendance-calendar-grid{max-height:calc(100vh - 390px)!important;min-height:360px!important;border:1px solid #e5e7eb!important;border-radius:12px!important;background:#fff!important;overflow:auto!important}
+.attendance-calendar-grid th,.attendance-calendar-grid td{height:46px!important;min-width:56px!important;padding:8px 10px!important;border-color:#edf1f7!important;font-size:13px!important}
+.attendance-calendar-grid thead th{background:#f8fafc!important;color:#475569!important;font-weight:650!important}
+.attendance-calendar-grid .employee-col{min-width:300px!important;background:#fff!important}
+.attendance-calendar-grid tbody .employee-col{background:#fff!important}.employee-cell strong{font-size:13px!important;font-weight:650!important}.employee-cell small{font-size:12px!important;color:#64748b!important}
+.employee-attendance-line{gap:6px!important;align-items:center!important}.employee-attendance-line i{height:20px!important;padding:0 7px!important;border-radius:999px!important;background:#f8fafc!important;color:#64748b!important;font-size:11px!important;font-weight:500!important}
+.attendance-dot{width:7px!important;height:7px!important;border-radius:50%!important;display:inline-block!important;background:#22c55e!important}.attendance-dot.warn{background:#f59e0b!important}.attendance-dot.danger{background:#ef4444!important}
+.row-apply{height:22px!important;border:1px solid #e5e7eb!important;border-radius:999px!important;background:#fff!important;color:#475569!important;padding:0 8px!important;font-size:11px!important;font-weight:500!important}
+.attendance-calendar-grid td.present{background:#dcfce7!important;color:#166534!important}.attendance-calendar-grid td.paid{background:#dbeafe!important;color:#1d4ed8!important}.attendance-calendar-grid td.absent{background:#fee2e2!important;color:#991b1b!important}.attendance-calendar-grid td.missing{background:#fef3c7!important;color:#92400e!important}.attendance-calendar-grid td.weekoff{background:#f1f5f9!important;color:#475569!important}.attendance-calendar-grid td.holiday{background:#ccfbf1!important;color:#0f766e!important}.attendance-calendar-grid td.half{background:#fef3c7!important;color:#92400e!important}.attendance-calendar-grid td.short{background:#ffedd5!important;color:#9a3412!important}
+@media(max-width:1100px){.attendance-summary{grid-template-columns:repeat(3,1fr)!important}.attendance-filterbar{grid-template-columns:1fr!important}.attendance-next-actions .ant-space-item,.attendance-next-actions .app-search-select{width:100%!important}.attendance-toolbar.attendance-simple-toolbar{flex-wrap:wrap!important}}
+@media(max-width:700px){.module-content{padding:16px!important}.attendance-summary{grid-template-columns:1fr 1fr!important}.attendance-toolbar.attendance-simple-toolbar label,.attendance-client-control{width:100%!important}}
+
+/* Shell spacing + compact attendance controls */
+.payroll-app.module-shell,.payroll-app.module-shell.nav-collapsed{min-height:100vh!important;background:#f5f6f8!important}
+.module-shell .compact-main{width:100%!important;max-width:none!important;padding:0 16px 24px!important;overflow-x:hidden!important}
+.compact-main>.app-topbar{height:68px!important;margin:0 -16px 12px!important;padding:0 18px!important;width:auto!important;border-radius:0!important}
+.nav-collapsed.module-shell .compact-main{padding-left:16px!important}
+.nav-collapsed.module-shell .compact-main>.app-topbar,.nav-collapsed.module-shell .compact-main>.topbar{margin-left:-16px!important;padding-left:18px!important}
+.module-content{width:100%!important;max-width:none!important;gap:8px!important}
+.pay-runs.payroll-attendance-page{width:100%!important;max-width:none!important;display:grid!important;gap:8px!important}
+.payroll-attendance-page .leave-client-filter{padding:10px 12px!important;border-radius:12px!important;box-shadow:0 1px 8px #1721360a!important}
+.payroll-attendance-page .leave-client-filter label{display:grid!important;grid-template-columns:58px minmax(180px,340px)!important;align-items:center!important;gap:10px!important;margin:0!important}
+.payroll-attendance-page .leave-client-filter label>span{margin:0!important;font-size:.72rem!important}
+.manual-attendance{width:100%!important;max-width:none!important;gap:8px!important}
+.attendance-toolbar.attendance-simple-toolbar{display:flex!important;align-items:end!important;gap:8px!important;margin:0!important}
+.attendance-toolbar.attendance-simple-toolbar label{width:180px!important;gap:3px!important;font-size:.68rem!important}
+.attendance-toolbar.attendance-simple-toolbar input{height:34px!important}
+.attendance-mode button{height:34px!important}
+.attendance-panel{padding:12px!important;border-radius:12px!important;gap:10px!important}
+.attendance-panel-head{align-items:center!important}
+.attendance-panel-head h3{font-size:.98rem!important}
+.attendance-panel-head p{font-size:.7rem!important}
+.attendance-summary{grid-template-columns:repeat(6,minmax(110px,1fr))!important;gap:8px!important}
+.attendance-summary span{padding:8px 10px!important;border-radius:10px!important}
+.attendance-next-actions{display:grid!important;grid-template-columns:auto auto minmax(150px,270px) minmax(150px,220px) auto auto!important;gap:8px!important;align-items:center!important}
+.attendance-next-actions>.app-search-select{width:100%!important}
+.attendance-filterbar{grid-template-columns:minmax(200px,1fr) 190px 170px!important;gap:8px!important}
+@media(max-width:980px){.attendance-summary,.attendance-next-actions,.attendance-filterbar{grid-template-columns:1fr 1fr!important}.attendance-toolbar.attendance-simple-toolbar{flex-wrap:wrap!important}}
+
+/* Global SaaS shell alignment pass */
+html.portal-shell-mounted,
+body.portal-shell-mounted,
+body.portal-shell-mounted #root{
+  width:100%!important;
+  max-width:none!important;
+  min-height:100vh!important;
+  margin:0!important;
+  padding:0!important;
+  background:#f7f8fb!important;
+}
+.payroll-app.module-shell,.payroll-app.module-shell.nav-collapsed{
+  display:grid!important;
+  min-height:100vh!important;
+  height:100vh!important;
+  gap:0!important;
+  background:#f7f8fb!important;
+}
+.payroll-app.module-shell{grid-template-columns:272px minmax(0,1fr)!important}
+.payroll-app.module-shell.nav-collapsed{grid-template-columns:72px minmax(0,1fr)!important}
+.module-shell .app-sidebar{
+  grid-column:1!important;
+  width:272px!important;
+  height:100vh!important;
+  padding:16px 14px!important;
+  border-right:1px solid #e5e7eb!important;
+  border-radius:0!important;
+  background:#fff!important;
+  box-shadow:none!important;
+}
+.module-shell.nav-collapsed .app-sidebar{width:72px!important;padding:12px 10px!important}
+.payroll-app.module-shell:not(.nav-collapsed)>.app-sidebar{width:272px!important}
+.payroll-app.module-shell.nav-collapsed>.app-sidebar{width:72px!important}
+.module-shell .compact-main{
+  grid-column:2!important;
+  min-width:0!important;
+  width:100%!important;
+  height:100vh!important;
+  padding:0!important;
+  overflow:auto!important;
+  background:#f7f8fb!important;
+}
+.compact-main>.app-topbar{
+  height:64px!important;
+  margin:0!important;
+  padding:0 24px!important;
+  border-bottom:1px solid #e5e7eb!important;
+  border-radius:0!important;
+  background:#fff!important;
+  box-shadow:none!important;
+}
+.nav-collapsed.module-shell .compact-main>.app-topbar,.nav-collapsed.module-shell .compact-main>.topbar{margin:0!important;padding-left:24px!important}
+.module-content{
+  width:100%!important;
+  max-width:none!important;
+  min-width:0!important;
+  padding:18px 24px 28px!important;
+  gap:16px!important;
+}
+.module-shell .sidebar-context{
+  height:58px!important;
+  padding:10px!important;
+  border:1px solid #eef1f6!important;
+  border-radius:12px!important;
+  background:#fff!important;
+  box-shadow:none!important;
+}
+.module-shell .sidebar-context i{width:34px!important;height:34px!important;border-radius:10px!important}
+.module-shell .context-menu button,.module-shell .context-menu a{min-height:38px!important;border-radius:9px!important}
+.app-topbar .topbar-title{min-width:0!important}
+.app-topbar .topbar-title h2{font-size:1.32rem!important;line-height:1.15!important}
+.app-topbar .global-search-antd{width:clamp(220px,24vw,320px)!important;min-width:220px!important}
+.module-content :is(.ant-input,.ant-picker,.ant-select-selector,.ant-btn){
+  min-height:38px!important;
+  border-radius:8px!important;
+}
+.module-content :is(.ant-card,.card,.section-card,.setup-card){
+  border-color:#e5e7eb!important;
+  border-radius:12px!important;
+  box-shadow:none!important;
+}
+.module-content :is(.ant-card-body,.card){padding:18px!important}
+.module-content :is(.ant-table-thead>tr>th){
+  background:#f8fafc!important;
+  color:#475569!important;
+  font-size:12px!important;
+  font-weight:650!important;
+}
+.module-content :is(.ant-table-tbody>tr>td){
+  padding-top:12px!important;
+  padding-bottom:12px!important;
+  color:#1f2937!important;
+  font-size:13px!important;
+}
+.attendance-toolbar.attendance-simple-toolbar{
+  display:flex!important;
+  align-items:end!important;
+  flex-wrap:wrap!important;
+  gap:12px!important;
+  padding:12px 16px!important;
+  border:1px solid #e5e7eb!important;
+  border-radius:12px!important;
+  background:#fff!important;
+}
+.attendance-toolbar.attendance-simple-toolbar label,.attendance-client-control{width:240px!important}
+.attendance-toolbar.attendance-simple-toolbar .ant-btn{width:auto!important}
+.attendance-panel.ant-card .ant-card-head{min-height:60px!important;padding:0 18px!important}
+.attendance-panel.ant-card .ant-card-body{padding:16px 18px 18px!important}
+.attendance-summary{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))!important}
+.attendance-next-actions.ant-space{
+  display:flex!important;
+  align-items:center!important;
+  flex-wrap:wrap!important;
+  gap:8px!important;
+  padding:10px 12px!important;
+  border:1px solid #eef2f7!important;
+  border-radius:10px!important;
+  background:#fbfcfe!important;
+}
+.attendance-next-actions .ant-space-item{min-width:180px!important}
+.attendance-next-actions .ant-space-item:last-child,.attendance-next-actions .ant-space-item:nth-last-child(2){min-width:auto!important}
+.attendance-filterbar{grid-template-columns:minmax(240px,1fr) 220px 190px!important;gap:10px!important}
+.attendance-calendar-grid{max-height:calc(100vh - 410px)!important}
+@media(max-width:1100px){
+  .app-topbar .global-search-antd{display:none!important}
+  .module-content{padding:16px!important}
+  .attendance-filterbar{grid-template-columns:1fr!important}
+}
+@media(max-width:700px){
+  .payroll-app.module-shell,.payroll-app.module-shell.nav-collapsed{grid-template-columns:64px minmax(0,1fr)!important}
+  .module-shell .app-sidebar,.module-shell.nav-collapsed .app-sidebar{width:64px!important}
+  .compact-main>.app-topbar{height:60px!important;padding:0 14px!important}
+  .module-content{padding:12px!important}
+  .attendance-summary{grid-template-columns:1fr 1fr!important}
+  .attendance-toolbar.attendance-simple-toolbar label,.attendance-client-control,.attendance-next-actions .ant-space-item{width:100%!important;min-width:0!important}
+}
+
+/* Seal shell against older responsive overrides */
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell:not(.nav-collapsed){
+  grid-template-columns:272px minmax(0,1fr)!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed{
+  grid-template-columns:72px minmax(0,1fr)!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell:not(.nav-collapsed)>.app-sidebar{
+  grid-column:1!important;
+  width:272px!important;
+  min-width:272px!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed>.app-sidebar{
+  grid-column:1!important;
+  width:72px!important;
+  min-width:72px!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main{
+  grid-column:2!important;
+  width:auto!important;
+  min-width:0!important;
+  margin:0!important;
+  padding:0!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main>.app-topbar{
+  width:100%!important;
+  margin:0!important;
+  padding-left:24px!important;
+}
+
+/* Global density pass: keep information, reduce wasted vertical space */
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main>.app-topbar{
+  height:56px!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main>.module-content{
+  padding:12px 18px 20px!important;
+  gap:10px!important;
+}
+.app-topbar .topbar-title h2{
+  font-size:1.18rem!important;
+  line-height:1.1!important;
+}
+.app-topbar .topbar-breadcrumb li,
+.app-topbar .topbar-breadcrumb a,
+.app-topbar .topbar-breadcrumb span{
+  font-size:.64rem!important;
+}
+.module-content .card.section-card,
+.module-content .card,
+.module-content .ant-card{
+  padding:12px 14px!important;
+  border-radius:10px!important;
+}
+.module-content .card>header{
+  margin-bottom:10px!important;
+  padding-bottom:10px!important;
+}
+.module-content :is(.ant-input,.ant-picker,.ant-select-selector,.ant-btn){
+  min-height:34px!important;
+}
+.page-tabs-ant{
+  margin:0 0 8px!important;
+}
+.page-tabs-ant .ant-tabs-tab{
+  padding:6px 0!important;
+  font-size:.75rem!important;
+}
+.page-tabs-ant .ant-tabs-nav{
+  margin:0!important;
+}
+.page-tabs-ant .ant-tabs-ink-bar{
+  height:2px!important;
+}
+.component-table-head,
+.ant-table-toolbar,
+.smart-table-toolbar{
+  gap:8px!important;
+  margin-bottom:8px!important;
+}
+.component-table-head b{
+  font-size:.86rem!important;
+}
+.component-table-head span{
+  font-size:.68rem!important;
+}
+.component-table-head button{
+  height:32px!important;
+  padding:0 12px!important;
+  border-radius:9px!important;
+}
+.component-guide{
+  grid-template-columns:auto minmax(0,1fr)!important;
+  align-items:center!important;
+  gap:8px!important;
+  margin:0 0 8px!important;
+  padding:8px 10px!important;
+  border-radius:9px!important;
+}
+.component-guide b{
+  white-space:nowrap!important;
+  font-size:.74rem!important;
+}
+.component-guide span{
+  font-size:.7rem!important;
+  line-height:1.35!important;
+}
+.ant-smart-table{
+  gap:8px!important;
+  margin-top:8px!important;
+}
+.ant-table-actions{
+  gap:8px!important;
+}
+.ant-table-actions .table-filter{
+  width:240px!important;
+  height:34px!important;
+}
+.ant-table-actions .ant-btn{
+  height:34px!important;
+}
+.zoho-ant-table .ant-table-thead>tr>th{
+  height:38px!important;
+  padding-top:8px!important;
+  padding-bottom:8px!important;
+}
+.zoho-ant-table .ant-table-tbody>tr>td{
+  height:42px!important;
+  padding-top:8px!important;
+  padding-bottom:8px!important;
+}
+
+/* Edge-tight shell: reduce the perceived top/left gutter */
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.app-sidebar{
+  padding:10px!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.app-sidebar .side-head{
+  height:44px!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.app-sidebar .brand i{
+  width:36px!important;
+  height:36px!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.app-sidebar .sidebar-context{
+  margin-top:6px!important;
+  height:52px!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main>.app-topbar{
+  height:52px!important;
+  padding-left:18px!important;
+  padding-right:18px!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main>.module-content{
+  padding:10px 16px 18px!important;
+}
+
+/* Final edge-tight center pane */
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main>.app-topbar{
+  padding-left:8px!important;
+  padding-right:14px!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main>.module-content{
+  padding:0 0 16px 0!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main>.module-content>.card,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main>.module-content>.section-card,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main>.module-content>.ant-card{
+  margin-left:0!important;
+  margin-right:0!important;
+  border-top-left-radius:0!important;
+  border-bottom-left-radius:0!important;
+  border-top-right-radius:0!important;
+  border-bottom-right-radius:0!important;
+}
+
+/* Remove center-pane scrollbar gutter on the right edge */
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main{
+  scrollbar-gutter:auto!important;
+  overflow-y:auto!important;
+}
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main::-webkit-scrollbar{
+  width:0!important;
+  height:0!important;
+}
+
+/* Fix AntD searchable select internals polluted by global input CSS */
+.app-search-select.ant-select{
+  width:100%!important;
+}
+.app-search-select.ant-select .ant-select-selector{
+  height:34px!important;
+  min-height:34px!important;
+  padding:0 32px 0 11px!important;
+  display:flex!important;
+  align-items:center!important;
+  border:1px solid #dfe2ea!important;
+  border-radius:8px!important;
+  background:#fff!important;
+  box-shadow:none!important;
+}
+.app-search-select.ant-select-focused .ant-select-selector{
+  border-color:#6546e8!important;
+  box-shadow:0 0 0 3px #6546e81a!important;
+}
+.app-search-select.ant-select .ant-select-selection-search{
+  inset:0 32px 0 11px!important;
+  display:flex!important;
+  align-items:center!important;
+}
+.app-search-select.ant-select .ant-select-selection-search-input{
+  width:100%!important;
+  height:100%!important;
+  padding:0!important;
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  outline:0!important;
+  font:inherit!important;
+  line-height:normal!important;
+}
+.app-search-select.ant-select .ant-select-selection-item,
+.app-search-select.ant-select .ant-select-selection-placeholder{
+  padding:0!important;
+  line-height:32px!important;
+  font-size:.78rem!important;
+}
+.app-search-select.ant-select .ant-select-arrow{
+  right:10px!important;
+}
 

@@ -50,8 +50,8 @@ CREATE TABLE IF NOT EXISTS payrunemployees (
     EmployeeCode VARCHAR(50) NOT NULL,
     EmployeeName VARCHAR(250) NOT NULL,
     Department VARCHAR(100),
-    PresentDays INT NOT NULL,
-    PayableDays INT NOT NULL,
+    PresentDays DECIMAL(5,2) NOT NULL,
+    PayableDays DECIMAL(5,2) NOT NULL,
     MonthlyGross DECIMAL(18,2) NOT NULL DEFAULT 0,
     GrossPay DECIMAL(18,2) NOT NULL DEFAULT 0,
     StatutoryDeductions DECIMAL(18,2) NOT NULL DEFAULT 0,
@@ -171,6 +171,20 @@ CREATE TABLE IF NOT EXISTS payroll_reconciliation_results (
         await EnsureColumnAsync(connection, "payruns", "RunType", "VARCHAR(30) NOT NULL DEFAULT 'Regular'");
         await EnsureColumnAsync(connection, "payruns", "RunName", "VARCHAR(120) NOT NULL DEFAULT ''");
         await EnsureColumnAsync(connection, "payruns", "Reason", "VARCHAR(500) NOT NULL DEFAULT ''");
+        await EnsureForeignKeyAsync(connection, "PayRunEmployees", "FK_PayRunEmployees_PayRuns", "FOREIGN KEY (PayRunId) REFERENCES PayRuns(Id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "PayrollAdjustments", "FK_PayrollAdjustments_Employees", "FOREIGN KEY (EmployeeId) REFERENCES Employees(Id)");
+        await EnsureForeignKeyAsync(connection, "PayrollAdjustments", "FK_PayrollAdjustments_PayRuns", "FOREIGN KEY (PayRunId) REFERENCES PayRuns(Id) ON DELETE SET NULL");
+        await EnsureColumnAsync(connection, "PayRunEmployees", "PaymentDate", "DATE NULL");
+        await EnsureColumnAsync(connection, "PayRunEmployees", "ClientId", "INT NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, "PayRunEmployees", "ClientName", "VARCHAR(250) NULL");
+        await EnsureColumnAsync(connection, "PayRunEmployees", "ManualTds", "DECIMAL(18,2) NOT NULL DEFAULT 0");
+        await connection.ExecuteAsync("ALTER TABLE PayRunEmployees MODIFY PresentDays DECIMAL(5,2) NOT NULL, MODIFY PayableDays DECIMAL(5,2) NOT NULL;");
+        await EnsureColumnAsync(connection, "PayRuns", "ClientId", "INT NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, "PayRuns", "ClientName", "VARCHAR(250) NULL");
+        await EnsureColumnAsync(connection, "PayRuns", "RunCode", "VARCHAR(40) NOT NULL DEFAULT 'REGULAR'");
+        await EnsureColumnAsync(connection, "PayRuns", "RunType", "VARCHAR(30) NOT NULL DEFAULT 'Regular'");
+        await EnsureColumnAsync(connection, "PayRuns", "RunName", "VARCHAR(120) NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, "PayRuns", "Reason", "VARCHAR(500) NOT NULL DEFAULT ''");
         await EnsurePayRunIndexAsync(connection);
         await PayrollDataTableStore.EnsureAsync(connection);
         await connection.ExecuteAsync(@"UPDATE payrunemployees p JOIN employees e ON e.Id = p.EmployeeId LEFT JOIN clients c ON c.Id = e.ClientId SET p.ClientId = e.ClientId, p.ClientName = c.Name WHERE p.ClientId = 0 OR p.ClientName IS NULL;");
@@ -273,8 +287,8 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         {
             var includeEmployee = includedEmployeeIds.Contains(employee.Id);
             var attendanceRow = attendance.GetValueOrDefault(employee.Id);
-            var presentDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? request.TotalWorkingDays : (int)Math.Round(Math.Clamp(attendanceRow.PresentDays, 0, request.TotalWorkingDays), MidpointRounding.AwayFromZero);
-            var payableDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? request.TotalWorkingDays : (int)Math.Round(Math.Clamp(attendanceRow.PayableDays, 0, request.TotalWorkingDays), MidpointRounding.AwayFromZero);
+            var presentDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? request.TotalWorkingDays : Math.Clamp(attendanceRow.PresentDays, 0, request.TotalWorkingDays);
+            var payableDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? request.TotalWorkingDays : Math.Clamp(attendanceRow.PayableDays, 0, request.TotalWorkingDays);
             var employeeAdjustments = adjustmentByEmployee.GetValueOrDefault(employee.Id) ?? [];
             var row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, request.TotalWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, 0, !includeEmployee);
             if (includeEmployee && runType == "Regular")
@@ -434,7 +448,7 @@ WHERE Id=@Id AND Status != 'Applied';", adjustment);
         return await GetAsync(id);
     }
 
-    private static PayRunEmployee BuildEmployee(int payRunId, PayRunSourceEmployee employee, string setupJson, string payPeriod, int totalWorkingDays, int presentDays, int payableDays, IEnumerable<PayrollAdjustment> adjustments, decimal manualOneTimeEarnings, decimal manualOneTimeDeductions, decimal manualTds, bool isSkipped)
+    private static PayRunEmployee BuildEmployee(int payRunId, PayRunSourceEmployee employee, string setupJson, string payPeriod, int totalWorkingDays, decimal presentDays, decimal payableDays, IEnumerable<PayrollAdjustment> adjustments, decimal manualOneTimeEarnings, decimal manualOneTimeDeductions, decimal manualTds, bool isSkipped)
     {
         var setup = ReadPayrollSetup(setupJson);
         var salary = CalculateConfiguredSalary(employee, setup, totalWorkingDays, presentDays, payableDays);
@@ -527,7 +541,7 @@ WHERE Id=@Id AND Status != 'Applied';", adjustment);
         };
     }
 
-    private static List<CalculatedPayrollComponent> CalculateConfiguredSalary(PayRunSourceEmployee employee, PayrollSetupData setup, int payrollDays, int presentDays, int payableDays)
+    private static List<CalculatedPayrollComponent> CalculateConfiguredSalary(PayRunSourceEmployee employee, PayrollSetupData setup, int payrollDays, decimal presentDays, decimal payableDays)
     {
         var salaryJson = employee.SalaryComponents.Count > 0 ? new Dictionary<string, decimal>(employee.SalaryComponents, StringComparer.OrdinalIgnoreCase) : JsonSerializer.Deserialize<Dictionary<string, decimal>>(employee.SalaryJson, new JsonSerializerOptions { NumberHandling = JsonNumberHandling.AllowReadingFromString }) ?? [];
         var componentById = setup.Components.ToDictionary(component => component.Id);
@@ -589,7 +603,7 @@ WHERE Id=@Id AND Status != 'Applied';", adjustment);
         return rows;
     }
 
-    private static List<CalculatedPayrollComponent> CalculateStructureLines(List<PayrollComponent> components, SalaryStructureSetup structure, decimal monthlyTarget, int payrollDays, int presentDays, int payableDays)
+    private static List<CalculatedPayrollComponent> CalculateStructureLines(List<PayrollComponent> components, SalaryStructureSetup structure, decimal monthlyTarget, int payrollDays, decimal presentDays, decimal payableDays)
     {
         var componentById = components.ToDictionary(component => component.Id);
         var values = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
@@ -624,7 +638,7 @@ WHERE Id=@Id AND Status != 'Applied';", adjustment);
         return rows;
     }
 
-    private static decimal EvaluateComponentFormula(PayrollComponent component, string source, decimal monthlyTarget, int payrollDays, int presentDays, int payableDays, Dictionary<string, decimal> values)
+    private static decimal EvaluateComponentFormula(PayrollComponent component, string source, decimal monthlyTarget, int payrollDays, decimal presentDays, decimal payableDays, Dictionary<string, decimal> values)
     {
         if (component.CalculationType.Equals("Percentage of CTC", StringComparison.OrdinalIgnoreCase))
             source = string.IsNullOrWhiteSpace(component.Formula) ? $"CTC * {FirstText(component.Value, source)}%" : component.Formula;
@@ -643,7 +657,7 @@ WHERE Id=@Id AND Status != 'Applied';", adjustment);
         return Math.Max(0, target - used);
     }
 
-    private static decimal EvaluateFormula(string source, decimal monthlyTarget, int payrollDays, int presentDays, int payableDays, Dictionary<string, decimal> values)
+    private static decimal EvaluateFormula(string source, decimal monthlyTarget, int payrollDays, decimal presentDays, decimal payableDays, Dictionary<string, decimal> values)
     {
         if (string.IsNullOrWhiteSpace(source)) return 0;
         var refs = new Dictionary<string, decimal>(values, StringComparer.OrdinalIgnoreCase)

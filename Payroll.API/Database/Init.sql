@@ -125,8 +125,8 @@ CREATE TABLE IF NOT EXISTS payrunemployees (
     EmployeeCode VARCHAR(50) NOT NULL,
     EmployeeName VARCHAR(250) NOT NULL,
     Department VARCHAR(100),
-    PresentDays INT NOT NULL,
-    PayableDays INT NOT NULL,
+    PresentDays DECIMAL(5,2) NOT NULL,
+    PayableDays DECIMAL(5,2) NOT NULL,
     MonthlyGross DECIMAL(18,2) NOT NULL DEFAULT 0,
     GrossPay DECIMAL(18,2) NOT NULL DEFAULT 0,
     StatutoryDeductions DECIMAL(18,2) NOT NULL DEFAULT 0,
@@ -437,6 +437,40 @@ CREATE TABLE IF NOT EXISTS employee_attendance_punches (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX IX_attendance_punch_employee_date (client_id, employee_id, captured_at),
     INDEX IX_attendance_punch_rule (geo_fence_rule_id)
+CREATE TABLE IF NOT EXISTS employee_monthly_attendance (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    client_id INT NOT NULL,
+    employee_id INT NOT NULL,
+    attendance_month VARCHAR(7) NOT NULL,
+    working_days DECIMAL(5,2) NOT NULL DEFAULT 0,
+    present_days DECIMAL(5,2) NOT NULL DEFAULT 0,
+    payable_days DECIMAL(5,2) NOT NULL DEFAULT 0,
+    lop_days DECIMAL(5,2) NOT NULL DEFAULT 0,
+    source_type VARCHAR(30) NOT NULL DEFAULT 'Monthly',
+    remarks VARCHAR(600),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_monthly_attendance_employee_month (client_id, employee_id, attendance_month),
+    INDEX IX_monthly_attendance_client_month (client_id, attendance_month),
+    CONSTRAINT FK_monthly_attendance_employee FOREIGN KEY (employee_id) REFERENCES employees(Id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS employee_daily_attendance (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    client_id INT NOT NULL,
+    employee_id INT NOT NULL,
+    attendance_date DATE NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'Present',
+    payable_value DECIMAL(4,2) NOT NULL DEFAULT 1,
+    check_in_time TIME NULL,
+    check_out_time TIME NULL,
+    total_hours DECIMAL(5,2) NOT NULL DEFAULT 0,
+    remarks VARCHAR(600),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_daily_attendance_employee_date (client_id, employee_id, attendance_date),
+    INDEX IX_daily_attendance_client_date (client_id, attendance_date),
+    CONSTRAINT FK_daily_attendance_employee FOREIGN KEY (employee_id) REFERENCES employees(Id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS leave_types (
