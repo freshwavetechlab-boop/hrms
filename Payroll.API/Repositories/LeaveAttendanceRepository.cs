@@ -101,9 +101,6 @@ CREATE TABLE IF NOT EXISTS employee_daily_attendance (
     attendance_date DATE NOT NULL,
     status VARCHAR(30) NOT NULL DEFAULT 'Present',
     payable_value DECIMAL(4,2) NOT NULL DEFAULT 1,
-    check_in_time TIME NULL,
-    check_out_time TIME NULL,
-    total_hours DECIMAL(5,2) NOT NULL DEFAULT 0,
     remarks VARCHAR(600),
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -223,10 +220,6 @@ CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
         await EnsureForeignKeyAsync(connection, "employee_leave_balances", "FK_employee_leave_balances_employee", "FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "employee_leave_balances", "FK_employee_leave_balances_leave_type", "FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "leave_balance_import_errors", "FK_leave_balance_import_errors_log", "FOREIGN KEY (import_log_id) REFERENCES leave_balance_import_logs(id) ON DELETE CASCADE");
-        await EnsureColumnAsync(connection, "holidays", "holiday_type", "VARCHAR(40) NOT NULL DEFAULT 'Holiday' AFTER name");
-        await EnsureColumnAsync(connection, "employee_daily_attendance", "check_in_time", "TIME NULL AFTER payable_value");
-        await EnsureColumnAsync(connection, "employee_daily_attendance", "check_out_time", "TIME NULL AFTER check_in_time");
-        await EnsureColumnAsync(connection, "employee_daily_attendance", "total_hours", "DECIMAL(5,2) NOT NULL DEFAULT 0 AFTER check_out_time");
         await EnsureClientScopeAsync(connection);
         await SeedAsync(connection);
     }
@@ -351,46 +344,13 @@ WHERE client_id=@ClientId;", request);
         return (await GetAttendanceSettingsAsync(request.ClientId), null);
     }
 
-    public async Task<AttendanceReviewContext> GetAttendanceReviewContextAsync(int clientId, string month)
-    {
-        var monthStart = IsValidMonth(month) ? DateTime.Parse($"{month}-01") : new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
-        var monthEnd = monthStart.AddMonths(1).AddDays(-1);
-        await using var connection = CreateConnection();
-        await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
-        var settings = await connection.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId,
-check_in_time AS CheckInTime, check_out_time AS CheckOutTime, working_hours_calculation AS WorkingHoursCalculation,
-minimum_hours_for_half_day AS MinimumHoursForHalfDay, minimum_hours_for_full_day AS MinimumHoursForFullDay, maximum_hours_allowed_for_full_day AS MaximumHoursAllowedForFullDay,
-allow_regularization_requests AS AllowRegularizationRequests, regularization_window AS RegularizationWindow, past_days_allowed AS PastDaysAllowed,
-restrict_regularization_requests_per_month AS RestrictRegularizationRequestsPerMonth, max_regularization_requests_per_month AS MaxRegularizationRequestsPerMonth,
-created_at AS CreatedAt, updated_at AS UpdatedAt
-FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { ClientId = clientId }) ?? new AttendanceSettings { ClientId = clientId };
-        var scheduleJson = await connection.ExecuteScalarAsync<string?>("SELECT CAST(PayScheduleJson AS CHAR) FROM clients WHERE Id=@ClientId", new { ClientId = clientId });
-        var balances = (await connection.QueryAsync<EmployeeLeaveBalanceSummary>(@"SELECT b.employee_id AS EmployeeId, lt.id AS LeaveTypeId, lt.code AS LeaveTypeCode, lt.name AS LeaveTypeName,
-b.balance_count AS Balance, b.balance_date AS BalanceDate, p.allow_negative_leave_balance AS AllowNegativeLeaveBalance
-FROM employee_leave_balances b
-JOIN leave_types lt ON lt.id=b.leave_type_id AND lt.client_id=@ClientId
-JOIN leave_type_policies p ON p.leave_type_id=lt.id
-JOIN (
-    SELECT employee_id, leave_type_id, MAX(balance_date) AS balance_date
-    FROM employee_leave_balances
-    WHERE client_id=@ClientId AND balance_date<=@MonthEnd
-    GROUP BY employee_id, leave_type_id
-) latest ON latest.employee_id=b.employee_id AND latest.leave_type_id=b.leave_type_id AND latest.balance_date=b.balance_date
-WHERE b.client_id=@ClientId;", new { ClientId = clientId, MonthEnd = monthEnd })).ToList();
-        var holidays = (await GetHolidaysAsync(clientId, monthStart.Year, null))
-            .Where(holiday => holiday.StartDate.Date <= monthEnd && holiday.EndDate.Date >= monthStart)
-            .ToList();
-        return new AttendanceReviewContext { Settings = settings, Schedule = ReadSchedule(scheduleJson), Holidays = holidays, LeaveBalances = balances };
-    }
-
     public async Task<IEnumerable<EmployeeMonthlyAttendance>> GetMonthlyAttendanceAsync(int clientId, string month)
     {
         if (!IsValidMonth(month)) return [];
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await connection.ExecuteAsync("USE payroll;");
-        return await connection.QueryAsync<EmployeeMonthlyAttendance>(@"SELECT e.Id AS EmployeeId, e.EmployeeCode, CONCAT(e.FirstName, ' ', e.LastName) AS EmployeeName, e.Department, e.WorkLocationId,
+        return await connection.QueryAsync<EmployeeMonthlyAttendance>(@"SELECT e.Id AS EmployeeId, e.EmployeeCode, CONCAT(e.FirstName, ' ', e.LastName) AS EmployeeName, e.Department,
 @Month AS Month,
 COALESCE(a.working_days, 0) AS WorkingDays,
 COALESCE(a.present_days, 0) AS PresentDays,
@@ -431,24 +391,10 @@ ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(p
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await connection.ExecuteAsync("USE payroll;");
-        return await connection.QueryAsync<EmployeeDailyAttendance>(@"SELECT id AS Id, client_id AS ClientId, employee_id AS EmployeeId, attendance_date AS AttendanceDate, status AS Status, payable_value AS PayableValue,
-check_in_time AS CheckInTime, check_out_time AS CheckOutTime, total_hours AS TotalHours, COALESCE(remarks, '') AS Remarks
+        return await connection.QueryAsync<EmployeeDailyAttendance>(@"SELECT id AS Id, client_id AS ClientId, employee_id AS EmployeeId, attendance_date AS AttendanceDate, status AS Status, payable_value AS PayableValue, COALESCE(remarks, '') AS Remarks
 FROM employee_daily_attendance
 WHERE client_id=@ClientId AND employee_id=@EmployeeId AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month
 ORDER BY attendance_date;", new { ClientId = clientId, EmployeeId = employeeId, Month = month });
-    }
-
-    public async Task<IEnumerable<EmployeeDailyAttendance>> GetDailyAttendanceMonthAsync(int clientId, string month)
-    {
-        if (!IsValidMonth(month)) return [];
-        await using var connection = CreateConnection();
-        await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
-        return await connection.QueryAsync<EmployeeDailyAttendance>(@"SELECT id AS Id, client_id AS ClientId, employee_id AS EmployeeId, attendance_date AS AttendanceDate, status AS Status, payable_value AS PayableValue,
-check_in_time AS CheckInTime, check_out_time AS CheckOutTime, total_hours AS TotalHours, COALESCE(remarks, '') AS Remarks
-FROM employee_daily_attendance
-WHERE client_id=@ClientId AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month
-ORDER BY employee_id, attendance_date;", new { ClientId = clientId, Month = month });
     }
 
     public async Task<(IEnumerable<EmployeeDailyAttendance>? Rows, string? Error)> SaveDailyAttendanceAsync(SaveDailyAttendanceRequest request)
@@ -460,30 +406,21 @@ ORDER BY employee_id, attendance_date;", new { ClientId = clientId, Month = mont
         await connection.ExecuteAsync("USE payroll;");
         var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM Employees WHERE Id=@EmployeeId AND ClientId=@ClientId AND IsActive=TRUE", new { request.EmployeeId, request.ClientId });
         if (exists == 0) return (null, "Employee was not found for the selected client.");
-        var settings = await connection.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId,
-check_in_time AS CheckInTime, check_out_time AS CheckOutTime, minimum_hours_for_half_day AS MinimumHoursForHalfDay,
-minimum_hours_for_full_day AS MinimumHoursForFullDay, maximum_hours_allowed_for_full_day AS MaximumHoursAllowedForFullDay
-FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { request.ClientId }) ?? new AttendanceSettings { ClientId = request.ClientId };
-        var activeLeaveTypes = (await connection.QueryAsync<AttendanceLeaveRule>(@"SELECT lt.id AS Id, lt.code AS Code, lt.name AS Name, lt.type AS Type, p.allow_negative_leave_balance AS AllowNegativeLeaveBalance
-FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id=lt.id
-WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
-            .ToDictionary(row => row.Code, row => row, StringComparer.OrdinalIgnoreCase);
-        var invalidStatus = request.Rows.FirstOrDefault(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes) is null);
-        if (invalidStatus is not null) return (null, $"Attendance status '{invalidStatus.Status}' is not valid.");
+        var activeLeaveTypes = (await connection.QueryAsync<(string Code, string Type)>(@"SELECT code AS Code, type AS Type
+FROM leave_types
+WHERE client_id=@ClientId AND is_active=TRUE;", new { request.ClientId }))
+            .ToDictionary(row => row.Code, row => row.Type, StringComparer.OrdinalIgnoreCase);
+        var invalidStatus = request.Rows.FirstOrDefault(row => !string.Equals(row.Status, "Present", StringComparison.OrdinalIgnoreCase) && !activeLeaveTypes.ContainsKey(row.Status));
+        if (invalidStatus is not null) return (null, $"Attendance status '{invalidStatus.Status}' is not an active leave type.");
         var rows = request.Rows.Where(row => row.AttendanceDate.ToString("yyyy-MM") == request.Month).Select(row =>
         {
-            var status = NormalizeAttendanceStatus(row.Status, activeLeaveTypes)!;
-            var checkIn = status == "Present" ? row.CheckInTime : null;
-            var checkOut = status == "Present" ? row.CheckOutTime : null;
-            var totalHours = status == "Present" ? CalculateHours(checkIn, checkOut, row.TotalHours) : 0m;
-            var payableValue = ResolvePayableValue(status, row.PayableValue, totalHours, checkIn.HasValue && checkOut.HasValue, settings, activeLeaveTypes);
-            return new { request.ClientId, request.EmployeeId, AttendanceDate = row.AttendanceDate.Date, Status = status, PayableValue = payableValue, CheckInTime = checkIn, CheckOutTime = checkOut, TotalHours = totalHours, Remarks = row.Remarks ?? string.Empty };
+            var status = string.Equals(row.Status, "Present", StringComparison.OrdinalIgnoreCase) ? "Present" : activeLeaveTypes.Keys.First(code => string.Equals(code, row.Status, StringComparison.OrdinalIgnoreCase));
+            var payableValue = status == "Present" || string.Equals(activeLeaveTypes[status], "Paid", StringComparison.OrdinalIgnoreCase) ? 1m : 0m;
+            return new { request.ClientId, request.EmployeeId, AttendanceDate = row.AttendanceDate.Date, Status = status, PayableValue = payableValue, Remarks = row.Remarks ?? string.Empty };
         }).ToList();
-        var balanceError = await ValidateLeaveBalancesAsync(connection, request.ClientId, request.EmployeeId, request.Month, rows.Select(row => new AttendanceSaveRow(row.Status, row.PayableValue)), activeLeaveTypes);
-        if (balanceError is not null) return (null, balanceError);
-        await connection.ExecuteAsync(@"INSERT INTO employee_daily_attendance (client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
-VALUES (@ClientId, @EmployeeId, @AttendanceDate, @Status, @PayableValue, @CheckInTime, @CheckOutTime, @TotalHours, @Remarks)
-ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), check_in_time=VALUES(check_in_time), check_out_time=VALUES(check_out_time), total_hours=VALUES(total_hours), remarks=VALUES(remarks);", rows);
+        await connection.ExecuteAsync(@"INSERT INTO employee_daily_attendance (client_id, employee_id, attendance_date, status, payable_value, remarks)
+VALUES (@ClientId, @EmployeeId, @AttendanceDate, @Status, @PayableValue, @Remarks)
+ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), remarks=VALUES(remarks);", rows);
         await RollupDailyAttendanceAsync(connection, request.ClientId, request.EmployeeId, request.Month);
         return (await GetDailyAttendanceAsync(request.ClientId, request.EmployeeId, request.Month), null);
     }
@@ -672,18 +609,15 @@ VALUES (@ClientId, @Name, @StartDate, @EndDate, @Description, @AllLocations); SE
         if (!IsValidMonth(request.Month)) return "Select a valid attendance month.";
         if (request.Rows.Count == 0) return "Add at least one date-wise attendance row.";
         if (request.Rows.Any(row => row.AttendanceDate.ToString("yyyy-MM") != request.Month)) return "All attendance dates must fall in the selected month.";
-        var expectedDays = DateTime.DaysInMonth(int.Parse(request.Month[..4]), int.Parse(request.Month[5..7]));
-        if (request.Rows.Select(row => row.AttendanceDate.Date).Distinct().Count() != expectedDays) return "Save the complete attendance month before payroll review.";
         if (request.Rows.Any(row => row.PayableValue < 0 || row.PayableValue > 1)) return "Payable value must be between 0 and 1.";
-        if (request.Rows.Any(row => row.TotalHours < 0 || row.TotalHours > 24)) return "Total hours must be between 0 and 24.";
         return null;
     }
 
     private static async Task RollupDailyAttendanceAsync(MySqlConnection connection, int clientId, int employeeId, string month)
     {
-        var summary = await connection.QuerySingleAsync<(decimal WorkingDays, decimal PresentDays, decimal PayableDays)>(@"SELECT COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 0 ELSE 1 END), 0) AS WorkingDays,
-COALESCE(SUM(CASE WHEN status='Present' THEN payable_value ELSE 0 END), 0) AS PresentDays,
-COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 0 ELSE payable_value END), 0) AS PayableDays
+        var summary = await connection.QuerySingleAsync<(decimal WorkingDays, decimal PresentDays, decimal PayableDays)>(@"SELECT COUNT(*) AS WorkingDays,
+COALESCE(SUM(payable_value), 0) AS PresentDays,
+COALESCE(SUM(payable_value), 0) AS PayableDays
 FROM employee_daily_attendance
 WHERE client_id=@ClientId AND employee_id=@EmployeeId AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month;", new { ClientId = clientId, EmployeeId = employeeId, Month = month });
         var lop = Math.Max(0, summary.WorkingDays - summary.PayableDays);
@@ -692,96 +626,6 @@ VALUES (@ClientId, @EmployeeId, @Month, @WorkingDays, @PresentDays, @PayableDays
 ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(present_days), payable_days=VALUES(payable_days), lop_days=VALUES(lop_days), source_type='Date-wise', remarks=VALUES(remarks);",
             new { ClientId = clientId, EmployeeId = employeeId, Month = month, summary.WorkingDays, summary.PresentDays, summary.PayableDays, LopDays = lop });
     }
-
-    private static string? NormalizeAttendanceStatus(string? status, IReadOnlyDictionary<string, AttendanceLeaveRule> leaveTypes)
-    {
-        var text = (status ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(text) || string.Equals(text, "P", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "Present", StringComparison.OrdinalIgnoreCase)) return "Present";
-        if (string.Equals(text, "A", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "Absent", StringComparison.OrdinalIgnoreCase)) return "A";
-        if (string.Equals(text, "WO", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "Weekly Off", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "Week Off", StringComparison.OrdinalIgnoreCase)) return "WO";
-        if (string.Equals(text, "H", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "Holiday", StringComparison.OrdinalIgnoreCase)) return "H";
-        return leaveTypes.Keys.FirstOrDefault(code => string.Equals(code, text, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static decimal ResolvePayableValue(string status, decimal incoming, decimal totalHours, bool hasTimes, AttendanceSettings settings, IReadOnlyDictionary<string, AttendanceLeaveRule> leaveTypes)
-    {
-        if (status == "A" || status == "WO" || status == "H") return 0;
-        if (status == "Present")
-        {
-            if (hasTimes)
-            {
-                if (totalHours >= settings.MinimumHoursForFullDay) return 1;
-                if (totalHours >= settings.MinimumHoursForHalfDay) return 0.5m;
-                return 0;
-            }
-            return Math.Clamp(incoming > 0 ? incoming : 1, 0, 1);
-        }
-        return leaveTypes.TryGetValue(status, out var leaveType) && string.Equals(leaveType.Type, "Paid", StringComparison.OrdinalIgnoreCase)
-            ? Math.Clamp(incoming > 0 ? incoming : 1, 0, 1)
-            : 0;
-    }
-
-    private static decimal CalculateHours(TimeSpan? checkIn, TimeSpan? checkOut, decimal fallback)
-    {
-        if (!checkIn.HasValue || !checkOut.HasValue) return Math.Clamp(fallback, 0, 24);
-        var minutes = (decimal)(checkOut.Value - checkIn.Value).TotalMinutes;
-        if (minutes < 0) minutes += 24 * 60;
-        return Math.Clamp(Math.Round(minutes / 60, 2), 0, 24);
-    }
-
-    private static async Task<string?> ValidateLeaveBalancesAsync(MySqlConnection connection, int clientId, int employeeId, string month, IEnumerable<AttendanceSaveRow> rows, IReadOnlyDictionary<string, AttendanceLeaveRule> leaveTypes)
-    {
-        var requested = rows
-            .Where(row => leaveTypes.TryGetValue(row.Status, out var leaveType) && string.Equals(leaveType.Type, "Paid", StringComparison.OrdinalIgnoreCase) && !leaveType.AllowNegativeLeaveBalance)
-            .GroupBy(row => row.Status, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.Sum(row => row.PayableValue > 0 ? row.PayableValue : 1), StringComparer.OrdinalIgnoreCase);
-        if (requested.Count == 0) return null;
-        var monthEnd = DateTime.Parse($"{month}-01").AddMonths(1).AddDays(-1);
-        var balances = (await connection.QueryAsync<LeaveBalanceRow>(@"SELECT lt.code AS Code, COALESCE(b.balance_count, 0) AS Balance
-FROM leave_types lt
-LEFT JOIN (
-    SELECT employee_id, leave_type_id, MAX(balance_date) AS balance_date
-    FROM employee_leave_balances
-    WHERE client_id=@ClientId AND employee_id=@EmployeeId AND balance_date<=@MonthEnd
-    GROUP BY employee_id, leave_type_id
-) latest ON latest.leave_type_id=lt.id
-LEFT JOIN employee_leave_balances b ON b.client_id=@ClientId AND b.employee_id=@EmployeeId AND b.leave_type_id=lt.id AND b.balance_date=latest.balance_date
-WHERE lt.client_id=@ClientId AND lt.code IN @Codes;", new { ClientId = clientId, EmployeeId = employeeId, MonthEnd = monthEnd, Codes = requested.Keys.ToArray() }))
-            .ToDictionary(row => row.Code, row => row.Balance, StringComparer.OrdinalIgnoreCase);
-        foreach (var item in requested)
-        {
-            var balance = balances.GetValueOrDefault(item.Key);
-            if (item.Value > balance + 0.001m)
-            {
-                var name = leaveTypes[item.Key].Name;
-                return $"{name} balance is {balance:0.##}; selected {item.Value:0.##}.";
-            }
-        }
-        return null;
-    }
-
-    private static ClientAttendanceSchedule ReadSchedule(string? json)
-    {
-        ClientAttendanceSchedule? schedule = null;
-        if (!string.IsNullOrWhiteSpace(json) && json.Trim() != "{}")
-        {
-            try { schedule = JsonSerializer.Deserialize<ClientAttendanceSchedule>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); }
-            catch { schedule = null; }
-        }
-        schedule ??= new ClientAttendanceSchedule();
-        return new ClientAttendanceSchedule
-        {
-            WorkWeek = string.IsNullOrWhiteSpace(schedule.WorkWeek) ? "Monday - Friday" : schedule.WorkWeek,
-            SalaryDays = string.IsNullOrWhiteSpace(schedule.SalaryDays) ? "Actual days" : schedule.SalaryDays,
-            FixedDays = string.IsNullOrWhiteSpace(schedule.FixedDays) ? "30" : schedule.FixedDays,
-            PayDay = string.IsNullOrWhiteSpace(schedule.PayDay) ? "Last working day" : schedule.PayDay,
-            FirstPayPeriod = schedule.FirstPayPeriod ?? string.Empty
-        };
-    }
-
-    private sealed record AttendanceSaveRow(string Status, decimal PayableValue);
-    private sealed class AttendanceLeaveRule { public int Id { get; set; } public string Code { get; set; } = string.Empty; public string Name { get; set; } = string.Empty; public string Type { get; set; } = "Paid"; public bool AllowNegativeLeaveBalance { get; set; } }
-    private sealed class LeaveBalanceRow { public string Code { get; set; } = string.Empty; public decimal Balance { get; set; } }
 
     private static async Task<bool> HasDuplicateHolidayAsync(MySqlConnection connection, SaveHolidayRequest request)
     {

@@ -140,7 +140,6 @@ CREATE TABLE IF NOT EXISTS Employees (
         await EnsureColumnAsync(connection, "LogoDataUrl", "LONGTEXT NULL");
         await EnsureTableColumnAsync(connection, "Clients", "PayScheduleJson", "JSON NULL");
         await PayrollDataTableStore.EnsureAsync(connection);
-        await SeedLocationDropdownMastersAsync(connection);
     }
 
     private static async Task EnsureColumnAsync(MySqlConnection connection, string columnName, string definition)
@@ -163,22 +162,6 @@ WHERE TABLE_SCHEMA = 'payroll'
     {
         var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'payroll' AND TABLE_NAME = @TableName AND COLUMN_NAME = @ColumnName", new { TableName = tableName, ColumnName = columnName });
         if (exists == 0) await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition};");
-    }
-
-    private static async Task SeedLocationDropdownMastersAsync(MySqlConnection connection)
-    {
-        await connection.ExecuteAsync(@"
-INSERT INTO dropdownmasters (Type, Value, IsActive)
-SELECT 'State', State, TRUE FROM (
-    SELECT DISTINCT TRIM(State) State FROM worklocations WHERE TRIM(COALESCE(State, '')) <> ''
-    UNION SELECT DISTINCT TRIM(State) FROM organizations WHERE TRIM(COALESCE(State, '')) <> ''
-) s WHERE NOT EXISTS (SELECT 1 FROM dropdownmasters d WHERE d.Type = 'State' AND d.Value = s.State);
-
-INSERT INTO dropdownmasters (Type, Value, IsActive)
-SELECT CONCAT('City:', State), City, TRUE FROM (
-    SELECT DISTINCT TRIM(State) State, TRIM(City) City FROM worklocations WHERE TRIM(COALESCE(State, '')) <> '' AND TRIM(COALESCE(City, '')) <> ''
-    UNION SELECT DISTINCT TRIM(State), TRIM(City) FROM organizations WHERE TRIM(COALESCE(State, '')) <> '' AND TRIM(COALESCE(City, '')) <> ''
-) c WHERE NOT EXISTS (SELECT 1 FROM dropdownmasters d WHERE d.Type = CONCAT('City:', c.State) AND d.Value = c.City);");
     }
 
     private async Task PrepareDatabaseAsync(MySqlConnection connection)
