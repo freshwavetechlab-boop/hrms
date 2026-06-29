@@ -52,8 +52,8 @@ export async function postEmpty<TResult>(path: string, fallback: TResult, option
   return mutateJson(path, { ...options, method: 'POST' }, fallback)
 }
 
-export async function deleteJson<TResult>(path: string, fallback: TResult): Promise<ApiResult<TResult>> {
-  return mutateJson(path, { method: 'DELETE' }, fallback)
+export async function deleteJson<TResult>(path: string, fallback: TResult, options: ApiOptions = {}): Promise<ApiResult<TResult>> {
+  return mutateJson(path, { ...options, method: 'DELETE' }, fallback)
 }
 
 export async function postForm<TResult>(path: string, body: FormData, fallback: TResult): Promise<ApiResult<TResult>> {

@@ -36,21 +36,21 @@ export async function saveDailyAttendance(clientId: number, employeeId: number, 
 }
 export const getLeaveTypes = (clientId: number) => getJson<LeaveType[]>(`/api/leave-attendance/leave-types?clientId=${clientId}`, [])
 export async function saveLeaveType(leaveType: LeaveType) {
-  return postJson('/api/leave-attendance/leave-types', leaveType, null as LeaveType | null)
+  return postJson('/api/leave-attendance/leave-types', leaveType, null as LeaveType | null, { toast: false })
 }
 export async function setLeaveTypeStatus(clientId: number, id: number, isActive: boolean) {
-  return postJson(`/api/leave-attendance/leave-types/${id}/status?clientId=${clientId}&isActive=${isActive}`, {}, null as LeaveType | null)
+  return postJson(`/api/leave-attendance/leave-types/${id}/status?clientId=${clientId}&isActive=${isActive}`, {}, null as LeaveType | null, { toast: false })
 }
 export async function deleteLeaveType(clientId: number, id: number) {
-  const response = await deleteJson(`/api/leave-attendance/leave-types/${id}?clientId=${clientId}`, null)
+  const response = await deleteJson(`/api/leave-attendance/leave-types/${id}?clientId=${clientId}`, null, { toast: false })
   return { ok: response.ok, error: response.error }
 }
 export const getHolidays = (clientId: number, year?: number, workLocationId?: number) => getJson<Holiday[]>(`/api/leave-attendance/holidays?${new URLSearchParams({ clientId: String(clientId), ...(year ? { year: String(year) } : {}), ...(workLocationId ? { workLocationId: String(workLocationId) } : {}) })}`, [])
 export async function saveHoliday(holiday: Holiday) {
-  return postJson('/api/leave-attendance/holidays', holiday, null as Holiday | null)
+  return postJson('/api/leave-attendance/holidays', holiday, null as Holiday | null, { toast: false })
 }
 export async function deleteHoliday(clientId: number, id: number) {
-  const response = await deleteJson(`/api/leave-attendance/holidays/${id}?clientId=${clientId}`, null)
+  const response = await deleteJson(`/api/leave-attendance/holidays/${id}?clientId=${clientId}`, null, { toast: false })
   return { ok: response.ok, error: response.error }
 }
 export const leaveBalanceSampleUrl = (clientId: number) => apiUrl(`/api/leave-attendance/import-balances/sample?clientId=${clientId}`)

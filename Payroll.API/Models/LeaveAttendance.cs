@@ -189,6 +189,7 @@ public class Holiday
     public int Id { get; set; }
     public int ClientId { get; set; }
     public string Name { get; set; } = string.Empty;
+    public string HolidayType { get; set; } = "Holiday";
     public DateTime StartDate { get; set; } = DateTime.Today;
     public DateTime EndDate { get; set; } = DateTime.Today;
     public string Description { get; set; } = string.Empty;

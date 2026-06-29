@@ -23,6 +23,7 @@ public class Organization
     public string BankName { get; set; } = string.Empty;
     public string AccountNumber { get; set; } = string.Empty;
     public string IfscCode { get; set; } = string.Empty;
+    public string ProfessionalTaxNumber { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 }

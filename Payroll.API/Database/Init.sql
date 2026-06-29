@@ -1,7 +1,7 @@
 CREATE DATABASE IF NOT EXISTS payroll;
 USE payroll;
 
-CREATE TABLE IF NOT EXISTS Organizations (
+CREATE TABLE IF NOT EXISTS organizations (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     Name VARCHAR(250) NOT NULL,
     LegalName VARCHAR(250),
@@ -27,13 +27,13 @@ CREATE TABLE IF NOT EXISTS Organizations (
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS PayrollSetups (
+CREATE TABLE IF NOT EXISTS payrollsetups (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     SetupJson JSON NOT NULL,
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS Clients (
+CREATE TABLE IF NOT EXISTS clients (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     Name VARCHAR(250) NOT NULL,
     Code VARCHAR(50),
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS Clients (
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS WorkLocations (
+CREATE TABLE IF NOT EXISTS worklocations (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     ClientId INT NOT NULL DEFAULT 0,
     ClientName VARCHAR(250),
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS WorkLocations (
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS DropdownMasters (
+CREATE TABLE IF NOT EXISTS dropdownmasters (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     Type VARCHAR(100) NOT NULL,
     Value VARCHAR(200) NOT NULL,
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS DropdownMasters (
     UNIQUE KEY UX_DropdownMasters_Type_Value (Type, Value)
 );
 
-CREATE TABLE IF NOT EXISTS Employees (
+CREATE TABLE IF NOT EXISTS employees (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     ClientId INT NOT NULL,
     EmployeeCode VARCHAR(50) NOT NULL,
@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS Employees (
     UNIQUE KEY UX_Employees_Client_Code (ClientId, EmployeeCode)
 );
 
-CREATE TABLE IF NOT EXISTS PayRuns (
+CREATE TABLE IF NOT EXISTS payruns (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     ClientId INT NOT NULL DEFAULT 0,
     ClientName VARCHAR(250),
@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS PayRuns (
     UNIQUE KEY UX_PayRuns_Client_Period_Code (ClientId, PayPeriod, RunCode)
 );
 
-CREATE TABLE IF NOT EXISTS PayRunEmployees (
+CREATE TABLE IF NOT EXISTS payrunemployees (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     PayRunId INT NOT NULL,
     EmployeeId INT NOT NULL,
@@ -138,10 +138,10 @@ CREATE TABLE IF NOT EXISTS PayRunEmployees (
     PaymentDate DATE NULL,
     DetailsJson JSON NOT NULL,
     UNIQUE KEY UX_PayRunEmployees_Run_Employee (PayRunId, EmployeeId),
-    CONSTRAINT FK_PayRunEmployees_PayRuns FOREIGN KEY (PayRunId) REFERENCES PayRuns(Id) ON DELETE CASCADE
+    CONSTRAINT FK_PayRunEmployees_PayRuns FOREIGN KEY (PayRunId) REFERENCES payruns(Id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS PayrollAdjustments (
+CREATE TABLE IF NOT EXISTS payrolladjustments (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     ClientId INT NOT NULL,
     EmployeeId INT NOT NULL,
@@ -162,11 +162,11 @@ CREATE TABLE IF NOT EXISTS PayrollAdjustments (
     CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX IX_PayrollAdjustments_Client_Period_Status (ClientId, PayPeriod, Status),
-    CONSTRAINT FK_PayrollAdjustments_Employees FOREIGN KEY (EmployeeId) REFERENCES Employees(Id),
-    CONSTRAINT FK_PayrollAdjustments_PayRuns FOREIGN KEY (PayRunId) REFERENCES PayRuns(Id) ON DELETE SET NULL
+    CONSTRAINT FK_PayrollAdjustments_Employees FOREIGN KEY (EmployeeId) REFERENCES employees(Id),
+    CONSTRAINT FK_PayrollAdjustments_PayRuns FOREIGN KEY (PayRunId) REFERENCES payruns(Id) ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS AuthUsers (
+CREATE TABLE IF NOT EXISTS authusers (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     Email VARCHAR(190) NOT NULL,
     DisplayName VARCHAR(190) NOT NULL,
@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS AuthUsers (
     UNIQUE KEY UX_AuthUsers_Email (Email)
 );
 
-CREATE TABLE IF NOT EXISTS AuthRoles (
+CREATE TABLE IF NOT EXISTS authroles (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     Code VARCHAR(80) NOT NULL,
     Name VARCHAR(150) NOT NULL,
@@ -191,7 +191,7 @@ CREATE TABLE IF NOT EXISTS AuthRoles (
     UNIQUE KEY UX_AuthRoles_Code (Code)
 );
 
-CREATE TABLE IF NOT EXISTS AuthPermissions (
+CREATE TABLE IF NOT EXISTS authpermissions (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     Code VARCHAR(120) NOT NULL,
     Name VARCHAR(150) NOT NULL,
@@ -201,23 +201,23 @@ CREATE TABLE IF NOT EXISTS AuthPermissions (
     UNIQUE KEY UX_AuthPermissions_Code (Code)
 );
 
-CREATE TABLE IF NOT EXISTS AuthUserRoles (
+CREATE TABLE IF NOT EXISTS authuserroles (
     UserId INT NOT NULL,
     RoleId INT NOT NULL,
     PRIMARY KEY (UserId, RoleId),
-    CONSTRAINT FK_AuthUserRoles_User FOREIGN KEY (UserId) REFERENCES AuthUsers(Id) ON DELETE CASCADE,
-    CONSTRAINT FK_AuthUserRoles_Role FOREIGN KEY (RoleId) REFERENCES AuthRoles(Id) ON DELETE CASCADE
+    CONSTRAINT FK_AuthUserRoles_User FOREIGN KEY (UserId) REFERENCES authusers(Id) ON DELETE CASCADE,
+    CONSTRAINT FK_AuthUserRoles_Role FOREIGN KEY (RoleId) REFERENCES authroles(Id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS AuthRolePermissions (
+CREATE TABLE IF NOT EXISTS authrolepermissions (
     RoleId INT NOT NULL,
     PermissionId INT NOT NULL,
     PRIMARY KEY (RoleId, PermissionId),
-    CONSTRAINT FK_AuthRolePermissions_Role FOREIGN KEY (RoleId) REFERENCES AuthRoles(Id) ON DELETE CASCADE,
-    CONSTRAINT FK_AuthRolePermissions_Permission FOREIGN KEY (PermissionId) REFERENCES AuthPermissions(Id) ON DELETE CASCADE
+    CONSTRAINT FK_AuthRolePermissions_Role FOREIGN KEY (RoleId) REFERENCES authroles(Id) ON DELETE CASCADE,
+    CONSTRAINT FK_AuthRolePermissions_Permission FOREIGN KEY (PermissionId) REFERENCES authpermissions(Id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS AuthSessions (
+CREATE TABLE IF NOT EXISTS authsessions (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
     UserId INT NOT NULL,
     TokenHash CHAR(64) NOT NULL,
@@ -228,10 +228,10 @@ CREATE TABLE IF NOT EXISTS AuthSessions (
     CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY UX_AuthSessions_TokenHash (TokenHash),
     INDEX IX_AuthSessions_User (UserId),
-    CONSTRAINT FK_AuthSessions_User FOREIGN KEY (UserId) REFERENCES AuthUsers(Id) ON DELETE CASCADE
+    CONSTRAINT FK_AuthSessions_User FOREIGN KEY (UserId) REFERENCES authusers(Id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS AuditLogs (
+CREATE TABLE IF NOT EXISTS auditlogs (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
     UserId INT NULL,
     UserEmail VARCHAR(190),
@@ -249,7 +249,7 @@ CREATE TABLE IF NOT EXISTS AuditLogs (
     INDEX IX_AuditLogs_Action (Action)
 );
 
-CREATE TABLE IF NOT EXISTS ModuleSettings (
+CREATE TABLE IF NOT EXISTS modulesettings (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     ModuleCode VARCHAR(80) NOT NULL,
     IsEnabled BOOLEAN NOT NULL DEFAULT FALSE,
@@ -259,7 +259,7 @@ CREATE TABLE IF NOT EXISTS ModuleSettings (
     UNIQUE KEY UX_ModuleSettings_ModuleCode (ModuleCode)
 );
 
-CREATE TABLE IF NOT EXISTS ModuleSetupProgress (
+CREATE TABLE IF NOT EXISTS modulesetupprogress (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     ModuleCode VARCHAR(80) NOT NULL,
     StepCode VARCHAR(80) NOT NULL,
@@ -422,6 +422,7 @@ CREATE TABLE IF NOT EXISTS leave_type_applicability (
 CREATE TABLE IF NOT EXISTS holidays (
     id INT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(180) NOT NULL,
+    holiday_type VARCHAR(40) NOT NULL DEFAULT 'Holiday',
     start_date DATE NOT NULL,
     end_date DATE NOT NULL,
     description VARCHAR(800),
@@ -451,7 +452,7 @@ CREATE TABLE IF NOT EXISTS employee_leave_balances (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY UX_employee_leave_balances_employee_type_date (employee_id, leave_type_id, balance_date),
     INDEX IX_employee_leave_balances_employee (employee_id),
-    CONSTRAINT FK_employee_leave_balances_employee FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE,
+    CONSTRAINT FK_employee_leave_balances_employee FOREIGN KEY (employee_id) REFERENCES employees(Id) ON DELETE CASCADE,
     CONSTRAINT FK_employee_leave_balances_leave_type FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE
 );
 

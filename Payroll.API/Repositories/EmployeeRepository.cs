@@ -24,9 +24,9 @@ public class EmployeeRepository(IConfiguration configuration)
         await db.OpenAsync();
         await db.ExecuteAsync("USE payroll;");
         if (employee.Id == 0)
-            employee.Id = (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO Employees (ClientId,EmployeeCode,FirstName,LastName,Gender,DateOfJoining,WorkEmail,Department,Designation,WorkLocationId,ReportingManagerId,PortalAccess,SalaryStructureId,AnnualCtc,SalaryJson,PersonalJson,PaymentJson,IsActive) VALUES (@ClientId,@EmployeeCode,@FirstName,@LastName,@Gender,@DateOfJoining,@WorkEmail,@Department,@Designation,@WorkLocationId,@ReportingManagerId,@PortalAccess,@SalaryStructureId,@AnnualCtc,@SalaryJson,@PersonalJson,@PaymentJson,@IsActive); SELECT LAST_INSERT_ID();", employee);
+            employee.Id = (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId,EmployeeCode,FirstName,LastName,Gender,DateOfJoining,WorkEmail,Department,Designation,WorkLocationId,ReportingManagerId,PortalAccess,SalaryStructureId,AnnualCtc,SalaryJson,PersonalJson,PaymentJson,IsActive) VALUES (@ClientId,@EmployeeCode,@FirstName,@LastName,@Gender,@DateOfJoining,@WorkEmail,@Department,@Designation,@WorkLocationId,@ReportingManagerId,@PortalAccess,@SalaryStructureId,@AnnualCtc,@SalaryJson,@PersonalJson,@PaymentJson,@IsActive); SELECT LAST_INSERT_ID();", employee);
         else
-            await db.ExecuteAsync(@"UPDATE Employees SET ClientId=@ClientId,EmployeeCode=@EmployeeCode,FirstName=@FirstName,LastName=@LastName,Gender=@Gender,DateOfJoining=@DateOfJoining,WorkEmail=@WorkEmail,Department=@Department,Designation=@Designation,WorkLocationId=@WorkLocationId,ReportingManagerId=@ReportingManagerId,PortalAccess=@PortalAccess,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,SalaryJson=@SalaryJson,PersonalJson=@PersonalJson,PaymentJson=@PaymentJson,IsActive=@IsActive WHERE Id=@Id", employee);
+            await db.ExecuteAsync(@"UPDATE employees SET ClientId=@ClientId,EmployeeCode=@EmployeeCode,FirstName=@FirstName,LastName=@LastName,Gender=@Gender,DateOfJoining=@DateOfJoining,WorkEmail=@WorkEmail,Department=@Department,Designation=@Designation,WorkLocationId=@WorkLocationId,ReportingManagerId=@ReportingManagerId,PortalAccess=@PortalAccess,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,SalaryJson=@SalaryJson,PersonalJson=@PersonalJson,PaymentJson=@PaymentJson,IsActive=@IsActive WHERE Id=@Id", employee);
         await PayrollDataTableStore.SyncEmployeeTablesAsync(db, employee);
         return employee.Id;
     }
@@ -36,6 +36,6 @@ public class EmployeeRepository(IConfiguration configuration)
         await using var db = Connection();
         await db.OpenAsync();
         await db.ExecuteAsync("USE payroll;");
-        return await db.ExecuteAsync("DELETE FROM Employees WHERE Id=@Id", new { Id = id }) > 0;
+        return await db.ExecuteAsync("DELETE FROM employees WHERE Id=@Id", new { Id = id }) > 0;
     }
 }

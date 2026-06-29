@@ -8,7 +8,7 @@ import SearchSelect, { type SearchOption } from './SearchSelect'
 import { useToast } from './ToastProvider'
 
 const today = new Date().toISOString().slice(0, 10)
-const blank: LeaveType = { id: 0, clientId: 0, name: '', code: '', type: 'Paid', description: '', entitlement: 0, entitlementPeriod: 'Yearly', proRateForNewJoinees: false, resetEnabled: false, resetFrequency: 'Yearly', carryForwardUnusedLeaves: false, maxCarryForwardLimit: null, encashUnusedLeaves: false, maxEncashmentLimit: null, allowNegativeLeaveBalance: false, negativeBalanceHandling: 'Mark as LOP', allowPastDates: false, pastDateLimitType: 'No limit', pastDateLimitDays: null, allowFutureDates: true, futureDateLimitType: 'No limit', futureDateLimitDays: null, applicabilityMode: 'All employees', workLocation: '', department: '', designation: '', gender: '', effectiveFrom: today, expiresOn: '', postponeCreditsForNewEmployees: false, postponeCreditValue: null, postponeCreditUnit: 'Days', isActive: true }
+const blank: LeaveType = { id: 0, clientId: 0, name: '', code: '', type: 'Paid', description: '', entitlement: 0, entitlementPeriod: 'Yearly', proRateForNewJoinees: false, resetEnabled: false, resetFrequency: 'Yearly', carryForwardUnusedLeaves: false, maxCarryForwardLimit: null, encashUnusedLeaves: false, maxEncashmentLimit: null, allowNegativeLeaveBalance: false, negativeBalanceHandling: 'Mark as LOP', allowPastDates: false, pastDateLimitType: 'No limit', pastDateLimitDays: null, allowFutureDates: true, futureDateLimitType: 'No limit', futureDateLimitDays: null, applicabilityMode: 'All employees', workLocation: '', department: '', designation: '', gender: '', effectiveFrom: today, expiresOn: null, postponeCreditsForNewEmployees: false, postponeCreditValue: null, postponeCreditUnit: 'Days', isActive: true }
 
 const required = (label: string) => <>{label} <em>*</em></>
 const numOrNull = (value: string) => value === '' ? null : Number(value)
@@ -34,7 +34,6 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
     if (Number.isFinite(form.entitlement) && form.entitlement < 0) next.push('Number of leaves cannot be negative.')
     if (!form.entitlementPeriod) next.push('Period is required.')
     if (!form.effectiveFrom) next.push('Effective from is required.')
-    if (!form.expiresOn) next.push('Expiry date is required.')
     if (rows.some(row => row.id !== form.id && row.code.toUpperCase() === code)) next.push(`Leave type code "${code}" already exists. Use a unique code.`)
     if (form.expiresOn && form.expiresOn < form.effectiveFrom) next.push('Expiry date cannot be before effective date.')
     return next.length ? fail(next) : true
@@ -42,14 +41,14 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
   const save = async () => {
     if (!validate()) return
     setBusy(true)
-    const response = await saveLeaveType({ ...form, clientId, code: form.code.trim().toUpperCase(), name: form.name.trim() })
+    const response = await saveLeaveType({ ...form, clientId, code: form.code.trim().toUpperCase(), name: form.name.trim(), expiresOn: form.expiresOn || null })
     setBusy(false)
     if (response.ok) { setForm({ ...blank, clientId }); setEditing(false); setDrawerOpen(false); onMessage('Leave type saved.'); await load() }
     else fail([response.error || 'Unable to save leave type.'])
   }
   const toggle = async (row: LeaveType) => { const response = await setLeaveTypeStatus(clientId, row.id, !row.isActive); if (response.ok) { onMessage(row.isActive ? 'Leave type disabled.' : 'Leave type enabled.'); await load() } else fail([response.error || 'Unable to update leave type status.']) }
   const remove = async (row: LeaveType) => { if (!window.confirm(`Delete ${row.name}?`)) return; const response = await deleteLeaveType(clientId, row.id); if (response.ok) { onMessage('Leave type deleted.'); await load() } else fail([response.error || 'Unable to delete leave type.']) }
-  const edit = (row: LeaveType) => { setForm({ ...blank, ...row, effectiveFrom: String(row.effectiveFrom).slice(0, 10), expiresOn: row.expiresOn ? String(row.expiresOn).slice(0, 10) : '' }); setEditing(true); setErrors([]); setDrawerOpen(true) }
+  const edit = (row: LeaveType) => { setForm({ ...blank, ...row, effectiveFrom: String(row.effectiveFrom).slice(0, 10), expiresOn: row.expiresOn ? String(row.expiresOn).slice(0, 10) : null }); setEditing(true); setErrors([]); setDrawerOpen(true) }
   const add = () => { setForm({ ...blank, clientId }); setEditing(false); setErrors([]); setDrawerOpen(true) }
   const close = () => { setForm({ ...blank, clientId }); setEditing(false); setErrors([]); setDrawerOpen(false) }
 
@@ -71,6 +70,7 @@ function LeaveTypeForm(p: { form: LeaveType; editing: boolean; errors: string[];
   const entitlement = Number.isFinite(p.form.entitlement) ? String(p.form.entitlement) : ''
   return <section className="card leave-type-form leave-type-drawer" role="dialog" aria-modal="true" aria-label={`${p.editing ? 'Edit' : 'Add'} leave type`} onClick={event => event.stopPropagation()}>
     <header><i className="blue">{p.editing ? 'E' : '+'}</i><div><h3>{p.editing ? 'Edit Leave Type' : 'Add Leave Type'}</h3><p>Policy, applicability and validity controls.</p></div><button type="button" className="drawer-close" aria-label="Close leave type drawer" onClick={p.cancel}>×</button></header>
+    <div className="leave-type-drawer-body">
     {p.errors.length > 0 && <div className="form-errors sticky-errors">{p.errors.map(error => <p key={error}>{error}</p>)}</div>}
     <div className="grid">
       <label><span>{required('Leave Type Name')}</span><input value={p.form.name} onChange={event => p.set('name', event.target.value)} /></label>
@@ -108,12 +108,13 @@ function LeaveTypeForm(p: { form: LeaveType; editing: boolean; errors: string[];
         <label><span>Gender</span><SearchSelect value={p.form.gender} onChange={value => p.set('gender', value)} options={anyOpts(['Male', 'Female', 'Other'])} /></label>
       </>}
       <label><span>{required('Effective from')}</span><input type="date" value={p.form.effectiveFrom} onChange={event => p.set('effectiveFrom', event.target.value)} /></label>
-      <label><span>{required('Expiry date')}</span><input type="date" value={p.form.expiresOn ?? ''} onChange={event => p.set('expiresOn', event.target.value || null)} /></label>
+      <label><span>Expiry date</span><input type="date" value={p.form.expiresOn ?? ''} onChange={event => p.set('expiresOn', event.target.value || null)} /></label>
       <Check label="Postpone leave credits for new employees" value={p.form.postponeCreditsForNewEmployees} set={value => p.set('postponeCreditsForNewEmployees', value)} />
       {p.form.postponeCreditsForNewEmployees && <>
         <label><span>Delay value</span><input type="number" value={p.form.postponeCreditValue ?? ''} onChange={event => p.set('postponeCreditValue', numOrNull(event.target.value))} /></label>
         <label><span>Delay unit</span><SearchSelect value={p.form.postponeCreditUnit} onChange={value => p.set('postponeCreditUnit', value as LeaveType['postponeCreditUnit'])} options={opts(['Days', 'Months'])} /></label>
       </>}
+    </div>
     </div>
     <div className="actions"><p>Fields marked <em>*</em> are mandatory.</p><span><button type="button" className="secondary" onClick={p.cancel}>Cancel</button><button type="button" disabled={p.busy} onClick={() => void p.save()}>{p.busy ? 'Saving...' : p.editing ? 'Update leave type' : 'Save leave type'}</button></span></div>
   </section>

@@ -117,12 +117,6 @@ id BIGINT PRIMARY KEY AUTO_INCREMENT, employee_id INT NOT NULL, client_id INT NO
 financial_year_id INT NULL, rule_version_id INT NOT NULL, regime_id INT NULL, regime VARCHAR(20) NOT NULL, gross_salary DECIMAL(14,2) NOT NULL, exemptions_amount DECIMAL(14,2) NOT NULL DEFAULT 0, deductions_amount DECIMAL(14,2) NOT NULL DEFAULT 0, taxable_income DECIMAL(14,2) NOT NULL,
 tax_before_rebate DECIMAL(14,2) NOT NULL DEFAULT 0, rebate_amount DECIMAL(14,2) NOT NULL DEFAULT 0, tax_after_rebate DECIMAL(14,2) NOT NULL DEFAULT 0, surcharge_amount DECIMAL(14,2) NOT NULL DEFAULT 0, cess_amount DECIMAL(14,2) NOT NULL DEFAULT 0, total_annual_tax DECIMAL(14,2) NOT NULL DEFAULT 0,
 tds_deducted_till_date DECIMAL(14,2) NOT NULL DEFAULT 0, remaining_tax DECIMAL(14,2) NOT NULL DEFAULT 0, annual_tax DECIMAL(14,2) NOT NULL, monthly_tds DECIMAL(14,2) NOT NULL, snapshot_json JSON NOT NULL, rule_breakup_json JSON NULL, declaration_json JSON NULL, proof_json JSON NULL, calculated_by INT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);");
-        var fy = CurrentFinancialYear();
-        var (fyStart, fyEnd) = FinancialYearRange(fy);
-        await db.ExecuteAsync(@"INSERT INTO tax_financial_years (code,start_date,end_date,active,notes) VALUES (@Fy,@Start,@End,TRUE,'Seeded statutory financial year') ON DUPLICATE KEY UPDATE start_date=@Start,end_date=@End,active=TRUE", new { Fy = fy, Start = fyStart, End = fyEnd });
-        var ruleVersionId = await db.ExecuteScalarAsync<int>(@"INSERT INTO tax_rule_versions (financial_year,version_number,effective_from,effective_to,active,source,notes) VALUES (@Fy,'1.0',@Start,@End,TRUE,'Finance Act / CBDT / Income Tax Department','Initial statutory seed')
-ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id),effective_from=@Start,effective_to=@End,active=TRUE;
-SELECT LAST_INSERT_ID();", new { Fy = fy, Start = fyStart, End = fyEnd });
         await EnsureColumnAsync(db, "tax_slabs", "financial_year", "financial_year VARCHAR(10) NOT NULL DEFAULT '' AFTER id");
         await EnsureColumnAsync(db, "tax_slabs", "rule_version_id", "rule_version_id INT NOT NULL DEFAULT 0 AFTER id");
         await EnsureColumnAsync(db, "tax_slabs", "regime_id", "regime_id INT NOT NULL DEFAULT 0 AFTER rule_version_id");
@@ -172,39 +166,13 @@ SELECT LAST_INSERT_ID();", new { Fy = fy, Start = fyStart, End = fyEnd });
         await EnsureColumnAsync(db, "tax_hra_rules", "is_applicable", "is_applicable BOOLEAN NOT NULL DEFAULT TRUE AFTER financial_year");
         await EnsureColumnAsync(db, "tax_hra_rules", "formula_type", "formula_type VARCHAR(40) NOT NULL DEFAULT 'LeastOf' AFTER rent_minus_basic_percent");
         await EnsureSnapshotColumnsAsync(db);
-        await BackfillFinancialYearIdsAsync(db);
-        await db.ExecuteAsync(@"UPDATE tax_client_settings SET planned_declaration_start=COALESCE(planned_declaration_start,declaration_window_start), planned_declaration_end=COALESCE(planned_declaration_end,declaration_window_end)");
-        await db.ExecuteAsync(@"INSERT INTO tax_activity_windows (client_setting_id,client_id,financial_year,activity_code,is_open,end_date,active)
-SELECT id,client_id,financial_year,'REGIME_SELECTION',regime_selection_window_open,regime_selection_cutoff,active FROM tax_client_settings
-ON DUPLICATE KEY UPDATE client_setting_id=VALUES(client_setting_id),is_open=VALUES(is_open),end_date=VALUES(end_date),active=VALUES(active);
-INSERT INTO tax_activity_windows (client_setting_id,client_id,financial_year,activity_code,is_open,start_date,end_date,active)
-SELECT id,client_id,financial_year,'IT_DECLARATION',planned_declaration_window_open,planned_declaration_start,planned_declaration_end,active FROM tax_client_settings
-ON DUPLICATE KEY UPDATE client_setting_id=VALUES(client_setting_id),is_open=VALUES(is_open),start_date=VALUES(start_date),end_date=VALUES(end_date),active=VALUES(active);
-INSERT INTO tax_activity_windows (client_setting_id,client_id,financial_year,activity_code,is_open,start_date,end_date,processing_month,active)
-SELECT id,client_id,financial_year,'POI',actual_declaration_window_open,actual_declaration_start,actual_declaration_end,poi_processing_month,active FROM tax_client_settings
-ON DUPLICATE KEY UPDATE client_setting_id=VALUES(client_setting_id),is_open=VALUES(is_open),start_date=VALUES(start_date),end_date=VALUES(end_date),processing_month=VALUES(processing_month),active=VALUES(active);");
         await EnsureColumnAsync(db, "employee_tax_declarations", "planned_amount", "planned_amount DECIMAL(14,2) NOT NULL DEFAULT 0 AFTER status");
         await EnsureColumnAsync(db, "employee_tax_declarations", "actual_amount", "actual_amount DECIMAL(14,2) NOT NULL DEFAULT 0 AFTER planned_amount");
-        await db.ExecuteAsync("UPDATE employee_tax_declarations SET planned_amount=declared_amount WHERE planned_amount=0 AND declared_amount<>0");
         await DropColumnIfExistsAsync(db, "tax_slabs", "cess_percent");
         await DropColumnIfExistsAsync(db, "tax_slabs", "surcharge_percent");
         await DropIndexIfExistsAsync(db, "tax_declaration_sections", "UX_tax_section_code");
         await EnsureIndexAsync(db, "tax_declaration_sections", "UX_tax_section_code_fy", "UNIQUE KEY UX_tax_section_code_fy (financial_year, code)");
-        await SeedStatutoryAsync(db, fy, ruleVersionId, fyStart, fyEnd);
-        await CleanupLegacyStatutorySeedAsync(db, fy, ruleVersionId);
         await EnsureIndexAsync(db, "employee_tax_declarations", "UX_employee_tax_declaration_section", "UNIQUE KEY UX_employee_tax_declaration_section (employee_id, financial_year, section_id)");
-        await db.ExecuteAsync(@"INSERT INTO employee_tax_declaration_headers (employee_id,client_id,financial_year,activity_code,status,submitted_at)
-SELECT employee_id,client_id,financial_year,'IT_DECLARATION',MAX(status),MAX(updated_at) FROM employee_tax_declarations WHERE planned_amount<>0 OR declared_amount<>0 GROUP BY employee_id,client_id,financial_year
-ON DUPLICATE KEY UPDATE status=VALUES(status);
-INSERT INTO employee_tax_declaration_lines (header_id,section_id,amount,approved_amount,status,remarks)
-SELECT h.id,d.section_id,COALESCE(NULLIF(d.planned_amount,0),d.declared_amount),d.approved_amount,d.status,d.remarks FROM employee_tax_declarations d JOIN employee_tax_declaration_headers h ON h.employee_id=d.employee_id AND h.financial_year=d.financial_year AND h.activity_code='IT_DECLARATION' WHERE d.planned_amount<>0 OR d.declared_amount<>0
-ON DUPLICATE KEY UPDATE amount=VALUES(amount),approved_amount=VALUES(approved_amount),status=VALUES(status),remarks=VALUES(remarks);
-INSERT INTO employee_tax_declaration_headers (employee_id,client_id,financial_year,activity_code,status,submitted_at)
-SELECT employee_id,client_id,financial_year,'POI',MAX(status),MAX(updated_at) FROM employee_tax_declarations WHERE actual_amount<>0 GROUP BY employee_id,client_id,financial_year
-ON DUPLICATE KEY UPDATE status=VALUES(status);
-INSERT INTO employee_tax_declaration_lines (header_id,section_id,amount,approved_amount,status,remarks)
-SELECT h.id,d.section_id,d.actual_amount,d.approved_amount,d.status,d.remarks FROM employee_tax_declarations d JOIN employee_tax_declaration_headers h ON h.employee_id=d.employee_id AND h.financial_year=d.financial_year AND h.activity_code='POI' WHERE d.actual_amount<>0
-ON DUPLICATE KEY UPDATE amount=VALUES(amount),approved_amount=VALUES(approved_amount),status=VALUES(status),remarks=VALUES(remarks);");
     }
 
     public async Task<TaxEngineSetup> GetAsync()
@@ -212,7 +180,7 @@ ON DUPLICATE KEY UPDATE amount=VALUES(amount),approved_amount=VALUES(approved_am
         await using var db = Connection(); await db.OpenAsync(); await db.ExecuteAsync("USE payroll;");
         return new TaxEngineSetup
         {
-            ClientSettings = (await db.QueryAsync<ClientTaxSetting>(@"SELECT s.id Id,s.client_id ClientId,COALESCE(c.Name,'') ClientName,s.enabled Enabled,s.financial_year FinancialYear,s.default_regime DefaultRegime,s.allow_employee_regime_selection AllowEmployeeRegimeSelection,COALESCE(reg.is_open,s.regime_selection_window_open) RegimeSelectionWindowOpen,COALESCE(reg.end_date,s.regime_selection_cutoff) RegimeSelectionCutoff,s.allow_declarations AllowDeclarations,COALESCE(it.is_open,s.planned_declaration_window_open) PlannedDeclarationWindowOpen,COALESCE(poi.is_open,s.actual_declaration_window_open) ActualDeclarationWindowOpen,s.declaration_window_start DeclarationWindowStart,s.declaration_window_end DeclarationWindowEnd,COALESCE(it.start_date,s.planned_declaration_start) PlannedDeclarationStart,COALESCE(it.end_date,s.planned_declaration_end) PlannedDeclarationEnd,COALESCE(poi.start_date,s.actual_declaration_start) ActualDeclarationStart,COALESCE(poi.end_date,s.actual_declaration_end) ActualDeclarationEnd,COALESCE(poi.processing_month,s.poi_processing_month) PoiProcessingMonth,s.reminder_emails_enabled ReminderEmailsEnabled,s.reminder_frequency ReminderFrequency,s.reminder_before_lock_days ReminderBeforeLockDays,s.require_proof_upload RequireProofUpload,s.require_approval RequireApproval,s.tax_deduction_component_code TaxDeductionComponentCode,s.project_monthly_tds ProjectMonthlyTds,s.lock_after_approval LockAfterApproval,s.active Active FROM tax_client_settings s LEFT JOIN Clients c ON c.Id=s.client_id LEFT JOIN tax_activity_windows reg ON reg.client_id=s.client_id AND reg.financial_year=s.financial_year AND reg.activity_code='REGIME_SELECTION' LEFT JOIN tax_activity_windows it ON it.client_id=s.client_id AND it.financial_year=s.financial_year AND it.activity_code='IT_DECLARATION' LEFT JOIN tax_activity_windows poi ON poi.client_id=s.client_id AND poi.financial_year=s.financial_year AND poi.activity_code='POI' ORDER BY c.Name,s.financial_year DESC")).ToList(),
+            ClientSettings = (await db.QueryAsync<ClientTaxSetting>(@"SELECT s.id Id,s.client_id ClientId,COALESCE(c.Name,'') ClientName,s.enabled Enabled,s.financial_year FinancialYear,s.default_regime DefaultRegime,s.allow_employee_regime_selection AllowEmployeeRegimeSelection,COALESCE(reg.is_open,s.regime_selection_window_open) RegimeSelectionWindowOpen,COALESCE(reg.end_date,s.regime_selection_cutoff) RegimeSelectionCutoff,s.allow_declarations AllowDeclarations,COALESCE(it.is_open,s.planned_declaration_window_open) PlannedDeclarationWindowOpen,COALESCE(poi.is_open,s.actual_declaration_window_open) ActualDeclarationWindowOpen,s.declaration_window_start DeclarationWindowStart,s.declaration_window_end DeclarationWindowEnd,COALESCE(it.start_date,s.planned_declaration_start) PlannedDeclarationStart,COALESCE(it.end_date,s.planned_declaration_end) PlannedDeclarationEnd,COALESCE(poi.start_date,s.actual_declaration_start) ActualDeclarationStart,COALESCE(poi.end_date,s.actual_declaration_end) ActualDeclarationEnd,COALESCE(poi.processing_month,s.poi_processing_month) PoiProcessingMonth,s.reminder_emails_enabled ReminderEmailsEnabled,s.reminder_frequency ReminderFrequency,s.reminder_before_lock_days ReminderBeforeLockDays,s.require_proof_upload RequireProofUpload,s.require_approval RequireApproval,s.tax_deduction_component_code TaxDeductionComponentCode,s.project_monthly_tds ProjectMonthlyTds,s.lock_after_approval LockAfterApproval,s.active Active FROM tax_client_settings s LEFT JOIN clients c ON c.Id=s.client_id LEFT JOIN tax_activity_windows reg ON reg.client_id=s.client_id AND reg.financial_year=s.financial_year AND reg.activity_code='REGIME_SELECTION' LEFT JOIN tax_activity_windows it ON it.client_id=s.client_id AND it.financial_year=s.financial_year AND it.activity_code='IT_DECLARATION' LEFT JOIN tax_activity_windows poi ON poi.client_id=s.client_id AND poi.financial_year=s.financial_year AND poi.activity_code='POI' ORDER BY c.Name,s.financial_year DESC")).ToList(),
             FinancialYears = (await db.QueryAsync<TaxFinancialYear>(@"SELECT id Id,code Code,start_date StartDate,end_date EndDate,active Active,notes Notes FROM tax_financial_years ORDER BY code DESC")).ToList(),
             RuleVersions = (await db.QueryAsync<TaxRuleVersion>(@"SELECT id Id,financial_year_id FinancialYearId,financial_year FinancialYear,version_number VersionNumber,version_name VersionName,effective_from EffectiveFrom,effective_to EffectiveTo,is_published IsPublished,active Active,source_reference_id SourceReferenceId,source Source,notes Notes FROM tax_rule_versions ORDER BY financial_year DESC,version_number DESC")).ToList(),
             Regimes = (await db.QueryAsync<TaxRegimeMaster>(@"SELECT id Id,rule_version_id RuleVersionId,financial_year FinancialYear,code Code,name Name,is_default IsDefault,active Active,notes Notes FROM tax_regimes ORDER BY financial_year DESC,code")).ToList(),
@@ -359,16 +327,6 @@ VALUES (@EmployeeId,@ClientId,@FinancialYear,@FinancialYearId,@PayPeriod,@RuleVe
         await EnsureColumnAsync(db, "tax_computation_snapshots", "calculated_by", "calculated_by INT NULL AFTER proof_json");
     }
 
-    private static async Task BackfillFinancialYearIdsAsync(MySqlConnection db)
-    {
-        await db.ExecuteAsync(@"UPDATE tax_rule_versions rv JOIN tax_financial_years fy ON fy.code=rv.financial_year SET rv.financial_year_id=fy.id WHERE rv.financial_year_id IS NULL;
-UPDATE tax_client_settings s JOIN tax_financial_years fy ON fy.code=s.financial_year SET s.financial_year_id=fy.id WHERE s.financial_year_id IS NULL;
-UPDATE tax_activity_windows w JOIN tax_financial_years fy ON fy.code=w.financial_year SET w.financial_year_id=fy.id WHERE w.financial_year_id IS NULL;
-UPDATE employee_tax_regime_selections r JOIN tax_financial_years fy ON fy.code=r.financial_year SET r.financial_year_id=fy.id WHERE r.financial_year_id IS NULL;
-UPDATE employee_tax_declaration_headers h JOIN tax_financial_years fy ON fy.code=h.financial_year SET h.financial_year_id=fy.id WHERE h.financial_year_id IS NULL;
-UPDATE employee_tax_declarations d JOIN tax_financial_years fy ON fy.code=d.financial_year SET d.financial_year_id=fy.id WHERE d.financial_year_id IS NULL;");
-    }
-
     private static async Task AuditRuleChangeAsync(MySqlConnection db, string entityName, long entityId, string action, object? oldValue, object newValue, int? changedBy, string financialYear, int ruleVersionId)
     {
         var financialYearId = await db.ExecuteScalarAsync<int?>("SELECT id FROM tax_financial_years WHERE code=@FinancialYear", new { FinancialYear = financialYear });
@@ -413,62 +371,8 @@ VALUES (@EntityName,@EntityId,@Action,@OldValueJson,@NewValueJson,@ChangedBy,@Ch
         var fy = string.IsNullOrWhiteSpace(financialYear) ? CurrentFinancialYear() : financialYear;
         var id = await db.ExecuteScalarAsync<int?>(@"SELECT id FROM tax_rule_versions WHERE financial_year=@Fy AND active=TRUE ORDER BY effective_from DESC,id DESC LIMIT 1", new { Fy = fy });
         if (id.HasValue) return id.Value;
-        var (start, end) = FinancialYearRange(fy);
-        return await db.ExecuteScalarAsync<int>(@"INSERT INTO tax_rule_versions (financial_year,version_number,effective_from,effective_to,active,source,notes) VALUES (@Fy,'1.0',@Start,@End,TRUE,'Finance Act / CBDT / Income Tax Department','Auto-created statutory rule version')
-ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id);
-SELECT LAST_INSERT_ID();", new { Fy = fy, Start = start, End = end });
+        return 0;
     }
-
-    private static async Task SeedStatutoryAsync(MySqlConnection db, string fy, int ruleVersionId, DateTime start, DateTime end)
-    {
-        await db.ExecuteAsync(@"INSERT INTO tax_regimes (rule_version_id,financial_year,code,name,is_default,active,notes) VALUES
-(@RuleVersionId,@Fy,'Old','Old Regime',FALSE,TRUE,'Deductions and exemptions allowed'),
-(@RuleVersionId,@Fy,'New','New Regime',TRUE,TRUE,'Default concessional regime')
-ON DUPLICATE KEY UPDATE rule_version_id=@RuleVersionId,active=TRUE;", new { RuleVersionId = ruleVersionId, Fy = fy });
-        await db.ExecuteAsync(@"INSERT INTO tax_standard_deductions (rule_version_id,financial_year,regime,amount,active,source,notes)
-SELECT @RuleVersionId,@Fy,'Both',50000,TRUE,'Finance Act / Income Tax Department','Seeded statutory standard deduction'
-WHERE NOT EXISTS (SELECT 1 FROM tax_standard_deductions WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId);", new { RuleVersionId = ruleVersionId, Fy = fy });
-        await db.ExecuteAsync(@"INSERT INTO tax_slabs (rule_version_id,financial_year,regime,income_from,income_to,rate_percent,effective_from,effective_to,active,source,notes)
-SELECT @RuleVersionId,@Fy,x.regime,x.income_from,x.income_to,x.rate_percent,@Start,@End,TRUE,'Finance Act / Income Tax Department','Initial statutory seed' FROM (
-SELECT 'Old' regime,0 income_from,250000 income_to,0 rate_percent UNION ALL SELECT 'Old',250000,500000,5 UNION ALL SELECT 'Old',500000,1000000,20 UNION ALL SELECT 'Old',1000000,NULL,30
-UNION ALL SELECT 'New',0,300000,0 UNION ALL SELECT 'New',300000,600000,5 UNION ALL SELECT 'New',600000,900000,10 UNION ALL SELECT 'New',900000,1200000,15 UNION ALL SELECT 'New',1200000,1500000,20 UNION ALL SELECT 'New',1500000,NULL,30) x
-WHERE NOT EXISTS (SELECT 1 FROM tax_slabs WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId);", new { RuleVersionId = ruleVersionId, Fy = fy, Start = start, End = end });
-        await db.ExecuteAsync(@"INSERT INTO tax_surcharges (rule_version_id,financial_year,income_from,income_to,surcharge_percent,active,source,notes)
-SELECT @RuleVersionId,@Fy,x.income_from,x.income_to,x.rate,TRUE,'Finance Act / Income Tax Department','Income based surcharge threshold' FROM (
-SELECT 0 income_from,5000000 income_to,0 rate UNION ALL SELECT 5000000,10000000,10 UNION ALL SELECT 10000000,20000000,15 UNION ALL SELECT 20000000,50000000,25 UNION ALL SELECT 50000000,NULL,37) x
-WHERE NOT EXISTS (SELECT 1 FROM tax_surcharges WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId);", new { RuleVersionId = ruleVersionId, Fy = fy });
-        await db.ExecuteAsync(@"INSERT INTO tax_final_adjustments (rule_version_id,financial_year,label,value_type,value,apply_order,active,source,notes)
-SELECT @RuleVersionId,@Fy,'Health & Education Cess','Percent',4,100,TRUE,'Finance Act / Income Tax Department','Configurable final tax adjustment'
-WHERE NOT EXISTS (SELECT 1 FROM tax_final_adjustments WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId);", new { RuleVersionId = ruleVersionId, Fy = fy });
-        await db.ExecuteAsync(@"INSERT INTO tax_rebate_rules (rule_version_id,financial_year,regime,income_limit,rebate_amount,active,source)
-SELECT @RuleVersionId,@Fy,x.regime,x.income_limit,x.rebate_amount,TRUE,'Finance Act / Income Tax Department' FROM (
-SELECT 'Old' regime,500000 income_limit,12500 rebate_amount UNION ALL SELECT 'New',700000,25000) x
-WHERE NOT EXISTS (SELECT 1 FROM tax_rebate_rules WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId);", new { RuleVersionId = ruleVersionId, Fy = fy });
-        await db.ExecuteAsync(@"INSERT INTO tax_hra_rules (rule_version_id,financial_year,metro_salary_percent,non_metro_salary_percent,rent_minus_basic_percent,active,source)
-SELECT @RuleVersionId,@Fy,50,40,10,TRUE,'Income Tax Act / Income Tax Rules'
-WHERE NOT EXISTS (SELECT 1 FROM tax_hra_rules WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId);", new { RuleVersionId = ruleVersionId, Fy = fy });
-        await db.ExecuteAsync(@"INSERT INTO tax_declaration_sections (rule_version_id,financial_year,code,name,category,regime,limit_amount,proof_required,requires_approval,active,source,notes) VALUES
-(@RuleVersionId,@Fy,'80C','Section 80C Investments','Investment','Old',150000,TRUE,TRUE,TRUE,'Income Tax Act','PF, ELSS, life insurance and eligible investments'),
-(@RuleVersionId,@Fy,'80CCD1B','Additional NPS Contribution','Investment','Old',50000,TRUE,TRUE,TRUE,'Income Tax Act','Additional NPS deduction'),
-(@RuleVersionId,@Fy,'80D','Medical Insurance Premium','Insurance','Old',25000,TRUE,TRUE,TRUE,'Income Tax Act','Health insurance deduction'),
-(@RuleVersionId,@Fy,'HRA','House Rent Allowance','Exemption','Old',NULL,TRUE,TRUE,TRUE,'Income Tax Act / Rules','HRA exemption using configured HRA rule'),
-(@RuleVersionId,@Fy,'24B','Home Loan Interest','Housing','Old',200000,TRUE,TRUE,TRUE,'Income Tax Act','Self occupied property interest'),
-(@RuleVersionId,@Fy,'80E','Education Loan Interest','Loan','Old',NULL,TRUE,TRUE,TRUE,'Income Tax Act','Education loan interest'),
-(@RuleVersionId,@Fy,'80G','Donations','Donation','Old',NULL,TRUE,TRUE,TRUE,'Income Tax Act','Eligible donations')
-ON DUPLICATE KEY UPDATE rule_version_id=@RuleVersionId,active=TRUE;", new { RuleVersionId = ruleVersionId, Fy = fy });
-        await db.ExecuteAsync(@"INSERT INTO tax_rule_source_references (rule_version_id,financial_year,source_type,title,url,notes,active)
-SELECT @RuleVersionId,@Fy,'Government','Income Tax Department India','https://www.incometax.gov.in/','Statutory rule traceability source',TRUE
-WHERE NOT EXISTS (SELECT 1 FROM tax_rule_source_references WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId);", new { RuleVersionId = ruleVersionId, Fy = fy });
-    }
-
-    private static Task CleanupLegacyStatutorySeedAsync(MySqlConnection db, string fy, int ruleVersionId) =>
-        db.ExecuteAsync(@"DELETE FROM tax_final_adjustments
-WHERE financial_year=@Fy AND rule_version_id=0 AND label='Health & Education Cess'
-AND EXISTS (SELECT 1 FROM (SELECT id FROM tax_final_adjustments WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND label='Health & Education Cess') x);
-DELETE FROM tax_surcharges
-WHERE financial_year=@Fy AND rule_version_id=0 AND surcharge_percent=4 AND income_from=0 AND income_to<=500000
-AND EXISTS (SELECT 1 FROM (SELECT id FROM tax_surcharges WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId) x);",
-            new { Fy = fy, RuleVersionId = ruleVersionId });
 
     private static Task UpsertActivityWindowAsync(MySqlConnection db, int settingId, int clientId, string financialYear, string activityCode, bool isOpen, DateTime? startDate, DateTime? endDate, DateTime? cutoffDate, string processingMonth, bool active) =>
         db.ExecuteAsync(@"INSERT INTO tax_activity_windows (client_setting_id,client_id,financial_year,activity_code,is_open,start_date,end_date,cutoff_date,processing_month,active)

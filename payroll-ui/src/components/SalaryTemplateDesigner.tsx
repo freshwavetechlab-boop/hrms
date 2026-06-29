@@ -8,20 +8,21 @@ import '../TemplateDesigner.css'
 
 const componentTabs = ['Earning', 'Deduction', 'Reimbursement'] as const
 
-export default function SalaryTemplateDesigner({ clients, components, structure, setStructure, templates, saveTemplate, removeTemplate }: { clients: Client[]; components: Component[]; structure: Structure; setStructure: (s: Structure) => void; templates: Structure[]; saveTemplate: () => void; removeTemplate: (row: Structure) => void }) {
+export default function SalaryTemplateDesigner({ clients, components, structure, setStructure, templates, saveTemplate, removeTemplate, saving = false }: { clients: Client[]; components: Component[]; structure: Structure; setStructure: (s: Structure) => void; templates: Structure[]; saveTemplate: () => void | Promise<void>; removeTemplate?: (row: Structure) => void; saving?: boolean }) {
   const [tab, setTab] = useState<'Earning' | 'Deduction' | 'Reimbursement'>('Earning')
   const [dragId, setDragId] = useState('')
   const [dragLineId, setDragLineId] = useState('')
   const library = components.filter(component => component.active && component.category === tab)
   const basic = components.find(component => component.code === 'BASIC')
+  const hasDraft = !!(structure.clientId || structure.name || structure.annualCtc || structure.lines.length)
   const hasBasic = basic ? structure.lines.some(line => line.componentId === String(basic.id)) : true
-  const lines = hasBasic || !basic ? structure.lines : [{ componentId: String(basic.id), value: basic.formula || basic.value || 'CTC * 40%' }, ...structure.lines]
+  const lines = hasDraft && basic && !hasBasic ? [{ componentId: String(basic.id), value: basic.formula || basic.value || 'CTC * 40%' }, ...structure.lines] : structure.lines
   const calculated = calculateSalaryDetails(Number(structure.annualCtc || 0), components, { ...structure, lines })
   const preview = calculateSalaryTotals(calculated).net
 
   useEffect(() => {
-    if (basic && !hasBasic) setStructure({ ...structure, lines })
-  }, [basic, hasBasic, lines, setStructure, structure])
+    if (hasDraft && basic && !hasBasic) setStructure({ ...structure, lines })
+  }, [basic, hasBasic, hasDraft, lines, setStructure, structure])
 
   const isBasic = (id: string) => components.find(component => String(component.id) === id)?.code === 'BASIC'
   const add = (id: string) => {
@@ -46,7 +47,7 @@ export default function SalaryTemplateDesigner({ clients, components, structure,
         <label>Client<SearchSelect value={structure.clientId} onChange={value => setStructure({ ...structure, clientId: value })} options={selectOptions(clients.map(client => ({ value: `${client.id}:${client.name}`, label: client.name })), 'Select client')} /></label>
         <label>Template<input value={structure.name} onChange={event => setStructure({ ...structure, name: event.target.value })} /></label>
         <label>Annual CTC<input value={structure.annualCtc} onChange={event => setStructure({ ...structure, annualCtc: event.target.value.replace(/\D/g, '') })} /></label>
-        <button type="button" onClick={saveTemplate}>Save Template</button>
+        <button type="button" disabled={saving} onClick={() => void saveTemplate()}>{saving ? 'Saving...' : 'Save Template'}</button>
       </div>
       <div className="salary-template-workbench">
         <section className="salary-component-palette">
@@ -75,7 +76,7 @@ export default function SalaryTemplateDesigner({ clients, components, structure,
         </section>
       </div>
     </div>
-    <DataTable rows={templates} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client' }, { key: 'annualCtc', label: 'Annual CTC' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} actions={row => <span className="row-actions"><button type="button" onClick={() => setStructure(row)}>Edit</button><button type="button" className="danger" onClick={() => removeTemplate(row)}>Delete</button></span>} />
+    <DataTable rows={templates} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client' }, { key: 'annualCtc', label: 'Annual CTC' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} actions={row => <span className="row-actions"><button type="button" onClick={() => setStructure(row)}>Edit</button>{removeTemplate && <button type="button" className="danger" onClick={() => removeTemplate(row)}>Delete</button>}</span>} />
   </Card>
 }
 
