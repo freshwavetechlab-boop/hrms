@@ -178,7 +178,7 @@ export default function ManualAttendanceManager({ clientId, onMessage, clientCon
   }
   const isWorkingDate = (date: string) => workDays.has(new Date(`${date}T00:00:00`).getDay())
   const holidayFor = (row: EmployeeMonthlyAttendance, date: string) => reviewContext.holidays.find((holiday) =>
-    isoDate(holiday.startDate) <= date && isoDate(holiday.endDate) >= date && (holiday.allLocations || holiday.workLocationIds.includes(row.workLocationId)))
+    isoDate(holiday.startDate) <= date && isoDate(holiday.endDate) >= date && (holiday.allLocations || !holiday.workLocationIds.length || holiday.workLocationIds.includes(row.workLocationId)))
   const defaultStatusFor = (row: EmployeeMonthlyAttendance, date: string) => holidayFor(row, date) ? 'H' : isWorkingDate(date) ? '' : 'WO'
   const totalHoursFor = (row: EmployeeDailyAttendance) => toNumber(row.totalHours) || hoursBetween(row.checkInTime, row.checkOutTime)
   const makeRow = (employeeId: number, date: string, status: DailyStatus, existing?: EmployeeDailyAttendance, patch: RowPatch = {}): EmployeeDailyAttendance => {
@@ -206,20 +206,17 @@ export default function ManualAttendanceManager({ clientId, onMessage, clientCon
   }
   const missingCountFor = (employee: EmployeeMonthlyAttendance) => monthDays.filter((date) => !dailyByEmployee.get(employee.employeeId)?.has(date) && !defaultStatusFor(employee, date)).length
   const rowTone = (row: EmployeeMonthlyAttendance) => reviewStatus(row) === 'Ready' ? 'ready' : reviewStatus(row) === 'Missing attendance' ? 'warn' : 'danger'
-  const shouldSkipBulk = (employee: EmployeeMonthlyAttendance, date: string, status: DailyStatus) => {
-    const target = normalizeStatus(status)
-    if (target === 'WO' || target === 'H') return false
-    const current = normalizeStatus(dailyByEmployee.get(employee.employeeId)?.get(date)?.status) || defaultStatusFor(employee, date)
-    return current === 'WO' || current === 'H'
+  const shouldSkipBulk = (employee: EmployeeMonthlyAttendance, date: string) => {
+    const defaultStatus = defaultStatusFor(employee, date)
+    const current = defaultStatus || normalizeStatus(dailyByEmployee.get(employee.employeeId)?.get(date)?.status)
+    return current === 'WO' || current === 'H' || leaveTypeByCode.has(current.toLowerCase())
   }
 
   const loadMonthly = async () => {
     setLoadingMonthly(true)
     try {
-      const contextPromise = getAttendanceReviewContext(clientId, month)
-      const [rows, leaveTypeRows, dailyGridRows] = await Promise.all([getMonthlyAttendance(clientId, month), getLeaveTypes(clientId), getDailyAttendanceGrid(clientId, month)])
-      setMonthlyRows(rows); setLeaveTypes(leaveTypeRows); setAllDailyRows(dailyGridRows); setDirtyEmployeeIds(new Set()); setGridEdit(null)
-      void contextPromise.then(setReviewContext)
+      const [rows, leaveTypeRows, dailyGridRows, context] = await Promise.all([getMonthlyAttendance(clientId, month), getLeaveTypes(clientId), getDailyAttendanceGrid(clientId, month), getAttendanceReviewContext(clientId, month)])
+      setMonthlyRows(rows); setLeaveTypes(leaveTypeRows); setAllDailyRows(dailyGridRows); setReviewContext(context); setDirtyEmployeeIds(new Set()); setGridEdit(null)
     } catch (error) {
       onMessage(error instanceof Error ? error.message : 'Unable to load monthly attendance', 'error')
     } finally {
@@ -361,17 +358,17 @@ export default function ManualAttendanceManager({ clientId, onMessage, clientCon
     employees.forEach((row) => {
       let rowApplied = false
       dates.forEach((date) => {
-        if (shouldSkipBulk(row, date, bulkStatus)) { skipped += 1; return }
+        if (shouldSkipBulk(row, date)) { skipped += 1; return }
         nextRows = upsertGridRow(nextRows, row.employeeId, date, bulkStatus)
         applied += 1
         rowApplied = true
       })
       if (rowApplied) touched.add(row.employeeId)
     })
-    if (!applied) { onMessage('Only WO/H dates matched. Nothing changed.', 'warning'); return }
+    if (!applied) { onMessage('Only protected days matched. Nothing changed.', 'warning'); return }
     setAllDailyRows(nextRows)
     setDirtyEmployeeIds((ids) => new Set([...ids, ...touched]))
-    onMessage(`Applied ${normalizeStatus(bulkStatus)} to ${label}. ${skipped ? `${skipped} WO/H skipped.` : ''}`, 'success')
+    onMessage(`Applied ${normalizeStatus(bulkStatus)} to ${label}. ${skipped ? `${skipped} protected skipped.` : ''}`, 'success')
   }
   const bulkApplyVisible = () => applyBulkToEmployees(filteredRows, bulkDates, `${filteredRows.length} employees / ${bulkDates.length} dates`)
   const applyEmployeeRow = (row: EmployeeMonthlyAttendance) => applyBulkToEmployees([row], monthDays, row.employeeName)
@@ -393,7 +390,7 @@ export default function ManualAttendanceManager({ clientId, onMessage, clientCon
         <SearchSelect value={bulkScope} onChange={(value) => setBulkScope(value as BulkScope)} options={bulkScopeOptions} />
         {bulkScope === 'date' && <Input className="attendance-bulk-date" type="date" min={monthDays[0]} max={monthDays[monthDays.length - 1]} value={selectedBulkDate} onChange={(event) => setBulkDate(event.target.value)} />}
         <Button onClick={bulkApplyVisible} disabled={!filteredRows.length}>Apply scope</Button>
-        <Button type="primary" onClick={() => void saveGridChanges()} loading={saving} disabled={!dirtyEmployeeIds.size}>Save grid {dirtyEmployeeIds.size ? `(${dirtyEmployeeIds.size})` : ''}</Button>
+        <Button type="primary" onClick={() => void saveGridChanges()} loading={saving} disabled={!dirtyEmployeeIds.size}>Save {dirtyEmployeeIds.size ? `(${dirtyEmployeeIds.size})` : ''}</Button>
       </Space>
       <div className="attendance-filterbar">
         <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search employee" allowClear />

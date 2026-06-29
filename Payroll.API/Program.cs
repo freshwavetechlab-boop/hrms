@@ -694,6 +694,18 @@ app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunReq
     {
         return Results.BadRequest(new { error = exception.Message });
     }
+    catch (Exception exception)
+    {
+        try
+        {
+            var failedRun = await repository.CreateFailedAttemptAsync(request, CurrentUser(context).Email, exception);
+            return failedRun is null ? Results.BadRequest(new { error = exception.Message }) : Results.Created($"/api/pay-runs/{failedRun.Id}", failedRun);
+        }
+        catch (Exception diagnosticException)
+        {
+            return Results.BadRequest(new { error = exception.Message, diagnosticError = diagnosticException.Message });
+        }
+    }
 })
 .WithName("CreatePayRun")
 .WithOpenApi();

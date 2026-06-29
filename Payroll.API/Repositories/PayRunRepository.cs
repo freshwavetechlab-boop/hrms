@@ -233,9 +233,13 @@ SELECT * FROM payrunemployees WHERE PayRunId = @Id ORDER BY EmployeeName;", new 
         var runType = string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
         var runCode = runType == "Regular" ? "REGULAR" : $"OFF-{DateTime.UtcNow:yyyyMMddHHmmss}";
         var runName = string.IsNullOrWhiteSpace(request.RunName) ? (runType == "Regular" ? "Regular payroll" : "Off-cycle payroll") : request.RunName.Trim();
-        var existing = runType == "Regular" ? await connection.ExecuteScalarAsync<int?>("SELECT Id FROM payruns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = 'REGULAR'", new { request.PayPeriod, request.ClientId }, transaction) : null;
+        var existing = runType == "Regular" ? await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>("SELECT Id, Status FROM payruns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = 'REGULAR'", new { request.PayPeriod, request.ClientId }, transaction) : null;
         if (existing is not null)
-            return null;
+        {
+            if (!existing.Status.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+                return null;
+            await DeletePayRunAttemptAsync(connection, transaction, existing.Id);
+        }
 
         var setupJson = await PayrollDataTableStore.GetSetupJsonAsync(connection, transaction);
         var employees = (await connection.QueryAsync<PayRunSourceEmployee>("SELECT e.*, c.Name AS ClientName, COALESCE(w.State,'') AS WorkState FROM employees e LEFT JOIN clients c ON c.Id = e.ClientId LEFT JOIN worklocations w ON w.Id = e.WorkLocationId WHERE e.IsActive = TRUE AND e.ClientId = @ClientId ORDER BY e.FirstName, e.LastName", new { request.ClientId }, transaction)).ToList();
@@ -255,15 +259,18 @@ FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=
             return null;
         }
         var validationIssues = ValidatePayRunInputs(0, request, runType, employees.Where(employee => includedEmployeeIds.Contains(employee.Id)).ToList(), attendance, setupJson);
-        if (validationIssues.Any(issue => issue.IsBlocking))
-            throw new InvalidOperationException(string.Join(" ", validationIssues.Where(issue => issue.IsBlocking).Take(3).Select(issue => issue.Message)));
-
+        var hasBlockingIssues = validationIssues.Any(issue => issue.IsBlocking);
         var payRunId = (int)await connection.ExecuteScalarAsync<long>(@"
-INSERT INTO payruns (ClientId, ClientName, PayPeriod, RunCode, RunType, RunName, Reason, PayDate, TotalWorkingDays) VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays);
-SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, RunType = runType, RunName = runName, Reason = request.Reason.Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays }, transaction);
+INSERT INTO payruns (ClientId, ClientName, PayPeriod, RunCode, RunType, RunName, Reason, PayDate, TotalWorkingDays, Status) VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays, @Status);
+SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, RunType = runType, RunName = runName, Reason = request.Reason.Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays, Status = hasBlockingIssues ? "Failed" : "Draft" }, transaction);
         validationIssues.ForEach(issue => issue.PayRunId = payRunId);
         await WriteValidationIssuesAsync(connection, transaction, validationIssues);
         await WritePipelineStepLogsAsync(connection, transaction, payRunId, performedBy, validationIssues);
+        if (hasBlockingIssues)
+        {
+            await transaction.CommitAsync();
+            return await GetAsync(payRunId);
+        }
 
         foreach (var employee in employees)
         {
@@ -287,6 +294,38 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
 
         await RefreshTotalsAsync(connection, transaction, payRunId);
         await WriteReconciliationResultsAsync(connection, transaction, payRunId);
+        await transaction.CommitAsync();
+        return await GetAsync(payRunId);
+    }
+
+    public async Task<PayRun?> CreateFailedAttemptAsync(CreatePayRunRequest request, string performedBy, Exception exception)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+        var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id", new { Id = request.ClientId }, transaction);
+        if (client is null) return null;
+        var runType = string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
+        var runCode = runType == "Regular" ? "REGULAR" : $"OFF-FAILED-{DateTime.UtcNow:yyyyMMddHHmmss}";
+        var runName = string.IsNullOrWhiteSpace(request.RunName) ? $"{runType} payroll" : request.RunName.Trim();
+        if (runType == "Regular")
+        {
+            var existing = await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>("SELECT Id, Status FROM payruns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = 'REGULAR'", new { request.PayPeriod, request.ClientId }, transaction);
+            if (existing is not null)
+            {
+                if (!existing.Status.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+                    return await GetAsync(existing.Id);
+                await DeletePayRunAttemptAsync(connection, transaction, existing.Id);
+            }
+        }
+        var payRunId = (int)await connection.ExecuteScalarAsync<long>(@"
+INSERT INTO payruns (ClientId, ClientName, PayPeriod, RunCode, RunType, RunName, Reason, PayDate, TotalWorkingDays, Status) VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays, 'Failed');
+SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, RunType = runType, RunName = runName, Reason = FirstText(request.Reason, "Payroll engine exception").Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays }, transaction);
+        var issue = Issue(payRunId, null, "", "Run", "Critical", "Payroll Validation", exception.Message, true);
+        issue.IssueType = "Exception";
+        issue.DataJson = JsonSerializer.Serialize(new { exception = exception.GetType().Name, stackTrace = Trunc(exception.StackTrace, 6000) });
+        await WriteValidationIssuesAsync(connection, transaction, [issue]);
+        await WritePipelineStepLogsAsync(connection, transaction, payRunId, performedBy, [issue]);
         await transaction.CommitAsync();
         return await GetAsync(payRunId);
     }
@@ -1024,7 +1063,7 @@ SELECT LAST_INSERT_ID();", row, transaction);
         issues.Count == 0
             ? Task.CompletedTask
             : connection.ExecuteAsync(@"INSERT INTO payroll_validation_issues (PayRunId,EmployeeId,EmployeeCode,Scope,IssueType,Severity,StepName,Message,DataJson,IsBlocking)
-VALUES (@PayRunId,@EmployeeId,@EmployeeCode,@Scope,@IssueType,@Severity,@StepName,@Message,@DataJson,@IsBlocking);", issues, transaction);
+VALUES (@PayRunId,@EmployeeId,@EmployeeCode,@Scope,@IssueType,@Severity,@StepName,@Message,@DataJson,@IsBlocking);", issues.Select(issue => new { issue.PayRunId, issue.EmployeeId, EmployeeCode = Trunc(issue.EmployeeCode, 50), Scope = Trunc(issue.Scope, 40), IssueType = Trunc(issue.IssueType, 40), Severity = Trunc(issue.Severity, 20), StepName = Trunc(issue.StepName, 160), Message = Trunc(issue.Message, 1000), issue.DataJson, issue.IsBlocking }), transaction);
 
     private static Task WritePipelineStepLogsAsync(MySqlConnection connection, MySqlTransaction transaction, int payRunId, string performedBy, List<PayrollValidationIssue> issues)
     {
@@ -1049,8 +1088,8 @@ VALUES (@PayRunId,@EmployeeId,@EmployeeCode,@Scope,@IssueType,@Severity,@StepNam
                 NewValueJson = "{}",
                 OutputJson = JsonSerializer.Serialize(new { warningCount = warnings.Length }),
                 Status = blocking ? "Failed" : "Success",
-                Warning = string.Join(" | ", warnings),
-                ErrorMessage = blocking ? string.Join(" | ", stepIssues.Where(issue => issue.IsBlocking).Select(issue => issue.Message).Take(3)) : "",
+                Warning = Trunc(string.Join(" | ", warnings), 1000),
+                ErrorMessage = blocking ? Trunc(string.Join(" | ", stepIssues.Where(issue => issue.IsBlocking).Select(issue => issue.Message).Take(3)), 1000) : "",
                 PerformedBy = performedBy,
                 MachineName = Environment.MachineName,
                 Version = "1.0"
@@ -1257,7 +1296,7 @@ LIMIT 1;", new { payRun.ClientId, payRun.PayPeriod });
 SELECT a.employee_id AS EmployeeId,
        a.status AS Code,
        COALESCE(lt.name, a.status) AS Name,
-       COALESCE(lt.type, CASE WHEN a.payable_value > 0 THEN 'Paid' ELSE 'Unpaid' END) AS Type,
+       COALESCE(lt.type, CASE WHEN COALESCE(SUM(a.payable_value),0) > 0 THEN 'Paid' ELSE 'Unpaid' END) AS Type,
        COUNT(*) AS Days,
        COALESCE(SUM(a.payable_value), 0) AS PayableDays
 FROM employee_daily_attendance a
@@ -1297,8 +1336,9 @@ ORDER BY a.employee_id, a.status;", new { payRun.ClientId, payRun.PayPeriod, Emp
         value.Equals("Reimbursement", StringComparison.OrdinalIgnoreCase) ? "Reimbursement" : "Earning";
 
     private sealed record PayRunAttendance(int EmployeeId, decimal PresentDays, decimal PayableDays);
-    private sealed record LeaveBreakdownRow(int EmployeeId, string Code, string Name, string Type, decimal Days, decimal PayableDays);
+    private sealed record LeaveBreakdownRow(int EmployeeId, string Code, string Name, string Type, long Days, decimal PayableDays);
     private sealed record StatutoryLineTotal(string ComponentCode, decimal Amount);
+    private sealed record ExistingPayRunRow(int Id, string Status);
     private sealed record EmployeeSalaryTableRow(int EmployeeId, string ComponentId, decimal Amount);
     private sealed record EmployeePersonalPayrollRow(int EmployeeId, string State, string PanNumber, string UanNumber, string EsicNumber, decimal EsicEmployee, decimal PtLwfWorkmenComp, decimal Tds, decimal Recovery);
     private sealed record EmployeePaymentPayrollRow(int EmployeeId, string BankAccountNo, string IfscCode);
@@ -1346,6 +1386,14 @@ ORDER BY a.employee_id, a.status;", new { payRun.ClientId, payRun.PayPeriod, Emp
             employee.IfscCode = payment.IfscCode;
         }
     }
+
+    private static async Task DeletePayRunAttemptAsync(MySqlConnection connection, MySqlTransaction transaction, int payRunId)
+    {
+        await connection.ExecuteAsync("UPDATE payrolladjustments SET Status='Approved', PayRunId=NULL WHERE PayRunId=@PayRunId;DELETE FROM tax_computation_snapshots WHERE pay_run_id=@PayRunId;DELETE FROM payrunemployeelines WHERE PayRunId=@PayRunId;DELETE FROM payrunemployees WHERE PayRunId=@PayRunId;DELETE FROM payrun_step_logs WHERE PayRunId=@PayRunId;DELETE FROM payroll_validation_issues WHERE PayRunId=@PayRunId;DELETE FROM payroll_calculation_traces WHERE PayRunId=@PayRunId;DELETE FROM payroll_reconciliation_results WHERE PayRunId=@PayRunId;DELETE FROM payruns WHERE Id=@PayRunId;", new { PayRunId = payRunId }, transaction);
+    }
+
+    private static string Trunc(string? value, int max) =>
+        string.IsNullOrEmpty(value) || value.Length <= max ? value ?? "" : value[..max];
 
     private static async Task EnsureColumnAsync(MySqlConnection connection, string tableName, string columnName, string definition)
     {

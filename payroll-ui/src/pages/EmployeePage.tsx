@@ -77,7 +77,8 @@ function EmployeeDirectory(p: { clients: Client[]; employees: Employee[]; allCou
   return <section className="card employee-directory"><header><i className="blue">E</i><div><h3>Employee master</h3><p>Search client-wise employees. Create or edit details in a focused popup.</p></div><button type="button" onClick={p.onNew}>New employee</button></header>
     <div className="employee-directory-tools"><label><span>Client</span><SearchSelect value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={selectOptions(p.clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label><label><span>Search</span><input value={p.query} onChange={event => p.setQuery(event.target.value)} placeholder="Code, name, department, email..." /></label><div><span>Showing</span><b>{p.employees.length} / {p.allCount}</b></div></div>
     <DataTable rows={p.employees} onEdit={p.onEdit} emptyText="No employees found for the selected filters." exportFileName="employees" columns={[
-      { key: 'employeeName', label: 'Employee', value: row => `${row.firstName} ${row.lastName}`.trim(), render: row => <><strong>{row.firstName} {row.lastName}</strong><small>{row.employeeCode}</small></> },
+      { key: 'employeeName', label: 'Employee', value: row => `${row.firstName} ${row.lastName}`.trim(), render: row => <strong>{row.firstName} {row.lastName}</strong> },
+      { key: 'employeeCode', label: 'Code' },
       { key: 'clientName', label: 'Client', value: row => clientName(row.clientId) },
       { key: 'department', label: 'Department' },
       { key: 'designation', label: 'Designation' },

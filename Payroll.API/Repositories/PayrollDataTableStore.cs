@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS paysliptemplates (
     Active BOOLEAN NOT NULL DEFAULT TRUE,
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
-CREATE TABLE IF NOT EXISTS ProfessionalTaxSlabs (
+CREATE TABLE IF NOT EXISTS professionaltaxslabs (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
     State VARCHAR(100) NOT NULL,
     SalaryFrom DECIMAL(18,2) NOT NULL DEFAULT 0,
@@ -179,7 +179,7 @@ CREATE TABLE IF NOT EXISTS payrunemployeelines (
         var templates = (await connection.QueryAsync<PayslipTemplateRow>("SELECT * FROM paysliptemplates ORDER BY Name", transaction: transaction)).ToList();
         if (templates.Count > 0) root["payslipTemplates"] = JsonSerializer.SerializeToNode(templates.Select(ToDto), JsonOptions);
 
-        var ptSlabs = (await connection.QueryAsync<ProfessionalTaxSlabDto>(@"SELECT Id id, State state, CAST(SalaryFrom AS CHAR) salaryFrom, CAST(SalaryTo AS CHAR) salaryTo, CAST(DeductionAmount AS CHAR) deductionAmount, DATE_FORMAT(EffectiveFrom,'%Y-%m-%d') effectiveFrom, DATE_FORMAT(EffectiveTo,'%Y-%m-%d') effectiveTo, Gender gender, Notes notes, Active active FROM ProfessionalTaxSlabs ORDER BY State, SalaryFrom, Id", transaction: transaction)).ToList();
+        var ptSlabs = (await connection.QueryAsync<ProfessionalTaxSlabDto>(@"SELECT Id id, State state, CAST(SalaryFrom AS CHAR) salaryFrom, CAST(SalaryTo AS CHAR) salaryTo, CAST(DeductionAmount AS CHAR) deductionAmount, DATE_FORMAT(EffectiveFrom,'%Y-%m-%d') effectiveFrom, DATE_FORMAT(EffectiveTo,'%Y-%m-%d') effectiveTo, Gender gender, Notes notes, Active active FROM professionaltaxslabs ORDER BY State, SalaryFrom, Id", transaction: transaction)).ToList();
         if (ptSlabs.Count > 0)
         {
             var statutory = root["statutory"] as JsonObject ?? [];
@@ -367,9 +367,9 @@ ON DUPLICATE KEY UPDATE ClientId=@ClientId,ClientRef=@ClientRef,Name=@Name,Theme
     private static async Task SaveProfessionalTaxSlabsAsync(MySqlConnection connection, List<ProfessionalTaxSlabDto> rows)
     {
         var ids = rows.Where(x => x.Id > 0).Select(x => x.Id).Distinct().ToArray();
-        if (ids.Length > 0) await connection.ExecuteAsync("DELETE FROM ProfessionalTaxSlabs WHERE Id NOT IN @ids", new { ids }); else await connection.ExecuteAsync("DELETE FROM ProfessionalTaxSlabs");
+        if (ids.Length > 0) await connection.ExecuteAsync("DELETE FROM professionaltaxslabs WHERE Id NOT IN @ids", new { ids }); else await connection.ExecuteAsync("DELETE FROM professionaltaxslabs");
         foreach (var row in rows.Where(x => !string.IsNullOrWhiteSpace(x.State)))
-            await connection.ExecuteAsync(@"INSERT INTO ProfessionalTaxSlabs (Id,State,SalaryFrom,SalaryTo,DeductionAmount,EffectiveFrom,EffectiveTo,Gender,Notes,Active)
+            await connection.ExecuteAsync(@"INSERT INTO professionaltaxslabs (Id,State,SalaryFrom,SalaryTo,DeductionAmount,EffectiveFrom,EffectiveTo,Gender,Notes,Active)
 VALUES (NULLIF(@Id,0),@State,@SalaryFrom,@SalaryTo,@DeductionAmount,@EffectiveFrom,@EffectiveTo,@Gender,@Notes,@Active)
 ON DUPLICATE KEY UPDATE State=@State,SalaryFrom=@SalaryFrom,SalaryTo=@SalaryTo,DeductionAmount=@DeductionAmount,EffectiveFrom=@EffectiveFrom,EffectiveTo=@EffectiveTo,Gender=@Gender,Notes=@Notes,Active=@Active", new
             {
