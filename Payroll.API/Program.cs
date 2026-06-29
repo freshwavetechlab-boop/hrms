@@ -392,6 +392,11 @@ app.MapGet("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRep
 .WithName("GetMonthlyAttendance")
 .WithOpenApi();
 
+app.MapGet("/api/leave-attendance/attendance/context", async (LeaveAttendanceRepository repository, int clientId, string month) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetAttendanceReviewContextAsync(clientId, month)))
+.WithName("GetAttendanceReviewContext")
+.WithOpenApi();
+
 app.MapPost("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRepository repository, SaveMonthlyAttendanceRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "settings.manage"))
@@ -405,6 +410,11 @@ app.MapPost("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRe
 app.MapGet("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepository repository, int clientId, int employeeId, string month) =>
     clientId <= 0 || employeeId <= 0 ? Results.BadRequest(new { error = "Select a client and employee." }) : Results.Ok(await repository.GetDailyAttendanceAsync(clientId, employeeId, month)))
 .WithName("GetDailyAttendance")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/attendance/daily-grid", async (LeaveAttendanceRepository repository, int clientId, string month) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetDailyAttendanceMonthAsync(clientId, month)))
+.WithName("GetDailyAttendanceGrid")
 .WithOpenApi();
 
 app.MapPost("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepository repository, SaveDailyAttendanceRequest request, HttpContext context) =>

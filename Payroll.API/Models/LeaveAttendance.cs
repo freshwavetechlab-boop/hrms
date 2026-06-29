@@ -80,6 +80,7 @@ public class EmployeeMonthlyAttendance
     public string EmployeeCode { get; set; } = string.Empty;
     public string EmployeeName { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
+    public int WorkLocationId { get; set; }
     public string Month { get; set; } = string.Empty;
     public decimal WorkingDays { get; set; }
     public decimal PresentDays { get; set; }
@@ -104,6 +105,9 @@ public class EmployeeDailyAttendance
     public DateTime AttendanceDate { get; set; }
     public string Status { get; set; } = "Present";
     public decimal PayableValue { get; set; } = 1;
+    public TimeSpan? CheckInTime { get; set; }
+    public TimeSpan? CheckOutTime { get; set; }
+    public decimal TotalHours { get; set; }
     public string Remarks { get; set; } = string.Empty;
 }
 
@@ -113,6 +117,34 @@ public class SaveDailyAttendanceRequest
     public int EmployeeId { get; set; }
     public string Month { get; set; } = string.Empty;
     public List<EmployeeDailyAttendance> Rows { get; set; } = [];
+}
+
+public class ClientAttendanceSchedule
+{
+    public string WorkWeek { get; set; } = "Monday - Friday";
+    public string SalaryDays { get; set; } = "Actual days";
+    public string FixedDays { get; set; } = "30";
+    public string PayDay { get; set; } = "Last working day";
+    public string FirstPayPeriod { get; set; } = string.Empty;
+}
+
+public class EmployeeLeaveBalanceSummary
+{
+    public int EmployeeId { get; set; }
+    public int LeaveTypeId { get; set; }
+    public string LeaveTypeCode { get; set; } = string.Empty;
+    public string LeaveTypeName { get; set; } = string.Empty;
+    public decimal Balance { get; set; }
+    public DateTime BalanceDate { get; set; }
+    public bool AllowNegativeLeaveBalance { get; set; }
+}
+
+public class AttendanceReviewContext
+{
+    public AttendanceSettings Settings { get; set; } = new();
+    public ClientAttendanceSchedule Schedule { get; set; } = new();
+    public List<Holiday> Holidays { get; set; } = [];
+    public List<EmployeeLeaveBalanceSummary> LeaveBalances { get; set; } = [];
 }
 
 public class LeaveType

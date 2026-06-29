@@ -31,8 +31,8 @@ public class PayRunEmployee
     public string EmployeeCode { get; set; } = string.Empty;
     public string EmployeeName { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
-    public int PresentDays { get; set; }
-    public int PayableDays { get; set; }
+    public decimal PresentDays { get; set; }
+    public decimal PayableDays { get; set; }
     public decimal MonthlyGross { get; set; }
     public decimal GrossPay { get; set; }
     public decimal StatutoryDeductions { get; set; }
@@ -76,7 +76,7 @@ public class CreatePayRunRequest
 
 public class UpdatePayRunEmployeeRequest
 {
-    public int PresentDays { get; set; }
+    public decimal PresentDays { get; set; }
     public decimal OneTimeEarnings { get; set; }
     public decimal OneTimeDeductions { get; set; }
     public decimal ManualTds { get; set; }
