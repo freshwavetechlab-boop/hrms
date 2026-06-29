@@ -166,6 +166,83 @@ CREATE TABLE IF NOT EXISTS payrolladjustments (
     CONSTRAINT FK_PayrollAdjustments_PayRuns FOREIGN KEY (PayRunId) REFERENCES payruns(Id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS payrun_step_logs (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PayRunId INT NOT NULL,
+    EmployeeId INT NULL,
+    StepNumber INT NOT NULL,
+    StepName VARCHAR(160) NOT NULL,
+    StartTime DATETIME NOT NULL,
+    EndTime DATETIME NULL,
+    DurationMs INT NOT NULL DEFAULT 0,
+    InputJson JSON NULL,
+    RuleJson JSON NULL,
+    FormulaJson JSON NULL,
+    OldValueJson JSON NULL,
+    NewValueJson JSON NULL,
+    OutputJson JSON NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Success',
+    Warning VARCHAR(1000) NOT NULL DEFAULT '',
+    ErrorMessage VARCHAR(1000) NOT NULL DEFAULT '',
+    PerformedBy VARCHAR(190) NOT NULL DEFAULT '',
+    MachineName VARCHAR(190) NOT NULL DEFAULT '',
+    Version VARCHAR(40) NOT NULL DEFAULT '1.0',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_PayRunStepLogs_Run_Step (PayRunId, StepNumber),
+    INDEX IX_PayRunStepLogs_Run_Employee (PayRunId, EmployeeId)
+);
+
+CREATE TABLE IF NOT EXISTS payroll_validation_issues (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PayRunId INT NOT NULL,
+    EmployeeId INT NULL,
+    EmployeeCode VARCHAR(50) NOT NULL DEFAULT '',
+    Scope VARCHAR(40) NOT NULL DEFAULT 'Employee',
+    IssueType VARCHAR(40) NOT NULL DEFAULT 'Validation',
+    Severity VARCHAR(20) NOT NULL DEFAULT 'Warning',
+    StepName VARCHAR(160) NOT NULL DEFAULT '',
+    Message VARCHAR(1000) NOT NULL,
+    DataJson JSON NULL,
+    IsBlocking BOOLEAN NOT NULL DEFAULT FALSE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_PayrollValidation_Run_Blocking (PayRunId, IsBlocking),
+    INDEX IX_PayrollValidation_Run_Employee (PayRunId, EmployeeId)
+);
+
+CREATE TABLE IF NOT EXISTS payroll_calculation_traces (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PayRunId INT NOT NULL,
+    EmployeeId INT NOT NULL,
+    EmployeeCode VARCHAR(50) NOT NULL DEFAULT '',
+    ComponentCode VARCHAR(80) NOT NULL,
+    ComponentName VARCHAR(180) NOT NULL,
+    ParentComponentCode VARCHAR(80) NOT NULL DEFAULT '',
+    TraceOrder INT NOT NULL,
+    RuleUsed VARCHAR(250) NOT NULL DEFAULT '',
+    FormulaUsed VARCHAR(500) NOT NULL DEFAULT '',
+    BaseAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    Factor DECIMAL(18,6) NOT NULL DEFAULT 0,
+    CalculatedAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    InputJson JSON NULL,
+    OutputJson JSON NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_PayrollTrace_Run_Employee (PayRunId, EmployeeId, TraceOrder),
+    INDEX IX_PayrollTrace_Run_Component (PayRunId, ComponentCode)
+);
+
+CREATE TABLE IF NOT EXISTS payroll_reconciliation_results (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PayRunId INT NOT NULL,
+    CheckName VARCHAR(160) NOT NULL,
+    ExpectedAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    ActualAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    DifferenceAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Passed',
+    DetailsJson JSON NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_PayrollRecon_Run_Status (PayRunId, Status)
+);
+
 CREATE TABLE IF NOT EXISTS authusers (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     Email VARCHAR(190) NOT NULL,

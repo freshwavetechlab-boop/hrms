@@ -1,10 +1,11 @@
-import type { Client, Employee, PayRun, PayrollAdjustment, RunEmployee } from '../types/payroll'
+import type { Client, Employee, PayRun, PayRunDiagnostics, PayrollAdjustment, RunEmployee } from '../types/payroll'
 import { deleteJson, getJson, postEmpty, postJson, putJson } from './apiClient'
 
 export const getClients = () => getJson<Client[]>('/api/clients', [])
 export const getEmployees = () => getJson<Employee[]>('/api/employees', [])
 export const getPayRuns = () => getJson<PayRun[]>('/api/pay-runs', [])
 export const getPayRun = (id: number) => getJson<PayRun | null>(`/api/pay-runs/${id}`, null)
+export const getPayRunDiagnostics = (id: number) => getJson<PayRunDiagnostics | null>(`/api/pay-runs/${id}/diagnostics`, null)
 export const createPayRun = (body: { clientId: number; payPeriod: string; payDate: string; totalWorkingDays: number; runType?: string; runName?: string; reason?: string; excludedEmployeeIds?: number[]; includedEmployeeIds?: number[]; adjustmentIds?: number[] }) => postJson<typeof body, PayRun | null>('/api/pay-runs', body, null)
 export const updatePayRunEmployee = (payRunId: number, employee: RunEmployee) => putJson(`/api/pay-runs/${payRunId}/employees/${employee.employeeId}`, { presentDays: employee.presentDays, oneTimeEarnings: employee.oneTimeEarnings, oneTimeDeductions: employee.oneTimeDeductions, manualTds: employee.manualTds, isSkipped: employee.isSkipped }, null)
 export const runPayRunAction = (id: number, path: string) => postEmpty<PayRun | null>(`/api/pay-runs/${id}/${path}`, null)

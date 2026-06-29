@@ -251,6 +251,7 @@ public class TaxRuleAuditLog
 
 public class TaxComputationRequest
 {
+    public int? PayRunId { get; set; }
     public int EmployeeId { get; set; }
     public int ClientId { get; set; }
     public string FinancialYear { get; set; } = "";

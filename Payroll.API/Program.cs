@@ -607,6 +607,16 @@ app.MapGet("/api/pay-runs/{id:int}", async (PayRunRepository repository, int id)
 .WithName("GetPayRun")
 .WithOpenApi();
 
+app.MapGet("/api/pay-runs/{id:int}/diagnostics", async (PayRunRepository repository, int id, HttpContext context) =>
+{
+    if (!HasPermission(context, "payroll.run") && !HasPermission(context, "payroll.approve"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var diagnostics = await repository.GetDiagnosticsAsync(id);
+    return diagnostics is null ? Results.NotFound() : Results.Ok(diagnostics);
+})
+.WithName("GetPayRunDiagnostics")
+.WithOpenApi();
+
 app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "payroll.run"))
@@ -615,8 +625,15 @@ app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunReq
         return Results.BadRequest(new { error = "Select a client and enter a valid pay period with 1 to 31 working days." });
     if (string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) && request.IncludedEmployeeIds.Count == 0 && request.AdjustmentIds.Count == 0)
         return Results.BadRequest(new { error = "Off-cycle payroll needs at least one employee or approved adjustment." });
-    var payRun = await repository.CreateAsync(request);
-    return payRun is null ? Results.Conflict(new { error = "A pay run already exists for this period." }) : Results.Created($"/api/pay-runs/{payRun.Id}", payRun);
+    try
+    {
+        var payRun = await repository.CreateAsync(request, CurrentUser(context).Email);
+        return payRun is null ? Results.Conflict(new { error = "A pay run already exists for this period." }) : Results.Created($"/api/pay-runs/{payRun.Id}", payRun);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
 })
 .WithName("CreatePayRun")
 .WithOpenApi();
