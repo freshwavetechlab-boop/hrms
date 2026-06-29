@@ -10,7 +10,7 @@ public class TaxEngineRepository(IConfiguration configuration)
 
     public async Task InitializeAsync()
     {
-        await using var db = Connection(); await db.OpenAsync(); await db.ExecuteAsync("USE payroll;");
+        await using var db = Connection(); await db.OpenAsync();
         await db.ExecuteAsync(@"CREATE TABLE IF NOT EXISTS tax_client_settings (
 id INT PRIMARY KEY AUTO_INCREMENT, client_id INT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, financial_year VARCHAR(10) NOT NULL,
 default_regime VARCHAR(10) NOT NULL DEFAULT 'New', allow_employee_regime_selection BOOLEAN NOT NULL DEFAULT TRUE, regime_selection_window_open BOOLEAN NOT NULL DEFAULT FALSE, regime_selection_cutoff DATE NULL,
@@ -178,7 +178,7 @@ tds_deducted_till_date DECIMAL(14,2) NOT NULL DEFAULT 0, remaining_tax DECIMAL(1
 
     public async Task<TaxEngineSetup> GetAsync()
     {
-        await using var db = Connection(); await db.OpenAsync(); await db.ExecuteAsync("USE payroll;");
+        await using var db = Connection(); await db.OpenAsync();
         return new TaxEngineSetup
         {
             ClientSettings = (await db.QueryAsync<ClientTaxSetting>(@"SELECT s.id Id,s.client_id ClientId,COALESCE(c.Name,'') ClientName,s.enabled Enabled,s.financial_year FinancialYear,s.default_regime DefaultRegime,s.allow_employee_regime_selection AllowEmployeeRegimeSelection,COALESCE(reg.is_open,s.regime_selection_window_open) RegimeSelectionWindowOpen,COALESCE(reg.end_date,s.regime_selection_cutoff) RegimeSelectionCutoff,s.allow_declarations AllowDeclarations,COALESCE(it.is_open,s.planned_declaration_window_open) PlannedDeclarationWindowOpen,COALESCE(poi.is_open,s.actual_declaration_window_open) ActualDeclarationWindowOpen,s.declaration_window_start DeclarationWindowStart,s.declaration_window_end DeclarationWindowEnd,COALESCE(it.start_date,s.planned_declaration_start) PlannedDeclarationStart,COALESCE(it.end_date,s.planned_declaration_end) PlannedDeclarationEnd,COALESCE(poi.start_date,s.actual_declaration_start) ActualDeclarationStart,COALESCE(poi.end_date,s.actual_declaration_end) ActualDeclarationEnd,COALESCE(poi.processing_month,s.poi_processing_month) PoiProcessingMonth,s.reminder_emails_enabled ReminderEmailsEnabled,s.reminder_frequency ReminderFrequency,s.reminder_before_lock_days ReminderBeforeLockDays,s.require_proof_upload RequireProofUpload,s.require_approval RequireApproval,s.tax_deduction_component_code TaxDeductionComponentCode,s.project_monthly_tds ProjectMonthlyTds,s.lock_after_approval LockAfterApproval,s.active Active FROM tax_client_settings s LEFT JOIN clients c ON c.Id=s.client_id LEFT JOIN tax_activity_windows reg ON reg.client_id=s.client_id AND reg.financial_year=s.financial_year AND reg.activity_code='REGIME_SELECTION' LEFT JOIN tax_activity_windows it ON it.client_id=s.client_id AND it.financial_year=s.financial_year AND it.activity_code='IT_DECLARATION' LEFT JOIN tax_activity_windows poi ON poi.client_id=s.client_id AND poi.financial_year=s.financial_year AND poi.activity_code='POI' ORDER BY c.Name,s.financial_year DESC")).ToList(),
@@ -201,7 +201,7 @@ tds_deducted_till_date DECIMAL(14,2) NOT NULL DEFAULT 0, remaining_tax DECIMAL(1
 
     public async Task<ClientTaxSetting> SaveClientSettingAsync(ClientTaxSetting row)
     {
-        await using var db = Connection(); await db.OpenAsync(); await db.ExecuteAsync("USE payroll;");
+        await using var db = Connection(); await db.OpenAsync();
         row.DeclarationWindowStart = row.PlannedDeclarationStart ?? row.DeclarationWindowStart;
         row.DeclarationWindowEnd = row.PlannedDeclarationEnd ?? row.DeclarationWindowEnd;
         var id = row.Id == 0 ? await db.ExecuteScalarAsync<int>(@"INSERT INTO tax_client_settings (client_id,enabled,financial_year,default_regime,allow_employee_regime_selection,regime_selection_window_open,regime_selection_cutoff,allow_declarations,planned_declaration_window_open,actual_declaration_window_open,declaration_window_start,declaration_window_end,planned_declaration_start,planned_declaration_end,actual_declaration_start,actual_declaration_end,poi_processing_month,reminder_emails_enabled,reminder_frequency,reminder_before_lock_days,require_proof_upload,require_approval,tax_deduction_component_code,project_monthly_tds,lock_after_approval,active) VALUES (@ClientId,@Enabled,@FinancialYear,@DefaultRegime,@AllowEmployeeRegimeSelection,@RegimeSelectionWindowOpen,@RegimeSelectionCutoff,@AllowDeclarations,@PlannedDeclarationWindowOpen,@ActualDeclarationWindowOpen,@DeclarationWindowStart,@DeclarationWindowEnd,@PlannedDeclarationStart,@PlannedDeclarationEnd,@ActualDeclarationStart,@ActualDeclarationEnd,@PoiProcessingMonth,@ReminderEmailsEnabled,@ReminderFrequency,@ReminderBeforeLockDays,@RequireProofUpload,@RequireApproval,@TaxDeductionComponentCode,@ProjectMonthlyTds,@LockAfterApproval,@Active); SELECT LAST_INSERT_ID();", row)
@@ -216,7 +216,7 @@ tds_deducted_till_date DECIMAL(14,2) NOT NULL DEFAULT 0, remaining_tax DECIMAL(1
 
     public async Task<TaxSlab> SaveSlabAsync(TaxSlab row, int? changedBy = null)
     {
-        await using var db = Connection(); await db.OpenAsync(); await db.ExecuteAsync("USE payroll;");
+        await using var db = Connection(); await db.OpenAsync();
         var old = row.Id == 0 ? null : await db.QueryFirstOrDefaultAsync<TaxSlab>(@"SELECT id Id,rule_version_id RuleVersionId,regime_id RegimeId,financial_year FinancialYear,regime Regime,income_from IncomeFrom,income_to IncomeTo,rate_percent RatePercent,effective_from EffectiveFrom,effective_to EffectiveTo,active Active,source Source,notes Notes FROM tax_slabs WHERE id=@Id", new { row.Id });
         row.RuleVersionId = row.RuleVersionId == 0 ? await GetActiveRuleVersionIdAsync(db, row.FinancialYear) : row.RuleVersionId;
         var id = row.Id == 0 ? await db.ExecuteScalarAsync<int>(@"INSERT INTO tax_slabs (rule_version_id,financial_year,regime,income_from,income_to,rate_percent,effective_from,effective_to,active,source,notes) VALUES (@RuleVersionId,@FinancialYear,@Regime,@IncomeFrom,@IncomeTo,@RatePercent,@EffectiveFrom,@EffectiveTo,@Active,@Source,@Notes); SELECT LAST_INSERT_ID();", row) : row.Id;
@@ -227,7 +227,7 @@ tds_deducted_till_date DECIMAL(14,2) NOT NULL DEFAULT 0, remaining_tax DECIMAL(1
 
     public async Task<TaxSurcharge> SaveSurchargeAsync(TaxSurcharge row, int? changedBy = null)
     {
-        await using var db = Connection(); await db.OpenAsync(); await db.ExecuteAsync("USE payroll;");
+        await using var db = Connection(); await db.OpenAsync();
         var old = row.Id == 0 ? null : await db.QueryFirstOrDefaultAsync<TaxSurcharge>(@"SELECT id Id,rule_version_id RuleVersionId,regime_id RegimeId,financial_year FinancialYear,income_from IncomeFrom,income_to IncomeTo,surcharge_percent SurchargePercent,active Active,source Source,notes Notes FROM tax_surcharges WHERE id=@Id", new { row.Id });
         row.RuleVersionId = row.RuleVersionId == 0 ? await GetActiveRuleVersionIdAsync(db, row.FinancialYear) : row.RuleVersionId;
         var id = row.Id == 0 ? await db.ExecuteScalarAsync<int>(@"INSERT INTO tax_surcharges (rule_version_id,financial_year,income_from,income_to,surcharge_percent,active,source,notes) VALUES (@RuleVersionId,@FinancialYear,@IncomeFrom,@IncomeTo,@SurchargePercent,@Active,@Source,@Notes); SELECT LAST_INSERT_ID();", row) : row.Id;
@@ -238,7 +238,7 @@ tds_deducted_till_date DECIMAL(14,2) NOT NULL DEFAULT 0, remaining_tax DECIMAL(1
 
     public async Task<TaxDeclarationSection> SaveSectionAsync(TaxDeclarationSection row, int? changedBy = null)
     {
-        await using var db = Connection(); await db.OpenAsync(); await db.ExecuteAsync("USE payroll;");
+        await using var db = Connection(); await db.OpenAsync();
         var old = row.Id == 0 ? null : await db.QueryFirstOrDefaultAsync<TaxDeclarationSection>(@"SELECT id Id,rule_version_id RuleVersionId,regime_id RegimeId,financial_year FinancialYear,code Code,name Name,category Category,regime Regime,limit_amount LimitAmount,proof_required ProofRequired,requires_approval RequiresApproval,active Active,source Source,notes Notes FROM tax_declaration_sections WHERE id=@Id", new { row.Id });
         row.RuleVersionId = row.RuleVersionId == 0 ? await GetActiveRuleVersionIdAsync(db, row.FinancialYear) : row.RuleVersionId;
         var id = row.Id == 0 ? await db.ExecuteScalarAsync<int>(@"INSERT INTO tax_declaration_sections (rule_version_id,financial_year,code,name,category,regime,limit_amount,proof_required,requires_approval,active,source,notes) VALUES (@RuleVersionId,@FinancialYear,@Code,@Name,@Category,@Regime,@LimitAmount,@ProofRequired,@RequiresApproval,@Active,@Source,@Notes); SELECT LAST_INSERT_ID();", row) : row.Id;
@@ -249,7 +249,7 @@ tds_deducted_till_date DECIMAL(14,2) NOT NULL DEFAULT 0, remaining_tax DECIMAL(1
 
     public async Task<TaxFinalAdjustment> SaveFinalAdjustmentAsync(TaxFinalAdjustment row, int? changedBy = null)
     {
-        await using var db = Connection(); await db.OpenAsync(); await db.ExecuteAsync("USE payroll;");
+        await using var db = Connection(); await db.OpenAsync();
         var old = row.Id == 0 ? null : await db.QueryFirstOrDefaultAsync<TaxFinalAdjustment>(@"SELECT id Id,rule_version_id RuleVersionId,financial_year FinancialYear,label Label,value_type ValueType,value Value,apply_order ApplyOrder,rule_type RuleType,active Active,source Source,notes Notes FROM tax_final_adjustments WHERE id=@Id", new { row.Id });
         row.RuleVersionId = row.RuleVersionId == 0 ? await GetActiveRuleVersionIdAsync(db, row.FinancialYear) : row.RuleVersionId;
         row.RuleType = string.IsNullOrWhiteSpace(row.RuleType) ? "FinalAdjustment" : row.RuleType;
@@ -261,7 +261,7 @@ tds_deducted_till_date DECIMAL(14,2) NOT NULL DEFAULT 0, remaining_tax DECIMAL(1
 
     public async Task<TaxComputationResult?> ComputeAsync(TaxComputationRequest request)
     {
-        await using var db = Connection(); await db.OpenAsync(); await db.ExecuteAsync("USE payroll;");
+        await using var db = Connection(); await db.OpenAsync();
         var fy = string.IsNullOrWhiteSpace(request.FinancialYear) ? CurrentFinancialYear() : request.FinancialYear;
         var version = await db.QueryFirstOrDefaultAsync<TaxRuleVersion>(@"SELECT id Id,financial_year FinancialYear,version_number VersionNumber,effective_from EffectiveFrom,effective_to EffectiveTo,active Active,source Source,notes Notes FROM tax_rule_versions WHERE financial_year=@Fy AND active=TRUE ORDER BY effective_from DESC,id DESC LIMIT 1", new { Fy = fy });
         if (version is null) return null;
@@ -297,7 +297,7 @@ VALUES (@EmployeeId,@ClientId,@FinancialYear,@FinancialYearId,@PayPeriod,@PayRun
 
     public async Task DeleteAsync(string kind, int id)
     {
-        await using var db = Connection(); await db.OpenAsync(); await db.ExecuteAsync("USE payroll;");
+        await using var db = Connection(); await db.OpenAsync();
         var table = kind switch { "client-settings" => "tax_client_settings", "slabs" => "tax_slabs", "surcharges" => "tax_surcharges", "final-adjustments" => "tax_final_adjustments", "sections" => "tax_declaration_sections", _ => "" };
         if (table != "") await db.ExecuteAsync($"DELETE FROM {table} WHERE id=@Id", new { Id = id });
     }

@@ -49,29 +49,25 @@ builder.Services.AddSingleton<ReportingRepository>();
 builder.Services.AddSingleton<EssMssRepository>();
 builder.Services.AddSingleton<WorkflowRepository>();
 builder.Services.AddSingleton<TaxEngineRepository>();
+builder.Services.AddSingleton<DashboardRepository>();
 
 var app = builder.Build();
 const string AuthCookieName = "payroll_auth";
 
-using (var scope = app.Services.CreateScope())
+var migrateDatabaseOnly = args.Any(arg =>
+    arg.Equals("--migrate", StringComparison.OrdinalIgnoreCase) ||
+    arg.Equals("--migrate-database", StringComparison.OrdinalIgnoreCase));
+
+if (migrateDatabaseOnly)
 {
-    var repository = scope.ServiceProvider.GetRequiredService<OrganizationRepository>();
-    await repository.InitializeAsync();
-    var payRunRepository = scope.ServiceProvider.GetRequiredService<PayRunRepository>();
-    await payRunRepository.InitializeAsync();
-    var authRepository = scope.ServiceProvider.GetRequiredService<AuthRepository>();
-    await authRepository.InitializeAsync();
-    var leaveAttendanceRepository = scope.ServiceProvider.GetRequiredService<LeaveAttendanceRepository>();
-    await leaveAttendanceRepository.InitializeAsync();
-    var workflowRepository = scope.ServiceProvider.GetRequiredService<WorkflowRepository>();
-    await workflowRepository.InitializeAsync();
-    var taxEngineRepository = scope.ServiceProvider.GetRequiredService<TaxEngineRepository>();
-    await taxEngineRepository.InitializeAsync();
-    await using var workflowDb = new MySqlConnector.MySqlConnection(builder.Configuration.GetConnectionString("Default"));
-    await workflowDb.OpenAsync(); await workflowDb.ExecuteAsync("USE payroll; CREATE TABLE IF NOT EXISTS essleaverequests (Id BIGINT PRIMARY KEY AUTO_INCREMENT,EmployeeId INT NOT NULL,ClientId INT NOT NULL,LeaveTypeId INT NOT NULL,FromDate DATE NOT NULL,ToDate DATE NOT NULL,Days DECIMAL(8,2) NOT NULL,Reason VARCHAR(1000),Status VARCHAR(40) NOT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);");
-    var essRepository = scope.ServiceProvider.GetRequiredService<EssMssRepository>();
-    await essRepository.InitializeAsync();
-    await essRepository.ReconcileLeaveWorkflowStatusesAsync();
+    await RunDatabaseSetupAsync(app.Services, app.Configuration);
+    app.Logger.LogInformation("Database setup completed.");
+    return;
+}
+
+if (app.Configuration.GetValue<bool>("Database:AutoMigrate"))
+{
+    await RunDatabaseSetupAsync(app.Services, app.Configuration);
 }
 
 if (app.Environment.IsDevelopment())
@@ -133,6 +129,15 @@ app.MapPost("/api/auth/login", async (AuthRepository repository, LoginRequest re
 app.MapGet("/api/auth/me", (HttpContext context) =>
     Results.Ok(CurrentUser(context)))
 .WithName("GetCurrentUser")
+.WithOpenApi();
+
+app.MapGet("/api/dashboard", async (DashboardRepository repository, int? clientId, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    var effectiveClientId = user.ClientId ?? Math.Max(clientId.GetValueOrDefault(), 0);
+    return Results.Ok(await repository.GetAsync(effectiveClientId, user));
+})
+.WithName("GetDashboard")
 .WithOpenApi();
 
 app.MapGet("/api/workflows", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403));
@@ -220,6 +225,8 @@ app.MapPost("/api/security/users", async (AuthRepository repository, SaveAuthUse
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.DisplayName))
         return Results.BadRequest(new { error = "Email and display name are required." });
+    if (request.Id == 0 && string.IsNullOrWhiteSpace(request.Password))
+        return Results.BadRequest(new { error = "Temporary password is required for a new user." });
     try
     {
         var user = await repository.SaveUserAsync(request);
@@ -263,6 +270,17 @@ app.MapPost("/api/security/roles", async (AuthRepository repository, SaveAuthRol
 app.MapGet("/api/audit-logs", async (AuthRepository repository, HttpContext context, int limit = 100) =>
     HasPermission(context, "audit.view") ? Results.Ok(await repository.GetAuditLogsAsync(limit)) : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetAuditLogs")
+.WithOpenApi();
+
+app.MapPost("/api/admin/database/migrate", async (HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+    await RunDatabaseSetupAsync(context.RequestServices, context.RequestServices.GetRequiredService<IConfiguration>());
+    return Results.Ok(new { message = "Database setup completed." });
+})
+.WithName("MigrateDatabase")
 .WithOpenApi();
 
 app.MapGet("/api/reports/{code}", async (ReportingRepository repository, string code, int clientId, string? department, int? workLocationId, string? fromDate, string? toDate, string? month, HttpContext context) =>
@@ -809,6 +827,38 @@ static void ClearAuthCookie(HttpContext context, string cookieName)
         SameSite = SameSiteMode.Lax,
         Path = "/"
     });
+}
+
+static async Task RunDatabaseSetupAsync(IServiceProvider services, IConfiguration configuration)
+{
+    using var scope = services.CreateScope();
+    var scopedServices = scope.ServiceProvider;
+
+    await scopedServices.GetRequiredService<OrganizationRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<PayRunRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<AuthRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<LeaveAttendanceRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<WorkflowRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<TaxEngineRepository>().InitializeAsync();
+
+    await using var workflowDb = new MySqlConnector.MySqlConnection(configuration.GetConnectionString("Default"));
+    await workflowDb.OpenAsync();
+    await workflowDb.ExecuteAsync(@"CREATE TABLE IF NOT EXISTS essleaverequests (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    LeaveTypeId INT NOT NULL,
+    FromDate DATE NOT NULL,
+    ToDate DATE NOT NULL,
+    Days DECIMAL(8,2) NOT NULL,
+    Reason VARCHAR(1000),
+    Status VARCHAR(40) NOT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);");
+
+    var essRepository = scopedServices.GetRequiredService<EssMssRepository>();
+    await essRepository.InitializeAsync();
+    await essRepository.ReconcileLeaveWorkflowStatusesAsync();
 }
 
 app.Run();

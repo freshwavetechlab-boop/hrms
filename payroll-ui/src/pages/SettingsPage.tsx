@@ -10,7 +10,7 @@ import PageTabs from '../components/PageTabs'
 import SalaryTemplateDesigner from '../components/SalaryTemplateDesigner'
 import TaxEngineManager from '../components/TaxEngineManager'
 import { useToast, type ToastType } from '../components/ToastProvider'
-import { client0, component0, demoComponents, drop0, dropTypes, location0, org0, payslip0, settingsMenus, setup0, structure0 } from '../data/payrollDefaults'
+import { client0, component0, drop0, dropTypes, location0, org0, payslip0, settingsMenus, setup0, structure0 } from '../data/payrollDefaults'
 import { getClients } from '../services/payrollService'
 import { getDropdowns, getOrganization, getSetup, getWorkLocations, saveClient as persistClient, saveDropdown, saveOrganization, saveSetup, saveWorkLocation } from '../services/settingsService'
 import type { Client, Component, Drop, Org, ProfessionalTaxSlab, Setup, WorkLocation } from '../types/payroll'
@@ -66,7 +66,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const load = async () => {
     const [organization, rawSetup, clientRows, locationRows, dropdownRows] = await Promise.all([getOrganization(org0), getSetup(settingsSetup0), getClients(), getWorkLocations(), getDropdowns()])
     setOrg({ ...org0, ...organization, professionalTaxNumber: organization.professionalTaxNumber || rawSetup.statutory?.ptNumber || '' })
-    setSetup({ ...settingsSetup0, ...rawSetup, tax: { ...setup0.tax, ...rawSetup.tax, clientSettings: rawSetup.tax?.clientSettings ?? setup0.tax.clientSettings, slabs: rawSetup.tax?.slabs ?? setup0.tax.slabs, surcharges: rawSetup.tax?.surcharges ?? setup0.tax.surcharges, finalAdjustments: rawSetup.tax?.finalAdjustments ?? setup0.tax.finalAdjustments, declarationSections: rawSetup.tax?.declarationSections ?? setup0.tax.declarationSections }, schedule: { ...setup0.schedule, ...rawSetup.schedule }, statutory: { ...setup0.statutory, ...rawSetup.statutory }, salaryComponents: (rawSetup.salaryComponents?.length ? rawSetup.salaryComponents : demoComponents).map(normalizeComponentForUi), salaryStructures: rawSetup.salaryStructures ?? [], payslipTemplates: rawSetup.payslipTemplates ?? [] })
+    setSetup({ ...settingsSetup0, ...rawSetup, tax: { ...setup0.tax, ...rawSetup.tax, clientSettings: rawSetup.tax?.clientSettings ?? setup0.tax.clientSettings, slabs: rawSetup.tax?.slabs ?? setup0.tax.slabs, surcharges: rawSetup.tax?.surcharges ?? setup0.tax.surcharges, finalAdjustments: rawSetup.tax?.finalAdjustments ?? setup0.tax.finalAdjustments, declarationSections: rawSetup.tax?.declarationSections ?? setup0.tax.declarationSections }, schedule: { ...setup0.schedule, ...rawSetup.schedule }, statutory: { ...setup0.statutory, ...rawSetup.statutory }, salaryComponents: (rawSetup.salaryComponents ?? []).map(normalizeComponentForUi), salaryStructures: rawSetup.salaryStructures ?? [], payslipTemplates: rawSetup.payslipTemplates ?? [] })
     setClients(clientRows)
     setLocations(locationRows)
     setDrops(dropdownRows)

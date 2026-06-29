@@ -1,6 +1,3 @@
-CREATE DATABASE IF NOT EXISTS payroll;
-USE payroll;
-
 CREATE TABLE IF NOT EXISTS organizations (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     Name VARCHAR(250) NOT NULL,
@@ -293,6 +290,17 @@ CREATE TABLE IF NOT EXISTS authrolepermissions (
     CONSTRAINT FK_AuthRolePermissions_Role FOREIGN KEY (RoleId) REFERENCES authroles(Id) ON DELETE CASCADE,
     CONSTRAINT FK_AuthRolePermissions_Permission FOREIGN KEY (PermissionId) REFERENCES authpermissions(Id) ON DELETE CASCADE
 );
+
+INSERT INTO authpermissions (Code, Name, Module, Description) VALUES
+('dashboard.view', 'View dashboard', 'Dashboard', 'Access the HRMS dashboard shell.'),
+('dashboard.workforce.view', 'View workforce dashboard', 'Dashboard', 'View employee and ESS adoption dashboard metrics.'),
+('dashboard.payroll.view', 'View payroll dashboard', 'Dashboard', 'View payroll run, net pay, validation and recent payroll dashboard metrics.'),
+('dashboard.attendance.view', 'View attendance dashboard', 'Dashboard', 'View attendance readiness and exception dashboard metrics.'),
+('dashboard.approvals.view', 'View approvals dashboard', 'Dashboard', 'View workflow and leave approval dashboard metrics.')
+ON DUPLICATE KEY UPDATE
+    Name = VALUES(Name),
+    Module = VALUES(Module),
+    Description = VALUES(Description);
 
 CREATE TABLE IF NOT EXISTS authsessions (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,

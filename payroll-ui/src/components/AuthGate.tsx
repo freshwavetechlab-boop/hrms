@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { getCurrentUser, login as authenticate, logout as endSession } from '../services/authService'
 import type { AuthUser } from '../types/payroll'
 
@@ -8,6 +9,7 @@ const AuthSessionContext = createContext<AuthSession | null>(null)
 export const useAuthSession = () => useContext(AuthSessionContext)
 
 export default function AuthGate({ children }: { children: ReactNode }) {
+  const navigate = useNavigate()
   const [user, setUser] = useState<AuthUser | null>(null), [email, setEmail] = useState(import.meta.env.DEV ? 'admin@paymint.local' : ''), [password, setPassword] = useState(import.meta.env.DEV ? 'Admin@12345' : '')
   const [loading, setLoading] = useState(true), [error, setError] = useState('')
 
@@ -26,6 +28,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     localStorage.removeItem('payroll.auth.token')
     localStorage.removeItem('payroll.auth.user')
     setUser(data.user)
+    navigate('/dashboard', { replace: true })
   }
 
   const logout = async () => {

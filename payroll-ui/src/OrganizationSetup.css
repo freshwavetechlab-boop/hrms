@@ -641,6 +641,157 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main:
   height:0!important;
 }
 
+/* Sidebar/content edge and collapsed navigation polish */
+.payroll-app.compact.module-shell,
+.payroll-app.compact.module-shell.nav-collapsed,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed{
+  column-gap:2px!important;
+}
+.payroll-app.compact.module-shell>.compact-main>.module-content,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main>.module-content{
+  padding-left:2px!important;
+}
+.payroll-app.compact.module-shell .module-content .page-tabs-ant,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell .module-content .page-tabs-ant{
+  padding-left:2px!important;
+}
+.payroll-app.compact.module-shell.nav-collapsed>.app-sidebar,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed>.app-sidebar{
+  overflow:visible!important;
+}
+.payroll-app.compact.module-shell.nav-collapsed>.app-sidebar .side-head,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed>.app-sidebar .side-head{
+  min-height:92px!important;
+  height:92px!important;
+  display:grid!important;
+  align-content:start!important;
+  justify-items:center!important;
+  gap:10px!important;
+}
+.payroll-app.compact.module-shell.nav-collapsed>.app-sidebar .sidebar-toggle.ant-btn,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed>.app-sidebar .sidebar-toggle.ant-btn{
+  position:static!important;
+  width:36px!important;
+  height:36px!important;
+  min-width:36px!important;
+  z-index:2!important;
+}
+.payroll-app.compact.module-shell.nav-collapsed>.app-sidebar .sidebar-context,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed>.app-sidebar .sidebar-context{
+  margin-top:0!important;
+}
+.payroll-app.compact.module-shell.nav-collapsed>.app-sidebar nav,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed>.app-sidebar nav{
+  overflow:visible!important;
+}
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group,
+.payroll-app.compact.module-shell.nav-collapsed .report-nav-group,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .report-nav-group{
+  position:relative!important;
+}
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group.expanded>.settings-nav-submenu,
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group:focus-within>.settings-nav-submenu,
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group:hover>.settings-nav-submenu,
+.payroll-app.compact.module-shell.nav-collapsed .report-nav-group:focus-within>.report-nav-submenu,
+.payroll-app.compact.module-shell.nav-collapsed .report-nav-group:hover>.report-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group.expanded>.settings-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group:focus-within>.settings-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group:hover>.settings-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .report-nav-group:focus-within>.report-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .report-nav-group:hover>.report-nav-submenu{
+  position:absolute!important;
+  top:0!important;
+  left:54px!important;
+  z-index:80!important;
+  display:grid!important;
+  min-width:190px!important;
+  max-width:260px!important;
+  margin:0!important;
+  padding:8px!important;
+  border:1px solid #e4e7f2!important;
+  border-radius:12px!important;
+  background:#fff!important;
+  box-shadow:0 18px 45px #17213624!important;
+}
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-submenu button,
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-submenu a,
+.payroll-app.compact.module-shell.nav-collapsed .report-nav-submenu button,
+.payroll-app.compact.module-shell.nav-collapsed .report-nav-submenu a,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-submenu button,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-submenu a,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .report-nav-submenu button,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .report-nav-submenu a{
+  width:100%!important;
+  min-height:34px!important;
+  height:auto!important;
+  display:grid!important;
+  grid-template-columns:minmax(0,1fr) auto!important;
+  place-items:initial!important;
+  align-items:center!important;
+  padding:7px 9px!important;
+  color:#4f5b73!important;
+  font-size:.74rem!important;
+  line-height:1.2!important;
+}
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-submenu button:before,
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-submenu a:before,
+.payroll-app.compact.module-shell.nav-collapsed .report-nav-submenu button:before,
+.payroll-app.compact.module-shell.nav-collapsed .report-nav-submenu a:before,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-submenu button:before,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-submenu a:before,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .report-nav-submenu button:before,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .report-nav-submenu a:before{
+  display:none!important;
+}
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-submenu button>*,
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-submenu a>*,
+.payroll-app.compact.module-shell.nav-collapsed .report-nav-submenu button>*,
+.payroll-app.compact.module-shell.nav-collapsed .report-nav-submenu a>*,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-submenu button>*,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-submenu a>*,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .report-nav-submenu button>*,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .report-nav-submenu a>*{
+  display:inline!important;
+}
+
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group:not(.flyout-open)>.settings-nav-submenu,
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group:not(.flyout-open):hover>.settings-nav-submenu,
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group:not(.flyout-open):focus-within>.settings-nav-submenu,
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group.expanded:not(.flyout-open)>.settings-nav-submenu,
+.payroll-app.compact.module-shell.nav-collapsed .report-nav-group:not(.flyout-open)>.report-nav-submenu,
+.payroll-app.compact.module-shell.nav-collapsed .report-nav-group:not(.flyout-open):hover>.report-nav-submenu,
+.payroll-app.compact.module-shell.nav-collapsed .report-nav-group:not(.flyout-open):focus-within>.report-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group:not(.flyout-open)>.settings-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group:not(.flyout-open):hover>.settings-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group:not(.flyout-open):focus-within>.settings-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group.expanded:not(.flyout-open)>.settings-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .report-nav-group:not(.flyout-open)>.report-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .report-nav-group:not(.flyout-open):hover>.report-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .report-nav-group:not(.flyout-open):focus-within>.report-nav-submenu{
+  display:none!important;
+}
+
+.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group.flyout-open>.settings-nav-submenu,
+.payroll-app.compact.module-shell.nav-collapsed .report-nav-group.flyout-open>.report-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .settings-nav-group.flyout-open>.settings-nav-submenu,
+body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed .report-nav-group.flyout-open>.report-nav-submenu{
+  position:absolute!important;
+  top:0!important;
+  left:54px!important;
+  z-index:80!important;
+  display:grid!important;
+  min-width:190px!important;
+  max-width:260px!important;
+  margin:0!important;
+  padding:8px!important;
+  border:1px solid #e4e7f2!important;
+  border-radius:12px!important;
+  background:#fff!important;
+  box-shadow:0 18px 45px #17213624!important;
+}
+
 /* Fix AntD searchable select internals polluted by global input CSS */
 .app-search-select.ant-select{
   width:100%!important;
@@ -686,4 +837,38 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell>.compact-main:
 .app-search-select.ant-select .ant-select-arrow{
   right:10px!important;
 }
+
+.dashboard-page{display:grid!important;gap:14px!important;width:100%!important;max-width:none!important}
+.dashboard-header{display:flex!important;align-items:flex-end!important;justify-content:space-between!important;gap:18px!important;padding:16px 18px!important;border:1px solid #e5e8f0!important;border-radius:8px!important;background:#fff!important;box-shadow:0 1px 8px #1721360a!important}
+.dashboard-header h3{margin:4px 0!important;font:800 1.18rem/1.2 Manrope,Inter,sans-serif!important;color:#172136!important}
+.dashboard-header p{margin:0!important;color:#64748b!important;font-size:.8rem!important}
+.dashboard-header label{width:min(280px,100%)!important;display:grid!important;gap:5px!important}
+.dashboard-header label span{margin:0!important;color:#465067!important;font-size:.72rem!important;font-weight:800!important}
+.dashboard-kpis{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:10px!important}
+.dashboard-kpis article{min-width:0!important;display:grid!important;grid-template-columns:auto 1fr!important;gap:4px 10px!important;padding:14px!important;border:1px solid #e5e8f0!important;border-radius:8px!important;background:#fff!important;box-shadow:0 1px 8px #1721360a!important}
+.dashboard-kpis .anticon{grid-row:1/4!important;width:34px!important;height:34px!important;display:grid!important;place-items:center!important;border-radius:8px!important;background:#f3f0ff!important;color:#5133cc!important;font-size:1rem!important}
+.dashboard-kpis span,.dashboard-status-list span{color:#64748b!important;font-size:.72rem!important;font-weight:800!important}
+.dashboard-kpis strong{min-width:0!important;overflow:hidden!important;text-overflow:ellipsis!important;font-size:1.28rem!important;line-height:1.1!important;color:#172136!important}
+.dashboard-kpis small{min-width:0!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;color:#7b8496!important;font-size:.68rem!important}
+.dashboard-grid{display:grid!important;grid-template-columns:minmax(0,1.05fr) minmax(320px,.95fr)!important;gap:10px!important}
+.dashboard-card{min-width:0!important;border-radius:8px!important}
+.dashboard-card>header{margin-bottom:12px!important}
+.dashboard-card>header>i{background:#edf3ff!important;color:#3766c7!important}
+.dashboard-status-list{display:grid!important;grid-template-columns:repeat(auto-fit,minmax(140px,1fr))!important;gap:8px!important}
+.dashboard-status-list div{min-width:0!important;padding:10px!important;border:1px solid #eef0f4!important;border-radius:8px!important;background:#f8fafc!important}
+.dashboard-status-list strong,.dashboard-status-list small{display:block!important}
+.dashboard-status-list strong{margin-top:4px!important;font-size:1.08rem!important;color:#172136!important}
+.dashboard-status-list small{margin-top:2px!important;color:#64748b!important;font-size:.7rem!important}
+.dashboard-action-list{display:grid!important;gap:8px!important}
+.dashboard-action-list a{display:grid!important;grid-template-columns:58px 1fr!important;align-items:center!important;gap:10px!important;padding:10px!important;border:1px solid #e5e8f0!important;border-radius:8px!important;background:#fff!important;color:#172136!important;text-decoration:none!important}
+.dashboard-action-list a:hover{border-color:#cfc6f5!important;background:#faf7ff!important}
+.dashboard-action-list strong{display:grid!important;place-items:center!important;min-height:34px!important;border-radius:8px!important;background:#f3f0ff!important;color:#5133cc!important;font-size:1rem!important}
+.dashboard-action-list span{min-width:0!important;overflow:hidden!important;text-overflow:ellipsis!important;color:#465067!important;font-size:.78rem!important;font-weight:800!important;white-space:nowrap!important}
+.dashboard-table{max-width:100%!important;overflow:auto!important}
+.dashboard-table table{width:100%!important;min-width:820px!important;border-collapse:collapse!important}
+.dashboard-table th,.dashboard-table td{padding:8px 10px!important;border-bottom:1px solid #e5e8f0!important;text-align:left!important;font-size:.74rem!important;white-space:nowrap!important}
+.dashboard-table th{background:#f8fafc!important;color:#64748b!important;font-size:.64rem!important;text-transform:uppercase!important;letter-spacing:.04em!important}
+.dashboard-table td{color:#243044!important}
+@media(max-width:1120px){.dashboard-kpis{grid-template-columns:repeat(2,minmax(0,1fr))!important}.dashboard-grid{grid-template-columns:1fr!important}}
+@media(max-width:700px){.dashboard-header{align-items:stretch!important;flex-direction:column!important}.dashboard-kpis{grid-template-columns:1fr!important}.dashboard-action-list a{grid-template-columns:48px 1fr!important}.dashboard-table table{min-width:760px!important}}
 

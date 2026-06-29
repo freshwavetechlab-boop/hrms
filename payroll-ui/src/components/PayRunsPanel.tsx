@@ -57,7 +57,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     setIncludedIds(employeeRows.filter(employee => employee.clientId === nextClientId && employee.isActive).map(employee => employee.id))
     setOffcycleEmployeeIds([])
     setRuns(runRows)
-    setSetup({ ...setup0, ...setupRow, salaryComponents: setupRow.salaryComponents?.length ? setupRow.salaryComponents : setup0.salaryComponents })
+    setSetup({ ...setup0, ...setupRow, salaryComponents: setupRow.salaryComponents ?? [] })
     setAdjustments(adjustmentRows)
   }
 

@@ -28,7 +28,6 @@ public class LeaveBalanceImportRepository(IConfiguration configuration)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         var leaveTypes = (await connection.QueryAsync<string>("SELECT Code FROM leave_types WHERE client_id=@ClientId AND is_active=TRUE ORDER BY Name", new { ClientId = clientId })).ToList();
         var rows = new List<string> { "Employee Number,Leave Type Code,Balance As Of Date,Opening Balance" };
         foreach (var leaveType in leaveTypes)
@@ -64,7 +63,6 @@ public class LeaveBalanceImportRepository(IConfiguration configuration)
         var errors = request.ErrorRecords.Concat(request.ValidRecords.Where(row => !row.IsValid)).ToList();
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         await using var transaction = await connection.BeginTransactionAsync();
         var logId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO leave_balance_import_logs (client_id, file_name, encoding, total_records, imported_records, skipped_records, mapping_json, created_by)
 VALUES (@ClientId, @FileName, @Encoding, @TotalRecords, @ImportedRecords, @SkippedRecords, @MappingJson, @CreatedBy); SELECT LAST_INSERT_ID();", new { request.ClientId, request.FileName, request.Encoding, TotalRecords = validRows.Count + errors.Count, ImportedRecords = validRows.Count, SkippedRecords = errors.Count, MappingJson = JsonSerializer.Serialize(request.Mapping), CreatedBy = userEmail }, transaction);
@@ -89,7 +87,6 @@ VALUES (@LogId, @RowNumber, @EmployeeNumber, @LeaveType, @Date, @Count, @ErrorMe
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         var rows = await connection.QueryAsync<EmployeeRef>(@"SELECT e.Id, e.EmployeeCode, e.IsActive, COALESCE(e.Department, '') AS Department,
 COALESCE(e.Designation, '') AS Designation, COALESCE(e.Gender, '') AS Gender, COALESCE(w.Name, '') AS WorkLocation
 FROM employees e
@@ -102,7 +99,6 @@ WHERE e.ClientId=@ClientId", new { ClientId = clientId });
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         var rows = await connection.QueryAsync<LeaveTypeRef>(@"SELECT lt.Id, lt.Code, lt.Name, lt.Is_Active AS IsActive,
 COALESCE(p.entitlement, 0) AS Entitlement, COALESCE(p.carry_forward_unused_leaves, FALSE) AS CarryForwardUnusedLeaves,
 p.max_carry_forward_limit AS MaxCarryForwardLimit, p.effective_from AS EffectiveFrom, p.expires_on AS ExpiresOn,
