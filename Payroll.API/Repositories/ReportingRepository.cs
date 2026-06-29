@@ -10,7 +10,7 @@ public class ReportingRepository(IConfiguration configuration)
 
     public async Task<ReportResult> RunAsync(string code, ReportFilter filter)
     {
-        await using var db = Connection(); await db.OpenAsync(); await db.ExecuteAsync("USE payroll;");
+        await using var db = Connection(); await db.OpenAsync();
         filter.Month = string.IsNullOrWhiteSpace(filter.Month) ? DateTime.Today.ToString("yyyy-MM") : filter.Month;
         filter.FromDate = string.IsNullOrWhiteSpace(filter.FromDate) ? $"{filter.Month}-01" : filter.FromDate;
         filter.ToDate = string.IsNullOrWhiteSpace(filter.ToDate) ? DateTime.Parse($"{filter.Month}-01").AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd") : filter.ToDate;

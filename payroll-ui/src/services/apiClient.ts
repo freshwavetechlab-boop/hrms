@@ -7,6 +7,7 @@ export type ApiOptions = RequestInit & { timeoutMs?: number; toast?: ToastMode; 
 type ApiResult<TResult> = { ok: boolean; data: TResult; error: string; status: number }
 
 const jsonContent = 'application/json'
+const legacyTokenKey = 'payroll_auth_token'
 
 export function apiUrl(path: string) {
   return path.startsWith('http') ? path : `${api}${path}`

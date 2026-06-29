@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { demoComponents, setup0 } from '../data/payrollDefaults'
+import { setup0 } from '../data/payrollDefaults'
 import { getSetup } from '../services/settingsService'
 import { getLeaveAttendancePreferences, saveLeaveAttendancePreferences } from '../services/leaveAttendanceService'
 import type { Component, LeaveAttendancePreferences } from '../types/payroll'
@@ -19,7 +19,7 @@ export default function LeaveAttendancePreferencesForm({ clientId, onSaved }: { 
   useEffect(() => {
     void Promise.all([getLeaveAttendancePreferences(clientId), getSetup(setup0)]).then(([saved, setup]) => {
       setPreferences(saved)
-      setComponents(setup.salaryComponents?.length ? setup.salaryComponents : demoComponents)
+      setComponents(setup.salaryComponents ?? [])
     })
   }, [clientId])
 

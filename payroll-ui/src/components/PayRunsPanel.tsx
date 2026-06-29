@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getMonthlyAttendance } from '../services/leaveAttendanceService'
-import { cancelPayrollAdjustment, createPayRun, exportPayRunUrl, getClients, getEmployees, getPayRun, getPayrollAdjustments, getPayRuns, runPayRunAction, savePayrollAdjustment, updatePayRunEmployee } from '../services/payrollService'
+import { cancelPayrollAdjustment, createPayRun, exportPayRunUrl, getClients, getEmployees, getPayRun, getPayRunDiagnostics, getPayrollAdjustments, getPayRuns, runPayRunAction, savePayrollAdjustment, updatePayRunEmployee } from '../services/payrollService'
 import { getSetup } from '../services/settingsService'
-import type { Client, Component, Employee, EmployeeMonthlyAttendance, PayRun, PayrollAdjustment, RunEmployee, Setup } from '../types/payroll'
+import type { Client, Component, Employee, EmployeeMonthlyAttendance, PayRun, PayRunDiagnostics, PayrollAdjustment, RunEmployee, Setup } from '../types/payroll'
 import { setup0 } from '../data/payrollDefaults'
 import { money } from '../utils/salary'
 import PageTabs from './PageTabs'
@@ -23,6 +23,7 @@ const adjustment0: PayrollAdjustment = { id: 0, clientId: 0, employeeId: 0, empl
 export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regular Run' }: { mode?: 'payrun' | 'adjustments'; initialRunType?: Exclude<PayrollTab, 'Adjustments'> }) {
   const [clients, setClients] = useState<Client[]>([]), [employees, setEmployees] = useState<Employee[]>([]), [runs, setRuns] = useState<PayRun[]>([])
   const [setup, setSetup] = useState<Setup>(setup0), [selected, setSelected] = useState<PayRun | null>(null)
+  const [diagnostics, setDiagnostics] = useState<PayRunDiagnostics | null>(null)
   const [clientId, setClientId] = useState(0), [period, setPeriod] = useState(currentPeriod), [workingDays, setWorkingDays] = useState(30)
   const [includedIds, setIncludedIds] = useState<number[]>([]), [offcycleEmployeeIds, setOffcycleEmployeeIds] = useState<number[]>([]), [offcycleAdjustmentIds, setOffcycleAdjustmentIds] = useState<number[]>([])
   const [adjustments, setAdjustments] = useState<PayrollAdjustment[]>([]), [adjustment, setAdjustment] = useState<PayrollAdjustment>(adjustment0)
@@ -56,13 +57,14 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     setIncludedIds(employeeRows.filter(employee => employee.clientId === nextClientId && employee.isActive).map(employee => employee.id))
     setOffcycleEmployeeIds([])
     setRuns(runRows)
-    setSetup({ ...setup0, ...setupRow, salaryComponents: setupRow.salaryComponents?.length ? setupRow.salaryComponents : setup0.salaryComponents })
+    setSetup({ ...setup0, ...setupRow, salaryComponents: setupRow.salaryComponents ?? [] })
     setAdjustments(adjustmentRows)
   }
 
   const open = async (id: number) => {
-    const payRun = await getPayRun(id)
+    const [payRun, diagnosticRows] = await Promise.all([getPayRun(id), getPayRunDiagnostics(id)])
     if (payRun) setSelected(payRun)
+    setDiagnostics(diagnosticRows)
   }
 
   useEffect(() => { void Promise.resolve().then(load) }, [])
@@ -92,6 +94,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const afterCreate = async (response: { ok: boolean; data: PayRun | null }, success: string) => {
     if (response.ok && response.data) {
       setSelected(response.data)
+      setDiagnostics(await getPayRunDiagnostics(response.data.id))
       setStage('Review')
       setMessage(success)
       await load()
@@ -140,7 +143,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     if (!selected) return
     setBusy(true)
     const response = await runPayRunAction(selected.id, path)
-    if (response.ok && response.data) { setSelected(response.data); setMessage(success); await load() }
+    if (response.ok && response.data) { setSelected(response.data); setDiagnostics(await getPayRunDiagnostics(response.data.id)); setMessage(success); await load() }
     setBusy(false)
   }
 
@@ -149,7 +152,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     if (component) setAdjustment({ ...adjustment, componentId: component.id, componentCode: component.code, componentName: component.name, adjustmentType: componentToAdjustmentType(component), taxable: component.taxable })
   }
 
-  const reviewPanel = selected ? <PayRunReview selected={selected} busy={busy} updateEmployee={updateEmployee} action={action} materialVarianceCount={materialVarianceCount} /> : <section className="card report-empty"><p>No draft selected yet.</p></section>
+  const reviewPanel = selected ? <PayRunReview selected={selected} diagnostics={diagnostics} busy={busy} updateEmployee={updateEmployee} action={action} materialVarianceCount={materialVarianceCount} /> : <section className="card report-empty"><p>No draft selected yet.</p></section>
 
   return <section className="pay-runs payroll-cockpit">
     <div className="payroll-status-strip"><span>{message}</span><span className={`status-chip ${attendanceReady ? 'paid' : 'pending-approval'}`}>{attendanceReady ? 'Attendance ready' : `${attendanceIssues || includedCount} attendance issue${(attendanceIssues || includedCount) === 1 ? '' : 's'}`}</span></div>
@@ -209,7 +212,7 @@ function AdjustmentMini(p: { rows: PayrollAdjustment[]; title: string; edit?: (r
   return <div className="adjustment-mini"><DataTable rows={p.rows} title={p.title} getRowId={row => row.id} emptyText="No adjustments found." exportFileName={p.title.toLowerCase().replace(/\s+/g, '-')} columns={columns} pageSizeOptions={[5, 10, 25]} actions={row => <span className="adjustment-actions">{p.edit && row.status !== 'Applied' && <button type="button" onClick={() => p.edit?.(row)}>Edit</button>}{p.cancel && row.status !== 'Applied' && <button type="button" className="danger" onClick={() => void p.cancel?.(row.id)}>Cancel</button>}</span>} /></div>
 }
 
-function PayRunReview(p: { selected: PayRun; busy: boolean; materialVarianceCount: number; updateEmployee: (employee: RunEmployee, change: Partial<RunEmployee>) => Promise<void>; action: (path: string, success: string) => Promise<void> }) {
+function PayRunReview(p: { selected: PayRun; diagnostics: PayRunDiagnostics | null; busy: boolean; materialVarianceCount: number; updateEmployee: (employee: RunEmployee, change: Partial<RunEmployee>) => Promise<void>; action: (path: string, success: string) => Promise<void> }) {
   const selected = p.selected
   const includedEmployees = selected.employees.filter(employee => !employee.isSkipped)
   const presentDays = includedEmployees.reduce((sum, employee) => sum + Number(employee.presentDays || 0), 0)
@@ -229,7 +232,35 @@ function PayRunReview(p: { selected: PayRun; busy: boolean; materialVarianceCoun
     { key: 'deductions', label: 'Deductions', value: row => row.statutoryDeductions + row.oneTimeDeductions, render: row => money(row.statutoryDeductions + row.oneTimeDeductions) },
     { key: 'netPay', label: 'Net', value: row => row.netPay, render: row => <strong>{money(row.netPay)}</strong> }
   ]
-  return <section className="card pay-run-details enterprise-review"><header><i className="blue">R</i><div><h3>{selected.clientName} / {selected.payPeriod}</h3><p>{selected.runType || 'Regular'} / {selected.runName || 'Regular payroll'} / {selected.status} / {selected.employeeCount} included employees</p></div><span className={`status-chip ${selected.status.toLowerCase().replace(/\s+/g, '-')}`}>{selected.status}</span></header><div className="pay-run-summary"><div><span>Payroll cost</span><strong>{money(selected.payrollCost)}</strong></div><div><span>Net payable</span><strong>{money(selected.netPay)}</strong></div><div><span>Payable days</span><strong>{payableDays}</strong></div><div><span>LOP days</span><strong>{lopDays}</strong></div><div><span>Present days</span><strong>{presentDays}</strong></div><div><span>Variance alerts</span><strong>{p.materialVarianceCount}</strong></div></div>{selected.runType === 'Off Cycle' && <p className="payment-warning">Off-cycle runs do not use monthly attendance payable days. Regular payroll pulls payable days from Attendance Review.</p>}<div className="pay-run-table"><DataTable rows={selected.employees} title="Employee payroll review" getRowId={row => row.employeeId} rowClassName={row => row.isSkipped ? 'skipped' : ''} emptyText="No employees in this run." exportFileName={`pay-run-${selected.payPeriod}`} columns={columns} pageSizeOptions={[10, 25, 50, 100]} /></div><div className="pay-run-actions"><button type="button" className="lock-action" disabled={p.busy || selected.status !== 'Draft'} onClick={() => void p.action('submit', 'Payroll locked and sent for approval.')}>Lock and send for approval</button><button type="button" className="approve-action" disabled={p.busy || selected.status !== 'Pending Approval'} onClick={() => void p.action('approve', 'Payroll approved.')}>Approve payroll</button><button type="button" className="secondary recall-action" disabled={p.busy || !['Approved', 'Pending Approval'].includes(selected.status)} onClick={() => void p.action('recall', 'Payroll recalled to draft.')}>Recall</button><a className="secondary export-action" href={exportPayRunUrl(selected.id)}>Export</a></div></section>
+  return <section className="card pay-run-details enterprise-review"><header><i className="blue">R</i><div><h3>{selected.clientName} / {selected.payPeriod}</h3><p>{selected.runType || 'Regular'} / {selected.runName || 'Regular payroll'} / {selected.status} / {selected.employeeCount} included employees</p></div><span className={`status-chip ${selected.status.toLowerCase().replace(/\s+/g, '-')}`}>{selected.status}</span></header><div className="pay-run-summary"><div><span>Payroll cost</span><strong>{money(selected.payrollCost)}</strong></div><div><span>Net payable</span><strong>{money(selected.netPay)}</strong></div><div><span>Payable days</span><strong>{payableDays}</strong></div><div><span>LOP days</span><strong>{lopDays}</strong></div><div><span>Present days</span><strong>{presentDays}</strong></div><div><span>Variance alerts</span><strong>{p.materialVarianceCount}</strong></div></div>{selected.runType === 'Off Cycle' && <p className="payment-warning">Off-cycle runs do not use monthly attendance payable days. Regular payroll pulls payable days from Attendance Review.</p>}<div className="pay-run-table"><DataTable rows={selected.employees} title="Employee payroll review" getRowId={row => row.employeeId} rowClassName={row => row.isSkipped ? 'skipped' : ''} emptyText="No employees in this run." exportFileName={`pay-run-${selected.payPeriod}`} columns={columns} pageSizeOptions={[10, 25, 50, 100]} /></div><DiagnosticsPanel diagnostics={p.diagnostics} payPeriod={selected.payPeriod} /><div className="pay-run-actions"><button type="button" className="lock-action" disabled={p.busy || selected.status !== 'Draft'} onClick={() => void p.action('submit', 'Payroll locked and sent for approval.')}>Lock and send for approval</button><button type="button" className="approve-action" disabled={p.busy || selected.status !== 'Pending Approval'} onClick={() => void p.action('approve', 'Payroll approved.')}>Approve payroll</button><button type="button" className="secondary recall-action" disabled={p.busy || !['Approved', 'Pending Approval'].includes(selected.status)} onClick={() => void p.action('recall', 'Payroll recalled to draft.')}>Recall</button><a className="secondary export-action" href={exportPayRunUrl(selected.id)}>Export</a></div></section>
+}
+
+function DiagnosticsPanel({ diagnostics, payPeriod }: { diagnostics: PayRunDiagnostics | null; payPeriod: string }) {
+  if (!diagnostics) return <section className="payroll-diagnostics"><p className="empty">Diagnostics are not available for this run yet.</p></section>
+  const failedSteps = diagnostics.stepLogs.filter(row => row.status !== 'Success')
+  const failedRecon = diagnostics.reconciliationResults.filter(row => row.status !== 'Passed')
+  const validationRows = diagnostics.validationIssues.slice(0, 50)
+  const traceRows = diagnostics.calculationTraces.slice(0, 100)
+  return <section className="payroll-diagnostics"><div className="pay-run-summary diagnostics-summary"><div><span>Pipeline steps</span><strong>{diagnostics.stepLogs.length}</strong></div><div><span>Failed steps</span><strong>{failedSteps.length}</strong></div><div><span>Validation issues</span><strong>{diagnostics.validationIssues.length}</strong></div><div><span>Recon failures</span><strong>{failedRecon.length}</strong></div><div><span>Trace rows</span><strong>{diagnostics.calculationTraces.length}</strong></div></div><DataTable rows={diagnostics.reconciliationResults} title="Reconciliation controls" getRowId={row => row.id} emptyText="No reconciliation checks found." exportFileName={`reconciliation-${payPeriod}`} pageSizeOptions={[5, 10, 25]} columns={[
+    { key: 'status', label: 'Status', render: row => <span className={`status-chip ${row.status.toLowerCase()}`}>{row.status}</span>, exportValue: row => row.status },
+    { key: 'checkName', label: 'Check' },
+    { key: 'expectedAmount', label: 'Expected', value: row => row.expectedAmount, render: row => money(row.expectedAmount) },
+    { key: 'actualAmount', label: 'Actual', value: row => row.actualAmount, render: row => money(row.actualAmount) },
+    { key: 'differenceAmount', label: 'Difference', value: row => row.differenceAmount, render: row => money(row.differenceAmount) }
+  ]} /><DataTable rows={validationRows} title="Validation and exception log" getRowId={row => row.id} emptyText="No validation issues found." exportFileName={`validation-${payPeriod}`} pageSizeOptions={[5, 10, 25]} columns={[
+    { key: 'severity', label: 'Severity' },
+    { key: 'employeeCode', label: 'Employee' },
+    { key: 'stepName', label: 'Step' },
+    { key: 'message', label: 'Message' },
+    { key: 'isBlocking', label: 'Blocking', render: row => row.isBlocking ? 'Yes' : 'No', exportValue: row => row.isBlocking ? 'Yes' : 'No' }
+  ]} /><DataTable rows={traceRows} title="Calculation trace sample" getRowId={row => row.id} emptyText="No calculation trace rows found." exportFileName={`calculation-trace-${payPeriod}`} pageSizeOptions={[10, 25, 50]} columns={[
+    { key: 'employeeCode', label: 'Employee' },
+    { key: 'componentCode', label: 'Component', render: row => <>{row.componentCode}<small>{row.componentName}</small></>, exportValue: row => `${row.componentCode} ${row.componentName}` },
+    { key: 'formulaUsed', label: 'Formula' },
+    { key: 'baseAmount', label: 'Base', value: row => row.baseAmount, render: row => money(row.baseAmount) },
+    { key: 'factor', label: 'Factor' },
+    { key: 'calculatedAmount', label: 'Amount', value: row => row.calculatedAmount, render: row => money(row.calculatedAmount) }
+  ]} /></section>
 }
 
 function attendanceIssue(row: EmployeeMonthlyAttendance) {

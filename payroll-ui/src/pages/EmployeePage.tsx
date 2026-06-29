@@ -3,7 +3,7 @@ import { Chk, F, Sel } from '../components/FormPrimitives'
 import DataTable from '../components/DataTable'
 import PageTabs from '../components/PageTabs'
 import SearchSelect, { selectOptions } from '../components/SearchSelect'
-import { demoComponents, employee0, setup0 } from '../data/payrollDefaults'
+import { employee0, setup0 } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
 import { getDropdowns, getSetup, getWorkLocations, saveEmployee as persistEmployee } from '../services/settingsService'
 import type { Client, Component, Drop, Employee, EmployeePaymentDetails, EmployeePersonalDetails, Setup, Structure, WorkLocation } from '../types/payroll'
@@ -31,7 +31,7 @@ export default function EmployeePage() {
   const load = async () => {
     const [clientRows, locationRows, dropdownRows, employeeRows, rawSetup] = await Promise.all([getClients(), getWorkLocations(), getDropdowns(), getEmployees(), getSetup(setup0)])
     setClients(clientRows); setLocations(locationRows); setDrops(dropdownRows); setEmployees(employeeRows.map(normalizeEmployeeDetails))
-    setSetup({ ...setup0, ...rawSetup, salaryComponents: rawSetup.salaryComponents?.length ? rawSetup.salaryComponents : demoComponents, salaryStructures: rawSetup.salaryStructures ?? [] })
+    setSetup({ ...setup0, ...rawSetup, salaryComponents: rawSetup.salaryComponents ?? [], salaryStructures: rawSetup.salaryStructures ?? [] })
   }
 
   useEffect(() => { void load() }, [])

@@ -92,7 +92,6 @@ if (!string.Equals(app.Configuration["Database:InitializeOnStartup"], "false", S
         var essRepository = scope.ServiceProvider.GetRequiredService<EssMssRepository>();
         await migrations.RunAsync("007_ess_mss", essRepository.InitializeAsync);
         await migrations.RunAsync("008_tax_engine", () => scope.ServiceProvider.GetRequiredService<TaxEngineRepository>().InitializeAsync());
-        await migrations.RunAsync("009_database_bootstrap", () => DatabaseBootstrapper.RunIfEnabledAsync(builder.Configuration, app.Environment.ContentRootPath, app.Logger));
         await essRepository.ReconcileLeaveWorkflowStatusesAsync();
     }
     catch (Exception exception)

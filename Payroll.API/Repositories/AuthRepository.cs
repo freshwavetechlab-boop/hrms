@@ -23,7 +23,6 @@ public class AuthRepository(IConfiguration configuration)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         await connection.ExecuteAsync(@"
 CREATE TABLE IF NOT EXISTS authusers (
     Id INT PRIMARY KEY AUTO_INCREMENT,
@@ -102,6 +101,7 @@ CREATE TABLE IF NOT EXISTS auditlogs (
         await EnsureForeignKeyAsync(connection, "authrolepermissions", "FK_AuthRolePermissions_Permission", "FOREIGN KEY (PermissionId) REFERENCES authpermissions(Id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "authsessions", "FK_AuthSessions_User", "FOREIGN KEY (UserId) REFERENCES authusers(Id) ON DELETE CASCADE");
         await EnsureColumnAsync(connection, "authusers", "EmployeeId", "INT NULL");
+        await SeedDashboardPermissionsAsync(connection);
 
     }
 
@@ -109,7 +109,6 @@ CREATE TABLE IF NOT EXISTS auditlogs (
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         var row = await connection.QueryFirstOrDefaultAsync<AuthUserRecord>("SELECT * FROM authusers WHERE Email = @Email", new { Email = NormalizeEmail(request.Email) });
         if (row is null || !row.IsActive || !VerifyPassword(request.Password, row.PasswordHash))
             return null;
@@ -127,7 +126,6 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         var userId = await connection.ExecuteScalarAsync<int?>(@"SELECT UserId FROM authsessions WHERE TokenHash = @TokenHash AND RevokedAt IS NULL AND ExpiresAt > UTC_TIMESTAMP()", new { TokenHash = HashToken(token) });
         return userId is null ? null : await BuildUserAsync(connection, userId.Value);
     }
@@ -136,7 +134,6 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         await connection.ExecuteAsync("UPDATE authsessions SET RevokedAt = UTC_TIMESTAMP() WHERE TokenHash = @TokenHash AND RevokedAt IS NULL", new { TokenHash = HashToken(token) });
         await WriteAuditAsync(connection, user?.Id, user?.Email ?? "", "auth.logout", "AuthSession", "POST", "/api/auth/logout", 200, ipAddress, userAgent, "{}");
     }
@@ -145,7 +142,6 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         var userIds = await connection.QueryAsync<int>("SELECT Id FROM authusers ORDER BY DisplayName");
         var users = new List<AuthUser>();
         foreach (var userId in userIds)
@@ -160,7 +156,6 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         return await connection.QueryAsync<AuthRole>(@"SELECT r.Id, r.Code, r.Name, r.Description, r.IsSystem, COALESCE(GROUP_CONCAT(p.Code ORDER BY p.Code), '') AS Permissions
 FROM authroles r
 LEFT JOIN authrolepermissions rp ON rp.RoleId = r.Id
@@ -173,7 +168,6 @@ ORDER BY r.Name;");
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         return await connection.QueryAsync<AuditLog>("SELECT * FROM auditlogs ORDER BY CreatedAt DESC LIMIT @Limit", new { Limit = Math.Clamp(limit, 1, 500) });
     }
 
@@ -181,7 +175,6 @@ ORDER BY r.Name;");
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         await WriteAuditAsync(connection, user?.Id, user?.Email ?? "", action, resource, method, path, statusCode, ipAddress, userAgent, detailsJson);
     }
 
@@ -202,7 +195,6 @@ VALUES (@UserId, @UserEmail, @Action, @Resource, @Method, @Path, @StatusCode, @I
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         return await connection.QueryAsync<AuthPermission>("SELECT * FROM authpermissions ORDER BY Module, Code");
     }
 
@@ -210,16 +202,14 @@ VALUES (@UserId, @UserEmail, @Action, @Resource, @Method, @Path, @StatusCode, @I
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         await using var transaction = await connection.BeginTransactionAsync();
         var email = NormalizeEmail(request.Email);
         var userId = request.Id;
         if (userId == 0)
         {
-            var password = string.IsNullOrWhiteSpace(request.Password) ? "Welcome@12345" : request.Password;
             userId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO authusers (Email, DisplayName, PasswordHash, ClientId, EmployeeId, IsActive, MustChangePassword)
 VALUES (@Email, @DisplayName, @PasswordHash, @ClientId, @EmployeeId, @IsActive, @MustChangePassword);
-SELECT LAST_INSERT_ID();", new { Email = email, request.DisplayName, PasswordHash = HashPassword(password), request.ClientId, request.EmployeeId, request.IsActive, request.MustChangePassword }, transaction);
+SELECT LAST_INSERT_ID();", new { Email = email, request.DisplayName, PasswordHash = HashPassword(request.Password), request.ClientId, request.EmployeeId, request.IsActive, request.MustChangePassword }, transaction);
         }
         else
         {
@@ -240,7 +230,6 @@ SELECT @UserId, Id FROM authroles WHERE Code IN @Roles;", new { UserId = userId,
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         await using var transaction = await connection.BeginTransactionAsync();
         var code = request.Code.Trim().ToLowerInvariant().Replace(' ', '_');
         var roleId = request.Id;
@@ -266,14 +255,33 @@ SELECT @RoleId, Id FROM authpermissions WHERE Code IN @Permissions;", new { Role
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("USE payroll;");
         return await BuildUserAsync(connection, userId);
     }
 
     private static async Task EnsureColumnAsync(MySqlConnection connection, string tableName, string columnName, string definition)
     {
-        var exists = await connection.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'payroll' AND TABLE_NAME = @TableName AND COLUMN_NAME = @ColumnName", new { TableName = tableName, ColumnName = columnName });
+        var exists = await connection.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @TableName AND COLUMN_NAME = @ColumnName", new { TableName = tableName, ColumnName = columnName });
         if (exists == 0) await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition}");
+    }
+
+    private static Task SeedDashboardPermissionsAsync(MySqlConnection connection)
+    {
+        var permissions = new[]
+        {
+            new { Code = "dashboard.view", Name = "View dashboard", Module = "Dashboard", Description = "Access the HRMS dashboard shell." },
+            new { Code = "dashboard.workforce.view", Name = "View workforce dashboard", Module = "Dashboard", Description = "View employee and ESS adoption dashboard metrics." },
+            new { Code = "dashboard.payroll.view", Name = "View payroll dashboard", Module = "Dashboard", Description = "View payroll run, net pay, validation and recent payroll dashboard metrics." },
+            new { Code = "dashboard.attendance.view", Name = "View attendance dashboard", Module = "Dashboard", Description = "View attendance readiness and exception dashboard metrics." },
+            new { Code = "dashboard.approvals.view", Name = "View approvals dashboard", Module = "Dashboard", Description = "View workflow and leave approval dashboard metrics." }
+        };
+
+        return connection.ExecuteAsync(@"
+INSERT INTO authpermissions (Code, Name, Module, Description)
+VALUES (@Code, @Name, @Module, @Description)
+ON DUPLICATE KEY UPDATE
+    Name = VALUES(Name),
+    Module = VALUES(Module),
+    Description = VALUES(Description);", permissions);
     }
 
     private static async Task EnsureForeignKeyAsync(MySqlConnection connection, string tableName, string constraintName, string definition)
@@ -281,7 +289,7 @@ SELECT @RoleId, Id FROM authpermissions WHERE Code IN @Permissions;", new { Role
         var exists = await connection.ExecuteScalarAsync<int>(@"
 SELECT COUNT(*)
 FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
-WHERE CONSTRAINT_SCHEMA = 'payroll'
+WHERE CONSTRAINT_SCHEMA = DATABASE()
   AND CONSTRAINT_NAME = @ConstraintName;", new { ConstraintName = constraintName });
 
         if (exists == 0)
