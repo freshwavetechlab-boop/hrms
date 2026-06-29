@@ -7,19 +7,6 @@ namespace Payroll.API.Repositories;
 
 public class LeaveAttendanceRepository(IConfiguration configuration)
 {
-<<<<<<< HEAD
-=======
-    private static readonly LeaveAttendanceSetupStep[] DefaultSteps =
-    [
-        new() { Code = "preferences", Title = "General Settings / Preferences", Description = "Mandatory rules for leave year, attendance cycle, weekly offs and payroll impact.", IsMandatory = true, CanDisable = false },
-        new() { Code = "leave_types", Title = "Leave Types", Description = "Define paid, unpaid, sick, casual and custom leave policies." },
-        new() { Code = "holiday", Title = "Holiday Management", Description = "Maintain client/location-wise holiday calendars and restricted holidays." },
-        new() { Code = "attendance", Title = "Attendance Management", Description = "Configure attendance capture, regularization, overtime and late rules." },
-        new() { Code = "geo_fencing", Title = "Geo-Fencing", Description = "Client, location and employee-wise mobile attendance boundary rules." },
-        new() { Code = "import_balance", Title = "Import Employee Leave Balance", Description = "Upload opening balances before employees start applying leaves." }
-    ];
-
->>>>>>> b607099 (Added Attendance Geofencing Module)
     private MySqlConnection CreateConnection()
     {
         var connectionString = configuration.GetConnectionString("Default")
@@ -267,12 +254,8 @@ CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
         await connection.OpenAsync();
         await connection.ExecuteAsync("USE payroll;");
         var isEnabled = await connection.ExecuteScalarAsync<bool?>("SELECT IsEnabled FROM modulesettings WHERE ModuleCode = 'leave_attendance' AND client_id=@ClientId", new { ClientId = clientId }) ?? false;
-        var steps = (await connection.QueryAsync<LeaveAttendanceSetupStep>(@"SELECT StepCode AS Code, Title, Description, Status, IsMandatory, CanDisable, UpdatedAt
-<<<<<<< HEAD
+        var steps = (await connection.QueryAsync<LeaveAttendanceSetupStep>(@"SELECT StepCode AS Code, Title, Description, Status, IsMandatory, CanDisable, UpdatedAt 
 FROM modulesetupprogress WHERE ModuleCode = 'leave_attendance' AND client_id=@ClientId ORDER BY FIELD(StepCode, 'preferences', 'leave_types', 'holiday', 'attendance', 'import_balance');", new { ClientId = clientId })).ToList();
-=======
-FROM ModuleSetupProgress WHERE ModuleCode = 'leave_attendance' AND client_id=@ClientId ORDER BY FIELD(StepCode, 'preferences', 'leave_types', 'holiday', 'attendance', 'geo_fencing', 'import_balance');", new { ClientId = clientId })).ToList();
->>>>>>> b607099 (Added Attendance Geofencing Module)
         return new LeaveAttendanceSetup { ClientId = clientId, IsEnabled = isEnabled, Steps = steps };
     }
 
@@ -856,19 +839,13 @@ LEFT JOIN Employees e ON e.Id = gre.employee_id";
 
     private static async Task EnsureClientScopeAsync(MySqlConnection connection)
     {
-<<<<<<< HEAD
         foreach (var table in new[] { "modulesettings", "modulesetupprogress", "leave_attendance_preferences", "attendance_settings", "employee_monthly_attendance", "employee_daily_attendance", "leave_types", "holidays", "employee_leave_balances", "leave_balance_import_logs" })
-=======
-        foreach (var table in new[] { "ModuleSettings", "ModuleSetupProgress", "leave_attendance_preferences", "attendance_settings", "employee_monthly_attendance", "employee_daily_attendance", "attendance_geo_fence_rules", "leave_types", "holidays", "employee_leave_balances", "leave_balance_import_logs" })
->>>>>>> b607099 (Added Attendance Geofencing Module)
+     
             await AddClientColumnIfMissingAsync(connection, table);
         var clientId = await connection.ExecuteScalarAsync<int?>("SELECT Id FROM clients ORDER BY Id LIMIT 1");
         if (clientId is null) return;
-<<<<<<< HEAD
+
         foreach (var table in new[] { "modulesettings", "modulesetupprogress", "leave_attendance_preferences", "attendance_settings", "employee_monthly_attendance", "employee_daily_attendance", "leave_types", "holidays", "employee_leave_balances", "leave_balance_import_logs" })
-=======
-        foreach (var table in new[] { "ModuleSettings", "ModuleSetupProgress", "leave_attendance_preferences", "attendance_settings", "employee_monthly_attendance", "employee_daily_attendance", "attendance_geo_fence_rules", "leave_types", "holidays", "employee_leave_balances", "leave_balance_import_logs" })
->>>>>>> b607099 (Added Attendance Geofencing Module)
             await connection.ExecuteAsync($"UPDATE {table} SET client_id=@ClientId WHERE client_id IS NULL", new { ClientId = clientId });
         await DropIndexIfExistsAsync(connection, "leave_types", "UX_leave_types_code");
         await CreateIndexIfMissingAsync(connection, "modulesettings", "UX_ModuleSettings_Client_Module", "CREATE UNIQUE INDEX UX_ModuleSettings_Client_Module ON modulesettings (client_id, ModuleCode)");

@@ -30,7 +30,7 @@ public class EssAttendanceSummary { public string Month { get; set; } = ""; publ
 public class EssDailyAttendance { public DateTime AttendanceDate { get; set; } public string Status { get; set; } = ""; public decimal PayableValue { get; set; } public string Remarks { get; set; } = ""; }
 public class EssHoliday { public string Name { get; set; } = ""; public DateTime StartDate { get; set; } public DateTime EndDate { get; set; } }
 public class EssBirthday { public string Name { get; set; } = ""; public string Department { get; set; } = ""; }
-<<<<<<< HEAD
+
 public class EssTaxPortal
 {
     public string FinancialYear { get; set; } = "";
@@ -81,7 +81,7 @@ public class EssTaxFinalAdjustmentInfo { public string Label { get; set; } = "";
 public class SaveEssTaxRegimeRequest { public string Regime { get; set; } = ""; }
 public class SaveEssTaxDeclarationsRequest { public string Phase { get; set; } = "Planned"; public List<SaveEssTaxDeclarationLine> Lines { get; set; } = []; }
 public class SaveEssTaxDeclarationLine { public int SectionId { get; set; } public decimal Amount { get; set; } public decimal DeclaredAmount { get; set; } public string Remarks { get; set; } = ""; }
-=======
+
 
 public class AttendanceFacialVerification
 {
@@ -131,4 +131,4 @@ public class AttendancePunchValidationResponse
     public bool FacialPassed { get; set; }
     public AttendancePunchRuleSummary? Rule { get; set; }
 }
->>>>>>> b607099 (Added Attendance Geofencing Module)
+

@@ -181,7 +181,6 @@ ON DUPLICATE KEY UPDATE declared_amount=@Amount,planned_amount=IF(@Phase='Planne
     public async Task SyncLeaveWorkflowStatusAsync(string resourceId, string status)
     { if (!long.TryParse(resourceId, out var id) || status is not ("Approved" or "Rejected" or "Sent Back")) return; await using var db=Connection();await db.OpenAsync();await db.ExecuteAsync("USE payroll;");await db.ExecuteAsync("UPDATE essleaverequests SET Status=@Status WHERE Id=@Id",new{Id=id,Status=status}); }
     public async Task ReconcileLeaveWorkflowStatusesAsync()
-<<<<<<< HEAD
     { await using var db=Connection();await db.OpenAsync();await db.ExecuteAsync("USE payroll;");await db.ExecuteAsync(@"UPDATE essleaverequests r JOIN workflowinstances w ON w.ResourceType='LeaveRequest' AND w.ResourceId=CAST(r.Id AS CHAR) SET r.Status=w.Status WHERE w.Status IN ('Approved','Rejected','Sent Back') AND r.Status<>w.Status"); }
     private static string CurrentFinancialYear()
     {
@@ -206,9 +205,6 @@ ON DUPLICATE KEY UPDATE declared_amount=@Amount,planned_amount=IF(@Phase='Planne
         else notes.Add("Investment declaration is not open right now.");
         return string.Join(" ", notes);
     }
-=======
-    { await using var db=Connection();await db.OpenAsync();await db.ExecuteAsync("USE payroll;");await db.ExecuteAsync(@"UPDATE EssLeaveRequests r JOIN WorkflowInstances w ON w.ResourceType='LeaveRequest' AND w.ResourceId=CAST(r.Id AS CHAR) SET r.Status=w.Status WHERE w.Status IN ('Approved','Rejected','Sent Back') AND r.Status<>w.Status"); }
-
     public async Task<AttendancePunchValidationResponse> ValidateAttendancePunchAsync(int employeeId, int? clientId, ValidateAttendancePunchRequest request)
     {
         await using var db = Connection();
@@ -374,5 +370,4 @@ LIMIT 1;", new { EmployeeId = employeeId, ClientId = clientId, Date = onDate.Dat
     }
 
     private static double ToRadians(double degrees) => degrees * Math.PI / 180;
->>>>>>> b607099 (Added Attendance Geofencing Module)
 }

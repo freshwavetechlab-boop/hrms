@@ -1,10 +1,5 @@
-<<<<<<< HEAD
-import type { AttendanceSettings, EmployeeDailyAttendance, EmployeeMonthlyAttendance, Holiday, LeaveAttendancePreferences, LeaveAttendanceSetup, LeaveBalanceImportMapping, LeaveBalanceImportPreview, LeaveBalanceImportResult, LeaveType, SetupStatus } from '../types/payroll'
-import { apiUrl, deleteJson, getBlob, getJson, postFormWithProgress, postJson, putJson } from './apiClient'
-=======
 import type { AttendanceSettings, EmployeeDailyAttendance, EmployeeMonthlyAttendance, GeoFenceRule, GeoFenceScope, Holiday, LeaveAttendancePreferences, LeaveAttendanceSetup, LeaveBalanceImportMapping, LeaveBalanceImportPreview, LeaveBalanceImportResult, LeaveType, SetupStatus } from '../types/payroll'
-import { apiUrl, deleteJson, getBlob, getJson, postForm, postJson, putJson } from './apiClient'
->>>>>>> b607099 (Added Attendance Geofencing Module)
+import { apiUrl, deleteJson, getBlob, getJson, postFormWithProgress, postJson, putJson } from './apiClient'
 
 const fallback: LeaveAttendanceSetup = { clientId: 0, isEnabled: false, steps: [] }
 const preferencesFallback: LeaveAttendancePreferences = { id: 0, clientId: 0, attendanceCycleStartDay: 1, attendanceCycleEndDay: 25, payrollReportGenerationDay: 28, includeLeaveEncashmentInPayRun: false, leaveEncashmentSalaryComponentId: null }
