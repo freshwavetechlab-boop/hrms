@@ -10,7 +10,7 @@ import PageTabs from '../components/PageTabs'
 import SalaryTemplateDesigner from '../components/SalaryTemplateDesigner'
 import TaxEngineManager from '../components/TaxEngineManager'
 import { useToast, type ToastType } from '../components/ToastProvider'
-import { client0, component0, demoComponents, demoStructures, drop0, dropTypes, location0, org0, payslip0, settingsMenus, setup0, states, structure0 } from '../data/payrollDefaults'
+import { client0, component0, demoComponents, demoStructures, drop0, dropTypes, location0, org0, payslip0, settingsMenus, setup0, structure0 } from '../data/payrollDefaults'
 import { getClients } from '../services/payrollService'
 import { getDropdowns, getOrganization, getSetup, getWorkLocations, saveClient as persistClient, saveDropdown, saveOrganization, saveSetup, saveWorkLocation } from '../services/settingsService'
 import type { Client, Component, Drop, Org, ProfessionalTaxSlab, Setup, WorkLocation } from '../types/payroll'
@@ -104,7 +104,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     if (response.ok) { if (location.id === row.id) setLocation(location0); await load() }
   }
   const activeDrops = drops.filter(item => item.isActive)
-  const stateOptions = unique([...states, ...activeDrops.filter(item => item.type === 'State').map(item => item.value), ...locations.map(item => item.state), org.state, location.state, dropState, setup.statutory.ptState, setup.statutory.lwfState, ptSlab.state, ...(setup.statutory.ptStateSlabs ?? []).map(item => item.state)])
+  const stateOptions = unique([...activeDrops.filter(item => item.type === 'State').map(item => item.value), ...locations.map(item => item.state), org.state, location.state, dropState, setup.statutory.ptState, setup.statutory.lwfState, ptSlab.state, ...(setup.statutory.ptStateSlabs ?? []).map(item => item.state)])
   const cityOptions = (state: string) => unique([...activeDrops.filter(item => isCityType(item.type) && (!state || item.type === cityType(state))).map(item => item.value), ...locations.filter(item => !state || item.state === state).map(item => item.city), !state || org.state === state ? org.city : '', !state || location.state === state ? location.city : ''])
   const selectedDropType = drop.type === 'City' ? 'City' : drop.type
   const visibleDrops = drops.filter(item => item.isActive && (selectedDropType === 'City' ? isCityType(item.type) && (!dropState || item.type === cityType(dropState)) : item.type === selectedDropType))
