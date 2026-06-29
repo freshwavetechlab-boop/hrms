@@ -872,14 +872,6 @@ WHERE table_schema = DATABASE() AND table_name = @TableName AND column_name = 'c
             await connection.ExecuteAsync($"ALTER TABLE `{table}` ADD COLUMN client_id INT NULL");
     }
 
-    private static async Task EnsureColumnAsync(MySqlConnection connection, string tableName, string columnName, string definition)
-    {
-        var exists = await connection.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM information_schema.columns
-WHERE table_schema = DATABASE() AND table_name = @TableName AND column_name = @ColumnName", new { TableName = tableName, ColumnName = columnName });
-        if (exists == 0)
-            await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition}");
-    }
-
     private static async Task EnsureForeignKeyAsync(MySqlConnection connection, string tableName, string constraintName, string definition)
     {
         var exists = await connection.ExecuteScalarAsync<int>(@"
