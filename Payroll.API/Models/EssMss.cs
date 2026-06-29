@@ -30,6 +30,7 @@ public class EssAttendanceSummary { public string Month { get; set; } = ""; publ
 public class EssDailyAttendance { public DateTime AttendanceDate { get; set; } public string Status { get; set; } = ""; public decimal PayableValue { get; set; } public string Remarks { get; set; } = ""; }
 public class EssHoliday { public string Name { get; set; } = ""; public DateTime StartDate { get; set; } public DateTime EndDate { get; set; } }
 public class EssBirthday { public string Name { get; set; } = ""; public string Department { get; set; } = ""; }
+<<<<<<< HEAD
 public class EssTaxPortal
 {
     public string FinancialYear { get; set; } = "";
@@ -80,3 +81,54 @@ public class EssTaxFinalAdjustmentInfo { public string Label { get; set; } = "";
 public class SaveEssTaxRegimeRequest { public string Regime { get; set; } = ""; }
 public class SaveEssTaxDeclarationsRequest { public string Phase { get; set; } = "Planned"; public List<SaveEssTaxDeclarationLine> Lines { get; set; } = []; }
 public class SaveEssTaxDeclarationLine { public int SectionId { get; set; } public decimal Amount { get; set; } public decimal DeclaredAmount { get; set; } public string Remarks { get; set; } = ""; }
+=======
+
+public class AttendanceFacialVerification
+{
+    public bool Passed { get; set; }
+    public decimal? FaceMatchScore { get; set; }
+    public decimal? LivenessScore { get; set; }
+    public string Provider { get; set; } = "";
+    public string ReferenceId { get; set; } = "";
+}
+
+public class ValidateAttendancePunchRequest
+{
+    public string Action { get; set; } = "CheckIn";
+    public decimal Latitude { get; set; }
+    public decimal Longitude { get; set; }
+    public int AccuracyMeters { get; set; }
+    public DateTime? CapturedAt { get; set; }
+    public string Reason { get; set; } = "";
+    public AttendanceFacialVerification? Facial { get; set; }
+}
+
+public class AttendancePunchRuleSummary
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public string ScopeType { get; set; } = "";
+    public string Strictness { get; set; } = "";
+}
+
+public class AttendancePunchValidationResponse
+{
+    public bool Allowed { get; set; }
+    public bool RequiresReason { get; set; }
+    public bool RequiresApproval { get; set; }
+    public bool PunchRecorded { get; set; }
+    public long? PunchId { get; set; }
+    public string Status { get; set; } = "";
+    public string Message { get; set; } = "";
+    public string NextAction { get; set; } = "";
+    public decimal? DistanceMeters { get; set; }
+    public int? AllowedRadiusMeters { get; set; }
+    public int? GpsToleranceMeters { get; set; }
+    public int DeviceAccuracyMeters { get; set; }
+    public int? EffectiveRadiusMeters { get; set; }
+    public decimal? OutsideByMeters { get; set; }
+    public bool FacialRequired { get; set; } = true;
+    public bool FacialPassed { get; set; }
+    public AttendancePunchRuleSummary? Rule { get; set; }
+}
+>>>>>>> b607099 (Added Attendance Geofencing Module)

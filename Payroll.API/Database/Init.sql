@@ -379,6 +379,66 @@ CREATE TABLE IF NOT EXISTS attendance_settings (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS attendance_geo_fence_rules (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    client_id INT NOT NULL,
+    name VARCHAR(180) NOT NULL,
+    scope_type VARCHAR(40) NOT NULL DEFAULT 'Work Location',
+    work_location_id INT NULL,
+    latitude DECIMAL(10,7) NOT NULL,
+    longitude DECIMAL(10,7) NOT NULL,
+    radius_meters INT NOT NULL DEFAULT 100,
+    gps_tolerance_meters INT NOT NULL DEFAULT 30,
+    strictness VARCHAR(60) NOT NULL DEFAULT 'Block outside fence',
+    allow_check_in BOOLEAN NOT NULL DEFAULT TRUE,
+    allow_check_out BOOLEAN NOT NULL DEFAULT TRUE,
+    effective_from DATE NOT NULL,
+    effective_to DATE NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    priority INT NOT NULL DEFAULT 20,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX IX_geo_fence_client_scope (client_id, scope_type, is_active),
+    INDEX IX_geo_fence_location (work_location_id)
+);
+
+CREATE TABLE IF NOT EXISTS attendance_geo_fence_rule_employees (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    geo_fence_rule_id INT NOT NULL,
+    employee_id INT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_geo_fence_rule_employee (geo_fence_rule_id, employee_id),
+    INDEX IX_geo_fence_employee (employee_id),
+    CONSTRAINT FK_geo_fence_rule_employee_rule FOREIGN KEY (geo_fence_rule_id) REFERENCES attendance_geo_fence_rules(id) ON DELETE CASCADE,
+    CONSTRAINT FK_geo_fence_rule_employee_employee FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS employee_attendance_punches (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    client_id INT NOT NULL,
+    employee_id INT NOT NULL,
+    action VARCHAR(20) NOT NULL,
+    captured_at DATETIME NOT NULL,
+    latitude DECIMAL(10,7) NOT NULL,
+    longitude DECIMAL(10,7) NOT NULL,
+    accuracy_meters INT NOT NULL DEFAULT 0,
+    geo_fence_rule_id INT NULL,
+    distance_meters DECIMAL(10,2) NULL,
+    effective_radius_meters INT NULL,
+    outside_by_meters DECIMAL(10,2) NULL,
+    validation_status VARCHAR(60) NOT NULL,
+    decision VARCHAR(30) NOT NULL,
+    reason VARCHAR(600),
+    face_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    face_match_score DECIMAL(6,3) NULL,
+    liveness_score DECIMAL(6,3) NULL,
+    face_provider VARCHAR(80),
+    face_reference_id VARCHAR(180),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_attendance_punch_employee_date (client_id, employee_id, captured_at),
+    INDEX IX_attendance_punch_rule (geo_fence_rule_id)
+);
+
 CREATE TABLE IF NOT EXISTS leave_types (
     id INT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(180) NOT NULL,

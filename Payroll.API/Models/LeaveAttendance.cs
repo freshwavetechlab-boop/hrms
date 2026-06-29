@@ -74,6 +74,33 @@ public class AttendanceSettings
 
 public class SaveAttendanceSettingsRequest : AttendanceSettings { }
 
+public class GeoFenceRule
+{
+    public int Id { get; set; }
+    public int ClientId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string ScopeType { get; set; } = "Work Location";
+    public int? WorkLocationId { get; set; }
+    public string WorkLocationName { get; set; } = string.Empty;
+    public List<int> EmployeeIds { get; set; } = [];
+    public string EmployeeNames { get; set; } = string.Empty;
+    public decimal Latitude { get; set; }
+    public decimal Longitude { get; set; }
+    public int RadiusMeters { get; set; } = 100;
+    public int GpsToleranceMeters { get; set; } = 30;
+    public string Strictness { get; set; } = "Block outside fence";
+    public bool AllowCheckIn { get; set; } = true;
+    public bool AllowCheckOut { get; set; } = true;
+    public DateTime EffectiveFrom { get; set; } = DateTime.Today;
+    public DateTime? EffectiveTo { get; set; }
+    public bool IsActive { get; set; } = true;
+    public int Priority { get; set; } = 20;
+    public DateTime? CreatedAt { get; set; }
+    public DateTime? UpdatedAt { get; set; }
+}
+
+public class SaveGeoFenceRuleRequest : GeoFenceRule { }
+
 public class EmployeeMonthlyAttendance
 {
     public int EmployeeId { get; set; }

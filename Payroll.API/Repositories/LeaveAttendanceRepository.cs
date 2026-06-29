@@ -7,6 +7,19 @@ namespace Payroll.API.Repositories;
 
 public class LeaveAttendanceRepository(IConfiguration configuration)
 {
+<<<<<<< HEAD
+=======
+    private static readonly LeaveAttendanceSetupStep[] DefaultSteps =
+    [
+        new() { Code = "preferences", Title = "General Settings / Preferences", Description = "Mandatory rules for leave year, attendance cycle, weekly offs and payroll impact.", IsMandatory = true, CanDisable = false },
+        new() { Code = "leave_types", Title = "Leave Types", Description = "Define paid, unpaid, sick, casual and custom leave policies." },
+        new() { Code = "holiday", Title = "Holiday Management", Description = "Maintain client/location-wise holiday calendars and restricted holidays." },
+        new() { Code = "attendance", Title = "Attendance Management", Description = "Configure attendance capture, regularization, overtime and late rules." },
+        new() { Code = "geo_fencing", Title = "Geo-Fencing", Description = "Client, location and employee-wise mobile attendance boundary rules." },
+        new() { Code = "import_balance", Title = "Import Employee Leave Balance", Description = "Upload opening balances before employees start applying leaves." }
+    ];
+
+>>>>>>> b607099 (Added Attendance Geofencing Module)
     private MySqlConnection CreateConnection()
     {
         var connectionString = configuration.GetConnectionString("Default")
@@ -97,6 +110,38 @@ CREATE TABLE IF NOT EXISTS employee_daily_attendance (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY UX_daily_attendance_employee_date (client_id, employee_id, attendance_date),
     INDEX IX_daily_attendance_client_date (client_id, attendance_date)
+);
+CREATE TABLE IF NOT EXISTS attendance_geo_fence_rules (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    client_id INT NOT NULL,
+    name VARCHAR(180) NOT NULL,
+    scope_type VARCHAR(40) NOT NULL DEFAULT 'Work Location',
+    work_location_id INT NULL,
+    latitude DECIMAL(10,7) NOT NULL,
+    longitude DECIMAL(10,7) NOT NULL,
+    radius_meters INT NOT NULL DEFAULT 100,
+    gps_tolerance_meters INT NOT NULL DEFAULT 30,
+    strictness VARCHAR(60) NOT NULL DEFAULT 'Block outside fence',
+    allow_check_in BOOLEAN NOT NULL DEFAULT TRUE,
+    allow_check_out BOOLEAN NOT NULL DEFAULT TRUE,
+    effective_from DATE NOT NULL,
+    effective_to DATE NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    priority INT NOT NULL DEFAULT 20,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX IX_geo_fence_client_scope (client_id, scope_type, is_active),
+    INDEX IX_geo_fence_location (work_location_id)
+);
+CREATE TABLE IF NOT EXISTS attendance_geo_fence_rule_employees (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    geo_fence_rule_id INT NOT NULL,
+    employee_id INT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_geo_fence_rule_employee (geo_fence_rule_id, employee_id),
+    INDEX IX_geo_fence_employee (employee_id),
+    CONSTRAINT FK_geo_fence_rule_employee_rule FOREIGN KEY (geo_fence_rule_id) REFERENCES attendance_geo_fence_rules(id) ON DELETE CASCADE,
+    CONSTRAINT FK_geo_fence_rule_employee_employee FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS leave_types (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -223,7 +268,11 @@ CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
         await connection.ExecuteAsync("USE payroll;");
         var isEnabled = await connection.ExecuteScalarAsync<bool?>("SELECT IsEnabled FROM modulesettings WHERE ModuleCode = 'leave_attendance' AND client_id=@ClientId", new { ClientId = clientId }) ?? false;
         var steps = (await connection.QueryAsync<LeaveAttendanceSetupStep>(@"SELECT StepCode AS Code, Title, Description, Status, IsMandatory, CanDisable, UpdatedAt
+<<<<<<< HEAD
 FROM modulesetupprogress WHERE ModuleCode = 'leave_attendance' AND client_id=@ClientId ORDER BY FIELD(StepCode, 'preferences', 'leave_types', 'holiday', 'attendance', 'import_balance');", new { ClientId = clientId })).ToList();
+=======
+FROM ModuleSetupProgress WHERE ModuleCode = 'leave_attendance' AND client_id=@ClientId ORDER BY FIELD(StepCode, 'preferences', 'leave_types', 'holiday', 'attendance', 'geo_fencing', 'import_balance');", new { ClientId = clientId })).ToList();
+>>>>>>> b607099 (Added Attendance Geofencing Module)
         return new LeaveAttendanceSetup { ClientId = clientId, IsEnabled = isEnabled, Steps = steps };
     }
 
@@ -333,6 +382,76 @@ restrict_regularization_requests_per_month=@RestrictRegularizationRequestsPerMon
 max_regularization_requests_per_month=@MaxRegularizationRequestsPerMonth
 ;", request);
         return (await GetAttendanceSettingsAsync(request.ClientId), null);
+    }
+
+    public async Task<IEnumerable<GeoFenceRule>> GetGeoFenceRulesAsync(int clientId, string? scopeType = null)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("USE payroll;");
+        var rows = (await connection.QueryAsync<GeoFenceRule>(GeoFenceRuleSelectSql + @"
+WHERE r.client_id=@ClientId AND (@ScopeType IS NULL OR r.scope_type=@ScopeType)
+GROUP BY r.id
+ORDER BY r.priority, r.name;", new { ClientId = clientId, ScopeType = string.IsNullOrWhiteSpace(scopeType) ? null : scopeType })).ToList();
+        await LoadGeoFenceEmployeesAsync(connection, rows);
+        return rows;
+    }
+
+    public async Task<GeoFenceRule?> GetApplicableGeoFenceRuleAsync(int clientId, int employeeId, DateTime? onDate = null)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("USE payroll;");
+        var date = (onDate ?? DateTime.Today).Date;
+        var rows = (await connection.QueryAsync<GeoFenceRule>(GeoFenceRuleSelectSql + @"
+LEFT JOIN attendance_geo_fence_rule_employees ge ON ge.geo_fence_rule_id = r.id
+LEFT JOIN Employees e ON e.Id=@EmployeeId AND e.ClientId=r.client_id
+WHERE r.client_id=@ClientId AND r.is_active=TRUE AND r.effective_from <= @Date AND (r.effective_to IS NULL OR r.effective_to >= @Date)
+AND (
+    (r.scope_type='Employee' AND ge.employee_id=@EmployeeId)
+    OR (r.scope_type='Work Location' AND r.work_location_id=e.WorkLocationId)
+    OR r.scope_type='Client Default'
+)
+GROUP BY r.id
+ORDER BY CASE r.scope_type WHEN 'Employee' THEN 1 WHEN 'Work Location' THEN 2 ELSE 3 END, r.priority
+LIMIT 1;", new { ClientId = clientId, EmployeeId = employeeId, Date = date })).ToList();
+        await LoadGeoFenceEmployeesAsync(connection, rows);
+        return rows.FirstOrDefault();
+    }
+
+    public async Task<(GeoFenceRule? Rule, string? Error)> SaveGeoFenceRuleAsync(SaveGeoFenceRuleRequest request)
+    {
+        var error = ValidateGeoFenceRule(request);
+        if (error is not null) return (null, error);
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("USE payroll;");
+        request.Priority = request.ScopeType == "Employee" ? 10 : request.ScopeType == "Work Location" ? 20 : 30;
+        await using var transaction = await connection.BeginTransactionAsync();
+        var id = request.Id;
+        if (id == 0)
+        {
+            id = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO attendance_geo_fence_rules (client_id, name, scope_type, work_location_id, latitude, longitude, radius_meters, gps_tolerance_meters, strictness, allow_check_in, allow_check_out, effective_from, effective_to, is_active, priority)
+VALUES (@ClientId, @Name, @ScopeType, @WorkLocationId, @Latitude, @Longitude, @RadiusMeters, @GpsToleranceMeters, @Strictness, @AllowCheckIn, @AllowCheckOut, @EffectiveFrom, @EffectiveTo, @IsActive, @Priority); SELECT LAST_INSERT_ID();", CleanGeoFenceRequest(request), transaction);
+        }
+        else
+        {
+            var updated = await connection.ExecuteAsync(@"UPDATE attendance_geo_fence_rules SET name=@Name, scope_type=@ScopeType, work_location_id=@WorkLocationId, latitude=@Latitude, longitude=@Longitude, radius_meters=@RadiusMeters, gps_tolerance_meters=@GpsToleranceMeters, strictness=@Strictness, allow_check_in=@AllowCheckIn, allow_check_out=@AllowCheckOut, effective_from=@EffectiveFrom, effective_to=@EffectiveTo, is_active=@IsActive, priority=@Priority WHERE id=@Id AND client_id=@ClientId", CleanGeoFenceRequest(request), transaction);
+            if (updated == 0) return (null, "Geo-fence rule was not found for the selected client.");
+            await connection.ExecuteAsync("DELETE FROM attendance_geo_fence_rule_employees WHERE geo_fence_rule_id=@Id", new { Id = id }, transaction);
+        }
+        if (request.ScopeType == "Employee" && request.EmployeeIds.Count > 0)
+            await connection.ExecuteAsync("INSERT INTO attendance_geo_fence_rule_employees (geo_fence_rule_id, employee_id) VALUES (@RuleId, @EmployeeId)", request.EmployeeIds.Distinct().Select(employeeId => new { RuleId = id, EmployeeId = employeeId }), transaction);
+        await transaction.CommitAsync();
+        return (await GetGeoFenceRuleAsync(id, request.ClientId), null);
+    }
+
+    public async Task<bool> DeleteGeoFenceRuleAsync(int id, int clientId)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("USE payroll;");
+        return await connection.ExecuteAsync("DELETE FROM attendance_geo_fence_rules WHERE id=@Id AND client_id=@ClientId", new { Id = id, ClientId = clientId }) > 0;
     }
 
     public async Task<IEnumerable<EmployeeMonthlyAttendance>> GetMonthlyAttendanceAsync(int clientId, string month)
@@ -536,6 +655,47 @@ VALUES (@ClientId, @Name, @HolidayType, @StartDate, @EndDate, @Description, @All
     private async Task<Holiday?> GetHolidayAsync(int id, int clientId) =>
         (await GetHolidaysAsync(clientId, null, null)).FirstOrDefault(holiday => holiday.Id == id);
 
+    private async Task<GeoFenceRule?> GetGeoFenceRuleAsync(int id, int clientId)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("USE payroll;");
+        var rows = (await connection.QueryAsync<GeoFenceRule>(GeoFenceRuleSelectSql + @"
+WHERE r.id=@Id AND r.client_id=@ClientId
+GROUP BY r.id;", new { Id = id, ClientId = clientId })).ToList();
+        await LoadGeoFenceEmployeesAsync(connection, rows);
+        return rows.FirstOrDefault();
+    }
+
+    private static async Task LoadGeoFenceEmployeesAsync(MySqlConnection connection, List<GeoFenceRule> rows)
+    {
+        if (rows.Count == 0) return;
+        var employees = await connection.QueryAsync<(int RuleId, int EmployeeId)>(@"SELECT geo_fence_rule_id AS RuleId, employee_id AS EmployeeId
+FROM attendance_geo_fence_rule_employees WHERE geo_fence_rule_id IN @Ids", new { Ids = rows.Select(row => row.Id).ToArray() });
+        foreach (var row in rows)
+            row.EmployeeIds = employees.Where(employee => employee.RuleId == row.Id).Select(employee => employee.EmployeeId).ToList();
+    }
+
+    private static object CleanGeoFenceRequest(SaveGeoFenceRuleRequest request) => new
+    {
+        request.Id,
+        request.ClientId,
+        Name = request.Name.Trim(),
+        request.ScopeType,
+        WorkLocationId = request.ScopeType == "Work Location" ? request.WorkLocationId : null,
+        request.Latitude,
+        request.Longitude,
+        request.RadiusMeters,
+        request.GpsToleranceMeters,
+        request.Strictness,
+        request.AllowCheckIn,
+        request.AllowCheckOut,
+        EffectiveFrom = request.EffectiveFrom.Date,
+        EffectiveTo = request.EffectiveTo?.Date,
+        request.IsActive,
+        request.Priority
+    };
+
     private async Task<string?> ValidatePreferencesAsync(SaveLeaveAttendancePreferencesRequest request)
     {
         if (!IsValidDay(request.AttendanceCycleStartDay) || !IsValidDay(request.AttendanceCycleEndDay) || !IsValidDay(request.PayrollReportGenerationDay))
@@ -582,6 +742,22 @@ VALUES (@ClientId, @Name, @HolidayType, @StartDate, @EndDate, @Description, @All
         if (request.RegularizationWindow is not ("Anytime" or "Limited by past days")) return "Select a valid regularization window.";
         if (request.RegularizationWindow == "Limited by past days" && request.PastDaysAllowed < 0) return "Past days allowed cannot be negative.";
         if (request.RestrictRegularizationRequestsPerMonth && request.MaxRegularizationRequestsPerMonth <= 0) return "Max regularization requests per month must be greater than zero.";
+        return null;
+    }
+
+    private static string? ValidateGeoFenceRule(SaveGeoFenceRuleRequest request)
+    {
+        if (request.ClientId <= 0) return "Select a client.";
+        if (string.IsNullOrWhiteSpace(request.Name)) return "Rule name is required.";
+        if (request.ScopeType is not ("Client Default" or "Work Location" or "Employee")) return "Select a valid geo-fence scope.";
+        if (request.ScopeType == "Work Location" && request.WorkLocationId is null or <= 0) return "Select a work location for this rule.";
+        if (request.ScopeType == "Employee" && request.EmployeeIds.Count == 0) return "Select at least one employee for an employee override.";
+        if (request.Latitude is < -90 or > 90 || request.Longitude is < -180 or > 180) return "Enter valid latitude and longitude.";
+        if (request.RadiusMeters is < 25 or > 5000) return "Radius must be between 25 and 5000 meters.";
+        if (request.GpsToleranceMeters is < 0 or > 500) return "GPS tolerance must be between 0 and 500 meters.";
+        if (request.Strictness is not ("Block outside fence" or "Allow with reason" or "Allow with approval")) return "Select a valid strictness mode.";
+        if (!request.AllowCheckIn && !request.AllowCheckOut) return "Allow at least one attendance action.";
+        if (request.EffectiveTo.HasValue && request.EffectiveTo.Value.Date < request.EffectiveFrom.Date) return "Effective to date cannot be before effective from date.";
         return null;
     }
 
@@ -654,6 +830,17 @@ p.entitlement AS Entitlement, p.entitlement_period AS EntitlementPeriod, p.pro_r
 a.applicability_mode AS ApplicabilityMode, a.work_location AS WorkLocation, a.department AS Department, a.designation AS Designation, a.gender AS Gender
 FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id = lt.id JOIN leave_type_applicability a ON a.leave_type_id = lt.id";
 
+    private const string GeoFenceRuleSelectSql = @"SELECT r.id AS Id, r.client_id AS ClientId, r.name AS Name, r.scope_type AS ScopeType, r.work_location_id AS WorkLocationId,
+COALESCE(w.Name, '') AS WorkLocationName,
+COALESCE(GROUP_CONCAT(DISTINCT CONCAT(e.FirstName, ' ', e.LastName, ' (', e.EmployeeCode, ')') ORDER BY e.FirstName, e.LastName SEPARATOR ', '), '') AS EmployeeNames,
+r.latitude AS Latitude, r.longitude AS Longitude, r.radius_meters AS RadiusMeters, r.gps_tolerance_meters AS GpsToleranceMeters,
+r.strictness AS Strictness, r.allow_check_in AS AllowCheckIn, r.allow_check_out AS AllowCheckOut, r.effective_from AS EffectiveFrom, r.effective_to AS EffectiveTo,
+r.is_active AS IsActive, r.priority AS Priority, r.created_at AS CreatedAt, r.updated_at AS UpdatedAt
+FROM attendance_geo_fence_rules r
+LEFT JOIN WorkLocations w ON w.Id = r.work_location_id
+LEFT JOIN attendance_geo_fence_rule_employees gre ON gre.geo_fence_rule_id = r.id
+LEFT JOIN Employees e ON e.Id = gre.employee_id";
+
     private async Task<bool> IsFormulaBasedSalaryComponentAsync(int componentId)
     {
         await using var connection = CreateConnection();
@@ -669,11 +856,19 @@ FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id = lt.id JOIN l
 
     private static async Task EnsureClientScopeAsync(MySqlConnection connection)
     {
+<<<<<<< HEAD
         foreach (var table in new[] { "modulesettings", "modulesetupprogress", "leave_attendance_preferences", "attendance_settings", "employee_monthly_attendance", "employee_daily_attendance", "leave_types", "holidays", "employee_leave_balances", "leave_balance_import_logs" })
+=======
+        foreach (var table in new[] { "ModuleSettings", "ModuleSetupProgress", "leave_attendance_preferences", "attendance_settings", "employee_monthly_attendance", "employee_daily_attendance", "attendance_geo_fence_rules", "leave_types", "holidays", "employee_leave_balances", "leave_balance_import_logs" })
+>>>>>>> b607099 (Added Attendance Geofencing Module)
             await AddClientColumnIfMissingAsync(connection, table);
         var clientId = await connection.ExecuteScalarAsync<int?>("SELECT Id FROM clients ORDER BY Id LIMIT 1");
         if (clientId is null) return;
+<<<<<<< HEAD
         foreach (var table in new[] { "modulesettings", "modulesetupprogress", "leave_attendance_preferences", "attendance_settings", "employee_monthly_attendance", "employee_daily_attendance", "leave_types", "holidays", "employee_leave_balances", "leave_balance_import_logs" })
+=======
+        foreach (var table in new[] { "ModuleSettings", "ModuleSetupProgress", "leave_attendance_preferences", "attendance_settings", "employee_monthly_attendance", "employee_daily_attendance", "attendance_geo_fence_rules", "leave_types", "holidays", "employee_leave_balances", "leave_balance_import_logs" })
+>>>>>>> b607099 (Added Attendance Geofencing Module)
             await connection.ExecuteAsync($"UPDATE {table} SET client_id=@ClientId WHERE client_id IS NULL", new { ClientId = clientId });
         await DropIndexIfExistsAsync(connection, "leave_types", "UX_leave_types_code");
         await CreateIndexIfMissingAsync(connection, "modulesettings", "UX_ModuleSettings_Client_Module", "CREATE UNIQUE INDEX UX_ModuleSettings_Client_Module ON modulesettings (client_id, ModuleCode)");
@@ -681,6 +876,7 @@ FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id = lt.id JOIN l
         await CreateIndexIfMissingAsync(connection, "leave_attendance_preferences", "UX_preferences_client", "CREATE UNIQUE INDEX UX_preferences_client ON leave_attendance_preferences (client_id)");
         await CreateIndexIfMissingAsync(connection, "attendance_settings", "UX_attendance_client", "CREATE UNIQUE INDEX UX_attendance_client ON attendance_settings (client_id)");
         await CreateIndexIfMissingAsync(connection, "leave_types", "UX_leave_types_client_code", "CREATE UNIQUE INDEX UX_leave_types_client_code ON leave_types (client_id, code)");
+        await CreateIndexIfMissingAsync(connection, "attendance_geo_fence_rules", "IX_geo_fence_client_scope", "CREATE INDEX IX_geo_fence_client_scope ON attendance_geo_fence_rules (client_id, scope_type, is_active)");
     }
 
     private static async Task AddClientColumnIfMissingAsync(MySqlConnection connection, string table)
