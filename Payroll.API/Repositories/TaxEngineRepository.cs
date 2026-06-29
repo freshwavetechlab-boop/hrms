@@ -114,6 +114,7 @@ regime VARCHAR(10) NOT NULL, taxable_income DECIMAL(14,2) NOT NULL DEFAULT 0, ap
 annual_tax DECIMAL(14,2) NOT NULL DEFAULT 0, monthly_tds DECIMAL(14,2) NOT NULL DEFAULT 0, calculation_json JSON NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);");
         await db.ExecuteAsync(@"CREATE TABLE IF NOT EXISTS tax_computation_snapshots (
 id BIGINT PRIMARY KEY AUTO_INCREMENT, employee_id INT NOT NULL, client_id INT NOT NULL, financial_year VARCHAR(10) NOT NULL, pay_period VARCHAR(7) NOT NULL,
+pay_run_id INT NULL,
 financial_year_id INT NULL, rule_version_id INT NOT NULL, regime_id INT NULL, regime VARCHAR(20) NOT NULL, gross_salary DECIMAL(14,2) NOT NULL, exemptions_amount DECIMAL(14,2) NOT NULL DEFAULT 0, deductions_amount DECIMAL(14,2) NOT NULL DEFAULT 0, taxable_income DECIMAL(14,2) NOT NULL,
 tax_before_rebate DECIMAL(14,2) NOT NULL DEFAULT 0, rebate_amount DECIMAL(14,2) NOT NULL DEFAULT 0, tax_after_rebate DECIMAL(14,2) NOT NULL DEFAULT 0, surcharge_amount DECIMAL(14,2) NOT NULL DEFAULT 0, cess_amount DECIMAL(14,2) NOT NULL DEFAULT 0, total_annual_tax DECIMAL(14,2) NOT NULL DEFAULT 0,
 tds_deducted_till_date DECIMAL(14,2) NOT NULL DEFAULT 0, remaining_tax DECIMAL(14,2) NOT NULL DEFAULT 0, annual_tax DECIMAL(14,2) NOT NULL, monthly_tds DECIMAL(14,2) NOT NULL, snapshot_json JSON NOT NULL, rule_breakup_json JSON NULL, declaration_json JSON NULL, proof_json JSON NULL, calculated_by INT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);");
@@ -288,9 +289,9 @@ tds_deducted_till_date DECIMAL(14,2) NOT NULL DEFAULT 0, remaining_tax DECIMAL(1
         var financialYearId = await db.ExecuteScalarAsync<int?>("SELECT id FROM tax_financial_years WHERE code=@Fy", new { Fy = fy });
         var regimeId = await db.ExecuteScalarAsync<int?>("SELECT id FROM tax_regimes WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND code=@Regime", new { Fy = fy, RuleVersionId = version.Id, Regime = regime });
         var ruleBreakup = System.Text.Json.JsonSerializer.Serialize(new { ruleVersion = version, slabs, rebateRule, surchargeRule, adjustments });
-        await db.ExecuteAsync(@"INSERT INTO tax_computation_snapshots (employee_id,client_id,financial_year,financial_year_id,pay_period,rule_version_id,regime_id,regime,gross_salary,exemptions_amount,deductions_amount,taxable_income,tax_before_rebate,rebate_amount,tax_after_rebate,surcharge_amount,cess_amount,total_annual_tax,tds_deducted_till_date,remaining_tax,annual_tax,monthly_tds,snapshot_json,rule_breakup_json,declaration_json,proof_json)
-VALUES (@EmployeeId,@ClientId,@FinancialYear,@FinancialYearId,@PayPeriod,@RuleVersionId,@RegimeId,@Regime,@GrossSalary,0,@ApprovedDeductions,@TaxableIncome,@SlabTax,@Rebate,@TaxAfterRebate,@Surcharge,@Cess,@AnnualTax,@TdsAlreadyDeducted,@RemainingTax,@AnnualTax,@MonthlyTds,@SnapshotJson,@RuleBreakupJson,@DeclarationJson,@ProofJson)",
-            new { request.EmployeeId, request.ClientId, result.FinancialYear, FinancialYearId = financialYearId, request.PayPeriod, result.RuleVersionId, RegimeId = regimeId, result.Regime, result.GrossSalary, result.ApprovedDeductions, result.TaxableIncome, result.SlabTax, result.Rebate, TaxAfterRebate = taxAfterRebate, result.Surcharge, result.Cess, result.AnnualTax, result.TdsAlreadyDeducted, result.RemainingTax, result.MonthlyTds, result.SnapshotJson, RuleBreakupJson = ruleBreakup, DeclarationJson = "{}", ProofJson = "{}" });
+        await db.ExecuteAsync(@"INSERT INTO tax_computation_snapshots (employee_id,client_id,financial_year,financial_year_id,pay_period,pay_run_id,rule_version_id,regime_id,regime,gross_salary,exemptions_amount,deductions_amount,taxable_income,tax_before_rebate,rebate_amount,tax_after_rebate,surcharge_amount,cess_amount,total_annual_tax,tds_deducted_till_date,remaining_tax,annual_tax,monthly_tds,snapshot_json,rule_breakup_json,declaration_json,proof_json)
+VALUES (@EmployeeId,@ClientId,@FinancialYear,@FinancialYearId,@PayPeriod,@PayRunId,@RuleVersionId,@RegimeId,@Regime,@GrossSalary,0,@ApprovedDeductions,@TaxableIncome,@SlabTax,@Rebate,@TaxAfterRebate,@Surcharge,@Cess,@AnnualTax,@TdsAlreadyDeducted,@RemainingTax,@AnnualTax,@MonthlyTds,@SnapshotJson,@RuleBreakupJson,@DeclarationJson,@ProofJson)",
+            new { request.EmployeeId, request.ClientId, result.FinancialYear, FinancialYearId = financialYearId, request.PayPeriod, request.PayRunId, result.RuleVersionId, RegimeId = regimeId, result.Regime, result.GrossSalary, result.ApprovedDeductions, result.TaxableIncome, result.SlabTax, result.Rebate, TaxAfterRebate = taxAfterRebate, result.Surcharge, result.Cess, result.AnnualTax, result.TdsAlreadyDeducted, result.RemainingTax, result.MonthlyTds, result.SnapshotJson, RuleBreakupJson = ruleBreakup, DeclarationJson = "{}", ProofJson = "{}" });
         return result;
     }
 
@@ -310,6 +311,7 @@ VALUES (@EmployeeId,@ClientId,@FinancialYear,@FinancialYearId,@PayPeriod,@RuleVe
     private static async Task EnsureSnapshotColumnsAsync(MySqlConnection db)
     {
         await EnsureColumnAsync(db, "tax_computation_snapshots", "financial_year_id", "financial_year_id INT NULL AFTER financial_year");
+        await EnsureColumnAsync(db, "tax_computation_snapshots", "pay_run_id", "pay_run_id INT NULL AFTER pay_period");
         await EnsureColumnAsync(db, "tax_computation_snapshots", "regime_id", "regime_id INT NULL AFTER rule_version_id");
         await EnsureColumnAsync(db, "tax_computation_snapshots", "exemptions_amount", "exemptions_amount DECIMAL(14,2) NOT NULL DEFAULT 0 AFTER gross_salary");
         await EnsureColumnAsync(db, "tax_computation_snapshots", "deductions_amount", "deductions_amount DECIMAL(14,2) NOT NULL DEFAULT 0 AFTER exemptions_amount");
@@ -325,6 +327,7 @@ VALUES (@EmployeeId,@ClientId,@FinancialYear,@FinancialYearId,@PayPeriod,@RuleVe
         await EnsureColumnAsync(db, "tax_computation_snapshots", "declaration_json", "declaration_json JSON NULL AFTER rule_breakup_json");
         await EnsureColumnAsync(db, "tax_computation_snapshots", "proof_json", "proof_json JSON NULL AFTER declaration_json");
         await EnsureColumnAsync(db, "tax_computation_snapshots", "calculated_by", "calculated_by INT NULL AFTER proof_json");
+        await EnsureIndexAsync(db, "tax_computation_snapshots", "IX_tax_snapshots_pay_run", "INDEX IX_tax_snapshots_pay_run (pay_run_id, employee_id)");
     }
 
     private static async Task AuditRuleChangeAsync(MySqlConnection db, string entityName, long entityId, string action, object? oldValue, object newValue, int? changedBy, string financialYear, int ruleVersionId)

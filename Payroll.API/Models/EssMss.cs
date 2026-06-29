@@ -26,10 +26,11 @@ public class EssLeaveRequest { public long Id { get; set; } public string LeaveC
 public class EssWorkflowTrail { public long? InstanceId { get; set; } public string WorkflowCode { get; set; } = ""; public string WorkflowName { get; set; } = ""; public string ResourceType { get; set; } = ""; public string MatchScope { get; set; } = ""; public string Status { get; set; } = ""; public DateTime? CreatedAt { get; set; } public DateTime? CompletedAt { get; set; } public List<EssWorkflowTrailItem> Events { get; set; } = []; }
 public class EssWorkflowTrailItem { public string StageName { get; set; } = ""; public string Action { get; set; } = ""; public string Actor { get; set; } = ""; public string Comment { get; set; } = ""; public DateTime CreatedAt { get; set; } public bool IsPending { get; set; } }
 public class EssPayslip { public int PayRunId { get; set; } public string PayPeriod { get; set; } = ""; public DateTime PayDate { get; set; } public string RunStatus { get; set; } = ""; public decimal GrossPay { get; set; } public decimal StatutoryDeductions { get; set; } public decimal OneTimeDeductions { get; set; } public decimal NetPay { get; set; } public string PaymentStatus { get; set; } = ""; public DateTime? PaymentDate { get; set; } }
-public class EssAttendanceSummary { public string Month { get; set; } = ""; public int PresentDays { get; set; } public int PayableDays { get; set; } public int TotalWorkingDays { get; set; } }
+public class EssAttendanceSummary { public string Month { get; set; } = ""; public decimal PresentDays { get; set; } public decimal PayableDays { get; set; } public int TotalWorkingDays { get; set; } }
 public class EssDailyAttendance { public DateTime AttendanceDate { get; set; } public string Status { get; set; } = ""; public decimal PayableValue { get; set; } public string Remarks { get; set; } = ""; }
 public class EssHoliday { public string Name { get; set; } = ""; public DateTime StartDate { get; set; } public DateTime EndDate { get; set; } }
 public class EssBirthday { public string Name { get; set; } = ""; public string Department { get; set; } = ""; }
+
 public class EssTaxPortal
 {
     public string FinancialYear { get; set; } = "";
@@ -80,3 +81,54 @@ public class EssTaxFinalAdjustmentInfo { public string Label { get; set; } = "";
 public class SaveEssTaxRegimeRequest { public string Regime { get; set; } = ""; }
 public class SaveEssTaxDeclarationsRequest { public string Phase { get; set; } = "Planned"; public List<SaveEssTaxDeclarationLine> Lines { get; set; } = []; }
 public class SaveEssTaxDeclarationLine { public int SectionId { get; set; } public decimal Amount { get; set; } public decimal DeclaredAmount { get; set; } public string Remarks { get; set; } = ""; }
+
+
+public class AttendanceFacialVerification
+{
+    public bool Passed { get; set; }
+    public decimal? FaceMatchScore { get; set; }
+    public decimal? LivenessScore { get; set; }
+    public string Provider { get; set; } = "";
+    public string ReferenceId { get; set; } = "";
+}
+
+public class ValidateAttendancePunchRequest
+{
+    public string Action { get; set; } = "CheckIn";
+    public decimal Latitude { get; set; }
+    public decimal Longitude { get; set; }
+    public int AccuracyMeters { get; set; }
+    public DateTime? CapturedAt { get; set; }
+    public string Reason { get; set; } = "";
+    public AttendanceFacialVerification? Facial { get; set; }
+}
+
+public class AttendancePunchRuleSummary
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public string ScopeType { get; set; } = "";
+    public string Strictness { get; set; } = "";
+}
+
+public class AttendancePunchValidationResponse
+{
+    public bool Allowed { get; set; }
+    public bool RequiresReason { get; set; }
+    public bool RequiresApproval { get; set; }
+    public bool PunchRecorded { get; set; }
+    public long? PunchId { get; set; }
+    public string Status { get; set; } = "";
+    public string Message { get; set; } = "";
+    public string NextAction { get; set; } = "";
+    public decimal? DistanceMeters { get; set; }
+    public int? AllowedRadiusMeters { get; set; }
+    public int? GpsToleranceMeters { get; set; }
+    public int DeviceAccuracyMeters { get; set; }
+    public int? EffectiveRadiusMeters { get; set; }
+    public decimal? OutsideByMeters { get; set; }
+    public bool FacialRequired { get; set; } = true;
+    public bool FacialPassed { get; set; }
+    public AttendancePunchRuleSummary? Rule { get; set; }
+}
+

@@ -21,6 +21,90 @@ public class PayRun
     public List<PayRunEmployee> Employees { get; set; } = [];
 }
 
+public class PayRunDiagnostics
+{
+    public int PayRunId { get; set; }
+    public List<PayRunStepLog> StepLogs { get; set; } = [];
+    public List<PayrollValidationIssue> ValidationIssues { get; set; } = [];
+    public List<PayrollValidationIssue> Exceptions { get; set; } = [];
+    public List<PayrollCalculationTrace> CalculationTraces { get; set; } = [];
+    public List<PayrollReconciliationResult> ReconciliationResults { get; set; } = [];
+}
+
+public class PayRunStepLog
+{
+    public long Id { get; set; }
+    public int PayRunId { get; set; }
+    public int? EmployeeId { get; set; }
+    public int StepNumber { get; set; }
+    public string StepName { get; set; } = string.Empty;
+    public DateTime StartTime { get; set; }
+    public DateTime? EndTime { get; set; }
+    public int DurationMs { get; set; }
+    public string InputJson { get; set; } = "{}";
+    public string RuleJson { get; set; } = "{}";
+    public string FormulaJson { get; set; } = "{}";
+    public string OldValueJson { get; set; } = "{}";
+    public string NewValueJson { get; set; } = "{}";
+    public string OutputJson { get; set; } = "{}";
+    public string Status { get; set; } = "Success";
+    public string Warning { get; set; } = string.Empty;
+    public string ErrorMessage { get; set; } = string.Empty;
+    public string PerformedBy { get; set; } = string.Empty;
+    public string MachineName { get; set; } = string.Empty;
+    public string Version { get; set; } = "1.0";
+    public DateTime CreatedAt { get; set; }
+}
+
+public class PayrollValidationIssue
+{
+    public long Id { get; set; }
+    public int PayRunId { get; set; }
+    public int? EmployeeId { get; set; }
+    public string EmployeeCode { get; set; } = string.Empty;
+    public string Scope { get; set; } = "Employee";
+    public string IssueType { get; set; } = "Validation";
+    public string Severity { get; set; } = "Warning";
+    public string StepName { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public string DataJson { get; set; } = "{}";
+    public bool IsBlocking { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public class PayrollCalculationTrace
+{
+    public long Id { get; set; }
+    public int PayRunId { get; set; }
+    public int EmployeeId { get; set; }
+    public string EmployeeCode { get; set; } = string.Empty;
+    public string ComponentCode { get; set; } = string.Empty;
+    public string ComponentName { get; set; } = string.Empty;
+    public string ParentComponentCode { get; set; } = string.Empty;
+    public int TraceOrder { get; set; }
+    public string RuleUsed { get; set; } = string.Empty;
+    public string FormulaUsed { get; set; } = string.Empty;
+    public decimal BaseAmount { get; set; }
+    public decimal Factor { get; set; }
+    public decimal CalculatedAmount { get; set; }
+    public string InputJson { get; set; } = "{}";
+    public string OutputJson { get; set; } = "{}";
+    public DateTime CreatedAt { get; set; }
+}
+
+public class PayrollReconciliationResult
+{
+    public long Id { get; set; }
+    public int PayRunId { get; set; }
+    public string CheckName { get; set; } = string.Empty;
+    public decimal ExpectedAmount { get; set; }
+    public decimal ActualAmount { get; set; }
+    public decimal DifferenceAmount { get; set; }
+    public string Status { get; set; } = "Passed";
+    public string DetailsJson { get; set; } = "{}";
+    public DateTime CreatedAt { get; set; }
+}
+
 public class PayRunEmployee
 {
     public int Id { get; set; }
@@ -31,8 +115,8 @@ public class PayRunEmployee
     public string EmployeeCode { get; set; } = string.Empty;
     public string EmployeeName { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
-    public int PresentDays { get; set; }
-    public int PayableDays { get; set; }
+    public decimal PresentDays { get; set; }
+    public decimal PayableDays { get; set; }
     public decimal MonthlyGross { get; set; }
     public decimal GrossPay { get; set; }
     public decimal StatutoryDeductions { get; set; }
@@ -76,7 +160,7 @@ public class CreatePayRunRequest
 
 public class UpdatePayRunEmployeeRequest
 {
-    public int PresentDays { get; set; }
+    public decimal PresentDays { get; set; }
     public decimal OneTimeEarnings { get; set; }
     public decimal OneTimeDeductions { get; set; }
     public decimal ManualTds { get; set; }

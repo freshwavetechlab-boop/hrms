@@ -70,6 +70,7 @@ using (var scope = app.Services.CreateScope())
     await using var workflowDb = new MySqlConnector.MySqlConnection(builder.Configuration.GetConnectionString("Default"));
     await workflowDb.OpenAsync(); await workflowDb.ExecuteAsync("USE payroll; CREATE TABLE IF NOT EXISTS essleaverequests (Id BIGINT PRIMARY KEY AUTO_INCREMENT,EmployeeId INT NOT NULL,ClientId INT NOT NULL,LeaveTypeId INT NOT NULL,FromDate DATE NOT NULL,ToDate DATE NOT NULL,Days DECIMAL(8,2) NOT NULL,Reason VARCHAR(1000),Status VARCHAR(40) NOT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);");
     var essRepository = scope.ServiceProvider.GetRequiredService<EssMssRepository>();
+    await essRepository.InitializeAsync();
     await essRepository.ReconcileLeaveWorkflowStatusesAsync();
 }
 
@@ -182,6 +183,8 @@ app.MapPost("/api/ess/tax/regime", async (EssMssRepository repository, SaveEssTa
 app.MapPost("/api/ess/tax/declarations", async (EssMssRepository repository, SaveEssTaxDeclarationsRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(ok,error)=await repository.SaveTaxDeclarationsAsync(user.EmployeeId.Value,user.ClientId,request); return ok ? Results.NoContent() : Results.BadRequest(new{error}); });
 app.MapGet("/api/ess/dashboard/attendance", async (EssMssRepository repository, string month, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetAttendanceSummaryAsync(user.EmployeeId.Value,user.ClientId,month)); });
 app.MapGet("/api/ess/dashboard/attendance/daily", async (EssMssRepository repository, string month, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetDailyAttendanceAsync(user.EmployeeId.Value,user.ClientId,month)); });
+app.MapPost("/api/ess/attendance/punch/validate", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); return Results.Ok(await repository.ValidateAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request)); });
+app.MapPost("/api/ess/attendance/punch", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var result=await repository.RecordAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request); return result.PunchRecorded ? Results.Created($"/api/ess/attendance/punch/{result.PunchId}",result) : Results.BadRequest(result); });
 app.MapGet("/api/ess/dashboard/holidays", async (EssMssRepository repository, string month, HttpContext context) => Results.Ok(await repository.GetHolidaysAsync(CurrentUser(context).ClientId,month)));
 app.MapGet("/api/ess/dashboard/birthdays", async (EssMssRepository repository, HttpContext context) => Results.Ok(await repository.GetTodaysBirthdaysAsync(CurrentUser(context).ClientId)));
 app.MapPost("/api/ess/leave/requests", async (EssMssRepository repository, WorkflowRepository workflows, CreateEssLeaveRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(result,error)=await repository.CreateLeaveRequestAsync(user.EmployeeId.Value,user.ClientId,request); if(result is null)return Results.BadRequest(new{error}); var workflowId=await workflows.GetDefaultIdAsync("LeaveRequest",user.ClientId); if(workflowId is not null) await workflows.StartAsync(new StartWorkflowRequest{WorkflowId=workflowId.Value,ResourceType="LeaveRequest",ResourceId=result.Id.ToString(),PayloadJson=System.Text.Json.JsonSerializer.Serialize(result)},user.Id); return Results.Created($"/api/ess/leave/requests/{result.Id}",result); });
@@ -397,9 +400,43 @@ app.MapPost("/api/leave-attendance/attendance-settings", async (LeaveAttendanceR
 .WithName("SaveAttendanceSettings")
 .WithOpenApi();
 
+app.MapGet("/api/leave-attendance/geo-fences", async (LeaveAttendanceRepository repository, int clientId, string? scopeType) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetGeoFenceRulesAsync(clientId, scopeType)))
+.WithName("GetGeoFenceRules")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/geo-fences/applicable", async (LeaveAttendanceRepository repository, int clientId, int employeeId, DateTime? onDate) =>
+    clientId <= 0 || employeeId <= 0 ? Results.BadRequest(new { error = "Select a client and employee." }) : Results.Ok(await repository.GetApplicableGeoFenceRuleAsync(clientId, employeeId, onDate)))
+.WithName("GetApplicableGeoFenceRule")
+.WithOpenApi();
+
+app.MapPost("/api/leave-attendance/geo-fences", async (LeaveAttendanceRepository repository, SaveGeoFenceRuleRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (rule, error) = await repository.SaveGeoFenceRuleAsync(request);
+    return rule is null ? Results.BadRequest(new { error }) : Results.Ok(rule);
+})
+.WithName("SaveGeoFenceRule")
+.WithOpenApi();
+
+app.MapDelete("/api/leave-attendance/geo-fences/{id:int}", async (LeaveAttendanceRepository repository, int id, int clientId, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return clientId > 0 && await repository.DeleteGeoFenceRuleAsync(id, clientId) ? Results.NoContent() : Results.NotFound();
+})
+.WithName("DeleteGeoFenceRule")
+.WithOpenApi();
+
 app.MapGet("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRepository repository, int clientId, string month) =>
     clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetMonthlyAttendanceAsync(clientId, month)))
 .WithName("GetMonthlyAttendance")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/attendance/context", async (LeaveAttendanceRepository repository, int clientId, string month) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetAttendanceReviewContextAsync(clientId, month)))
+.WithName("GetAttendanceReviewContext")
 .WithOpenApi();
 
 app.MapPost("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRepository repository, SaveMonthlyAttendanceRequest request, HttpContext context) =>
@@ -415,6 +452,11 @@ app.MapPost("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRe
 app.MapGet("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepository repository, int clientId, int employeeId, string month) =>
     clientId <= 0 || employeeId <= 0 ? Results.BadRequest(new { error = "Select a client and employee." }) : Results.Ok(await repository.GetDailyAttendanceAsync(clientId, employeeId, month)))
 .WithName("GetDailyAttendance")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/attendance/daily-grid", async (LeaveAttendanceRepository repository, int clientId, string month) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetDailyAttendanceMonthAsync(clientId, month)))
+.WithName("GetDailyAttendanceGrid")
 .WithOpenApi();
 
 app.MapPost("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepository repository, SaveDailyAttendanceRequest request, HttpContext context) =>
@@ -607,6 +649,16 @@ app.MapGet("/api/pay-runs/{id:int}", async (PayRunRepository repository, int id)
 .WithName("GetPayRun")
 .WithOpenApi();
 
+app.MapGet("/api/pay-runs/{id:int}/diagnostics", async (PayRunRepository repository, int id, HttpContext context) =>
+{
+    if (!HasPermission(context, "payroll.run") && !HasPermission(context, "payroll.approve"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var diagnostics = await repository.GetDiagnosticsAsync(id);
+    return diagnostics is null ? Results.NotFound() : Results.Ok(diagnostics);
+})
+.WithName("GetPayRunDiagnostics")
+.WithOpenApi();
+
 app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "payroll.run"))
@@ -615,8 +667,15 @@ app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunReq
         return Results.BadRequest(new { error = "Select a client and enter a valid pay period with 1 to 31 working days." });
     if (string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) && request.IncludedEmployeeIds.Count == 0 && request.AdjustmentIds.Count == 0)
         return Results.BadRequest(new { error = "Off-cycle payroll needs at least one employee or approved adjustment." });
-    var payRun = await repository.CreateAsync(request);
-    return payRun is null ? Results.Conflict(new { error = "A pay run already exists for this period." }) : Results.Created($"/api/pay-runs/{payRun.Id}", payRun);
+    try
+    {
+        var payRun = await repository.CreateAsync(request, CurrentUser(context).Email);
+        return payRun is null ? Results.Conflict(new { error = "A pay run already exists for this period." }) : Results.Created($"/api/pay-runs/{payRun.Id}", payRun);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
 })
 .WithName("CreatePayRun")
 .WithOpenApi();

@@ -74,12 +74,40 @@ public class AttendanceSettings
 
 public class SaveAttendanceSettingsRequest : AttendanceSettings { }
 
+public class GeoFenceRule
+{
+    public int Id { get; set; }
+    public int ClientId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string ScopeType { get; set; } = "Work Location";
+    public int? WorkLocationId { get; set; }
+    public string WorkLocationName { get; set; } = string.Empty;
+    public List<int> EmployeeIds { get; set; } = [];
+    public string EmployeeNames { get; set; } = string.Empty;
+    public decimal Latitude { get; set; }
+    public decimal Longitude { get; set; }
+    public int RadiusMeters { get; set; } = 100;
+    public int GpsToleranceMeters { get; set; } = 30;
+    public string Strictness { get; set; } = "Block outside fence";
+    public bool AllowCheckIn { get; set; } = true;
+    public bool AllowCheckOut { get; set; } = true;
+    public DateTime EffectiveFrom { get; set; } = DateTime.Today;
+    public DateTime? EffectiveTo { get; set; }
+    public bool IsActive { get; set; } = true;
+    public int Priority { get; set; } = 20;
+    public DateTime? CreatedAt { get; set; }
+    public DateTime? UpdatedAt { get; set; }
+}
+
+public class SaveGeoFenceRuleRequest : GeoFenceRule { }
+
 public class EmployeeMonthlyAttendance
 {
     public int EmployeeId { get; set; }
     public string EmployeeCode { get; set; } = string.Empty;
     public string EmployeeName { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
+    public int WorkLocationId { get; set; }
     public string Month { get; set; } = string.Empty;
     public decimal WorkingDays { get; set; }
     public decimal PresentDays { get; set; }
@@ -104,6 +132,9 @@ public class EmployeeDailyAttendance
     public DateTime AttendanceDate { get; set; }
     public string Status { get; set; } = "Present";
     public decimal PayableValue { get; set; } = 1;
+    public TimeSpan? CheckInTime { get; set; }
+    public TimeSpan? CheckOutTime { get; set; }
+    public decimal TotalHours { get; set; }
     public string Remarks { get; set; } = string.Empty;
 }
 
@@ -113,6 +144,34 @@ public class SaveDailyAttendanceRequest
     public int EmployeeId { get; set; }
     public string Month { get; set; } = string.Empty;
     public List<EmployeeDailyAttendance> Rows { get; set; } = [];
+}
+
+public class ClientAttendanceSchedule
+{
+    public string WorkWeek { get; set; } = "Monday - Friday";
+    public string SalaryDays { get; set; } = "Actual days";
+    public string FixedDays { get; set; } = "30";
+    public string PayDay { get; set; } = "Last working day";
+    public string FirstPayPeriod { get; set; } = string.Empty;
+}
+
+public class EmployeeLeaveBalanceSummary
+{
+    public int EmployeeId { get; set; }
+    public int LeaveTypeId { get; set; }
+    public string LeaveTypeCode { get; set; } = string.Empty;
+    public string LeaveTypeName { get; set; } = string.Empty;
+    public decimal Balance { get; set; }
+    public DateTime BalanceDate { get; set; }
+    public bool AllowNegativeLeaveBalance { get; set; }
+}
+
+public class AttendanceReviewContext
+{
+    public AttendanceSettings Settings { get; set; } = new();
+    public ClientAttendanceSchedule Schedule { get; set; } = new();
+    public List<Holiday> Holidays { get; set; } = [];
+    public List<EmployeeLeaveBalanceSummary> LeaveBalances { get; set; } = [];
 }
 
 public class LeaveType
