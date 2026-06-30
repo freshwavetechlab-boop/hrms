@@ -562,6 +562,59 @@ ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_valu
         return (await GetDailyAttendanceAsync(request.ClientId, request.EmployeeId, request.Month), null);
     }
 
+    public async Task<(IEnumerable<EmployeeMonthlyAttendance>? Rows, string? Error)> SaveDailyAttendanceBatchAsync(SaveDailyAttendanceBatchRequest request)
+    {
+        var error = ValidateDailyAttendanceBatch(request);
+        if (error is not null) return (null, error);
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        var settings = await connection.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId,
+check_in_time AS CheckInTime, check_out_time AS CheckOutTime, minimum_hours_for_half_day AS MinimumHoursForHalfDay,
+minimum_hours_for_full_day AS MinimumHoursForFullDay, maximum_hours_allowed_for_full_day AS MaximumHoursAllowedForFullDay
+FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { request.ClientId }) ?? new AttendanceSettings { ClientId = request.ClientId };
+        var activeLeaveTypes = (await connection.QueryAsync<AttendanceLeaveRule>(@"SELECT lt.id AS Id, lt.code AS Code, lt.name AS Name, lt.type AS Type, p.allow_negative_leave_balance AS AllowNegativeLeaveBalance
+FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id=lt.id
+WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
+            .ToDictionary(row => row.Code, row => row, StringComparer.OrdinalIgnoreCase);
+        var validEmployeeIds = (await connection.QueryAsync<int>("SELECT Id FROM employees WHERE ClientId=@ClientId AND IsActive=TRUE", new { request.ClientId })).ToHashSet();
+        var groupedRows = request.Rows
+            .Where(row => validEmployeeIds.Contains(row.EmployeeId) && row.AttendanceDate.ToString("yyyy-MM") == request.Month)
+            .GroupBy(row => row.EmployeeId)
+            .ToList();
+        if (groupedRows.Count == 0) return (null, "No valid employee attendance rows were submitted.");
+
+        var expectedDays = DateTime.DaysInMonth(int.Parse(request.Month[..4]), int.Parse(request.Month[5..7]));
+        var rows = new List<object>();
+        foreach (var group in groupedRows)
+        {
+            if (group.Select(row => row.AttendanceDate.Date).Distinct().Count() != expectedDays)
+                return (null, "Save the complete attendance month before payroll review.");
+            var invalidStatus = group.FirstOrDefault(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes) is null);
+            if (invalidStatus is not null) return (null, $"Attendance status '{invalidStatus.Status}' is not valid.");
+            var employeeRows = group.Select(row =>
+            {
+                var status = NormalizeAttendanceStatus(row.Status, activeLeaveTypes)!;
+                var checkIn = status == "Present" ? row.CheckInTime : null;
+                var checkOut = status == "Present" ? row.CheckOutTime : null;
+                var totalHours = status == "Present" ? CalculateHours(checkIn, checkOut, row.TotalHours) : 0m;
+                var payableValue = ResolvePayableValue(status, row.PayableValue, totalHours, checkIn.HasValue && checkOut.HasValue, settings, activeLeaveTypes);
+                return new { request.ClientId, EmployeeId = group.Key, AttendanceDate = row.AttendanceDate.Date, Status = status, PayableValue = payableValue, CheckInTime = checkIn, CheckOutTime = checkOut, TotalHours = totalHours, Remarks = row.Remarks ?? string.Empty };
+            }).ToList();
+            var balanceError = await ValidateLeaveBalancesAsync(connection, request.ClientId, group.Key, request.Month, employeeRows.Select(row => new AttendanceSaveRow(row.Status, row.PayableValue)), activeLeaveTypes);
+            if (balanceError is not null) return (null, balanceError);
+            rows.AddRange(employeeRows);
+        }
+
+        await using var transaction = await connection.BeginTransactionAsync();
+        await connection.ExecuteAsync(@"INSERT INTO employee_daily_attendance (client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
+VALUES (@ClientId, @EmployeeId, @AttendanceDate, @Status, @PayableValue, @CheckInTime, @CheckOutTime, @TotalHours, @Remarks)
+ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), check_in_time=VALUES(check_in_time), check_out_time=VALUES(check_out_time), total_hours=VALUES(total_hours), remarks=VALUES(remarks);", rows, transaction);
+        await RollupDailyAttendanceBatchAsync(connection, transaction, request.ClientId, groupedRows.Select(row => row.Key).ToArray(), request.Month);
+        await transaction.CommitAsync();
+        return (await GetMonthlyAttendanceAsync(request.ClientId, request.Month), null);
+    }
+
     public async Task<IEnumerable<LeaveType>> GetLeaveTypesAsync(int clientId)
     {
         await using var connection = CreateConnection();
@@ -802,11 +855,23 @@ FROM attendance_geo_fence_rule_employees WHERE geo_fence_rule_id IN @Ids", new {
         return null;
     }
 
+    private static string? ValidateDailyAttendanceBatch(SaveDailyAttendanceBatchRequest request)
+    {
+        if (request.ClientId <= 0) return "Select a client.";
+        if (!IsValidMonth(request.Month)) return "Select a valid attendance month.";
+        if (request.Rows.Count == 0) return "Add at least one date-wise attendance row.";
+        if (request.Rows.Any(row => row.EmployeeId <= 0)) return "Every attendance row must have an employee.";
+        if (request.Rows.Any(row => row.AttendanceDate.ToString("yyyy-MM") != request.Month)) return "All attendance dates must fall in the selected month.";
+        if (request.Rows.Any(row => row.PayableValue < 0 || row.PayableValue > 1)) return "Payable value must be between 0 and 1.";
+        if (request.Rows.Any(row => row.TotalHours < 0 || row.TotalHours > 24)) return "Total hours must be between 0 and 24.";
+        return null;
+    }
+
     private static async Task RollupDailyAttendanceAsync(MySqlConnection connection, int clientId, int employeeId, string month)
     {
-        var summary = await connection.QuerySingleAsync<(decimal WorkingDays, decimal PresentDays, decimal PayableDays)>(@"SELECT COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 0 ELSE 1 END), 0) AS WorkingDays,
+        var summary = await connection.QuerySingleAsync<(decimal WorkingDays, decimal PresentDays, decimal PayableDays)>(@"SELECT COALESCE(COUNT(*), 0) AS WorkingDays,
 COALESCE(SUM(CASE WHEN status='Present' THEN payable_value ELSE 0 END), 0) AS PresentDays,
-COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 0 ELSE payable_value END), 0) AS PayableDays
+COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 1 ELSE payable_value END), 0) AS PayableDays
 FROM employee_daily_attendance
 WHERE client_id=@ClientId AND employee_id=@EmployeeId AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month;", new { ClientId = clientId, EmployeeId = employeeId, Month = month });
         var lop = Math.Max(0, summary.WorkingDays - summary.PayableDays);
@@ -814,6 +879,24 @@ WHERE client_id=@ClientId AND employee_id=@EmployeeId AND DATE_FORMAT(attendance
 VALUES (@ClientId, @EmployeeId, @Month, @WorkingDays, @PresentDays, @PayableDays, @LopDays, 'Date-wise', 'Rolled up from date-wise attendance')
 ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(present_days), payable_days=VALUES(payable_days), lop_days=VALUES(lop_days), source_type='Date-wise', remarks=VALUES(remarks);",
             new { ClientId = clientId, EmployeeId = employeeId, Month = month, summary.WorkingDays, summary.PresentDays, summary.PayableDays, LopDays = lop });
+    }
+
+    private static async Task RollupDailyAttendanceBatchAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, int[] employeeIds, string month)
+    {
+        if (employeeIds.Length == 0) return;
+        await connection.ExecuteAsync(@"INSERT INTO employee_monthly_attendance (client_id, employee_id, attendance_month, working_days, present_days, payable_days, lop_days, source_type, remarks)
+SELECT @ClientId, employee_id, @Month,
+COUNT(*) AS working_days,
+COALESCE(SUM(CASE WHEN status='Present' THEN payable_value ELSE 0 END), 0) AS present_days,
+COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 1 ELSE payable_value END), 0) AS payable_days,
+GREATEST(0, COUNT(*) - COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 1 ELSE payable_value END), 0)) AS lop_days,
+'Date-wise',
+'Rolled up from date-wise attendance'
+FROM employee_daily_attendance
+WHERE client_id=@ClientId AND employee_id IN @EmployeeIds AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month
+GROUP BY employee_id
+ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(present_days), payable_days=VALUES(payable_days), lop_days=VALUES(lop_days), source_type='Date-wise', remarks=VALUES(remarks);",
+            new { ClientId = clientId, EmployeeIds = employeeIds, Month = month }, transaction);
     }
 
     private static string? NormalizeAttendanceStatus(string? status, IReadOnlyDictionary<string, AttendanceLeaveRule> leaveTypes)
@@ -828,7 +911,8 @@ ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(p
 
     private static decimal ResolvePayableValue(string status, decimal incoming, decimal totalHours, bool hasTimes, AttendanceSettings settings, IReadOnlyDictionary<string, AttendanceLeaveRule> leaveTypes)
     {
-        if (status == "A" || status == "WO" || status == "H") return 0;
+        if (status == "WO" || status == "H") return 1;
+        if (status == "A") return 0;
         if (status == "Present")
         {
             if (hasTimes)

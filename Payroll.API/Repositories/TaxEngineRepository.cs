@@ -6,7 +6,16 @@ namespace Payroll.API.Repositories;
 
 public class TaxEngineRepository(IConfiguration configuration)
 {
-    private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
+    private MySqlConnection Connection()
+    {
+        var connectionString = configuration.GetConnectionString("Default")
+            ?? throw new InvalidOperationException("Connection string 'Default' is not configured.");
+        var builder = new MySqlConnectionStringBuilder(connectionString)
+        {
+            DefaultCommandTimeout = 300
+        };
+        return new MySqlConnection(builder.ConnectionString);
+    }
 
     public async Task InitializeAsync()
     {

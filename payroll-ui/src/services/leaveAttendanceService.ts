@@ -37,6 +37,9 @@ export const getDailyAttendanceGrid = (clientId: number, month: string) => getJs
 export async function saveDailyAttendance(clientId: number, employeeId: number, month: string, rows: EmployeeDailyAttendance[]) {
   return postJson('/api/leave-attendance/attendance/daily', { clientId, employeeId, month, rows }, [])
 }
+export async function saveDailyAttendanceBatch(clientId: number, month: string, rows: EmployeeDailyAttendance[]) {
+  return postJson('/api/leave-attendance/attendance/daily/batch', { clientId, month, rows }, [])
+}
 export const getLeaveTypes = (clientId: number) => getJson<LeaveType[]>(`/api/leave-attendance/leave-types?clientId=${clientId}`, [])
 export async function saveLeaveType(leaveType: LeaveType) {
   return postJson('/api/leave-attendance/leave-types', leaveType, null as LeaveType | null, { toast: false })

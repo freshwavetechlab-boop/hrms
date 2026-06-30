@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from '
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { Button, Card, Input, Space, Typography } from 'antd'
 import type { AttendanceReviewContext, EmployeeDailyAttendance, EmployeeMonthlyAttendance, LeaveType } from '../types/payroll'
-import { getAttendanceReviewContext, getDailyAttendanceGrid, getLeaveTypes, getMonthlyAttendance, saveDailyAttendance } from '../services/leaveAttendanceService'
+import { getAttendanceReviewContext, getDailyAttendanceGrid, getLeaveTypes, getMonthlyAttendance, saveDailyAttendanceBatch } from '../services/leaveAttendanceService'
 import SearchSelect from './SearchSelect'
 import type { ToastType } from './ToastProvider'
 
@@ -173,7 +173,8 @@ export default function ManualAttendanceManager({ clientId, onMessage, clientCon
       if (hasTimes) return hours >= settings.minimumHoursForFullDay ? 1 : hours >= settings.minimumHoursForHalfDay ? 0.5 : 0
       return 1
     }
-    if (['A', 'WO', 'H', ''].includes(normalized)) return 0
+    if (['WO', 'H'].includes(normalized)) return 1
+    if (['A', ''].includes(normalized)) return 0
     return leaveTypeByCode.get(normalized.toLowerCase())?.type === 'Paid' ? 1 : 0
   }
   const isWorkingDate = (date: string) => workDays.has(new Date(`${date}T00:00:00`).getDay())
@@ -289,10 +290,8 @@ export default function ManualAttendanceManager({ clientId, onMessage, clientCon
     if (balanceError) { onMessage(balanceError, 'error'); return }
     setSaving(true)
     try {
-      for (const [employeeId, rows] of prepared) {
-        const response = await saveDailyAttendance(clientId, employeeId, month, rows)
-        if (!response.ok) { onMessage(response.error || 'Unable to save attendance.', 'error'); return }
-      }
+      const response = await saveDailyAttendanceBatch(clientId, month, Array.from(prepared.values()).flat())
+      if (!response.ok) { onMessage(response.error || 'Unable to save attendance.', 'error'); return }
       onMessage(`${employeeIds.length} employee attendance saved.`, 'success')
       await loadMonthly()
     } finally {

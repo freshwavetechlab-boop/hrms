@@ -13,6 +13,10 @@ public class PayRun
     public DateTime PayDate { get; set; }
     public int TotalWorkingDays { get; set; }
     public string Status { get; set; } = "Draft";
+    public string RequestJson { get; set; } = "{}";
+    public DateTime? ProcessingStartedAt { get; set; }
+    public DateTime? ProcessingCompletedAt { get; set; }
+    public string ProcessingError { get; set; } = string.Empty;
     public decimal PayrollCost { get; set; }
     public decimal NetPay { get; set; }
     public int EmployeeCount { get; set; }
@@ -130,8 +134,12 @@ public class PayRunEmployee
     public string DetailsJson { get; set; } = "[]";
     public List<PayRunLeaveBreakdown> LeaveBreakdown { get; set; } = [];
     public decimal? PreviousNetPay { get; set; }
+    public decimal? PreviousSecondNetPay { get; set; }
+    public decimal? PreviousTwoMonthAverageNetPay { get; set; }
     public decimal? NetPayVariance { get; set; }
+    public decimal? TwoMonthAverageVariance { get; set; }
     public decimal? VariancePercent { get; set; }
+    public decimal? TwoMonthAverageVariancePercent { get; set; }
     public string VarianceReason { get; set; } = string.Empty;
 }
 

@@ -146,6 +146,13 @@ public class SaveDailyAttendanceRequest
     public List<EmployeeDailyAttendance> Rows { get; set; } = [];
 }
 
+public class SaveDailyAttendanceBatchRequest
+{
+    public int ClientId { get; set; }
+    public string Month { get; set; } = string.Empty;
+    public List<EmployeeDailyAttendance> Rows { get; set; } = [];
+}
+
 public class ClientAttendanceSchedule
 {
     public string WorkWeek { get; set; } = "Monday - Friday";

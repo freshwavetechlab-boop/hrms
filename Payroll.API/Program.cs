@@ -1,5 +1,6 @@
 using Payroll.API.Models;
 using Payroll.API.Repositories;
+using Payroll.API.Services;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 using Dapper;
@@ -50,6 +51,7 @@ builder.Services.AddSingleton<EssMssRepository>();
 builder.Services.AddSingleton<WorkflowRepository>();
 builder.Services.AddSingleton<TaxEngineRepository>();
 builder.Services.AddSingleton<DashboardRepository>();
+builder.Services.AddHostedService<PayrollRunWorker>();
 
 var app = builder.Build();
 const string AuthCookieName = "payroll_auth";
@@ -487,6 +489,16 @@ app.MapPost("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepo
 .WithName("SaveDailyAttendance")
 .WithOpenApi();
 
+app.MapPost("/api/leave-attendance/attendance/daily/batch", async (LeaveAttendanceRepository repository, SaveDailyAttendanceBatchRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (rows, error) = await repository.SaveDailyAttendanceBatchAsync(request);
+    return rows is null ? Results.BadRequest(new { error }) : Results.Ok(rows);
+})
+.WithName("SaveDailyAttendanceBatch")
+.WithOpenApi();
+
 app.MapGet("/api/leave-attendance/leave-types", async (LeaveAttendanceRepository repository, int clientId) =>
     clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetLeaveTypesAsync(clientId)))
 .WithName("GetLeaveTypes")
@@ -687,8 +699,8 @@ app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunReq
         return Results.BadRequest(new { error = "Off-cycle payroll needs at least one employee or approved adjustment." });
     try
     {
-        var payRun = await repository.CreateAsync(request, CurrentUser(context).Email);
-        return payRun is null ? Results.Conflict(new { error = "A pay run already exists for this period." }) : Results.Created($"/api/pay-runs/{payRun.Id}", payRun);
+        var payRun = await repository.QueueAsync(request, CurrentUser(context).Email);
+        return payRun is null ? Results.Conflict(new { error = "An approved or pending payroll already exists for this period." }) : Results.Created($"/api/pay-runs/{payRun.Id}", payRun);
     }
     catch (InvalidOperationException exception)
     {
