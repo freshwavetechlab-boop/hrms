@@ -1,0 +1,12 @@
+dotnet run --project Payroll.API\Payroll.API.csproj -- --migrate
+
+POST /api/admin/database/migrate
+
+Optional Auto Migration
+Only if you intentionally want migration on API startup, add this to config:
+
+{
+  "Database": {
+    "AutoMigrate": true
+  }
+}

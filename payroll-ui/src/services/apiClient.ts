@@ -135,7 +135,7 @@ async function mutateJson<TResult>(path: string, options: ApiOptions, fallback: 
     notifyMutation(options.method, response.ok, error, options)
     return { ok: response.ok, data: response.ok ? await readJson<TResult>(response, fallback) : fallback, error, status: response.status }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Request failed.'
+    const message = error instanceof DOMException && error.name === 'AbortError' ? 'Request timed out. Payroll may still be processing; refresh and check diagnostics.' : error instanceof Error ? error.message : 'Request failed.'
     notifyMutation(options.method, false, message, options)
     return { ok: false, data: fallback, error: message, status: 0 }
   }

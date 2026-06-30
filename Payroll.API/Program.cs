@@ -3,20 +3,11 @@ using Payroll.API.Repositories;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 using Dapper;
-using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
-ValidateConfiguration(builder.Configuration, builder.Environment);
-Dapper.SqlMapper.Settings.CommandTimeout = int.TryParse(builder.Configuration["Database:CommandTimeoutSeconds"], out var timeout) ? timeout : 30;
 
-builder.Host.UseSerilog((context, configuration) => configuration
-    .ReadFrom.Configuration(context.Configuration)
-    .Enrich.FromLogContext()
-    .WriteTo.Console()
-    .WriteTo.File(
-        path: context.Configuration["Logging:FilePath"] ?? "logs/payroll-api-.log",
-        rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: 14));
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -39,26 +30,17 @@ builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        var origins = AllowedOrigins(builder.Configuration);
-        if (origins.Length > 0) policy.WithOrigins(origins);
-        else policy.SetIsOriginAllowed(origin =>
-        {
-            if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
-            return builder.Environment.IsDevelopment()
-                   && (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-                       || uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase));
-        });
         policy
-              .AllowCredentials()
-              .AllowAnyHeader()
-              .AllowAnyMethod();
+            .SetIsOriginAllowed(_ => true)
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials();
     });
 });
 
 builder.Services.AddSingleton<OrganizationRepository>();
 builder.Services.AddSingleton<SettingsRepository>();
 builder.Services.AddSingleton<EmployeeRepository>();
-builder.Services.AddSingleton<EmployeeImportRepository>();
 builder.Services.AddSingleton<PayRunRepository>();
 builder.Services.AddSingleton<AuthRepository>();
 builder.Services.AddSingleton<LeaveAttendanceRepository>();
@@ -66,39 +48,26 @@ builder.Services.AddSingleton<LeaveBalanceImportRepository>();
 builder.Services.AddSingleton<ReportingRepository>();
 builder.Services.AddSingleton<EssMssRepository>();
 builder.Services.AddSingleton<WorkflowRepository>();
-builder.Services.AddSingleton<DatabaseMigrationRepository>();
 builder.Services.AddSingleton<TaxEngineRepository>();
+builder.Services.AddSingleton<DashboardRepository>();
 
 var app = builder.Build();
 const string AuthCookieName = "payroll_auth";
 
-if (!string.Equals(app.Configuration["Database:InitializeOnStartup"], "false", StringComparison.OrdinalIgnoreCase))
+var migrateDatabaseOnly = args.Any(arg =>
+    arg.Equals("--migrate", StringComparison.OrdinalIgnoreCase) ||
+    arg.Equals("--migrate-database", StringComparison.OrdinalIgnoreCase));
+
+if (migrateDatabaseOnly)
 {
-    try
-    {
-        using var scope = app.Services.CreateScope();
-        var migrations = scope.ServiceProvider.GetRequiredService<DatabaseMigrationRepository>();
-        await migrations.RunAsync("001_organization", () => scope.ServiceProvider.GetRequiredService<OrganizationRepository>().InitializeAsync());
-        await migrations.RunAsync("002_pay_runs", () => scope.ServiceProvider.GetRequiredService<PayRunRepository>().InitializeAsync());
-        await migrations.RunAsync("003_auth", () => scope.ServiceProvider.GetRequiredService<AuthRepository>().InitializeAsync());
-        await migrations.RunAsync("004_leave_attendance", () => scope.ServiceProvider.GetRequiredService<LeaveAttendanceRepository>().InitializeAsync());
-        await migrations.RunAsync("005_workflows", () => scope.ServiceProvider.GetRequiredService<WorkflowRepository>().InitializeAsync());
-        await migrations.RunAsync("006_ess_leave_requests", async () =>
-        {
-            await using var workflowDb = new MySqlConnector.MySqlConnection(builder.Configuration.GetConnectionString("Default"));
-            await workflowDb.OpenAsync();
-            await workflowDb.ExecuteAsync("USE payroll; CREATE TABLE IF NOT EXISTS EssLeaveRequests (Id BIGINT PRIMARY KEY AUTO_INCREMENT,EmployeeId INT NOT NULL,ClientId INT NOT NULL,LeaveTypeId INT NOT NULL,FromDate DATE NOT NULL,ToDate DATE NOT NULL,Days DECIMAL(8,2) NOT NULL,Reason VARCHAR(1000),Status VARCHAR(40) NOT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);");
-        });
-        var essRepository = scope.ServiceProvider.GetRequiredService<EssMssRepository>();
-        await migrations.RunAsync("007_ess_mss", essRepository.InitializeAsync);
-        await migrations.RunAsync("008_tax_engine", () => scope.ServiceProvider.GetRequiredService<TaxEngineRepository>().InitializeAsync());
-        await essRepository.ReconcileLeaveWorkflowStatusesAsync();
-    }
-    catch (Exception exception)
-    {
-        app.Logger.LogCritical(exception, "Database initialization failed.");
-        throw;
-    }
+    await RunDatabaseSetupAsync(app.Services, app.Configuration);
+    app.Logger.LogInformation("Database setup completed.");
+    return;
+}
+
+if (app.Configuration.GetValue<bool>("Database:AutoMigrate"))
+{
+    await RunDatabaseSetupAsync(app.Services, app.Configuration);
 }
 
 if (app.Environment.IsDevelopment())
@@ -107,46 +76,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok", utc = DateTime.UtcNow }))
-.WithName("Health");
-
-app.MapGet("/ready", async (IConfiguration configuration) =>
-{
-    try
-    {
-        await using var db = new MySqlConnector.MySqlConnection(configuration.GetConnectionString("Default"));
-        await db.OpenAsync();
-        await db.ExecuteAsync("USE payroll;");
-        var migrations = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM SchemaMigrations;");
-        return Results.Ok(new { status = "ready", migrations });
-    }
-    catch (Exception exception)
-    {
-        return Results.Json(new { status = "not_ready", error = exception.Message }, statusCode: StatusCodes.Status503ServiceUnavailable);
-    }
-})
-.WithName("Readiness");
-
 app.UseHttpsRedirection();
 app.UseCors();
-app.UseSerilogRequestLogging();
-
-app.Use(async (context, next) =>
-{
-    try
-    {
-        await next();
-    }
-    catch (Exception exception)
-    {
-        context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("GlobalException").LogError(exception, "Unhandled request error.");
-        if (!context.Response.HasStarted)
-        {
-            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-            await context.Response.WriteAsJsonAsync(new { error = "Unexpected server error.", traceId = context.TraceIdentifier });
-        }
-    }
-});
 
 app.Use(async (context, next) =>
 {
@@ -200,6 +131,15 @@ app.MapGet("/api/auth/me", (HttpContext context) =>
 .WithName("GetCurrentUser")
 .WithOpenApi();
 
+app.MapGet("/api/dashboard", async (DashboardRepository repository, int? clientId, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    var effectiveClientId = user.ClientId ?? Math.Max(clientId.GetValueOrDefault(), 0);
+    return Results.Ok(await repository.GetAsync(effectiveClientId, user));
+})
+.WithName("GetDashboard")
+.WithOpenApi();
+
 app.MapGet("/api/workflows", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/approvers", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetApproversAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/departments", async (WorkflowRepository repository, int clientId, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetDepartmentsAsync(clientId)) : Results.StatusCode(403));
@@ -247,9 +187,9 @@ app.MapGet("/api/ess/tax", async (EssMssRepository repository, HttpContext conte
 app.MapPost("/api/ess/tax/regime", async (EssMssRepository repository, SaveEssTaxRegimeRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(ok,error)=await repository.SaveTaxRegimeAsync(user.EmployeeId.Value,user.ClientId,request); return ok ? Results.NoContent() : Results.BadRequest(new{error}); });
 app.MapPost("/api/ess/tax/declarations", async (EssMssRepository repository, SaveEssTaxDeclarationsRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(ok,error)=await repository.SaveTaxDeclarationsAsync(user.EmployeeId.Value,user.ClientId,request); return ok ? Results.NoContent() : Results.BadRequest(new{error}); });
 app.MapGet("/api/ess/dashboard/attendance", async (EssMssRepository repository, string month, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetAttendanceSummaryAsync(user.EmployeeId.Value,user.ClientId,month)); });
+app.MapGet("/api/ess/dashboard/attendance/daily", async (EssMssRepository repository, string month, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetDailyAttendanceAsync(user.EmployeeId.Value,user.ClientId,month)); });
 app.MapPost("/api/ess/attendance/punch/validate", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); return Results.Ok(await repository.ValidateAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request)); });
 app.MapPost("/api/ess/attendance/punch", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var result=await repository.RecordAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request); return result.PunchRecorded ? Results.Created($"/api/ess/attendance/punch/{result.PunchId}",result) : Results.BadRequest(result); });
-app.MapGet("/api/ess/dashboard/attendance/daily", async (EssMssRepository repository, string month, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetDailyAttendanceAsync(user.EmployeeId.Value,user.ClientId,month)); });
 app.MapGet("/api/ess/dashboard/holidays", async (EssMssRepository repository, string month, HttpContext context) => Results.Ok(await repository.GetHolidaysAsync(CurrentUser(context).ClientId,month)));
 app.MapGet("/api/ess/dashboard/birthdays", async (EssMssRepository repository, HttpContext context) => Results.Ok(await repository.GetTodaysBirthdaysAsync(CurrentUser(context).ClientId)));
 app.MapPost("/api/ess/leave/requests", async (EssMssRepository repository, WorkflowRepository workflows, CreateEssLeaveRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(result,error)=await repository.CreateLeaveRequestAsync(user.EmployeeId.Value,user.ClientId,request); if(result is null)return Results.BadRequest(new{error}); var workflowId=await workflows.GetDefaultIdAsync("LeaveRequest",user.ClientId); if(workflowId is not null) await workflows.StartAsync(new StartWorkflowRequest{WorkflowId=workflowId.Value,ResourceType="LeaveRequest",ResourceId=result.Id.ToString(),PayloadJson=System.Text.Json.JsonSerializer.Serialize(result)},user.Id); return Results.Created($"/api/ess/leave/requests/{result.Id}",result); });
@@ -285,6 +225,8 @@ app.MapPost("/api/security/users", async (AuthRepository repository, SaveAuthUse
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.DisplayName))
         return Results.BadRequest(new { error = "Email and display name are required." });
+    if (request.Id == 0 && string.IsNullOrWhiteSpace(request.Password))
+        return Results.BadRequest(new { error = "Temporary password is required for a new user." });
     try
     {
         var user = await repository.SaveUserAsync(request);
@@ -328,6 +270,17 @@ app.MapPost("/api/security/roles", async (AuthRepository repository, SaveAuthRol
 app.MapGet("/api/audit-logs", async (AuthRepository repository, HttpContext context, int limit = 100) =>
     HasPermission(context, "audit.view") ? Results.Ok(await repository.GetAuditLogsAsync(limit)) : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetAuditLogs")
+.WithOpenApi();
+
+app.MapPost("/api/admin/database/migrate", async (HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+    await RunDatabaseSetupAsync(context.RequestServices, context.RequestServices.GetRequiredService<IConfiguration>());
+    return Results.Ok(new { message = "Database setup completed." });
+})
+.WithName("MigrateDatabase")
 .WithOpenApi();
 
 app.MapGet("/api/reports/{code}", async (ReportingRepository repository, string code, int clientId, string? department, int? workLocationId, string? fromDate, string? toDate, string? month, HttpContext context) =>
@@ -499,6 +452,11 @@ app.MapGet("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRep
 .WithName("GetMonthlyAttendance")
 .WithOpenApi();
 
+app.MapGet("/api/leave-attendance/attendance/context", async (LeaveAttendanceRepository repository, int clientId, string month) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetAttendanceReviewContextAsync(clientId, month)))
+.WithName("GetAttendanceReviewContext")
+.WithOpenApi();
+
 app.MapPost("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRepository repository, SaveMonthlyAttendanceRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "settings.manage"))
@@ -512,6 +470,11 @@ app.MapPost("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRe
 app.MapGet("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepository repository, int clientId, int employeeId, string month) =>
     clientId <= 0 || employeeId <= 0 ? Results.BadRequest(new { error = "Select a client and employee." }) : Results.Ok(await repository.GetDailyAttendanceAsync(clientId, employeeId, month)))
 .WithName("GetDailyAttendance")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/attendance/daily-grid", async (LeaveAttendanceRepository repository, int clientId, string month) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetDailyAttendanceMonthAsync(clientId, month)))
+.WithName("GetDailyAttendanceGrid")
 .WithOpenApi();
 
 app.MapPost("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepository repository, SaveDailyAttendanceRequest request, HttpContext context) =>
@@ -637,11 +600,6 @@ app.MapPost("/api/clients", async (OrganizationRepository repository, Client cli
 .WithName("SaveClient")
 .WithOpenApi();
 
-app.MapDelete("/api/clients/{id:int}", async (OrganizationRepository repository, int id) =>
-    await repository.DeleteClientAsync(id) ? Results.NoContent() : Results.NotFound())
-.WithName("DeleteClient")
-.WithOpenApi();
-
 app.MapGet("/api/work-locations", async (OrganizationRepository repository) =>
     Results.Ok(await repository.GetWorkLocationsAsync()))
 .WithName("GetWorkLocations")
@@ -651,17 +609,14 @@ app.MapPost("/api/work-locations", async (OrganizationRepository repository, Wor
 {
     if (string.IsNullOrWhiteSpace(location.Name))
         return Results.BadRequest(new { error = "Work location name is required." });
-    if (!System.Text.RegularExpressions.Regex.IsMatch(location.PostalCode ?? "", @"^[1-9][0-9]{5}$"))
+    if (location.ClientId <= 0)
+        return Results.BadRequest(new { error = "Client is required for work location." });
+    if (!string.IsNullOrWhiteSpace(location.PostalCode) && !System.Text.RegularExpressions.Regex.IsMatch(location.PostalCode, @"^[1-9][0-9]{5}$"))
         return Results.BadRequest(new { error = "Enter a valid 6-digit PIN code." });
     var id = await repository.SaveWorkLocationAsync(location);
     return Results.Ok(new { id });
 })
 .WithName("SaveWorkLocation")
-.WithOpenApi();
-
-app.MapDelete("/api/work-locations/{id:int}", async (OrganizationRepository repository, int id) =>
-    await repository.DeleteWorkLocationAsync(id) ? Results.NoContent() : Results.NotFound())
-.WithName("DeleteWorkLocation")
 .WithOpenApi();
 
 app.MapGet("/api/dropdowns", async (OrganizationRepository repository) =>
@@ -679,11 +634,6 @@ app.MapPost("/api/dropdowns", async (OrganizationRepository repository, Dropdown
     return Results.Ok(new { id });
 })
 .WithName("SaveDropdownMaster")
-.WithOpenApi();
-
-app.MapDelete("/api/dropdowns/{id:int}", async (OrganizationRepository repository, int id) =>
-    await repository.DeleteDropdownMasterAsync(id) ? Results.NoContent() : Results.NotFound())
-.WithName("DeleteDropdownMaster")
 .WithOpenApi();
 
 app.MapGet("/api/employees", async (EmployeeRepository repository) =>
@@ -704,25 +654,6 @@ app.MapPost("/api/employees", async (EmployeeRepository repository, Employee emp
 .WithName("SaveEmployee")
 .WithOpenApi();
 
-app.MapDelete("/api/employees/{id:int}", async (EmployeeRepository repository, int id) =>
-    await repository.DeleteAsync(id) ? Results.NoContent() : Results.NotFound())
-.WithName("DeleteEmployee")
-.WithOpenApi();
-
-app.MapGet("/api/employees/import/sample", () =>
-    Results.File(EmployeeImportRepository.SampleExcel(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "employee-import-sample.xlsx"))
-.WithName("DownloadEmployeeImportSample")
-.WithOpenApi();
-
-app.MapPost("/api/employees/import", async (EmployeeImportRepository repository, [FromForm] int clientId, [FromForm] IFormFile file) =>
-{
-    if (file.Length == 0) return Results.BadRequest(new { error = "Select a CSV, XLS or XLSX file." });
-    return Results.Ok(await repository.ImportAsync(clientId, file));
-})
-.DisableAntiforgery()
-.WithName("ImportEmployees")
-.ExcludeFromDescription();
-
 app.MapGet("/api/pay-runs", async (PayRunRepository repository) =>
     Results.Ok(await repository.GetAllAsync()))
 .WithName("GetPayRuns")
@@ -736,6 +667,16 @@ app.MapGet("/api/pay-runs/{id:int}", async (PayRunRepository repository, int id)
 .WithName("GetPayRun")
 .WithOpenApi();
 
+app.MapGet("/api/pay-runs/{id:int}/diagnostics", async (PayRunRepository repository, int id, HttpContext context) =>
+{
+    if (!HasPermission(context, "payroll.run") && !HasPermission(context, "payroll.approve"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var diagnostics = await repository.GetDiagnosticsAsync(id);
+    return diagnostics is null ? Results.NotFound() : Results.Ok(diagnostics);
+})
+.WithName("GetPayRunDiagnostics")
+.WithOpenApi();
+
 app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "payroll.run"))
@@ -744,8 +685,27 @@ app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunReq
         return Results.BadRequest(new { error = "Select a client and enter a valid pay period with 1 to 31 working days." });
     if (string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) && request.IncludedEmployeeIds.Count == 0 && request.AdjustmentIds.Count == 0)
         return Results.BadRequest(new { error = "Off-cycle payroll needs at least one employee or approved adjustment." });
-    var payRun = await repository.CreateAsync(request);
-    return payRun is null ? Results.Conflict(new { error = "A pay run already exists for this period." }) : Results.Created($"/api/pay-runs/{payRun.Id}", payRun);
+    try
+    {
+        var payRun = await repository.CreateAsync(request, CurrentUser(context).Email);
+        return payRun is null ? Results.Conflict(new { error = "A pay run already exists for this period." }) : Results.Created($"/api/pay-runs/{payRun.Id}", payRun);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
+    catch (Exception exception)
+    {
+        try
+        {
+            var failedRun = await repository.CreateFailedAttemptAsync(request, CurrentUser(context).Email, exception);
+            return failedRun is null ? Results.BadRequest(new { error = exception.Message }) : Results.Created($"/api/pay-runs/{failedRun.Id}", failedRun);
+        }
+        catch (Exception diagnosticException)
+        {
+            return Results.BadRequest(new { error = exception.Message, diagnosticError = diagnosticException.Message });
+        }
+    }
 })
 .WithName("CreatePayRun")
 .WithOpenApi();
@@ -863,8 +823,8 @@ static void WriteAuthCookie(HttpContext context, string cookieName, string token
     context.Response.Cookies.Append(cookieName, token, new CookieOptions
     {
         HttpOnly = true,
-        Secure = CookieSecure(context),
-        SameSite = SameSiteMode.Strict,
+        Secure = context.Request.IsHttps,
+        SameSite = SameSiteMode.Lax,
         Expires = new DateTimeOffset(DateTime.SpecifyKind(expiresAt, DateTimeKind.Utc)),
         Path = "/"
     });
@@ -875,30 +835,42 @@ static void ClearAuthCookie(HttpContext context, string cookieName)
     context.Response.Cookies.Delete(cookieName, new CookieOptions
     {
         HttpOnly = true,
-        Secure = CookieSecure(context),
-        SameSite = SameSiteMode.Strict,
+        Secure = context.Request.IsHttps,
+        SameSite = SameSiteMode.Lax,
         Path = "/"
     });
 }
 
+static async Task RunDatabaseSetupAsync(IServiceProvider services, IConfiguration configuration)
+{
+    using var scope = services.CreateScope();
+    var scopedServices = scope.ServiceProvider;
+
+    await scopedServices.GetRequiredService<OrganizationRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<PayRunRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<AuthRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<LeaveAttendanceRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<WorkflowRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<TaxEngineRepository>().InitializeAsync();
+
+    await using var workflowDb = new MySqlConnector.MySqlConnection(configuration.GetConnectionString("Default"));
+    await workflowDb.OpenAsync();
+    await workflowDb.ExecuteAsync(@"CREATE TABLE IF NOT EXISTS essleaverequests (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    LeaveTypeId INT NOT NULL,
+    FromDate DATE NOT NULL,
+    ToDate DATE NOT NULL,
+    Days DECIMAL(8,2) NOT NULL,
+    Reason VARCHAR(1000),
+    Status VARCHAR(40) NOT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);");
+
+    var essRepository = scopedServices.GetRequiredService<EssMssRepository>();
+    await essRepository.InitializeAsync();
+    await essRepository.ReconcileLeaveWorkflowStatusesAsync();
+}
+
 app.Run();
-
-static string[] AllowedOrigins(IConfiguration configuration)
-{
-    var configured = configuration.GetSection("Cors:AllowedOrigins").GetChildren().Select(x => x.Value).Where(x => !string.IsNullOrWhiteSpace(x));
-    var env = (configuration["CORS_ALLOWED_ORIGINS"] ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    return configured.Concat(env).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()!;
-}
-
-static bool CookieSecure(HttpContext context) =>
-    context.Request.IsHttps || string.Equals(context.RequestServices.GetRequiredService<IConfiguration>()["Auth:CookieSecure"], "true", StringComparison.OrdinalIgnoreCase);
-
-static void ValidateConfiguration(IConfiguration configuration, IWebHostEnvironment environment)
-{
-    if (string.IsNullOrWhiteSpace(configuration.GetConnectionString("Default")))
-        throw new InvalidOperationException("ConnectionStrings__Default is required.");
-    if (!environment.IsDevelopment() && AllowedOrigins(configuration).Length == 0)
-        throw new InvalidOperationException("Production requires Cors:AllowedOrigins or CORS_ALLOWED_ORIGINS.");
-    if (!environment.IsDevelopment() && !string.Equals(configuration["Auth:CookieSecure"], "true", StringComparison.OrdinalIgnoreCase))
-        throw new InvalidOperationException("Production requires Auth:CookieSecure=true.");
-}
