@@ -1,4 +1,4 @@
-import type { AttendanceReviewContext, AttendanceSettings, EmployeeDailyAttendance, EmployeeMonthlyAttendance, GeoFenceRule, GeoFenceScope, Holiday, LeaveAttendancePreferences, LeaveAttendanceSetup, LeaveBalanceImportMapping, LeaveBalanceImportPreview, LeaveBalanceImportResult, LeaveType, SetupStatus } from '../types/payroll'
+import type { AttendanceGroup, AttendanceReviewContext, AttendanceSettings, EmployeeDailyAttendance, EmployeeMonthlyAttendance, GeoFenceRule, GeoFenceScope, Holiday, LeaveAttendancePreferences, LeaveAttendanceSetup, LeaveBalanceImportMapping, LeaveBalanceImportPreview, LeaveBalanceImportResult, LeaveType, SetupStatus } from '../types/payroll'
 import { apiUrl, deleteJson, getBlob, getJson, postFormWithProgress, postJson, putJson } from './apiClient'
 
 const fallback: LeaveAttendanceSetup = { clientId: 0, isEnabled: false, steps: [] }
@@ -25,6 +25,14 @@ export async function saveGeoFenceRule(rule: GeoFenceRule) {
 }
 export async function deleteGeoFenceRule(clientId: number, id: number) {
   const response = await deleteJson(`/api/leave-attendance/geo-fences/${id}?clientId=${clientId}`, null)
+  return { ok: response.ok, error: response.error }
+}
+export const getAttendanceGroups = (clientId = 0) => getJson<AttendanceGroup[]>(`/api/leave-attendance/groups${clientId ? `?clientId=${clientId}` : ''}`, [])
+export async function saveAttendanceGroup(group: AttendanceGroup) {
+  return postJson('/api/leave-attendance/groups', group, null as AttendanceGroup | null)
+}
+export async function deleteAttendanceGroup(clientId: number, id: number) {
+  const response = await deleteJson(`/api/leave-attendance/groups/${id}?clientId=${clientId}`, null)
   return { ok: response.ok, error: response.error }
 }
 export const getMonthlyAttendance = (clientId: number, month: string) => getJson<EmployeeMonthlyAttendance[]>(`/api/leave-attendance/attendance/monthly?clientId=${clientId}&month=${month}`, [])

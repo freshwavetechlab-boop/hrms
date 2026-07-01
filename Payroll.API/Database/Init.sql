@@ -421,6 +421,37 @@ CREATE TABLE IF NOT EXISTS attendance_geo_fence_rule_employees (
     CONSTRAINT FK_geo_fence_rule_employee_employee FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS attendance_groups (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    client_id INT NOT NULL,
+    name VARCHAR(180) NOT NULL,
+    work_location_id INT NOT NULL,
+    department VARCHAR(150) NOT NULL DEFAULT '',
+    designation VARCHAR(150) NOT NULL DEFAULT '',
+    work_week VARCHAR(80) NOT NULL DEFAULT 'Monday - Friday',
+    attendance_cycle_start_day INT NOT NULL DEFAULT 1,
+    attendance_cycle_end_day INT NOT NULL DEFAULT 25,
+    payroll_report_generation_day INT NOT NULL DEFAULT 28,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_attendance_groups_client_name (client_id, name),
+    INDEX IX_attendance_groups_client_location (client_id, work_location_id),
+    CONSTRAINT FK_attendance_groups_client FOREIGN KEY (client_id) REFERENCES clients(Id) ON DELETE CASCADE,
+    CONSTRAINT FK_attendance_groups_location FOREIGN KEY (work_location_id) REFERENCES worklocations(Id)
+);
+
+CREATE TABLE IF NOT EXISTS attendance_group_employees (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    attendance_group_id INT NOT NULL,
+    employee_id INT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_attendance_group_employee (attendance_group_id, employee_id),
+    INDEX IX_attendance_group_employee_employee (employee_id),
+    CONSTRAINT FK_attendance_group_employee_group FOREIGN KEY (attendance_group_id) REFERENCES attendance_groups(id) ON DELETE CASCADE,
+    CONSTRAINT FK_attendance_group_employee_employee FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS employee_attendance_punches (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     client_id INT NOT NULL,
@@ -445,6 +476,8 @@ CREATE TABLE IF NOT EXISTS employee_attendance_punches (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX IX_attendance_punch_employee_date (client_id, employee_id, captured_at),
     INDEX IX_attendance_punch_rule (geo_fence_rule_id)
+);
+
 CREATE TABLE IF NOT EXISTS employee_monthly_attendance (
     id INT PRIMARY KEY AUTO_INCREMENT,
     client_id INT NOT NULL,

@@ -101,6 +101,30 @@ public class GeoFenceRule
 
 public class SaveGeoFenceRuleRequest : GeoFenceRule { }
 
+public class AttendanceGroup
+{
+    public int Id { get; set; }
+    public int ClientId { get; set; }
+    public string ClientName { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public int WorkLocationId { get; set; }
+    public string WorkLocationName { get; set; } = string.Empty;
+    public string Department { get; set; } = string.Empty;
+    public string Designation { get; set; } = string.Empty;
+    public string WorkWeek { get; set; } = "Monday - Friday";
+    public int AttendanceCycleStartDay { get; set; } = 1;
+    public int AttendanceCycleEndDay { get; set; } = 25;
+    public int PayrollReportGenerationDay { get; set; } = 28;
+    public bool IsActive { get; set; } = true;
+    public List<int> EmployeeIds { get; set; } = [];
+    public string EmployeeNames { get; set; } = string.Empty;
+    public int EmployeeCount { get; set; }
+    public DateTime? CreatedAt { get; set; }
+    public DateTime? UpdatedAt { get; set; }
+}
+
+public class SaveAttendanceGroupRequest : AttendanceGroup { }
+
 public class EmployeeMonthlyAttendance
 {
     public int EmployeeId { get; set; }
