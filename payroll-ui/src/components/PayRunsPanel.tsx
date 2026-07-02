@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getMonthlyAttendance } from '../services/leaveAttendanceService'
-import { cancelPayrollAdjustment, createPayRun, exportPayRunUrl, getClients, getEmployees, getPayRun, getPayRunDiagnostics, getPayrollAdjustments, getPayRuns, runPayRunAction, savePayrollAdjustment } from '../services/payrollService'
+import { cancelPayrollAdjustment, createPayRun, deletePayRun, exportPayRunUrl, getClients, getEmployees, getPayRun, getPayRunDiagnostics, getPayrollAdjustments, getPayRuns, runPayRunAction, savePayrollAdjustment } from '../services/payrollService'
 import { getSetup } from '../services/settingsService'
 import type { Client, Component, Employee, EmployeeMonthlyAttendance, PayRun, PayRunDiagnostics, PayrollAdjustment, PayRunSalaryLine, RunEmployee, Setup } from '../types/payroll'
 import { setup0 } from '../data/payrollDefaults'
@@ -175,6 +175,22 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     setBusy(false)
   }
 
+  const deleteSelectedRun = async () => {
+    if (!selected || !['Draft', 'Queued', 'Processing', 'Failed'].includes(selected.status)) return
+    if (!window.confirm('Delete this payroll request and clean all related run data?')) return
+    setBusy(true)
+    const response = await deletePayRun(selected.id)
+    if (response.ok) {
+      setSelected(null)
+      setDiagnostics(null)
+      setMessage('Payroll request deleted and related run data cleaned.')
+      await load()
+    } else {
+      setMessage(response.error || 'Payroll request could not be deleted.')
+    }
+    setBusy(false)
+  }
+
   const chooseComponent = (id: number) => {
     const component = variableComponents.find(item => item.id === id)
     if (component) setAdjustment({ ...adjustment, componentId: component.id, componentCode: component.code, componentName: component.name, adjustmentType: componentToAdjustmentType(component), taxable: component.taxable })
@@ -188,7 +204,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const selectedReviewRun = selected && reviewRuns.some(run => run.id === selected.id) ? selected : null
   const reviewPanel = <>
     <ReviewRunPicker runs={reviewRuns} selectedId={selectedReviewRun?.id} openRun={openReviewRun} />
-    {selectedReviewRun ? <PayRunReview selected={selectedReviewRun} diagnostics={diagnostics} busy={busy} action={action} materialVarianceCount={materialVarianceCount} /> : <section className="card report-empty"><p>Select a draft payroll run to review.</p></section>}
+    {selectedReviewRun ? <PayRunReview selected={selectedReviewRun} diagnostics={diagnostics} busy={busy} action={action} deleteRun={deleteSelectedRun} materialVarianceCount={materialVarianceCount} /> : <section className="card report-empty"><p>Select a draft payroll run to review.</p></section>}
   </>
   const contextPanel = <div className="card payroll-control-panel"><header><i className="blue">R</i><div><h3>Run context</h3><p>Client and pay period are selected before draft processing. Working days come from Attendance Review.</p></div></header><div className="pay-run-form enterprise"><label>Client<SearchSelect value={clientId} onChange={value => changeClient(Number(value))} options={clients.filter(client => client.isActive).map(client => ({ value: client.id, label: client.name }))} /></label><label>Pay period<input type="month" value={period} onChange={event => changePeriod(event.target.value)} /></label><label>Working days<input value={derivedWorkingDays} readOnly /></label>{tab === 'Regular Run' && mode !== 'adjustments' && <button onClick={() => void createRegular()} disabled={busy || !clientId || includedCount === 0 || !attendanceReady}>{busy ? 'Queuing...' : 'Queue regular draft'}</button>}{tab === 'Off-cycle Run' && <button onClick={() => void createOffcycle()} disabled={busy || !clientId || (offcycleEmployeeIds.length === 0 && offcycleAdjustmentIds.length === 0)}>{busy ? 'Queuing...' : 'Queue off-cycle draft'}</button>}</div>{tab === 'Off-cycle Run' && <div className="offcycle-fields"><label>Run name<input value={offcycleName} onChange={event => setOffcycleName(event.target.value)} /></label><label>Reason<input value={offcycleReason} onChange={event => setOffcycleReason(event.target.value)} /></label></div>}{!attendanceReady && tab === 'Regular Run' && mode !== 'adjustments' && <p className="payment-warning">Attendance review must be clean before regular payroll can run. Off-cycle can be used for missed/reimbursement-only payments.</p>}<div className="payroll-kpis"><div><span>{tab === 'Off-cycle Run' ? 'Selected employees' : 'Regular employees'}</span><strong>{tab === 'Off-cycle Run' ? `${offcycleEmployeeIds.length}/${clientEmployees.length}` : `${includedCount}/${clientEmployees.length}`}</strong></div><div><span>{tab === 'Off-cycle Run' ? 'Selected adjustments' : 'Approved adjustments'}</span><strong>{tab === 'Off-cycle Run' ? `${offcycleAdjustmentIds.length}/${offcycleAdjustments.length}` : pendingAdjustments.length}</strong></div><div><span>{estimateLabel}</span><strong>{money(selectedEstimate)}</strong></div><div><span>Current draft net</span><strong>{money(selected?.netPay)}</strong></div></div></div>
 
@@ -261,7 +277,7 @@ function ReviewRunPicker(p: { runs: PayRun[]; selectedId?: number; openRun: (run
   return <section className="card payroll-review-runs"><header><i className="blue">D</i><div><h3>Draft payroll runs</h3><p>Select a draft run to load its saved review data.</p></div></header><DataTable rows={p.runs} title="Draft payroll runs" getRowId={row => row.id} emptyText="No draft payroll run found for this client." exportFileName="draft-payroll-runs" columns={columns} pageSizeOptions={[5, 10, 25]} actions={run => <button type="button" className={p.selectedId === run.id ? 'secondary' : ''} onClick={() => void p.openRun(run)}>{p.selectedId === run.id ? 'Opened' : 'Open'}</button>} /></section>
 }
 
-function PayRunReview(p: { selected: PayRun; diagnostics: PayRunDiagnostics | null; busy: boolean; materialVarianceCount: number; action: (path: string, success: string) => Promise<void> }) {
+function PayRunReview(p: { selected: PayRun; diagnostics: PayRunDiagnostics | null; busy: boolean; materialVarianceCount: number; action: (path: string, success: string) => Promise<void>; deleteRun: () => Promise<void> }) {
   const selected = p.selected
   const includedEmployees = selected.employees.filter(employee => !employee.isSkipped)
   const presentDays = includedEmployees.reduce((sum, employee) => sum + Number(employee.presentDays || 0), 0)
@@ -269,7 +285,8 @@ function PayRunReview(p: { selected: PayRun; diagnostics: PayRunDiagnostics | nu
   const workingDays = selected.runType === 'Off Cycle' ? 0 : selected.totalWorkingDays * includedEmployees.length
   const lopDays = Math.max(0, workingDays - payableDays)
   const isProcessing = processingStatuses.has(selected.status)
-  const actions = <div className="pay-run-actions"><button type="button" className="lock-action" disabled={p.busy || selected.status !== 'Draft'} onClick={() => void p.action('submit', 'Payroll locked and sent for approval.')}>Lock payroll</button><button type="button" className="approve-action" disabled={p.busy || selected.status !== 'Pending Approval'} onClick={() => void p.action('approve', 'Payroll approved.')}>Approve payroll</button><button type="button" className="secondary recall-action" disabled={p.busy || !['Approved', 'Pending Approval'].includes(selected.status)} onClick={() => void p.action('recall', 'Payroll recalled to draft.')}>Recall</button><a className="secondary export-action" href={exportPayRunUrl(selected.id)}>Export</a></div>
+  const canDelete = ['Draft', 'Queued', 'Processing', 'Failed'].includes(selected.status)
+  const actions = <div className="pay-run-actions"><button type="button" className="lock-action" disabled={p.busy || selected.status !== 'Draft'} onClick={() => void p.action('submit', 'Payroll locked and sent for approval.')}>Lock payroll</button><button type="button" className="approve-action" disabled={p.busy || selected.status !== 'Pending Approval'} onClick={() => void p.action('approve', 'Payroll approved.')}>Approve payroll</button><button type="button" className="secondary recall-action" disabled={p.busy || !['Approved', 'Pending Approval'].includes(selected.status)} onClick={() => void p.action('recall', 'Payroll recalled to draft.')}>Recall</button><button type="button" className="danger" disabled={p.busy || !canDelete} onClick={() => void p.deleteRun()}>Delete request</button><a className="secondary export-action" href={exportPayRunUrl(selected.id)}>Export</a></div>
   const salaryRegisterColumns = useMemo(() => buildSalaryRegisterColumns(selected.employees), [selected.employees])
   const columns: Column<RunEmployee>[] = [
     { key: 'employeeCode', label: 'Code', width: '110px' },
