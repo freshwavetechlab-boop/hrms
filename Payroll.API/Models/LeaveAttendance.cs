@@ -34,6 +34,9 @@ public class LeaveAttendancePreferences
 {
     public int Id { get; set; }
     public int ClientId { get; set; }
+    public int? WorkLocationId { get; set; }
+    public string WorkLocationName { get; set; } = "All locations";
+    public string WorkWeek { get; set; } = string.Empty;
     public int AttendanceCycleStartDay { get; set; } = 1;
     public int AttendanceCycleEndDay { get; set; } = 25;
     public int PayrollReportGenerationDay { get; set; } = 28;
@@ -46,6 +49,8 @@ public class LeaveAttendancePreferences
 public class SaveLeaveAttendancePreferencesRequest
 {
     public int ClientId { get; set; }
+    public int? WorkLocationId { get; set; }
+    public string WorkWeek { get; set; } = string.Empty;
     public int AttendanceCycleStartDay { get; set; }
     public int AttendanceCycleEndDay { get; set; }
     public int PayrollReportGenerationDay { get; set; }
@@ -101,6 +106,30 @@ public class GeoFenceRule
 
 public class SaveGeoFenceRuleRequest : GeoFenceRule { }
 
+public class AttendanceGroup
+{
+    public int Id { get; set; }
+    public int ClientId { get; set; }
+    public string ClientName { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public int WorkLocationId { get; set; }
+    public string WorkLocationName { get; set; } = string.Empty;
+    public string Department { get; set; } = string.Empty;
+    public string Designation { get; set; } = string.Empty;
+    public string WorkWeek { get; set; } = string.Empty;
+    public int AttendanceCycleStartDay { get; set; } = 1;
+    public int AttendanceCycleEndDay { get; set; } = 25;
+    public int PayrollReportGenerationDay { get; set; } = 28;
+    public bool IsActive { get; set; } = true;
+    public List<int> EmployeeIds { get; set; } = [];
+    public string EmployeeNames { get; set; } = string.Empty;
+    public int EmployeeCount { get; set; }
+    public DateTime? CreatedAt { get; set; }
+    public DateTime? UpdatedAt { get; set; }
+}
+
+public class SaveAttendanceGroupRequest : AttendanceGroup { }
+
 public class EmployeeMonthlyAttendance
 {
     public int EmployeeId { get; set; }
@@ -108,6 +137,12 @@ public class EmployeeMonthlyAttendance
     public string EmployeeName { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
     public int WorkLocationId { get; set; }
+    public int? AttendanceGroupId { get; set; }
+    public string AttendanceGroupName { get; set; } = string.Empty;
+    public string WorkWeek { get; set; } = string.Empty;
+    public int? AttendanceCycleStartDay { get; set; }
+    public int? AttendanceCycleEndDay { get; set; }
+    public int? PayrollReportGenerationDay { get; set; }
     public string Month { get; set; } = string.Empty;
     public decimal WorkingDays { get; set; }
     public decimal PresentDays { get; set; }
@@ -155,7 +190,7 @@ public class SaveDailyAttendanceBatchRequest
 
 public class ClientAttendanceSchedule
 {
-    public string WorkWeek { get; set; } = "Monday - Friday";
+    public string WorkWeek { get; set; } = string.Empty;
     public string SalaryDays { get; set; } = "Actual days";
     public string FixedDays { get; set; } = "30";
     public string PayDay { get; set; } = "Last working day";
@@ -177,6 +212,7 @@ public class AttendanceReviewContext
 {
     public AttendanceSettings Settings { get; set; } = new();
     public ClientAttendanceSchedule Schedule { get; set; } = new();
+    public LeaveAttendancePreferences Preferences { get; set; } = new();
     public List<Holiday> Holidays { get; set; } = [];
     public List<EmployeeLeaveBalanceSummary> LeaveBalances { get; set; } = [];
 }

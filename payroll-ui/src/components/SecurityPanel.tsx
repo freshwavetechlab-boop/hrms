@@ -16,15 +16,18 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: '
   const [user, setUser] = useState(user0), [role, setRole] = useState(role0), [msg, setMsg] = useState('Create users for payroll, hiring, HR, approvers and employee self-service.'), [userQuery, setUserQuery] = useState(''), [directoryClientId, setDirectoryClientId] = useState(''), [pendingEmployeeSearch, setPendingEmployeeSearch] = useState(''), [createdCredentials, setCreatedCredentials] = useState<{ email: string; password: string } | null>(null)
   const [saving, setSaving] = useState(false)
   const groupedPermissions = useMemo(() => permissions.reduce<Record<string, AuthPermission[]>>((groups, permission) => ({ ...groups, [permission.module]: [...(groups[permission.module] ?? []), permission] }), {}), [permissions])
+  const activeClientIds = new Set(clients.map(client => client.id))
   const employeeOptions = employees.filter(employee => (!user.clientId || employee.clientId === Number(user.clientId)) && (!users.some(existing => existing.employeeId === employee.id) || String(employee.id) === user.employeeId))
   const unlinkedEmployees = employees.filter(employee => employee.isActive && employee.workEmail && !users.some(existing => existing.employeeId === employee.id) && (!directoryClientId || employee.clientId === Number(directoryClientId)))
-  const visibleUsers = users.filter(item => (!directoryClientId || item.clientId === Number(directoryClientId)) && `${item.displayName} ${item.email} ${item.roles.join(' ')}`.toLowerCase().includes(userQuery.toLowerCase()))
+  const visibleUsers = users.filter(item => (!item.clientId || activeClientIds.has(item.clientId)) && (!directoryClientId || item.clientId === Number(directoryClientId)) && `${item.displayName} ${item.email} ${item.roles.join(' ')}`.toLowerCase().includes(userQuery.toLowerCase()))
 
   useEffect(() => { void load() }, [])
   useEffect(() => { setTab(initialTab) }, [initialTab])
   const load = async () => {
     const data = await loadSecurityData()
-    setUsers(data.users); setRoles(data.roles); setPermissions(data.permissions); setAuditLogs(data.auditLogs); setClients(data.clients); setEmployees(data.employees)
+    const activeClients = data.clients.filter(client => client.isActive)
+    const activeClientIds = new Set(activeClients.map(client => client.id))
+    setUsers(data.users); setRoles(data.roles); setPermissions(data.permissions); setAuditLogs(data.auditLogs); setClients(activeClients); setEmployees(data.employees.filter(employee => activeClientIds.has(employee.clientId)))
   }
 
   const saveUser = async () => {

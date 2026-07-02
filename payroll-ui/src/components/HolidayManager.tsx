@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Form, Input, Row, Space } from 'antd'
 import { deleteHoliday, getHolidays, saveHoliday } from '../services/leaveAttendanceService'
 import { getWorkLocations } from '../services/settingsService'
 import type { Holiday, WorkLocation } from '../types/payroll'
@@ -28,27 +29,39 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
   const calendar = useMemo(() => monthNames.map((month, index) => ({ month, holidays: rows.filter(row => new Date(row.startDate).getMonth() === index || new Date(row.endDate).getMonth() === index) })), [rows])
   const load = async () => {
     const [holidays, workLocations] = await Promise.all([getHolidays(clientId, year, workLocationId || undefined), getWorkLocations()])
+    const activeLocations = workLocations.filter(location => location.isActive && Number(location.clientId) === Number(clientId))
+    if (workLocationId && !activeLocations.some(location => Number(location.id) === Number(workLocationId))) {
+      setWorkLocationId(0)
+      return
+    }
     setRows(holidays)
-    setLocations(workLocations.filter(location => location.isActive))
+    setLocations(activeLocations)
     setForm(current => current.id ? current : { ...blank, clientId })
   }
+
+  useEffect(() => {
+    setWorkLocationId(0)
+    setForm({ ...blank, clientId })
+    setErrors([])
+  }, [clientId])
 
   useEffect(() => { void load() }, [clientId, year, workLocationId])
 
   const set = <K extends keyof Holiday>(key: K, value: Holiday[K]) => setForm(current => ({ ...current, [key]: value }))
   const toggleLocation = (id: number) => set('workLocationIds', form.workLocationIds.includes(id) ? form.workLocationIds.filter(item => item !== id) : [...form.workLocationIds, id])
+  const validLocationIds = () => form.workLocationIds.filter(id => locations.some(location => Number(location.id) === Number(id)))
   const validate = () => {
     const next = []
     if (!form.name.trim()) next.push('Holiday name is required.')
     if (!holidayTypes.includes(form.holidayType)) next.push('Select a valid holiday type.')
     if (form.endDate < form.startDate) next.push('End date cannot be before start date.')
-    if (!form.allLocations && form.workLocationIds.length === 0) next.push('Select at least one work location.')
+    if (!form.allLocations && validLocationIds().length === 0) next.push('Select at least one work location.')
     setErrors(next)
     return next.length === 0
   }
   const save = async () => {
     if (!validate()) return
-    const response = await saveHoliday({ ...form, clientId })
+    const response = await saveHoliday({ ...form, clientId, workLocationIds: form.allLocations ? [] : validLocationIds() })
     if (response.ok) {
       setForm({ ...blank, clientId })
       setErrors([])
@@ -68,12 +81,14 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
   }
 
   return <section className="holiday-manager">
-    <div className="card">
-      <header><i className="blue">H</i><div><h3>Holiday Management</h3><p>Maintain location-wise holidays and prevent duplicate date overlaps.</p></div></header>
-      <div className="holiday-toolbar"><label><span>Year</span><SearchSelect value={year} onChange={value => setYear(Number(value))} options={years.map(value => ({ value, label: String(value) }))} /></label><label><span>Work Location</span><SearchSelect value={workLocationId} onChange={value => setWorkLocationId(Number(value))} options={selectOptions(locations.map(location => ({ value: location.id, label: location.name })), 'All locations', 0)} /></label></div>
+    <AntCard className="settings-panel settings-table-panel holiday-list-card" size="small" title="Holiday Management">
+      <Row gutter={12} className="holiday-toolbar">
+        <Col xs={24} sm={8} md={6} lg={5} className="holiday-year-field"><Form.Item label="Year"><SearchSelect value={year} onChange={value => setYear(Number(value))} options={years.map(value => ({ value, label: String(value) }))} /></Form.Item></Col>
+        <Col xs={24} sm={16} md={12} lg={10} className="holiday-location-field"><Form.Item label="Work Location"><SearchSelect value={workLocationId} onChange={value => setWorkLocationId(Number(value))} options={selectOptions(locations.map(location => ({ value: location.id, label: `${location.name}${location.city ? ` - ${location.city}` : ''}` })), 'All locations', 0)} /></Form.Item></Col>
+      </Row>
       <PageTabs items={holidayViews} value={view} onChange={setView} label="Holiday views" />
       {view === 'Table' ? <HolidayTable rows={rows} edit={edit} remove={remove} /> : <div className="holiday-calendar">{calendar.map(item => <article key={item.month}><h4>{item.month}</h4>{item.holidays.length ? item.holidays.map(holiday => <button type="button" key={holiday.id} onClick={() => edit(holiday)}><strong>{holiday.name}</strong><span>{holiday.holidayType}</span><span>{dateRange(holiday)}</span><small>{holiday.workLocations}</small></button>) : <p>No holidays</p>}</article>)}</div>}
-    </div>
+    </AntCard>
     <HolidayForm form={form} locations={locations} errors={errors} set={set} toggleLocation={toggleLocation} save={save} cancel={() => { setForm({ ...blank, clientId }); setErrors([]) }} />
     <HolidayBulkUpload clientId={clientId} locations={locations} onImported={async message => { onMessage(message); await load() }} />
   </section>
@@ -87,11 +102,26 @@ function HolidayTable({ rows, edit, remove }: { rows: Holiday[]; edit: (row: Hol
     { key: 'endDate', label: 'End Date', value: row => formatDate(row.endDate) },
     { key: 'workLocations', label: 'Work Locations' },
     { key: 'description', label: 'Description' }
-  ]} actions={row => <><button type="button" onClick={() => edit(row)}>Edit</button><button type="button" className="danger" onClick={() => void remove(row)}>Delete</button></>} />
+  ]} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => edit(row)}>Edit</Button><Button size="small" danger onClick={() => void remove(row)}>Delete</Button></Space>} />
 }
 
 function HolidayForm(p: { form: Holiday; locations: WorkLocation[]; errors: string[]; set: <K extends keyof Holiday>(key: K, value: Holiday[K]) => void; toggleLocation: (id: number) => void; save: () => void; cancel: () => void }) {
-  return <section className="card holiday-form"><header><i className="blue">{p.form.id ? 'E' : '+'}</i><div><h3>{p.form.id ? 'Edit Holiday' : 'Add Holiday'}</h3><p>Single-day holidays use the same start and end date.</p></div></header><div className="grid"><label><span>Holiday name</span><input value={p.form.name} onChange={event => p.set('name', event.target.value)} /></label><label><span>Holiday type</span><SearchSelect value={p.form.holidayType} onChange={value => p.set('holidayType', normalizeHolidayType(value))} options={selectOptions([...holidayTypes])} /></label><label><span>Start date</span><input type="date" value={p.form.startDate} onChange={event => p.set('startDate', event.target.value)} /></label><label><span>End date</span><input type="date" value={p.form.endDate} onChange={event => p.set('endDate', event.target.value)} /></label><label className="wide"><span>Description</span><input value={p.form.description} onChange={event => p.set('description', event.target.value)} /></label><label><span>Applicable locations</span><SearchSelect value={p.form.allLocations ? 'all' : 'selected'} onChange={value => p.set('allLocations', value === 'all')} options={[{ value: 'all', label: 'All locations' }, { value: 'selected', label: 'Multiple selected locations' }]} /></label></div>{!p.form.allLocations && <div className="location-picker">{p.locations.map(location => <label className={p.form.workLocationIds.includes(location.id) ? 'selected' : ''} key={location.id}><input type="checkbox" checked={p.form.workLocationIds.includes(location.id)} onChange={() => p.toggleLocation(location.id)} /><span>{location.name}</span><small>{location.city}, {location.state}</small></label>)}</div>}{p.errors.length > 0 && <div className="form-errors">{p.errors.map(error => <p key={error}>{error}</p>)}</div>}<div className="actions"><p>RH rows are maintained as Restricted Holiday records and can be location-wise or all-location.</p><span><button type="button" className="secondary" onClick={p.cancel}>Cancel</button><button type="button" onClick={() => void p.save()}>{p.form.id ? 'Update holiday' : 'Save holiday'}</button></span></div></section>
+  return <AntCard className="holiday-form settings-panel settings-form-panel" size="small" title={p.form.id ? 'Edit Holiday' : 'Add Holiday'}>
+    <Form className="settings-quick-form" component={false} layout="vertical" requiredMark={false}>
+      {p.errors.length > 0 && <Alert type="error" showIcon message={p.errors.join(' ')} />}
+      <Row gutter={12}>
+        <Col xs={24} md={12}><Form.Item label="Holiday name" required><Input value={p.form.name} onChange={event => p.set('name', event.target.value)} /></Form.Item></Col>
+        <Col xs={24} md={12}><Form.Item label="Holiday type" required><SearchSelect value={p.form.holidayType} onChange={value => p.set('holidayType', normalizeHolidayType(value))} options={selectOptions([...holidayTypes])} /></Form.Item></Col>
+        <Col xs={24} md={12}><Form.Item label="Start date" required><Input type="date" value={p.form.startDate} onChange={event => p.set('startDate', event.target.value)} /></Form.Item></Col>
+        <Col xs={24} md={12}><Form.Item label="End date" required><Input type="date" value={p.form.endDate} onChange={event => p.set('endDate', event.target.value)} /></Form.Item></Col>
+        <Col xs={24}><Form.Item label="Description"><Input value={p.form.description} onChange={event => p.set('description', event.target.value)} /></Form.Item></Col>
+        <Col xs={24} md={12}><Form.Item label="Applicable locations"><SearchSelect value={p.form.allLocations ? 'all' : 'selected'} onChange={value => p.set('allLocations', value === 'all')} options={[{ value: 'all', label: 'All locations' }, { value: 'selected', label: 'Multiple selected locations' }]} /></Form.Item></Col>
+      </Row>
+      {!p.form.allLocations && <div className="location-picker">{p.locations.map(location => <label className={p.form.workLocationIds.includes(location.id) ? 'selected' : ''} key={location.id}><AntCheckbox checked={p.form.workLocationIds.includes(location.id)} onChange={() => p.toggleLocation(location.id)} /><span>{location.name}</span><small>{location.city}, {location.state}</small></label>)}</div>}
+      <Divider />
+      <Row justify="end"><Space><Button onClick={p.cancel}>Cancel</Button><Button type="primary" onClick={() => void p.save()}>{p.form.id ? 'Update holiday' : 'Save holiday'}</Button></Space></Row>
+    </Form>
+  </AntCard>
 }
 
 function HolidayBulkUpload(p: { clientId: number; locations: WorkLocation[]; onImported: (message: string) => Promise<void> }) {
@@ -132,9 +162,8 @@ function HolidayBulkUpload(p: { clientId: number; locations: WorkLocation[]; onI
     URL.revokeObjectURL(url)
   }
 
-  return <section className="card holiday-import">
-    <header><i className="blue">I</i><div><h3>Bulk Upload Holidays</h3><p>Upload all-location or location-wise holiday rows from CSV.</p></div></header>
-    <div className="grid"><label className="wide"><span>Select CSV</span><FileDropZone accept=".csv,text/csv" fileName={fileName} title="Drop holiday CSV here or browse" hint="Columns: name, holidayType, startDate, endDate, description, allLocations, workLocations." onFile={file => void pickFile(file)} /></label></div>
+  return <AntCard className="holiday-import settings-panel" size="small" title="Bulk Upload Holidays">
+    <Form component={false} layout="vertical" className="settings-quick-form"><Form.Item label="Select CSV"><FileDropZone accept=".csv,text/csv" fileName={fileName} title="Drop holiday CSV here or browse" hint="Columns: name, holidayType, startDate, endDate, description, allLocations, workLocations." onFile={file => void pickFile(file)} /></Form.Item></Form>
     {preview.length > 0 && <div className="holiday-import-summary"><strong>{validRows.length} valid</strong><span>{preview.length - validRows.length} with errors</span><span>{preview.length} total rows</span></div>}
     {preview.length > 0 && <DataTable rows={preview.slice(0, 20)} getRowId={row => row.rowNumber} emptyText="No import rows." rowClassName={row => row.errors.length ? 'error' : ''} exportFileName="holiday-import-preview" columns={[
       { key: 'rowNumber', label: 'Row' },
@@ -146,9 +175,9 @@ function HolidayBulkUpload(p: { clientId: number; locations: WorkLocation[]; onI
       { key: 'errors', label: 'Errors', value: row => row.errors.join('; ') }
     ]} />}
     {preview.length > 20 && <p className="empty">Showing first 20 rows.</p>}
-    {errors.length > 0 && <div className="form-errors">{errors.map(error => <p key={error}>{error}</p>)}</div>}
-    <div className="actions"><p>Use Holiday, Restricted Holiday, or RH in holidayType. Blank workLocations means all locations.</p><span><button type="button" className="secondary" onClick={downloadSample}>Download Sample</button><button type="button" disabled={busy || validRows.length === 0} onClick={() => void importRows()}>{busy ? 'Importing...' : 'Import holidays'}</button></span></div>
-  </section>
+    {errors.length > 0 && <Alert type="error" showIcon message={errors.join(' ')} />}
+    <Row justify="end"><Space><Button onClick={downloadSample}>Download Sample</Button><Button type="primary" disabled={validRows.length === 0} loading={busy} onClick={() => void importRows()}>Import holidays</Button></Space></Row>
+  </AntCard>
 }
 
 function parseHolidayCsv(text: string, clientId: number, locations: WorkLocation[]) {

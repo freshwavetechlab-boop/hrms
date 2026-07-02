@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Form, Input, InputNumber, Row, Space } from 'antd'
 import { getAttendanceSettings, saveAttendanceSettings } from '../services/leaveAttendanceService'
 import type { AttendanceSettings } from '../types/payroll'
 import SearchSelect, { selectOptions } from './SearchSelect'
@@ -28,23 +29,38 @@ export default function AttendanceSettingsForm({ clientId, onSaved }: { clientId
     setSaving(false)
     if (response.ok) { setForm(normalizeTimes(response.data)); onSaved('Attendance settings saved.') } else setErrors([response.error || 'Unable to save attendance settings.'])
   }
-  return <section className="card attendance-settings">
-    <header><i className="blue">A</i><div><h3>Attendance Management</h3><p>Configure shift times, workday duration and regularization controls.</p></div></header>
-    {errors.length > 0 && <div className="form-errors sticky-errors">{errors.map(error => <p key={error}>{error}</p>)}</div>}
-    <h3>Work Shift Time</h3>
-    <div className="grid"><label><span>Check-in time</span><input type="time" value={timeValue(form.checkInTime)} onChange={event => set('checkInTime', `${event.target.value}:00`)} /></label><label><span>Check-out time</span><input type="time" value={timeValue(form.checkOutTime)} onChange={event => set('checkOutTime', `${event.target.value}:00`)} /></label></div>
-    <h3>Working Hours Calculation</h3>
-    <div className="grid"><label className="wide"><span>Calculation method</span><SearchSelect value={form.workingHoursCalculation} onChange={value => set('workingHoursCalculation', value as AttendanceSettings['workingHoursCalculation'])} options={selectOptions(['First check-in and last check-out', 'Every valid check-in and check-out'])} /></label></div>
-    <h3>Workday Duration</h3>
-    <div className="grid"><label><span>Minimum hours for half-day</span><input type="number" step="0.25" value={form.minimumHoursForHalfDay} onChange={event => set('minimumHoursForHalfDay', Number(event.target.value))} /></label><label><span>Minimum hours for full-day</span><input type="number" step="0.25" value={form.minimumHoursForFullDay} onChange={event => set('minimumHoursForFullDay', Number(event.target.value))} /></label><label><span>Maximum hours allowed for full-day</span><input type="number" step="0.25" value={form.maximumHoursAllowedForFullDay} onChange={event => set('maximumHoursAllowedForFullDay', Number(event.target.value))} /></label></div>
-    <h3>Regularization Settings</h3>
-    <div className="grid"><Check label="Allow regularization requests" value={form.allowRegularizationRequests} set={value => set('allowRegularizationRequests', value)} /><label><span>Request window</span><SearchSelect disabled={!form.allowRegularizationRequests} value={form.regularizationWindow} onChange={value => set('regularizationWindow', value as AttendanceSettings['regularizationWindow'])} options={selectOptions(['Anytime', 'Limited by past days'])} /></label>{form.regularizationWindow === 'Limited by past days' && <label><span>Number of past days allowed</span><input type="number" disabled={!form.allowRegularizationRequests} value={form.pastDaysAllowed} onChange={event => set('pastDaysAllowed', Number(event.target.value))} /></label>}<Check label="Restrict regularization requests per month" value={form.restrictRegularizationRequestsPerMonth} set={value => set('restrictRegularizationRequestsPerMonth', value)} />{form.restrictRegularizationRequestsPerMonth && <label><span>Max requests per month</span><input type="number" disabled={!form.allowRegularizationRequests} value={form.maxRegularizationRequestsPerMonth} onChange={event => set('maxRegularizationRequestsPerMonth', Number(event.target.value))} /></label>}</div>
-    <div className="actions"><p>Rules are applied during attendance calculation and payroll cut-off processing.</p><button type="button" disabled={saving} onClick={() => void save()}>{saving ? 'Saving...' : 'Save attendance settings'}</button></div>
-  </section>
+  return <AntCard className="attendance-settings settings-panel settings-form-panel" size="small" title="Attendance Management">
+    <Form className="settings-quick-form" component={false} layout="vertical" requiredMark={false}>
+      {errors.length > 0 && <Alert type="error" showIcon message={errors.join(' ')} />}
+      <Divider orientation="left">Work Shift Time</Divider>
+      <Row gutter={12}>
+        <Col xs={24} md={12}><Form.Item label="Check-in time" required><Input type="time" value={timeValue(form.checkInTime)} onChange={event => set('checkInTime', `${event.target.value}:00`)} /></Form.Item></Col>
+        <Col xs={24} md={12}><Form.Item label="Check-out time" required><Input type="time" value={timeValue(form.checkOutTime)} onChange={event => set('checkOutTime', `${event.target.value}:00`)} /></Form.Item></Col>
+      </Row>
+      <Divider orientation="left">Working Hours Calculation</Divider>
+      <Row gutter={12}><Col xs={24} md={14}><Form.Item label="Calculation method"><SearchSelect value={form.workingHoursCalculation} onChange={value => set('workingHoursCalculation', value as AttendanceSettings['workingHoursCalculation'])} options={selectOptions(['First check-in and last check-out', 'Every valid check-in and check-out'])} /></Form.Item></Col></Row>
+      <Divider orientation="left">Workday Duration</Divider>
+      <Row gutter={12}>
+        <Col xs={24} md={8}><Form.Item label="Minimum hours for half-day"><InputNumber step={0.25} value={form.minimumHoursForHalfDay} onChange={value => set('minimumHoursForHalfDay', Number(value || 0))} style={{ width: '100%' }} /></Form.Item></Col>
+        <Col xs={24} md={8}><Form.Item label="Minimum hours for full-day"><InputNumber step={0.25} value={form.minimumHoursForFullDay} onChange={value => set('minimumHoursForFullDay', Number(value || 0))} style={{ width: '100%' }} /></Form.Item></Col>
+        <Col xs={24} md={8}><Form.Item label="Maximum hours allowed for full-day"><InputNumber step={0.25} value={form.maximumHoursAllowedForFullDay} onChange={value => set('maximumHoursAllowedForFullDay', Number(value || 0))} style={{ width: '100%' }} /></Form.Item></Col>
+      </Row>
+      <Divider orientation="left">Regularization Settings</Divider>
+      <Row gutter={12}>
+        <Check label="Allow regularization requests" value={form.allowRegularizationRequests} set={value => set('allowRegularizationRequests', value)} />
+        <Col xs={24} md={12}><Form.Item label="Request window"><SearchSelect disabled={!form.allowRegularizationRequests} value={form.regularizationWindow} onChange={value => set('regularizationWindow', value as AttendanceSettings['regularizationWindow'])} options={selectOptions(['Anytime', 'Limited by past days'])} /></Form.Item></Col>
+        {form.regularizationWindow === 'Limited by past days' && <Col xs={24} md={12}><Form.Item label="Number of past days allowed"><InputNumber disabled={!form.allowRegularizationRequests} value={form.pastDaysAllowed} onChange={value => set('pastDaysAllowed', Number(value || 0))} style={{ width: '100%' }} /></Form.Item></Col>}
+        <Check label="Restrict regularization requests per month" value={form.restrictRegularizationRequestsPerMonth} set={value => set('restrictRegularizationRequestsPerMonth', value)} />
+        {form.restrictRegularizationRequestsPerMonth && <Col xs={24} md={12}><Form.Item label="Max requests per month"><InputNumber disabled={!form.allowRegularizationRequests} value={form.maxRegularizationRequestsPerMonth} onChange={value => set('maxRegularizationRequestsPerMonth', Number(value || 0))} style={{ width: '100%' }} /></Form.Item></Col>}
+      </Row>
+      <Divider />
+      <Row justify="end"><Space><Button type="primary" loading={saving} onClick={() => void save()}>Save attendance settings</Button></Space></Row>
+    </Form>
+  </AntCard>
 }
 
 function Check({ label, value, set }: { label: string; value: boolean; set: (value: boolean) => void }) {
-  return <label><span>{label}</span><input type="checkbox" checked={value} onChange={event => set(event.target.checked)} /></label>
+  return <Col xs={24} md={12}><Form.Item><AntCheckbox checked={value} onChange={event => set(event.target.checked)}>{label}</AntCheckbox></Form.Item></Col>
 }
 
 function timeValue(value: string) { return value?.slice(0, 5) || '' }
