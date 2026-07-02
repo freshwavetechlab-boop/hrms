@@ -779,7 +779,7 @@ app.MapPost("/api/pay-runs/{id:int}/approve", async (PayRunRepository repository
 .WithOpenApi();
 
 app.MapDelete("/api/pay-runs/{id:int}", async (PayRunRepository repository, int id) =>
-    await repository.DeleteDraftAsync(id) ? Results.NoContent() : Results.BadRequest(new { error = "Only draft pay runs can be deleted." }))
+    await repository.DeleteDraftAsync(id) ? Results.NoContent() : Results.BadRequest(new { error = "Only draft, queued, processing or failed pay runs can be deleted." }))
 .WithName("DeleteDraftPayRun")
 .WithOpenApi();
 

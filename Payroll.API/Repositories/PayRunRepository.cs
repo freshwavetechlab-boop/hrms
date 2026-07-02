@@ -243,16 +243,19 @@ SELECT * FROM payrunemployees WHERE PayRunId = @Id ORDER BY EmployeeName;", new 
         var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id AND IsActive = TRUE", new { Id = request.ClientId }, transaction);
         if (client is null) return null;
         var runType = string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
-        var runCode = runType == "Regular" ? "REGULAR" : $"OFF-{DateTime.UtcNow:yyyyMMddHHmmss}";
         var runName = string.IsNullOrWhiteSpace(request.RunName) ? (runType == "Regular" ? "Regular payroll" : "Off-cycle payroll") : request.RunName.Trim();
+        var activeRun = await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>(@"SELECT Id, Status FROM payruns
+WHERE PayPeriod=@PayPeriod AND ClientId=@ClientId AND Status IN ('Queued','Processing')
+ORDER BY Id DESC LIMIT 1", new { request.PayPeriod, request.ClientId }, transaction);
+        if (activeRun is not null)
+        {
+            await transaction.RollbackAsync();
+            return await GetAsync(activeRun.Id);
+        }
+        var runCode = runType == "Regular" ? "REGULAR" : $"OFF-{DateTime.UtcNow:yyyyMMddHHmmss}";
         var existing = runType == "Regular" ? await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>("SELECT Id, Status FROM payruns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = 'REGULAR'", new { request.PayPeriod, request.ClientId }, transaction) : null;
         if (existing is not null)
         {
-            if (existing.Status is "Queued" or "Processing")
-            {
-                await transaction.RollbackAsync();
-                return await GetAsync(existing.Id);
-            }
             if (!LatestAttemptStatuses.Contains(existing.Status))
                 return null;
             await DeletePayRunAttemptAsync(connection, transaction, existing.Id);
@@ -571,7 +574,16 @@ WHERE Id=@Id AND Status != 'Applied';", adjustment);
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        return await connection.ExecuteAsync("DELETE FROM payruns WHERE Id = @Id AND Status = 'Draft'", new { Id = id }) == 1;
+        await using var transaction = await connection.BeginTransactionAsync();
+        var status = await connection.ExecuteScalarAsync<string?>("SELECT Status FROM payruns WHERE Id=@Id FOR UPDATE", new { Id = id }, transaction);
+        if (status is not ("Draft" or "Queued" or "Processing" or "Failed"))
+        {
+            await transaction.RollbackAsync();
+            return false;
+        }
+        await DeletePayRunAttemptAsync(connection, transaction, id);
+        await transaction.CommitAsync();
+        return true;
     }
 
     public async Task<PayRun?> RecallAsync(int id)
