@@ -19,6 +19,7 @@ export default function SalaryTemplateDesigner({ clients, components, structure,
   const lines = hasDraft && basic && !hasBasic ? [{ componentId: String(basic.id), value: basic.formula || basic.value || 'CTC * 40%' }, ...structure.lines] : structure.lines
   const calculated = calculateSalaryDetails(Number(structure.annualCtc || 0), components, { ...structure, lines })
   const preview = calculateSalaryTotals(calculated).net
+  const clientName = (id: string | number) => clients.find(client => String(client.id) === String(id).split(':')[0])?.name || (id ? `Client #${String(id).split(':')[0]}` : 'Default')
 
   useEffect(() => {
     if (hasDraft && basic && !hasBasic) setStructure({ ...structure, lines })
@@ -44,7 +45,7 @@ export default function SalaryTemplateDesigner({ clients, components, structure,
   return <Card title="Enterprise salary template designer">
     <div className="salary-template-designer">
       <div className="salary-template-head">
-        <label>Client<SearchSelect value={structure.clientId} onChange={value => setStructure({ ...structure, clientId: value })} options={selectOptions(clients.map(client => ({ value: `${client.id}:${client.name}`, label: client.name })), 'Select client')} /></label>
+        <label>Client<SearchSelect value={structure.clientId} onChange={value => setStructure({ ...structure, clientId: value })} options={selectOptions(clients.map(client => ({ value: client.id, label: client.name })), 'Select client')} /></label>
         <label>Template<input value={structure.name} onChange={event => setStructure({ ...structure, name: event.target.value })} /></label>
         <label>Annual CTC<input value={structure.annualCtc} onChange={event => setStructure({ ...structure, annualCtc: event.target.value.replace(/\D/g, '') })} /></label>
         <button type="button" disabled={saving} onClick={() => void saveTemplate()}>{saving ? 'Saving...' : 'Save Template'}</button>
@@ -76,7 +77,7 @@ export default function SalaryTemplateDesigner({ clients, components, structure,
         </section>
       </div>
     </div>
-    <DataTable rows={templates} onEdit={setStructure} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client' }, { key: 'annualCtc', label: 'Annual CTC' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} />
+    <DataTable rows={templates} onEdit={setStructure} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'annualCtc', label: 'Annual CTC' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} />
   </Card>
 }
 

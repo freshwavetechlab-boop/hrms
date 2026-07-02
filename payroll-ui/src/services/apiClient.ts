@@ -157,7 +157,7 @@ function notifyMutation(method = 'POST', ok: boolean, error: string, options: Ap
     toast.error(error || 'Request failed.')
     return
   }
-  if (options.toast === 'error-only') return
+  if (options.toast === 'error-only' || (!options.successMessage && options.toast !== true)) return
   toast.success(options.successMessage || successText(method))
 }
 

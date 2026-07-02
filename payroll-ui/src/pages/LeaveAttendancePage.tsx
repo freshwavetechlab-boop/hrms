@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import AttendanceSettingsForm from '../components/AttendanceSettingsForm'
+import AttendanceGroupsManager from '../components/AttendanceGroupsManager'
 import GeoFenceManager from '../components/GeoFenceManager'
 import HolidayManager from '../components/HolidayManager'
 import LeaveAttendancePreferencesForm from '../components/LeaveAttendancePreferencesForm'
@@ -10,7 +11,7 @@ import { useToast } from '../components/ToastProvider'
 import { getClients } from '../services/payrollService'
 import type { Client } from '../types/payroll'
 
-export type LeaveAttendanceMenu = 'Preferences' | 'Leave Types' | 'Holiday' | 'Attendance' | 'Geo-Fencing' | 'Import Balance'
+export type LeaveAttendanceMenu = 'Attendance Cycle' | 'Groups' | 'Leave Types' | 'Holiday' | 'Attendance' | 'Geo-Fencing' | 'Import Balance'
 
 export default function LeaveAttendancePage({ activeMenu }: { activeMenu: LeaveAttendanceMenu; onSelectMenu: (menu: LeaveAttendanceMenu) => void }) {
   const toast = useToast()
@@ -29,8 +30,8 @@ export default function LeaveAttendancePage({ activeMenu }: { activeMenu: LeaveA
 
   const showMessage = (text: string) => toast(text, /error|unable|failed|required|resolve|select/i.test(text) ? 'error' : 'success')
   const selectedClient = clients.find(client => client.id === clientId)
-  const clientFilter = <div className="card leave-client-filter"><label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label></div>
-  const content = activeMenu === 'Preferences' ? <LeaveAttendancePreferencesForm clientId={clientId} onSaved={showMessage} /> : activeMenu === 'Leave Types' ? <LeaveTypesManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Holiday' ? <HolidayManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Attendance' ? <AttendanceSettingsForm clientId={clientId} onSaved={showMessage} /> : activeMenu === 'Geo-Fencing' ? <GeoFenceManager clientId={clientId} clientName={selectedClient?.name || ''} onMessage={showMessage} /> : <LeaveBalanceImportManager clientId={clientId} onMessage={showMessage} />
+  const clientFilter = activeMenu === 'Groups' || activeMenu === 'Attendance Cycle' ? null : <div className="card leave-client-filter"><label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label></div>
+  const content = activeMenu === 'Attendance Cycle' ? <LeaveAttendancePreferencesForm clientId={clientId} onSaved={showMessage} /> : activeMenu === 'Groups' ? <AttendanceGroupsManager onMessage={showMessage} /> : activeMenu === 'Leave Types' ? <LeaveTypesManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Holiday' ? <HolidayManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Attendance' ? <AttendanceSettingsForm clientId={clientId} onSaved={showMessage} /> : activeMenu === 'Geo-Fencing' ? <GeoFenceManager clientId={clientId} clientName={selectedClient?.name || ''} onMessage={showMessage} /> : <LeaveBalanceImportManager clientId={clientId} onMessage={showMessage} />
 
   return <section className="leave-attendance">{clientFilter}{content}</section>
 }

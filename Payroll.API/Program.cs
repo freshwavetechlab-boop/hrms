@@ -390,8 +390,8 @@ app.MapPut("/api/leave-attendance/setup/{stepCode}", async (LeaveAttendanceRepos
 .WithName("UpdateLeaveAttendanceSetupStep")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/preferences", async (LeaveAttendanceRepository repository, int clientId) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetPreferencesAsync(clientId)))
+app.MapGet("/api/leave-attendance/preferences", async (LeaveAttendanceRepository repository, int clientId, int? workLocationId) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetPreferencesAsync(clientId, workLocationId)))
 .WithName("GetLeaveAttendancePreferences")
 .WithOpenApi();
 
@@ -449,13 +449,37 @@ app.MapDelete("/api/leave-attendance/geo-fences/{id:int}", async (LeaveAttendanc
 .WithName("DeleteGeoFenceRule")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRepository repository, int clientId, string month) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetMonthlyAttendanceAsync(clientId, month)))
+app.MapGet("/api/leave-attendance/groups", async (LeaveAttendanceRepository repository, int? clientId) =>
+    Results.Ok(await repository.GetAttendanceGroupsAsync(Math.Max(0, clientId.GetValueOrDefault()))))
+.WithName("GetAttendanceGroups")
+.WithOpenApi();
+
+app.MapPost("/api/leave-attendance/groups", async (LeaveAttendanceRepository repository, SaveAttendanceGroupRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (group, error) = await repository.SaveAttendanceGroupAsync(request);
+    return group is null ? Results.BadRequest(new { error }) : Results.Ok(group);
+})
+.WithName("SaveAttendanceGroup")
+.WithOpenApi();
+
+app.MapDelete("/api/leave-attendance/groups/{id:int}", async (LeaveAttendanceRepository repository, int id, int clientId, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return clientId > 0 && await repository.DeleteAttendanceGroupAsync(id, clientId) ? Results.NoContent() : Results.NotFound();
+})
+.WithName("DeleteAttendanceGroup")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRepository repository, int clientId, string month, int? workLocationId) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetMonthlyAttendanceAsync(clientId, month, workLocationId)))
 .WithName("GetMonthlyAttendance")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/attendance/context", async (LeaveAttendanceRepository repository, int clientId, string month) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetAttendanceReviewContextAsync(clientId, month)))
+app.MapGet("/api/leave-attendance/attendance/context", async (LeaveAttendanceRepository repository, int clientId, string month, int? workLocationId) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetAttendanceReviewContextAsync(clientId, month, workLocationId)))
 .WithName("GetAttendanceReviewContext")
 .WithOpenApi();
 
@@ -474,8 +498,8 @@ app.MapGet("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepos
 .WithName("GetDailyAttendance")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/attendance/daily-grid", async (LeaveAttendanceRepository repository, int clientId, string month) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetDailyAttendanceMonthAsync(clientId, month)))
+app.MapGet("/api/leave-attendance/attendance/daily-grid", async (LeaveAttendanceRepository repository, int clientId, string month, int? workLocationId) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetDailyAttendanceMonthAsync(clientId, month, workLocationId)))
 .WithName("GetDailyAttendanceGrid")
 .WithOpenApi();
 

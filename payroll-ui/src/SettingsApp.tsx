@@ -6,7 +6,7 @@ import type { MenuProps } from 'antd'
 import AppIcon from './components/AppIcon'
 import type { IconName } from './components/AppIcon'
 import SecurityPanel from './components/SecurityPanel'
-import { leaveAttendanceMenus, reportingMenus, securityMenus, settingsMenus, workflowMenus } from './data/payrollDefaults'
+import { leaveAttendanceMenus, org0, reportingMenus, securityMenus, settingsMenus, workflowMenus } from './data/payrollDefaults'
 import DashboardPage from './pages/DashboardPage'
 import EmployeePage from './pages/EmployeePage'
 import LeaveAttendancePage from './pages/LeaveAttendancePage'
@@ -21,6 +21,8 @@ import type { WorkflowMenu } from './pages/WorkflowPage'
 import WorkflowTasks from './components/WorkflowTasks'
 import { useAuthSession } from './components/AuthGate'
 import SettingsPage from './pages/SettingsPage'
+import { getOrganization } from './services/settingsService'
+import type { Org } from './types/payroll'
 import './OrganizationSetup.css'
 import './ModuleDrawer.css'
 
@@ -29,8 +31,9 @@ type SettingsTab = (typeof settingsMenus)[number]
 type SecurityTab = (typeof securityMenus)[number]
 type PayrollTab = 'Regular Run' | 'Off-cycle Run' | 'Adjustments'
 type SettingsSection = 'General' | 'LeaveAttendance'
-const allPayrollSetupMenus: SettingsTab[] = ['Pay Schedule', 'Tax Engine', 'Statutory Setup', 'Salary Components', 'Salary Templates', 'Payslip Templates']
+const allPayrollSetupMenus: SettingsTab[] = ['Tax Engine', 'Statutory Setup', 'Salary Components', 'Salary Templates', 'Payslip Templates']
 const compactSidebarQuery = '(max-width: 640px)'
+const productLogo = '/assets/FrevoOneLogo.png'
 
 const modules: { code: ModuleCode | 'Reports'; label: string; icon: IconName; description: string; disabled?: boolean }[] = [
   { code: 'Dashboard', label: 'Dashboard', icon: 'reports', description: 'Client-wise payroll, attendance and approval overview.' },
@@ -94,11 +97,12 @@ export default function SettingsApp() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('General')
   const [securityTab, setSecurityTab] = useState<SecurityTab>(savedSecurityTab && securityMenus.includes(savedSecurityTab) ? savedSecurityTab : 'Users')
   const [payrollTab, setPayrollTab] = useState<PayrollTab>((localStorage.getItem('payroll.payrollTab') as PayrollTab | null) ?? 'Regular Run')
-  const [leaveAttendanceTab, setLeaveAttendanceTab] = useState<LeaveAttendanceMenu>(savedLeaveAttendanceTab && leaveAttendanceMenus.includes(savedLeaveAttendanceTab) ? savedLeaveAttendanceTab : 'Preferences')
+  const [leaveAttendanceTab, setLeaveAttendanceTab] = useState<LeaveAttendanceMenu>(savedLeaveAttendanceTab && leaveAttendanceMenus.includes(savedLeaveAttendanceTab) ? savedLeaveAttendanceTab : 'Attendance Cycle')
   const [reportingTab, setReportingTab] = useState<ReportingMenu>(savedReportingTab && reportingMenus.includes(savedReportingTab) ? savedReportingTab : 'Payroll Reports')
   const [workflowTab, setWorkflowTab] = useState<WorkflowMenu>(savedWorkflowTab && workflowMenus.includes(savedWorkflowTab) ? savedWorkflowTab : 'Workflow Setup')
   const [reportingReport, setReportingReport] = useState<ReportDefinition>(() => reportItems(savedReportingTab && reportingMenus.includes(savedReportingTab) ? savedReportingTab : 'Payroll Reports')[0])
   const [mainModule, setMainModule] = useState<ModuleCode>(initialModule)
+  const [shellOrg, setShellOrg] = useState<Org>(org0)
   const activeModule = modules.find(module => module.code === mainModule)!
   const pageTitle = showMyTasks ? 'My Tasks' : mainModule === 'Dashboard' ? 'Dashboard' : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? 'Employee Master' : mainModule === 'Security' ? securityTab : mainModule === 'Reports' ? reportingTab : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
   const currentUser = session?.user
@@ -130,6 +134,16 @@ export default function SettingsApp() {
       document.documentElement.classList.remove('portal-shell-mounted')
       document.body.classList.remove('portal-shell-mounted')
     }
+  }, [])
+
+  useEffect(() => {
+    void getOrganization(org0).then(organization => setShellOrg({ ...org0, ...organization }))
+    const syncOrganization = (event: Event) => {
+      const detail = (event as CustomEvent<Org>).detail
+      if (detail) setShellOrg({ ...org0, ...detail })
+    }
+    window.addEventListener('organization-updated', syncOrganization)
+    return () => window.removeEventListener('organization-updated', syncOrganization)
   }, [])
 
   useEffect(() => {
@@ -200,7 +214,7 @@ export default function SettingsApp() {
     }
     if (parts[0] === 'settings') {
       if (parts[1] === 'leave-attendance') {
-        const nextTab = fromSlug(leaveAttendanceMenus, parts[2], 'Preferences')
+        const nextTab = fromSlug(leaveAttendanceMenus, parts[2], 'Attendance Cycle')
         setSettingsSection('LeaveAttendance')
         setLeaveAttendanceOpen(true)
         setLeaveAttendanceTab(nextTab)
@@ -295,7 +309,7 @@ export default function SettingsApp() {
     {mobileShell && navOpen && <button className="sidebar-scrim" type="button" aria-label="Close sidebar" onClick={() => setNavOpen(false)} />}
     <aside className="app-sidebar" ref={sidebarRef}>
       <div className="side-head">
-        <a className="brand"><i>F</i><span>Frevo One HR</span></a>
+        <a className="brand has-logo product-brand" aria-label="Frevo One HR"><img className="brand-logo product-brand-logo" src={productLogo} alt="Frevo One HR" /></a>
         <Button className="sidebar-toggle" type="text" shape="circle" title={navOpen ? 'Collapse sidebar' : 'Expand sidebar'} aria-label={navOpen ? 'Collapse sidebar' : 'Expand sidebar'} aria-expanded={navOpen} icon={navOpen ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />} onClick={() => setNavOpen(open => !open)} />
       </div>
       <div className="sidebar-context"><i><AppIcon name={activeModule.icon} /></i><div><span>Module</span><strong>{activeModule.label}</strong></div></div>
@@ -304,8 +318,13 @@ export default function SettingsApp() {
     <main className="compact-main">
       <header className="topbar app-topbar">
         <div className="topbar-title">
-          <Breadcrumb className="topbar-breadcrumb" items={[{ title: activeModule.label }, { title: pageTitle }]} />
-          <h2 title={pageTitle}>{pageTitle}</h2>
+          <div className="topbar-title-line">
+            {shellOrg.logoDataUrl && <img className="topbar-org-logo" src={shellOrg.logoDataUrl} alt="Organization logo" />}
+            <div>
+              <Breadcrumb className="topbar-breadcrumb" items={[{ title: activeModule.label }, { title: pageTitle }]} />
+              <h2 title={pageTitle}>{pageTitle}</h2>
+            </div>
+          </div>
         </div>
         <Space className="topbar-tools" size={10}>
           <Input className="global-search-antd" prefix={<SearchOutlined />} placeholder="Search..." allowClear suffix={<span className="search-shortcut">Ctrl K</span>} />
@@ -319,6 +338,10 @@ export default function SettingsApp() {
         </Space>
       </header>
       <div className="module-content">{renderPage()}</div>
+      <footer className="shell-bottom-brand">
+        {shellOrg.logoDataUrl ? <img src={shellOrg.logoDataUrl} alt="Organization logo" /> : <b>{(shellOrg.name || 'O').slice(0, 1).toUpperCase()}</b>}
+        <span>{shellOrg.name || 'Organization'}</span>
+      </footer>
     </main>
     {appDrawerOpen && <div className="drawer-scrim" onClick={() => setAppDrawerOpen(false)} />}
     <aside className="module-drawer" aria-hidden={!appDrawerOpen}>
