@@ -361,6 +361,8 @@ CREATE TABLE IF NOT EXISTS modulesetupprogress (
 
 CREATE TABLE IF NOT EXISTS leave_attendance_preferences (
     id INT PRIMARY KEY AUTO_INCREMENT,
+    work_location_id INT NOT NULL DEFAULT 0,
+    work_week VARCHAR(80) NOT NULL DEFAULT 'Monday - Friday',
     attendance_cycle_start_day INT NOT NULL DEFAULT 1,
     attendance_cycle_end_day INT NOT NULL DEFAULT 25,
     payroll_report_generation_day INT NOT NULL DEFAULT 28,

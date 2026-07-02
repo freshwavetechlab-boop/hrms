@@ -18,6 +18,8 @@ public class PayRunRepository(IConfiguration configuration, TaxEngineRepository 
         {
             DefaultCommandTimeout = 300
         };
+        if (string.IsNullOrWhiteSpace(builder.Database))
+            builder.Database = "payroll";
         return new MySqlConnection(builder.ConnectionString);
     }
 

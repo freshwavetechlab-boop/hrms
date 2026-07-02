@@ -910,6 +910,55 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 @media(max-width:980px){.payroll-attendance-page .attendance-summary{grid-template-columns:repeat(3,1fr)!important}.payroll-attendance-page .attendance-filterbar{grid-template-columns:1fr!important}.payroll-attendance-page .attendance-next-actions .ant-space-item,.payroll-attendance-page .attendance-next-actions .app-search-select{width:100%!important}}
 @media(max-width:700px){.payroll-attendance-page .attendance-summary{grid-template-columns:1fr 1fr!important}.payroll-attendance-page .attendance-calendar-grid .employee-col{min-width:190px!important}}
 
+.payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar{align-items:flex-start!important;flex-wrap:wrap!important;row-gap:10px!important}
+.payroll-attendance-page .attendance-client-control.attendance-client-field{width:240px!important}
+.payroll-attendance-page .attendance-client-control.attendance-scope-field{width:360px!important}
+.payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar .attendance-cycle-field{width:340px!important;min-width:340px!important;gap:4px!important;margin-left:auto!important}
+.payroll-attendance-page .attendance-cycle-field small{display:block!important;min-height:14px!important;color:#7c86a0!important;font-size:11px!important;font-weight:700!important;line-height:14px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
+.payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar .attendance-cycle-field .ant-input{width:100%!important}
+.payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar>.ant-btn{margin-top:21px!important}
+
+/* Leave Types screen polish */
+.leave-types{display:grid!important;gap:12px!important;min-width:0!important;width:100%!important}
+.leave-types-panel>.ant-card-body{display:grid!important;gap:12px!important;min-width:0!important;padding:12px!important}
+.leave-types-panel .settings-table,.leave-types-panel .data-table,.leave-types-panel table{max-width:100%!important}
+.leave-type-summary{display:grid!important;grid-template-columns:repeat(4,minmax(120px,1fr))!important;gap:8px!important}
+.leave-type-summary span{min-width:0!important;display:grid!important;gap:2px!important;padding:10px 12px!important;border:1px solid #e5e8f0!important;border-radius:8px!important;background:#f8fafc!important}
+.leave-type-summary b{font-size:1.1rem!important;line-height:1.1!important;color:#172136!important}
+.leave-type-summary small{min-width:0!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;color:#64748b!important;font-size:.68rem!important;font-weight:800!important;text-transform:uppercase!important}
+.leave-type-drawer-backdrop{align-items:stretch!important;overflow:hidden!important}
+.leave-type-drawer.ant-card{width:min(780px,96vw)!important;height:100dvh!important;max-height:100dvh!important;display:grid!important;grid-template-rows:auto minmax(0,1fr)!important;margin:0!important;padding:0!important;border-top:0!important;border-right:0!important;border-bottom:0!important;border-left:1px solid #e5e8f0!important;border-radius:0!important;overflow:hidden!important;box-shadow:-24px 0 60px #11182730!important}
+.leave-type-drawer>.ant-card-head{min-height:56px!important;padding:0 16px!important;border-bottom:1px solid #eef0f4!important}
+.leave-type-drawer>.ant-card-head .ant-card-head-title{padding:12px 0!important;font-size:.94rem!important;font-weight:900!important;color:#172136!important}
+.leave-type-drawer>.ant-card-head .ant-card-extra{padding:10px 0!important}
+.leave-type-drawer>.ant-card-head .ant-btn{width:32px!important;height:32px!important;min-height:32px!important;padding:0!important;border-radius:8px!important;font-size:18px!important;line-height:1!important;color:#64748b!important}
+.leave-type-drawer>.ant-card-body{min-height:0!important;overflow:hidden!important;padding:0!important}
+.leave-type-drawer .leave-type-drawer-body{height:100%!important;min-height:0!important;display:grid!important;grid-template-rows:minmax(0,1fr) auto!important;gap:0!important;padding:0!important;overflow:hidden!important}
+.leave-type-drawer-scroll{min-height:0!important;display:grid!important;gap:12px!important;align-content:start!important;padding:14px!important;overflow-y:auto!important;overscroll-behavior:contain!important;scrollbar-gutter:stable!important;background:#f8fafc!important}
+.leave-type-drawer-scroll::-webkit-scrollbar{width:9px!important}
+.leave-type-drawer-scroll::-webkit-scrollbar-thumb{border:2px solid #f8fafc!important;border-radius:999px!important;background:#c7cbd7!important}
+.leave-type-form-section{min-width:0!important;display:grid!important;gap:10px!important;padding:12px!important;border:1px solid #e5e8f0!important;border-radius:8px!important;background:#fff!important;box-shadow:0 1px 8px #17213608!important}
+.leave-type-form-section h3{margin:0!important;font-size:.82rem!important;line-height:1.2!important;font-weight:900!important;color:#172136!important}
+.leave-type-form-section .ant-row{row-gap:0!important}
+.leave-type-drawer .ant-form-item{margin-bottom:10px!important}
+.leave-type-drawer .ant-form-item-label{padding-bottom:3px!important}
+.leave-type-drawer .ant-form-item-label>label{height:auto!important;color:#465067!important;font-size:.7rem!important;font-weight:900!important}
+.leave-type-drawer .ant-form-item-required:before{color:#e11d48!important}
+.leave-type-drawer .ant-input,.leave-type-drawer .ant-input-number,.leave-type-drawer .app-search-select .ant-select-selector{height:34px!important;min-height:34px!important;border-radius:8px!important}
+.leave-type-drawer .ant-input-number{width:100%!important}
+.leave-type-drawer .ant-checkbox-wrapper{align-items:flex-start!important;min-height:34px!important;padding-top:6px!important;color:#243044!important;font-size:.76rem!important;font-weight:800!important}
+.leave-type-drawer-footer{display:flex!important;justify-content:flex-end!important;gap:8px!important;padding:12px 16px!important;border-top:1px solid #eef0f4!important;background:#fff!important}
+.leave-type-drawer-footer .ant-space{flex-wrap:wrap!important;justify-content:flex-end!important}
+.leave-type-drawer-footer .ant-btn{min-width:112px!important;height:34px!important;border-radius:8px!important;font-weight:900!important}
+@media(max-width:900px){.leave-type-summary{grid-template-columns:repeat(2,minmax(0,1fr))!important}.leave-type-drawer.ant-card{width:100vw!important}}
+@media(max-width:620px){.leave-type-summary{grid-template-columns:1fr!important}.leave-type-drawer-scroll{padding:10px!important}.leave-type-form-section{padding:10px!important}.leave-type-drawer-footer{padding:10px!important}.leave-type-drawer-footer .ant-space,.leave-type-drawer-footer .ant-space-item,.leave-type-drawer-footer .ant-btn{width:100%!important}}
+.payroll-attendance-page .attendance-calendar-grid thead th{height:44px!important;min-width:48px!important;padding:3px 4px!important}
+.payroll-attendance-page .attendance-calendar-grid thead th button{grid-template-rows:13px 11px 11px!important;gap:0!important;line-height:1!important}
+.payroll-attendance-page .attendance-calendar-grid thead th b{font-size:12px!important;line-height:13px!important}
+.payroll-attendance-page .attendance-calendar-grid thead th em{display:block!important;color:#64748b!important;font-size:9px!important;font-style:normal!important;font-weight:800!important;line-height:11px!important;text-transform:uppercase!important}
+.payroll-attendance-page .attendance-calendar-grid thead th span{font-size:10px!important;line-height:11px!important}
+@media(max-width:700px){.payroll-attendance-page .attendance-client-control.attendance-client-field,.payroll-attendance-page .attendance-client-control.attendance-scope-field,.payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar .attendance-cycle-field{width:100%!important;min-width:0!important;margin-left:0!important}.payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar>.ant-btn{margin-top:0!important;width:100%!important}}
+
 /* Attendance Review themed buttons */
 .payroll-attendance-page .ant-btn,
 .payroll-attendance-page .attendance-file-action.ant-btn,
@@ -969,3 +1018,138 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 .attendance-group-table{min-height:calc(100vh - 170px)}
 .attendance-group-table .ant-card-body{padding-top:10px!important}
 @media(max-width:991px){.attendance-group-table{min-height:auto}.attendance-employee-picker{max-height:280px}}
+
+.settings-split{align-items:stretch!important}
+.settings-split>.ant-col{display:flex!important}
+.settings-panel{width:100%!important;border-color:#e5e8f0!important;border-radius:10px!important;box-shadow:0 2px 10px #1721360a!important}
+.settings-split .settings-panel{min-height:calc(100vh - 160px)!important}
+.settings-compact-panel{height:100%!important;border-color:#e5e8f0!important;border-radius:10px!important}
+.settings-panel>.ant-card-body{height:calc(100% - 48px)!important}
+.settings-form-panel>.ant-card-body{display:flex!important;flex-direction:column!important}
+.settings-quick-form{display:flex!important;min-height:100%!important;flex-direction:column!important}
+.settings-quick-form .ant-form-item{margin-bottom:14px!important}
+.settings-quick-form>.ant-divider{margin-top:auto!important}
+.settings-table-panel .ant-card-body{display:block!important}
+.settings-table-panel .ant-smart-table{flex:none!important}
+.settings-table-panel .zoho-ant-table .ant-table-body{min-height:420px!important}
+.zoho-ant-table .ant-table-row-actions button:not(.ant-btn):first-child,.zoho-ant-table .row-actions button:not(.danger):first-child{border-color:#1677ff!important;background:#1677ff!important;color:#fff!important}
+.zoho-ant-table .ant-table-row-actions button:not(.ant-btn):first-child:hover,.zoho-ant-table .row-actions button:not(.danger):first-child:hover{border-color:#4096ff!important;background:#4096ff!important;color:#fff!important}
+.zoho-ant-table .ant-table-row-actions .ant-btn-primary{border-color:#1677ff!important;background:#1677ff!important;color:#fff!important}
+.zoho-ant-table .ant-table-row-actions .ant-btn-primary:hover{border-color:#4096ff!important;background:#4096ff!important;color:#fff!important}
+.zoho-ant-table .ant-table-row-actions .ant-btn-dangerous{border-color:#ff4d4f!important;background:#fff!important;color:#ff4d4f!important}
+.zoho-ant-table .ant-table-row-actions .ant-btn-dangerous:hover{border-color:#ff7875!important;background:#fff2f0!important;color:#ff4d4f!important}
+@media(max-width:991px){.settings-split .settings-panel{min-height:auto!important}}
+
+/* Restored product branding, auth polish, and document logo support */
+.auth-shell{min-height:100vh!important;display:grid!important;place-items:center!important;padding:28px!important;background:linear-gradient(135deg,#f8fafc 0%,#eef6ff 46%,#f7f7fb 100%)!important}
+.auth-card.auth-login-card,.auth-card{width:min(100%,430px)!important;padding:30px!important;border:1px solid #dde5ef!important;border-radius:18px!important;background:#fff!important;box-shadow:0 24px 70px #1721361c!important}
+.auth-brand-panel{display:grid!important;gap:7px!important;margin-bottom:22px!important}
+.auth-product-logo{width:172px!important;max-width:70%!important;height:auto!important;object-fit:contain!important;margin-bottom:6px!important}
+.auth-card h1{margin:0!important;color:#172136!important;font:800 1.65rem Manrope,Inter,sans-serif!important;letter-spacing:0!important}
+.auth-card p{margin:0!important;color:#64748b!important;font-size:.86rem!important;line-height:1.55!important}
+.auth-card form{display:grid!important;gap:14px!important}
+.auth-card label{display:grid!important;gap:6px!important;color:#465067!important;font-size:.76rem!important;font-weight:800!important}
+.auth-card input{height:42px!important;border:1px solid #d9e0ea!important;border-radius:10px!important;padding:0 12px!important;background:#fff!important;color:#172136!important;font-size:.82rem!important;outline:0!important}
+.auth-card input:focus{border-color:#2b8fdc!important;box-shadow:0 0 0 3px #2b8fdc18!important}
+.auth-password-field{display:grid!important;grid-template-columns:minmax(0,1fr) 42px!important;align-items:center!important;border:1px solid #d9e0ea!important;border-radius:10px!important;background:#fff!important;overflow:hidden!important}
+.auth-password-field:focus-within{border-color:#2b8fdc!important;box-shadow:0 0 0 3px #2b8fdc18!important}
+.auth-password-field input{border:0!important;border-radius:0!important;box-shadow:none!important}
+.auth-password-field button{width:42px!important;height:42px!important;display:grid!important;place-items:center!important;border:0!important;border-left:1px solid #eef1f5!important;border-radius:0!important;background:#f8fafc!important;color:#334155!important;box-shadow:none!important;cursor:pointer!important}
+.auth-submit{height:44px!important;border:0!important;border-radius:11px!important;background:linear-gradient(135deg,#146ab6,#21a0d7)!important;color:#fff!important;font-weight:900!important;box-shadow:0 12px 22px #1787c52d!important;cursor:pointer!important}
+.auth-submit:disabled,.auth-password-field button:disabled{opacity:.62!important;cursor:not-allowed!important;box-shadow:none!important}
+.auth-card small{display:block!important;margin-top:12px!important;color:#8a94a6!important;font-size:.68rem!important}
+.topbar-title-line{display:flex!important;align-items:center!important;gap:10px!important;min-width:0!important}
+.topbar-title-line>div{min-width:0!important}
+.topbar-org-logo{width:44px!important;height:40px!important;flex:0 0 44px!important;object-fit:contain!important;padding:5px!important;border:1px solid #e5e8f0!important;border-radius:10px!important;background:#fff!important;box-shadow:0 6px 16px #1721360f!important}
+body.portal-shell-mounted #root .module-shell .side-head .brand.product-brand{width:190px!important;height:54px!important;flex:0 0 190px!important;display:flex!important;align-items:center!important;justify-content:center!important;margin:0!important;padding:5px 8px!important;border:1px solid #e1e7ef!important;border-radius:12px!important;background:#fff!important;box-shadow:0 10px 24px #17213610!important}
+body.portal-shell-mounted #root .module-shell .side-head .brand.product-brand span{display:none!important}
+body.portal-shell-mounted #root .module-shell .side-head .brand.product-brand .product-brand-logo{width:100%!important;height:100%!important;max-width:none!important;flex:0 0 auto!important;object-fit:contain!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+body.portal-shell-mounted #root .module-shell.nav-collapsed .side-head .brand.product-brand{width:42px!important;height:42px!important;flex-basis:42px!important;padding:3px!important;border-radius:11px!important}
+body.portal-shell-mounted #root .module-shell .compact-main{min-height:100vh!important;display:flex!important;flex-direction:column!important}
+body.portal-shell-mounted #root .module-shell .module-content{flex:1 0 auto!important}
+.shell-bottom-brand{min-height:34px!important;display:flex!important;align-items:center!important;gap:9px!important;margin:10px -18px 0!important;padding:7px 24px!important;border-top:1px solid #e5e8f0!important;background:#fff!important;color:#3b475c!important;font-size:.68rem!important;font-weight:800!important;opacity:.84!important;position:sticky!important;bottom:0!important;z-index:18!important}
+.shell-bottom-brand img,.shell-bottom-brand b{width:38px!important;height:22px!important;flex:0 0 38px!important;display:grid!important;place-items:center!important;object-fit:contain!important;border:1px solid #dfe6ee!important;border-radius:6px!important;background:#fff!important;color:#146ab6!important}
+.payslip-preview header b.payslip-logo-mark{background:#fff!important;border:1px solid #e5e8f0!important;color:inherit!important;overflow:hidden!important}
+.payslip-preview header b.payslip-logo-mark img{width:100%!important;height:100%!important;object-fit:contain!important;padding:4px!important}
+@media(max-width:640px){.auth-card.auth-login-card,.auth-card{padding:22px!important;border-radius:15px!important}.auth-product-logo{width:145px!important}.shell-bottom-brand{margin-left:-12px!important;margin-right:-10px!important;padding-inline:14px!important}}
+
+/* Holiday Management: keep AntD controls readable and scoped to the selected client */
+.leave-attendance .holiday-manager{display:grid!important;grid-template-columns:minmax(0,1.35fr) minmax(360px,.65fr)!important;gap:12px!important;align-items:start!important}
+.leave-attendance .holiday-manager .holiday-list-card{grid-row:1 / span 2!important;min-width:0!important}
+.leave-attendance .holiday-manager .holiday-form,.leave-attendance .holiday-manager .holiday-import{max-width:none!important;min-width:0!important}
+.leave-attendance .holiday-manager .holiday-toolbar.ant-row{display:flex!important;grid-template-columns:none!important;gap:0!important;align-items:flex-end!important;margin:0 -6px 8px!important}
+.leave-attendance .holiday-manager .holiday-toolbar .ant-form-item{margin-bottom:10px!important}
+.leave-attendance .holiday-manager .holiday-toolbar .app-search-select{width:100%!important;min-width:0!important}
+.leave-attendance .holiday-manager .holiday-toolbar .app-search-select .ant-select-selector{height:38px!important;min-height:38px!important;border-radius:8px!important}
+.leave-attendance .holiday-manager .holiday-year-field.ant-col{flex:0 0 180px!important;max-width:180px!important}
+.leave-attendance .holiday-manager .holiday-location-field.ant-col{flex:0 0 390px!important;max-width:390px!important}
+.leave-attendance .holiday-manager .holiday-calendar{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))!important}
+.leave-attendance .holiday-manager .location-picker{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))!important}
+@media(max-width:1180px){.leave-attendance .holiday-manager{grid-template-columns:1fr!important}.leave-attendance .holiday-manager .holiday-list-card{grid-row:auto!important}}
+@media(max-width:700px){.leave-attendance .holiday-manager .holiday-toolbar.ant-row{margin:0 0 8px!important}.leave-attendance .holiday-manager .holiday-year-field.ant-col,.leave-attendance .holiday-manager .holiday-location-field.ant-col{flex:0 0 100%!important;max-width:100%!important;padding-inline:0!important}}
+
+/* 100% browser zoom stability: remove fixed-width pressure from Attendance Review */
+.payroll-attendance-page,.payroll-attendance-page *{min-width:0}
+.payroll-attendance-page .manual-attendance{width:100%!important;max-width:100%!important;overflow:hidden!important}
+.payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar{
+  display:grid!important;
+  grid-template-columns:minmax(180px,240px) minmax(280px,1fr) minmax(230px,300px) max-content!important;
+  align-items:start!important;
+  gap:10px!important;
+  width:100%!important;
+  min-height:0!important;
+}
+.payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar label,
+.payroll-attendance-page .attendance-client-control,
+.payroll-attendance-page .attendance-client-control.attendance-client-field,
+.payroll-attendance-page .attendance-client-control.attendance-scope-field,
+.payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar .attendance-cycle-field{
+  width:auto!important;
+  min-width:0!important;
+  max-width:none!important;
+  margin-left:0!important;
+}
+.payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar>.ant-btn{width:max-content!important;margin-top:21px!important;white-space:nowrap!important}
+.payroll-attendance-page .attendance-panel{min-width:0!important;overflow:hidden!important}
+.payroll-attendance-page .attendance-panel.ant-card .ant-card-body{min-width:0!important;overflow:hidden!important}
+.payroll-attendance-page .attendance-summary{grid-template-columns:repeat(auto-fit,minmax(120px,1fr))!important}
+.payroll-attendance-page .attendance-next-actions.ant-space{display:flex!important;width:100%!important;min-width:0!important}
+.payroll-attendance-page .attendance-next-actions .ant-space-item{min-width:0!important}
+.payroll-attendance-page .attendance-action-field{width:clamp(150px,18vw,210px)!important;min-width:0!important}
+.payroll-attendance-page .attendance-next-actions .app-search-select{width:100%!important;min-width:0!important}
+.payroll-attendance-page .attendance-filterbar{
+  display:grid!important;
+  grid-template-columns:minmax(220px,1fr) minmax(150px,190px) minmax(150px,180px)!important;
+  width:100%!important;
+  min-width:0!important;
+}
+.payroll-attendance-page .attendance-table-head{display:flex!important;align-items:center!important;justify-content:space-between!important;min-width:0!important}
+.payroll-attendance-page .attendance-table-head>div{min-width:0!important}
+.payroll-attendance-page .attendance-table-head span{display:block!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important}
+.payroll-attendance-page .attendance-table-actions{flex:0 0 auto!important}
+.payroll-attendance-page .attendance-calendar-grid{width:100%!important;max-width:100%!important;overflow:auto!important}
+.payroll-attendance-page .attendance-calendar-grid table{width:max-content!important;min-width:100%!important}
+.payroll-attendance-page .attendance-calendar-grid .employee-col{min-width:220px!important;max-width:240px!important}
+@media(max-width:1180px){
+  .payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar{grid-template-columns:minmax(170px,220px) minmax(260px,1fr) minmax(220px,280px)!important}
+  .payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar>.ant-btn{grid-column:3!important;justify-self:end!important;margin-top:0!important}
+}
+@media(max-width:900px){
+  .payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar{grid-template-columns:1fr 1fr!important}
+  .payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar>.ant-btn{grid-column:auto!important;justify-self:stretch!important;width:100%!important}
+  .payroll-attendance-page .attendance-filterbar{grid-template-columns:1fr!important}
+  .payroll-attendance-page .attendance-action-field{width:100%!important}
+}
+@media(max-width:640px){
+  .payroll-attendance-page .attendance-toolbar.attendance-simple-toolbar{grid-template-columns:1fr!important}
+  .payroll-attendance-page .attendance-table-head{align-items:stretch!important;flex-direction:column!important}
+  .payroll-attendance-page .attendance-table-actions{width:100%!important}
+  .payroll-attendance-page .attendance-table-actions .ant-btn,.payroll-attendance-page .attendance-file-action.ant-btn{width:100%!important}
+}
+
+/* Final scoped overrides for Leave Types after generic Settings rules */
+.leave-types .leave-types-panel>.ant-card-body{height:auto!important;display:grid!important;gap:12px!important;min-width:0!important;padding:12px!important}
+.leave-type-drawer.settings-panel>.ant-card-body{height:calc(100dvh - 56px)!important;min-height:0!important;overflow:hidden!important;padding:0!important}
+.leave-type-drawer .settings-quick-form.leave-type-drawer-body{height:100%!important;max-height:100%!important;min-height:0!important;display:grid!important;grid-template-rows:minmax(0,1fr) auto!important;gap:0!important;padding:0!important;overflow:hidden!important}
+.leave-type-drawer .leave-type-drawer-scroll{min-height:0!important;max-height:100%!important;overflow-y:auto!important}
+.leave-type-drawer .leave-type-drawer-footer{flex:0 0 auto!important}

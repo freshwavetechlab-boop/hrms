@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS modulesetupprogress (
 );
 CREATE TABLE IF NOT EXISTS leave_attendance_preferences (
     id INT PRIMARY KEY AUTO_INCREMENT,
+    work_location_id INT NOT NULL DEFAULT 0,
+    work_week VARCHAR(80) NOT NULL DEFAULT '',
     attendance_cycle_start_day INT NOT NULL DEFAULT 1,
     attendance_cycle_end_day INT NOT NULL DEFAULT 25,
     payroll_report_generation_day INT NOT NULL DEFAULT 28,
@@ -139,7 +141,7 @@ CREATE TABLE IF NOT EXISTS attendance_groups (
     work_location_id INT NOT NULL,
     department VARCHAR(150) NOT NULL DEFAULT '',
     designation VARCHAR(150) NOT NULL DEFAULT '',
-    work_week VARCHAR(80) NOT NULL DEFAULT 'Monday - Friday',
+    work_week VARCHAR(80) NOT NULL DEFAULT '',
     attendance_cycle_start_day INT NOT NULL DEFAULT 1,
     attendance_cycle_end_day INT NOT NULL DEFAULT 25,
     payroll_report_generation_day INT NOT NULL DEFAULT 28,
@@ -281,10 +283,14 @@ CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
         await EnsureColumnAsync(connection, "employee_daily_attendance", "check_in_time", "TIME NULL AFTER payable_value");
         await EnsureColumnAsync(connection, "employee_daily_attendance", "check_out_time", "TIME NULL AFTER check_in_time");
         await EnsureColumnAsync(connection, "employee_daily_attendance", "total_hours", "DECIMAL(5,2) NOT NULL DEFAULT 0 AFTER check_out_time");
-        await EnsureColumnAsync(connection, "attendance_groups", "work_week", "VARCHAR(80) NOT NULL DEFAULT 'Monday - Friday' AFTER designation");
+        await EnsureColumnAsync(connection, "attendance_groups", "work_week", "VARCHAR(80) NOT NULL DEFAULT '' AFTER designation");
         await EnsureColumnAsync(connection, "attendance_groups", "attendance_cycle_start_day", "INT NOT NULL DEFAULT 1 AFTER work_week");
         await EnsureColumnAsync(connection, "attendance_groups", "attendance_cycle_end_day", "INT NOT NULL DEFAULT 25 AFTER attendance_cycle_start_day");
         await EnsureColumnAsync(connection, "attendance_groups", "payroll_report_generation_day", "INT NOT NULL DEFAULT 28 AFTER attendance_cycle_end_day");
+        await EnsureColumnAsync(connection, "leave_attendance_preferences", "work_location_id", "INT NOT NULL DEFAULT 0 AFTER client_id");
+        await EnsureColumnAsync(connection, "leave_attendance_preferences", "work_week", "VARCHAR(80) NOT NULL DEFAULT '' AFTER work_location_id");
+        await EnsureColumnAsync(connection, "dropdownmasters", "ConfigJson", "JSON NULL AFTER Value");
+        await connection.ExecuteAsync("UPDATE leave_attendance_preferences SET work_location_id=0 WHERE work_location_id IS NULL");
         await EnsureClientScopeAsync(connection);
     }
 
@@ -322,19 +328,34 @@ FROM modulesetupprogress WHERE ModuleCode = 'leave_attendance' AND client_id=@Cl
         return await GetAsync(clientId);
     }
 
-    public async Task<LeaveAttendancePreferences> GetPreferencesAsync(int clientId)
+    public async Task<LeaveAttendancePreferences> GetPreferencesAsync(int clientId, int? workLocationId = null)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        return await connection.QueryFirstOrDefaultAsync<LeaveAttendancePreferences>(@"SELECT id AS Id, client_id AS ClientId,
+        return await GetPreferencesAsync(connection, clientId, workLocationId);
+    }
+
+    private static async Task<LeaveAttendancePreferences> GetPreferencesAsync(MySqlConnection connection, int clientId, int? workLocationId = null)
+    {
+        await EnsureColumnAsync(connection, "leave_attendance_preferences", "work_location_id", "INT NOT NULL DEFAULT 0 AFTER client_id");
+        await EnsureColumnAsync(connection, "leave_attendance_preferences", "work_week", "VARCHAR(80) NOT NULL DEFAULT '' AFTER work_location_id");
+        var locationId = workLocationId.GetValueOrDefault();
+        return await connection.QueryFirstOrDefaultAsync<LeaveAttendancePreferences>(@"SELECT p.id AS Id, p.client_id AS ClientId,
+NULLIF(p.work_location_id, 0) AS WorkLocationId,
+CASE WHEN p.work_location_id = 0 THEN 'All locations' ELSE COALESCE(w.Name, 'All locations') END AS WorkLocationName,
+p.work_week AS WorkWeek,
 attendance_cycle_start_day AS AttendanceCycleStartDay,
 attendance_cycle_end_day AS AttendanceCycleEndDay,
 payroll_report_generation_day AS PayrollReportGenerationDay,
 include_leave_encashment_in_pay_run AS IncludeLeaveEncashmentInPayRun,
 leave_encashment_salary_component_id AS LeaveEncashmentSalaryComponentId,
-created_at AS CreatedAt,
-updated_at AS UpdatedAt
-FROM leave_attendance_preferences WHERE client_id=@ClientId LIMIT 1;", new { ClientId = clientId }) ?? new LeaveAttendancePreferences { ClientId = clientId };
+p.created_at AS CreatedAt,
+p.updated_at AS UpdatedAt
+FROM leave_attendance_preferences p
+LEFT JOIN worklocations w ON w.Id = p.work_location_id
+WHERE p.client_id=@ClientId AND ((@WorkLocationId > 0 AND p.work_location_id=@WorkLocationId) OR p.work_location_id=0)
+ORDER BY CASE WHEN p.work_location_id=@WorkLocationId THEN 0 ELSE 1 END
+LIMIT 1;", new { ClientId = clientId, WorkLocationId = locationId }) ?? new LeaveAttendancePreferences { ClientId = clientId, WorkLocationId = locationId > 0 ? locationId : null };
     }
 
     public async Task<(LeaveAttendancePreferences? Preferences, string? Error)> SavePreferencesAsync(SaveLeaveAttendancePreferencesRequest request)
@@ -343,16 +364,28 @@ FROM leave_attendance_preferences WHERE client_id=@ClientId LIMIT 1;", new { Cli
         if (validationError is not null) return (null, validationError);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync(@"INSERT INTO leave_attendance_preferences (client_id, attendance_cycle_start_day, attendance_cycle_end_day, payroll_report_generation_day, include_leave_encashment_in_pay_run, leave_encashment_salary_component_id)
-VALUES (@ClientId, @AttendanceCycleStartDay, @AttendanceCycleEndDay, @PayrollReportGenerationDay, @IncludeLeaveEncashmentInPayRun, @LeaveEncashmentSalaryComponentId)
+        var payload = new
+        {
+            request.ClientId,
+            WorkLocationId = request.WorkLocationId is > 0 ? request.WorkLocationId : 0,
+            WorkWeek = request.WorkWeek.Trim(),
+            request.AttendanceCycleStartDay,
+            request.AttendanceCycleEndDay,
+            request.PayrollReportGenerationDay,
+            request.IncludeLeaveEncashmentInPayRun,
+            request.LeaveEncashmentSalaryComponentId
+        };
+        await connection.ExecuteAsync(@"INSERT INTO leave_attendance_preferences (client_id, work_location_id, work_week, attendance_cycle_start_day, attendance_cycle_end_day, payroll_report_generation_day, include_leave_encashment_in_pay_run, leave_encashment_salary_component_id)
+VALUES (@ClientId, @WorkLocationId, @WorkWeek, @AttendanceCycleStartDay, @AttendanceCycleEndDay, @PayrollReportGenerationDay, @IncludeLeaveEncashmentInPayRun, @LeaveEncashmentSalaryComponentId)
 ON DUPLICATE KEY UPDATE
+work_week = @WorkWeek,
 attendance_cycle_start_day = @AttendanceCycleStartDay,
 attendance_cycle_end_day = @AttendanceCycleEndDay,
 payroll_report_generation_day = @PayrollReportGenerationDay,
 include_leave_encashment_in_pay_run = @IncludeLeaveEncashmentInPayRun,
 leave_encashment_salary_component_id = @LeaveEncashmentSalaryComponentId
-;", request);
-        return (await GetPreferencesAsync(request.ClientId), null);
+;", payload);
+        return (await GetPreferencesAsync(connection, request.ClientId, request.WorkLocationId), null);
     }
 
     public async Task<AttendanceSettings> GetAttendanceSettingsAsync(int clientId)
@@ -512,7 +545,7 @@ VALUES (@ClientId, @Name, @WorkLocationId, @Department, @Designation, @WorkWeek,
         return await connection.ExecuteAsync("DELETE FROM attendance_groups WHERE id=@Id AND client_id=@ClientId", new { Id = id, ClientId = clientId }) > 0;
     }
 
-    public async Task<AttendanceReviewContext> GetAttendanceReviewContextAsync(int clientId, string month)
+    public async Task<AttendanceReviewContext> GetAttendanceReviewContextAsync(int clientId, string month, int? workLocationId = null)
     {
         var monthStart = IsValidMonth(month) ? DateTime.Parse($"{month}-01") : new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
         var monthEnd = monthStart.AddMonths(1).AddDays(-1);
@@ -525,7 +558,15 @@ allow_regularization_requests AS AllowRegularizationRequests, regularization_win
 restrict_regularization_requests_per_month AS RestrictRegularizationRequestsPerMonth, max_regularization_requests_per_month AS MaxRegularizationRequestsPerMonth,
 created_at AS CreatedAt, updated_at AS UpdatedAt
 FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { ClientId = clientId }) ?? new AttendanceSettings { ClientId = clientId };
-        var scheduleJson = await connection.ExecuteScalarAsync<string?>("SELECT CAST(PayScheduleJson AS CHAR) FROM clients WHERE Id=@ClientId", new { ClientId = clientId });
+        var preferences = await GetPreferencesAsync(connection, clientId, workLocationId);
+        var schedule = new ClientAttendanceSchedule
+        {
+            WorkWeek = preferences.WorkWeek ?? string.Empty,
+            SalaryDays = "Actual days",
+            FixedDays = "30",
+            PayDay = "Last working day",
+            FirstPayPeriod = string.Empty
+        };
         var balances = (await connection.QueryAsync<EmployeeLeaveBalanceSummary>(@"SELECT b.employee_id AS EmployeeId, lt.id AS LeaveTypeId, lt.code AS LeaveTypeCode, lt.name AS LeaveTypeName,
 b.balance_count AS Balance, b.balance_date AS BalanceDate, p.allow_negative_leave_balance AS AllowNegativeLeaveBalance
 FROM employee_leave_balances b
@@ -538,18 +579,35 @@ JOIN (
     GROUP BY employee_id, leave_type_id
 ) latest ON latest.employee_id=b.employee_id AND latest.leave_type_id=b.leave_type_id AND latest.balance_date=b.balance_date
 WHERE b.client_id=@ClientId;", new { ClientId = clientId, MonthEnd = monthEnd })).ToList();
-        var holidays = (await GetHolidaysAsync(clientId, monthStart.Year, null))
-            .Where(holiday => holiday.StartDate.Date <= monthEnd && holiday.EndDate.Date >= monthStart)
+        var holidayStart = monthStart.AddMonths(-1);
+        var holidayRows = new List<Holiday>();
+        foreach (var year in new[] { holidayStart.Year, monthStart.Year }.Distinct())
+            holidayRows.AddRange(await GetHolidaysAsync(clientId, year, workLocationId is > 0 ? workLocationId : null));
+        var holidays = holidayRows
+            .Where(holiday => holiday.StartDate.Date <= monthEnd && holiday.EndDate.Date >= holidayStart)
+            .GroupBy(holiday => holiday.Id)
+            .Select(group => group.First())
             .ToList();
-        return new AttendanceReviewContext { Settings = settings, Schedule = ReadSchedule(scheduleJson), Holidays = holidays, LeaveBalances = balances };
+        return new AttendanceReviewContext { Settings = settings, Schedule = schedule, Preferences = preferences, Holidays = holidays, LeaveBalances = balances };
     }
 
-    public async Task<IEnumerable<EmployeeMonthlyAttendance>> GetMonthlyAttendanceAsync(int clientId, string month)
+    public async Task<IEnumerable<EmployeeMonthlyAttendance>> GetMonthlyAttendanceAsync(int clientId, string month, int? workLocationId = null)
     {
         if (!IsValidMonth(month)) return [];
         await using var connection = CreateConnection();
         await connection.OpenAsync();
+        await EnsureColumnAsync(connection, "attendance_groups", "work_week", "VARCHAR(80) NOT NULL DEFAULT '' AFTER designation");
+        await EnsureColumnAsync(connection, "attendance_groups", "attendance_cycle_start_day", "INT NOT NULL DEFAULT 1 AFTER work_week");
+        await EnsureColumnAsync(connection, "attendance_groups", "attendance_cycle_end_day", "INT NOT NULL DEFAULT 25 AFTER attendance_cycle_start_day");
+        await EnsureColumnAsync(connection, "attendance_groups", "payroll_report_generation_day", "INT NOT NULL DEFAULT 28 AFTER attendance_cycle_end_day");
+        var locationId = workLocationId.GetValueOrDefault();
         return await connection.QueryAsync<EmployeeMonthlyAttendance>(@"SELECT e.Id AS EmployeeId, e.EmployeeCode, CONCAT(e.FirstName, ' ', e.LastName) AS EmployeeName, e.Department, e.WorkLocationId,
+g.id AS AttendanceGroupId,
+COALESCE(g.name, '') AS AttendanceGroupName,
+COALESCE(g.work_week, '') AS WorkWeek,
+g.attendance_cycle_start_day AS AttendanceCycleStartDay,
+g.attendance_cycle_end_day AS AttendanceCycleEndDay,
+g.payroll_report_generation_day AS PayrollReportGenerationDay,
 @Month AS Month,
 COALESCE(a.working_days, 0) AS WorkingDays,
 COALESCE(a.present_days, 0) AS PresentDays,
@@ -559,8 +617,15 @@ COALESCE(a.source_type, 'Monthly') AS SourceType,
 COALESCE(a.remarks, '') AS Remarks
 FROM employees e
 LEFT JOIN employee_monthly_attendance a ON a.employee_id=e.Id AND a.client_id=e.ClientId AND a.attendance_month=@Month
-WHERE e.ClientId=@ClientId AND e.IsActive=TRUE
-ORDER BY e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = clientId, Month = month });
+LEFT JOIN (
+    SELECT age.employee_id, MIN(g.id) AS group_id
+    FROM attendance_group_employees age
+    JOIN attendance_groups g ON g.id=age.attendance_group_id AND g.client_id=@ClientId AND g.is_active=TRUE
+    GROUP BY age.employee_id
+) employee_group ON employee_group.employee_id=e.Id
+LEFT JOIN attendance_groups g ON g.id=employee_group.group_id
+WHERE e.ClientId=@ClientId AND e.IsActive=TRUE AND (@WorkLocationId <= 0 OR e.WorkLocationId=@WorkLocationId)
+ORDER BY e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = clientId, Month = month, WorkLocationId = locationId });
     }
 
     public async Task<(IEnumerable<EmployeeMonthlyAttendance>? Rows, string? Error)> SaveMonthlyAttendanceAsync(SaveMonthlyAttendanceRequest request)
@@ -595,16 +660,18 @@ WHERE client_id=@ClientId AND employee_id=@EmployeeId AND DATE_FORMAT(attendance
 ORDER BY attendance_date;", new { ClientId = clientId, EmployeeId = employeeId, Month = month });
     }
 
-    public async Task<IEnumerable<EmployeeDailyAttendance>> GetDailyAttendanceMonthAsync(int clientId, string month)
+    public async Task<IEnumerable<EmployeeDailyAttendance>> GetDailyAttendanceMonthAsync(int clientId, string month, int? workLocationId = null)
     {
         if (!IsValidMonth(month)) return [];
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        return await connection.QueryAsync<EmployeeDailyAttendance>(@"SELECT id AS Id, client_id AS ClientId, employee_id AS EmployeeId, attendance_date AS AttendanceDate, status AS Status, payable_value AS PayableValue,
-check_in_time AS CheckInTime, check_out_time AS CheckOutTime, total_hours AS TotalHours, COALESCE(remarks, '') AS Remarks
-FROM employee_daily_attendance
-WHERE client_id=@ClientId AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month
-ORDER BY employee_id, attendance_date;", new { ClientId = clientId, Month = month });
+        var locationId = workLocationId.GetValueOrDefault();
+        return await connection.QueryAsync<EmployeeDailyAttendance>(@"SELECT d.id AS Id, d.client_id AS ClientId, d.employee_id AS EmployeeId, d.attendance_date AS AttendanceDate, d.status AS Status, d.payable_value AS PayableValue,
+d.check_in_time AS CheckInTime, d.check_out_time AS CheckOutTime, d.total_hours AS TotalHours, COALESCE(d.remarks, '') AS Remarks
+FROM employee_daily_attendance d
+JOIN employees e ON e.Id=d.employee_id AND e.ClientId=d.client_id
+WHERE d.client_id=@ClientId AND DATE_FORMAT(d.attendance_date, '%Y-%m')=@Month AND (@WorkLocationId <= 0 OR e.WorkLocationId=@WorkLocationId)
+ORDER BY d.employee_id, d.attendance_date;", new { ClientId = clientId, Month = month, WorkLocationId = locationId });
     }
 
     public async Task<(IEnumerable<EmployeeDailyAttendance>? Rows, string? Error)> SaveDailyAttendanceAsync(SaveDailyAttendanceRequest request)
@@ -660,17 +727,18 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
             .ToDictionary(row => row.Code, row => row, StringComparer.OrdinalIgnoreCase);
         var validEmployeeIds = (await connection.QueryAsync<int>("SELECT Id FROM employees WHERE ClientId=@ClientId AND IsActive=TRUE", new { request.ClientId })).ToHashSet();
         var groupedRows = request.Rows
-            .Where(row => validEmployeeIds.Contains(row.EmployeeId) && row.AttendanceDate.ToString("yyyy-MM") == request.Month)
+            .Where(row => validEmployeeIds.Contains(row.EmployeeId))
             .GroupBy(row => row.EmployeeId)
             .ToList();
         if (groupedRows.Count == 0) return (null, "No valid employee attendance rows were submitted.");
 
-        var expectedDays = DateTime.DaysInMonth(int.Parse(request.Month[..4]), int.Parse(request.Month[5..7]));
+        var expectedDays = groupedRows.Max(group => group.Select(row => row.AttendanceDate.Date).Distinct().Count());
+        var touchedMonths = groupedRows.SelectMany(group => group.Select(row => row.AttendanceDate.ToString("yyyy-MM"))).Distinct().ToArray();
         var rows = new List<object>();
         foreach (var group in groupedRows)
         {
             if (group.Select(row => row.AttendanceDate.Date).Distinct().Count() != expectedDays)
-                return (null, "Save the complete attendance month before payroll review.");
+                return (null, "Save the complete attendance cycle before payroll review.");
             var invalidStatus = group.FirstOrDefault(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes) is null);
             if (invalidStatus is not null) return (null, $"Attendance status '{invalidStatus.Status}' is not valid.");
             var employeeRows = group.Select(row =>
@@ -691,7 +759,8 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
         await connection.ExecuteAsync(@"INSERT INTO employee_daily_attendance (client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
 VALUES (@ClientId, @EmployeeId, @AttendanceDate, @Status, @PayableValue, @CheckInTime, @CheckOutTime, @TotalHours, @Remarks)
 ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), check_in_time=VALUES(check_in_time), check_out_time=VALUES(check_out_time), total_hours=VALUES(total_hours), remarks=VALUES(remarks);", rows, transaction);
-        await RollupDailyAttendanceBatchAsync(connection, transaction, request.ClientId, groupedRows.Select(row => row.Key).ToArray(), request.Month);
+        foreach (var touchedMonth in touchedMonths)
+            await RollupDailyAttendanceBatchAsync(connection, transaction, request.ClientId, groupedRows.Select(row => row.Key).ToArray(), touchedMonth);
         await transaction.CommitAsync();
         return (await GetMonthlyAttendanceAsync(request.ClientId, request.Month), null);
     }
@@ -777,6 +846,12 @@ ORDER BY h.start_date, h.name;", new { ClientId = clientId, Year = year, WorkLoc
         if (error is not null) return (null, error);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
+        request.WorkLocationIds = request.AllLocations ? [] : request.WorkLocationIds.Distinct().ToList();
+        if (!request.AllLocations)
+        {
+            var validLocationCount = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE AND Id IN @Ids", new { request.ClientId, Ids = request.WorkLocationIds });
+            if (validLocationCount != request.WorkLocationIds.Count) return (null, "Selected work location does not belong to this client.");
+        }
         var duplicate = await HasDuplicateHolidayAsync(connection, request);
         if (duplicate) return (null, "Duplicate holiday exists for the same location and date range.");
         await using var transaction = await connection.BeginTransactionAsync();
@@ -885,6 +960,15 @@ FROM attendance_group_employees WHERE attendance_group_id IN @Ids", new { Ids = 
 
     private async Task<string?> ValidatePreferencesAsync(SaveLeaveAttendancePreferencesRequest request)
     {
+        if (request.ClientId <= 0) return "Select a client.";
+        if (!await IsValidWorkWeekAsync((request.WorkWeek ?? string.Empty).Trim())) return "Select a valid work week.";
+        if (request.WorkLocationId is > 0)
+        {
+            await using var connection = CreateConnection();
+            await connection.OpenAsync();
+            var locationOk = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM worklocations WHERE Id=@WorkLocationId AND ClientId=@ClientId AND IsActive=TRUE", new { request.ClientId, request.WorkLocationId });
+            if (locationOk == 0) return "Select a valid work location for the client.";
+        }
         if (!IsValidDay(request.AttendanceCycleStartDay) || !IsValidDay(request.AttendanceCycleEndDay) || !IsValidDay(request.PayrollReportGenerationDay))
             return "Attendance cycle and report generation days must be between 1 and 31.";
         var buffer = request.PayrollReportGenerationDay >= request.AttendanceCycleEndDay
@@ -953,7 +1037,7 @@ FROM attendance_group_employees WHERE attendance_group_id IN @Ids", new { Ids = 
         if (request.ClientId <= 0) return "Select a client.";
         if (string.IsNullOrWhiteSpace(request.Name)) return "Group name is required.";
         if (request.WorkLocationId <= 0) return "Select a work location.";
-        if (!IsValidWorkWeek((request.WorkWeek ?? string.Empty).Trim())) return "Select a valid work week.";
+        if (!await IsValidWorkWeekAsync((request.WorkWeek ?? string.Empty).Trim())) return "Select a valid work week.";
         if (!IsValidDay(request.AttendanceCycleStartDay) || !IsValidDay(request.AttendanceCycleEndDay) || !IsValidDay(request.PayrollReportGenerationDay))
             return "Attendance cycle and report generation days must be between 1 and 31.";
         var buffer = request.PayrollReportGenerationDay >= request.AttendanceCycleEndDay
@@ -1127,7 +1211,7 @@ WHERE lt.client_id=@ClientId AND lt.code IN @Codes;", new { ClientId = clientId,
         schedule ??= new ClientAttendanceSchedule();
         return new ClientAttendanceSchedule
         {
-            WorkWeek = string.IsNullOrWhiteSpace(schedule.WorkWeek) ? "Monday - Friday" : schedule.WorkWeek,
+            WorkWeek = schedule.WorkWeek ?? string.Empty,
             SalaryDays = string.IsNullOrWhiteSpace(schedule.SalaryDays) ? "Actual days" : schedule.SalaryDays,
             FixedDays = string.IsNullOrWhiteSpace(schedule.FixedDays) ? "30" : schedule.FixedDays,
             PayDay = string.IsNullOrWhiteSpace(schedule.PayDay) ? "Last working day" : schedule.PayDay,
@@ -1211,7 +1295,34 @@ LEFT JOIN Employees e ON e.Id = age.employee_id";
         status is "Not Started" or "In Progress" or "Completed" or "Disabled";
     private static bool IsValidDay(int day) => day is >= 1 and <= 31;
     private static bool IsValidMonth(string month) => month.Length == 7 && DateTime.TryParse($"{month}-01", out _);
-    private static bool IsValidWorkWeek(string workWeek) => WorkWeekOptions.Contains(workWeek);
+    private async Task<bool> IsValidWorkWeekAsync(string workWeek)
+    {
+        if (WorkWeekOptions.Contains(workWeek)) return true;
+        if (string.IsNullOrWhiteSpace(workWeek)) return false;
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await EnsureColumnAsync(connection, "dropdownmasters", "ConfigJson", "JSON NULL AFTER Value");
+        var activeMasterCount = await connection.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM dropdownmasters
+WHERE Type='Work Week' AND Value=@WorkWeek AND IsActive=TRUE LIMIT 1", new { WorkWeek = workWeek });
+        return activeMasterCount > 0;
+    }
+
+    private static bool IsValidWorkWeekConfig(string? configJson)
+    {
+        if (string.IsNullOrWhiteSpace(configJson)) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(configJson);
+            if (!document.RootElement.TryGetProperty("workingDays", out var workingDays) || workingDays.ValueKind != JsonValueKind.Array) return false;
+            var days = workingDays.EnumerateArray().Select(item => item.GetInt32()).ToArray();
+            return days.Length > 0 && days.All(day => day is >= 0 and <= 6);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static readonly HashSet<string> WorkWeekOptions = new(StringComparer.OrdinalIgnoreCase)
     {
         "Monday - Friday",
@@ -1232,10 +1343,13 @@ LEFT JOIN Employees e ON e.Id = age.employee_id";
 
         foreach (var table in new[] { "modulesettings", "modulesetupprogress", "leave_attendance_preferences", "attendance_settings", "employee_monthly_attendance", "employee_daily_attendance", "leave_types", "holidays", "employee_leave_balances", "leave_balance_import_logs" })
             await connection.ExecuteAsync($"UPDATE {table} SET client_id=@ClientId WHERE client_id IS NULL", new { ClientId = clientId });
+        await connection.ExecuteAsync("UPDATE leave_attendance_preferences SET work_location_id=0 WHERE work_location_id IS NULL");
+        await KeepLatestPreferenceScopeAsync(connection);
+        await DropIndexIfExistsAsync(connection, "leave_attendance_preferences", "UX_preferences_client");
         await DropIndexIfExistsAsync(connection, "leave_types", "UX_leave_types_code");
         await CreateIndexIfMissingAsync(connection, "modulesettings", "UX_ModuleSettings_Client_Module", "CREATE UNIQUE INDEX UX_ModuleSettings_Client_Module ON modulesettings (client_id, ModuleCode)");
         await CreateIndexIfMissingAsync(connection, "modulesetupprogress", "UX_ModuleSetupProgress_Client_Module_Step", "CREATE UNIQUE INDEX UX_ModuleSetupProgress_Client_Module_Step ON modulesetupprogress (client_id, ModuleCode, StepCode)");
-        await CreateIndexIfMissingAsync(connection, "leave_attendance_preferences", "UX_preferences_client", "CREATE UNIQUE INDEX UX_preferences_client ON leave_attendance_preferences (client_id)");
+        await CreateIndexIfMissingAsync(connection, "leave_attendance_preferences", "UX_preferences_client_location", "CREATE UNIQUE INDEX UX_preferences_client_location ON leave_attendance_preferences (client_id, work_location_id)");
         await CreateIndexIfMissingAsync(connection, "attendance_settings", "UX_attendance_client", "CREATE UNIQUE INDEX UX_attendance_client ON attendance_settings (client_id)");
         await CreateIndexIfMissingAsync(connection, "leave_types", "UX_leave_types_client_code", "CREATE UNIQUE INDEX UX_leave_types_client_code ON leave_types (client_id, code)");
         await CreateIndexIfMissingAsync(connection, "attendance_geo_fence_rules", "IX_geo_fence_client_scope", "CREATE INDEX IX_geo_fence_client_scope ON attendance_geo_fence_rules (client_id, scope_type, is_active)");
@@ -1259,6 +1373,13 @@ WHERE table_schema = DATABASE() AND table_name = @TableName AND column_name = @C
         if (exists == 0)
             await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition}");
     }
+
+    private static Task KeepLatestPreferenceScopeAsync(MySqlConnection connection) =>
+        connection.ExecuteAsync(@"DELETE older FROM leave_attendance_preferences older
+JOIN leave_attendance_preferences newer
+  ON newer.client_id = older.client_id
+ AND newer.work_location_id = older.work_location_id
+ AND newer.id > older.id");
 
     private static async Task EnsureForeignKeyAsync(MySqlConnection connection, string tableName, string constraintName, string definition)
     {
