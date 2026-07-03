@@ -78,7 +78,10 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+if (!app.Environment.IsDevelopment() || app.Configuration.GetValue<int?>("HttpsRedirection:HttpsPort").HasValue)
+{
+    app.UseHttpsRedirection();
+}
 app.UseCors();
 
 app.Use(async (context, next) =>
@@ -677,14 +680,14 @@ app.MapGet("/api/employees", async (EmployeeRepository repository) =>
 .WithName("GetEmployees")
 .WithOpenApi();
 
-app.MapPost("/api/employees", async (EmployeeRepository repository, Employee employee) =>
+app.MapPost("/api/employees", async (EmployeeRepository repository, Employee employee, HttpContext context, string? infotypeCode, string? changeReason) =>
 {
     if (employee.ClientId == 0 || string.IsNullOrWhiteSpace(employee.EmployeeCode) || string.IsNullOrWhiteSpace(employee.FirstName))
         return Results.BadRequest(new { error = "Client, employee code and first name are required." });
     employee.SalaryJson = string.IsNullOrWhiteSpace(employee.SalaryJson) ? "{}" : employee.SalaryJson;
     employee.PersonalJson = string.IsNullOrWhiteSpace(employee.PersonalJson) ? "{}" : employee.PersonalJson;
     employee.PaymentJson = string.IsNullOrWhiteSpace(employee.PaymentJson) ? "{}" : employee.PaymentJson;
-    var id = await repository.SaveAsync(employee);
+    var id = await repository.SaveAsync(employee, CurrentUser(context).Email, infotypeCode, changeReason);
     return Results.Ok(new { id });
 })
 .WithName("SaveEmployee")
@@ -693,6 +696,29 @@ app.MapPost("/api/employees", async (EmployeeRepository repository, Employee emp
 app.MapGet("/api/employees/{id:int}/delete-preview", async (EmployeeRepository repository, int id) =>
     await repository.GetDeletePreviewAsync(id) is { } preview ? Results.Ok(preview) : Results.NotFound(new { error = "Employee not found." }))
 .WithName("GetEmployeeDeletePreview")
+.WithOpenApi();
+
+app.MapGet("/api/employees/{id:int}/infotypes", async (EmployeeRepository repository, int id, bool activeOnly) =>
+    Results.Ok(await repository.GetInfotypesAsync(id, activeOnly)))
+.WithName("GetEmployeeInfotypes")
+.WithOpenApi();
+
+app.MapGet("/api/employees/{id:int}/audit", async (EmployeeRepository repository, int id) =>
+    Results.Ok(await repository.GetAuditTrailAsync(id)))
+.WithName("GetEmployeeAuditTrail")
+.WithOpenApi();
+
+app.MapGet("/api/employees/infotypes/active", async (EmployeeRepository repository, int clientId) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetActiveInfotypesAsync(clientId)))
+.WithName("GetActiveEmployeeInfotypes")
+.WithOpenApi();
+
+app.MapPost("/api/employees/actions", async (EmployeeRepository repository, EmployeeActionRequest request, HttpContext context) =>
+{
+    var (employee, error) = await repository.ProcessActionAsync(request, CurrentUser(context).Email);
+    return employee is null ? Results.BadRequest(new { error }) : Results.Ok(employee);
+})
+.WithName("ProcessEmployeeAction")
 .WithOpenApi();
 
 app.MapDelete("/api/employees/{id:int}", async (EmployeeRepository repository, int id) =>
@@ -958,6 +984,7 @@ static async Task RunDatabaseSetupAsync(IServiceProvider services, IConfiguratio
     var scopedServices = scope.ServiceProvider;
 
     await scopedServices.GetRequiredService<OrganizationRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<EmployeeRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<PayRunRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<AuthRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<LeaveAttendanceRepository>().InitializeAsync();
