@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Form, Input, Row, Space } from 'antd'
+import { Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Form, Input, Row, Space } from 'antd'
 import { getClients, getEmployees } from '../services/payrollService'
 import { getDropdowns, getWorkLocations } from '../services/settingsService'
 import { deleteAttendanceGroup, getAttendanceGroups, saveAttendanceGroup } from '../services/leaveAttendanceService'
@@ -12,6 +12,25 @@ const emptyGroup: AttendanceGroup = { id: 0, clientId: 0, clientName: '', name: 
 const unique = (items: string[]) => Array.from(new Set(items.map(item => item.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b))
 const fullName = (employee: Employee) => `${employee.firstName} ${employee.lastName}`.trim() || employee.employeeCode
 const bufferDays = (endDay: number, reportDay: number) => reportDay >= endDay ? reportDay - endDay : reportDay + 31 - endDay
+const cycleDays = (startDay: number, endDay: number) => startDay === 1 ? endDay : 31 - startDay + 1 + endDay
+const currentMonth = () => {
+  const date = new Date()
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+const monthStart = (month: string) => {
+  const [year, monthNumber] = month.split('-').map(Number)
+  return new Date(year || new Date().getFullYear(), (monthNumber || 1) - 1, 1)
+}
+const addMonths = (date: Date, months: number) => new Date(date.getFullYear(), date.getMonth() + months, 1)
+const clampDay = (date: Date, day: number) => Math.min(Math.max(1, day), new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate())
+const shortDate = (date: Date) => date.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })
+const cyclePreviewFor = (month: string, startDay: number, endDay: number) => {
+  const endMonth = monthStart(month)
+  const startMonth = startDay > 1 ? addMonths(endMonth, -1) : endMonth
+  const start = new Date(startMonth.getFullYear(), startMonth.getMonth(), clampDay(startMonth, startDay))
+  const end = new Date(endMonth.getFullYear(), endMonth.getMonth(), clampDay(endMonth, endDay))
+  return { label: `${shortDate(start)} - ${shortDate(end)}`, days: Math.round((end.getTime() - start.getTime()) / 86400000) + 1 }
+}
 
 export default function AttendanceGroupsManager({ onMessage }: { onMessage: (message: string) => void }) {
   const [clients, setClients] = useState<Client[]>([])
@@ -20,8 +39,9 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
   const [dropdowns, setDropdowns] = useState<Drop[]>([])
   const [groups, setGroups] = useState<AttendanceGroup[]>([])
   const [form, setForm] = useState<AttendanceGroup>(emptyGroup)
-  const [errors, setErrors] = useState<string[]>([])
+  const [, setErrors] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
+  const [previewMonth, setPreviewMonth] = useState(currentMonth())
 
   const activeEmployees = useMemo(() => employees.filter(employee => employee.isActive), [employees])
   const clientLocations = useMemo(() => locations.filter(location => location.isActive), [locations])
@@ -33,6 +53,8 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
   const matchingIds = useMemo(() => matchingEmployees.map(employee => employee.id), [matchingEmployees])
   const selectedMatchingCount = form.employeeIds.filter(id => matchingIds.includes(id)).length
   const buffer = bufferDays(form.attendanceCycleEndDay, form.payrollReportGenerationDay)
+  const cycleLength = cycleDays(form.attendanceCycleStartDay, form.attendanceCycleEndDay)
+  const cyclePreview = useMemo(() => cyclePreviewFor(previewMonth, form.attendanceCycleStartDay, form.attendanceCycleEndDay), [previewMonth, form.attendanceCycleStartDay, form.attendanceCycleEndDay])
 
   const employeeIdsFor = (group: AttendanceGroup, sourceEmployees = activeEmployees) => sourceEmployees.filter(employee => employee.clientId === group.clientId && employee.workLocationId === group.workLocationId && (!group.department || employee.department === group.department) && (!group.designation || employee.designation === group.designation)).map(employee => employee.id)
   const defaultFor = (clientRows = clients, locationRows = locations, employeeRows = activeEmployees) => {
@@ -76,14 +98,16 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
 
   const validate = () => {
     const next: string[] = []
-    if (!form.name.trim()) next.push('Group name is required.')
+    if (!form.name.trim()) next.push('Policy name is required.')
     if (!form.clientId) next.push('Select a client.')
     if (!form.workLocationId) next.push('Select a work location.')
     if (!form.workWeek) next.push('Select a weekly off pattern.')
+    if (cycleLength > 31) next.push('Attendance cycle cannot exceed 31 days in any payroll month.')
     if (buffer < 3 || buffer > 7) next.push('Payroll report generation day must be 3 to 7 days after attendance cycle end day.')
     if (!form.employeeIds.length) next.push('Select at least one employee.')
     if (form.employeeIds.some(id => !matchingIds.includes(id))) next.push('Selected employees must match the selected client, location, department and designation.')
     setErrors(next)
+    if (next.length) onMessage(next.join(' '))
     return next.length === 0
   }
 
@@ -96,27 +120,34 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
       setForm(response.data)
       setGroups(await getAttendanceGroups())
       setErrors([])
-      onMessage('Attendance group saved.')
-    } else setErrors([response.error || 'Unable to save attendance group.'])
+      onMessage('Attendance policy saved.')
+    } else {
+      const error = response.error || 'Unable to save attendance policy.'
+      setErrors([error])
+      onMessage(error)
+    }
   }
   const edit = (group: AttendanceGroup) => { setErrors([]); setForm({ ...emptyGroup, ...group, employeeIds: group.employeeIds || [] }) }
   const remove = async (group: AttendanceGroup) => {
-    if (!window.confirm(`Delete group ${group.name}?`)) return
+    if (!window.confirm(`Delete policy ${group.name}?`)) return
     const response = await deleteAttendanceGroup(group.clientId, group.id)
     if (response.ok) {
       setGroups(await getAttendanceGroups())
       if (form.id === group.id) reset()
-      onMessage('Attendance group deleted.')
-    } else setErrors([response.error || 'Unable to delete attendance group.'])
+      onMessage('Attendance policy deleted.')
+    } else {
+      const error = response.error || 'Unable to delete attendance policy.'
+      setErrors([error])
+      onMessage(error)
+    }
   }
 
   return <section className="attendance-groups">
     <Row gutter={[16, 16]} className="attendance-group-layout">
       <Col xs={24} lg={10}>
-        <AntCard className="attendance-group-panel attendance-group-form-panel" title={form.id ? 'Edit group' : 'Add group'} size="small" extra={form.id ? <Button htmlType="button" onClick={reset}>New</Button> : null}>
+        <AntCard className="attendance-group-panel attendance-group-form-panel" title={form.id ? 'Edit attendance policy' : 'Add attendance policy'} size="small" extra={form.id ? <Button htmlType="button" onClick={reset}>New</Button> : null}>
           <Form className="attendance-group-form" component={false} layout="vertical" requiredMark={false}>
-            {errors.length > 0 && <Alert type="error" showIcon message={errors.join(' ')} />}
-            <Form.Item label="Group name" required><Input value={form.name} onChange={event => set('name', event.target.value)} placeholder="Consultants - RECL Site A" /></Form.Item>
+            <Form.Item label="Policy name" required><Input value={form.name} onChange={event => set('name', event.target.value)} placeholder="Consultants - RECL Site A" /></Form.Item>
             <Form.Item label="Client" required><SearchSelect value={form.clientId} onChange={value => applyScope({ clientId: Number(value), id: 0 })} options={clients.map(client => ({ value: client.id, label: client.name }))} /></Form.Item>
             <Form.Item label="Work Location" required><SearchSelect value={form.workLocationId} onChange={applyWorkLocation} options={selectOptions(clientLocations.map(location => ({ value: location.id, label: `${location.name} - ${location.clientName || clients.find(client => client.id === location.clientId)?.name || 'Client'} - ${location.city || location.state || 'Location'}` })), 'Select work location', 0)} /></Form.Item>
             <Row gutter={12}>
@@ -124,14 +155,15 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
               <Col xs={24} md={12} lg={24} xl={12}><Form.Item label="Designation"><SearchSelect value={form.designation} onChange={value => applyScope({ designation: value, id: 0 })} options={selectOptions(designations, 'All designations')} /></Form.Item></Col>
             </Row>
             <Form.Item label="Weekly off pattern" required><SearchSelect value={form.workWeek} onChange={value => set('workWeek', value as AttendanceWorkWeek)} options={selectOptions(workWeeks, 'Select weekly off pattern')} /></Form.Item>
+            <Form.Item label="Payroll month preview" extra={`${cyclePreview.label} / ${cyclePreview.days} days`}><Input type="month" value={previewMonth} onChange={event => setPreviewMonth(event.target.value || currentMonth())} /></Form.Item>
             <Row gutter={12}>
               <Col span={8}><Form.Item label="Cycle start date" required><SearchSelect value={form.attendanceCycleStartDay} onChange={value => set('attendanceCycleStartDay', Number(value))} options={selectOptions(dayOptions)} /></Form.Item></Col>
-              <Col span={8}><Form.Item label="Cycle end date" required><SearchSelect value={form.attendanceCycleEndDay} onChange={value => set('attendanceCycleEndDay', Number(value))} options={selectOptions(dayOptions)} /></Form.Item></Col>
+              <Col span={8}><Form.Item label="Cycle end date" extra={`Max ${cycleLength} days`} required><SearchSelect value={form.attendanceCycleEndDay} onChange={value => set('attendanceCycleEndDay', Number(value))} options={selectOptions(dayOptions)} /></Form.Item></Col>
               <Col span={8}><Form.Item label="Payroll report date" extra={`${buffer} day buffer`} required><SearchSelect value={form.payrollReportGenerationDay} onChange={value => set('payrollReportGenerationDay', Number(value))} options={selectOptions(dayOptions)} /></Form.Item></Col>
             </Row>
             <Form.Item><AntCheckbox checked={form.isActive} onChange={event => set('isActive', event.target.checked)}>Active</AntCheckbox></Form.Item>
             <Divider />
-            <div className="attendance-group-actions"><Button htmlType="button" onClick={reset}>Reset</Button><Button htmlType="button" type="primary" loading={saving} onClick={() => void save()}>{form.id ? 'Update group' : 'Save group'}</Button></div>
+            <div className="attendance-group-actions"><Button htmlType="button" onClick={reset}>Reset</Button><Button htmlType="button" type="primary" loading={saving} onClick={() => void save()}>{form.id ? 'Update policy' : 'Save policy'}</Button></div>
           </Form>
         </AntCard>
         <AntCard className="attendance-group-panel attendance-group-members" title={`Employees (${selectedMatchingCount}/${matchingEmployees.length})`} size="small" extra={<Space><Button size="small" onClick={() => set('employeeIds', matchingIds)}>Select all</Button><Button size="small" onClick={() => set('employeeIds', [])}>Clear</Button></Space>}>
@@ -139,9 +171,9 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
         </AntCard>
       </Col>
       <Col xs={24} lg={14}>
-        <AntCard className="attendance-group-panel attendance-group-table" title="Saved groups" size="small">
-          <DataTable rows={groups} getRowId={row => row.id} emptyText="No attendance groups configured." exportFileName="attendance-groups" columns={[
-            { key: 'name', label: 'Group' },
+        <AntCard className="attendance-group-panel attendance-group-table" title="Saved attendance policies" size="small">
+          <DataTable rows={groups} getRowId={row => row.id} emptyText="No attendance policies configured." exportFileName="attendance-policies" columns={[
+            { key: 'name', label: 'Policy' },
             { key: 'clientName', label: 'Client' },
             { key: 'workLocationName', label: 'Location' },
             { key: 'department', label: 'Department', value: row => row.department || 'All' },

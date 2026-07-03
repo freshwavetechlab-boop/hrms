@@ -45,9 +45,12 @@ CREATE TABLE IF NOT EXISTS organizations (
     LogoDataUrl LONGTEXT,
     PAN VARCHAR(50),
     GSTIN VARCHAR(50),
+    TanNumber VARCHAR(50),
     FiscalYearStart VARCHAR(50),
     AddressLine1 VARCHAR(255),
     AddressLine2 VARCHAR(255),
+    RegisteredOfficeAddress TEXT,
+    CorporateOfficeAddress TEXT,
     City VARCHAR(100),
     State VARCHAR(100),
     PostalCode VARCHAR(30),
@@ -92,6 +95,7 @@ CREATE TABLE IF NOT EXISTS worklocations (
     City VARCHAR(100),
     State VARCHAR(100),
     PostalCode VARCHAR(30),
+    GSTIN VARCHAR(50),
     IsPrimary BOOLEAN NOT NULL DEFAULT FALSE,
     IsActive BOOLEAN NOT NULL DEFAULT TRUE,
     CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -101,13 +105,14 @@ CREATE TABLE IF NOT EXISTS worklocations (
         await connection.ExecuteAsync(@"
 CREATE TABLE IF NOT EXISTS dropdownmasters (
     Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL DEFAULT 0,
     Type VARCHAR(100) NOT NULL,
     Value VARCHAR(200) NOT NULL,
     ConfigJson JSON NULL,
     IsActive BOOLEAN NOT NULL DEFAULT TRUE,
     CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY UX_DropdownMasters_Type_Value (Type, Value)
+    UNIQUE KEY UX_DropdownMasters_Client_Type_Value (ClientId, Type, Value)
 );" );
 
         await connection.ExecuteAsync(@"
@@ -122,6 +127,7 @@ CREATE TABLE IF NOT EXISTS employees (
     WorkEmail VARCHAR(150),
     Department VARCHAR(100),
     Designation VARCHAR(100),
+    Grade VARCHAR(100),
     WorkLocationId INT NOT NULL DEFAULT 0,
     ReportingManagerId INT NOT NULL DEFAULT 0,
     PortalAccess BOOLEAN NOT NULL DEFAULT FALSE,
@@ -142,10 +148,18 @@ CREATE TABLE IF NOT EXISTS employees (
         await EnsureColumnAsync(connection, "SetupCompleted", "BOOLEAN NOT NULL DEFAULT FALSE");
         await EnsureColumnAsync(connection, "LogoDataUrl", "LONGTEXT NULL");
         await EnsureColumnAsync(connection, "ProfessionalTaxNumber", "VARCHAR(100) NULL");
+        await EnsureColumnAsync(connection, "TanNumber", "VARCHAR(50) NULL AFTER GSTIN");
+        await EnsureColumnAsync(connection, "RegisteredOfficeAddress", "TEXT NULL AFTER AddressLine2");
+        await EnsureColumnAsync(connection, "CorporateOfficeAddress", "TEXT NULL AFTER RegisteredOfficeAddress");
         await EnsureTableColumnAsync(connection, "clients", "PayScheduleJson", "JSON NULL");
         await EnsureTableColumnAsync(connection, "worklocations", "ClientId", "INT NOT NULL DEFAULT 0 AFTER Id");
         await EnsureTableColumnAsync(connection, "worklocations", "ClientName", "VARCHAR(250) NULL AFTER ClientId");
+        await EnsureTableColumnAsync(connection, "worklocations", "GSTIN", "VARCHAR(50) NULL AFTER PostalCode");
+        await EnsureTableColumnAsync(connection, "employees", "Grade", "VARCHAR(100) NULL AFTER Designation");
+        await EnsureTableColumnAsync(connection, "dropdownmasters", "ClientId", "INT NOT NULL DEFAULT 0 AFTER Id");
         await EnsureTableColumnAsync(connection, "dropdownmasters", "ConfigJson", "JSON NULL AFTER Value");
+        await DropIndexIfExistsAsync(connection, "dropdownmasters", "UX_DropdownMasters_Type_Value");
+        await EnsureIndexAsync(connection, "dropdownmasters", "UX_DropdownMasters_Client_Type_Value", "CREATE UNIQUE INDEX UX_DropdownMasters_Client_Type_Value ON dropdownmasters (ClientId, Type, Value)");
         await PayrollDataTableStore.EnsureAsync(connection);
         await SeedLocationDropdownMastersAsync(connection);
     }
@@ -172,20 +186,45 @@ WHERE TABLE_SCHEMA = DATABASE()
         if (exists == 0) await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition};");
     }
 
+    private static async Task DropIndexIfExistsAsync(MySqlConnection connection, string tableName, string indexName)
+    {
+        var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @TableName AND INDEX_NAME = @IndexName", new { TableName = tableName, IndexName = indexName });
+        if (exists > 0) await connection.ExecuteAsync($"DROP INDEX `{indexName}` ON `{tableName}`;");
+    }
+
+    private static async Task EnsureIndexAsync(MySqlConnection connection, string tableName, string indexName, string createSql)
+    {
+        var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @TableName AND INDEX_NAME = @IndexName", new { TableName = tableName, IndexName = indexName });
+        if (exists == 0) await connection.ExecuteAsync(createSql);
+    }
+
     private static async Task SeedLocationDropdownMastersAsync(MySqlConnection connection)
     {
+        string[] states =
+        [
+            "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh", "Goa", "Gujarat", "Haryana",
+            "Himachal Pradesh", "Jharkhand", "Karnataka", "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur",
+            "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu",
+            "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal", "Andaman and Nicobar Islands",
+            "Chandigarh", "Dadra and Nagar Haveli and Daman and Diu", "Delhi", "Jammu and Kashmir", "Ladakh",
+            "Lakshadweep", "Puducherry"
+        ];
+        foreach (var state in states)
+            await connection.ExecuteAsync(@"INSERT INTO dropdownmasters (ClientId, Type, Value, IsActive)
+SELECT 0, 'State', @State, TRUE WHERE NOT EXISTS (SELECT 1 FROM dropdownmasters WHERE ClientId=0 AND Type='State' AND Value=@State);", new { State = state });
+
         await connection.ExecuteAsync(@"
-INSERT INTO dropdownmasters (Type, Value, IsActive)
-SELECT 'State', State, TRUE FROM (
+INSERT INTO dropdownmasters (ClientId, Type, Value, IsActive)
+SELECT 0, 'State', State, TRUE FROM (
     SELECT DISTINCT TRIM(State) State FROM worklocations WHERE TRIM(COALESCE(State, '')) <> ''
     UNION SELECT DISTINCT TRIM(State) FROM organizations WHERE TRIM(COALESCE(State, '')) <> ''
-) s WHERE NOT EXISTS (SELECT 1 FROM dropdownmasters d WHERE d.Type = 'State' AND d.Value = s.State);
+) s WHERE NOT EXISTS (SELECT 1 FROM dropdownmasters d WHERE d.ClientId = 0 AND d.Type = 'State' AND d.Value = s.State);
 
-INSERT INTO dropdownmasters (Type, Value, IsActive)
-SELECT CONCAT('City:', State), City, TRUE FROM (
+INSERT INTO dropdownmasters (ClientId, Type, Value, IsActive)
+SELECT 0, CONCAT('City:', State), City, TRUE FROM (
     SELECT DISTINCT TRIM(State) State, TRIM(City) City FROM worklocations WHERE TRIM(COALESCE(State, '')) <> '' AND TRIM(COALESCE(City, '')) <> ''
     UNION SELECT DISTINCT TRIM(State), TRIM(City) FROM organizations WHERE TRIM(COALESCE(State, '')) <> '' AND TRIM(COALESCE(City, '')) <> ''
-) c WHERE NOT EXISTS (SELECT 1 FROM dropdownmasters d WHERE d.Type = CONCAT('City:', c.State) AND d.Value = c.City);");
+) c WHERE NOT EXISTS (SELECT 1 FROM dropdownmasters d WHERE d.ClientId = 0 AND d.Type = CONCAT('City:', c.State) AND d.Value = c.City);");
     }
 
     private static Task PrepareDatabaseAsync(MySqlConnection connection) => Task.CompletedTask;
@@ -221,9 +260,12 @@ INSERT INTO organizations (
     LogoDataUrl,
     PAN,
     GSTIN,
+    TanNumber,
     FiscalYearStart,
     AddressLine1,
     AddressLine2,
+    RegisteredOfficeAddress,
+    CorporateOfficeAddress,
     City,
     State,
     PostalCode,
@@ -243,9 +285,12 @@ INSERT INTO organizations (
     @LogoDataUrl,
     @Pan,
     @Gstin,
+    @TanNumber,
     @FiscalYearStart,
     @AddressLine1,
     @AddressLine2,
+    @RegisteredOfficeAddress,
+    @CorporateOfficeAddress,
     @City,
     @State,
     @PostalCode,
@@ -275,9 +320,12 @@ UPDATE organizations SET
     LogoDataUrl = @LogoDataUrl,
     PAN = @Pan,
     GSTIN = @Gstin,
+    TanNumber = @TanNumber,
     FiscalYearStart = @FiscalYearStart,
     AddressLine1 = @AddressLine1,
     AddressLine2 = @AddressLine2,
+    RegisteredOfficeAddress = @RegisteredOfficeAddress,
+    CorporateOfficeAddress = @CorporateOfficeAddress,
     City = @City,
     State = @State,
     PostalCode = @PostalCode,
@@ -353,8 +401,8 @@ WHERE Id = @Id;";
         if (location.IsPrimary)
             await connection.ExecuteAsync("UPDATE worklocations SET IsPrimary = FALSE WHERE ClientId=@ClientId", new { location.ClientId });
         if (location.Id == 0)
-            return (int)await connection.ExecuteScalarAsync<long>("INSERT INTO worklocations (ClientId, ClientName, Name, Address, City, State, PostalCode, IsPrimary, IsActive) VALUES (@ClientId, @ClientName, @Name, @Address, @City, @State, @PostalCode, @IsPrimary, @IsActive); SELECT LAST_INSERT_ID();", location);
-        await connection.ExecuteAsync("UPDATE worklocations SET ClientId=@ClientId, ClientName=@ClientName, Name=@Name, Address=@Address, City=@City, State=@State, PostalCode=@PostalCode, IsPrimary=@IsPrimary, IsActive=@IsActive WHERE Id=@Id", location);
+            return (int)await connection.ExecuteScalarAsync<long>("INSERT INTO worklocations (ClientId, ClientName, Name, Address, City, State, PostalCode, GSTIN, IsPrimary, IsActive) VALUES (@ClientId, @ClientName, @Name, @Address, @City, @State, @PostalCode, @Gstin, @IsPrimary, @IsActive); SELECT LAST_INSERT_ID();", location);
+        await connection.ExecuteAsync("UPDATE worklocations SET ClientId=@ClientId, ClientName=@ClientName, Name=@Name, Address=@Address, City=@City, State=@State, PostalCode=@PostalCode, GSTIN=@Gstin, IsPrimary=@IsPrimary, IsActive=@IsActive WHERE Id=@Id", location);
         return location.Id;
     }
 
@@ -372,8 +420,8 @@ WHERE Id = @Id;";
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
         if (item.Id == 0)
-            return (int)await connection.ExecuteScalarAsync<long>("INSERT INTO dropdownmasters (Type, Value, ConfigJson, IsActive) VALUES (@Type, @Value, NULLIF(@ConfigJson, ''), @IsActive); SELECT LAST_INSERT_ID();", item);
-        await connection.ExecuteAsync("UPDATE dropdownmasters SET Type=@Type, Value=@Value, ConfigJson=NULLIF(@ConfigJson, ''), IsActive=@IsActive WHERE Id=@Id", item);
+            return (int)await connection.ExecuteScalarAsync<long>("INSERT INTO dropdownmasters (ClientId, Type, Value, ConfigJson, IsActive) VALUES (@ClientId, @Type, @Value, NULLIF(@ConfigJson, ''), @IsActive); SELECT LAST_INSERT_ID();", item);
+        await connection.ExecuteAsync("UPDATE dropdownmasters SET ClientId=@ClientId, Type=@Type, Value=@Value, ConfigJson=NULLIF(@ConfigJson, ''), IsActive=@IsActive WHERE Id=@Id", item);
         return item.Id;
     }
 
@@ -393,9 +441,9 @@ WHERE Id = @Id;";
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
         if (employee.Id == 0)
-            employee.Id = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId, EmployeeCode, FirstName, LastName, Gender, DateOfJoining, WorkEmail, Department, Designation, WorkLocationId, ReportingManagerId, PortalAccess, SalaryStructureId, AnnualCtc, SalaryJson, PersonalJson, PaymentJson, IsActive) VALUES (@ClientId, @EmployeeCode, @FirstName, @LastName, @Gender, @DateOfJoining, @WorkEmail, @Department, @Designation, @WorkLocationId, @ReportingManagerId, @PortalAccess, @SalaryStructureId, @AnnualCtc, @SalaryJson, @PersonalJson, @PaymentJson, @IsActive); SELECT LAST_INSERT_ID();", employee);
+            employee.Id = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId, EmployeeCode, FirstName, LastName, Gender, DateOfJoining, WorkEmail, Department, Designation, Grade, WorkLocationId, ReportingManagerId, PortalAccess, SalaryStructureId, AnnualCtc, SalaryJson, PersonalJson, PaymentJson, IsActive) VALUES (@ClientId, @EmployeeCode, @FirstName, @LastName, @Gender, @DateOfJoining, @WorkEmail, @Department, @Designation, @Grade, @WorkLocationId, @ReportingManagerId, @PortalAccess, @SalaryStructureId, @AnnualCtc, @SalaryJson, @PersonalJson, @PaymentJson, @IsActive); SELECT LAST_INSERT_ID();", employee);
         else
-            await connection.ExecuteAsync(@"UPDATE employees SET ClientId=@ClientId, EmployeeCode=@EmployeeCode, FirstName=@FirstName, LastName=@LastName, Gender=@Gender, DateOfJoining=@DateOfJoining, WorkEmail=@WorkEmail, Department=@Department, Designation=@Designation, WorkLocationId=@WorkLocationId, ReportingManagerId=@ReportingManagerId, PortalAccess=@PortalAccess, SalaryStructureId=@SalaryStructureId, AnnualCtc=@AnnualCtc, SalaryJson=@SalaryJson, PersonalJson=@PersonalJson, PaymentJson=@PaymentJson, IsActive=@IsActive WHERE Id=@Id", employee);
+            await connection.ExecuteAsync(@"UPDATE employees SET ClientId=@ClientId, EmployeeCode=@EmployeeCode, FirstName=@FirstName, LastName=@LastName, Gender=@Gender, DateOfJoining=@DateOfJoining, WorkEmail=@WorkEmail, Department=@Department, Designation=@Designation, Grade=@Grade, WorkLocationId=@WorkLocationId, ReportingManagerId=@ReportingManagerId, PortalAccess=@PortalAccess, SalaryStructureId=@SalaryStructureId, AnnualCtc=@AnnualCtc, SalaryJson=@SalaryJson, PersonalJson=@PersonalJson, PaymentJson=@PaymentJson, IsActive=@IsActive WHERE Id=@Id", employee);
         await PayrollDataTableStore.SyncEmployeeTablesAsync(connection, employee);
         return employee.Id;
     }

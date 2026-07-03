@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import type { FormEvent, ReactNode } from 'react'
+import type { FormEvent, ReactNode, SyntheticEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons'
 import { getCurrentUser, login as authenticate, logout as endSession } from '../services/authService'
@@ -7,6 +7,7 @@ import type { AuthUser } from '../types/payroll'
 import { useToast } from './ToastProvider'
 
 const productLogo = '/assets/FrevoOneLogo.png'
+const loginLogo = '/assets/FrevoOneLoginLogo.png'
 
 type AuthSession = { user: AuthUser; logout: () => Promise<void> }
 const AuthSessionContext = createContext<AuthSession | null>(null)
@@ -58,8 +59,9 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     setUser(null)
   }
 
-  if (loading) return <main className="auth-shell"><section className="auth-card"><img className="auth-product-logo" src={productLogo} alt="Frevo One HR" /><h1>Frevo One HR</h1><p>Restoring secure workspace...</p></section></main>
-  if (!user) return <main className="auth-shell"><section className="auth-card auth-login-card"><div className="auth-brand-panel"><img className="auth-product-logo" src={productLogo} alt="Frevo One HR" /><span className="eyebrow purple">Secure Workspace</span><h1>Sign in to Frevo One HR</h1><p>Access payroll, attendance, approvals and statutory operations from one protected workspace.</p></div><form onSubmit={login}><label><span>Email</span><input value={email} onChange={event => setEmail(event.target.value)} autoComplete="username" placeholder="Enter email or login ID" disabled={signingIn} /></label><label><span>Password</span><div className="auth-password-field"><input type={showPassword ? 'text' : 'password'} value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" placeholder="Enter password" disabled={signingIn} /><button type="button" aria-label={showPassword ? 'Hide password' : 'Show password'} title={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword(current => !current)} disabled={signingIn}>{showPassword ? <EyeInvisibleOutlined /> : <EyeOutlined />}</button></div></label>{error && <strong className="auth-error">{error}</strong>}<button className="auth-submit" type="submit" disabled={signingIn}>{signingIn ? 'Signing in...' : 'Sign in'}</button></form>{import.meta.env.DEV && <small>Development login is prefilled for local testing.</small>}</section></main>
+  const useProductLogo = (event: SyntheticEvent<HTMLImageElement>) => { event.currentTarget.onerror = null; event.currentTarget.src = productLogo }
+  if (loading) return <main className="auth-shell"><section className="auth-card"><img className="auth-product-logo" src={loginLogo} onError={useProductLogo} alt="Frevo One HR" /></section></main>
+  if (!user) return <main className="auth-shell"><section className="auth-card auth-login-card"><div className="auth-brand-panel"><img className="auth-product-logo" src={loginLogo} onError={useProductLogo} alt="Frevo One HR" /></div><form onSubmit={login}><label><span>Email</span><input value={email} onChange={event => setEmail(event.target.value)} autoComplete="username" placeholder="Enter email or login ID" disabled={signingIn} /></label><label><span>Password</span><div className="auth-password-field"><input type={showPassword ? 'text' : 'password'} value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" placeholder="Enter password" disabled={signingIn} /><button type="button" aria-label={showPassword ? 'Hide password' : 'Show password'} title={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword(current => !current)} disabled={signingIn}>{showPassword ? <EyeInvisibleOutlined /> : <EyeOutlined />}</button></div></label>{error && <strong className="auth-error">{error}</strong>}<button className="auth-submit" type="submit" disabled={signingIn}>{signingIn ? 'Signing in...' : 'Sign in'}</button></form></section></main>
   return <AuthSessionContext.Provider value={{ user, logout }}>{children}</AuthSessionContext.Provider>
 }
 

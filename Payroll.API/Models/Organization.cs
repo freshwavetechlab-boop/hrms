@@ -13,9 +13,12 @@ public class Organization
     public string LogoDataUrl { get; set; } = string.Empty;
     public string Pan { get; set; } = string.Empty;
     public string Gstin { get; set; } = string.Empty;
+    public string TanNumber { get; set; } = string.Empty;
     public string FiscalYearStart { get; set; } = string.Empty;
     public string AddressLine1 { get; set; } = string.Empty;
     public string AddressLine2 { get; set; } = string.Empty;
+    public string RegisteredOfficeAddress { get; set; } = string.Empty;
+    public string CorporateOfficeAddress { get; set; } = string.Empty;
     public string City { get; set; } = string.Empty;
     public string State { get; set; } = string.Empty;
     public string PostalCode { get; set; } = string.Empty;

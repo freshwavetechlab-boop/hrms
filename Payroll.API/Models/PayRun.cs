@@ -161,6 +161,8 @@ public class CreatePayRunRequest
     public string RunType { get; set; } = "Regular";
     public string RunName { get; set; } = string.Empty;
     public string Reason { get; set; } = string.Empty;
+    public int AttendanceGroupId { get; set; }
+    public string AttendanceGroupName { get; set; } = string.Empty;
     public List<int> ExcludedEmployeeIds { get; set; } = [];
     public List<int> IncludedEmployeeIds { get; set; } = [];
     public List<int> AdjustmentIds { get; set; } = [];
