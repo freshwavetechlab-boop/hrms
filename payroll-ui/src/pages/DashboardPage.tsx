@@ -43,6 +43,7 @@ export default function DashboardPage() {
   }, [metrics, sections])
 
   const clientName = clientId === 0 ? 'All clients' : dashboard?.clients.find(client => client.id === clientId)?.name ?? 'Selected client'
+  const recentTotals = ['Approved', 'Processing', 'Pending Approval'].map(status => dashboard?.payRunStatuses.find(item => item.status === status) ?? { status, count: 0, netPay: 0 })
 
   return <section className="dashboard-page">
     <header className="dashboard-header">
@@ -95,6 +96,9 @@ export default function DashboardPage() {
 
     {canSee('payroll') && <article className="card dashboard-card dashboard-recent">
       <header><i><WalletOutlined /></i><div><h3>Recent Pay Runs</h3><p>Latest payroll activity for the selected client view.</p></div></header>
+      <div className="dashboard-status-list dashboard-recent-totals">
+        {recentTotals.map(item => <div key={item.status}><span>{item.status} Pay Runs</span><strong>{count.format(item.count)}</strong><small>{money.format(item.netPay)}</small></div>)}
+      </div>
       <div className="dashboard-table">
         <table>
           <thead><tr><th>Client</th><th>Period</th><th>Run</th><th>Status</th><th>Employees</th><th>Net Pay</th><th>Updated</th></tr></thead>

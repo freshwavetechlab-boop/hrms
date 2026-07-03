@@ -10,12 +10,16 @@ CREATE TABLE IF NOT EXISTS organizations (
     LogoDataUrl LONGTEXT,
     PAN VARCHAR(50),
     GSTIN VARCHAR(50),
+    TanNumber VARCHAR(50),
     FiscalYearStart VARCHAR(50),
     AddressLine1 VARCHAR(255),
     AddressLine2 VARCHAR(255),
+    RegisteredOfficeAddress TEXT,
+    CorporateOfficeAddress TEXT,
     City VARCHAR(100),
     State VARCHAR(100),
     PostalCode VARCHAR(30),
+    GSTIN VARCHAR(50),
     Country VARCHAR(100),
     BankName VARCHAR(200),
     AccountNumber VARCHAR(100),
@@ -61,12 +65,14 @@ CREATE TABLE IF NOT EXISTS worklocations (
 
 CREATE TABLE IF NOT EXISTS dropdownmasters (
     Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL DEFAULT 0,
     Type VARCHAR(100) NOT NULL,
     Value VARCHAR(200) NOT NULL,
+    ConfigJson JSON NULL,
     IsActive BOOLEAN NOT NULL DEFAULT TRUE,
     CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY UX_DropdownMasters_Type_Value (Type, Value)
+    UNIQUE KEY UX_DropdownMasters_Client_Type_Value (ClientId, Type, Value)
 );
 
 CREATE TABLE IF NOT EXISTS employees (
@@ -80,6 +86,7 @@ CREATE TABLE IF NOT EXISTS employees (
     WorkEmail VARCHAR(150),
     Department VARCHAR(100),
     Designation VARCHAR(100),
+    Grade VARCHAR(100),
     WorkLocationId INT NOT NULL DEFAULT 0,
     ReportingManagerId INT NOT NULL DEFAULT 0,
     PortalAccess BOOLEAN NOT NULL DEFAULT FALSE,

@@ -10,7 +10,8 @@ export default function PayrollAttendancePage() {
   const [clients, setClients] = useState<Client[]>([])
   const [groups, setGroups] = useState<AttendanceGroup[]>([])
   const [clientId, setClientId] = useState(0)
-  const [reviewScope, setReviewScope] = useState('cycle')
+  const [reviewScope, setReviewScope] = useState('')
+  const [groupsLoaded, setGroupsLoaded] = useState(false)
   const toast = useToast()
 
   useEffect(() => {
@@ -23,10 +24,12 @@ export default function PayrollAttendancePage() {
 
   useEffect(() => {
     if (!clientId) return
+    setGroupsLoaded(false)
     void getAttendanceGroups(clientId).then(rows => {
       const active = rows.filter(row => row.isActive)
       setGroups(active)
-      setReviewScope(current => current === 'cycle' || active.some(group => `group:${group.id}` === current) ? current : 'cycle')
+      setReviewScope(current => active.some(group => `group:${group.id}` === current) ? current : active[0] ? `group:${active[0].id}` : '')
+      setGroupsLoaded(true)
     })
   }, [clientId])
 
@@ -34,9 +37,13 @@ export default function PayrollAttendancePage() {
 
   if (!clientId) return <section className="pay-runs"><div className="card report-empty"><p>Create an active client before entering payroll attendance.</p></div></section>
   const clientControl = <>
-    <label className="attendance-client-control attendance-client-field"><span>Client</span><SearchSelect value={clientId} onChange={value => { setClientId(Number(value)); setReviewScope('cycle') }} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label>
-    <label className="attendance-client-control attendance-scope-field"><span>Review scope</span><SearchSelect value={reviewScope} onChange={setReviewScope} options={[{ value: 'cycle', label: 'Attendance cycle' }, ...groups.map(group => ({ value: `group:${group.id}`, label: `Group: ${group.name} - ${group.workLocationName || 'Location'}` }))]} /></label>
+    <label className="attendance-client-control attendance-client-field"><span>Client</span><SearchSelect value={clientId} onChange={value => { setClientId(Number(value)); setReviewScope('') }} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label>
+    <label className="attendance-client-control attendance-scope-field"><span>Attendance policy</span><SearchSelect value={reviewScope} onChange={setReviewScope} options={groups.length ? groups.map(group => ({ value: `group:${group.id}`, label: `${group.name} - ${group.workLocationName || 'Location'}` })) : [{ value: '', label: 'No policy configured' }]} /></label>
   </>
+
+  if (groupsLoaded && !selectedGroup) return <section className="pay-runs payroll-attendance-page">
+    <div className="card attendance-policy-empty">{clientControl}<p>Create an attendance policy in Settings before reviewing attendance.</p></div>
+  </section>
 
   return <section className="pay-runs payroll-attendance-page">
     <ManualAttendanceManager clientId={clientId} group={selectedGroup} clientControl={clientControl} onMessage={(message, type: ToastType = 'success') => toast(message, type)} />

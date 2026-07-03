@@ -12,6 +12,7 @@ public class Employee
     public string WorkEmail { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
     public string Designation { get; set; } = string.Empty;
+    public string Grade { get; set; } = string.Empty;
     public int WorkLocationId { get; set; }
     public int ReportingManagerId { get; set; }
     public bool PortalAccess { get; set; }
@@ -35,6 +36,8 @@ public class EmployeePersonalDetails
     public string UanNumber { get; set; } = string.Empty;
     public string EsicNumber { get; set; } = string.Empty;
     public string Address { get; set; } = string.Empty;
+    public string CorrespondenceAddress { get; set; } = string.Empty;
+    public string PermanentAddress { get; set; } = string.Empty;
     public string Source { get; set; } = string.Empty;
     public string SourceLocation { get; set; } = string.Empty;
     public string City { get; set; } = string.Empty;
