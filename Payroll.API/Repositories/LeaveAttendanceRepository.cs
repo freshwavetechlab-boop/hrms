@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS attendance_geo_fence_rule_employees (
     UNIQUE KEY UX_geo_fence_rule_employee (geo_fence_rule_id, employee_id),
     INDEX IX_geo_fence_employee (employee_id),
     CONSTRAINT FK_geo_fence_rule_employee_rule FOREIGN KEY (geo_fence_rule_id) REFERENCES attendance_geo_fence_rules(id) ON DELETE CASCADE,
-    CONSTRAINT FK_geo_fence_rule_employee_employee FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE
+    CONSTRAINT FK_geo_fence_rule_employee_employee FOREIGN KEY (employee_id) REFERENCES employees(Id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS attendance_groups (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS attendance_group_employees (
     UNIQUE KEY UX_attendance_group_employee (attendance_group_id, employee_id),
     INDEX IX_attendance_group_employee_employee (employee_id),
     CONSTRAINT FK_attendance_group_employee_group FOREIGN KEY (attendance_group_id) REFERENCES attendance_groups(id) ON DELETE CASCADE,
-    CONSTRAINT FK_attendance_group_employee_employee FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE
+    CONSTRAINT FK_attendance_group_employee_employee FOREIGN KEY (employee_id) REFERENCES employees(Id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS leave_types (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -272,7 +272,7 @@ CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
         await EnsureForeignKeyAsync(connection, "attendance_groups", "FK_attendance_groups_client", "FOREIGN KEY (client_id) REFERENCES clients(Id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "attendance_groups", "FK_attendance_groups_location", "FOREIGN KEY (work_location_id) REFERENCES worklocations(Id)");
         await EnsureForeignKeyAsync(connection, "attendance_group_employees", "FK_attendance_group_employee_group", "FOREIGN KEY (attendance_group_id) REFERENCES attendance_groups(id) ON DELETE CASCADE");
-        await EnsureForeignKeyAsync(connection, "attendance_group_employees", "FK_attendance_group_employee_employee", "FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "attendance_group_employees", "FK_attendance_group_employee_employee", "FOREIGN KEY (employee_id) REFERENCES employees(Id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "leave_type_policies", "FK_leave_type_policies_type", "FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "leave_type_applicability", "FK_leave_type_applicability_type", "FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "holiday_locations", "FK_holiday_locations_holiday", "FOREIGN KEY (holiday_id) REFERENCES holidays(id) ON DELETE CASCADE");
@@ -452,7 +452,7 @@ ORDER BY r.priority, r.name;", new { ClientId = clientId, ScopeType = string.IsN
         var date = (onDate ?? DateTime.Today).Date;
         var rows = (await connection.QueryAsync<GeoFenceRule>(GeoFenceRuleSelectSql + @"
 LEFT JOIN attendance_geo_fence_rule_employees ge ON ge.geo_fence_rule_id = r.id
-LEFT JOIN Employees e ON e.Id=@EmployeeId AND e.ClientId=r.client_id
+LEFT JOIN employees e ON e.Id=@EmployeeId AND e.ClientId=r.client_id
 WHERE r.client_id=@ClientId AND r.is_active=TRUE AND r.effective_from <= @Date AND (r.effective_to IS NULL OR r.effective_to >= @Date)
 AND (
     (r.scope_type='Employee' AND ge.employee_id=@EmployeeId)
@@ -1270,7 +1270,7 @@ r.is_active AS IsActive, r.priority AS Priority, r.created_at AS CreatedAt, r.up
 FROM attendance_geo_fence_rules r
 LEFT JOIN WorkLocations w ON w.Id = r.work_location_id
 LEFT JOIN attendance_geo_fence_rule_employees gre ON gre.geo_fence_rule_id = r.id
-LEFT JOIN Employees e ON e.Id = gre.employee_id";
+LEFT JOIN employees e ON e.Id = gre.employee_id";
 
     private const string AttendanceGroupSelectSql = @"SELECT g.id AS Id, g.client_id AS ClientId, COALESCE(c.Name, '') AS ClientName,
 g.name AS Name, g.work_location_id AS WorkLocationId, COALESCE(w.Name, '') AS WorkLocationName,
@@ -1285,7 +1285,7 @@ FROM attendance_groups g
 LEFT JOIN clients c ON c.Id = g.client_id
 LEFT JOIN WorkLocations w ON w.Id = g.work_location_id
 LEFT JOIN attendance_group_employees age ON age.attendance_group_id = g.id
-LEFT JOIN Employees e ON e.Id = age.employee_id";
+LEFT JOIN employees e ON e.Id = age.employee_id";
 
     private async Task<bool> IsFormulaBasedSalaryComponentAsync(int componentId)
     {

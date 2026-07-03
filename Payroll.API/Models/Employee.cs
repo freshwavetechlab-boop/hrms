@@ -60,3 +60,52 @@ public class EmployeePaymentDetails
     public string IfscCode { get; set; } = string.Empty;
     public string PaymentMode { get; set; } = string.Empty;
 }
+
+public class EmployeeInfotypeRecord
+{
+    public long Id { get; set; }
+    public int EmployeeId { get; set; }
+    public int ClientId { get; set; }
+    public string EmployeeCode { get; set; } = string.Empty;
+    public string EmployeeName { get; set; } = string.Empty;
+    public string InfotypeCode { get; set; } = string.Empty;
+    public string InfotypeName { get; set; } = string.Empty;
+    public string ActionType { get; set; } = string.Empty;
+    public DateTime EffectiveFrom { get; set; } = DateTime.Today;
+    public DateTime? EffectiveTo { get; set; }
+    public string Status { get; set; } = "Active";
+    public string DataJson { get; set; } = "{}";
+    public string ChangeReason { get; set; } = string.Empty;
+    public string CreatedBy { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+}
+
+public class EmployeeAuditTrail
+{
+    public long Id { get; set; }
+    public int EmployeeId { get; set; }
+    public string EmployeeCode { get; set; } = string.Empty;
+    public string ActionType { get; set; } = string.Empty;
+    public string InfotypeCode { get; set; } = string.Empty;
+    public string FieldName { get; set; } = string.Empty;
+    public string OldValue { get; set; } = string.Empty;
+    public string NewValue { get; set; } = string.Empty;
+    public DateTime EffectiveFrom { get; set; } = DateTime.Today;
+    public string ChangedBy { get; set; } = string.Empty;
+    public DateTime ChangedAt { get; set; }
+}
+
+public class EmployeeActionRequest
+{
+    public int EmployeeId { get; set; }
+    public string ActionType { get; set; } = "Salary Change";
+    public DateTime EffectiveDate { get; set; } = DateTime.Today;
+    public string Reason { get; set; } = string.Empty;
+    public string Department { get; set; } = string.Empty;
+    public string Designation { get; set; } = string.Empty;
+    public string Grade { get; set; } = string.Empty;
+    public int WorkLocationId { get; set; }
+    public string SalaryStructureId { get; set; } = string.Empty;
+    public decimal AnnualCtc { get; set; }
+    public string SalaryJson { get; set; } = "{}";
+}

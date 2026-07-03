@@ -10,3 +10,159 @@ Only if you intentionally want migration on API startup, add this to config:
     "AutoMigrate": true
   }
 }
+
+2026-07-03 - Employee infotype and audit trail schema
+
+CREATE TABLE IF NOT EXISTS employee_infotype_records (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    InfotypeCode VARCHAR(20) NOT NULL,
+    InfotypeName VARCHAR(120) NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    DataJson JSON NOT NULL,
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_EmployeeInfotype_Employee (EmployeeId, InfotypeCode, Status, EffectiveFrom),
+    INDEX IX_EmployeeInfotype_Client_Active (ClientId, Status, InfotypeCode)
+);
+
+CREATE TABLE IF NOT EXISTS employee_audit_trail (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    EmployeeCode VARCHAR(50) NOT NULL DEFAULT '',
+    ActionType VARCHAR(60) NOT NULL,
+    InfotypeCode VARCHAR(20) NOT NULL,
+    FieldName VARCHAR(120) NOT NULL,
+    OldValue TEXT NULL,
+    NewValue TEXT NULL,
+    EffectiveFrom DATE NOT NULL,
+    ChangedBy VARCHAR(190) NOT NULL DEFAULT '',
+    ChangedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_EmployeeAudit_Employee (EmployeeId, ChangedAt),
+    INDEX IX_EmployeeAudit_Action (ActionType, InfotypeCode)
+);
+
+2026-07-03 - Physical employee infotype tables
+
+CREATE TABLE IF NOT EXISTS employee_it0000_actions (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    DateOfJoining VARCHAR(20) NOT NULL DEFAULT '',
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_IT0000_Employee (EmployeeId, Status, EffectiveFrom),
+    INDEX IX_IT0000_Client (ClientId, Status)
+);
+
+CREATE TABLE IF NOT EXISTS employee_it0001_org_assignment (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    Department VARCHAR(160) NOT NULL DEFAULT '',
+    Designation VARCHAR(160) NOT NULL DEFAULT '',
+    Grade VARCHAR(80) NOT NULL DEFAULT '',
+    WorkLocationId INT NOT NULL DEFAULT 0,
+    ReportingManagerId INT NOT NULL DEFAULT 0,
+    WorkEmail VARCHAR(190) NOT NULL DEFAULT '',
+    PortalAccess BOOLEAN NOT NULL DEFAULT FALSE,
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_IT0001_Employee (EmployeeId, Status, EffectiveFrom),
+    INDEX IX_IT0001_Client (ClientId, Status)
+);
+
+CREATE TABLE IF NOT EXISTS employee_it0002_personal_data (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    FirstName VARCHAR(120) NOT NULL DEFAULT '',
+    LastName VARCHAR(120) NOT NULL DEFAULT '',
+    Gender VARCHAR(40) NOT NULL DEFAULT '',
+    DateOfBirth VARCHAR(20) NOT NULL DEFAULT '',
+    Mobile VARCHAR(40) NOT NULL DEFAULT '',
+    PanNumber VARCHAR(40) NOT NULL DEFAULT '',
+    AadhaarNumber VARCHAR(40) NOT NULL DEFAULT '',
+    UanNumber VARCHAR(40) NOT NULL DEFAULT '',
+    EsicNumber VARCHAR(40) NOT NULL DEFAULT '',
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_IT0002_Employee (EmployeeId, Status, EffectiveFrom),
+    INDEX IX_IT0002_Client (ClientId, Status)
+);
+
+CREATE TABLE IF NOT EXISTS employee_it0006_addresses (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    Address TEXT NULL,
+    CorrespondenceAddress TEXT NULL,
+    PermanentAddress TEXT NULL,
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_IT0006_Employee (EmployeeId, Status, EffectiveFrom),
+    INDEX IX_IT0006_Client (ClientId, Status)
+);
+
+CREATE TABLE IF NOT EXISTS employee_it0008_basic_pay (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    SalaryStructureId VARCHAR(80) NOT NULL DEFAULT '',
+    AnnualCtc DECIMAL(18,2) NOT NULL DEFAULT 0,
+    SalaryJson JSON NOT NULL,
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_IT0008_Employee (EmployeeId, Status, EffectiveFrom),
+    INDEX IX_IT0008_Client (ClientId, Status)
+);
+
+CREATE TABLE IF NOT EXISTS employee_it0009_bank_details (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    BankName VARCHAR(190) NOT NULL DEFAULT '',
+    BankAccountNo VARCHAR(80) NOT NULL DEFAULT '',
+    IfscCode VARCHAR(40) NOT NULL DEFAULT '',
+    PaymentMode VARCHAR(60) NOT NULL DEFAULT '',
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_IT0009_Employee (EmployeeId, Status, EffectiveFrom),
+    INDEX IX_IT0009_Client (ClientId, Status)
+);
