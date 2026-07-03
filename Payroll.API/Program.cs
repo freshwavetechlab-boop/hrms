@@ -1,5 +1,6 @@
 using Payroll.API.Models;
 using Payroll.API.Repositories;
+using Payroll.API.Services;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 using Dapper;
@@ -50,6 +51,7 @@ builder.Services.AddSingleton<EssMssRepository>();
 builder.Services.AddSingleton<WorkflowRepository>();
 builder.Services.AddSingleton<TaxEngineRepository>();
 builder.Services.AddSingleton<DashboardRepository>();
+builder.Services.AddHostedService<PayrollRunWorker>();
 
 var app = builder.Build();
 const string AuthCookieName = "payroll_auth";
@@ -388,8 +390,8 @@ app.MapPut("/api/leave-attendance/setup/{stepCode}", async (LeaveAttendanceRepos
 .WithName("UpdateLeaveAttendanceSetupStep")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/preferences", async (LeaveAttendanceRepository repository, int clientId) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetPreferencesAsync(clientId)))
+app.MapGet("/api/leave-attendance/preferences", async (LeaveAttendanceRepository repository, int clientId, int? workLocationId) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetPreferencesAsync(clientId, workLocationId)))
 .WithName("GetLeaveAttendancePreferences")
 .WithOpenApi();
 
@@ -447,13 +449,37 @@ app.MapDelete("/api/leave-attendance/geo-fences/{id:int}", async (LeaveAttendanc
 .WithName("DeleteGeoFenceRule")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRepository repository, int clientId, string month) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetMonthlyAttendanceAsync(clientId, month)))
+app.MapGet("/api/leave-attendance/groups", async (LeaveAttendanceRepository repository, int? clientId) =>
+    Results.Ok(await repository.GetAttendanceGroupsAsync(Math.Max(0, clientId.GetValueOrDefault()))))
+.WithName("GetAttendanceGroups")
+.WithOpenApi();
+
+app.MapPost("/api/leave-attendance/groups", async (LeaveAttendanceRepository repository, SaveAttendanceGroupRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (group, error) = await repository.SaveAttendanceGroupAsync(request);
+    return group is null ? Results.BadRequest(new { error }) : Results.Ok(group);
+})
+.WithName("SaveAttendanceGroup")
+.WithOpenApi();
+
+app.MapDelete("/api/leave-attendance/groups/{id:int}", async (LeaveAttendanceRepository repository, int id, int clientId, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return clientId > 0 && await repository.DeleteAttendanceGroupAsync(id, clientId) ? Results.NoContent() : Results.NotFound();
+})
+.WithName("DeleteAttendanceGroup")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRepository repository, int clientId, string month, int? workLocationId) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetMonthlyAttendanceAsync(clientId, month, workLocationId)))
 .WithName("GetMonthlyAttendance")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/attendance/context", async (LeaveAttendanceRepository repository, int clientId, string month) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetAttendanceReviewContextAsync(clientId, month)))
+app.MapGet("/api/leave-attendance/attendance/context", async (LeaveAttendanceRepository repository, int clientId, string month, int? workLocationId) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetAttendanceReviewContextAsync(clientId, month, workLocationId)))
 .WithName("GetAttendanceReviewContext")
 .WithOpenApi();
 
@@ -472,8 +498,8 @@ app.MapGet("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepos
 .WithName("GetDailyAttendance")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/attendance/daily-grid", async (LeaveAttendanceRepository repository, int clientId, string month) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetDailyAttendanceMonthAsync(clientId, month)))
+app.MapGet("/api/leave-attendance/attendance/daily-grid", async (LeaveAttendanceRepository repository, int clientId, string month, int? workLocationId) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetDailyAttendanceMonthAsync(clientId, month, workLocationId)))
 .WithName("GetDailyAttendanceGrid")
 .WithOpenApi();
 
@@ -485,6 +511,16 @@ app.MapPost("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepo
     return rows is null ? Results.BadRequest(new { error }) : Results.Ok(rows);
 })
 .WithName("SaveDailyAttendance")
+.WithOpenApi();
+
+app.MapPost("/api/leave-attendance/attendance/daily/batch", async (LeaveAttendanceRepository repository, SaveDailyAttendanceBatchRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (rows, error) = await repository.SaveDailyAttendanceBatchAsync(request);
+    return rows is null ? Results.BadRequest(new { error }) : Results.Ok(rows);
+})
+.WithName("SaveDailyAttendanceBatch")
 .WithOpenApi();
 
 app.MapGet("/api/leave-attendance/leave-types", async (LeaveAttendanceRepository repository, int clientId) =>
@@ -687,8 +723,8 @@ app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunReq
         return Results.BadRequest(new { error = "Off-cycle payroll needs at least one employee or approved adjustment." });
     try
     {
-        var payRun = await repository.CreateAsync(request, CurrentUser(context).Email);
-        return payRun is null ? Results.Conflict(new { error = "A pay run already exists for this period." }) : Results.Created($"/api/pay-runs/{payRun.Id}", payRun);
+        var payRun = await repository.QueueAsync(request, CurrentUser(context).Email);
+        return payRun is null ? Results.Conflict(new { error = "An approved or pending payroll already exists for this period." }) : Results.Created($"/api/pay-runs/{payRun.Id}", payRun);
     }
     catch (InvalidOperationException exception)
     {
@@ -767,7 +803,7 @@ app.MapPost("/api/pay-runs/{id:int}/approve", async (PayRunRepository repository
 .WithOpenApi();
 
 app.MapDelete("/api/pay-runs/{id:int}", async (PayRunRepository repository, int id) =>
-    await repository.DeleteDraftAsync(id) ? Results.NoContent() : Results.BadRequest(new { error = "Only draft pay runs can be deleted." }))
+    await repository.DeleteDraftAsync(id) ? Results.NoContent() : Results.BadRequest(new { error = "Only draft, queued, processing or failed pay runs can be deleted." }))
 .WithName("DeleteDraftPayRun")
 .WithOpenApi();
 

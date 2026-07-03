@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS dropdownmasters (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     Type VARCHAR(100) NOT NULL,
     Value VARCHAR(200) NOT NULL,
+    ConfigJson JSON NULL,
     IsActive BOOLEAN NOT NULL DEFAULT TRUE,
     CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -143,6 +144,7 @@ CREATE TABLE IF NOT EXISTS employees (
         await EnsureTableColumnAsync(connection, "clients", "PayScheduleJson", "JSON NULL");
         await EnsureTableColumnAsync(connection, "worklocations", "ClientId", "INT NOT NULL DEFAULT 0 AFTER Id");
         await EnsureTableColumnAsync(connection, "worklocations", "ClientName", "VARCHAR(250) NULL AFTER ClientId");
+        await EnsureTableColumnAsync(connection, "dropdownmasters", "ConfigJson", "JSON NULL AFTER Value");
         await PayrollDataTableStore.EnsureAsync(connection);
     }
 
@@ -410,8 +412,8 @@ WHERE Id = @Id;";
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
         if (item.Id == 0)
-            return (int)await connection.ExecuteScalarAsync<long>("INSERT INTO dropdownmasters (Type, Value, IsActive) VALUES (@Type, @Value, @IsActive); SELECT LAST_INSERT_ID();", item);
-        await connection.ExecuteAsync("UPDATE dropdownmasters SET Type=@Type, Value=@Value, IsActive=@IsActive WHERE Id=@Id", item);
+            return (int)await connection.ExecuteScalarAsync<long>("INSERT INTO dropdownmasters (Type, Value, ConfigJson, IsActive) VALUES (@Type, @Value, NULLIF(@ConfigJson, ''), @IsActive); SELECT LAST_INSERT_ID();", item);
+        await connection.ExecuteAsync("UPDATE dropdownmasters SET Type=@Type, Value=@Value, ConfigJson=NULLIF(@ConfigJson, ''), IsActive=@IsActive WHERE Id=@Id", item);
         return item.Id;
     }
 

@@ -30,7 +30,9 @@ export default function EmployeePage() {
 
   const load = async () => {
     const [clientRows, locationRows, dropdownRows, employeeRows, rawSetup] = await Promise.all([getClients(), getWorkLocations(), getDropdowns(), getEmployees(), getSetup(setup0)])
-    setClients(clientRows); setLocations(locationRows); setDrops(dropdownRows); setEmployees(employeeRows.map(normalizeEmployeeDetails))
+    const activeClientIds = new Set(clientRows.map(client => client.id))
+    const activeLocations = locationRows.filter(location => location.isActive && activeClientIds.has(location.clientId))
+    setClients(clientRows); setLocations(activeLocations); setDrops(dropdownRows); setEmployees(employeeRows.filter(employee => activeClientIds.has(employee.clientId)).map(normalizeEmployeeDetails))
     setSetup({ ...setup0, ...rawSetup, salaryComponents: rawSetup.salaryComponents ?? [], salaryStructures: rawSetup.salaryStructures ?? [] })
   }
 

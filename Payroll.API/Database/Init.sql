@@ -1,6 +1,3 @@
-CREATE DATABASE IF NOT EXISTS payroll;
-USE payroll;
-
 CREATE TABLE IF NOT EXISTS organizations (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     Name VARCHAR(250) NOT NULL,
@@ -125,8 +122,8 @@ CREATE TABLE IF NOT EXISTS payrunemployees (
     EmployeeCode VARCHAR(50) NOT NULL,
     EmployeeName VARCHAR(250) NOT NULL,
     Department VARCHAR(100),
-    PresentDays INT NOT NULL,
-    PayableDays INT NOT NULL,
+    PresentDays DECIMAL(5,2) NOT NULL,
+    PayableDays DECIMAL(5,2) NOT NULL,
     MonthlyGross DECIMAL(18,2) NOT NULL DEFAULT 0,
     GrossPay DECIMAL(18,2) NOT NULL DEFAULT 0,
     StatutoryDeductions DECIMAL(18,2) NOT NULL DEFAULT 0,
@@ -164,6 +161,83 @@ CREATE TABLE IF NOT EXISTS payrolladjustments (
     INDEX IX_PayrollAdjustments_Client_Period_Status (ClientId, PayPeriod, Status),
     CONSTRAINT FK_PayrollAdjustments_Employees FOREIGN KEY (EmployeeId) REFERENCES employees(Id),
     CONSTRAINT FK_PayrollAdjustments_PayRuns FOREIGN KEY (PayRunId) REFERENCES payruns(Id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS payrun_step_logs (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PayRunId INT NOT NULL,
+    EmployeeId INT NULL,
+    StepNumber INT NOT NULL,
+    StepName VARCHAR(160) NOT NULL,
+    StartTime DATETIME NOT NULL,
+    EndTime DATETIME NULL,
+    DurationMs INT NOT NULL DEFAULT 0,
+    InputJson JSON NULL,
+    RuleJson JSON NULL,
+    FormulaJson JSON NULL,
+    OldValueJson JSON NULL,
+    NewValueJson JSON NULL,
+    OutputJson JSON NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Success',
+    Warning VARCHAR(1000) NOT NULL DEFAULT '',
+    ErrorMessage VARCHAR(1000) NOT NULL DEFAULT '',
+    PerformedBy VARCHAR(190) NOT NULL DEFAULT '',
+    MachineName VARCHAR(190) NOT NULL DEFAULT '',
+    Version VARCHAR(40) NOT NULL DEFAULT '1.0',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_PayRunStepLogs_Run_Step (PayRunId, StepNumber),
+    INDEX IX_PayRunStepLogs_Run_Employee (PayRunId, EmployeeId)
+);
+
+CREATE TABLE IF NOT EXISTS payroll_validation_issues (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PayRunId INT NOT NULL,
+    EmployeeId INT NULL,
+    EmployeeCode VARCHAR(50) NOT NULL DEFAULT '',
+    Scope VARCHAR(40) NOT NULL DEFAULT 'Employee',
+    IssueType VARCHAR(40) NOT NULL DEFAULT 'Validation',
+    Severity VARCHAR(20) NOT NULL DEFAULT 'Warning',
+    StepName VARCHAR(160) NOT NULL DEFAULT '',
+    Message VARCHAR(1000) NOT NULL,
+    DataJson JSON NULL,
+    IsBlocking BOOLEAN NOT NULL DEFAULT FALSE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_PayrollValidation_Run_Blocking (PayRunId, IsBlocking),
+    INDEX IX_PayrollValidation_Run_Employee (PayRunId, EmployeeId)
+);
+
+CREATE TABLE IF NOT EXISTS payroll_calculation_traces (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PayRunId INT NOT NULL,
+    EmployeeId INT NOT NULL,
+    EmployeeCode VARCHAR(50) NOT NULL DEFAULT '',
+    ComponentCode VARCHAR(80) NOT NULL,
+    ComponentName VARCHAR(180) NOT NULL,
+    ParentComponentCode VARCHAR(80) NOT NULL DEFAULT '',
+    TraceOrder INT NOT NULL,
+    RuleUsed VARCHAR(250) NOT NULL DEFAULT '',
+    FormulaUsed VARCHAR(500) NOT NULL DEFAULT '',
+    BaseAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    Factor DECIMAL(18,6) NOT NULL DEFAULT 0,
+    CalculatedAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    InputJson JSON NULL,
+    OutputJson JSON NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_PayrollTrace_Run_Employee (PayRunId, EmployeeId, TraceOrder),
+    INDEX IX_PayrollTrace_Run_Component (PayRunId, ComponentCode)
+);
+
+CREATE TABLE IF NOT EXISTS payroll_reconciliation_results (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PayRunId INT NOT NULL,
+    CheckName VARCHAR(160) NOT NULL,
+    ExpectedAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    ActualAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    DifferenceAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Passed',
+    DetailsJson JSON NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_PayrollRecon_Run_Status (PayRunId, Status)
 );
 
 CREATE TABLE IF NOT EXISTS authusers (
@@ -216,6 +290,17 @@ CREATE TABLE IF NOT EXISTS authrolepermissions (
     CONSTRAINT FK_AuthRolePermissions_Role FOREIGN KEY (RoleId) REFERENCES authroles(Id) ON DELETE CASCADE,
     CONSTRAINT FK_AuthRolePermissions_Permission FOREIGN KEY (PermissionId) REFERENCES authpermissions(Id) ON DELETE CASCADE
 );
+
+INSERT INTO authpermissions (Code, Name, Module, Description) VALUES
+('dashboard.view', 'View dashboard', 'Dashboard', 'Access the HRMS dashboard shell.'),
+('dashboard.workforce.view', 'View workforce dashboard', 'Dashboard', 'View employee and ESS adoption dashboard metrics.'),
+('dashboard.payroll.view', 'View payroll dashboard', 'Dashboard', 'View payroll run, net pay, validation and recent payroll dashboard metrics.'),
+('dashboard.attendance.view', 'View attendance dashboard', 'Dashboard', 'View attendance readiness and exception dashboard metrics.'),
+('dashboard.approvals.view', 'View approvals dashboard', 'Dashboard', 'View workflow and leave approval dashboard metrics.')
+ON DUPLICATE KEY UPDATE
+    Name = VALUES(Name),
+    Module = VALUES(Module),
+    Description = VALUES(Description);
 
 CREATE TABLE IF NOT EXISTS authsessions (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -276,6 +361,8 @@ CREATE TABLE IF NOT EXISTS modulesetupprogress (
 
 CREATE TABLE IF NOT EXISTS leave_attendance_preferences (
     id INT PRIMARY KEY AUTO_INCREMENT,
+    work_location_id INT NOT NULL DEFAULT 0,
+    work_week VARCHAR(80) NOT NULL DEFAULT 'Monday - Friday',
     attendance_cycle_start_day INT NOT NULL DEFAULT 1,
     attendance_cycle_end_day INT NOT NULL DEFAULT 25,
     payroll_report_generation_day INT NOT NULL DEFAULT 28,
@@ -336,6 +423,37 @@ CREATE TABLE IF NOT EXISTS attendance_geo_fence_rule_employees (
     CONSTRAINT FK_geo_fence_rule_employee_employee FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS attendance_groups (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    client_id INT NOT NULL,
+    name VARCHAR(180) NOT NULL,
+    work_location_id INT NOT NULL,
+    department VARCHAR(150) NOT NULL DEFAULT '',
+    designation VARCHAR(150) NOT NULL DEFAULT '',
+    work_week VARCHAR(80) NOT NULL DEFAULT 'Monday - Friday',
+    attendance_cycle_start_day INT NOT NULL DEFAULT 1,
+    attendance_cycle_end_day INT NOT NULL DEFAULT 25,
+    payroll_report_generation_day INT NOT NULL DEFAULT 28,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_attendance_groups_client_name (client_id, name),
+    INDEX IX_attendance_groups_client_location (client_id, work_location_id),
+    CONSTRAINT FK_attendance_groups_client FOREIGN KEY (client_id) REFERENCES clients(Id) ON DELETE CASCADE,
+    CONSTRAINT FK_attendance_groups_location FOREIGN KEY (work_location_id) REFERENCES worklocations(Id)
+);
+
+CREATE TABLE IF NOT EXISTS attendance_group_employees (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    attendance_group_id INT NOT NULL,
+    employee_id INT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_attendance_group_employee (attendance_group_id, employee_id),
+    INDEX IX_attendance_group_employee_employee (employee_id),
+    CONSTRAINT FK_attendance_group_employee_group FOREIGN KEY (attendance_group_id) REFERENCES attendance_groups(id) ON DELETE CASCADE,
+    CONSTRAINT FK_attendance_group_employee_employee FOREIGN KEY (employee_id) REFERENCES Employees(Id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS employee_attendance_punches (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     client_id INT NOT NULL,
@@ -360,6 +478,42 @@ CREATE TABLE IF NOT EXISTS employee_attendance_punches (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX IX_attendance_punch_employee_date (client_id, employee_id, captured_at),
     INDEX IX_attendance_punch_rule (geo_fence_rule_id)
+);
+
+CREATE TABLE IF NOT EXISTS employee_monthly_attendance (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    client_id INT NOT NULL,
+    employee_id INT NOT NULL,
+    attendance_month VARCHAR(7) NOT NULL,
+    working_days DECIMAL(5,2) NOT NULL DEFAULT 0,
+    present_days DECIMAL(5,2) NOT NULL DEFAULT 0,
+    payable_days DECIMAL(5,2) NOT NULL DEFAULT 0,
+    lop_days DECIMAL(5,2) NOT NULL DEFAULT 0,
+    source_type VARCHAR(30) NOT NULL DEFAULT 'Monthly',
+    remarks VARCHAR(600),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_monthly_attendance_employee_month (client_id, employee_id, attendance_month),
+    INDEX IX_monthly_attendance_client_month (client_id, attendance_month),
+    CONSTRAINT FK_monthly_attendance_employee FOREIGN KEY (employee_id) REFERENCES employees(Id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS employee_daily_attendance (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    client_id INT NOT NULL,
+    employee_id INT NOT NULL,
+    attendance_date DATE NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'Present',
+    payable_value DECIMAL(4,2) NOT NULL DEFAULT 1,
+    check_in_time TIME NULL,
+    check_out_time TIME NULL,
+    total_hours DECIMAL(5,2) NOT NULL DEFAULT 0,
+    remarks VARCHAR(600),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_daily_attendance_employee_date (client_id, employee_id, attendance_date),
+    INDEX IX_daily_attendance_client_date (client_id, attendance_date),
+    CONSTRAINT FK_daily_attendance_employee FOREIGN KEY (employee_id) REFERENCES employees(Id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS leave_types (

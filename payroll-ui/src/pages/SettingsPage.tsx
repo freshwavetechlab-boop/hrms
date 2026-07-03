@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Select as AntSelect } from 'antd'
-import ClientPayScheduleManager from '../components/ClientPayScheduleManager'
+import { Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Form, Input, Modal, Row, Select as AntSelect, Space } from 'antd'
 import DataTable from '../components/DataTable'
 import FileDropZone from '../components/FileDropZone'
 import { Card, Chk, F, Sel } from '../components/FormPrimitives'
@@ -10,10 +9,11 @@ import PageTabs from '../components/PageTabs'
 import SalaryTemplateDesigner from '../components/SalaryTemplateDesigner'
 import TaxEngineManager from '../components/TaxEngineManager'
 import { useToast, type ToastType } from '../components/ToastProvider'
-import { client0, component0, demoComponents, drop0, dropTypes, location0, org0, payslip0, settingsMenus, setup0, states, structure0 } from '../data/payrollDefaults'
-import { getClients } from '../services/payrollService'
+import { client0, component0, drop0, dropTypes, location0, org0, payslip0, settingsMenus, setup0, structure0, workWeekOptions } from '../data/payrollDefaults'
+import { getClients, getEmployees } from '../services/payrollService'
+import { getAttendanceGroups } from '../services/leaveAttendanceService'
 import { getDropdowns, getOrganization, getSetup, getWorkLocations, saveClient as persistClient, saveDropdown, saveOrganization, saveSetup, saveWorkLocation } from '../services/settingsService'
-import type { Client, Component, Drop, Org, ProfessionalTaxSlab, Setup, Structure, WorkLocation } from '../types/payroll'
+import type { AttendanceGroup, Client, Component, Drop, Employee, Org, ProfessionalTaxSlab, Setup, WorkLocation } from '../types/payroll'
 import { money } from '../utils/salary'
 
 type SettingsTab = (typeof settingsMenus)[number]
@@ -44,14 +44,54 @@ const normalizeComponentForUi = (row: Component): Component => {
   return { ...row, calculationType, formula, payType: calculationType === 'Manual / Variable' ? 'Variable Pay' : row.payType }
 }
 const unique = (items: string[]) => Array.from(new Set(items.map(item => item.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b))
+const plural = (count: number, label: string) => `${count} ${label}${count === 1 ? '' : 's'}`
+const countLink = (count: number, label: string) => count ? plural(count, label) : ''
+const namedLink = (label: string, names: string[]) => {
+  const clean = unique(names)
+  if (!clean.length) return ''
+  return `${label}: ${clean.slice(0, 3).join(', ')}${clean.length > 3 ? ` +${clean.length - 3} more` : ''}`
+}
 const cityType = (state: string) => `City:${state}`
 const isCityType = (type: string) => type.startsWith('City:')
 const cityState = (type: string) => isCityType(type) ? type.slice(5) : ''
+const refId = (value: string | number | null | undefined) => String(value ?? '').split(':')[0]
+type WorkWeekConfig = { workingDays: number[]; offSaturdays: number[] }
+const weekDayOptions = [{ value: 0, label: 'Sun' }, { value: 1, label: 'Mon' }, { value: 2, label: 'Tue' }, { value: 3, label: 'Wed' }, { value: 4, label: 'Thu' }, { value: 5, label: 'Fri' }, { value: 6, label: 'Sat' }]
+const saturdayOptions = [{ value: 1, label: '1st' }, { value: 2, label: '2nd' }, { value: 3, label: '3rd' }, { value: 4, label: '4th' }, { value: 5, label: '5th' }]
+const defaultWorkWeekConfig: WorkWeekConfig = { workingDays: [1, 2, 3, 4, 5], offSaturdays: [] }
+const workWeekPresetConfigs: Record<string, WorkWeekConfig> = {
+  'Monday - Friday': { workingDays: [1, 2, 3, 4, 5], offSaturdays: [] },
+  'Monday - Saturday': { workingDays: [1, 2, 3, 4, 5, 6], offSaturdays: [] },
+  'All days': { workingDays: [0, 1, 2, 3, 4, 5, 6], offSaturdays: [] },
+  'Only 2nd Saturday off': { workingDays: [1, 2, 3, 4, 5, 6], offSaturdays: [2] },
+  'Sunday + 2nd Saturday off': { workingDays: [1, 2, 3, 4, 5, 6], offSaturdays: [2] },
+  'Sunday + 2nd/4th Saturday off': { workingDays: [1, 2, 3, 4, 5, 6], offSaturdays: [2, 4] }
+}
+const normalizeWorkWeekConfig = (config: WorkWeekConfig): WorkWeekConfig => ({ workingDays: unique(config.workingDays.map(String)).map(Number).filter(day => day >= 0 && day <= 6), offSaturdays: unique(config.offSaturdays.map(String)).map(Number).filter(day => day >= 1 && day <= 5) })
+const parseWorkWeekConfig = (drop: Drop): WorkWeekConfig => {
+  if (drop.configJson) {
+    try { return normalizeWorkWeekConfig(JSON.parse(drop.configJson) as WorkWeekConfig) } catch { /* ignore invalid legacy config */ }
+  }
+  return workWeekPresetConfigs[drop.value] ?? defaultWorkWeekConfig
+}
+const workWeekLabel = (config: WorkWeekConfig) => {
+  const normalized = normalizeWorkWeekConfig(config)
+  const weeklyOffDays = weekDayOptions.filter(day => !normalized.workingDays.includes(day.value)).map(day => day.label)
+  const saturdayOffText = normalized.workingDays.includes(6) && normalized.offSaturdays.length
+    ? `${normalized.offSaturdays.map(item => saturdayOptions.find(option => option.value === item)?.label).filter(Boolean).join('/')} Saturday off`
+    : ''
+  return [weeklyOffDays.length ? `${weeklyOffDays.join(', ')} off` : '', saturdayOffText].filter(Boolean).join('; ') || 'No weekly off'
+}
+const workWeekPayload = (config: WorkWeekConfig) => {
+  const normalized = normalizeWorkWeekConfig(config)
+  return { value: workWeekLabel(normalized), configJson: JSON.stringify(normalized) }
+}
 
 export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onMessage: (message: string) => void }) {
   const toast = useToast()
   const [org, setOrg] = useState(org0), [setup, setSetup] = useState(settingsSetup0), [clients, setClients] = useState<Client[]>([]), [client, setClient] = useState(client0)
   const [locations, setLocations] = useState<WorkLocation[]>([]), [location, setLocation] = useState(location0), [drops, setDrops] = useState<Drop[]>([]), [drop, setDrop] = useState(drop0)
+  const [employees, setEmployees] = useState<Employee[]>([]), [attendanceGroups, setAttendanceGroups] = useState<AttendanceGroup[]>([])
   const [component, setComponent] = useState(component0), [structure, setStructure] = useState(structure0), [payslip, setPayslip] = useState(payslip0), [componentTab, setComponentTab] = useState<ComponentCategory>('Earning')
   const [organizationTab, setOrganizationTab] = useState<OrganizationTab>('Organization')
   const [statutoryTab, setStatutoryTab] = useState<StatutoryTab>('Income Tax Rules')
@@ -62,14 +102,17 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const [payslipSaving, setPayslipSaving] = useState(false)
   const [saving, setSaving] = useState(false)
   const [dropState, setDropState] = useState('')
+  const isErrorMessage = (message: string) => /error|unable|failed|required|resolve|select|invalid|must|cannot|some/i.test(message)
 
   const load = async () => {
-    const [organization, rawSetup, clientRows, locationRows, dropdownRows] = await Promise.all([getOrganization(org0), getSetup(settingsSetup0), getClients(), getWorkLocations(), getDropdowns()])
+    const [organization, rawSetup, clientRows, locationRows, dropdownRows, employeeRows, groupRows] = await Promise.all([getOrganization(org0), getSetup(settingsSetup0), getClients(), getWorkLocations(), getDropdowns(), getEmployees(), getAttendanceGroups()])
     setOrg({ ...org0, ...organization, professionalTaxNumber: organization.professionalTaxNumber || rawSetup.statutory?.ptNumber || '' })
-    setSetup({ ...settingsSetup0, ...rawSetup, tax: { ...setup0.tax, ...rawSetup.tax, clientSettings: rawSetup.tax?.clientSettings ?? setup0.tax.clientSettings, slabs: rawSetup.tax?.slabs ?? setup0.tax.slabs, surcharges: rawSetup.tax?.surcharges ?? setup0.tax.surcharges, finalAdjustments: rawSetup.tax?.finalAdjustments ?? setup0.tax.finalAdjustments, declarationSections: rawSetup.tax?.declarationSections ?? setup0.tax.declarationSections }, schedule: { ...setup0.schedule, ...rawSetup.schedule }, statutory: { ...setup0.statutory, ...rawSetup.statutory }, salaryComponents: (rawSetup.salaryComponents?.length ? rawSetup.salaryComponents : demoComponents).map(normalizeComponentForUi), salaryStructures: rawSetup.salaryStructures ?? [], payslipTemplates: rawSetup.payslipTemplates ?? [] })
+    setSetup({ ...settingsSetup0, ...rawSetup, tax: { ...setup0.tax, ...rawSetup.tax, clientSettings: rawSetup.tax?.clientSettings ?? setup0.tax.clientSettings, slabs: rawSetup.tax?.slabs ?? setup0.tax.slabs, surcharges: rawSetup.tax?.surcharges ?? setup0.tax.surcharges, finalAdjustments: rawSetup.tax?.finalAdjustments ?? setup0.tax.finalAdjustments, declarationSections: rawSetup.tax?.declarationSections ?? setup0.tax.declarationSections }, schedule: { ...setup0.schedule, ...rawSetup.schedule }, statutory: { ...setup0.statutory, ...rawSetup.statutory }, salaryComponents: (rawSetup.salaryComponents ?? []).map(normalizeComponentForUi), salaryStructures: rawSetup.salaryStructures ?? [], payslipTemplates: rawSetup.payslipTemplates ?? [] })
     setClients(clientRows)
-    setLocations(locationRows)
+    setLocations(locationRows.filter(location => location.isActive && clientRows.some(client => client.id === location.clientId)))
     setDrops(dropdownRows)
+    setEmployees(employeeRows)
+    setAttendanceGroups(groupRows)
   }
 
   useEffect(() => { void load() }, [])
@@ -81,7 +124,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     const row = { ...ptSlab, id: ptSlab.id || Date.now() }
     setSetup(current => ({ ...current, statutory: { ...current.statutory, ptStateSlabs: [...(current.statutory.ptStateSlabs ?? []).filter(item => item.id !== row.id), row] } }))
     setPtSlab(ptSlab0)
-    onMessage('Click Save settings to persist Professional Tax slabs.')
+    notify('Click Save settings to persist Professional Tax slabs.', 'info')
   }
   const removePtSlab = (row: ProfessionalTaxSlab) => {
     if (!window.confirm(`Delete Professional Tax slab for ${row.state || 'this state'}?`)) return
@@ -92,30 +135,121 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     reader.onload = () => o('logoDataUrl', String(reader.result || ''))
     reader.readAsDataURL(file)
   }
-  const saveAll = async (event: FormEvent) => { event.preventDefault(); setSaving(true); await saveOrganization(org); await saveSetup({ ...setup, statutory: { ...setup.statutory, ptNumber: org.professionalTaxNumber } }); onMessage('Settings saved.'); setSaving(false) }
-  const saveClient = async () => { if (!client.name.trim()) return; await persistClient(client); setClient(client0); await load(); onMessage('Client saved.') }
-  const applyLocationClient = (value: string) => {
-    const [id, ...nameParts] = value.split(':')
-    setLocation(current => ({ ...current, clientId: Number(id) || 0, clientName: nameParts.join(':') }))
+  const notify = (message: string, type: ToastType = 'success') => { onMessage(message); toast(message, type) }
+  const notifyFromChild = (message: string) => notify(message, isErrorMessage(message) ? 'error' : 'success')
+  const activeEmployees = employees.filter(item => item.isActive)
+  const activeGroups = attendanceGroups.filter(item => item.isActive)
+  const blockDeleteIfLinked = (item: string, links: string[]) => {
+    const linked = links.filter(Boolean)
+    if (!linked.length) return false
+    notify(`Cannot delete ${item}. Linked records: ${linked.join(' | ')}`, 'warning')
+    return true
   }
-  const saveLocation = async () => { if (!location.clientId) return notify('Client select karo.', 'error'); if (!location.name.trim()) return notify('Location name required hai.', 'error'); const response = await saveWorkLocation(location); notify(response.ok ? 'Work location saved.' : response.error || 'Location fields check karo.', response.ok ? 'success' : 'error'); if (response.ok) { setLocation(location0); await load() } }
+  const clientDeleteLinks = (row: Client) => {
+    const id = String(row.id)
+    return [
+      countLink(locations.filter(item => item.isActive && String(item.clientId) === id).length, 'work location'),
+      countLink(activeEmployees.filter(item => String(item.clientId) === id).length, 'employee'),
+      namedLink('Salary templates', setup.salaryStructures.filter(item => refId(item.clientId) === id).map(item => item.name)),
+      namedLink('Payslip templates', setup.payslipTemplates.filter(item => refId(item.clientId) === id).map(item => item.name)),
+      countLink(setup.tax.clientSettings.filter(item => refId(item.clientId) === id && item.active).length, 'tax rule'),
+      namedLink('Attendance groups', activeGroups.filter(item => String(item.clientId) === id).map(item => item.name))
+    ]
+  }
+  const locationDeleteLinks = (row: WorkLocation) => [
+    countLink(activeEmployees.filter(item => item.workLocationId === row.id).length, 'employee'),
+    namedLink('Attendance groups', activeGroups.filter(item => item.workLocationId === row.id).map(item => item.name))
+  ]
+  const dropdownDeleteLinks = (row: Drop) => {
+    const type = row.type, value = row.value.trim()
+    if (type === 'Department') return [
+      countLink(activeEmployees.filter(item => item.department === value).length, 'employee'),
+      namedLink('Attendance groups', activeGroups.filter(item => item.department === value).map(item => item.name))
+    ]
+    if (type === 'Designation') return [
+      countLink(activeEmployees.filter(item => item.designation === value).length, 'employee'),
+      namedLink('Attendance groups', activeGroups.filter(item => item.designation === value).map(item => item.name))
+    ]
+    if (type === 'Work Week') return [
+      setup.schedule.workWeek === value ? 'Payroll setup pay schedule' : '',
+      namedLink('Attendance groups', activeGroups.filter(item => item.workWeek === value).map(item => item.name))
+    ]
+    if (type === 'State') return [
+      org.state === value ? 'Organization address' : '',
+      setup.statutory.ptState === value ? 'Professional Tax setup' : '',
+      setup.statutory.lwfState === value ? 'LWF setup' : '',
+      countLink(locations.filter(item => item.isActive && item.state === value).length, 'work location'),
+      countLink((setup.statutory.ptStateSlabs ?? []).filter(item => item.state === value).length, 'PT slab')
+    ]
+    if (isCityType(type)) {
+      const state = cityState(type)
+      return [
+        org.state === state && org.city === value ? 'Organization address' : '',
+        countLink(locations.filter(item => item.isActive && item.state === state && item.city === value).length, 'work location')
+      ]
+    }
+    return []
+  }
+  const componentDeleteLinks = (row: Component) => [
+    namedLink('Salary templates', setup.salaryStructures.filter(structure => structure.lines.some(line => Number(line.componentId) === row.id)).map(item => item.name)),
+    countLink(setup.tax.clientSettings.filter(item => item.active && item.taxDeductionComponentCode === row.code).length, 'client tax setting')
+  ]
+  const saveAll = async (event: FormEvent) => { event.preventDefault(); setSaving(true); await saveOrganization(org); await saveSetup({ ...setup, statutory: { ...setup.statutory, ptNumber: org.professionalTaxNumber || setup.statutory.ptNumber } }); window.dispatchEvent(new CustomEvent('organization-updated', { detail: org })); notify('Settings saved.'); setSaving(false) }
+  const saveClient = async () => { if (!client.name.trim()) return notify('Client name is required.', 'error'); const response = await persistClient(client, { toast: false }); notify(response.ok ? client.id ? 'Client updated.' : 'Client saved.' : response.error || 'Unable to save client.', response.ok ? 'success' : 'error'); if (response.ok) { setClient(client0); await load() } }
+  const deleteClient = async (row: Client) => {
+    if (blockDeleteIfLinked(row.name, clientDeleteLinks(row))) return
+    if (!window.confirm(`Delete ${row.name}?`)) return
+    const response = await persistClient({ ...row, isActive: false }, { toast: false })
+    notify(response.ok ? 'Client deleted.' : response.error || 'Unable to delete client.', response.ok ? 'success' : 'error')
+    if (response.ok) { if (client.id === row.id) setClient(client0); await load() }
+  }
+  const applyLocationClient = (value: string) => {
+    const clientId = Number(refId(value) || 0)
+    const selectedClient = clients.find(item => item.id === clientId)
+    setLocation(current => ({ ...current, clientId, clientName: selectedClient?.name || '' }))
+  }
+  const saveLocation = async () => {
+    if (!location.clientId) return notify('Select a client.', 'error')
+    if (!location.name.trim()) return notify('Location name is required.', 'error')
+    const response = await saveWorkLocation(location)
+    notify(response.ok ? 'Work location saved.' : response.error || 'Review the work location fields.', response.ok ? 'success' : 'error')
+    if (response.ok) { setLocation(location0); await load() }
+  }
   const deleteLocation = async (row: WorkLocation) => {
-    if (!window.confirm(`Delete ${row.name}? Existing employees or holidays linked to this location will keep their history, but this location will no longer be active for new use.`)) return
+    if (blockDeleteIfLinked(row.name, locationDeleteLinks(row))) return
+    if (!window.confirm(`Delete ${row.name}?`)) return
     const response = await saveWorkLocation({ ...row, isActive: false, isPrimary: false })
     notify(response.ok ? 'Work location deleted.' : response.error || 'Unable to delete work location.', response.ok ? 'success' : 'error')
     if (response.ok) { if (location.id === row.id) setLocation(location0); await load() }
   }
-  const notify = (message: string, type: ToastType = 'success') => { onMessage(message); toast(message, type) }
-  const stateOptions = unique([...states, ...drops.filter(item => item.isActive && item.type === 'State').map(item => item.value), ...locations.map(item => item.state), org.state, location.state, dropState])
-  const cityOptions = (state: string) => unique(drops.filter(item => item.isActive && isCityType(item.type) && (!state || item.type === cityType(state))).map(item => item.value))
+  const activeDrops = drops.filter(item => item.isActive)
+  const activeClientIds = new Set(clients.map(item => String(item.id)))
+  const stateOptions = unique([...activeDrops.filter(item => item.type === 'State').map(item => item.value), ...locations.map(item => item.state), org.state, location.state, dropState, setup.statutory.ptState, setup.statutory.lwfState, ptSlab.state, ...(setup.statutory.ptStateSlabs ?? []).map(item => item.state)])
+  const cityOptions = (state: string) => unique([...activeDrops.filter(item => isCityType(item.type) && (!state || item.type === cityType(state))).map(item => item.value), ...locations.filter(item => !state || item.state === state).map(item => item.city), !state || org.state === state ? org.city : '', !state || location.state === state ? location.city : ''])
+  const clientName = (id: string | number) => clients.find(item => String(item.id) === refId(id))?.name || (id ? String(id).split(':')[1] || `Client #${refId(id)}` : 'Default')
+  const addCityForSelectedState = async (city: string) => {
+    const state = location.state.trim(), value = city.trim()
+    if (!state) { notify('Select a state before adding a city.', 'error'); return false }
+    if (!value) { notify('City name is required.', 'error'); return false }
+    const actualType = cityType(state)
+    const duplicate = drops.find(item => item.type.toLowerCase() === actualType.toLowerCase() && item.value.trim().toLowerCase() === value.toLowerCase())
+    if (duplicate?.isActive) { setLocation(current => ({ ...current, city: duplicate.value })); notify('City already exists and has been selected.', 'info'); return true }
+    const response = await saveDropdown(duplicate ? { ...duplicate, value, type: actualType, isActive: true } : { ...drop0, value, type: actualType, isActive: true }, { toast: false })
+    notify(response.ok ? 'City added.' : response.error || 'Unable to add city.', response.ok ? 'success' : 'error')
+    if (!response.ok) return false
+    setLocation(current => ({ ...current, city: value }))
+    await load()
+    return true
+  }
   const selectedDropType = drop.type === 'City' ? 'City' : drop.type
   const visibleDrops = drops.filter(item => item.isActive && (selectedDropType === 'City' ? isCityType(item.type) && (!dropState || item.type === cityType(dropState)) : item.type === selectedDropType))
-  const changeDropType = (type: string) => { setDrop({ ...drop0, type }); setDropState('') }
-  const editDrop = (row: Drop) => { if (isCityType(row.type)) { setDropState(cityState(row.type)); setDrop({ ...row, type: 'City' }); return } setDropState(''); setDrop(row) }
+  const changeDropType = (type: string) => { const workWeek = workWeekPayload(defaultWorkWeekConfig); setDrop(type === 'Work Week' ? { ...drop0, type, ...workWeek } : { ...drop0, type }); setDropState('') }
+  const editDrop = (row: Drop) => { if (isCityType(row.type)) { setDropState(cityState(row.type)); setDrop({ ...row, type: 'City' }); return } setDropState(''); setDrop(row.type === 'Work Week' ? { ...row, ...workWeekPayload(parseWorkWeekConfig(row)) } : row) }
   const saveDrop = async () => {
     const actualType = drop.type === 'City' ? dropState ? cityType(dropState) : '' : drop.type
-    if (!actualType || !drop.value.trim()) return notify(drop.type === 'City' ? 'City master ke liye state aur city dono required hain.' : 'Dropdown value required hai.', 'error')
+    if (!actualType || !drop.value.trim()) return notify(drop.type === 'City' ? 'Select a state and city for the city master.' : 'Dropdown value is required.', 'error')
     const value = drop.value.trim()
+    if (actualType === 'Work Week' && !parseWorkWeekConfig(drop).workingDays.length) return notify('Select at least one working day.', 'error')
     const duplicate = drops.find(item => item.id !== drop.id && item.type.toLowerCase() === actualType.toLowerCase() && item.value.trim().toLowerCase() === value.toLowerCase())
     if (duplicate?.isActive) return notify(`${value} already exists in ${drop.type === 'City' ? dropState : actualType}.`, 'error')
     const payload = duplicate && !drop.id ? { ...duplicate, value, type: actualType, isActive: true } : { ...drop, type: actualType, value }
@@ -124,6 +258,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     if (response.ok) { setDrop({ ...drop0, type: drop.type }); await load() }
   }
   const deleteDrop = async (row: Drop) => {
+    if (blockDeleteIfLinked(row.value, dropdownDeleteLinks(row))) return
     if (!window.confirm(`Delete ${row.value}?`)) return
     const response = await saveDropdown({ ...row, isActive: false }, { toast: false })
     notify(response.ok ? 'Dropdown value deleted.' : response.error || 'Dropdown delete failed.', response.ok ? 'success' : 'error')
@@ -133,10 +268,10 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const persistComponentSetup = async (nextSetup: Setup, success: string) => { setComponentSaving(true); const response = await saveSetup(nextSetup, { toast: false }); setComponentSaving(false); if (!response.ok) { notify(response.error || 'Unable to save salary components.', 'error'); return false } setSetup(nextSetup); notify(success); return true }
   const saveComponent = async () => { const rowForUi = normalizeComponentForUi(component); const errors = validateComponent(rowForUi, componentTab, setup); if (errors.length) return notify(errors[0], 'error'); const isUpdate = Boolean(rowForUi.id), locked = rowForUi.id && componentUsed(rowForUi.id, setup); const row = { ...rowForUi, category: locked ? rowForUi.category : componentTab, id: rowForUi.id || Date.now(), code: locked ? rowForUi.code : rowForUi.code.trim().toUpperCase() }; const nextSetup = { ...setup, salaryComponents: [...setup.salaryComponents.filter(item => item.id !== row.id), row] }; if (await persistComponentSetup(nextSetup, isUpdate ? 'Salary component updated successfully.' : 'Salary component added successfully.')) { setComponent(normalizeComponentForUi({ ...component0, category: componentTab })); setComponentDrawerOpen(false) } }
   const editComponent = (row: Component) => { if (componentTabs.includes(row.category as ComponentCategory)) setComponentTab(row.category as ComponentCategory); setComponent(normalizeComponentForUi(row)); setComponentDrawerOpen(true) }
-  const deleteComponent = async (row: Component) => { if (componentUsed(row.id, setup)) return notify('This component is used in salary templates. Remove it from templates before deleting.', 'error'); if (!window.confirm(`Delete ${row.name || row.code}?`)) return; await persistComponentSetup({ ...setup, salaryComponents: setup.salaryComponents.filter(item => item.id !== row.id) }, 'Salary component deleted successfully.'); if (component.id === row.id) { setComponent({ ...component0, category: componentTab }); setComponentDrawerOpen(false) } }
+  const deleteComponent = async (row: Component) => { if (blockDeleteIfLinked(row.name || row.code, componentDeleteLinks(row))) return; if (!window.confirm(`Delete ${row.name || row.code}?`)) return; await persistComponentSetup({ ...setup, salaryComponents: setup.salaryComponents.filter(item => item.id !== row.id) }, 'Salary component deleted successfully.'); if (component.id === row.id) { setComponent({ ...component0, category: componentTab }); setComponentDrawerOpen(false) } }
   const saveStructure = async () => {
     if (!structure.name.trim()) return notify('Template name is required.', 'error')
-    const row = { ...structure, id: structure.id || Date.now() }
+    const row = { ...structure, clientId: refId(structure.clientId), id: structure.id || Date.now() }
     const nextSetup = { ...setup, salaryStructures: [...setup.salaryStructures.filter(item => item.id !== row.id), row] }
     setTemplateSaving(true)
     const response = await saveSetup(nextSetup, { toast: false })
@@ -146,20 +281,9 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     setStructure(structure0)
     notify(row.id === structure.id ? 'Salary template updated.' : 'Salary template saved.')
   }
-  const removeStructure = async (row: Structure) => {
-    if (!window.confirm(`Delete ${row.name}?`)) return
-    const nextSetup = { ...setup, salaryStructures: setup.salaryStructures.filter(item => item.id !== row.id) }
-    setTemplateSaving(true)
-    const response = await saveSetup(nextSetup, { toast: false })
-    setTemplateSaving(false)
-    if (!response.ok) return notify(response.error || 'Unable to delete salary template.', 'error')
-    setSetup(nextSetup)
-    if (structure.id === row.id) setStructure(structure0)
-    notify('Salary template deleted.')
-  }
   const savePayslip = async () => {
     if (!payslip.name.trim()) return notify('Payslip template name is required.', 'error')
-    const row = { ...payslip, id: payslip.id || Date.now() }
+    const row = { ...payslip, clientId: refId(payslip.clientId), id: payslip.id || Date.now() }
     const nextSetup = { ...setup, payslipTemplates: [...setup.payslipTemplates.filter(item => item.id !== row.id), row] }
     setPayslipSaving(true)
     const response = await saveSetup(nextSetup, { toast: false })
@@ -169,16 +293,16 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     setPayslip(payslip0)
     notify(row.id === payslip.id ? 'Payslip template updated.' : 'Payslip template saved.')
   }
-  const previewStructure = setup.salaryStructures.find(item => item.clientId === payslip.clientId) ?? setup.salaryStructures[0]
+  const previewStructure = setup.salaryStructures.find(item => refId(item.clientId) === refId(payslip.clientId)) ?? setup.salaryStructures[0]
   const monthly = Number(previewStructure?.annualCtc || 600000) / 12
   const previewLines = setup.salaryComponents.filter(item => item.active).slice(0, 6).map((componentRow, index) => ({ componentRow, amount: componentRow.category === 'Deduction' ? monthly * 0.048 : index === 0 ? monthly * 0.4 : index === 1 ? monthly * 0.2 : monthly * 0.08 }))
   const renderOrganizationBody = () => {
-    if (organizationTab === 'Organization') return <div className="grid"><F l="Organization logo" w><div className="logo-uploader"><FileDropZone accept="image/png,image/jpeg,image/svg+xml,image/webp" title="Drop logo here or browse" hint="PNG, JPG, SVG or WebP for payslips and documents." onFile={uploadLogo} preview={org.logoDataUrl ? <img src={org.logoDataUrl} alt="Organization logo preview" /> : <b>No logo</b>} />{org.logoDataUrl && <button type="button" className="secondary" onClick={() => o('logoDataUrl', '')}>Remove logo</button>}</div></F><F l="Name"><input required value={org.name} onChange={event => o('name', event.target.value)} /></F><F l="Legal name"><input value={org.legalName} onChange={event => o('legalName', event.target.value)} /></F><F l="Industry"><input value={org.industry} onChange={event => o('industry', event.target.value)} /></F><F l="State"><Sel v={org.state} set={value => o('state', value)} a={stateOptions} /></F><F l="Address" w><input required value={org.addressLine1} onChange={event => o('addressLine1', event.target.value)} /></F><F l="City"><input required value={org.city} onChange={event => o('city', event.target.value)} /></F><F l="PIN"><input required value={org.postalCode} onChange={event => o('postalCode', event.target.value.replace(/\D/g, '').slice(0, 6))} /></F></div>
-    if (organizationTab === 'Tax') return <div className="grid"><F l="PAN"><input value={setup.tax.pan} onChange={event => u('tax', 'pan', event.target.value.toUpperCase())} /></F><F l="TAN"><input value={setup.tax.tan} onChange={event => u('tax', 'tan', event.target.value.toUpperCase())} /></F><F l="AO Code"><input value={setup.tax.aoCode} onChange={event => u('tax', 'aoCode', event.target.value)} /></F><F l="Frequency"><Sel v={setup.tax.frequency} set={value => u('tax', 'frequency', value)} a={['Monthly', 'Quarterly']} /></F></div>
-    if (organizationTab === 'EPF') return <div className="grid"><Chk l="Enable EPF" v={setup.statutory.epf} set={value => u('statutory', 'epf', value)} /><F l="EPF registration no"><input value={setup.statutory.epfNumber} onChange={event => u('statutory', 'epfNumber', event.target.value)} /></F><F l="Contribution"><Sel v={setup.statutory.epfContribution} set={value => u('statutory', 'epfContribution', value)} a={['Both Employee and Employer', 'Employee only', 'Employer only']} /></F><Chk l="Employer PF in CTC" v={setup.statutory.epfCtc} set={value => u('statutory', 'epfCtc', value)} /><Chk l="Restrict PF to statutory wage ceiling" v={setup.statutory.restrictPf} set={value => u('statutory', 'restrictPf', value)} /><Chk l="ABRY applicable" v={setup.statutory.abry} set={value => u('statutory', 'abry', value)} /></div>
-    if (organizationTab === 'ESI') return <div className="grid"><Chk l="Enable ESI" v={setup.statutory.esi} set={value => u('statutory', 'esi', value)} /><F l="ESI registration no"><input value={setup.statutory.esiNumber} onChange={event => u('statutory', 'esiNumber', event.target.value)} /></F></div>
-    if (organizationTab === 'Professional Tax') return <div className="grid"><F l="PT registration no"><input value={org.professionalTaxNumber} onChange={event => o('professionalTaxNumber', event.target.value)} /></F></div>
-    return <div className="grid"><Chk l="Enable LWF" v={setup.statutory.lwf} set={value => u('statutory', 'lwf', value)} /><F l="LWF state"><Sel v={setup.statutory.lwfState} set={value => u('statutory', 'lwfState', value)} a={stateOptions} /></F><F l="Deduction cycle"><Sel v={setup.statutory.lwfCycle} set={value => u('statutory', 'lwfCycle', value)} a={['Monthly', 'Half-yearly', 'Yearly']} /></F><F l="Eligibility wage limit"><input value={setup.statutory.lwfEligibilityLimit} onChange={event => u('statutory', 'lwfEligibilityLimit', event.target.value.replace(/\D/g, ''))} /></F><F l="Employee contribution"><input value={setup.statutory.lwfEmployeeContribution} onChange={event => u('statutory', 'lwfEmployeeContribution', event.target.value)} /></F><F l="Employer contribution"><input value={setup.statutory.lwfEmployerContribution} onChange={event => u('statutory', 'lwfEmployerContribution', event.target.value)} /></F></div>
+    if (organizationTab === 'Organization') return <Row gutter={[16, 16]}><Col xs={24} lg={8}><AntCard title="Logo" size="small" className="settings-compact-panel"><FileDropZone accept="image/png,image/jpeg,image/svg+xml,image/webp" title="Drop logo here or browse" hint="PNG, JPG, SVG or WebP for payslips and documents." onFile={uploadLogo} preview={org.logoDataUrl ? <img src={org.logoDataUrl} alt="Organization logo preview" /> : <b>No logo</b>} />{org.logoDataUrl && <Button block onClick={() => o('logoDataUrl', '')}>Remove logo</Button>}</AntCard></Col><Col xs={24} lg={8}><AntCard title="Basic details" size="small" className="settings-compact-panel"><Form component={false} layout="vertical"><Form.Item label="Name" required><Input value={org.name} onChange={event => o('name', event.target.value)} /></Form.Item><Form.Item label="Legal name"><Input value={org.legalName} onChange={event => o('legalName', event.target.value)} /></Form.Item><Form.Item label="Industry"><Input value={org.industry} onChange={event => o('industry', event.target.value)} /></Form.Item></Form></AntCard></Col><Col xs={24} lg={8}><AntCard title="Address" size="small" className="settings-compact-panel"><Form component={false} layout="vertical"><Form.Item label="Address" required><Input value={org.addressLine1} onChange={event => o('addressLine1', event.target.value)} /></Form.Item><Row gutter={12}><Col span={12}><Form.Item label="State"><Sel v={org.state} set={value => o('state', value)} a={stateOptions} /></Form.Item></Col><Col span={12}><Form.Item label="City" required><Input value={org.city} onChange={event => o('city', event.target.value)} /></Form.Item></Col></Row><Form.Item label="PIN" required><Input value={org.postalCode} onChange={event => o('postalCode', event.target.value.replace(/\D/g, '').slice(0, 6))} /></Form.Item></Form></AntCard></Col></Row>
+    if (organizationTab === 'Tax') return <AntCard title="Tax details" size="small" className="settings-compact-panel"><Row gutter={16}><Col xs={24} md={6}><Form.Item label="PAN"><Input value={setup.tax.pan} onChange={event => u('tax', 'pan', event.target.value.toUpperCase())} /></Form.Item></Col><Col xs={24} md={6}><Form.Item label="TAN"><Input value={setup.tax.tan} onChange={event => u('tax', 'tan', event.target.value.toUpperCase())} /></Form.Item></Col><Col xs={24} md={6}><Form.Item label="AO Code"><Input value={setup.tax.aoCode} onChange={event => u('tax', 'aoCode', event.target.value)} /></Form.Item></Col><Col xs={24} md={6}><Form.Item label="Frequency"><Sel v={setup.tax.frequency} set={value => u('tax', 'frequency', value)} a={['Monthly', 'Quarterly']} /></Form.Item></Col></Row></AntCard>
+    if (organizationTab === 'EPF') return <AntCard title="EPF setup" size="small" className="settings-compact-panel"><Form component={false} layout="vertical"><Row gutter={16}><Col xs={24} md={8}><Form.Item><AntCheckbox checked={setup.statutory.epf} onChange={event => u('statutory', 'epf', event.target.checked)}>Enable EPF</AntCheckbox></Form.Item></Col><Col xs={24} md={8}><Form.Item label="EPF registration no"><Input value={setup.statutory.epfNumber} onChange={event => u('statutory', 'epfNumber', event.target.value)} /></Form.Item></Col><Col xs={24} md={8}><Form.Item label="Contribution"><Sel v={setup.statutory.epfContribution} set={value => u('statutory', 'epfContribution', value)} a={['Both Employee and Employer', 'Employee only', 'Employer only']} /></Form.Item></Col></Row><Space wrap><AntCheckbox checked={setup.statutory.epfCtc} onChange={event => u('statutory', 'epfCtc', event.target.checked)}>Employer PF in CTC</AntCheckbox><AntCheckbox checked={setup.statutory.restrictPf} onChange={event => u('statutory', 'restrictPf', event.target.checked)}>Restrict PF to statutory wage ceiling</AntCheckbox><AntCheckbox checked={setup.statutory.abry} onChange={event => u('statutory', 'abry', event.target.checked)}>ABRY applicable</AntCheckbox></Space></Form></AntCard>
+    if (organizationTab === 'ESI') return <AntCard title="ESI setup" size="small" className="settings-compact-panel"><Row gutter={16}><Col xs={24} md={8}><AntCheckbox checked={setup.statutory.esi} onChange={event => u('statutory', 'esi', event.target.checked)}>Enable ESI</AntCheckbox></Col><Col xs={24} md={8}><Form.Item label="ESI registration no"><Input value={setup.statutory.esiNumber} onChange={event => u('statutory', 'esiNumber', event.target.value)} /></Form.Item></Col></Row></AntCard>
+    if (organizationTab === 'Professional Tax') return <AntCard title="Professional Tax" size="small" className="settings-compact-panel"><Form.Item label="PT registration no"><Input value={org.professionalTaxNumber} onChange={event => o('professionalTaxNumber', event.target.value)} /></Form.Item></AntCard>
+    return <AntCard title="Labour Welfare Fund" size="small" className="settings-compact-panel"><Form component={false} layout="vertical"><Row gutter={16}><Col xs={24} md={8}><Form.Item><AntCheckbox checked={setup.statutory.lwf} onChange={event => u('statutory', 'lwf', event.target.checked)}>Enable LWF</AntCheckbox></Form.Item></Col><Col xs={24} md={8}><Form.Item label="LWF state"><Sel v={setup.statutory.lwfState} set={value => u('statutory', 'lwfState', value)} a={stateOptions} /></Form.Item></Col><Col xs={24} md={8}><Form.Item label="Deduction cycle"><Sel v={setup.statutory.lwfCycle} set={value => u('statutory', 'lwfCycle', value)} a={['Monthly', 'Half-yearly', 'Yearly']} /></Form.Item></Col><Col xs={24} md={8}><Form.Item label="Eligibility wage limit"><Input value={setup.statutory.lwfEligibilityLimit} onChange={event => u('statutory', 'lwfEligibilityLimit', event.target.value.replace(/\D/g, ''))} /></Form.Item></Col><Col xs={24} md={8}><Form.Item label="Employee contribution"><Input value={setup.statutory.lwfEmployeeContribution} onChange={event => u('statutory', 'lwfEmployeeContribution', event.target.value)} /></Form.Item></Col><Col xs={24} md={8}><Form.Item label="Employer contribution"><Input value={setup.statutory.lwfEmployerContribution} onChange={event => u('statutory', 'lwfEmployerContribution', event.target.value)} /></Form.Item></Col></Row></Form></AntCard>
   }
   const renderProfessionalTaxSetup = () => <Card t="Professional Tax">
     <div className="grid"><Chk l="Enable PT" v={setup.statutory.pt} set={value => u('statutory', 'pt', value)} /><F l="Default PT state"><Sel v={setup.statutory.ptState} set={value => u('statutory', 'ptState', value)} a={stateOptions} /></F><F l="Deduction cycle"><Sel v={setup.statutory.ptCycle} set={value => u('statutory', 'ptCycle', value)} a={['Monthly', 'Half-yearly', 'Yearly']} /></F></div>
@@ -222,17 +346,16 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   }
 
   return <form onSubmit={saveAll}>
-    {tab === 'Organization' && <Card t="Organization"><PageTabs items={organizationTabs} value={organizationTab} onChange={setOrganizationTab} label="Organization sections" />{renderOrganizationBody()}</Card>}
-    {tab === 'Clients' && <Card t="Clients"><div className="grid"><F l="Client name"><input value={client.name} onChange={event => setClient({ ...client, name: event.target.value })} /></F><F l="Code"><input value={client.code} onChange={event => setClient({ ...client, code: event.target.value })} /></F><F l="Contact"><input value={client.contactPerson} onChange={event => setClient({ ...client, contactPerson: event.target.value })} /></F><F l="Email"><input value={client.email} onChange={event => setClient({ ...client, email: event.target.value })} /></F><F l="Phone"><input value={client.phone} onChange={event => setClient({ ...client, phone: event.target.value })} /></F><F l="Address" w><input value={client.address} onChange={event => setClient({ ...client, address: event.target.value })} /></F><button type="button" onClick={saveClient}>Add / Update client</button></div><DataTable rows={clients} onEdit={setClient} columns={[{ key: 'name', label: 'Client' }, { key: 'code', label: 'Code' }, { key: 'contactPerson', label: 'Contact' }, { key: 'email', label: 'Email' }, { key: 'isActive', label: 'Status', render: item => item.isActive ? 'Active' : 'Inactive' }]} /></Card>}
-    {tab === 'Work Locations' && <Card t="Work locations"><div className="grid"><F l="Client"><Sel v={location.clientId ? `${location.clientId}:${location.clientName || clients.find(item => item.id === location.clientId)?.name || ''}` : ''} set={applyLocationClient} a={clients.map(item => `${item.id}:${item.name}`)} /></F><F l="Location name"><input value={location.name} onChange={event => setLocation({ ...location, name: event.target.value })} placeholder="Head Office / WFH - Employee Name" /></F><F l="State"><Sel v={location.state} set={value => setLocation({ ...location, state: value })} a={stateOptions} /></F><F l="Address" w><input value={location.address} onChange={event => setLocation({ ...location, address: event.target.value })} /></F><F l="City"><input value={location.city} onChange={event => setLocation({ ...location, city: event.target.value })} /></F><F l="PIN code"><input value={location.postalCode} onChange={event => setLocation({ ...location, postalCode: event.target.value.replace(/\D/g, '').slice(0, 6) })} /></F><Chk l="Primary work location" v={location.isPrimary} set={value => setLocation({ ...location, isPrimary: value })} /><Chk l="Active" v={location.isActive} set={value => setLocation({ ...location, isActive: value })} /><button type="button" onClick={saveLocation}>{location.id ? 'Update location' : 'Add location'}</button></div><DataTable rows={locations.filter(item => item.isActive)} columns={[{ key: 'clientName', label: 'Client', value: row => row.clientName || clients.find(item => item.id === row.clientId)?.name || '-' }, { key: 'name', label: 'Location' }, { key: 'city', label: 'City' }, { key: 'state', label: 'State' }, { key: 'postalCode', label: 'PIN' }, { key: 'isPrimary', label: 'Primary', render: item => item.isPrimary ? 'Yes' : 'No' }]} actions={row => <span className="row-actions"><button type="button" onClick={() => setLocation(row)}>Edit</button><button type="button" className="danger" onClick={() => void deleteLocation(row)}>Delete</button></span>} /></Card>}
-    {tab === 'Dropdown Masters' && <Card t="Dropdown masters"><div className="grid"><F l="Master type"><Sel v={selectedDropType} set={changeDropType} a={dropTypes} /></F>{selectedDropType === 'City' && <F l="State"><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></F>}<F l={selectedDropType === 'City' ? 'City' : 'Value'}><input value={drop.value} onChange={event => setDrop({ ...drop, value: event.target.value })} placeholder={selectedDropType === 'City' ? 'e.g. Bengaluru / Pune' : 'e.g. Finance / Manager'} /></F><Chk l="Active" v={drop.isActive} set={value => setDrop({ ...drop, isActive: value })} /><button type="button" onClick={saveDrop}>{drop.id ? 'Update value' : 'Add value'}</button></div><DataTable rows={visibleDrops} actions={row => <span className="row-actions"><button type="button" onClick={() => editDrop(row)}>Edit</button><button type="button" className="danger" onClick={() => void deleteDrop(row)}>Delete</button></span>} columns={[{ key: 'master', label: 'Master', value: row => isCityType(row.type) ? 'City' : row.type }, { key: 'state', label: 'State', value: row => cityState(row.type) || '-' }, { key: 'value', label: 'Value' }, { key: 'isActive', label: 'Status', render: item => item.isActive ? 'Active' : 'Inactive' }]} /></Card>}
-    {tab === 'Pay Schedule' && <Card t="Client pay schedule"><ClientPayScheduleManager clients={clients} reload={load} /></Card>}
-    {tab === 'Tax Engine' && <TaxEngineManager clients={clients} onMessage={onMessage} mode="company" />}
-    {tab === 'Statutory Setup' && <><PageTabs items={statutoryTabs} value={statutoryTab} onChange={setStatutoryTab} label="Statutory setup sections" />{statutoryTab === 'Income Tax Rules' ? <TaxEngineManager clients={clients} onMessage={onMessage} mode="statutory" /> : renderProfessionalTaxSetup()}</>}
+    {tab === 'Organization' && <AntCard title="Organization" size="small" className="settings-panel"><PageTabs items={organizationTabs} value={organizationTab} onChange={setOrganizationTab} label="Organization sections" />{renderOrganizationBody()}</AntCard>}
+    {tab === 'Clients' && <Row gutter={[16, 16]} className="settings-split"><Col xs={24} lg={9}><AntCard title={client.id ? 'Edit client' : 'Add client'} size="small" className="settings-panel settings-form-panel" extra={client.id ? <Button onClick={() => setClient(client0)}>New</Button> : null}><Form component={false} layout="vertical" className="settings-quick-form"><Form.Item label="Client name" required><Input value={client.name} onChange={event => setClient({ ...client, name: event.target.value })} /></Form.Item><Form.Item label="Code"><Input value={client.code} onChange={event => setClient({ ...client, code: event.target.value })} /></Form.Item><Form.Item label="Contact"><Input value={client.contactPerson} onChange={event => setClient({ ...client, contactPerson: event.target.value })} /></Form.Item><Form.Item label="Email"><Input value={client.email} onChange={event => setClient({ ...client, email: event.target.value })} /></Form.Item><Form.Item label="Phone"><Input value={client.phone} onChange={event => setClient({ ...client, phone: event.target.value })} /></Form.Item><Form.Item label="Address"><Input value={client.address} onChange={event => setClient({ ...client, address: event.target.value })} /></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => setClient(client0)}>Reset</Button><Button type="primary" onClick={saveClient}>{client.id ? 'Update client' : 'Add client'}</Button></Space></Row></Form></AntCard></Col><Col xs={24} lg={15}><AntCard title="Clients" size="small" className="settings-panel settings-table-panel"><DataTable rows={clients.filter(item => item.isActive)} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => setClient(row)}>Edit</Button><Button size="small" danger onClick={() => void deleteClient(row)}>Delete</Button></Space>} columns={[{ key: 'name', label: 'Client' }, { key: 'code', label: 'Code' }, { key: 'contactPerson', label: 'Contact' }, { key: 'email', label: 'Email' }, { key: 'isActive', label: 'Status', render: item => item.isActive ? 'Active' : 'Inactive' }]} /></AntCard></Col></Row>}
+    {tab === 'Work Locations' && <Row gutter={[16, 16]} className="settings-split"><Col xs={24} lg={10}><AntCard title={location.id ? 'Edit work location' : 'Add work location'} size="small" className="settings-panel settings-form-panel" extra={location.id ? <Button onClick={() => setLocation(location0)}>New</Button> : null}><Form component={false} layout="vertical" className="settings-quick-form"><Form.Item label="Client" required><Sel v={location.clientId || ''} set={applyLocationClient} a={clients.map(item => `${item.id}:${item.name}`)} /></Form.Item><Form.Item label="Location name" required><Input value={location.name} onChange={event => setLocation({ ...location, name: event.target.value })} placeholder="Head Office / WFH - Employee Name" /></Form.Item><Row gutter={12}><Col xs={24} md={12}><Form.Item label="State"><Sel v={location.state} set={value => setLocation({ ...location, state: value, city: '' })} a={stateOptions} /></Form.Item></Col><Col xs={24} md={12}><Form.Item label="City"><CitySelectWithAdd value={location.city} stateName={location.state} options={cityOptions(location.state)} onChange={value => setLocation({ ...location, city: value })} onAddCity={addCityForSelectedState} /></Form.Item></Col></Row><Form.Item label="PIN code"><Input value={location.postalCode} onChange={event => setLocation({ ...location, postalCode: event.target.value.replace(/\D/g, '').slice(0, 6) })} /></Form.Item><Form.Item label="Address"><Input value={location.address} onChange={event => setLocation({ ...location, address: event.target.value })} /></Form.Item><Form.Item><Space direction="vertical"><AntCheckbox checked={location.isPrimary} onChange={event => setLocation({ ...location, isPrimary: event.target.checked })}>Primary work location</AntCheckbox><AntCheckbox checked={location.isActive} onChange={event => setLocation({ ...location, isActive: event.target.checked })}>Active</AntCheckbox></Space></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => setLocation(location0)}>Reset</Button><Button type="primary" onClick={saveLocation}>{location.id ? 'Update location' : 'Add location'}</Button></Space></Row></Form></AntCard></Col><Col xs={24} lg={14}><AntCard title="Work locations" size="small" className="settings-panel settings-table-panel"><DataTable rows={locations.filter(item => item.isActive)} columns={[{ key: 'clientName', label: 'Client', value: row => row.clientName || clients.find(item => item.id === row.clientId)?.name || '-' }, { key: 'name', label: 'Location' }, { key: 'city', label: 'City' }, { key: 'state', label: 'State' }, { key: 'postalCode', label: 'PIN' }, { key: 'isPrimary', label: 'Primary', render: item => item.isPrimary ? 'Yes' : 'No' }]} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => setLocation(row)}>Edit</Button><Button size="small" danger onClick={() => void deleteLocation(row)}>Delete</Button></Space>} /></AntCard></Col></Row>}
+    {tab === 'Dropdown Masters' && <Row gutter={[16, 16]} className="settings-split"><Col xs={24} lg={10}><AntCard title={drop.id ? 'Edit dropdown value' : 'Add dropdown value'} size="small" className="settings-panel settings-form-panel" extra={drop.id ? <Button onClick={() => { setDrop({ ...drop0, type: drop.type }); setDropState('') }}>New</Button> : null}><Form component={false} layout="vertical" className="settings-quick-form"><Form.Item label="Master type" required><Sel v={selectedDropType} set={changeDropType} a={dropTypes} /></Form.Item>{selectedDropType === 'City' && <Form.Item label="State" required><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></Form.Item>}{selectedDropType === 'Work Week' ? <WorkWeekMasterFields drop={drop} setDrop={setDrop} /> : <Form.Item label={selectedDropType === 'City' ? 'City' : 'Value'} required><Input value={drop.value} onChange={event => setDrop({ ...drop, value: event.target.value })} placeholder={selectedDropType === 'City' ? 'e.g. Bengaluru / Pune' : 'e.g. Finance / Manager'} /></Form.Item>}<Form.Item><AntCheckbox checked={drop.isActive} onChange={event => setDrop({ ...drop, isActive: event.target.checked })}>Active</AntCheckbox></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => { setDrop({ ...drop0, type: drop.type }); setDropState('') }}>Reset</Button><Button type="primary" style={drop.id ? { background: '#f59e0b', borderColor: '#f59e0b' } : undefined} onClick={saveDrop}>{drop.id ? 'Update value' : 'Add value'}</Button></Space></Row></Form></AntCard></Col><Col xs={24} lg={14}><AntCard title="Dropdown values" size="small" className="settings-panel settings-table-panel"><DataTable rows={visibleDrops} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editDrop(row)}>Edit</Button><Button size="small" danger onClick={() => void deleteDrop(row)}>Delete</Button></Space>} columns={[{ key: 'master', label: 'Master', value: row => isCityType(row.type) ? 'City' : row.type }, { key: 'state', label: 'State', value: row => cityState(row.type) || '-' }, { key: 'value', label: 'Value' }, { key: 'isActive', label: 'Status', render: item => item.isActive ? 'Active' : 'Inactive' }]} /></AntCard></Col></Row>}
+    {tab === 'Tax Engine' && <TaxEngineManager clients={clients} onMessage={notifyFromChild} mode="company" />}
+    {tab === 'Statutory Setup' && <><PageTabs items={statutoryTabs} value={statutoryTab} onChange={setStatutoryTab} label="Statutory setup sections" />{statutoryTab === 'Income Tax Rules' ? <TaxEngineManager clients={clients} onMessage={notifyFromChild} mode="statutory" /> : renderProfessionalTaxSetup()}</>}
     {tab === 'Salary Components' && <Card t="Salary components"><PageTabs items={componentTabs} value={componentTab} onChange={item => { setComponentTab(item); setComponent(normalizeComponentForUi({ ...component0, category: item })); setComponentDrawerOpen(false) }} label="Salary component categories" getLabel={item => `${item}s`} /><div className="component-table-head"><div><b>{componentTab}s</b><span>Changes save immediately to payroll setup.</span></div><button type="button" disabled={componentSaving} onClick={openNewComponent}>Add {componentTab}</button></div><div className="component-guide"><b>Setup guide</b><span>Use Formula for all derived components. Use Residual for balancing amount. Payable values are handled by Pro-rata, separate payable rows are not needed.</span></div><DataTable rows={componentRows} actions={row => <span className="row-actions"><button type="button" onClick={() => editComponent(row)}>Edit</button><button type="button" className="danger" disabled={componentSaving} onClick={() => void deleteComponent(row)}>Delete</button></span>} emptyText={`No ${componentTab.toLowerCase()} components configured yet.`} exportFileName={`salary-${componentTab.toLowerCase()}-components`} columns={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Name' }, { key: 'componentType', label: 'Type' }, { key: 'calculationType', label: 'Calculation' }, { key: 'payType', label: 'Pay Type' }, { key: 'priority', label: 'Priority' }, { key: 'locked', label: 'Lock', render: item => componentUsed(item.id, setup) ? 'Locked' : 'Open' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
-    {tab === 'Salary Templates' && <SalaryTemplateDesigner clients={clients} components={setup.salaryComponents} structure={structure} setStructure={setStructure} templates={setup.salaryStructures} saveTemplate={saveStructure} removeTemplate={removeStructure} saving={templateSaving} />}
-    {tab === 'Payslip Templates' && <Card t="Payslip templates"><div className="grid"><F l="Client"><Sel v={payslip.clientId} set={value => setPayslip({ ...payslip, clientId: value, theme: 'GA Digital' })} a={clients.map(item => `${item.id}:${item.name}`)} /></F><F l="Template name"><input value={payslip.name} onChange={event => setPayslip({ ...payslip, name: event.target.value, theme: 'GA Digital' })} /></F><Chk l="Show logo" v={payslip.showLogo} set={value => setPayslip({ ...payslip, showLogo: value })} /><Chk l="Show bank info" v={payslip.showBank} set={value => setPayslip({ ...payslip, showBank: value })} /><Chk l="Active" v={payslip.active} set={value => setPayslip({ ...payslip, active: value })} /><F l="Footer note" w><input value={payslip.note} onChange={event => setPayslip({ ...payslip, note: event.target.value })} /></F><button type="button" disabled={payslipSaving} onClick={() => void savePayslip()}>{payslipSaving ? 'Saving...' : 'Add / Update template'}</button></div><div className="payslip-preview ga"><header>{payslip.showLogo && <b>P</b>}<div><h3>{org.name || 'GA DIGITAL WEB WORD PRIVATE LIMITED'}</h3><p>{org.addressLine1 || 'NO. 1, VIKAS MARKET EXTN, HARGOBIND ENCLAVE'}</p><small>India</small></div></header><h2>Payslip - June 2026</h2><section><div><h4>Employee Details</h4><p><span>Name</span><strong>Demo Employee</strong></p><p><span>Email Id</span><strong>demo@company.com</strong></p><p><span>Emp Code</span><strong>EMP001</strong></p><p><span>Designation</span><strong>Software Engineer</strong></p><p><span>Bank</span><strong>{payslip.showBank ? 'HDFC BANK LIMITED' : '-'}</strong></p></div><div><h4>Salary Details</h4><p><span>Salary Period</span><strong>Jun 01, 2026 - Jun 30, 2026</strong></p><p><span>Working Days</span><strong>30</strong></p><p><span>Leaves</span><strong>0.00</strong></p><p><span>LOP</span><strong>0.00</strong></p><p><span>OT Hours</span><strong>0</strong></p></div></section><table><thead><tr><th>Earnings</th><th>Rate</th><th>Actual</th><th>Deductions</th><th>Amount</th></tr></thead><tbody>{previewLines.map((item, index) => <tr key={item.componentRow.id}><td>{item.componentRow.category !== 'Deduction' ? item.componentRow.name : ''}</td><td>{item.componentRow.category !== 'Deduction' ? money(item.amount) : ''}</td><td>{item.componentRow.category !== 'Deduction' ? money(item.amount) : ''}</td><td>{item.componentRow.category === 'Deduction' ? item.componentRow.name : index === 0 ? 'Professional Tax' : ''}</td><td>{item.componentRow.category === 'Deduction' ? money(item.amount) : index === 0 ? '200' : ''}</td></tr>)}</tbody><tfoot><tr><td>Earning Total</td><td>{money(monthly)}</td><td>{money(monthly)}</td><td>Deduction Total</td><td>{money(monthly * .048 + 200)}</td></tr></tfoot></table><p className="net-pay"><span>Net Pay (INR) :</span><strong>{money(monthly - monthly * .048 - 200)}</strong></p><footer>{payslip.note}</footer></div><DataTable rows={setup.payslipTemplates} onEdit={setPayslip} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client' }, { key: 'theme', label: 'Theme' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
-    {!['Salary Components', 'Salary Templates', 'Payslip Templates', 'Work Locations', 'Pay Schedule'].includes(tab) && <div className="actions"><p>Structures are client-wise. Components are global.</p><button disabled={saving || tab === 'Clients'}>{saving ? 'Saving...' : 'Save settings'}</button></div>}
+    {tab === 'Salary Templates' && <SalaryTemplateDesigner clients={clients} components={setup.salaryComponents} structure={structure} setStructure={setStructure} templates={setup.salaryStructures.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} saveTemplate={saveStructure} saving={templateSaving} />}
+    {tab === 'Payslip Templates' && <Card t="Payslip templates"><div className="grid"><F l="Client"><Sel v={payslip.clientId} set={value => setPayslip({ ...payslip, clientId: value })} a={clients.map(item => `${item.id}:${item.name}`)} /></F><F l="Template name"><input value={payslip.name} onChange={event => setPayslip({ ...payslip, name: event.target.value })} /></F><F l="Theme"><Sel v={payslip.theme} set={value => setPayslip({ ...payslip, theme: value })} a={['Classic', 'Modern', 'Compact']} /></F><Chk l="Show logo" v={payslip.showLogo} set={value => setPayslip({ ...payslip, showLogo: value })} /><Chk l="Show client" v={payslip.showClient} set={value => setPayslip({ ...payslip, showClient: value })} /><Chk l="Show YTD" v={payslip.showYtd} set={value => setPayslip({ ...payslip, showYtd: value })} /><Chk l="Show bank info" v={payslip.showBank} set={value => setPayslip({ ...payslip, showBank: value })} /><Chk l="Active" v={payslip.active} set={value => setPayslip({ ...payslip, active: value })} /><F l="Footer note" w><input value={payslip.note} onChange={event => setPayslip({ ...payslip, note: event.target.value })} /></F><button type="button" disabled={payslipSaving} onClick={() => void savePayslip()}>{payslipSaving ? 'Saving...' : 'Add / Update template'}</button></div><div className={`payslip-preview ${payslip.theme.toLowerCase()}`}><header>{payslip.showLogo && <b className={org.logoDataUrl ? 'payslip-logo-mark' : ''}>{org.logoDataUrl ? <img src={org.logoDataUrl} alt="Organization logo" /> : 'P'}</b>}<div><h3>{org.name || 'Your Organization'}</h3><p>Payslip for June 2026</p>{payslip.showClient && <small>Client: {clientName(payslip.clientId)}</small>}</div></header><section><div><span>Employee</span><strong>Demo Employee</strong></div><div><span>Designation</span><strong>Software Engineer</strong></div><div><span>Pay Days</span><strong>30</strong></div><div><span>Bank</span><strong>{payslip.showBank ? 'HDFC ****1234' : '-'}</strong></div></section><table><thead><tr><th>Earnings</th><th>Amount</th><th>Deductions</th><th>Amount</th></tr></thead><tbody>{previewLines.map((item, index) => <tr key={item.componentRow.id}><td>{item.componentRow.category !== 'Deduction' ? item.componentRow.name : ''}</td><td>{item.componentRow.category !== 'Deduction' ? money(item.amount) : ''}</td><td>{item.componentRow.category === 'Deduction' ? item.componentRow.name : index === 0 ? 'Professional Tax' : ''}</td><td>{item.componentRow.category === 'Deduction' ? money(item.amount) : index === 0 ? '200' : ''}</td></tr>)}</tbody></table>{payslip.showYtd && <p className="ytd">YTD Gross: Rs {money(monthly * 6)} | YTD Tax: Rs {money(1200)}</p>}<footer>{payslip.note}</footer></div><DataTable rows={setup.payslipTemplates.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} onEdit={setPayslip} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'theme', label: 'Theme' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
+    {!['Clients', 'Salary Components', 'Salary Templates', 'Payslip Templates', 'Work Locations', 'Dropdown Masters'].includes(tab) && <div className="actions"><p>Structures are client-wise. Components are global.</p><button disabled={saving}>{saving ? 'Saving...' : 'Save settings'}</button></div>}
     {renderComponentDrawer()}
   </form>
 }
@@ -247,6 +370,42 @@ function HelpTip({ text }: { text: string }) {
   return <>
     <span className="field-help" tabIndex={0} aria-label={text} onMouseEnter={event => open(event.currentTarget)} onMouseLeave={() => setPos(null)} onFocus={event => open(event.currentTarget)} onBlur={() => setPos(null)}>?</span>
     {pos && createPortal(<small className="field-help-popover" style={{ top: pos.top, left: pos.left }}>{text}</small>, document.body)}
+  </>
+}
+
+function CitySelectWithAdd(p: { value: string; stateName: string; options: string[]; onChange: (value: string) => void; onAddCity: (city: string) => Promise<boolean> }) {
+  const [city, setCity] = useState(''), [open, setOpen] = useState(false), [saving, setSaving] = useState(false)
+  const addCity = async () => { setSaving(true); const ok = await p.onAddCity(city); setSaving(false); if (ok) { setCity(''); setOpen(false) } }
+  return <>
+    <AntSelect className="app-search-select" popupClassName="app-search-select-dropdown" showSearch value={p.value || ''} optionFilterProp="label" filterOption={(input, option) => String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())} onChange={value => p.onChange(String(value))} options={[{ value: '', label: 'Select' }, ...unique([...p.options, p.value]).map(item => ({ value: item, label: item }))]} dropdownRender={menu => <>{menu}<Divider /><Button type="link" disabled={!p.stateName} onClick={() => setOpen(true)}>+ Add city</Button></>} />
+    <Modal title="Add city" open={open} okText="Save city" confirmLoading={saving} okButtonProps={{ disabled: !city.trim() }} onOk={() => void addCity()} onCancel={() => { setOpen(false); setCity('') }}><Form component={false} layout="vertical"><Form.Item label="State"><Input value={p.stateName} disabled /></Form.Item><Form.Item label="City name" required><Input autoFocus value={city} onChange={event => setCity(event.target.value)} onPressEnter={() => void addCity()} placeholder="Enter city name" /></Form.Item></Form></Modal>
+  </>
+}
+
+function WorkWeekMasterFields({ drop, setDrop }: { drop: Drop; setDrop: (drop: Drop) => void }) {
+  const config = parseWorkWeekConfig(drop)
+  const weeklyOffDays = weekDayOptions.filter(day => !config.workingDays.includes(day.value)).map(day => day.value)
+  const update = (patch: Partial<WorkWeekConfig>) => {
+    const next = normalizeWorkWeekConfig({ ...config, ...patch })
+    setDrop({ ...drop, ...workWeekPayload(next) })
+  }
+  const toggleWeeklyOff = (day: number) => {
+    const workingDays = config.workingDays.includes(day) ? config.workingDays.filter(item => item !== day) : [...config.workingDays, day]
+    update({ workingDays, offSaturdays: day === 6 && !workingDays.includes(6) ? [] : config.offSaturdays })
+  }
+  const toggleSaturday = (occurrence: number) => {
+    const offSaturdays = config.offSaturdays.includes(occurrence) ? config.offSaturdays.filter(item => item !== occurrence) : [...config.offSaturdays, occurrence]
+    update({ offSaturdays })
+  }
+
+  return <>
+    <Form.Item label="Pattern name" required><Input value={drop.value} readOnly /></Form.Item>
+    <Form.Item label="Weekly off days" required>
+      <Space wrap>{weekDayOptions.map(day => <AntCheckbox key={day.value} checked={weeklyOffDays.includes(day.value)} onChange={() => toggleWeeklyOff(day.value)}>{day.label}</AntCheckbox>)}</Space>
+    </Form.Item>
+    {config.workingDays.includes(6) && <Form.Item label="Extra Saturday off in every month">
+      <Space wrap>{saturdayOptions.map(option => <AntCheckbox key={option.value} checked={config.offSaturdays.includes(option.value)} onChange={() => toggleSaturday(option.value)}>{option.label}</AntCheckbox>)}</Space>
+    </Form.Item>}
   </>
 }
 

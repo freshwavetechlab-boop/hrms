@@ -22,7 +22,7 @@ export default function GeoFenceManager({ clientId, clientName, onMessage }: { c
   const load = async () => {
     const [nextRules, nextLocations, nextEmployees] = await Promise.all([getGeoFenceRules(clientId), getWorkLocations(), getEmployees()])
     setRules(nextRules)
-    setLocations(nextLocations.filter(location => location.isActive))
+    setLocations(nextLocations.filter(location => location.isActive && Number(location.clientId) === Number(clientId)))
     setEmployees(nextEmployees)
     setForm(current => current.id ? current : { ...geoFenceFallback, clientId })
   }
