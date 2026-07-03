@@ -118,6 +118,8 @@ CREATE TABLE IF NOT EXISTS employeepersonaldetails (
     UanNumber VARCHAR(50) NOT NULL DEFAULT '',
     EsicNumber VARCHAR(50) NOT NULL DEFAULT '',
     Address VARCHAR(800) NOT NULL DEFAULT '',
+    CorrespondenceAddress VARCHAR(800) NOT NULL DEFAULT '',
+    PermanentAddress VARCHAR(800) NOT NULL DEFAULT '',
     Source VARCHAR(120) NOT NULL DEFAULT '',
     SourceLocation VARCHAR(200) NOT NULL DEFAULT '',
     City VARCHAR(100) NOT NULL DEFAULT '',
@@ -316,6 +318,8 @@ VALUES (@PayRunEmployeeId,@PayRunId,@EmployeeId,@ComponentCode,@Name,@Category,@
     private static async Task EnsureEmployeeDetailColumnsAsync(MySqlConnection connection)
     {
         await EnsureColumnAsync(connection, "employeepersonaldetails", "Address", "VARCHAR(800) NOT NULL DEFAULT '' AFTER EsicNumber");
+        await EnsureColumnAsync(connection, "employeepersonaldetails", "CorrespondenceAddress", "VARCHAR(800) NOT NULL DEFAULT '' AFTER Address");
+        await EnsureColumnAsync(connection, "employeepersonaldetails", "PermanentAddress", "VARCHAR(800) NOT NULL DEFAULT '' AFTER CorrespondenceAddress");
         await EnsureColumnAsync(connection, "employeepaymentdetails", "BankName", "VARCHAR(160) NOT NULL DEFAULT '' AFTER EmployeeId");
         await EnsureColumnAsync(connection, "employeepaymentdetails", "PaymentMode", "VARCHAR(60) NOT NULL DEFAULT '' AFTER IfscCode");
     }
@@ -399,9 +403,9 @@ ON DUPLICATE KEY UPDATE ComponentCode=@ComponentCode,Amount=@Amount", new { empl
     }
 
     private static Task SaveEmployeePersonalAsync(MySqlConnection connection, int employeeId, EmployeePersonalDetails personal) =>
-        connection.ExecuteAsync(@"INSERT INTO employeepersonaldetails (EmployeeId,DateOfBirth,Mobile,PanNumber,AadhaarNumber,UanNumber,EsicNumber,Address,Source,SourceLocation,City,District,State,RawDesignation,OriginalEmployeeCode,DuplicateResolution,ExcelRow,EsicEmployee,PtLwfWorkmenComp,Tds,Recovery)
-VALUES (@EmployeeId,@DateOfBirth,@Mobile,@PanNumber,@AadhaarNumber,@UanNumber,@EsicNumber,@Address,@Source,@SourceLocation,@City,@District,@State,@RawDesignation,@OriginalEmployeeCode,@DuplicateResolution,@ExcelRow,@EsicEmployee,@PtLwfWorkmenComp,@Tds,@Recovery)
-ON DUPLICATE KEY UPDATE DateOfBirth=@DateOfBirth,Mobile=@Mobile,PanNumber=@PanNumber,AadhaarNumber=@AadhaarNumber,UanNumber=@UanNumber,EsicNumber=@EsicNumber,Address=@Address,Source=@Source,SourceLocation=@SourceLocation,City=@City,District=@District,State=@State,RawDesignation=@RawDesignation,OriginalEmployeeCode=@OriginalEmployeeCode,DuplicateResolution=@DuplicateResolution,ExcelRow=@ExcelRow,EsicEmployee=@EsicEmployee,PtLwfWorkmenComp=@PtLwfWorkmenComp,Tds=@Tds,Recovery=@Recovery", new
+        connection.ExecuteAsync(@"INSERT INTO employeepersonaldetails (EmployeeId,DateOfBirth,Mobile,PanNumber,AadhaarNumber,UanNumber,EsicNumber,Address,CorrespondenceAddress,PermanentAddress,Source,SourceLocation,City,District,State,RawDesignation,OriginalEmployeeCode,DuplicateResolution,ExcelRow,EsicEmployee,PtLwfWorkmenComp,Tds,Recovery)
+VALUES (@EmployeeId,@DateOfBirth,@Mobile,@PanNumber,@AadhaarNumber,@UanNumber,@EsicNumber,@Address,@CorrespondenceAddress,@PermanentAddress,@Source,@SourceLocation,@City,@District,@State,@RawDesignation,@OriginalEmployeeCode,@DuplicateResolution,@ExcelRow,@EsicEmployee,@PtLwfWorkmenComp,@Tds,@Recovery)
+ON DUPLICATE KEY UPDATE DateOfBirth=@DateOfBirth,Mobile=@Mobile,PanNumber=@PanNumber,AadhaarNumber=@AadhaarNumber,UanNumber=@UanNumber,EsicNumber=@EsicNumber,Address=@Address,CorrespondenceAddress=@CorrespondenceAddress,PermanentAddress=@PermanentAddress,Source=@Source,SourceLocation=@SourceLocation,City=@City,District=@District,State=@State,RawDesignation=@RawDesignation,OriginalEmployeeCode=@OriginalEmployeeCode,DuplicateResolution=@DuplicateResolution,ExcelRow=@ExcelRow,EsicEmployee=@EsicEmployee,PtLwfWorkmenComp=@PtLwfWorkmenComp,Tds=@Tds,Recovery=@Recovery", new
         {
             EmployeeId = employeeId,
             personal.DateOfBirth,
@@ -411,6 +415,8 @@ ON DUPLICATE KEY UPDATE DateOfBirth=@DateOfBirth,Mobile=@Mobile,PanNumber=@PanNu
             personal.UanNumber,
             personal.EsicNumber,
             personal.Address,
+            personal.CorrespondenceAddress,
+            personal.PermanentAddress,
             personal.Source,
             personal.SourceLocation,
             personal.City,
@@ -445,6 +451,8 @@ ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode
         UanNumber = row.UanNumber,
         EsicNumber = row.EsicNumber,
         Address = row.Address,
+        CorrespondenceAddress = row.CorrespondenceAddress,
+        PermanentAddress = row.PermanentAddress,
         Source = row.Source,
         SourceLocation = row.SourceLocation,
         City = row.City,
@@ -469,6 +477,8 @@ ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode
         UanNumber = Text(root, "uan", Text(root, "uanNumber")),
         EsicNumber = Text(root, "esic", Text(root, "esicNumber")),
         Address = Text(root, "address"),
+        CorrespondenceAddress = Text(root, "correspondenceAddress"),
+        PermanentAddress = Text(root, "permanentAddress"),
         Source = Text(root, "source"),
         SourceLocation = Text(root, "sourceLocation"),
         City = Text(root, "city"),
@@ -501,6 +511,8 @@ ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode
         ["esic"] = personal.EsicNumber,
         ["esicNumber"] = personal.EsicNumber,
         ["address"] = personal.Address,
+        ["correspondenceAddress"] = personal.CorrespondenceAddress,
+        ["permanentAddress"] = personal.PermanentAddress,
         ["source"] = personal.Source,
         ["sourceLocation"] = personal.SourceLocation,
         ["city"] = personal.City,
@@ -529,7 +541,7 @@ ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode
     };
 
     private static bool HasPersonalDetails(EmployeePersonalDetails personal) =>
-        !string.IsNullOrWhiteSpace(personal.DateOfBirth) || !string.IsNullOrWhiteSpace(personal.Mobile) || !string.IsNullOrWhiteSpace(personal.PanNumber) || !string.IsNullOrWhiteSpace(personal.AadhaarNumber) || !string.IsNullOrWhiteSpace(personal.UanNumber) || !string.IsNullOrWhiteSpace(personal.EsicNumber) || !string.IsNullOrWhiteSpace(personal.Address) || !string.IsNullOrWhiteSpace(personal.Source) || !string.IsNullOrWhiteSpace(personal.SourceLocation) || !string.IsNullOrWhiteSpace(personal.City) || !string.IsNullOrWhiteSpace(personal.District) || !string.IsNullOrWhiteSpace(personal.State) || !string.IsNullOrWhiteSpace(personal.RawDesignation) || !string.IsNullOrWhiteSpace(personal.OriginalEmployeeCode) || !string.IsNullOrWhiteSpace(personal.DuplicateResolution) || personal.ExcelRow != 0 || personal.EsicEmployee != 0 || personal.PtLwfWorkmenComp != 0 || personal.Tds != 0 || personal.Recovery != 0;
+        !string.IsNullOrWhiteSpace(personal.DateOfBirth) || !string.IsNullOrWhiteSpace(personal.Mobile) || !string.IsNullOrWhiteSpace(personal.PanNumber) || !string.IsNullOrWhiteSpace(personal.AadhaarNumber) || !string.IsNullOrWhiteSpace(personal.UanNumber) || !string.IsNullOrWhiteSpace(personal.EsicNumber) || !string.IsNullOrWhiteSpace(personal.Address) || !string.IsNullOrWhiteSpace(personal.CorrespondenceAddress) || !string.IsNullOrWhiteSpace(personal.PermanentAddress) || !string.IsNullOrWhiteSpace(personal.Source) || !string.IsNullOrWhiteSpace(personal.SourceLocation) || !string.IsNullOrWhiteSpace(personal.City) || !string.IsNullOrWhiteSpace(personal.District) || !string.IsNullOrWhiteSpace(personal.State) || !string.IsNullOrWhiteSpace(personal.RawDesignation) || !string.IsNullOrWhiteSpace(personal.OriginalEmployeeCode) || !string.IsNullOrWhiteSpace(personal.DuplicateResolution) || personal.ExcelRow != 0 || personal.EsicEmployee != 0 || personal.PtLwfWorkmenComp != 0 || personal.Tds != 0 || personal.Recovery != 0;
 
     private static bool HasPaymentDetails(EmployeePaymentDetails payment) =>
         !string.IsNullOrWhiteSpace(payment.BankName) || !string.IsNullOrWhiteSpace(payment.BankAccountNo) || !string.IsNullOrWhiteSpace(payment.IfscCode) || !string.IsNullOrWhiteSpace(payment.PaymentMode);
@@ -578,6 +590,6 @@ ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode
     private sealed class PayslipTemplateRow { public long Id { get; set; } public int ClientId { get; set; } public string ClientRef { get; set; } = ""; public string Name { get; set; } = ""; public string Theme { get; set; } = "Classic"; public bool ShowLogo { get; set; } = true; public bool ShowClient { get; set; } = true; public bool ShowYtd { get; set; } = true; public bool ShowBank { get; set; } = true; public string Note { get; set; } = ""; public bool Active { get; set; } = true; }
     private sealed class ClientScheduleRow : ClientScheduleDto { public int ClientId { get; set; } }
     private sealed class EmployeeSalaryComponentRow { public int EmployeeId { get; set; } public string ComponentId { get; set; } = ""; public decimal Amount { get; set; } }
-    private sealed class EmployeePersonalRow { public int EmployeeId { get; set; } public string DateOfBirth { get; set; } = ""; public string Mobile { get; set; } = ""; public string PanNumber { get; set; } = ""; public string AadhaarNumber { get; set; } = ""; public string UanNumber { get; set; } = ""; public string EsicNumber { get; set; } = ""; public string Address { get; set; } = ""; public string Source { get; set; } = ""; public string SourceLocation { get; set; } = ""; public string City { get; set; } = ""; public string District { get; set; } = ""; public string State { get; set; } = ""; public string RawDesignation { get; set; } = ""; public string OriginalEmployeeCode { get; set; } = ""; public string DuplicateResolution { get; set; } = ""; public int ExcelRow { get; set; } public decimal EsicEmployee { get; set; } public decimal PtLwfWorkmenComp { get; set; } public decimal Tds { get; set; } public decimal Recovery { get; set; } }
+    private sealed class EmployeePersonalRow { public int EmployeeId { get; set; } public string DateOfBirth { get; set; } = ""; public string Mobile { get; set; } = ""; public string PanNumber { get; set; } = ""; public string AadhaarNumber { get; set; } = ""; public string UanNumber { get; set; } = ""; public string EsicNumber { get; set; } = ""; public string Address { get; set; } = ""; public string CorrespondenceAddress { get; set; } = ""; public string PermanentAddress { get; set; } = ""; public string Source { get; set; } = ""; public string SourceLocation { get; set; } = ""; public string City { get; set; } = ""; public string District { get; set; } = ""; public string State { get; set; } = ""; public string RawDesignation { get; set; } = ""; public string OriginalEmployeeCode { get; set; } = ""; public string DuplicateResolution { get; set; } = ""; public int ExcelRow { get; set; } public decimal EsicEmployee { get; set; } public decimal PtLwfWorkmenComp { get; set; } public decimal Tds { get; set; } public decimal Recovery { get; set; } }
     private sealed class EmployeePaymentRow { public int EmployeeId { get; set; } public string BankName { get; set; } = ""; public string BankAccountNo { get; set; } = ""; public string IfscCode { get; set; } = ""; public string PaymentMode { get; set; } = ""; }
 }

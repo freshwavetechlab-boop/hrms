@@ -10,6 +10,7 @@ public class WorkLocation
     public string City { get; set; } = string.Empty;
     public string State { get; set; } = string.Empty;
     public string PostalCode { get; set; } = string.Empty;
+    public string Gstin { get; set; } = string.Empty;
     public bool IsPrimary { get; set; }
     public bool IsActive { get; set; } = true;
 }
