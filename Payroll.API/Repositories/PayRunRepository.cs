@@ -245,19 +245,16 @@ SELECT * FROM payrunemployees WHERE PayRunId = @Id ORDER BY EmployeeName;", new 
         var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id AND IsActive = TRUE", new { Id = request.ClientId }, transaction);
         if (client is null) return null;
         var runType = string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
+        var runCode = runType == "Regular" ? RegularRunCode(request) : $"OFF-{DateTime.UtcNow:yyyyMMddHHmmss}";
         var runName = string.IsNullOrWhiteSpace(request.RunName) ? (runType == "Regular" ? "Regular payroll" : "Off-cycle payroll") : request.RunName.Trim();
-        var activeRun = await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>(@"SELECT Id, Status FROM payruns
-WHERE PayPeriod=@PayPeriod AND ClientId=@ClientId AND Status IN ('Queued','Processing')
-ORDER BY Id DESC LIMIT 1", new { request.PayPeriod, request.ClientId }, transaction);
-        if (activeRun is not null)
-        {
-            await transaction.RollbackAsync();
-            return await GetAsync(activeRun.Id);
-        }
-        var runCode = runType == "Regular" ? "REGULAR" : $"OFF-{DateTime.UtcNow:yyyyMMddHHmmss}";
-        var existing = runType == "Regular" ? await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>("SELECT Id, Status FROM payruns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = 'REGULAR'", new { request.PayPeriod, request.ClientId }, transaction) : null;
+        var existing = runType == "Regular" ? await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>("SELECT Id, Status FROM payruns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = @RunCode", new { request.PayPeriod, request.ClientId, RunCode = runCode }, transaction) : null;
         if (existing is not null)
         {
+            if (existing.Status is "Queued" or "Processing")
+            {
+                await transaction.RollbackAsync();
+                return await GetAsync(existing.Id);
+            }
             if (!LatestAttemptStatuses.Contains(existing.Status))
                 return null;
             await DeletePayRunAttemptAsync(connection, transaction, existing.Id);
@@ -317,9 +314,9 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id AND IsActive = TRUE", new { Id = request.ClientId }, transaction);
         if (client is null) return null;
         var runType = string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
-        var runCode = runType == "Regular" ? "REGULAR" : $"OFF-{DateTime.UtcNow:yyyyMMddHHmmss}";
+        var runCode = runType == "Regular" ? RegularRunCode(request) : $"OFF-{DateTime.UtcNow:yyyyMMddHHmmss}";
         var runName = string.IsNullOrWhiteSpace(request.RunName) ? (runType == "Regular" ? "Regular payroll" : "Off-cycle payroll") : request.RunName.Trim();
-        var existing = runType == "Regular" ? await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>("SELECT Id, Status FROM payruns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = 'REGULAR'", new { request.PayPeriod, request.ClientId }, transaction) : null;
+        var existing = runType == "Regular" ? await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>("SELECT Id, Status FROM payruns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = @RunCode", new { request.PayPeriod, request.ClientId, RunCode = runCode }, transaction) : null;
         if (existing is not null)
         {
             if (!existing.Status.Equals("Failed", StringComparison.OrdinalIgnoreCase))
@@ -334,10 +331,13 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
 
         var selectedAdjustmentIds = request.AdjustmentIds.Distinct().ToArray();
         var adjustments = await GetApplicableAdjustmentsAsync(connection, transaction, request.ClientId, request.PayPeriod, runType, selectedAdjustmentIds);
-        var adjustmentByEmployee = adjustments.GroupBy(item => item.EmployeeId).ToDictionary(group => group.Key, group => group.ToList());
+        var requestedIncludedIds = request.IncludedEmployeeIds.Distinct().ToHashSet();
         var includedEmployeeIds = runType == "Off Cycle"
             ? request.IncludedEmployeeIds.Concat(adjustments.Select(item => item.EmployeeId)).Distinct().ToHashSet()
-            : employees.Select(employee => employee.Id).Except(request.ExcludedEmployeeIds).ToHashSet();
+            : requestedIncludedIds.Count > 0 ? employees.Where(employee => requestedIncludedIds.Contains(employee.Id)).Select(employee => employee.Id).ToHashSet() : employees.Select(employee => employee.Id).Except(request.ExcludedEmployeeIds).ToHashSet();
+        if (runType == "Regular" && requestedIncludedIds.Count > 0)
+            adjustments = adjustments.Where(item => includedEmployeeIds.Contains(item.EmployeeId)).ToList();
+        var adjustmentByEmployee = adjustments.GroupBy(item => item.EmployeeId).ToDictionary(group => group.Key, group => group.ToList());
         if (runType == "Off Cycle" && includedEmployeeIds.Count == 0)
         {
             await transaction.RollbackAsync();
@@ -360,18 +360,19 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         foreach (var employee in employees.Where(employee => includedEmployeeIds.Contains(employee.Id)))
         {
             var attendanceRow = attendance.GetValueOrDefault(employee.Id);
-            var presentDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? request.TotalWorkingDays : Math.Clamp(attendanceRow.PresentDays, 0, request.TotalWorkingDays);
-            var payableDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? request.TotalWorkingDays : Math.Clamp(attendanceRow.PayableDays, 0, request.TotalWorkingDays);
+            var employeeWorkingDays = runType == "Off Cycle" ? request.TotalWorkingDays : AttendanceWorkingDays(attendanceRow, request.TotalWorkingDays);
+            var presentDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? employeeWorkingDays : Math.Clamp(attendanceRow.PresentDays, 0, employeeWorkingDays);
+            var payableDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? employeeWorkingDays : Math.Clamp(attendanceRow.PayableDays, 0, employeeWorkingDays);
             var employeeAdjustments = adjustmentByEmployee.GetValueOrDefault(employee.Id) ?? [];
-            var row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, request.TotalWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, 0, false);
+            var row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, 0, false);
             if (runType == "Regular")
             {
                 var projectedTds = await CalculateMonthlyTdsAsync(connection, transaction, employee, row, request.PayPeriod);
                 if (projectedTds > 0)
-                    row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, request.TotalWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, projectedTds, false);
+                    row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, projectedTds, false);
             }
             await SaveEmployeeAsync(connection, transaction, row);
-            await WriteCalculationTracesAsync(connection, transaction, row, request.TotalWorkingDays);
+            await WriteCalculationTracesAsync(connection, transaction, row, employeeWorkingDays);
         }
         if (adjustments.Count > 0)
             await connection.ExecuteAsync("UPDATE payrolladjustments SET Status = 'Applied', PayRunId = @PayRunId WHERE Id IN @Ids", new { PayRunId = payRunId, Ids = adjustments.Select(item => item.Id).ToArray() }, transaction);
@@ -390,11 +391,11 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id", new { Id = request.ClientId }, transaction);
         if (client is null) return null;
         var runType = string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
-        var runCode = runType == "Regular" ? "REGULAR" : $"OFF-FAILED-{DateTime.UtcNow:yyyyMMddHHmmss}";
+        var runCode = runType == "Regular" ? RegularRunCode(request) : $"OFF-FAILED-{DateTime.UtcNow:yyyyMMddHHmmss}";
         var runName = string.IsNullOrWhiteSpace(request.RunName) ? $"{runType} payroll" : request.RunName.Trim();
         if (runType == "Regular")
         {
-            var existing = await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>("SELECT Id, Status FROM payruns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = 'REGULAR'", new { request.PayPeriod, request.ClientId }, transaction);
+            var existing = await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>("SELECT Id, Status FROM payruns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = @RunCode", new { request.PayPeriod, request.ClientId, RunCode = runCode }, transaction);
             if (existing is not null)
             {
                 if (!existing.Status.Equals("Failed", StringComparison.OrdinalIgnoreCase))
@@ -433,10 +434,13 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         var attendance = (await GetPayRunAttendanceAsync(connection, transaction, request.ClientId, request.PayPeriod)).ToDictionary(row => row.EmployeeId);
         var selectedAdjustmentIds = request.AdjustmentIds.Distinct().ToArray();
         var adjustments = await GetApplicableAdjustmentsAsync(connection, transaction, request.ClientId, request.PayPeriod, runType, selectedAdjustmentIds);
-        var adjustmentByEmployee = adjustments.GroupBy(item => item.EmployeeId).ToDictionary(group => group.Key, group => group.ToList());
+        var requestedIncludedIds = request.IncludedEmployeeIds.Distinct().ToHashSet();
         var includedEmployeeIds = runType == "Off Cycle"
             ? request.IncludedEmployeeIds.Concat(adjustments.Select(item => item.EmployeeId)).Distinct().ToHashSet()
-            : employees.Select(employee => employee.Id).Except(request.ExcludedEmployeeIds).ToHashSet();
+            : requestedIncludedIds.Count > 0 ? employees.Where(employee => requestedIncludedIds.Contains(employee.Id)).Select(employee => employee.Id).ToHashSet() : employees.Select(employee => employee.Id).Except(request.ExcludedEmployeeIds).ToHashSet();
+        if (runType == "Regular" && requestedIncludedIds.Count > 0)
+            adjustments = adjustments.Where(item => includedEmployeeIds.Contains(item.EmployeeId)).ToList();
+        var adjustmentByEmployee = adjustments.GroupBy(item => item.EmployeeId).ToDictionary(group => group.Key, group => group.ToList());
         var validationIssues = ValidatePayRunInputs(payRunId, request, runType, employees.Where(employee => includedEmployeeIds.Contains(employee.Id)).ToList(), attendance, setupJson);
         if (runType == "Off Cycle" && includedEmployeeIds.Count == 0)
             validationIssues.Add(Issue(payRunId, null, "", "Run", "Critical", "Payroll Validation", "Off-cycle payroll needs at least one employee or approved adjustment.", true));
@@ -453,18 +457,19 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         foreach (var employee in employees.Where(employee => includedEmployeeIds.Contains(employee.Id)))
         {
             var attendanceRow = attendance.GetValueOrDefault(employee.Id);
-            var presentDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? request.TotalWorkingDays : Math.Clamp(attendanceRow.PresentDays, 0, request.TotalWorkingDays);
-            var payableDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? request.TotalWorkingDays : Math.Clamp(attendanceRow.PayableDays, 0, request.TotalWorkingDays);
+            var employeeWorkingDays = runType == "Off Cycle" ? request.TotalWorkingDays : AttendanceWorkingDays(attendanceRow, request.TotalWorkingDays);
+            var presentDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? employeeWorkingDays : Math.Clamp(attendanceRow.PresentDays, 0, employeeWorkingDays);
+            var payableDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? employeeWorkingDays : Math.Clamp(attendanceRow.PayableDays, 0, employeeWorkingDays);
             var employeeAdjustments = adjustmentByEmployee.GetValueOrDefault(employee.Id) ?? [];
-            var row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, request.TotalWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, 0, false);
+            var row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, 0, false);
             if (runType == "Regular")
             {
                 var projectedTds = await CalculateMonthlyTdsAsync(connection, transaction, employee, row, request.PayPeriod);
                 if (projectedTds > 0)
-                    row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, request.TotalWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, projectedTds, false);
+                    row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, projectedTds, false);
             }
             await SaveEmployeeAsync(connection, transaction, row);
-            await WriteCalculationTracesAsync(connection, transaction, row, request.TotalWorkingDays);
+            await WriteCalculationTracesAsync(connection, transaction, row, employeeWorkingDays);
         }
         if (adjustments.Count > 0)
             await connection.ExecuteAsync("UPDATE payrolladjustments SET Status = 'Applied', PayRunId = @PayRunId WHERE Id IN @Ids", new { PayRunId = payRunId, Ids = adjustments.Select(item => item.Id).ToArray() }, transaction);
@@ -576,16 +581,7 @@ WHERE Id=@Id AND Status != 'Applied';", adjustment);
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await using var transaction = await connection.BeginTransactionAsync();
-        var status = await connection.ExecuteScalarAsync<string?>("SELECT Status FROM payruns WHERE Id=@Id FOR UPDATE", new { Id = id }, transaction);
-        if (status is not ("Draft" or "Queued" or "Processing" or "Failed"))
-        {
-            await transaction.RollbackAsync();
-            return false;
-        }
-        await DeletePayRunAttemptAsync(connection, transaction, id);
-        await transaction.CommitAsync();
-        return true;
+        return await connection.ExecuteAsync("DELETE FROM payruns WHERE Id = @Id AND Status = 'Draft'", new { Id = id }) == 1;
     }
 
     public async Task<PayRun?> RecallAsync(int id)
@@ -1145,6 +1141,8 @@ SELECT LAST_INSERT_ID();", row, transaction);
             issues.Add(Issue(payRunId, null, "", "Run", "Critical", "Employee Master Validation", "No active employees are available for this client.", true));
         if (setup.Components.Count == 0)
             issues.Add(Issue(payRunId, null, "", "Run", "Critical", "Salary Structure Validation", "No salary components are configured.", true));
+        if (runType == "Regular" && request.AttendanceGroupId > 0 && request.IncludedEmployeeIds.Count == 0)
+            issues.Add(Issue(payRunId, null, "", "Run", "Critical", "Attendance Policy", "Attendance policy has no mapped employees. Select a policy with employees before running payroll.", true));
         issues.AddRange(ValidateFormulaMasters(payRunId, setup.Components));
         var epfEnabled = SetupBool(setupJson, "statutory", "epf");
         var esiEnabled = SetupBool(setupJson, "statutory", "esi");
@@ -1161,6 +1159,8 @@ SELECT LAST_INSERT_ID();", row, transaction);
                 issues.Add(Issue(payRunId, employee.Id, employee.EmployeeCode, "Employee", "Warning", "Employee Master Validation", "Work location is missing; state-wise statutory logic may be incomplete.", false));
             if (runType == "Regular" && !attendance.ContainsKey(employee.Id))
                 issues.Add(Issue(payRunId, employee.Id, employee.EmployeeCode, "Employee", "Critical", "Attendance Freeze", "Monthly attendance is missing for the pay period.", true));
+            if (runType == "Regular" && attendance.TryGetValue(employee.Id, out var attendanceRow) && attendanceRow.WorkingDays > 31)
+                issues.Add(Issue(payRunId, employee.Id, employee.EmployeeCode, "Employee", "Critical", "Attendance Freeze", "Attendance cycle cannot exceed 31 days in any payroll month.", true));
             if (employee.AnnualCtc <= 0 && employee.SalaryComponents.Count == 0 && string.IsNullOrWhiteSpace(employee.SalaryStructureId))
                 issues.Add(Issue(payRunId, employee.Id, employee.EmployeeCode, "Employee", "Critical", "Salary Structure Validation", "Employee has no annual CTC, salary components, or salary structure.", true));
             if (string.IsNullOrWhiteSpace(FirstText(employee.BankAccountNo, JsonValue(employee.PaymentJson, "bankAccountNo"))) || string.IsNullOrWhiteSpace(FirstText(employee.IfscCode, JsonValue(employee.PaymentJson, "ifscCode"))))
@@ -1464,24 +1464,41 @@ LIMIT 2;", new { payRun.ClientId, payRun.PayPeriod })).ToList();
             return;
 
         var employeeIds = payRun.Employees.Select(employee => employee.EmployeeId).Distinct().ToArray();
-        var rows = await connection.QueryAsync<LeaveBreakdownRow>(@"
+        var cycleRows = await connection.QueryAsync<EmployeeCycleRow>(@"
+SELECT e.Id AS EmployeeId,
+       COALESCE(g.attendance_cycle_start_day, 1) AS StartDay,
+       COALESCE(g.attendance_cycle_end_day, DAY(LAST_DAY(STR_TO_DATE(CONCAT(@PayPeriod, '-01'), '%Y-%m-%d')))) AS EndDay
+FROM employees e
+LEFT JOIN (
+    SELECT age.employee_id, MIN(g.id) AS group_id
+    FROM attendance_group_employees age
+    JOIN attendance_groups g ON g.id=age.attendance_group_id AND g.client_id=@ClientId AND g.is_active=TRUE
+    GROUP BY age.employee_id
+) employee_group ON employee_group.employee_id=e.Id
+LEFT JOIN attendance_groups g ON g.id=employee_group.group_id
+WHERE e.ClientId=@ClientId AND e.Id IN @EmployeeIds;", new { payRun.ClientId, payRun.PayPeriod, EmployeeIds = employeeIds });
+        var ranges = cycleRows.ToDictionary(row => row.EmployeeId, row => CycleRangeFor(payRun.PayPeriod, (int)row.StartDay, (int)row.EndDay));
+        if (ranges.Count == 0) return;
+        var minStart = ranges.Values.Min(row => row.Start);
+        var maxEnd = ranges.Values.Max(row => row.End);
+        var rows = await connection.QueryAsync<LeaveDailyBreakdownRow>(@"
 SELECT a.employee_id AS EmployeeId,
+       a.attendance_date AS AttendanceDate,
        a.status AS Code,
        COALESCE(lt.name, a.status) AS Name,
-       COALESCE(lt.type, CASE WHEN COALESCE(SUM(a.payable_value),0) > 0 THEN 'Paid' ELSE 'Unpaid' END) AS Type,
-       COUNT(*) AS Days,
-       COALESCE(SUM(a.payable_value), 0) AS PayableDays
+       COALESCE(lt.type, '') AS Type,
+       a.payable_value AS PayableValue
 FROM employee_daily_attendance a
 LEFT JOIN leave_types lt ON lt.client_id = a.client_id AND lt.code = a.status
 WHERE a.client_id = @ClientId
-  AND DATE_FORMAT(a.attendance_date, '%Y-%m') = @PayPeriod
+  AND a.attendance_date BETWEEN @StartDate AND @EndDate
   AND a.employee_id IN @EmployeeIds
-  AND a.status <> 'Present'
-GROUP BY a.employee_id, a.status, lt.name, lt.type
-ORDER BY a.employee_id, a.status;", new { payRun.ClientId, payRun.PayPeriod, EmployeeIds = employeeIds });
+  AND a.status <> 'Present';", new { payRun.ClientId, EmployeeIds = employeeIds, StartDate = minStart, EndDate = maxEnd });
 
-        var byEmployee = rows.GroupBy(row => row.EmployeeId).ToDictionary(group => group.Key, group => group
-            .Select(row => new PayRunLeaveBreakdown { Code = row.Code, Name = row.Name, Type = row.Type, Days = row.Days, PayableDays = row.PayableDays })
+        var scopedRows = rows.Where(row => ranges.TryGetValue(row.EmployeeId, out var range) && row.AttendanceDate.Date >= range.Start && row.AttendanceDate.Date <= range.End);
+        var byEmployee = scopedRows.GroupBy(row => row.EmployeeId).ToDictionary(group => group.Key, group => group
+            .GroupBy(row => new { row.Code, row.Name, row.Type })
+            .Select(row => new PayRunLeaveBreakdown { Code = row.Key.Code, Name = row.Key.Name, Type = string.IsNullOrWhiteSpace(row.Key.Type) ? row.Sum(item => item.PayableValue) > 0 ? "Paid" : "Unpaid" : row.Key.Type, Days = row.Count(), PayableDays = row.Sum(item => item.PayableValue) })
             .ToList());
 
         foreach (var employee in payRun.Employees)
@@ -1491,21 +1508,37 @@ ORDER BY a.employee_id, a.status;", new { payRun.ClientId, payRun.PayPeriod, Emp
         }
     }
 
+    private static AttendanceCycleRange CycleRangeFor(string payPeriod, int startDay, int endDay)
+    {
+        var endMonth = DateTime.ParseExact($"{payPeriod}-01", "yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var startMonth = startDay > 1 ? endMonth.AddMonths(-1) : endMonth;
+        return new AttendanceCycleRange(
+            new DateTime(startMonth.Year, startMonth.Month, ClampDay(startMonth, startDay)),
+            new DateTime(endMonth.Year, endMonth.Month, ClampDay(endMonth, endDay)));
+    }
+
+    private static int ClampDay(DateTime month, int day) =>
+        Math.Min(Math.Max(1, day), DateTime.DaysInMonth(month.Year, month.Month));
+
     private static async Task<List<PayRunAttendance>> GetPayRunAttendanceAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, string payPeriod)
     {
-        var dailyRows = (await connection.QueryAsync<PayRunAttendance>(@"
+        var monthlyRows = (await connection.QueryAsync<PayRunAttendance>(@"SELECT employee_id AS EmployeeId, working_days AS WorkingDays, present_days AS PresentDays, payable_days AS PayableDays
+FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=@Month", new { ClientId = clientId, Month = payPeriod }, transaction)).ToList();
+        if (monthlyRows.Count > 0)
+            return monthlyRows;
+
+        return (await connection.QueryAsync<PayRunAttendance>(@"
 SELECT employee_id AS EmployeeId,
+       COUNT(*) AS WorkingDays,
        COALESCE(SUM(CASE WHEN status='Present' THEN payable_value ELSE 0 END), 0) AS PresentDays,
        COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 1 ELSE payable_value END), 0) AS PayableDays
 FROM employee_daily_attendance
 WHERE client_id=@ClientId AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month
 GROUP BY employee_id;", new { ClientId = clientId, Month = payPeriod }, transaction)).ToList();
-        if (dailyRows.Count > 0)
-            return dailyRows;
-
-        return (await connection.QueryAsync<PayRunAttendance>(@"SELECT employee_id AS EmployeeId, present_days AS PresentDays, payable_days AS PayableDays
-FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=@Month", new { ClientId = clientId, Month = payPeriod }, transaction)).ToList();
     }
+
+    private static int AttendanceWorkingDays(PayRunAttendance? row, int fallback) =>
+        Math.Max(1, (int)Math.Ceiling(row is not null && row.WorkingDays > 0 ? row.WorkingDays : fallback));
 
     private static async Task<List<PayrollAdjustment>> GetApplicableAdjustmentsAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, string payPeriod, string runType, int[] adjustmentIds)
     {
@@ -1523,8 +1556,13 @@ FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=
         value.Equals("Deduction", StringComparison.OrdinalIgnoreCase) || value.Equals("Recovery", StringComparison.OrdinalIgnoreCase) ? "Deduction" :
         value.Equals("Reimbursement", StringComparison.OrdinalIgnoreCase) ? "Reimbursement" : "Earning";
 
-    private sealed record PayRunAttendance(int EmployeeId, decimal PresentDays, decimal PayableDays);
-    private sealed record LeaveBreakdownRow(int EmployeeId, string Code, string Name, string Type, long Days, decimal PayableDays);
+    private static string RegularRunCode(CreatePayRunRequest request) =>
+        request.AttendanceGroupId > 0 ? $"REG-G{request.AttendanceGroupId}" : "REGULAR";
+
+    private sealed record PayRunAttendance(int EmployeeId, decimal WorkingDays, decimal PresentDays, decimal PayableDays);
+    private sealed record EmployeeCycleRow(int EmployeeId, long StartDay, long EndDay);
+    private sealed record AttendanceCycleRange(DateTime Start, DateTime End);
+    private sealed record LeaveDailyBreakdownRow(int EmployeeId, DateTime AttendanceDate, string Code, string Name, string Type, decimal PayableValue);
     private sealed record StatutoryLineTotal(string ComponentCode, decimal Amount);
     private sealed record ExistingPayRunRow(int Id, string Status);
     private sealed record TaxProjectionSetting(bool Enabled, bool ProjectMonthlyTds);

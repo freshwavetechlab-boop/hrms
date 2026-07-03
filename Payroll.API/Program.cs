@@ -690,6 +690,52 @@ app.MapPost("/api/employees", async (EmployeeRepository repository, Employee emp
 .WithName("SaveEmployee")
 .WithOpenApi();
 
+app.MapGet("/api/employees/{id:int}/delete-preview", async (EmployeeRepository repository, int id) =>
+    await repository.GetDeletePreviewAsync(id) is { } preview ? Results.Ok(preview) : Results.NotFound(new { error = "Employee not found." }))
+.WithName("GetEmployeeDeletePreview")
+.WithOpenApi();
+
+app.MapDelete("/api/employees/{id:int}", async (EmployeeRepository repository, int id) =>
+{
+    var (ok, error) = await repository.DeleteAsync(id);
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+})
+.WithName("DeleteEmployee")
+.WithOpenApi();
+
+app.MapGet("/api/employees/import-template", async (EmployeeRepository repository, int clientId) =>
+    clientId <= 0
+        ? Results.BadRequest(new { error = "Select a client." })
+        : Results.File(await repository.BuildImportTemplateAsync(clientId), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "employee-import-template.xlsx"))
+.WithName("DownloadEmployeeImportTemplate")
+.WithOpenApi();
+
+app.MapPost("/api/employees/import", async (EmployeeRepository repository, [FromForm] int clientId, [FromForm] IFormFile file) =>
+{
+    if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select an employee CSV file." });
+    var result = await repository.ImportCsvAsync(clientId, file);
+    return result.Errors.Count > 0 ? Results.BadRequest(result) : Results.Ok(result);
+})
+.DisableAntiforgery()
+.WithName("ImportEmployees")
+.WithOpenApi();
+
+app.MapPost("/api/employees/import-jobs", async (EmployeeRepository repository, [FromForm] int clientId, [FromForm] IFormFile file) =>
+{
+    if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select an employee CSV file." });
+    return Results.Accepted($"/api/employees/import-jobs", await repository.StartImportCsvJobAsync(clientId, file));
+})
+.DisableAntiforgery()
+.WithName("StartEmployeeImportJob")
+.WithOpenApi();
+
+app.MapGet("/api/employees/import-jobs/{jobId:guid}", (EmployeeRepository repository, Guid jobId) =>
+    repository.GetImportJob(jobId) is { } job ? Results.Ok(job) : Results.NotFound(new { error = "Import job not found." }))
+.WithName("GetEmployeeImportJob")
+.WithOpenApi();
+
 app.MapGet("/api/pay-runs", async (PayRunRepository repository) =>
     Results.Ok(await repository.GetAllAsync()))
 .WithName("GetPayRuns")
@@ -831,12 +877,41 @@ app.MapGet("/api/pay-runs/{id:int}/export", async (PayRunRepository repository, 
 {
     var payRun = await repository.GetAsync(id);
     if (payRun is null) return Results.NotFound();
-    var rows = new List<string> { "Employee Code,Employee,Present Days,Gross Pay,Deductions,Net Pay,Payment Status" };
-    rows.AddRange(payRun.Employees.Where(employee => !employee.IsSkipped).Select(employee => $"{employee.EmployeeCode},\"{employee.EmployeeName.Replace("\"", "\"\"")}\",{employee.PresentDays},{employee.GrossPay},{employee.StatutoryDeductions + employee.OneTimeDeductions},{employee.NetPay},{employee.PaymentStatus}"));
-    return Results.File(System.Text.Encoding.UTF8.GetBytes(string.Join(Environment.NewLine, rows)), "text/csv", $"payroll-{payRun.PayPeriod}.csv");
+    var rows = new List<string> { "Client,Pay Period,Run Code,Run Type,Run Name,Employee Code,Employee,Department,Present Days,Payable Days,Gross Pay,Statutory Deductions,One-Time Earnings,One-Time Deductions,Manual TDS,Total Deductions,Net Pay,Payment Status" };
+    rows.AddRange(payRun.Employees.Where(employee => !employee.IsSkipped).Select(employee =>
+    {
+        var totalDeductions = employee.StatutoryDeductions + employee.OneTimeDeductions + employee.ManualTds;
+        return string.Join(",", [
+            Csv(payRun.ClientName),
+            Csv(payRun.PayPeriod),
+            Csv(payRun.RunCode),
+            Csv(payRun.RunType),
+            Csv(payRun.RunName),
+            Csv(employee.EmployeeCode),
+            Csv(employee.EmployeeName),
+            Csv(employee.Department),
+            Csv(employee.PresentDays),
+            Csv(employee.PayableDays),
+            Csv(employee.GrossPay),
+            Csv(employee.StatutoryDeductions),
+            Csv(employee.OneTimeEarnings),
+            Csv(employee.OneTimeDeductions),
+            Csv(employee.ManualTds),
+            Csv(totalDeductions),
+            Csv(employee.NetPay),
+            Csv(employee.PaymentStatus)
+        ]);
+    }));
+    return Results.File(System.Text.Encoding.UTF8.GetBytes(string.Join(Environment.NewLine, rows)), "text/csv", $"pay-register-{payRun.PayPeriod}.csv");
 })
 .WithName("ExportPayRun")
 .WithOpenApi();
+
+static string Csv(object? value)
+{
+    var text = Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "";
+    return text.Contains(',') || text.Contains('"') || text.Contains('\n') || text.Contains('\r') ? $"\"{text.Replace("\"", "\"\"")}\"" : text;
+}
 
 static AuthUser CurrentUser(HttpContext context) =>
     context.Items.TryGetValue("User", out var user) && user is AuthUser authUser

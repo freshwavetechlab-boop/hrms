@@ -706,7 +706,8 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
         await connection.ExecuteAsync(@"INSERT INTO employee_daily_attendance (client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
 VALUES (@ClientId, @EmployeeId, @AttendanceDate, @Status, @PayableValue, @CheckInTime, @CheckOutTime, @TotalHours, @Remarks)
 ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), check_in_time=VALUES(check_in_time), check_out_time=VALUES(check_out_time), total_hours=VALUES(total_hours), remarks=VALUES(remarks);", rows);
-        await RollupDailyAttendanceAsync(connection, request.ClientId, request.EmployeeId, request.Month);
+        var cycleDates = rows.Select(row => row.AttendanceDate.Date).Distinct().OrderBy(date => date).ToArray();
+        await RollupDailyAttendanceAsync(connection, request.ClientId, request.EmployeeId, request.Month, cycleDates.First(), cycleDates.Last());
         return (await GetDailyAttendanceAsync(request.ClientId, request.EmployeeId, request.Month), null);
     }
 
@@ -733,7 +734,7 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
         if (groupedRows.Count == 0) return (null, "No valid employee attendance rows were submitted.");
 
         var expectedDays = groupedRows.Max(group => group.Select(row => row.AttendanceDate.Date).Distinct().Count());
-        var touchedMonths = groupedRows.SelectMany(group => group.Select(row => row.AttendanceDate.ToString("yyyy-MM"))).Distinct().ToArray();
+        var cycleDates = request.Rows.Select(row => row.AttendanceDate.Date).Distinct().OrderBy(date => date).ToArray();
         var rows = new List<object>();
         foreach (var group in groupedRows)
         {
@@ -759,8 +760,7 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
         await connection.ExecuteAsync(@"INSERT INTO employee_daily_attendance (client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
 VALUES (@ClientId, @EmployeeId, @AttendanceDate, @Status, @PayableValue, @CheckInTime, @CheckOutTime, @TotalHours, @Remarks)
 ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), check_in_time=VALUES(check_in_time), check_out_time=VALUES(check_out_time), total_hours=VALUES(total_hours), remarks=VALUES(remarks);", rows, transaction);
-        foreach (var touchedMonth in touchedMonths)
-            await RollupDailyAttendanceBatchAsync(connection, transaction, request.ClientId, groupedRows.Select(row => row.Key).ToArray(), touchedMonth);
+        await RollupDailyAttendanceBatchAsync(connection, transaction, request.ClientId, groupedRows.Select(row => row.Key).ToArray(), request.Month, cycleDates.First(), cycleDates.Last());
         await transaction.CommitAsync();
         return (await GetMonthlyAttendanceAsync(request.ClientId, request.Month), null);
     }
@@ -1040,6 +1040,8 @@ FROM attendance_group_employees WHERE attendance_group_id IN @Ids", new { Ids = 
         if (!await IsValidWorkWeekAsync((request.WorkWeek ?? string.Empty).Trim())) return "Select a valid work week.";
         if (!IsValidDay(request.AttendanceCycleStartDay) || !IsValidDay(request.AttendanceCycleEndDay) || !IsValidDay(request.PayrollReportGenerationDay))
             return "Attendance cycle and report generation days must be between 1 and 31.";
+        if (AttendanceCycleDays(request.AttendanceCycleStartDay, request.AttendanceCycleEndDay) > 31)
+            return "Attendance cycle cannot exceed 31 days in any payroll month.";
         var buffer = request.PayrollReportGenerationDay >= request.AttendanceCycleEndDay
             ? request.PayrollReportGenerationDay - request.AttendanceCycleEndDay
             : request.PayrollReportGenerationDay + 31 - request.AttendanceCycleEndDay;
@@ -1075,14 +1077,15 @@ AND Id IN @EmployeeIds", new { request.ClientId, request.WorkLocationId, Departm
         return null;
     }
 
+    private static int AttendanceCycleDays(int startDay, int endDay) =>
+        startDay == 1 ? endDay : 31 - startDay + 1 + endDay;
+
     private static string? ValidateDailyAttendance(SaveDailyAttendanceRequest request)
     {
         if (request.ClientId <= 0 || request.EmployeeId <= 0) return "Select a client and employee.";
         if (!IsValidMonth(request.Month)) return "Select a valid attendance month.";
         if (request.Rows.Count == 0) return "Add at least one date-wise attendance row.";
-        if (request.Rows.Any(row => row.AttendanceDate.ToString("yyyy-MM") != request.Month)) return "All attendance dates must fall in the selected month.";
-        var expectedDays = DateTime.DaysInMonth(int.Parse(request.Month[..4]), int.Parse(request.Month[5..7]));
-        if (request.Rows.Select(row => row.AttendanceDate.Date).Distinct().Count() != expectedDays) return "Save the complete attendance month before payroll review.";
+        if (request.Rows.Select(row => row.AttendanceDate.Date).Distinct().Count() > 31) return "Attendance cycle cannot exceed 31 days in any payroll month.";
         if (request.Rows.Any(row => row.PayableValue < 0 || row.PayableValue > 1)) return "Payable value must be between 0 and 1.";
         if (request.Rows.Any(row => row.TotalHours < 0 || row.TotalHours > 24)) return "Total hours must be between 0 and 24.";
         return null;
@@ -1094,19 +1097,19 @@ AND Id IN @EmployeeIds", new { request.ClientId, request.WorkLocationId, Departm
         if (!IsValidMonth(request.Month)) return "Select a valid attendance month.";
         if (request.Rows.Count == 0) return "Add at least one date-wise attendance row.";
         if (request.Rows.Any(row => row.EmployeeId <= 0)) return "Every attendance row must have an employee.";
-        if (request.Rows.Any(row => row.AttendanceDate.ToString("yyyy-MM") != request.Month)) return "All attendance dates must fall in the selected month.";
+        if (request.Rows.GroupBy(row => row.EmployeeId).Any(group => group.Select(row => row.AttendanceDate.Date).Distinct().Count() > 31)) return "Attendance cycle cannot exceed 31 days in any payroll month.";
         if (request.Rows.Any(row => row.PayableValue < 0 || row.PayableValue > 1)) return "Payable value must be between 0 and 1.";
         if (request.Rows.Any(row => row.TotalHours < 0 || row.TotalHours > 24)) return "Total hours must be between 0 and 24.";
         return null;
     }
 
-    private static async Task RollupDailyAttendanceAsync(MySqlConnection connection, int clientId, int employeeId, string month)
+    private static async Task RollupDailyAttendanceAsync(MySqlConnection connection, int clientId, int employeeId, string month, DateTime cycleStart, DateTime cycleEnd)
     {
         var summary = await connection.QuerySingleAsync<(decimal WorkingDays, decimal PresentDays, decimal PayableDays)>(@"SELECT COALESCE(COUNT(*), 0) AS WorkingDays,
 COALESCE(SUM(CASE WHEN status='Present' THEN payable_value ELSE 0 END), 0) AS PresentDays,
 COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 1 ELSE payable_value END), 0) AS PayableDays
 FROM employee_daily_attendance
-WHERE client_id=@ClientId AND employee_id=@EmployeeId AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month;", new { ClientId = clientId, EmployeeId = employeeId, Month = month });
+WHERE client_id=@ClientId AND employee_id=@EmployeeId AND attendance_date BETWEEN @CycleStart AND @CycleEnd;", new { ClientId = clientId, EmployeeId = employeeId, CycleStart = cycleStart, CycleEnd = cycleEnd });
         var lop = Math.Max(0, summary.WorkingDays - summary.PayableDays);
         await connection.ExecuteAsync(@"INSERT INTO employee_monthly_attendance (client_id, employee_id, attendance_month, working_days, present_days, payable_days, lop_days, source_type, remarks)
 VALUES (@ClientId, @EmployeeId, @Month, @WorkingDays, @PresentDays, @PayableDays, @LopDays, 'Date-wise', 'Rolled up from date-wise attendance')
@@ -1114,7 +1117,7 @@ ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(p
             new { ClientId = clientId, EmployeeId = employeeId, Month = month, summary.WorkingDays, summary.PresentDays, summary.PayableDays, LopDays = lop });
     }
 
-    private static async Task RollupDailyAttendanceBatchAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, int[] employeeIds, string month)
+    private static async Task RollupDailyAttendanceBatchAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, int[] employeeIds, string month, DateTime cycleStart, DateTime cycleEnd)
     {
         if (employeeIds.Length == 0) return;
         await connection.ExecuteAsync(@"INSERT INTO employee_monthly_attendance (client_id, employee_id, attendance_month, working_days, present_days, payable_days, lop_days, source_type, remarks)
@@ -1126,10 +1129,10 @@ GREATEST(0, COUNT(*) - COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 1 ELSE p
 'Date-wise',
 'Rolled up from date-wise attendance'
 FROM employee_daily_attendance
-WHERE client_id=@ClientId AND employee_id IN @EmployeeIds AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month
+WHERE client_id=@ClientId AND employee_id IN @EmployeeIds AND attendance_date BETWEEN @CycleStart AND @CycleEnd
 GROUP BY employee_id
 ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(present_days), payable_days=VALUES(payable_days), lop_days=VALUES(lop_days), source_type='Date-wise', remarks=VALUES(remarks);",
-            new { ClientId = clientId, EmployeeIds = employeeIds, Month = month }, transaction);
+            new { ClientId = clientId, EmployeeIds = employeeIds, Month = month, CycleStart = cycleStart, CycleEnd = cycleEnd }, transaction);
     }
 
     private static string? NormalizeAttendanceStatus(string? status, IReadOnlyDictionary<string, AttendanceLeaveRule> leaveTypes)

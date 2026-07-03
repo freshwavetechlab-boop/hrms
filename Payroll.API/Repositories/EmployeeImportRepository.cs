@@ -30,9 +30,9 @@ public class EmployeeImportRepository(IConfiguration configuration)
 
     public static byte[] SampleExcel() => Xlsx([SampleColumns, SampleRow]);
 
-    public async Task<EmployeeImportResult> ImportAsync(int clientId, IFormFile file)
+    public async Task<Payroll.API.Models.EmployeeImportResult> ImportAsync(int clientId, IFormFile file)
     {
-        var result = new EmployeeImportResult();
+        var result = new Payroll.API.Models.EmployeeImportResult();
         var rows = await ParseAsync(file);
         if (rows.Count < 2) { result.Errors.Add("Data rows required hain."); return result; }
         var columns = rows[0];
