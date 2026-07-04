@@ -1025,6 +1025,17 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 .settings-panel{width:100%!important;border-color:#e5e8f0!important;border-radius:10px!important;box-shadow:0 2px 10px #1721360a!important}
 .settings-split .settings-panel{min-height:calc(100vh - 160px)!important}
 .settings-compact-panel{height:100%!important;border-color:#e5e8f0!important;border-radius:10px!important}
+.organization-logo-panel .ant-card-body{display:flex!important;min-width:0!important;height:calc(100% - 48px)!important;flex-direction:column!important;gap:12px!important}
+.organization-logo-panel .file-drop-zone{width:100%!important;min-width:0!important;min-height:236px!important;display:flex!important;grid-template-columns:none!important;flex:1 1 auto!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;gap:12px!important;padding:18px!important;text-align:center!important;overflow:hidden!important}
+.organization-logo-panel .file-drop-preview{width:104px!important;height:78px!important;flex:0 0 auto!important}
+.organization-logo-panel .file-drop-preview b{display:block!important;max-width:100%!important;overflow-wrap:anywhere!important;white-space:normal!important;line-height:1.2!important}
+.organization-logo-panel .file-drop-icon{width:40px!important;height:40px!important;flex:0 0 auto!important}
+.organization-logo-panel .file-drop-copy{width:100%!important;max-width:100%!important;display:grid!important;gap:5px!important;justify-items:center!important;min-width:0!important}
+.organization-logo-panel .file-drop-copy strong,.organization-logo-panel .file-drop-copy small{max-width:100%!important;overflow:visible!important;text-align:center!important;text-overflow:clip!important;white-space:normal!important;overflow-wrap:anywhere!important;word-break:break-word!important}
+.organization-logo-panel .file-drop-copy strong{font-size:.82rem!important;line-height:1.25!important}
+.organization-logo-panel .file-drop-copy small{font-size:.69rem!important;line-height:1.35!important}
+.organization-logo-panel .file-drop-action{height:34px!important;flex:0 0 auto!important}
+.organization-logo-panel .ant-btn{height:34px!important;border-radius:9px!important}
 .settings-panel>.ant-card-body{height:calc(100% - 48px)!important}
 .settings-form-panel>.ant-card-body{display:flex!important;flex-direction:column!important}
 .settings-quick-form{display:flex!important;min-height:100%!important;flex-direction:column!important}
@@ -1033,6 +1044,18 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 .settings-table-panel .ant-card-body{display:block!important}
 .settings-table-panel .ant-smart-table{flex:none!important}
 .settings-table-panel .zoho-ant-table .ant-table-body{min-height:420px!important}
+.settings-master-drawer .ant-drawer-content{background:#fff!important}
+.settings-master-drawer .ant-drawer-header{padding:18px 20px!important;border-bottom:1px solid #eef1f6!important;background:#fafbff!important}
+.settings-master-drawer .ant-drawer-title{color:#172136!important;font-size:1rem!important;font-weight:900!important}
+.settings-master-drawer .ant-drawer-body{padding:18px 20px!important}
+.settings-master-drawer .settings-quick-form{min-height:calc(100vh - 112px)!important}
+.settings-master-drawer .ant-form-item-label>label{color:#475569!important;font-size:.72rem!important;font-weight:800!important}
+.settings-master-drawer .ant-input,.settings-master-drawer .ant-select-selector{border-color:#dfe2ea!important;border-radius:9px!important}
+.settings-master-drawer .ant-btn-primary{border-color:#6546e8!important;background:#6546e8!important;box-shadow:0 8px 18px #6546e824!important}
+.component-table-head{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin-bottom:12px!important;padding:10px 0 12px!important;border-bottom:1px solid #eef1f6!important}
+.component-table-head>div{display:grid!important;gap:2px!important}
+.component-table-head b{color:#172136!important;font-size:.92rem!important}
+.component-table-head span{color:#64748b!important;font-size:.72rem!important}
 .zoho-ant-table .ant-table-row-actions button:not(.ant-btn):first-child,.zoho-ant-table .row-actions button:not(.danger):first-child{border-color:#1677ff!important;background:#1677ff!important;color:#fff!important}
 .zoho-ant-table .ant-table-row-actions button:not(.ant-btn):first-child:hover,.zoho-ant-table .row-actions button:not(.danger):first-child:hover{border-color:#4096ff!important;background:#4096ff!important;color:#fff!important}
 .zoho-ant-table .ant-table-row-actions .ant-btn-primary{border-color:#1677ff!important;background:#1677ff!important;color:#fff!important}

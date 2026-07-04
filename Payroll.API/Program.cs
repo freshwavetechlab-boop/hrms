@@ -120,6 +120,8 @@ app.Use(async (context, next) =>
     }
 });
 
+app.UseMiddleware<WorkflowActionMiddleware>();
+
 app.MapPost("/api/auth/login", async (AuthRepository repository, LoginRequest request, HttpContext context) =>
 {
     if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Password))
@@ -147,16 +149,34 @@ app.MapGet("/api/dashboard", async (DashboardRepository repository, int? clientI
 .WithOpenApi();
 
 app.MapGet("/api/workflows", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403));
+app.MapGet("/api/workflows/activities", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetActivitiesAsync()) : Results.StatusCode(403));
+app.MapGet("/api/workflows/activities/catalog", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetActivitiesForSetupAsync()) : Results.StatusCode(403));
+app.MapGet("/api/workflows/action-rules", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetActionRulesForSetupAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/approvers", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetApproversAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/departments", async (WorkflowRepository repository, int clientId, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetDepartmentsAsync(clientId)) : Results.StatusCode(403));
 app.MapGet("/api/workflows/department-heads", async (WorkflowRepository repository, int clientId, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetDepartmentHeadsAsync(clientId)) : Results.StatusCode(403));
 app.MapPost("/api/workflows/department-heads", async (WorkflowRepository repository, SaveDepartmentHeadAssignmentRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); if(request.ClientId<=0||string.IsNullOrWhiteSpace(request.Department)||request.UserId<=0)return Results.BadRequest(new{error="Client, department, and assigned user are required."}); return Results.Ok(await repository.SaveDepartmentHeadAsync(request)); });
 app.MapPost("/api/workflows", async (WorkflowRepository repository, SaveWorkflowRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); return Results.Ok(await repository.SaveAsync(request)); });
+app.MapPost("/api/workflows/activities", async (WorkflowRepository repository, SaveWorkflowActivityRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); if(string.IsNullOrWhiteSpace(request.ActivityCode)||string.IsNullOrWhiteSpace(request.DisplayName)||string.IsNullOrWhiteSpace(request.ModuleCode)||string.IsNullOrWhiteSpace(request.ResourceType)) return Results.BadRequest(new{error="Activity code, activity name, module, and record type are required."}); return Results.Ok(await repository.SaveActivityAsync(request)); });
+app.MapPost("/api/workflows/action-rules", async (WorkflowRepository repository, SaveWorkflowActionRuleRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); if(string.IsNullOrWhiteSpace(request.ActivityCode)||string.IsNullOrWhiteSpace(request.HttpMethod)||string.IsNullOrWhiteSpace(request.PathPattern)||string.IsNullOrWhiteSpace(request.ResourceType)||string.IsNullOrWhiteSpace(request.ResourceIdSource)) return Results.BadRequest(new{error="Activity, method, path, resource type, and resource id source are required."}); if(!request.ResourceIdSource.Contains('.')) return Results.BadRequest(new{error="Resource id source must use scope.field format, for example route.id or body.employeeId."}); return Results.Ok(await repository.SaveActionRuleAsync(request)); });
 app.MapPost("/api/workflows/start", async (WorkflowRepository repository, StartWorkflowRequest request, HttpContext context) => { var item=await repository.StartAsync(request,CurrentUser(context).Id); return item is null ? Results.BadRequest(new {error="Workflow cannot start. Check stages and approver setup."}) : Results.Ok(item); });
 app.MapGet("/api/workflows/tasks/pending", async (WorkflowRepository repository,HttpContext context) => Results.Ok(await repository.PendingAsync(CurrentUser(context).Id)));
 app.MapGet("/api/workflows/history", async (WorkflowRepository repository,HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetInstancesAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/{instanceId:long}/history", async (WorkflowRepository repository,long instanceId,HttpContext context) => Results.Ok(await repository.HistoryAsync(instanceId)));
-app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository,long taskId,string action,WorkflowActionRequest request,HttpContext context) => { if(action is not ("Approved" or "Rejected" or "Sent Back")) return Results.BadRequest(); var task=await repository.ActionAsync(taskId,CurrentUser(context).Id,action,request.Comment); if(!task)return Results.NotFound(); var instance=await repository.GetInstanceForTaskAsync(taskId); if(instance?.ResourceType=="LeaveRequest")await essRepository.SyncLeaveWorkflowStatusAsync(instance.ResourceId,instance.Status); return Results.NoContent(); });
+app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository, PayRunRepository payRuns,long taskId,string action,WorkflowActionRequest request,HttpContext context) =>
+{
+    if(action is not ("Approved" or "Rejected" or "Sent Back")) return Results.BadRequest();
+    var task=await repository.ActionAsync(taskId,CurrentUser(context).Id,action,request.Comment);
+    if(!task)return Results.NotFound();
+    var instance=await repository.GetInstanceForTaskAsync(taskId);
+    if(instance?.ResourceType=="LeaveRequest")await essRepository.SyncLeaveWorkflowStatusAsync(instance.ResourceId,instance.Status);
+    if(instance?.ResourceType=="PayRun" && int.TryParse(instance.ResourceId,out var payRunId))
+    {
+        if(instance.Status=="Approved") await payRuns.ApproveAsync(payRunId);
+        if(instance.Status is "Rejected" or "Sent Back") await payRuns.RecallAsync(payRunId);
+    }
+    return Results.NoContent();
+});
 
 app.MapGet("/api/ess/leave/balances", async (EssMssRepository repository, HttpContext context) =>
 {
@@ -887,16 +907,24 @@ app.MapPost("/api/pay-runs/{id:int}/submit", async (PayRunRepository repository,
 {
     if (!HasPermission(context, "payroll.run"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var existing = await repository.GetAsync(id);
+    if (existing is null) return Results.NotFound(new { error = "Pay run not found." });
     var payRun = await repository.SubmitForApprovalAsync(id);
     return payRun is null ? Results.BadRequest(new { error = "Only draft pay runs can be locked and sent for approval." }) : Results.Ok(payRun);
 })
 .WithName("SubmitPayRunForApproval")
 .WithOpenApi();
 
-app.MapPost("/api/pay-runs/{id:int}/approve", async (PayRunRepository repository, int id, HttpContext context) =>
+app.MapPost("/api/pay-runs/{id:int}/approve", async (PayRunRepository repository, WorkflowRepository workflows, int id, HttpContext context) =>
 {
     if (!HasPermission(context, "payroll.approve"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var existing = await repository.GetAsync(id);
+    if (existing is null) return Results.NotFound(new { error = "Pay run not found." });
+    var workflowId = await workflows.GetDefaultIdForActivityAsync("PAYRUN.SUBMIT", existing.ClientId);
+    var state = await workflows.GetResourceStateAsync("PayRun", id.ToString());
+    if (workflowId is not null && existing.Status == "Pending Approval" && state?.CurrentState == "Pending")
+        return Results.BadRequest(new { error = "This payroll is under workflow approval. Approve it from My Tasks." });
     var payRun = await repository.ApproveAsync(id);
     return payRun is null ? Results.BadRequest(new { error = "Only draft or pending approval pay runs can be approved." }) : Results.Ok(payRun);
 })

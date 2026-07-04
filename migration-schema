@@ -203,3 +203,97 @@ DROP TABLE IF EXISTS client_billing_invoices;
 
 ALTER TABLE client_billing_configurations
 ADD COLUMN IF NOT EXISTS GstRatePercent DECIMAL(8,4) NOT NULL DEFAULT 18 AFTER TaxInclusive;
+
+2026-07-04 - Workflow activity catalogue and generic resource states
+
+CREATE TABLE IF NOT EXISTS workflowactivities (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    ActivityCode VARCHAR(120) NOT NULL,
+    DisplayName VARCHAR(200) NOT NULL,
+    ModuleCode VARCHAR(80) NOT NULL,
+    ResourceType VARCHAR(100) NOT NULL,
+    Description VARCHAR(500) NOT NULL DEFAULT '',
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_WorkflowActivity_Code (ActivityCode),
+    INDEX IX_WorkflowActivity_Module (ModuleCode, IsActive),
+    INDEX IX_WorkflowActivity_Resource (ResourceType, IsActive)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_action_rules (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    ActivityCode VARCHAR(120) NOT NULL,
+    HttpMethod VARCHAR(12) NOT NULL,
+    PathPattern VARCHAR(300) NOT NULL,
+    ResourceType VARCHAR(100) NOT NULL,
+    ResourceIdSource VARCHAR(120) NOT NULL DEFAULT 'route.id',
+    ResourceIdRouteKey VARCHAR(80) NOT NULL DEFAULT 'id',
+    ClientIdSource VARCHAR(120) NOT NULL DEFAULT '',
+    ClientIdSql VARCHAR(1000) NOT NULL DEFAULT '',
+    ClientLookupTable VARCHAR(120) NOT NULL DEFAULT '',
+    ClientLookupKeyColumn VARCHAR(120) NOT NULL DEFAULT '',
+    ClientLookupClientColumn VARCHAR(120) NOT NULL DEFAULT '',
+    WorkflowId INT NULL,
+    TriggerMode VARCHAR(40) NOT NULL DEFAULT 'AfterSuccess',
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_WorkflowActionRule (HttpMethod, PathPattern, ActivityCode),
+    INDEX IX_WorkflowActionRule_Activity (ActivityCode, IsActive)
+);
+
+CREATE TABLE IF NOT EXISTS ResourceStates (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    ResourceType VARCHAR(100) NOT NULL,
+    ResourceId VARCHAR(120) NOT NULL,
+    CurrentState VARCHAR(60) NOT NULL,
+    WorkflowInstanceId BIGINT NULL,
+    CreatedBy INT NOT NULL DEFAULT 0,
+    CreatedOn DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ModifiedBy INT NOT NULL DEFAULT 0,
+    ModifiedOn DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_ResourceStates_Resource (ResourceType, ResourceId),
+    INDEX IX_ResourceStates_State (ResourceType, CurrentState),
+    INDEX IX_ResourceStates_Workflow (WorkflowInstanceId)
+);
+
+INSERT INTO workflowactivities (ActivityCode, DisplayName, ModuleCode, ResourceType, Description, IsActive) VALUES
+('PAYRUN.SUBMIT', 'Submit payroll for approval', 'Payroll', 'PayRun', 'Lock a draft payroll run and route it for approval.', TRUE),
+('PAYRUN.RECALL', 'Recall payroll', 'Payroll', 'PayRun', 'Recall a pending or approved unpaid payroll run.', TRUE),
+('LEAVE_REQUEST.SUBMIT', 'Submit leave request', 'Leave & Attendance', 'LeaveRequest', 'Employee leave request approval.', TRUE),
+('ATTENDANCE_REGULARIZATION.SUBMIT', 'Submit attendance regularization', 'Leave & Attendance', 'AttendanceRegularization', 'Employee attendance correction approval.', TRUE),
+('EMPLOYEE_ACTION.SUBMIT', 'Submit employee action', 'Employees', 'EmployeeAction', 'Hire, promotion, transfer, demotion, retirement or separation action approval.', TRUE),
+('SALARY_REVISION.SUBMIT', 'Submit salary revision', 'Employees', 'SalaryRevision', 'Employee compensation change approval.', TRUE),
+('TAX_PROOF.SUBMIT', 'Submit tax proof', 'Tax', 'TaxProof', 'Employee proof of investment approval.', TRUE),
+('PAYROLL_ADJUSTMENT.SUBMIT', 'Submit payroll adjustment', 'Payroll', 'PayrollAdjustment', 'Variable earning, deduction, recovery or reimbursement adjustment approval.', TRUE)
+ON DUPLICATE KEY UPDATE DisplayName=VALUES(DisplayName), ModuleCode=VALUES(ModuleCode), ResourceType=VALUES(ResourceType), Description=VALUES(Description), IsActive=VALUES(IsActive);
+
+INSERT INTO workflow_action_rules (ActivityCode, HttpMethod, PathPattern, ResourceType, ResourceIdSource, ResourceIdRouteKey, ClientIdSource, ClientIdSql, ClientLookupTable, ClientLookupKeyColumn, ClientLookupClientColumn, TriggerMode, IsActive) VALUES
+('PAYRUN.SUBMIT', 'POST', '/api/pay-runs/{id}/submit', 'PayRun', 'route.id', 'id', '', '', 'payruns', 'Id', 'ClientId', 'AfterSuccess', TRUE)
+ON DUPLICATE KEY UPDATE ResourceType=VALUES(ResourceType), ResourceIdSource=VALUES(ResourceIdSource), ResourceIdRouteKey=VALUES(ResourceIdRouteKey), ClientIdSource=VALUES(ClientIdSource), ClientIdSql=VALUES(ClientIdSql), ClientLookupTable=VALUES(ClientLookupTable), ClientLookupKeyColumn=VALUES(ClientLookupKeyColumn), ClientLookupClientColumn=VALUES(ClientLookupClientColumn), TriggerMode=VALUES(TriggerMode), IsActive=VALUES(IsActive);
+
+2026-07-04 - Workflow action source expressions
+
+ALTER TABLE workflow_action_rules
+ADD COLUMN IF NOT EXISTS ResourceIdSource VARCHAR(120) NOT NULL DEFAULT 'route.id' AFTER ResourceType;
+
+ALTER TABLE workflow_action_rules
+ADD COLUMN IF NOT EXISTS ClientIdSource VARCHAR(120) NOT NULL DEFAULT '' AFTER ResourceIdRouteKey;
+
+ALTER TABLE workflow_action_rules
+ADD COLUMN IF NOT EXISTS ClientLookupTable VARCHAR(120) NOT NULL DEFAULT '' AFTER ClientIdSql;
+
+ALTER TABLE workflow_action_rules
+ADD COLUMN IF NOT EXISTS ClientLookupKeyColumn VARCHAR(120) NOT NULL DEFAULT '' AFTER ClientLookupTable;
+
+ALTER TABLE workflow_action_rules
+ADD COLUMN IF NOT EXISTS ClientLookupClientColumn VARCHAR(120) NOT NULL DEFAULT '' AFTER ClientLookupKeyColumn;
+
+UPDATE workflow_action_rules
+SET ResourceIdSource = CONCAT('route.', ResourceIdRouteKey)
+WHERE (ResourceIdSource IS NULL OR ResourceIdSource = '') AND ResourceIdRouteKey <> '';
+
+UPDATE workflow_action_rules
+SET ResourceIdSource = 'route.id', ClientIdSource = '', ClientIdSql = '', ClientLookupTable = 'payruns', ClientLookupKeyColumn = 'Id', ClientLookupClientColumn = 'ClientId'
+WHERE ActivityCode = 'PAYRUN.SUBMIT' AND HttpMethod = 'POST' AND PathPattern = '/api/pay-runs/{id}/submit';

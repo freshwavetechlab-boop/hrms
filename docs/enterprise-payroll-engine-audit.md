@@ -1,5 +1,9 @@
 # Enterprise Payroll Engine Audit
 
+Related documentation:
+
+- [API catalog for workflow configuration](api-catalog.md)
+
 ## Implemented in this pass
 
 - Added persistent payroll diagnostics keyed by `PayRunId`: step logs, validation issues, calculation traces, and reconciliation results.

@@ -210,6 +210,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     setBusy(true)
     const response = await runPayRunAction(selected.id, path)
     if (response.ok && response.data) { setSelected(response.data); setDiagnostics(await getPayRunDiagnostics(response.data.id)); setMessage(success); await load() }
+    if (!response.ok) setMessage(response.error || 'Payroll action failed.')
     setBusy(false)
   }
 

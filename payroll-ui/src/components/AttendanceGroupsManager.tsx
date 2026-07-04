@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Form, Input, Row, Space } from 'antd'
+import { Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Drawer, Form, Input, Row, Space } from 'antd'
 import { getClients, getEmployees } from '../services/payrollService'
 import { getDropdowns, getWorkLocations } from '../services/settingsService'
 import { deleteAttendanceGroup, getAttendanceGroups, saveAttendanceGroup } from '../services/leaveAttendanceService'
@@ -39,6 +39,7 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
   const [dropdowns, setDropdowns] = useState<Drop[]>([])
   const [groups, setGroups] = useState<AttendanceGroup[]>([])
   const [form, setForm] = useState<AttendanceGroup>(emptyGroup)
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [, setErrors] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [previewMonth, setPreviewMonth] = useState(currentMonth())
@@ -80,6 +81,7 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
   useEffect(() => { void load() }, [])
 
   const reset = () => { setErrors([]); setForm(defaultFor()) }
+  const openNew = () => { reset(); setDrawerOpen(true) }
   const applyScope = (patch: Partial<AttendanceGroup>) => {
     setErrors([])
     setForm(current => {
@@ -118,6 +120,7 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
     setSaving(false)
     if (response.ok && response.data) {
       setForm(response.data)
+      setDrawerOpen(false)
       setGroups(await getAttendanceGroups())
       setErrors([])
       onMessage('Attendance policy saved.')
@@ -127,7 +130,7 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
       onMessage(error)
     }
   }
-  const edit = (group: AttendanceGroup) => { setErrors([]); setForm({ ...emptyGroup, ...group, employeeIds: group.employeeIds || [] }) }
+  const edit = (group: AttendanceGroup) => { setErrors([]); setForm({ ...emptyGroup, ...group, employeeIds: group.employeeIds || [] }); setDrawerOpen(true) }
   const remove = async (group: AttendanceGroup) => {
     if (!window.confirm(`Delete policy ${group.name}?`)) return
     const response = await deleteAttendanceGroup(group.clientId, group.id)
@@ -143,35 +146,8 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
   }
 
   return <section className="attendance-groups">
-    <Row gutter={[16, 16]} className="attendance-group-layout">
-      <Col xs={24} lg={10}>
-        <AntCard className="attendance-group-panel attendance-group-form-panel" title={form.id ? 'Edit attendance policy' : 'Add attendance policy'} size="small" extra={form.id ? <Button htmlType="button" onClick={reset}>New</Button> : null}>
-          <Form className="attendance-group-form" component={false} layout="vertical" requiredMark={false}>
-            <Form.Item label="Policy name" required><Input value={form.name} onChange={event => set('name', event.target.value)} placeholder="Consultants - RECL Site A" /></Form.Item>
-            <Form.Item label="Client" required><SearchSelect value={form.clientId} onChange={value => applyScope({ clientId: Number(value), id: 0 })} options={clients.map(client => ({ value: client.id, label: client.name }))} /></Form.Item>
-            <Form.Item label="Work Location" required><SearchSelect value={form.workLocationId} onChange={applyWorkLocation} options={selectOptions(clientLocations.map(location => ({ value: location.id, label: `${location.name} - ${location.clientName || clients.find(client => client.id === location.clientId)?.name || 'Client'} - ${location.city || location.state || 'Location'}` })), 'Select work location', 0)} /></Form.Item>
-            <Row gutter={12}>
-              <Col xs={24} md={12} lg={24} xl={12}><Form.Item label="Department"><SearchSelect value={form.department} onChange={value => applyScope({ department: value, id: 0 })} options={selectOptions(departments, 'All departments')} /></Form.Item></Col>
-              <Col xs={24} md={12} lg={24} xl={12}><Form.Item label="Designation"><SearchSelect value={form.designation} onChange={value => applyScope({ designation: value, id: 0 })} options={selectOptions(designations, 'All designations')} /></Form.Item></Col>
-            </Row>
-            <Form.Item label="Weekly off pattern" required><SearchSelect value={form.workWeek} onChange={value => set('workWeek', value as AttendanceWorkWeek)} options={selectOptions(workWeeks, 'Select weekly off pattern')} /></Form.Item>
-            <Form.Item label="Payroll month preview" extra={`${cyclePreview.label} / ${cyclePreview.days} days`}><Input type="month" value={previewMonth} onChange={event => setPreviewMonth(event.target.value || currentMonth())} /></Form.Item>
-            <Row gutter={12}>
-              <Col span={8}><Form.Item label="Cycle start date" required><SearchSelect value={form.attendanceCycleStartDay} onChange={value => set('attendanceCycleStartDay', Number(value))} options={selectOptions(dayOptions)} /></Form.Item></Col>
-              <Col span={8}><Form.Item label="Cycle end date" extra={`Max ${cycleLength} days`} required><SearchSelect value={form.attendanceCycleEndDay} onChange={value => set('attendanceCycleEndDay', Number(value))} options={selectOptions(dayOptions)} /></Form.Item></Col>
-              <Col span={8}><Form.Item label="Payroll report date" extra={`${buffer} day buffer`} required><SearchSelect value={form.payrollReportGenerationDay} onChange={value => set('payrollReportGenerationDay', Number(value))} options={selectOptions(dayOptions)} /></Form.Item></Col>
-            </Row>
-            <Form.Item><AntCheckbox checked={form.isActive} onChange={event => set('isActive', event.target.checked)}>Active</AntCheckbox></Form.Item>
-            <Divider />
-            <div className="attendance-group-actions"><Button htmlType="button" onClick={reset}>Reset</Button><Button htmlType="button" type="primary" loading={saving} onClick={() => void save()}>{form.id ? 'Update policy' : 'Save policy'}</Button></div>
-          </Form>
-        </AntCard>
-        <AntCard className="attendance-group-panel attendance-group-members" title={`Employees (${selectedMatchingCount}/${matchingEmployees.length})`} size="small" extra={<Space><Button size="small" onClick={() => set('employeeIds', matchingIds)}>Select all</Button><Button size="small" onClick={() => set('employeeIds', [])}>Clear</Button></Space>}>
-          <div className="attendance-employee-picker">{matchingEmployees.length ? matchingEmployees.map(employee => <label className={form.employeeIds.includes(employee.id) ? 'selected' : ''} key={employee.id}><input type="checkbox" checked={form.employeeIds.includes(employee.id)} onChange={() => toggleEmployee(employee.id)} /><span>{fullName(employee)}</span><small>{employee.employeeCode} / {employee.department || 'No department'} / {employee.designation || 'No designation'}</small></label>) : <p>No employees match this scope.</p>}</div>
-        </AntCard>
-      </Col>
-      <Col xs={24} lg={14}>
-        <AntCard className="attendance-group-panel attendance-group-table" title="Saved attendance policies" size="small">
+        <AntCard className="settings-panel settings-table-panel attendance-group-panel attendance-group-table" title="Attendance Policies" size="small">
+          <div className="component-table-head"><div><b>Attendance policy master</b><span>Define client, location, employee scope, work-week, attendance cycle, and payroll report day.</span></div><Button type="primary" onClick={openNew}>Add policy</Button></div>
           <DataTable rows={groups} getRowId={row => row.id} emptyText="No attendance policies configured." exportFileName="attendance-policies" columns={[
             { key: 'name', label: 'Policy' },
             { key: 'clientName', label: 'Client' },
@@ -184,7 +160,29 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
             { key: 'isActive', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive' }
           ]} actions={row => <Space size={6}><Button htmlType="button" size="small" type="primary" onClick={() => edit(row)}>Edit</Button><Button htmlType="button" size="small" danger onClick={() => void remove(row)}>Delete</Button></Space>} />
         </AntCard>
-      </Col>
-    </Row>
+    <Drawer className="settings-master-drawer" title={form.id ? 'Edit attendance policy' : 'Add attendance policy'} open={drawerOpen} width={720} onClose={() => setDrawerOpen(false)} destroyOnClose>
+      <Form className="attendance-group-form" component={false} layout="vertical" requiredMark={false}>
+        <Form.Item label="Policy name" required><Input value={form.name} onChange={event => set('name', event.target.value)} placeholder="Consultants - RECL Site A" /></Form.Item>
+        <Form.Item label="Client" required><SearchSelect value={form.clientId} onChange={value => applyScope({ clientId: Number(value), id: 0 })} options={clients.map(client => ({ value: client.id, label: client.name }))} /></Form.Item>
+        <Form.Item label="Work Location" required><SearchSelect value={form.workLocationId} onChange={applyWorkLocation} options={selectOptions(clientLocations.map(location => ({ value: location.id, label: `${location.name} - ${location.clientName || clients.find(client => client.id === location.clientId)?.name || 'Client'} - ${location.city || location.state || 'Location'}` })), 'Select work location', 0)} /></Form.Item>
+        <Row gutter={12}>
+          <Col xs={24} md={12}><Form.Item label="Department"><SearchSelect value={form.department} onChange={value => applyScope({ department: value, id: 0 })} options={selectOptions(departments, 'All departments')} /></Form.Item></Col>
+          <Col xs={24} md={12}><Form.Item label="Designation"><SearchSelect value={form.designation} onChange={value => applyScope({ designation: value, id: 0 })} options={selectOptions(designations, 'All designations')} /></Form.Item></Col>
+        </Row>
+        <Form.Item label="Weekly off pattern" required><SearchSelect value={form.workWeek} onChange={value => set('workWeek', value as AttendanceWorkWeek)} options={selectOptions(workWeeks, 'Select weekly off pattern')} /></Form.Item>
+        <Form.Item label="Payroll month preview" extra={`${cyclePreview.label} / ${cyclePreview.days} days`}><Input type="month" value={previewMonth} onChange={event => setPreviewMonth(event.target.value || currentMonth())} /></Form.Item>
+        <Row gutter={12}>
+          <Col span={8}><Form.Item label="Cycle start date" required><SearchSelect value={form.attendanceCycleStartDay} onChange={value => set('attendanceCycleStartDay', Number(value))} options={selectOptions(dayOptions)} /></Form.Item></Col>
+          <Col span={8}><Form.Item label="Cycle end date" extra={`Max ${cycleLength} days`} required><SearchSelect value={form.attendanceCycleEndDay} onChange={value => set('attendanceCycleEndDay', Number(value))} options={selectOptions(dayOptions)} /></Form.Item></Col>
+          <Col span={8}><Form.Item label="Payroll report date" extra={`${buffer} day buffer`} required><SearchSelect value={form.payrollReportGenerationDay} onChange={value => set('payrollReportGenerationDay', Number(value))} options={selectOptions(dayOptions)} /></Form.Item></Col>
+        </Row>
+        <Form.Item><AntCheckbox checked={form.isActive} onChange={event => set('isActive', event.target.checked)}>Active</AntCheckbox></Form.Item>
+        <AntCard className="attendance-group-panel attendance-group-members" title={`Employees (${selectedMatchingCount}/${matchingEmployees.length})`} size="small" extra={<Space><Button size="small" onClick={() => set('employeeIds', matchingIds)}>Select all</Button><Button size="small" onClick={() => set('employeeIds', [])}>Clear</Button></Space>}>
+          <div className="attendance-employee-picker">{matchingEmployees.length ? matchingEmployees.map(employee => <label className={form.employeeIds.includes(employee.id) ? 'selected' : ''} key={employee.id}><input type="checkbox" checked={form.employeeIds.includes(employee.id)} onChange={() => toggleEmployee(employee.id)} /><span>{fullName(employee)}</span><small>{employee.employeeCode} / {employee.department || 'No department'} / {employee.designation || 'No designation'}</small></label>) : <p>No employees match this scope.</p>}</div>
+        </AntCard>
+        <Divider />
+        <div className="attendance-group-actions"><Button htmlType="button" onClick={reset}>Reset</Button><Button htmlType="button" type="primary" loading={saving} onClick={() => void save()}>{form.id ? 'Update policy' : 'Save policy'}</Button></div>
+      </Form>
+    </Drawer>
   </section>
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Form, Input, Row, Space } from 'antd'
+import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Drawer, Form, Input, Row, Space } from 'antd'
 import { deleteHoliday, getHolidays, saveHoliday } from '../services/leaveAttendanceService'
 import { getWorkLocations } from '../services/settingsService'
 import type { Holiday, WorkLocation } from '../types/payroll'
@@ -21,6 +21,7 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
   const [rows, setRows] = useState<Holiday[]>([])
   const [locations, setLocations] = useState<WorkLocation[]>([])
   const [form, setForm] = useState<Holiday>(blank)
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [errors, setErrors] = useState<string[]>([])
   const [year, setYear] = useState(currentYear)
   const [workLocationId, setWorkLocationId] = useState(0)
@@ -64,6 +65,7 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
     const response = await saveHoliday({ ...form, clientId, workLocationIds: form.allLocations ? [] : validLocationIds() })
     if (response.ok) {
       setForm({ ...blank, clientId })
+      setDrawerOpen(false)
       setErrors([])
       onMessage('Holiday saved.')
       await load()
@@ -72,6 +74,7 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
   const edit = (row: Holiday) => {
     setForm({ ...blank, ...row, startDate: String(row.startDate).slice(0, 10), endDate: String(row.endDate).slice(0, 10), workLocationIds: row.workLocationIds || [] })
     setErrors([])
+    setDrawerOpen(true)
   }
   const remove = async (row: Holiday) => {
     if (!window.confirm(`Delete ${row.name}?`)) return
@@ -82,6 +85,7 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
 
   return <section className="holiday-manager">
     <AntCard className="settings-panel settings-table-panel holiday-list-card" size="small" title="Holiday Management">
+      <div className="component-table-head"><div><b>Holiday master</b><span>Maintain holidays and restricted holidays by year and work-location applicability.</span></div><Button type="primary" onClick={() => { setForm({ ...blank, clientId }); setErrors([]); setDrawerOpen(true) }}>Add holiday</Button></div>
       <Row gutter={12} className="holiday-toolbar">
         <Col xs={24} sm={8} md={6} lg={5} className="holiday-year-field"><Form.Item label="Year"><SearchSelect value={year} onChange={value => setYear(Number(value))} options={years.map(value => ({ value, label: String(value) }))} /></Form.Item></Col>
         <Col xs={24} sm={16} md={12} lg={10} className="holiday-location-field"><Form.Item label="Work Location"><SearchSelect value={workLocationId} onChange={value => setWorkLocationId(Number(value))} options={selectOptions(locations.map(location => ({ value: location.id, label: `${location.name}${location.city ? ` - ${location.city}` : ''}` })), 'All locations', 0)} /></Form.Item></Col>
@@ -89,7 +93,9 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
       <PageTabs items={holidayViews} value={view} onChange={setView} label="Holiday views" />
       {view === 'Table' ? <HolidayTable rows={rows} edit={edit} remove={remove} /> : <div className="holiday-calendar">{calendar.map(item => <article key={item.month}><h4>{item.month}</h4>{item.holidays.length ? item.holidays.map(holiday => <button type="button" key={holiday.id} onClick={() => edit(holiday)}><strong>{holiday.name}</strong><span>{holiday.holidayType}</span><span>{dateRange(holiday)}</span><small>{holiday.workLocations}</small></button>) : <p>No holidays</p>}</article>)}</div>}
     </AntCard>
-    <HolidayForm form={form} locations={locations} errors={errors} set={set} toggleLocation={toggleLocation} save={save} cancel={() => { setForm({ ...blank, clientId }); setErrors([]) }} />
+    <Drawer className="settings-master-drawer" title={form.id ? 'Edit holiday' : 'Add holiday'} open={drawerOpen} width={620} onClose={() => { setDrawerOpen(false); setForm({ ...blank, clientId }); setErrors([]) }} destroyOnClose>
+      <HolidayForm form={form} locations={locations} errors={errors} set={set} toggleLocation={toggleLocation} save={save} cancel={() => { setDrawerOpen(false); setForm({ ...blank, clientId }); setErrors([]) }} />
+    </Drawer>
     <HolidayBulkUpload clientId={clientId} locations={locations} onImported={async message => { onMessage(message); await load() }} />
   </section>
 }
@@ -106,7 +112,7 @@ function HolidayTable({ rows, edit, remove }: { rows: Holiday[]; edit: (row: Hol
 }
 
 function HolidayForm(p: { form: Holiday; locations: WorkLocation[]; errors: string[]; set: <K extends keyof Holiday>(key: K, value: Holiday[K]) => void; toggleLocation: (id: number) => void; save: () => void; cancel: () => void }) {
-  return <AntCard className="holiday-form settings-panel settings-form-panel" size="small" title={p.form.id ? 'Edit Holiday' : 'Add Holiday'}>
+  return <div className="holiday-form">
     <Form className="settings-quick-form" component={false} layout="vertical" requiredMark={false}>
       {p.errors.length > 0 && <Alert type="error" showIcon message={p.errors.join(' ')} />}
       <Row gutter={12}>
@@ -121,7 +127,7 @@ function HolidayForm(p: { form: Holiday; locations: WorkLocation[]; errors: stri
       <Divider />
       <Row justify="end"><Space><Button onClick={p.cancel}>Cancel</Button><Button type="primary" onClick={() => void p.save()}>{p.form.id ? 'Update holiday' : 'Save holiday'}</Button></Space></Row>
     </Form>
-  </AntCard>
+  </div>
 }
 
 function HolidayBulkUpload(p: { clientId: number; locations: WorkLocation[]; onImported: (message: string) => Promise<void> }) {

@@ -17,6 +17,6 @@ export const settingsMenus = ['Organization', 'Clients', 'Work Locations', 'Drop
 export const securityMenus = ['Users', 'Roles', 'Audit'] as const
 export const leaveAttendanceMenus = ['Attendance Policies', 'Leave Types', 'Holiday', 'Attendance', 'Geo-Fencing', 'Import Balance'] as const
 export const reportingMenus = ['Payroll Reports', 'Client Billing Report', 'Employee Reports', 'Attendance Reports', 'Leave Reports', 'Recruitment Reports', 'Onboarding Reports', 'Separation Reports', 'Compliance Reports', 'Tax Reports', 'Loan & Advance Reports', 'Cost Center Reports', 'Department Reports', 'Location Reports', 'Contractor Reports', 'Audit Reports', 'MIS Reports', 'Executive Dashboards', 'Scheduled Reports', 'Report Builder'] as const
-export const workflowMenus = ['Workflow Setup', 'Department Head Assignments', 'My Tasks', 'Workflow History'] as const
+export const workflowMenus = ['Workflow Setup', 'API Catalog', 'Department Head Assignments', 'My Tasks', 'Workflow History'] as const
 export const workWeekOptions = ['Monday - Friday', 'Monday - Saturday', 'All days', 'Sunday + 2nd Saturday off', 'Sunday + 2nd/4th Saturday off', 'Only 2nd Saturday off'] as const
 export const dropTypes = ['Department', 'Designation', 'Work Week', 'Employment Type', 'Employee Grade', 'Cost Center', 'Location Tag', 'State', 'City']
