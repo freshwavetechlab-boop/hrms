@@ -90,4 +90,21 @@
 .employee-modal .grid{grid-template-columns:repeat(3,minmax(160px,1fr))}
 .employee-modal .actions{position:sticky;bottom:0;margin:0 -16px -16px;padding:10px 16px;border-top:1px solid #eef0f4;background:#fff}
 .employee-modal .actions .secondary{background:#fff;color:#5133cc;border:1px solid #cfc6f5;box-shadow:none}
-@media(max-width:900px){.employee-directory-tools,.employee-modal .grid{grid-template-columns:1fr}.employee-modal-backdrop{padding:10px}.employee-modal{max-height:calc(100vh - 20px)}}
+.employee-basic-strip{display:grid;grid-template-columns:repeat(5,minmax(110px,1fr));gap:8px}
+.employee-basic-strip article{padding:8px 10px;border:1px solid #e7eaf2;border-radius:8px;background:#f8fafc}
+.employee-basic-strip span,.employee-infotype-picker span{display:block;color:#667085;font-size:.66rem;font-weight:800;text-transform:uppercase}
+.employee-basic-strip b{display:block;margin-top:3px;color:#172136;font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.employee-infotype-picker{display:grid;grid-template-columns:120px minmax(260px,420px);align-items:center;gap:10px;padding:10px 12px;border:1px solid #e7eaf2;border-radius:8px;background:#fbfcff}
+.employee-infotype-editor{display:grid;gap:10px;padding:12px;border:1px solid #e7eaf2;border-radius:8px;background:#fff}
+.employee-infotype-editor h4{margin:0;color:#172136;font-size:.9rem}
+.employee-status-pill{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:999px;background:#eef2ff;color:#5133cc;font-size:.68rem;font-weight:900}
+.employee-status-pill.historical{background:#f1f5f9;color:#667085}
+.employee-history-panel{display:grid;gap:12px}
+.employee-action-box{display:grid;gap:10px;padding:12px;border:1px solid #e5e8f0;border-radius:10px;background:#fafbfc}
+.employee-action-box h4,.employee-history-grid h4{margin:0;font-size:.86rem;color:#172136}
+.employee-action-box button{justify-self:end;height:34px;border:1px solid #6546e8;border-radius:8px;background:#6546e8;color:#fff;padding:0 13px;font-weight:800}
+.employee-history-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;min-width:0}
+.employee-history-grid.single{grid-template-columns:1fr}
+.employee-history-grid>div{min-width:0;padding:10px;border:1px solid #e5e8f0;border-radius:10px;background:#fff}
+@media(max-width:900px){.employee-directory-tools,.employee-modal .grid,.employee-basic-strip,.employee-infotype-picker{grid-template-columns:1fr}.employee-modal-backdrop{padding:10px}.employee-modal{max-height:calc(100vh - 20px)}}
+@media(max-width:1100px){.employee-history-grid{grid-template-columns:1fr}}

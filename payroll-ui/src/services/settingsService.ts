@@ -1,4 +1,4 @@
-import type { Client, Drop, Employee, Org, Setup, WorkLocation } from '../types/payroll'
+import type { Client, Drop, Employee, EmployeeActionRequest, EmployeeAuditTrail, EmployeeInfotypeRecord, Org, Setup, WorkLocation } from '../types/payroll'
 import { deleteJson, getBlob, getJson, postForm, postJson, type ApiOptions } from './apiClient'
 
 export type BulkImportStatus = { jobId: string; state: 'Queued' | 'Processing' | 'Completed' | 'Failed'; totalRows: number; completedRows: number; inserted: number; updated: number; errors: string[] }
@@ -13,7 +13,16 @@ export const getWorkLocations = () => getJson<WorkLocation[]>('/api/work-locatio
 export const saveWorkLocation = (location: WorkLocation) => postJson('/api/work-locations', location, { id: location.id })
 export const getDropdowns = () => getJson<Drop[]>('/api/dropdowns', [])
 export const saveDropdown = (drop: Drop, options: ApiOptions = {}) => postJson('/api/dropdowns', drop, { id: drop.id }, options)
-export const saveEmployee = (employee: Employee) => postJson('/api/employees', employee, { id: employee.id })
+export const saveEmployee = (employee: Employee, infotypeCode?: string, changeReason = '') => {
+  const query = new URLSearchParams()
+  if (infotypeCode) query.set('infotypeCode', infotypeCode)
+  if (changeReason.trim()) query.set('changeReason', changeReason.trim())
+  return postJson(`/api/employees${query.size ? `?${query}` : ''}`, employee, { id: employee.id })
+}
+export const getEmployeeInfotypes = (id: number, activeOnly = false) => getJson<EmployeeInfotypeRecord[]>(`/api/employees/${id}/infotypes?activeOnly=${activeOnly}`, [])
+export const getEmployeeAuditTrail = (id: number) => getJson<EmployeeAuditTrail[]>(`/api/employees/${id}/audit`, [])
+export const getActiveEmployeeInfotypes = (clientId: number) => getJson<EmployeeInfotypeRecord[]>(`/api/employees/infotypes/active?clientId=${clientId}`, [])
+export const processEmployeeAction = (request: EmployeeActionRequest) => postJson<EmployeeActionRequest, Employee | null>('/api/employees/actions', request, null)
 export const getEmployeeDeletePreview = (id: number) => getJson<EmployeeDeletePreview>(`/api/employees/${id}/delete-preview`, { employeeId: id, employeeCode: '', employeeName: '', links: ['Unable to validate employee links.'], canDelete: false })
 export const deleteEmployee = (id: number) => deleteJson(`/api/employees/${id}`, null, { toast: false })
 export const downloadEmployeeImportTemplate = (clientId: number) => getBlob(`/api/employees/import-template?clientId=${clientId}`)

@@ -13,8 +13,23 @@ public class EmployeeRepository(IConfiguration configuration)
 {
     private static readonly ConcurrentDictionary<Guid, EmployeeImportJobStatus> ImportJobs = new();
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
-    public async Task<IEnumerable<Employee>> GetAsync() { await using var db = Connection(); await db.OpenAsync(); var rows = (await db.QueryAsync<Employee>("SELECT * FROM employees ORDER BY FirstName, LastName")).ToList(); await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, rows); return rows; }
-    public async Task<int> SaveAsync(Employee employee) { await using var db = Connection(); await db.OpenAsync(); if (employee.Id == 0) employee.Id = (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId,EmployeeCode,FirstName,LastName,Gender,DateOfJoining,WorkEmail,Department,Designation,Grade,WorkLocationId,ReportingManagerId,PortalAccess,SalaryStructureId,AnnualCtc,SalaryJson,PersonalJson,PaymentJson,IsActive) VALUES (@ClientId,@EmployeeCode,@FirstName,@LastName,@Gender,@DateOfJoining,@WorkEmail,@Department,@Designation,@Grade,@WorkLocationId,@ReportingManagerId,@PortalAccess,@SalaryStructureId,@AnnualCtc,@SalaryJson,@PersonalJson,@PaymentJson,@IsActive); SELECT LAST_INSERT_ID();", employee); else await db.ExecuteAsync(@"UPDATE employees SET ClientId=@ClientId,EmployeeCode=@EmployeeCode,FirstName=@FirstName,LastName=@LastName,Gender=@Gender,DateOfJoining=@DateOfJoining,WorkEmail=@WorkEmail,Department=@Department,Designation=@Designation,Grade=@Grade,WorkLocationId=@WorkLocationId,ReportingManagerId=@ReportingManagerId,PortalAccess=@PortalAccess,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,IsActive=@IsActive WHERE Id=@Id", employee); await PayrollDataTableStore.SyncEmployeeTablesAsync(db, employee); await db.ExecuteAsync("UPDATE employees SET SalaryJson=@SalaryJson,PersonalJson=@PersonalJson,PaymentJson=@PaymentJson WHERE Id=@Id", employee); return employee.Id; }
+    public async Task InitializeAsync() { await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db); }
+    public async Task<IEnumerable<Employee>> GetAsync() { await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db); var rows = (await db.QueryAsync<Employee>("SELECT * FROM employees ORDER BY FirstName, LastName")).ToList(); await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, rows); return rows; }
+    public async Task<int> SaveAsync(Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db);
+        var wasNew = employee.Id == 0;
+        var before = employee.Id > 0 ? await LoadEmployeeAsync(db, employee.Id) : null;
+        var actionType = wasNew ? "Hire" : "Master Update";
+        if (employee.Id == 0) employee.Id = (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId,EmployeeCode,FirstName,LastName,Gender,DateOfJoining,WorkEmail,Department,Designation,Grade,WorkLocationId,ReportingManagerId,PortalAccess,SalaryStructureId,AnnualCtc,SalaryJson,PersonalJson,PaymentJson,IsActive) VALUES (@ClientId,@EmployeeCode,@FirstName,@LastName,@Gender,@DateOfJoining,@WorkEmail,@Department,@Designation,@Grade,@WorkLocationId,@ReportingManagerId,@PortalAccess,@SalaryStructureId,@AnnualCtc,@SalaryJson,@PersonalJson,@PaymentJson,@IsActive); SELECT LAST_INSERT_ID();", employee);
+        else await db.ExecuteAsync(@"UPDATE employees SET ClientId=@ClientId,EmployeeCode=@EmployeeCode,FirstName=@FirstName,LastName=@LastName,Gender=@Gender,DateOfJoining=@DateOfJoining,WorkEmail=@WorkEmail,Department=@Department,Designation=@Designation,Grade=@Grade,WorkLocationId=@WorkLocationId,ReportingManagerId=@ReportingManagerId,PortalAccess=@PortalAccess,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,IsActive=@IsActive WHERE Id=@Id", employee);
+        await PayrollDataTableStore.SyncEmployeeTablesAsync(db, employee);
+        await db.ExecuteAsync("UPDATE employees SET SalaryJson=@SalaryJson,PersonalJson=@PersonalJson,PaymentJson=@PaymentJson WHERE Id=@Id", employee);
+        var after = await LoadEmployeeAsync(db, employee.Id) ?? employee;
+        var reason = string.IsNullOrWhiteSpace(changeReason) ? wasNew ? "Employee hired" : "Infotype updated" : changeReason.Trim();
+        await WriteCurrentInfotypesAsync(db, after, actionType, EffectiveDate(after), reason, changedBy, before, wasNew ? null : NormalizeInfotypeCodes(infotypeCode));
+        return employee.Id;
+    }
     public async Task<EmployeeDeletePreview?> GetDeletePreviewAsync(int id)
     {
         await using var db = Connection(); await db.OpenAsync();
@@ -45,6 +60,58 @@ public class EmployeeRepository(IConfiguration configuration)
         await using var db = Connection(); await db.OpenAsync();
         await db.ExecuteAsync("UPDATE employees SET IsActive=FALSE WHERE Id=@id", new { id });
         return (true, "");
+    }
+
+    public async Task<IEnumerable<EmployeeInfotypeRecord>> GetInfotypesAsync(int employeeId, bool activeOnly = false)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db);
+        var filter = activeOnly ? "AND t.Status='Active'" : "";
+        return await db.QueryAsync<EmployeeInfotypeRecord>($@"{InfotypeUnionSql($"t.EmployeeId=@employeeId {filter}")}
+ORDER BY EffectiveFrom DESC, Id DESC", new { employeeId });
+    }
+
+    public async Task<IEnumerable<EmployeeInfotypeRecord>> GetActiveInfotypesAsync(int clientId)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db);
+        return await db.QueryAsync<EmployeeInfotypeRecord>($@"{InfotypeUnionSql("t.ClientId=@clientId AND t.Status='Active' AND e.IsActive=TRUE")}
+ORDER BY EmployeeCode, InfotypeCode", new { clientId });
+    }
+
+    public async Task<IEnumerable<EmployeeAuditTrail>> GetAuditTrailAsync(int employeeId)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db);
+        return await db.QueryAsync<EmployeeAuditTrail>("SELECT * FROM employee_audit_trail WHERE EmployeeId=@employeeId ORDER BY ChangedAt DESC, Id DESC", new { employeeId });
+    }
+
+    public async Task<(Employee? Employee, string? Error)> ProcessActionAsync(EmployeeActionRequest request, string changedBy)
+    {
+        if (request.EmployeeId <= 0) return (null, "Select an employee.");
+        if (!EmployeeActions.Contains(request.ActionType)) return (null, "Select a valid employee action.");
+        await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db);
+        var before = await LoadEmployeeAsync(db, request.EmployeeId);
+        if (before is null) return (null, "Employee not found.");
+        var next = CloneEmployee(before);
+        if (request.ActionType is "Promotion" or "Demotion" or "Transfer")
+        {
+            if (!string.IsNullOrWhiteSpace(request.Department)) next.Department = request.Department.Trim();
+            if (!string.IsNullOrWhiteSpace(request.Designation)) next.Designation = request.Designation.Trim();
+            if (!string.IsNullOrWhiteSpace(request.Grade)) next.Grade = request.Grade.Trim();
+            if (request.WorkLocationId > 0) next.WorkLocationId = request.WorkLocationId;
+        }
+        if (request.ActionType is "Salary Change")
+        {
+            if (request.AnnualCtc > 0) next.AnnualCtc = request.AnnualCtc;
+            if (!string.IsNullOrWhiteSpace(request.SalaryStructureId)) next.SalaryStructureId = request.SalaryStructureId;
+            if (!string.IsNullOrWhiteSpace(request.SalaryJson) && request.SalaryJson != "{}") next.SalaryJson = request.SalaryJson;
+        }
+        if (request.ActionType is "Retire" or "Terminate" or "Resign") next.IsActive = false;
+        if (request.ActionType == "Rehire") next.IsActive = true;
+
+        await db.ExecuteAsync(@"UPDATE employees SET Department=@Department,Designation=@Designation,Grade=@Grade,WorkLocationId=@WorkLocationId,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,SalaryJson=@SalaryJson,IsActive=@IsActive WHERE Id=@Id", next);
+        await PayrollDataTableStore.SyncEmployeeTablesAsync(db, next);
+        var after = await LoadEmployeeAsync(db, request.EmployeeId) ?? next;
+        await WriteCurrentInfotypesAsync(db, after, request.ActionType, request.EffectiveDate, request.Reason, changedBy, before, ActionInfotypeCodes(request.ActionType));
+        return (after, null);
     }
 
     public async Task<EmployeeImportResult> ImportCsvAsync(int clientId, IFormFile file)
@@ -129,6 +196,315 @@ ON DUPLICATE KEY UPDATE DateOfBirth=@DateOfBirth,Mobile=@Mobile,PanNumber=@Pan,A
     }
 
     static void SetJob(Guid jobId, Func<EmployeeImportJobStatus, EmployeeImportJobStatus> update) => ImportJobs.AddOrUpdate(jobId, _ => update(new EmployeeImportJobStatus(jobId, "Processing", 0, 0, 0, 0, [])), (_, current) => update(current));
+    static readonly HashSet<string> EmployeeActions = new(StringComparer.OrdinalIgnoreCase) { "Hire", "Promotion", "Salary Change", "Demotion", "Transfer", "Retire", "Terminate", "Resign", "Rehire", "Master Update" };
+    static readonly HashSet<string> EmployeeInfotypeCodes = new(StringComparer.OrdinalIgnoreCase) { "0000", "0001", "0002", "0006", "0008", "0009" };
+
+    static HashSet<string>? NormalizeInfotypeCodes(string? infotypeCode)
+    {
+        if (string.IsNullOrWhiteSpace(infotypeCode)) return new HashSet<string>(EmployeeInfotypeCodes, StringComparer.OrdinalIgnoreCase);
+        var codes = infotypeCode.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(EmployeeInfotypeCodes.Contains)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return codes.Count == 0 ? new HashSet<string>(EmployeeInfotypeCodes, StringComparer.OrdinalIgnoreCase) : codes;
+    }
+
+    static HashSet<string> ActionInfotypeCodes(string actionType) => actionType switch
+    {
+        "Salary Change" => new HashSet<string>(["0000", "0008"], StringComparer.OrdinalIgnoreCase),
+        "Promotion" or "Demotion" => new HashSet<string>(["0000", "0001"], StringComparer.OrdinalIgnoreCase),
+        "Transfer" => new HashSet<string>(["0000", "0001"], StringComparer.OrdinalIgnoreCase),
+        "Retire" or "Terminate" or "Resign" or "Rehire" => new HashSet<string>(["0000"], StringComparer.OrdinalIgnoreCase),
+        _ => new HashSet<string>(["0000"], StringComparer.OrdinalIgnoreCase)
+    };
+
+    static string InfotypeUnionSql(string where) => $@"
+SELECT t.Id,t.EmployeeId,t.ClientId,e.EmployeeCode,CONCAT(e.FirstName,' ',e.LastName) EmployeeName,'0000' InfotypeCode,'Actions' InfotypeName,t.ActionType,t.EffectiveFrom,t.EffectiveTo,t.Status,JSON_OBJECT('IsActive',t.IsActive,'DateOfJoining',t.DateOfJoining) DataJson,t.ChangeReason,t.CreatedBy,t.CreatedAt
+FROM employee_it0000_actions t JOIN employees e ON e.Id=t.EmployeeId WHERE {where}
+UNION ALL
+SELECT t.Id,t.EmployeeId,t.ClientId,e.EmployeeCode,CONCAT(e.FirstName,' ',e.LastName) EmployeeName,'0001' InfotypeCode,'Organizational Assignment' InfotypeName,t.ActionType,t.EffectiveFrom,t.EffectiveTo,t.Status,JSON_OBJECT('ClientId',t.ClientId,'Department',t.Department,'Designation',t.Designation,'Grade',t.Grade,'WorkLocationId',t.WorkLocationId,'ReportingManagerId',t.ReportingManagerId,'WorkEmail',t.WorkEmail,'PortalAccess',t.PortalAccess) DataJson,t.ChangeReason,t.CreatedBy,t.CreatedAt
+FROM employee_it0001_org_assignment t JOIN employees e ON e.Id=t.EmployeeId WHERE {where}
+UNION ALL
+SELECT t.Id,t.EmployeeId,t.ClientId,e.EmployeeCode,CONCAT(e.FirstName,' ',e.LastName) EmployeeName,'0002' InfotypeCode,'Personal Data' InfotypeName,t.ActionType,t.EffectiveFrom,t.EffectiveTo,t.Status,JSON_OBJECT('FirstName',t.FirstName,'LastName',t.LastName,'Gender',t.Gender,'PersonalDetails',JSON_OBJECT('DateOfBirth',t.DateOfBirth,'Mobile',t.Mobile,'PanNumber',t.PanNumber,'AadhaarNumber',t.AadhaarNumber,'UanNumber',t.UanNumber,'EsicNumber',t.EsicNumber)) DataJson,t.ChangeReason,t.CreatedBy,t.CreatedAt
+FROM employee_it0002_personal_data t JOIN employees e ON e.Id=t.EmployeeId WHERE {where}
+UNION ALL
+SELECT t.Id,t.EmployeeId,t.ClientId,e.EmployeeCode,CONCAT(e.FirstName,' ',e.LastName) EmployeeName,'0006' InfotypeCode,'Addresses' InfotypeName,t.ActionType,t.EffectiveFrom,t.EffectiveTo,t.Status,JSON_OBJECT('Address',t.Address,'CorrespondenceAddress',t.CorrespondenceAddress,'PermanentAddress',t.PermanentAddress) DataJson,t.ChangeReason,t.CreatedBy,t.CreatedAt
+FROM employee_it0006_addresses t JOIN employees e ON e.Id=t.EmployeeId WHERE {where}
+UNION ALL
+SELECT t.Id,t.EmployeeId,t.ClientId,e.EmployeeCode,CONCAT(e.FirstName,' ',e.LastName) EmployeeName,'0008' InfotypeCode,'Basic Pay' InfotypeName,t.ActionType,t.EffectiveFrom,t.EffectiveTo,t.Status,JSON_OBJECT('SalaryStructureId',t.SalaryStructureId,'AnnualCtc',t.AnnualCtc,'SalaryComponents',JSON_EXTRACT(t.SalaryJson,'$')) DataJson,t.ChangeReason,t.CreatedBy,t.CreatedAt
+FROM employee_it0008_basic_pay t JOIN employees e ON e.Id=t.EmployeeId WHERE {where}
+UNION ALL
+SELECT t.Id,t.EmployeeId,t.ClientId,e.EmployeeCode,CONCAT(e.FirstName,' ',e.LastName) EmployeeName,'0009' InfotypeCode,'Bank Details' InfotypeName,t.ActionType,t.EffectiveFrom,t.EffectiveTo,t.Status,JSON_OBJECT('BankName',t.BankName,'BankAccountNo',t.BankAccountNo,'IfscCode',t.IfscCode,'PaymentMode',t.PaymentMode) DataJson,t.ChangeReason,t.CreatedBy,t.CreatedAt
+FROM employee_it0009_bank_details t JOIN employees e ON e.Id=t.EmployeeId WHERE {where}";
+
+    static async Task EnsureEmployeeInfotypeTablesAsync(MySqlConnection db)
+    {
+        await db.ExecuteAsync(@"
+CREATE TABLE IF NOT EXISTS employee_infotype_records (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    InfotypeCode VARCHAR(20) NOT NULL,
+    InfotypeName VARCHAR(120) NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    DataJson JSON NOT NULL,
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_EmployeeInfotype_Employee (EmployeeId, InfotypeCode, Status, EffectiveFrom),
+    INDEX IX_EmployeeInfotype_Client_Active (ClientId, Status, InfotypeCode)
+);
+CREATE TABLE IF NOT EXISTS employee_it0000_actions (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    DateOfJoining VARCHAR(20) NOT NULL DEFAULT '',
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_IT0000_Employee (EmployeeId, Status, EffectiveFrom),
+    INDEX IX_IT0000_Client (ClientId, Status)
+);
+CREATE TABLE IF NOT EXISTS employee_it0001_org_assignment (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    Department VARCHAR(160) NOT NULL DEFAULT '',
+    Designation VARCHAR(160) NOT NULL DEFAULT '',
+    Grade VARCHAR(80) NOT NULL DEFAULT '',
+    WorkLocationId INT NOT NULL DEFAULT 0,
+    ReportingManagerId INT NOT NULL DEFAULT 0,
+    WorkEmail VARCHAR(190) NOT NULL DEFAULT '',
+    PortalAccess BOOLEAN NOT NULL DEFAULT FALSE,
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_IT0001_Employee (EmployeeId, Status, EffectiveFrom),
+    INDEX IX_IT0001_Client (ClientId, Status)
+);
+CREATE TABLE IF NOT EXISTS employee_it0002_personal_data (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    FirstName VARCHAR(120) NOT NULL DEFAULT '',
+    LastName VARCHAR(120) NOT NULL DEFAULT '',
+    Gender VARCHAR(40) NOT NULL DEFAULT '',
+    DateOfBirth VARCHAR(20) NOT NULL DEFAULT '',
+    Mobile VARCHAR(40) NOT NULL DEFAULT '',
+    PanNumber VARCHAR(40) NOT NULL DEFAULT '',
+    AadhaarNumber VARCHAR(40) NOT NULL DEFAULT '',
+    UanNumber VARCHAR(40) NOT NULL DEFAULT '',
+    EsicNumber VARCHAR(40) NOT NULL DEFAULT '',
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_IT0002_Employee (EmployeeId, Status, EffectiveFrom),
+    INDEX IX_IT0002_Client (ClientId, Status)
+);
+CREATE TABLE IF NOT EXISTS employee_it0006_addresses (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    Address TEXT NULL,
+    CorrespondenceAddress TEXT NULL,
+    PermanentAddress TEXT NULL,
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_IT0006_Employee (EmployeeId, Status, EffectiveFrom),
+    INDEX IX_IT0006_Client (ClientId, Status)
+);
+CREATE TABLE IF NOT EXISTS employee_it0008_basic_pay (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    SalaryStructureId VARCHAR(80) NOT NULL DEFAULT '',
+    AnnualCtc DECIMAL(18,2) NOT NULL DEFAULT 0,
+    SalaryJson JSON NOT NULL,
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_IT0008_Employee (EmployeeId, Status, EffectiveFrom),
+    INDEX IX_IT0008_Client (ClientId, Status)
+);
+CREATE TABLE IF NOT EXISTS employee_it0009_bank_details (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ActionType VARCHAR(60) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Active',
+    BankName VARCHAR(190) NOT NULL DEFAULT '',
+    BankAccountNo VARCHAR(80) NOT NULL DEFAULT '',
+    IfscCode VARCHAR(40) NOT NULL DEFAULT '',
+    PaymentMode VARCHAR(60) NOT NULL DEFAULT '',
+    ChangeReason VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedBy VARCHAR(190) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_IT0009_Employee (EmployeeId, Status, EffectiveFrom),
+    INDEX IX_IT0009_Client (ClientId, Status)
+);
+CREATE TABLE IF NOT EXISTS employee_audit_trail (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    EmployeeCode VARCHAR(50) NOT NULL DEFAULT '',
+    ActionType VARCHAR(60) NOT NULL,
+    InfotypeCode VARCHAR(20) NOT NULL,
+    FieldName VARCHAR(120) NOT NULL,
+    OldValue TEXT NULL,
+    NewValue TEXT NULL,
+    EffectiveFrom DATE NOT NULL,
+    ChangedBy VARCHAR(190) NOT NULL DEFAULT '',
+    ChangedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_EmployeeAudit_Employee (EmployeeId, ChangedAt),
+    INDEX IX_EmployeeAudit_Action (ActionType, InfotypeCode)
+);");
+    }
+
+    static async Task<Employee?> LoadEmployeeAsync(MySqlConnection db, int id)
+    {
+        var employee = await db.QueryFirstOrDefaultAsync<Employee>("SELECT * FROM employees WHERE Id=@id", new { id });
+        if (employee is null) return null;
+        var rows = new List<Employee> { employee };
+        await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, rows);
+        return rows[0];
+    }
+
+    static Employee CloneEmployee(Employee row) => new()
+    {
+        Id = row.Id, ClientId = row.ClientId, EmployeeCode = row.EmployeeCode, FirstName = row.FirstName, LastName = row.LastName, Gender = row.Gender,
+        DateOfJoining = row.DateOfJoining, WorkEmail = row.WorkEmail, Department = row.Department, Designation = row.Designation, Grade = row.Grade,
+        WorkLocationId = row.WorkLocationId, ReportingManagerId = row.ReportingManagerId, PortalAccess = row.PortalAccess, SalaryStructureId = row.SalaryStructureId,
+        AnnualCtc = row.AnnualCtc, SalaryJson = row.SalaryJson, PersonalJson = row.PersonalJson, PaymentJson = row.PaymentJson, IsActive = row.IsActive,
+        SalaryComponents = new Dictionary<string, decimal>(row.SalaryComponents), PersonalDetails = row.PersonalDetails, PaymentDetails = row.PaymentDetails
+    };
+
+    static DateTime EffectiveDate(Employee employee) =>
+        DateTime.TryParse(employee.DateOfJoining, out var date) ? date.Date : DateTime.Today;
+
+    static async Task WriteCurrentInfotypesAsync(MySqlConnection db, Employee employee, string actionType, DateTime effectiveDate, string reason, string changedBy, Employee? before, HashSet<string>? onlyInfotypeCodes = null)
+    {
+        effectiveDate = effectiveDate.Date;
+        var beforeSnapshots = before is null ? new Dictionary<string, string>() : InfotypeSnapshots(before).ToDictionary(item => item.InfotypeCode, item => item.DataJson);
+        var infotypes = InfotypeSnapshots(employee).Where(item => onlyInfotypeCodes is null || onlyInfotypeCodes.Contains(item.InfotypeCode));
+        foreach (var item in infotypes)
+        {
+            if (beforeSnapshots.TryGetValue(item.InfotypeCode, out var oldJson) && oldJson == item.DataJson) continue;
+            await WritePhysicalInfotypeAsync(db, employee, item.InfotypeCode, actionType, effectiveDate, reason, changedBy);
+        }
+        await WriteAuditRowsAsync(db, employee, before, actionType, effectiveDate, changedBy ?? "", onlyInfotypeCodes);
+    }
+
+    static async Task WritePhysicalInfotypeAsync(MySqlConnection db, Employee employee, string infotypeCode, string actionType, DateTime effectiveDate, string reason, string changedBy)
+    {
+        var meta = new { EmployeeId = employee.Id, employee.ClientId, ActionType = actionType, EffectiveFrom = effectiveDate, ChangeReason = reason ?? "", CreatedBy = changedBy ?? "" };
+        switch (infotypeCode)
+        {
+            case "0000":
+                await CloseActiveInfotypeAsync(db, "employee_it0000_actions", employee.Id, effectiveDate);
+                await db.ExecuteAsync(@"INSERT INTO employee_it0000_actions (EmployeeId,ClientId,ActionType,EffectiveFrom,Status,IsActive,DateOfJoining,ChangeReason,CreatedBy)
+VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@IsActive,@DateOfJoining,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.IsActive, employee.DateOfJoining, meta.ChangeReason, meta.CreatedBy });
+                break;
+            case "0001":
+                await CloseActiveInfotypeAsync(db, "employee_it0001_org_assignment", employee.Id, effectiveDate);
+                await db.ExecuteAsync(@"INSERT INTO employee_it0001_org_assignment (EmployeeId,ClientId,ActionType,EffectiveFrom,Status,Department,Designation,Grade,WorkLocationId,ReportingManagerId,WorkEmail,PortalAccess,ChangeReason,CreatedBy)
+VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@Department,@Designation,@Grade,@WorkLocationId,@ReportingManagerId,@WorkEmail,@PortalAccess,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.Department, employee.Designation, employee.Grade, employee.WorkLocationId, employee.ReportingManagerId, employee.WorkEmail, employee.PortalAccess, meta.ChangeReason, meta.CreatedBy });
+                break;
+            case "0002":
+                await CloseActiveInfotypeAsync(db, "employee_it0002_personal_data", employee.Id, effectiveDate);
+                await db.ExecuteAsync(@"INSERT INTO employee_it0002_personal_data (EmployeeId,ClientId,ActionType,EffectiveFrom,Status,FirstName,LastName,Gender,DateOfBirth,Mobile,PanNumber,AadhaarNumber,UanNumber,EsicNumber,ChangeReason,CreatedBy)
+VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@FirstName,@LastName,@Gender,@DateOfBirth,@Mobile,@PanNumber,@AadhaarNumber,@UanNumber,@EsicNumber,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.FirstName, employee.LastName, employee.Gender, employee.PersonalDetails.DateOfBirth, employee.PersonalDetails.Mobile, employee.PersonalDetails.PanNumber, employee.PersonalDetails.AadhaarNumber, employee.PersonalDetails.UanNumber, employee.PersonalDetails.EsicNumber, meta.ChangeReason, meta.CreatedBy });
+                break;
+            case "0006":
+                await CloseActiveInfotypeAsync(db, "employee_it0006_addresses", employee.Id, effectiveDate);
+                await db.ExecuteAsync(@"INSERT INTO employee_it0006_addresses (EmployeeId,ClientId,ActionType,EffectiveFrom,Status,Address,CorrespondenceAddress,PermanentAddress,ChangeReason,CreatedBy)
+VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@Address,@CorrespondenceAddress,@PermanentAddress,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.PersonalDetails.Address, employee.PersonalDetails.CorrespondenceAddress, employee.PersonalDetails.PermanentAddress, meta.ChangeReason, meta.CreatedBy });
+                break;
+            case "0008":
+                await CloseActiveInfotypeAsync(db, "employee_it0008_basic_pay", employee.Id, effectiveDate);
+                await db.ExecuteAsync(@"INSERT INTO employee_it0008_basic_pay (EmployeeId,ClientId,ActionType,EffectiveFrom,Status,SalaryStructureId,AnnualCtc,SalaryJson,ChangeReason,CreatedBy)
+VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@SalaryStructureId,@AnnualCtc,@SalaryJson,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.SalaryStructureId, employee.AnnualCtc, SalaryJson = string.IsNullOrWhiteSpace(employee.SalaryJson) ? "{}" : employee.SalaryJson, meta.ChangeReason, meta.CreatedBy });
+                break;
+            case "0009":
+                await CloseActiveInfotypeAsync(db, "employee_it0009_bank_details", employee.Id, effectiveDate);
+                await db.ExecuteAsync(@"INSERT INTO employee_it0009_bank_details (EmployeeId,ClientId,ActionType,EffectiveFrom,Status,BankName,BankAccountNo,IfscCode,PaymentMode,ChangeReason,CreatedBy)
+VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@BankName,@BankAccountNo,@IfscCode,@PaymentMode,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.PaymentDetails.BankName, employee.PaymentDetails.BankAccountNo, employee.PaymentDetails.IfscCode, employee.PaymentDetails.PaymentMode, meta.ChangeReason, meta.CreatedBy });
+                break;
+        }
+    }
+
+    static Task CloseActiveInfotypeAsync(MySqlConnection db, string tableName, int employeeId, DateTime effectiveDate) =>
+        db.ExecuteAsync($@"UPDATE {tableName}
+SET Status='Historical', EffectiveTo=DATE_SUB(@EffectiveFrom, INTERVAL 1 DAY)
+WHERE EmployeeId=@EmployeeId AND Status='Active' AND EffectiveFrom<=@EffectiveFrom", new { EmployeeId = employeeId, EffectiveFrom = effectiveDate });
+
+    static IEnumerable<(string InfotypeCode, string InfotypeName, string DataJson)> InfotypeSnapshots(Employee employee)
+    {
+        yield return ("0000", "Actions", JsonSerializer.Serialize(new { employee.IsActive, employee.DateOfJoining }));
+        yield return ("0001", "Organizational Assignment", JsonSerializer.Serialize(new { employee.ClientId, employee.Department, employee.Designation, employee.Grade, employee.WorkLocationId, employee.ReportingManagerId, employee.WorkEmail }));
+        yield return ("0002", "Personal Data", JsonSerializer.Serialize(new { employee.FirstName, employee.LastName, employee.Gender, employee.PersonalDetails }));
+        yield return ("0006", "Addresses", JsonSerializer.Serialize(new { employee.PersonalDetails.Address, employee.PersonalDetails.CorrespondenceAddress, employee.PersonalDetails.PermanentAddress }));
+        yield return ("0008", "Basic Pay", JsonSerializer.Serialize(new { employee.SalaryStructureId, employee.AnnualCtc, employee.SalaryComponents }));
+        yield return ("0009", "Bank Details", JsonSerializer.Serialize(employee.PaymentDetails));
+    }
+
+    static async Task WriteAuditRowsAsync(MySqlConnection db, Employee after, Employee? before, string actionType, DateTime effectiveDate, string changedBy, HashSet<string>? onlyInfotypeCodes = null)
+    {
+        effectiveDate = effectiveDate.Date;
+        var oldValues = before is null ? new Dictionary<string, string>() : AuditValues(before);
+        var newValues = AuditValues(after);
+        var rows = newValues.Keys.Union(oldValues.Keys).Select(key => new { Key = key, Old = oldValues.GetValueOrDefault(key, ""), New = newValues.GetValueOrDefault(key, "") }).Where(row => row.Old != row.New && (onlyInfotypeCodes is null || onlyInfotypeCodes.Contains(row.Key.Split(':')[0])))
+            .Select(row => new { after.Id, after.EmployeeCode, ActionType = actionType, InfotypeCode = row.Key.Split(':')[0], FieldName = row.Key.Split(':')[1], OldValue = row.Old, NewValue = row.New, EffectiveFrom = effectiveDate, ChangedBy = changedBy ?? "" })
+            .ToList();
+        if (rows.Count == 0) return;
+        await db.ExecuteAsync(@"INSERT INTO employee_audit_trail (EmployeeId,EmployeeCode,ActionType,InfotypeCode,FieldName,OldValue,NewValue,EffectiveFrom,ChangedBy)
+VALUES (@Id,@EmployeeCode,@ActionType,@InfotypeCode,@FieldName,@OldValue,@NewValue,@EffectiveFrom,@ChangedBy)", rows);
+    }
+
+    static Dictionary<string, string> AuditValues(Employee employee) => new()
+    {
+        ["0000:IsActive"] = employee.IsActive.ToString(),
+        ["0001:Department"] = employee.Department ?? "",
+        ["0001:Designation"] = employee.Designation ?? "",
+        ["0001:Grade"] = employee.Grade ?? "",
+        ["0001:WorkLocationId"] = employee.WorkLocationId.ToString(),
+        ["0001:ReportingManagerId"] = employee.ReportingManagerId.ToString(),
+        ["0002:FirstName"] = employee.FirstName ?? "",
+        ["0002:LastName"] = employee.LastName ?? "",
+        ["0002:Gender"] = employee.Gender ?? "",
+        ["0008:SalaryStructureId"] = employee.SalaryStructureId ?? "",
+        ["0008:AnnualCtc"] = employee.AnnualCtc.ToString("0.##"),
+        ["0008:SalaryJson"] = employee.SalaryJson ?? "{}",
+        ["0009:BankName"] = employee.PaymentDetails.BankName ?? "",
+        ["0009:BankAccountNo"] = employee.PaymentDetails.BankAccountNo ?? "",
+        ["0009:IfscCode"] = employee.PaymentDetails.IfscCode ?? "",
+        ["0009:PaymentMode"] = employee.PaymentDetails.PaymentMode ?? ""
+    };
+
     static async Task<int> CountSafeAsync(MySqlConnection db, string table, string column, int id, string filter) { try { return await db.ExecuteScalarAsync<int>($"SELECT COUNT(*) FROM {table} WHERE {column}=@id {filter}", new { id }); } catch { return 0; } }
     static void ValidateMaster(string type, string value, Dictionary<string, HashSet<string>> masters, List<string> errors, int row, string? label = null) { if (!string.IsNullOrWhiteSpace(value) && (!masters.TryGetValue(type, out var values) || !values.Contains(value))) errors.Add($"Row {row}: {label ?? type} \"{value}\" is not in Dropdown Masters."); }
     static bool DateOk(string value) => string.IsNullOrWhiteSpace(value) || DateTime.TryParseExact(value, "yyyy-MM-dd", null, System.Globalization.DateTimeStyles.None, out _);
