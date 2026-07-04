@@ -41,6 +41,7 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddSingleton<OrganizationRepository>();
 builder.Services.AddSingleton<SettingsRepository>();
+builder.Services.AddSingleton<ClientBillingRepository>();
 builder.Services.AddSingleton<EmployeeRepository>();
 builder.Services.AddSingleton<PayRunRepository>();
 builder.Services.AddSingleton<AuthRepository>();
@@ -358,6 +359,34 @@ app.MapPost("/api/setup", async (SettingsRepository repository, JsonElement setu
     return Results.Ok(setup);
 })
 .WithName("SavePayrollSetup")
+.WithOpenApi();
+
+app.MapGet("/api/client-billing/module", async (ClientBillingRepository repository) =>
+    Results.Ok(await repository.GetModuleAsync()))
+.WithName("GetClientBillingModule")
+.WithOpenApi();
+
+app.MapPost("/api/client-billing/module", async (ClientBillingRepository repository, ClientBillingModule module, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    await repository.SaveModuleAsync(module);
+    return Results.NoContent();
+})
+.WithName("SaveClientBillingModule")
+.WithOpenApi();
+
+app.MapGet("/api/client-billing/configurations", async (ClientBillingRepository repository) =>
+    Results.Ok(await repository.GetAsync()))
+.WithName("GetClientBillingConfigurations")
+.WithOpenApi();
+
+app.MapPost("/api/client-billing/configurations", async (ClientBillingRepository repository, ClientBillingConfiguration row, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (id, error) = await repository.SaveAsync(row);
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(new { id }) : Results.BadRequest(new { error });
+})
+.WithName("SaveClientBillingConfiguration")
 .WithOpenApi();
 
 app.MapGet("/api/tax-engine", async (TaxEngineRepository repository, HttpContext context) => HasPermission(context, "settings.manage") || HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403));
@@ -984,6 +1013,7 @@ static async Task RunDatabaseSetupAsync(IServiceProvider services, IConfiguratio
     var scopedServices = scope.ServiceProvider;
 
     await scopedServices.GetRequiredService<OrganizationRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<ClientBillingRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<EmployeeRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<PayRunRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<AuthRepository>().InitializeAsync();

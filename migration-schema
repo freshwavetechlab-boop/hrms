@@ -166,3 +166,40 @@ CREATE TABLE IF NOT EXISTS employee_it0009_bank_details (
     INDEX IX_IT0009_Employee (EmployeeId, Status, EffectiveFrom),
     INDEX IX_IT0009_Client (ClientId, Status)
 );
+
+2026-07-03 - Client billing configuration
+
+CREATE TABLE IF NOT EXISTS client_billing_settings (
+    Id TINYINT PRIMARY KEY,
+    IsEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS client_billing_configurations (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    WorkLocationId INT NULL,
+    RateCardType VARCHAR(80) NOT NULL,
+    RateType VARCHAR(30) NOT NULL,
+    Value DECIMAL(18,4) NOT NULL DEFAULT 0,
+    TaxInclusive BOOLEAN NOT NULL DEFAULT FALSE,
+    GstRatePercent DECIMAL(8,4) NOT NULL DEFAULT 18,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX IX_ClientBilling_Client (ClientId, IsActive, EffectiveFrom),
+    INDEX IX_ClientBilling_Location (WorkLocationId, IsActive, EffectiveFrom),
+    INDEX IX_ClientBilling_Type (RateCardType, RateType)
+);
+
+2026-07-04 - Remove client billing invoice module
+
+DROP TABLE IF EXISTS client_billing_invoice_lines;
+DROP TABLE IF EXISTS client_billing_invoices;
+
+2026-07-04 - Client billing GST rate configuration
+
+ALTER TABLE client_billing_configurations
+ADD COLUMN IF NOT EXISTS GstRatePercent DECIMAL(8,4) NOT NULL DEFAULT 18 AFTER TaxInclusive;

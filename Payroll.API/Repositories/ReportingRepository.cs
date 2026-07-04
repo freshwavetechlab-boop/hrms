@@ -7,13 +7,14 @@ namespace Payroll.API.Repositories;
 public class ReportingRepository(IConfiguration configuration)
 {
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
-
     public async Task<ReportResult> RunAsync(string code, ReportFilter filter)
     {
         await using var db = Connection(); await db.OpenAsync();
         filter.Month = string.IsNullOrWhiteSpace(filter.Month) ? DateTime.Today.ToString("yyyy-MM") : filter.Month;
         filter.FromDate = string.IsNullOrWhiteSpace(filter.FromDate) ? $"{filter.Month}-01" : filter.FromDate;
         filter.ToDate = string.IsNullOrWhiteSpace(filter.ToDate) ? DateTime.Parse($"{filter.Month}-01").AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd") : filter.ToDate;
+        if (code == "client-billing-report")
+            return await RunClientBillingReportAsync(db, filter);
         var sql = code switch
         {
             "salary-register" => @"SELECT r.PayPeriod AS `Pay Period`, p.EmployeeCode AS `Employee Code`, p.EmployeeName AS Employee, p.Department, p.PresentDays AS `Present Days`, p.PayableDays AS `Payable Days`, p.GrossPay AS `Gross Pay`, p.StatutoryDeductions AS `Statutory Deductions`, p.OneTimeDeductions AS `Other Deductions`, p.NetPay AS `Net Pay`, p.PaymentStatus AS `Payment Status` FROM payrunemployees p JOIN payruns r ON r.Id=p.PayRunId WHERE p.ClientId=@ClientId AND r.PayPeriod=@Month AND p.IsSkipped=FALSE ORDER BY r.PayPeriod DESC,p.EmployeeCode",
@@ -118,4 +119,228 @@ ORDER BY r.CreatedAt DESC",
         var rows = (await db.QueryAsync(sql, filter)).Select(row => ((IDictionary<string, object>)row).ToDictionary(x => x.Key, x => (object?)x.Value)).ToList();
         return new ReportResult { Title = code, Columns = rows.FirstOrDefault()?.Keys.ToList() ?? [], Rows = rows };
     }
+
+    private static async Task<ReportResult> RunClientBillingReportAsync(MySqlConnection db, ReportFilter filter)
+    {
+        var periodDate = DateTime.TryParse($"{filter.Month}-01", out var parsed) ? parsed.Date : DateTime.Today;
+        var employees = (await db.QueryAsync<BillingEmployeeRow>(@"
+SELECT r.Id AS PayRunId,
+       r.PayPeriod,
+       r.RunName,
+       r.Status,
+       p.Id AS PayRunEmployeeId,
+       p.EmployeeId,
+       p.EmployeeCode,
+       p.EmployeeName,
+       p.Department,
+       p.PresentDays,
+       p.PayableDays,
+       p.GrossPay,
+       p.StatutoryDeductions,
+       p.OneTimeEarnings,
+       p.OneTimeDeductions,
+       p.NetPay,
+       c.Name AS ClientName,
+       COALESCE(e.WorkLocationId,0) AS WorkLocationId,
+       COALESCE(w.Name,'All locations') AS WorkLocationName
+FROM payruns r
+JOIN payrunemployees p ON p.PayRunId=r.Id AND p.IsSkipped=FALSE
+LEFT JOIN employees e ON e.Id=p.EmployeeId
+LEFT JOIN clients c ON c.Id=r.ClientId
+LEFT JOIN worklocations w ON w.Id=e.WorkLocationId
+WHERE r.ClientId=@ClientId
+  AND r.PayPeriod=@Month
+  AND r.Status IN ('Draft','Pending Approval','Approved','Partially Paid','Paid')
+  AND (@Department IS NULL OR p.Department=@Department)
+  AND (@WorkLocationId IS NULL OR e.WorkLocationId=@WorkLocationId)
+ORDER BY r.PayPeriod DESC, r.Id DESC, w.Name, p.EmployeeCode;", filter)).ToList();
+
+        if (employees.Count == 0)
+            return new ReportResult { Title = "Client Billing Report", Columns = BaseBillingColumns(), Rows = [] };
+
+        var employeeRowIds = employees.Select(row => row.PayRunEmployeeId).Distinct().ToArray();
+        var lines = (await db.QueryAsync<BillingComponentLine>(@"
+SELECT PayRunEmployeeId, ComponentCode, Name, Category, Amount, SortOrder
+FROM payrunemployeelines
+WHERE PayRunEmployeeId IN @EmployeeRowIds
+ORDER BY SortOrder, ComponentCode;", new { EmployeeRowIds = employeeRowIds })).ToList();
+        var linesByEmployeeRow = lines.GroupBy(row => row.PayRunEmployeeId).ToDictionary(group => group.Key, group => group.ToList());
+        var componentColumns = lines
+            .GroupBy(line => new { line.Category, line.ComponentCode, line.Name })
+            .Select(group => new BillingComponentColumn(group.Key.Category, group.Key.ComponentCode, group.Key.Name, group.Min(line => line.SortOrder), ComponentColumnLabel(group.Key.Category, group.Key.ComponentCode, group.Key.Name)))
+            .OrderBy(column => ComponentGroupOrder(column.Category)).ThenBy(column => column.SortOrder).ThenBy(column => column.Label)
+            .ToList();
+
+        var configs = (await db.QueryAsync<BillingConfigRow>(@"
+SELECT Id, ClientId, WorkLocationId, RateCardType, RateType, Value, TaxInclusive, GstRatePercent, EffectiveFrom, EffectiveTo
+FROM client_billing_configurations
+WHERE ClientId=@ClientId
+  AND IsActive=TRUE
+  AND EffectiveFrom<=@PeriodDate
+  AND (EffectiveTo IS NULL OR EffectiveTo>=@PeriodDate)
+ORDER BY CASE WHEN WorkLocationId IS NULL THEN 1 ELSE 0 END, RateCardType, Id;", new { filter.ClientId, PeriodDate = periodDate })).ToList();
+
+        var columns = BaseBillingColumns().Concat(componentColumns.Select(column => column.Label)).Concat([
+            "Gross Pay",
+            "Statutory Deductions",
+            "Other Deductions",
+            "Net Pay",
+            "Billing Base Total",
+            "Billing Rules",
+            "Configured Rate",
+            "Tax Basis",
+            "Billing Amount Before GST",
+            "GST Rate %",
+            "GST Amount",
+            "Final Billable Amount"
+        ]).ToList();
+
+        var rows = new List<Dictionary<string, object?>>();
+        foreach (var employee in employees)
+        {
+            var employeeLines = linesByEmployeeRow.GetValueOrDefault(employee.PayRunEmployeeId) ?? [];
+            var matchingConfigs = configs.Where(config => !config.WorkLocationId.HasValue || config.WorkLocationId.Value == employee.WorkLocationId).ToList();
+            var billing = CalculateBilling(employee, employeeLines, matchingConfigs);
+            var row = new Dictionary<string, object?>
+            {
+                ["Pay Run"] = string.IsNullOrWhiteSpace(employee.RunName) ? $"Run #{employee.PayRunId}" : employee.RunName,
+                ["Pay Run Id"] = employee.PayRunId,
+                ["Pay Period"] = employee.PayPeriod,
+                ["Status"] = employee.Status,
+                ["Client"] = employee.ClientName,
+                ["Work Location"] = employee.WorkLocationName,
+                ["Employee Code"] = employee.EmployeeCode,
+                ["Employee"] = employee.EmployeeName,
+                ["Department"] = employee.Department,
+                ["Present Days"] = employee.PresentDays,
+                ["Payable Days"] = employee.PayableDays
+            };
+
+            foreach (var column in componentColumns)
+            {
+                row[column.Label] = employeeLines
+                    .Where(line => line.ComponentCode == column.ComponentCode && line.Category == column.Category)
+                    .Sum(line => line.Amount);
+            }
+
+            row["Gross Pay"] = employee.GrossPay;
+            row["Statutory Deductions"] = employee.StatutoryDeductions;
+            row["Other Deductions"] = employee.OneTimeDeductions;
+            row["Net Pay"] = employee.NetPay;
+            row["Billing Base Total"] = billing.BaseTotal;
+            row["Billing Rules"] = billing.RuleSummary;
+            row["Configured Rate"] = billing.RateSummary;
+            row["Tax Basis"] = billing.TaxBasisSummary;
+            row["Billing Amount Before GST"] = billing.AmountBeforeGst;
+            row["GST Rate %"] = billing.GstRateSummary;
+            row["GST Amount"] = billing.GstAmount;
+            row["Final Billable Amount"] = billing.FinalAmount;
+            rows.Add(row);
+        }
+
+        return new ReportResult { Title = "Client Billing Report", Columns = columns, Rows = rows };
+    }
+
+    private static List<string> BaseBillingColumns() => [
+        "Pay Run",
+        "Pay Run Id",
+        "Pay Period",
+        "Status",
+        "Client",
+        "Work Location",
+        "Employee Code",
+        "Employee",
+        "Department",
+        "Present Days",
+        "Payable Days"
+    ];
+
+    private static BillingAmount CalculateBilling(BillingEmployeeRow employee, List<BillingComponentLine> lines, List<BillingConfigRow> configs)
+    {
+        decimal baseTotal = 0;
+        decimal beforeGst = 0;
+        decimal gst = 0;
+        decimal final = 0;
+        var rules = new List<string>();
+        var rates = new List<string>();
+        var taxBasis = new List<string>();
+
+        foreach (var config in configs)
+        {
+            var baseAmount = BaseAmountFor(config.RateCardType, employee, lines);
+            var configuredAmount = config.RateType.Equals("Percentage", StringComparison.OrdinalIgnoreCase)
+                ? decimal.Round(baseAmount * config.Value / 100m, 2)
+                : decimal.Round(config.Value, 2);
+            var gstRate = Math.Max(0, config.GstRatePercent);
+            var lineBeforeGst = config.TaxInclusive ? decimal.Round(configuredAmount / (1 + gstRate / 100m), 2) : configuredAmount;
+            var lineGst = config.TaxInclusive ? decimal.Round(configuredAmount - lineBeforeGst, 2) : decimal.Round(lineBeforeGst * gstRate / 100m, 2);
+            baseTotal += baseAmount;
+            beforeGst += lineBeforeGst;
+            gst += lineGst;
+            final += config.TaxInclusive ? configuredAmount : lineBeforeGst + lineGst;
+            rules.Add(config.RateCardType);
+            rates.Add(config.RateType.Equals("Percentage", StringComparison.OrdinalIgnoreCase) ? $"{config.Value:0.####}% on {config.RateCardType}" : $"{config.Value:0.##} fixed {config.RateCardType}");
+            taxBasis.Add(config.TaxInclusive ? "Inclusive" : "Excluding");
+        }
+
+        return new BillingAmount(decimal.Round(baseTotal, 2), string.Join(", ", rules.Distinct()), string.Join(", ", rates), string.Join(", ", taxBasis.Distinct()), string.Join(", ", configs.Select(config => $"{config.GstRatePercent:0.####}%").Distinct()), decimal.Round(beforeGst, 2), decimal.Round(gst, 2), decimal.Round(final, 2));
+    }
+
+    private static decimal BaseAmountFor(string rateCardType, BillingEmployeeRow employee, List<BillingComponentLine> lines)
+    {
+        var key = (rateCardType ?? "").ToLowerInvariant();
+        if (key.Contains("reimbursement"))
+            return SumLines(lines, "reimburs");
+        if (key.Contains("bonus"))
+        {
+            var bonus = SumLines(lines, "bonus");
+            return bonus > 0 ? bonus : employee.OneTimeEarnings;
+        }
+        if (key.Contains("statutory"))
+        {
+            var statutory = lines.Where(line => ContainsAny(line, "statutory", "employer contribution", "pf", "esi", "pt", "lwf")).Sum(line => line.Amount);
+            return statutory > 0 ? statutory : employee.StatutoryDeductions;
+        }
+        if (key.Contains("service"))
+            return employee.GrossPay + employee.OneTimeEarnings;
+        return employee.GrossPay + employee.OneTimeEarnings + employee.StatutoryDeductions;
+    }
+
+    private static decimal SumLines(List<BillingComponentLine> lines, string token) =>
+        lines.Where(line => ContainsAny(line, token)).Sum(line => line.Amount);
+
+    private static bool ContainsAny(BillingComponentLine line, params string[] tokens)
+    {
+        var text = $"{line.Category} {line.ComponentCode} {line.Name}".ToLowerInvariant();
+        return tokens.Any(text.Contains);
+    }
+
+    private static string ComponentColumnLabel(string category, string code, string name)
+    {
+        var prefix = category switch
+        {
+            "Earning" => "E",
+            "Deduction" => "D",
+            "Reimbursement" => "R",
+            "Employer Contribution" => "ER",
+            _ => string.IsNullOrWhiteSpace(category) ? "Component" : category
+        };
+        var component = !string.IsNullOrWhiteSpace(code) ? code : name;
+        return $"{prefix}: {component}";
+    }
+
+    private static int ComponentGroupOrder(string category) => category switch
+    {
+        "Earning" => 1,
+        "Reimbursement" => 2,
+        "Employer Contribution" => 3,
+        "Deduction" => 4,
+        _ => 9
+    };
+
+    private sealed record BillingEmployeeRow(int PayRunId, string PayPeriod, string RunName, string Status, int PayRunEmployeeId, int EmployeeId, string EmployeeCode, string EmployeeName, string Department, decimal PresentDays, decimal PayableDays, decimal GrossPay, decimal StatutoryDeductions, decimal OneTimeEarnings, decimal OneTimeDeductions, decimal NetPay, string ClientName, int WorkLocationId, string WorkLocationName);
+    private sealed record BillingComponentLine(int PayRunEmployeeId, string ComponentCode, string Name, string Category, decimal Amount, int SortOrder);
+    private sealed record BillingConfigRow(long Id, int ClientId, int? WorkLocationId, string RateCardType, string RateType, decimal Value, bool TaxInclusive, decimal GstRatePercent, DateTime EffectiveFrom, DateTime? EffectiveTo);
+    private sealed record BillingComponentColumn(string Category, string ComponentCode, string Name, int SortOrder, string Label);
+    private sealed record BillingAmount(decimal BaseTotal, string RuleSummary, string RateSummary, string TaxBasisSummary, string GstRateSummary, decimal AmountBeforeGst, decimal GstAmount, decimal FinalAmount);
 }

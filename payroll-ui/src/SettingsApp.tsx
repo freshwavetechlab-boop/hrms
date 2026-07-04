@@ -287,7 +287,13 @@ export default function SettingsApp() {
     </>
     if (mainModule === 'LeaveAttendance') return <>{tasks}<Link {...navAttrs('Attendance Review')} className="active" to="/attendance" onClick={() => navigateFromMenu(() => setModule('LeaveAttendance'))}>Attendance Review<small>Pre-payroll</small></Link></>
     if (mainModule === 'Security') return <>{tasks}{securityMenus.map(item => <button {...navAttrs(item)} className={securityTab === item ? 'active' : ''} type="button" onClick={() => navigateFromMenu(() => setSecurityModuleTab(item))} key={item}>{item}</button>)}</>
-    if (mainModule === 'Reports') return <>{tasks}{reportingMenus.map(item => <div className={`report-nav-group ${collapsedFlyout === `reports-${slug(item)}` ? 'flyout-open' : ''}`} key={item}><button {...navAttrs(item)} className={reportingTab === item ? 'active' : ''} type="button" onClick={() => toggleNavGroup(`reports-${slug(item)}`, () => setReportingModuleTab(item))}>{item}</button>{reportingTab === item && <div className="report-nav-submenu">{reportItems(item).map(report => <button {...navAttrs(report.name)} className={reportingReport.name === report.name ? 'active' : ''} type="button" onClick={() => navigateFromMenu(() => setReportingReport(report))} key={report.name}>{report.name}</button>)}</div>}</div>)}</>
+    if (mainModule === 'Reports') return <>{tasks}{reportingMenus.map(item => {
+      const expanded = reportingTab === item
+      return <div className={`report-nav-group ${expanded ? 'expanded' : ''} ${collapsedFlyout === `reports-${slug(item)}` ? 'flyout-open' : ''}`} key={item}>
+        <button {...navAttrs(item)} className={expanded ? 'active' : ''} type="button" aria-expanded={expanded} onClick={() => toggleNavGroup(`reports-${slug(item)}`, () => setReportingModuleTab(item))}><span>{item}</span><small>{expanded ? '-' : '+'}</small></button>
+        {expanded && <div className="report-nav-submenu">{reportItems(item).map(report => <button {...navAttrs(report.name)} className={reportingReport.name === report.name ? 'active' : ''} type="button" onClick={() => navigateFromMenu(() => setReportingReport(report))} key={report.name}>{report.name}</button>)}</div>}
+      </div>
+    })}</>
     if (mainModule === 'Workflows') return workflowMenus.map(item => <button {...navAttrs(item)} className={workflowTab === item ? 'active' : ''} type="button" onClick={() => navigateFromMenu(() => setWorkflowModuleTab(item))} key={item}>{item}</button>)
     return <button {...navAttrs('Employee Master')} className="active" type="button" onClick={() => navigateFromMenu(() => setModule('Employees'))}>Employee Master<small>Core HR</small></button>
   }

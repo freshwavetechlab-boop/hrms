@@ -1,4 +1,4 @@
-import type { Client, Drop, Employee, EmployeeActionRequest, EmployeeAuditTrail, EmployeeInfotypeRecord, Org, Setup, WorkLocation } from '../types/payroll'
+import type { Client, ClientBillingConfiguration, ClientBillingModule, Drop, Employee, EmployeeActionRequest, EmployeeAuditTrail, EmployeeInfotypeRecord, Org, Setup, WorkLocation } from '../types/payroll'
 import { deleteJson, getBlob, getJson, postForm, postJson, type ApiOptions } from './apiClient'
 
 export type BulkImportStatus = { jobId: string; state: 'Queued' | 'Processing' | 'Completed' | 'Failed'; totalRows: number; completedRows: number; inserted: number; updated: number; errors: string[] }
@@ -8,6 +8,10 @@ export const getOrganization = (fallback: Org) => getJson<Org>('/api/organizatio
 export const saveOrganization = (organization: Org) => postJson('/api/organization', organization, organization)
 export const getSetup = (fallback: Setup) => getJson<Setup>('/api/setup', fallback)
 export const saveSetup = (setup: Setup, options: ApiOptions = {}) => postJson('/api/setup', setup, setup, options)
+export const getClientBillingModule = () => getJson<ClientBillingModule>('/api/client-billing/module', { isEnabled: false })
+export const saveClientBillingModule = (module: ClientBillingModule) => postJson('/api/client-billing/module', module, module, { toast: false })
+export const getClientBillingConfigurations = () => getJson<ClientBillingConfiguration[]>('/api/client-billing/configurations', [])
+export const saveClientBillingConfiguration = (row: ClientBillingConfiguration) => postJson('/api/client-billing/configurations', row, { id: row.id }, { toast: false })
 export const saveClient = (client: Client, options: ApiOptions = {}) => postJson('/api/clients', client, { id: client.id }, options)
 export const getWorkLocations = () => getJson<WorkLocation[]>('/api/work-locations', [])
 export const saveWorkLocation = (location: WorkLocation) => postJson('/api/work-locations', location, { id: location.id })
