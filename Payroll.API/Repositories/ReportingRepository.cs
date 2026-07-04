@@ -17,6 +17,21 @@ public class ReportingRepository(IConfiguration configuration)
         var sql = code switch
         {
             "salary-register" => @"SELECT r.PayPeriod AS `Pay Period`, p.EmployeeCode AS `Employee Code`, p.EmployeeName AS Employee, p.Department, p.PresentDays AS `Present Days`, p.PayableDays AS `Payable Days`, p.GrossPay AS `Gross Pay`, p.StatutoryDeductions AS `Statutory Deductions`, p.OneTimeDeductions AS `Other Deductions`, p.NetPay AS `Net Pay`, p.PaymentStatus AS `Payment Status` FROM payrunemployees p JOIN payruns r ON r.Id=p.PayRunId WHERE p.ClientId=@ClientId AND r.PayPeriod=@Month AND p.IsSkipped=FALSE ORDER BY r.PayPeriod DESC,p.EmployeeCode",
+            "bank-transfer-report" => @"SELECT
+p.EmployeeCode AS `Emp Code`,
+p.EmployeeName AS Employee,
+p.Department,
+COALESCE(pay.BankAccountNo,'') AS `Bank A/c #`,
+COALESCE(pd.PanNumber,'') AS `Pan #`,
+COALESCE(pay.IfscCode,'') AS `IFSC Code`,
+ROUND(p.NetPay,2) AS `Net Salary`
+FROM payrunemployees p
+JOIN payruns r ON r.Id=p.PayRunId
+LEFT JOIN employeepersonaldetails pd ON pd.EmployeeId=p.EmployeeId
+LEFT JOIN employeepaymentdetails pay ON pay.EmployeeId=p.EmployeeId
+WHERE p.ClientId=@ClientId AND r.PayPeriod=@Month AND p.IsSkipped=FALSE
+AND (@Department IS NULL OR p.Department=@Department)
+ORDER BY p.EmployeeCode",
             "net-pay-estimate" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee,
 ROUND(COALESCE(s.Gross,0),2) AS `Gross Estimate`,
 ROUND(COALESCE(s.Deductions,0)+COALESCE(p.EsicEmployee,0)+COALESCE(p.PtLwfWorkmenComp,0)+COALESCE(p.Tds,0)+COALESCE(p.Recovery,0),2) AS Deductions,
