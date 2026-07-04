@@ -1,6 +1,7 @@
 using Dapper;
 using MySqlConnector;
 using Payroll.API.Models;
+using System.Text.Json;
 
 namespace Payroll.API.Repositories;
 
@@ -14,10 +15,10 @@ public class ReportingRepository(IConfiguration configuration)
         filter.Month = string.IsNullOrWhiteSpace(filter.Month) ? DateTime.Today.ToString("yyyy-MM") : filter.Month;
         filter.FromDate = string.IsNullOrWhiteSpace(filter.FromDate) ? $"{filter.Month}-01" : filter.FromDate;
         filter.ToDate = string.IsNullOrWhiteSpace(filter.ToDate) ? DateTime.Parse($"{filter.Month}-01").AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd") : filter.ToDate;
+        if (code == "salary-register") return await SalaryRegisterAsync(db, filter);
         var sql = code switch
         {
-            "salary-register" => @"SELECT r.PayPeriod AS `Pay Period`, p.EmployeeCode AS `Employee Code`, p.EmployeeName AS Employee, p.Department, p.PresentDays AS `Present Days`, p.PayableDays AS `Payable Days`, p.GrossPay AS `Gross Pay`, p.StatutoryDeductions AS `Statutory Deductions`, p.OneTimeDeductions AS `Other Deductions`, p.NetPay AS `Net Pay`, p.PaymentStatus AS `Payment Status` FROM payrunemployees p JOIN payruns r ON r.Id=p.PayRunId WHERE p.ClientId=@ClientId AND r.PayPeriod=@Month AND p.IsSkipped=FALSE ORDER BY r.PayPeriod DESC,p.EmployeeCode",
-            "bank-transfer-report" => @"SELECT
+            "bank-advice-report" => @"SELECT
 p.EmployeeCode AS `Emp Code`,
 p.EmployeeName AS Employee,
 p.Department,
@@ -132,5 +133,69 @@ ORDER BY r.CreatedAt DESC",
         };
         var rows = (await db.QueryAsync(sql, filter)).Select(row => ((IDictionary<string, object>)row).ToDictionary(x => x.Key, x => (object?)x.Value)).ToList();
         return new ReportResult { Title = code, Columns = rows.FirstOrDefault()?.Keys.ToList() ?? [], Rows = rows };
+    }
+
+    private static async Task<ReportResult> SalaryRegisterAsync(MySqlConnection db, ReportFilter filter)
+    {
+        var data = (await db.QueryAsync(@"SELECT r.PayPeriod,p.EmployeeCode,p.EmployeeName,p.Department,
+IF(COALESCE(e.IsActive,0)=1,'Active','Inactive') Status,
+p.PresentDays,p.PayableDays,p.GrossPay,p.StatutoryDeductions,p.OneTimeDeductions,
+p.MonthlyGross,p.NetPay,p.PaymentStatus,p.DetailsJson
+FROM payrunemployees p
+JOIN payruns r ON r.Id=p.PayRunId
+LEFT JOIN employees e ON e.Id=p.EmployeeId
+WHERE p.ClientId=@ClientId AND r.PayPeriod=@Month AND p.IsSkipped=FALSE
+ORDER BY r.PayPeriod DESC,p.EmployeeCode", filter)).ToList();
+        var componentColumns = new List<string>();
+        var rows = new List<Dictionary<string, object?>>();
+        foreach (var item in data)
+        {
+            var row = (IDictionary<string, object>)item;
+            var components = Components(row.TryGetValue("DetailsJson", out var json) ? json?.ToString() : "");
+            foreach (var name in components.Keys)
+                if (!componentColumns.Contains(name)) componentColumns.Add(name);
+            rows.Add(new()
+            {
+                ["Pay Period"] = row["PayPeriod"],
+                ["Employee Code"] = row["EmployeeCode"],
+                ["Employee"] = row["EmployeeName"],
+                ["Status"] = row["Status"],
+                ["Department"] = row["Department"],
+                ["Present Days"] = row["PresentDays"],
+                ["Payable Days"] = row["PayableDays"],
+                ["Gross Pay"] = row["GrossPay"],
+                ["Statutory Deductions"] = row["StatutoryDeductions"],
+                ["Other Deductions"] = row["OneTimeDeductions"],
+                ["Monthly CTC"] = row["MonthlyGross"],
+                ["Net Pay"] = row["NetPay"],
+                ["Payment Status"] = row["PaymentStatus"],
+                ["__components"] = components
+            });
+        }
+        var columns = new[] { "Pay Period", "Employee Code", "Employee", "Status", "Department", "Present Days", "Payable Days", "Gross Pay" }
+            .Concat(componentColumns)
+            .Concat(["Statutory Deductions", "Other Deductions", "Monthly CTC", "Net Pay", "Payment Status"])
+            .ToList();
+        foreach (var row in rows)
+        {
+            var components = (Dictionary<string, decimal>)row["__components"]!;
+            row.Remove("__components");
+            foreach (var column in componentColumns) row[column] = components.GetValueOrDefault(column);
+        }
+        return new ReportResult { Title = "salary-register", Columns = columns, Rows = rows };
+    }
+
+    private static Dictionary<string, decimal> Components(string? detailsJson)
+    {
+        var result = new Dictionary<string, decimal>();
+        if (string.IsNullOrWhiteSpace(detailsJson)) return result;
+        using var doc = JsonDocument.Parse(detailsJson);
+        foreach (var item in doc.RootElement.EnumerateArray())
+        {
+            var name = item.TryGetProperty("Name", out var n) ? n.GetString() : null;
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            result[name] = item.TryGetProperty("amount", out var a) && a.TryGetDecimal(out var value) ? value : 0;
+        }
+        return result;
     }
 }

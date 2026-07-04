@@ -10,7 +10,7 @@ import SearchSelect from '../components/SearchSelect'
 export type ReportingMenu = (typeof reportingMenus)[number]
 export type ReportDefinition = { name: string; code?: string }
 const catalogue: Record<ReportingMenu, ReportDefinition[]> = {
-  'Payroll Reports': [{ name: 'Salary Register', code: 'salary-register' }, { name: 'Payslip Register', code: 'payslip-register' }, { name: 'Payroll Summary', code: 'payroll-summary' }, { name: 'Department Payroll Cost', code: 'headcount' }, { name: 'Location Payroll Cost', code: 'location-cost' }, { name: 'Employee Wise Salary', code: 'salary-register' }, { name: 'Net Pay Report', code: 'net-pay-estimate' }, { name: 'Bank Transfer Report', code: 'bank-transfer-report' }],
+  'Payroll Reports': [{ name: 'Salary Register', code: 'salary-register' }, { name: 'Payslip Register', code: 'payslip-register' }, { name: 'Payroll Summary', code: 'payroll-summary' }, { name: 'Department Payroll Cost', code: 'headcount' }, { name: 'Location Payroll Cost', code: 'location-cost' }, { name: 'Employee Wise Salary', code: 'salary-register' }, { name: 'Net Pay Report', code: 'net-pay-estimate' }, { name: 'Bank Advice Report', code: 'bank-advice-report' }],
   'Employee Reports': [{ name: 'Employee Master Report', code: 'employee-master' }, { name: 'Employee Directory', code: 'employee-master' }, { name: 'Active Employees', code: 'employee-master' }, { name: 'New Joiners', code: 'new-joiners' }, { name: 'Employee Tenure Report', code: 'tenure' }, { name: 'Employee Demographics' }],
   'Attendance Reports': [{ name: 'Daily Attendance', code: 'daily-attendance' }, { name: 'Monthly Attendance', code: 'monthly-attendance' }, { name: 'Late Coming Report', code: 'attendance-exception' }, { name: 'Attendance Exception Report', code: 'attendance-exception' }, { name: 'Attendance Trend Analysis', code: 'attendance-trend' }],
   'Leave Reports': [{ name: 'Leave Balance Report', code: 'leave-balance' }, { name: 'Leave Accrual Report', code: 'leave-accrual' }, { name: 'Leave Utilization Report', code: 'leave-utilization' }, { name: 'Leave Without Pay Report', code: 'lwp-balance' }, { name: 'Leave Approval Status', code: 'leave-approval-status' }],
@@ -36,7 +36,7 @@ export default function ReportingPage({ activeMenu, activeReport }: { activeMenu
   const [clients, setClients] = useState<Client[]>([]), [clientId, setClientId] = useState(0), [result, setResult] = useState<ReportResult>({ title: '', columns: [], rows: [] })
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7)), [fromDate, setFromDate] = useState(`${new Date().toISOString().slice(0, 7)}-01`), [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10))
   const periodCodes = ['daily-attendance', 'attendance-trend', 'leave-utilization', 'leave-approval-status']
-  const monthCodes = ['monthly-attendance', 'attendance-exception', 'salary-register', 'pt-register', 'bank-transfer-report']
+  const monthCodes = ['monthly-attendance', 'attendance-exception', 'salary-register', 'pt-register', 'bank-advice-report']
   const showPeriod = !!activeReport.code && periodCodes.includes(activeReport.code)
   const showMonth = !!activeReport.code && monthCodes.includes(activeReport.code)
   useEffect(() => { void getClients().then(rows => { const active = rows.filter(x => x.isActive); setClients(active); setClientId(current => current || active[0]?.id || 0) }) }, [])
