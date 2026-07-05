@@ -160,8 +160,8 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
             { key: 'isActive', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive' }
           ]} actions={row => <Space size={6}><Button htmlType="button" size="small" type="primary" onClick={() => edit(row)}>Edit</Button><Button htmlType="button" size="small" danger onClick={() => void remove(row)}>Delete</Button></Space>} />
         </AntCard>
-    <Drawer className="settings-master-drawer" title={form.id ? 'Edit attendance policy' : 'Add attendance policy'} open={drawerOpen} width={720} onClose={() => setDrawerOpen(false)} destroyOnClose>
-      <Form className="attendance-group-form" component={false} layout="vertical" requiredMark={false}>
+    <Drawer className="settings-master-drawer attendance-policy-master-drawer" title={<div className="settings-drawer-title"><span>Attendance policy</span><h3>{form.id ? 'Edit attendance policy' : 'Add attendance policy'}</h3><p>Define client, location, employee scope, weekly off, cycle, and payroll report day.</p></div>} open={drawerOpen} width={760} onClose={() => setDrawerOpen(false)} destroyOnClose>
+      <Form className="attendance-group-form settings-quick-form" component="div" layout="vertical" requiredMark={false}>
         <Form.Item label="Policy name" required><Input value={form.name} onChange={event => set('name', event.target.value)} placeholder="Consultants - RECL Site A" /></Form.Item>
         <Form.Item label="Client" required><SearchSelect value={form.clientId} onChange={value => applyScope({ clientId: Number(value), id: 0 })} options={clients.map(client => ({ value: client.id, label: client.name }))} /></Form.Item>
         <Form.Item label="Work Location" required><SearchSelect value={form.workLocationId} onChange={applyWorkLocation} options={selectOptions(clientLocations.map(location => ({ value: location.id, label: `${location.name} - ${location.clientName || clients.find(client => client.id === location.clientId)?.name || 'Client'} - ${location.city || location.state || 'Location'}` })), 'Select work location', 0)} /></Form.Item>

@@ -1,15 +1,62 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
+import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Col, Form, Input, InputNumber, Row, Space } from 'antd'
 import { drop0, location0 } from '../data/payrollDefaults'
-import { deleteLeaveType, getLeaveTypes, saveLeaveType, setLeaveTypeStatus } from '../services/leaveAttendanceService'
+import { deleteLeaveType, getLeaveTypeImportJob, getLeaveTypes, saveLeaveType, setLeaveTypeStatus, startLeaveTypeImport } from '../services/leaveAttendanceService'
 import { getDropdowns, getWorkLocations } from '../services/settingsService'
+import type { BulkImportStatus } from '../services/settingsService'
 import type { Drop, LeaveType, WorkLocation } from '../types/payroll'
+import { parseImportPreviewFile, validateImportPreview, type ImportPreviewIssue, type ImportPreviewRules } from '../utils/importPreview'
+import { downloadXlsx } from '../utils/xlsx'
+import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from './BulkUploadPreviewModal'
+import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from './BulkUploadProgressModal'
 import DataTable from './DataTable'
 import SearchSelect, { type SearchOption } from './SearchSelect'
 import { useToast } from './ToastProvider'
 
 const today = new Date().toISOString().slice(0, 10)
 const blank: LeaveType = { id: 0, clientId: 0, name: '', code: '', type: 'Paid', description: '', entitlement: 0, entitlementPeriod: 'Yearly', proRateForNewJoinees: false, resetEnabled: false, resetFrequency: 'Yearly', carryForwardUnusedLeaves: false, maxCarryForwardLimit: null, encashUnusedLeaves: false, maxEncashmentLimit: null, allowNegativeLeaveBalance: false, negativeBalanceHandling: 'Mark as LOP', allowPastDates: false, pastDateLimitType: 'No limit', pastDateLimitDays: null, allowFutureDates: true, futureDateLimitType: 'No limit', futureDateLimitDays: null, applicabilityMode: 'All employees', workLocation: '', department: '', designation: '', gender: '', effectiveFrom: today, expiresOn: null, postponeCreditsForNewEmployees: false, postponeCreditValue: null, postponeCreditUnit: 'Days', isActive: true }
+const leaveTypeImportHeaders = ['Leave Type Name', 'Code', 'Type', 'Description', 'Entitlement', 'Entitlement Period', 'Pro Rate New Joinees', 'Reset Enabled', 'Reset Frequency', 'Carry Forward', 'Max Carry Forward', 'Encash', 'Max Encashment', 'Allow Negative Balance', 'Negative Balance Handling', 'Allow Past Dates', 'Past Date Limit Type', 'Past Date Limit Days', 'Allow Future Dates', 'Future Date Limit Type', 'Future Date Limit Days', 'Applicability', 'Work Location', 'Department', 'Designation', 'Gender', 'Effective From', 'Expires On', 'Postpone Credits', 'Postpone Credit Value', 'Postpone Credit Unit', 'Active']
+const previewDateMs = (text: string) => {
+  const clean = text.trim()
+  if (!clean) return null
+  const serial = Number(clean)
+  if (Number.isFinite(serial)) return Date.UTC(1899, 11, 30) + serial * 86400000
+  const parsed = Date.parse(clean)
+  return Number.isNaN(parsed) ? null : parsed
+}
+const leaveTypePreviewRules: ImportPreviewRules = {
+  required: ['Leave Type Name', 'Code', 'Type', 'Entitlement', 'Entitlement Period', 'Effective From'],
+  unique: [['Code']],
+  booleans: ['Pro Rate New Joinees', 'Reset Enabled', 'Carry Forward', 'Encash', 'Allow Negative Balance', 'Allow Past Dates', 'Allow Future Dates', 'Postpone Credits', 'Active'],
+  numbers: ['Entitlement', 'Max Carry Forward', 'Max Encashment', 'Past Date Limit Days', 'Future Date Limit Days', 'Postpone Credit Value'],
+  dates: ['Effective From', 'Expires On'],
+  enums: {
+    Type: ['Paid', 'Unpaid'],
+    'Entitlement Period': ['Monthly', 'Yearly'],
+    'Reset Frequency': ['Monthly', 'Yearly'],
+    'Negative Balance Handling': ['Mark as LOP', 'Without limit', 'Up to year-end limit'],
+    'Past Date Limit Type': ['No limit', 'Set number of days'],
+    'Future Date Limit Type': ['No limit', 'Set number of days'],
+    Applicability: ['All employees', 'Criteria based employees'],
+    'Postpone Credit Unit': ['Days', 'Months']
+  },
+  custom: (row, rowNumber) => {
+    const issues: ImportPreviewIssue[] = []
+    if (row.Code && !/^[A-Z0-9_]+$/i.test(row.Code)) issues.push({ rowNumber, column: 'Code', message: 'Code can use only letters, numbers and underscore.' })
+    const entitlement = Number(row.Entitlement)
+    if (row.Entitlement && Number.isFinite(entitlement) && entitlement < 0) issues.push({ rowNumber, column: 'Entitlement', message: 'Entitlement cannot be negative.' })
+    const effective = previewDateMs(row['Effective From'])
+    const expires = previewDateMs(row['Expires On'])
+    if (effective !== null && expires !== null && expires < effective) issues.push({ rowNumber, column: 'Expires On', message: 'Expires On cannot be before Effective From.' })
+    return issues
+  }
+}
+const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
+type LeaveTypeBulkUpload = { open: boolean; state: BulkUploadState; percent: number; summary: BulkUploadSummary }
+type ImportStart = (file: File) => Promise<{ ok: boolean; data: BulkImportStatus; error: string; status: number }>
+type ImportStatus = (jobId: string) => Promise<BulkImportStatus>
 
 const opts = (items: string[]): SearchOption[] => items.map(value => ({ value, label: value }))
 const anyOpts = (items: string[] | SearchOption[], label = 'Any'): SearchOption[] => [{ value: '', label }, ...items.map(item => typeof item === 'string' ? { value: item, label: item } : item)]
@@ -24,6 +71,11 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
   const [busy, setBusy] = useState(false)
   const [drops, setDrops] = useState<Drop[]>([])
   const [locations, setLocations] = useState<WorkLocation[]>([])
+  const [templateDownloaded, setTemplateDownloaded] = useState(false)
+  const [upload, setUpload] = useState<LeaveTypeBulkUpload>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
+  const [preview, setPreview] = useState<BulkUploadPreviewState>(emptyBulkUploadPreview)
+  const [previewImporting, setPreviewImporting] = useState(false)
+  const [previewConfirm, setPreviewConfirm] = useState<(() => Promise<void>) | null>(null)
   const departments = useMemo(() => drops.filter(item => item.type === 'Department' && item.isActive).map(item => item.value), [drops])
   const designations = useMemo(() => drops.filter(item => item.type === 'Designation' && item.isActive).map(item => item.value), [drops])
 
@@ -74,6 +126,78 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
   const edit = (row: LeaveType) => { setForm({ ...blank, ...row, effectiveFrom: String(row.effectiveFrom).slice(0, 10), expiresOn: row.expiresOn ? String(row.expiresOn).slice(0, 10) : null }); setEditing(true); setErrors([]); setDrawerOpen(true) }
   const add = () => { setForm({ ...blank, clientId }); setEditing(false); setErrors([]); setDrawerOpen(true) }
   const close = () => { setForm({ ...blank, clientId }); setEditing(false); setErrors([]); setDrawerOpen(false) }
+  const runBulkUploadJob = async (file: File, setBulkUpload: Dispatch<SetStateAction<LeaveTypeBulkUpload>>, startImport: ImportStart, getImportJob: ImportStatus, failureText: string) => {
+    setBulkUpload({ open: true, state: 'uploading', percent: 1, summary: { totalRows: 0 } })
+    const start = await startImport(file)
+    if (!start.ok || !start.data.jobId) {
+      setBulkUpload({ open: true, state: 'error', percent: 100, summary: { ...start.data, errors: start.data.errors?.length ? start.data.errors : [start.error || 'Upload failed.'] } })
+      return
+    }
+    let job = start.data
+    while (job.state === 'Queued' || job.state === 'Processing') {
+      const percent = job.totalRows ? Math.min(99, Math.round((job.completedRows / job.totalRows) * 100)) : 5
+      setBulkUpload({ open: true, state: 'uploading', percent, summary: job })
+      await wait(700)
+      job = await getImportJob(job.jobId)
+    }
+    if (job.state === 'Completed') {
+      setBulkUpload({ open: true, state: 'success', percent: 100, summary: job })
+      await load()
+      return
+    }
+    const percent = job.totalRows ? Math.round((job.completedRows / job.totalRows) * 100) : 100
+    setBulkUpload({ open: true, state: 'error', percent, summary: { ...job, errors: job.errors?.length ? job.errors : [failureText] } })
+  }
+  const previewBulkUpload = async (file: File, onConfirm: (file: File) => Promise<void>) => {
+    try {
+      const data = await parseImportPreviewFile(file)
+      const issues = validateImportPreview(data, leaveTypePreviewRules)
+      setPreview({ open: true, title: 'Leave type bulk upload preview', fileName: file.name, headers: data.headers, rows: data.rows, issues })
+      setPreviewConfirm(() => async () => onConfirm(file))
+    } catch (error) {
+      fail([error instanceof Error ? error.message : 'Unable to preview import file.'])
+    }
+  }
+  const confirmPreview = async () => {
+    if (!previewConfirm) return
+    const action = previewConfirm
+    setPreviewImporting(true)
+    setPreview(emptyBulkUploadPreview)
+    setPreviewConfirm(null)
+    try {
+      await action()
+    } finally {
+      setPreviewImporting(false)
+    }
+  }
+  const downloadTemplate = () => {
+    if (!clientId) return fail(['Select a client before downloading leave type template.'])
+    const flag = (value: boolean) => value ? 'TRUE' : 'FALSE'
+    const rowValues = rows.length ? rows.map(row => [
+      row.name, row.code, row.type, row.description, String(row.entitlement), row.entitlementPeriod,
+      flag(row.proRateForNewJoinees), flag(row.resetEnabled), row.resetFrequency, flag(row.carryForwardUnusedLeaves), row.maxCarryForwardLimit == null ? '' : String(row.maxCarryForwardLimit),
+      flag(row.encashUnusedLeaves), row.maxEncashmentLimit == null ? '' : String(row.maxEncashmentLimit), flag(row.allowNegativeLeaveBalance), row.negativeBalanceHandling,
+      flag(row.allowPastDates), row.pastDateLimitType, row.pastDateLimitDays == null ? '' : String(row.pastDateLimitDays), flag(row.allowFutureDates), row.futureDateLimitType, row.futureDateLimitDays == null ? '' : String(row.futureDateLimitDays),
+      row.applicabilityMode, row.workLocation, row.department, row.designation, row.gender, String(row.effectiveFrom).slice(0, 10), row.expiresOn ? String(row.expiresOn).slice(0, 10) : '',
+      flag(row.postponeCreditsForNewEmployees), row.postponeCreditValue == null ? '' : String(row.postponeCreditValue), row.postponeCreditUnit, flag(row.isActive)
+    ]) : [['Casual Leave', 'CL', 'Paid', 'Casual leave', '12', 'Yearly', 'TRUE', 'TRUE', 'Yearly', 'TRUE', '6', 'FALSE', '', 'FALSE', 'Mark as LOP', 'FALSE', 'No limit', '', 'TRUE', 'No limit', '', 'All employees', '', '', '', '', today, '', 'FALSE', '', 'Days', 'TRUE']]
+    downloadXlsx('leave-type-import-template.xlsx', [
+      { name: 'Leave Types', rows: [leaveTypeImportHeaders, ...rowValues] },
+      { name: 'Reference', rows: [['Options', 'Values', ''], ['Type', 'Paid, Unpaid', ''], ['Period', 'Monthly, Yearly', ''], ['Reset Frequency', 'Monthly, Yearly', ''], ['Negative Balance Handling', 'Mark as LOP, Without limit, Up to year-end limit', ''], ['Date Limit Type', 'No limit, Set number of days', ''], ['Applicability', 'All employees, Criteria based employees', ''], ['Postpone Credit Unit', 'Days, Months', ''], ['Boolean', 'TRUE/FALSE', ''], ['', '', ''], ['Work Locations', '', ''], ...locations.filter(item => item.id).map(item => [item.name, '', '']), ['', '', ''], ['Departments', '', ''], ...departments.map(item => [item, '', '']), ['', '', ''], ['Designations', '', ''], ...designations.map(item => [item, '', ''])] }
+    ])
+    setTemplateDownloaded(true)
+    onMessage('Leave type import template downloaded.')
+  }
+  const uploadTemplate = async (file: File | null) => {
+    if (!file) return
+    if (!templateDownloaded) {
+      const errors = ['Download the leave type template before uploading.']
+      setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors } })
+      fail(errors)
+      return
+    }
+    await previewBulkUpload(file, selected => runBulkUploadJob(selected, setUpload, item => startLeaveTypeImport(clientId, item), getLeaveTypeImportJob, 'Leave type import failed. No rows were saved.'))
+  }
   const metrics = useMemo(() => ({
     total: rows.length,
     active: rows.filter(row => row.isActive).length,
@@ -82,7 +206,7 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
   }), [rows])
 
   return <section className="leave-types">
-    <AntCard className="settings-panel settings-table-panel leave-types-panel" size="small" title="Leave Types" extra={<Button type="primary" onClick={add}>Add Leave Type</Button>}>
+    <AntCard className="settings-panel settings-table-panel leave-types-panel" size="small" title="Leave Types" extra={<Space className="leave-type-toolbar" size={8} wrap><Button type="primary" icon={<DownloadOutlined />} onClick={downloadTemplate}>Template</Button><label className={`settings-upload-action ${!templateDownloaded ? 'disabled' : ''}`} title={templateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!templateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadTemplate(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" onClick={add}>Add Leave Type</Button></Space>}>
       <div className="leave-type-summary">
         <span><b>{metrics.total}</b><small>Total policies</small></span>
         <span><b>{metrics.active}</b><small>Active</small></span>
@@ -91,6 +215,8 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
       </div>
       <LeaveTypesTable rows={rows} edit={edit} toggle={toggle} remove={remove} />
     </AntCard>
+    <BulkUploadProgressModal open={upload.open} title="Leave type bulk upload" state={upload.state} percent={upload.percent} summary={upload.summary} onClose={() => setUpload(current => ({ ...current, open: false }))} />
+    <BulkUploadPreviewModal preview={preview} importing={previewImporting} onCancel={() => { setPreview(emptyBulkUploadPreview); setPreviewConfirm(null) }} onConfirm={() => void confirmPreview()} />
     {drawerOpen && <div className="leave-type-drawer-backdrop" onClick={close}><LeaveTypeForm form={form} editing={editing} errors={errors} busy={busy} departments={departments} designations={designations} locations={locations} set={set} save={save} cancel={close} /></div>}
   </section>
 }

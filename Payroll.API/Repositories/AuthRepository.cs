@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS auditlogs (
         await EnsureForeignKeyAsync(connection, "authrolepermissions", "FK_AuthRolePermissions_Permission", "FOREIGN KEY (PermissionId) REFERENCES authpermissions(Id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "authsessions", "FK_AuthSessions_User", "FOREIGN KEY (UserId) REFERENCES authusers(Id) ON DELETE CASCADE");
         await EnsureColumnAsync(connection, "authusers", "EmployeeId", "INT NULL");
-        await SeedDashboardPermissionsAsync(connection);
+        await SeedSecurityCatalogAsync(connection);
 
     }
 
@@ -156,6 +156,7 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
+        await SeedSecurityCatalogAsync(connection);
         return await connection.QueryAsync<AuthRole>(@"SELECT r.Id, r.Code, r.Name, r.Description, r.IsSystem, COALESCE(GROUP_CONCAT(p.Code ORDER BY p.Code), '') AS Permissions
 FROM authroles r
 LEFT JOIN authrolepermissions rp ON rp.RoleId = r.Id
@@ -195,13 +196,171 @@ VALUES (@UserId, @UserEmail, @Action, @Resource, @Method, @Path, @StatusCode, @I
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
+        await SeedSecurityCatalogAsync(connection);
         return await connection.QueryAsync<AuthPermission>("SELECT * FROM authpermissions ORDER BY Module, Code");
+    }
+
+    public async Task<IEnumerable<EmployeeLoginProvisionPreview>> GetEmployeeProvisionPreviewAsync(int? clientId = null)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        return await connection.QueryAsync<EmployeeLoginProvisionPreview>(@"
+SELECT
+    e.Id AS EmployeeId,
+    e.ClientId,
+    COALESCE(c.Name, '') AS ClientName,
+    e.EmployeeCode,
+    TRIM(CONCAT(COALESCE(e.FirstName, ''), ' ', COALESCE(e.LastName, ''))) AS EmployeeName,
+    e.WorkEmail,
+    e.Department,
+    e.Designation
+FROM employees e
+LEFT JOIN clients c ON c.Id = e.ClientId
+WHERE e.IsActive = TRUE
+  AND (c.Id IS NULL OR c.IsActive = TRUE)
+  AND NULLIF(TRIM(e.WorkEmail), '') IS NOT NULL
+  AND (@ClientId IS NULL OR @ClientId = 0 OR e.ClientId = @ClientId)
+  AND NOT EXISTS (
+      SELECT 1
+      FROM authusers u
+      WHERE u.EmployeeId = e.Id
+         OR LOWER(TRIM(u.Email)) = LOWER(TRIM(e.WorkEmail))
+  )
+ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = clientId.GetValueOrDefault() });
+    }
+
+    public async Task<ProvisionEmployeeLoginsResponse> ProvisionEmployeeLoginsAsync(ProvisionEmployeeLoginsRequest request)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await SeedSecurityCatalogAsync(connection);
+        await using var transaction = await connection.BeginTransactionAsync();
+
+        var response = new ProvisionEmployeeLoginsResponse();
+        var employeeIds = request.EmployeeIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        var roles = request.Roles
+            .Where(role => !string.IsNullOrWhiteSpace(role))
+            .Select(role => role.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .DefaultIfEmpty("employee")
+            .ToArray();
+        var temporaryPassword = string.IsNullOrWhiteSpace(request.TemporaryPassword)
+            ? GenerateTemporaryPassword()
+            : request.TemporaryPassword.Trim();
+        response.TemporaryPassword = temporaryPassword;
+
+        if (employeeIds.Length == 0)
+        {
+            await transaction.CommitAsync();
+            return response;
+        }
+
+        var employees = (await connection.QueryAsync<EmployeeLoginProvisionPreview>(@"
+SELECT
+    e.Id AS EmployeeId,
+    e.ClientId,
+    COALESCE(c.Name, '') AS ClientName,
+    e.EmployeeCode,
+    TRIM(CONCAT(COALESCE(e.FirstName, ''), ' ', COALESCE(e.LastName, ''))) AS EmployeeName,
+    e.WorkEmail,
+    e.Department,
+    e.Designation
+FROM employees e
+LEFT JOIN clients c ON c.Id = e.ClientId
+WHERE e.Id IN @EmployeeIds
+ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { EmployeeIds = employeeIds }, transaction)).ToList();
+
+        foreach (var employee in employees)
+        {
+            var result = new ProvisionEmployeeLoginResult
+            {
+                EmployeeId = employee.EmployeeId,
+                EmployeeCode = employee.EmployeeCode,
+                EmployeeName = employee.EmployeeName,
+                Email = NormalizeEmail(employee.WorkEmail)
+            };
+
+            if (string.IsNullOrWhiteSpace(employee.WorkEmail))
+            {
+                result.Status = "Skipped";
+                result.Message = "Work email is missing.";
+                response.Results.Add(result);
+                continue;
+            }
+
+            var existingUser = await connection.QueryFirstOrDefaultAsync<(int Id, int? EmployeeId)>(
+                "SELECT Id, EmployeeId FROM authusers WHERE LOWER(TRIM(Email)) = LOWER(TRIM(@Email)) OR EmployeeId = @EmployeeId LIMIT 1",
+                new { Email = result.Email, employee.EmployeeId },
+                transaction);
+            if (existingUser.Id > 0)
+            {
+                result.UserId = existingUser.Id;
+                result.Status = "Skipped";
+                result.Message = existingUser.EmployeeId == employee.EmployeeId
+                    ? "Employee already has a login."
+                    : "Email/login ID already exists.";
+                response.Results.Add(result);
+                continue;
+            }
+
+            var displayName = string.IsNullOrWhiteSpace(employee.EmployeeName) ? employee.EmployeeCode : employee.EmployeeName;
+            var userId = (int)await connection.ExecuteScalarAsync<long>(@"
+INSERT INTO authusers (Email, DisplayName, PasswordHash, ClientId, EmployeeId, IsActive, MustChangePassword)
+VALUES (@Email, @DisplayName, @PasswordHash, @ClientId, @EmployeeId, TRUE, @MustChangePassword);
+SELECT LAST_INSERT_ID();", new
+            {
+                Email = result.Email,
+                DisplayName = displayName,
+                PasswordHash = HashPassword(temporaryPassword),
+                employee.ClientId,
+                employee.EmployeeId,
+                request.MustChangePassword
+            }, transaction);
+
+            await connection.ExecuteAsync(@"
+INSERT IGNORE INTO authuserroles (UserId, RoleId)
+SELECT @UserId, Id FROM authroles WHERE Code IN @Roles;", new { UserId = userId, Roles = roles }, transaction);
+
+            var assignedRoleCount = await connection.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM authuserroles WHERE UserId = @UserId",
+                new { UserId = userId },
+                transaction);
+            if (assignedRoleCount == 0)
+            {
+                await connection.ExecuteAsync(@"
+INSERT IGNORE INTO authuserroles (UserId, RoleId)
+SELECT @UserId, Id FROM authroles WHERE Code = 'employee';", new { UserId = userId }, transaction);
+            }
+
+            result.UserId = userId;
+            result.Status = "Created";
+            result.Message = "Login created.";
+            response.Results.Add(result);
+        }
+
+        var missingIds = employeeIds.Except(employees.Select(employee => employee.EmployeeId)).ToArray();
+        foreach (var employeeId in missingIds)
+        {
+            response.Results.Add(new ProvisionEmployeeLoginResult
+            {
+                EmployeeId = employeeId,
+                Status = "Skipped",
+                Message = "Employee not found."
+            });
+        }
+
+        await transaction.CommitAsync();
+        return response;
     }
 
     public async Task<AuthUser?> SaveUserAsync(SaveAuthUserRequest request)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
+        await SeedSecurityCatalogAsync(connection);
         await using var transaction = await connection.BeginTransactionAsync();
         var email = NormalizeEmail(request.Email);
         var userId = request.Id;
@@ -230,25 +389,25 @@ SELECT @UserId, Id FROM authroles WHERE Code IN @Roles;", new { UserId = userId,
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
+        await SeedSecurityCatalogAsync(connection);
         await using var transaction = await connection.BeginTransactionAsync();
         var code = request.Code.Trim().ToLowerInvariant().Replace(' ', '_');
         var roleId = request.Id;
         if (roleId == 0)
             roleId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO authroles (Code, Name, Description, IsSystem) VALUES (@Code, @Name, @Description, FALSE);
 SELECT LAST_INSERT_ID();", new { Code = code, request.Name, request.Description }, transaction);
-        else if (await connection.ExecuteScalarAsync<bool>("SELECT IsSystem FROM authroles WHERE Id=@Id", new { Id = roleId }, transaction))
-        {
-            await transaction.RollbackAsync();
-            return (await GetRolesAsync()).FirstOrDefault(role => role.Id == roleId);
-        }
         else
-            await connection.ExecuteAsync("UPDATE authroles SET Name=@Name, Description=@Description WHERE Id=@Id AND IsSystem=FALSE", new { Id = roleId, request.Name, request.Description }, transaction);
+        {
+            var isSystem = await connection.ExecuteScalarAsync<bool>("SELECT IsSystem FROM authroles WHERE Id=@Id", new { Id = roleId }, transaction);
+            if (!isSystem)
+                await connection.ExecuteAsync("UPDATE authroles SET Name=@Name, Description=@Description WHERE Id=@Id", new { Id = roleId, request.Name, request.Description }, transaction);
+        }
         await connection.ExecuteAsync("DELETE FROM authrolepermissions WHERE RoleId=@RoleId", new { RoleId = roleId }, transaction);
         if (request.Permissions.Count > 0)
             await connection.ExecuteAsync(@"INSERT IGNORE INTO authrolepermissions (RoleId, PermissionId)
 SELECT @RoleId, Id FROM authpermissions WHERE Code IN @Permissions;", new { RoleId = roleId, request.Permissions }, transaction);
         await transaction.CommitAsync();
-        return (await GetRolesAsync()).FirstOrDefault(role => role.Code.Equals(code, StringComparison.OrdinalIgnoreCase));
+        return (await GetRolesAsync()).FirstOrDefault(role => role.Id == roleId);
     }
 
     private async Task<AuthUser?> GetUserByIdAsync(int userId)
@@ -264,7 +423,7 @@ SELECT @RoleId, Id FROM authpermissions WHERE Code IN @Permissions;", new { Role
         if (exists == 0) await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition}");
     }
 
-    private static Task SeedDashboardPermissionsAsync(MySqlConnection connection)
+    private static async Task SeedSecurityCatalogAsync(MySqlConnection connection)
     {
         var permissions = new[]
         {
@@ -272,16 +431,92 @@ SELECT @RoleId, Id FROM authpermissions WHERE Code IN @Permissions;", new { Role
             new { Code = "dashboard.workforce.view", Name = "View workforce dashboard", Module = "Dashboard", Description = "View employee and ESS adoption dashboard metrics." },
             new { Code = "dashboard.payroll.view", Name = "View payroll dashboard", Module = "Dashboard", Description = "View payroll run, net pay, validation and recent payroll dashboard metrics." },
             new { Code = "dashboard.attendance.view", Name = "View attendance dashboard", Module = "Dashboard", Description = "View attendance readiness and exception dashboard metrics." },
-            new { Code = "dashboard.approvals.view", Name = "View approvals dashboard", Module = "Dashboard", Description = "View workflow and leave approval dashboard metrics." }
+            new { Code = "dashboard.approvals.view", Name = "View approvals dashboard", Module = "Dashboard", Description = "View workflow and leave approval dashboard metrics." },
+            new { Code = "employees.view", Name = "View employee master", Module = "Employees", Description = "Open employee master and employee reports." },
+            new { Code = "employees.manage", Name = "Manage employees", Module = "Employees", Description = "Create, update and maintain employee master data." },
+            new { Code = "payroll.run", Name = "Run payroll", Module = "Payroll", Description = "Create payroll runs and manage payroll inputs." },
+            new { Code = "payroll.approve", Name = "Approve payroll", Module = "Payroll", Description = "Approve, recall and review payroll runs." },
+            new { Code = "payroll.payments", Name = "Record payroll payments", Module = "Payroll", Description = "Mark payroll payments and payment dates." },
+            new { Code = "leave.manage", Name = "Manage leave", Module = "Leave & Attendance", Description = "Configure and process leave records." },
+            new { Code = "attendance.manage", Name = "Manage attendance", Module = "Leave & Attendance", Description = "Configure attendance and review attendance data." },
+            new { Code = "settings.manage", Name = "Manage settings", Module = "Settings", Description = "Configure organization, clients, masters and setup data." },
+            new { Code = "tax.statutory.manage", Name = "Manage statutory tax", Module = "Settings", Description = "Maintain statutory and income tax rules." },
+            new { Code = "workflow.manage", Name = "Manage workflows", Module = "Workflows", Description = "Configure approval workflows and department heads." },
+            new { Code = "reports.view", Name = "View reports", Module = "Reports", Description = "Open reports and exports." },
+            new { Code = "security.manage", Name = "Manage security", Module = "Security", Description = "Manage users, roles and permissions." },
+            new { Code = "audit.view", Name = "View audit logs", Module = "Security", Description = "View identity and operational audit logs." },
+            new { Code = "ess.self", Name = "Employee self service", Module = "ESS", Description = "Access employee self-service profile, pay, leave, tax and attendance." }
         };
 
-        return connection.ExecuteAsync(@"
+        await connection.ExecuteAsync(@"
 INSERT INTO authpermissions (Code, Name, Module, Description)
 VALUES (@Code, @Name, @Module, @Description)
 ON DUPLICATE KEY UPDATE
     Name = VALUES(Name),
     Module = VALUES(Module),
     Description = VALUES(Description);", permissions);
+
+        var roles = new[]
+        {
+            new { Code = "admin", Name = "Administrator", Description = "Full HRMS administration access.", IsSystem = true },
+            new { Code = "employee", Name = "Employee", Description = "Employee self-service access.", IsSystem = true },
+            new { Code = "payroll_maker", Name = "Payroll Maker", Description = "Payroll preparation and employee master operations.", IsSystem = true },
+            new { Code = "payroll_approver", Name = "Payroll Approver", Description = "Payroll approval and review access.", IsSystem = true },
+            new { Code = "hr_manager", Name = "HR Manager", Description = "HR, attendance, leave and employee operations.", IsSystem = true }
+        };
+
+        await connection.ExecuteAsync(@"
+INSERT INTO authroles (Code, Name, Description, IsSystem)
+VALUES (@Code, @Name, @Description, @IsSystem)
+ON DUPLICATE KEY UPDATE
+    Name = VALUES(Name),
+    Description = VALUES(Description),
+    IsSystem = VALUES(IsSystem);", roles);
+
+        var rolePermissions = new Dictionary<string, string[]>
+        {
+            ["admin"] = permissions.Select(permission => permission.Code).ToArray(),
+            ["employee"] = ["ess.self"],
+            ["payroll_maker"] = ["dashboard.view", "dashboard.payroll.view", "dashboard.workforce.view", "employees.view", "employees.manage", "payroll.run", "reports.view"],
+            ["payroll_approver"] = ["dashboard.view", "dashboard.payroll.view", "payroll.approve", "reports.view"],
+            ["hr_manager"] = ["dashboard.view", "dashboard.workforce.view", "dashboard.attendance.view", "employees.view", "employees.manage", "leave.manage", "attendance.manage", "workflow.manage", "reports.view"]
+        };
+
+        foreach (var (roleCode, permissionCodes) in rolePermissions)
+        {
+            var existingPermissionCount = await connection.ExecuteScalarAsync<int>(@"
+SELECT COUNT(*)
+FROM authrolepermissions rp
+JOIN authroles r ON r.Id = rp.RoleId
+WHERE r.Code = @RoleCode;", new { RoleCode = roleCode });
+            var hasRequiredPermission = roleCode switch
+            {
+                "admin" => await connection.ExecuteScalarAsync<int>(@"
+SELECT COUNT(*)
+FROM authrolepermissions rp
+JOIN authroles r ON r.Id = rp.RoleId
+JOIN authpermissions p ON p.Id = rp.PermissionId
+WHERE r.Code = 'admin'
+  AND p.Code = 'security.manage';") > 0,
+                "employee" => await connection.ExecuteScalarAsync<int>(@"
+SELECT COUNT(*)
+FROM authrolepermissions rp
+JOIN authroles r ON r.Id = rp.RoleId
+JOIN authpermissions p ON p.Id = rp.PermissionId
+WHERE r.Code = 'employee'
+  AND p.Code = 'ess.self';") > 0,
+                _ => true
+            };
+            if (existingPermissionCount > 0 && hasRequiredPermission)
+                continue;
+
+            await connection.ExecuteAsync(@"
+INSERT IGNORE INTO authrolepermissions (RoleId, PermissionId)
+SELECT r.Id, p.Id
+FROM authroles r
+JOIN authpermissions p ON p.Code IN @PermissionCodes
+WHERE r.Code = @RoleCode;", new { RoleCode = roleCode, PermissionCodes = permissionCodes });
+        }
     }
 
     private static async Task EnsureForeignKeyAsync(MySqlConnection connection, string tableName, string constraintName, string definition)
@@ -320,6 +555,15 @@ WHERE CONSTRAINT_SCHEMA = DATABASE()
     {
         var hash = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token));
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static string GenerateTemporaryPassword()
+    {
+        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+        Span<byte> bytes = stackalloc byte[10];
+        RandomNumberGenerator.Fill(bytes);
+        var chars = bytes.ToArray().Select(value => alphabet[value % alphabet.Length]).ToArray();
+        return $"Hr@{new string(chars)}1";
     }
 
     private sealed class AuthUserRecord

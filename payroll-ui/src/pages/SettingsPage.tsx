@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
-import type { FormEvent, ReactNode } from 'react'
+import type { Dispatch, FormEvent, ReactNode, SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
+import { DownloadOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
 import { Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Drawer, Form, Input, Modal, Row, Select as AntSelect, Space } from 'antd'
+import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from '../components/BulkUploadPreviewModal'
+import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from '../components/BulkUploadProgressModal'
 import DataTable from '../components/DataTable'
 import FileDropZone from '../components/FileDropZone'
 import { Card, Chk, F, Sel } from '../components/FormPrimitives'
@@ -12,9 +15,11 @@ import { useToast, type ToastType } from '../components/ToastProvider'
 import { client0, component0, drop0, dropTypes, location0, org0, payslip0, settingsMenus, setup0, structure0, workWeekOptions } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
 import { getAttendanceGroups } from '../services/leaveAttendanceService'
-import { getClientBillingConfigurations, getClientBillingModule, getDropdowns, getOrganization, getSetup, getWorkLocations, saveClient as persistClient, saveClientBillingConfiguration, saveClientBillingModule, saveDropdown, saveOrganization, saveSetup, saveWorkLocation } from '../services/settingsService'
-import type { AttendanceGroup, Client, ClientBillingConfiguration, ClientBillingRateCardType, ClientBillingRateType, Component, Drop, Employee, Org, ProfessionalTaxSlab, Setup, WorkLocation } from '../types/payroll'
+import { getClientBillingConfigurations, getClientBillingModule, getClientImportJob, getDropdownImportJob, getDropdowns, getOrganization, getSalaryComponentImportJob, getSalaryTemplateImportJob, getSetup, getWorkLocationImportJob, getWorkLocations, saveClient as persistClient, saveClientBillingConfiguration, saveClientBillingModule, saveDropdown, saveOrganization, saveSetup, saveWorkLocation, startClientImport, startDropdownImport, startSalaryComponentImport, startSalaryTemplateImport, startWorkLocationImport, type BulkImportStatus } from '../services/settingsService'
+import type { AttendanceGroup, Client, ClientBillingConfiguration, ClientBillingRateCardType, ClientBillingRateType, Component, Drop, Employee, Org, ProfessionalTaxSlab, Setup, Structure, WorkLocation } from '../types/payroll'
 import { money } from '../utils/salary'
+import { parseImportPreviewFile, parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules } from '../utils/importPreview'
+import { downloadXlsx } from '../utils/xlsx'
 
 type SettingsTab = (typeof settingsMenus)[number]
 type OrganizationTab = 'Organization' | 'Tax' | 'EPF' | 'ESI' | 'Professional Tax' | 'Labour Welfare Fund'
@@ -31,6 +36,27 @@ const settingsSetup0: Setup = setup0
 const billingRateCardTypes: ClientBillingRateCardType[] = ['All', 'Service Charge', 'Reimbursement', 'Bonus', 'Statutory Compliance Charges']
 const billingRateTypes: ClientBillingRateType[] = ['Percentage', 'Fixed']
 const billing0: ClientBillingConfiguration = { id: 0, clientId: 0, clientName: '', workLocationId: null, workLocationName: '', rateCardType: 'All', rateType: 'Percentage', value: 0, taxInclusive: false, gstRatePercent: 18, effectiveFrom: new Date().toISOString().slice(0, 10), effectiveTo: null, isActive: true }
+const clientImportHeaders = ['Client Name', 'Code', 'Contact Person', 'Email', 'Phone', 'Address', 'Active']
+const workLocationImportHeaders = ['Client Id', 'Location Name', 'Address', 'State', 'City', 'PIN', 'GST Number', 'Primary', 'Active']
+const dropdownImportHeaders = ['Master Type', 'Value', 'Client Id', 'State', 'Active', 'Config Json']
+const salaryComponentImportHeaders = ['Code', 'Category', 'Name', 'Component Type', 'Pay Type', 'Calculation Type', 'Value', 'Formula', 'Base Component', 'Taxable', 'Part Of CTC', 'Pro Rata', 'FBP', 'Restrict FBP', 'EPF', 'ESI', 'Recurring', 'Scheduled', 'Investment Type', 'Correction Of', 'Priority', 'Active']
+const salaryTemplateImportHeaders = ['Client Ids', 'Template Name', 'Annual CTC', 'Active', 'Component Code', 'Value']
+const clientPreviewRules: ImportPreviewRules = {
+  required: ['Client Name'],
+  unique: [['Client Name'], ['Code']],
+  booleans: ['Active'],
+  custom: (row, rowNumber) => row.Email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.Email) ? [{ rowNumber, column: 'Email', message: 'Email must be valid.' }] : []
+}
+const workLocationPreviewRules: ImportPreviewRules = { required: ['Client Id', 'Location Name'], unique: [['Client Id', 'Location Name']], booleans: ['Primary', 'Active'] }
+const dropdownPreviewRules: ImportPreviewRules = { required: ['Master Type', 'Value'], unique: [['Master Type', 'Client Id', 'State', 'Value']], booleans: ['Active'], enums: { 'Master Type': [...dropTypes] } }
+const salaryComponentPreviewRules: ImportPreviewRules = { required: ['Code', 'Category', 'Name', 'Calculation Type'], unique: [['Code']], booleans: ['Taxable', 'Part Of CTC', 'Pro Rata', 'FBP', 'Restrict FBP', 'ESI', 'Recurring', 'Scheduled', 'Active'], numbers: ['Priority'], enums: { Category: [...componentTabs], 'Calculation Type': [...calculationOptions], 'Pay Type': ['Fixed Pay', 'Variable Pay'], EPF: ['Never', 'Always', 'Only if employee is PF eligible'] } }
+const salaryTemplatePreviewRules: ImportPreviewRules = { required: ['Client Ids', 'Template Name', 'Component Code'], unique: [['Client Ids', 'Template Name', 'Component Code']], booleans: ['Active'], numbers: ['Annual CTC'] }
+const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
+const dropdownSheetHeaders = (type: string) => type === 'Employee Grade' ? ['Client Id', 'Value', 'Active'] : type === 'City' ? ['State', 'Value', 'Active'] : type === 'Work Week' ? ['Value', 'Active', 'Working Days', 'Off Saturdays'] : ['Value', 'Active']
+const dropdownSheetExample = (type: string, clientId = '1') => type === 'Employee Grade' ? [clientId, 'G1', 'TRUE'] : type === 'City' ? ['Delhi', 'New Delhi', 'TRUE'] : type === 'Work Week' ? ['Monday - Saturday with 1st-4th Saturdays off', 'TRUE', 'Mon, Tue, Wed, Thu, Fri, Sat', '1st, 2nd, 3rd, 4th'] : [type === 'State' ? 'Delhi' : type === 'Department' ? 'Finance' : type === 'Designation' ? 'Manager' : type === 'Employment Type' ? 'Full Time' : type === 'Cost Center' ? 'CC-001' : 'Head Office', 'TRUE']
+type SettingsBulkUpload = { open: boolean; state: BulkUploadState; percent: number; summary: BulkUploadSummary }
+type ImportStart = (file: File) => Promise<{ ok: boolean; data: BulkImportStatus; error: string; status: number }>
+type ImportStatus = (jobId: string) => Promise<BulkImportStatus>
 const normalizeCalculationType = (value: string) =>
   value === 'Percentage of CTC' || value === 'Percentage of Component' || value === 'Formula' ? 'Formula' :
   value === 'Balancing Amount' || value === 'Residual / Balancing' ? 'Residual / Balancing' :
@@ -58,6 +84,36 @@ const cityType = (state: string) => `City:${state}`
 const isCityType = (type: string) => type.startsWith('City:')
 const cityState = (type: string) => isCityType(type) ? type.slice(5) : ''
 const refId = (value: string | number | null | undefined) => String(value ?? '').split(':')[0]
+const refIds = (value: string | number | null | undefined) => unique(String(value ?? '').split(/[;,|]/).map(item => refId(item)).filter(Boolean))
+const importNorm = (value: string) => value.replace(/[\s_-]/g, '').toLowerCase()
+const dropdownTypeFromSheet = (name: string) => dropTypes.find(type => importNorm(type) === importNorm(name) || importNorm(`${type}s`) === importNorm(name)) ?? ''
+const previewCell = (headers: string[], row: string[], name: string) => {
+  const index = headers.findIndex(header => importNorm(header) === importNorm(name))
+  return index >= 0 && index < row.length ? row[index].trim() : ''
+}
+const parseWorkWeekNumberList = (text: string, aliases: Record<string, number>) => unique(text.split(/[,;|/]+/).map(item => item.trim()).filter(Boolean).map(item => {
+  const key = importNorm(item.replace(/\d+(st|nd|rd|th)/i, match => match.replace(/\D/g, '')))
+  return String(aliases[key] ?? aliases[importNorm(item)] ?? '')
+})).map(Number).filter(Number.isFinite)
+const buildWorkWeekConfigJson = (workingDaysText: string, offSaturdaysText: string) => {
+  const dayAliases: Record<string, number> = { sun: 0, sunday: 0, '0': 0, mon: 1, monday: 1, '1': 1, tue: 2, tuesday: 2, '2': 2, wed: 3, wednesday: 3, '3': 3, thu: 4, thursday: 4, '4': 4, fri: 5, friday: 5, '5': 5, sat: 6, saturday: 6, '6': 6 }
+  const satAliases: Record<string, number> = { first: 1, '1st': 1, '1': 1, second: 2, '2nd': 2, '2': 2, third: 3, '3rd': 3, '3': 3, fourth: 4, '4th': 4, '4': 4, fifth: 5, '5th': 5, '5': 5 }
+  const workingDays = parseWorkWeekNumberList(workingDaysText, dayAliases).filter(day => day >= 0 && day <= 6)
+  const offSaturdays = parseWorkWeekNumberList(offSaturdaysText, satAliases).filter(item => item >= 1 && item <= 5)
+  return workingDays.length ? JSON.stringify({ workingDays, offSaturdays }) : ''
+}
+const validateWorkWeekJson = (text: string) => {
+  if (!text.trim()) return 'Work Week requires Working Days or Config Json.'
+  try {
+    const json = JSON.parse(text) as { workingDays?: unknown; offSaturdays?: unknown }
+    const validNumbers = (items: unknown[], min: number, max: number) => items.every(item => Number.isInteger(Number(item)) && Number(item) >= min && Number(item) <= max)
+    if (!Array.isArray(json.workingDays) || !json.workingDays.length || !validNumbers(json.workingDays, 0, 6)) return 'Config Json workingDays must be an array with values 0-6.'
+    if (!Array.isArray(json.offSaturdays) || !validNumbers(json.offSaturdays, 1, 5)) return 'Config Json offSaturdays must be an array with values 1-5.'
+    return ''
+  } catch {
+    return 'Config Json must be valid JSON.'
+  }
+}
 type WorkWeekConfig = { workingDays: number[]; offSaturdays: number[] }
 const weekDayOptions = [{ value: 0, label: 'Sun' }, { value: 1, label: 'Mon' }, { value: 2, label: 'Tue' }, { value: 3, label: 'Wed' }, { value: 4, label: 'Thu' }, { value: 5, label: 'Fri' }, { value: 6, label: 'Sat' }]
 const saturdayOptions = [{ value: 1, label: '1st' }, { value: 2, label: '2nd' }, { value: 3, label: '3rd' }, { value: 4, label: '4th' }, { value: 5, label: '5th' }]
@@ -101,14 +157,27 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const [statutoryTab, setStatutoryTab] = useState<StatutoryTab>('Income Tax Rules')
   const [ptSlab, setPtSlab] = useState<ProfessionalTaxSlab>(ptSlab0)
   const [componentDrawerOpen, setComponentDrawerOpen] = useState(false)
+  const [componentTemplateDownloaded, setComponentTemplateDownloaded] = useState(false)
+  const [componentUpload, setComponentUpload] = useState<SettingsBulkUpload>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
+  const [salaryTemplateDownloaded, setSalaryTemplateDownloaded] = useState(false)
+  const [salaryTemplateUpload, setSalaryTemplateUpload] = useState<SettingsBulkUpload>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
   const [clientDrawerOpen, setClientDrawerOpen] = useState(false)
+  const [clientTemplateDownloaded, setClientTemplateDownloaded] = useState(false)
+  const [clientUpload, setClientUpload] = useState<SettingsBulkUpload>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
   const [locationDrawerOpen, setLocationDrawerOpen] = useState(false)
+  const [locationTemplateDownloaded, setLocationTemplateDownloaded] = useState(false)
+  const [locationUpload, setLocationUpload] = useState<SettingsBulkUpload>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
   const [dropDrawerOpen, setDropDrawerOpen] = useState(false)
+  const [dropTemplateDownloaded, setDropTemplateDownloaded] = useState(false)
+  const [dropUpload, setDropUpload] = useState<SettingsBulkUpload>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
   const [componentSaving, setComponentSaving] = useState(false)
   const [templateSaving, setTemplateSaving] = useState(false)
   const [payslipSaving, setPayslipSaving] = useState(false)
   const [saving, setSaving] = useState(false)
   const [dropState, setDropState] = useState('')
+  const [bulkPreview, setBulkPreview] = useState<BulkUploadPreviewState>(emptyBulkUploadPreview)
+  const [bulkPreviewImporting, setBulkPreviewImporting] = useState(false)
+  const [bulkPreviewConfirm, setBulkPreviewConfirm] = useState<(() => Promise<void>) | null>(null)
   const isErrorMessage = (message: string) => /error|unable|failed|required|resolve|select|invalid|must|cannot|some/i.test(message)
 
   const load = async () => {
@@ -212,6 +281,219 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     notify(response.ok ? 'Client deleted.' : response.error || 'Unable to delete client.', response.ok ? 'success' : 'error')
     if (response.ok) { if (client.id === row.id) setClient(client0); await load() }
   }
+  const runBulkUploadJob = async (file: File, setUpload: Dispatch<SetStateAction<SettingsBulkUpload>>, startImport: ImportStart, getImportJob: ImportStatus, failureText: string) => {
+    setUpload({ open: true, state: 'uploading', percent: 1, summary: { totalRows: 0 } })
+    const start = await startImport(file)
+    if (!start.ok || !start.data.jobId) {
+      setUpload({ open: true, state: 'error', percent: 100, summary: { ...start.data, errors: start.data.errors?.length ? start.data.errors : [start.error || 'Upload failed.'] } })
+      return
+    }
+    let job = start.data
+    while (job.state === 'Queued' || job.state === 'Processing') {
+      const percent = job.totalRows ? Math.min(99, Math.round((job.completedRows / job.totalRows) * 100)) : 5
+      setUpload({ open: true, state: 'uploading', percent, summary: job })
+      await wait(700)
+      job = await getImportJob(job.jobId)
+    }
+    const percent = job.totalRows ? Math.round((job.completedRows / job.totalRows) * 100) : 100
+    if (job.state === 'Completed') {
+      setUpload({ open: true, state: 'success', percent: 100, summary: job })
+      await load()
+      return
+    }
+    setUpload({ open: true, state: 'error', percent, summary: { ...job, errors: job.errors?.length ? job.errors : [failureText] } })
+  }
+  const previewBulkUploadData = (file: File, title: string, data: ImportPreviewData, rules: ImportPreviewRules, onConfirm: (file: File) => Promise<void>) => {
+    const issues = validateImportPreview(data, rules)
+    setBulkPreview({ open: true, title, fileName: file.name, headers: data.headers, rows: data.rows, issues })
+    setBulkPreviewConfirm(() => async () => onConfirm(file))
+  }
+  const previewBulkUpload = async (file: File, title: string, rules: ImportPreviewRules, onConfirm: (file: File) => Promise<void>) => {
+    try { previewBulkUploadData(file, title, await parseImportPreviewFile(file), rules, onConfirm) }
+    catch (error) { notify(error instanceof Error ? error.message : 'Unable to preview import file.', 'error') }
+  }
+  const parseDropdownPreviewData = async (file: File): Promise<ImportPreviewData> => {
+    const sheets = await parseImportPreviewSheets(file)
+    const first = sheets[0]
+    if (!first) return { headers: [], rows: [] }
+    if (first.headers.some(header => importNorm(header) === 'mastertype')) return first
+    const rows: string[][] = []
+    for (const sheet of sheets) {
+      const type = dropdownTypeFromSheet(sheet.name)
+      if (!type) continue
+      for (const row of sheet.rows) {
+        const value = previewCell(sheet.headers, row, 'Value')
+        const active = previewCell(sheet.headers, row, 'Active')
+        const clientId = type === 'Employee Grade' ? previewCell(sheet.headers, row, 'Client Id') : ''
+        const state = type === 'City' ? previewCell(sheet.headers, row, 'State') : ''
+        const configJson = type === 'Work Week' ? previewCell(sheet.headers, row, 'Config Json') || buildWorkWeekConfigJson(previewCell(sheet.headers, row, 'Working Days'), previewCell(sheet.headers, row, 'Off Saturdays')) : ''
+        if ([value, active, clientId, state, configJson].some(Boolean)) rows.push([sheet.name, type, value, clientId, state, active, configJson])
+      }
+    }
+    return { headers: ['Sheet', 'Master Type', 'Value', 'Client Id', 'State', 'Active', 'Config Json'], rows }
+  }
+  const confirmBulkPreview = async () => {
+    if (!bulkPreviewConfirm) return
+    const action = bulkPreviewConfirm
+    setBulkPreviewImporting(true)
+    setBulkPreview(emptyBulkUploadPreview)
+    setBulkPreviewConfirm(null)
+    try {
+      await action()
+    } finally {
+      setBulkPreviewImporting(false)
+    }
+  }
+  const downloadClientTemplate = () => {
+    downloadXlsx('client-import-template.xlsx', [
+      { name: 'Clients', rows: [clientImportHeaders, ['Acme Services Pvt Ltd', 'ACME', 'Priya Sharma', 'priya@example.com', '9876543210', 'Registered office address', 'TRUE']] },
+      { name: 'Instructions', rows: [['Field', 'Required', 'Notes'], ['Client Name', 'Yes', 'Unique client display name. Existing names will be updated.'], ['Code', 'No', 'Used to update an existing client when matched.'], ['Contact Person', 'No', 'Primary contact name.'], ['Email', 'No', 'Must be valid when filled.'], ['Phone', 'No', 'Primary phone number.'], ['Address', 'No', 'Client address.'], ['Active', 'No', 'TRUE/FALSE. Blank means TRUE.']] }
+    ])
+    setClientTemplateDownloaded(true)
+    notify('Client import template downloaded.', 'info')
+  }
+  const uploadClients = async (file: File | null) => {
+    if (!file) return
+    if (!clientTemplateDownloaded) {
+      const errors = ['Download the client template before uploading.']
+      setClientUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors } })
+      notify(errors[0], 'error')
+      return
+    }
+    await previewBulkUpload(file, 'Client bulk upload preview', clientPreviewRules, selected => runBulkUploadJob(selected, setClientUpload, startClientImport, getClientImportJob, 'Client import failed. No rows were saved.'))
+  }
+  const downloadLocationTemplate = () => {
+    const firstClient = clients[0]
+    downloadXlsx('work-location-import-template.xlsx', [
+      { name: 'Work Locations', rows: [workLocationImportHeaders, [firstClient ? String(firstClient.id) : '', 'Head Office', 'Registered office address', 'Delhi', 'New Delhi', '110001', '', 'TRUE', 'TRUE']] },
+      { name: 'Clients', rows: [['Client Id', 'Client Name', 'Client Code'], ...clients.map(item => [String(item.id), item.name, item.code || ''])] }
+    ])
+    setLocationTemplateDownloaded(true)
+    notify('Work-location import template downloaded.', 'info')
+  }
+  const uploadWorkLocations = async (file: File | null) => {
+    if (!file) return
+    if (!locationTemplateDownloaded) {
+      const errors = ['Download the work-location template before uploading.']
+      setLocationUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors } })
+      notify(errors[0], 'error')
+      return
+    }
+    const clientIds = new Set(clients.map(item => String(item.id)))
+    await previewBulkUpload(file, 'Work-location bulk upload preview', {
+      ...workLocationPreviewRules,
+      custom: (row, rowNumber) => {
+        const issues: ImportPreviewIssue[] = []
+        const clientId = row['Client Id']
+        if (clientId && !clientIds.has(clientId)) issues.push({ rowNumber, column: 'Client Id', message: `Client Id ${clientId} was not found.` })
+        if (row.PIN && !/^[1-9][0-9]{5}$/.test(row.PIN)) issues.push({ rowNumber, column: 'PIN', message: 'PIN must be a valid 6-digit PIN code.' })
+        return issues
+      }
+    }, selected => runBulkUploadJob(selected, setLocationUpload, startWorkLocationImport, getWorkLocationImportJob, 'Work-location import failed. No rows were saved.'))
+  }
+  const downloadDropTemplate = () => {
+    const firstClientId = clients[0] ? String(clients[0].id) : '1'
+    const referenceRows = [['Clients', '', '', ''], ['Client Id', 'Client Name', 'Client Code', ''], ...clients.map(item => [String(item.id), item.name, item.code || '', '']), ['', '', '', ''], ['Sheet', 'Required columns', 'Example row', 'Notes'], ...dropTypes.map(type => [type, dropdownSheetHeaders(type).join(', '), dropdownSheetExample(type, firstClientId).join(' | '), type === 'Employee Grade' ? 'Client Id must match Clients sheet.' : type === 'City' ? 'State must exist or will be created as a state master.' : 'Value is the dropdown text.'])]
+    downloadXlsx('dropdown-master-import-template.xlsx', [
+      ...dropTypes.map(type => ({ name: type, rows: [dropdownSheetHeaders(type), dropdownSheetExample(type, firstClientId)] })),
+      { name: 'Reference', rows: referenceRows }
+    ])
+    setDropTemplateDownloaded(true)
+    notify('Dropdown master import template downloaded.', 'info')
+  }
+  const uploadDrops = async (file: File | null) => {
+    if (!file) return
+    if (!dropTemplateDownloaded) {
+      const errors = ['Download the dropdown master template before uploading.']
+      setDropUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors } })
+      notify(errors[0], 'error')
+      return
+    }
+    const clientIds = new Set(clients.map(item => String(item.id)))
+    try {
+      previewBulkUploadData(file, 'Dropdown master bulk upload preview', await parseDropdownPreviewData(file), {
+        ...dropdownPreviewRules,
+        custom: (row, rowNumber) => {
+          const issues: ImportPreviewIssue[] = []
+          const type = row['Master Type']?.toLowerCase()
+          const clientId = row['Client Id']
+          if (type === 'employee grade') {
+            if (!clientId) issues.push({ rowNumber, column: 'Client Id', message: 'Client Id is required for Employee Grade.' })
+            else if (!clientIds.has(clientId)) issues.push({ rowNumber, column: 'Client Id', message: `Client Id ${clientId} was not found.` })
+          }
+          if (type === 'city' && !row.State) issues.push({ rowNumber, column: 'State', message: 'State is required for City.' })
+          if (type === 'work week' || row['Config Json']) {
+            const jsonIssue = type === 'work week' ? validateWorkWeekJson(row['Config Json']) : (() => { try { JSON.parse(row['Config Json']); return '' } catch { return 'Config Json must be valid JSON.' } })()
+            if (jsonIssue) issues.push({ rowNumber, column: 'Config Json', message: jsonIssue })
+          }
+          return issues
+        }
+      }, selected => runBulkUploadJob(selected, setDropUpload, startDropdownImport, getDropdownImportJob, 'Dropdown master import failed. No rows were saved.'))
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Unable to preview dropdown import file.', 'error')
+    }
+  }
+  const downloadSalaryComponentTemplate = () => {
+    const flag = (value: boolean) => value ? 'TRUE' : 'FALSE'
+    const rows = setup.salaryComponents.length
+      ? setup.salaryComponents.map(item => [item.code, item.category, item.name, item.componentType, item.payType, item.calculationType, item.value, item.formula, item.baseComponent, flag(item.taxable), flag(item.ctc), flag(item.proRata), flag(item.fbp), flag(item.restrictFbp), item.epf, flag(item.esi), flag(item.recurring), flag(item.scheduled), item.investmentType, item.correctionOf, item.priority, flag(item.active)])
+      : [['BASIC', 'Earning', 'Basic Salary', 'Basic', 'Fixed Pay', 'Fixed Amount', '0', '', '', 'TRUE', 'TRUE', 'TRUE', 'FALSE', 'FALSE', 'Never', 'FALSE', 'TRUE', 'FALSE', '', '', '100', 'TRUE']]
+    downloadXlsx('salary-component-import-template.xlsx', [
+      { name: 'Salary Components', rows: [salaryComponentImportHeaders, ...rows] },
+      { name: 'Reference', rows: [['Categories', componentTabs.join(', '), ''], ['Calculation Types', calculationOptions.join(', '), ''], ['Pay Types', 'Fixed Pay, Variable Pay', ''], ['EPF Options', 'Never, Always, Only if employee is PF eligible', ''], ['', '', ''], ['Existing Code', 'Name', 'Category'], ...setup.salaryComponents.map(item => [item.code, item.name, item.category])] }
+    ])
+    setComponentTemplateDownloaded(true)
+    notify('Salary component import template downloaded.', 'info')
+  }
+  const uploadSalaryComponents = async (file: File | null) => {
+    if (!file) return
+    if (!componentTemplateDownloaded) {
+      const errors = ['Download the salary component template before uploading.']
+      setComponentUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors } })
+      notify(errors[0], 'error')
+      return
+    }
+    await previewBulkUpload(file, 'Salary component bulk upload preview', salaryComponentPreviewRules, selected => runBulkUploadJob(selected, setComponentUpload, startSalaryComponentImport, getSalaryComponentImportJob, 'Salary component import failed. No rows were saved.'))
+  }
+  const downloadSalaryTemplateTemplate = () => {
+    const flag = (value: boolean) => value ? 'TRUE' : 'FALSE'
+    const componentsById = new Map(setup.salaryComponents.map(item => [String(item.id), item]))
+    const rows = setup.salaryStructures.flatMap(template => template.lines.map(line => {
+      const component = componentsById.get(String(line.componentId))
+      return [refId(template.clientId), template.name, template.annualCtc, flag(template.active), component?.code || String(line.componentId), line.value]
+    }))
+    const sampleClient = clients[0]
+    const sampleComponent = setup.salaryComponents.find(item => item.code === 'BASIC') ?? setup.salaryComponents[0]
+    downloadXlsx('salary-template-import-template.xlsx', [
+      { name: 'Salary Templates', rows: [salaryTemplateImportHeaders, ...(rows.length ? rows : [[sampleClient ? String(sampleClient.id) : 'ALL', 'Standard Salary', '600000', 'TRUE', sampleComponent?.code || 'BASIC', sampleComponent?.formula || sampleComponent?.value || 'CTC * 40%']])] },
+      { name: 'Reference', rows: [['Clients', '', ''], ['Client Id', 'Client Name', 'Client Code'], ...clients.map(item => [String(item.id), item.name, item.code || '']), ['', '', ''], ['Components', '', ''], ['Component Code', 'Name', 'Category'], ...setup.salaryComponents.map(item => [item.code, item.name, item.category])] }
+    ])
+    setSalaryTemplateDownloaded(true)
+    notify('Salary template import template downloaded.', 'info')
+  }
+  const uploadSalaryTemplates = async (file: File | null) => {
+    if (!file) return
+    if (!salaryTemplateDownloaded) {
+      const errors = ['Download the salary template before uploading.']
+      setSalaryTemplateUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors } })
+      notify(errors[0], 'error')
+      return
+    }
+    const clientIds = new Set(clients.map(item => String(item.id)))
+    const componentCodes = new Set(setup.salaryComponents.map(item => item.code.toUpperCase()))
+    await previewBulkUpload(file, 'Salary template bulk upload preview', {
+      ...salaryTemplatePreviewRules,
+      custom: (row, rowNumber) => {
+        const issues: ImportPreviewIssue[] = []
+        const clientText = row['Client Ids']
+        const clientValues = clientText.toUpperCase() === 'ALL' ? [] : clientText.split(/[;,|]/).map(item => refId(item.trim())).filter(Boolean)
+        for (const clientId of clientValues) if (!clientIds.has(clientId)) issues.push({ rowNumber, column: 'Client Ids', message: `Client Id ${clientId} was not found.` })
+        const code = row['Component Code']?.toUpperCase()
+        if (code && !componentCodes.has(code)) issues.push({ rowNumber, column: 'Component Code', message: `Component Code ${code} was not found.` })
+        return issues
+      }
+    }, selected => runBulkUploadJob(selected, setSalaryTemplateUpload, startSalaryTemplateImport, getSalaryTemplateImportJob, 'Salary template import failed. No rows were saved.'))
+  }
   const applyLocationClient = (value: string) => {
     const clientId = Number(refId(value) || 0)
     const selectedClient = clients.find(item => item.id === clientId)
@@ -304,15 +586,24 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   }
   const saveStructure = async () => {
     if (!structure.name.trim()) return notify('Template name is required.', 'error')
-    const row = { ...structure, clientId: refId(structure.clientId), id: structure.id || Date.now() }
-    const nextSetup = { ...setup, salaryStructures: [...setup.salaryStructures.filter(item => item.id !== row.id), row] }
+    const templateName = structure.name.trim()
+    const selectedClientIds = refIds(structure.clientId)
+    const targetClientIds = selectedClientIds.length ? selectedClientIds : ['']
+    const templateKey = (row: Structure) => `${refId(row.clientId)}:${row.name.trim().toLowerCase()}`
+    const rows = targetClientIds.map((clientId, index) => {
+      const existing = setup.salaryStructures.find(item => item.id !== structure.id && refId(item.clientId) === clientId && item.name.trim().toLowerCase() === templateName.toLowerCase())
+      return { ...structure, clientId, name: templateName, id: existing?.id || (index === 0 && structure.id ? structure.id : Date.now() + index) }
+    })
+    const replacementIds = new Set([structure.id, ...rows.map(item => item.id)].filter(Boolean))
+    const replacementKeys = new Set(rows.map(templateKey))
+    const nextSetup = { ...setup, salaryStructures: [...setup.salaryStructures.filter(item => !replacementIds.has(item.id) && !replacementKeys.has(templateKey(item))), ...rows] }
     setTemplateSaving(true)
     const response = await saveSetup(nextSetup, { toast: false })
     setTemplateSaving(false)
     if (!response.ok) return notify(response.error || 'Unable to save salary template.', 'error')
     setSetup(nextSetup)
     setStructure(structure0)
-    notify(row.id === structure.id ? 'Salary template updated.' : 'Salary template saved.')
+    notify(rows.length > 1 ? `Salary template saved for ${rows.length} clients.` : rows[0]?.id === structure.id ? 'Salary template updated.' : 'Salary template saved.')
   }
   const savePayslip = async () => {
     if (!payslip.name.trim()) return notify('Payslip template name is required.', 'error')
@@ -330,7 +621,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const monthly = Number(previewStructure?.annualCtc || 600000) / 12
   const previewLines = setup.salaryComponents.filter(item => item.active).slice(0, 6).map((componentRow, index) => ({ componentRow, amount: componentRow.category === 'Deduction' ? monthly * 0.048 : index === 0 ? monthly * 0.4 : index === 1 ? monthly * 0.2 : monthly * 0.08 }))
   const renderOrganizationBody = () => {
-    if (organizationTab === 'Organization') return <Row gutter={[16, 16]}><Col xs={24} lg={6}><AntCard title="Logo" size="small" className="settings-compact-panel organization-logo-panel"><FileDropZone accept="image/png,image/jpeg,image/svg+xml,image/webp" title="Drop logo here or browse" hint="PNG, JPG, SVG or WebP for payslips and documents." onFile={uploadLogo} preview={org.logoDataUrl ? <img src={org.logoDataUrl} alt="Organization logo preview" /> : <b>No logo</b>} />{org.logoDataUrl && <Button block onClick={() => o('logoDataUrl', '')}>Remove logo</Button>}</AntCard></Col><Col xs={24} lg={6}><AntCard title="Basic details" size="small" className="settings-compact-panel"><Form component={false} layout="vertical"><Form.Item label="Name" required><Input value={org.name} onChange={event => o('name', event.target.value)} /></Form.Item><Form.Item label="Legal name"><Input value={org.legalName} onChange={event => o('legalName', event.target.value)} /></Form.Item><Form.Item label="Industry"><Input value={org.industry} onChange={event => o('industry', event.target.value)} /></Form.Item></Form></AntCard></Col><Col xs={24} lg={6}><AntCard title="Tax identity" size="small" className="settings-compact-panel"><Form component={false} layout="vertical"><Form.Item label="GST Number"><Input value={org.gstin} onChange={event => o('gstin', event.target.value.toUpperCase())} /></Form.Item><Form.Item label="TAN Number"><Input value={org.tanNumber} onChange={event => o('tanNumber', event.target.value.toUpperCase())} /></Form.Item><Form.Item label="PAN"><Input value={org.pan} onChange={event => o('pan', event.target.value.toUpperCase())} /></Form.Item></Form></AntCard></Col><Col xs={24} lg={6}><AntCard title="Address" size="small" className="settings-compact-panel"><Form component={false} layout="vertical"><Form.Item label="Address" required><Input value={org.addressLine1} onChange={event => o('addressLine1', event.target.value)} /></Form.Item><Row gutter={12}><Col span={12}><Form.Item label="State"><Sel v={org.state} set={value => o('state', value)} a={stateOptions} /></Form.Item></Col><Col span={12}><Form.Item label="City" required><Input value={org.city} onChange={event => o('city', event.target.value)} /></Form.Item></Col></Row><Form.Item label="PIN" required><Input value={org.postalCode} onChange={event => o('postalCode', event.target.value.replace(/\D/g, '').slice(0, 6))} /></Form.Item></Form></AntCard></Col><Col xs={24} lg={12}><AntCard title="Registered Office Address" size="small" className="settings-compact-panel"><Input.TextArea rows={3} value={org.registeredOfficeAddress} onChange={event => o('registeredOfficeAddress', event.target.value)} /></AntCard></Col><Col xs={24} lg={12}><AntCard title="Corporate Office Address" size="small" className="settings-compact-panel"><Input.TextArea rows={3} value={org.corporateOfficeAddress} onChange={event => o('corporateOfficeAddress', event.target.value)} /></AntCard></Col></Row>
+    if (organizationTab === 'Organization') return <Row gutter={[16, 16]}><Col xs={24} lg={6}><AntCard title="Logo" size="small" className="settings-compact-panel organization-logo-panel"><FileDropZone accept="image/png,image/jpeg,image/svg+xml,image/webp" title="Drop logo here or browse" hint="PNG, JPG, SVG or WebP for payslips and documents." onFile={uploadLogo} preview={org.logoDataUrl ? <img src={org.logoDataUrl} alt="Organization logo preview" /> : <b>No logo</b>} />{org.logoDataUrl && <Button block onClick={() => o('logoDataUrl', '')}>Remove logo</Button>}</AntCard></Col><Col xs={24} lg={6}><AntCard title="Basic details" size="small" className="settings-compact-panel"><Form component={false} layout="vertical"><Form.Item label="Name" required><Input value={org.name} onChange={event => o('name', event.target.value)} /></Form.Item><Form.Item label="Legal name"><Input value={org.legalName} onChange={event => o('legalName', event.target.value)} /></Form.Item><Form.Item label="Industry"><Input value={org.industry} onChange={event => o('industry', event.target.value)} /></Form.Item></Form></AntCard></Col><Col xs={24} lg={6}><AntCard title="Tax identity" size="small" className="settings-compact-panel"><Form component={false} layout="vertical"><Form.Item label="GST Number"><Input value={org.gstin} onChange={event => o('gstin', event.target.value.toUpperCase())} /></Form.Item><Form.Item label="TAN Number"><Input value={org.tanNumber} onChange={event => o('tanNumber', event.target.value.toUpperCase())} /></Form.Item><Form.Item label="PAN"><Input value={org.pan} onChange={event => o('pan', event.target.value.toUpperCase())} /></Form.Item></Form></AntCard></Col><Col xs={24} lg={6}><AntCard title="Address" size="small" className="settings-compact-panel organization-address-panel"><Form component={false} layout="vertical"><Form.Item label="Address" required><Input value={org.addressLine1} onChange={event => o('addressLine1', event.target.value)} /></Form.Item><Form.Item label="State"><Sel v={org.state} set={value => o('state', value)} a={stateOptions} /></Form.Item><Form.Item label="City" required><Input value={org.city} onChange={event => o('city', event.target.value)} /></Form.Item><Form.Item label="PIN" required><Input value={org.postalCode} onChange={event => o('postalCode', event.target.value.replace(/\D/g, '').slice(0, 6))} /></Form.Item></Form></AntCard></Col><Col xs={24} lg={12}><AntCard title="Registered Office Address" size="small" className="settings-compact-panel"><Input.TextArea rows={3} value={org.registeredOfficeAddress} onChange={event => o('registeredOfficeAddress', event.target.value)} /></AntCard></Col><Col xs={24} lg={12}><AntCard title="Corporate Office Address" size="small" className="settings-compact-panel"><Input.TextArea rows={3} value={org.corporateOfficeAddress} onChange={event => o('corporateOfficeAddress', event.target.value)} /></AntCard></Col></Row>
     if (organizationTab === 'Tax') return <AntCard title="Tax details" size="small" className="settings-compact-panel"><Row gutter={16}><Col xs={24} md={6}><Form.Item label="PAN"><Input value={setup.tax.pan} onChange={event => u('tax', 'pan', event.target.value.toUpperCase())} /></Form.Item></Col><Col xs={24} md={6}><Form.Item label="TAN"><Input value={setup.tax.tan} onChange={event => u('tax', 'tan', event.target.value.toUpperCase())} /></Form.Item></Col><Col xs={24} md={6}><Form.Item label="AO Code"><Input value={setup.tax.aoCode} onChange={event => u('tax', 'aoCode', event.target.value)} /></Form.Item></Col><Col xs={24} md={6}><Form.Item label="Frequency"><Sel v={setup.tax.frequency} set={value => u('tax', 'frequency', value)} a={['Monthly', 'Quarterly']} /></Form.Item></Col></Row></AntCard>
     if (organizationTab === 'EPF') return <AntCard title="EPF setup" size="small" className="settings-compact-panel"><Form component={false} layout="vertical"><Row gutter={16}><Col xs={24} md={8}><Form.Item><AntCheckbox checked={setup.statutory.epf} onChange={event => u('statutory', 'epf', event.target.checked)}>Enable EPF</AntCheckbox></Form.Item></Col><Col xs={24} md={8}><Form.Item label="EPF registration no"><Input value={setup.statutory.epfNumber} onChange={event => u('statutory', 'epfNumber', event.target.value)} /></Form.Item></Col><Col xs={24} md={8}><Form.Item label="Contribution"><Sel v={setup.statutory.epfContribution} set={value => u('statutory', 'epfContribution', value)} a={['Both Employee and Employer', 'Employee only', 'Employer only']} /></Form.Item></Col></Row><Space wrap><AntCheckbox checked={setup.statutory.epfCtc} onChange={event => u('statutory', 'epfCtc', event.target.checked)}>Employer PF in CTC</AntCheckbox><AntCheckbox checked={setup.statutory.restrictPf} onChange={event => u('statutory', 'restrictPf', event.target.checked)}>Restrict PF to statutory wage ceiling</AntCheckbox><AntCheckbox checked={setup.statutory.abry} onChange={event => u('statutory', 'abry', event.target.checked)}>ABRY applicable</AntCheckbox></Space></Form></AntCard>
     if (organizationTab === 'ESI') return <AntCard title="ESI setup" size="small" className="settings-compact-panel"><Row gutter={16}><Col xs={24} md={8}><AntCheckbox checked={setup.statutory.esi} onChange={event => u('statutory', 'esi', event.target.checked)}>Enable ESI</AntCheckbox></Col><Col xs={24} md={8}><Form.Item label="ESI registration no"><Input value={setup.statutory.esiNumber} onChange={event => u('statutory', 'esiNumber', event.target.value)} /></Form.Item></Col></Row></AntCard>
@@ -389,17 +680,63 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   }
 
   return <form onSubmit={saveAll}>
-    {tab === 'Organization' && <AntCard title="Organization" size="small" className="settings-panel"><PageTabs items={organizationTabs} value={organizationTab} onChange={setOrganizationTab} label="Organization sections" />{renderOrganizationBody()}</AntCard>}
-    {tab === 'Clients' && <><AntCard title="Clients" size="small" className="settings-panel settings-table-panel"><div className="component-table-head"><div><b>Client master</b><span>Maintain client accounts used across payroll, attendance, billing, and reports.</span></div><Button type="primary" onClick={() => { setClient(client0); setClientDrawerOpen(true) }}>Add client</Button></div><DataTable rows={clients.filter(item => item.isActive)} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => { setClient(row); setClientDrawerOpen(true) }}>Edit</Button><Button size="small" danger onClick={() => void deleteClient(row)}>Delete</Button></Space>} columns={[{ key: 'name', label: 'Client' }, { key: 'code', label: 'Code' }, { key: 'contactPerson', label: 'Contact' }, { key: 'email', label: 'Email' }, { key: 'isActive', label: 'Status', render: item => item.isActive ? 'Active' : 'Inactive' }]} /></AntCard><Drawer className="settings-master-drawer" title={client.id ? 'Edit client' : 'Add client'} open={clientDrawerOpen} width={440} onClose={() => { setClientDrawerOpen(false); setClient(client0) }} destroyOnClose><Form component={false} layout="vertical" className="settings-quick-form"><Form.Item label="Client name" required><Input value={client.name} onChange={event => setClient({ ...client, name: event.target.value })} /></Form.Item><Form.Item label="Code"><Input value={client.code} onChange={event => setClient({ ...client, code: event.target.value })} /></Form.Item><Form.Item label="Contact"><Input value={client.contactPerson} onChange={event => setClient({ ...client, contactPerson: event.target.value })} /></Form.Item><Form.Item label="Email"><Input value={client.email} onChange={event => setClient({ ...client, email: event.target.value })} /></Form.Item><Form.Item label="Phone"><Input value={client.phone} onChange={event => setClient({ ...client, phone: event.target.value })} /></Form.Item><Form.Item label="Address"><Input value={client.address} onChange={event => setClient({ ...client, address: event.target.value })} /></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => setClient(client0)}>Reset</Button><Button type="primary" onClick={saveClient}>{client.id ? 'Update client' : 'Add client'}</Button></Space></Row></Form></Drawer></>}
-    {tab === 'Work Locations' && <><AntCard title="Work locations" size="small" className="settings-panel settings-table-panel"><div className="component-table-head"><div><b>Work-location master</b><span>Maintain operating locations, state/city, GST, and primary-location flags.</span></div><Button type="primary" onClick={() => { setLocation(location0); setLocationDrawerOpen(true) }}>Add work location</Button></div><DataTable rows={locations.filter(item => item.isActive)} columns={[{ key: 'clientName', label: 'Client', value: row => row.clientName || clients.find(item => item.id === row.clientId)?.name || '-' }, { key: 'name', label: 'Location' }, { key: 'city', label: 'City' }, { key: 'state', label: 'State' }, { key: 'postalCode', label: 'PIN' }, { key: 'gstin', label: 'GST Number' }, { key: 'isPrimary', label: 'Primary', render: item => item.isPrimary ? 'Yes' : 'No' }]} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => { setLocation(row); setLocationDrawerOpen(true) }}>Edit</Button><Button size="small" danger onClick={() => void deleteLocation(row)}>Delete</Button></Space>} /></AntCard><Drawer className="settings-master-drawer" title={location.id ? 'Edit work location' : 'Add work location'} open={locationDrawerOpen} width={520} onClose={() => { setLocationDrawerOpen(false); setLocation(location0) }} destroyOnClose><Form component={false} layout="vertical" className="settings-quick-form"><Form.Item label="Client" required><Sel v={location.clientId || ''} set={applyLocationClient} a={clients.map(item => `${item.id}:${item.name}`)} /></Form.Item><Form.Item label="Location name" required><Input value={location.name} onChange={event => setLocation({ ...location, name: event.target.value })} placeholder="Head Office / WFH - Employee Name" /></Form.Item><Row gutter={12}><Col xs={24} md={12}><Form.Item label="State"><Sel v={location.state} set={value => setLocation({ ...location, state: value, city: '' })} a={stateOptions} /></Form.Item></Col><Col xs={24} md={12}><Form.Item label="City"><CitySelectWithAdd value={location.city} stateName={location.state} options={cityOptions(location.state)} onChange={value => setLocation({ ...location, city: value })} onAddCity={addCityForSelectedState} /></Form.Item></Col></Row><Row gutter={12}><Col xs={24} md={12}><Form.Item label="PIN code"><Input value={location.postalCode} onChange={event => setLocation({ ...location, postalCode: event.target.value.replace(/\D/g, '').slice(0, 6) })} /></Form.Item></Col><Col xs={24} md={12}><Form.Item label="GST Number"><Input value={location.gstin} onChange={event => setLocation({ ...location, gstin: event.target.value.toUpperCase() })} /></Form.Item></Col></Row><Form.Item label="Address"><Input value={location.address} onChange={event => setLocation({ ...location, address: event.target.value })} /></Form.Item><Form.Item><Space direction="vertical"><AntCheckbox checked={location.isPrimary} onChange={event => setLocation({ ...location, isPrimary: event.target.checked })}>Primary work location</AntCheckbox><AntCheckbox checked={location.isActive} onChange={event => setLocation({ ...location, isActive: event.target.checked })}>Active</AntCheckbox></Space></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => setLocation(location0)}>Reset</Button><Button type="primary" onClick={saveLocation}>{location.id ? 'Update location' : 'Add location'}</Button></Space></Row></Form></Drawer></>}
-    {tab === 'Dropdown Masters' && <><AntCard title="Dropdown values" size="small" className="settings-panel settings-table-panel"><div className="component-table-head"><div><b>Dropdown master</b><span>Maintain reusable departments, designations, states, cities, grades, and work-week patterns.</span></div><Button type="primary" onClick={() => { setDrop({ ...drop0, type: selectedDropType, clientId: selectedDropType === 'Employee Grade' ? clients[0]?.id || 0 : 0 }); setDropState(''); setDropDrawerOpen(true) }}>Add value</Button></div><DataTable rows={visibleDrops} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editDrop(row)}>Edit</Button><Button size="small" danger onClick={() => void deleteDrop(row)}>Delete</Button></Space>} columns={[{ key: 'master', label: 'Master', value: row => isCityType(row.type) ? 'City' : row.type }, { key: 'clientId', label: 'Client', value: row => row.type === 'Employee Grade' ? clientName(row.clientId) : '-' }, { key: 'state', label: 'State', value: row => cityState(row.type) || '-' }, { key: 'value', label: 'Value' }, { key: 'isActive', label: 'Status', render: item => item.isActive ? 'Active' : 'Inactive' }]} /></AntCard><Drawer className="settings-master-drawer" title={drop.id ? 'Edit dropdown value' : 'Add dropdown value'} open={dropDrawerOpen} width={480} onClose={() => { setDropDrawerOpen(false); setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }} destroyOnClose><Form component={false} layout="vertical" className="settings-quick-form"><Form.Item label="Master type" required><Sel v={selectedDropType} set={changeDropType} a={dropTypes} /></Form.Item>{selectedDropType === 'Employee Grade' && <Form.Item label="Client" required><Sel v={drop.clientId || ''} set={value => setDrop({ ...drop, clientId: Number(refId(value) || 0) })} a={clients.map(item => `${item.id}:${item.name}`)} /></Form.Item>}{selectedDropType === 'City' && <Form.Item label="State" required><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></Form.Item>}{selectedDropType === 'Work Week' ? <WorkWeekMasterFields drop={drop} setDrop={setDrop} /> : <Form.Item label={selectedDropType === 'City' ? 'City' : 'Value'} required><Input value={drop.value} onChange={event => setDrop({ ...drop, value: event.target.value })} placeholder={selectedDropType === 'City' ? 'e.g. Bengaluru / Pune' : selectedDropType === 'Employee Grade' ? 'e.g. G1 / Supervisor' : 'e.g. Finance / Manager'} /></Form.Item>}<Form.Item><AntCheckbox checked={drop.isActive} onChange={event => setDrop({ ...drop, isActive: event.target.checked })}>Active</AntCheckbox></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => { setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }}>Reset</Button><Button type="primary" style={drop.id ? { background: '#f59e0b', borderColor: '#f59e0b' } : undefined} onClick={saveDrop}>{drop.id ? 'Update value' : 'Add value'}</Button></Space></Row></Form></Drawer></>}
+    {tab === 'Organization' && <AntCard title="Organization" size="small" className="settings-panel organization-settings-page"><PageTabs items={organizationTabs} value={organizationTab} onChange={setOrganizationTab} label="Organization sections" />{renderOrganizationBody()}</AntCard>}
+    {tab === 'Clients' && <>
+      <AntCard title="Clients" size="small" className="settings-panel settings-table-panel">
+        <div className="component-table-head">
+          <div><b>Client master</b><span>Maintain client accounts used across payroll, attendance, billing, and reports.</span></div>
+          <Space className="settings-master-actions" size={8} wrap>
+            <Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadClientTemplate}>Template</Button>
+            <label className={`settings-upload-action ${!clientTemplateDownloaded ? 'disabled' : ''}`} title={clientTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}>
+              <input type="file" disabled={!clientTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadClients(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} />
+              <UploadOutlined />
+              Bulk upload
+            </label>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => { setClient(client0); setClientDrawerOpen(true) }}>Add client</Button>
+          </Space>
+        </div>
+        <DataTable rows={clients.filter(item => item.isActive)} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => { setClient(row); setClientDrawerOpen(true) }}>Edit</Button><Button size="small" danger onClick={() => void deleteClient(row)}>Delete</Button></Space>} columns={[{ key: 'name', label: 'Client' }, { key: 'code', label: 'Code' }, { key: 'contactPerson', label: 'Contact' }, { key: 'email', label: 'Email' }, { key: 'isActive', label: 'Status', render: item => item.isActive ? 'Active' : 'Inactive' }]} />
+      </AntCard>
+      <Drawer className="settings-master-drawer client-master-drawer" title={<div className="settings-drawer-title"><span>Client</span><h3>{client.id ? 'Edit client' : 'Add client'}</h3><p>Maintain client account details used across payroll, attendance, billing, and reports.</p></div>} open={clientDrawerOpen} width={760} onClose={() => { setClientDrawerOpen(false); setClient(client0) }} destroyOnClose>
+        <Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Client name" required><Input value={client.name} onChange={event => setClient({ ...client, name: event.target.value })} /></Form.Item><Form.Item label="Code"><Input value={client.code} onChange={event => setClient({ ...client, code: event.target.value })} /></Form.Item><Form.Item label="Contact"><Input value={client.contactPerson} onChange={event => setClient({ ...client, contactPerson: event.target.value })} /></Form.Item><Form.Item label="Email"><Input value={client.email} onChange={event => setClient({ ...client, email: event.target.value })} /></Form.Item><Form.Item label="Phone"><Input value={client.phone} onChange={event => setClient({ ...client, phone: event.target.value })} /></Form.Item><Form.Item label="Address"><Input value={client.address} onChange={event => setClient({ ...client, address: event.target.value })} /></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => setClient(client0)}>Reset</Button><Button type="primary" onClick={saveClient}>{client.id ? 'Update client' : 'Add client'}</Button></Space></Row></Form>
+      </Drawer>
+    </>}
+    {tab === 'Work Locations' && <><AntCard title="Work locations" size="small" className="settings-panel settings-table-panel"><div className="component-table-head"><div><b>Work-location master</b><span>Maintain operating locations, state/city, GST, and primary-location flags.</span></div><Space className="settings-master-actions" size={8} wrap><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadLocationTemplate}>Template</Button><label className={`settings-upload-action ${!locationTemplateDownloaded ? 'disabled' : ''}`} title={locationTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!locationTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadWorkLocations(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" icon={<PlusOutlined />} onClick={() => { setLocation(location0); setLocationDrawerOpen(true) }}>Add work location</Button></Space></div><DataTable rows={locations.filter(item => item.isActive)} columns={[{ key: 'clientName', label: 'Client', value: row => row.clientName || clients.find(item => item.id === row.clientId)?.name || '-' }, { key: 'name', label: 'Location' }, { key: 'city', label: 'City' }, { key: 'state', label: 'State' }, { key: 'postalCode', label: 'PIN' }, { key: 'gstin', label: 'GST Number' }, { key: 'isPrimary', label: 'Primary', render: item => item.isPrimary ? 'Yes' : 'No' }]} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => { setLocation(row); setLocationDrawerOpen(true) }}>Edit</Button><Button size="small" danger onClick={() => void deleteLocation(row)}>Delete</Button></Space>} /></AntCard><Drawer className="settings-master-drawer work-location-master-drawer" title={<div className="settings-drawer-title"><span>Work location</span><h3>{location.id ? 'Edit work location' : 'Add work location'}</h3><p>Maintain client location, address, GST, and primary-location details.</p></div>} open={locationDrawerOpen} width={760} onClose={() => { setLocationDrawerOpen(false); setLocation(location0) }} destroyOnClose><Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Client" required><Sel v={location.clientId || ''} set={applyLocationClient} a={clients.map(item => `${item.id}:${item.name}`)} /></Form.Item><Form.Item label="Location name" required><Input value={location.name} onChange={event => setLocation({ ...location, name: event.target.value })} placeholder="Head Office / WFH - Employee Name" /></Form.Item><Row gutter={12}><Col xs={24} md={12}><Form.Item label="State"><Sel v={location.state} set={value => setLocation({ ...location, state: value, city: '' })} a={stateOptions} /></Form.Item></Col><Col xs={24} md={12}><Form.Item label="City"><CitySelectWithAdd value={location.city} stateName={location.state} options={cityOptions(location.state)} onChange={value => setLocation({ ...location, city: value })} onAddCity={addCityForSelectedState} /></Form.Item></Col></Row><Row gutter={12}><Col xs={24} md={12}><Form.Item label="PIN code"><Input value={location.postalCode} onChange={event => setLocation({ ...location, postalCode: event.target.value.replace(/\D/g, '').slice(0, 6) })} /></Form.Item></Col><Col xs={24} md={12}><Form.Item label="GST Number"><Input value={location.gstin} onChange={event => setLocation({ ...location, gstin: event.target.value.toUpperCase() })} /></Form.Item></Col></Row><Form.Item label="Address"><Input value={location.address} onChange={event => setLocation({ ...location, address: event.target.value })} /></Form.Item><Form.Item><Space direction="vertical"><AntCheckbox checked={location.isPrimary} onChange={event => setLocation({ ...location, isPrimary: event.target.checked })}>Primary work location</AntCheckbox><AntCheckbox checked={location.isActive} onChange={event => setLocation({ ...location, isActive: event.target.checked })}>Active</AntCheckbox></Space></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => setLocation(location0)}>Reset</Button><Button type="primary" onClick={saveLocation}>{location.id ? 'Update location' : 'Add location'}</Button></Space></Row></Form></Drawer></>}
+    {tab === 'Dropdown Masters' && <>
+      <AntCard title="Dropdown values" size="small" className="settings-panel settings-table-panel">
+        <div className="component-table-head">
+          <div><b>Dropdown master</b><span>Maintain reusable departments, designations, states, cities, grades, and work-week patterns.</span></div>
+          <Space className="settings-master-actions" size={8} wrap>
+            <Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadDropTemplate}>Template</Button>
+            <label className={`settings-upload-action ${!dropTemplateDownloaded ? 'disabled' : ''}`} title={dropTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}>
+              <input type="file" disabled={!dropTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadDrops(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} />
+              <UploadOutlined />Bulk upload
+            </label>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => { setDrop({ ...drop0, type: selectedDropType, clientId: selectedDropType === 'Employee Grade' ? clients[0]?.id || 0 : 0 }); setDropState(''); setDropDrawerOpen(true) }}>Add value</Button>
+          </Space>
+        </div>
+        <Form component="div" layout="vertical" className="dropdown-master-filter">
+          <Form.Item label="Master type"><Sel v={selectedDropType} set={changeDropType} a={dropTypes} /></Form.Item>
+          {selectedDropType === 'City' && <Form.Item label="State"><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></Form.Item>}
+          <span>{visibleDrops.length} active value{visibleDrops.length === 1 ? '' : 's'}</span>
+        </Form>
+        <DataTable rows={visibleDrops} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editDrop(row)}>Edit</Button><Button size="small" danger onClick={() => void deleteDrop(row)}>Delete</Button></Space>} columns={[{ key: 'master', label: 'Master', value: row => isCityType(row.type) ? 'City' : row.type }, { key: 'clientId', label: 'Client', value: row => row.type === 'Employee Grade' ? clientName(row.clientId) : '-' }, { key: 'state', label: 'State', value: row => cityState(row.type) || '-' }, { key: 'value', label: 'Value' }, { key: 'isActive', label: 'Status', render: item => item.isActive ? 'Active' : 'Inactive' }]} />
+      </AntCard>
+      <Drawer className="settings-master-drawer dropdown-master-drawer" title={<div className="settings-drawer-title"><span>Dropdown master</span><h3>{drop.id ? 'Edit dropdown value' : 'Add dropdown value'}</h3><p>Maintain reusable values for departments, designations, states, cities, grades, and work weeks.</p></div>} open={dropDrawerOpen} width={760} onClose={() => { setDropDrawerOpen(false); setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }} destroyOnClose><Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Master type" required><Sel v={selectedDropType} set={changeDropType} a={dropTypes} /></Form.Item>{selectedDropType === 'Employee Grade' && <Form.Item label="Client" required><Sel v={drop.clientId || ''} set={value => setDrop({ ...drop, clientId: Number(refId(value) || 0) })} a={clients.map(item => `${item.id}:${item.name}`)} /></Form.Item>}{selectedDropType === 'City' && <Form.Item label="State" required><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></Form.Item>}{selectedDropType === 'Work Week' ? <WorkWeekMasterFields drop={drop} setDrop={setDrop} /> : <Form.Item label={selectedDropType === 'City' ? 'City' : 'Value'} required><Input value={drop.value} onChange={event => setDrop({ ...drop, value: event.target.value })} placeholder={selectedDropType === 'City' ? 'e.g. Bengaluru / Pune' : selectedDropType === 'Employee Grade' ? 'e.g. G1 / Supervisor' : 'e.g. Finance / Manager'} /></Form.Item>}<Form.Item><AntCheckbox checked={drop.isActive} onChange={event => setDrop({ ...drop, isActive: event.target.checked })}>Active</AntCheckbox></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => { setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }}>Reset</Button><Button type="primary" style={drop.id ? { background: '#f59e0b', borderColor: '#f59e0b' } : undefined} onClick={saveDrop}>{drop.id ? 'Update value' : 'Add value'}</Button></Space></Row></Form></Drawer>
+    </>}
     {tab === 'Tax Engine' && <TaxEngineManager clients={clients} onMessage={notifyFromChild} mode="company" />}
     {tab === 'Statutory Setup' && <><PageTabs items={statutoryTabs} value={statutoryTab} onChange={setStatutoryTab} label="Statutory setup sections" />{statutoryTab === 'Income Tax Rules' ? <TaxEngineManager clients={clients} onMessage={notifyFromChild} mode="statutory" /> : renderProfessionalTaxSetup()}</>}
     {tab === 'Client Billing Configuration' && renderClientBilling()}
-    {tab === 'Salary Components' && <Card t="Salary components"><PageTabs items={componentTabs} value={componentTab} onChange={item => { setComponentTab(item); setComponent(normalizeComponentForUi({ ...component0, category: item })); setComponentDrawerOpen(false) }} label="Salary component categories" getLabel={item => `${item}s`} /><div className="component-table-head"><div><b>{componentTab}s</b><span>Changes save immediately to payroll setup.</span></div><button type="button" disabled={componentSaving} onClick={openNewComponent}>Add {componentTab}</button></div><div className="component-guide"><b>Setup guide</b><span>Use Formula for all derived components. Use Residual for balancing amount. Payable values are handled by Pro-rata, separate payable rows are not needed.</span></div><DataTable rows={componentRows} actions={row => <span className="row-actions"><button type="button" onClick={() => editComponent(row)}>Edit</button><button type="button" className="danger" disabled={componentSaving} onClick={() => void deleteComponent(row)}>Delete</button></span>} emptyText={`No ${componentTab.toLowerCase()} components configured yet.`} exportFileName={`salary-${componentTab.toLowerCase()}-components`} columns={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Name' }, { key: 'componentType', label: 'Type' }, { key: 'calculationType', label: 'Calculation' }, { key: 'payType', label: 'Pay Type' }, { key: 'priority', label: 'Priority' }, { key: 'locked', label: 'Lock', render: item => componentUsed(item.id, setup) ? 'Locked' : 'Open' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
-    {tab === 'Salary Templates' && <SalaryTemplateDesigner clients={clients} components={setup.salaryComponents} structure={structure} setStructure={setStructure} templates={setup.salaryStructures.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} saveTemplate={saveStructure} saving={templateSaving} />}
+    {tab === 'Salary Components' && <Card t="Salary components"><PageTabs items={componentTabs} value={componentTab} onChange={item => { setComponentTab(item); setComponent(normalizeComponentForUi({ ...component0, category: item })); setComponentDrawerOpen(false) }} label="Salary component categories" getLabel={item => `${item}s`} /><div className="component-table-head"><div><b>{componentTab}s</b><span>Maintain salary component formulas, flags, and payroll order.</span></div><Space className="settings-master-actions" size={8} wrap><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadSalaryComponentTemplate}>Template</Button><label className={`settings-upload-action ${!componentTemplateDownloaded ? 'disabled' : ''}`} title={componentTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!componentTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadSalaryComponents(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" icon={<PlusOutlined />} disabled={componentSaving} onClick={openNewComponent}>Add {componentTab}</Button></Space></div><div className="component-guide"><b>Setup guide</b><span>Use Formula for all derived components. Use Residual for balancing amount. Payable values are handled by Pro-rata, separate payable rows are not needed.</span></div><DataTable rows={componentRows} actions={row => <span className="row-actions"><button type="button" onClick={() => editComponent(row)}>Edit</button><button type="button" className="danger" disabled={componentSaving} onClick={() => void deleteComponent(row)}>Delete</button></span>} emptyText={`No ${componentTab.toLowerCase()} components configured yet.`} exportFileName={`salary-${componentTab.toLowerCase()}-components`} columns={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Name' }, { key: 'componentType', label: 'Type' }, { key: 'calculationType', label: 'Calculation' }, { key: 'payType', label: 'Pay Type' }, { key: 'priority', label: 'Priority' }, { key: 'locked', label: 'Lock', render: item => componentUsed(item.id, setup) ? 'Locked' : 'Open' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
+    {tab === 'Salary Templates' && <SalaryTemplateDesigner clients={clients} components={setup.salaryComponents} structure={structure} setStructure={setStructure} templates={setup.salaryStructures.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} saveTemplate={saveStructure} saving={templateSaving} templateDownloaded={salaryTemplateDownloaded} onDownloadTemplate={downloadSalaryTemplateTemplate} onUploadTemplate={uploadSalaryTemplates} />}
     {tab === 'Payslip Templates' && <Card t="Payslip templates"><div className="grid"><F l="Client"><Sel v={payslip.clientId} set={value => setPayslip({ ...payslip, clientId: value })} a={clients.map(item => `${item.id}:${item.name}`)} /></F><F l="Template name"><input value={payslip.name} onChange={event => setPayslip({ ...payslip, name: event.target.value })} /></F><F l="Theme"><Sel v={payslip.theme} set={value => setPayslip({ ...payslip, theme: value })} a={['Classic', 'Modern', 'Compact']} /></F><Chk l="Show logo" v={payslip.showLogo} set={value => setPayslip({ ...payslip, showLogo: value })} /><Chk l="Show client" v={payslip.showClient} set={value => setPayslip({ ...payslip, showClient: value })} /><Chk l="Show YTD" v={payslip.showYtd} set={value => setPayslip({ ...payslip, showYtd: value })} /><Chk l="Show bank info" v={payslip.showBank} set={value => setPayslip({ ...payslip, showBank: value })} /><Chk l="Active" v={payslip.active} set={value => setPayslip({ ...payslip, active: value })} /><F l="Footer note" w><input value={payslip.note} onChange={event => setPayslip({ ...payslip, note: event.target.value })} /></F><button type="button" disabled={payslipSaving} onClick={() => void savePayslip()}>{payslipSaving ? 'Saving...' : 'Add / Update template'}</button></div><div className={`payslip-preview ${payslip.theme.toLowerCase()}`}><header>{payslip.showLogo && <b className={org.logoDataUrl ? 'payslip-logo-mark' : ''}>{org.logoDataUrl ? <img src={org.logoDataUrl} alt="Organization logo" /> : 'P'}</b>}<div><h3>{org.name || 'Your Organization'}</h3><p>Payslip for June 2026</p>{payslip.showClient && <small>Client: {clientName(payslip.clientId)}</small>}</div></header><section><div><span>Employee</span><strong>Demo Employee</strong></div><div><span>Designation</span><strong>Software Engineer</strong></div><div><span>Pay Days</span><strong>30</strong></div><div><span>Bank</span><strong>{payslip.showBank ? 'HDFC ****1234' : '-'}</strong></div></section><table><thead><tr><th>Earnings</th><th>Amount</th><th>Deductions</th><th>Amount</th></tr></thead><tbody>{previewLines.map((item, index) => <tr key={item.componentRow.id}><td>{item.componentRow.category !== 'Deduction' ? item.componentRow.name : ''}</td><td>{item.componentRow.category !== 'Deduction' ? money(item.amount) : ''}</td><td>{item.componentRow.category === 'Deduction' ? item.componentRow.name : index === 0 ? 'Professional Tax' : ''}</td><td>{item.componentRow.category === 'Deduction' ? money(item.amount) : index === 0 ? '200' : ''}</td></tr>)}</tbody></table>{payslip.showYtd && <p className="ytd">YTD Gross: Rs {money(monthly * 6)} | YTD Tax: Rs {money(1200)}</p>}<footer>{payslip.note}</footer></div><DataTable rows={setup.payslipTemplates.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} onEdit={setPayslip} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'theme', label: 'Theme' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
     {!['Clients', 'Client Billing Configuration', 'Salary Components', 'Salary Templates', 'Payslip Templates', 'Work Locations', 'Dropdown Masters'].includes(tab) && <div className="actions"><p>Structures are client-wise. Components are global.</p><button disabled={saving}>{saving ? 'Saving...' : 'Save settings'}</button></div>}
+    <BulkUploadProgressModal open={clientUpload.open} title="Client bulk upload" state={clientUpload.state} percent={clientUpload.percent} summary={clientUpload.summary} onClose={() => setClientUpload(current => ({ ...current, open: false }))} />
+    <BulkUploadProgressModal open={locationUpload.open} title="Work-location bulk upload" state={locationUpload.state} percent={locationUpload.percent} summary={locationUpload.summary} onClose={() => setLocationUpload(current => ({ ...current, open: false }))} />
+    <BulkUploadProgressModal open={dropUpload.open} title="Dropdown master bulk upload" state={dropUpload.state} percent={dropUpload.percent} summary={dropUpload.summary} onClose={() => setDropUpload(current => ({ ...current, open: false }))} />
+    <BulkUploadProgressModal open={componentUpload.open} title="Salary component bulk upload" state={componentUpload.state} percent={componentUpload.percent} summary={componentUpload.summary} onClose={() => setComponentUpload(current => ({ ...current, open: false }))} />
+    <BulkUploadProgressModal open={salaryTemplateUpload.open} title="Salary template bulk upload" state={salaryTemplateUpload.state} percent={salaryTemplateUpload.percent} summary={salaryTemplateUpload.summary} onClose={() => setSalaryTemplateUpload(current => ({ ...current, open: false }))} />
+    <BulkUploadPreviewModal preview={bulkPreview} importing={bulkPreviewImporting} onCancel={() => { setBulkPreview(emptyBulkUploadPreview); setBulkPreviewConfirm(null) }} onConfirm={() => void confirmBulkPreview()} />
     {renderComponentDrawer()}
   </form>
 }

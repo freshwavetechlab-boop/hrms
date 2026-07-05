@@ -1,8 +1,13 @@
 .salary-template-designer{display:grid;gap:12px}
-.salary-template-head{display:grid;grid-template-columns:180px minmax(220px,1fr) 130px 116px;gap:10px;align-items:end}
+.salary-template-head{display:grid;grid-template-columns:minmax(260px,1.1fr) minmax(220px,1fr) 130px 116px;gap:10px;align-items:end}
 .salary-template-head label{display:grid;gap:4px;min-width:0;color:#465067;font-size:.72rem;font-weight:800}
 .salary-template-head input,.salary-template-head select{height:34px}
 .salary-template-head button{height:34px;border:0;border-radius:8px;background:#6546e8;color:#fff;font-weight:800}
+.salary-template-client-select{min-width:0}
+.salary-template-actions{display:flex;justify-content:flex-end;margin:-2px 0 2px}
+.salary-template-action-button{height:36px!important;border:1px solid #6546e8!important;border-radius:10px!important;background:linear-gradient(135deg,#7054e7,#5637d2)!important;color:#fff!important;font-weight:800!important;box-shadow:0 8px 18px #6546e824!important}
+.salary-template-action-button span,.salary-template-action-button svg{color:#fff!important}
+.salary-template-action-button:hover{border-color:#5133cc!important;background:linear-gradient(135deg,#6546e8,#4f2fca)!important;color:#fff!important}
 .salary-template-workbench{display:grid;grid-template-columns:280px minmax(0,1fr);gap:12px;align-items:start}
 .salary-component-palette,.salary-template-canvas{min-width:0;border:1px solid #e5e8f0;border-radius:10px;background:#fafbfc;padding:10px}
 .salary-tabs.page-tabs{display:flex;grid-template-columns:none;gap:2px;margin-bottom:10px}

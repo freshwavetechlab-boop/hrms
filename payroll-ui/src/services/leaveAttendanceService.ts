@@ -1,5 +1,6 @@
 import type { AttendanceGroup, AttendanceReviewContext, AttendanceSettings, EmployeeDailyAttendance, EmployeeMonthlyAttendance, GeoFenceRule, GeoFenceScope, Holiday, LeaveAttendancePreferences, LeaveAttendanceSetup, LeaveBalanceImportMapping, LeaveBalanceImportPreview, LeaveBalanceImportResult, LeaveType, SetupStatus } from '../types/payroll'
-import { apiUrl, deleteJson, getBlob, getJson, postFormWithProgress, postJson, putJson } from './apiClient'
+import { apiUrl, deleteJson, getBlob, getJson, postForm, postFormWithProgress, postJson, putJson } from './apiClient'
+import type { BulkImportStatus } from './settingsService'
 
 const fallback: LeaveAttendanceSetup = { clientId: 0, isEnabled: false, steps: [] }
 const preferencesFallback: LeaveAttendancePreferences = { id: 0, clientId: 0, workLocationId: null, workLocationName: 'All locations', workWeek: '', attendanceCycleStartDay: 1, attendanceCycleEndDay: 25, payrollReportGenerationDay: 28, includeLeaveEncashmentInPayRun: false, leaveEncashmentSalaryComponentId: null }
@@ -59,6 +60,14 @@ export async function deleteLeaveType(clientId: number, id: number) {
   const response = await deleteJson(`/api/leave-attendance/leave-types/${id}?clientId=${clientId}`, null, { toast: false })
   return { ok: response.ok, error: response.error }
 }
+export const downloadLeaveTypeImportTemplate = (clientId: number) => getBlob(`/api/leave-attendance/leave-types/import-template?clientId=${clientId}`)
+export const startLeaveTypeImport = (clientId: number, file: File) => {
+  const body = new FormData()
+  body.append('clientId', String(clientId))
+  body.append('file', file)
+  return postForm<BulkImportStatus>('/api/leave-attendance/leave-types/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
+}
+export const getLeaveTypeImportJob = (jobId: string) => getJson<BulkImportStatus>(`/api/leave-attendance/leave-types/import-jobs/${jobId}`, { jobId, state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: ['Import job not found.'] })
 export const getHolidays = (clientId: number, year?: number, workLocationId?: number) => getJson<Holiday[]>(`/api/leave-attendance/holidays?${new URLSearchParams({ clientId: String(clientId), ...(year ? { year: String(year) } : {}), ...(workLocationId ? { workLocationId: String(workLocationId) } : {}) })}`, [])
 export async function saveHoliday(holiday: Holiday) {
   return postJson('/api/leave-attendance/holidays', holiday, null as Holiday | null, { toast: false })

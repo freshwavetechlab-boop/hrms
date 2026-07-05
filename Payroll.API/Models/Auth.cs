@@ -35,6 +35,45 @@ public class SaveAuthRoleRequest
     public List<string> Permissions { get; set; } = [];
 }
 
+public class EmployeeLoginProvisionPreview
+{
+    public int EmployeeId { get; set; }
+    public int ClientId { get; set; }
+    public string ClientName { get; set; } = string.Empty;
+    public string EmployeeCode { get; set; } = string.Empty;
+    public string EmployeeName { get; set; } = string.Empty;
+    public string WorkEmail { get; set; } = string.Empty;
+    public string Department { get; set; } = string.Empty;
+    public string Designation { get; set; } = string.Empty;
+}
+
+public class ProvisionEmployeeLoginsRequest
+{
+    public List<int> EmployeeIds { get; set; } = [];
+    public List<string> Roles { get; set; } = ["employee"];
+    public string TemporaryPassword { get; set; } = string.Empty;
+    public bool MustChangePassword { get; set; } = true;
+}
+
+public class ProvisionEmployeeLoginResult
+{
+    public int EmployeeId { get; set; }
+    public int? UserId { get; set; }
+    public string EmployeeCode { get; set; } = string.Empty;
+    public string EmployeeName { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+}
+
+public class ProvisionEmployeeLoginsResponse
+{
+    public List<ProvisionEmployeeLoginResult> Results { get; set; } = [];
+    public string TemporaryPassword { get; set; } = string.Empty;
+    public int CreatedCount => Results.Count(item => item.Status == "Created");
+    public int SkippedCount => Results.Count(item => item.Status != "Created");
+}
+
 public class AuthPermission
 {
     public int Id { get; set; }

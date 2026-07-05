@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type Key, type ReactNode } from 'react'
 import { Button, Input, Space, Table } from 'antd'
-import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
+import type { ColumnsType, TablePaginationConfig, TableRowSelection } from 'antd/es/table/interface'
 
 export type Column<T> = {
   key: keyof T | string
@@ -24,6 +24,7 @@ type DataTableProps<T> = {
   title?: string
   exportFileName?: string
   pageSizeOptions?: number[]
+  rowSelection?: TableRowSelection<T>
 }
 
 const text = (value: unknown) => value === null || value === undefined ? '' : String(value)
@@ -92,6 +93,7 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
       rowClassName={row => rowClassName?.(row) ?? ''}
       locale={{ emptyText }}
       pagination={pagination}
+      rowSelection={props.rowSelection}
       tableLayout="fixed"
       scroll={{ x: tableScrollX }}
       onChange={(_, __, ___, extra) => { setDirtyTable(true); setExportRows(extra.currentDataSource as T[]) }}

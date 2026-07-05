@@ -13,10 +13,45 @@ export const saveClientBillingModule = (module: ClientBillingModule) => postJson
 export const getClientBillingConfigurations = () => getJson<ClientBillingConfiguration[]>('/api/client-billing/configurations', [])
 export const saveClientBillingConfiguration = (row: ClientBillingConfiguration) => postJson('/api/client-billing/configurations', row, { id: row.id }, { toast: false })
 export const saveClient = (client: Client, options: ApiOptions = {}) => postJson('/api/clients', client, { id: client.id }, options)
+export const downloadClientImportTemplate = () => getBlob('/api/clients/import-template')
+export const startClientImport = (file: File) => {
+  const body = new FormData()
+  body.append('file', file)
+  return postForm<BulkImportStatus>('/api/clients/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
+}
+export const getClientImportJob = (jobId: string) => getJson<BulkImportStatus>(`/api/clients/import-jobs/${jobId}`, { jobId, state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: ['Import job not found.'] })
 export const getWorkLocations = () => getJson<WorkLocation[]>('/api/work-locations', [])
 export const saveWorkLocation = (location: WorkLocation) => postJson('/api/work-locations', location, { id: location.id })
+export const downloadWorkLocationImportTemplate = () => getBlob('/api/work-locations/import-template')
+export const startWorkLocationImport = (file: File) => {
+  const body = new FormData()
+  body.append('file', file)
+  return postForm<BulkImportStatus>('/api/work-locations/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
+}
+export const getWorkLocationImportJob = (jobId: string) => getJson<BulkImportStatus>(`/api/work-locations/import-jobs/${jobId}`, { jobId, state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: ['Import job not found.'] })
 export const getDropdowns = () => getJson<Drop[]>('/api/dropdowns', [])
 export const saveDropdown = (drop: Drop, options: ApiOptions = {}) => postJson('/api/dropdowns', drop, { id: drop.id }, options)
+export const downloadDropdownImportTemplate = () => getBlob('/api/dropdowns/import-template')
+export const startDropdownImport = (file: File) => {
+  const body = new FormData()
+  body.append('file', file)
+  return postForm<BulkImportStatus>('/api/dropdowns/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
+}
+export const getDropdownImportJob = (jobId: string) => getJson<BulkImportStatus>(`/api/dropdowns/import-jobs/${jobId}`, { jobId, state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: ['Import job not found.'] })
+export const downloadSalaryComponentImportTemplate = () => getBlob('/api/salary-components/import-template')
+export const startSalaryComponentImport = (file: File) => {
+  const body = new FormData()
+  body.append('file', file)
+  return postForm<BulkImportStatus>('/api/salary-components/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
+}
+export const getSalaryComponentImportJob = (jobId: string) => getJson<BulkImportStatus>(`/api/salary-components/import-jobs/${jobId}`, { jobId, state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: ['Import job not found.'] })
+export const downloadSalaryTemplateImportTemplate = () => getBlob('/api/salary-templates/import-template')
+export const startSalaryTemplateImport = (file: File) => {
+  const body = new FormData()
+  body.append('file', file)
+  return postForm<BulkImportStatus>('/api/salary-templates/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
+}
+export const getSalaryTemplateImportJob = (jobId: string) => getJson<BulkImportStatus>(`/api/salary-templates/import-jobs/${jobId}`, { jobId, state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: ['Import job not found.'] })
 export const saveEmployee = (employee: Employee, infotypeCode?: string, changeReason = '') => {
   const query = new URLSearchParams()
   if (infotypeCode) query.set('infotypeCode', infotypeCode)

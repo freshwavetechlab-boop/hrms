@@ -1,4 +1,4 @@
-import type { AuditLog, AuthPermission, AuthRole, AuthUser, Client, Employee } from '../types/payroll'
+import type { AuditLog, AuthPermission, AuthRole, AuthUser, Client, Employee, EmployeeLoginProvisionPreview, EmployeeLoginProvisionResponse } from '../types/payroll'
 import { getJson, postJson } from './apiClient'
 
 export const loadSecurityData = async () => ({
@@ -18,4 +18,13 @@ export async function saveSecurityUser(body: unknown) {
 export async function saveSecurityRole(body: unknown) {
   const response = await postJson('/api/security/roles', body, null)
   return { ok: response.ok, error: response.error }
+}
+
+export async function loadEmployeeProvisionPreview(clientId?: string | number) {
+  const query = clientId ? `?clientId=${encodeURIComponent(String(clientId))}` : ''
+  return getJson<EmployeeLoginProvisionPreview[]>(`/api/security/users/employee-provision-preview${query}`, [])
+}
+
+export async function provisionEmployeeLogins(body: unknown) {
+  return postJson('/api/security/users/provision-employees', body, null as EmployeeLoginProvisionResponse | null)
 }

@@ -270,6 +270,33 @@ app.MapPost("/api/security/users", async (AuthRepository repository, SaveAuthUse
 .WithName("SaveSecurityUser")
 .WithOpenApi();
 
+app.MapGet("/api/security/users/employee-provision-preview", async (AuthRepository repository, HttpContext context, int? clientId) =>
+{
+    if (!HasPermission(context, "security.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Results.Ok(await repository.GetEmployeeProvisionPreviewAsync(clientId));
+})
+.WithName("GetEmployeeProvisionPreview")
+.WithOpenApi();
+
+app.MapPost("/api/security/users/provision-employees", async (AuthRepository repository, ProvisionEmployeeLoginsRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "security.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (request.EmployeeIds.Count == 0)
+        return Results.BadRequest(new { error = "Select at least one employee." });
+    try
+    {
+        return Results.Ok(await repository.ProvisionEmployeeLoginsAsync(request));
+    }
+    catch (Exception)
+    {
+        return Results.BadRequest(new { error = "Unable to provision employee logins. Please review selected employees and try again." });
+    }
+})
+.WithName("ProvisionEmployeeLogins")
+.WithOpenApi();
+
 app.MapPost("/api/security/roles", async (AuthRepository repository, SaveAuthRoleRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "security.manage"))
@@ -609,6 +636,30 @@ app.MapDelete("/api/leave-attendance/leave-types/{id:int}", async (LeaveAttendan
 .WithName("DeleteLeaveType")
 .WithOpenApi();
 
+app.MapGet("/api/leave-attendance/leave-types/import-template", async (LeaveAttendanceRepository repository, int clientId) =>
+    clientId <= 0
+        ? Results.BadRequest(new { error = "Select a client." })
+        : Results.File(await repository.BuildLeaveTypeImportTemplateAsync(clientId), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "leave-type-import-template.xlsx"))
+.WithName("DownloadLeaveTypeImportTemplate")
+.WithOpenApi();
+
+app.MapPost("/api/leave-attendance/leave-types/import-jobs", async (LeaveAttendanceRepository repository, [FromForm] int clientId, [FromForm] IFormFile file, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a leave type import file." });
+    return Results.Accepted("/api/leave-attendance/leave-types/import-jobs", await repository.StartLeaveTypeImportJobAsync(clientId, file));
+})
+.DisableAntiforgery()
+.WithName("StartLeaveTypeImportJob")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/leave-types/import-jobs/{jobId:guid}", (LeaveAttendanceRepository repository, Guid jobId) =>
+    repository.GetLeaveTypeImportJob(jobId) is { } job ? Results.Ok(job) : Results.NotFound(new { error = "Import job not found." }))
+.WithName("GetLeaveTypeImportJob")
+.WithOpenApi();
+
 app.MapGet("/api/leave-attendance/holidays", async (LeaveAttendanceRepository repository, int clientId, int? year, int? workLocationId) =>
     clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetHolidaysAsync(clientId, year, workLocationId)))
 .WithName("GetHolidays")
@@ -688,6 +739,25 @@ app.MapPost("/api/clients", async (OrganizationRepository repository, Client cli
 .WithName("SaveClient")
 .WithOpenApi();
 
+app.MapGet("/api/clients/import-template", async (OrganizationRepository repository) =>
+    Results.File(await repository.BuildClientImportTemplateAsync(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "client-import-template.xlsx"))
+.WithName("DownloadClientImportTemplate")
+.WithOpenApi();
+
+app.MapPost("/api/clients/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file) =>
+{
+    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a client import file." });
+    return Results.Accepted("/api/clients/import-jobs", await repository.StartClientImportJobAsync(file));
+})
+.DisableAntiforgery()
+.WithName("StartClientImportJob")
+.WithOpenApi();
+
+app.MapGet("/api/clients/import-jobs/{jobId:guid}", (OrganizationRepository repository, Guid jobId) =>
+    repository.GetClientImportJob(jobId) is { } job ? Results.Ok(job) : Results.NotFound(new { error = "Import job not found." }))
+.WithName("GetClientImportJob")
+.WithOpenApi();
+
 app.MapGet("/api/work-locations", async (OrganizationRepository repository) =>
     Results.Ok(await repository.GetWorkLocationsAsync()))
 .WithName("GetWorkLocations")
@@ -707,6 +777,25 @@ app.MapPost("/api/work-locations", async (OrganizationRepository repository, Wor
 .WithName("SaveWorkLocation")
 .WithOpenApi();
 
+app.MapGet("/api/work-locations/import-template", async (OrganizationRepository repository) =>
+    Results.File(await repository.BuildWorkLocationImportTemplateAsync(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "work-location-import-template.xlsx"))
+.WithName("DownloadWorkLocationImportTemplate")
+.WithOpenApi();
+
+app.MapPost("/api/work-locations/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file) =>
+{
+    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a work-location import file." });
+    return Results.Accepted("/api/work-locations/import-jobs", await repository.StartWorkLocationImportJobAsync(file));
+})
+.DisableAntiforgery()
+.WithName("StartWorkLocationImportJob")
+.WithOpenApi();
+
+app.MapGet("/api/work-locations/import-jobs/{jobId:guid}", (OrganizationRepository repository, Guid jobId) =>
+    repository.GetWorkLocationImportJob(jobId) is { } job ? Results.Ok(job) : Results.NotFound(new { error = "Import job not found." }))
+.WithName("GetWorkLocationImportJob")
+.WithOpenApi();
+
 app.MapGet("/api/dropdowns", async (OrganizationRepository repository) =>
     Results.Ok(await repository.GetDropdownMastersAsync()))
 .WithName("GetDropdownMasters")
@@ -722,6 +811,63 @@ app.MapPost("/api/dropdowns", async (OrganizationRepository repository, Dropdown
     return Results.Ok(new { id });
 })
 .WithName("SaveDropdownMaster")
+.WithOpenApi();
+
+app.MapGet("/api/dropdowns/import-template", async (OrganizationRepository repository) =>
+    Results.File(await repository.BuildDropdownImportTemplateAsync(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "dropdown-master-import-template.xlsx"))
+.WithName("DownloadDropdownImportTemplate")
+.WithOpenApi();
+
+app.MapPost("/api/dropdowns/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file) =>
+{
+    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a dropdown import file." });
+    return Results.Accepted("/api/dropdowns/import-jobs", await repository.StartDropdownImportJobAsync(file));
+})
+.DisableAntiforgery()
+.WithName("StartDropdownImportJob")
+.WithOpenApi();
+
+app.MapGet("/api/dropdowns/import-jobs/{jobId:guid}", (OrganizationRepository repository, Guid jobId) =>
+    repository.GetDropdownImportJob(jobId) is { } job ? Results.Ok(job) : Results.NotFound(new { error = "Import job not found." }))
+.WithName("GetDropdownImportJob")
+.WithOpenApi();
+
+app.MapGet("/api/salary-components/import-template", async (OrganizationRepository repository) =>
+    Results.File(await repository.BuildSalaryComponentImportTemplateAsync(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "salary-component-import-template.xlsx"))
+.WithName("DownloadSalaryComponentImportTemplate")
+.WithOpenApi();
+
+app.MapPost("/api/salary-components/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file) =>
+{
+    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a salary component import file." });
+    return Results.Accepted("/api/salary-components/import-jobs", await repository.StartSalaryComponentImportJobAsync(file));
+})
+.DisableAntiforgery()
+.WithName("StartSalaryComponentImportJob")
+.WithOpenApi();
+
+app.MapGet("/api/salary-components/import-jobs/{jobId:guid}", (OrganizationRepository repository, Guid jobId) =>
+    repository.GetSalaryComponentImportJob(jobId) is { } job ? Results.Ok(job) : Results.NotFound(new { error = "Import job not found." }))
+.WithName("GetSalaryComponentImportJob")
+.WithOpenApi();
+
+app.MapGet("/api/salary-templates/import-template", async (OrganizationRepository repository) =>
+    Results.File(await repository.BuildSalaryTemplateImportTemplateAsync(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "salary-template-import-template.xlsx"))
+.WithName("DownloadSalaryTemplateImportTemplate")
+.WithOpenApi();
+
+app.MapPost("/api/salary-templates/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file) =>
+{
+    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a salary template import file." });
+    return Results.Accepted("/api/salary-templates/import-jobs", await repository.StartSalaryTemplateImportJobAsync(file));
+})
+.DisableAntiforgery()
+.WithName("StartSalaryTemplateImportJob")
+.WithOpenApi();
+
+app.MapGet("/api/salary-templates/import-jobs/{jobId:guid}", (OrganizationRepository repository, Guid jobId) =>
+    repository.GetSalaryTemplateImportJob(jobId) is { } job ? Results.Ok(job) : Results.NotFound(new { error = "Import job not found." }))
+.WithName("GetSalaryTemplateImportJob")
 .WithOpenApi();
 
 app.MapGet("/api/employees", async (EmployeeRepository repository) =>

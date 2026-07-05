@@ -1,19 +1,35 @@
 import { useEffect, useState } from 'react'
+import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
+import { Button, Select, Space } from 'antd'
 import DataTable from './DataTable'
 import type { Client, Component, Structure } from '../types/payroll'
 import { calculateSalaryDetails, calculateSalaryTotals } from '../utils/salary'
 import PageTabs from './PageTabs'
-import SearchSelect, { selectOptions } from './SearchSelect'
 import '../TemplateDesigner.css'
 
 const componentTabs = ['Earning', 'Deduction', 'Reimbursement'] as const
 
-export default function SalaryTemplateDesigner({ clients, components, structure, setStructure, templates, saveTemplate, saving = false }: { clients: Client[]; components: Component[]; structure: Structure; setStructure: (s: Structure) => void; templates: Structure[]; saveTemplate: () => void | Promise<void>; saving?: boolean }) {
+type SalaryTemplateDesignerProps = {
+  clients: Client[]
+  components: Component[]
+  structure: Structure
+  setStructure: (s: Structure) => void
+  templates: Structure[]
+  saveTemplate: () => void | Promise<void>
+  saving?: boolean
+  templateDownloaded?: boolean
+  onDownloadTemplate?: () => void
+  onUploadTemplate?: (file: File | null) => void | Promise<void>
+}
+
+export default function SalaryTemplateDesigner({ clients, components, structure, setStructure, templates, saveTemplate, saving = false, templateDownloaded = false, onDownloadTemplate, onUploadTemplate }: SalaryTemplateDesignerProps) {
   const [tab, setTab] = useState<'Earning' | 'Deduction' | 'Reimbursement'>('Earning')
   const [dragId, setDragId] = useState('')
   const [dragLineId, setDragLineId] = useState('')
   const library = components.filter(component => component.active && component.category === tab)
   const basic = components.find(component => component.code === 'BASIC')
+  const selectedClientIds = String(structure.clientId || '').split(/[;,|]/).map(item => item.split(':')[0].trim()).filter(Boolean)
+  const clientOptions = clients.map(client => ({ value: String(client.id), label: client.name }))
   const hasDraft = !!(structure.clientId || structure.name || structure.annualCtc || structure.lines.length)
   const hasBasic = basic ? structure.lines.some(line => line.componentId === String(basic.id)) : true
   const lines = hasDraft && basic && !hasBasic ? [{ componentId: String(basic.id), value: basic.formula || basic.value || 'CTC * 40%' }, ...structure.lines] : structure.lines
@@ -45,11 +61,21 @@ export default function SalaryTemplateDesigner({ clients, components, structure,
   return <Card title="Enterprise salary template designer">
     <div className="salary-template-designer">
       <div className="salary-template-head">
-        <label>Client<SearchSelect value={structure.clientId} onChange={value => setStructure({ ...structure, clientId: value })} options={selectOptions(clients.map(client => ({ value: client.id, label: client.name })), 'Select client')} /></label>
+        <label>Clients<Select mode="multiple" className="app-search-select salary-template-client-select" popupClassName="app-search-select-dropdown" showSearch allowClear maxTagCount="responsive" value={selectedClientIds} placeholder="Select clients" optionFilterProp="label" filterOption={(input, option) => String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())} options={clientOptions} onChange={values => setStructure({ ...structure, clientId: values.join(',') })} /></label>
         <label>Template<input value={structure.name} onChange={event => setStructure({ ...structure, name: event.target.value })} /></label>
         <label>Annual CTC<input value={structure.annualCtc} onChange={event => setStructure({ ...structure, annualCtc: event.target.value.replace(/\D/g, '') })} /></label>
         <button type="button" disabled={saving} onClick={() => void saveTemplate()}>{saving ? 'Saving...' : 'Save Template'}</button>
       </div>
+      {onDownloadTemplate && onUploadTemplate && <div className="salary-template-actions">
+        <Space size={8} wrap>
+          <Button className="salary-template-action-button" icon={<DownloadOutlined />} onClick={onDownloadTemplate}>Template</Button>
+          <label className={`settings-upload-action ${!templateDownloaded ? 'disabled' : ''}`} title={templateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}>
+            <input type="file" disabled={!templateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void onUploadTemplate(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} />
+            <UploadOutlined />
+            Bulk upload
+          </label>
+        </Space>
+      </div>}
       <div className="salary-template-workbench">
         <section className="salary-component-palette">
           <PageTabs items={componentTabs} value={tab} onChange={setTab} label="Salary template component categories" className="salary-tabs" getLabel={item => `${item}s`} />

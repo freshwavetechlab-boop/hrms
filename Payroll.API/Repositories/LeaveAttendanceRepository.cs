@@ -1,12 +1,19 @@
 using Dapper;
 using MySqlConnector;
 using Payroll.API.Models;
+using System.Collections.Concurrent;
+using System.Globalization;
+using System.IO.Compression;
+using System.Text;
 using System.Text.Json;
+using System.Xml.Linq;
 
 namespace Payroll.API.Repositories;
 
 public class LeaveAttendanceRepository(IConfiguration configuration)
 {
+    private static readonly ConcurrentDictionary<Guid, ClientImportJobStatus> LeaveTypeImportJobs = new();
+
     private MySqlConnection CreateConnection()
     {
         var connectionString = configuration.GetConnectionString("Default")
@@ -813,6 +820,262 @@ VALUES (@ClientId, @Name, @Code, @Type, @Description, TRUE); SELECT LAST_INSERT_
         return await connection.ExecuteAsync("DELETE FROM leave_types WHERE id=@Id AND client_id=@ClientId", new { Id = id, ClientId = clientId }) > 0;
     }
 
+    public async Task<byte[]> BuildLeaveTypeImportTemplateAsync(int clientId)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        var rows = (await connection.QueryAsync<LeaveType>(LeaveTypeSelectSql + " WHERE lt.client_id=@ClientId ORDER BY lt.name;", new { ClientId = clientId })).ToList();
+        var templateRows = new List<string[]> { LeaveTypeImportHeaders };
+        templateRows.AddRange(rows.Select(row => new[]
+        {
+            row.Name,
+            row.Code,
+            row.Type,
+            row.Description,
+            row.Entitlement.ToString(CultureInfo.InvariantCulture),
+            row.EntitlementPeriod,
+            BoolText(row.ProRateForNewJoinees),
+            BoolText(row.ResetEnabled),
+            row.ResetFrequency,
+            BoolText(row.CarryForwardUnusedLeaves),
+            row.MaxCarryForwardLimit?.ToString(CultureInfo.InvariantCulture) ?? "",
+            BoolText(row.EncashUnusedLeaves),
+            row.MaxEncashmentLimit?.ToString(CultureInfo.InvariantCulture) ?? "",
+            BoolText(row.AllowNegativeLeaveBalance),
+            row.NegativeBalanceHandling,
+            BoolText(row.AllowPastDates),
+            row.PastDateLimitType,
+            row.PastDateLimitDays?.ToString(CultureInfo.InvariantCulture) ?? "",
+            BoolText(row.AllowFutureDates),
+            row.FutureDateLimitType,
+            row.FutureDateLimitDays?.ToString(CultureInfo.InvariantCulture) ?? "",
+            row.ApplicabilityMode,
+            row.WorkLocation,
+            row.Department,
+            row.Designation,
+            row.Gender,
+            row.EffectiveFrom.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            row.ExpiresOn?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "",
+            BoolText(row.PostponeCreditsForNewEmployees),
+            row.PostponeCreditValue?.ToString(CultureInfo.InvariantCulture) ?? "",
+            row.PostponeCreditUnit,
+            BoolText(row.IsActive)
+        }));
+        if (templateRows.Count == 1)
+            templateRows.Add(new[] { "Casual Leave", "CL", "Paid", "Casual leave", "12", "Yearly", "TRUE", "TRUE", "Yearly", "TRUE", "6", "FALSE", "", "FALSE", "Mark as LOP", "FALSE", "No limit", "", "TRUE", "No limit", "", "All employees", "", "", "", "", DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), "", "FALSE", "", "Days", "TRUE" });
+
+        var locations = await connection.QueryAsync<string>("SELECT Name FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY Name", new { ClientId = clientId });
+        var departments = await connection.QueryAsync<string>("SELECT Value FROM dropdownmasters WHERE Type='Department' AND IsActive=TRUE ORDER BY Value");
+        var designations = await connection.QueryAsync<string>("SELECT Value FROM dropdownmasters WHERE Type='Designation' AND IsActive=TRUE ORDER BY Value");
+        var reference = new List<string[]>
+        {
+            new[] { "Options", "Values", "" },
+            new[] { "Type", "Paid, Unpaid", "" },
+            new[] { "Period", "Monthly, Yearly", "" },
+            new[] { "Reset Frequency", "Monthly, Yearly", "" },
+            new[] { "Negative Balance Handling", "Mark as LOP, Without limit, Up to year-end limit", "" },
+            new[] { "Date Limit Type", "No limit, Set number of days", "" },
+            new[] { "Applicability", "All employees, Criteria based employees", "" },
+            new[] { "Postpone Credit Unit", "Days, Months", "" },
+            new[] { "Boolean", "TRUE/FALSE", "" },
+            new[] { "", "", "" },
+            new[] { "Work Locations", "", "" }
+        };
+        reference.AddRange(locations.Select(item => new[] { item, "", "" }));
+        reference.Add(new[] { "", "", "" });
+        reference.Add(new[] { "Departments", "", "" });
+        reference.AddRange(departments.Select(item => new[] { item, "", "" }));
+        reference.Add(new[] { "", "", "" });
+        reference.Add(new[] { "Designations", "", "" });
+        reference.AddRange(designations.Select(item => new[] { item, "", "" }));
+        return BuildImportXlsx(("Leave Types", templateRows), ("Reference", reference));
+    }
+
+    public async Task<ClientImportJobStatus> StartLeaveTypeImportJobAsync(int clientId, IFormFile file)
+    {
+        var rows = await ParseImportFileAsync(file);
+        var totalRows = Math.Max(0, rows.Skip(1).Count(row => row.Any(value => !string.IsNullOrWhiteSpace(value))));
+        var job = new ClientImportJobStatus(Guid.NewGuid(), "Queued", totalRows, 0, 0, 0, []);
+        LeaveTypeImportJobs[job.JobId] = job;
+        _ = Task.Run(async () =>
+        {
+            SetLeaveTypeImportJob(job.JobId, current => current with { State = "Processing" });
+            try
+            {
+                var result = await ImportLeaveTypeRowsAsync(clientId, rows, (completed, inserted, updated) => SetLeaveTypeImportJob(job.JobId, current => current with { CompletedRows = completed, Inserted = inserted, Updated = updated }));
+                SetLeaveTypeImportJob(job.JobId, current => current with { State = result.Errors.Count > 0 ? "Failed" : "Completed", TotalRows = result.TotalRows, CompletedRows = result.TotalRows, Inserted = result.Inserted, Updated = result.Updated, Errors = result.Errors });
+            }
+            catch (Exception ex)
+            {
+                SetLeaveTypeImportJob(job.JobId, current => current with { State = "Failed", Errors = [$"Import failed: {ex.Message}"] });
+            }
+        });
+        return job;
+    }
+
+    public ClientImportJobStatus? GetLeaveTypeImportJob(Guid jobId) => LeaveTypeImportJobs.TryGetValue(jobId, out var job) ? job : null;
+
+    private async Task<ClientImportResult> ImportLeaveTypeRowsAsync(int clientId, List<List<string>> rows, Action<int, int, int>? progress = null)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        var totalRows = Math.Max(0, rows.Skip(1).Count(row => row.Any(value => !string.IsNullOrWhiteSpace(value))));
+        if (rows.Count < 2 || totalRows == 0)
+            return new ClientImportResult(0, 0, 0, ["Import file has no data rows."]);
+        var clientExists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM clients WHERE Id=@ClientId AND IsActive=TRUE", new { ClientId = clientId });
+        if (clientExists == 0)
+            return new ClientImportResult(totalRows, 0, 0, ["Selected client was not found."]);
+
+        var header = rows[0].Select(Norm).ToList();
+        var existingRows = (await connection.QueryAsync<LeaveType>(LeaveTypeSelectSql + " WHERE lt.client_id=@ClientId", new { ClientId = clientId })).ToList();
+        var existingByCode = existingRows.ToDictionary(row => row.Code.ToUpperInvariant(), row => row, StringComparer.OrdinalIgnoreCase);
+        var allCodes = (await connection.QueryAsync<(int Id, int ClientId, string Code)>("SELECT id AS Id, client_id AS ClientId, code AS Code FROM leave_types")).ToList();
+        var drafts = new List<SaveLeaveTypeRequest>();
+        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var errors = new List<string>();
+        var completed = 0;
+
+        for (var i = 1; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            if (row.All(string.IsNullOrWhiteSpace)) continue;
+
+            string V(params string[] names)
+            {
+                foreach (var name in names)
+                {
+                    var ix = header.IndexOf(Norm(name));
+                    if (ix >= 0 && ix < row.Count) return row[ix].Trim();
+                }
+                return "";
+            }
+
+            var rowNumber = i + 1;
+            var rowErrors = new List<string>();
+            var code = V("Code").ToUpperInvariant();
+            var name = V("Leave Type Name", "Name");
+            var type = NormalizeOption(V("Type", "Paid/Unpaid"), LeaveTypeTypes);
+            var entitlementPeriod = NormalizeOption(V("Entitlement Period", "Period"), LeavePeriods);
+            var resetFrequency = NormalizeOption(V("Reset Frequency"), LeavePeriods);
+            var negativeHandling = NormalizeOption(V("Negative Balance Handling"), NegativeBalanceHandlingOptions);
+            var pastLimitType = NormalizeOption(V("Past Date Limit Type", "Past Date Limit"), DateLimitTypes);
+            var futureLimitType = NormalizeOption(V("Future Date Limit Type", "Future Date Limit"), DateLimitTypes);
+            var applicability = NormalizeOption(V("Applicability", "Applicability Mode"), ApplicabilityModes);
+            var creditUnit = NormalizeOption(V("Postpone Credit Unit", "Delay Unit"), PostponeCreditUnits);
+            var entitlement = ParseDecimal(V("Entitlement", "Number of leaves"), out var entitlementOk);
+            var effectiveFrom = ParseDate(V("Effective From"), out var effectiveOk);
+            var expiresOn = ParseOptionalDate(V("Expires On", "Expiry Date"), out var expiresOk);
+            var existing = !string.IsNullOrWhiteSpace(code) && existingByCode.TryGetValue(code, out var found) ? found : null;
+            var globalDuplicate = !string.IsNullOrWhiteSpace(code) ? allCodes.FirstOrDefault(item => item.Code.Equals(code, StringComparison.OrdinalIgnoreCase) && item.ClientId != clientId) : default;
+
+            if (string.IsNullOrWhiteSpace(name)) rowErrors.Add($"Row {rowNumber}: Leave Type Name is required.");
+            if (string.IsNullOrWhiteSpace(code)) rowErrors.Add($"Row {rowNumber}: Code is required.");
+            else if (!System.Text.RegularExpressions.Regex.IsMatch(code, @"^[A-Z0-9_]+$")) rowErrors.Add($"Row {rowNumber}: Code can use only letters, numbers and underscore.");
+            else if (!seenCodes.Add(code)) rowErrors.Add($"Row {rowNumber}: Code {code} is repeated in the file.");
+            else if (globalDuplicate.Code is not null) rowErrors.Add($"Row {rowNumber}: Code {code} already exists for another client.");
+            if (!LeaveTypeTypes.Contains(type)) rowErrors.Add($"Row {rowNumber}: Type must be Paid/Unpaid.");
+            if (!entitlementOk || entitlement < 0) rowErrors.Add($"Row {rowNumber}: Entitlement must be a non-negative number.");
+            if (!LeavePeriods.Contains(entitlementPeriod)) rowErrors.Add($"Row {rowNumber}: Entitlement Period must be Monthly/Yearly.");
+            if (!LeavePeriods.Contains(resetFrequency)) rowErrors.Add($"Row {rowNumber}: Reset Frequency must be Monthly/Yearly.");
+            if (!NegativeBalanceHandlingOptions.Contains(negativeHandling)) rowErrors.Add($"Row {rowNumber}: Negative Balance Handling is invalid.");
+            if (!DateLimitTypes.Contains(pastLimitType)) rowErrors.Add($"Row {rowNumber}: Past Date Limit Type is invalid.");
+            if (!DateLimitTypes.Contains(futureLimitType)) rowErrors.Add($"Row {rowNumber}: Future Date Limit Type is invalid.");
+            if (!ApplicabilityModes.Contains(applicability)) rowErrors.Add($"Row {rowNumber}: Applicability is invalid.");
+            if (!PostponeCreditUnits.Contains(creditUnit)) rowErrors.Add($"Row {rowNumber}: Postpone Credit Unit is invalid.");
+            foreach (var (label, text) in new[] { ("Pro Rate New Joinees", V("Pro Rate New Joinees", "Pro-rata for new joinees")), ("Reset Enabled", V("Reset Enabled", "Enable Reset")), ("Carry Forward", V("Carry Forward", "Carry Forward Unused Leaves")), ("Encash", V("Encash", "Encash Unused Leaves")), ("Allow Negative Balance", V("Allow Negative Balance", "Allow Negative Leave Balance")), ("Allow Past Dates", V("Allow Past Dates")), ("Allow Future Dates", V("Allow Future Dates")), ("Postpone Credits", V("Postpone Credits", "Postpone Leave Credits")), ("Active", V("Active")) })
+                if (!IsImportFlag(text)) rowErrors.Add($"Row {rowNumber}: {label} must be TRUE/FALSE.");
+            if (!effectiveOk) rowErrors.Add($"Row {rowNumber}: Effective From is required as a valid date.");
+            if (!expiresOk) rowErrors.Add($"Row {rowNumber}: Expires On must be a valid date when filled.");
+            if (expiresOn.HasValue && effectiveOk && expiresOn.Value.Date < effectiveFrom.Date) rowErrors.Add($"Row {rowNumber}: Expires On cannot be before Effective From.");
+            var pastDays = ParseOptionalInt(V("Past Date Limit Days"), rowNumber, "Past Date Limit Days", rowErrors);
+            var futureDays = ParseOptionalInt(V("Future Date Limit Days"), rowNumber, "Future Date Limit Days", rowErrors);
+            var carryLimit = ParseOptionalDecimal(V("Max Carry Forward", "Max Carry Forward Limit"), rowNumber, "Max Carry Forward", rowErrors);
+            var encashLimit = ParseOptionalDecimal(V("Max Encashment", "Max Encashment Limit"), rowNumber, "Max Encashment", rowErrors);
+            var postponeValue = ParseOptionalInt(V("Postpone Credit Value", "Delay Value"), rowNumber, "Postpone Credit Value", rowErrors);
+            ValidateLength(name, "Leave Type Name", 180, rowNumber, rowErrors);
+            ValidateLength(code, "Code", 40, rowNumber, rowErrors);
+
+            if (rowErrors.Count == 0)
+            {
+                drafts.Add(new SaveLeaveTypeRequest
+                {
+                    Id = existing?.Id ?? 0,
+                    ClientId = clientId,
+                    Name = name.Trim(),
+                    Code = code,
+                    Type = type,
+                    Description = V("Description"),
+                    Entitlement = entitlement,
+                    EntitlementPeriod = entitlementPeriod,
+                    ProRateForNewJoinees = ParseImportFlag(V("Pro Rate New Joinees", "Pro-rata for new joinees"), existing?.ProRateForNewJoinees ?? false),
+                    ResetEnabled = ParseImportFlag(V("Reset Enabled", "Enable Reset"), existing?.ResetEnabled ?? false),
+                    ResetFrequency = resetFrequency,
+                    CarryForwardUnusedLeaves = ParseImportFlag(V("Carry Forward", "Carry Forward Unused Leaves"), existing?.CarryForwardUnusedLeaves ?? false),
+                    MaxCarryForwardLimit = carryLimit,
+                    EncashUnusedLeaves = ParseImportFlag(V("Encash", "Encash Unused Leaves"), existing?.EncashUnusedLeaves ?? false),
+                    MaxEncashmentLimit = encashLimit,
+                    AllowNegativeLeaveBalance = ParseImportFlag(V("Allow Negative Balance", "Allow Negative Leave Balance"), existing?.AllowNegativeLeaveBalance ?? false),
+                    NegativeBalanceHandling = negativeHandling,
+                    AllowPastDates = ParseImportFlag(V("Allow Past Dates"), existing?.AllowPastDates ?? false),
+                    PastDateLimitType = pastLimitType,
+                    PastDateLimitDays = pastDays,
+                    AllowFutureDates = ParseImportFlag(V("Allow Future Dates"), existing?.AllowFutureDates ?? true),
+                    FutureDateLimitType = futureLimitType,
+                    FutureDateLimitDays = futureDays,
+                    ApplicabilityMode = applicability,
+                    WorkLocation = V("Work Location"),
+                    Department = V("Department"),
+                    Designation = V("Designation"),
+                    Gender = V("Gender"),
+                    EffectiveFrom = effectiveFrom,
+                    ExpiresOn = expiresOn,
+                    PostponeCreditsForNewEmployees = ParseImportFlag(V("Postpone Credits", "Postpone Leave Credits"), existing?.PostponeCreditsForNewEmployees ?? false),
+                    PostponeCreditValue = postponeValue,
+                    PostponeCreditUnit = creditUnit,
+                    IsActive = ParseImportFlag(V("Active"), existing?.IsActive ?? true)
+                });
+            }
+            else errors.AddRange(rowErrors);
+
+            completed++;
+            progress?.Invoke(completed, 0, 0);
+        }
+
+        if (errors.Count > 0)
+            return new ClientImportResult(totalRows, 0, 0, errors);
+
+        await using var transaction = await connection.BeginTransactionAsync();
+        var inserted = 0;
+        var updated = 0;
+        try
+        {
+            foreach (var draft in drafts)
+            {
+                var id = draft.Id;
+                if (id == 0)
+                {
+                    id = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO leave_types (client_id, name, code, type, description, is_active)
+VALUES (@ClientId, @Name, @Code, @Type, @Description, @IsActive); SELECT LAST_INSERT_ID();", draft, transaction);
+                    inserted++;
+                }
+                else
+                {
+                    await connection.ExecuteAsync(@"UPDATE leave_types SET name=@Name, code=@Code, type=@Type, description=@Description, is_active=@IsActive WHERE id=@Id AND client_id=@ClientId", draft, transaction);
+                    updated++;
+                }
+                await UpsertPolicyAsync(connection, transaction, id, draft);
+                await UpsertApplicabilityAsync(connection, transaction, id, draft);
+            }
+            await transaction.CommitAsync();
+            return new ClientImportResult(totalRows, inserted, updated, []);
+        }
+        catch (Exception ex)
+        {
+            await transaction.RollbackAsync();
+            return new ClientImportResult(0, 0, 0, [$"Import failed: {ex.Message}"]);
+        }
+    }
+
     private async Task<LeaveType?> GetLeaveTypeAsync(int id, int clientId)
     {
         await using var connection = CreateConnection();
@@ -825,7 +1088,7 @@ VALUES (@ClientId, @Name, @Code, @Type, @Description, TRUE); SELECT LAST_INSERT_
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         var rows = (await connection.QueryAsync<Holiday>(@"SELECT h.id AS Id, h.client_id AS ClientId, h.name AS Name, h.holiday_type AS HolidayType, h.start_date AS StartDate, h.end_date AS EndDate, h.description AS Description, h.all_locations AS AllLocations, h.created_at AS CreatedAt, h.updated_at AS UpdatedAt,
-CASE WHEN h.all_locations THEN 'All locations' ELSE COALESCE(GROUP_CONCAT(w.Name ORDER BY w.Name SEPARATOR ', '), 'No locations') END AS WorkLocations
+CASE WHEN h.all_locations THEN 'All locations' ELSE COALESCE(GROUP_CONCAT(w.Name ORDER BY w.Name SEPARATOR ', '), 'No locations') END AS worklocations
 FROM holidays h
 LEFT JOIN holiday_locations hl ON hl.holiday_id = h.id
 LEFT JOIN worklocations w ON w.Id = hl.work_location_id
@@ -1226,6 +1489,206 @@ WHERE lt.client_id=@ClientId AND lt.code IN @Codes;", new { ClientId = clientId,
     private sealed class AttendanceLeaveRule { public int Id { get; set; } public string Code { get; set; } = string.Empty; public string Name { get; set; } = string.Empty; public string Type { get; set; } = "Paid"; public bool AllowNegativeLeaveBalance { get; set; } }
     private sealed class LeaveBalanceRow { public string Code { get; set; } = string.Empty; public decimal Balance { get; set; } }
 
+    private static readonly string[] LeaveTypeImportHeaders = ["Leave Type Name", "Code", "Type", "Description", "Entitlement", "Entitlement Period", "Pro Rate New Joinees", "Reset Enabled", "Reset Frequency", "Carry Forward", "Max Carry Forward", "Encash", "Max Encashment", "Allow Negative Balance", "Negative Balance Handling", "Allow Past Dates", "Past Date Limit Type", "Past Date Limit Days", "Allow Future Dates", "Future Date Limit Type", "Future Date Limit Days", "Applicability", "Work Location", "Department", "Designation", "Gender", "Effective From", "Expires On", "Postpone Credits", "Postpone Credit Value", "Postpone Credit Unit", "Active"];
+    private static readonly string[] LeaveTypeTypes = ["Paid", "Unpaid"];
+    private static readonly string[] LeavePeriods = ["Monthly", "Yearly"];
+    private static readonly string[] NegativeBalanceHandlingOptions = ["Mark as LOP", "Without limit", "Up to year-end limit"];
+    private static readonly string[] DateLimitTypes = ["No limit", "Set number of days"];
+    private static readonly string[] ApplicabilityModes = ["All employees", "Criteria based employees"];
+    private static readonly string[] PostponeCreditUnits = ["Days", "Months"];
+
+    private static void SetLeaveTypeImportJob(Guid jobId, Func<ClientImportJobStatus, ClientImportJobStatus> update) =>
+        LeaveTypeImportJobs.AddOrUpdate(jobId, _ => update(new ClientImportJobStatus(jobId, "Processing", 0, 0, 0, 0, [])), (_, current) => update(current));
+
+    private static string NormalizeOption(string value, string[] options) =>
+        options.FirstOrDefault(option => option.Equals(value.Trim(), StringComparison.OrdinalIgnoreCase)) ?? value.Trim();
+
+    private static void ValidateLength(string value, string label, int max, int row, List<string> errors)
+    {
+        if (value.Length > max) errors.Add($"Row {row}: {label} must be {max} characters or less.");
+    }
+
+    private static bool IsImportFlag(string value) =>
+        string.IsNullOrWhiteSpace(value) ||
+        new[] { "true", "yes", "active", "1" }.Contains(value.Trim(), StringComparer.OrdinalIgnoreCase) ||
+        new[] { "false", "no", "inactive", "0" }.Contains(value.Trim(), StringComparer.OrdinalIgnoreCase);
+
+    private static bool ParseImportFlag(string value, bool defaultValue) =>
+        string.IsNullOrWhiteSpace(value) ? defaultValue :
+        new[] { "true", "yes", "active", "1" }.Contains(value.Trim(), StringComparer.OrdinalIgnoreCase) ? true :
+        new[] { "false", "no", "inactive", "0" }.Contains(value.Trim(), StringComparer.OrdinalIgnoreCase) ? false : defaultValue;
+
+    private static decimal ParseDecimal(string value, out bool ok)
+    {
+        ok = decimal.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var result);
+        return ok ? result : 0;
+    }
+
+    private static DateTime ParseDate(string value, out bool ok)
+    {
+        ok = DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date);
+        return ok ? date.Date : DateTime.Today;
+    }
+
+    private static DateTime? ParseOptionalDate(string value, out bool ok)
+    {
+        if (string.IsNullOrWhiteSpace(value)) { ok = true; return null; }
+        ok = DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date);
+        return ok ? date.Date : null;
+    }
+
+    private static int? ParseOptionalInt(string value, int row, string label, List<string> errors)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result) && result >= 0) return result;
+        errors.Add($"Row {row}: {label} must be a non-negative number.");
+        return null;
+    }
+
+    private static decimal? ParseOptionalDecimal(string value, int row, string label, List<string> errors)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (decimal.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var result) && result >= 0) return result;
+        errors.Add($"Row {row}: {label} must be a non-negative number.");
+        return null;
+    }
+
+    private static string BoolText(bool value) => value ? "TRUE" : "FALSE";
+
+    private static string Norm(string value) => value.Replace(" ", "").Replace("_", "").Replace("-", "").ToLowerInvariant();
+
+    private static async Task<List<List<string>>> ParseImportFileAsync(IFormFile file)
+    {
+        using var ms = new MemoryStream();
+        await file.CopyToAsync(ms);
+        var bytes = ms.ToArray();
+        return file.FileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) ? ParseXlsx(bytes) : ParseCsv(Encoding.UTF8.GetString(bytes));
+    }
+
+    private static List<List<string>> ParseCsv(string text)
+    {
+        var rows = new List<List<string>>();
+        var row = new List<string>();
+        var cell = new StringBuilder();
+        var quoted = false;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var ch = text[i];
+            if (quoted && ch == '"' && i + 1 < text.Length && text[i + 1] == '"') { cell.Append('"'); i++; }
+            else if (ch == '"') quoted = !quoted;
+            else if (!quoted && ch == ',') { row.Add(cell.ToString()); cell.Clear(); }
+            else if (!quoted && (ch == '\n' || ch == '\r'))
+            {
+                if (ch == '\r' && i + 1 < text.Length && text[i + 1] == '\n') i++;
+                row.Add(cell.ToString());
+                cell.Clear();
+                rows.Add(row);
+                row = [];
+            }
+            else cell.Append(ch);
+        }
+        row.Add(cell.ToString());
+        if (row.Any(value => value.Length > 0)) rows.Add(row);
+        return rows;
+    }
+
+    private static List<List<string>> ParseXlsx(byte[] bytes)
+    {
+        using var zip = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read);
+        var shared = ReadSharedStrings(zip);
+        var sheet = zip.GetEntry("xl/worksheets/sheet1.xml") ?? throw new InvalidDataException("Import sheet not found.");
+        using var stream = sheet.Open();
+        var doc = XDocument.Load(stream);
+        XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        var rows = new List<List<string>>();
+        foreach (var row in doc.Descendants(ns + "row"))
+        {
+            var values = new List<string>();
+            foreach (var cell in row.Elements(ns + "c"))
+            {
+                var index = CellIndex((string?)cell.Attribute("r") ?? "A1");
+                while (values.Count < index) values.Add("");
+                var type = (string?)cell.Attribute("t") ?? "";
+                var raw = type == "inlineStr" ? cell.Descendants(ns + "t").FirstOrDefault()?.Value ?? "" : cell.Element(ns + "v")?.Value ?? "";
+                values.Add(type == "s" && int.TryParse(raw, out var sharedIndex) && sharedIndex >= 0 && sharedIndex < shared.Count ? shared[sharedIndex] : raw);
+            }
+            rows.Add(values);
+        }
+        return rows;
+    }
+
+    private static List<string> ReadSharedStrings(ZipArchive zip)
+    {
+        var entry = zip.GetEntry("xl/sharedStrings.xml");
+        if (entry is null) return [];
+        using var stream = entry.Open();
+        var doc = XDocument.Load(stream);
+        XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        return doc.Descendants(ns + "si").Select(item => string.Concat(item.Descendants(ns + "t").Select(text => text.Value))).ToList();
+    }
+
+    private static int CellIndex(string reference)
+    {
+        var n = 0;
+        foreach (var ch in reference.TakeWhile(char.IsLetter)) n = n * 26 + char.ToUpperInvariant(ch) - 'A' + 1;
+        return Math.Max(0, n - 1);
+    }
+
+    private static byte[] BuildImportXlsx(params (string Name, IEnumerable<string[]> Rows)[] sheets)
+    {
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, true))
+        {
+            Add(zip, "[Content_Types].xml", $"""<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>{string.Join("", sheets.Select((_, index) => $"""<Override PartName="/xl/worksheets/sheet{index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"""))}</Types>""");
+            Add(zip, "_rels/.rels", """<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>""");
+            Add(zip, "xl/_rels/workbook.xml.rels", $"""<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{string.Join("", sheets.Select((_, index) => $"""<Relationship Id="rId{index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{index + 1}.xml"/>"""))}<Relationship Id="rId{sheets.Length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>""");
+            Add(zip, "xl/styles.xml", """<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="1"><xf/></cellXfs></styleSheet>""");
+            Add(zip, "xl/workbook.xml", WorkbookXml(sheets.Select((sheet, index) => (sheet.Name, index + 1))));
+            foreach (var (sheet, index) in sheets.Select((sheet, index) => (sheet, index + 1)))
+                Add(zip, $"xl/worksheets/sheet{index}.xml", SheetXml(sheet.Rows));
+        }
+        return ms.ToArray();
+    }
+
+    private static void Add(ZipArchive zip, string path, string text)
+    {
+        var entry = zip.CreateEntry(path);
+        using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
+        writer.Write(text);
+    }
+
+    private static string WorkbookXml(IEnumerable<(string Name, int Index)> sheets) =>
+        new XDocument(new XElement(XName.Get("workbook", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"),
+            new XAttribute(XNamespace.Xmlns + "r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships"),
+            new XElement(XName.Get("sheets", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"),
+                sheets.Select(sheet => new XElement(XName.Get("sheet", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"),
+                    new XAttribute("name", sheet.Name),
+                    new XAttribute("sheetId", sheet.Index),
+                    new XAttribute(XName.Get("id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships"), $"rId{sheet.Index}")))))).ToString(SaveOptions.DisableFormatting);
+
+    private static string SheetXml(IEnumerable<string[]> rows) =>
+        new XDocument(new XElement(XName.Get("worksheet", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"),
+            new XElement(XName.Get("sheetData", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"),
+                rows.Select((row, rowIndex) => new XElement(XName.Get("row", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"),
+                    new XAttribute("r", rowIndex + 1),
+                    row.Select((cell, colIndex) => new XElement(XName.Get("c", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"),
+                        new XAttribute("r", $"{Col(colIndex + 1)}{rowIndex + 1}"),
+                        new XAttribute("t", "inlineStr"),
+                        new XElement(XName.Get("is", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"),
+                            new XElement(XName.Get("t", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), cell ?? ""))))))))).ToString(SaveOptions.DisableFormatting);
+
+    private static string Col(int n)
+    {
+        var value = "";
+        while (n > 0)
+        {
+            n--;
+            value = (char)('A' + n % 26) + value;
+            n /= 26;
+        }
+        return value;
+    }
+
     private static async Task<bool> HasDuplicateHolidayAsync(MySqlConnection connection, SaveHolidayRequest request)
     {
         var ids = request.WorkLocationIds.Distinct().ToArray();
@@ -1268,7 +1731,7 @@ r.latitude AS Latitude, r.longitude AS Longitude, r.radius_meters AS RadiusMeter
 r.strictness AS Strictness, r.allow_check_in AS AllowCheckIn, r.allow_check_out AS AllowCheckOut, r.effective_from AS EffectiveFrom, r.effective_to AS EffectiveTo,
 r.is_active AS IsActive, r.priority AS Priority, r.created_at AS CreatedAt, r.updated_at AS UpdatedAt
 FROM attendance_geo_fence_rules r
-LEFT JOIN WorkLocations w ON w.Id = r.work_location_id
+LEFT JOIN worklocations w ON w.Id = r.work_location_id
 LEFT JOIN attendance_geo_fence_rule_employees gre ON gre.geo_fence_rule_id = r.id
 LEFT JOIN employees e ON e.Id = gre.employee_id";
 
@@ -1283,7 +1746,7 @@ COUNT(DISTINCT age.employee_id) AS EmployeeCount,
 COALESCE(GROUP_CONCAT(DISTINCT CONCAT(e.FirstName, ' ', e.LastName, ' (', e.EmployeeCode, ')') ORDER BY e.FirstName, e.LastName SEPARATOR ', '), '') AS EmployeeNames
 FROM attendance_groups g
 LEFT JOIN clients c ON c.Id = g.client_id
-LEFT JOIN WorkLocations w ON w.Id = g.work_location_id
+LEFT JOIN worklocations w ON w.Id = g.work_location_id
 LEFT JOIN attendance_group_employees age ON age.attendance_group_id = g.id
 LEFT JOIN employees e ON e.Id = age.employee_id";
 

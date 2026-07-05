@@ -270,7 +270,7 @@ public class Holiday
     public string Description { get; set; } = string.Empty;
     public bool AllLocations { get; set; } = true;
     public List<int> WorkLocationIds { get; set; } = [];
-    public string WorkLocations { get; set; } = "All locations";
+    public string worklocations { get; set; } = "All locations";
     public DateTime? CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
 }
