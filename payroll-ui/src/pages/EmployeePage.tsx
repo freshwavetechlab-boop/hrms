@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Chk, F, Sel } from '../components/FormPrimitives'
+import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from '../components/BulkUploadPreviewModal'
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from '../components/BulkUploadProgressModal'
 import DataTable, { type Column } from '../components/DataTable'
 import SearchSelect, { selectOptions } from '../components/SearchSelect'
 import { useToast } from '../components/ToastProvider'
 import { employee0, setup0 } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
-import { deleteEmployee as removeEmployee, getDropdowns, getEmployeeDeletePreview, getEmployeeImportJob, getEmployeeInfotypes, getSetup, getWorkLocations, processEmployeeAction, saveEmployee as persistEmployee, startEmployeeImport } from '../services/settingsService'
+import { deleteEmployee as removeEmployee, downloadEmployeeImportTemplate, getDropdowns, getEmployeeDeletePreview, getEmployeeImportJob, getEmployeeInfotypes, getSetup, getWorkLocations, processEmployeeAction, saveEmployee as persistEmployee, startEmployeeImport } from '../services/settingsService'
 import type { Client, Component, Drop, Employee, EmployeeActionRequest, EmployeeInfotypeRecord, EmployeePaymentDetails, EmployeePersonalDetails, Setup, Structure, WorkLocation } from '../types/payroll'
 import { calculateSalaryJson, calculateSalaryTotals, money } from '../utils/salary'
-import { downloadXlsx } from '../utils/xlsx'
+import { parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules } from '../utils/importPreview'
 import { safeJsonRecord } from '../shared/json'
 import '../TemplateDesigner.css'
 
@@ -24,7 +25,22 @@ const employeeInfotypes = [
 type EmployeeInfotypeCode = typeof employeeInfotypes[number]['code']
 const personal0 = employee0.personalDetails
 const payment0 = employee0.paymentDetails
-const employeeImportHeaders = ['Employee Code', 'First Name', 'Last Name', 'Gender', 'Date Of Joining', 'Work Email', 'Department', 'Designation', 'Grade', 'Work Location', 'Annual CTC', 'Date Of Birth', 'Mobile', 'PAN', 'Aadhaar', 'UAN Number', 'Address', 'Correspondence Address', 'Permanent Address']
+const employeePreviewHeaders = ['Sheet', 'Employee Code', 'Date Of Joining', 'First Name', 'Last Name', 'Gender', 'Date Of Birth', 'Mobile', 'PAN', 'Aadhaar', 'UAN Number', 'ESIC Number', 'Work Email', 'Department', 'Designation', 'Grade', 'Work Location Id', 'Work Location', 'Portal Access', 'Active', 'Address', 'Correspondence Address', 'Permanent Address', 'Salary Template Id', 'Salary Template', 'Annual CTC', 'Salary Json', 'Bank Name', 'Bank Account No', 'IFSC', 'Payment Mode', 'Change Reason']
+const employeePreviewRules: ImportPreviewRules = {
+  required: ['Sheet', 'Employee Code'],
+  booleans: ['Portal Access', 'Active'],
+  numbers: ['Work Location Id', 'Annual CTC'],
+  dates: ['Date Of Joining', 'Date Of Birth'],
+  custom: (row, rowNumber) => {
+    const issues: ImportPreviewIssue[] = []
+    const salaryJson = row['Salary Json']?.trim()
+    if (salaryJson) {
+      try { const parsed = JSON.parse(salaryJson); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) issues.push({ rowNumber, column: 'Salary Json', message: 'Salary Json must be a JSON object.' }) }
+      catch { issues.push({ rowNumber, column: 'Salary Json', message: 'Salary Json must be valid JSON.' }) }
+    }
+    return issues
+  }
+}
 const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
 
 export default function EmployeePage() {
@@ -35,6 +51,10 @@ export default function EmployeePage() {
   const [changeReason, setChangeReason] = useState('')
   const [modalOpen, setModalOpen] = useState(false), [clientFilter, setClientFilter] = useState(0), [query, setQuery] = useState('')
   const [upload, setUpload] = useState<{ open: boolean; state: BulkUploadState; percent: number; summary: BulkUploadSummary }>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
+  const [templateDownloaded, setTemplateDownloaded] = useState(false)
+  const [preview, setPreview] = useState<BulkUploadPreviewState>(emptyBulkUploadPreview)
+  const [previewConfirm, setPreviewConfirm] = useState<null | (() => Promise<void>)>(null)
+  const [previewImporting, setPreviewImporting] = useState(false)
   const clientStructure = templatesForClient(setup.salaryStructures, employee.clientId)[0]
   const chosenStructure = setup.salaryStructures.find(item => String(item.id) === employee.salaryStructureId) ?? clientStructure
   const rawEmployeeSalary = salaryRecord(employee)
@@ -54,6 +74,7 @@ export default function EmployeePage() {
   }
 
   useEffect(() => { void load() }, [])
+  useEffect(() => { setTemplateDownloaded(false) }, [clientFilter])
   const calcSalary = (ctc: number, salaryStructure = chosenStructure) => calculateSalaryJson(ctc, setup.salaryComponents, salaryStructure)
   const withSalary = (row: Employee, salaryJson: string): Employee => ({ ...row, salaryJson, salaryComponents: numberRecord(salaryJson) })
   const normalizeEmployeeSalary = (row: Employee) => {
@@ -103,19 +124,13 @@ export default function EmployeePage() {
   }
   const downloadTemplate = async () => {
     if (!clientFilter) { setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: ['Select a client before downloading employee template.'] } }); return }
-    const client = clients.find(item => item.id === clientFilter)
-    const departments = drops.filter(item => item.isActive && item.type === 'Department').map(item => item.value)
-    const designations = drops.filter(item => item.isActive && item.type === 'Designation').map(item => item.value)
-    const gradeValues = drops.filter(item => item.isActive && item.type === 'Employee Grade' && (!item.clientId || item.clientId === clientFilter)).map(item => item.value)
-    const locationValues = locations.filter(item => item.isActive && item.clientId === clientFilter).map(item => item.name)
-    downloadXlsx('employee-import-template.xlsx', [
-      { name: 'Employees', rows: [employeeImportHeaders, ['EMP001', 'Rahul', 'Sharma', 'Male', '2026-04-01', 'rahul@example.com', departments[0] || '', designations[0] || '', gradeValues[0] || '', locationValues[0] || '', '600000', '1995-01-15', '9876543210', 'ABCDE1234F', '123412341234', '100200300400', 'Local address', 'Correspondence address', 'Permanent address']] },
-      { name: 'Masters', rows: [['Master Type', 'Value', 'Id'], ['Client', client?.name || '', String(clientFilter)], ...departments.map(value => ['Department', value, '']), ...designations.map(value => ['Designation', value, '']), ...gradeValues.map(value => ['Employee Grade', value, '']), ...locations.filter(item => item.isActive && item.clientId === clientFilter).map(item => ['Work Location', item.name, String(item.id)])] }
-    ])
+    const response = await downloadEmployeeImportTemplate(clientFilter)
+    if (!response.ok || !response.data) { setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: [response.error || 'Unable to download employee template.'] } }); return }
+    saveBlob(response.data, 'employee-import-template.xlsx')
+    setTemplateDownloaded(true)
+    notify('Employee import template downloaded.', 'info')
   }
-  const uploadEmployees = async (file: File | null) => {
-    if (!file) return
-    if (!clientFilter) { setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: ['Select a client before bulk upload.'] } }); return }
+  const runEmployeeImport = async (file: File) => {
     setUpload({ open: true, state: 'uploading', percent: 1, summary: { totalRows: 0 } })
     const start = await startEmployeeImport(clientFilter, file)
     if (!start.ok || !start.data.jobId) { setUpload({ open: true, state: 'error', percent: 100, summary: { ...start.data, errors: start.data.errors?.length ? start.data.errors : [start.error || 'Upload failed.'] } }); return }
@@ -130,22 +145,90 @@ export default function EmployeePage() {
     if (job.state === 'Completed') { setUpload({ open: true, state: 'success', percent: 100, summary: job }); await load(); return }
     setUpload({ open: true, state: 'error', percent, summary: { ...job, errors: job.errors?.length ? job.errors : ['Import failed. No rows were saved.'] } })
   }
+  const previewEmployeeUpload = async (file: File, onConfirm: (file: File) => Promise<void>) => {
+    try {
+      const data = await parseEmployeePreviewData(file)
+      const issues = validateImportPreview(data, employeePreviewRules)
+      setPreview({ open: true, title: 'Employee bulk upload preview', fileName: file.name, headers: data.headers, rows: data.rows, issues })
+      setPreviewConfirm(() => async () => onConfirm(file))
+    } catch (error) {
+      setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: [error instanceof Error ? error.message : 'Unable to preview employee import file.'] } })
+    }
+  }
+  const confirmEmployeePreview = async () => {
+    if (!previewConfirm) return
+    const action = previewConfirm
+    setPreviewImporting(true)
+    setPreview(emptyBulkUploadPreview)
+    setPreviewConfirm(null)
+    try { await action() } finally { setPreviewImporting(false) }
+  }
+  const uploadEmployees = async (file: File | null) => {
+    if (!file) return
+    if (!clientFilter) { setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: ['Select a client before bulk upload.'] } }); return }
+    if (!templateDownloaded) { setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: ['Download the employee template before uploading.'] } }); return }
+    await previewEmployeeUpload(file, selected => runEmployeeImport(selected))
+  }
   const visibleEmployees = employees.filter(row => row.isActive && (!clientFilter || row.clientId === clientFilter) && `${row.employeeCode} ${row.firstName} ${row.lastName} ${row.department} ${row.designation} ${row.workEmail}`.toLowerCase().includes(query.toLowerCase()))
 
   return <section className="employee-master">
-    <EmployeeDirectory clients={clients} employees={visibleEmployees} allCount={employees.length} clientFilter={clientFilter} setClientFilter={setClientFilter} query={query} setQuery={setQuery} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onDownloadTemplate={downloadTemplate} onUpload={uploadEmployees} />
+    <EmployeeDirectory clients={clients} employees={visibleEmployees} allCount={employees.length} clientFilter={clientFilter} setClientFilter={setClientFilter} query={query} setQuery={setQuery} templateDownloaded={templateDownloaded} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onDownloadTemplate={downloadTemplate} onUpload={uploadEmployees} />
     {modalOpen && <div className="employee-modal-backdrop" onClick={closeModal}>
       <section className="employee-modal" role="dialog" aria-modal="true" aria-label="Employee details" onClick={event => event.stopPropagation()}>
         <EmployeePanel employee={employee} setEmployee={row => setEmployee(normalizeEmployeeSalary(row))} employeeInfotype={employeeInfotype} setEmployeeInfotype={value => { setEmployeeInfotype(value as EmployeeInfotypeCode); setChangeReason('') }} changeReason={changeReason} setChangeReason={setChangeReason} clients={clients} locations={locations} templates={setup.salaryStructures} salaryComponents={setup.salaryComponents} deps={deps} desigs={desigs} grades={grades} applyClient={applyClient} applyStructure={applyStructure} applyCtc={applyCtc} structureComponents={structureComponents} employeeSalary={employeeSalary} empLine={empLine} empMonthly={empMonthly} saveEmployee={saveEmployee} closeModal={closeModal} infotypes={infotypes} runEmployeeAction={runEmployeeAction} />
       </section>
     </div>}
     <BulkUploadProgressModal open={upload.open} title="Employee bulk upload" state={upload.state} percent={upload.percent} summary={upload.summary} onClose={() => setUpload(current => ({ ...current, open: false }))} />
+    <BulkUploadPreviewModal preview={preview} importing={previewImporting} onCancel={() => { setPreview(emptyBulkUploadPreview); setPreviewConfirm(null) }} onConfirm={() => void confirmEmployeePreview()} />
   </section>
 }
 
-function EmployeeDirectory(p: { clients: Client[]; employees: Employee[]; allCount: number; clientFilter: number; setClientFilter: (id: number) => void; query: string; setQuery: (value: string) => void; onNew: () => void; onEdit: (employee: Employee) => void; onDelete: (employee: Employee) => void; onDownloadTemplate: () => void; onUpload: (file: File | null) => void }) {
+async function parseEmployeePreviewData(file: File): Promise<ImportPreviewData> {
+  const sheets = await parseImportPreviewSheets(file)
+  const importSheets = sheets.filter(sheet => !['references', 'reference', 'masters', 'instructions'].includes(sheet.name.trim().toLowerCase()) && sheet.rows.length)
+  const sheetRows = importSheets.map(sheet => sheet.rows.map(row => employeePreviewHeaders.map(header => header === 'Sheet' ? sheet.name : previewCell(sheet.headers, row, header))))
+  const rows: string[][] = []
+  const maxRows = Math.max(0, ...sheetRows.map(rows => rows.length))
+  for (let rowIndex = 0; rowIndex < maxRows; rowIndex++) {
+    for (const rowsForSheet of sheetRows) if (rowsForSheet[rowIndex]) rows.push(rowsForSheet[rowIndex])
+  }
+  if (!rows.length) throw new Error('No employee import rows found.')
+  return { headers: employeePreviewHeaders, rows }
+}
+
+function previewCell(headers: string[], row: string[], name: string) {
+  const index = headers.findIndex(header => importNorm(header) === importNorm(name))
+  const value = index >= 0 ? row[index] ?? '' : ''
+  return ['dateofjoining', 'dateofbirth'].includes(importNorm(name)) ? previewDate(value) : value
+}
+
+function importNorm(value: string) {
+  return value.replace(/[\s_-]/g, '').toLowerCase()
+}
+
+function saveBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function previewDate(value: string) {
+  const text = value.trim()
+  const serial = Number(text)
+  if (Number.isFinite(serial) && serial >= 20000 && serial <= 80000) {
+    const date = new Date(Date.UTC(1899, 11, 30) + serial * 86400000)
+    return date.toISOString().slice(0, 10)
+  }
+  return value
+}
+
+function EmployeeDirectory(p: { clients: Client[]; employees: Employee[]; allCount: number; clientFilter: number; setClientFilter: (id: number) => void; query: string; setQuery: (value: string) => void; templateDownloaded: boolean; onNew: () => void; onEdit: (employee: Employee) => void; onDelete: (employee: Employee) => void; onDownloadTemplate: () => void; onUpload: (file: File | null) => void }) {
   const clientName = (id: number) => p.clients.find(client => client.id === id)?.name ?? `Client #${id || '-'}`
-  return <section className="card employee-directory"><header><i className="blue">E</i><div><h3>Employee master</h3><p>Search client-wise employees. Create or edit details in a focused popup.</p></div><div className="employee-directory-actions"><button type="button" disabled={!p.clientFilter} title={p.clientFilter ? 'Download Excel template' : 'Select a client first'} onClick={p.onDownloadTemplate}>Download Excel template</button><label className={`employee-upload-action ${!p.clientFilter ? 'disabled' : ''}`} title={p.clientFilter ? 'Upload Excel or CSV' : 'Select a client first'}><input type="file" disabled={!p.clientFilter} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { p.onUpload(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} />Bulk upload</label><button type="button" onClick={p.onNew}>New employee</button></div></header>
+  const uploadDisabled = !p.clientFilter || !p.templateDownloaded
+  return <section className="card employee-directory"><header><i className="blue">E</i><div><h3>Employee master</h3><p>Search client-wise employees. Create or edit details in a focused popup.</p></div><div className="employee-directory-actions"><button type="button" disabled={!p.clientFilter} title={p.clientFilter ? 'Download Excel template' : 'Select a client first'} onClick={p.onDownloadTemplate}>Download Excel template</button><label className={`employee-upload-action ${uploadDisabled ? 'disabled' : ''}`} title={!p.clientFilter ? 'Select a client first' : p.templateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={uploadDisabled} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { p.onUpload(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} />Bulk upload</label><button type="button" onClick={p.onNew}>New employee</button></div></header>
     <div className="employee-directory-tools"><label><span>Client</span><SearchSelect value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={selectOptions(p.clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label><label><span>Search</span><input value={p.query} onChange={event => p.setQuery(event.target.value)} placeholder="Code, name, department, email..." /></label><div className="employee-directory-count"><span>Showing</span><b>{p.employees.length} / {p.allCount}</b></div></div>
     <DataTable rows={p.employees} emptyText="No employees found for the selected filters." exportFileName="employees" columns={[
       { key: 'employeeName', label: 'Employee', value: row => `${row.firstName} ${row.lastName}`.trim(), render: row => <strong>{row.firstName} {row.lastName}</strong> },

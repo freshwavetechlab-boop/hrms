@@ -23,7 +23,7 @@ export default function LeaveAttendancePreferencesForm({ clientId, onSaved }: { 
   const [saving, setSaving] = useState(false)
 
   const activeClients = useMemo(() => clients.filter(row => row.isActive), [clients])
-  const clientLocations = useMemo(() => locations.filter(row => row.isActive), [locations])
+  const clientLocations = useMemo(() => locations.filter(row => row.isActive && Number(row.clientId) === Number(preferences.clientId || clientId)), [locations, preferences.clientId, clientId])
   const selectedComponent = components.find(component => component.id === Number(preferences.leaveEncashmentSalaryComponentId || 0))
   const isFormulaBased = selectedComponent?.calculationType === 'Formula'
   const workWeeks = useMemo(() => unique([...dropdowns.filter(item => item.type === 'Work Week' && item.isActive).map(item => item.value), preferences.workWeek]), [dropdowns, preferences.workWeek])

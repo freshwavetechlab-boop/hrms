@@ -270,6 +270,26 @@ app.MapPost("/api/security/users", async (AuthRepository repository, SaveAuthUse
 .WithName("SaveSecurityUser")
 .WithOpenApi();
 
+app.MapDelete("/api/security/users/{id:int}", async (AuthRepository repository, int id, HttpContext context) =>
+{
+    if (!HasPermission(context, "security.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try
+    {
+        return await repository.DeleteUserAsync(id) ? Results.NoContent() : Results.NotFound(new { error = "User not found." });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+    catch (Exception)
+    {
+        return Results.BadRequest(new { error = "Unable to delete user." });
+    }
+})
+.WithName("DeleteSecurityUser")
+.WithOpenApi();
+
 app.MapGet("/api/security/users/employee-provision-preview", async (AuthRepository repository, HttpContext context, int? clientId) =>
 {
     if (!HasPermission(context, "security.manage"))
@@ -318,6 +338,26 @@ app.MapPost("/api/security/roles", async (AuthRepository repository, SaveAuthRol
     }
 })
 .WithName("SaveSecurityRole")
+.WithOpenApi();
+
+app.MapDelete("/api/security/roles/{id:int}", async (AuthRepository repository, int id, HttpContext context) =>
+{
+    if (!HasPermission(context, "security.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try
+    {
+        return await repository.DeleteRoleAsync(id) ? Results.NoContent() : Results.NotFound(new { error = "Role not found." });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+    catch (Exception)
+    {
+        return Results.BadRequest(new { error = "Unable to delete role." });
+    }
+})
+.WithName("DeleteSecurityRole")
 .WithOpenApi();
 
 app.MapGet("/api/audit-logs", async (AuthRepository repository, HttpContext context, int limit = 100) =>
@@ -436,6 +476,30 @@ app.MapPost("/api/client-billing/configurations", async (ClientBillingRepository
 .WithName("SaveClientBillingConfiguration")
 .WithOpenApi();
 
+app.MapGet("/api/client-billing/configurations/import-template", async (ClientBillingRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage")
+        ? Results.File(await repository.BuildImportTemplateAsync(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "client-billing-import-template.xlsx")
+        : Results.StatusCode(403))
+.WithName("GetClientBillingImportTemplate")
+.WithOpenApi();
+
+app.MapPost("/api/client-billing/configurations/import-jobs", async (ClientBillingRepository repository, [FromForm] IFormFile file, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a client billing import file." });
+    return Results.Accepted("/api/client-billing/configurations/import-jobs", await repository.StartImportJobAsync(file));
+})
+.WithName("StartClientBillingImportJob")
+.DisableAntiforgery()
+.WithOpenApi();
+
+app.MapGet("/api/client-billing/configurations/import-jobs/{jobId:guid}", (ClientBillingRepository repository, Guid jobId, HttpContext context) =>
+    HasPermission(context, "settings.manage")
+        ? repository.GetImportJob(jobId) is { } job ? Results.Ok(job) : Results.NotFound(new { error = "Import job not found." })
+        : Results.StatusCode(403))
+.WithName("GetClientBillingImportJob")
+.WithOpenApi();
+
 app.MapGet("/api/tax-engine", async (TaxEngineRepository repository, HttpContext context) => HasPermission(context, "settings.manage") || HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403));
 app.MapPost("/api/tax-engine/client-settings", async (TaxEngineRepository repository, ClientTaxSetting request, HttpContext context) => HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveClientSettingAsync(request)) : Results.StatusCode(403));
 app.MapPost("/api/tax-engine/slabs", async (TaxEngineRepository repository, TaxSlab request, HttpContext context) => HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.SaveSlabAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
@@ -535,7 +599,7 @@ app.MapGet("/api/leave-attendance/groups", async (LeaveAttendanceRepository repo
 
 app.MapPost("/api/leave-attendance/groups", async (LeaveAttendanceRepository repository, SaveAttendanceGroupRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attendance.manage"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var (group, error) = await repository.SaveAttendanceGroupAsync(request);
     return group is null ? Results.BadRequest(new { error }) : Results.Ok(group);
@@ -543,9 +607,19 @@ app.MapPost("/api/leave-attendance/groups", async (LeaveAttendanceRepository rep
 .WithName("SaveAttendanceGroup")
 .WithOpenApi();
 
+app.MapPost("/api/leave-attendance/groups/batch", async (LeaveAttendanceRepository repository, SaveAttendanceGroupBatchRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attendance.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (groups, error) = await repository.SaveAttendanceGroupBatchAsync(request);
+    return error is not null ? Results.BadRequest(new { error }) : Results.Ok(groups);
+})
+.WithName("SaveAttendanceGroupBatch")
+.WithOpenApi();
+
 app.MapDelete("/api/leave-attendance/groups/{id:int}", async (LeaveAttendanceRepository repository, int id, int clientId, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attendance.manage"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     return clientId > 0 && await repository.DeleteAttendanceGroupAsync(id, clientId) ? Results.NoContent() : Results.NotFound();
 })
@@ -682,6 +756,30 @@ app.MapDelete("/api/leave-attendance/holidays/{id:int}", async (LeaveAttendanceR
     return clientId > 0 && await repository.DeleteHolidayAsync(id, clientId) ? Results.NoContent() : Results.NotFound();
 })
 .WithName("DeleteHoliday")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/holidays/import-template", async (LeaveAttendanceRepository repository, int clientId) =>
+    clientId <= 0
+        ? Results.BadRequest(new { error = "Select a client." })
+        : Results.File(await repository.BuildHolidayImportTemplateAsync(clientId), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "holiday-import-template.xlsx"))
+.WithName("DownloadHolidayImportTemplate")
+.WithOpenApi();
+
+app.MapPost("/api/leave-attendance/holidays/import-jobs", async (LeaveAttendanceRepository repository, [FromForm] int clientId, [FromForm] IFormFile file, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a holiday import file." });
+    return Results.Accepted("/api/leave-attendance/holidays/import-jobs", await repository.StartHolidayImportJobAsync(clientId, file));
+})
+.DisableAntiforgery()
+.WithName("StartHolidayImportJob")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/holidays/import-jobs/{jobId:guid}", (LeaveAttendanceRepository repository, Guid jobId) =>
+    repository.GetHolidayImportJob(jobId) is { } job ? Results.Ok(job) : Results.NotFound(new { error = "Import job not found." }))
+.WithName("GetHolidayImportJob")
 .WithOpenApi();
 
 app.MapGet("/api/leave-attendance/import-balances/sample", async (LeaveBalanceImportRepository repository, int clientId, HttpContext context) =>

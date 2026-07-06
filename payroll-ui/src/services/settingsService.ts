@@ -12,6 +12,13 @@ export const getClientBillingModule = () => getJson<ClientBillingModule>('/api/c
 export const saveClientBillingModule = (module: ClientBillingModule) => postJson('/api/client-billing/module', module, module, { toast: false })
 export const getClientBillingConfigurations = () => getJson<ClientBillingConfiguration[]>('/api/client-billing/configurations', [])
 export const saveClientBillingConfiguration = (row: ClientBillingConfiguration) => postJson('/api/client-billing/configurations', row, { id: row.id }, { toast: false })
+export const downloadClientBillingImportTemplate = () => getBlob('/api/client-billing/configurations/import-template')
+export const startClientBillingImport = (file: File) => {
+  const body = new FormData()
+  body.append('file', file)
+  return postForm<BulkImportStatus>('/api/client-billing/configurations/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
+}
+export const getClientBillingImportJob = (jobId: string) => getJson<BulkImportStatus>(`/api/client-billing/configurations/import-jobs/${jobId}`, { jobId, state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: ['Import job not found.'] })
 export const saveClient = (client: Client, options: ApiOptions = {}) => postJson('/api/clients', client, { id: client.id }, options)
 export const downloadClientImportTemplate = () => getBlob('/api/clients/import-template')
 export const startClientImport = (file: File) => {

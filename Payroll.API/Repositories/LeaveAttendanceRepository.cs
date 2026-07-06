@@ -13,6 +13,7 @@ namespace Payroll.API.Repositories;
 public class LeaveAttendanceRepository(IConfiguration configuration)
 {
     private static readonly ConcurrentDictionary<Guid, ClientImportJobStatus> LeaveTypeImportJobs = new();
+    private static readonly ConcurrentDictionary<Guid, ClientImportJobStatus> HolidayImportJobs = new();
 
     private MySqlConnection CreateConnection()
     {
@@ -144,6 +145,7 @@ CREATE TABLE IF NOT EXISTS attendance_geo_fence_rule_employees (
 CREATE TABLE IF NOT EXISTS attendance_groups (
     id INT PRIMARY KEY AUTO_INCREMENT,
     client_id INT NOT NULL,
+    policy_batch_id CHAR(36) NULL,
     name VARCHAR(180) NOT NULL,
     work_location_id INT NOT NULL,
     department VARCHAR(150) NOT NULL DEFAULT '',
@@ -277,7 +279,7 @@ CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
         await EnsureForeignKeyAsync(connection, "employee_monthly_attendance", "FK_monthly_attendance_employee", "FOREIGN KEY (employee_id) REFERENCES employees(Id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "employee_daily_attendance", "FK_daily_attendance_employee", "FOREIGN KEY (employee_id) REFERENCES employees(Id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "attendance_groups", "FK_attendance_groups_client", "FOREIGN KEY (client_id) REFERENCES clients(Id) ON DELETE CASCADE");
-        await EnsureForeignKeyAsync(connection, "attendance_groups", "FK_attendance_groups_location", "FOREIGN KEY (work_location_id) REFERENCES worklocations(Id)");
+        await DropForeignKeyIfExistsAsync(connection, "attendance_groups", "FK_attendance_groups_location");
         await EnsureForeignKeyAsync(connection, "attendance_group_employees", "FK_attendance_group_employee_group", "FOREIGN KEY (attendance_group_id) REFERENCES attendance_groups(id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "attendance_group_employees", "FK_attendance_group_employee_employee", "FOREIGN KEY (employee_id) REFERENCES employees(Id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "leave_type_policies", "FK_leave_type_policies_type", "FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE");
@@ -290,6 +292,7 @@ CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
         await EnsureColumnAsync(connection, "employee_daily_attendance", "check_in_time", "TIME NULL AFTER payable_value");
         await EnsureColumnAsync(connection, "employee_daily_attendance", "check_out_time", "TIME NULL AFTER check_in_time");
         await EnsureColumnAsync(connection, "employee_daily_attendance", "total_hours", "DECIMAL(5,2) NOT NULL DEFAULT 0 AFTER check_out_time");
+        await EnsureColumnAsync(connection, "attendance_groups", "policy_batch_id", "CHAR(36) NULL AFTER client_id");
         await EnsureColumnAsync(connection, "attendance_groups", "work_week", "VARCHAR(80) NOT NULL DEFAULT '' AFTER designation");
         await EnsureColumnAsync(connection, "attendance_groups", "attendance_cycle_start_day", "INT NOT NULL DEFAULT 1 AFTER work_week");
         await EnsureColumnAsync(connection, "attendance_groups", "attendance_cycle_end_day", "INT NOT NULL DEFAULT 25 AFTER attendance_cycle_start_day");
@@ -297,6 +300,7 @@ CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
         await EnsureColumnAsync(connection, "leave_attendance_preferences", "work_location_id", "INT NOT NULL DEFAULT 0 AFTER client_id");
         await EnsureColumnAsync(connection, "leave_attendance_preferences", "work_week", "VARCHAR(80) NOT NULL DEFAULT '' AFTER work_location_id");
         await EnsureColumnAsync(connection, "dropdownmasters", "ConfigJson", "JSON NULL AFTER Value");
+        await connection.ExecuteAsync("UPDATE attendance_groups SET policy_batch_id=UUID() WHERE policy_batch_id IS NULL OR policy_batch_id=''");
         await connection.ExecuteAsync("UPDATE leave_attendance_preferences SET work_location_id=0 WHERE work_location_id IS NULL");
         await EnsureClientScopeAsync(connection);
     }
@@ -530,12 +534,12 @@ ORDER BY c.Name, w.Name, g.name;", new { ClientId = clientId })).ToList();
         var payload = CleanAttendanceGroupRequest(request);
         if (id == 0)
         {
-            id = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO attendance_groups (client_id, name, work_location_id, department, designation, work_week, attendance_cycle_start_day, attendance_cycle_end_day, payroll_report_generation_day, is_active)
-VALUES (@ClientId, @Name, @WorkLocationId, @Department, @Designation, @WorkWeek, @AttendanceCycleStartDay, @AttendanceCycleEndDay, @PayrollReportGenerationDay, @IsActive); SELECT LAST_INSERT_ID();", payload, transaction);
+            id = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO attendance_groups (client_id, policy_batch_id, name, work_location_id, department, designation, work_week, attendance_cycle_start_day, attendance_cycle_end_day, payroll_report_generation_day, is_active)
+VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designation, @WorkWeek, @AttendanceCycleStartDay, @AttendanceCycleEndDay, @PayrollReportGenerationDay, @IsActive); SELECT LAST_INSERT_ID();", payload, transaction);
         }
         else
         {
-            var updated = await connection.ExecuteAsync(@"UPDATE attendance_groups SET name=@Name, work_location_id=@WorkLocationId, department=@Department, designation=@Designation, work_week=@WorkWeek, attendance_cycle_start_day=@AttendanceCycleStartDay, attendance_cycle_end_day=@AttendanceCycleEndDay, payroll_report_generation_day=@PayrollReportGenerationDay, is_active=@IsActive WHERE id=@Id AND client_id=@ClientId", payload, transaction);
+            var updated = await connection.ExecuteAsync(@"UPDATE attendance_groups SET policy_batch_id=@PolicyBatchId, name=@Name, work_location_id=@WorkLocationId, department=@Department, designation=@Designation, work_week=@WorkWeek, attendance_cycle_start_day=@AttendanceCycleStartDay, attendance_cycle_end_day=@AttendanceCycleEndDay, payroll_report_generation_day=@PayrollReportGenerationDay, is_active=@IsActive WHERE id=@Id AND client_id=@ClientId", payload, transaction);
             if (updated == 0) return (null, "Attendance group was not found for the selected client.");
         }
         var employeeIds = (request.EmployeeIds ?? new List<int>()).Distinct().ToArray();
@@ -543,6 +547,85 @@ VALUES (@ClientId, @Name, @WorkLocationId, @Department, @Designation, @WorkWeek,
         await connection.ExecuteAsync("INSERT INTO attendance_group_employees (attendance_group_id, employee_id) VALUES (@GroupId, @EmployeeId)", employeeIds.Select(employeeId => new { GroupId = id, EmployeeId = employeeId }), transaction);
         await transaction.CommitAsync();
         return (await GetAttendanceGroupAsync(id, request.ClientId), null);
+    }
+
+    public async Task<(IEnumerable<AttendanceGroup> Groups, string? Error)> SaveAttendanceGroupBatchAsync(SaveAttendanceGroupBatchRequest request)
+    {
+        var validationError = await ValidateAttendanceGroupBatchAsync(request);
+        if (validationError is not null) return ([], validationError);
+
+        var batchId = string.IsNullOrWhiteSpace(request.PolicyBatchId) ? Guid.NewGuid().ToString() : request.PolicyBatchId.Trim();
+        var locationIds = request.WorkLocationIds.Where(id => id > 0).Distinct().ToArray();
+        var departments = request.Departments.Select(item => item.Trim()).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var designations = request.Designations.Select(item => item.Trim()).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var employeeIds = request.EmployeeIds.Distinct().ToArray();
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        var locations = (await connection.QueryAsync<(int Id, string Name)>(@"SELECT Id, Name FROM worklocations
+WHERE ClientId=@ClientId AND IsActive=TRUE AND Id IN @LocationIds", new { request.ClientId, LocationIds = locationIds })).ToDictionary(item => item.Id, item => item.Name);
+        if (locations.Count != locationIds.Length) return ([], "One or more selected work locations do not belong to this client.");
+
+        var duplicateError = request.IsActive ? await FindAttendanceGroupDuplicateAsync(connection, request.ClientId, batchId, 0, locationIds, departments, designations, employeeIds) : null;
+        if (duplicateError is not null) return ([], duplicateError);
+
+        var employees = (await connection.QueryAsync<(int Id, int WorkLocationId, string Department, string Designation)>(@"SELECT Id, WorkLocationId, Department, Designation FROM employees
+WHERE IsActive=TRUE AND ClientId=@ClientId AND WorkLocationId IN @LocationIds AND Department IN @Departments AND Designation IN @Designations AND Id IN @EmployeeIds",
+            new { request.ClientId, LocationIds = locationIds, Departments = departments, Designations = designations, EmployeeIds = employeeIds })).ToList();
+
+        foreach (var locationId in locationIds)
+        foreach (var department in departments)
+        foreach (var designation in designations)
+        {
+            var hasEmployee = employees.Any(employee => employee.WorkLocationId == locationId && employee.Department == department && employee.Designation == designation);
+            if (!hasEmployee) return ([], $"No selected employees match {locations[locationId]} / {department} / {designation}.");
+        }
+
+        await using var transaction = await connection.BeginTransactionAsync();
+        await connection.ExecuteAsync("DELETE FROM attendance_groups WHERE client_id=@ClientId AND policy_batch_id=@PolicyBatchId", new { request.ClientId, PolicyBatchId = batchId }, transaction);
+        var existingNames = await connection.QueryAsync<string>(@"SELECT name FROM attendance_groups
+WHERE client_id=@ClientId AND (@PolicyBatchId='' OR COALESCE(policy_batch_id, '')<>@PolicyBatchId)", new { request.ClientId, PolicyBatchId = batchId }, transaction);
+        var usedNames = new HashSet<string>(existingNames, StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            foreach (var locationId in locationIds)
+            foreach (var department in departments)
+            foreach (var designation in designations)
+            {
+                var comboEmployeeIds = employees
+                    .Where(employee => employee.WorkLocationId == locationId && employee.Department == department && employee.Designation == designation)
+                    .Select(employee => employee.Id)
+                    .Distinct()
+                    .ToArray();
+
+                var name = UniqueAttendancePolicyName(BuildAttendancePolicyName(request.Name, locations[locationId], department, designation, locationIds.Length * departments.Length * designations.Length), usedNames);
+                var groupId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO attendance_groups (client_id, policy_batch_id, name, work_location_id, department, designation, work_week, attendance_cycle_start_day, attendance_cycle_end_day, payroll_report_generation_day, is_active)
+VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designation, @WorkWeek, @AttendanceCycleStartDay, @AttendanceCycleEndDay, @PayrollReportGenerationDay, @IsActive); SELECT LAST_INSERT_ID();",
+                    new
+                    {
+                        request.ClientId,
+                        PolicyBatchId = batchId,
+                        Name = name,
+                        WorkLocationId = locationId,
+                        Department = department,
+                        Designation = designation,
+                        WorkWeek = request.WorkWeek.Trim(),
+                        request.AttendanceCycleStartDay,
+                        request.AttendanceCycleEndDay,
+                        request.PayrollReportGenerationDay,
+                        request.IsActive
+                    }, transaction);
+                await connection.ExecuteAsync("INSERT INTO attendance_group_employees (attendance_group_id, employee_id) VALUES (@GroupId, @EmployeeId)", comboEmployeeIds.Select(employeeId => new { GroupId = groupId, EmployeeId = employeeId }), transaction);
+            }
+            await transaction.CommitAsync();
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            throw;
+        }
+
+        return (await GetAttendanceGroupsByBatchAsync(batchId, request.ClientId), null);
     }
 
     public async Task<bool> DeleteAttendanceGroupAsync(int id, int clientId)
@@ -1143,6 +1226,207 @@ VALUES (@ClientId, @Name, @HolidayType, @StartDate, @EndDate, @Description, @All
         return await connection.ExecuteAsync("DELETE FROM holidays WHERE id=@Id AND client_id=@ClientId", new { Id = id, ClientId = clientId }) > 0;
     }
 
+    public async Task<byte[]> BuildHolidayImportTemplateAsync(int clientId)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        var rows = (await GetHolidaysAsync(clientId, null, null)).ToList();
+        var templateRows = new List<string[]> { HolidayImportHeaders };
+        templateRows.AddRange(rows.Select(row => new[]
+        {
+            row.Id.ToString(CultureInfo.InvariantCulture),
+            row.Name,
+            row.HolidayType,
+            row.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            row.EndDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            row.Description,
+            BoolText(row.AllLocations),
+            row.AllLocations ? "" : string.Join("; ", row.WorkLocationIds),
+            row.worklocations
+        }));
+        if (templateRows.Count == 1)
+            templateRows.Add(new[] { "", "Republic Day", "Holiday", $"{DateTime.Today.Year}-01-26", $"{DateTime.Today.Year}-01-26", "National holiday", "TRUE", "", "All locations" });
+
+        var locations = (await connection.QueryAsync<(int Id, string Name, string City, string State)>(
+            "SELECT Id, Name, City, State FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY Name",
+            new { ClientId = clientId })).ToList();
+        var reference = new List<string[]>
+        {
+            new[] { "Options", "Values", "", "" },
+            new[] { "Holiday Type", "Holiday, Restricted Holiday", "", "" },
+            new[] { "All Locations", "TRUE/FALSE", "", "" },
+            new[] { "Work Location Ids", "Use semicolon separated ids when All Locations is FALSE.", "", "" },
+            new[] { "", "", "", "" },
+            new[] { "Work Location Id", "Name", "City", "State" }
+        };
+        reference.AddRange(locations.Select(location => new[]
+        {
+            location.Id.ToString(CultureInfo.InvariantCulture),
+            location.Name,
+            location.City,
+            location.State
+        }));
+        return BuildImportXlsx(("Holidays", templateRows), ("Reference", reference));
+    }
+
+    public async Task<ClientImportJobStatus> StartHolidayImportJobAsync(int clientId, IFormFile file)
+    {
+        var rows = await ParseImportFileAsync(file);
+        var totalRows = Math.Max(0, rows.Skip(1).Count(row => row.Any(value => !string.IsNullOrWhiteSpace(value))));
+        var job = new ClientImportJobStatus(Guid.NewGuid(), "Queued", totalRows, 0, 0, 0, []);
+        HolidayImportJobs[job.JobId] = job;
+        _ = Task.Run(async () =>
+        {
+            SetHolidayImportJob(job.JobId, current => current with { State = "Processing" });
+            try
+            {
+                var result = await ImportHolidayRowsAsync(clientId, rows, (completed, inserted, updated) => SetHolidayImportJob(job.JobId, current => current with { CompletedRows = completed, Inserted = inserted, Updated = updated }));
+                SetHolidayImportJob(job.JobId, current => current with { State = result.Errors.Count > 0 ? "Failed" : "Completed", TotalRows = result.TotalRows, CompletedRows = result.TotalRows, Inserted = result.Inserted, Updated = result.Updated, Errors = result.Errors });
+            }
+            catch (Exception ex)
+            {
+                SetHolidayImportJob(job.JobId, current => current with { State = "Failed", Errors = [$"Import failed: {ex.Message}"] });
+            }
+        });
+        return job;
+    }
+
+    public ClientImportJobStatus? GetHolidayImportJob(Guid jobId) => HolidayImportJobs.TryGetValue(jobId, out var job) ? job : null;
+
+    private async Task<ClientImportResult> ImportHolidayRowsAsync(int clientId, List<List<string>> rows, Action<int, int, int>? progress = null)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        var totalRows = Math.Max(0, rows.Skip(1).Count(row => row.Any(value => !string.IsNullOrWhiteSpace(value))));
+        if (rows.Count < 2 || totalRows == 0)
+            return new ClientImportResult(0, 0, 0, ["Import file has no data rows."]);
+        var clientExists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM clients WHERE Id=@ClientId AND IsActive=TRUE", new { ClientId = clientId });
+        if (clientExists == 0)
+            return new ClientImportResult(totalRows, 0, 0, ["Selected client was not found."]);
+
+        var header = rows[0].Select(Norm).ToList();
+        var existingIds = (await connection.QueryAsync<int>("SELECT id FROM holidays WHERE client_id=@ClientId", new { ClientId = clientId })).ToHashSet();
+        var locations = (await connection.QueryAsync<(int Id, string Name)>("SELECT Id, Name FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE", new { ClientId = clientId })).ToList();
+        var locationById = locations.ToDictionary(location => location.Id);
+        var locationByName = locations.GroupBy(location => Norm(location.Name)).ToDictionary(group => group.Key, group => group.First().Id);
+        var drafts = new List<SaveHolidayRequest>();
+        var seenIds = new HashSet<int>();
+        var errors = new List<string>();
+        var completed = 0;
+
+        for (var i = 1; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            if (row.All(string.IsNullOrWhiteSpace)) continue;
+
+            string V(params string[] names)
+            {
+                foreach (var name in names)
+                {
+                    var ix = header.IndexOf(Norm(name));
+                    if (ix >= 0 && ix < row.Count) return row[ix].Trim();
+                }
+                return "";
+            }
+
+            var rowNumber = i + 1;
+            var rowErrors = new List<string>();
+            var idText = V("Id", "Holiday Id");
+            var id = 0;
+            if (!string.IsNullOrWhiteSpace(idText) && (!int.TryParse(idText, NumberStyles.Integer, CultureInfo.InvariantCulture, out id) || id <= 0))
+                rowErrors.Add($"Row {rowNumber}: Id must be a positive number when filled.");
+            else if (id > 0 && !existingIds.Contains(id))
+                rowErrors.Add($"Row {rowNumber}: Holiday Id {id} was not found for the selected client.");
+            else if (id > 0 && !seenIds.Add(id))
+                rowErrors.Add($"Row {rowNumber}: Holiday Id {id} is repeated in the file.");
+
+            var name = V("Holiday Name", "Name");
+            var holidayTypeText = V("Holiday Type", "Type");
+            var holidayType = NormalizeHolidayType(holidayTypeText);
+            var startDate = ParseDate(V("Start Date", "startDate"), out var startOk);
+            var endText = V("End Date", "endDate");
+            var endOk = startOk;
+            var endDate = string.IsNullOrWhiteSpace(endText) ? startDate : ParseDate(endText, out endOk);
+            var allText = V("All Locations", "allLocations");
+            var allLocations = ParseImportFlag(allText, true);
+            var workLocationIds = allLocations ? new List<int>() : ResolveHolidayLocationIds(V("Work Location Ids", "Work Location Id", "Location Ids"), V("Work Locations", "Work Location"), locationById, locationByName, rowNumber, rowErrors);
+
+            if (string.IsNullOrWhiteSpace(name)) rowErrors.Add($"Row {rowNumber}: Holiday Name is required.");
+            if (!IsHolidayTypeText(holidayTypeText)) rowErrors.Add($"Row {rowNumber}: Holiday Type must be Holiday or Restricted Holiday.");
+            if (!startOk) rowErrors.Add($"Row {rowNumber}: Start Date is required as a valid date.");
+            if (!endOk) rowErrors.Add($"Row {rowNumber}: End Date must be a valid date when filled.");
+            if (startOk && endOk && endDate.Date < startDate.Date) rowErrors.Add($"Row {rowNumber}: End Date cannot be before Start Date.");
+            if (!IsImportFlag(allText)) rowErrors.Add($"Row {rowNumber}: All Locations must be TRUE/FALSE.");
+            if (!allLocations && workLocationIds.Count == 0) rowErrors.Add($"Row {rowNumber}: Work Location Ids are required when All Locations is FALSE.");
+            ValidateLength(name, "Holiday Name", 180, rowNumber, rowErrors);
+
+            if (rowErrors.Count == 0)
+            {
+                var draft = new SaveHolidayRequest
+                {
+                    Id = id,
+                    ClientId = clientId,
+                    Name = name.Trim(),
+                    HolidayType = holidayType,
+                    StartDate = startDate,
+                    EndDate = endDate,
+                    Description = V("Description"),
+                    AllLocations = allLocations,
+                    WorkLocationIds = workLocationIds
+                };
+                var validationError = ValidateHoliday(draft);
+                if (validationError is not null) rowErrors.Add($"Row {rowNumber}: {validationError}");
+                else if (await HasDuplicateHolidayAsync(connection, draft)) rowErrors.Add($"Row {rowNumber}: Duplicate holiday exists for the same location and date range.");
+                else
+                {
+                    var draftDuplicate = drafts.FirstOrDefault(item => HolidayDraftsOverlap(item, draft));
+                    if (draftDuplicate is not null) rowErrors.Add($"Row {rowNumber}: Duplicate holiday overlaps another row in this file.");
+                    else drafts.Add(draft);
+                }
+            }
+
+            if (rowErrors.Count > 0) errors.AddRange(rowErrors);
+            completed++;
+            progress?.Invoke(completed, 0, 0);
+        }
+
+        if (errors.Count > 0)
+            return new ClientImportResult(totalRows, 0, 0, errors);
+
+        await using var transaction = await connection.BeginTransactionAsync();
+        var inserted = 0;
+        var updated = 0;
+        try
+        {
+            foreach (var draft in drafts)
+            {
+                var id = draft.Id;
+                if (id == 0)
+                {
+                    id = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO holidays (client_id, name, holiday_type, start_date, end_date, description, all_locations)
+VALUES (@ClientId, @Name, @HolidayType, @StartDate, @EndDate, @Description, @AllLocations); SELECT LAST_INSERT_ID();", new { draft.ClientId, Name = draft.Name.Trim(), HolidayType = NormalizeHolidayType(draft.HolidayType), draft.StartDate, draft.EndDate, draft.Description, draft.AllLocations }, transaction);
+                    inserted++;
+                }
+                else
+                {
+                    var count = await connection.ExecuteAsync(@"UPDATE holidays SET name=@Name, holiday_type=@HolidayType, start_date=@StartDate, end_date=@EndDate, description=@Description, all_locations=@AllLocations WHERE id=@Id AND client_id=@ClientId", new { draft.ClientId, Id = id, Name = draft.Name.Trim(), HolidayType = NormalizeHolidayType(draft.HolidayType), draft.StartDate, draft.EndDate, draft.Description, draft.AllLocations }, transaction);
+                    if (count == 0) throw new InvalidOperationException($"Holiday Id {id} was not found.");
+                    await connection.ExecuteAsync("DELETE FROM holiday_locations WHERE holiday_id=@Id", new { Id = id }, transaction);
+                    updated++;
+                }
+                if (!draft.AllLocations && draft.WorkLocationIds.Count > 0)
+                    await connection.ExecuteAsync("INSERT INTO holiday_locations (holiday_id, work_location_id) VALUES (@HolidayId, @WorkLocationId)", draft.WorkLocationIds.Distinct().Select(locationId => new { HolidayId = id, WorkLocationId = locationId }), transaction);
+            }
+            await transaction.CommitAsync();
+            return new ClientImportResult(totalRows, inserted, updated, []);
+        }
+        catch (Exception ex)
+        {
+            await transaction.RollbackAsync();
+            return new ClientImportResult(totalRows, inserted, updated, [$"Import failed: {ex.Message}"]);
+        }
+    }
+
     private async Task<Holiday?> GetHolidayAsync(int id, int clientId) =>
         (await GetHolidaysAsync(clientId, null, null)).FirstOrDefault(holiday => holiday.Id == id);
 
@@ -1175,6 +1459,18 @@ WHERE g.id=@Id AND g.client_id=@ClientId
 GROUP BY g.id;", new { Id = id, ClientId = clientId })).ToList();
         await LoadAttendanceGroupEmployeesAsync(connection, rows);
         return rows.FirstOrDefault();
+    }
+
+    private async Task<List<AttendanceGroup>> GetAttendanceGroupsByBatchAsync(string policyBatchId, int clientId)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        var rows = (await connection.QueryAsync<AttendanceGroup>(AttendanceGroupSelectSql + @"
+WHERE g.policy_batch_id=@PolicyBatchId AND g.client_id=@ClientId
+GROUP BY g.id
+ORDER BY w.Name, g.department, g.designation;", new { PolicyBatchId = policyBatchId, ClientId = clientId })).ToList();
+        await LoadAttendanceGroupEmployeesAsync(connection, rows);
+        return rows;
     }
 
     private static async Task LoadAttendanceGroupEmployeesAsync(MySqlConnection connection, List<AttendanceGroup> rows)
@@ -1210,6 +1506,7 @@ FROM attendance_group_employees WHERE attendance_group_id IN @Ids", new { Ids = 
     {
         request.Id,
         request.ClientId,
+        PolicyBatchId = string.IsNullOrWhiteSpace(request.PolicyBatchId) ? Guid.NewGuid().ToString() : request.PolicyBatchId.Trim(),
         Name = request.Name.Trim(),
         request.WorkLocationId,
         Department = (request.Department ?? string.Empty).Trim(),
@@ -1300,6 +1597,8 @@ FROM attendance_group_employees WHERE attendance_group_id IN @Ids", new { Ids = 
         if (request.ClientId <= 0) return "Select a client.";
         if (string.IsNullOrWhiteSpace(request.Name)) return "Group name is required.";
         if (request.WorkLocationId <= 0) return "Select a work location.";
+        if (string.IsNullOrWhiteSpace(request.Department)) return "Select a department.";
+        if (string.IsNullOrWhiteSpace(request.Designation)) return "Select a designation.";
         if (!await IsValidWorkWeekAsync((request.WorkWeek ?? string.Empty).Trim())) return "Select a valid work week.";
         if (!IsValidDay(request.AttendanceCycleStartDay) || !IsValidDay(request.AttendanceCycleEndDay) || !IsValidDay(request.PayrollReportGenerationDay))
             return "Attendance cycle and report generation days must be between 1 and 31.";
@@ -1320,14 +1619,88 @@ WHERE client_id=@ClientId AND name=@Name AND id<>@Id", new { request.ClientId, N
         if (duplicateName > 0) return "A group with this name already exists for this client.";
         var locationOk = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM worklocations WHERE Id=@WorkLocationId AND ClientId=@ClientId AND IsActive=TRUE", new { request.ClientId, request.WorkLocationId });
         if (locationOk == 0) return "Selected work location does not belong to this client.";
+        if (request.IsActive)
+        {
+            var duplicateError = await FindAttendanceGroupDuplicateAsync(connection, request.ClientId, (request.PolicyBatchId ?? string.Empty).Trim(), request.Id, [request.WorkLocationId], [(request.Department ?? string.Empty).Trim()], [(request.Designation ?? string.Empty).Trim()], employeeIds);
+            if (duplicateError is not null) return duplicateError;
+        }
         var matchingEmployeeIds = (await connection.QueryAsync<int>(@"SELECT Id FROM employees
 WHERE IsActive=TRUE AND ClientId=@ClientId AND WorkLocationId=@WorkLocationId
-AND (@Department='' OR Department=@Department)
-AND (@Designation='' OR Designation=@Designation)
+AND Department=@Department
+AND Designation=@Designation
 AND Id IN @EmployeeIds", new { request.ClientId, request.WorkLocationId, Department = (request.Department ?? string.Empty).Trim(), Designation = (request.Designation ?? string.Empty).Trim(), EmployeeIds = employeeIds })).Distinct().ToHashSet();
         return matchingEmployeeIds.Count == employeeIds.Length
             ? null
             : "Selected employees must belong to the selected client, work location, department and designation.";
+    }
+
+    private async Task<string?> ValidateAttendanceGroupBatchAsync(SaveAttendanceGroupBatchRequest request)
+    {
+        if (request.ClientId <= 0) return "Select a client.";
+        if (string.IsNullOrWhiteSpace(request.Name)) return "Policy name is required.";
+        if (request.WorkLocationIds.Where(id => id > 0).Distinct().Count() == 0) return "Select at least one work location.";
+        if (request.Departments.Select(item => item.Trim()).Where(item => item.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 0) return "Select at least one department.";
+        if (request.Designations.Select(item => item.Trim()).Where(item => item.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 0) return "Select at least one designation.";
+        if (!await IsValidWorkWeekAsync((request.WorkWeek ?? string.Empty).Trim())) return "Select a valid work week.";
+        if (!IsValidDay(request.AttendanceCycleStartDay) || !IsValidDay(request.AttendanceCycleEndDay) || !IsValidDay(request.PayrollReportGenerationDay))
+            return "Attendance cycle and report generation days must be between 1 and 31.";
+        if (AttendanceCycleDays(request.AttendanceCycleStartDay, request.AttendanceCycleEndDay) > 31)
+            return "Attendance cycle cannot exceed 31 days in any payroll month.";
+        var buffer = request.PayrollReportGenerationDay >= request.AttendanceCycleEndDay
+            ? request.PayrollReportGenerationDay - request.AttendanceCycleEndDay
+            : request.PayrollReportGenerationDay + 31 - request.AttendanceCycleEndDay;
+        if (buffer is < 3 or > 7)
+            return "Payroll report generation day must have a 3 to 7 day buffer after attendance cycle end day.";
+        if (request.EmployeeIds.Distinct().Count() == 0) return "Select at least one employee.";
+        return null;
+    }
+
+    private static async Task<string?> FindAttendanceGroupDuplicateAsync(MySqlConnection connection, int clientId, string policyBatchId, int excludeGroupId, int[] locationIds, string[] departments, string[] designations, int[] employeeIds)
+    {
+        var duplicateEmployee = await connection.QueryFirstOrDefaultAsync<(string EmployeeName, string PolicyName)>(@"SELECT CONCAT(e.FirstName, ' ', e.LastName) AS EmployeeName, g.name AS PolicyName
+FROM attendance_group_employees age
+JOIN attendance_groups g ON g.id=age.attendance_group_id
+JOIN employees e ON e.Id=age.employee_id
+WHERE g.client_id=@ClientId AND g.is_active=TRUE AND age.employee_id IN @EmployeeIds
+AND g.id<>@ExcludeGroupId
+AND (@PolicyBatchId='' OR COALESCE(g.policy_batch_id, '')<>@PolicyBatchId)
+LIMIT 1;", new { ClientId = clientId, PolicyBatchId = policyBatchId, ExcludeGroupId = excludeGroupId, EmployeeIds = employeeIds });
+        if (!string.IsNullOrWhiteSpace(duplicateEmployee.EmployeeName))
+            return $"{duplicateEmployee.EmployeeName.Trim()} is already mapped in policy {duplicateEmployee.PolicyName}.";
+
+        var duplicateScope = await connection.QueryFirstOrDefaultAsync<(string LocationName, string Department, string Designation, string PolicyName)>(@"SELECT COALESCE(w.Name, '') AS LocationName, g.department AS Department, g.designation AS Designation, g.name AS PolicyName
+FROM attendance_groups g
+LEFT JOIN worklocations w ON w.Id=g.work_location_id
+WHERE g.client_id=@ClientId AND g.is_active=TRUE
+AND g.id<>@ExcludeGroupId
+AND g.work_location_id IN @LocationIds
+AND g.department IN @Departments
+AND g.designation IN @Designations
+AND (@PolicyBatchId='' OR COALESCE(g.policy_batch_id, '')<>@PolicyBatchId)
+LIMIT 1;", new { ClientId = clientId, PolicyBatchId = policyBatchId, ExcludeGroupId = excludeGroupId, LocationIds = locationIds, Departments = departments, Designations = designations });
+        return !string.IsNullOrWhiteSpace(duplicateScope.PolicyName)
+            ? $"Policy already exists for {duplicateScope.LocationName} / {duplicateScope.Department} / {duplicateScope.Designation}."
+            : null;
+    }
+
+    private static string BuildAttendancePolicyName(string baseName, string locationName, string department, string designation, int comboCount)
+    {
+        var name = comboCount <= 1 ? baseName.Trim() : $"{baseName.Trim()} - {locationName} - {department} - {designation}";
+        return name.Length <= 180 ? name : name[..180].Trim();
+    }
+
+    private static string UniqueAttendancePolicyName(string name, HashSet<string> usedNames)
+    {
+        var clean = string.IsNullOrWhiteSpace(name) ? "Attendance policy" : name.Trim();
+        var unique = clean;
+        var index = 2;
+        while (!usedNames.Add(unique))
+        {
+            var suffix = $" #{index++}";
+            var head = clean.Length + suffix.Length <= 180 ? clean : clean[..(180 - suffix.Length)].Trim();
+            unique = $"{head}{suffix}";
+        }
+        return unique;
     }
 
     private static string? ValidateMonthlyAttendance(SaveMonthlyAttendanceRequest request)
@@ -1496,9 +1869,13 @@ WHERE lt.client_id=@ClientId AND lt.code IN @Codes;", new { ClientId = clientId,
     private static readonly string[] DateLimitTypes = ["No limit", "Set number of days"];
     private static readonly string[] ApplicabilityModes = ["All employees", "Criteria based employees"];
     private static readonly string[] PostponeCreditUnits = ["Days", "Months"];
+    private static readonly string[] HolidayImportHeaders = ["Id", "Holiday Name", "Holiday Type", "Start Date", "End Date", "Description", "All Locations", "Work Location Ids", "Work Locations"];
 
     private static void SetLeaveTypeImportJob(Guid jobId, Func<ClientImportJobStatus, ClientImportJobStatus> update) =>
         LeaveTypeImportJobs.AddOrUpdate(jobId, _ => update(new ClientImportJobStatus(jobId, "Processing", 0, 0, 0, 0, [])), (_, current) => update(current));
+
+    private static void SetHolidayImportJob(Guid jobId, Func<ClientImportJobStatus, ClientImportJobStatus> update) =>
+        HolidayImportJobs.AddOrUpdate(jobId, _ => update(new ClientImportJobStatus(jobId, "Processing", 0, 0, 0, 0, [])), (_, current) => update(current));
 
     private static string NormalizeOption(string value, string[] options) =>
         options.FirstOrDefault(option => option.Equals(value.Trim(), StringComparison.OrdinalIgnoreCase)) ?? value.Trim();
@@ -1526,6 +1903,7 @@ WHERE lt.client_id=@ClientId AND lt.code IN @Codes;", new { ClientId = clientId,
 
     private static DateTime ParseDate(string value, out bool ok)
     {
+        if (TryParseExcelDate(value, out var excelDate)) { ok = true; return excelDate; }
         ok = DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date);
         return ok ? date.Date : DateTime.Today;
     }
@@ -1533,6 +1911,7 @@ WHERE lt.client_id=@ClientId AND lt.code IN @Codes;", new { ClientId = clientId,
     private static DateTime? ParseOptionalDate(string value, out bool ok)
     {
         if (string.IsNullOrWhiteSpace(value)) { ok = true; return null; }
+        if (TryParseExcelDate(value, out var excelDate)) { ok = true; return excelDate; }
         ok = DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date);
         return ok ? date.Date : null;
     }
@@ -1551,6 +1930,46 @@ WHERE lt.client_id=@ClientId AND lt.code IN @Codes;", new { ClientId = clientId,
         if (decimal.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var result) && result >= 0) return result;
         errors.Add($"Row {row}: {label} must be a non-negative number.");
         return null;
+    }
+
+    private static bool TryParseExcelDate(string value, out DateTime date)
+    {
+        date = DateTime.Today;
+        if (!decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var serial) || serial < 20000 || serial > 80000) return false;
+        date = new DateTime(1899, 12, 30).AddDays((double)serial).Date;
+        return true;
+    }
+
+    private static bool IsHolidayTypeText(string value)
+    {
+        var clean = Norm(value);
+        return clean is "holiday" or "restrictedholiday" or "restricted" or "rh";
+    }
+
+    private static List<int> ResolveHolidayLocationIds(string idText, string nameText, Dictionary<int, (int Id, string Name)> locationById, Dictionary<string, int> locationByName, int rowNumber, List<string> errors)
+    {
+        var ids = new List<int>();
+        foreach (var item in idText.Split([';', ',', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!int.TryParse(item, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) || !locationById.ContainsKey(id))
+                errors.Add($"Row {rowNumber}: Work Location Id {item} was not found for this client.");
+            else ids.Add(id);
+        }
+        foreach (var item in nameText.Split([';', ',', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (int.TryParse(item, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) && locationById.ContainsKey(id)) ids.Add(id);
+            else if (locationByName.TryGetValue(Norm(item), out var locationId)) ids.Add(locationId);
+            else errors.Add($"Row {rowNumber}: Work Location \"{item}\" was not found for this client.");
+        }
+        return ids.Distinct().ToList();
+    }
+
+    private static bool HolidayDraftsOverlap(SaveHolidayRequest left, SaveHolidayRequest right)
+    {
+        if (left.Id > 0 && left.Id == right.Id) return true;
+        if (left.StartDate.Date > right.EndDate.Date || left.EndDate.Date < right.StartDate.Date) return false;
+        if (left.AllLocations || right.AllLocations) return true;
+        return left.WorkLocationIds.Intersect(right.WorkLocationIds).Any();
     }
 
     private static string BoolText(bool value) => value ? "TRUE" : "FALSE";
@@ -1735,7 +2154,7 @@ LEFT JOIN worklocations w ON w.Id = r.work_location_id
 LEFT JOIN attendance_geo_fence_rule_employees gre ON gre.geo_fence_rule_id = r.id
 LEFT JOIN employees e ON e.Id = gre.employee_id";
 
-    private const string AttendanceGroupSelectSql = @"SELECT g.id AS Id, g.client_id AS ClientId, COALESCE(c.Name, '') AS ClientName,
+    private const string AttendanceGroupSelectSql = @"SELECT g.id AS Id, g.client_id AS ClientId, COALESCE(c.Name, '') AS ClientName, COALESCE(g.policy_batch_id, '') AS PolicyBatchId,
 g.name AS Name, g.work_location_id AS WorkLocationId, COALESCE(w.Name, '') AS WorkLocationName,
 g.department AS Department, g.designation AS Designation, g.work_week AS WorkWeek,
 g.attendance_cycle_start_day AS AttendanceCycleStartDay,
@@ -1820,6 +2239,7 @@ WHERE Type='Work Week' AND Value=@WorkWeek AND IsActive=TRUE LIMIT 1", new { Wor
         await CreateIndexIfMissingAsync(connection, "leave_types", "UX_leave_types_client_code", "CREATE UNIQUE INDEX UX_leave_types_client_code ON leave_types (client_id, code)");
         await CreateIndexIfMissingAsync(connection, "attendance_geo_fence_rules", "IX_geo_fence_client_scope", "CREATE INDEX IX_geo_fence_client_scope ON attendance_geo_fence_rules (client_id, scope_type, is_active)");
         await CreateIndexIfMissingAsync(connection, "attendance_groups", "UX_attendance_groups_client_name", "CREATE UNIQUE INDEX UX_attendance_groups_client_name ON attendance_groups (client_id, name)");
+        await CreateIndexIfMissingAsync(connection, "attendance_groups", "IX_attendance_groups_batch", "CREATE INDEX IX_attendance_groups_batch ON attendance_groups (policy_batch_id)");
         await CreateIndexIfMissingAsync(connection, "attendance_groups", "IX_attendance_groups_client_location", "CREATE INDEX IX_attendance_groups_client_location ON attendance_groups (client_id, work_location_id)");
         await CreateIndexIfMissingAsync(connection, "attendance_group_employees", "UX_attendance_group_employee", "CREATE UNIQUE INDEX UX_attendance_group_employee ON attendance_group_employees (attendance_group_id, employee_id)");
     }
@@ -1857,6 +2277,18 @@ WHERE CONSTRAINT_SCHEMA = DATABASE()
 
         if (exists == 0)
             await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD CONSTRAINT `{constraintName}` {definition}");
+    }
+
+    private static async Task DropForeignKeyIfExistsAsync(MySqlConnection connection, string tableName, string constraintName)
+    {
+        var exists = await connection.ExecuteScalarAsync<int>(@"
+SELECT COUNT(*)
+FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+WHERE CONSTRAINT_SCHEMA = DATABASE()
+  AND CONSTRAINT_NAME = @ConstraintName;", new { ConstraintName = constraintName });
+
+        if (exists > 0)
+            await connection.ExecuteAsync($"ALTER TABLE `{tableName}` DROP FOREIGN KEY `{constraintName}`");
     }
 
     private static async Task CreateIndexIfMissingAsync(MySqlConnection connection, string table, string indexName, string createSql)

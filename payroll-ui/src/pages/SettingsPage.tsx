@@ -15,7 +15,7 @@ import { useToast, type ToastType } from '../components/ToastProvider'
 import { client0, component0, drop0, dropTypes, location0, org0, payslip0, settingsMenus, setup0, structure0, workWeekOptions } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
 import { getAttendanceGroups } from '../services/leaveAttendanceService'
-import { getClientBillingConfigurations, getClientBillingModule, getClientImportJob, getDropdownImportJob, getDropdowns, getOrganization, getSalaryComponentImportJob, getSalaryTemplateImportJob, getSetup, getWorkLocationImportJob, getWorkLocations, saveClient as persistClient, saveClientBillingConfiguration, saveClientBillingModule, saveDropdown, saveOrganization, saveSetup, saveWorkLocation, startClientImport, startDropdownImport, startSalaryComponentImport, startSalaryTemplateImport, startWorkLocationImport, type BulkImportStatus } from '../services/settingsService'
+import { getClientBillingConfigurations, getClientBillingImportJob, getClientBillingModule, getClientImportJob, getDropdownImportJob, getDropdowns, getOrganization, getSalaryComponentImportJob, getSalaryTemplateImportJob, getSetup, getWorkLocationImportJob, getWorkLocations, saveClient as persistClient, saveClientBillingConfiguration, saveClientBillingModule, saveDropdown, saveOrganization, saveSetup, saveWorkLocation, startClientBillingImport, startClientImport, startDropdownImport, startSalaryComponentImport, startSalaryTemplateImport, startWorkLocationImport, type BulkImportStatus } from '../services/settingsService'
 import type { AttendanceGroup, Client, ClientBillingConfiguration, ClientBillingRateCardType, ClientBillingRateType, Component, Drop, Employee, Org, ProfessionalTaxSlab, Setup, Structure, WorkLocation } from '../types/payroll'
 import { money } from '../utils/salary'
 import { parseImportPreviewFile, parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules } from '../utils/importPreview'
@@ -36,6 +36,7 @@ const settingsSetup0: Setup = setup0
 const billingRateCardTypes: ClientBillingRateCardType[] = ['All', 'Service Charge', 'Reimbursement', 'Bonus', 'Statutory Compliance Charges']
 const billingRateTypes: ClientBillingRateType[] = ['Percentage', 'Fixed']
 const billing0: ClientBillingConfiguration = { id: 0, clientId: 0, clientName: '', workLocationId: null, workLocationName: '', rateCardType: 'All', rateType: 'Percentage', value: 0, taxInclusive: false, gstRatePercent: 18, effectiveFrom: new Date().toISOString().slice(0, 10), effectiveTo: null, isActive: true }
+const billingImportHeaders = ['Client Id', 'Work Location Id', 'Rate Card Type', 'Rate Type', 'Value', 'Tax Basis', 'GST Rate %', 'Effective From', 'Effective To', 'Active']
 const clientImportHeaders = ['Client Name', 'Code', 'Contact Person', 'Email', 'Phone', 'Address', 'Active']
 const workLocationImportHeaders = ['Client Id', 'Location Name', 'Address', 'State', 'City', 'PIN', 'GST Number', 'Primary', 'Active']
 const dropdownImportHeaders = ['Master Type', 'Value', 'Client Id', 'State', 'Active', 'Config Json']
@@ -51,9 +52,19 @@ const workLocationPreviewRules: ImportPreviewRules = { required: ['Client Id', '
 const dropdownPreviewRules: ImportPreviewRules = { required: ['Master Type', 'Value'], unique: [['Master Type', 'Client Id', 'State', 'Value']], booleans: ['Active'], enums: { 'Master Type': [...dropTypes] } }
 const salaryComponentPreviewRules: ImportPreviewRules = { required: ['Code', 'Category', 'Name', 'Calculation Type'], unique: [['Code']], booleans: ['Taxable', 'Part Of CTC', 'Pro Rata', 'FBP', 'Restrict FBP', 'ESI', 'Recurring', 'Scheduled', 'Active'], numbers: ['Priority'], enums: { Category: [...componentTabs], 'Calculation Type': [...calculationOptions], 'Pay Type': ['Fixed Pay', 'Variable Pay'], EPF: ['Never', 'Always', 'Only if employee is PF eligible'] } }
 const salaryTemplatePreviewRules: ImportPreviewRules = { required: ['Client Ids', 'Template Name', 'Component Code'], unique: [['Client Ids', 'Template Name', 'Component Code']], booleans: ['Active'], numbers: ['Annual CTC'] }
+const billingPreviewRules: ImportPreviewRules = { required: ['Client Id', 'Rate Card Type', 'Rate Type', 'Value', 'Effective From'], unique: [['Client Id', 'Work Location Id', 'Rate Card Type', 'Rate Type', 'Effective From']], booleans: ['Active'], numbers: ['Value', 'GST Rate %'], dates: ['Effective From', 'Effective To'], enums: { 'Rate Card Type': [...billingRateCardTypes], 'Rate Type': [...billingRateTypes], 'Tax Basis': ['Excluding', 'Inclusive'] } }
 const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
 const dropdownSheetHeaders = (type: string) => type === 'Employee Grade' ? ['Client Id', 'Value', 'Active'] : type === 'City' ? ['State', 'Value', 'Active'] : type === 'Work Week' ? ['Value', 'Active', 'Working Days', 'Off Saturdays'] : ['Value', 'Active']
 const dropdownSheetExample = (type: string, clientId = '1') => type === 'Employee Grade' ? [clientId, 'G1', 'TRUE'] : type === 'City' ? ['Delhi', 'New Delhi', 'TRUE'] : type === 'Work Week' ? ['Monday - Saturday with 1st-4th Saturdays off', 'TRUE', 'Mon, Tue, Wed, Thu, Fri, Sat', '1st, 2nd, 3rd, 4th'] : [type === 'State' ? 'Delhi' : type === 'Department' ? 'Finance' : type === 'Designation' ? 'Manager' : type === 'Employment Type' ? 'Full Time' : type === 'Cost Center' ? 'CC-001' : 'Head Office', 'TRUE']
+const dropdownWorkWeekReferenceRows = [
+  ['', '', '', ''],
+  ['Work Week Examples', '', '', ''],
+  ['Pattern', 'Working Days', 'Off Saturdays', 'Result'],
+  ['Monday - Friday', 'Mon, Tue, Wed, Thu, Fri', '', 'Saturday and Sunday off'],
+  ['Monday - Saturday', 'Mon, Tue, Wed, Thu, Fri, Sat', '', 'Only Sunday off'],
+  ['2nd/4th Saturday off', 'Mon, Tue, Wed, Thu, Fri, Sat', '2nd, 4th', 'Sunday + selected Saturdays off'],
+  ['All Saturdays off', 'Mon, Tue, Wed, Thu, Fri', '', 'Do not include Sat in Working Days']
+]
 type SettingsBulkUpload = { open: boolean; state: BulkUploadState; percent: number; summary: BulkUploadSummary }
 type ImportStart = (file: File) => Promise<{ ok: boolean; data: BulkImportStatus; error: string; status: number }>
 type ImportStatus = (jobId: string) => Promise<BulkImportStatus>
@@ -153,6 +164,8 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const [employees, setEmployees] = useState<Employee[]>([]), [attendanceGroups, setAttendanceGroups] = useState<AttendanceGroup[]>([])
   const [component, setComponent] = useState(component0), [structure, setStructure] = useState(structure0), [payslip, setPayslip] = useState(payslip0), [componentTab, setComponentTab] = useState<ComponentCategory>('Earning')
   const [billingEnabled, setBillingEnabled] = useState(false), [billingRows, setBillingRows] = useState<ClientBillingConfiguration[]>([]), [billingRow, setBillingRow] = useState<ClientBillingConfiguration>(billing0), [billingDrawerOpen, setBillingDrawerOpen] = useState(false)
+  const [billingTemplateDownloaded, setBillingTemplateDownloaded] = useState(false)
+  const [billingUpload, setBillingUpload] = useState<SettingsBulkUpload>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
   const [organizationTab, setOrganizationTab] = useState<OrganizationTab>('Organization')
   const [statutoryTab, setStatutoryTab] = useState<StatutoryTab>('Income Tax Rules')
   const [ptSlab, setPtSlab] = useState<ProfessionalTaxSlab>(ptSlab0)
@@ -393,7 +406,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   }
   const downloadDropTemplate = () => {
     const firstClientId = clients[0] ? String(clients[0].id) : '1'
-    const referenceRows = [['Clients', '', '', ''], ['Client Id', 'Client Name', 'Client Code', ''], ...clients.map(item => [String(item.id), item.name, item.code || '', '']), ['', '', '', ''], ['Sheet', 'Required columns', 'Example row', 'Notes'], ...dropTypes.map(type => [type, dropdownSheetHeaders(type).join(', '), dropdownSheetExample(type, firstClientId).join(' | '), type === 'Employee Grade' ? 'Client Id must match Clients sheet.' : type === 'City' ? 'State must exist or will be created as a state master.' : 'Value is the dropdown text.'])]
+    const referenceRows = [['Clients', '', '', ''], ['Client Id', 'Client Name', 'Client Code', ''], ...clients.map(item => [String(item.id), item.name, item.code || '', '']), ['', '', '', ''], ['Sheet', 'Required columns', 'Example row', 'Notes'], ...dropTypes.map(type => [type, dropdownSheetHeaders(type).join(', '), dropdownSheetExample(type, firstClientId).join(' | '), type === 'Employee Grade' ? 'Client Id must match Clients sheet.' : type === 'City' ? 'State must exist or will be created as a state master.' : 'Value is the dropdown text.']), ...dropdownWorkWeekReferenceRows]
     downloadXlsx('dropdown-master-import-template.xlsx', [
       ...dropTypes.map(type => ({ name: type, rows: [dropdownSheetHeaders(type), dropdownSheetExample(type, firstClientId)] })),
       { name: 'Reference', rows: referenceRows }
@@ -493,6 +506,48 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
         return issues
       }
     }, selected => runBulkUploadJob(selected, setSalaryTemplateUpload, startSalaryTemplateImport, getSalaryTemplateImportJob, 'Salary template import failed. No rows were saved.'))
+  }
+  const downloadBillingTemplate = () => {
+    const flag = (value: boolean) => value ? 'TRUE' : 'FALSE'
+    const firstClient = clients[0]
+    const rows = billingRows.length
+      ? billingRows.map(row => [String(row.clientId || ''), row.workLocationId ? String(row.workLocationId) : '', row.rateCardType, row.rateType, String(row.value ?? 0), row.taxInclusive ? 'Inclusive' : 'Excluding', String(row.gstRatePercent ?? 18), String(row.effectiveFrom).slice(0, 10), row.effectiveTo ? String(row.effectiveTo).slice(0, 10) : '', flag(row.isActive)])
+      : [[firstClient ? String(firstClient.id) : '', '', 'All', 'Percentage', '0', 'Excluding', '18', new Date().toISOString().slice(0, 10), '', 'TRUE']]
+    downloadXlsx('client-billing-import-template.xlsx', [
+      { name: 'Client Billing', rows: [billingImportHeaders, ...rows] },
+      { name: 'Reference', rows: [['Clients', '', ''], ['Client Id', 'Client Name', 'Client Code'], ...clients.map(item => [String(item.id), item.name, item.code || '']), ['', '', ''], ['Work Locations', '', ''], ['Work Location Id', 'Client Id', 'Work Location Name'], ...locations.filter(item => item.isActive).map(item => [String(item.id), String(item.clientId), item.name]), ['', '', ''], ['Options', 'Values', 'Notes'], ['Rate Card Type', billingRateCardTypes.join(', '), ''], ['Rate Type', billingRateTypes.join(', '), ''], ['Tax Basis', 'Excluding, Inclusive', ''], ['Work Location Id', 'Blank or 0', 'Applies to all locations for that client'], ['Active', 'TRUE, FALSE', '']] }
+    ])
+    setBillingTemplateDownloaded(true)
+    notify('Client billing import template downloaded.', 'info')
+  }
+  const uploadBillingConfigurations = async (file: File | null) => {
+    if (!file) return
+    if (!billingTemplateDownloaded) {
+      const errors = ['Download the client billing template before uploading.']
+      setBillingUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors } })
+      notify(errors[0], 'error')
+      return
+    }
+    const clientIds = new Set(clients.map(item => String(item.id)))
+    const locationClientById = new Map(locations.filter(item => item.isActive).map(item => [String(item.id), String(item.clientId)]))
+    await previewBulkUpload(file, 'Client billing bulk upload preview', {
+      ...billingPreviewRules,
+      custom: (row, rowNumber) => {
+        const issues: ImportPreviewIssue[] = []
+        const clientId = row['Client Id']
+        const locationId = row['Work Location Id']
+        if (clientId && !clientIds.has(clientId)) issues.push({ rowNumber, column: 'Client Id', message: `Client Id ${clientId} was not found.` })
+        if (locationId && locationId !== '0' && locationClientById.get(locationId) !== clientId) issues.push({ rowNumber, column: 'Work Location Id', message: `Work Location Id ${locationId} was not found for Client Id ${clientId}.` })
+        const value = Number(row.Value)
+        if (row.Value && Number.isFinite(value) && value < 0) issues.push({ rowNumber, column: 'Value', message: 'Value cannot be negative.' })
+        const gst = Number(row['GST Rate %'])
+        if (row['GST Rate %'] && Number.isFinite(gst) && (gst < 0 || gst > 100)) issues.push({ rowNumber, column: 'GST Rate %', message: 'GST Rate % must be between 0 and 100.' })
+        const from = row['Effective From'] ? Date.parse(row['Effective From']) : Number.NaN
+        const to = row['Effective To'] ? Date.parse(row['Effective To']) : Number.NaN
+        if (!Number.isNaN(from) && !Number.isNaN(to) && to < from) issues.push({ rowNumber, column: 'Effective To', message: 'Effective To cannot be before Effective From.' })
+        return issues
+      }
+    }, selected => runBulkUploadJob(selected, setBillingUpload, startClientBillingImport, getClientBillingImportJob, 'Client billing import failed. No rows were saved.'))
   }
   const applyLocationClient = (value: string) => {
     const clientId = Number(refId(value) || 0)
@@ -637,7 +692,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     const locationOptions = billingRow.clientId ? locations.filter(item => item.clientId === billingRow.clientId) : []
     const setBilling = <K extends keyof ClientBillingConfiguration>(key: K, value: ClientBillingConfiguration[K]) => setBillingRow(current => ({ ...current, [key]: value }))
     return <AntCard title="Client Billing Configuration" size="small" className="settings-panel settings-table-panel">
-      <div className="component-table-head"><div><b>Billing rate cards</b><span>Effective-dated client and work-location billing rules.</span></div><Space><AntCheckbox checked={billingEnabled} onChange={event => void toggleBillingModule(event.target.checked)}>Enable module</AntCheckbox><Button type="primary" disabled={!billingEnabled} onClick={openBillingDrawer}>Add configuration</Button></Space></div>
+      <div className="component-table-head"><div><b>Billing rate cards</b><span>Effective-dated client and work-location billing rules.</span></div><Space className="settings-master-actions" size={8} wrap><AntCheckbox checked={billingEnabled} onChange={event => void toggleBillingModule(event.target.checked)}>Enable module</AntCheckbox><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} disabled={!billingEnabled} onClick={downloadBillingTemplate}>Template</Button><label className={`settings-upload-action ${!billingEnabled || !billingTemplateDownloaded ? 'disabled' : ''}`} title={billingEnabled ? billingTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first' : 'Enable module first'}><input type="file" disabled={!billingEnabled || !billingTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadBillingConfigurations(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" disabled={!billingEnabled} onClick={openBillingDrawer}>Add configuration</Button></Space></div>
       {billingEnabled ? <DataTable rows={activeBillingRows} emptyText="No billing configurations added." exportFileName="client-billing-configurations" actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editBilling(row)}>Edit</Button><Button size="small" danger onClick={() => void deleteBilling(row)}>Delete</Button></Space>} columns={[{ key: 'clientName', label: 'Client' }, { key: 'workLocationName', label: 'Work location', value: row => row.workLocationName || 'All locations' }, { key: 'rateCardType', label: 'Rate card' }, { key: 'rateType', label: 'Rate type' }, { key: 'value', label: 'Value', value: row => row.rateType === 'Percentage' ? `${row.value}%` : money(row.value) }, { key: 'taxInclusive', label: 'Tax', value: row => row.taxInclusive ? 'Inclusive' : 'Excluding' }, { key: 'gstRatePercent', label: 'GST %', value: row => `${row.gstRatePercent ?? 0}%` }, { key: 'effectiveFrom', label: 'From', value: row => String(row.effectiveFrom).slice(0, 10) }, { key: 'effectiveTo', label: 'To', value: row => row.effectiveTo ? String(row.effectiveTo).slice(0, 10) : 'Open' }]} /> : <p className="component-guide"><b>Module disabled</b><span>Enable the module to maintain client billing rate cards.</span></p>}
       {billingDrawerOpen && <div className="component-drawer-backdrop" onClick={() => setBillingDrawerOpen(false)}><aside className="component-drawer" role="dialog" aria-modal="true" aria-label={billingRow.id ? 'Edit billing configuration' : 'Add billing configuration'} onClick={event => event.stopPropagation()}><header><div><span className="eyebrow purple">Billing</span><h3>{billingRow.id ? 'Edit configuration' : 'Add configuration'}</h3><p>Define client billing rate and tax basis for an effective period.</p></div><button type="button" aria-label="Close billing drawer" onClick={() => setBillingDrawerOpen(false)}>x</button></header><div className="component-drawer-form"><InfoField label="Client" help="Billing rules are maintained client-wise."><Sel v={billingRow.clientId || ''} set={value => setBillingRow(current => ({ ...current, clientId: Number(refId(value) || 0), workLocationId: null }))} a={clients.map(item => `${item.id}:${item.name}`)} /></InfoField><InfoField label="Work location" help="Leave blank to apply to all work locations of the client."><Sel v={billingRow.workLocationId || ''} set={value => setBilling('workLocationId', Number(refId(value) || 0) || null)} a={['0:All locations', ...locationOptions.map(item => `${item.id}:${item.name}`)]} /></InfoField><InfoField label="Rate card type" help="Classifies the billing component."><Sel v={billingRow.rateCardType} set={value => setBilling('rateCardType', value as ClientBillingRateCardType)} a={billingRateCardTypes} /></InfoField><InfoField label="Rate type" help="Percentage applies on billing base; fixed is an absolute amount."><Sel v={billingRow.rateType} set={value => setBilling('rateType', value as ClientBillingRateType)} a={billingRateTypes} /></InfoField><InfoField label="Value" help="Enter percentage or fixed value based on rate type."><Input type="number" min={0} step="0.01" value={billingRow.value} onChange={event => setBilling('value', Number(event.target.value || 0))} /></InfoField><InfoField label="Tax basis" help="Choose whether entered value includes tax."><Sel v={billingRow.taxInclusive ? 'Inclusive' : 'Excluding'} set={value => setBilling('taxInclusive', value === 'Inclusive')} a={['Inclusive', 'Excluding']} /></InfoField><InfoField label="GST rate %" help="GST percentage used by Client Billing Report for this billing rule."><Input type="number" min={0} max={100} step="0.01" value={billingRow.gstRatePercent} onChange={event => setBilling('gstRatePercent', Number(event.target.value || 0))} /></InfoField><InfoField label="Effective from" help="First date from which this billing rule applies."><Input type="date" value={billingRow.effectiveFrom} onChange={event => setBilling('effectiveFrom', event.target.value)} /></InfoField><InfoField label="Effective to" help="Optional expiry date."><Input type="date" value={billingRow.effectiveTo || ''} onChange={event => setBilling('effectiveTo', event.target.value || null)} /></InfoField><InfoField label="Status" help="Inactive rows are kept for reference but ignored by active billing setup."><AntCheckbox checked={billingRow.isActive} onChange={event => setBilling('isActive', event.target.checked)}>Active</AntCheckbox></InfoField></div><footer><button type="button" className="secondary" onClick={() => setBillingDrawerOpen(false)}>Cancel</button><button type="button" onClick={() => void saveBilling()}>{billingRow.id ? 'Update configuration' : 'Save configuration'}</button></footer></aside></div>}
     </AntCard>
@@ -736,6 +791,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     <BulkUploadProgressModal open={dropUpload.open} title="Dropdown master bulk upload" state={dropUpload.state} percent={dropUpload.percent} summary={dropUpload.summary} onClose={() => setDropUpload(current => ({ ...current, open: false }))} />
     <BulkUploadProgressModal open={componentUpload.open} title="Salary component bulk upload" state={componentUpload.state} percent={componentUpload.percent} summary={componentUpload.summary} onClose={() => setComponentUpload(current => ({ ...current, open: false }))} />
     <BulkUploadProgressModal open={salaryTemplateUpload.open} title="Salary template bulk upload" state={salaryTemplateUpload.state} percent={salaryTemplateUpload.percent} summary={salaryTemplateUpload.summary} onClose={() => setSalaryTemplateUpload(current => ({ ...current, open: false }))} />
+    <BulkUploadProgressModal open={billingUpload.open} title="Client billing bulk upload" state={billingUpload.state} percent={billingUpload.percent} summary={billingUpload.summary} onClose={() => setBillingUpload(current => ({ ...current, open: false }))} />
     <BulkUploadPreviewModal preview={bulkPreview} importing={bulkPreviewImporting} onCancel={() => { setBulkPreview(emptyBulkUploadPreview); setBulkPreviewConfirm(null) }} onConfirm={() => void confirmBulkPreview()} />
     {renderComponentDrawer()}
   </form>

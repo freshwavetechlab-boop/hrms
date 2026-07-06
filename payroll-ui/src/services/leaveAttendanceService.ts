@@ -32,6 +32,9 @@ export const getAttendanceGroups = (clientId = 0) => getJson<AttendanceGroup[]>(
 export async function saveAttendanceGroup(group: AttendanceGroup) {
   return postJson('/api/leave-attendance/groups', group, null as AttendanceGroup | null)
 }
+export async function saveAttendanceGroupBatch(group: Pick<AttendanceGroup, 'policyBatchId' | 'clientId' | 'name' | 'workWeek' | 'attendanceCycleStartDay' | 'attendanceCycleEndDay' | 'payrollReportGenerationDay' | 'isActive' | 'employeeIds'> & { workLocationIds: number[]; departments: string[]; designations: string[] }) {
+  return postJson('/api/leave-attendance/groups/batch', group, [] as AttendanceGroup[])
+}
 export async function deleteAttendanceGroup(clientId: number, id: number) {
   const response = await deleteJson(`/api/leave-attendance/groups/${id}?clientId=${clientId}`, null)
   return { ok: response.ok, error: response.error }
@@ -76,6 +79,14 @@ export async function deleteHoliday(clientId: number, id: number) {
   const response = await deleteJson(`/api/leave-attendance/holidays/${id}?clientId=${clientId}`, null, { toast: false })
   return { ok: response.ok, error: response.error }
 }
+export const downloadHolidayImportTemplate = (clientId: number) => getBlob(`/api/leave-attendance/holidays/import-template?clientId=${clientId}`)
+export const startHolidayImport = (clientId: number, file: File) => {
+  const body = new FormData()
+  body.append('clientId', String(clientId))
+  body.append('file', file)
+  return postForm<BulkImportStatus>('/api/leave-attendance/holidays/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
+}
+export const getHolidayImportJob = (jobId: string) => getJson<BulkImportStatus>(`/api/leave-attendance/holidays/import-jobs/${jobId}`, { jobId, state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: ['Import job not found.'] })
 export const leaveBalanceSampleUrl = (clientId: number) => apiUrl(`/api/leave-attendance/import-balances/sample?clientId=${clientId}`)
 export const downloadLeaveBalanceSample = (clientId: number) => getBlob(`/api/leave-attendance/import-balances/sample?clientId=${clientId}`)
 export async function previewLeaveBalanceImport(clientId: number, file: File, encoding: string, mapping?: LeaveBalanceImportMapping, onProgress: (percent: number) => void = () => {}) {

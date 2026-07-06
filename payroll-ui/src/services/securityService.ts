@@ -1,5 +1,5 @@
 import type { AuditLog, AuthPermission, AuthRole, AuthUser, Client, Employee, EmployeeLoginProvisionPreview, EmployeeLoginProvisionResponse } from '../types/payroll'
-import { getJson, postJson } from './apiClient'
+import { deleteJson, getJson, postJson } from './apiClient'
 
 export const loadSecurityData = async () => ({
   users: await getJson<AuthUser[]>('/api/security/users', []),
@@ -17,6 +17,16 @@ export async function saveSecurityUser(body: unknown) {
 
 export async function saveSecurityRole(body: unknown) {
   const response = await postJson('/api/security/roles', body, null)
+  return { ok: response.ok, error: response.error }
+}
+
+export async function deleteSecurityUser(id: number) {
+  const response = await deleteJson(`/api/security/users/${id}`, null)
+  return { ok: response.ok, error: response.error }
+}
+
+export async function deleteSecurityRole(id: number) {
+  const response = await deleteJson(`/api/security/roles/${id}`, null)
   return { ok: response.ok, error: response.error }
 }
 

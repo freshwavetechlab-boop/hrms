@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Checkbox as AntCheckbox, Drawer, Input, Modal, Space, Tabs, Tag } from 'antd'
-import { DownloadOutlined, ImportOutlined, KeyOutlined, PlusOutlined, SafetyCertificateOutlined, TeamOutlined, UploadOutlined } from '@ant-design/icons'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Input, Modal, Space, Tag } from 'antd'
+import { DownloadOutlined, ImportOutlined, KeyOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
 import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from './BulkUploadPreviewModal'
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from './BulkUploadProgressModal'
-import { loadEmployeeProvisionPreview, loadSecurityData, provisionEmployeeLogins, saveSecurityRole, saveSecurityUser } from '../services/securityService'
+import { deleteSecurityRole, deleteSecurityUser, loadEmployeeProvisionPreview, loadSecurityData, provisionEmployeeLogins, saveSecurityRole, saveSecurityUser } from '../services/securityService'
 import type { AuditLog, AuthPermission, AuthRole, AuthUser, Client, Employee, EmployeeLoginProvisionPreview, EmployeeLoginProvisionResponse } from '../types/payroll'
 import { parseImportPreviewFile, validateImportPreview, type ImportPreviewData, type ImportPreviewRules } from '../utils/importPreview'
 import { downloadXlsx } from '../utils/xlsx'
@@ -12,7 +12,7 @@ import SearchSelect from './SearchSelect'
 import '../SecurityAccess.css'
 
 const user0 = { id: 0, email: '', displayName: '', password: '', clientId: '', employeeId: '', isActive: true, mustChangePassword: true, roles: ['employee'] }
-const role0 = { id: 0, code: '', name: '', description: '', permissions: [] as string[] }
+const role0 = { id: 0, code: '', name: '', description: '', permissions: [] as string[], isSystem: false }
 const userImportHeaders = ['Email', 'Display Name', 'Client Id', 'Employee Code', 'Roles', 'Temporary Password', 'Active', 'Must Change Password']
 const securityTabs = ['Users', 'Roles', 'Audit'] as const
 
@@ -31,13 +31,15 @@ const parseFlag = (value: string | undefined, fallback: boolean) => {
 const rowMap = (data: ImportPreviewData, row: string[]) => Object.fromEntries(data.headers.map((header, index) => [header, row[index]?.trim() ?? '']))
 const cell = (map: Record<string, string>, name: string) => map[Object.keys(map).find(header => normalizeKey(header) === normalizeKey(name)) ?? name] || ''
 const unique = (items: string[]) => Array.from(new Set(items.map(item => item.trim()).filter(Boolean)))
+const InfoField = ({ label, help, children, className = '' }: { label: string; help?: string; children: ReactNode; className?: string }) => <label className={`info-field ${className}`.trim()}><span>{label}</span>{children}{help && <small>{help}</small>}</label>
 
 export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: SecurityTab }) {
   const [users, setUsers] = useState<AuthUser[]>([]), [roles, setRoles] = useState<AuthRole[]>([]), [permissions, setPermissions] = useState<AuthPermission[]>([]), [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
   const [clients, setClients] = useState<Client[]>([]), [employees, setEmployees] = useState<Employee[]>([])
-  const [user, setUser] = useState(user0), [role, setRole] = useState(role0), [msg, setMsg] = useState('Create users for payroll, hiring, HR, approvers and employee self-service.'), [directoryClientId, setDirectoryClientId] = useState('')
+  const [user, setUser] = useState(user0), [role, setRole] = useState(role0), [msg, setMsg] = useState(''), [directoryClientId, setDirectoryClientId] = useState('')
   const [userDrawerOpen, setUserDrawerOpen] = useState(false), [roleDrawerOpen, setRoleDrawerOpen] = useState(false), [createdCredentials, setCreatedCredentials] = useState<{ email: string; password: string } | null>(null), [saving, setSaving] = useState(false)
   const [accessRole, setAccessRole] = useState<AuthRole | null>(null), [accessPermissions, setAccessPermissions] = useState<string[]>([]), [savingAccess, setSavingAccess] = useState(false)
+  const [accessModule, setAccessModule] = useState('')
   const [provisionOpen, setProvisionOpen] = useState(false), [provisionLoading, setProvisionLoading] = useState(false), [provisionRows, setProvisionRows] = useState<EmployeeLoginProvisionPreview[]>([])
   const [selectedProvisionKeys, setSelectedProvisionKeys] = useState<string[]>([]), [provisionPassword, setProvisionPassword] = useState(''), [provisionMustChangePassword, setProvisionMustChangePassword] = useState(true), [provisionRoles, setProvisionRoles] = useState<string[]>(['employee'])
   const [provisionResult, setProvisionResult] = useState<EmployeeLoginProvisionResponse | null>(null)
@@ -74,6 +76,10 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
 
   useEffect(() => { void load() }, [])
   useEffect(() => { setUserDrawerOpen(false); setRoleDrawerOpen(false); setAccessRole(null) }, [initialTab])
+  useEffect(() => {
+    if (!accessRole) return
+    if (!groupedPermissions.some(([module]) => module === accessModule)) setAccessModule(groupedPermissions[0]?.[0] ?? '')
+  }, [accessRole, accessModule, groupedPermissions])
 
   const load = async () => {
     const data = await loadSecurityData()
@@ -102,10 +108,10 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   }
   const openNewRole = () => { setRole(role0); setRoleDrawerOpen(true) }
   const editRole = (selected: AuthRole) => {
-    setRole({ id: selected.isSystem ? 0 : selected.id, code: selected.isSystem ? `${selected.code}_copy` : selected.code, name: selected.isSystem ? `${selected.name} Copy` : selected.name, description: selected.description || '', permissions: rolePermissions(selected) })
+    setRole({ id: selected.id, code: selected.code, name: selected.name, description: selected.description || '', permissions: rolePermissions(selected), isSystem: selected.isSystem })
     setRoleDrawerOpen(true)
   }
-  const openAccess = (selected: AuthRole) => { setAccessRole(selected); setAccessPermissions(rolePermissions(selected)) }
+  const openAccess = (selected: AuthRole) => { setAccessRole(selected); setAccessPermissions(rolePermissions(selected)); setAccessModule(groupedPermissions[0]?.[0] ?? '') }
 
   const saveUser = async () => {
     if (!user.displayName.trim() || !user.email.trim()) { setMsg('Display name and email/login ID are required.'); return }
@@ -133,7 +139,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     if (!role.code.trim() || !role.name.trim()) { setMsg('Role code and role name are required.'); return }
     setSaving(true)
     try {
-      const response = await saveSecurityRole({ ...role, code: role.code.trim(), name: role.name.trim(), description: role.description.trim() })
+      const response = await saveSecurityRole({ id: role.id, code: role.code.trim(), name: role.name.trim(), description: role.description.trim(), permissions: role.permissions })
       setMsg(response.ok ? 'Role saved with selected permissions.' : response.error || 'Role save failed.')
       if (response.ok) { setRole(role0); setRoleDrawerOpen(false); await load() }
     } catch {
@@ -155,6 +161,37 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     } finally {
       setSavingAccess(false)
     }
+  }
+
+  const removeUser = async (selected: AuthUser) => {
+    if (!window.confirm(`Delete user ${selected.displayName || selected.email}?`)) return
+    const response = await deleteSecurityUser(selected.id)
+    if (response.ok) {
+      setMsg('User deleted successfully.')
+      if (user.id === selected.id) {
+        setUser(user0)
+        setUserDrawerOpen(false)
+      }
+      await load()
+      return
+    }
+    setMsg(response.error || 'Unable to delete user.')
+  }
+
+  const removeRole = async (selected: AuthRole) => {
+    if (!selected.isSystem && !window.confirm(`Delete role ${selected.name}?`)) return
+    const response = await deleteSecurityRole(selected.id)
+    if (response.ok) {
+      setMsg('Role deleted successfully.')
+      if (role.id === selected.id) {
+        setRole(role0)
+        setRoleDrawerOpen(false)
+      }
+      if (accessRole?.id === selected.id) setAccessRole(null)
+      await load()
+      return
+    }
+    setMsg(response.error || 'Unable to delete role.')
   }
 
   const useEmployee = (employeeId: string) => {
@@ -302,42 +339,54 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     await load()
   }
 
-  const renderUserDrawer = () => <Drawer className="settings-master-drawer security-user-drawer" title={<div className="settings-drawer-title"><span>User access</span><h3>{user.id ? 'Edit user' : 'Add user'}</h3><p>Create an employee-linked login or a standalone business user.</p></div>} open={userDrawerOpen} width={780} onClose={() => { setUserDrawerOpen(false); setUser(user0); setCreatedCredentials(null) }} destroyOnClose>
-    <div className="settings-quick-form security-drawer-form">
-      {createdCredentials && <Alert type="success" showIcon message="Login created" description={`Temporary password for ${createdCredentials.email}: ${createdCredentials.password}`} />}
-      <label><span>User type</span><SearchSelect value={user.roles.includes('employee') && user.employeeId ? 'employee' : 'business'} onChange={value => value === 'employee' ? setUser({ ...user, roles: ['employee'] }) : setUser({ ...user, employeeId: '', roles: ['payroll_maker'] })} options={[{ value: 'business', label: 'Business user' }, { value: 'employee', label: 'Employee / ESS user' }]} /></label>
-      <label><span>Client scope</span><SearchSelect value={user.clientId} onChange={value => setUser({ ...user, clientId: value, employeeId: '' })} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></label>
-      <label className="wide"><span>Employee link</span><SearchSelect value={user.employeeId} onChange={useEmployee} options={[{ value: '', label: 'No employee link' }, ...employeeOptions.map(employee => ({ value: employee.id, label: `${employee.firstName} ${employee.lastName} / ${employee.employeeCode} / ${employee.department}` }))]} /></label>
-      <label><span>Display name</span><input value={user.displayName} onChange={event => setUser({ ...user, displayName: event.target.value })} /></label>
-      <label><span>Email / Login ID</span><input value={user.email} onChange={event => setUser({ ...user, email: event.target.value })} /></label>
-      <label><span>{user.id ? 'Reset password' : 'Temporary password'}</span><input value={user.password} onChange={event => setUser({ ...user, password: event.target.value })} placeholder={user.id ? 'Leave blank to keep existing' : 'Enter temporary password'} /></label>
-      <label><span>Status</span><SearchSelect value={user.isActive ? 'active' : 'inactive'} onChange={value => setUser({ ...user, isActive: value === 'active' })} options={[{ value: 'active', label: 'Active' }, { value: 'inactive', label: 'Inactive' }]} /></label>
-      <label className="security-check-field"><span>Must change password</span><AntCheckbox checked={user.mustChangePassword} onChange={event => setUser({ ...user, mustChangePassword: event.target.checked })}>Required</AntCheckbox></label>
-      <div className="security-drawer-section wide"><div className="security-mini-access"><b>Role assignment</b><span>{user.roles.length} selected</span></div><div className="permission-matrix role-picker">{roles.map(item => <label className={user.roles.includes(item.code) ? 'selected' : ''} key={item.code}><input type="checkbox" checked={user.roles.includes(item.code)} onChange={() => setUser({ ...user, roles: toggle(user.roles, item.code) })} /><strong>{item.name}</strong><small>{item.description}</small></label>)}</div></div>
-      <div className="actions wide"><span /><Space><Button onClick={() => { setUser(user0); setCreatedCredentials(null) }}>Reset</Button><Button type="primary" loading={saving} onClick={() => void saveUser()}>{user.id ? 'Update user' : 'Create user'}</Button></Space></div>
-    </div>
-  </Drawer>
+  const closeUserDrawer = () => { setUserDrawerOpen(false); setUser(user0); setCreatedCredentials(null) }
+  const closeRoleDrawer = () => { setRoleDrawerOpen(false); setRole(role0) }
+  const activeAccessGroup = groupedPermissions.find(([module]) => module === accessModule) ?? groupedPermissions[0]
 
-  const renderRoleDrawer = () => <Drawer className="settings-master-drawer security-role-drawer" title={<div className="settings-drawer-title"><span>Role management</span><h3>{role.id ? 'Edit custom role' : 'Add role'}</h3><p>Define access bundles, then tune detailed access with Manage Access.</p></div>} open={roleDrawerOpen} width={820} onClose={() => { setRoleDrawerOpen(false); setRole(role0) }} destroyOnClose>
-    <div className="settings-quick-form security-drawer-form">
-      <label><span>Role code</span><input value={role.code} disabled={role.id > 0} onChange={event => setRole({ ...role, code: event.target.value })} placeholder="payroll_viewer" /></label>
-      <label><span>Role name</span><input value={role.name} onChange={event => setRole({ ...role, name: event.target.value })} /></label>
-      <label className="wide"><span>Description</span><input value={role.description} onChange={event => setRole({ ...role, description: event.target.value })} /></label>
-      <div className="security-drawer-section wide"><div className="security-mini-access"><b>Initial permissions</b><span>{role.permissions.length} selected</span></div><div className="permission-groups compact">{groupedPermissions.map(([module, items]) => <section key={module}><h4>{module}</h4><div className="permission-matrix">{items.map(permission => <label className={role.permissions.includes(permission.code) ? 'selected' : ''} key={permission.code}><input type="checkbox" checked={role.permissions.includes(permission.code)} onChange={() => setRole({ ...role, permissions: toggle(role.permissions, permission.code) })} /><strong>{permission.name}</strong><small>{permission.code}</small></label>)}</div></section>)}</div></div>
-      <div className="actions wide"><span /><Space><Button icon={<PlusOutlined />} onClick={() => setRole(role0)}>Reset</Button><Button type="primary" loading={saving} onClick={() => void saveRole()}>{role.id ? 'Update role' : 'Save role'}</Button></Space></div>
-    </div>
-  </Drawer>
+  const renderUserDrawer = () => userDrawerOpen ? <div className="component-drawer-backdrop security-component-backdrop" onClick={closeUserDrawer}>
+    <aside className="component-drawer security-component-drawer" role="dialog" aria-modal="true" aria-label={user.id ? 'Edit user' : 'Add user'} onClick={event => event.stopPropagation()}>
+      <header><div><span className="eyebrow purple">User access</span><h3>{user.id ? 'Edit user' : 'Add user'}</h3><p>Create an employee-linked login or a standalone business user.</p></div><button type="button" aria-label="Close user drawer" onClick={closeUserDrawer}>x</button></header>
+      <div className="component-drawer-form security-component-drawer-form">
+        <InfoField label="User type" help="Choose employee-linked ESS access or a standalone business login."><SearchSelect value={user.roles.includes('employee') && user.employeeId ? 'employee' : 'business'} onChange={value => value === 'employee' ? setUser({ ...user, roles: ['employee'] }) : setUser({ ...user, employeeId: '', roles: ['payroll_maker'] })} options={[{ value: 'business', label: 'Business user' }, { value: 'employee', label: 'Employee / ESS user' }]} /></InfoField>
+        <InfoField label="Client scope" help="Leave blank for cross-client access."><SearchSelect value={user.clientId} onChange={value => setUser({ ...user, clientId: value, employeeId: '' })} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></InfoField>
+        <InfoField label="Employee link" help="Employee Master records not yet linked to another login." className="wide"><SearchSelect value={user.employeeId} onChange={useEmployee} options={[{ value: '', label: 'No employee link' }, ...employeeOptions.map(employee => ({ value: employee.id, label: `${employee.firstName} ${employee.lastName} / ${employee.employeeCode} / ${employee.department}` }))]} /></InfoField>
+        <InfoField label="Display name"><Input value={user.displayName} onChange={event => setUser({ ...user, displayName: event.target.value })} /></InfoField>
+        <InfoField label="Email / Login ID"><Input value={user.email} onChange={event => setUser({ ...user, email: event.target.value })} /></InfoField>
+        <InfoField label={user.id ? 'Reset password' : 'Temporary password'} help={user.id ? 'Leave blank to keep the current password.' : 'Required for a new login.'}><Input.Password value={user.password} onChange={event => setUser({ ...user, password: event.target.value })} placeholder={user.id ? 'Leave blank to keep existing' : 'Enter temporary password'} /></InfoField>
+        <InfoField label="Status"><SearchSelect value={user.isActive ? 'active' : 'inactive'} onChange={value => setUser({ ...user, isActive: value === 'active' })} options={[{ value: 'active', label: 'Active' }, { value: 'inactive', label: 'Inactive' }]} /></InfoField>
+        <InfoField label="Password policy"><AntCheckbox checked={user.mustChangePassword} onChange={event => setUser({ ...user, mustChangePassword: event.target.checked })}>Require change on first login</AntCheckbox></InfoField>
+        <div className="security-drawer-section wide"><div className="security-mini-access"><b>Role assignment</b><span>{user.roles.length} selected</span></div><div className="permission-matrix role-picker">{roles.map(item => <label className={user.roles.includes(item.code) ? 'selected' : ''} key={item.code}><input type="checkbox" checked={user.roles.includes(item.code)} onChange={() => setUser({ ...user, roles: toggle(user.roles, item.code) })} /><strong>{item.name}</strong><small>{item.description}</small></label>)}</div></div>
+      </div>
+      <footer><button type="button" className="secondary" onClick={closeUserDrawer}>Cancel</button><button type="button" disabled={saving} onClick={() => void saveUser()}>{saving ? 'Saving...' : user.id ? 'Update user' : 'Create user'}</button></footer>
+    </aside>
+  </div> : null
 
-  const renderAccessDrawer = () => <Drawer className="settings-master-drawer role-access-drawer" title={<div className="settings-drawer-title"><span>Access matrix</span><h3>{accessRole ? accessRole.name : 'Manage access'}</h3><p>Users receive combined permissions from every assigned role.</p></div>} open={Boolean(accessRole)} width="min(1080px, 96vw)" onClose={() => setAccessRole(null)} destroyOnClose extra={<Button type="primary" loading={savingAccess} onClick={() => void saveAccess()}>Save Changes</Button>}>
-    <Tabs tabPosition="left" items={groupedPermissions.map(([module, items]) => {
-      const selectedCount = items.filter(permission => accessPermissions.includes(permission.code)).length
-      return {
-        key: module,
-        label: `${module} (${selectedCount}/${items.length})`,
-        children: <div className="security-access-tab"><div className="security-access-tab-head"><b>{module}</b><Space><Button size="small" onClick={() => setAllAccess(items, true)}>Select all</Button><Button size="small" onClick={() => setAllAccess(items, false)}>Clear</Button></Space></div><div className="permission-matrix access-grid">{items.map(permission => <label className={accessPermissions.includes(permission.code) ? 'selected' : ''} key={permission.code}><input type="checkbox" checked={accessPermissions.includes(permission.code)} onChange={() => setAccessPermissions(current => toggle(current, permission.code))} /><strong>{permission.name}</strong><small>{permission.description || permission.code}</small></label>)}</div></div>
-      }
-    })} />
-  </Drawer>
+  const renderRoleDrawer = () => roleDrawerOpen ? <div className="component-drawer-backdrop security-component-backdrop" onClick={closeRoleDrawer}>
+    <aside className="component-drawer security-component-drawer" role="dialog" aria-modal="true" aria-label={role.id ? 'Edit role' : 'Add role'} onClick={event => event.stopPropagation()}>
+      <header><div><span className="eyebrow purple">Role management</span><h3>{role.id ? role.isSystem ? 'Edit system role' : 'Edit role' : 'Add role'}</h3><p>Define access bundles, then tune detailed access with Manage Access.</p></div><button type="button" aria-label="Close role drawer" onClick={closeRoleDrawer}>x</button></header>
+      <div className="component-drawer-form security-component-drawer-form">
+        <InfoField label="Role code" help="Code is locked after creation."><Input value={role.code} disabled={role.id > 0} onChange={event => setRole({ ...role, code: event.target.value })} placeholder="payroll_viewer" /></InfoField>
+        <InfoField label="Role name" help={role.isSystem ? 'System role names are maintained by the catalog.' : undefined}><Input value={role.name} disabled={role.isSystem} onChange={event => setRole({ ...role, name: event.target.value })} /></InfoField>
+        <InfoField label="Description" className="wide"><Input value={role.description} disabled={role.isSystem} onChange={event => setRole({ ...role, description: event.target.value })} /></InfoField>
+        <div className="security-drawer-section wide"><div className="security-mini-access"><b>Initial permissions</b><span>{role.permissions.length} selected</span></div><div className="permission-groups compact">{groupedPermissions.map(([module, items]) => <section key={module}><h4>{module}</h4><div className="permission-matrix">{items.map(permission => <label className={role.permissions.includes(permission.code) ? 'selected' : ''} key={permission.code}><input type="checkbox" checked={role.permissions.includes(permission.code)} onChange={() => setRole({ ...role, permissions: toggle(role.permissions, permission.code) })} /><strong>{permission.name}</strong><small>{permission.code}</small></label>)}</div></section>)}</div></div>
+      </div>
+      <footer><button type="button" className="secondary" onClick={closeRoleDrawer}>Cancel</button><button type="button" disabled={saving} onClick={() => void saveRole()}>{saving ? 'Saving...' : role.id ? 'Update role' : 'Save role'}</button></footer>
+    </aside>
+  </div> : null
+
+  const renderAccessDrawer = () => accessRole ? <div className="component-drawer-backdrop security-component-backdrop" onClick={() => setAccessRole(null)}>
+    <aside className="component-drawer security-component-drawer security-access-component-drawer" role="dialog" aria-modal="true" aria-label="Manage role access" onClick={event => event.stopPropagation()}>
+      <header><div><span className="eyebrow purple">Access matrix</span><h3>{accessRole.name}</h3><p>Users receive combined permissions from every assigned role.</p></div><button type="button" aria-label="Close access drawer" onClick={() => setAccessRole(null)}>x</button></header>
+      <div className="security-access-drawer-body">
+        <nav className="security-access-side" aria-label="Permission modules">{groupedPermissions.map(([module, items]) => {
+          const selectedCount = items.filter(permission => accessPermissions.includes(permission.code)).length
+          return <button type="button" className={module === (activeAccessGroup?.[0] ?? '') ? 'active' : ''} key={module} onClick={() => setAccessModule(module)}><span>{module}</span><small>{selectedCount}/{items.length}</small></button>
+        })}</nav>
+        <section className="security-access-main">{activeAccessGroup && <><div className="security-access-tab-head"><b>{activeAccessGroup[0]}</b><Space><Button size="small" onClick={() => setAllAccess(activeAccessGroup[1], true)}>Select all</Button><Button size="small" onClick={() => setAllAccess(activeAccessGroup[1], false)}>Clear</Button></Space></div><div className="permission-matrix access-grid">{activeAccessGroup[1].map(permission => <label className={accessPermissions.includes(permission.code) ? 'selected' : ''} key={permission.code}><input type="checkbox" checked={accessPermissions.includes(permission.code)} onChange={() => setAccessPermissions(current => toggle(current, permission.code))} /><strong>{permission.name}</strong><small>{permission.description || permission.code}</small></label>)}</div></>}</section>
+      </div>
+      <footer><button type="button" className="secondary" onClick={() => setAccessRole(null)}>Cancel</button><button type="button" disabled={savingAccess} onClick={() => void saveAccess()}>{savingAccess ? 'Saving...' : 'Save Changes'}</button></footer>
+    </aside>
+  </div> : null
 
   const renderProvisionModal = () => <Modal className="employee-provision-modal" title="Import Employees as Users" open={provisionOpen} onCancel={() => setProvisionOpen(false)} footer={<Space><Button disabled={provisionLoading} onClick={() => setProvisionOpen(false)}>Close</Button><Button type="primary" icon={<ImportOutlined />} loading={provisionLoading} disabled={!selectedProvisionKeys.length || Boolean(provisionResult)} onClick={() => void runProvision()}>Create selected users</Button></Space>} width="min(1120px, 96vw)">
     <div className="employee-provision-controls">
@@ -365,9 +414,11 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   </Modal>
 
   const renderUsers = () => <section className="security-page-stack">
-    <section className="component-table-head security-command-bar"><div><span className="eyebrow purple">User directory</span><b>{directoryClientId ? clientName(Number(directoryClientId)) : 'All clients'}</b><span>{visibleUsers.length} users shown / {unlinkedEmployees.length} employees awaiting login</span></div><Space className="settings-master-actions" size={8} wrap><label className="security-filter-field"><span>Filter by client</span><SearchSelect value={directoryClientId} onChange={setDirectoryClientId} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></label><Button icon={<DownloadOutlined />} onClick={downloadUserTemplate}>Template</Button><label className={`settings-upload-action ${!userTemplateDownloaded ? 'disabled' : ''}`} title={userTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!userTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadUserImport(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button icon={<ImportOutlined />} onClick={() => void openProvisionModal()}>Import Employees</Button><Button type="primary" icon={<PlusOutlined />} onClick={openNewUser}>New user</Button></Space></section>
-    {createdCredentials && <Alert type="success" showIcon message="Login created" description={`Temporary password for ${createdCredentials.email}: ${createdCredentials.password}`} closable onClose={() => setCreatedCredentials(null)} />}
-    <section className="card security-table-card"><div className="security-list-heading"><b>Users</b><span>Table-first user access register</span></div><DataTable rows={visibleUsers} getRowId={row => row.id} exportFileName="security-users" actions={row => <Button size="small" type="primary" onClick={() => editUser(row)}>Edit</Button>} columns={[
+    {msg && <Alert className="security-message-alert" type={/unable|required|failed|cannot/i.test(msg) ? 'warning' : 'info'} showIcon message={msg} closable onClose={() => setMsg('')} />}
+    <AntCard title="Users" size="small" className="settings-panel settings-table-panel security-table-panel">
+      <div className="component-table-head security-table-head"><div><b>User directory</b><span>{directoryClientId ? clientName(Number(directoryClientId)) : 'All clients'} / {visibleUsers.length} users shown / {unlinkedEmployees.length} employees awaiting login</span></div><Space className="settings-master-actions" size={8} wrap><label className="security-filter-field"><span>Filter by client</span><SearchSelect value={directoryClientId} onChange={setDirectoryClientId} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></label><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadUserTemplate}>Template</Button><label className={`settings-upload-action ${!userTemplateDownloaded ? 'disabled' : ''}`} title={userTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!userTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadUserImport(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button className="settings-toolbar-secondary" icon={<ImportOutlined />} onClick={() => void openProvisionModal()}>Import Employees</Button><Button type="primary" icon={<PlusOutlined />} onClick={openNewUser}>New user</Button></Space></div>
+      {createdCredentials && <Alert className="security-message-alert" type="success" showIcon message="Login created" description={`Temporary password for ${createdCredentials.email}: ${createdCredentials.password}`} closable onClose={() => setCreatedCredentials(null)} />}
+      <DataTable rows={visibleUsers} getRowId={row => row.id} exportFileName="security-users" actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editUser(row)}>Edit</Button><Button size="small" danger onClick={() => void removeUser(row)}>Delete</Button></Space>} columns={[
       { key: 'displayName', label: 'User', width: '190px' },
       { key: 'email', label: 'Email / Login ID', width: '220px' },
       { key: 'clientId', label: 'Client', value: row => clientName(row.clientId), width: '180px' },
@@ -375,32 +426,44 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
       { key: 'roles', label: 'Roles', value: row => row.roles.map(roleName).join(', '), render: row => <Space size={4} wrap>{row.roles.map(code => <Tag key={code}>{roleName(code)}</Tag>)}</Space>, width: '240px' },
       { key: 'isActive', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive', render: row => <Tag color={row.isActive ? 'green' : 'red'}>{row.isActive ? 'Active' : 'Inactive'}</Tag> },
       { key: 'mustChangePassword', label: 'Password Change', value: row => row.mustChangePassword ? 'Required' : 'Not required' }
-    ]} /></section>
-    <section className="card security-table-card"><div className="security-list-heading"><b>Employees awaiting login</b><span>Quick single-user provisioning</span></div><DataTable rows={unlinkedEmployees} getRowId={row => row.id} emptyText="No active employees are pending login creation." exportFileName="security-employees-without-login" actions={row => <Button size="small" onClick={() => provisionEmployee(row)}>Create user</Button>} columns={[
+    ]} />
+    </AntCard>
+    <AntCard title="Employees awaiting login" size="small" className="settings-panel settings-table-panel security-table-panel">
+      <div className="component-table-head security-table-head"><div><b>Employee login queue</b><span>Quick single-user provisioning from Employee Master.</span></div><Button icon={<ImportOutlined />} onClick={() => void openProvisionModal()}>Import Employees</Button></div>
+      <DataTable rows={unlinkedEmployees} getRowId={row => row.id} emptyText="No active employees are pending login creation." exportFileName="security-employees-without-login" actions={row => <Button size="small" onClick={() => provisionEmployee(row)}>Create user</Button>} columns={[
       { key: 'employeeCode', label: 'Employee Code' },
       { key: 'name', label: 'Employee', value: row => `${row.firstName} ${row.lastName}`.trim(), width: '190px' },
       { key: 'clientId', label: 'Client', value: row => clientName(row.clientId), width: '180px' },
       { key: 'workEmail', label: 'Work Email', width: '220px' },
       { key: 'department', label: 'Department' },
       { key: 'designation', label: 'Designation' }
-    ]} /></section>
+    ]} />
+    </AntCard>
   </section>
 
   const renderRoles = () => <section className="security-page-stack">
-    <section className="component-table-head security-command-bar"><div><span className="eyebrow purple">Role management</span><b>Access bundles</b><span>{roles.length} roles / {permissions.length} permissions</span></div><Button type="primary" icon={<PlusOutlined />} onClick={openNewRole}>New role</Button></section>
-    <section className="card security-table-card"><div className="security-list-heading"><b>Roles</b><span>Manage access from row actions</span></div><DataTable rows={roles} getRowId={row => row.id} exportFileName="security-roles" actions={row => <Space size={6}><Button size="small" onClick={() => editRole(row)}>{row.isSystem ? 'Copy' : 'Edit'}</Button><Button size="small" type="primary" icon={<KeyOutlined />} onClick={() => openAccess(row)}>Manage Access</Button></Space>} columns={[
+    {msg && <Alert className="security-message-alert" type={/unable|required|failed|cannot/i.test(msg) ? 'warning' : 'info'} showIcon message={msg} closable onClose={() => setMsg('')} />}
+    <AntCard title="Roles" size="small" className="settings-panel settings-table-panel security-table-panel">
+      <div className="component-table-head security-table-head"><div><b>Access bundles</b><span>{roles.length} roles / {permissions.length} permissions. Manage access from row actions.</span></div><Button type="primary" icon={<PlusOutlined />} onClick={openNewRole}>New role</Button></div>
+      <DataTable rows={roles} getRowId={row => row.id} exportFileName="security-roles" actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editRole(row)}>Edit</Button><Button size="small" icon={<KeyOutlined />} onClick={() => openAccess(row)}>Manage Access</Button><Button size="small" danger onClick={() => void removeRole(row)}>Delete</Button></Space>} columns={[
       { key: 'name', label: 'Role', width: '190px' },
       { key: 'code', label: 'Code' },
       { key: 'description', label: 'Description', width: '260px' },
       { key: 'permissions', label: 'Permissions', value: row => `${rolePermissions(row).length}`, render: row => `${rolePermissions(row).length} permissions` },
       { key: 'isSystem', label: 'Type', value: row => row.isSystem ? 'System' : 'Custom', render: row => <Tag color={row.isSystem ? 'blue' : 'purple'}>{row.isSystem ? 'System' : 'Custom'}</Tag> }
-    ]} /></section>
+    ]} />
+    </AntCard>
   </section>
 
-  const renderAudit = () => <section className="card security-table-card"><header><i className="blue">A</i><div><h3>Audit trail</h3><p>Recent identity and operational activity.</p></div></header><DataTable rows={auditLogs} exportFileName="audit-log" columns={[{ key: 'time', label: 'Time', value: log => new Date(log.createdAt).toLocaleString() }, { key: 'userEmail', label: 'User', value: log => log.userEmail || 'System' }, { key: 'action', label: 'Action' }, { key: 'statusCode', label: 'Status' }, { key: 'path', label: 'Path' }]} /></section>
+  const renderAudit = () => <section className="security-page-stack">
+    {msg && <Alert className="security-message-alert" type={/unable|required|failed|cannot/i.test(msg) ? 'warning' : 'info'} showIcon message={msg} closable onClose={() => setMsg('')} />}
+    <AntCard title="Audit trail" size="small" className="settings-panel settings-table-panel security-table-panel">
+      <div className="component-table-head security-table-head"><div><b>Recent activity</b><span>Identity and operational activity from the audit log.</span></div></div>
+      <DataTable rows={auditLogs} exportFileName="audit-log" columns={[{ key: 'time', label: 'Time', value: log => new Date(log.createdAt).toLocaleString() }, { key: 'userEmail', label: 'User', value: log => log.userEmail || 'System' }, { key: 'action', label: 'Action' }, { key: 'statusCode', label: 'Status' }, { key: 'path', label: 'Path' }]} />
+    </AntCard>
+  </section>
 
   return <section className="security-module">
-    <div className="security-hero"><div><span className="eyebrow purple">Identity Governance</span><h3>{initialTab}</h3><p>{msg}</p></div><div><strong>{users.length}</strong><span>identities</span></div><div><strong>{roles.length}</strong><span>roles</span></div><div><strong>{permissions.length}</strong><span>permissions</span></div></div>
     {initialTab === 'Users' && renderUsers()}
     {initialTab === 'Roles' && renderRoles()}
     {initialTab === 'Audit' && renderAudit()}

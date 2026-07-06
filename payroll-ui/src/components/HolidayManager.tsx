@@ -1,10 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
+import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Drawer, Form, Input, Row, Space } from 'antd'
-import { deleteHoliday, getHolidays, saveHoliday } from '../services/leaveAttendanceService'
+import { deleteHoliday, downloadHolidayImportTemplate, getHolidayImportJob, getHolidays, saveHoliday, startHolidayImport } from '../services/leaveAttendanceService'
 import { getWorkLocations } from '../services/settingsService'
+import type { BulkImportStatus } from '../services/settingsService'
 import type { Holiday, WorkLocation } from '../types/payroll'
+import { parseImportPreviewFile, validateImportPreview, type ImportPreviewIssue, type ImportPreviewRules } from '../utils/importPreview'
+import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from './BulkUploadPreviewModal'
+import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from './BulkUploadProgressModal'
 import DataTable from './DataTable'
-import FileDropZone from './FileDropZone'
 import PageTabs from './PageTabs'
 import SearchSelect, { selectOptions } from './SearchSelect'
 
@@ -13,8 +18,32 @@ const holidayTypes = ['Holiday', 'Restricted Holiday'] as const
 const blank: Holiday = { id: 0, clientId: 0, name: '', holidayType: 'Holiday', startDate: today, endDate: today, description: '', allLocations: true, workLocationIds: [], workLocations: 'All locations' }
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const holidayViews = ['Table', 'Calendar'] as const
-
-type HolidayImportRow = Holiday & { rowNumber: number; errors: string[] }
+const holidayPreviewRules: ImportPreviewRules = {
+  required: ['Holiday Name', 'Holiday Type', 'Start Date'],
+  unique: [['Id']],
+  booleans: ['All Locations'],
+  dates: ['Start Date', 'End Date'],
+  enums: { 'Holiday Type': [...holidayTypes, 'Restricted', 'RH'] },
+  custom: (row, rowNumber) => {
+    const issues: ImportPreviewIssue[] = []
+    if (row.Id && (!/^\d+$/.test(row.Id) || Number(row.Id) <= 0)) issues.push({ rowNumber, column: 'Id', message: 'Id must be a positive number.' })
+    const start = previewDateMs(row['Start Date'])
+    const end = previewDateMs(row['End Date'] || row['Start Date'])
+    if (start !== null && end !== null && end < start) issues.push({ rowNumber, column: 'End Date', message: 'End Date cannot be before Start Date.' })
+    const allLocations = parsePreviewFlag(row['All Locations'], true)
+    if (!allLocations && !row['Work Location Ids']?.trim() && !row['Work Locations']?.trim()) issues.push({ rowNumber, column: 'Work Location Ids', message: 'Work Location Ids are required when All Locations is FALSE.' })
+    if (row['Work Location Ids']?.trim()) {
+      row['Work Location Ids'].split(/[;,|]/).map(item => item.trim()).filter(Boolean).forEach(item => {
+        if (!/^\d+$/.test(item)) issues.push({ rowNumber, column: 'Work Location Ids', message: `Work Location Id "${item}" must be numeric.` })
+      })
+    }
+    return issues
+  }
+}
+const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
+type HolidayBulkUpload = { open: boolean; state: BulkUploadState; percent: number; summary: BulkUploadSummary }
+type ImportStart = (file: File) => Promise<{ ok: boolean; data: BulkImportStatus; error: string; status: number }>
+type ImportStatus = (jobId: string) => Promise<BulkImportStatus>
 
 export default function HolidayManager({ clientId, onMessage }: { clientId: number; onMessage: (message: string) => void }) {
   const currentYear = new Date().getFullYear()
@@ -26,6 +55,11 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
   const [year, setYear] = useState(currentYear)
   const [workLocationId, setWorkLocationId] = useState(0)
   const [view, setView] = useState<'Table' | 'Calendar'>('Table')
+  const [templateDownloaded, setTemplateDownloaded] = useState(false)
+  const [upload, setUpload] = useState<HolidayBulkUpload>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
+  const [preview, setPreview] = useState<BulkUploadPreviewState>(emptyBulkUploadPreview)
+  const [previewImporting, setPreviewImporting] = useState(false)
+  const [previewConfirm, setPreviewConfirm] = useState<(() => Promise<void>) | null>(null)
   const years = Array.from({ length: 7 }, (_, index) => currentYear - 3 + index)
   const calendar = useMemo(() => monthNames.map((month, index) => ({ month, holidays: rows.filter(row => new Date(row.startDate).getMonth() === index || new Date(row.endDate).getMonth() === index) })), [rows])
   const load = async () => {
@@ -82,10 +116,74 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
     if (response.ok) { onMessage('Holiday deleted.'); await load() }
     else setErrors([response.error || 'Unable to delete holiday.'])
   }
+  const fail = (items: string[]) => { setErrors(items); return false }
+  const runBulkUploadJob = async (file: File, setBulkUpload: Dispatch<SetStateAction<HolidayBulkUpload>>, startImport: ImportStart, getImportJob: ImportStatus, failureText: string) => {
+    setBulkUpload({ open: true, state: 'uploading', percent: 1, summary: { totalRows: 0 } })
+    const start = await startImport(file)
+    if (!start.ok || !start.data.jobId) {
+      setBulkUpload({ open: true, state: 'error', percent: 100, summary: { ...start.data, errors: start.data.errors?.length ? start.data.errors : [start.error || 'Upload failed.'] } })
+      return
+    }
+    let job = start.data
+    while (job.state === 'Queued' || job.state === 'Processing') {
+      const percent = job.totalRows ? Math.min(99, Math.round((job.completedRows / job.totalRows) * 100)) : 5
+      setBulkUpload({ open: true, state: 'uploading', percent, summary: job })
+      await wait(700)
+      job = await getImportJob(job.jobId)
+    }
+    if (job.state === 'Completed') {
+      setBulkUpload({ open: true, state: 'success', percent: 100, summary: job })
+      await load()
+      return
+    }
+    const percent = job.totalRows ? Math.round((job.completedRows / job.totalRows) * 100) : 100
+    setBulkUpload({ open: true, state: 'error', percent, summary: { ...job, errors: job.errors?.length ? job.errors : [failureText] } })
+  }
+  const previewBulkUpload = async (file: File, onConfirm: (file: File) => Promise<void>) => {
+    try {
+      const data = await parseImportPreviewFile(file)
+      const issues = validateImportPreview(data, holidayPreviewRules)
+      setPreview({ open: true, title: 'Holiday bulk upload preview', fileName: file.name, headers: data.headers, rows: data.rows, issues })
+      setPreviewConfirm(() => async () => onConfirm(file))
+    } catch (error) {
+      fail([error instanceof Error ? error.message : 'Unable to preview import file.'])
+    }
+  }
+  const confirmPreview = async () => {
+    if (!previewConfirm) return
+    const action = previewConfirm
+    setPreviewImporting(true)
+    setPreview(emptyBulkUploadPreview)
+    setPreviewConfirm(null)
+    try {
+      await action()
+    } finally {
+      setPreviewImporting(false)
+    }
+  }
+  const downloadTemplate = async () => {
+    if (!clientId) return fail(['Select a client before downloading holiday template.'])
+    const response = await downloadHolidayImportTemplate(clientId)
+    if (!response.ok || !response.data) return fail([response.error || 'Unable to download holiday template.'])
+    saveBlob(response.data, 'holiday-import-template.xlsx')
+    setTemplateDownloaded(true)
+    onMessage('Holiday import template downloaded.')
+    return true
+  }
+  const uploadTemplate = async (file: File | null) => {
+    if (!file) return
+    if (!templateDownloaded) {
+      const next = ['Download the holiday template before uploading.']
+      setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: next } })
+      fail(next)
+      return
+    }
+    await previewBulkUpload(file, selected => runBulkUploadJob(selected, setUpload, item => startHolidayImport(clientId, item), getHolidayImportJob, 'Holiday import failed. No rows were saved.'))
+  }
 
   return <section className="holiday-manager">
     <AntCard className="settings-panel settings-table-panel holiday-list-card" size="small" title="Holiday Management">
-      <div className="component-table-head"><div><b>Holiday master</b><span>Maintain holidays and restricted holidays by year and work-location applicability.</span></div><Button type="primary" onClick={() => { setForm({ ...blank, clientId }); setErrors([]); setDrawerOpen(true) }}>Add holiday</Button></div>
+      <div className="component-table-head"><div><b>Holiday master</b><span>Maintain holidays and restricted holidays by year and work-location applicability.</span></div><Space className="settings-master-actions" size={8} wrap><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={() => void downloadTemplate()}>Template</Button><label className={`settings-upload-action ${!templateDownloaded ? 'disabled' : ''}`} title={templateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!templateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadTemplate(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" onClick={() => { setForm({ ...blank, clientId }); setErrors([]); setDrawerOpen(true) }}>Add holiday</Button></Space></div>
       <Row gutter={12} className="holiday-toolbar">
         <Col xs={24} sm={8} md={6} lg={5} className="holiday-year-field"><Form.Item label="Year"><SearchSelect value={year} onChange={value => setYear(Number(value))} options={years.map(value => ({ value, label: String(value) }))} /></Form.Item></Col>
         <Col xs={24} sm={16} md={12} lg={10} className="holiday-location-field"><Form.Item label="Work Location"><SearchSelect value={workLocationId} onChange={value => setWorkLocationId(Number(value))} options={selectOptions(locations.map(location => ({ value: location.id, label: `${location.name}${location.city ? ` - ${location.city}` : ''}` })), 'All locations', 0)} /></Form.Item></Col>
@@ -96,7 +194,8 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
     <Drawer className="settings-master-drawer" title={form.id ? 'Edit holiday' : 'Add holiday'} open={drawerOpen} width={620} onClose={() => { setDrawerOpen(false); setForm({ ...blank, clientId }); setErrors([]) }} destroyOnClose>
       <HolidayForm form={form} locations={locations} errors={errors} set={set} toggleLocation={toggleLocation} save={save} cancel={() => { setDrawerOpen(false); setForm({ ...blank, clientId }); setErrors([]) }} />
     </Drawer>
-    <HolidayBulkUpload clientId={clientId} locations={locations} onImported={async message => { onMessage(message); await load() }} />
+    <BulkUploadProgressModal open={upload.open} title="Holiday bulk upload" state={upload.state} percent={upload.percent} summary={upload.summary} onClose={() => setUpload(current => ({ ...current, open: false }))} />
+    <BulkUploadPreviewModal preview={preview} importing={previewImporting} onCancel={() => { setPreview(emptyBulkUploadPreview); setPreviewConfirm(null) }} onConfirm={() => void confirmPreview()} />
   </section>
 }
 
@@ -130,116 +229,24 @@ function HolidayForm(p: { form: Holiday; locations: WorkLocation[]; errors: stri
   </div>
 }
 
-function HolidayBulkUpload(p: { clientId: number; locations: WorkLocation[]; onImported: (message: string) => Promise<void> }) {
-  const [fileName, setFileName] = useState('')
-  const [preview, setPreview] = useState<HolidayImportRow[]>([])
-  const [errors, setErrors] = useState<string[]>([])
-  const [busy, setBusy] = useState(false)
-  const validRows = preview.filter(row => row.errors.length === 0)
-
-  const pickFile = async (file: File) => {
-    setFileName(file.name)
-    setErrors([])
-    const rows = parseHolidayCsv(await file.text(), p.clientId, p.locations)
-    setPreview(rows)
-    if (rows.length === 0) setErrors(['No holiday rows found in the file.'])
-  }
-  const importRows = async () => {
-    if (validRows.length === 0) { setErrors(['No valid rows to import.']); return }
-    setBusy(true)
-    const failed: string[] = []
-    let imported = 0
-    for (const row of validRows) {
-      const response = await saveHoliday(row)
-      if (response.ok) imported += 1
-      else failed.push(`Row ${row.rowNumber}: ${response.error || 'Unable to save holiday.'}`)
-    }
-    setBusy(false)
-    setErrors(failed.slice(0, 8))
-    await p.onImported(`Imported ${imported} holidays. Skipped ${preview.length - imported}.`)
-  }
-  const downloadSample = () => {
-    const csv = ['name,holidayType,startDate,endDate,description,allLocations,workLocations', 'Republic Day,Holiday,2026-01-26,2026-01-26,National holiday,true,', 'Local Foundation Day,Restricted Holiday,2026-04-12,2026-04-12,Optional local holiday,false,"Mumbai Office; Bengaluru Office"'].join('\n')
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'holiday-import-sample.csv'
-    link.click()
-    URL.revokeObjectURL(url)
-  }
-
-  return <AntCard className="holiday-import settings-panel" size="small" title="Bulk Upload Holidays">
-    <Form component={false} layout="vertical" className="settings-quick-form"><Form.Item label="Select CSV"><FileDropZone accept=".csv,text/csv" fileName={fileName} title="Drop holiday CSV here or browse" hint="Columns: name, holidayType, startDate, endDate, description, allLocations, workLocations." onFile={file => void pickFile(file)} /></Form.Item></Form>
-    {preview.length > 0 && <div className="holiday-import-summary"><strong>{validRows.length} valid</strong><span>{preview.length - validRows.length} with errors</span><span>{preview.length} total rows</span></div>}
-    {preview.length > 0 && <DataTable rows={preview.slice(0, 20)} getRowId={row => row.rowNumber} emptyText="No import rows." rowClassName={row => row.errors.length ? 'error' : ''} exportFileName="holiday-import-preview" columns={[
-      { key: 'rowNumber', label: 'Row' },
-      { key: 'name', label: 'Holiday Name' },
-      { key: 'holidayType', label: 'Type' },
-      { key: 'startDate', label: 'Start Date' },
-      { key: 'endDate', label: 'End Date' },
-      { key: 'workLocations', label: 'Work Locations' },
-      { key: 'errors', label: 'Errors', value: row => row.errors.join('; ') }
-    ]} />}
-    {preview.length > 20 && <p className="empty">Showing first 20 rows.</p>}
-    {errors.length > 0 && <Alert type="error" showIcon message={errors.join(' ')} />}
-    <Row justify="end"><Space><Button onClick={downloadSample}>Download Sample</Button><Button type="primary" disabled={validRows.length === 0} loading={busy} onClick={() => void importRows()}>Import holidays</Button></Space></Row>
-  </AntCard>
-}
-
-function parseHolidayCsv(text: string, clientId: number, locations: WorkLocation[]) {
-  const [headerRow, ...dataRows] = parseCsv(text).filter(row => row.some(cell => cell.trim()))
-  if (!headerRow) return []
-  const header = headerRow.map(cell => normalize(cell))
-  const locationMap = new Map(locations.flatMap(location => [[normalize(location.name), location], [String(location.id), location]]))
-  return dataRows.map((row, index) => {
-    const read = (name: string) => row[header.indexOf(normalize(name))] || ''
-    const name = read('name').trim()
-    const holidayType = normalizeHolidayType(read('holidayType'))
-    const startDate = read('startDate').trim()
-    const endDate = (read('endDate').trim() || startDate)
-    const description = read('description').trim()
-    const locationText = read('workLocations').trim()
-    const allLocations = parseBoolean(read('allLocations')) || !locationText
-    const selected = locationText ? locationText.split(';').map(item => locationMap.get(normalize(item))).filter(Boolean) as WorkLocation[] : []
-    const errors: string[] = []
-    if (!name) errors.push('Holiday name is required.')
-    if (!isDate(startDate)) errors.push('Start date must be YYYY-MM-DD.')
-    if (!isDate(endDate)) errors.push('End date must be YYYY-MM-DD.')
-    if (isDate(startDate) && isDate(endDate) && endDate < startDate) errors.push('End date cannot be before start date.')
-    if (!allLocations && selected.length === 0) errors.push('No matching work locations found.')
-    return { ...blank, id: 0, clientId, name, holidayType, startDate, endDate, description, allLocations, workLocationIds: allLocations ? [] : selected.map(location => location.id), workLocations: allLocations ? 'All locations' : selected.map(location => location.name).join(', '), rowNumber: index + 2, errors }
-  })
-}
-
-function parseCsv(text: string) {
-  const rows: string[][] = []
-  let row: string[] = []
-  let cell = ''
-  let quoted = false
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index]
-    const next = text[index + 1]
-    if (char === '"' && quoted && next === '"') { cell += '"'; index += 1; continue }
-    if (char === '"') { quoted = !quoted; continue }
-    if (char === ',' && !quoted) { row.push(cell); cell = ''; continue }
-    if ((char === '\n' || char === '\r') && !quoted) {
-      if (char === '\r' && next === '\n') index += 1
-      row.push(cell)
-      rows.push(row)
-      row = []
-      cell = ''
-      continue
-    }
-    cell += char
-  }
-  row.push(cell)
-  rows.push(row)
-  return rows
-}
-
 function normalize(value: string) { return value.trim().toLowerCase().replace(/\s+/g, '') }
 function normalizeHolidayType(value: string): Holiday['holidayType'] { return ['restrictedholiday', 'restricted', 'rh'].includes(normalize(value)) ? 'Restricted Holiday' : 'Holiday' }
-function parseBoolean(value: string) { return ['true', 'yes', 'y', '1', 'all'].includes(value.trim().toLowerCase()) }
-function isDate(value: string) { return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T00:00:00`).getTime()) }
+function parsePreviewFlag(value: string, fallback: boolean) { return value.trim() ? ['true', 'yes', 'active', '1'].includes(value.trim().toLowerCase()) : fallback }
+function previewDateMs(text: string) {
+  const clean = text.trim()
+  if (!clean) return null
+  const serial = Number(clean)
+  if (Number.isFinite(serial) && serial >= 20000 && serial <= 80000) return Date.UTC(1899, 11, 30) + serial * 86400000
+  const parsed = Date.parse(clean)
+  return Number.isNaN(parsed) ? null : parsed
+}
+function saveBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  link.click()
+  URL.revokeObjectURL(url)
+}
 function formatDate(value: string) { return new Date(value).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) }
 function dateRange(holiday: Holiday) { return holiday.startDate === holiday.endDate ? formatDate(holiday.startDate) : `${formatDate(holiday.startDate)} - ${formatDate(holiday.endDate)}` }

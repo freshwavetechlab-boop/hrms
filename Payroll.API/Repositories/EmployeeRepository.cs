@@ -116,19 +116,19 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
 
     public async Task<EmployeeImportResult> ImportCsvAsync(int clientId, IFormFile file)
     {
-        return await ImportRowsAsync(clientId, await ParseImportFileAsync(file));
+        return await ImportWorkbookAsync(clientId, await ParseImportWorkbookAsync(file));
     }
 
     public async Task<EmployeeImportJobStatus> StartImportCsvJobAsync(int clientId, IFormFile file)
     {
-        var rows = await ParseImportFileAsync(file);
-        var totalRows = Math.Max(0, rows.Skip(1).Count(row => row.Any(value => !string.IsNullOrWhiteSpace(value))));
+        var workbook = await ParseImportWorkbookAsync(file);
+        var totalRows = CountImportRows(workbook);
         var job = new EmployeeImportJobStatus(Guid.NewGuid(), "Queued", totalRows, 0, 0, 0, []);
         ImportJobs[job.JobId] = job;
         _ = Task.Run(async () =>
         {
             SetJob(job.JobId, current => current with { State = "Processing" });
-            var result = await ImportRowsAsync(clientId, rows, (completed, inserted, updated) => SetJob(job.JobId, current => current with { CompletedRows = completed, Inserted = inserted, Updated = updated }));
+            var result = await ImportWorkbookAsync(clientId, workbook, (completed, inserted, updated) => SetJob(job.JobId, current => current with { CompletedRows = completed, Inserted = inserted, Updated = updated }));
             SetJob(job.JobId, current => current with { State = result.Errors.Count > 0 ? "Failed" : "Completed", CompletedRows = result.TotalRows, Inserted = result.Inserted, Updated = result.Updated, Errors = result.Errors });
         });
         return job;
@@ -139,60 +139,265 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
     public async Task<byte[]> BuildImportTemplateAsync(int clientId)
     {
         await using var db = Connection(); await db.OpenAsync();
+        await PayrollDataTableStore.EnsureAsync(db);
         var client = await db.QueryFirstOrDefaultAsync<(int Id, string Name)>("SELECT Id, Name FROM clients WHERE Id=@clientId", new { clientId });
         var drops = (await db.QueryAsync<(string Type, string Value)>("SELECT Type, Value FROM dropdownmasters WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@clientId) AND Type IN ('Department','Designation','Employee Grade') ORDER BY Type, Value", new { clientId })).ToList();
-        var locations = (await db.QueryAsync<(int Id, string Name)>("SELECT Id, Name FROM worklocations WHERE ClientId=@clientId AND IsActive=TRUE ORDER BY Name", new { clientId })).ToList();
+        var locations = (await db.QueryAsync<LocationRef>("SELECT Id, Name, City, State FROM worklocations WHERE ClientId=@clientId AND IsActive=TRUE ORDER BY Name", new { clientId })).ToList();
+        var templates = ReadSalaryTemplates(await PayrollDataTableStore.GetSetupJsonAsync(db)).Where(template => TemplateForClient(template, clientId)).ToList();
         string First(string type, string fallback) => drops.FirstOrDefault(item => item.Type == type).Value ?? fallback;
-        var headers = new[] { "Employee Code", "First Name", "Last Name", "Gender", "Date Of Joining", "Work Email", "Department", "Designation", "Grade", "Work Location", "Annual CTC", "Date Of Birth", "Mobile", "PAN", "Aadhaar", "UAN Number", "Address", "Correspondence Address", "Permanent Address" };
-        var example = new[] { "EMP001", "Rahul", "Sharma", "Male", "2026-04-01", "rahul@example.com", First("Department", ""), First("Designation", ""), First("Employee Grade", ""), locations.FirstOrDefault().Name ?? "", "600000", "1995-01-15", "9876543210", "ABCDE1234F", "123412341234", "100200300400", "Local address", "Correspondence address", "Permanent address" };
-        var masters = new List<string[]> { new[] { "Master Type", "Value", "Id" } };
-        if (client.Id > 0) masters.Add(new[] { "Client", client.Name, client.Id.ToString() });
-        masters.AddRange(drops.Select(item => new[] { item.Type, item.Value, "" }));
-        masters.AddRange(locations.Select(item => new[] { "Work Location", item.Name, item.Id.ToString() }));
-        return BuildXlsx(("Employees", new[] { headers, example }), ("Masters", masters));
+        var location = locations.FirstOrDefault();
+        var template = templates.FirstOrDefault();
+        var orgHeaders = new[] { "Employee Code", "Date Of Joining", "Work Email", "Department", "Designation", "Grade", "Work Location Id", "Work Location", "Portal Access", "Active", "Change Reason" };
+        var orgExample = new[] { "EMP001", "2026-04-01", "rahul@example.com", First("Department", ""), First("Designation", ""), First("Employee Grade", ""), location?.Id.ToString() ?? "", location?.Name ?? "", "TRUE", "TRUE", "Initial upload" };
+        var personalHeaders = new[] { "Employee Code", "First Name", "Last Name", "Gender", "Date Of Birth", "Mobile", "PAN", "Aadhaar", "UAN Number", "ESIC Number", "Change Reason" };
+        var personalExample = new[] { "EMP001", "Rahul", "Sharma", "Male", "1995-01-15", "9876543210", "ABCDE1234F", "123412341234", "100200300400", "", "Initial upload" };
+        var addressHeaders = new[] { "Employee Code", "Address", "Correspondence Address", "Permanent Address", "Change Reason" };
+        var addressExample = new[] { "EMP001", "Local address", "Correspondence address", "Permanent address", "Initial upload" };
+        var payHeaders = new[] { "Employee Code", "Salary Template Id", "Salary Template", "Annual CTC", "Salary Json", "Change Reason" };
+        var payExample = new[] { "EMP001", template?.Id ?? "", template?.Name ?? "", template?.AnnualCtc ?? "600000", "", "Initial upload" };
+        var bankHeaders = new[] { "Employee Code", "Bank Name", "Bank Account No", "IFSC", "Payment Mode", "Change Reason" };
+        var bankExample = new[] { "EMP001", "HDFC Bank", "50100123456789", "HDFC0001234", "Bank Transfer", "Initial upload" };
+        var references = new List<string[]> { new[] { "Reference Type", "Id", "Value", "Extra", "Notes" } };
+        if (client.Id > 0) references.Add(new[] { "Client", client.Id.ToString(), client.Name, "", "Selected client" });
+        references.AddRange(drops.Select(item => new[] { item.Type, "", item.Value, "", "" }));
+        references.AddRange(locations.Select(item => new[] { "Work Location", item.Id.ToString(), item.Name, item.City, item.State }));
+        references.AddRange(templates.Select(item => new[] { "Salary Template", item.Id, item.Name, item.AnnualCtc, $"ClientId={RefId(item.ClientId)}" }));
+        references.AddRange(new[] { new[] { "Gender", "", "Male", "", "" }, new[] { "Gender", "", "Female", "", "" }, new[] { "Gender", "", "Other", "", "" } });
+        references.AddRange(new[] { new[] { "Payment Mode", "", "Bank Transfer", "", "" }, new[] { "Payment Mode", "", "Cheque", "", "" }, new[] { "Payment Mode", "", "Cash", "", "" } });
+        references.AddRange(new[] { new[] { "Boolean", "", "TRUE", "", "Allowed values: TRUE/FALSE, YES/NO, 1/0, Active/Inactive" }, new[] { "Date Format", "", "yyyy-MM-dd", "", "Example: 2026-04-01" } });
+        return BuildXlsx(
+            ("0001 Org Assignment", new[] { orgHeaders, orgExample }),
+            ("0002 Personal Data", new[] { personalHeaders, personalExample }),
+            ("0006 Addresses", new[] { addressHeaders, addressExample }),
+            ("0008 Basic Pay", new[] { payHeaders, payExample }),
+            ("0009 Bank Details", new[] { bankHeaders, bankExample }),
+            ("References", references));
     }
 
-    async Task<EmployeeImportResult> ImportRowsAsync(int clientId, List<List<string>> rows, Action<int, int, int>? progress = null)
+    async Task<EmployeeImportResult> ImportWorkbookAsync(int clientId, EmployeeImportWorkbook workbook, Action<int, int, int>? progress = null)
     {
-        await using var db = Connection(); await db.OpenAsync(); await using var tx = await db.BeginTransactionAsync();
+        await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db); await PayrollDataTableStore.EnsureAsync(db);
         try
         {
-            if (rows.Count < 2) return new EmployeeImportResult(0, 0, 0, ["Import file has no data rows."]);
-            var header = rows[0].Select(Norm).ToList();
-            var validDrops = (await db.QueryAsync<(string Type, string Value)>("SELECT Type, Value FROM dropdownmasters WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@clientId) AND Type IN ('Department','Designation','Employee Grade')", new { clientId }, tx)).GroupBy(x => x.Type).ToDictionary(x => x.Key, x => x.Select(v => v.Value).ToHashSet(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
-            var locations = (await db.QueryAsync<(int Id, string Name)>("SELECT Id, Name FROM worklocations WHERE ClientId=@clientId AND IsActive=TRUE", new { clientId }, tx)).ToDictionary(x => x.Name, x => x.Id, StringComparer.OrdinalIgnoreCase);
-            var inserted = 0; var updated = 0; var completed = 0; var errors = new List<string>();
-            var totalRows = Math.Max(0, rows.Skip(1).Count(row => row.Any(value => !string.IsNullOrWhiteSpace(value))));
-            for (var i = 1; i < rows.Count; i++)
+            var totalRows = CountImportRows(workbook);
+            if (totalRows == 0) return new EmployeeImportResult(0, 0, 0, ["Import file has no data rows."]);
+            var validDrops = (await db.QueryAsync<(string Type, string Value)>("SELECT Type, Value FROM dropdownmasters WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@clientId) AND Type IN ('Department','Designation','Employee Grade')", new { clientId })).GroupBy(x => x.Type).ToDictionary(x => x.Key, x => x.Select(v => v.Value).ToHashSet(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
+            var locations = (await db.QueryAsync<LocationRef>("SELECT Id, Name, City, State FROM worklocations WHERE ClientId=@clientId AND IsActive=TRUE", new { clientId })).ToList();
+            var locationsById = locations.ToDictionary(x => x.Id);
+            var locationsByName = locations.GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(x => x.Key, x => x.ToList(), StringComparer.OrdinalIgnoreCase);
+            var salaryTemplates = ReadSalaryTemplates(await PayrollDataTableStore.GetSetupJsonAsync(db)).Where(template => TemplateForClient(template, clientId)).ToList();
+            var salaryTemplateById = salaryTemplates.ToDictionary(x => x.Id, StringComparer.OrdinalIgnoreCase);
+            var salaryTemplateByName = salaryTemplates.GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(x => x.Key, x => x.ToList(), StringComparer.OrdinalIgnoreCase);
+            var existing = (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE ClientId=@clientId", new { clientId })).ToList();
+            await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, existing);
+            var existingByCode = existing.Where(x => !string.IsNullOrWhiteSpace(x.EmployeeCode)).GroupBy(x => x.EmployeeCode, StringComparer.OrdinalIgnoreCase).ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+            var existingByEmail = existing.Where(x => !string.IsNullOrWhiteSpace(x.WorkEmail)).GroupBy(x => x.WorkEmail, StringComparer.OrdinalIgnoreCase).ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+            var drafts = new Dictionary<string, EmployeeImportDraft>(StringComparer.OrdinalIgnoreCase);
+            var errors = new List<string>();
+
+            EmployeeImportDraft DraftFor(string code, int rowNumber)
             {
-                var row = rows[i]; if (row.All(string.IsNullOrWhiteSpace)) continue;
-                string V(string name) => header.IndexOf(Norm(name)) is var ix && ix >= 0 && ix < row.Count ? row[ix].Trim() : "";
-                var rowErrors = new List<string>();
-                var code = V("Employee Code"); var first = V("First Name"); var email = V("Work Email");
-                if (string.IsNullOrWhiteSpace(code)) rowErrors.Add($"Row {i + 1}: Employee Code is required.");
-                if (string.IsNullOrWhiteSpace(first)) rowErrors.Add($"Row {i + 1}: First Name is required.");
-                if (!DateOk(V("Date Of Joining"))) rowErrors.Add($"Row {i + 1}: Date Of Joining must be yyyy-MM-dd.");
-                if (!DateOk(V("Date Of Birth"))) rowErrors.Add($"Row {i + 1}: Date Of Birth must be yyyy-MM-dd.");
-                ValidateMaster("Department", V("Department"), validDrops, rowErrors, i + 1);
-                ValidateMaster("Designation", V("Designation"), validDrops, rowErrors, i + 1);
-                ValidateMaster("Employee Grade", V("Grade"), validDrops, rowErrors, i + 1, "Grade");
-                var workLocation = V("Work Location");
-                if (!string.IsNullOrWhiteSpace(workLocation) && !locations.ContainsKey(workLocation)) rowErrors.Add($"Row {i + 1}: Work Location \"{workLocation}\" is not in Work Locations.");
-                if (rowErrors.Count > 0) { errors.AddRange(rowErrors); completed++; progress?.Invoke(completed, inserted, updated); continue; }
-                var existingId = await db.ExecuteScalarAsync<int?>(@"SELECT Id FROM employees WHERE ClientId=@clientId AND (EmployeeCode=@code OR (WorkEmail<>'' AND WorkEmail=@email)) ORDER BY EmployeeCode=@code DESC LIMIT 1", new { clientId, code, email }, tx);
-                var personal = JsonSerializer.Serialize(new { dateOfBirth = V("Date Of Birth"), mobile = V("Mobile"), panNumber = V("PAN"), aadhaarNumber = V("Aadhaar"), uanNumber = V("UAN Number"), address = V("Address"), correspondenceAddress = V("Correspondence Address"), permanentAddress = V("Permanent Address") });
-                var args = new { Id = existingId ?? 0, ClientId = clientId, EmployeeCode = code, FirstName = first, LastName = V("Last Name"), Gender = V("Gender"), DateOfJoining = DbDate(V("Date Of Joining")), WorkEmail = email, Department = V("Department"), Designation = V("Designation"), Grade = V("Grade"), WorkLocationId = string.IsNullOrWhiteSpace(workLocation) ? 0 : locations[workLocation], AnnualCtc = decimal.TryParse(V("Annual CTC"), out var ctc) ? ctc : 0, PersonalJson = personal, SalaryJson = "{}", PaymentJson = "{}", IsActive = true };
-                var id = existingId ?? (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId,EmployeeCode,FirstName,LastName,Gender,DateOfJoining,WorkEmail,Department,Designation,Grade,WorkLocationId,AnnualCtc,SalaryJson,PersonalJson,PaymentJson,IsActive) VALUES (@ClientId,@EmployeeCode,@FirstName,@LastName,@Gender,@DateOfJoining,@WorkEmail,@Department,@Designation,@Grade,@WorkLocationId,@AnnualCtc,@SalaryJson,@PersonalJson,@PaymentJson,@IsActive); SELECT LAST_INSERT_ID();", args, tx);
-                if (existingId is null) inserted++; else { updated++; await db.ExecuteAsync(@"UPDATE employees SET EmployeeCode=@EmployeeCode,FirstName=@FirstName,LastName=@LastName,Gender=@Gender,DateOfJoining=@DateOfJoining,WorkEmail=@WorkEmail,Department=@Department,Designation=@Designation,Grade=@Grade,WorkLocationId=@WorkLocationId,AnnualCtc=@AnnualCtc,PersonalJson=@PersonalJson,IsActive=TRUE WHERE Id=@Id", args, tx); }
-                await db.ExecuteAsync(@"INSERT INTO employeepersonaldetails (EmployeeId,DateOfBirth,Mobile,PanNumber,AadhaarNumber,UanNumber,Address,CorrespondenceAddress,PermanentAddress)
-VALUES (@Id,@DateOfBirth,@Mobile,@Pan,@Aadhaar,@Uan,@Address,@Correspondence,@Permanent)
-ON DUPLICATE KEY UPDATE DateOfBirth=@DateOfBirth,Mobile=@Mobile,PanNumber=@Pan,AadhaarNumber=@Aadhaar,UanNumber=@Uan,Address=@Address,CorrespondenceAddress=@Correspondence,PermanentAddress=@Permanent", new { Id = id, DateOfBirth = DbDate(V("Date Of Birth")), Mobile = V("Mobile"), Pan = V("PAN"), Aadhaar = V("Aadhaar"), Uan = V("UAN Number"), Address = V("Address"), Correspondence = V("Correspondence Address"), Permanent = V("Permanent Address") }, tx);
-                completed++; progress?.Invoke(completed, inserted, updated);
+                if (drafts.TryGetValue(code, out var existingDraft)) return existingDraft;
+                var employee = existingByCode.TryGetValue(code, out var row) ? CloneEmployee(row) : new Employee { ClientId = clientId, EmployeeCode = code, IsActive = true, SalaryJson = "{}", PersonalJson = "{}", PaymentJson = "{}", PersonalDetails = new EmployeePersonalDetails(), PaymentDetails = new EmployeePaymentDetails() };
+                var draft = new EmployeeImportDraft(employee, rowNumber);
+                drafts[code] = draft;
+                return draft;
             }
-            if (errors.Count > 0) { await tx.RollbackAsync(); return new EmployeeImportResult(totalRows, 0, 0, errors); }
-            await tx.CommitAsync(); return new EmployeeImportResult(totalRows, inserted, updated, []);
+
+            void Mark(EmployeeImportDraft draft, string infotypeCode, string reason)
+            {
+                draft.Infotypes.Add(infotypeCode);
+                if (!string.IsNullOrWhiteSpace(reason)) draft.ChangeReason = reason.Trim();
+            }
+
+            bool AddCodeError(string sheet, int rowNumber, string code, HashSet<string> seen)
+            {
+                if (string.IsNullOrWhiteSpace(code)) { errors.Add($"{sheet} row {rowNumber}: Employee Code is required."); return true; }
+                if (!seen.Add(code)) { errors.Add($"{sheet} row {rowNumber}: Employee Code \"{code}\" is duplicated in this sheet."); return true; }
+                return false;
+            }
+
+            void ProcessOrgRows(List<List<string>> rows, string sheet)
+            {
+                if (rows.Count < 2) return;
+                var map = HeaderMap(rows[0]);
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (var i = 1; i < rows.Count; i++)
+                {
+                    var row = rows[i]; if (Blank(row)) continue;
+                    var rowNumber = i + 1; var code = Cell(row, map, "Employee Code");
+                    if (AddCodeError(sheet, rowNumber, code, seen)) continue;
+                    var draft = DraftFor(code, rowNumber); var employee = draft.Employee;
+                    if (TryDate(Cell(row, map, "Date Of Joining"), out var doj)) { if (!string.IsNullOrWhiteSpace(doj)) employee.DateOfJoining = doj; } else errors.Add($"{sheet} row {rowNumber}: Date Of Joining must be yyyy-MM-dd.");
+                    var email = Cell(row, map, "Work Email"); if (!string.IsNullOrWhiteSpace(email)) employee.WorkEmail = email;
+                    if (!string.IsNullOrWhiteSpace(employee.WorkEmail) && existingByEmail.TryGetValue(employee.WorkEmail, out var emailOwner) && !string.Equals(emailOwner.EmployeeCode, employee.EmployeeCode, StringComparison.OrdinalIgnoreCase)) errors.Add($"{sheet} row {rowNumber}: Work Email already belongs to employee {emailOwner.EmployeeCode}.");
+                    var dep = Cell(row, map, "Department"); ValidateMaster("Department", dep, validDrops, errors, rowNumber, "Department", sheet); if (!string.IsNullOrWhiteSpace(dep)) employee.Department = dep;
+                    var desig = Cell(row, map, "Designation"); ValidateMaster("Designation", desig, validDrops, errors, rowNumber, "Designation", sheet); if (!string.IsNullOrWhiteSpace(desig)) employee.Designation = desig;
+                    var grade = Cell(row, map, "Grade"); ValidateMaster("Employee Grade", grade, validDrops, errors, rowNumber, "Grade", sheet); if (!string.IsNullOrWhiteSpace(grade)) employee.Grade = grade;
+                    var locationId = ResolveWorkLocationId(Cell(row, map, "Work Location Id"), Cell(row, map, "Work Location"), locationsById, locationsByName, errors, sheet, rowNumber);
+                    if (locationId.HasValue) employee.WorkLocationId = locationId.Value;
+                    if (TryBool(Cell(row, map, "Portal Access"), employee.PortalAccess, out var portal)) employee.PortalAccess = portal; else errors.Add($"{sheet} row {rowNumber}: Portal Access must be TRUE/FALSE.");
+                    if (TryBool(Cell(row, map, "Active"), employee.IsActive, out var active)) employee.IsActive = active; else errors.Add($"{sheet} row {rowNumber}: Active must be TRUE/FALSE.");
+                    Mark(draft, "0001", Cell(row, map, "Change Reason"));
+                    Mark(draft, "0000", Cell(row, map, "Change Reason"));
+                }
+            }
+
+            void ProcessPersonalRows(List<List<string>> rows, string sheet)
+            {
+                if (rows.Count < 2) return;
+                var map = HeaderMap(rows[0]);
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (var i = 1; i < rows.Count; i++)
+                {
+                    var row = rows[i]; if (Blank(row)) continue;
+                    var rowNumber = i + 1; var code = Cell(row, map, "Employee Code");
+                    if (AddCodeError(sheet, rowNumber, code, seen)) continue;
+                    var draft = DraftFor(code, rowNumber); var employee = draft.Employee; var personal = employee.PersonalDetails ?? new EmployeePersonalDetails(); employee.PersonalDetails = personal;
+                    var first = Cell(row, map, "First Name"); if (!string.IsNullOrWhiteSpace(first)) employee.FirstName = first;
+                    var last = Cell(row, map, "Last Name"); if (!string.IsNullOrWhiteSpace(last)) employee.LastName = last;
+                    var gender = Cell(row, map, "Gender"); if (!string.IsNullOrWhiteSpace(gender)) { if (!new[] { "Male", "Female", "Other" }.Contains(gender, StringComparer.OrdinalIgnoreCase)) errors.Add($"{sheet} row {rowNumber}: Gender must be Male, Female, or Other."); else employee.Gender = gender; }
+                    if (TryDate(Cell(row, map, "Date Of Birth"), out var dob)) { if (!string.IsNullOrWhiteSpace(dob)) personal.DateOfBirth = dob; } else errors.Add($"{sheet} row {rowNumber}: Date Of Birth must be yyyy-MM-dd.");
+                    SetIfAny(value => personal.Mobile = value, Cell(row, map, "Mobile"));
+                    SetIfAny(value => personal.PanNumber = value.ToUpperInvariant(), Cell(row, map, "PAN"));
+                    SetIfAny(value => personal.AadhaarNumber = value, Cell(row, map, "Aadhaar"));
+                    SetIfAny(value => personal.UanNumber = value, Cell(row, map, "UAN Number"));
+                    SetIfAny(value => personal.EsicNumber = value, Cell(row, map, "ESIC Number"));
+                    Mark(draft, "0002", Cell(row, map, "Change Reason"));
+                }
+            }
+
+            void ProcessAddressRows(List<List<string>> rows, string sheet)
+            {
+                if (rows.Count < 2) return;
+                var map = HeaderMap(rows[0]);
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (var i = 1; i < rows.Count; i++)
+                {
+                    var row = rows[i]; if (Blank(row)) continue;
+                    var rowNumber = i + 1; var code = Cell(row, map, "Employee Code");
+                    if (AddCodeError(sheet, rowNumber, code, seen)) continue;
+                    var draft = DraftFor(code, rowNumber); var personal = draft.Employee.PersonalDetails ?? new EmployeePersonalDetails(); draft.Employee.PersonalDetails = personal;
+                    SetIfAny(value => personal.Address = value, Cell(row, map, "Address"));
+                    SetIfAny(value => personal.CorrespondenceAddress = value, Cell(row, map, "Correspondence Address"));
+                    SetIfAny(value => personal.PermanentAddress = value, Cell(row, map, "Permanent Address"));
+                    Mark(draft, "0006", Cell(row, map, "Change Reason"));
+                }
+            }
+
+            void ProcessPayRows(List<List<string>> rows, string sheet)
+            {
+                if (rows.Count < 2) return;
+                var map = HeaderMap(rows[0]);
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (var i = 1; i < rows.Count; i++)
+                {
+                    var row = rows[i]; if (Blank(row)) continue;
+                    var rowNumber = i + 1; var code = Cell(row, map, "Employee Code");
+                    if (AddCodeError(sheet, rowNumber, code, seen)) continue;
+                    var draft = DraftFor(code, rowNumber); var employee = draft.Employee;
+                    var templateId = Cell(row, map, "Salary Template Id"); var templateName = Cell(row, map, "Salary Template");
+                    var template = ResolveSalaryTemplate(templateId, templateName, salaryTemplateById, salaryTemplateByName, errors, sheet, rowNumber);
+                    if (template is not null) employee.SalaryStructureId = template.Id;
+                    var ctcText = Cell(row, map, "Annual CTC");
+                    if (!string.IsNullOrWhiteSpace(ctcText))
+                    {
+                        if (decimal.TryParse(ctcText, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var ctc)) employee.AnnualCtc = ctc;
+                        else errors.Add($"{sheet} row {rowNumber}: Annual CTC must be numeric.");
+                    }
+                    else if (template is not null && decimal.TryParse(template.AnnualCtc, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var templateCtc) && employee.AnnualCtc <= 0) employee.AnnualCtc = templateCtc;
+                    var salaryJson = Cell(row, map, "Salary Json");
+                    if (!string.IsNullOrWhiteSpace(salaryJson))
+                    {
+                        if (JsonObjectOk(salaryJson)) employee.SalaryJson = salaryJson;
+                        else errors.Add($"{sheet} row {rowNumber}: Salary Json must be a valid JSON object.");
+                    }
+                    Mark(draft, "0008", Cell(row, map, "Change Reason"));
+                }
+            }
+
+            void ProcessBankRows(List<List<string>> rows, string sheet)
+            {
+                if (rows.Count < 2) return;
+                var map = HeaderMap(rows[0]);
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (var i = 1; i < rows.Count; i++)
+                {
+                    var row = rows[i]; if (Blank(row)) continue;
+                    var rowNumber = i + 1; var code = Cell(row, map, "Employee Code");
+                    if (AddCodeError(sheet, rowNumber, code, seen)) continue;
+                    var draft = DraftFor(code, rowNumber); var payment = draft.Employee.PaymentDetails ?? new EmployeePaymentDetails(); draft.Employee.PaymentDetails = payment;
+                    SetIfAny(value => payment.BankName = value, Cell(row, map, "Bank Name"));
+                    SetIfAny(value => payment.BankAccountNo = value, Cell(row, map, "Bank Account No"));
+                    SetIfAny(value => payment.IfscCode = value.ToUpperInvariant(), Cell(row, map, "IFSC"));
+                    var mode = Cell(row, map, "Payment Mode"); if (!string.IsNullOrWhiteSpace(mode)) { if (!new[] { "Bank Transfer", "Cheque", "Cash" }.Contains(mode, StringComparer.OrdinalIgnoreCase)) errors.Add($"{sheet} row {rowNumber}: Payment Mode must be Bank Transfer, Cheque, or Cash."); else payment.PaymentMode = mode; }
+                    Mark(draft, "0009", Cell(row, map, "Change Reason"));
+                }
+            }
+
+            void ProcessFlatRows(List<List<string>> rows)
+            {
+                if (rows.Count < 2) return;
+                var map = HeaderMap(rows[0]);
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (var i = 1; i < rows.Count; i++)
+                {
+                    var row = rows[i]; if (Blank(row)) continue;
+                    var rowNumber = i + 1; var code = Cell(row, map, "Employee Code");
+                    if (AddCodeError("Employees", rowNumber, code, seen)) continue;
+                    var draft = DraftFor(code, rowNumber); var employee = draft.Employee; var personal = employee.PersonalDetails ?? new EmployeePersonalDetails(); employee.PersonalDetails = personal;
+                    SetIfAny(value => employee.FirstName = value, Cell(row, map, "First Name"));
+                    SetIfAny(value => employee.LastName = value, Cell(row, map, "Last Name"));
+                    SetIfAny(value => employee.Gender = value, Cell(row, map, "Gender"));
+                    if (TryDate(Cell(row, map, "Date Of Joining"), out var doj)) { if (!string.IsNullOrWhiteSpace(doj)) employee.DateOfJoining = doj; } else errors.Add($"Employees row {rowNumber}: Date Of Joining must be yyyy-MM-dd.");
+                    SetIfAny(value => employee.WorkEmail = value, Cell(row, map, "Work Email"));
+                    var dep = Cell(row, map, "Department"); ValidateMaster("Department", dep, validDrops, errors, rowNumber, "Department", "Employees"); SetIfAny(value => employee.Department = value, dep);
+                    var desig = Cell(row, map, "Designation"); ValidateMaster("Designation", desig, validDrops, errors, rowNumber, "Designation", "Employees"); SetIfAny(value => employee.Designation = value, desig);
+                    var grade = Cell(row, map, "Grade"); ValidateMaster("Employee Grade", grade, validDrops, errors, rowNumber, "Grade", "Employees"); SetIfAny(value => employee.Grade = value, grade);
+                    var locationId = ResolveWorkLocationId(Cell(row, map, "Work Location Id"), Cell(row, map, "Work Location"), locationsById, locationsByName, errors, "Employees", rowNumber); if (locationId.HasValue) employee.WorkLocationId = locationId.Value;
+                    if (decimal.TryParse(Cell(row, map, "Annual CTC"), System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var ctc)) employee.AnnualCtc = ctc;
+                    if (TryDate(Cell(row, map, "Date Of Birth"), out var dob)) { if (!string.IsNullOrWhiteSpace(dob)) personal.DateOfBirth = dob; } else errors.Add($"Employees row {rowNumber}: Date Of Birth must be yyyy-MM-dd.");
+                    SetIfAny(value => personal.Mobile = value, Cell(row, map, "Mobile"));
+                    SetIfAny(value => personal.PanNumber = value.ToUpperInvariant(), Cell(row, map, "PAN"));
+                    SetIfAny(value => personal.AadhaarNumber = value, Cell(row, map, "Aadhaar"));
+                    SetIfAny(value => personal.UanNumber = value, Cell(row, map, "UAN Number"));
+                    SetIfAny(value => personal.Address = value, Cell(row, map, "Address"));
+                    SetIfAny(value => personal.CorrespondenceAddress = value, Cell(row, map, "Correspondence Address"));
+                    SetIfAny(value => personal.PermanentAddress = value, Cell(row, map, "Permanent Address"));
+                    Mark(draft, "0001", "Bulk upload"); Mark(draft, "0002", "Bulk upload"); Mark(draft, "0006", "Bulk upload"); Mark(draft, "0008", "Bulk upload"); Mark(draft, "0000", "Bulk upload");
+                }
+            }
+
+            var hasInfotypeSheets = HasDataSheet(workbook, "0001 Org Assignment", "0002 Personal Data", "0006 Addresses", "0008 Basic Pay", "0009 Bank Details");
+            if (hasInfotypeSheets)
+            {
+                ProcessOrgRows(GetSheet(workbook, "0001 Org Assignment"), "0001 Org Assignment");
+                ProcessPersonalRows(GetSheet(workbook, "0002 Personal Data"), "0002 Personal Data");
+                ProcessAddressRows(GetSheet(workbook, "0006 Addresses"), "0006 Addresses");
+                ProcessPayRows(GetSheet(workbook, "0008 Basic Pay"), "0008 Basic Pay");
+                ProcessBankRows(GetSheet(workbook, "0009 Bank Details"), "0009 Bank Details");
+            }
+            else ProcessFlatRows(GetSheet(workbook, "Employees", "Employee", "CSV"));
+
+            foreach (var draft in drafts.Values)
+            {
+                if (string.IsNullOrWhiteSpace(draft.Employee.FirstName)) errors.Add($"Employee {draft.Employee.EmployeeCode}: First Name is required in 0002 Personal Data.");
+                if (string.IsNullOrWhiteSpace(draft.Employee.DateOfJoining)) errors.Add($"Employee {draft.Employee.EmployeeCode}: Date Of Joining is required in 0001 Org Assignment.");
+            }
+            if (errors.Count > 0) return new EmployeeImportResult(totalRows, 0, 0, errors);
+
+            var inserted = 0; var updated = 0; var completed = 0;
+            foreach (var draft in drafts.Values.OrderBy(x => x.FirstRow))
+            {
+                var isNew = draft.Employee.Id == 0;
+                await SaveAsync(draft.Employee, "Bulk Upload", isNew ? null : string.Join(',', draft.Infotypes.OrderBy(x => x)), draft.ChangeReason);
+                if (isNew) inserted++; else updated++;
+                completed++;
+                progress?.Invoke(Math.Min(totalRows, completed), inserted, updated);
+            }
+            return new EmployeeImportResult(totalRows, inserted, updated, []);
         }
-        catch (Exception ex) { await tx.RollbackAsync(); return new EmployeeImportResult(0, 0, 0, [$"Import failed: {ex.Message}"]); }
+        catch (Exception ex) { return new EmployeeImportResult(0, 0, 0, [$"Import failed: {ex.Message}"]); }
     }
 
     static void SetJob(Guid jobId, Func<EmployeeImportJobStatus, EmployeeImportJobStatus> update) => ImportJobs.AddOrUpdate(jobId, _ => update(new EmployeeImportJobStatus(jobId, "Processing", 0, 0, 0, 0, [])), (_, current) => update(current));
@@ -506,22 +711,214 @@ VALUES (@Id,@EmployeeCode,@ActionType,@InfotypeCode,@FieldName,@OldValue,@NewVal
     };
 
     static async Task<int> CountSafeAsync(MySqlConnection db, string table, string column, int id, string filter) { try { return await db.ExecuteScalarAsync<int>($"SELECT COUNT(*) FROM {table} WHERE {column}=@id {filter}", new { id }); } catch { return 0; } }
-    static void ValidateMaster(string type, string value, Dictionary<string, HashSet<string>> masters, List<string> errors, int row, string? label = null) { if (!string.IsNullOrWhiteSpace(value) && (!masters.TryGetValue(type, out var values) || !values.Contains(value))) errors.Add($"Row {row}: {label ?? type} \"{value}\" is not in Dropdown Masters."); }
-    static bool DateOk(string value) => string.IsNullOrWhiteSpace(value) || DateTime.TryParseExact(value, "yyyy-MM-dd", null, System.Globalization.DateTimeStyles.None, out _);
-    static string? DbDate(string value) => string.IsNullOrWhiteSpace(value) ? null : value;
-    static string Norm(string value) => value.Replace(" ", "").Replace("_", "").ToLowerInvariant();
-    static async Task<List<List<string>>> ParseImportFileAsync(IFormFile file) { using var ms = new MemoryStream(); await file.CopyToAsync(ms); var bytes = ms.ToArray(); return file.FileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) ? ParseXlsx(bytes) : ParseCsv(Encoding.UTF8.GetString(bytes)); }
+    static void ValidateMaster(string type, string value, Dictionary<string, HashSet<string>> masters, List<string> errors, int row, string label, string sheet) { if (!string.IsNullOrWhiteSpace(value) && (!masters.TryGetValue(type, out var values) || !values.Contains(value))) errors.Add($"{sheet} row {row}: {label} \"{value}\" is not in Dropdown Masters."); }
+    static bool DateOk(string value) => TryDate(value, out _);
+    static string? DbDate(string value) => TryDate(value, out var date) && !string.IsNullOrWhiteSpace(date) ? date : null;
+    static string Norm(string value) => value.Replace(" ", "").Replace("_", "").Replace("-", "").ToLowerInvariant();
+    static async Task<EmployeeImportWorkbook> ParseImportWorkbookAsync(IFormFile file) { using var ms = new MemoryStream(); await file.CopyToAsync(ms); var bytes = ms.ToArray(); return file.FileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) ? ParseXlsxWorkbook(bytes) : new EmployeeImportWorkbook(new Dictionary<string, List<List<string>>>(StringComparer.OrdinalIgnoreCase) { ["Employees"] = ParseCsv(Encoding.UTF8.GetString(bytes)) }); }
     static List<List<string>> ParseCsv(string text) { var rows = new List<List<string>>(); var row = new List<string>(); var cell = new StringBuilder(); var q = false; for (var i = 0; i < text.Length; i++) { var c = text[i]; if (q && c == '"' && i + 1 < text.Length && text[i + 1] == '"') { cell.Append('"'); i++; } else if (c == '"') q = !q; else if (!q && c == ',') { row.Add(cell.ToString()); cell.Clear(); } else if (!q && (c == '\n' || c == '\r')) { if (c == '\r' && i + 1 < text.Length && text[i + 1] == '\n') i++; row.Add(cell.ToString()); cell.Clear(); rows.Add(row); row = []; } else cell.Append(c); } row.Add(cell.ToString()); if (row.Any(x => x.Length > 0)) rows.Add(row); return rows; }
-    static List<List<string>> ParseXlsx(byte[] bytes) { using var zip = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read); var shared = ReadSharedStrings(zip); var sheet = zip.GetEntry("xl/worksheets/sheet1.xml") ?? throw new InvalidDataException("Employees sheet not found."); using var stream = sheet.Open(); var doc = XDocument.Load(stream); XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"; var rows = new List<List<string>>(); foreach (var row in doc.Descendants(ns + "row")) { var values = new List<string>(); foreach (var cell in row.Elements(ns + "c")) { var index = CellIndex((string?)cell.Attribute("r") ?? "A1"); while (values.Count < index) values.Add(""); var type = (string?)cell.Attribute("t") ?? ""; var raw = type == "inlineStr" ? cell.Descendants(ns + "t").FirstOrDefault()?.Value ?? "" : cell.Element(ns + "v")?.Value ?? ""; values.Add(type == "s" && int.TryParse(raw, out var si) && si >= 0 && si < shared.Count ? shared[si] : raw); } rows.Add(values); } return rows; }
+    static EmployeeImportWorkbook ParseXlsxWorkbook(byte[] bytes)
+    {
+        using var zip = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read);
+        var shared = ReadSharedStrings(zip);
+        var sheetRefs = WorkbookSheets(zip).ToList();
+        if (sheetRefs.Count == 0) sheetRefs = zip.Entries.Where(entry => entry.FullName.StartsWith("xl/worksheets/sheet", StringComparison.OrdinalIgnoreCase) && entry.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)).OrderBy(entry => entry.FullName).Select((entry, index) => new SheetRef($"Sheet {index + 1}", entry.FullName)).ToList();
+        var sheets = new Dictionary<string, List<List<string>>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var sheetRef in sheetRefs)
+        {
+            var entry = zip.GetEntry(sheetRef.Path);
+            if (entry is not null) sheets[sheetRef.Name] = ParseXlsxSheet(entry, shared);
+        }
+        return new EmployeeImportWorkbook(sheets);
+    }
+
+    static IEnumerable<SheetRef> WorkbookSheets(ZipArchive zip)
+    {
+        var workbookEntry = zip.GetEntry("xl/workbook.xml");
+        if (workbookEntry is null) yield break;
+        var rels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var relEntry = zip.GetEntry("xl/_rels/workbook.xml.rels");
+        if (relEntry is not null)
+        {
+            using var relStream = relEntry.Open();
+            var relDoc = XDocument.Load(relStream);
+            foreach (var rel in relDoc.Descendants().Where(x => x.Name.LocalName == "Relationship"))
+            {
+                var id = (string?)rel.Attribute("Id") ?? "";
+                var target = (string?)rel.Attribute("Target") ?? "";
+                if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(target)) rels[id] = target;
+            }
+        }
+        using var stream = workbookEntry.Open();
+        var doc = XDocument.Load(stream);
+        var index = 0;
+        foreach (var sheet in doc.Descendants().Where(x => x.Name.LocalName == "sheet"))
+        {
+            index++;
+            var name = (string?)sheet.Attribute("name") ?? $"Sheet {index}";
+            var relId = (string?)sheet.Attributes().FirstOrDefault(attribute => attribute.Name.LocalName == "id") ?? $"rId{index}";
+            var target = rels.GetValueOrDefault(relId, $"worksheets/sheet{index}.xml");
+            var path = target.StartsWith('/') ? target.TrimStart('/') : target.StartsWith("xl/", StringComparison.OrdinalIgnoreCase) ? target : $"xl/{target}";
+            yield return new SheetRef(name, path);
+        }
+    }
+
+    static List<List<string>> ParseXlsxSheet(ZipArchiveEntry sheet, List<string> shared)
+    {
+        using var stream = sheet.Open();
+        var doc = XDocument.Load(stream);
+        XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        var rows = new List<List<string>>();
+        foreach (var row in doc.Descendants(ns + "row"))
+        {
+            var values = new List<string>();
+            foreach (var cell in row.Elements(ns + "c"))
+            {
+                var index = CellIndex((string?)cell.Attribute("r") ?? "A1");
+                while (values.Count < index) values.Add("");
+                var type = (string?)cell.Attribute("t") ?? "";
+                var raw = type == "inlineStr" ? cell.Descendants(ns + "t").FirstOrDefault()?.Value ?? "" : cell.Element(ns + "v")?.Value ?? "";
+                values.Add(type == "s" && int.TryParse(raw, out var si) && si >= 0 && si < shared.Count ? shared[si] : raw);
+            }
+            rows.Add(values);
+        }
+        return rows;
+    }
     static List<string> ReadSharedStrings(ZipArchive zip) { var entry = zip.GetEntry("xl/sharedStrings.xml"); if (entry is null) return []; using var stream = entry.Open(); var doc = XDocument.Load(stream); XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"; return doc.Descendants(ns + "si").Select(si => string.Concat(si.Descendants(ns + "t").Select(t => t.Value))).ToList(); }
     static int CellIndex(string reference) { var n = 0; foreach (var c in reference.TakeWhile(char.IsLetter)) n = n * 26 + char.ToUpperInvariant(c) - 'A' + 1; return Math.Max(0, n - 1); }
-    static byte[] BuildXlsx(params (string Name, IEnumerable<string[]> Rows)[] sheets) { using var ms = new MemoryStream(); using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, true)) { Add(zip, "[Content_Types].xml", """<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"""); Add(zip, "_rels/.rels", """<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"""); Add(zip, "xl/_rels/workbook.xml.rels", """<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"""); Add(zip, "xl/styles.xml", """<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="1"><xf/></cellXfs></styleSheet>"""); Add(zip, "xl/workbook.xml", WorkbookXml(sheets.Select((s, i) => (s.Name, i + 1)))); foreach (var (sheet, ix) in sheets.Select((s, i) => (s, i + 1))) Add(zip, $"xl/worksheets/sheet{ix}.xml", SheetXml(sheet.Rows)); } return ms.ToArray(); }
+    static byte[] BuildXlsx(params (string Name, IEnumerable<string[]> Rows)[] sheets)
+    {
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, true))
+        {
+            Add(zip, "[Content_Types].xml", ContentTypesXml(sheets.Length));
+            Add(zip, "_rels/.rels", """<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>""");
+            Add(zip, "xl/_rels/workbook.xml.rels", WorkbookRelsXml(sheets.Length));
+            Add(zip, "xl/styles.xml", """<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="1"><xf/></cellXfs></styleSheet>""");
+            Add(zip, "xl/workbook.xml", WorkbookXml(sheets.Select((s, i) => (SafeSheetName(s.Name), i + 1))));
+            foreach (var (sheet, ix) in sheets.Select((s, i) => (s, i + 1))) Add(zip, $"xl/worksheets/sheet{ix}.xml", SheetXml(sheet.Rows));
+        }
+        return ms.ToArray();
+    }
     static void Add(ZipArchive zip, string path, string text) { var entry = zip.CreateEntry(path); using var writer = new StreamWriter(entry.Open(), Encoding.UTF8); writer.Write(text); }
+    static string ContentTypesXml(int sheetCount) => $"""<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>{string.Concat(Enumerable.Range(1, sheetCount).Select(i => $"""<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"""))}</Types>""";
+    static string WorkbookRelsXml(int sheetCount) => $"""<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{string.Concat(Enumerable.Range(1, sheetCount).Select(i => $"""<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>"""))}<Relationship Id="rId{sheetCount + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>""";
     static string WorkbookXml(IEnumerable<(string Name, int Index)> sheets) => new XDocument(new XElement(XName.Get("workbook", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), new XAttribute(XNamespace.Xmlns + "r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships"), new XElement(XName.Get("sheets", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), sheets.Select(s => new XElement(XName.Get("sheet", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), new XAttribute("name", s.Name), new XAttribute("sheetId", s.Index), new XAttribute(XName.Get("id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships"), $"rId{s.Index}")))))).ToString(SaveOptions.DisableFormatting);
     static string SheetXml(IEnumerable<string[]> rows) => new XDocument(new XElement(XName.Get("worksheet", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), new XElement(XName.Get("sheetData", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), rows.Select((row, r) => new XElement(XName.Get("row", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), new XAttribute("r", r + 1), row.Select((cell, c) => new XElement(XName.Get("c", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), new XAttribute("r", $"{Col(c + 1)}{r + 1}"), new XAttribute("t", "inlineStr"), new XElement(XName.Get("is", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), new XElement(XName.Get("t", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), cell ?? ""))))))))).ToString(SaveOptions.DisableFormatting);
     static string Col(int n) { var s = ""; while (n > 0) { n--; s = (char)('A' + n % 26) + s; n /= 26; } return s; }
+    static string SafeSheetName(string name) => string.Join("", name.Where(ch => !"[]:*?/\\ ".Contains(ch) || ch == ' ')).Trim() is var clean && clean.Length > 31 ? clean[..31] : string.IsNullOrWhiteSpace(clean) ? "Sheet" : clean;
+    static Dictionary<string, int> HeaderMap(List<string> header) => header.Select((value, index) => (Key: Norm(value), Index: index)).Where(item => !string.IsNullOrWhiteSpace(item.Key)).GroupBy(item => item.Key).ToDictionary(group => group.Key, group => group.First().Index, StringComparer.OrdinalIgnoreCase);
+    static string Cell(List<string> row, Dictionary<string, int> header, string name) => header.TryGetValue(Norm(name), out var index) && index >= 0 && index < row.Count ? row[index].Trim() : "";
+    static bool Blank(List<string> row) => row.All(string.IsNullOrWhiteSpace);
+    static void SetIfAny(Action<string> set, string value) { if (!string.IsNullOrWhiteSpace(value)) set(value.Trim()); }
+    static List<List<string>> GetSheet(EmployeeImportWorkbook workbook, params string[] names)
+    {
+        foreach (var name in names) if (workbook.Sheets.TryGetValue(name, out var rows)) return rows;
+        var wanted = names.Select(Norm).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return workbook.Sheets.FirstOrDefault(sheet => wanted.Contains(Norm(sheet.Key))).Value ?? [];
+    }
+    static bool HasDataSheet(EmployeeImportWorkbook workbook, params string[] names) => names.Any(name => GetSheet(workbook, name).Skip(1).Any(row => !Blank(row)));
+    static int CountImportRows(EmployeeImportWorkbook workbook)
+    {
+        var known = new[] { "0001 Org Assignment", "0002 Personal Data", "0006 Addresses", "0008 Basic Pay", "0009 Bank Details" };
+        var total = known.Sum(name => GetSheet(workbook, name).Skip(1).Count(row => !Blank(row)));
+        return total > 0 ? total : GetSheet(workbook, "Employees", "Employee", "CSV").Skip(1).Count(row => !Blank(row));
+    }
+    static bool TryDate(string value, out string date)
+    {
+        date = "";
+        if (string.IsNullOrWhiteSpace(value)) return true;
+        value = value.Trim();
+        if (double.TryParse(value, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var serial) && serial >= 20000 && serial <= 80000)
+        {
+            date = DateTime.FromOADate(serial).ToString("yyyy-MM-dd");
+            return true;
+        }
+        if (DateTime.TryParseExact(value, "yyyy-MM-dd", null, System.Globalization.DateTimeStyles.None, out var exact) || DateTime.TryParse(value, out exact))
+        {
+            date = exact.ToString("yyyy-MM-dd");
+            return true;
+        }
+        return false;
+    }
+    static bool TryBool(string value, bool fallback, out bool result)
+    {
+        result = fallback;
+        if (string.IsNullOrWhiteSpace(value)) return true;
+        switch (value.Trim().ToLowerInvariant())
+        {
+            case "true": case "yes": case "active": case "1": result = true; return true;
+            case "false": case "no": case "inactive": case "0": result = false; return true;
+            default: return false;
+        }
+    }
+    static bool JsonObjectOk(string value)
+    {
+        try { using var doc = JsonDocument.Parse(value); return doc.RootElement.ValueKind == JsonValueKind.Object; }
+        catch { return false; }
+    }
+    static int? ResolveWorkLocationId(string idText, string name, Dictionary<int, LocationRef> byId, Dictionary<string, List<LocationRef>> byName, List<string> errors, string sheet, int row)
+    {
+        if (!string.IsNullOrWhiteSpace(idText))
+        {
+            if (int.TryParse(idText, out var id) && byId.ContainsKey(id)) return id;
+            errors.Add($"{sheet} row {row}: Work Location Id \"{idText}\" is not in Work Locations for this client.");
+            return null;
+        }
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        if (!byName.TryGetValue(name, out var matches)) { errors.Add($"{sheet} row {row}: Work Location \"{name}\" is not in Work Locations for this client."); return null; }
+        if (matches.Count > 1) { errors.Add($"{sheet} row {row}: Work Location \"{name}\" is duplicate. Use Work Location Id."); return null; }
+        return matches[0].Id;
+    }
+    static SalaryTemplateRef? ResolveSalaryTemplate(string id, string name, Dictionary<string, SalaryTemplateRef> byId, Dictionary<string, List<SalaryTemplateRef>> byName, List<string> errors, string sheet, int row)
+    {
+        if (!string.IsNullOrWhiteSpace(id))
+        {
+            if (byId.TryGetValue(id, out var template)) return template;
+            errors.Add($"{sheet} row {row}: Salary Template Id \"{id}\" is not in Salary Templates for this client.");
+            return null;
+        }
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        if (!byName.TryGetValue(name, out var matches)) { errors.Add($"{sheet} row {row}: Salary Template \"{name}\" is not in Salary Templates for this client."); return null; }
+        if (matches.Count > 1) { errors.Add($"{sheet} row {row}: Salary Template \"{name}\" is duplicate. Use Salary Template Id."); return null; }
+        return matches[0];
+    }
+    static List<SalaryTemplateRef> ReadSalaryTemplates(string setupJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(setupJson) ? "{}" : setupJson);
+            if (!doc.RootElement.TryGetProperty("salaryStructures", out var structures) || structures.ValueKind != JsonValueKind.Array) return [];
+            return structures.EnumerateArray()
+                .Where(item => !item.TryGetProperty("active", out var active) || active.ValueKind != JsonValueKind.False)
+                .Select(item => new SalaryTemplateRef(JsonText(item, "id"), JsonText(item, "name"), JsonText(item, "clientId"), JsonText(item, "annualCtc")))
+                .Where(item => !string.IsNullOrWhiteSpace(item.Id))
+                .ToList();
+        }
+        catch { return []; }
+    }
+    static string JsonText(JsonElement item, string property) => item.TryGetProperty(property, out var value) ? value.ValueKind switch { JsonValueKind.String => value.GetString() ?? "", JsonValueKind.Number => value.ToString(), JsonValueKind.True => "TRUE", JsonValueKind.False => "FALSE", _ => value.ToString() } : "";
+    static string RefId(string value) => (value ?? "").Split(':')[0].Trim();
+    static bool TemplateForClient(SalaryTemplateRef template, int clientId) { var refId = RefId(template.ClientId); return string.IsNullOrWhiteSpace(refId) || refId == "0" || refId == clientId.ToString(); }
+    private sealed class EmployeeImportDraft(Employee employee, int firstRow)
+    {
+        public Employee Employee { get; } = employee;
+        public int FirstRow { get; } = firstRow;
+        public HashSet<string> Infotypes { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public string ChangeReason { get; set; } = "Bulk upload";
+    }
+    private sealed class LocationRef
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+        public string City { get; set; } = "";
+        public string State { get; set; } = "";
+    }
+    private sealed record SalaryTemplateRef(string Id, string Name, string ClientId, string AnnualCtc);
+    private sealed record SheetRef(string Name, string Path);
 }
 
+public record EmployeeImportWorkbook(Dictionary<string, List<List<string>>> Sheets);
 public record EmployeeImportResult(int TotalRows, int Inserted, int Updated, List<string> Errors);
 public record EmployeeImportJobStatus(Guid JobId, string State, int TotalRows, int CompletedRows, int Inserted, int Updated, List<string> Errors);
 public record EmployeeDeletePreview(int EmployeeId, string EmployeeCode, string EmployeeName, List<string> Links, bool CanDelete);

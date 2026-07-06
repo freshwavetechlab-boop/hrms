@@ -411,6 +411,7 @@ WHERE Id = @Id;";
         }
 
         await connection.ExecuteAsync("UPDATE clients SET Name=@Name, Code=@Code, ContactPerson=@ContactPerson, Email=@Email, Phone=@Phone, Address=@Address, PayScheduleJson=@PayScheduleJson, IsActive=@IsActive WHERE Id=@Id", client);
+        await connection.ExecuteAsync("UPDATE worklocations SET ClientName=@Name WHERE ClientId=@Id", client);
         await PayrollDataTableStore.SyncClientPayScheduleAsync(connection, client.Id, client.PayScheduleJson);
         return client.Id;
     }
@@ -548,6 +549,7 @@ WHERE Id = @Id;";
                 else
                 {
                     await connection.ExecuteAsync("UPDATE clients SET Name=@Name, Code=@Code, ContactPerson=@ContactPerson, Email=@Email, Phone=@Phone, Address=@Address, IsActive=@IsActive WHERE Id=@Id", args, tx);
+                    await connection.ExecuteAsync("UPDATE worklocations SET ClientName=@Name WHERE ClientId=@Id", args, tx);
                     updated++;
                 }
 
@@ -576,7 +578,21 @@ WHERE Id = @Id;";
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
-        return await connection.QueryAsync<WorkLocation>("SELECT * FROM worklocations ORDER BY ClientName, IsPrimary DESC, Name");
+        return await connection.QueryAsync<WorkLocation>(@"SELECT
+    w.Id,
+    w.ClientId,
+    COALESCE(c.Name, w.ClientName, '') AS ClientName,
+    w.Name,
+    w.Address,
+    w.City,
+    w.State,
+    w.PostalCode,
+    w.GSTIN AS Gstin,
+    w.IsPrimary,
+    w.IsActive
+FROM worklocations w
+LEFT JOIN clients c ON c.Id = w.ClientId
+ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
     }
 
     public async Task<int> SaveWorkLocationAsync(WorkLocation location)
@@ -779,6 +795,13 @@ WHERE Id = @Id;";
         reference.Add([]);
         reference.Add(new[] { "Sheet", "Required Columns", "Example Row", "Notes" });
         reference.AddRange(DropdownImportTypes.Select(type => new[] { type, string.Join(", ", DropdownSheetHeaders(type)), string.Join(" | ", DropdownSheetExample(type, firstClientId)), type == "Employee Grade" ? "Client Id must match Clients sheet." : type == "City" ? "State must be filled." : "Value is the dropdown text." }));
+        reference.Add([]);
+        reference.Add(new[] { "Work Week Examples", "", "", "" });
+        reference.Add(new[] { "Pattern", "Working Days", "Off Saturdays", "Result" });
+        reference.Add(new[] { "Monday - Friday", "Mon, Tue, Wed, Thu, Fri", "", "Saturday and Sunday off" });
+        reference.Add(new[] { "Monday - Saturday", "Mon, Tue, Wed, Thu, Fri, Sat", "", "Only Sunday off" });
+        reference.Add(new[] { "2nd/4th Saturday off", "Mon, Tue, Wed, Thu, Fri, Sat", "2nd, 4th", "Sunday + selected Saturdays off" });
+        reference.Add(new[] { "All Saturdays off", "Mon, Tue, Wed, Thu, Fri", "", "Do not include Sat in Working Days" });
         var sheets = DropdownImportTypes.Select(type => (Name: type, Rows: (IEnumerable<string[]>)new[] { DropdownSheetHeaders(type), DropdownSheetExample(type, firstClientId) })).ToList();
         sheets.Add((Name: "Reference", Rows: reference));
         return BuildXlsx(sheets.ToArray());

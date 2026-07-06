@@ -433,6 +433,7 @@ CREATE TABLE IF NOT EXISTS attendance_geo_fence_rule_employees (
 CREATE TABLE IF NOT EXISTS attendance_groups (
     id INT PRIMARY KEY AUTO_INCREMENT,
     client_id INT NOT NULL,
+    policy_batch_id CHAR(36) NULL,
     name VARCHAR(180) NOT NULL,
     work_location_id INT NOT NULL,
     department VARCHAR(150) NOT NULL DEFAULT '',
@@ -445,6 +446,7 @@ CREATE TABLE IF NOT EXISTS attendance_groups (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY UX_attendance_groups_client_name (client_id, name),
+    INDEX IX_attendance_groups_batch (policy_batch_id),
     INDEX IX_attendance_groups_client_location (client_id, work_location_id),
     CONSTRAINT FK_attendance_groups_client FOREIGN KEY (client_id) REFERENCES clients(Id) ON DELETE CASCADE,
     CONSTRAINT FK_attendance_groups_location FOREIGN KEY (work_location_id) REFERENCES worklocations(Id)

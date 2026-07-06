@@ -410,6 +410,87 @@ SELECT @RoleId, Id FROM authpermissions WHERE Code IN @Permissions;", new { Role
         return (await GetRolesAsync()).FirstOrDefault(role => role.Id == roleId);
     }
 
+    public async Task<bool> DeleteUserAsync(int id)
+    {
+        if (id <= 0) return false;
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await SeedSecurityCatalogAsync(connection);
+        await using var transaction = await connection.BeginTransactionAsync();
+
+        var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM authusers WHERE Id=@Id", new { Id = id }, transaction);
+        if (exists == 0)
+        {
+            await transaction.RollbackAsync();
+            return false;
+        }
+
+        var targetIsSecurityAdmin = await connection.ExecuteScalarAsync<int>(@"
+SELECT COUNT(DISTINCT u.Id)
+FROM authusers u
+JOIN authuserroles ur ON ur.UserId = u.Id
+JOIN authrolepermissions rp ON rp.RoleId = ur.RoleId
+JOIN authpermissions p ON p.Id = rp.PermissionId
+WHERE u.Id = @Id AND u.IsActive = TRUE AND p.Code = 'security.manage';", new { Id = id }, transaction);
+        if (targetIsSecurityAdmin > 0)
+        {
+            var remainingSecurityAdmins = await connection.ExecuteScalarAsync<int>(@"
+SELECT COUNT(DISTINCT u.Id)
+FROM authusers u
+JOIN authuserroles ur ON ur.UserId = u.Id
+JOIN authrolepermissions rp ON rp.RoleId = ur.RoleId
+JOIN authpermissions p ON p.Id = rp.PermissionId
+WHERE u.Id <> @Id AND u.IsActive = TRUE AND p.Code = 'security.manage';", new { Id = id }, transaction);
+            if (remainingSecurityAdmins == 0)
+                throw new InvalidOperationException("At least one active security administrator is required.");
+        }
+
+        await connection.ExecuteAsync("DELETE FROM authsessions WHERE UserId=@Id", new { Id = id }, transaction);
+        await connection.ExecuteAsync("DELETE FROM authuserroles WHERE UserId=@Id", new { Id = id }, transaction);
+        var affected = await connection.ExecuteAsync("DELETE FROM authusers WHERE Id=@Id", new { Id = id }, transaction);
+        await transaction.CommitAsync();
+        return affected > 0;
+    }
+
+    public async Task<bool> DeleteRoleAsync(int id)
+    {
+        if (id <= 0) return false;
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await SeedSecurityCatalogAsync(connection);
+        await using var transaction = await connection.BeginTransactionAsync();
+
+        var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM authroles WHERE Id=@Id", new { Id = id }, transaction);
+        if (exists == 0)
+        {
+            await transaction.RollbackAsync();
+            return false;
+        }
+
+        var isSystem = await connection.ExecuteScalarAsync<bool>("SELECT IsSystem FROM authroles WHERE Id=@Id", new { Id = id }, transaction);
+        if (isSystem)
+            throw new InvalidOperationException("System role is protected by the security catalog and cannot be deleted.");
+
+        var assignedUsers = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM authuserroles WHERE RoleId=@Id", new { Id = id }, transaction);
+        if (assignedUsers > 0)
+        {
+            var linkedUsers = (await connection.QueryAsync<string>(@"
+SELECT COALESCE(NULLIF(DisplayName, ''), Email)
+FROM authusers u
+JOIN authuserroles ur ON ur.UserId = u.Id
+WHERE ur.RoleId = @Id
+ORDER BY DisplayName
+LIMIT 5;", new { Id = id }, transaction)).ToList();
+            var sample = linkedUsers.Count > 0 ? $": {string.Join(", ", linkedUsers)}{(assignedUsers > linkedUsers.Count ? "..." : "")}" : "";
+            throw new InvalidOperationException($"Role is linked with {assignedUsers} user{(assignedUsers == 1 ? "" : "s")}{sample} and cannot be deleted.");
+        }
+
+        await connection.ExecuteAsync("DELETE FROM authrolepermissions WHERE RoleId=@Id", new { Id = id }, transaction);
+        var affected = await connection.ExecuteAsync("DELETE FROM authroles WHERE Id=@Id AND IsSystem=FALSE", new { Id = id }, transaction);
+        await transaction.CommitAsync();
+        return affected > 0;
+    }
+
     private async Task<AuthUser?> GetUserByIdAsync(int userId)
     {
         await using var connection = CreateConnection();
