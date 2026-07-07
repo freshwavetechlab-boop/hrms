@@ -15,9 +15,25 @@ public class ReportingRepository(IConfiguration configuration)
         filter.ToDate = string.IsNullOrWhiteSpace(filter.ToDate) ? DateTime.Parse($"{filter.Month}-01").AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd") : filter.ToDate;
         if (code == "client-billing-report")
             return await RunClientBillingReportAsync(db, filter);
-        var sql = code switch
+        var monthlyAdviceSql = @"SELECT p.EmployeeCode AS `Emp Code`,
+p.EmployeeName AS `Name`,
+p.Department,
+COALESCE(pay.BankAccountNo,'') AS `Bank Account Number`,
+COALESCE(pd.PanNumber,'') AS `PAN`,
+COALESCE(pay.IfscCode,'') AS `IFSC Code`,
+p.NetPay AS `Net Salary`
+FROM payrunemployees p
+JOIN payruns r ON r.Id=p.PayRunId
+LEFT JOIN employeepersonaldetails pd ON pd.EmployeeId=p.EmployeeId
+LEFT JOIN employeepaymentdetails pay ON pay.EmployeeId=p.EmployeeId
+WHERE p.ClientId=@ClientId AND r.PayPeriod=@Month AND p.IsSkipped=FALSE
+AND LOWER(COALESCE(pay.PaymentMode,''))='bank transfer'
+ORDER BY p.EmployeeCode";
+        string? sql = code switch
         {
             "salary-register" => @"SELECT r.PayPeriod AS `Pay Period`, p.EmployeeCode AS `Employee Code`, p.EmployeeName AS Employee, p.Department, p.PresentDays AS `Present Days`, p.PayableDays AS `Payable Days`, p.GrossPay AS `Gross Pay`, p.StatutoryDeductions AS `Statutory Deductions`, p.OneTimeDeductions AS `Other Deductions`, p.NetPay AS `Net Pay`, p.PaymentStatus AS `Payment Status` FROM payrunemployees p JOIN payruns r ON r.Id=p.PayRunId WHERE p.ClientId=@ClientId AND r.PayPeriod=@Month AND p.IsSkipped=FALSE ORDER BY r.PayPeriod DESC,p.EmployeeCode",
+            "monthly-advice-report" => monthlyAdviceSql,
+            "bank-transfer-report" => monthlyAdviceSql,
             "net-pay-estimate" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee,
 ROUND(COALESCE(s.Gross,0),2) AS `Gross Estimate`,
 ROUND(COALESCE(s.Deductions,0)+COALESCE(p.EsicEmployee,0)+COALESCE(p.PtLwfWorkmenComp,0)+COALESCE(p.Tds,0)+COALESCE(p.Recovery,0),2) AS Deductions,
@@ -114,8 +130,10 @@ WHERE r.ClientId=@ClientId AND r.FromDate <= @ToDate AND r.ToDate >= @FromDate
 AND (@Department IS NULL OR e.Department=@Department) AND (@WorkLocationId IS NULL OR e.WorkLocationId=@WorkLocationId)
 ORDER BY r.CreatedAt DESC",
             "payroll-summary" => @"SELECT p.PayPeriod AS `Pay Period`, p.Status, COUNT(e.Id) AS Employees, p.PayrollCost AS `Payroll Cost`, p.NetPay AS `Net Pay` FROM payruns p LEFT JOIN payrunemployees e ON e.PayRunId=p.Id AND e.IsSkipped=FALSE WHERE p.ClientId=@ClientId GROUP BY p.Id,p.PayPeriod,p.Status,p.PayrollCost,p.NetPay ORDER BY p.PayPeriod DESC",
-            _ => "SELECT e.Department, COUNT(*) AS Headcount FROM employees e WHERE e.ClientId=@ClientId GROUP BY e.Department"
+            _ => null
         };
+        if (sql is null)
+            return new ReportResult { Title = code, Columns = [], Rows = [] };
         var rows = (await db.QueryAsync(sql, filter)).Select(row => ((IDictionary<string, object>)row).ToDictionary(x => x.Key, x => (object?)x.Value)).ToList();
         return new ReportResult { Title = code, Columns = rows.FirstOrDefault()?.Keys.ToList() ?? [], Rows = rows };
     }

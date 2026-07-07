@@ -340,6 +340,7 @@ CREATE TABLE `payruns` (
   `ClientId` int NOT NULL DEFAULT '0',
   `ClientName` varchar(250) DEFAULT NULL,
   `RunCode` varchar(40) NOT NULL DEFAULT 'REGULAR',
+  `AttendancePolicyBatchId` varchar(64) NOT NULL DEFAULT '',
   `RunType` varchar(30) NOT NULL DEFAULT 'Regular',
   `RunName` varchar(120) NOT NULL DEFAULT '',
   `Reason` varchar(500) NOT NULL DEFAULT '',

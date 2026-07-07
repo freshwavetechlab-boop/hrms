@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS payruns (
     ClientName VARCHAR(250),
     PayPeriod VARCHAR(7) NOT NULL,
     RunCode VARCHAR(40) NOT NULL DEFAULT 'REGULAR',
+    AttendancePolicyBatchId VARCHAR(64) NOT NULL DEFAULT '',
     RunType VARCHAR(30) NOT NULL DEFAULT 'Regular',
     RunName VARCHAR(120) NOT NULL DEFAULT '',
     Reason VARCHAR(500) NOT NULL DEFAULT '',
@@ -178,6 +179,7 @@ CREATE TABLE IF NOT EXISTS payroll_reconciliation_results (
         await EnsureColumnAsync(connection, "payruns", "ClientId", "INT NOT NULL DEFAULT 0");
         await EnsureColumnAsync(connection, "payruns", "ClientName", "VARCHAR(250) NULL");
         await EnsureColumnAsync(connection, "payruns", "RunCode", "VARCHAR(40) NOT NULL DEFAULT 'REGULAR'");
+        await EnsureColumnAsync(connection, "payruns", "AttendancePolicyBatchId", "VARCHAR(64) NOT NULL DEFAULT '' AFTER RunCode");
         await EnsureColumnAsync(connection, "payruns", "RunType", "VARCHAR(30) NOT NULL DEFAULT 'Regular'");
         await EnsureColumnAsync(connection, "payruns", "RunName", "VARCHAR(120) NOT NULL DEFAULT ''");
         await EnsureColumnAsync(connection, "payruns", "Reason", "VARCHAR(500) NOT NULL DEFAULT ''");
@@ -245,9 +247,10 @@ SELECT * FROM payrunemployees WHERE PayRunId = @Id ORDER BY EmployeeName;", new 
         var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id AND IsActive = TRUE", new { Id = request.ClientId }, transaction);
         if (client is null) return null;
         var runType = string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
+        request.AttendancePolicyBatchId = await ResolveAttendancePolicyBatchIdAsync(connection, transaction, request);
         var runCode = runType == "Regular" ? RegularRunCode(request) : $"OFF-{DateTime.UtcNow:yyyyMMddHHmmss}";
         var runName = string.IsNullOrWhiteSpace(request.RunName) ? (runType == "Regular" ? "Regular payroll" : "Off-cycle payroll") : request.RunName.Trim();
-        var existing = runType == "Regular" ? await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>("SELECT Id, Status FROM payruns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = @RunCode", new { request.PayPeriod, request.ClientId, RunCode = runCode }, transaction) : null;
+        var existing = runType == "Regular" ? await FindExistingRegularRunAsync(connection, transaction, request, runCode) : null;
         if (existing is not null)
         {
             if (existing.Status is "Queued" or "Processing")
@@ -261,9 +264,9 @@ SELECT * FROM payrunemployees WHERE PayRunId = @Id ORDER BY EmployeeName;", new 
         }
         var requestJson = JsonSerializer.Serialize(request);
         var payRunId = (int)await connection.ExecuteScalarAsync<long>(@"
-INSERT INTO payruns (ClientId, ClientName, PayPeriod, RunCode, RunType, RunName, Reason, PayDate, TotalWorkingDays, Status, RequestJson, ProcessingError)
-VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays, 'Queued', @RequestJson, '');
-SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, RunType = runType, RunName = runName, Reason = request.Reason.Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays, RequestJson = requestJson }, transaction);
+INSERT INTO payruns (ClientId, ClientName, PayPeriod, RunCode, AttendancePolicyBatchId, RunType, RunName, Reason, PayDate, TotalWorkingDays, Status, RequestJson, ProcessingError)
+VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @AttendancePolicyBatchId, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays, 'Queued', @RequestJson, '');
+SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, AttendancePolicyBatchId = request.AttendancePolicyBatchId, RunType = runType, RunName = runName, Reason = request.Reason.Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays, RequestJson = requestJson }, transaction);
         await WritePipelineStepLogsAsync(connection, transaction, payRunId, performedBy, []);
         await transaction.CommitAsync();
         return await GetAsync(payRunId);
@@ -314,9 +317,10 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id AND IsActive = TRUE", new { Id = request.ClientId }, transaction);
         if (client is null) return null;
         var runType = string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
+        request.AttendancePolicyBatchId = await ResolveAttendancePolicyBatchIdAsync(connection, transaction, request);
         var runCode = runType == "Regular" ? RegularRunCode(request) : $"OFF-{DateTime.UtcNow:yyyyMMddHHmmss}";
         var runName = string.IsNullOrWhiteSpace(request.RunName) ? (runType == "Regular" ? "Regular payroll" : "Off-cycle payroll") : request.RunName.Trim();
-        var existing = runType == "Regular" ? await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>("SELECT Id, Status FROM payruns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = @RunCode", new { request.PayPeriod, request.ClientId, RunCode = runCode }, transaction) : null;
+        var existing = runType == "Regular" ? await FindExistingRegularRunAsync(connection, transaction, request, runCode) : null;
         if (existing is not null)
         {
             if (!existing.Status.Equals("Failed", StringComparison.OrdinalIgnoreCase))
@@ -346,8 +350,8 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         var validationIssues = ValidatePayRunInputs(0, request, runType, employees.Where(employee => includedEmployeeIds.Contains(employee.Id)).ToList(), attendance, setupJson);
         var hasBlockingIssues = validationIssues.Any(issue => issue.IsBlocking);
         var payRunId = (int)await connection.ExecuteScalarAsync<long>(@"
-INSERT INTO payruns (ClientId, ClientName, PayPeriod, RunCode, RunType, RunName, Reason, PayDate, TotalWorkingDays, Status) VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays, @Status);
-SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, RunType = runType, RunName = runName, Reason = request.Reason.Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays, Status = hasBlockingIssues ? "Failed" : "Draft" }, transaction);
+INSERT INTO payruns (ClientId, ClientName, PayPeriod, RunCode, AttendancePolicyBatchId, RunType, RunName, Reason, PayDate, TotalWorkingDays, Status) VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @AttendancePolicyBatchId, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays, @Status);
+SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, AttendancePolicyBatchId = request.AttendancePolicyBatchId, RunType = runType, RunName = runName, Reason = request.Reason.Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays, Status = hasBlockingIssues ? "Failed" : "Draft" }, transaction);
         validationIssues.ForEach(issue => issue.PayRunId = payRunId);
         await WriteValidationIssuesAsync(connection, transaction, validationIssues);
         await WritePipelineStepLogsAsync(connection, transaction, payRunId, performedBy, validationIssues);
@@ -391,11 +395,12 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id", new { Id = request.ClientId }, transaction);
         if (client is null) return null;
         var runType = string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
+        request.AttendancePolicyBatchId = await ResolveAttendancePolicyBatchIdAsync(connection, transaction, request);
         var runCode = runType == "Regular" ? RegularRunCode(request) : $"OFF-FAILED-{DateTime.UtcNow:yyyyMMddHHmmss}";
         var runName = string.IsNullOrWhiteSpace(request.RunName) ? $"{runType} payroll" : request.RunName.Trim();
         if (runType == "Regular")
         {
-            var existing = await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>("SELECT Id, Status FROM payruns WHERE PayPeriod = @PayPeriod AND ClientId = @ClientId AND RunCode = @RunCode", new { request.PayPeriod, request.ClientId, RunCode = runCode }, transaction);
+            var existing = await FindExistingRegularRunAsync(connection, transaction, request, runCode);
             if (existing is not null)
             {
                 if (!existing.Status.Equals("Failed", StringComparison.OrdinalIgnoreCase))
@@ -404,8 +409,8 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             }
         }
         var payRunId = (int)await connection.ExecuteScalarAsync<long>(@"
-INSERT INTO payruns (ClientId, ClientName, PayPeriod, RunCode, RunType, RunName, Reason, PayDate, TotalWorkingDays, Status) VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays, 'Failed');
-SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, RunType = runType, RunName = runName, Reason = FirstText(request.Reason, "Payroll engine exception").Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays }, transaction);
+INSERT INTO payruns (ClientId, ClientName, PayPeriod, RunCode, AttendancePolicyBatchId, RunType, RunName, Reason, PayDate, TotalWorkingDays, Status) VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @AttendancePolicyBatchId, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays, 'Failed');
+SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, AttendancePolicyBatchId = request.AttendancePolicyBatchId, RunType = runType, RunName = runName, Reason = FirstText(request.Reason, "Payroll engine exception").Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays }, transaction);
         var issue = Issue(payRunId, null, "", "Run", "Critical", "Payroll Validation", exception.Message, true);
         issue.IssueType = "Exception";
         issue.DataJson = JsonSerializer.Serialize(new { exception = exception.GetType().Name, stackTrace = Trunc(exception.StackTrace, 6000) });
@@ -577,11 +582,24 @@ WHERE Id=@Id AND Status != 'Applied';", adjustment);
         return rows == 1 ? await GetAsync(id) : null;
     }
 
-    public async Task<bool> DeleteDraftAsync(int id)
+    public async Task<bool> DeleteAsync(int id)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        return await connection.ExecuteAsync("DELETE FROM payruns WHERE Id = @Id AND Status = 'Draft'", new { Id = id }) == 1;
+        var canDelete = await connection.ExecuteScalarAsync<int>(@"
+SELECT COUNT(*)
+FROM payruns
+WHERE Id=@Id
+AND Status NOT IN ('Paid', 'Partially Paid')
+AND NOT EXISTS (
+    SELECT 1 FROM payrunemployees
+    WHERE PayRunId=@Id AND PaymentStatus='Paid'
+);", new { Id = id });
+        if (canDelete == 0) return false;
+        await using var transaction = await connection.BeginTransactionAsync();
+        await DeletePayRunAttemptAsync(connection, transaction, id);
+        await transaction.CommitAsync();
+        return true;
     }
 
     public async Task<PayRun?> RecallAsync(int id)
@@ -1556,8 +1574,77 @@ GROUP BY employee_id;", new { ClientId = clientId, Month = payPeriod }, transact
         value.Equals("Deduction", StringComparison.OrdinalIgnoreCase) || value.Equals("Recovery", StringComparison.OrdinalIgnoreCase) ? "Deduction" :
         value.Equals("Reimbursement", StringComparison.OrdinalIgnoreCase) ? "Reimbursement" : "Earning";
 
-    private static string RegularRunCode(CreatePayRunRequest request) =>
-        request.AttendanceGroupId > 0 ? $"REG-G{request.AttendanceGroupId}" : "REGULAR";
+    private static string RegularRunCode(CreatePayRunRequest request)
+    {
+        if (!string.IsNullOrWhiteSpace(request.AttendancePolicyBatchId))
+            return $"REG-B-{StableRunHash(request.AttendancePolicyBatchId.Trim())}";
+        return LegacyRegularRunCode(request);
+    }
+
+    private static string LegacyRegularRunCode(CreatePayRunRequest request)
+    {
+        var ids = (request.AttendanceGroupIds.Count > 0 ? request.AttendanceGroupIds : request.AttendanceGroupId > 0 ? [request.AttendanceGroupId] : [])
+            .Where(id => id > 0)
+            .Distinct()
+            .Order()
+            .ToArray();
+        if (ids.Length == 0) return "REGULAR";
+        if (ids.Length == 1) return $"REG-G{ids[0]}";
+        return $"REG-M-{StableRunHash(string.Join(",", ids))}";
+    }
+
+    private static async Task<ExistingPayRunRow?> FindExistingRegularRunAsync(MySqlConnection connection, MySqlTransaction transaction, CreatePayRunRequest request, string runCode)
+    {
+        var legacyRunCode = LegacyRegularRunCode(request);
+        var runCodes = new[] { runCode, legacyRunCode }
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return await connection.QueryFirstOrDefaultAsync<ExistingPayRunRow>(@"
+SELECT Id, Status
+FROM payruns
+WHERE PayPeriod=@PayPeriod
+AND ClientId=@ClientId
+AND (
+    RunCode IN @RunCodes
+    OR (@AttendancePolicyBatchId<>'' AND AttendancePolicyBatchId=@AttendancePolicyBatchId)
+)
+ORDER BY
+    CASE
+        WHEN RunCode=@RunCode THEN 0
+        WHEN @AttendancePolicyBatchId<>'' AND AttendancePolicyBatchId=@AttendancePolicyBatchId THEN 1
+        ELSE 2
+    END,
+    Id DESC
+LIMIT 1;", new { request.PayPeriod, request.ClientId, RunCode = runCode, RunCodes = runCodes, AttendancePolicyBatchId = request.AttendancePolicyBatchId }, transaction);
+    }
+
+    private static async Task<string> ResolveAttendancePolicyBatchIdAsync(MySqlConnection connection, MySqlTransaction transaction, CreatePayRunRequest request)
+    {
+        var batchId = request.AttendancePolicyBatchId?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(batchId)) return batchId;
+        var groupIds = (request.AttendanceGroupIds.Count > 0 ? request.AttendanceGroupIds : request.AttendanceGroupId > 0 ? [request.AttendanceGroupId] : [])
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (groupIds.Length == 0) return string.Empty;
+        return await connection.ExecuteScalarAsync<string?>(@"SELECT COALESCE(policy_batch_id, '')
+FROM attendance_groups
+WHERE client_id=@ClientId AND id IN @GroupIds AND COALESCE(policy_batch_id, '')<>''
+ORDER BY id
+LIMIT 1;", new { request.ClientId, GroupIds = groupIds }, transaction) ?? string.Empty;
+    }
+
+    private static string StableRunHash(string value)
+    {
+        uint hash = 2166136261;
+        foreach (var ch in value)
+        {
+            hash ^= ch;
+            hash *= 16777619;
+        }
+        return hash.ToString("X8");
+    }
 
     private sealed record PayRunAttendance(int EmployeeId, decimal WorkingDays, decimal PresentDays, decimal PayableDays);
     private sealed record EmployeeCycleRow(int EmployeeId, long StartDay, long EndDay);
@@ -1649,8 +1736,6 @@ WHERE CONSTRAINT_SCHEMA = DATABASE()
     {
         var oldIndex = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'payruns' AND INDEX_NAME = 'UX_PayRuns_PayPeriod'");
         if (oldIndex > 0) await connection.ExecuteAsync("ALTER TABLE payruns DROP INDEX UX_PayRuns_PayPeriod");
-        var newIndex = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'payruns' AND INDEX_NAME = 'UX_PayRuns_Client_Period'");
-        if (newIndex == 0) await connection.ExecuteAsync("ALTER TABLE payruns ADD UNIQUE KEY UX_PayRuns_Client_Period (ClientId, PayPeriod)");
         var clientPeriodIndex = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'payruns' AND INDEX_NAME = 'UX_PayRuns_Client_Period'");
         if (clientPeriodIndex > 0) await connection.ExecuteAsync("ALTER TABLE payruns DROP INDEX UX_PayRuns_Client_Period");
         var runCodeIndex = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'payruns' AND INDEX_NAME = 'UX_PayRuns_Client_Period_Code'");

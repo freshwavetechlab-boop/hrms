@@ -7,6 +7,7 @@ public class PayRun
     public string ClientName { get; set; } = string.Empty;
     public string PayPeriod { get; set; } = string.Empty;
     public string RunCode { get; set; } = string.Empty;
+    public string AttendancePolicyBatchId { get; set; } = string.Empty;
     public string RunType { get; set; } = "Regular";
     public string RunName { get; set; } = string.Empty;
     public string Reason { get; set; } = string.Empty;
@@ -162,6 +163,8 @@ public class CreatePayRunRequest
     public string RunName { get; set; } = string.Empty;
     public string Reason { get; set; } = string.Empty;
     public int AttendanceGroupId { get; set; }
+    public List<int> AttendanceGroupIds { get; set; } = [];
+    public string AttendancePolicyBatchId { get; set; } = string.Empty;
     public string AttendanceGroupName { get; set; } = string.Empty;
     public List<int> ExcludedEmployeeIds { get; set; } = [];
     public List<int> IncludedEmployeeIds { get; set; } = [];

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import DataTable from './components/DataTable'
-import { getPayRun, getPayRuns, recordPayRunPayments } from './services/payrollService'
+import { deletePayRun, getPayRun, getPayRuns, recordPayRunPayments } from './services/payrollService'
 import type { PayRun } from './types/payroll'
 import { money } from './utils/salary'
 import './PayHistory.css'
@@ -46,13 +46,28 @@ export default function PayHistory() {
     load()
   }
 
+  const hardDelete = async () => {
+    if (!selected || !window.confirm(`Hard delete payroll run for ${selected.clientName} - ${selected.payPeriod}?`)) return
+    setBusy(true)
+    const response = await deletePayRun(selected.id)
+    setBusy(false)
+    if (!response.ok) {
+      setMessage(response.error || 'Unable to hard delete payroll run.')
+      return
+    }
+    setSelected(null)
+    setSelectedIds([])
+    setMessage('Payroll run hard deleted.')
+    load()
+  }
+
   return (
     <section className="pay-runs">
       <div className="pay-run-intro"><div><span className="eyebrow purple">Payroll</span><h3>Pay history</h3><p>Select a run to review payment status and record disbursement.</p></div><input placeholder="Filter client, period, status..." value={query} onChange={event => setQuery(event.target.value)} /></div>
       <section className="history-grid">{filtered.map(run => <button type="button" className={`run-item ${selected?.id === run.id ? 'active' : ''}`} onClick={() => void open(run)} key={run.id}><strong>{run.clientName}</strong><span>{run.payPeriod} - {run.employeeCount} employees - {run.status}</span><b>{money(run.netPay)}</b></button>)}</section>
       {!filtered.length && <p className="empty">No payroll runs found.</p>}
       {selected && <section className="payment-workspace">
-        <header><div><span className="eyebrow purple">{selected.clientName} - {selected.payPeriod}</span><h3>Payment recording</h3><p>{selected.status} - {unpaid.length} employee{unpaid.length === 1 ? '' : 's'} unpaid</p></div><button type="button" className="secondary" onClick={() => setSelected(null)}>Close</button></header>
+        <header><div><span className="eyebrow purple">{selected.clientName} - {selected.payPeriod}</span><h3>Payment recording</h3><p>{selected.status} - {unpaid.length} employee{unpaid.length === 1 ? '' : 's'} unpaid</p></div><span className="adjustment-actions"><button type="button" className="danger" disabled={busy} onClick={() => void hardDelete()}>Hard delete</button><button type="button" className="secondary" onClick={() => setSelected(null)}>Close</button></span></header>
         {message && <p className="form-warning">{message}</p>}
         {canRecord ? <section className="payment-panel"><div><b>Record payment</b><span>All unpaid employees are selected by default. Deselect anyone whose payment will be made later.</span></div><label><span>Payment date</span><input type="date" value={paymentDate} onChange={event => setPaymentDate(event.target.value)} /></label><strong>{money(paymentTotal)}</strong><button type="button" disabled={busy || !selectedIds.length || paymentTotal <= 0} onClick={() => void record()}>{busy ? 'Recording...' : `Mark ${selectedIds.length} as paid`}</button>{paymentTotal <= 0 && <p className="payment-warning">No positive net payment is selected. Review the payroll calculation before recording payment.</p>}</section> : <p className="payment-warning">Payments can be recorded only after the run is approved.</p>}
         <DataTable rows={selected.employees.filter(employee => !employee.isSkipped)} getRowId={row => row.employeeId} exportFileName={`payment-status-${selected.payPeriod}`} columns={[

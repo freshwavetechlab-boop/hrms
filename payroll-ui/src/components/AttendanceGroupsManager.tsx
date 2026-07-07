@@ -66,6 +66,7 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
   const [, setErrors] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [previewMonth, setPreviewMonth] = useState(currentMonth())
+  const [employeeQuery, setEmployeeQuery] = useState('')
 
   const activeEmployees = useMemo(() => employees.filter(employee => employee.isActive), [employees])
   const clientLocations = useMemo(() => locations.filter(location => location.isActive && (!form.clientId || location.clientId === form.clientId)), [locations, form.clientId])
@@ -81,6 +82,11 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
     return mapped
   }, [groups, form.policyBatchId])
   const matchingEmployees = useMemo(() => locationEmployees.filter(employee => form.departments.includes(employee.department) && form.designations.includes(employee.designation) && !mappedEmployeePolicyById.has(employee.id)), [locationEmployees, form.departments, form.designations, mappedEmployeePolicyById])
+  const visibleMatchingEmployees = useMemo(() => {
+    const query = employeeQuery.trim().toLowerCase()
+    if (!query) return matchingEmployees
+    return matchingEmployees.filter(employee => `${fullName(employee)} ${employee.employeeCode} ${employee.department} ${employee.designation}`.toLowerCase().includes(query))
+  }, [employeeQuery, matchingEmployees])
   const matchingIds = useMemo(() => matchingEmployees.map(employee => employee.id), [matchingEmployees])
   const selectedMatchingCount = form.employeeIds.filter(id => matchingIds.includes(id)).length
   const monthDays = daysInPreviewMonth(previewMonth)
@@ -139,16 +145,36 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
     }))
   }, [groups])
 
-  const reset = () => { setErrors([]); setForm(defaultFor()) }
+  const reset = () => { setErrors([]); setEmployeeQuery(''); setForm(defaultFor()) }
   const openNew = () => { reset(); setDrawerOpen(true) }
   const applyScope = (patch: Partial<AttendancePolicyForm>) => {
     setErrors([])
     setForm(current => {
       const next = { ...current, ...patch }
-      const normalized = patch.workLocationIds !== undefined ? { ...next, workLocationId: patch.workLocationIds[0] || 0, department: '', designation: '', departments: [], designations: [] } : patch.clientId ? (() => {
+      const scopedEmployees = activeEmployees.filter(employee => employee.clientId === next.clientId && next.workLocationIds.includes(employee.workLocationId))
+      const keepDepartments = (items: string[]) => {
+        const available = new Set(scopedEmployees.map(employee => employee.department).filter(Boolean))
+        const kept = items.filter(item => available.has(item))
+        return kept.length ? kept : items
+      }
+      const keepDesignations = (items: string[], departmentsForScope: string[]) => {
+        const available = new Set(scopedEmployees.filter(employee => departmentsForScope.includes(employee.department)).map(employee => employee.designation).filter(Boolean))
+        const kept = items.filter(item => available.has(item))
+        return kept.length ? kept : items
+      }
+      const normalized = patch.workLocationIds !== undefined ? (() => {
+        if (!next.workLocationIds.length) return { ...next, workLocationId: 0, department: '', designation: '', departments: [], designations: [] }
+        const departments = keepDepartments(next.departments)
+        const designations = keepDesignations(next.designations, departments)
+        return { ...next, workLocationId: patch.workLocationIds[0] || 0, department: departments[0] || '', designation: designations[0] || '', departments, designations }
+      })() : patch.clientId ? (() => {
         const workLocationId = locations.find(location => location.isActive && location.clientId === patch.clientId)?.id || 0
         return { ...next, workLocationId, workLocationIds: workLocationId ? [workLocationId] : [], department: '', designation: '', departments: [], designations: [] }
-      })() : patch.departments !== undefined ? { ...next, department: patch.departments[0] || '', designation: '', designations: [] } : patch.designations !== undefined ? { ...next, designation: patch.designations[0] || '' } : next
+      })() : patch.departments !== undefined ? (() => {
+        if (!patch.departments.length) return { ...next, department: '', designation: '', departments: [], designations: [] }
+        const designations = keepDesignations(next.designations, patch.departments)
+        return { ...next, department: patch.departments[0] || '', designation: designations[0] || '', designations }
+      })() : patch.designations !== undefined ? { ...next, designation: patch.designations[0] || '' } : next
       return { ...normalized, employeeIds: employeeIdsFor(normalized) }
     })
   }
@@ -262,10 +288,10 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
       <Form className="attendance-group-form settings-quick-form" component="div" layout="vertical" requiredMark={false}>
         <Form.Item label="Policy name" required><Input value={form.name} onChange={event => set('name', event.target.value)} placeholder="Consultants - RECL Site A" /></Form.Item>
         <Form.Item label="Client" required><SearchSelect value={form.clientId} onChange={value => applyScope({ clientId: Number(value), id: 0 })} options={clients.map(client => ({ value: client.id, label: client.name }))} /></Form.Item>
-        <Form.Item label="Work Location" required><Select mode="multiple" className="app-search-select" popupClassName="app-search-select-dropdown" showSearch value={form.workLocationIds.map(String)} optionFilterProp="label" onChange={values => applyScope({ workLocationIds: values.map(Number), id: 0 })} options={clientLocations.map(location => ({ value: String(location.id), label: `${location.name} - ${location.city || location.state || 'Location'}` }))} /></Form.Item>
+        <Form.Item label="Work Location" required><Select mode="multiple" className="app-search-select attendance-policy-multi" popupClassName="app-search-select-dropdown" showSearch value={form.workLocationIds.map(String)} optionFilterProp="label" onChange={values => applyScope({ workLocationIds: values.map(Number), id: 0 })} options={clientLocations.map(location => ({ value: String(location.id), label: `${location.name} - ${location.city || location.state || 'Location'}` }))} /></Form.Item>
         <Row gutter={12}>
-          <Col xs={24} md={12}><Form.Item label="Department" required><Select mode="multiple" className="app-search-select" popupClassName="app-search-select-dropdown" showSearch value={form.departments} optionFilterProp="label" onChange={values => applyScope({ departments: values, id: 0 })} options={departments.map(item => ({ value: item, label: item }))} /></Form.Item></Col>
-          <Col xs={24} md={12}><Form.Item label="Designation" required><Select mode="multiple" className="app-search-select" popupClassName="app-search-select-dropdown" showSearch value={form.designations} optionFilterProp="label" onChange={values => applyScope({ designations: values, id: 0 })} options={designations.map(item => ({ value: item, label: item }))} /></Form.Item></Col>
+          <Col xs={24} md={12}><Form.Item label="Department" required><Select mode="multiple" className="app-search-select attendance-policy-multi" popupClassName="app-search-select-dropdown" showSearch value={form.departments} optionFilterProp="label" onChange={values => applyScope({ departments: values, id: 0 })} options={departments.map(item => ({ value: item, label: item }))} /></Form.Item></Col>
+          <Col xs={24} md={12}><Form.Item label="Designation" required><Select mode="multiple" className="app-search-select attendance-policy-multi" popupClassName="app-search-select-dropdown" showSearch value={form.designations} optionFilterProp="label" onChange={values => applyScope({ designations: values, id: 0 })} options={designations.map(item => ({ value: item, label: item }))} /></Form.Item></Col>
         </Row>
         <Form.Item label="Weekly off pattern" required><SearchSelect value={form.workWeek} onChange={value => set('workWeek', value as AttendanceWorkWeek)} options={selectOptions(workWeeks, 'Select weekly off pattern')} /></Form.Item>
         <Form.Item label="Payroll month preview" extra={`${cyclePreview.label} / ${cyclePreview.days} of ${monthDays} days`}><Input type="month" value={previewMonth} onChange={event => changePreviewMonth(event.target.value)} /></Form.Item>
@@ -275,8 +301,8 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
           <Col span={8}><Form.Item label="Payroll report date" extra={`${buffer} day buffer`} required><SearchSelect value={form.payrollReportGenerationDay} onChange={value => setCycle({ payrollReportGenerationDay: Number(value) })} options={selectOptions(dayOptions)} /></Form.Item></Col>
         </Row>
         <Form.Item><AntCheckbox checked={form.isActive} onChange={event => set('isActive', event.target.checked)}>Active</AntCheckbox></Form.Item>
-        <AntCard className="attendance-group-panel attendance-group-members" title={`Employees (${selectedMatchingCount}/${matchingEmployees.length})`} size="small" extra={<Space><Button size="small" onClick={() => set('employeeIds', matchingIds)}>Select all</Button><Button size="small" onClick={() => set('employeeIds', [])}>Clear</Button></Space>}>
-          <div className="attendance-employee-picker">{matchingEmployees.length ? matchingEmployees.map(employee => <label className={form.employeeIds.includes(employee.id) ? 'selected' : ''} key={employee.id}><input type="checkbox" checked={form.employeeIds.includes(employee.id)} onChange={() => toggleEmployee(employee.id)} /><span>{fullName(employee)}</span><small>{employee.employeeCode} / {employee.department || 'No department'} / {employee.designation || 'No designation'}</small></label>) : <p>No employees match this scope.</p>}</div>
+        <AntCard className="attendance-group-panel attendance-group-members" title={`Employees (${selectedMatchingCount}/${matchingEmployees.length})`} size="small" extra={<Space className="attendance-employee-tools" wrap><Input allowClear placeholder="Search employee..." value={employeeQuery} onChange={event => setEmployeeQuery(event.target.value)} /><Button size="small" onClick={() => set('employeeIds', matchingIds)}>Select all</Button><Button size="small" onClick={() => set('employeeIds', [])}>Clear</Button></Space>}>
+          <div className="attendance-employee-picker">{visibleMatchingEmployees.length ? visibleMatchingEmployees.map(employee => <label className={form.employeeIds.includes(employee.id) ? 'selected' : ''} key={employee.id}><input type="checkbox" checked={form.employeeIds.includes(employee.id)} onChange={() => toggleEmployee(employee.id)} /><span>{fullName(employee)}</span><small>{employee.employeeCode} / {employee.department || 'No department'} / {employee.designation || 'No designation'}</small></label>) : <p>No employees match this scope.</p>}</div>
         </AntCard>
         <Divider />
         <div className="attendance-group-actions"><Button htmlType="button" onClick={reset}>Reset</Button><Button htmlType="button" type="primary" loading={saving} onClick={() => void save()}>{form.id ? 'Update policy' : 'Save policy'}</Button></div>

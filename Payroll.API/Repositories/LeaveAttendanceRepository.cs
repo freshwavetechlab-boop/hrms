@@ -566,20 +566,28 @@ VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designa
 WHERE ClientId=@ClientId AND IsActive=TRUE AND Id IN @LocationIds", new { request.ClientId, LocationIds = locationIds })).ToDictionary(item => item.Id, item => item.Name);
         if (locations.Count != locationIds.Length) return ([], "One or more selected work locations do not belong to this client.");
 
-        var duplicateError = request.IsActive ? await FindAttendanceGroupDuplicateAsync(connection, request.ClientId, batchId, 0, locationIds, departments, designations, employeeIds) : null;
-        if (duplicateError is not null) return ([], duplicateError);
-
         var employees = (await connection.QueryAsync<(int Id, int WorkLocationId, string Department, string Designation)>(@"SELECT Id, WorkLocationId, Department, Designation FROM employees
 WHERE IsActive=TRUE AND ClientId=@ClientId AND WorkLocationId IN @LocationIds AND Department IN @Departments AND Designation IN @Designations AND Id IN @EmployeeIds",
             new { request.ClientId, LocationIds = locationIds, Departments = departments, Designations = designations, EmployeeIds = employeeIds })).ToList();
 
-        foreach (var locationId in locationIds)
-        foreach (var department in departments)
-        foreach (var designation in designations)
-        {
-            var hasEmployee = employees.Any(employee => employee.WorkLocationId == locationId && employee.Department == department && employee.Designation == designation);
-            if (!hasEmployee) return ([], $"No selected employees match {locations[locationId]} / {department} / {designation}.");
-        }
+        if (employees.Select(employee => employee.Id).Distinct().Count() != employeeIds.Length)
+            return ([], "Selected employees must match the selected client, location, department and designation.");
+
+        var combos = (from locationId in locationIds
+                      from department in departments
+                      from designation in designations
+                      let comboEmployeeIds = employees
+                          .Where(employee => employee.WorkLocationId == locationId && employee.Department == department && employee.Designation == designation)
+                          .Select(employee => employee.Id)
+                          .Distinct()
+                          .ToArray()
+                      where comboEmployeeIds.Length > 0
+                      select new { LocationId = locationId, Department = department, Designation = designation, EmployeeIds = comboEmployeeIds }).ToList();
+
+        if (combos.Count == 0) return ([], "No selected employees match the selected policy scope.");
+
+        var duplicateError = request.IsActive ? await FindAttendanceGroupDuplicateForCombosAsync(connection, request.ClientId, batchId, 0, combos.SelectMany(combo => combo.EmployeeIds).Distinct().ToArray(), combos.Select(combo => (combo.LocationId, combo.Department, combo.Designation))) : null;
+        if (duplicateError is not null) return ([], duplicateError);
 
         await using var transaction = await connection.BeginTransactionAsync();
         await connection.ExecuteAsync("DELETE FROM attendance_groups WHERE client_id=@ClientId AND policy_batch_id=@PolicyBatchId", new { request.ClientId, PolicyBatchId = batchId }, transaction);
@@ -588,17 +596,9 @@ WHERE client_id=@ClientId AND (@PolicyBatchId='' OR COALESCE(policy_batch_id, ''
         var usedNames = new HashSet<string>(existingNames, StringComparer.OrdinalIgnoreCase);
         try
         {
-            foreach (var locationId in locationIds)
-            foreach (var department in departments)
-            foreach (var designation in designations)
+            foreach (var combo in combos)
             {
-                var comboEmployeeIds = employees
-                    .Where(employee => employee.WorkLocationId == locationId && employee.Department == department && employee.Designation == designation)
-                    .Select(employee => employee.Id)
-                    .Distinct()
-                    .ToArray();
-
-                var name = UniqueAttendancePolicyName(BuildAttendancePolicyName(request.Name, locations[locationId], department, designation, locationIds.Length * departments.Length * designations.Length), usedNames);
+                var name = UniqueAttendancePolicyName(BuildAttendancePolicyName(request.Name, locations[combo.LocationId], combo.Department, combo.Designation, combos.Count), usedNames);
                 var groupId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO attendance_groups (client_id, policy_batch_id, name, work_location_id, department, designation, work_week, attendance_cycle_start_day, attendance_cycle_end_day, payroll_report_generation_day, is_active)
 VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designation, @WorkWeek, @AttendanceCycleStartDay, @AttendanceCycleEndDay, @PayrollReportGenerationDay, @IsActive); SELECT LAST_INSERT_ID();",
                     new
@@ -606,16 +606,16 @@ VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designa
                         request.ClientId,
                         PolicyBatchId = batchId,
                         Name = name,
-                        WorkLocationId = locationId,
-                        Department = department,
-                        Designation = designation,
+                        WorkLocationId = combo.LocationId,
+                        Department = combo.Department,
+                        Designation = combo.Designation,
                         WorkWeek = request.WorkWeek.Trim(),
                         request.AttendanceCycleStartDay,
                         request.AttendanceCycleEndDay,
                         request.PayrollReportGenerationDay,
                         request.IsActive
                     }, transaction);
-                await connection.ExecuteAsync("INSERT INTO attendance_group_employees (attendance_group_id, employee_id) VALUES (@GroupId, @EmployeeId)", comboEmployeeIds.Select(employeeId => new { GroupId = groupId, EmployeeId = employeeId }), transaction);
+                await connection.ExecuteAsync("INSERT INTO attendance_group_employees (attendance_group_id, employee_id) VALUES (@GroupId, @EmployeeId)", combo.EmployeeIds.Select(employeeId => new { GroupId = groupId, EmployeeId = employeeId }), transaction);
             }
             await transaction.CommitAsync();
         }
@@ -1681,6 +1681,37 @@ LIMIT 1;", new { ClientId = clientId, PolicyBatchId = policyBatchId, ExcludeGrou
         return !string.IsNullOrWhiteSpace(duplicateScope.PolicyName)
             ? $"Policy already exists for {duplicateScope.LocationName} / {duplicateScope.Department} / {duplicateScope.Designation}."
             : null;
+    }
+
+    private static async Task<string?> FindAttendanceGroupDuplicateForCombosAsync(MySqlConnection connection, int clientId, string policyBatchId, int excludeGroupId, int[] employeeIds, IEnumerable<(int LocationId, string Department, string Designation)> combos)
+    {
+        var duplicateEmployee = await connection.QueryFirstOrDefaultAsync<(string EmployeeName, string PolicyName)>(@"SELECT CONCAT(e.FirstName, ' ', e.LastName) AS EmployeeName, g.name AS PolicyName
+FROM attendance_group_employees age
+JOIN attendance_groups g ON g.id=age.attendance_group_id
+JOIN employees e ON e.Id=age.employee_id
+WHERE g.client_id=@ClientId AND g.is_active=TRUE AND age.employee_id IN @EmployeeIds
+AND g.id<>@ExcludeGroupId
+AND (@PolicyBatchId='' OR COALESCE(g.policy_batch_id, '')<>@PolicyBatchId)
+LIMIT 1;", new { ClientId = clientId, PolicyBatchId = policyBatchId, ExcludeGroupId = excludeGroupId, EmployeeIds = employeeIds });
+        if (!string.IsNullOrWhiteSpace(duplicateEmployee.EmployeeName))
+            return $"{duplicateEmployee.EmployeeName.Trim()} is already mapped in policy {duplicateEmployee.PolicyName}.";
+
+        foreach (var combo in combos)
+        {
+            var duplicateScope = await connection.QueryFirstOrDefaultAsync<(string LocationName, string Department, string Designation, string PolicyName)>(@"SELECT COALESCE(w.Name, '') AS LocationName, g.department AS Department, g.designation AS Designation, g.name AS PolicyName
+FROM attendance_groups g
+LEFT JOIN worklocations w ON w.Id=g.work_location_id
+WHERE g.client_id=@ClientId AND g.is_active=TRUE
+AND g.id<>@ExcludeGroupId
+AND g.work_location_id=@LocationId
+AND g.department=@Department
+AND g.designation=@Designation
+AND (@PolicyBatchId='' OR COALESCE(g.policy_batch_id, '')<>@PolicyBatchId)
+LIMIT 1;", new { ClientId = clientId, PolicyBatchId = policyBatchId, ExcludeGroupId = excludeGroupId, combo.LocationId, combo.Department, combo.Designation });
+            if (!string.IsNullOrWhiteSpace(duplicateScope.PolicyName))
+                return $"Policy already exists for {duplicateScope.LocationName} / {duplicateScope.Department} / {duplicateScope.Designation}.";
+        }
+        return null;
     }
 
     private static string BuildAttendancePolicyName(string baseName, string locationName, string department, string designation, int comboCount)

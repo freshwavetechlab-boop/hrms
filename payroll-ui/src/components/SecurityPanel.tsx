@@ -292,9 +292,10 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
       setUserUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: ['Unable to read selected file. Use the downloaded XLSX/CSV template.'] } })
     }
   }
-  const confirmUserImport = async () => {
-    if (!userImportData) return
-    const rows = userImportData.rows
+  const confirmUserImport = async (previewDraft?: BulkUploadPreviewState) => {
+    const importData = previewDraft ? { headers: previewDraft.headers, rows: previewDraft.rows } : userImportData
+    if (!importData) return
+    const rows = importData.rows
     setUserImportPreview(emptyBulkUploadPreview)
     setUserImporting(true)
     setUserUpload({ open: true, state: 'uploading', percent: 1, summary: { totalRows: rows.length, completedRows: 0, inserted: 0, updated: 0, errors: [] } })
@@ -302,7 +303,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     const errors: string[] = []
     for (let index = 0; index < rows.length; index++) {
       const rowNumber = index + 2
-      const map = rowMap(userImportData, rows[index])
+      const map = rowMap(importData, rows[index])
       const employeeCode = cell(map, 'Employee Code')
       const employee = employeeCode ? employeeByCode.get(employeeCode.toLowerCase()) : null
       const email = normalizeEmail(cell(map, 'Email') || employee?.workEmail)
@@ -471,7 +472,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     {renderRoleDrawer()}
     {renderAccessDrawer()}
     {renderProvisionModal()}
-    <BulkUploadPreviewModal preview={userImportPreview} importing={userImporting} onCancel={() => { setUserImportPreview(emptyBulkUploadPreview); setUserImportData(null) }} onConfirm={() => void confirmUserImport()} />
+    <BulkUploadPreviewModal preview={userImportPreview} importing={userImporting} onCancel={() => { setUserImportPreview(emptyBulkUploadPreview); setUserImportData(null) }} onConfirm={preview => void confirmUserImport(preview)} />
     <BulkUploadProgressModal open={userUpload.open} title="Security user bulk upload" state={userUpload.state} percent={userUpload.percent} summary={userUpload.summary} onClose={() => setUserUpload(current => ({ ...current, open: false }))} />
   </section>
 }

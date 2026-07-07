@@ -7,7 +7,7 @@ import { getDropdowns } from '../services/settingsService'
 import SearchSelect from './SearchSelect'
 import type { ToastType } from './ToastProvider'
 
-type Props = { clientId: number; group?: AttendanceGroup | null; onMessage: (message: string, type?: ToastType) => void; clientControl?: ReactNode }
+type Props = { clientId: number; group?: AttendanceGroup | null; reviewMonth?: string; onMessage: (message: string, type?: ToastType) => void; clientControl?: ReactNode }
 type DailyStatus = string
 type ReviewStatus = 'Ready' | 'Missing attendance' | 'Check values'
 type GridEdit = { employeeId: number; date: string } | null
@@ -149,8 +149,8 @@ const reviewStatus = (row: EmployeeMonthlyAttendance): ReviewStatus => {
   return 'Ready'
 }
 
-export default function ManualAttendanceManager({ clientId, group = null, onMessage, clientControl }: Props) {
-  const [month, setMonth] = useState(currentMonth())
+export default function ManualAttendanceManager({ clientId, group = null, reviewMonth = '', onMessage, clientControl }: Props) {
+  const [month, setMonth] = useState(reviewMonth || currentMonth())
   const [monthlyRows, setMonthlyRows] = useState<EmployeeMonthlyAttendance[]>([])
   const [allDailyRows, setAllDailyRows] = useState<EmployeeDailyAttendance[]>([])
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([])
@@ -167,8 +167,13 @@ export default function ManualAttendanceManager({ clientId, group = null, onMess
   const [loadingMonthly, setLoadingMonthly] = useState(false)
   const [saving, setSaving] = useState(false)
 
+  useEffect(() => {
+    if (reviewMonth && /^\d{4}-\d{2}$/.test(reviewMonth)) setMonth(reviewMonth)
+  }, [reviewMonth])
+
   const settings = reviewContext.settings
   const preferences = reviewContext.preferences
+  const groupEmployeeKey = useMemo(() => (group?.employeeIds ?? []).join(','), [group?.employeeIds])
   const cycleSettings = group
     ? { workLocationId: group.workLocationId, workWeek: group.workWeek, attendanceCycleStartDay: group.attendanceCycleStartDay, attendanceCycleEndDay: group.attendanceCycleEndDay, payrollReportGenerationDay: group.payrollReportGenerationDay }
     : preferences
@@ -312,7 +317,7 @@ export default function ManualAttendanceManager({ clientId, group = null, onMess
     }
   }
 
-  useEffect(() => { void loadMonthly() }, [clientId, group?.id, month])
+  useEffect(() => { void loadMonthly() }, [clientId, group?.id, group?.workLocationId, groupEmployeeKey, month])
 
   const upsertGridRow = (rows: EmployeeDailyAttendance[], employeeId: number, date: string, status: DailyStatus, patch: RowPatch = {}) => {
     let found = false

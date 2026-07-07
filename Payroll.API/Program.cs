@@ -1175,8 +1175,12 @@ app.MapPost("/api/pay-runs/{id:int}/approve", async (PayRunRepository repository
 .WithName("ApprovePayRun")
 .WithOpenApi();
 
-app.MapDelete("/api/pay-runs/{id:int}", async (PayRunRepository repository, int id) =>
-    await repository.DeleteDraftAsync(id) ? Results.NoContent() : Results.BadRequest(new { error = "Only draft, queued, processing or failed pay runs can be deleted." }))
+app.MapDelete("/api/pay-runs/{id:int}", async (PayRunRepository repository, int id, HttpContext context) =>
+{
+    if (!HasPermission(context, "payroll.run"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return await repository.DeleteAsync(id) ? Results.NoContent() : Results.BadRequest(new { error = "Paid or partially paid pay runs cannot be hard deleted." });
+})
 .WithName("DeleteDraftPayRun")
 .WithOpenApi();
 

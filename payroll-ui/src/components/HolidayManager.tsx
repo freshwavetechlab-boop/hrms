@@ -7,6 +7,7 @@ import { getWorkLocations } from '../services/settingsService'
 import type { BulkImportStatus } from '../services/settingsService'
 import type { Holiday, WorkLocation } from '../types/payroll'
 import { parseImportPreviewFile, validateImportPreview, type ImportPreviewIssue, type ImportPreviewRules } from '../utils/importPreview'
+import { previewToXlsxFile } from '../utils/previewFile'
 import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from './BulkUploadPreviewModal'
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from './BulkUploadProgressModal'
 import DataTable from './DataTable'
@@ -59,7 +60,7 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
   const [upload, setUpload] = useState<HolidayBulkUpload>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
   const [preview, setPreview] = useState<BulkUploadPreviewState>(emptyBulkUploadPreview)
   const [previewImporting, setPreviewImporting] = useState(false)
-  const [previewConfirm, setPreviewConfirm] = useState<(() => Promise<void>) | null>(null)
+  const [previewConfirm, setPreviewConfirm] = useState<((preview: BulkUploadPreviewState) => Promise<void>) | null>(null)
   const years = Array.from({ length: 7 }, (_, index) => currentYear - 3 + index)
   const calendar = useMemo(() => monthNames.map((month, index) => ({ month, holidays: rows.filter(row => new Date(row.startDate).getMonth() === index || new Date(row.endDate).getMonth() === index) })), [rows])
   const load = async () => {
@@ -144,19 +145,19 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
       const data = await parseImportPreviewFile(file)
       const issues = validateImportPreview(data, holidayPreviewRules)
       setPreview({ open: true, title: 'Holiday bulk upload preview', fileName: file.name, headers: data.headers, rows: data.rows, issues })
-      setPreviewConfirm(() => async () => onConfirm(file))
+      setPreviewConfirm(() => async (preview: BulkUploadPreviewState) => onConfirm(previewToXlsxFile(preview, file.name)))
     } catch (error) {
       fail([error instanceof Error ? error.message : 'Unable to preview import file.'])
     }
   }
-  const confirmPreview = async () => {
+  const confirmPreview = async (preview: BulkUploadPreviewState) => {
     if (!previewConfirm) return
     const action = previewConfirm
     setPreviewImporting(true)
     setPreview(emptyBulkUploadPreview)
     setPreviewConfirm(null)
     try {
-      await action()
+      await action(preview)
     } finally {
       setPreviewImporting(false)
     }
@@ -195,7 +196,7 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
       <HolidayForm form={form} locations={locations} errors={errors} set={set} toggleLocation={toggleLocation} save={save} cancel={() => { setDrawerOpen(false); setForm({ ...blank, clientId }); setErrors([]) }} />
     </Drawer>
     <BulkUploadProgressModal open={upload.open} title="Holiday bulk upload" state={upload.state} percent={upload.percent} summary={upload.summary} onClose={() => setUpload(current => ({ ...current, open: false }))} />
-    <BulkUploadPreviewModal preview={preview} importing={previewImporting} onCancel={() => { setPreview(emptyBulkUploadPreview); setPreviewConfirm(null) }} onConfirm={() => void confirmPreview()} />
+    <BulkUploadPreviewModal preview={preview} importing={previewImporting} onCancel={() => { setPreview(emptyBulkUploadPreview); setPreviewConfirm(null) }} onConfirm={preview => void confirmPreview(preview)} />
   </section>
 }
 

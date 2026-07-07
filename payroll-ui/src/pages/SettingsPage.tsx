@@ -20,6 +20,7 @@ import type { AttendanceGroup, Client, ClientBillingConfiguration, ClientBilling
 import { money } from '../utils/salary'
 import { parseImportPreviewFile, parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules } from '../utils/importPreview'
 import { downloadXlsx } from '../utils/xlsx'
+import { previewToXlsxFile } from '../utils/previewFile'
 
 type SettingsTab = (typeof settingsMenus)[number]
 type OrganizationTab = 'Organization' | 'Tax' | 'EPF' | 'ESI' | 'Professional Tax' | 'Labour Welfare Fund'
@@ -190,7 +191,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const [dropState, setDropState] = useState('')
   const [bulkPreview, setBulkPreview] = useState<BulkUploadPreviewState>(emptyBulkUploadPreview)
   const [bulkPreviewImporting, setBulkPreviewImporting] = useState(false)
-  const [bulkPreviewConfirm, setBulkPreviewConfirm] = useState<(() => Promise<void>) | null>(null)
+  const [bulkPreviewConfirm, setBulkPreviewConfirm] = useState<((preview: BulkUploadPreviewState) => Promise<void>) | null>(null)
   const isErrorMessage = (message: string) => /error|unable|failed|required|resolve|select|invalid|must|cannot|some/i.test(message)
 
   const load = async () => {
@@ -319,7 +320,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const previewBulkUploadData = (file: File, title: string, data: ImportPreviewData, rules: ImportPreviewRules, onConfirm: (file: File) => Promise<void>) => {
     const issues = validateImportPreview(data, rules)
     setBulkPreview({ open: true, title, fileName: file.name, headers: data.headers, rows: data.rows, issues })
-    setBulkPreviewConfirm(() => async () => onConfirm(file))
+    setBulkPreviewConfirm(() => async (preview: BulkUploadPreviewState) => onConfirm(previewToXlsxFile(preview, file.name)))
   }
   const previewBulkUpload = async (file: File, title: string, rules: ImportPreviewRules, onConfirm: (file: File) => Promise<void>) => {
     try { previewBulkUploadData(file, title, await parseImportPreviewFile(file), rules, onConfirm) }
@@ -345,14 +346,14 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     }
     return { headers: ['Sheet', 'Master Type', 'Value', 'Client Id', 'State', 'Active', 'Config Json'], rows }
   }
-  const confirmBulkPreview = async () => {
+  const confirmBulkPreview = async (preview: BulkUploadPreviewState) => {
     if (!bulkPreviewConfirm) return
     const action = bulkPreviewConfirm
     setBulkPreviewImporting(true)
     setBulkPreview(emptyBulkUploadPreview)
     setBulkPreviewConfirm(null)
     try {
-      await action()
+      await action(preview)
     } finally {
       setBulkPreviewImporting(false)
     }
@@ -792,7 +793,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     <BulkUploadProgressModal open={componentUpload.open} title="Salary component bulk upload" state={componentUpload.state} percent={componentUpload.percent} summary={componentUpload.summary} onClose={() => setComponentUpload(current => ({ ...current, open: false }))} />
     <BulkUploadProgressModal open={salaryTemplateUpload.open} title="Salary template bulk upload" state={salaryTemplateUpload.state} percent={salaryTemplateUpload.percent} summary={salaryTemplateUpload.summary} onClose={() => setSalaryTemplateUpload(current => ({ ...current, open: false }))} />
     <BulkUploadProgressModal open={billingUpload.open} title="Client billing bulk upload" state={billingUpload.state} percent={billingUpload.percent} summary={billingUpload.summary} onClose={() => setBillingUpload(current => ({ ...current, open: false }))} />
-    <BulkUploadPreviewModal preview={bulkPreview} importing={bulkPreviewImporting} onCancel={() => { setBulkPreview(emptyBulkUploadPreview); setBulkPreviewConfirm(null) }} onConfirm={() => void confirmBulkPreview()} />
+    <BulkUploadPreviewModal preview={bulkPreview} importing={bulkPreviewImporting} onCancel={() => { setBulkPreview(emptyBulkUploadPreview); setBulkPreviewConfirm(null) }} onConfirm={preview => void confirmBulkPreview(preview)} />
     {renderComponentDrawer()}
   </form>
 }

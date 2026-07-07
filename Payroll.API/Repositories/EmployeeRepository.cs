@@ -28,6 +28,7 @@ public class EmployeeRepository(IConfiguration configuration)
         var after = await LoadEmployeeAsync(db, employee.Id) ?? employee;
         var reason = string.IsNullOrWhiteSpace(changeReason) ? wasNew ? "Employee hired" : "Infotype updated" : changeReason.Trim();
         await WriteCurrentInfotypesAsync(db, after, actionType, EffectiveDate(after), reason, changedBy, before, wasNew ? null : NormalizeInfotypeCodes(infotypeCode));
+        await SyncAttendancePolicyMappingsAsync(db, after, before);
         return employee.Id;
     }
     public async Task<EmployeeDeletePreview?> GetDeletePreviewAsync(int id)
@@ -111,6 +112,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         await PayrollDataTableStore.SyncEmployeeTablesAsync(db, next);
         var after = await LoadEmployeeAsync(db, request.EmployeeId) ?? next;
         await WriteCurrentInfotypesAsync(db, after, request.ActionType, request.EffectiveDate, request.Reason, changedBy, before, ActionInfotypeCodes(request.ActionType));
+        await SyncAttendancePolicyMappingsAsync(db, after, before);
         return (after, null);
     }
 
@@ -622,6 +624,36 @@ CREATE TABLE IF NOT EXISTS employee_audit_trail (
             await WritePhysicalInfotypeAsync(db, employee, item.InfotypeCode, actionType, effectiveDate, reason, changedBy);
         }
         await WriteAuditRowsAsync(db, employee, before, actionType, effectiveDate, changedBy ?? "", onlyInfotypeCodes);
+    }
+
+    static async Task SyncAttendancePolicyMappingsAsync(MySqlConnection db, Employee employee, Employee? before)
+    {
+        var clientIds = new[] { employee.ClientId, before?.ClientId ?? employee.ClientId }.Where(id => id > 0).Distinct().ToArray();
+        foreach (var clientId in clientIds)
+        {
+            await db.ExecuteAsync(@"DELETE age FROM attendance_group_employees age
+JOIN attendance_groups g ON g.id=age.attendance_group_id
+WHERE age.employee_id=@EmployeeId AND g.client_id=@ClientId", new { EmployeeId = employee.Id, ClientId = clientId });
+        }
+
+        if (!employee.IsActive || employee.Id <= 0 || employee.ClientId <= 0 || employee.WorkLocationId <= 0 || string.IsNullOrWhiteSpace(employee.Department) || string.IsNullOrWhiteSpace(employee.Designation))
+            return;
+
+        await db.ExecuteAsync(@"INSERT IGNORE INTO attendance_group_employees (attendance_group_id, employee_id)
+SELECT g.id, @EmployeeId
+FROM attendance_groups g
+WHERE g.client_id=@ClientId
+  AND g.work_location_id=@WorkLocationId
+  AND g.department=@Department
+  AND g.designation=@Designation
+  AND g.is_active=TRUE", new
+        {
+            EmployeeId = employee.Id,
+            employee.ClientId,
+            employee.WorkLocationId,
+            Department = employee.Department.Trim(),
+            Designation = employee.Designation.Trim()
+        });
     }
 
     static async Task WritePhysicalInfotypeAsync(MySqlConnection db, Employee employee, string infotypeCode, string actionType, DateTime effectiveDate, string reason, string changedBy)

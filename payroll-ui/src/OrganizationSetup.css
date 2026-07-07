@@ -66,6 +66,11 @@ textarea{width:100%;padding:12px 13px;border:1px solid #dfe2ea;border-radius:9px
 .payroll-diagnostics{display:grid;gap:12px;margin-top:12px;padding-top:12px;border-top:1px solid #e5e8f0}.payroll-diagnostics .data-table{max-width:100%;overflow:auto}.payroll-diagnostics table{min-width:760px}.diagnostics-summary{margin-bottom:0}.status-chip.failed{background:#fff1f2;color:#be123c}.status-chip.passed{background:#ecfdf5;color:#047857}
 .leave-chip-list{display:flex;gap:4px;flex-wrap:wrap;min-width:120px}.leave-chip{display:inline-flex;border-radius:999px;padding:3px 7px;background:#eef2ff;color:#4338ca;font-size:.64rem;font-weight:900}.leave-chip.unpaid{background:#fff1f2;color:#be123c}.leave-chip.paid{background:#ecfdf5;color:#047857}
 .payrun-submenu{padding:4px;border:1px solid #e5e8f0;border-radius:10px;background:#fff}.payrun-submenu button{border-radius:8px}.payrun-flow-tabs{justify-content:flex-start;border-bottom:1px solid #e5e8f0}.payrun-flow-tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:#64748b}.payrun-flow-tabs button.active{border-bottom-color:#6546e8;background:#f8f6ff;color:#5133cc}.pay-run-actions .lock-action{background:#fff7ed!important;color:#9a3412!important;border:1px solid #fed7aa!important}.pay-run-actions .approve-action{background:#ecfdf5!important;color:#047857!important;border:1px solid #bbf7d0!important}.pay-run-actions .recall-action{color:#475569!important;border-color:#cbd5e1!important}.pay-run-actions .export-action{color:#334155!important;border-color:#cbd5e1!important}
+.payroll-control-panel .pay-run-form.enterprise{grid-template-columns:minmax(180px,220px) minmax(280px,1fr) minmax(130px,160px) minmax(96px,110px) max-content}
+.payroll-policy-select.ant-select-multiple .ant-select-selector{height:auto!important;min-height:38px!important;align-items:flex-start!important;padding:4px 30px 4px 9px!important}
+.payroll-policy-select.ant-select-multiple .ant-select-selection-overflow{row-gap:4px!important;max-height:72px!important;overflow:auto!important}
+.payroll-policy-select.ant-select-multiple .ant-select-selection-item{height:23px!important;line-height:21px!important;margin:2px 4px 2px 0!important;border-radius:6px!important;background:#f5f3ff!important;color:#334155!important;font-size:.68rem!important;font-weight:800!important}
+.payroll-policy-select.ant-select-multiple .ant-select-selection-search-input{height:24px!important}
 .adjustment-actions{display:flex;gap:6px;align-items:center}.adjustment-mini .adjustment-actions button{border-color:#cfc6f5;color:#5133cc}.adjustment-mini .adjustment-actions button.danger{border-color:#fecaca;color:#be123c}
 .component-guide{display:grid;gap:3px;margin:0 0 10px;padding:10px 12px;border:1px solid #dbeafe;border-radius:10px;background:#eff6ff;color:#334155}.component-guide b{font-size:.76rem}.component-guide span{font-size:.68rem;line-height:1.45;color:#64748b}.adjustment-import-panel{align-self:start}.adjustment-import-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.adjustment-import-grid article{display:grid;gap:7px;align-content:start;padding:12px;border:1px solid #e5e8f0;border-radius:10px;background:#fff}.adjustment-import-grid h3{margin:0!important;font-size:.86rem!important}.adjustment-import-grid p{margin:0;color:#64748b;font-size:.7rem;line-height:1.45}.adjustment-import-grid small{color:#64748b;font-size:.64rem;line-height:1.4}.adjustment-import-grid input{width:100%;height:auto;padding:8px;border:1px dashed #cbd5e1;border-radius:8px;background:#f8fafc}@media(max-width:900px){.adjustment-import-grid{grid-template-columns:1fr}}
 .nav-collapsed.module-shell{grid-template-columns:minmax(0,1fr)!important}.nav-collapsed.module-shell .app-sidebar{position:fixed;top:10px;left:10px;z-index:30;width:auto!important;height:auto;display:block;padding:5px 6px;border:1px solid #e5e8f0;border-radius:12px;background:#fff;box-shadow:0 10px 28px #17213618;overflow:visible}.nav-collapsed.module-shell .side-head{display:flex;width:auto;margin:0;gap:6px;align-items:center}.nav-collapsed.module-shell .side-head .brand{display:flex;margin:0}.nav-collapsed.module-shell .brand span,.nav-collapsed.module-shell .sidebar-context,.nav-collapsed.module-shell .app-sidebar nav{display:none!important}.nav-collapsed.module-shell .brand i{width:32px;height:32px;border-radius:9px}.nav-collapsed.module-shell .side-head button.sidebar-toggle{width:32px;height:32px;border-color:#cfc6f5;background:#f6f3ff;color:#5133cc}.nav-collapsed.module-shell .compact-main{grid-column:1;min-width:0;padding-left:18px}.nav-collapsed.module-shell .compact-main>.topbar{padding-left:86px}
@@ -1011,6 +1016,10 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 .attendance-group-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:auto}
 .attendance-group-actions .ant-btn-primary{border-color:#6546e8!important;background:#6546e8!important}
 .attendance-group-members{min-height:300px}
+.attendance-employee-tools{align-items:center!important;justify-content:flex-end!important;max-width:100%}
+.attendance-employee-tools .ant-input-affix-wrapper{width:220px!important;height:30px!important;border-color:#d8deea!important;border-radius:8px!important}
+.attendance-employee-tools .ant-input{height:22px!important;min-height:22px!important;font-size:.72rem!important}
+.attendance-employee-tools .ant-btn{height:30px!important;padding:0 9px!important;border-radius:7px!important;font-size:.72rem!important;font-weight:800!important}
 .attendance-employee-picker{max-height:330px;overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;padding-right:4px}
 .attendance-employee-picker label{display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 8px;align-items:start;padding:9px;border:1px solid #e5e8f0;border-radius:9px;background:#fff;cursor:pointer}
 .attendance-employee-picker label.selected{border-color:#cfc6f5;background:#f8f6ff}
@@ -1022,6 +1031,7 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 .attendance-group-table{min-height:calc(100vh - 170px)}
 .attendance-group-table .ant-card-body{padding-top:10px!important}
 @media(max-width:991px){.attendance-group-table{min-height:auto}.attendance-employee-picker{max-height:280px}}
+@media(max-width:720px){.attendance-employee-tools{justify-content:flex-start!important}.attendance-employee-tools .ant-input-affix-wrapper{width:100%!important}}
 
 .settings-split{align-items:stretch!important}
 .settings-split>.ant-col{display:flex!important}
@@ -1096,6 +1106,16 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 .client-master-drawer .ant-form-item-control,.client-master-drawer .ant-form-item-control-input-content,.work-location-master-drawer .ant-form-item-control,.work-location-master-drawer .ant-form-item-control-input-content,.dropdown-master-drawer .ant-form-item-control,.dropdown-master-drawer .ant-form-item-control-input-content,.attendance-policy-master-drawer .ant-form-item-control,.attendance-policy-master-drawer .ant-form-item-control-input-content{width:100%!important;max-width:100%!important}
 .client-master-drawer .ant-input,.client-master-drawer .ant-select-selector,.work-location-master-drawer .ant-input,.work-location-master-drawer .ant-select-selector,.dropdown-master-drawer .ant-input,.dropdown-master-drawer .ant-select-selector,.attendance-policy-master-drawer .ant-input,.attendance-policy-master-drawer .ant-select-selector{width:100%!important;height:40px!important;min-height:40px!important;border-color:#d8deea!important;border-radius:9px!important;color:#243047!important;font-size:.78rem!important}
 .client-master-drawer .ant-divider,.client-master-drawer .settings-quick-form>.ant-row,.work-location-master-drawer .ant-divider,.work-location-master-drawer .settings-quick-form>.ant-row,.dropdown-master-drawer .ant-divider,.dropdown-master-drawer .settings-quick-form>.ant-row,.attendance-policy-master-drawer .ant-divider,.attendance-policy-master-drawer .settings-quick-form>.ant-row,.attendance-policy-master-drawer .attendance-group-members,.attendance-policy-master-drawer .attendance-group-actions{grid-column:1/-1!important}
+.attendance-policy-master-drawer .attendance-policy-multi.ant-select-multiple .ant-select-selector{height:auto!important;min-height:40px!important;align-items:flex-start!important;padding:4px 34px 4px 10px!important}
+.attendance-policy-master-drawer .attendance-policy-multi .ant-select-selection-overflow{row-gap:4px!important;max-height:92px!important;overflow:auto!important}
+.attendance-policy-master-drawer .attendance-policy-multi .ant-select-selection-item{height:24px!important;line-height:22px!important;margin:2px 4px 2px 0!important;border-radius:6px!important;background:#f5f3ff!important;color:#334155!important;font-size:.7rem!important;font-weight:700!important}
+.attendance-policy-master-drawer .attendance-policy-multi .ant-select-selection-search-input{height:24px!important}
+.attendance-policy-master-drawer .attendance-policy-multi .ant-select-selection-placeholder{line-height:30px!important}
+.attendance-policy-master-drawer .attendance-group-members .ant-card-head{min-height:52px!important;padding:0 12px!important}
+.attendance-policy-master-drawer .attendance-group-members .ant-card-head-title,.attendance-policy-master-drawer .attendance-group-members .ant-card-extra{padding:9px 0!important;display:flex!important;align-items:center!important}
+.attendance-policy-master-drawer .attendance-employee-tools{align-items:center!important;gap:8px!important}
+.attendance-policy-master-drawer .attendance-employee-tools .ant-input-affix-wrapper{height:32px!important;min-height:32px!important;padding:0 10px!important;display:flex!important;align-items:center!important}
+.attendance-policy-master-drawer .attendance-employee-tools .ant-input{height:24px!important;min-height:24px!important;line-height:24px!important;padding:0!important}
 @media(max-width:720px){.settings-master-drawer .ant-drawer-content-wrapper{width:94vw!important}.settings-master-drawer .settings-quick-form{grid-template-columns:1fr!important}}
 .component-table-head{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin-bottom:12px!important;padding:10px 0 12px!important;border-bottom:1px solid #eef1f6!important}
 .component-table-head>div{display:grid!important;gap:2px!important}
@@ -1137,12 +1157,26 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 .settings-upload-action.disabled,.settings-upload-action.disabled:hover{border-color:#6546e8!important;background:linear-gradient(135deg,#7054e7,#5637d2)!important;color:#fff!important;opacity:.48!important;cursor:not-allowed!important;box-shadow:none!important}
 .settings-upload-action input{display:none!important}
 .bulk-preview-modal .ant-modal-body{max-height:calc(100vh - 210px);overflow:hidden!important}
-.bulk-preview-table{max-height:52vh;overflow:auto;border:1px solid #e5e8f0;border-radius:10px;background:#fff}
+.bulk-preview-modal .ant-drawer-body{overflow:hidden!important;padding:16px!important}
+.bulk-preview-modal .ant-drawer-footer{display:flex!important;justify-content:flex-end!important}
+.bulk-preview-content{height:100%;min-height:0;display:flex;flex-direction:column;gap:14px}
+.bulk-preview-resolve{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid #fed7aa;background:#fff7ed;border-radius:10px;padding:10px 12px;color:#9a3412;font-size:.78rem;font-weight:800}
+.bulk-preview-grid-shell{flex:1;min-height:0;display:flex;flex-direction:column}
+.bulk-preview-table{flex:1;min-height:0;overflow:auto;border:1px solid #e5e8f0;border-radius:10px;background:#fff}
 .bulk-preview-table table{min-width:100%;border-collapse:collapse}
 .bulk-preview-table th,.bulk-preview-table td{padding:8px 10px;border-bottom:1px solid #eef0f4;border-right:1px solid #eef0f4;white-space:nowrap;font-size:.74rem;text-align:left}
 .bulk-preview-table th{position:sticky;top:0;z-index:1;background:#f8fafc;color:#475569;font-size:.68rem;font-weight:900;text-transform:uppercase}
 .bulk-preview-table tr.has-error td:first-child{background:#fff1f2;color:#be123c;font-weight:900}
 .bulk-preview-table td.cell-error{background:#fee2e2!important;color:#991b1b!important;box-shadow:inset 0 0 0 1px #ef4444}
+.bulk-preview-table td input{width:100%;min-width:90px;border:0;background:transparent;color:inherit;font:inherit;outline:0;padding:0}
+.bulk-preview-table td input:focus{background:#fff;border-radius:5px;box-shadow:0 0 0 2px #8b5cf644;padding:3px 5px;margin:-3px -5px}
+.bulk-preview-row-delete{border:1px solid #fecaca;background:#fff1f2;color:#be123c;border-radius:7px;padding:4px 8px;font-size:.7rem;font-weight:900;cursor:pointer}
+.bulk-preview-row-delete:hover{background:#fee2e2}
+.bulk-preview-sheet-tabs{display:flex;gap:4px;overflow-x:auto;border-top:1px solid #e5e8f0;padding:7px 4px 0}
+.bulk-preview-sheet-tabs button{border:1px solid #dbe3ef;background:#f8fafc;color:#475569;border-radius:7px 7px 0 0;padding:7px 10px;font-size:.75rem;font-weight:800;white-space:nowrap;cursor:pointer}
+.bulk-preview-sheet-tabs button.active{background:#fff;color:#4f46e5;border-color:#8b5cf6;border-bottom-color:#fff;box-shadow:0 -2px 8px rgba(79,70,229,.08)}
+.bulk-preview-sheet-tabs button span{margin-left:6px;color:#64748b;font-weight:700}
+.bulk-preview-sheet-tabs button b{display:inline-grid;place-items:center;min-width:18px;height:18px;margin-left:6px;border-radius:999px;background:#ef4444;color:#fff;font-size:.68rem}
 .bulk-preview-note{color:#64748b;font-size:.72rem}
 .employee-same-address{grid-column:1/-1!important;display:flex!important;align-items:center!important;gap:8px!important;margin:-2px 0 2px!important;color:#475569!important;font-size:.74rem!important;font-weight:800!important}
 .employee-same-address input{width:15px!important;height:15px!important}

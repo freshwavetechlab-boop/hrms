@@ -72,7 +72,7 @@
 .employee-master{display:grid;gap:12px;max-width:1240px}
 .employee-directory>header{align-items:center}
 .employee-directory>header button{margin-left:auto;height:34px;border:0;border-radius:8px;background:#6546e8;color:#fff;padding:0 13px;font-weight:800}
-.employee-directory-tools{display:grid;grid-template-columns:minmax(220px,260px) minmax(280px,1fr) auto;gap:10px;align-items:end;margin-bottom:12px;padding:10px;border:1px solid #e5e8f0;border-radius:10px;background:#fff}
+.employee-directory-tools{display:grid;grid-template-columns:minmax(200px,240px) minmax(200px,240px) minmax(260px,1fr) auto;gap:10px;align-items:end;margin-bottom:12px;padding:10px;border:1px solid #e5e8f0;border-radius:10px;background:#fff}
 .employee-directory-tools label{display:grid;gap:4px;color:#465067;font-size:.72rem;font-weight:800}
 .employee-directory-tools input,.employee-directory-tools select{height:34px}
 .employee-directory-count{min-width:118px;padding:8px 10px;border:1px solid #e5e8f0;border-radius:9px;background:#fafbfc}

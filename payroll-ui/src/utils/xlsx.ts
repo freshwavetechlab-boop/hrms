@@ -1,4 +1,4 @@
-type Sheet = { name: string; rows: string[][] }
+export type XlsxSheet = { name: string; rows: string[][] }
 
 const encoder = new TextEncoder()
 const crcTable = Array.from({ length: 256 }, (_, n) => {
@@ -7,7 +7,7 @@ const crcTable = Array.from({ length: 256 }, (_, n) => {
   return c >>> 0
 })
 
-export function downloadXlsx(fileName: string, sheets: Sheet[]) {
+export function buildXlsxBlob(sheets: XlsxSheet[]) {
   const files: Record<string, string> = {
     '[Content_Types].xml': contentTypes(sheets.length),
     '_rels/.rels': '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
@@ -16,7 +16,11 @@ export function downloadXlsx(fileName: string, sheets: Sheet[]) {
     'xl/workbook.xml': workbookXml(sheets),
     ...Object.fromEntries(sheets.map((sheet, index) => [`xl/worksheets/sheet${index + 1}.xml`, sheetXml(sheet.rows)]))
   }
-  const blob = new Blob([zip(files)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  return new Blob([zip(files)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+}
+
+export function downloadXlsx(fileName: string, sheets: XlsxSheet[]) {
+  const blob = buildXlsxBlob(sheets)
   const link = document.createElement('a')
   link.href = URL.createObjectURL(blob)
   link.download = fileName
@@ -56,5 +60,5 @@ function esc(value: string) { return String(value ?? '').replace(/[&<>"']/g, ch 
 function col(n: number) { let s = ''; while (n > 0) { n--; s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) } return s }
 function contentTypes(count: number) { return `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${Array.from({ length: count }, (_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>` }
 function workbookRels(count: number) { return `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${Array.from({ length: count }, (_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${count + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` }
-function workbookXml(sheets: Sheet[]) { return `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((sheet, i) => `<sheet name="${esc(sheet.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>` }
+function workbookXml(sheets: XlsxSheet[]) { return `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((sheet, i) => `<sheet name="${esc(sheet.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>` }
 function sheetXml(rows: string[][]) { return `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rows.map((row, r) => `<row r="${r + 1}">${row.map((cell, c) => `<c r="${col(c + 1)}${r + 1}" t="inlineStr"><is><t>${esc(cell)}</t></is></c>`).join('')}</row>`).join('')}</sheetData></worksheet>` }

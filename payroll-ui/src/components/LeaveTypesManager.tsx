@@ -9,6 +9,7 @@ import type { BulkImportStatus } from '../services/settingsService'
 import type { Drop, LeaveType, WorkLocation } from '../types/payroll'
 import { parseImportPreviewFile, validateImportPreview, type ImportPreviewIssue, type ImportPreviewRules } from '../utils/importPreview'
 import { downloadXlsx } from '../utils/xlsx'
+import { previewToXlsxFile } from '../utils/previewFile'
 import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from './BulkUploadPreviewModal'
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from './BulkUploadProgressModal'
 import DataTable from './DataTable'
@@ -75,7 +76,7 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
   const [upload, setUpload] = useState<LeaveTypeBulkUpload>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
   const [preview, setPreview] = useState<BulkUploadPreviewState>(emptyBulkUploadPreview)
   const [previewImporting, setPreviewImporting] = useState(false)
-  const [previewConfirm, setPreviewConfirm] = useState<(() => Promise<void>) | null>(null)
+  const [previewConfirm, setPreviewConfirm] = useState<((preview: BulkUploadPreviewState) => Promise<void>) | null>(null)
   const departments = useMemo(() => drops.filter(item => item.type === 'Department' && item.isActive).map(item => item.value), [drops])
   const designations = useMemo(() => drops.filter(item => item.type === 'Designation' && item.isActive).map(item => item.value), [drops])
 
@@ -153,19 +154,19 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
       const data = await parseImportPreviewFile(file)
       const issues = validateImportPreview(data, leaveTypePreviewRules)
       setPreview({ open: true, title: 'Leave type bulk upload preview', fileName: file.name, headers: data.headers, rows: data.rows, issues })
-      setPreviewConfirm(() => async () => onConfirm(file))
+      setPreviewConfirm(() => async (preview: BulkUploadPreviewState) => onConfirm(previewToXlsxFile(preview, file.name)))
     } catch (error) {
       fail([error instanceof Error ? error.message : 'Unable to preview import file.'])
     }
   }
-  const confirmPreview = async () => {
+  const confirmPreview = async (preview: BulkUploadPreviewState) => {
     if (!previewConfirm) return
     const action = previewConfirm
     setPreviewImporting(true)
     setPreview(emptyBulkUploadPreview)
     setPreviewConfirm(null)
     try {
-      await action()
+      await action(preview)
     } finally {
       setPreviewImporting(false)
     }
@@ -216,7 +217,7 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
       <LeaveTypesTable rows={rows} edit={edit} toggle={toggle} remove={remove} />
     </AntCard>
     <BulkUploadProgressModal open={upload.open} title="Leave type bulk upload" state={upload.state} percent={upload.percent} summary={upload.summary} onClose={() => setUpload(current => ({ ...current, open: false }))} />
-    <BulkUploadPreviewModal preview={preview} importing={previewImporting} onCancel={() => { setPreview(emptyBulkUploadPreview); setPreviewConfirm(null) }} onConfirm={() => void confirmPreview()} />
+    <BulkUploadPreviewModal preview={preview} importing={previewImporting} onCancel={() => { setPreview(emptyBulkUploadPreview); setPreviewConfirm(null) }} onConfirm={preview => void confirmPreview(preview)} />
     {drawerOpen && <div className="leave-type-drawer-backdrop" onClick={close}><LeaveTypeForm form={form} editing={editing} errors={errors} busy={busy} departments={departments} designations={designations} locations={locations} set={set} save={save} cancel={close} /></div>}
   </section>
 }
