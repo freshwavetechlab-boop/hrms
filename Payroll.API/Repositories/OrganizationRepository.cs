@@ -800,8 +800,10 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
         reference.Add(new[] { "Pattern", "Working Days", "Off Saturdays", "Result" });
         reference.Add(new[] { "Monday - Friday", "Mon, Tue, Wed, Thu, Fri", "", "Saturday and Sunday off" });
         reference.Add(new[] { "Monday - Saturday", "Mon, Tue, Wed, Thu, Fri, Sat", "", "Only Sunday off" });
-        reference.Add(new[] { "2nd/4th Saturday off", "Mon, Tue, Wed, Thu, Fri, Sat", "2nd, 4th", "Sunday + selected Saturdays off" });
-        reference.Add(new[] { "All Saturdays off", "Mon, Tue, Wed, Thu, Fri", "", "Do not include Sat in Working Days" });
+        reference.Add(new[] { "Second Saturday + Sunday off", "Mon, Tue, Wed, Thu, Fri, Sat", "2nd", "Sunday and 2nd Saturday off" });
+        reference.Add(new[] { "Second & Fourth Saturday + Sunday off", "Mon, Tue, Wed, Thu, Fri, Sat", "2nd, 4th", "Sunday, 2nd Saturday, and 4th Saturday off" });
+        reference.Add(new[] { "Friday off", "Sun, Mon, Tue, Wed, Thu, Sat", "", "Only Friday off" });
+        reference.Add(new[] { "Friday-Saturday off", "Sun, Mon, Tue, Wed, Thu", "", "Friday and Saturday off" });
         var sheets = DropdownImportTypes.Select(type => (Name: type, Rows: (IEnumerable<string[]>)new[] { DropdownSheetHeaders(type), DropdownSheetExample(type, firstClientId) })).ToList();
         sheets.Add((Name: "Reference", Rows: reference));
         return BuildXlsx(sheets.ToArray());
@@ -945,6 +947,8 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
             JsonText(component, "category", "Earning"),
             JsonText(component, "name"),
             JsonText(component, "componentType"),
+            JsonText(component, "componentRole", DefaultSalaryComponentRole(JsonText(component, "category", "Earning"))),
+            JsonText(component, "statutoryType", "None"),
             JsonText(component, "payType", "Fixed Pay"),
             JsonText(component, "calculationType", "Fixed Amount"),
             JsonText(component, "value"),
@@ -965,11 +969,13 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
             BoolText(JsonBool(component, "active", true))
         }));
         if (componentRows.Count == 1)
-            componentRows.Add(new[] { "BASIC", "Earning", "Basic Salary", "Basic", "Fixed Pay", "Fixed Amount", "0", "", "", "TRUE", "TRUE", "TRUE", "FALSE", "FALSE", "Never", "FALSE", "TRUE", "FALSE", "", "", "100", "TRUE" });
+            componentRows.Add(new[] { "BASIC", "Earning", "Basic Salary", "Basic", "Regular Earning", "None", "Fixed Pay", "Fixed Amount", "0", "", "", "TRUE", "TRUE", "TRUE", "FALSE", "FALSE", "Never", "FALSE", "TRUE", "FALSE", "", "", "100", "TRUE" });
 
         var reference = new List<string[]>
         {
             new[] { "Categories", string.Join(", ", SalaryComponentCategories), "" },
+            new[] { "Component Roles", string.Join(", ", SalaryComponentRoles), "" },
+            new[] { "Statutory Types", string.Join(", ", SalaryStatutoryTypes), "" },
             new[] { "Calculation Types", string.Join(", ", SalaryCalculationTypes), "" },
             new[] { "Pay Types", string.Join(", ", SalaryPayTypes), "" },
             new[] { "EPF Options", string.Join(", ", SalaryEpfOptions), "" },
@@ -1056,6 +1062,8 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
                 var category = NormalizeSalaryComponentCategory(categoryText);
                 var name = V("Name");
                 var componentType = V("Component Type");
+                var componentRoleText = V("Component Role");
+                var statutoryTypeText = V("Statutory Type");
                 var payTypeText = V("Pay Type");
                 var calculationTypeText = V("Calculation Type");
                 var calculationType = NormalizeSalaryCalculationType(calculationTypeText);
@@ -1069,6 +1077,8 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
                 var priorityText = V("Priority");
                 var activeText = V("Active");
                 var existing = !string.IsNullOrWhiteSpace(code) && byCode.TryGetValue(code, out var found) ? found : null;
+                var componentRole = string.IsNullOrWhiteSpace(componentRoleText) ? JsonText(existing, "componentRole", DefaultSalaryComponentRole(category)) : NormalizeSalaryComponentRole(componentRoleText);
+                var statutoryType = string.IsNullOrWhiteSpace(statutoryTypeText) ? JsonText(existing, "statutoryType", "None") : NormalizeSalaryStatutoryType(statutoryTypeText);
                 var payType = string.IsNullOrWhiteSpace(payTypeText) ? JsonText(existing, "payType", calculationType == "Manual / Variable" ? "Variable Pay" : "Fixed Pay") : NormalizeSalaryPayType(payTypeText);
                 var priority = int.TryParse(priorityText, out var parsedPriority) ? parsedPriority : JsonInt(existing, "priority", 999);
 
@@ -1078,6 +1088,9 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
                 if (string.IsNullOrWhiteSpace(categoryText)) rowErrors.Add($"Row {rowNumber}: Category is required.");
                 else if (!SalaryComponentCategories.Contains(category)) rowErrors.Add($"Row {rowNumber}: Category \"{categoryText}\" is invalid.");
                 if (string.IsNullOrWhiteSpace(name)) rowErrors.Add($"Row {rowNumber}: Name is required.");
+                if (!string.IsNullOrWhiteSpace(componentRoleText) && !SalaryComponentRoles.Contains(componentRole)) rowErrors.Add($"Row {rowNumber}: Component Role \"{componentRoleText}\" is invalid.");
+                if (!string.IsNullOrWhiteSpace(statutoryTypeText) && !SalaryStatutoryTypes.Contains(statutoryType)) rowErrors.Add($"Row {rowNumber}: Statutory Type \"{statutoryTypeText}\" is invalid.");
+                if ((componentRole == "Statutory Deduction" || componentRole == "Employer Contribution") && statutoryType == "None") rowErrors.Add($"Row {rowNumber}: Statutory Type is required for {componentRole}.");
                 if (!string.IsNullOrWhiteSpace(payTypeText) && !SalaryPayTypes.Contains(payType)) rowErrors.Add($"Row {rowNumber}: Pay Type \"{payTypeText}\" is invalid.");
                 if (string.IsNullOrWhiteSpace(calculationTypeText)) rowErrors.Add($"Row {rowNumber}: Calculation Type is required.");
                 else if (!SalaryCalculationTypes.Contains(calculationType)) rowErrors.Add($"Row {rowNumber}: Calculation Type \"{calculationTypeText}\" is invalid.");
@@ -1108,6 +1121,8 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
                 target["category"] = category;
                 target["name"] = name;
                 target["componentType"] = string.IsNullOrWhiteSpace(componentType) ? DefaultSalaryComponentType(category) : componentType;
+                target["componentRole"] = componentRole;
+                target["statutoryType"] = componentRole == "Statutory Deduction" || componentRole == "Employer Contribution" ? statutoryType : "None";
                 target["payType"] = payType;
                 target["calculationType"] = calculationType;
                 target["value"] = value;
@@ -1419,11 +1434,13 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
     private static string[] DropdownSheetExample(string type, string clientId) =>
         type == "Employee Grade" ? [clientId, "G1", "TRUE"] :
         type == "City" ? ["Delhi", "New Delhi", "TRUE"] :
-        type == "Work Week" ? ["Monday - Saturday with 1st-4th Saturdays off", "TRUE", "Mon, Tue, Wed, Thu, Fri, Sat", "1st, 2nd, 3rd, 4th"] :
+        type == "Work Week" ? ["Second & Fourth Saturday + Sunday off", "TRUE", "Mon, Tue, Wed, Thu, Fri, Sat", "2nd, 4th"] :
         [type == "State" ? "Delhi" : type == "Department" ? "Finance" : type == "Designation" ? "Manager" : type == "Employment Type" ? "Full Time" : type == "Cost Center" ? "CC-001" : "Head Office", "TRUE"];
-    private static readonly string[] SalaryComponentImportHeaders = ["Code", "Category", "Name", "Component Type", "Pay Type", "Calculation Type", "Value", "Formula", "Base Component", "Taxable", "Part Of CTC", "Pro Rata", "FBP", "Restrict FBP", "EPF", "ESI", "Recurring", "Scheduled", "Investment Type", "Correction Of", "Priority", "Active"];
+    private static readonly string[] SalaryComponentImportHeaders = ["Code", "Category", "Name", "Component Type", "Component Role", "Statutory Type", "Pay Type", "Calculation Type", "Value", "Formula", "Base Component", "Taxable", "Part Of CTC", "Pro Rata", "FBP", "Restrict FBP", "EPF", "ESI", "Recurring", "Scheduled", "Investment Type", "Correction Of", "Priority", "Active"];
     private static readonly string[] SalaryTemplateImportHeaders = ["Client Ids", "Template Name", "Annual CTC", "Active", "Component Code", "Value"];
     private static readonly string[] SalaryComponentCategories = ["Earning", "Deduction", "Reimbursement", "Benefit", "Correction"];
+    private static readonly string[] SalaryComponentRoles = ["Regular Earning", "Regular Deduction", "Statutory Deduction", "Employer Contribution", "Reimbursement", "Variable Pay", "Arrear / Correction", "Recovery"];
+    private static readonly string[] SalaryStatutoryTypes = ["None", "TDS", "Professional Tax", "PF Employee", "PF Employer", "VPF", "EPS", "ESI Employee", "ESI Employer", "LWF Employee", "LWF Employer", "NPS Employee", "NPS Employer", "Workmen Compensation"];
     private static readonly string[] SalaryCalculationTypes = ["Fixed Amount", "Formula", "Residual / Balancing", "Manual / Variable", "Slab Based"];
     private static readonly string[] SalaryPayTypes = ["Fixed Pay", "Variable Pay"];
     private static readonly string[] SalaryEpfOptions = ["Never", "Always", "Only if employee is PF eligible"];
@@ -1437,6 +1454,12 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
 
     private static string NormalizeSalaryPayType(string value) =>
         SalaryPayTypes.FirstOrDefault(type => type.Equals(value.Trim(), StringComparison.OrdinalIgnoreCase)) ?? value.Trim();
+
+    private static string NormalizeSalaryComponentRole(string value) =>
+        SalaryComponentRoles.FirstOrDefault(type => type.Equals(value.Trim(), StringComparison.OrdinalIgnoreCase)) ?? value.Trim();
+
+    private static string NormalizeSalaryStatutoryType(string value) =>
+        SalaryStatutoryTypes.FirstOrDefault(type => type.Equals(value.Trim(), StringComparison.OrdinalIgnoreCase)) ?? value.Trim();
 
     private static string NormalizeSalaryEpf(string value) =>
         SalaryEpfOptions.FirstOrDefault(type => type.Equals(value.Trim(), StringComparison.OrdinalIgnoreCase)) ?? value.Trim();
@@ -1460,6 +1483,15 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
         "Benefit" => "Benefit",
         "Correction" => "Correction",
         _ => "Custom Allowance"
+    };
+
+    private static string DefaultSalaryComponentRole(string category) => category switch
+    {
+        "Deduction" => "Regular Deduction",
+        "Reimbursement" => "Reimbursement",
+        "Benefit" => "Employer Contribution",
+        "Correction" => "Arrear / Correction",
+        _ => "Regular Earning"
     };
 
     private static bool IsImportFlag(string value) =>

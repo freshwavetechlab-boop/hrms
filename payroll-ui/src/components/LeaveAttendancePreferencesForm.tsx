@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Col, Form, Row, Space, Table, Tag, type TableColumnsType } from 'antd'
-import { setup0 } from '../data/payrollDefaults'
+import { setup0, workWeekOptionsFromDrops } from '../data/payrollDefaults'
 import { getClients } from '../services/payrollService'
 import { getDropdowns, getSetup, getWorkLocations } from '../services/settingsService'
 import { getLeaveAttendancePreferences, saveLeaveAttendancePreferences } from '../services/leaveAttendanceService'
@@ -26,7 +26,7 @@ export default function LeaveAttendancePreferencesForm({ clientId, onSaved }: { 
   const clientLocations = useMemo(() => locations.filter(row => row.isActive && Number(row.clientId) === Number(preferences.clientId || clientId)), [locations, preferences.clientId, clientId])
   const selectedComponent = components.find(component => component.id === Number(preferences.leaveEncashmentSalaryComponentId || 0))
   const isFormulaBased = selectedComponent?.calculationType === 'Formula'
-  const workWeeks = useMemo(() => unique([...dropdowns.filter(item => item.type === 'Work Week' && item.isActive).map(item => item.value), preferences.workWeek]), [dropdowns, preferences.workWeek])
+  const workWeeks = useMemo(() => workWeekOptionsFromDrops(dropdowns, preferences.workWeek), [dropdowns, preferences.workWeek])
   const buffer = useMemo(() => bufferDays(preferences.attendanceCycleEndDay, preferences.payrollReportGenerationDay), [preferences.attendanceCycleEndDay, preferences.payrollReportGenerationDay])
   const warning = preferences.includeLeaveEncashmentInPayRun && selectedComponent && !isFormulaBased ? 'Leave encashment can only be enabled for formula-based salary components.' : ''
 

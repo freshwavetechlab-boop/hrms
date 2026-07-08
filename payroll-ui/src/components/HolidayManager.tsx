@@ -31,8 +31,6 @@ const holidayPreviewRules: ImportPreviewRules = {
     const start = previewDateMs(row['Start Date'])
     const end = previewDateMs(row['End Date'] || row['Start Date'])
     if (start !== null && end !== null && end < start) issues.push({ rowNumber, column: 'End Date', message: 'End Date cannot be before Start Date.' })
-    const allLocations = parsePreviewFlag(row['All Locations'], true)
-    if (!allLocations && !row['Work Location Ids']?.trim() && !row['Work Locations']?.trim()) issues.push({ rowNumber, column: 'Work Location Ids', message: 'Work Location Ids are required when All Locations is FALSE.' })
     if (row['Work Location Ids']?.trim()) {
       row['Work Location Ids'].split(/[;,|]/).map(item => item.trim()).filter(Boolean).forEach(item => {
         if (!/^\d+$/.test(item)) issues.push({ rowNumber, column: 'Work Location Ids', message: `Work Location Id "${item}" must be numeric.` })
@@ -91,13 +89,14 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
     if (!form.name.trim()) next.push('Holiday name is required.')
     if (!holidayTypes.includes(form.holidayType)) next.push('Select a valid holiday type.')
     if (form.endDate < form.startDate) next.push('End date cannot be before start date.')
-    if (!form.allLocations && validLocationIds().length === 0) next.push('Select at least one work location.')
     setErrors(next)
     return next.length === 0
   }
   const save = async () => {
     if (!validate()) return
-    const response = await saveHoliday({ ...form, clientId, workLocationIds: form.allLocations ? [] : validLocationIds() })
+    const selectedLocationIds = validLocationIds()
+    const appliesToAll = form.allLocations || selectedLocationIds.length === 0
+    const response = await saveHoliday({ ...form, clientId, allLocations: appliesToAll, workLocationIds: appliesToAll ? [] : selectedLocationIds })
     if (response.ok) {
       setForm({ ...blank, clientId })
       setDrawerOpen(false)
@@ -221,7 +220,7 @@ function HolidayForm(p: { form: Holiday; locations: WorkLocation[]; errors: stri
         <Col xs={24} md={12}><Form.Item label="Start date" required><Input type="date" value={p.form.startDate} onChange={event => p.set('startDate', event.target.value)} /></Form.Item></Col>
         <Col xs={24} md={12}><Form.Item label="End date" required><Input type="date" value={p.form.endDate} onChange={event => p.set('endDate', event.target.value)} /></Form.Item></Col>
         <Col xs={24}><Form.Item label="Description"><Input value={p.form.description} onChange={event => p.set('description', event.target.value)} /></Form.Item></Col>
-        <Col xs={24} md={12}><Form.Item label="Applicable locations"><SearchSelect value={p.form.allLocations ? 'all' : 'selected'} onChange={value => p.set('allLocations', value === 'all')} options={[{ value: 'all', label: 'All locations' }, { value: 'selected', label: 'Multiple selected locations' }]} /></Form.Item></Col>
+        <Col xs={24} md={12}><Form.Item label="Applicable locations" extra="If no location is selected, holiday applies to all locations."><SearchSelect value={p.form.allLocations ? 'all' : 'selected'} onChange={value => p.set('allLocations', value === 'all')} options={[{ value: 'all', label: 'All locations' }, { value: 'selected', label: 'Selected locations only' }]} /></Form.Item></Col>
       </Row>
       {!p.form.allLocations && <div className="location-picker">{p.locations.map(location => <label className={p.form.workLocationIds.includes(location.id) ? 'selected' : ''} key={location.id}><AntCheckbox checked={p.form.workLocationIds.includes(location.id)} onChange={() => p.toggleLocation(location.id)} /><span>{location.name}</span><small>{location.city}, {location.state}</small></label>)}</div>}
       <Divider />

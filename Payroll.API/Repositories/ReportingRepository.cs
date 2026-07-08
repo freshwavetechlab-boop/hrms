@@ -26,12 +26,182 @@ FROM payrunemployees p
 JOIN payruns r ON r.Id=p.PayRunId
 LEFT JOIN employeepersonaldetails pd ON pd.EmployeeId=p.EmployeeId
 LEFT JOIN employeepaymentdetails pay ON pay.EmployeeId=p.EmployeeId
-WHERE p.ClientId=@ClientId AND r.PayPeriod=@Month AND p.IsSkipped=FALSE
+WHERE p.ClientId=@ClientId AND (@PayRunId IS NULL OR r.Id=@PayRunId) AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month) AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId) AND p.IsSkipped=FALSE
 AND LOWER(COALESCE(pay.PaymentMode,''))='bank transfer'
 ORDER BY p.EmployeeCode";
+        var pfRegisterSql = @"SELECT x.`Pay Period`,
+x.`Employee Code`,
+x.Employee,
+x.Department,
+x.Basic,
+x.`Employee PF`,
+x.VPF,
+x.EPS,
+CASE WHEN x.`Employer PF Actual` <> 0 OR x.EPS <> 0 THEN x.`Employer PF Actual` ELSE x.`Employee PF` END AS `Employer PF`
+FROM (
+SELECT r.PayPeriod AS `Pay Period`,
+p.EmployeeCode AS `Employee Code`,
+p.EmployeeName AS Employee,
+p.Department,
+SUM(CASE WHEN UPPER(TRIM(l.ComponentCode))='BASIC' THEN l.Amount ELSE 0 END) AS Basic,
+SUM(CASE WHEN COALESCE(l.StatutoryType,'')='PF Employee' OR UPPER(TRIM(l.ComponentCode)) IN ('PF','EPF') THEN l.Amount ELSE 0 END) AS `Employee PF`,
+SUM(CASE WHEN COALESCE(l.StatutoryType,'')='VPF' OR UPPER(TRIM(l.ComponentCode))='VPF' THEN l.Amount ELSE 0 END) AS VPF,
+SUM(CASE WHEN COALESCE(l.StatutoryType,'')='EPS' OR UPPER(TRIM(l.ComponentCode))='EPS' THEN l.Amount ELSE 0 END) AS EPS,
+SUM(CASE WHEN COALESCE(l.StatutoryType,'')='PF Employer' OR UPPER(TRIM(l.ComponentCode)) IN ('EPF_ER','EPF_ER_BAL','PF_ER','PF_EMPLOYER') THEN l.Amount ELSE 0 END) AS `Employer PF Actual`
+FROM payrunemployees p
+JOIN payruns r ON r.Id=p.PayRunId
+LEFT JOIN payrunemployeelines l ON l.PayRunEmployeeId=p.Id
+WHERE p.ClientId=@ClientId AND (@PayRunId IS NULL OR r.Id=@PayRunId) AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month) AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId) AND p.IsSkipped=FALSE
+GROUP BY r.PayPeriod,p.EmployeeCode,p.EmployeeName,p.Department
+) x
+WHERE x.`Employee PF` <> 0 OR x.VPF <> 0 OR x.EPS <> 0 OR x.`Employer PF Actual` <> 0
+ORDER BY x.`Employee Code`";
+        var pfEcrReportSql = @"SELECT
+COALESCE(pd.UanNumber,'') AS UAN,
+p.EmployeeName AS `Member Name`,
+CAST(ROUND(x.GrossWages,0) AS SIGNED) AS `Gross Wages`,
+CAST(ROUND(x.EpfWages,0) AS SIGNED) AS `EPF Wages`,
+CAST(ROUND(x.EpsWages,0) AS SIGNED) AS `EPS Wages`,
+CAST(ROUND(x.EdliWages,0) AS SIGNED) AS `EDLI Wages`,
+CAST(ROUND(x.EmployeePf,0) AS SIGNED) AS `EPF Contribution Remitted`,
+CAST(ROUND(x.EpsContribution,0) AS SIGNED) AS `EPS Contribution Remitted`,
+CAST(ROUND(CASE WHEN x.EmployerPfActual <> 0 OR x.EpsContribution <> 0 THEN x.EmployerPfActual ELSE x.EmployeePf END,0) AS SIGNED) AS `EPF EPS Difference Remitted`,
+CAST(ROUND(GREATEST(0, r.TotalWorkingDays - p.PayableDays),0) AS SIGNED) AS `NCP Days`,
+0 AS `Refund Of Advances`
+FROM payrunemployees p
+JOIN payruns r ON r.Id=p.PayRunId
+LEFT JOIN employeepersonaldetails pd ON pd.EmployeeId=p.EmployeeId
+JOIN (
+    SELECT l.PayRunEmployeeId,
+    SUM(CASE WHEN COALESCE(l.Category,'') IN ('Earning','Reimbursement') THEN l.Amount ELSE 0 END) AS GrossWages,
+    LEAST(15000, SUM(CASE WHEN UPPER(TRIM(l.ComponentCode))='BASIC' THEN l.Amount ELSE 0 END)) AS EpfWages,
+    CASE WHEN SUM(CASE WHEN COALESCE(l.StatutoryType,'')='EPS' OR UPPER(TRIM(l.ComponentCode))='EPS' THEN l.Amount ELSE 0 END) > 0
+        THEN LEAST(15000, ROUND(SUM(CASE WHEN COALESCE(l.StatutoryType,'')='EPS' OR UPPER(TRIM(l.ComponentCode))='EPS' THEN l.Amount ELSE 0 END) / 0.0833, 0))
+        ELSE 0 END AS EpsWages,
+    LEAST(15000, SUM(CASE WHEN UPPER(TRIM(l.ComponentCode))='BASIC' THEN l.Amount ELSE 0 END)) AS EdliWages,
+    SUM(CASE WHEN COALESCE(l.StatutoryType,'')='PF Employee' OR UPPER(TRIM(l.ComponentCode)) IN ('PF','EPF') THEN l.Amount ELSE 0 END) AS EmployeePf,
+    SUM(CASE WHEN COALESCE(l.StatutoryType,'')='EPS' OR UPPER(TRIM(l.ComponentCode))='EPS' THEN l.Amount ELSE 0 END) AS EpsContribution,
+    SUM(CASE WHEN COALESCE(l.StatutoryType,'')='PF Employer' OR UPPER(TRIM(l.ComponentCode)) IN ('EPF_ER','EPF_ER_BAL','PF_ER','PF_EMPLOYER') THEN l.Amount ELSE 0 END) AS EmployerPfActual
+    FROM payrunemployeelines l
+    GROUP BY l.PayRunEmployeeId
+) x ON x.PayRunEmployeeId=p.Id
+WHERE p.ClientId=@ClientId
+AND (@PayRunId IS NULL OR r.Id=@PayRunId)
+AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month)
+AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId)
+AND p.IsSkipped=FALSE
+AND (x.EmployeePf <> 0 OR x.EpsContribution <> 0 OR x.EmployerPfActual <> 0)
+ORDER BY p.EmployeeCode";
+        var esiRegisterSql = @"SELECT r.PayPeriod AS `Pay Period`,
+p.EmployeeCode AS `Employee Code`,
+p.EmployeeName AS Employee,
+p.Department,
+SUM(CASE WHEN COALESCE(l.StatutoryType,'')='ESI Employee' OR UPPER(TRIM(l.ComponentCode)) IN ('ESI','ESIC','ESI_EE','ESIC_EE') THEN l.Amount ELSE 0 END) AS `Employee ESI`,
+SUM(CASE WHEN COALESCE(l.StatutoryType,'')='ESI Employer' OR UPPER(TRIM(l.ComponentCode)) IN ('ESI_ER','ESIC_ER') THEN l.Amount ELSE 0 END) AS `Employer ESI`
+FROM payrunemployees p
+JOIN payruns r ON r.Id=p.PayRunId
+LEFT JOIN payrunemployeelines l ON l.PayRunEmployeeId=p.Id
+WHERE p.ClientId=@ClientId AND (@PayRunId IS NULL OR r.Id=@PayRunId) AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month) AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId) AND p.IsSkipped=FALSE
+GROUP BY r.PayPeriod,p.EmployeeCode,p.EmployeeName,p.Department
+HAVING `Employee ESI` <> 0 OR `Employer ESI` <> 0
+ORDER BY p.EmployeeCode";
+        var ptRegisterSql = @"SELECT r.PayPeriod AS `Pay Period`,
+p.EmployeeCode AS `Employee Code`,
+p.EmployeeName AS Employee,
+p.Department,
+COALESCE(ep.State,w.State,'') AS State,
+COALESCE(o.ProfessionalTaxNumber,'') AS `PT Registration No`,
+SUM(l.Amount) AS `Professional Tax`
+FROM payrunemployeelines l
+JOIN payrunemployees p ON p.Id=l.PayRunEmployeeId
+JOIN payruns r ON r.Id=l.PayRunId
+LEFT JOIN employees e ON e.Id=p.EmployeeId
+LEFT JOIN employeepersonaldetails ep ON ep.EmployeeId=p.EmployeeId
+LEFT JOIN worklocations w ON w.Id=e.WorkLocationId
+LEFT JOIN organizations o ON 1=1
+WHERE r.ClientId=@ClientId AND (@PayRunId IS NULL OR r.Id=@PayRunId) AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month) AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId) AND (COALESCE(l.StatutoryType,'')='Professional Tax' OR UPPER(TRIM(l.ComponentCode)) IN ('PT','PT_LWF_WC')) AND l.Amount > 0
+GROUP BY r.PayPeriod,p.EmployeeCode,p.EmployeeName,p.Department,ep.State,w.State,o.ProfessionalTaxNumber
+ORDER BY p.EmployeeCode";
+        var statutorySummarySql = @"SELECT x.`Pay Period`,
+x.`Pay Run Id`,
+x.`Employee Code`,
+x.Employee,
+x.Department,
+x.`Statutory Group`,
+x.`Statutory Type`,
+x.`Component Code`,
+x.Component,
+SUM(x.Amount) AS Amount
+FROM (
+SELECT r.PayPeriod AS `Pay Period`,
+r.Id AS `Pay Run Id`,
+p.EmployeeCode AS `Employee Code`,
+p.EmployeeName AS Employee,
+p.Department,
+CASE
+    WHEN COALESCE(l.StatutoryType,'') IN ('PF Employee','PF Employer','VPF','EPS') OR UPPER(TRIM(l.ComponentCode)) IN ('PF','EPF','VPF','EPS','EPF_ER','EPF_ER_BAL','PF_ER','PF_EMPLOYER') THEN 'Provident Fund'
+    WHEN COALESCE(l.StatutoryType,'') IN ('ESI Employee','ESI Employer') OR UPPER(TRIM(l.ComponentCode)) IN ('ESI','ESIC','ESI_EE','ESIC_EE','ESI_ER','ESIC_ER') THEN 'ESI'
+    WHEN COALESCE(l.StatutoryType,'')='Professional Tax' OR UPPER(TRIM(l.ComponentCode)) IN ('PT','PT_LWF_WC') THEN 'Professional Tax'
+    WHEN COALESCE(l.StatutoryType,'') IN ('LWF Employee','LWF Employer') OR UPPER(TRIM(l.ComponentCode)) LIKE 'LWF%' THEN 'Labour Welfare Fund'
+    WHEN COALESCE(l.StatutoryType,'')='TDS' OR UPPER(TRIM(l.ComponentCode))='TDS' THEN 'Income Tax'
+    WHEN COALESCE(l.StatutoryType,'') IN ('NPS Employee','NPS Employer') OR UPPER(TRIM(l.ComponentCode)) LIKE 'NPS%' THEN 'NPS'
+    WHEN COALESCE(l.StatutoryType,'')='Workmen Compensation' OR UPPER(TRIM(l.ComponentCode)) IN ('WC','WORKMEN_COMP') THEN 'Workmen Compensation'
+    ELSE ''
+END AS `Statutory Group`,
+CASE WHEN COALESCE(l.StatutoryType,'None')='None' THEN
+    CASE
+        WHEN UPPER(TRIM(l.ComponentCode)) IN ('PF','EPF') THEN 'PF Employee'
+        WHEN UPPER(TRIM(l.ComponentCode))='VPF' THEN 'VPF'
+        WHEN UPPER(TRIM(l.ComponentCode))='EPS' THEN 'EPS'
+        WHEN UPPER(TRIM(l.ComponentCode)) IN ('EPF_ER','EPF_ER_BAL','PF_ER','PF_EMPLOYER') THEN 'PF Employer'
+        WHEN UPPER(TRIM(l.ComponentCode)) IN ('ESI','ESIC','ESI_EE','ESIC_EE') THEN 'ESI Employee'
+        WHEN UPPER(TRIM(l.ComponentCode)) IN ('ESI_ER','ESIC_ER') THEN 'ESI Employer'
+        WHEN UPPER(TRIM(l.ComponentCode)) IN ('PT','PT_LWF_WC') THEN 'Professional Tax'
+        WHEN UPPER(TRIM(l.ComponentCode))='TDS' THEN 'TDS'
+        ELSE COALESCE(l.StatutoryType,'None')
+    END
+ELSE COALESCE(l.StatutoryType,'None') END AS `Statutory Type`,
+l.ComponentCode AS `Component Code`,
+l.Name AS Component,
+l.Amount
+FROM payrunemployeelines l
+JOIN payrunemployees p ON p.Id=l.PayRunEmployeeId
+JOIN payruns r ON r.Id=l.PayRunId
+WHERE r.ClientId=@ClientId
+AND (@PayRunId IS NULL OR r.Id=@PayRunId)
+AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month)
+AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId)
+AND p.IsSkipped=FALSE
+) x
+WHERE x.`Statutory Group` <> ''
+GROUP BY x.`Pay Period`,x.`Pay Run Id`,x.`Employee Code`,x.Employee,x.Department,x.`Statutory Group`,x.`Statutory Type`,x.`Component Code`,x.Component
+ORDER BY x.`Pay Period` DESC,x.`Employee Code`,x.`Statutory Group`,x.`Component Code`";
         string? sql = code switch
         {
-            "salary-register" => @"SELECT r.PayPeriod AS `Pay Period`, p.EmployeeCode AS `Employee Code`, p.EmployeeName AS Employee, p.Department, p.PresentDays AS `Present Days`, p.PayableDays AS `Payable Days`, p.GrossPay AS `Gross Pay`, p.StatutoryDeductions AS `Statutory Deductions`, p.OneTimeDeductions AS `Other Deductions`, p.NetPay AS `Net Pay`, p.PaymentStatus AS `Payment Status` FROM payrunemployees p JOIN payruns r ON r.Id=p.PayRunId WHERE p.ClientId=@ClientId AND r.PayPeriod=@Month AND p.IsSkipped=FALSE ORDER BY r.PayPeriod DESC,p.EmployeeCode",
+            "salary-register" => @"SELECT r.Id AS `Pay Run Id`, r.PayPeriod AS `Pay Period`, p.EmployeeCode AS `Employee Code`, p.EmployeeName AS Employee, p.Department, p.PresentDays AS `Present Days`, p.PayableDays AS `Payable Days`, p.GrossPay AS `Gross Pay`, p.StatutoryDeductions AS `Statutory Deductions`, p.OneTimeDeductions AS `Other Deductions`, p.NetPay AS `Net Pay`, p.PaymentStatus AS `Payment Status` FROM payrunemployees p JOIN payruns r ON r.Id=p.PayRunId WHERE p.ClientId=@ClientId AND (@PayRunId IS NULL OR r.Id=@PayRunId) AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month) AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId) AND p.IsSkipped=FALSE ORDER BY r.PayPeriod DESC,p.EmployeeCode",
+            "component-ledger" => @"SELECT r.PayPeriod AS `Pay Period`,
+r.Id AS `Pay Run Id`,
+p.EmployeeCode AS `Employee Code`,
+p.EmployeeName AS Employee,
+p.Department,
+l.ComponentCode AS `Component Code`,
+l.Name AS Component,
+l.Category,
+COALESCE(l.ComponentRole,'') AS `Component Role`,
+COALESCE(l.StatutoryType,'None') AS `Statutory Type`,
+l.MonthlyAmount AS `Monthly Rate`,
+l.Amount,
+CASE WHEN l.Amount >= 0 THEN 'Payable' ELSE 'Recoverable' END AS Impact
+FROM payrunemployeelines l
+JOIN payrunemployees p ON p.Id=l.PayRunEmployeeId
+JOIN payruns r ON r.Id=l.PayRunId
+WHERE r.ClientId=@ClientId
+AND (@PayRunId IS NULL OR r.Id=@PayRunId)
+AND (@PayRunId IS NOT NULL OR @Month IS NULL OR r.PayPeriod=@Month)
+AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId)
+AND (@ComponentCode IS NULL OR @ComponentCode='' OR l.ComponentCode=@ComponentCode OR l.Category=@ComponentCode)
+AND p.IsSkipped=FALSE
+ORDER BY r.PayPeriod DESC,p.EmployeeCode,l.SortOrder,l.ComponentCode",
             "monthly-advice-report" => monthlyAdviceSql,
             "bank-transfer-report" => monthlyAdviceSql,
             "net-pay-estimate" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee,
@@ -45,29 +215,28 @@ SUM(CASE WHEN COALESCE(sc.Category,'')='Deduction' THEN esc.Amount ELSE 0 END) D
 FROM employeesalarycomponents esc LEFT JOIN salarycomponents sc ON CAST(sc.Id AS CHAR)=esc.ComponentId OR sc.Code=esc.ComponentCode GROUP BY esc.EmployeeId) s ON s.EmployeeId=e.Id
 LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id
 WHERE e.ClientId=@ClientId AND e.IsActive=TRUE ORDER BY e.EmployeeCode",
-            "pf-register" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee,
-MAX(CASE WHEN sc.Code='BASIC' THEN esc.Amount END) AS Basic,
-MAX(CASE WHEN sc.Code IN ('PF','EPF') THEN esc.Amount END) AS `Employee PF`
-FROM employees e LEFT JOIN employeesalarycomponents esc ON esc.EmployeeId=e.Id LEFT JOIN salarycomponents sc ON CAST(sc.Id AS CHAR)=esc.ComponentId OR sc.Code=esc.ComponentCode
-WHERE e.ClientId=@ClientId AND e.IsActive=TRUE GROUP BY e.Id,e.EmployeeCode,Employee ORDER BY e.EmployeeCode",
-            "esi-register" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, COALESCE(p.EsicEmployee,0) AS `Employee ESIC` FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id WHERE e.ClientId=@ClientId AND e.IsActive=TRUE ORDER BY e.EmployeeCode",
-            "pt-register" => @"SELECT r.PayPeriod AS `Pay Period`,
+            "pf-register" => pfRegisterSql,
+            "pf-ecr-report" => pfEcrReportSql,
+            "esi-register" => esiRegisterSql,
+            "pt-register" => ptRegisterSql,
+            "tds-register" => @"SELECT r.PayPeriod AS `Pay Period`,
 p.EmployeeCode AS `Employee Code`,
 p.EmployeeName AS Employee,
 p.Department,
-COALESCE(ep.State,w.State,'') AS State,
-COALESCE(o.ProfessionalTaxNumber,'') AS `PT Registration No`,
-l.Amount AS `Professional Tax`
-FROM payrunemployeelines l
-JOIN payrunemployees p ON p.Id=l.PayRunEmployeeId
-JOIN payruns r ON r.Id=l.PayRunId
-LEFT JOIN employees e ON e.Id=p.EmployeeId
-LEFT JOIN employeepersonaldetails ep ON ep.EmployeeId=p.EmployeeId
-LEFT JOIN worklocations w ON w.Id=e.WorkLocationId
-LEFT JOIN organizations o ON 1=1
-WHERE r.ClientId=@ClientId AND r.PayPeriod=@Month AND l.ComponentCode='PT_LWF_WC' AND l.Amount > 0
+COALESCE(t.regime,'') AS Regime,
+COALESCE(t.taxable_income,0) AS `Taxable Income`,
+COALESCE(t.total_annual_tax,0) AS `Annual Tax`,
+COALESCE(t.remaining_tax,0) AS `Remaining Tax`,
+SUM(CASE WHEN l.StatutoryType='TDS' OR l.ComponentCode='TDS' THEN l.Amount ELSE 0 END) AS TDS
+FROM payrunemployees p
+JOIN payruns r ON r.Id=p.PayRunId
+LEFT JOIN payrunemployeelines l ON l.PayRunEmployeeId=p.Id
+LEFT JOIN tax_computation_snapshots t ON t.pay_run_id=r.Id AND t.employee_id=p.EmployeeId
+WHERE p.ClientId=@ClientId AND (@PayRunId IS NULL OR r.Id=@PayRunId) AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month) AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId) AND p.IsSkipped=FALSE
+GROUP BY r.PayPeriod,p.EmployeeCode,p.EmployeeName,p.Department,t.regime,t.taxable_income,t.total_annual_tax,t.remaining_tax
+HAVING TDS <> 0 OR `Annual Tax` <> 0
 ORDER BY p.EmployeeCode",
-            "tds-register" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, COALESCE(p.Tds,0) AS TDS FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id WHERE e.ClientId=@ClientId AND e.IsActive=TRUE ORDER BY e.EmployeeCode",
+            "statutory-summary" => statutorySummarySql,
             "employee-master" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, e.Department, e.Designation, w.Name AS Location, e.DateOfJoining AS `Joining Date`, e.IsActive AS Active FROM employees e LEFT JOIN worklocations w ON w.Id=e.WorkLocationId WHERE e.ClientId=@ClientId AND (@Department IS NULL OR e.Department=@Department) AND (@WorkLocationId IS NULL OR e.WorkLocationId=@WorkLocationId) ORDER BY e.FirstName,e.LastName",
             "new-joiners" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, e.DateOfJoining AS `Joining Date`, e.Designation, w.Name AS Location FROM employees e LEFT JOIN worklocations w ON w.Id=e.WorkLocationId WHERE e.ClientId=@ClientId AND e.DateOfJoining >= DATE_SUB(CURDATE(), INTERVAL 90 DAY) ORDER BY e.DateOfJoining DESC",
             "tenure" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, e.DateOfJoining AS `Joining Date`, ROUND(DATEDIFF(CURDATE(), STR_TO_DATE(e.DateOfJoining,'%Y-%m-%d')) / 365.25, 1) AS `Tenure Years`, e.Designation FROM employees e WHERE e.ClientId=@ClientId AND e.IsActive=TRUE ORDER BY `Tenure Years` DESC",
@@ -167,7 +336,8 @@ LEFT JOIN employees e ON e.Id=p.EmployeeId
 LEFT JOIN clients c ON c.Id=r.ClientId
 LEFT JOIN worklocations w ON w.Id=e.WorkLocationId
 WHERE r.ClientId=@ClientId
-  AND r.PayPeriod=@Month
+  AND (@PayRunId IS NULL OR r.Id=@PayRunId)
+  AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month)
   AND r.Status IN ('Draft','Pending Approval','Approved','Partially Paid','Paid')
   AND (@Department IS NULL OR p.Department=@Department)
   AND (@WorkLocationId IS NULL OR e.WorkLocationId=@WorkLocationId)
@@ -178,7 +348,7 @@ ORDER BY r.PayPeriod DESC, r.Id DESC, w.Name, p.EmployeeCode;", filter)).ToList(
 
         var employeeRowIds = employees.Select(row => row.PayRunEmployeeId).Distinct().ToArray();
         var lines = (await db.QueryAsync<BillingComponentLine>(@"
-SELECT PayRunEmployeeId, ComponentCode, Name, Category, Amount, SortOrder
+SELECT PayRunEmployeeId, ComponentCode, Name, Category, COALESCE(StatutoryType,'None') StatutoryType, Amount, SortOrder
 FROM payrunemployeelines
 WHERE PayRunEmployeeId IN @EmployeeRowIds
 ORDER BY SortOrder, ComponentCode;", new { EmployeeRowIds = employeeRowIds })).ToList();
@@ -316,7 +486,7 @@ ORDER BY CASE WHEN WorkLocationId IS NULL THEN 1 ELSE 0 END, RateCardType, Id;",
         }
         if (key.Contains("statutory"))
         {
-            var statutory = lines.Where(line => ContainsAny(line, "statutory", "employer contribution", "pf", "esi", "pt", "lwf")).Sum(line => line.Amount);
+            var statutory = lines.Where(line => !string.IsNullOrWhiteSpace(line.StatutoryType) && !line.StatutoryType.Equals("None", StringComparison.OrdinalIgnoreCase) || ContainsAny(line, "statutory", "employer contribution", "pf", "esi", "pt", "lwf")).Sum(line => line.Amount);
             return statutory > 0 ? statutory : employee.StatutoryDeductions;
         }
         if (key.Contains("service"))
@@ -329,7 +499,7 @@ ORDER BY CASE WHEN WorkLocationId IS NULL THEN 1 ELSE 0 END, RateCardType, Id;",
 
     private static bool ContainsAny(BillingComponentLine line, params string[] tokens)
     {
-        var text = $"{line.Category} {line.ComponentCode} {line.Name}".ToLowerInvariant();
+        var text = $"{line.Category} {line.ComponentCode} {line.Name} {line.StatutoryType}".ToLowerInvariant();
         return tokens.Any(text.Contains);
     }
 
@@ -357,7 +527,7 @@ ORDER BY CASE WHEN WorkLocationId IS NULL THEN 1 ELSE 0 END, RateCardType, Id;",
     };
 
     private sealed record BillingEmployeeRow(int PayRunId, string PayPeriod, string RunName, string Status, int PayRunEmployeeId, int EmployeeId, string EmployeeCode, string EmployeeName, string Department, decimal PresentDays, decimal PayableDays, decimal GrossPay, decimal StatutoryDeductions, decimal OneTimeEarnings, decimal OneTimeDeductions, decimal NetPay, string ClientName, int WorkLocationId, string WorkLocationName);
-    private sealed record BillingComponentLine(int PayRunEmployeeId, string ComponentCode, string Name, string Category, decimal Amount, int SortOrder);
+    private sealed record BillingComponentLine(int PayRunEmployeeId, string ComponentCode, string Name, string Category, string StatutoryType, decimal Amount, int SortOrder);
     private sealed record BillingConfigRow(long Id, int ClientId, int? WorkLocationId, string RateCardType, string RateType, decimal Value, bool TaxInclusive, decimal GstRatePercent, DateTime EffectiveFrom, DateTime? EffectiveTo);
     private sealed record BillingComponentColumn(string Category, string ComponentCode, string Name, int SortOrder, string Label);
     private sealed record BillingAmount(decimal BaseTotal, string RuleSummary, string RateSummary, string TaxBasisSummary, string GstRateSummary, decimal AmountBeforeGst, decimal GstAmount, decimal FinalAmount);

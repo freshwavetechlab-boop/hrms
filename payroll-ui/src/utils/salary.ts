@@ -19,6 +19,7 @@ const normalizeCalculationType = (value: string) =>
   value === 'Balancing Amount' || value === 'Residual / Balancing' ? 'Residual / Balancing' :
   value === 'Manual Entry' || value === 'Manual Override' || value === 'Manual / Variable' ? 'Manual / Variable' :
   value === 'Slab Based' ? 'Slab Based' : 'Fixed Amount'
+export const canOverrideSalaryComponent = (component: Component) => ['Fixed Amount', 'Manual / Variable'].includes(normalizeCalculationType(component.calculationType))
 
 function slabValue(source: string, baseAmount: number) {
   for (const slab of source.split(';')) {
@@ -32,7 +33,7 @@ function slabValue(source: string, baseAmount: number) {
   return 0
 }
 
-export function calculateSalaryDetails(ctc: number, components: Component[], salaryStructure?: Structure): SalaryCalculationRow[] {
+export function calculateSalaryDetails(ctc: number, components: Component[], salaryStructure?: Structure, overrides: Record<string, string | number> = {}): SalaryCalculationRow[] {
   const monthlyCtc = ctc / 12
   const values: Record<string, string> = {}
   const componentById = new Map(components.map(component => [String(component.id), component]))
@@ -80,14 +81,15 @@ export function calculateSalaryDetails(ctc: number, components: Component[], sal
       const amount = numberFrom(source || component.value)
       monthly = amount || (hasFormulaSyntax(source) ? evaluate(source, byCode) : 0)
     }
+    if (canOverrideSalaryComponent(component) && overrides[String(component.id)] !== undefined) monthly = numberFrom(overrides[String(component.id)])
     values[component.id] = String(monthly)
     rows.push({ line, component, monthly, annual: monthly * 12 })
   }
   return rows
 }
 
-export function calculateSalaryJson(ctc: number, components: Component[], salaryStructure?: Structure) {
-  return JSON.stringify(Object.fromEntries(calculateSalaryDetails(ctc, components, salaryStructure).map(row => [row.component.id, String(row.monthly)])))
+export function calculateSalaryJson(ctc: number, components: Component[], salaryStructure?: Structure, overrides: Record<string, string | number> = {}) {
+  return JSON.stringify(Object.fromEntries(calculateSalaryDetails(ctc, components, salaryStructure, overrides).map(row => [row.component.id, String(row.monthly)])))
 }
 
 export function calculateSalaryTotals(rows: SalaryCalculationRow[]): SalaryTotals {
@@ -97,6 +99,6 @@ export function calculateSalaryTotals(rows: SalaryCalculationRow[]): SalaryTotal
   const gross = grossRow?.monthly ?? rows.filter(row => ['Earning', 'Reimbursement'].includes(row.component.category) && !isSummaryCode(row.component.code)).reduce((sum, row) => sum + row.monthly, 0)
   const deductions = rows.filter(row => row.component.category === 'Deduction' && row.component.code.toUpperCase() !== 'NET_PAY').reduce((sum, row) => sum + row.monthly, 0)
   const net = netRow?.monthly ?? Math.max(0, gross - deductions)
-  const employerCost = employerCostRow?.monthly ?? rows.filter(row => row.component.category === 'Employer Contribution').reduce((sum, row) => sum + row.monthly, 0)
+  const employerCost = employerCostRow?.monthly ?? rows.filter(row => row.component.category === 'Benefit' || row.component.componentRole === 'Employer Contribution').reduce((sum, row) => sum + row.monthly, 0)
   return { gross, deductions, net, employerCost }
 }

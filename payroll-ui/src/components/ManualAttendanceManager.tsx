@@ -126,11 +126,17 @@ const isWorkingDateFor = (workWeek: string, date: string, config?: WorkWeekConfi
   }
   const text = workWeek.toLowerCase()
   if (!text.trim()) return true
+  if (text.includes('no fixed')) return true
   if (text.includes('all')) return true
+  if (text.includes('friday-saturday') || text.includes('friday saturday')) return ![5, 6].includes(day)
+  if (text.includes('friday off')) return day !== 5
+  if (text.includes('saturday-sunday') || text.includes('saturday sunday')) return ![0, 6].includes(day)
   if (day === 0) return false
   if (day !== 6) return day >= 1 && day <= 5
   const saturdayNumber = Math.ceil(current.getDate() / 7)
+  if (text.includes('second & fourth') || text.includes('alternate saturday')) return ![2, 4].includes(saturdayNumber)
   if (text.includes('2nd/4th') || text.includes('2nd and 4th')) return ![2, 4].includes(saturdayNumber)
+  if (text.includes('second saturday')) return saturdayNumber !== 2
   if (text.includes('2nd saturday') || text.includes('only 2nd')) return saturdayNumber !== 2
   return text.includes('saturday')
 }

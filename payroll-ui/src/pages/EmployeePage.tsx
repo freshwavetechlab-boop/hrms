@@ -9,7 +9,7 @@ import { employee0, setup0 } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
 import { deleteEmployee as removeEmployee, downloadEmployeeImportTemplate, getDropdowns, getEmployeeDeletePreview, getEmployeeImportJob, getEmployeeInfotypes, getSetup, getWorkLocations, processEmployeeAction, saveEmployee as persistEmployee, startEmployeeImport } from '../services/settingsService'
 import type { Client, Component, Drop, Employee, EmployeeActionRequest, EmployeeInfotypeRecord, EmployeePaymentDetails, EmployeePersonalDetails, Setup, Structure, WorkLocation } from '../types/payroll'
-import { calculateSalaryJson, calculateSalaryTotals, money } from '../utils/salary'
+import { calculateSalaryJson, calculateSalaryTotals, canOverrideSalaryComponent, money } from '../utils/salary'
 import { parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules, type ImportPreviewSheet } from '../utils/importPreview'
 import { buildXlsxBlob } from '../utils/xlsx'
 import { safeJsonRecord } from '../shared/json'
@@ -45,8 +45,7 @@ export default function EmployeePage() {
   const chosenStructure = setup.salaryStructures.find(item => String(item.id) === employee.salaryStructureId) ?? clientStructure
   const rawEmployeeSalary = salaryRecord(employee)
   const structureLineIds = chosenStructure?.lines.map(line => line.componentId) ?? []
-  const linkedSalaryHasCurrentIds = structureLineIds.some(id => rawEmployeeSalary[id] !== undefined)
-  const employeeSalary = linkedSalaryHasCurrentIds || !chosenStructure || !employee.annualCtc ? rawEmployeeSalary : safeJsonRecord(calculateSalaryJson(employee.annualCtc, setup.salaryComponents, chosenStructure))
+  const employeeSalary = chosenStructure && employee.annualCtc ? safeJsonRecord(calculateSalaryJson(employee.annualCtc, setup.salaryComponents, chosenStructure, rawEmployeeSalary)) : rawEmployeeSalary
   const structureComponents = setup.salaryComponents.filter(component => component.active && structureLineIds.includes(String(component.id))).sort((a, b) => structureLineIds.indexOf(String(a.id)) - structureLineIds.indexOf(String(b.id)) || Number(a.priority) - Number(b.priority))
   const deps = drops.filter(item => item.type === 'Department' && item.isActive).map(item => item.value), desigs = drops.filter(item => item.type === 'Designation' && item.isActive).map(item => item.value)
   const grades = drops.filter(item => item.type === 'Employee Grade' && item.isActive && (!item.clientId || item.clientId === employee.clientId)).map(item => item.value)
@@ -62,21 +61,19 @@ export default function EmployeePage() {
   useEffect(() => { void load() }, [])
   useEffect(() => { setTemplateDownloaded(false) }, [clientFilter])
   const changeClientFilter = (id: number) => { setClientFilter(id); setLocationFilter(0) }
-  const calcSalary = (ctc: number, salaryStructure = chosenStructure) => calculateSalaryJson(ctc, setup.salaryComponents, salaryStructure)
+  const calcSalary = (ctc: number, salaryStructure = chosenStructure, overrides: Record<string, string | number> = {}) => calculateSalaryJson(ctc, setup.salaryComponents, salaryStructure, overrides)
   const withSalary = (row: Employee, salaryJson: string): Employee => ({ ...row, salaryJson, salaryComponents: numberRecord(salaryJson) })
   const normalizeEmployeeSalary = (row: Employee) => {
     row = normalizeEmployeeDetails(row)
     const salaryStructure = setup.salaryStructures.find(item => String(item.id) === row.salaryStructureId) ?? templatesForClient(setup.salaryStructures, row.clientId)[0]
     if (!salaryStructure || !row.annualCtc) return row
-    const existing = salaryRecord(row)
-    const hasCurrentIds = salaryStructure.lines.some(line => existing[line.componentId] !== undefined)
     const normalized = String(row.salaryStructureId) === String(salaryStructure.id) ? row : { ...row, salaryStructureId: String(salaryStructure.id) }
-    return hasCurrentIds ? normalized : withSalary(normalized, calcSalary(row.annualCtc, salaryStructure))
+    return withSalary(normalized, calcSalary(row.annualCtc, salaryStructure, salaryRecord(row)))
   }
   const empLine = (componentId: string, value: string) => { const lines = salaryRecord(employee); lines[componentId] = value; setEmployee(withSalary(employee, JSON.stringify(lines))) }
   const empMonthly = (component: Component) => Number(employeeSalary[String(component.id)] || 0)
   const applyStructure = (id: string) => { const selectedId = id.split(':')[0]; const selectedStructure = setup.salaryStructures.find(item => String(item.id) === selectedId); const ctc = Number(selectedStructure?.annualCtc || employee.annualCtc || 0); setEmployee(withSalary({ ...employee, salaryStructureId: selectedId, annualCtc: ctc }, calcSalary(ctc, selectedStructure))) }
-  const applyCtc = (ctc: number) => setEmployee(withSalary({ ...employee, salaryStructureId: chosenStructure ? String(chosenStructure.id) : employee.salaryStructureId, annualCtc: ctc }, calcSalary(ctc)))
+  const applyCtc = (ctc: number) => setEmployee(withSalary({ ...employee, salaryStructureId: chosenStructure ? String(chosenStructure.id) : employee.salaryStructureId, annualCtc: ctc }, calcSalary(ctc, chosenStructure, salaryRecord(employee))))
   const applyClient = (value: string) => { const clientId = Number(value.split(':')[0] || 0); const selectedStructure = templatesForClient(setup.salaryStructures, clientId)[0]; const ctc = Number(selectedStructure?.annualCtc || employee.annualCtc || 0); setEmployee(withSalary({ ...employee, clientId, salaryStructureId: selectedStructure ? String(selectedStructure.id) : '', annualCtc: ctc }, selectedStructure ? calcSalary(ctc, selectedStructure) : '{}')) }
   const newEmployee = () => {
     const selectedStructure = templatesForClient(setup.salaryStructures, clientFilter)[0]
@@ -354,7 +351,7 @@ function EmployeePanel(p: { employee: Employee; setEmployee: (employee: Employee
           <strong title={component.name}>{component.name}</strong>
           <output>{money(monthly)}</output>
           <output>{money(annual)}</output>
-          <input value={p.employeeSalary[String(component.id)] ?? ''} onChange={event => p.empLine(String(component.id), event.target.value.replace(/[^\d.-]/g, ''))} aria-label={`${component.name} override`} />
+          <input value={p.employeeSalary[String(component.id)] ?? ''} readOnly={!canOverrideSalaryComponent(component)} title={canOverrideSalaryComponent(component) ? 'Employee-specific override' : 'Calculated from salary component master and template'} onChange={event => p.empLine(String(component.id), event.target.value.replace(/[^\d.-]/g, ''))} aria-label={`${component.name} override`} />
         </div>) : <p className="employee-salary-empty">Select a client and salary template, then enter Annual CTC to calculate the salary breakup.</p>}
       </div>
     </div>}

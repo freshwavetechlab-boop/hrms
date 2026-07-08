@@ -279,3 +279,30 @@ public class TaxComputationResult
     public decimal MonthlyTds { get; set; }
     public string SnapshotJson { get; set; } = "{}";
 }
+
+public class EmployeeTaxProfile
+{
+    public int EmployeeId { get; set; }
+    public int ClientId { get; set; }
+    public string EmployeeCode { get; set; } = "";
+    public string EmployeeName { get; set; } = "";
+    public string FinancialYear { get; set; } = "";
+    public string Regime { get; set; } = "";
+    public string RegimeStatus { get; set; } = "";
+    public string DeductionSource { get; set; } = "Planned";
+    public List<EmployeeTaxProfileLine> Lines { get; set; } = [];
+}
+
+public class EmployeeTaxProfileLine
+{
+    public int SectionId { get; set; }
+    public string Code { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Regime { get; set; } = "";
+    public decimal? LimitAmount { get; set; }
+    public decimal PlannedAmount { get; set; }
+    public decimal ActualAmount { get; set; }
+    public decimal ApprovedAmount { get; set; }
+    public string Status { get; set; } = "Draft";
+    public string Remarks { get; set; } = "";
+}

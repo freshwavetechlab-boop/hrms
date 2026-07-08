@@ -11,6 +11,113 @@ Only if you intentionally want migration on API startup, add this to config:
   }
 }
 
+2026-07-08 - Salary component role and statutory identity
+
+2026-07-08 - Pay-run line statutory identity for processed payroll reports
+
+SET @add_payrun_line_component_role = (
+    SELECT IF(
+        COUNT(*) = 0,
+        'ALTER TABLE payrunemployeelines ADD COLUMN ComponentRole VARCHAR(80) NOT NULL DEFAULT '''' AFTER Category',
+        'SELECT 1'
+    )
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'payrunemployeelines'
+      AND COLUMN_NAME = 'ComponentRole'
+);
+PREPARE stmt FROM @add_payrun_line_component_role;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @add_payrun_line_statutory_type = (
+    SELECT IF(
+        COUNT(*) = 0,
+        'ALTER TABLE payrunemployeelines ADD COLUMN StatutoryType VARCHAR(80) NOT NULL DEFAULT ''None'' AFTER ComponentRole',
+        'SELECT 1'
+    )
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'payrunemployeelines'
+      AND COLUMN_NAME = 'StatutoryType'
+);
+PREPARE stmt FROM @add_payrun_line_statutory_type;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+ALTER TABLE salarycomponents
+    ADD COLUMN ComponentRole VARCHAR(80) NOT NULL DEFAULT 'Regular Earning' AFTER ComponentType,
+    ADD COLUMN StatutoryType VARCHAR(80) NOT NULL DEFAULT 'None' AFTER ComponentRole;
+
+UPDATE salarycomponents
+SET ComponentRole = CASE
+    WHEN Category = 'Deduction' THEN 'Regular Deduction'
+    WHEN Category = 'Reimbursement' THEN 'Reimbursement'
+    WHEN Category = 'Benefit' THEN 'Employer Contribution'
+    WHEN Category = 'Correction' THEN 'Arrear / Correction'
+    ELSE 'Regular Earning'
+END
+WHERE ComponentRole = '' OR ComponentRole IS NULL OR (ComponentRole = 'Regular Earning' AND Category <> 'Earning');
+
+UPDATE salarycomponents
+SET ComponentRole = 'Statutory Deduction',
+    StatutoryType = CASE
+        WHEN Code IN ('PF', 'EPF', 'EPF_EMP') THEN 'PF Employee'
+        WHEN Code IN ('VPF') THEN 'VPF'
+        WHEN Code IN ('ESIC', 'ESI') THEN 'ESI Employee'
+        WHEN Code IN ('PT', 'PT_LWF_WC') THEN 'Professional Tax'
+        WHEN Code IN ('TDS') THEN 'TDS'
+        ELSE StatutoryType
+    END
+WHERE Category = 'Deduction'
+  AND Code IN ('PF', 'EPF', 'EPF_EMP', 'VPF', 'ESIC', 'ESI', 'PT', 'PT_LWF_WC', 'TDS');
+
+UPDATE salarycomponents
+SET ComponentRole = 'Recovery',
+    StatutoryType = 'None'
+WHERE Category = 'Deduction'
+  AND Code IN ('RECOVERY', 'LOAN', 'ADVANCE');
+
+2026-07-08 - Split combined PT/LWF/WC salary component
+
+UPDATE salarycomponents
+SET Code = 'PT',
+    Name = 'Professional Tax',
+    ComponentType = 'Professional Tax',
+    ComponentRole = 'Statutory Deduction',
+    StatutoryType = 'Professional Tax',
+    Category = 'Deduction',
+    PayType = 'Variable Pay',
+    CalculationType = 'Manual / Variable',
+    ValueText = '',
+    Formula = '',
+    BaseComponent = '',
+    Taxable = FALSE,
+    Ctc = FALSE,
+    ProRata = FALSE,
+    Fbp = FALSE,
+    RestrictFbp = FALSE,
+    Epf = 'Never',
+    Esi = FALSE,
+    Recurring = TRUE,
+    Scheduled = FALSE,
+    InvestmentType = '',
+    CorrectionOf = '',
+    Active = TRUE,
+    Priority = 130
+WHERE Code = 'PT_LWF_WC'
+  AND NOT EXISTS (SELECT 1 FROM (SELECT Code FROM salarycomponents WHERE Code = 'PT') existing_pt);
+
+INSERT INTO salarycomponents
+(Id, Code, ComponentType, ComponentRole, StatutoryType, Category, Name, PayType, CalculationType, ValueText, Formula, BaseComponent, Taxable, Ctc, ProRata, Fbp, RestrictFbp, Epf, Esi, Recurring, Scheduled, InvestmentType, CorrectionOf, Active, Priority)
+SELECT 204, 'LWF', 'Labour Welfare Fund', 'Statutory Deduction', 'LWF Employee', 'Deduction', 'Labour Welfare Fund', 'Variable Pay', 'Manual / Variable', '', '', '', FALSE, FALSE, FALSE, FALSE, FALSE, 'Never', FALSE, TRUE, FALSE, '', '', TRUE, 135
+WHERE NOT EXISTS (SELECT 1 FROM salarycomponents WHERE Code = 'LWF');
+
+INSERT INTO salarycomponents
+(Id, Code, ComponentType, ComponentRole, StatutoryType, Category, Name, PayType, CalculationType, ValueText, Formula, BaseComponent, Taxable, Ctc, ProRata, Fbp, RestrictFbp, Epf, Esi, Recurring, Scheduled, InvestmentType, CorrectionOf, Active, Priority)
+SELECT 205, 'WC', 'Workmen Compensation', 'Employer Contribution', 'Workmen Compensation', 'Benefit', 'Workmen Compensation', 'Variable Pay', 'Manual / Variable', '', '', '', FALSE, TRUE, FALSE, FALSE, FALSE, 'Never', FALSE, TRUE, FALSE, '', '', TRUE, 240
+WHERE NOT EXISTS (SELECT 1 FROM salarycomponents WHERE Code = 'WC');
+
 2026-07-03 - Employee infotype and audit trail schema
 
 CREATE TABLE IF NOT EXISTS employee_infotype_records (

@@ -23,6 +23,7 @@ public class EmployeeRepository(IConfiguration configuration)
         var actionType = wasNew ? "Hire" : "Master Update";
         if (employee.Id == 0) employee.Id = (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId,EmployeeCode,FirstName,LastName,Gender,DateOfJoining,WorkEmail,Department,Designation,Grade,WorkLocationId,ReportingManagerId,PortalAccess,SalaryStructureId,AnnualCtc,SalaryJson,PersonalJson,PaymentJson,IsActive) VALUES (@ClientId,@EmployeeCode,@FirstName,@LastName,@Gender,@DateOfJoining,@WorkEmail,@Department,@Designation,@Grade,@WorkLocationId,@ReportingManagerId,@PortalAccess,@SalaryStructureId,@AnnualCtc,@SalaryJson,@PersonalJson,@PaymentJson,@IsActive); SELECT LAST_INSERT_ID();", employee);
         else await db.ExecuteAsync(@"UPDATE employees SET ClientId=@ClientId,EmployeeCode=@EmployeeCode,FirstName=@FirstName,LastName=@LastName,Gender=@Gender,DateOfJoining=@DateOfJoining,WorkEmail=@WorkEmail,Department=@Department,Designation=@Designation,Grade=@Grade,WorkLocationId=@WorkLocationId,ReportingManagerId=@ReportingManagerId,PortalAccess=@PortalAccess,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,IsActive=@IsActive WHERE Id=@Id", employee);
+        if (wasNew) await EnsureDefaultTaxProfileAsync(db, employee.Id, employee.ClientId);
         await PayrollDataTableStore.SyncEmployeeTablesAsync(db, employee);
         await db.ExecuteAsync("UPDATE employees SET SalaryJson=@SalaryJson,PersonalJson=@PersonalJson,PaymentJson=@PaymentJson WHERE Id=@Id", employee);
         var after = await LoadEmployeeAsync(db, employee.Id) ?? employee;
@@ -30,6 +31,26 @@ public class EmployeeRepository(IConfiguration configuration)
         await WriteCurrentInfotypesAsync(db, after, actionType, EffectiveDate(after), reason, changedBy, before, wasNew ? null : NormalizeInfotypeCodes(infotypeCode));
         await SyncAttendancePolicyMappingsAsync(db, after, before);
         return employee.Id;
+    }
+
+    private static async Task EnsureDefaultTaxProfileAsync(MySqlConnection db, int employeeId, int clientId)
+    {
+        await db.ExecuteAsync(@"CREATE TABLE IF NOT EXISTS employee_tax_regime_selections (
+id INT PRIMARY KEY AUTO_INCREMENT,
+employee_id INT NOT NULL, client_id INT NOT NULL DEFAULT 0, financial_year VARCHAR(10) NOT NULL, regime VARCHAR(20) NOT NULL DEFAULT 'New',
+status VARCHAR(30) NOT NULL DEFAULT 'Draft', submitted_at DATETIME NULL, approved_at DATETIME NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_employee_tax_regime (employee_id, financial_year));");
+        await db.ExecuteAsync(@"INSERT INTO employee_tax_regime_selections (employee_id,client_id,financial_year,regime,status)
+VALUES (@EmployeeId,@ClientId,@FinancialYear,'New','Draft')
+ON DUPLICATE KEY UPDATE client_id=@ClientId",
+            new { EmployeeId = employeeId, ClientId = clientId, FinancialYear = CurrentFinancialYear() });
+    }
+
+    private static string CurrentFinancialYear()
+    {
+        var today = DateTime.Today;
+        var startYear = today.Month >= 4 ? today.Year : today.Year - 1;
+        return $"{startYear}-{(startYear + 1) % 100:00}";
     }
     public async Task<EmployeeDeletePreview?> GetDeletePreviewAsync(int id)
     {

@@ -393,6 +393,7 @@ export function PayRunReview(p: { selected: PayRun; diagnostics: PayRunDiagnosti
   const defaultActions = p.action ? <div className="pay-run-actions"><button type="button" className="lock-action" disabled={p.busy || selected.status !== 'Draft'} onClick={() => void p.action?.('submit', 'Payroll locked and sent for approval.')}>Lock payroll</button><button type="button" className="approve-action" disabled={p.busy || selected.status !== 'Pending Approval'} onClick={() => void p.action?.('approve', 'Payroll approved.')}>Approve payroll</button><button type="button" className="secondary recall-action" disabled={p.busy || !['Approved', 'Pending Approval'].includes(selected.status)} onClick={() => void p.action?.('recall', 'Payroll recalled to draft.')}>Recall</button><a className="secondary export-action" href={exportPayRunUrl(selected.id)}>Export</a></div> : null
   const actions = p.actions === undefined ? defaultActions : p.actions
   const salaryRegisterColumns = useMemo(() => buildSalaryRegisterColumns(selected.employees), [selected.employees])
+  const componentDetailRows = useMemo(() => buildPayrollComponentDetailRows(selected.employees), [selected.employees])
   const columns: Column<RunEmployee>[] = [
     { key: 'employeeCode', label: 'Code', width: '110px' },
     { key: 'employeeName', label: 'Employee', width: '190px', render: employee => <>{employee.employeeName}<small>{employee.department || employee.employeeCode}</small></>, exportValue: row => `${row.employeeName} ${row.employeeCode}`.trim() },
@@ -401,13 +402,13 @@ export function PayRunReview(p: { selected: PayRun; diagnostics: PayRunDiagnosti
     { key: 'leaveBreakdown', label: 'Leave', sortable: false, filterable: false, render: employee => <LeaveChips employee={employee} totalWorkingDays={selected.totalWorkingDays} offcycle={selected.runType === 'Off Cycle'} />, exportValue: row => leaveText(row, selected.totalWorkingDays, selected.runType === 'Off Cycle') },
     ...salaryRegisterColumns,
     { key: 'grossPay', label: 'Gross', value: row => row.grossPay, render: row => money(row.grossPay) },
-    { key: 'deductions', label: 'Deductions', value: row => row.statutoryDeductions + row.oneTimeDeductions, render: row => money(row.statutoryDeductions + row.oneTimeDeductions) },
+    { key: 'deductions', label: 'Total deductions', value: row => row.statutoryDeductions + row.oneTimeDeductions, render: row => money(row.statutoryDeductions + row.oneTimeDeductions) },
     { key: 'netPay', label: 'Net', value: row => row.netPay, render: row => <strong>{money(row.netPay)}</strong> },
     { key: 'previousNetPay', label: 'Last net', value: row => row.previousNetPay ?? 0, render: row => row.previousNetPay == null ? '-' : money(row.previousNetPay) },
     { key: 'previousTwoMonthAverageNetPay', label: '2-mo avg', value: row => row.previousTwoMonthAverageNetPay ?? 0, render: row => row.previousTwoMonthAverageNetPay == null ? '-' : money(row.previousTwoMonthAverageNetPay) },
     { key: 'twoMonthAverageVariance', label: 'Variance', value: row => row.twoMonthAverageVariance ?? 0, render: row => row.twoMonthAverageVariance == null ? '-' : <span className={`variance-badge ${Math.abs(row.twoMonthAverageVariancePercent || 0) >= 10 ? 'risk' : ''}`}>{money(row.twoMonthAverageVariance)}<small>{row.twoMonthAverageVariancePercent == null ? '' : `${row.twoMonthAverageVariancePercent}%`}</small></span>, exportValue: row => row.twoMonthAverageVariance ?? '' }
   ]
-  return <section className="card pay-run-details enterprise-review"><header><i className="blue">R</i><div><h3>{selected.clientName} / {selected.payPeriod}</h3><p>{selected.runType || 'Regular'} / {selected.runName || 'Regular payroll'} / {selected.status} / {selected.employeeCount} included employees</p></div><span className={`status-chip ${selected.status.toLowerCase().replace(/\s+/g, '-')}`}>{selected.status}</span></header>{actions}{isProcessing && <p className="payment-warning">Payroll request is under process. This review will refresh automatically and show pass/fail diagnostics once the worker completes.</p>}{selected.status === 'Failed' && selected.processingError && <p className="payment-warning">{selected.processingError}</p>}<div className="pay-run-summary"><div><span>Payroll cost</span><strong>{money(selected.payrollCost)}</strong></div><div><span>Net payable</span><strong>{money(selected.netPay)}</strong></div><div><span>Payable days</span><strong>{payableDays}</strong></div><div><span>LOP days</span><strong>{lopDays}</strong></div><div><span>Present days</span><strong>{presentDays}</strong></div><div><span>Variance alerts</span><strong>{p.materialVarianceCount}</strong></div></div>{selected.runType === 'Off Cycle' && <p className="payment-warning">Off-cycle runs do not use monthly attendance payable days. Regular payroll pulls payable days from Attendance Review.</p>}<div className="pay-run-table"><DataTable rows={selected.employees} title="Employee payroll review" getRowId={row => row.employeeId} rowClassName={row => row.isSkipped ? 'skipped' : ''} emptyText={isProcessing ? 'Payroll is queued or processing.' : 'No employees in this run.'} exportFileName={`pay-run-${selected.payPeriod}`} columns={columns} pageSizeOptions={[10, 25, 50, 100]} /></div><DiagnosticsPanel diagnostics={p.diagnostics} payPeriod={selected.payPeriod} /></section>
+  return <section className="card pay-run-details enterprise-review"><header><i className="blue">R</i><div><h3>{selected.clientName} / {selected.payPeriod}</h3><p>{selected.runType || 'Regular'} / {selected.runName || 'Regular payroll'} / {selected.status} / {selected.employeeCount} included employees</p></div><span className={`status-chip ${selected.status.toLowerCase().replace(/\s+/g, '-')}`}>{selected.status}</span></header>{actions}{isProcessing && <p className="payment-warning">Payroll request is under process. This review will refresh automatically and show pass/fail diagnostics once the worker completes.</p>}{selected.status === 'Failed' && selected.processingError && <p className="payment-warning">{selected.processingError}</p>}<div className="pay-run-summary"><div><span>Payroll cost</span><strong>{money(selected.payrollCost)}</strong></div><div><span>Net payable</span><strong>{money(selected.netPay)}</strong></div><div><span>Payable days</span><strong>{payableDays}</strong></div><div><span>LOP days</span><strong>{lopDays}</strong></div><div><span>Present days</span><strong>{presentDays}</strong></div><div><span>Variance alerts</span><strong>{p.materialVarianceCount}</strong></div></div>{selected.runType === 'Off Cycle' && <p className="payment-warning">Off-cycle runs do not use monthly attendance payable days. Regular payroll pulls payable days from Attendance Review.</p>}<div className="pay-run-table"><DataTable rows={selected.employees} title="Employee payroll review" getRowId={row => row.employeeId} rowClassName={row => row.isSkipped ? 'skipped' : ''} emptyText={isProcessing ? 'Payroll is queued or processing.' : 'No employees in this run.'} exportFileName={`pay-run-${selected.payPeriod}`} columns={columns} pageSizeOptions={[10, 25, 50, 100]} /></div><div className="pay-run-table component-detail-table"><DataTable rows={componentDetailRows} title="Component-wise payroll detail" getRowId={row => row.id} emptyText={isProcessing ? 'Payroll is queued or processing.' : 'No payroll component lines found.'} exportFileName={`pay-run-components-${selected.payPeriod}`} columns={componentDetailColumns} pageSizeOptions={[25, 50, 100, 200]} /></div><DiagnosticsPanel diagnostics={p.diagnostics} payPeriod={selected.payPeriod} /></section>
 }
 
 function DiagnosticsPanel({ diagnostics, payPeriod }: { diagnostics: PayRunDiagnostics | null; payPeriod: string }) {
@@ -469,6 +470,45 @@ function buildSalaryRegisterColumns(rows: RunEmployee[]): Column<RunEmployee>[] 
     }))
 }
 
+type PayrollComponentDetailRow = { id: string; employeeCode: string; employeeName: string; department: string; category: string; componentRole: string; statutoryType: string; componentCode: string; componentName: string; monthlyRate: number; amount: number; proRata: string }
+
+const componentDetailColumns: Column<PayrollComponentDetailRow>[] = [
+  { key: 'employeeCode', label: 'Code', width: '110px' },
+  { key: 'employeeName', label: 'Employee', width: '190px', render: row => <>{row.employeeName}<small>{row.department || row.employeeCode}</small></>, exportValue: row => `${row.employeeName} ${row.employeeCode}`.trim() },
+  { key: 'category', label: 'Category', width: '130px' },
+  { key: 'componentRole', label: 'Role', width: '170px' },
+  { key: 'statutoryType', label: 'Statutory', width: '150px', render: row => row.statutoryType && row.statutoryType !== 'None' ? row.statutoryType : '-', exportValue: row => row.statutoryType },
+  { key: 'componentCode', label: 'Component code', width: '140px' },
+  { key: 'componentName', label: 'Component', width: '220px' },
+  { key: 'monthlyRate', label: 'Monthly rate', width: '130px', value: row => row.monthlyRate, render: row => money(row.monthlyRate) },
+  { key: 'amount', label: 'Amount', width: '130px', value: row => row.amount, render: row => money(row.amount) },
+  { key: 'proRata', label: 'Pro-rata', width: '110px' }
+]
+
+function buildPayrollComponentDetailRows(rows: RunEmployee[]): PayrollComponentDetailRow[] {
+  return rows.flatMap(employee => salaryLines(employee)
+    .map((line, index) => {
+      const category = lineCategory(line)
+      const code = lineCode(line)
+      if (!code || category === 'Summary') return null
+      return {
+        id: `${employee.employeeId}-${index}-${category}-${code}`,
+        employeeCode: employee.employeeCode,
+        employeeName: employee.employeeName,
+        department: employee.department,
+        category,
+        componentRole: lineRole(line),
+        statutoryType: lineStatutoryType(line),
+        componentCode: code,
+        componentName: lineName(line) || code,
+        monthlyRate: lineMonthlyAmount(line),
+        amount: lineAmount(line),
+        proRata: lineProRata(line) ? 'Yes' : 'No'
+      }
+    })
+    .filter((row): row is PayrollComponentDetailRow => row !== null))
+}
+
 function salaryLines(employee: RunEmployee): PayRunSalaryLine[] {
   if (!employee.detailsJson) return []
   try {
@@ -480,7 +520,7 @@ function salaryLines(employee: RunEmployee): PayRunSalaryLine[] {
 }
 
 function componentAmount(employee: RunEmployee, code: string, category: string) {
-  return salaryLines(employee).filter(line => lineCode(line) === code && lineCategory(line) === category).reduce((sum, line) => sum + Number(line.amount ?? 0), 0)
+  return salaryLines(employee).filter(line => lineCode(line) === code && lineCategory(line) === category).reduce((sum, line) => sum + lineAmount(line), 0)
 }
 
 function lineCode(line: PayRunSalaryLine) {
@@ -495,8 +535,32 @@ function lineCategory(line: PayRunSalaryLine) {
   return String(line.category ?? line.Category ?? '').trim()
 }
 
+function lineRole(line: PayRunSalaryLine) {
+  return String(line.componentRole ?? line.ComponentRole ?? '').trim()
+}
+
+function lineStatutoryType(line: PayRunSalaryLine) {
+  return String(line.statutoryType ?? line.StatutoryType ?? 'None').trim() || 'None'
+}
+
+function lineMonthlyAmount(line: PayRunSalaryLine) {
+  return Number(line.monthlyAmount ?? line.MonthlyAmount ?? 0)
+}
+
+function lineAmount(line: PayRunSalaryLine) {
+  return Number(line.amount ?? line.Amount ?? 0)
+}
+
+function lineProRata(line: PayRunSalaryLine) {
+  return Boolean(line.proRata ?? line.ProRata)
+}
+
 function componentPrefix(category: string) {
-  return ['Deduction', 'Recovery'].includes(category) ? 'D:' : category === 'Reimbursement' ? 'R:' : 'E:'
+  if (['Deduction', 'Recovery'].includes(category)) return 'D:'
+  if (category === 'Reimbursement') return 'R:'
+  if (category === 'Benefit') return 'B:'
+  if (category === 'Correction') return 'C:'
+  return 'E:'
 }
 
 function componentGroupOrder(category: string) {

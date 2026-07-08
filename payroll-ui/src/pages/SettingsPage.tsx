@@ -12,7 +12,7 @@ import PageTabs from '../components/PageTabs'
 import SalaryTemplateDesigner from '../components/SalaryTemplateDesigner'
 import TaxEngineManager from '../components/TaxEngineManager'
 import { useToast, type ToastType } from '../components/ToastProvider'
-import { client0, component0, drop0, dropTypes, location0, org0, payslip0, settingsMenus, setup0, structure0, workWeekOptions } from '../data/payrollDefaults'
+import { client0, component0, drop0, dropTypes, location0, org0, payslip0, settingsMenus, setup0, structure0, workWeekOptions, workWeekPatternConfigs } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
 import { getAttendanceGroups } from '../services/leaveAttendanceService'
 import { getClientBillingConfigurations, getClientBillingImportJob, getClientBillingModule, getClientImportJob, getDropdownImportJob, getDropdowns, getOrganization, getSalaryComponentImportJob, getSalaryTemplateImportJob, getSetup, getWorkLocationImportJob, getWorkLocations, saveClient as persistClient, saveClientBillingConfiguration, saveClientBillingModule, saveDropdown, saveOrganization, saveSetup, saveWorkLocation, startClientBillingImport, startClientImport, startDropdownImport, startSalaryComponentImport, startSalaryTemplateImport, startWorkLocationImport, type BulkImportStatus } from '../services/settingsService'
@@ -29,6 +29,23 @@ const statutoryTabs = ['Income Tax Rules', 'Professional Tax'] as const
 type StatutoryTab = (typeof statutoryTabs)[number]
 const componentTabs = ['Earning', 'Deduction', 'Reimbursement', 'Benefit', 'Correction'] as const
 type ComponentCategory = (typeof componentTabs)[number]
+const componentRoleOptions = ['Regular Earning', 'Regular Deduction', 'Statutory Deduction', 'Employer Contribution', 'Reimbursement', 'Variable Pay', 'Arrear / Correction', 'Recovery'] as const
+const statutoryTypeOptions = ['None', 'TDS', 'Professional Tax', 'PF Employee', 'PF Employer', 'VPF', 'EPS', 'ESI Employee', 'ESI Employer', 'LWF Employee', 'LWF Employer', 'NPS Employee', 'NPS Employer', 'Workmen Compensation'] as const
+const defaultComponentRole = (category: string) => category === 'Deduction' ? 'Regular Deduction' : category === 'Reimbursement' ? 'Reimbursement' : category === 'Benefit' ? 'Employer Contribution' : category === 'Correction' ? 'Arrear / Correction' : 'Regular Earning'
+const componentRolesForCategory = (category: string) => category === 'Deduction'
+  ? ['Regular Deduction', 'Statutory Deduction', 'Recovery', 'Arrear / Correction']
+  : category === 'Reimbursement'
+    ? ['Reimbursement']
+    : category === 'Benefit'
+      ? ['Employer Contribution']
+      : category === 'Correction'
+        ? ['Arrear / Correction']
+        : ['Regular Earning', 'Variable Pay']
+const statutoryTypesForRole = (role: string) => role === 'Statutory Deduction'
+  ? ['TDS', 'Professional Tax', 'PF Employee', 'VPF', 'ESI Employee', 'LWF Employee', 'NPS Employee']
+  : role === 'Employer Contribution'
+    ? ['PF Employer', 'EPS', 'ESI Employer', 'LWF Employer', 'NPS Employer', 'Workmen Compensation']
+    : ['None']
 const ptSlab0: ProfessionalTaxSlab = { id: 0, state: '', salaryFrom: '0', salaryTo: '', deductionAmount: '', effectiveFrom: new Date().toISOString().slice(0, 10), effectiveTo: '', gender: 'All', notes: '', active: true }
 const calculationOptions = ['Fixed Amount', 'Formula', 'Residual / Balancing', 'Manual / Variable', 'Slab Based']
 const formulaChips = ['GROSS', 'CTC', 'MONTHLY_CTC', 'PAYROLL_DAYS', 'PAYABLE_DAYS', 'MIN()', 'MAX()', 'ROUND()', 'ROUNDDOWN()', 'ROUNDUP()']
@@ -41,7 +58,7 @@ const billingImportHeaders = ['Client Id', 'Work Location Id', 'Rate Card Type',
 const clientImportHeaders = ['Client Name', 'Code', 'Contact Person', 'Email', 'Phone', 'Address', 'Active']
 const workLocationImportHeaders = ['Client Id', 'Location Name', 'Address', 'State', 'City', 'PIN', 'GST Number', 'Primary', 'Active']
 const dropdownImportHeaders = ['Master Type', 'Value', 'Client Id', 'State', 'Active', 'Config Json']
-const salaryComponentImportHeaders = ['Code', 'Category', 'Name', 'Component Type', 'Pay Type', 'Calculation Type', 'Value', 'Formula', 'Base Component', 'Taxable', 'Part Of CTC', 'Pro Rata', 'FBP', 'Restrict FBP', 'EPF', 'ESI', 'Recurring', 'Scheduled', 'Investment Type', 'Correction Of', 'Priority', 'Active']
+const salaryComponentImportHeaders = ['Code', 'Category', 'Name', 'Component Type', 'Component Role', 'Statutory Type', 'Pay Type', 'Calculation Type', 'Value', 'Formula', 'Base Component', 'Taxable', 'Part Of CTC', 'Pro Rata', 'FBP', 'Restrict FBP', 'EPF', 'ESI', 'Recurring', 'Scheduled', 'Investment Type', 'Correction Of', 'Priority', 'Active']
 const salaryTemplateImportHeaders = ['Client Ids', 'Template Name', 'Annual CTC', 'Active', 'Component Code', 'Value']
 const clientPreviewRules: ImportPreviewRules = {
   required: ['Client Name'],
@@ -51,7 +68,7 @@ const clientPreviewRules: ImportPreviewRules = {
 }
 const workLocationPreviewRules: ImportPreviewRules = { required: ['Client Id', 'Location Name'], unique: [['Client Id', 'Location Name']], booleans: ['Primary', 'Active'] }
 const dropdownPreviewRules: ImportPreviewRules = { required: ['Master Type', 'Value'], unique: [['Master Type', 'Client Id', 'State', 'Value']], booleans: ['Active'], enums: { 'Master Type': [...dropTypes] } }
-const salaryComponentPreviewRules: ImportPreviewRules = { required: ['Code', 'Category', 'Name', 'Calculation Type'], unique: [['Code']], booleans: ['Taxable', 'Part Of CTC', 'Pro Rata', 'FBP', 'Restrict FBP', 'ESI', 'Recurring', 'Scheduled', 'Active'], numbers: ['Priority'], enums: { Category: [...componentTabs], 'Calculation Type': [...calculationOptions], 'Pay Type': ['Fixed Pay', 'Variable Pay'], EPF: ['Never', 'Always', 'Only if employee is PF eligible'] } }
+const salaryComponentPreviewRules: ImportPreviewRules = { required: ['Code', 'Category', 'Name', 'Calculation Type'], unique: [['Code']], booleans: ['Taxable', 'Part Of CTC', 'Pro Rata', 'FBP', 'Restrict FBP', 'ESI', 'Recurring', 'Scheduled', 'Active'], numbers: ['Priority'], enums: { Category: [...componentTabs], 'Component Role': [...componentRoleOptions], 'Statutory Type': [...statutoryTypeOptions], 'Calculation Type': [...calculationOptions], 'Pay Type': ['Fixed Pay', 'Variable Pay'], EPF: ['Never', 'Always', 'Only if employee is PF eligible'] } }
 const salaryTemplatePreviewRules: ImportPreviewRules = { required: ['Client Ids', 'Template Name', 'Component Code'], unique: [['Client Ids', 'Template Name', 'Component Code']], booleans: ['Active'], numbers: ['Annual CTC'] }
 const billingPreviewRules: ImportPreviewRules = { required: ['Client Id', 'Rate Card Type', 'Rate Type', 'Value', 'Effective From'], unique: [['Client Id', 'Work Location Id', 'Rate Card Type', 'Rate Type', 'Effective From']], booleans: ['Active'], numbers: ['Value', 'GST Rate %'], dates: ['Effective From', 'Effective To'], enums: { 'Rate Card Type': [...billingRateCardTypes], 'Rate Type': [...billingRateTypes], 'Tax Basis': ['Excluding', 'Inclusive'] } }
 const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
@@ -63,8 +80,10 @@ const dropdownWorkWeekReferenceRows = [
   ['Pattern', 'Working Days', 'Off Saturdays', 'Result'],
   ['Monday - Friday', 'Mon, Tue, Wed, Thu, Fri', '', 'Saturday and Sunday off'],
   ['Monday - Saturday', 'Mon, Tue, Wed, Thu, Fri, Sat', '', 'Only Sunday off'],
-  ['2nd/4th Saturday off', 'Mon, Tue, Wed, Thu, Fri, Sat', '2nd, 4th', 'Sunday + selected Saturdays off'],
-  ['All Saturdays off', 'Mon, Tue, Wed, Thu, Fri', '', 'Do not include Sat in Working Days']
+  ['Second Saturday + Sunday off', 'Mon, Tue, Wed, Thu, Fri, Sat', '2nd', 'Sunday and 2nd Saturday off'],
+  ['Second & Fourth Saturday + Sunday off', 'Mon, Tue, Wed, Thu, Fri, Sat', '2nd, 4th', 'Sunday, 2nd Saturday, and 4th Saturday off'],
+  ['Friday off', 'Sun, Mon, Tue, Wed, Thu, Sat', '', 'Only Friday off'],
+  ['Friday-Saturday off', 'Sun, Mon, Tue, Wed, Thu', '', 'Friday and Saturday off']
 ]
 type SettingsBulkUpload = { open: boolean; state: BulkUploadState; percent: number; summary: BulkUploadSummary }
 type ImportStart = (file: File) => Promise<{ ok: boolean; data: BulkImportStatus; error: string; status: number }>
@@ -82,7 +101,33 @@ const normalizeComponentForUi = (row: Component): Component => {
       : row.calculationType === 'Percentage of Component' ? `${row.baseComponent || 'BASIC'} * ${row.value || 0}%`
         : currentFormula
     : currentFormula
-  return { ...row, calculationType, formula, payType: calculationType === 'Manual / Variable' ? 'Variable Pay' : row.payType }
+  return { ...row, calculationType, formula, componentRole: row.componentRole || defaultComponentRole(row.category), statutoryType: row.statutoryType || 'None', payType: calculationType === 'Manual / Variable' ? 'Variable Pay' : row.payType }
+}
+const prepareComponentForSave = (row: Component): Component => {
+  const category = row.category
+  const roleOptions = componentRolesForCategory(category)
+  const role = roleOptions.includes(row.componentRole) ? row.componentRole : defaultComponentRole(category)
+  const isEarning = category === 'Earning'
+  const isBenefit = category === 'Benefit'
+  const isReimbursement = category === 'Reimbursement'
+  const isCorrection = category === 'Correction'
+  const isStatutory = role === 'Statutory Deduction' || role === 'Employer Contribution'
+  const statutoryOptions = statutoryTypesForRole(role)
+  const statutoryType = isStatutory && statutoryOptions.includes(row.statutoryType) ? row.statutoryType : 'None'
+  return {
+    ...row,
+    componentRole: role,
+    statutoryType,
+    taxable: isEarning || isBenefit || isReimbursement ? row.taxable : false,
+    ctc: isEarning || isBenefit || role === 'Employer Contribution' ? row.ctc : false,
+    fbp: isEarning || isBenefit || isReimbursement ? row.fbp : false,
+    restrictFbp: (isEarning || isBenefit || isReimbursement) && row.fbp ? row.restrictFbp : false,
+    epf: isEarning ? row.epf : 'Never',
+    esi: isEarning ? row.esi : false,
+    scheduled: isEarning || role === 'Variable Pay' ? row.scheduled : false,
+    investmentType: isBenefit || isStatutory || statutoryType.includes('NPS') || statutoryType === 'TDS' ? row.investmentType : '',
+    correctionOf: isCorrection ? row.correctionOf : ''
+  }
 }
 const unique = (items: string[]) => Array.from(new Set(items.map(item => item.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b))
 const plural = (count: number, label: string) => `${count} ${label}${count === 1 ? '' : 's'}`
@@ -131,6 +176,7 @@ const weekDayOptions = [{ value: 0, label: 'Sun' }, { value: 1, label: 'Mon' }, 
 const saturdayOptions = [{ value: 1, label: '1st' }, { value: 2, label: '2nd' }, { value: 3, label: '3rd' }, { value: 4, label: '4th' }, { value: 5, label: '5th' }]
 const defaultWorkWeekConfig: WorkWeekConfig = { workingDays: [1, 2, 3, 4, 5], offSaturdays: [] }
 const workWeekPresetConfigs: Record<string, WorkWeekConfig> = {
+  ...Object.fromEntries(workWeekPatternConfigs.map(item => [item.value, item.config])),
   'Monday - Friday': { workingDays: [1, 2, 3, 4, 5], offSaturdays: [] },
   'Monday - Saturday': { workingDays: [1, 2, 3, 4, 5, 6], offSaturdays: [] },
   'All days': { workingDays: [0, 1, 2, 3, 4, 5, 6], offSaturdays: [] },
@@ -147,6 +193,11 @@ const parseWorkWeekConfig = (drop: Drop): WorkWeekConfig => {
 }
 const workWeekLabel = (config: WorkWeekConfig) => {
   const normalized = normalizeWorkWeekConfig(config)
+  const canonical = workWeekPatternConfigs.find(item => {
+    const itemConfig = normalizeWorkWeekConfig(item.config)
+    return itemConfig.workingDays.join(',') === normalized.workingDays.join(',') && itemConfig.offSaturdays.join(',') === normalized.offSaturdays.join(',')
+  })
+  if (canonical) return canonical.value
   const weeklyOffDays = weekDayOptions.filter(day => !normalized.workingDays.includes(day.value)).map(day => day.label)
   const saturdayOffText = normalized.workingDays.includes(6) && normalized.offSaturdays.length
     ? `${normalized.offSaturdays.map(item => saturdayOptions.find(option => option.value === item)?.label).filter(Boolean).join('/')} Saturday off`
@@ -450,11 +501,11 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const downloadSalaryComponentTemplate = () => {
     const flag = (value: boolean) => value ? 'TRUE' : 'FALSE'
     const rows = setup.salaryComponents.length
-      ? setup.salaryComponents.map(item => [item.code, item.category, item.name, item.componentType, item.payType, item.calculationType, item.value, item.formula, item.baseComponent, flag(item.taxable), flag(item.ctc), flag(item.proRata), flag(item.fbp), flag(item.restrictFbp), item.epf, flag(item.esi), flag(item.recurring), flag(item.scheduled), item.investmentType, item.correctionOf, item.priority, flag(item.active)])
-      : [['BASIC', 'Earning', 'Basic Salary', 'Basic', 'Fixed Pay', 'Fixed Amount', '0', '', '', 'TRUE', 'TRUE', 'TRUE', 'FALSE', 'FALSE', 'Never', 'FALSE', 'TRUE', 'FALSE', '', '', '100', 'TRUE']]
+      ? setup.salaryComponents.map(item => [item.code, item.category, item.name, item.componentType, item.componentRole, item.statutoryType, item.payType, item.calculationType, item.value, item.formula, item.baseComponent, flag(item.taxable), flag(item.ctc), flag(item.proRata), flag(item.fbp), flag(item.restrictFbp), item.epf, flag(item.esi), flag(item.recurring), flag(item.scheduled), item.investmentType, item.correctionOf, item.priority, flag(item.active)])
+      : [['BASIC', 'Earning', 'Basic Salary', 'Basic', 'Regular Earning', 'None', 'Fixed Pay', 'Fixed Amount', '0', '', '', 'TRUE', 'TRUE', 'TRUE', 'FALSE', 'FALSE', 'Never', 'FALSE', 'TRUE', 'FALSE', '', '', '100', 'TRUE']]
     downloadXlsx('salary-component-import-template.xlsx', [
       { name: 'Salary Components', rows: [salaryComponentImportHeaders, ...rows] },
-      { name: 'Reference', rows: [['Categories', componentTabs.join(', '), ''], ['Calculation Types', calculationOptions.join(', '), ''], ['Pay Types', 'Fixed Pay, Variable Pay', ''], ['EPF Options', 'Never, Always, Only if employee is PF eligible', ''], ['', '', ''], ['Existing Code', 'Name', 'Category'], ...setup.salaryComponents.map(item => [item.code, item.name, item.category])] }
+      { name: 'Reference', rows: [['Categories', componentTabs.join(', '), ''], ['Component Roles', componentRoleOptions.join(', '), ''], ['Statutory Types', statutoryTypeOptions.join(', '), ''], ['Calculation Types', calculationOptions.join(', '), ''], ['Pay Types', 'Fixed Pay, Variable Pay', ''], ['EPF Options', 'Never, Always, Only if employee is PF eligible', ''], ['', '', ''], ['Existing Code', 'Name', 'Category'], ...setup.salaryComponents.map(item => [item.code, item.name, item.category])] }
     ])
     setComponentTemplateDownloaded(true)
     notify('Salary component import template downloaded.', 'info')
@@ -592,6 +643,20 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const visibleDrops = drops.filter(item => item.isActive && (selectedDropType === 'City' ? isCityType(item.type) && (!dropState || item.type === cityType(dropState)) : item.type === selectedDropType))
   const changeDropType = (type: string) => { const workWeek = workWeekPayload(defaultWorkWeekConfig); setDrop(type === 'Work Week' ? { ...drop0, type, ...workWeek } : { ...drop0, type, clientId: type === 'Employee Grade' ? clients[0]?.id || 0 : 0 }); setDropState('') }
   const editDrop = (row: Drop) => { setDropDrawerOpen(true); if (isCityType(row.type)) { setDropState(cityState(row.type)); setDrop({ ...row, type: 'City' }); return } setDropState(''); setDrop(row.type === 'Work Week' ? { ...row, ...workWeekPayload(parseWorkWeekConfig(row)) } : row) }
+  const seedWorkWeekPatterns = async () => {
+    let inserted = 0, updated = 0
+    for (const pattern of workWeekPatternConfigs) {
+      const config = normalizeWorkWeekConfig(pattern.config)
+      const existing = drops.find(item => item.type === 'Work Week' && item.value.trim().toLowerCase() === pattern.value.toLowerCase())
+      const payload = { ...(existing ?? drop0), clientId: 0, type: 'Work Week', value: pattern.value, configJson: JSON.stringify(config), isActive: true }
+      const response = await saveDropdown(payload, { toast: false })
+      if (!response.ok) return notify(response.error || `Unable to save ${pattern.value}.`, 'error')
+      if (existing) updated += 1
+      else inserted += 1
+    }
+    notify(`Work week patterns ready. ${inserted} added, ${updated} refreshed.`, 'success')
+    await load()
+  }
   const saveDrop = async () => {
     const actualType = drop.type === 'City' ? dropState ? cityType(dropState) : '' : drop.type
     if (!actualType || !drop.value.trim()) return notify(drop.type === 'City' ? 'Select a state and city for the city master.' : 'Dropdown value is required.', 'error')
@@ -615,7 +680,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   }
   const openNewComponent = () => { setComponent(normalizeComponentForUi({ ...component0, category: componentTab })); setComponentDrawerOpen(true) }
   const persistComponentSetup = async (nextSetup: Setup, success: string) => { setComponentSaving(true); const response = await saveSetup(nextSetup, { toast: false }); setComponentSaving(false); if (!response.ok) { notify(response.error || 'Unable to save salary components.', 'error'); return false } setSetup(nextSetup); notify(success); return true }
-  const saveComponent = async () => { const rowForUi = normalizeComponentForUi(component); const errors = validateComponent(rowForUi, componentTab, setup); if (errors.length) return notify(errors[0], 'error'); const isUpdate = Boolean(rowForUi.id), locked = rowForUi.id && componentUsed(rowForUi.id, setup); const row = { ...rowForUi, category: locked ? rowForUi.category : componentTab, id: rowForUi.id || Date.now(), code: locked ? rowForUi.code : rowForUi.code.trim().toUpperCase() }; const nextSetup = { ...setup, salaryComponents: [...setup.salaryComponents.filter(item => item.id !== row.id), row] }; if (await persistComponentSetup(nextSetup, isUpdate ? 'Salary component updated successfully.' : 'Salary component added successfully.')) { setComponent(normalizeComponentForUi({ ...component0, category: componentTab })); setComponentDrawerOpen(false) } }
+  const saveComponent = async () => { const rowForUi = prepareComponentForSave(normalizeComponentForUi({ ...component, category: componentTab })); const errors = validateComponent(rowForUi, componentTab, setup); if (errors.length) return notify(errors[0], 'error'); const isUpdate = Boolean(rowForUi.id), locked = rowForUi.id && componentUsed(rowForUi.id, setup); const row = { ...rowForUi, category: locked ? rowForUi.category : componentTab, id: rowForUi.id || Date.now(), code: locked ? rowForUi.code : rowForUi.code.trim().toUpperCase() }; const nextSetup = { ...setup, salaryComponents: [...setup.salaryComponents.filter(item => item.id !== row.id), row] }; if (await persistComponentSetup(nextSetup, isUpdate ? 'Salary component updated successfully.' : 'Salary component added successfully.')) { setComponent(normalizeComponentForUi({ ...component0, category: componentTab })); setComponentDrawerOpen(false) } }
   const editComponent = (row: Component) => { if (componentTabs.includes(row.category as ComponentCategory)) setComponentTab(row.category as ComponentCategory); setComponent(normalizeComponentForUi(row)); setComponentDrawerOpen(true) }
   const deleteComponent = async (row: Component) => { if (blockDeleteIfLinked(row.name || row.code, componentDeleteLinks(row))) return; if (!window.confirm(`Delete ${row.name || row.code}?`)) return; await persistComponentSetup({ ...setup, salaryComponents: setup.salaryComponents.filter(item => item.id !== row.id) }, 'Salary component deleted successfully.'); if (component.id === row.id) { setComponent({ ...component0, category: componentTab }); setComponentDrawerOpen(false) } }
   const toggleBillingModule = async (enabled: boolean) => {
@@ -703,7 +768,30 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const renderComponentDrawer = () => {
     if (!componentDrawerOpen) return null
     const calcType = normalizeCalculationType(component.calculationType)
+    const roleOptions = componentRolesForCategory(componentTab)
+    const role = roleOptions.includes(component.componentRole) ? component.componentRole : defaultComponentRole(componentTab)
+    const statutoryOptions = statutoryTypesForRole(role)
+    const statutoryType = statutoryOptions.includes(component.statutoryType) ? component.statutoryType : 'None'
+    const isEarning = componentTab === 'Earning'
+    const isDeduction = componentTab === 'Deduction'
+    const isReimbursement = componentTab === 'Reimbursement'
+    const isBenefit = componentTab === 'Benefit'
+    const isCorrection = componentTab === 'Correction'
+    const isStatutory = role === 'Statutory Deduction' || role === 'Employer Contribution'
+    const showStatutoryType = isStatutory
+    const showTaxable = isEarning || isBenefit || isReimbursement
+    const showCtc = isEarning || isBenefit || role === 'Employer Contribution'
+    const showProRata = isEarning || isDeduction || isBenefit
+    const showFbp = isEarning || isReimbursement || isBenefit
+    const showPfEsiBase = isEarning
+    const showInvestment = isBenefit || isStatutory || statutoryType.includes('NPS') || statutoryType === 'TDS'
+    const showScheduled = isEarning || role === 'Variable Pay'
+    const showCorrectionOf = isCorrection
     const setCalcType = (value: string) => setComponent({ ...component, calculationType: value, payType: value === 'Manual / Variable' ? 'Variable Pay' : component.payType })
+    const setRole = (value: string) => {
+      const nextStatutoryOptions = statutoryTypesForRole(value)
+      setComponent({ ...component, componentRole: value, statutoryType: nextStatutoryOptions.includes(component.statutoryType) ? component.statutoryType : nextStatutoryOptions[0] })
+    }
     const addFormulaToken = (token: string) => setComponent(current => ({ ...current, formula: `${current.formula}${current.formula ? ' ' : ''}${token}` }))
     const removeFormulaToken = (token: string) => setComponent(current => ({ ...current, formula: current.formula.replace(new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'), '').replace(/\s+/g, ' ').trim() }))
     const componentFormulaChips = setup.salaryComponents.filter(item => item.active && item.code && item.code.toUpperCase() !== component.code.trim().toUpperCase()).sort((a, b) => Number(a.priority || 999) - Number(b.priority || 999))
@@ -718,6 +806,8 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
         <InfoField label="Code" help="Unique short code used in formulas and imports. Changing it can affect formula references and payroll mapping."><input value={component.code} onChange={event => setComponent({ ...component, code: event.target.value.toUpperCase() })} placeholder="BASIC" /></InfoField>
         <InfoField label="Name in payslip" help="Employee-facing label printed in payroll outputs and payslips. Keep it clear and recognizable."><input value={component.name} onChange={event => setComponent({ ...component, name: event.target.value })} /></InfoField>
         <InfoField label="Component type" help="Groups the component by business purpose. This controls the setup choices shown to payroll admins."><Sel v={component.componentType} set={value => setComponent({ ...component, componentType: value })} a={componentTypeOptions} /></InfoField>
+        <InfoField label="Component role" help="Defines payroll behavior for this category only."><Sel v={role} set={setRole} a={roleOptions} /></InfoField>
+        {showStatutoryType && <InfoField label="Statutory type" help="Canonical identity used by payroll, reports, statutory registers, and later rule mapping."><Sel v={statutoryType} set={value => setComponent({ ...component, statutoryType: value })} a={statutoryOptions} /></InfoField>}
         <InfoField label="Pay type" help="Fixed pay is part of regular monthly salary. Variable pay is usually event-based or manually adjusted."><Sel v={component.payType} set={value => setComponent({ ...component, payType: value })} a={['Fixed Pay', 'Variable Pay']} /></InfoField>
         <InfoField label="Calculation" help="Choose the natural behavior. Formula covers percentage of CTC/component, so those shortcuts are no longer separate options."><Sel v={calcType} set={setCalcType} a={calculationOptions} /></InfoField>
         {calcType === 'Fixed Amount' && <InfoField label="Monthly amount" help="Fixed monthly value before attendance pro-rata. Example: 2000."><input value={component.value} onChange={event => setComponent({ ...component, value: event.target.value.replace(/[^\d.-]/g, '') })} placeholder="2000" /></InfoField>}
@@ -725,10 +815,21 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
         {calcType === 'Residual / Balancing' && <InfoField label="Balance target" help="Usually GROSS or CTC. Payroll subtracts already calculated earnings before this component."><input value={component.baseComponent || 'GROSS'} onChange={event => setComponent({ ...component, baseComponent: event.target.value.toUpperCase() })} placeholder="GROSS" /></InfoField>}
         {calcType === 'Slab Based' && <InfoField label="Slab rules" wide help="Use semicolon slabs like 0-15000:0;15001+:200."><textarea value={component.formula || component.value} onChange={event => setComponent({ ...component, formula: event.target.value })} rows={3} placeholder="0-15000:0;15001+:200" /></InfoField>}
         {calcType === 'Manual / Variable' && <div className="component-drawer-note">Value will come from payroll adjustment/import/manual entry. No formula or fixed amount is required.</div>}
-        {componentTab !== 'Reimbursement' && <InfoField label="EPF treatment" help="Controls whether this component contributes to PF wage calculations and employer/employee deductions."><Sel v={component.epf} set={value => setComponent({ ...component, epf: value })} a={['Never', 'Always', 'Only if employee is PF eligible']} /></InfoField>}
-        <InfoField label="Investment type" help="Optional tax classification such as 80C or 80CCD. It helps reporting and tax projection later."><input value={component.investmentType} onChange={event => setComponent({ ...component, investmentType: event.target.value })} placeholder="80C / 80CCD / Other" /></InfoField>
+        {showPfEsiBase && <InfoField label="EPF wage base" help="Controls whether this earning contributes to PF wage calculations."><Sel v={component.epf} set={value => setComponent({ ...component, epf: value })} a={['Never', 'Always', 'Only if employee is PF eligible']} /></InfoField>}
+        {showInvestment && <InfoField label="Tax / investment class" help="Optional classification such as 80C, 80CCD, perquisite, reimbursement, or statutory register group."><input value={component.investmentType} onChange={event => setComponent({ ...component, investmentType: event.target.value })} placeholder="80C / 80CCD / Perquisite / Other" /></InfoField>}
+        {showCorrectionOf && <InfoField label="Correction of" help="Original component code being corrected or reversed."><input value={component.correctionOf} onChange={event => setComponent({ ...component, correctionOf: event.target.value.toUpperCase() })} placeholder="BASIC / HRA / TDS" /></InfoField>}
         <InfoField label="Priority" help="Controls calculation and display order. Lower numbers calculate earlier. Put residual/balancing after normal earnings."><input value={component.priority} onChange={event => setComponent({ ...component, priority: event.target.value.replace(/\D/g, '') })} /></InfoField>
-        <div className="component-drawer-checks"><Chk l="Taxable" v={component.taxable} set={value => setComponent({ ...component, taxable: value })} /><small>Includes this amount in taxable salary and tax reports.</small><Chk l="Part of CTC" v={component.ctc} set={value => setComponent({ ...component, ctc: value })} /><small>Counts this amount in annual CTC totals.</small><Chk l="Pro-rata" v={component.proRata} set={value => setComponent({ ...component, proRata: value })} /><small>Reduces or adjusts the amount for partial attendance/pay days.</small><Chk l="FBP" v={component.fbp} set={value => setComponent({ ...component, fbp: value })} /><small>Marks this component as flexible benefit plan eligible.</small><Chk l="Restrict FBP override" v={component.restrictFbp} set={value => setComponent({ ...component, restrictFbp: value })} /><small>Prevents ad hoc changes after FBP selection is locked.</small><Chk l="ESI wages" v={component.esi} set={value => setComponent({ ...component, esi: value })} /><small>Includes this amount in ESI wage eligibility and contribution calculation.</small><Chk l="Recurring" v={component.recurring} set={value => setComponent({ ...component, recurring: value })} /><small>Runs every payroll cycle unless changed in employee salary.</small><Chk l="Scheduled earning" v={component.scheduled} set={value => setComponent({ ...component, scheduled: value })} /><small>Used for planned earnings such as bonus or future-dated payments.</small><Chk l="Active" v={component.active} set={value => setComponent({ ...component, active: value })} /><small>Inactive components stay saved but are hidden from new salary templates.</small></div>
+        <div className="component-drawer-checks">
+          {showTaxable && <><Chk l="Taxable" v={component.taxable} set={value => setComponent({ ...component, taxable: value })} /><small>Includes this component in taxable salary and tax reports.</small></>}
+          {showCtc && <><Chk l="Part of CTC" v={component.ctc} set={value => setComponent({ ...component, ctc: value })} /><small>Counts this amount in annual CTC totals.</small></>}
+          {showProRata && <><Chk l="Pro-rata" v={component.proRata} set={value => setComponent({ ...component, proRata: value })} /><small>Adjusts the amount for payable days.</small></>}
+          {showFbp && <><Chk l="FBP" v={component.fbp} set={value => setComponent({ ...component, fbp: value })} /><small>Marks this component as flexible benefit plan eligible.</small></>}
+          {component.fbp && showFbp && <><Chk l="Restrict FBP override" v={component.restrictFbp} set={value => setComponent({ ...component, restrictFbp: value })} /><small>Prevents ad hoc changes after FBP selection is locked.</small></>}
+          {showPfEsiBase && <><Chk l="ESI wage base" v={component.esi} set={value => setComponent({ ...component, esi: value })} /><small>Includes this earning in ESI wage eligibility and contribution calculation.</small></>}
+          <Chk l="Recurring" v={component.recurring} set={value => setComponent({ ...component, recurring: value })} /><small>Runs every payroll cycle unless changed in employee salary.</small>
+          {showScheduled && <><Chk l="Scheduled" v={component.scheduled} set={value => setComponent({ ...component, scheduled: value })} /><small>Used for planned future earnings or variable pay.</small></>}
+          <Chk l="Active" v={component.active} set={value => setComponent({ ...component, active: value })} /><small>Inactive components stay saved but are hidden from new salary templates.</small>
+        </div>
       </div>
       <footer><button type="button" disabled={componentSaving} onClick={() => void saveComponent()}>{componentSaving ? 'Saving...' : component.id ? 'Update component' : `Add ${componentTab}`}</button></footer>
     </aside>
@@ -768,6 +869,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
               <input type="file" disabled={!dropTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadDrops(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} />
               <UploadOutlined />Bulk upload
             </label>
+            {selectedDropType === 'Work Week' && <Button className="settings-toolbar-secondary" onClick={() => void seedWorkWeekPatterns()}>Load common patterns</Button>}
             <Button type="primary" icon={<PlusOutlined />} onClick={() => { setDrop({ ...drop0, type: selectedDropType, clientId: selectedDropType === 'Employee Grade' ? clients[0]?.id || 0 : 0 }); setDropState(''); setDropDrawerOpen(true) }}>Add value</Button>
           </Space>
         </div>
@@ -778,12 +880,12 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
         </Form>
         <DataTable rows={visibleDrops} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editDrop(row)}>Edit</Button><Button size="small" danger onClick={() => void deleteDrop(row)}>Delete</Button></Space>} columns={[{ key: 'master', label: 'Master', value: row => isCityType(row.type) ? 'City' : row.type }, { key: 'clientId', label: 'Client', value: row => row.type === 'Employee Grade' ? clientName(row.clientId) : '-' }, { key: 'state', label: 'State', value: row => cityState(row.type) || '-' }, { key: 'value', label: 'Value' }, { key: 'isActive', label: 'Status', render: item => item.isActive ? 'Active' : 'Inactive' }]} />
       </AntCard>
-      <Drawer className="settings-master-drawer dropdown-master-drawer" title={<div className="settings-drawer-title"><span>Dropdown master</span><h3>{drop.id ? 'Edit dropdown value' : 'Add dropdown value'}</h3><p>Maintain reusable values for departments, designations, states, cities, grades, and work weeks.</p></div>} open={dropDrawerOpen} width={760} onClose={() => { setDropDrawerOpen(false); setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }} destroyOnClose><Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Master type" required><Sel v={selectedDropType} set={changeDropType} a={dropTypes} /></Form.Item>{selectedDropType === 'Employee Grade' && <Form.Item label="Client" required><Sel v={drop.clientId || ''} set={value => setDrop({ ...drop, clientId: Number(refId(value) || 0) })} a={clients.map(item => `${item.id}:${item.name}`)} /></Form.Item>}{selectedDropType === 'City' && <Form.Item label="State" required><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></Form.Item>}{selectedDropType === 'Work Week' ? <WorkWeekMasterFields drop={drop} setDrop={setDrop} /> : <Form.Item label={selectedDropType === 'City' ? 'City' : 'Value'} required><Input value={drop.value} onChange={event => setDrop({ ...drop, value: event.target.value })} placeholder={selectedDropType === 'City' ? 'e.g. Bengaluru / Pune' : selectedDropType === 'Employee Grade' ? 'e.g. G1 / Supervisor' : 'e.g. Finance / Manager'} /></Form.Item>}<Form.Item><AntCheckbox checked={drop.isActive} onChange={event => setDrop({ ...drop, isActive: event.target.checked })}>Active</AntCheckbox></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => { setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }}>Reset</Button><Button type="primary" style={drop.id ? { background: '#f59e0b', borderColor: '#f59e0b' } : undefined} onClick={saveDrop}>{drop.id ? 'Update value' : 'Add value'}</Button></Space></Row></Form></Drawer>
+      <Drawer className="settings-master-drawer dropdown-master-drawer" title={<div className="settings-drawer-title"><span>{selectedDropType === 'Work Week' ? 'Work week pattern' : 'Dropdown master'}</span><h3>{drop.id ? 'Edit dropdown value' : 'Add dropdown value'}</h3><p>{selectedDropType === 'Work Week' ? 'Maintain weekly off rules used by attendance policy, review, payroll attendance, and reports.' : 'Maintain reusable values for departments, designations, states, cities, grades, and work weeks.'}</p></div>} open={dropDrawerOpen} width={760} onClose={() => { setDropDrawerOpen(false); setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }} destroyOnClose><Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Master type" required><Sel v={selectedDropType} set={changeDropType} a={dropTypes} /></Form.Item>{selectedDropType === 'Employee Grade' && <Form.Item label="Client" required><Sel v={drop.clientId || ''} set={value => setDrop({ ...drop, clientId: Number(refId(value) || 0) })} a={clients.map(item => `${item.id}:${item.name}`)} /></Form.Item>}{selectedDropType === 'City' && <Form.Item label="State" required><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></Form.Item>}{selectedDropType === 'Work Week' ? <WorkWeekMasterFields drop={drop} setDrop={setDrop} /> : <Form.Item label={selectedDropType === 'City' ? 'City' : 'Value'} required><Input value={drop.value} onChange={event => setDrop({ ...drop, value: event.target.value })} placeholder={selectedDropType === 'City' ? 'e.g. Bengaluru / Pune' : selectedDropType === 'Employee Grade' ? 'e.g. G1 / Supervisor' : 'e.g. Finance / Manager'} /></Form.Item>}<Form.Item><AntCheckbox checked={drop.isActive} onChange={event => setDrop({ ...drop, isActive: event.target.checked })}>Active</AntCheckbox></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => { setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }}>Reset</Button><Button type="primary" style={drop.id ? { background: '#f59e0b', borderColor: '#f59e0b' } : undefined} onClick={saveDrop}>{drop.id ? 'Update value' : 'Add value'}</Button></Space></Row></Form></Drawer>
     </>}
     {tab === 'Tax Engine' && <TaxEngineManager clients={clients} onMessage={notifyFromChild} mode="company" />}
     {tab === 'Statutory Setup' && <><PageTabs items={statutoryTabs} value={statutoryTab} onChange={setStatutoryTab} label="Statutory setup sections" />{statutoryTab === 'Income Tax Rules' ? <TaxEngineManager clients={clients} onMessage={notifyFromChild} mode="statutory" /> : renderProfessionalTaxSetup()}</>}
     {tab === 'Client Billing Configuration' && renderClientBilling()}
-    {tab === 'Salary Components' && <Card t="Salary components"><PageTabs items={componentTabs} value={componentTab} onChange={item => { setComponentTab(item); setComponent(normalizeComponentForUi({ ...component0, category: item })); setComponentDrawerOpen(false) }} label="Salary component categories" getLabel={item => `${item}s`} /><div className="component-table-head"><div><b>{componentTab}s</b><span>Maintain salary component formulas, flags, and payroll order.</span></div><Space className="settings-master-actions" size={8} wrap><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadSalaryComponentTemplate}>Template</Button><label className={`settings-upload-action ${!componentTemplateDownloaded ? 'disabled' : ''}`} title={componentTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!componentTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadSalaryComponents(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" icon={<PlusOutlined />} disabled={componentSaving} onClick={openNewComponent}>Add {componentTab}</Button></Space></div><div className="component-guide"><b>Setup guide</b><span>Use Formula for all derived components. Use Residual for balancing amount. Payable values are handled by Pro-rata, separate payable rows are not needed.</span></div><DataTable rows={componentRows} actions={row => <span className="row-actions"><button type="button" onClick={() => editComponent(row)}>Edit</button><button type="button" className="danger" disabled={componentSaving} onClick={() => void deleteComponent(row)}>Delete</button></span>} emptyText={`No ${componentTab.toLowerCase()} components configured yet.`} exportFileName={`salary-${componentTab.toLowerCase()}-components`} columns={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Name' }, { key: 'componentType', label: 'Type' }, { key: 'calculationType', label: 'Calculation' }, { key: 'payType', label: 'Pay Type' }, { key: 'priority', label: 'Priority' }, { key: 'locked', label: 'Lock', render: item => componentUsed(item.id, setup) ? 'Locked' : 'Open' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
+    {tab === 'Salary Components' && <Card t="Salary components"><PageTabs items={componentTabs} value={componentTab} onChange={item => { setComponentTab(item); setComponent(normalizeComponentForUi({ ...component0, category: item })); setComponentDrawerOpen(false) }} label="Salary component categories" getLabel={item => `${item}s`} /><div className="component-table-head"><div><b>{componentTab}s</b><span>Maintain salary component formulas, flags, and payroll order.</span></div><Space className="settings-master-actions" size={8} wrap><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadSalaryComponentTemplate}>Template</Button><label className={`settings-upload-action ${!componentTemplateDownloaded ? 'disabled' : ''}`} title={componentTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!componentTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadSalaryComponents(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" icon={<PlusOutlined />} disabled={componentSaving} onClick={openNewComponent}>Add {componentTab}</Button></Space></div><div className="component-guide"><b>Setup guide</b><span>Use Formula for all derived components. Use Residual for balancing amount. Payable values are handled by Pro-rata, separate payable rows are not needed.</span></div><DataTable rows={componentRows} actions={row => <span className="row-actions"><button type="button" onClick={() => editComponent(row)}>Edit</button><button type="button" className="danger" disabled={componentSaving} onClick={() => void deleteComponent(row)}>Delete</button></span>} emptyText={`No ${componentTab.toLowerCase()} components configured yet.`} exportFileName={`salary-${componentTab.toLowerCase()}-components`} columns={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Name' }, { key: 'componentType', label: 'Type' }, { key: 'componentRole', label: 'Role' }, { key: 'statutoryType', label: 'Statutory', render: item => item.statutoryType && item.statutoryType !== 'None' ? item.statutoryType : '-' }, { key: 'calculationType', label: 'Calculation' }, { key: 'payType', label: 'Pay Type' }, { key: 'priority', label: 'Priority' }, { key: 'locked', label: 'Lock', render: item => componentUsed(item.id, setup) ? 'Locked' : 'Open' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
     {tab === 'Salary Templates' && <SalaryTemplateDesigner clients={clients} components={setup.salaryComponents} structure={structure} setStructure={setStructure} templates={setup.salaryStructures.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} saveTemplate={saveStructure} saving={templateSaving} templateDownloaded={salaryTemplateDownloaded} onDownloadTemplate={downloadSalaryTemplateTemplate} onUploadTemplate={uploadSalaryTemplates} />}
     {tab === 'Payslip Templates' && <Card t="Payslip templates"><div className="grid"><F l="Client"><Sel v={payslip.clientId} set={value => setPayslip({ ...payslip, clientId: value })} a={clients.map(item => `${item.id}:${item.name}`)} /></F><F l="Template name"><input value={payslip.name} onChange={event => setPayslip({ ...payslip, name: event.target.value })} /></F><F l="Theme"><Sel v={payslip.theme} set={value => setPayslip({ ...payslip, theme: value })} a={['Classic', 'Modern', 'Compact']} /></F><Chk l="Show logo" v={payslip.showLogo} set={value => setPayslip({ ...payslip, showLogo: value })} /><Chk l="Show client" v={payslip.showClient} set={value => setPayslip({ ...payslip, showClient: value })} /><Chk l="Show YTD" v={payslip.showYtd} set={value => setPayslip({ ...payslip, showYtd: value })} /><Chk l="Show bank info" v={payslip.showBank} set={value => setPayslip({ ...payslip, showBank: value })} /><Chk l="Active" v={payslip.active} set={value => setPayslip({ ...payslip, active: value })} /><F l="Footer note" w><input value={payslip.note} onChange={event => setPayslip({ ...payslip, note: event.target.value })} /></F><button type="button" disabled={payslipSaving} onClick={() => void savePayslip()}>{payslipSaving ? 'Saving...' : 'Add / Update template'}</button></div><div className={`payslip-preview ${payslip.theme.toLowerCase()}`}><header>{payslip.showLogo && <b className={org.logoDataUrl ? 'payslip-logo-mark' : ''}>{org.logoDataUrl ? <img src={org.logoDataUrl} alt="Organization logo" /> : 'P'}</b>}<div><h3>{org.name || 'Your Organization'}</h3><p>Payslip for June 2026</p>{payslip.showClient && <small>Client: {clientName(payslip.clientId)}</small>}</div></header><section><div><span>Employee</span><strong>Demo Employee</strong></div><div><span>Designation</span><strong>Software Engineer</strong></div><div><span>Pay Days</span><strong>30</strong></div><div><span>Bank</span><strong>{payslip.showBank ? 'HDFC ****1234' : '-'}</strong></div></section><table><thead><tr><th>Earnings</th><th>Amount</th><th>Deductions</th><th>Amount</th></tr></thead><tbody>{previewLines.map((item, index) => <tr key={item.componentRow.id}><td>{item.componentRow.category !== 'Deduction' ? item.componentRow.name : ''}</td><td>{item.componentRow.category !== 'Deduction' ? money(item.amount) : ''}</td><td>{item.componentRow.category === 'Deduction' ? item.componentRow.name : index === 0 ? 'Professional Tax' : ''}</td><td>{item.componentRow.category === 'Deduction' ? money(item.amount) : index === 0 ? '200' : ''}</td></tr>)}</tbody></table>{payslip.showYtd && <p className="ytd">YTD Gross: Rs {money(monthly * 6)} | YTD Tax: Rs {money(1200)}</p>}<footer>{payslip.note}</footer></div><DataTable rows={setup.payslipTemplates.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} onEdit={setPayslip} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'theme', label: 'Theme' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
     {!['Clients', 'Client Billing Configuration', 'Salary Components', 'Salary Templates', 'Payslip Templates', 'Work Locations', 'Dropdown Masters'].includes(tab) && <div className="actions"><p>Structures are client-wise. Components are global.</p><button disabled={saving}>{saving ? 'Saving...' : 'Save settings'}</button></div>}
@@ -844,6 +946,9 @@ function WorkWeekMasterFields({ drop, setDrop }: { drop: Drop; setDrop: (drop: D
     {config.workingDays.includes(6) && <Form.Item label="Extra Saturday off in every month">
       <Space wrap>{saturdayOptions.map(option => <AntCheckbox key={option.value} checked={config.offSaturdays.includes(option.value)} onChange={() => toggleSaturday(option.value)}>{option.label}</AntCheckbox>)}</Space>
     </Form.Item>}
+    <Form.Item label="System config JSON" extra="Generated from the checkboxes above and saved in Dropdown Masters. Reports and attendance review use this config when available.">
+      <Input.TextArea value={drop.configJson || JSON.stringify(config)} readOnly autoSize={{ minRows: 2, maxRows: 3 }} />
+    </Form.Item>
   </>
 }
 
@@ -860,6 +965,7 @@ function validateComponent(component: Component, category: string, setup: Setup)
     const formulaError = validateFormula(component.formula, component, setup)
     if (formulaError) errors.push(formulaError)
   }
+  if ((component.componentRole === 'Statutory Deduction' || component.componentRole === 'Employer Contribution') && (!component.statutoryType || component.statutoryType === 'None')) errors.push('Select statutory type for statutory or employer contribution components.')
   if (category === 'Benefit' && component.taxable && !component.investmentType.trim()) errors.push('For taxable benefits, add investment/tax classification to guide payroll reports.')
   return errors
 }

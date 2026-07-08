@@ -7,6 +7,26 @@ import { PayRunReview } from './PayRunsPanel'
 
 type Task = { id: number; instanceId: number; stageName: string; resourceType: string; resourceId: string; payloadJson: string; createdAt: string }
 
+const formatTaskDate = (value: string) => {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value || '-'
+  const day = String(date.getDate()).padStart(2, '0')
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const year = date.getFullYear()
+  let hour = date.getHours()
+  const suffix = hour >= 12 ? 'PM' : 'AM'
+  hour = hour % 12 || 12
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  const second = String(date.getSeconds()).padStart(2, '0')
+  return `${day}-${month}-${year} ${String(hour).padStart(2, '0')}:${minute}:${second} ${suffix}`
+}
+
+const referenceText = (row: Task) => {
+  if (row.resourceType === 'PayRun') return `PayRun #${row.resourceId}`
+  if (row.resourceType === 'LeaveRequest') return `Leave request #${row.resourceId}`
+  return `${row.resourceType} #${row.resourceId}`
+}
+
 const details = (payload: string) => {
   try {
     const value = JSON.parse(payload) as Record<string, unknown>
@@ -73,9 +93,9 @@ export default function WorkflowTasks() {
         exportFileName="workflow-tasks"
         columns={[
           { key: 'resourceType', label: 'Resource' },
-          { key: 'resourceId', label: 'Reference' },
+          { key: 'resourceId', label: 'Reference', value: referenceText },
           { key: 'stageName', label: 'Stage' },
-          { key: 'createdAtText', label: 'Received', value: row => new Date(row.createdAt).toLocaleString('en-IN') }
+          { key: 'createdAtText', label: 'Received', value: row => formatTaskDate(row.createdAt) }
         ]}
         actions={row => <button type="button" onClick={() => setSelected(row)}>Review</button>}
       />

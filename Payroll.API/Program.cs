@@ -376,11 +376,11 @@ app.MapPost("/api/admin/database/migrate", async (HttpContext context) =>
 .WithName("MigrateDatabase")
 .WithOpenApi();
 
-app.MapGet("/api/reports/{code}", async (ReportingRepository repository, string code, int clientId, string? department, int? workLocationId, string? fromDate, string? toDate, string? month, HttpContext context) =>
+app.MapGet("/api/reports/{code}", async (ReportingRepository repository, string code, int clientId, string? department, int? workLocationId, string? fromDate, string? toDate, string? month, int? payRunId, int? employeeId, string? componentCode, HttpContext context) =>
 {
     if (!HasPermission(context, "reports.view")) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
-    return Results.Ok(await repository.RunAsync(code, new ReportFilter { ClientId = clientId, Department = department, WorkLocationId = workLocationId, FromDate = fromDate, ToDate = toDate, Month = month }));
+    return Results.Ok(await repository.RunAsync(code, new ReportFilter { ClientId = clientId, Department = department, WorkLocationId = workLocationId, FromDate = fromDate, ToDate = toDate, Month = month, PayRunId = payRunId, EmployeeId = employeeId, ComponentCode = componentCode }));
 })
 .WithName("RunReport")
 .WithOpenApi();
@@ -507,6 +507,21 @@ app.MapPost("/api/tax-engine/surcharges", async (TaxEngineRepository repository,
 app.MapPost("/api/tax-engine/final-adjustments", async (TaxEngineRepository repository, TaxFinalAdjustment request, HttpContext context) => HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.SaveFinalAdjustmentAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
 app.MapPost("/api/tax-engine/sections", async (TaxEngineRepository repository, TaxDeclarationSection request, HttpContext context) => HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.SaveSectionAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
 app.MapPost("/api/tax-engine/compute", async (TaxEngineRepository repository, TaxComputationRequest request, HttpContext context) => HasPermission(context, "payroll.run") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.ComputeAsync(request)) : Results.StatusCode(403));
+app.MapGet("/api/tax-engine/employee-profiles/{employeeId:int}", async (TaxEngineRepository repository, int employeeId, string? financialYear, HttpContext context) => HasPermission(context, "payroll.run") || HasPermission(context, "settings.manage") ? await repository.GetEmployeeTaxProfileAsync(employeeId, financialYear ?? "") is { } profile ? Results.Ok(profile) : Results.NotFound(new { error = "Employee tax profile not found." }) : Results.StatusCode(403));
+app.MapPost("/api/tax-engine/employee-profiles", async (TaxEngineRepository repository, EmployeeTaxProfile request, HttpContext context) =>
+{
+    if (!(HasPermission(context, "payroll.run") || HasPermission(context, "settings.manage"))) return Results.StatusCode(403);
+    if (request.EmployeeId <= 0) return Results.BadRequest(new { error = "Select employee before saving tax profile." });
+    var profile = await repository.SaveEmployeeTaxProfileAsync(request);
+    return profile is null ? Results.BadRequest(new { error = "Employee tax profile could not be saved. Refresh employee list and try again." }) : Results.Ok(profile);
+});
+app.MapPost("/api/tax-engine/employee-profiles/{employeeId:int}", async (TaxEngineRepository repository, int employeeId, EmployeeTaxProfile request, HttpContext context) =>
+{
+    if (!(HasPermission(context, "payroll.run") || HasPermission(context, "settings.manage"))) return Results.StatusCode(403);
+    request.EmployeeId = employeeId;
+    var profile = await repository.SaveEmployeeTaxProfileAsync(request);
+    return profile is null ? Results.BadRequest(new { error = "Employee tax profile could not be saved. Refresh employee list and try again." }) : Results.Ok(profile);
+});
 app.MapDelete("/api/tax-engine/{kind}/{id:int}", async (TaxEngineRepository repository, string kind, int id, HttpContext context) => { var clientKind = kind == "client-settings"; if (!(clientKind ? HasPermission(context, "settings.manage") : HasPermission(context, "tax.statutory.manage"))) return Results.StatusCode(403); await repository.DeleteAsync(kind, id); return Results.NoContent(); });
 
 app.MapGet("/api/leave-attendance/setup", async (LeaveAttendanceRepository repository, int clientId) =>

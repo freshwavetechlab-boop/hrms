@@ -524,6 +524,26 @@ ORDER BY c.Name, w.Name, g.name;", new { ClientId = clientId })).ToList();
 
     public async Task<(AttendanceGroup? Group, string? Error)> SaveAttendanceGroupAsync(SaveAttendanceGroupRequest request)
     {
+        if (request.WorkLocationId <= 0 || string.IsNullOrWhiteSpace(request.Department) || string.IsNullOrWhiteSpace(request.Designation))
+        {
+            var (groups, batchError) = await SaveAttendanceGroupBatchAsync(new SaveAttendanceGroupBatchRequest
+            {
+                PolicyBatchId = request.PolicyBatchId,
+                ClientId = request.ClientId,
+                Name = request.Name,
+                WorkLocationIds = request.WorkLocationId > 0 ? [request.WorkLocationId] : [],
+                Departments = string.IsNullOrWhiteSpace(request.Department) ? [] : [request.Department],
+                Designations = string.IsNullOrWhiteSpace(request.Designation) ? [] : [request.Designation],
+                WorkWeek = request.WorkWeek,
+                AttendanceCycleStartDay = request.AttendanceCycleStartDay,
+                AttendanceCycleEndDay = request.AttendanceCycleEndDay,
+                PayrollReportGenerationDay = request.PayrollReportGenerationDay,
+                IsActive = request.IsActive,
+                EmployeeIds = request.EmployeeIds ?? []
+            });
+            return (groups.FirstOrDefault(), batchError);
+        }
+
         var validationError = await ValidateAttendanceGroupAsync(request);
         if (validationError is not null) return (null, validationError);
 
@@ -555,28 +575,35 @@ VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designa
         if (validationError is not null) return ([], validationError);
 
         var batchId = string.IsNullOrWhiteSpace(request.PolicyBatchId) ? Guid.NewGuid().ToString() : request.PolicyBatchId.Trim();
-        var locationIds = request.WorkLocationIds.Where(id => id > 0).Distinct().ToArray();
-        var departments = request.Departments.Select(item => item.Trim()).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        var designations = request.Designations.Select(item => item.Trim()).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        var employeeIds = request.EmployeeIds.Distinct().ToArray();
-
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        var locations = (await connection.QueryAsync<(int Id, string Name)>(@"SELECT Id, Name FROM worklocations
-WHERE ClientId=@ClientId AND IsActive=TRUE AND Id IN @LocationIds", new { request.ClientId, LocationIds = locationIds })).ToDictionary(item => item.Id, item => item.Name);
+        var allLocations = (await connection.QueryAsync<(int Id, string Name)>(@"SELECT Id, Name FROM worklocations
+WHERE ClientId=@ClientId AND IsActive=TRUE", new { request.ClientId })).ToDictionary(item => item.Id, item => item.Name);
+        var requestedLocationIds = request.WorkLocationIds.Where(id => id > 0).Distinct().ToArray();
+        var locationIds = requestedLocationIds.Length == 0 ? allLocations.Keys.ToArray() : requestedLocationIds;
+        var locations = allLocations.Where(item => locationIds.Contains(item.Key)).ToDictionary(item => item.Key, item => item.Value);
         if (locations.Count != locationIds.Length) return ([], "One or more selected work locations do not belong to this client.");
 
-        var employees = (await connection.QueryAsync<(int Id, int WorkLocationId, string Department, string Designation)>(@"SELECT Id, WorkLocationId, Department, Designation FROM employees
-WHERE IsActive=TRUE AND ClientId=@ClientId AND WorkLocationId IN @LocationIds AND Department IN @Departments AND Designation IN @Designations AND Id IN @EmployeeIds",
-            new { request.ClientId, LocationIds = locationIds, Departments = departments, Designations = designations, EmployeeIds = employeeIds })).ToList();
+        var requestedDepartments = request.Departments.Select(item => item.Trim()).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var requestedDesignations = request.Designations.Select(item => item.Trim()).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var requestedEmployeeIds = request.EmployeeIds.Distinct().ToArray();
 
-        if (employees.Select(employee => employee.Id).Distinct().Count() != employeeIds.Length)
-            return ([], "Selected employees must match the selected client, location, department and designation.");
+        var scopedEmployees = (await connection.QueryAsync<(int Id, int WorkLocationId, string Department, string Designation)>(@"SELECT Id, WorkLocationId, Department, Designation FROM employees
+WHERE IsActive=TRUE AND ClientId=@ClientId AND WorkLocationId IN @LocationIds", new { request.ClientId, LocationIds = locationIds })).ToList();
+        var departments = requestedDepartments.Length == 0 ? scopedEmployees.Select(employee => employee.Department.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() : requestedDepartments;
+        var departmentEmployees = scopedEmployees.Where(employee => departments.Contains(employee.Department, StringComparer.OrdinalIgnoreCase)).ToList();
+        var designations = requestedDesignations.Length == 0 ? departmentEmployees.Select(employee => employee.Designation.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() : requestedDesignations;
+        var matchingEmployees = departmentEmployees.Where(employee => designations.Contains(employee.Designation, StringComparer.OrdinalIgnoreCase)).ToList();
+        var employeeIds = requestedEmployeeIds.Length == 0 ? matchingEmployees.Select(employee => employee.Id).Distinct().ToArray() : requestedEmployeeIds;
+
+        if (employeeIds.Length == 0) return ([], "Select at least one employee.");
+        if (matchingEmployees.Where(employee => employeeIds.Contains(employee.Id)).Select(employee => employee.Id).Distinct().Count() != employeeIds.Length)
+            return ([], "Selected employees must match the selected client and selected filters.");
 
         var combos = (from locationId in locationIds
                       from department in departments
                       from designation in designations
-                      let comboEmployeeIds = employees
+                      let comboEmployeeIds = matchingEmployees
                           .Where(employee => employee.WorkLocationId == locationId && employee.Department == department && employee.Designation == designation)
                           .Select(employee => employee.Id)
                           .Distinct()
@@ -1192,7 +1219,9 @@ ORDER BY h.start_date, h.name;", new { ClientId = clientId, Year = year, WorkLoc
         if (error is not null) return (null, error);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        request.WorkLocationIds = request.AllLocations ? [] : request.WorkLocationIds.Distinct().ToList();
+        request.WorkLocationIds = request.WorkLocationIds.Where(id => id > 0).Distinct().ToList();
+        request.AllLocations = request.AllLocations || request.WorkLocationIds.Count == 0;
+        if (request.AllLocations) request.WorkLocationIds = [];
         if (!request.AllLocations)
         {
             var validLocationCount = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE AND Id IN @Ids", new { request.ClientId, Ids = request.WorkLocationIds });
@@ -1350,6 +1379,7 @@ VALUES (@ClientId, @Name, @HolidayType, @StartDate, @EndDate, @Description, @All
             var allText = V("All Locations", "allLocations");
             var allLocations = ParseImportFlag(allText, true);
             var workLocationIds = allLocations ? new List<int>() : ResolveHolidayLocationIds(V("Work Location Ids", "Work Location Id", "Location Ids"), V("Work Locations", "Work Location"), locationById, locationByName, rowNumber, rowErrors);
+            if (!allLocations && workLocationIds.Count == 0) allLocations = true;
 
             if (string.IsNullOrWhiteSpace(name)) rowErrors.Add($"Row {rowNumber}: Holiday Name is required.");
             if (!IsHolidayTypeText(holidayTypeText)) rowErrors.Add($"Row {rowNumber}: Holiday Type must be Holiday or Restricted Holiday.");
@@ -1357,7 +1387,6 @@ VALUES (@ClientId, @Name, @HolidayType, @StartDate, @EndDate, @Description, @All
             if (!endOk) rowErrors.Add($"Row {rowNumber}: End Date must be a valid date when filled.");
             if (startOk && endOk && endDate.Date < startDate.Date) rowErrors.Add($"Row {rowNumber}: End Date cannot be before Start Date.");
             if (!IsImportFlag(allText)) rowErrors.Add($"Row {rowNumber}: All Locations must be TRUE/FALSE.");
-            if (!allLocations && workLocationIds.Count == 0) rowErrors.Add($"Row {rowNumber}: Work Location Ids are required when All Locations is FALSE.");
             ValidateLength(name, "Holiday Name", 180, rowNumber, rowErrors);
 
             if (rowErrors.Count == 0)
@@ -1559,7 +1588,6 @@ FROM attendance_group_employees WHERE attendance_group_id IN @Ids", new { Ids = 
         if (string.IsNullOrWhiteSpace(request.Name)) return "Holiday name is required.";
         if (NormalizeHolidayType(request.HolidayType) is not ("Holiday" or "Restricted Holiday")) return "Select a valid holiday type.";
         if (request.EndDate.Date < request.StartDate.Date) return "End date cannot be before start date.";
-        if (!request.AllLocations && request.WorkLocationIds.Count == 0) return "Select at least one work location or choose all locations.";
         return null;
     }
 
@@ -1638,9 +1666,6 @@ AND Id IN @EmployeeIds", new { request.ClientId, request.WorkLocationId, Departm
     {
         if (request.ClientId <= 0) return "Select a client.";
         if (string.IsNullOrWhiteSpace(request.Name)) return "Policy name is required.";
-        if (request.WorkLocationIds.Where(id => id > 0).Distinct().Count() == 0) return "Select at least one work location.";
-        if (request.Departments.Select(item => item.Trim()).Where(item => item.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 0) return "Select at least one department.";
-        if (request.Designations.Select(item => item.Trim()).Where(item => item.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 0) return "Select at least one designation.";
         if (!await IsValidWorkWeekAsync((request.WorkWeek ?? string.Empty).Trim())) return "Select a valid work week.";
         if (!IsValidDay(request.AttendanceCycleStartDay) || !IsValidDay(request.AttendanceCycleEndDay) || !IsValidDay(request.PayrollReportGenerationDay))
             return "Attendance cycle and report generation days must be between 1 and 31.";
@@ -1651,7 +1676,6 @@ AND Id IN @EmployeeIds", new { request.ClientId, request.WorkLocationId, Departm
             : request.PayrollReportGenerationDay + 31 - request.AttendanceCycleEndDay;
         if (buffer is < 3 or > 7)
             return "Payroll report generation day must have a 3 to 7 day buffer after attendance cycle end day.";
-        if (request.EmployeeIds.Distinct().Count() == 0) return "Select at least one employee.";
         return null;
     }
 
@@ -2244,6 +2268,15 @@ WHERE Type='Work Week' AND Value=@WorkWeek AND IsActive=TRUE LIMIT 1", new { Wor
         "Monday - Friday",
         "Monday - Saturday",
         "All days",
+        "Sunday off",
+        "Saturday-Sunday off",
+        "Second Saturday + Sunday off",
+        "Second & Fourth Saturday + Sunday off",
+        "Alternate Saturday + Sunday off",
+        "Friday off",
+        "Friday-Saturday off",
+        "No fixed weekly off",
+        // Legacy labels retained so old saved policies keep working.
         "Sunday + 2nd Saturday off",
         "Sunday + 2nd/4th Saturday off",
         "Only 2nd Saturday off"

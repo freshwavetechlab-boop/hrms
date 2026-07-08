@@ -8,6 +8,9 @@ public class ReportFilter
     public string? FromDate { get; set; }
     public string? ToDate { get; set; }
     public string? Month { get; set; }
+    public int? PayRunId { get; set; }
+    public int? EmployeeId { get; set; }
+    public string? ComponentCode { get; set; }
 }
 
 public class ReportResult

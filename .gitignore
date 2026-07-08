@@ -9,6 +9,8 @@ obj/
 *.userosscache
 *.sln.docstates
 TestResults/
+appsettings.json
+appsettings.Development.json
 
 # Node / Vite
 node_modules/

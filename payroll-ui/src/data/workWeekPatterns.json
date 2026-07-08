@@ -1,0 +1,86 @@
+[
+  {
+    "value": "Sunday off",
+    "config": { "workingDays": [1, 2, 3, 4, 5, 6], "offSaturdays": [] }
+  },
+  {
+    "value": "Monday off",
+    "config": { "workingDays": [0, 2, 3, 4, 5, 6], "offSaturdays": [] }
+  },
+  {
+    "value": "Tuesday off",
+    "config": { "workingDays": [0, 1, 3, 4, 5, 6], "offSaturdays": [] }
+  },
+  {
+    "value": "Wednesday off",
+    "config": { "workingDays": [0, 1, 2, 4, 5, 6], "offSaturdays": [] }
+  },
+  {
+    "value": "Thursday off",
+    "config": { "workingDays": [0, 1, 2, 3, 5, 6], "offSaturdays": [] }
+  },
+  {
+    "value": "Friday off",
+    "config": { "workingDays": [0, 1, 2, 3, 4, 6], "offSaturdays": [] }
+  },
+  {
+    "value": "Saturday off",
+    "config": { "workingDays": [0, 1, 2, 3, 4, 5], "offSaturdays": [] }
+  },
+  {
+    "value": "Saturday-Sunday off",
+    "config": { "workingDays": [1, 2, 3, 4, 5], "offSaturdays": [] }
+  },
+  {
+    "value": "Friday-Saturday off",
+    "config": { "workingDays": [0, 1, 2, 3, 4], "offSaturdays": [] }
+  },
+  {
+    "value": "Thursday-Friday off",
+    "config": { "workingDays": [0, 1, 2, 3, 6], "offSaturdays": [] }
+  },
+  {
+    "value": "Sunday-Monday off",
+    "config": { "workingDays": [2, 3, 4, 5, 6], "offSaturdays": [] }
+  },
+  {
+    "value": "First Saturday + Sunday off",
+    "config": { "workingDays": [1, 2, 3, 4, 5, 6], "offSaturdays": [1] }
+  },
+  {
+    "value": "Second Saturday + Sunday off",
+    "config": { "workingDays": [1, 2, 3, 4, 5, 6], "offSaturdays": [2] }
+  },
+  {
+    "value": "Third Saturday + Sunday off",
+    "config": { "workingDays": [1, 2, 3, 4, 5, 6], "offSaturdays": [3] }
+  },
+  {
+    "value": "Fourth Saturday + Sunday off",
+    "config": { "workingDays": [1, 2, 3, 4, 5, 6], "offSaturdays": [4] }
+  },
+  {
+    "value": "Fifth Saturday + Sunday off",
+    "config": { "workingDays": [1, 2, 3, 4, 5, 6], "offSaturdays": [5] }
+  },
+  {
+    "value": "First & Third Saturday + Sunday off",
+    "config": { "workingDays": [1, 2, 3, 4, 5, 6], "offSaturdays": [1, 3] }
+  },
+  {
+    "value": "Second & Fourth Saturday + Sunday off",
+    "config": { "workingDays": [1, 2, 3, 4, 5, 6], "offSaturdays": [2, 4] }
+  },
+  {
+    "value": "First, Third & Fifth Saturday + Sunday off",
+    "config": { "workingDays": [1, 2, 3, 4, 5, 6], "offSaturdays": [1, 3, 5] }
+  },
+  {
+    "value": "First to Fourth Saturday + Sunday off",
+    "config": { "workingDays": [1, 2, 3, 4, 5, 6], "offSaturdays": [1, 2, 3, 4] }
+  },
+  {
+    "value": "No fixed weekly off",
+    "config": { "workingDays": [0, 1, 2, 3, 4, 5, 6], "offSaturdays": [] }
+  }
+]

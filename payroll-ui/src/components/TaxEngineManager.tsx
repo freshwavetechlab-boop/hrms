@@ -3,8 +3,9 @@ import DataTable from './DataTable'
 import PageTabs from './PageTabs'
 import { Card, Chk, F, Sel } from './FormPrimitives'
 import { useAuthSession } from './AuthGate'
-import type { Client, ClientTaxSetting, TaxDeclarationSection, TaxFinalAdjustment, TaxSlab, TaxSurcharge } from '../types/payroll'
-import { deleteTaxEngineRow, getTaxEngineSetup, saveTaxClientSetting, saveTaxDeclarationSection, saveTaxFinalAdjustment, saveTaxSlab, saveTaxSurcharge, type TaxEngineSetup } from '../services/taxEngineService'
+import type { Client, ClientTaxSetting, Employee, TaxDeclarationSection, TaxFinalAdjustment, TaxSlab, TaxSurcharge } from '../types/payroll'
+import { getEmployees } from '../services/payrollService'
+import { deleteTaxEngineRow, getEmployeeTaxProfile, getTaxEngineSetup, saveEmployeeTaxProfile, saveTaxClientSetting, saveTaxDeclarationSection, saveTaxFinalAdjustment, saveTaxSlab, saveTaxSurcharge, type EmployeeTaxProfile, type EmployeeTaxProfileLine, type TaxEngineSetup } from '../services/taxEngineService'
 
 const fy = `${new Date().getFullYear()}-${String(new Date().getFullYear() + 1).slice(2)}`
 const clientTax0: ClientTaxSetting = { id: 0, clientId: '', enabled: true, financialYear: fy, defaultRegime: 'New', allowEmployeeRegimeSelection: true, regimeSelectionWindowOpen: false, regimeSelectionCutoff: '', allowDeclarations: true, plannedDeclarationWindowOpen: false, actualDeclarationWindowOpen: false, declarationWindowStart: '', declarationWindowEnd: '', plannedDeclarationStart: '', plannedDeclarationEnd: '', actualDeclarationStart: '', actualDeclarationEnd: '', poiProcessingMonth: '', reminderEmailsEnabled: true, reminderFrequency: 'Weekly', reminderBeforeLockDays: 7, requireProofUpload: true, requireApproval: true, taxDeductionComponentCode: 'TDS', projectMonthlyTds: true, lockAfterApproval: true, active: true }
@@ -24,10 +25,16 @@ export default function TaxEngineManager({ clients, onMessage, mode = 'company' 
   const [surcharge, setSurcharge] = useState<TaxSurcharge>(surcharge0)
   const [finalAdjustment, setFinalAdjustment] = useState<TaxFinalAdjustment>(finalAdjustment0)
   const [section, setSection] = useState<TaxDeclarationSection>(section0)
+  const [employees, setEmployees] = useState<Employee[]>([])
+  const [profileClientId, setProfileClientId] = useState('')
+  const [profileEmployeeId, setProfileEmployeeId] = useState('')
+  const [profileFy, setProfileFy] = useState(fy)
+  const [taxProfile, setTaxProfile] = useState<EmployeeTaxProfile | null>(null)
   const clientOptions = clients.map(client => `${client.id}:${client.name}`)
+  const employeeOptions = employees.filter(employee => !profileClientId || String(employee.clientId) === profileClientId.split(':')[0]).map(employee => `${employee.id}:${employee.employeeCode} - ${employee.firstName} ${employee.lastName}`)
   const clientName = (id: string | number) => clients.find(client => String(client.id) === String(id).split(':')[0])?.name || (id ? `Client #${String(id).split(':')[0]}` : 'Default')
   const load = async () => setTax(await getTaxEngineSetup())
-  useEffect(() => { void load() }, [])
+  useEffect(() => { void load(); getEmployees().then(setEmployees).catch(() => setEmployees([])) }, [])
   useEffect(() => { if (!tabs.includes(tab)) setTab(mode === 'statutory' ? 'Financial Years' : 'Company Settings') }, [mode, tab, tabs])
 
   const selectedRule = useMemo(() => tax.clientSettings.find(item => item.clientId === clientRule.clientId && item.financialYear === clientRule.financialYear), [clientRule, tax.clientSettings])
@@ -117,6 +124,23 @@ export default function TaxEngineManager({ clients, onMessage, mode = 'company' 
   const removeSurcharge = async (id: number) => { if (!confirmDelete('tax surcharge threshold')) return; await deleteTaxEngineRow('surcharges', id); await load() }
   const removeFinalAdjustment = async (id: number) => { if (!confirmDelete('final tax adjustment')) return; await deleteTaxEngineRow('final-adjustments', id); await load() }
   const removeSection = async (id: number) => { if (!confirmDelete('declaration section')) return; await deleteTaxEngineRow('sections', id); await load() }
+  const loadEmployeeProfile = async () => {
+    const employeeId = Number(profileEmployeeId.split(':')[0] || 0)
+    if (!employeeId) return onMessage('Select employee.')
+    const profile = await getEmployeeTaxProfile(employeeId, profileFy)
+    if (!profile) return onMessage('Employee tax profile not found.')
+    setTaxProfile(profile)
+  }
+  const updateProfileLine = (sectionId: number, patch: Partial<EmployeeTaxProfileLine>) => {
+    if (!taxProfile) return
+    setTaxProfile({ ...taxProfile, lines: taxProfile.lines.map(line => line.sectionId === sectionId ? { ...line, ...patch } : line) })
+  }
+  const saveProfile = async () => {
+    if (!taxProfile) return onMessage('Load employee tax profile first.')
+    const result = await saveEmployeeTaxProfile(taxProfile)
+    onMessage(result.ok ? 'Employee tax profile saved.' : result.error)
+    if (result.ok && result.data) setTaxProfile(result.data)
+  }
 
   if (mode === 'statutory' && !canManageStatutory) return <Card t="Statutory rules"><p className="tax-note">You do not have access to statutory tax rule maintenance.</p></Card>
 
@@ -131,10 +155,15 @@ export default function TaxEngineManager({ clients, onMessage, mode = 'company' 
           <F l={<Req label="Financial year" />}><input value={clientRule.financialYear} onChange={e => setClientRule({ ...clientRule, financialYear: e.target.value })} placeholder="2026-27" /></F>
           <F l={<Req label="Default regime" />}><Sel v={clientRule.defaultRegime} set={value => setClientRule({ ...clientRule, defaultRegime: value as 'Old' | 'New' })} a={['Old', 'New']} /></F>
         </div></section>
+        <section className="tax-rule-card"><h3>Payroll TDS setup</h3><div className="grid">
+          <F l={<Req label="TDS component code" />}><input value={clientRule.taxDeductionComponentCode || ''} onChange={e => setClientRule({ ...clientRule, taxDeductionComponentCode: e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '') })} placeholder="TDS" /></F>
+          <F l={<Req label="POI processing month" />}><input type="month" value={clientRule.poiProcessingMonth || ''} onChange={e => setClientRule({ ...clientRule, poiProcessingMonth: e.target.value })} /></F>
+          <Chk l="Project monthly TDS" v={clientRule.projectMonthlyTds} set={value => setClientRule({ ...clientRule, projectMonthlyTds: value })} />
+        </div><p className="tax-note">Before POI month payroll uses planned declaration; from POI month it uses approved POI. The TDS component code decides where calculated TDS is posted in payroll.</p></section>
         <section className="tax-rule-card tax-activity-card"><div className="tax-card-title"><h3>Activity windows</h3><span>Open each employee activity at the right stage of the financial year.</span></div><div className="tax-window-grid">
           <article className={clientRule.regimeSelectionWindowOpen ? 'open' : ''}><header><i>1</i><div><b>Regime selection</b><span>Employee chooses Old or New regime.</span></div><em>{clientRule.regimeSelectionWindowOpen ? 'Open' : 'Closed'}</em></header><div className="tax-window-controls"><Chk l="Release window" v={clientRule.regimeSelectionWindowOpen} set={value => setClientRule({ ...clientRule, regimeSelectionWindowOpen: value })} /><F l="Cutoff date"><input type="date" value={dateOnly(clientRule.regimeSelectionCutoff)} onChange={e => setClientRule({ ...clientRule, regimeSelectionCutoff: e.target.value })} /></F></div></article>
           <article className={clientRule.plannedDeclarationWindowOpen ? 'open' : ''}><header><i>2</i><div><b>IT declaration</b><span>Planned investments declared after regime selection.</span></div><em>{clientRule.plannedDeclarationWindowOpen ? 'Open' : 'Closed'}</em></header><div className="tax-window-controls two"><Chk l="Release window" v={clientRule.plannedDeclarationWindowOpen} set={value => setClientRule({ ...clientRule, plannedDeclarationWindowOpen: value })} /><F l="Start date"><input type="date" value={dateOnly(clientRule.plannedDeclarationStart)} onChange={e => setClientRule({ ...clientRule, plannedDeclarationStart: e.target.value, declarationWindowStart: e.target.value })} /></F><F l="Lock date"><input type="date" value={dateOnly(clientRule.plannedDeclarationEnd)} onChange={e => setClientRule({ ...clientRule, plannedDeclarationEnd: e.target.value, declarationWindowEnd: e.target.value })} /></F></div></article>
-          <article className={clientRule.actualDeclarationWindowOpen ? 'open' : ''}><header><i>3</i><div><b>POI submission</b><span>Actual investment proofs collected near year end.</span></div><em>{clientRule.actualDeclarationWindowOpen ? 'Open' : 'Closed'}</em></header><div className="tax-window-controls two"><Chk l="Release window" v={clientRule.actualDeclarationWindowOpen} set={value => setClientRule({ ...clientRule, actualDeclarationWindowOpen: value })} /><F l="Start date"><input type="date" value={dateOnly(clientRule.actualDeclarationStart)} onChange={e => setClientRule({ ...clientRule, actualDeclarationStart: e.target.value })} /></F><F l="Lock date"><input type="date" value={dateOnly(clientRule.actualDeclarationEnd)} onChange={e => setClientRule({ ...clientRule, actualDeclarationEnd: e.target.value })} /></F><F l="Payroll month"><input type="month" value={clientRule.poiProcessingMonth || ''} onChange={e => setClientRule({ ...clientRule, poiProcessingMonth: e.target.value })} /></F></div></article>
+          <article className={clientRule.actualDeclarationWindowOpen ? 'open' : ''}><header><i>3</i><div><b>POI submission</b><span>Actual investment proofs collected near year end.</span></div><em>{clientRule.actualDeclarationWindowOpen ? 'Open' : 'Closed'}</em></header><div className="tax-window-controls two"><Chk l="Release window" v={clientRule.actualDeclarationWindowOpen} set={value => setClientRule({ ...clientRule, actualDeclarationWindowOpen: value })} /><F l="Start date"><input type="date" value={dateOnly(clientRule.actualDeclarationStart)} onChange={e => setClientRule({ ...clientRule, actualDeclarationStart: e.target.value })} /></F><F l="Lock date"><input type="date" value={dateOnly(clientRule.actualDeclarationEnd)} onChange={e => setClientRule({ ...clientRule, actualDeclarationEnd: e.target.value })} /></F><F l="TDS switch month"><input type="month" value={clientRule.poiProcessingMonth || ''} onChange={e => setClientRule({ ...clientRule, poiProcessingMonth: e.target.value })} /></F></div></article>
         </div>{clientRuleErrors.length > 0 && <p className="inline-error">{clientRuleErrors[0]}</p>}</section>
         <section className="tax-rule-card"><h3>Reminder settings</h3><div className="grid">
           <Chk l="Reminder emails" v={clientRule.reminderEmailsEnabled} set={value => setClientRule({ ...clientRule, reminderEmailsEnabled: value })} />
@@ -146,7 +175,32 @@ export default function TaxEngineManager({ clients, onMessage, mode = 'company' 
         </div></section>
       </div>
       <div className="tax-sticky-actions"><span>{selectedRule ? 'Editing existing client rule' : 'New client tax rule'}</span><button type="button" className="secondary" onClick={() => setClientRule(clientTax0)}>Clear form</button><button type="button" className="secondary" onClick={copyClientRule}>Copy from {previousFy(clientRule.financialYear)}</button><button type="button" disabled={clientRuleErrors.length > 0} onClick={saveClientRule}>{clientRule.id ? 'Update client rule' : 'Save client rule'}</button></div>
-      <DataTable rows={tax.clientSettings} columns={[{ key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'financialYear', label: 'FY' }, { key: 'defaultRegime', label: 'Default Regime' }, { key: 'regimeOpen', label: 'Regime', render: row => row.regimeSelectionWindowOpen ? 'Open' : 'Closed' }, { key: 'itOpen', label: 'IT Declaration', render: row => row.plannedDeclarationWindowOpen ? 'Open' : 'Closed' }, { key: 'poiOpen', label: 'POI', render: row => row.actualDeclarationWindowOpen ? 'Open' : 'Closed' }, { key: 'poiProcessingMonth', label: 'POI Month' }, { key: 'reminderFrequency', label: 'Reminder' }, { key: 'active', label: 'Status', render: row => row.active ? 'Active' : 'Inactive' }]} actions={row => <ActionButtons onEdit={() => setClientRule(row)} onDelete={() => removeClientRule(row.id)} />} />
+      <DataTable rows={tax.clientSettings} columns={[{ key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'financialYear', label: 'FY' }, { key: 'defaultRegime', label: 'Default Regime' }, { key: 'taxDeductionComponentCode', label: 'TDS Code' }, { key: 'projectMonthlyTds', label: 'Monthly TDS', render: row => row.projectMonthlyTds ? 'Yes' : 'No' }, { key: 'regimeOpen', label: 'Regime', render: row => row.regimeSelectionWindowOpen ? 'Open' : 'Closed' }, { key: 'itOpen', label: 'IT Declaration', render: row => row.plannedDeclarationWindowOpen ? 'Open' : 'Closed' }, { key: 'poiOpen', label: 'POI', render: row => row.actualDeclarationWindowOpen ? 'Open' : 'Closed' }, { key: 'poiProcessingMonth', label: 'POI Month' }, { key: 'reminderFrequency', label: 'Reminder' }, { key: 'active', label: 'Status', render: row => row.active ? 'Active' : 'Inactive' }]} actions={row => <ActionButtons onEdit={() => setClientRule(row)} onDelete={() => removeClientRule(row.id)} />} />
+    </>}
+
+    {tab === 'Employee Tax Profiles' && <>
+      <div className="tax-rule-layout">
+        <section className="tax-rule-card"><h3>Employee selection</h3><div className="grid">
+          <F l={<Req label="Client" />}><Sel v={profileClientId} set={value => { setProfileClientId(value); setProfileEmployeeId(''); setTaxProfile(null) }} a={clientOptions} /></F>
+          <F l={<Req label="Employee" />}><Sel v={profileEmployeeId} set={value => { setProfileEmployeeId(value); setTaxProfile(null) }} a={employeeOptions} /></F>
+          <F l={<Req label="Financial year" />}><input value={profileFy} onChange={event => setProfileFy(event.target.value)} placeholder="2026-27" /></F>
+          <button type="button" className="tax-submit" onClick={loadEmployeeProfile}>Load profile</button>
+        </div></section>
+        {taxProfile && <section className="tax-rule-card"><h3>Tax regime</h3><div className="grid">
+          <F l="Employee"><input value={`${taxProfile.employeeCode} - ${taxProfile.employeeName}`} readOnly /></F>
+          <F l="Regime"><Sel v={taxProfile.regime || 'New'} set={value => setTaxProfile({ ...taxProfile, regime: value as 'Old' | 'New' })} a={['Old', 'New']} /></F>
+          <F l="TDS deduction source"><input value={taxProfile.deductionSource} readOnly /></F>
+        </div></section>}
+      </div>
+      {taxProfile && <><DataTable rows={taxProfile.lines} getRowId={row => row.sectionId} columns={[
+        { key: 'code', label: 'Section', value: row => `${row.code} - ${row.name}`, width: '220px' },
+        { key: 'limitAmount', label: 'Limit', value: row => row.limitAmount ?? 'No limit' },
+        { key: 'plannedAmount', label: 'Planned', render: row => <input value={String(row.plannedAmount || '')} onChange={event => updateProfileLine(row.sectionId, { plannedAmount: Number(money(event.target.value) || 0) })} /> },
+        { key: 'actualAmount', label: 'Actual / POI', render: row => <input value={String(row.actualAmount || '')} onChange={event => updateProfileLine(row.sectionId, { actualAmount: Number(money(event.target.value) || 0) })} /> },
+        { key: 'approvedAmount', label: 'Approved POI', render: row => <input value={String(row.approvedAmount || '')} onChange={event => updateProfileLine(row.sectionId, { approvedAmount: Number(money(event.target.value) || 0) })} /> },
+        { key: 'remarks', label: 'Remarks', render: row => <input value={row.remarks || ''} onChange={event => updateProfileLine(row.sectionId, { remarks: event.target.value })} /> }
+      ]} emptyText="No declaration sections configured for this financial year." />
+      <div className="tax-sticky-actions"><span>Planned values are used before POI month; approved POI values are used from POI month.</span><button type="button" onClick={saveProfile}>Save employee tax profile</button></div></>}
     </>}
 
     {tab === 'Financial Years' && <DataTable rows={tax.financialYears as Record<string, unknown>[]} columns={[{ key: 'code', label: 'FY' }, { key: 'startDate', label: 'Start', value: row => dateOnly(row.startDate as string) }, { key: 'endDate', label: 'End', value: row => dateOnly(row.endDate as string) }, { key: 'active', label: 'Status', render: row => row.active ? 'Active' : 'Inactive' }, { key: 'notes', label: 'Notes' }]} />}
@@ -234,6 +288,8 @@ function validateClientRule(rule: ClientTaxSetting) {
   if (!rule.clientId) errors.push('Select client for tax settings.')
   if (!isFy(rule.financialYear)) errors.push('Enter financial year in 2026-27 format.')
   if (!rule.defaultRegime) errors.push('Default regime is required.')
+  if (!rule.taxDeductionComponentCode?.trim()) errors.push('TDS component code is required.')
+  if (rule.taxDeductionComponentCode && !/^[A-Z0-9_]{2,40}$/.test(rule.taxDeductionComponentCode)) errors.push('TDS component code can use A-Z, 0-9 and underscore only.')
   if (numberOrNull(String(rule.reminderBeforeLockDays)) === null || Number(rule.reminderBeforeLockDays) < 0) errors.push('Reminder before lock days must be zero or more.')
   if (rule.regimeSelectionWindowOpen && !rule.allowEmployeeRegimeSelection) errors.push('Enable employee regime selection before opening the regime window.')
   if (rule.plannedDeclarationWindowOpen && !rule.allowDeclarations) errors.push('Enable declarations before opening planned investment.')
