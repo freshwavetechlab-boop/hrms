@@ -14,6 +14,9 @@ public class ClientBillingRepository(IConfiguration configuration)
     private static readonly ConcurrentDictionary<Guid, ClientImportJobStatus> ImportJobs = new();
     private static readonly string[] RateCardTypes = ["All", "Service Charge", "Reimbursement", "Bonus", "Statutory Compliance Charges"];
     private static readonly string[] RateTypes = ["Percentage", "Fixed"];
+    private static readonly string[] AdvancedLineTypes = ["Base Amount", "Payroll Component", "Component Category", "Statutory Type", "Fixed Charge", "Commission"];
+    private static readonly string[] AdvancedRateTypes = ["Actual", "Percent", "Fixed"];
+    private static readonly string[] AdvancedBaseTypes = ["Processed Amount", "Net Pay", "Gross Pay", "Employer Cost", "Billable Salary"];
     private static readonly string[] ImportHeaders = ["Client Id", "Work Location Id", "Rate Card Type", "Rate Type", "Value", "Tax Basis", "GST Rate %", "Effective From", "Effective To", "Active"];
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
 
@@ -26,14 +29,84 @@ public class ClientBillingRepository(IConfiguration configuration)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
         var enabled = await db.ExecuteScalarAsync<bool?>("SELECT IsEnabled FROM client_billing_settings WHERE Id=1");
-        return new ClientBillingModule { IsEnabled = enabled ?? false };
+        var advanced = await db.ExecuteScalarAsync<bool?>("SELECT AdvancedCostingEnabled FROM client_billing_settings WHERE Id=1");
+        return new ClientBillingModule { IsEnabled = enabled ?? false, AdvancedCostingEnabled = advanced ?? false };
     }
 
     public async Task SaveModuleAsync(ClientBillingModule module)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
-        await db.ExecuteAsync(@"INSERT INTO client_billing_settings (Id,IsEnabled) VALUES (1,@IsEnabled)
-ON DUPLICATE KEY UPDATE IsEnabled=@IsEnabled, UpdatedAt=CURRENT_TIMESTAMP", module);
+        await db.ExecuteAsync(@"INSERT INTO client_billing_settings (Id,IsEnabled,AdvancedCostingEnabled) VALUES (1,@IsEnabled,@AdvancedCostingEnabled)
+ON DUPLICATE KEY UPDATE IsEnabled=@IsEnabled, AdvancedCostingEnabled=@AdvancedCostingEnabled, UpdatedAt=CURRENT_TIMESTAMP", module);
+    }
+
+    public async Task<ClientBillingAdvancedSetup> GetAdvancedAsync()
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
+        return new ClientBillingAdvancedSetup
+        {
+            Headers = await db.QueryAsync<ClientBillingCostRuleHeader>(@"SELECT h.*, c.Name ClientName, COALESCE(w.Name,'All locations') WorkLocationName
+FROM client_billing_cost_rule_headers h
+JOIN clients c ON c.Id=h.ClientId
+LEFT JOIN worklocations w ON w.Id=h.WorkLocationId
+ORDER BY c.Name, WorkLocationName, h.EffectiveFrom DESC, h.Id DESC"),
+            Lines = await db.QueryAsync<ClientBillingCostRuleLine>(@"SELECT l.*, h.RuleName FROM client_billing_cost_rule_lines l JOIN client_billing_cost_rule_headers h ON h.Id=l.HeaderId ORDER BY h.RuleName,l.SortOrder,l.Id")
+        };
+    }
+
+    public async Task<(long Id, string Error)> SaveAdvancedHeaderAsync(ClientBillingCostRuleHeader row)
+    {
+        var error = ValidateAdvancedHeader(row);
+        if (!string.IsNullOrWhiteSpace(error)) return (0, error);
+        await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
+        if (await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM clients WHERE Id=@ClientId AND IsActive=TRUE", row) == 0) return (0, "Select an active client.");
+        row.WorkLocationId = row.WorkLocationId is > 0 ? row.WorkLocationId : null;
+        if (row.WorkLocationId is > 0 && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM worklocations WHERE Id=@WorkLocationId AND ClientId=@ClientId AND IsActive=TRUE", row) == 0) return (0, "Select an active work location for the selected client.");
+        if (row.Id <= 0)
+        {
+            var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO client_billing_cost_rule_headers (ClientId,WorkLocationId,RuleName,EffectiveFrom,EffectiveTo,GstRatePercent,IsActive)
+VALUES (@ClientId,@WorkLocationId,@RuleName,@EffectiveFrom,@EffectiveTo,@GstRatePercent,@IsActive); SELECT LAST_INSERT_ID();", row);
+            return (id, "");
+        }
+        await db.ExecuteAsync(@"UPDATE client_billing_cost_rule_headers SET ClientId=@ClientId,WorkLocationId=@WorkLocationId,RuleName=@RuleName,EffectiveFrom=@EffectiveFrom,EffectiveTo=@EffectiveTo,GstRatePercent=@GstRatePercent,IsActive=@IsActive,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id", row);
+        return (row.Id, "");
+    }
+
+    public async Task<(long Id, string Error)> SaveAdvancedLineAsync(ClientBillingCostRuleLine row)
+    {
+        var error = ValidateAdvancedLine(row);
+        if (!string.IsNullOrWhiteSpace(error)) return (0, error);
+        await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
+        if (await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM client_billing_cost_rule_headers WHERE Id=@HeaderId", row) == 0) return (0, "Select a valid advanced rule header.");
+        if (row.Id <= 0)
+        {
+            var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO client_billing_cost_rule_lines (HeaderId,LineType,MatchValue,BillingTreatment,BaseType,RateType,RateValue,TaxApplicable,CommissionApplicable,DisplayGroup,SortOrder,IsActive)
+VALUES (@HeaderId,@LineType,@MatchValue,@BillingTreatment,@BaseType,@RateType,@RateValue,@TaxApplicable,@CommissionApplicable,@DisplayGroup,@SortOrder,@IsActive); SELECT LAST_INSERT_ID();", row);
+            return (id, "");
+        }
+        await db.ExecuteAsync(@"UPDATE client_billing_cost_rule_lines SET HeaderId=@HeaderId,LineType=@LineType,MatchValue=@MatchValue,BillingTreatment=@BillingTreatment,BaseType=@BaseType,RateType=@RateType,RateValue=@RateValue,TaxApplicable=@TaxApplicable,CommissionApplicable=@CommissionApplicable,DisplayGroup=@DisplayGroup,SortOrder=@SortOrder,IsActive=@IsActive WHERE Id=@Id", row);
+        return (row.Id, "");
+    }
+
+    public async Task<(long HeaderId, string Error)> CreateStandardAdvancedTemplateAsync(int clientId, int? workLocationId, decimal commissionPercent, decimal gstRatePercent)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
+        if (clientId <= 0 || await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM clients WHERE Id=@ClientId AND IsActive=TRUE", new { ClientId = clientId }) == 0) return (0, "Select an active client.");
+        workLocationId = workLocationId is > 0 ? workLocationId : null;
+        var headerId = await db.ExecuteScalarAsync<long>(@"INSERT INTO client_billing_cost_rule_headers (ClientId,WorkLocationId,RuleName,EffectiveFrom,GstRatePercent,IsActive)
+VALUES (@ClientId,@WorkLocationId,'Salary + employer statutory + commission',CURRENT_DATE,@GstRatePercent,TRUE); SELECT LAST_INSERT_ID();", new { ClientId = clientId, WorkLocationId = workLocationId, GstRatePercent = gstRatePercent });
+        var lines = new[]
+        {
+            new ClientBillingCostRuleLine { HeaderId = headerId, LineType = "Component Category", MatchValue = "Earning", BillingTreatment = "Bill Actual", RateType = "Actual", DisplayGroup = "Salary", SortOrder = 10, TaxApplicable = true, CommissionApplicable = true },
+            new ClientBillingCostRuleLine { HeaderId = headerId, LineType = "Component Category", MatchValue = "Reimbursement", BillingTreatment = "Bill Actual", RateType = "Actual", DisplayGroup = "Reimbursement", SortOrder = 20, TaxApplicable = true, CommissionApplicable = false },
+            new ClientBillingCostRuleLine { HeaderId = headerId, LineType = "Statutory Type", MatchValue = "PF Employer", BillingTreatment = "Bill Actual", RateType = "Actual", DisplayGroup = "Employer Statutory", SortOrder = 30, TaxApplicable = true, CommissionApplicable = false },
+            new ClientBillingCostRuleLine { HeaderId = headerId, LineType = "Statutory Type", MatchValue = "ESI Employer", BillingTreatment = "Bill Actual", RateType = "Actual", DisplayGroup = "Employer Statutory", SortOrder = 40, TaxApplicable = true, CommissionApplicable = false },
+            new ClientBillingCostRuleLine { HeaderId = headerId, LineType = "Payroll Component", MatchValue = "EDLI", BillingTreatment = "Bill Actual", RateType = "Actual", DisplayGroup = "Employer Statutory", SortOrder = 50, TaxApplicable = true, CommissionApplicable = false },
+            new ClientBillingCostRuleLine { HeaderId = headerId, LineType = "Payroll Component", MatchValue = "PF_ADMIN", BillingTreatment = "Bill Actual", RateType = "Actual", DisplayGroup = "Employer Statutory", SortOrder = 60, TaxApplicable = true, CommissionApplicable = false },
+            new ClientBillingCostRuleLine { HeaderId = headerId, LineType = "Commission", MatchValue = "Service Charge", BillingTreatment = "Add Percentage", BaseType = "Billable Salary", RateType = "Percent", RateValue = commissionPercent, DisplayGroup = "Commission", SortOrder = 90, TaxApplicable = true, CommissionApplicable = false }
+        };
+        foreach (var line in lines) await SaveAdvancedLineAsync(line);
+        return (headerId, "");
     }
 
     public async Task<IEnumerable<ClientBillingConfiguration>> GetAsync()
@@ -263,12 +336,34 @@ VALUES (@ClientId,@WorkLocationId,@RateCardType,@RateType,@Value,@TaxInclusive,@
         return "";
     }
 
+    static string ValidateAdvancedHeader(ClientBillingCostRuleHeader row)
+    {
+        if (row.ClientId <= 0) return "Select a client.";
+        if (string.IsNullOrWhiteSpace(row.RuleName)) return "Rule name is required.";
+        if (row.GstRatePercent < 0 || row.GstRatePercent > 100) return "GST rate must be between 0 and 100.";
+        if (row.EffectiveFrom == default) return "Effective from date is required.";
+        if (row.EffectiveTo.HasValue && row.EffectiveTo.Value.Date < row.EffectiveFrom.Date) return "Effective to date cannot be before effective from.";
+        return "";
+    }
+
+    static string ValidateAdvancedLine(ClientBillingCostRuleLine row)
+    {
+        if (row.HeaderId <= 0) return "Select a rule header.";
+        if (!AdvancedLineTypes.Contains(row.LineType)) return "Select a valid line type.";
+        if (!AdvancedRateTypes.Contains(row.RateType)) return "Select a valid rate type.";
+        if (!AdvancedBaseTypes.Contains(row.BaseType)) return "Select a valid base type.";
+        if (row.LineType is not ("Base Amount" or "Fixed Charge" or "Commission") && string.IsNullOrWhiteSpace(row.MatchValue)) return "Match value is required.";
+        if (row.RateValue < 0) return "Rate value cannot be negative.";
+        return "";
+    }
+
     static async Task EnsureTablesAsync(MySqlConnection db)
     {
         await db.ExecuteAsync(@"
 CREATE TABLE IF NOT EXISTS client_billing_settings (
     Id TINYINT PRIMARY KEY,
     IsEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+    AdvancedCostingEnabled BOOLEAN NOT NULL DEFAULT FALSE,
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS client_billing_configurations (
@@ -288,8 +383,39 @@ CREATE TABLE IF NOT EXISTS client_billing_configurations (
     INDEX IX_ClientBilling_Client (ClientId, IsActive, EffectiveFrom),
     INDEX IX_ClientBilling_Location (WorkLocationId, IsActive, EffectiveFrom),
     INDEX IX_ClientBilling_Type (RateCardType, RateType)
+);
+CREATE TABLE IF NOT EXISTS client_billing_cost_rule_headers (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    WorkLocationId INT NULL,
+    RuleName VARCHAR(180) NOT NULL,
+    EffectiveFrom DATE NOT NULL,
+    EffectiveTo DATE NULL,
+    GstRatePercent DECIMAL(8,4) NOT NULL DEFAULT 18,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX IX_CostRuleHeader_Client (ClientId, WorkLocationId, IsActive, EffectiveFrom)
+);
+CREATE TABLE IF NOT EXISTS client_billing_cost_rule_lines (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    HeaderId BIGINT NOT NULL,
+    LineType VARCHAR(60) NOT NULL,
+    MatchValue VARCHAR(120) NOT NULL DEFAULT '',
+    BillingTreatment VARCHAR(60) NOT NULL DEFAULT 'Bill Actual',
+    BaseType VARCHAR(60) NOT NULL DEFAULT 'Processed Amount',
+    RateType VARCHAR(30) NOT NULL DEFAULT 'Actual',
+    RateValue DECIMAL(18,4) NOT NULL DEFAULT 0,
+    TaxApplicable BOOLEAN NOT NULL DEFAULT TRUE,
+    CommissionApplicable BOOLEAN NOT NULL DEFAULT TRUE,
+    DisplayGroup VARCHAR(80) NOT NULL DEFAULT '',
+    SortOrder INT NOT NULL DEFAULT 100,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    INDEX IX_CostRuleLine_Header (HeaderId, IsActive, SortOrder),
+    INDEX IX_CostRuleLine_Match (LineType, MatchValue)
 );");
         await EnsureColumnAsync(db, "client_billing_configurations", "GstRatePercent", "DECIMAL(8,4) NOT NULL DEFAULT 18 AFTER TaxInclusive");
+        await EnsureColumnAsync(db, "client_billing_settings", "AdvancedCostingEnabled", "BOOLEAN NOT NULL DEFAULT FALSE AFTER IsEnabled");
     }
 
     static async Task EnsureColumnAsync(MySqlConnection db, string tableName, string columnName, string definition)

@@ -6,6 +6,7 @@ public class EssLeaveBalance
     public string LeaveType { get; set; } = string.Empty;
     public decimal Balance { get; set; }
     public DateTime BalanceDate { get; set; }
+    public bool AllowHalfDay { get; set; } = true;
 }
 
 public class EssProfile
@@ -21,11 +22,79 @@ public class EssProfile
     public string ReportingManager { get; set; } = string.Empty;
 }
 
-public class CreateEssLeaveRequest { public string LeaveCode { get; set; } = ""; public string FromDate { get; set; } = ""; public string ToDate { get; set; } = ""; public string Reason { get; set; } = ""; }
-public class EssLeaveRequest { public long Id { get; set; } public string LeaveCode { get; set; } = ""; public string LeaveType { get; set; } = ""; public DateTime FromDate { get; set; } public DateTime ToDate { get; set; } public decimal Days { get; set; } public string Reason { get; set; } = ""; public string Status { get; set; } = ""; public DateTime CreatedAt { get; set; } }
+public class CreateEssLeaveRequest { public string LeaveCode { get; set; } = ""; public string FromDate { get; set; } = ""; public string ToDate { get; set; } = ""; public string DayType { get; set; } = "Full Day"; public string Reason { get; set; } = ""; }
+public class EssLeaveRequest { public long Id { get; set; } public string LeaveCode { get; set; } = ""; public string LeaveType { get; set; } = ""; public DateTime FromDate { get; set; } public DateTime ToDate { get; set; } public string DayType { get; set; } = "Full Day"; public decimal Days { get; set; } public string Reason { get; set; } = ""; public string Status { get; set; } = ""; public DateTime CreatedAt { get; set; } }
+public class EssTravelRequest
+{
+    public long Id { get; set; }
+    public string RequestNumber { get; set; } = "";
+    public DateTime RequestDate { get; set; }
+    public int EmployeeId { get; set; }
+    public int ClientId { get; set; }
+    public string EmployeeName { get; set; } = "";
+    public string Department { get; set; } = "";
+    public string Designation { get; set; } = "";
+    public string ReportingManager { get; set; } = "";
+    public string Purpose { get; set; } = "";
+    public string Customer { get; set; } = "";
+    public string Project { get; set; } = "";
+    public string CostCenter { get; set; } = "";
+    public string TravelScope { get; set; } = "Domestic";
+    public string TravelType { get; set; } = "Official";
+    public string Priority { get; set; } = "Normal";
+    public string FromLocation { get; set; } = "";
+    public string ToLocation { get; set; } = "";
+    public List<EssTravelCity> Legs { get; set; } = [];
+    public DateTime StartDateTime { get; set; }
+    public DateTime EndDateTime { get; set; }
+    public decimal EstimatedCost { get; set; }
+    public long? PolicyId { get; set; }
+    public string PolicyName { get; set; } = "";
+    public string TravelMode { get; set; } = "";
+    public bool AccommodationRequired { get; set; }
+    public bool LocalConveyanceRequired { get; set; }
+    public bool AdvanceRequired { get; set; }
+    public decimal AdvanceAmount { get; set; }
+    public string Remarks { get; set; } = "";
+    public string Status { get; set; } = "Draft";
+    public string PolicyValidationJson { get; set; } = "[]";
+    public string CancellationReason { get; set; } = "";
+    public DateTime? CancellationDate { get; set; }
+    public string CancellationStatus { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+public class SaveEssTravelRequest
+{
+    public long Id { get; set; }
+    public string Purpose { get; set; } = "";
+    public string Customer { get; set; } = "";
+    public string Project { get; set; } = "";
+    public string CostCenter { get; set; } = "";
+    public string TravelScope { get; set; } = "Domestic";
+    public string TravelType { get; set; } = "Official";
+    public string Priority { get; set; } = "Normal";
+    public string FromLocation { get; set; } = "";
+    public string ToLocation { get; set; } = "";
+    public List<EssTravelCity> Cities { get; set; } = [];
+    public DateTime StartDateTime { get; set; }
+    public DateTime EndDateTime { get; set; }
+    public decimal EstimatedCost { get; set; }
+    public string TravelMode { get; set; } = "";
+    public bool AccommodationRequired { get; set; }
+    public bool LocalConveyanceRequired { get; set; }
+    public bool AdvanceRequired { get; set; }
+    public decimal AdvanceAmount { get; set; }
+    public string Remarks { get; set; } = "";
+}
+public class EssTravelCity { public string FromLocation { get; set; } = ""; public string ToLocation { get; set; } = ""; public string TravelMode { get; set; } = ""; public string TravelClass { get; set; } = ""; public string Remarks { get; set; } = ""; public DateTime? StartDateTime { get; set; } public DateTime? EndDateTime { get; set; } }
+public class EssTravelOptions { public long? PolicyId { get; set; } public string PolicyName { get; set; } = ""; public string ClientName { get; set; } = ""; public List<string> TravelModes { get; set; } = []; public List<string> TravelTypes { get; set; } = []; public List<string> Priorities { get; set; } = []; public List<string> Locations { get; set; } = []; public List<string> TravelClasses { get; set; } = []; public List<string> ValidationMessages { get; set; } = []; }
+public class EssTravelDashboard { public int DraftRequests { get; set; } public int PendingApproval { get; set; } public int Approved { get; set; } public int Rejected { get; set; } public int UpcomingTravel { get; set; } public int CancelledTrips { get; set; } }
+public class EssTravelValidationResult { public string Severity { get; set; } = ""; public string Message { get; set; } = ""; public string RuleName { get; set; } = ""; public string Behavior { get; set; } = ""; }
 public class EssWorkflowTrail { public long? InstanceId { get; set; } public string WorkflowCode { get; set; } = ""; public string WorkflowName { get; set; } = ""; public string ResourceType { get; set; } = ""; public string MatchScope { get; set; } = ""; public string Status { get; set; } = ""; public DateTime? CreatedAt { get; set; } public DateTime? CompletedAt { get; set; } public List<EssWorkflowTrailItem> Events { get; set; } = []; }
 public class EssWorkflowTrailItem { public string StageName { get; set; } = ""; public string Action { get; set; } = ""; public string Actor { get; set; } = ""; public string Comment { get; set; } = ""; public DateTime CreatedAt { get; set; } public bool IsPending { get; set; } }
 public class EssPayslip { public int PayRunId { get; set; } public string PayPeriod { get; set; } = ""; public DateTime PayDate { get; set; } public string RunStatus { get; set; } = ""; public decimal GrossPay { get; set; } public decimal StatutoryDeductions { get; set; } public decimal OneTimeDeductions { get; set; } public decimal NetPay { get; set; } public string PaymentStatus { get; set; } = ""; public DateTime? PaymentDate { get; set; } }
+public class EssPayslipDocument { public int PayRunId { get; set; } public string PayPeriod { get; set; } = ""; public string EmployeeCode { get; set; } = ""; public string FileName { get; set; } = ""; public string Html { get; set; } = ""; }
 public class EssAttendanceSummary { public string Month { get; set; } = ""; public decimal PresentDays { get; set; } public decimal PayableDays { get; set; } public int TotalWorkingDays { get; set; } }
 public class EssDailyAttendance { public DateTime AttendanceDate { get; set; } public string Status { get; set; } = ""; public decimal PayableValue { get; set; } public string Remarks { get; set; } = ""; }
 public class EssHoliday { public string Name { get; set; } = ""; public DateTime StartDate { get; set; } public DateTime EndDate { get; set; } }

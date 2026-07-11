@@ -1,4 +1,4 @@
-import type { Client, ClientBillingConfiguration, ClientBillingModule, Drop, Employee, EmployeeActionRequest, EmployeeAuditTrail, EmployeeInfotypeRecord, Org, Setup, WorkLocation } from '../types/payroll'
+import type { Client, ClientBillingAdvancedSetup, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingModule, Drop, Employee, EmployeeActionRequest, EmployeeAuditTrail, EmployeeInfotypeRecord, Org, ScheduledJob, ScheduledJobAction, ScheduledJobHandlerOption, ScheduledJobRun, Setup, TravelExpenseCategory, TravelExpenseSetup, TravelPolicy, TravelPolicyAssignment, TravelPolicyRule, WorkLocation, WorkflowApprover } from '../types/payroll'
 import { deleteJson, getBlob, getJson, postForm, postJson, type ApiOptions } from './apiClient'
 
 export type BulkImportStatus = { jobId: string; state: 'Queued' | 'Processing' | 'Completed' | 'Failed'; totalRows: number; completedRows: number; inserted: number; updated: number; errors: string[] }
@@ -8,10 +8,14 @@ export const getOrganization = (fallback: Org) => getJson<Org>('/api/organizatio
 export const saveOrganization = (organization: Org) => postJson('/api/organization', organization, organization)
 export const getSetup = (fallback: Setup) => getJson<Setup>('/api/setup', fallback)
 export const saveSetup = (setup: Setup, options: ApiOptions = {}) => postJson('/api/setup', setup, setup, options)
-export const getClientBillingModule = () => getJson<ClientBillingModule>('/api/client-billing/module', { isEnabled: false })
+export const getClientBillingModule = () => getJson<ClientBillingModule>('/api/client-billing/module', { isEnabled: false, advancedCostingEnabled: false })
 export const saveClientBillingModule = (module: ClientBillingModule) => postJson('/api/client-billing/module', module, module, { toast: false })
 export const getClientBillingConfigurations = () => getJson<ClientBillingConfiguration[]>('/api/client-billing/configurations', [])
 export const saveClientBillingConfiguration = (row: ClientBillingConfiguration) => postJson('/api/client-billing/configurations', row, { id: row.id }, { toast: false })
+export const getClientBillingAdvanced = () => getJson<ClientBillingAdvancedSetup>('/api/client-billing/advanced', { headers: [], lines: [] })
+export const saveClientBillingAdvancedHeader = (row: ClientBillingCostRuleHeader) => postJson('/api/client-billing/advanced/headers', row, { id: row.id }, { toast: false })
+export const saveClientBillingAdvancedLine = (row: ClientBillingCostRuleLine) => postJson('/api/client-billing/advanced/lines', row, { id: row.id }, { toast: false })
+export const createClientBillingStandardTemplate = (clientId: number, workLocationId?: number | null, commissionPercent = 5, gstRatePercent = 18) => postJson('/api/client-billing/advanced/templates/standard', { clientId, workLocationId: workLocationId || null, commissionPercent, gstRatePercent }, { id: 0 }, { toast: false })
 export const downloadClientBillingImportTemplate = () => getBlob('/api/client-billing/configurations/import-template')
 export const startClientBillingImport = (file: File) => {
   const body = new FormData()
@@ -19,6 +23,19 @@ export const startClientBillingImport = (file: File) => {
   return postForm<BulkImportStatus>('/api/client-billing/configurations/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
 }
 export const getClientBillingImportJob = (jobId: string) => getJson<BulkImportStatus>(`/api/client-billing/configurations/import-jobs/${jobId}`, { jobId, state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: ['Import job not found.'] })
+export const getTravelExpenseSetup = () => getJson<TravelExpenseSetup>('/api/travel-expense/setup', { policies: [], assignments: [], rules: [], categories: [], audit: [] })
+export const saveTravelPolicy = (row: TravelPolicy) => postJson('/api/travel-expense/policies', row, { id: row.id }, { successMessage: 'Travel policy saved.' })
+export const saveTravelPolicyAssignment = (row: TravelPolicyAssignment) => postJson('/api/travel-expense/assignments', row, { id: row.id }, { successMessage: 'Policy assignment saved.' })
+export const saveTravelPolicyRule = (row: TravelPolicyRule) => postJson('/api/travel-expense/rules', row, { id: row.id }, { successMessage: 'Policy rule saved.' })
+export const saveTravelExpenseCategory = (row: TravelExpenseCategory) => postJson('/api/travel-expense/categories', row, { id: row.id }, { successMessage: 'Expense category saved.' })
+export const getScheduledJobs = () => getJson<ScheduledJob[]>('/api/scheduled-jobs', [])
+export const getScheduledJobActions = () => getJson<ScheduledJobAction[]>('/api/scheduled-jobs/actions', [])
+export const saveScheduledJobAction = (action: ScheduledJobAction) => postJson<ScheduledJobAction, ScheduledJobAction | null>('/api/scheduled-jobs/actions', action, null)
+export const getScheduledJobHandlers = () => getJson<ScheduledJobHandlerOption[]>('/api/scheduled-jobs/handlers', [])
+export const getScheduledJobRuns = (jobId?: number, limit = 100) => getJson<ScheduledJobRun[]>(`/api/scheduled-jobs/runs?${new URLSearchParams({ ...(jobId ? { jobId: String(jobId) } : {}), limit: String(limit) })}`, [])
+export const saveScheduledJob = (job: ScheduledJob) => postJson<ScheduledJob, ScheduledJob | null>('/api/scheduled-jobs', job, null)
+export const setScheduledJobEnabled = (id: number, isEnabled: boolean) => postJson(`/api/scheduled-jobs/${id}/enabled?isEnabled=${isEnabled}`, {}, null as ScheduledJob | null)
+export const runScheduledJobNow = (id: number) => postJson(`/api/scheduled-jobs/${id}/run-now`, {}, null as ScheduledJobRun | null)
 export const saveClient = (client: Client, options: ApiOptions = {}) => postJson('/api/clients', client, { id: client.id }, options)
 export const downloadClientImportTemplate = () => getBlob('/api/clients/import-template')
 export const startClientImport = (file: File) => {
@@ -65,6 +82,7 @@ export const saveEmployee = (employee: Employee, infotypeCode?: string, changeRe
   if (changeReason.trim()) query.set('changeReason', changeReason.trim())
   return postJson(`/api/employees${query.size ? `?${query}` : ''}`, employee, { id: employee.id })
 }
+export const getEmployeeManagerUsers = () => getJson<WorkflowApprover[]>('/api/employees/manager-users', [])
 export const getEmployeeInfotypes = (id: number, activeOnly = false) => getJson<EmployeeInfotypeRecord[]>(`/api/employees/${id}/infotypes?activeOnly=${activeOnly}`, [])
 export const getEmployeeAuditTrail = (id: number) => getJson<EmployeeAuditTrail[]>(`/api/employees/${id}/audit`, [])
 export const getActiveEmployeeInfotypes = (clientId: number) => getJson<EmployeeInfotypeRecord[]>(`/api/employees/infotypes/active?clientId=${clientId}`, [])

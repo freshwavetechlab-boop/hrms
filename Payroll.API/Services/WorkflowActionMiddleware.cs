@@ -6,7 +6,7 @@ namespace Payroll.API.Services;
 
 public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActionMiddleware> logger)
 {
-    public async Task InvokeAsync(HttpContext context, WorkflowRepository workflows)
+    public async Task InvokeAsync(HttpContext context, WorkflowRepository workflows, NotificationRepository notifications)
     {
         var user = context.Items.TryGetValue("User", out var item) && item is AuthUser authUser ? authUser : null;
         (WorkflowActionRule Rule, Dictionary<string, string> RouteValues)? match = null;
@@ -68,14 +68,6 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
             clientId ??= await workflows.ResolveClientIdFromLookupAsync(rule.ClientLookupTable, rule.ClientLookupKeyColumn, rule.ClientLookupClientColumn, resourceId);
             clientId ??= await workflows.ResolveClientIdAsync(rule.ClientIdSql, routeValues);
             clientId ??= user.ClientId;
-            var workflowId = rule.WorkflowId ?? await workflows.GetDefaultIdForActivityAsync(rule.ActivityCode, clientId);
-            if (workflowId is null)
-                return;
-
-            var existingState = await workflows.GetResourceStateAsync(rule.ResourceType, resourceId);
-            if (existingState?.CurrentState == "Pending")
-                return;
-
             var payload = JsonSerializer.Serialize(new
             {
                 rule.ActivityCode,
@@ -88,6 +80,26 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
                 RequestPath = context.Request.Path.Value,
                 RequestedAt = DateTime.UtcNow
             });
+
+            await notifications.PublishEventAsync(new NotificationEvent
+            {
+                EventCode = rule.ActivityCode,
+                ResourceType = rule.ResourceType,
+                ResourceId = resourceId,
+                ClientId = clientId,
+                ActorUserId = user.Id,
+                ActorName = user.DisplayName,
+                ActorEmail = user.Email,
+                PayloadJson = payload
+            });
+
+            var workflowId = rule.WorkflowId ?? await workflows.GetDefaultIdForActivityAsync(rule.ActivityCode, clientId);
+            if (workflowId is null)
+                return;
+
+            var existingState = await workflows.GetResourceStateAsync(rule.ResourceType, resourceId);
+            if (existingState?.CurrentState == "Pending")
+                return;
 
             await workflows.StartAsync(new StartWorkflowRequest
             {

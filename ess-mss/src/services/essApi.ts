@@ -1,4 +1,4 @@
-import type { AttendanceSummary, Birthday, DailyAttendance, Holiday, LeaveBalance, LeaveRequest, Payslip, ProfileData, Task, TaxPortal, User, WorkflowTrail } from '../types'
+import type { AttendanceSummary, Birthday, DailyAttendance, Holiday, LeaveBalance, LeaveRequest, OrganizationBrand, Payslip, PayslipDocument, ProfileData, SaveTravelRequest, Task, TaxPortal, TravelDashboard, TravelOptions, TravelRequest, User, WorkflowTrail } from '../types'
 
 export const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:5062'
 const tokenKey = 'ess.auth.token'
@@ -42,23 +42,46 @@ export async function me() {
   return response.ok ? (response.json() as Promise<User>) : null
 }
 
+export async function organizationBrand() {
+  const response = await fetch(`${apiBase}/api/public/organization-brand`)
+  return response.ok ? (response.json() as Promise<OrganizationBrand>) : null
+}
+
 export const essApi = {
   profile: () => essFetch('/api/ess/profile').then(r => r.ok ? r.json() as Promise<ProfileData> : null),
   leaveBalances: () => essFetch('/api/ess/leave/balances').then(r => r.ok ? r.json() as Promise<LeaveBalance[]> : []),
   leaveRequests: () => essFetch('/api/ess/leave/requests').then(r => r.ok ? r.json() as Promise<LeaveRequest[]> : []),
   leaveTrail: (id: number) => essFetch(`/api/ess/leave/requests/${id}/trail`).then(r => r.ok ? r.json() as Promise<WorkflowTrail> : Promise.reject()),
-  tasks: () => essFetch('/api/workflows/tasks/pending').then(r => r.ok ? r.json() as Promise<Task[]> : []),
+  tasks: (view: 'pending' | 'actioned' = 'pending') => essFetch(`/api/workflows/tasks/${view}`).then(r => r.ok ? r.json() as Promise<Task[]> : []),
+  taskAction: (taskId: number, action: 'Approved' | 'Rejected' | 'Sent Back', comment: string) => essFetch(`/api/workflows/tasks/${taskId}/${encodeURIComponent(action)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ comment }),
+  }).then(async response => {
+    if (response.ok) return
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.error || 'Unable to update task.')
+  }),
   birthdays: () => essFetch('/api/ess/dashboard/birthdays').then(r => r.ok ? r.json() as Promise<Birthday[]> : []),
   attendance: (month: string) => essFetch(`/api/ess/dashboard/attendance?month=${month}`).then(r => r.ok ? r.json() as Promise<AttendanceSummary> : null),
   dailyAttendance: (month: string) => essFetch(`/api/ess/dashboard/attendance/daily?month=${month}`).then(r => r.ok ? r.json() as Promise<DailyAttendance[]> : []),
   holidays: (month: string) => essFetch(`/api/ess/dashboard/holidays?month=${month}`).then(r => r.ok ? r.json() as Promise<Holiday[]> : []),
   payslips: () => essFetch('/api/ess/pay/payslips').then(r => r.ok ? r.json() as Promise<Payslip[]> : Promise.reject()),
+  payslipDocument: (payRunId: number) => essFetch(`/api/ess/pay/payslips/${payRunId}`).then(r => r.ok ? r.json() as Promise<PayslipDocument> : Promise.reject()),
   taxPortal: () => essFetch('/api/ess/tax').then(r => r.ok ? r.json() as Promise<TaxPortal> : Promise.reject()),
   saveTaxRegime: (regime: 'Old' | 'New') => essFetch('/api/ess/tax/regime', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ regime }) }).then(jsonOrThrow<unknown>),
   saveTaxDeclarations: (phase: 'Planned' | 'Actual', lines: { sectionId: number; amount: number; remarks: string }[]) => essFetch('/api/ess/tax/declarations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phase, lines }) }).then(jsonOrThrow<unknown>),
-  createLeaveRequest: (request: { leaveCode: string; fromDate: string; toDate: string; reason: string }) => essFetch('/api/ess/leave/requests', {
+  createLeaveRequest: (request: { leaveCode: string; fromDate: string; toDate: string; dayType: string; reason: string }) => essFetch('/api/ess/leave/requests', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   }).then(jsonOrThrow<LeaveRequest>),
+  travelOptions: () => essFetch('/api/ess/travel/options').then(r => r.ok ? r.json() as Promise<TravelOptions> : Promise.reject()),
+  travelDashboard: () => essFetch('/api/ess/travel/dashboard').then(r => r.ok ? r.json() as Promise<TravelDashboard> : Promise.reject()),
+  travelRequests: () => essFetch('/api/ess/travel/requests').then(r => r.ok ? r.json() as Promise<TravelRequest[]> : []),
+  travelTrail: (id: number) => essFetch(`/api/ess/travel/requests/${id}/trail`).then(r => r.ok ? r.json() as Promise<WorkflowTrail> : Promise.reject()),
+  saveTravelRequest: (request: SaveTravelRequest) => essFetch('/api/ess/travel/requests', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) }).then(jsonOrThrow<TravelRequest>),
+  submitTravelRequest: (id: number) => essFetch(`/api/ess/travel/requests/${id}/submit`, { method: 'POST' }).then(jsonOrThrow<TravelRequest>),
+  withdrawTravelRequest: (id: number) => essFetch(`/api/ess/travel/requests/${id}/withdraw`, { method: 'POST' }).then(async r => { if (!r.ok) await jsonOrThrow<unknown>(r) }),
+  cancelTravelRequest: (id: number, reason: string) => essFetch(`/api/ess/travel/requests/${id}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) }).then(async r => { if (!r.ok) await jsonOrThrow<unknown>(r) }),
 }

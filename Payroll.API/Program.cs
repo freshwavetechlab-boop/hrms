@@ -52,7 +52,11 @@ builder.Services.AddSingleton<EssMssRepository>();
 builder.Services.AddSingleton<WorkflowRepository>();
 builder.Services.AddSingleton<TaxEngineRepository>();
 builder.Services.AddSingleton<DashboardRepository>();
+builder.Services.AddSingleton<NotificationRepository>();
+builder.Services.AddSingleton<ScheduledJobRepository>();
+builder.Services.AddSingleton<TravelExpenseRepository>();
 builder.Services.AddHostedService<PayrollRunWorker>();
+builder.Services.AddHostedService<ScheduledJobWorker>();
 
 var app = builder.Build();
 const string AuthCookieName = "payroll_auth";
@@ -87,7 +91,7 @@ app.UseCors();
 
 app.Use(async (context, next) =>
 {
-    if (HttpMethods.IsOptions(context.Request.Method) || !context.Request.Path.StartsWithSegments("/api") || context.Request.Path.StartsWithSegments("/api/auth/login"))
+    if (HttpMethods.IsOptions(context.Request.Method) || !context.Request.Path.StartsWithSegments("/api") || context.Request.Path.StartsWithSegments("/api/auth/login") || context.Request.Path.StartsWithSegments("/api/public"))
     {
         await next();
         return;
@@ -161,6 +165,11 @@ app.MapPost("/api/workflows/activities", async (WorkflowRepository repository, S
 app.MapPost("/api/workflows/action-rules", async (WorkflowRepository repository, SaveWorkflowActionRuleRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); if(string.IsNullOrWhiteSpace(request.ActivityCode)||string.IsNullOrWhiteSpace(request.HttpMethod)||string.IsNullOrWhiteSpace(request.PathPattern)||string.IsNullOrWhiteSpace(request.ResourceType)||string.IsNullOrWhiteSpace(request.ResourceIdSource)) return Results.BadRequest(new{error="Activity, method, path, resource type, and resource id source are required."}); if(!request.ResourceIdSource.Contains('.')) return Results.BadRequest(new{error="Resource id source must use scope.field format, for example route.id or body.employeeId."}); return Results.Ok(await repository.SaveActionRuleAsync(request)); });
 app.MapPost("/api/workflows/start", async (WorkflowRepository repository, StartWorkflowRequest request, HttpContext context) => { var item=await repository.StartAsync(request,CurrentUser(context).Id); return item is null ? Results.BadRequest(new {error="Workflow cannot start. Check stages and approver setup."}) : Results.Ok(item); });
 app.MapGet("/api/workflows/tasks/pending", async (WorkflowRepository repository,HttpContext context) => Results.Ok(await repository.PendingAsync(CurrentUser(context).Id)));
+app.MapGet("/api/workflows/tasks/actioned", async (WorkflowRepository repository,string? scope,HttpContext context) =>
+{
+    var all = scope?.Equals("all", StringComparison.OrdinalIgnoreCase) == true && HasPermission(context, "workflow.manage");
+    return Results.Ok(await repository.ActionedAsync(CurrentUser(context).Id, all));
+});
 app.MapGet("/api/workflows/history", async (WorkflowRepository repository,HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetInstancesAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/{instanceId:long}/history", async (WorkflowRepository repository,long instanceId,HttpContext context) => Results.Ok(await repository.HistoryAsync(instanceId)));
 app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository, PayRunRepository payRuns,long taskId,string action,WorkflowActionRequest request,HttpContext context) =>
@@ -170,6 +179,7 @@ app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowReposi
     if(!task)return Results.NotFound();
     var instance=await repository.GetInstanceForTaskAsync(taskId);
     if(instance?.ResourceType=="LeaveRequest")await essRepository.SyncLeaveWorkflowStatusAsync(instance.ResourceId,instance.Status);
+    if(instance?.ResourceType=="TravelRequest")await essRepository.SyncTravelWorkflowStatusAsync(instance.ResourceId,instance.Status);
     if(instance?.ResourceType=="PayRun" && int.TryParse(instance.ResourceId,out var payRunId))
     {
         if(instance.Status=="Approved") await payRuns.ApproveAsync(payRunId);
@@ -209,6 +219,7 @@ app.MapGet("/api/ess/profile", async (EssMssRepository repository, HttpContext c
 app.MapGet("/api/ess/leave/requests", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetLeaveRequestsAsync(user.EmployeeId.Value,user.ClientId)); });
 app.MapGet("/api/ess/leave/requests/{id:long}/trail", async (EssMssRepository repository, long id, HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var trail=await repository.GetLeaveRequestTrailAsync(id,user.EmployeeId.Value,user.ClientId); return trail is null ? Results.NotFound() : Results.Ok(trail); });
 app.MapGet("/api/ess/pay/payslips", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetPayslipsAsync(user.EmployeeId.Value,user.ClientId)); });
+app.MapGet("/api/ess/pay/payslips/{payRunId:int}", async (EssMssRepository repository, int payRunId, HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var document=await repository.GetPayslipDocumentAsync(user.EmployeeId.Value,user.ClientId,payRunId); return document is null ? Results.NotFound() : Results.Ok(document); });
 app.MapGet("/api/ess/tax", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetTaxPortalAsync(user.EmployeeId.Value,user.ClientId)); });
 app.MapPost("/api/ess/tax/regime", async (EssMssRepository repository, SaveEssTaxRegimeRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(ok,error)=await repository.SaveTaxRegimeAsync(user.EmployeeId.Value,user.ClientId,request); return ok ? Results.NoContent() : Results.BadRequest(new{error}); });
 app.MapPost("/api/ess/tax/declarations", async (EssMssRepository repository, SaveEssTaxDeclarationsRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(ok,error)=await repository.SaveTaxDeclarationsAsync(user.EmployeeId.Value,user.ClientId,request); return ok ? Results.NoContent() : Results.BadRequest(new{error}); });
@@ -219,6 +230,26 @@ app.MapPost("/api/ess/attendance/punch", async (EssMssRepository repository, Val
 app.MapGet("/api/ess/dashboard/holidays", async (EssMssRepository repository, string month, HttpContext context) => Results.Ok(await repository.GetHolidaysAsync(CurrentUser(context).ClientId,month)));
 app.MapGet("/api/ess/dashboard/birthdays", async (EssMssRepository repository, HttpContext context) => Results.Ok(await repository.GetTodaysBirthdaysAsync(CurrentUser(context).ClientId)));
 app.MapPost("/api/ess/leave/requests", async (EssMssRepository repository, WorkflowRepository workflows, CreateEssLeaveRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(result,error)=await repository.CreateLeaveRequestAsync(user.EmployeeId.Value,user.ClientId,request); if(result is null)return Results.BadRequest(new{error}); var workflowId=await workflows.GetDefaultIdAsync("LeaveRequest",user.ClientId); if(workflowId is not null) await workflows.StartAsync(new StartWorkflowRequest{WorkflowId=workflowId.Value,ResourceType="LeaveRequest",ResourceId=result.Id.ToString(),PayloadJson=System.Text.Json.JsonSerializer.Serialize(result)},user.Id); return Results.Created($"/api/ess/leave/requests/{result.Id}",result); });
+
+app.MapGet("/api/ess/travel/options", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetTravelOptionsAsync(user.EmployeeId.Value,user.ClientId)); });
+app.MapGet("/api/ess/travel/requests", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetTravelRequestsAsync(user.EmployeeId.Value,user.ClientId)); });
+app.MapGet("/api/ess/travel/requests/{id:long}", async (EssMssRepository repository,long id,HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var request=await repository.GetTravelRequestAsync(id,user.EmployeeId.Value,user.ClientId); return request is null ? Results.NotFound() : Results.Ok(request); });
+app.MapPost("/api/ess/travel/requests", async (EssMssRepository repository, SaveEssTravelRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(result,error)=await repository.SaveTravelDraftAsync(user.EmployeeId.Value,user.ClientId,request); return result is null ? Results.BadRequest(new{error}) : Results.Ok(result); });
+app.MapPost("/api/ess/travel/requests/{id:long}/submit", async (EssMssRepository repository, WorkflowRepository workflows,long id,HttpContext context) =>
+{
+    var user=CurrentUser(context);
+    if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403);
+    var(result,error)=await repository.SubmitTravelRequestAsync(user.EmployeeId.Value,user.ClientId,id);
+    if(result is null)return Results.BadRequest(new{error});
+    var workflowId=await workflows.GetDefaultIdAsync("TravelRequest",user.ClientId);
+    if(workflowId is not null) await workflows.StartAsync(new StartWorkflowRequest{WorkflowId=workflowId.Value,ResourceType="TravelRequest",ResourceId=result.Id.ToString(),PayloadJson=System.Text.Json.JsonSerializer.Serialize(result)},user.Id);
+    return Results.Ok(result);
+});
+app.MapPost("/api/ess/travel/requests/{id:long}/withdraw", async (EssMssRepository repository,long id,HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var(ok,error)=await repository.WithdrawTravelRequestAsync(user.EmployeeId.Value,user.ClientId,id); return ok ? Results.NoContent() : Results.BadRequest(new{error}); });
+app.MapPost("/api/ess/travel/requests/{id:long}/cancel", async (EssMssRepository repository,long id, JsonElement body,HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var reason=body.TryGetProperty("reason",out var value)?value.GetString()??"":""; var(ok,error)=await repository.CancelTravelRequestAsync(user.EmployeeId.Value,user.ClientId,id,reason); return ok ? Results.NoContent() : Results.BadRequest(new{error}); });
+app.MapGet("/api/ess/travel/requests/{id:long}/trail", async (EssMssRepository repository,long id,HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var trail=await repository.GetTravelRequestTrailAsync(id,user.EmployeeId.Value,user.ClientId); return trail is null ? Results.NotFound() : Results.Ok(trail); });
+app.MapGet("/api/ess/travel/dashboard", async (EssMssRepository repository,HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetTravelDashboardAsync(user.EmployeeId.Value,user.ClientId)); });
+app.MapGet("/api/ess/travel/calendar", async (EssMssRepository repository,string from,string to,HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetTravelCalendarAsync(user.EmployeeId.Value,user.ClientId,from,to)); });
 
 app.MapPost("/api/auth/logout", async (AuthRepository repository, HttpContext context) =>
 {
@@ -376,6 +407,75 @@ app.MapPost("/api/admin/database/migrate", async (HttpContext context) =>
 .WithName("MigrateDatabase")
 .WithOpenApi();
 
+app.MapGet("/api/notifications/setup", async (NotificationRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetSetupAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden));
+app.MapPost("/api/notifications/smtp", async (NotificationRepository repository, NotificationSmtpSetting request, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveSmtpAsync(request)) : Results.StatusCode(StatusCodes.Status403Forbidden));
+app.MapPost("/api/notifications/templates", async (NotificationRepository repository, NotificationTemplate request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try { return Results.Ok(await repository.SaveTemplateAsync(request)); }
+    catch (Exception exception) { return Results.BadRequest(new { error = exception.Message }); }
+});
+app.MapPost("/api/notifications/rules", async (NotificationRepository repository, NotificationRule request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try { return Results.Ok(await repository.SaveRuleAsync(request)); }
+    catch (Exception exception) { return Results.BadRequest(new { error = exception.Message }); }
+});
+app.MapPost("/api/notifications/queue/{id:long}/retry", async (NotificationRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    await repository.RetryAsync(id);
+    return Results.NoContent();
+});
+app.MapPost("/api/notifications/test", async (NotificationRepository repository, NotificationTestRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (request.RuleId <= 0 || string.IsNullOrWhiteSpace(request.ToEmail)) return Results.BadRequest(new { error = "Rule and test email are required." });
+    await repository.QueueTestAsync(request, CurrentUser(context).Id);
+    return Results.NoContent();
+});
+
+app.MapGet("/api/scheduled-jobs", async (ScheduledJobRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden));
+app.MapGet("/api/scheduled-jobs/actions", async (ScheduledJobRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetActionsAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden));
+app.MapPost("/api/scheduled-jobs/actions", async (ScheduledJobRepository repository, ScheduledJobActionSaveRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try { return Results.Ok(await repository.SaveActionAsync(request)); }
+    catch (Exception exception) { return Results.BadRequest(new { error = exception.Message }); }
+});
+app.MapGet("/api/scheduled-jobs/handlers", async (ScheduledJobRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetHandlerOptionsAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden));
+app.MapGet("/api/scheduled-jobs/runs", async (ScheduledJobRepository repository, int? jobId, int? limit, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetRunsAsync(jobId, limit ?? 100)) : Results.StatusCode(StatusCodes.Status403Forbidden));
+app.MapPost("/api/scheduled-jobs", async (ScheduledJobRepository repository, ScheduledJobSaveRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (string.IsNullOrWhiteSpace(request.JobCode) || string.IsNullOrWhiteSpace(request.JobName) || string.IsNullOrWhiteSpace(request.HandlerKey))
+        return Results.BadRequest(new { error = "Job code, job name, and handler are required." });
+    try { return Results.Ok(await repository.SaveAsync(request)); }
+    catch (Exception exception) { return Results.BadRequest(new { error = exception.Message }); }
+});
+app.MapPost("/api/scheduled-jobs/{id:int}/enabled", async (ScheduledJobRepository repository, int id, bool isEnabled, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var job = await repository.SetEnabledAsync(id, isEnabled);
+    return job is null ? Results.NotFound(new { error = "Scheduled job not found." }) : Results.Ok(job);
+});
+app.MapPost("/api/scheduled-jobs/{id:int}/run-now", async (ScheduledJobRepository repository, int id, HttpContext context, CancellationToken cancellationToken) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try
+    {
+        var run = await repository.RunJobAsync(id, CurrentUser(context).Email, cancellationToken);
+        return run is null ? Results.NotFound(new { error = "Scheduled job not found." }) : Results.Ok(run);
+    }
+    catch (Exception exception) { return Results.BadRequest(new { error = exception.Message }); }
+});
+
 app.MapGet("/api/reports/{code}", async (ReportingRepository repository, string code, int clientId, string? department, int? workLocationId, string? fromDate, string? toDate, string? month, int? payRunId, int? employeeId, string? componentCode, HttpContext context) =>
 {
     if (!HasPermission(context, "reports.view")) return Results.StatusCode(StatusCodes.Status403Forbidden);
@@ -391,6 +491,14 @@ app.MapGet("/api/organization", async (OrganizationRepository repository) =>
     return organization is not null ? Results.Ok(organization) : Results.NotFound();
 })
 .WithName("GetOrganization")
+.WithOpenApi();
+
+app.MapGet("/api/public/organization-brand", async (OrganizationRepository repository) =>
+{
+    var organization = await repository.GetAsync();
+    return organization is not null ? Results.Ok(new { organization.Name, organization.LogoDataUrl }) : Results.NotFound();
+})
+.WithName("GetPublicOrganizationBrand")
 .WithOpenApi();
 
 app.MapPost("/api/organization", async (OrganizationRepository repository, Organization organization) =>
@@ -476,6 +584,42 @@ app.MapPost("/api/client-billing/configurations", async (ClientBillingRepository
 .WithName("SaveClientBillingConfiguration")
 .WithOpenApi();
 
+app.MapGet("/api/client-billing/advanced", async (ClientBillingRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetAdvancedAsync()) : Results.StatusCode(403))
+.WithName("GetClientBillingAdvanced")
+.WithOpenApi();
+
+app.MapPost("/api/client-billing/advanced/headers", async (ClientBillingRepository repository, ClientBillingCostRuleHeader row, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (id, error) = await repository.SaveAdvancedHeaderAsync(row);
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(new { id }) : Results.BadRequest(new { error });
+})
+.WithName("SaveClientBillingAdvancedHeader")
+.WithOpenApi();
+
+app.MapPost("/api/client-billing/advanced/lines", async (ClientBillingRepository repository, ClientBillingCostRuleLine row, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (id, error) = await repository.SaveAdvancedLineAsync(row);
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(new { id }) : Results.BadRequest(new { error });
+})
+.WithName("SaveClientBillingAdvancedLine")
+.WithOpenApi();
+
+app.MapPost("/api/client-billing/advanced/templates/standard", async (ClientBillingRepository repository, JsonElement body, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var clientId = body.TryGetProperty("clientId", out var clientValue) ? clientValue.GetInt32() : 0;
+    int? locationId = body.TryGetProperty("workLocationId", out var locationValue) && locationValue.ValueKind != JsonValueKind.Null ? locationValue.GetInt32() : null;
+    var commission = body.TryGetProperty("commissionPercent", out var commissionValue) ? commissionValue.GetDecimal() : 5m;
+    var gst = body.TryGetProperty("gstRatePercent", out var gstValue) ? gstValue.GetDecimal() : 18m;
+    var (id, error) = await repository.CreateStandardAdvancedTemplateAsync(clientId, locationId, commission, gst);
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(new { id }) : Results.BadRequest(new { error });
+})
+.WithName("CreateClientBillingStandardTemplate")
+.WithOpenApi();
+
 app.MapGet("/api/client-billing/configurations/import-template", async (ClientBillingRepository repository, HttpContext context) =>
     HasPermission(context, "settings.manage")
         ? Results.File(await repository.BuildImportTemplateAsync(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "client-billing-import-template.xlsx")
@@ -498,6 +642,54 @@ app.MapGet("/api/client-billing/configurations/import-jobs/{jobId:guid}", (Clien
         ? repository.GetImportJob(jobId) is { } job ? Results.Ok(job) : Results.NotFound(new { error = "Import job not found." })
         : Results.StatusCode(403))
 .WithName("GetClientBillingImportJob")
+.WithOpenApi();
+
+app.MapGet("/api/travel-expense/setup", async (TravelExpenseRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403))
+.WithName("GetTravelExpenseSetup")
+.WithOpenApi();
+
+app.MapPost("/api/travel-expense/policies", async (TravelExpenseRepository repository, TravelPolicy request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (id, error) = await repository.SavePolicyAsync(request, CurrentUser(context).Email);
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(new { id }) : Results.BadRequest(new { error });
+})
+.WithName("SaveTravelPolicy")
+.WithOpenApi();
+
+app.MapPost("/api/travel-expense/assignments", async (TravelExpenseRepository repository, TravelPolicyAssignment request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (id, error) = await repository.SaveAssignmentAsync(request, CurrentUser(context).Email);
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(new { id }) : Results.BadRequest(new { error });
+})
+.WithName("SaveTravelPolicyAssignment")
+.WithOpenApi();
+
+app.MapPost("/api/travel-expense/rules", async (TravelExpenseRepository repository, TravelPolicyRule request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    try
+    {
+        var (id, error) = await repository.SaveRuleAsync(request, CurrentUser(context).Email);
+        return string.IsNullOrWhiteSpace(error) ? Results.Ok(new { id }) : Results.BadRequest(new { error });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new { error = "Eligibility/config JSON is invalid." });
+    }
+})
+.WithName("SaveTravelPolicyRule")
+.WithOpenApi();
+
+app.MapPost("/api/travel-expense/categories", async (TravelExpenseRepository repository, TravelExpenseCategory request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (id, error) = await repository.SaveCategoryAsync(request, CurrentUser(context).Email);
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(new { id }) : Results.BadRequest(new { error });
+})
+.WithName("SaveTravelExpenseCategory")
 .WithOpenApi();
 
 app.MapGet("/api/tax-engine", async (TaxEngineRepository repository, HttpContext context) => HasPermission(context, "settings.manage") || HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403));
@@ -988,6 +1180,11 @@ app.MapGet("/api/employees", async (EmployeeRepository repository) =>
 .WithName("GetEmployees")
 .WithOpenApi();
 
+app.MapGet("/api/employees/manager-users", async (EmployeeRepository repository) =>
+    Results.Ok(await repository.GetManagerUsersAsync()))
+.WithName("GetEmployeeManagerUsers")
+.WithOpenApi();
+
 app.MapPost("/api/employees", async (EmployeeRepository repository, Employee employee, HttpContext context, string? infotypeCode, string? changeReason) =>
 {
     if (employee.ClientId == 0 || string.IsNullOrWhiteSpace(employee.EmployeeCode) || string.IsNullOrWhiteSpace(employee.FirstName))
@@ -1311,6 +1508,9 @@ static async Task RunDatabaseSetupAsync(IServiceProvider services, IConfiguratio
     await scopedServices.GetRequiredService<LeaveAttendanceRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<WorkflowRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<TaxEngineRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<NotificationRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<ScheduledJobRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<TravelExpenseRepository>().InitializeAsync();
 
     await using var workflowDb = new MySqlConnector.MySqlConnection(configuration.GetConnectionString("Default"));
     await workflowDb.OpenAsync();
@@ -1321,6 +1521,7 @@ static async Task RunDatabaseSetupAsync(IServiceProvider services, IConfiguratio
     LeaveTypeId INT NOT NULL,
     FromDate DATE NOT NULL,
     ToDate DATE NOT NULL,
+    DayType VARCHAR(30) NOT NULL DEFAULT 'Full Day',
     Days DECIMAL(8,2) NOT NULL,
     Reason VARCHAR(1000),
     Status VARCHAR(40) NOT NULL,

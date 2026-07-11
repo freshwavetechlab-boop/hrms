@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS employees (
     Grade VARCHAR(100),
     WorkLocationId INT NOT NULL DEFAULT 0,
     ReportingManagerId INT NOT NULL DEFAULT 0,
+    ReportingManagerUserId INT NULL,
     PortalAccess BOOLEAN NOT NULL DEFAULT FALSE,
     SalaryStructureId VARCHAR(50),
     AnnualCtc DECIMAL(18,2) NOT NULL DEFAULT 0,
@@ -166,6 +167,7 @@ CREATE TABLE IF NOT EXISTS employees (
         await EnsureColumnAsync(connection, "CorporateOfficeAddress", "TEXT NULL AFTER RegisteredOfficeAddress");
         await EnsureTableColumnAsync(connection, "clients", "PayScheduleJson", "JSON NULL");
         await EnsureTableColumnAsync(connection, "worklocations", "ClientId", "INT NOT NULL DEFAULT 0 AFTER Id");
+        await EnsureTableColumnAsync(connection, "employees", "ReportingManagerUserId", "INT NULL AFTER ReportingManagerId");
         await EnsureTableColumnAsync(connection, "worklocations", "ClientName", "VARCHAR(250) NULL AFTER ClientId");
         await EnsureTableColumnAsync(connection, "worklocations", "GSTIN", "VARCHAR(50) NULL AFTER PostalCode");
         await EnsureTableColumnAsync(connection, "employees", "Grade", "VARCHAR(100) NULL AFTER Designation");
@@ -402,6 +404,7 @@ WHERE Id = @Id;";
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
+        client.PayScheduleJson = NormalizeJsonObject(client.PayScheduleJson);
         if (client.Id == 0)
         {
             const string sql = "INSERT INTO clients (Name, Code, ContactPerson, Email, Phone, Address, PayScheduleJson, IsActive) VALUES (@Name, @Code, @ContactPerson, @Email, @Phone, @Address, @PayScheduleJson, @IsActive); SELECT LAST_INSERT_ID();";
@@ -414,6 +417,20 @@ WHERE Id = @Id;";
         await connection.ExecuteAsync("UPDATE worklocations SET ClientName=@Name WHERE ClientId=@Id", client);
         await PayrollDataTableStore.SyncClientPayScheduleAsync(connection, client.Id, client.PayScheduleJson);
         return client.Id;
+    }
+
+    private static string NormalizeJsonObject(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return "{}";
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.ValueKind == JsonValueKind.Object ? json : "{}";
+        }
+        catch
+        {
+            return "{}";
+        }
     }
 
     public Task<byte[]> BuildClientImportTemplateAsync()
@@ -1404,9 +1421,9 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
         if (employee.Id == 0)
-            employee.Id = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId, EmployeeCode, FirstName, LastName, Gender, DateOfJoining, WorkEmail, Department, Designation, Grade, WorkLocationId, ReportingManagerId, PortalAccess, SalaryStructureId, AnnualCtc, SalaryJson, PersonalJson, PaymentJson, IsActive) VALUES (@ClientId, @EmployeeCode, @FirstName, @LastName, @Gender, @DateOfJoining, @WorkEmail, @Department, @Designation, @Grade, @WorkLocationId, @ReportingManagerId, @PortalAccess, @SalaryStructureId, @AnnualCtc, @SalaryJson, @PersonalJson, @PaymentJson, @IsActive); SELECT LAST_INSERT_ID();", employee);
+            employee.Id = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId, EmployeeCode, FirstName, LastName, Gender, DateOfJoining, WorkEmail, Department, Designation, Grade, WorkLocationId, ReportingManagerId, ReportingManagerUserId, PortalAccess, SalaryStructureId, AnnualCtc, SalaryJson, PersonalJson, PaymentJson, IsActive) VALUES (@ClientId, @EmployeeCode, @FirstName, @LastName, @Gender, @DateOfJoining, @WorkEmail, @Department, @Designation, @Grade, @WorkLocationId, @ReportingManagerId, @ReportingManagerUserId, @PortalAccess, @SalaryStructureId, @AnnualCtc, @SalaryJson, @PersonalJson, @PaymentJson, @IsActive); SELECT LAST_INSERT_ID();", employee);
         else
-            await connection.ExecuteAsync(@"UPDATE employees SET ClientId=@ClientId, EmployeeCode=@EmployeeCode, FirstName=@FirstName, LastName=@LastName, Gender=@Gender, DateOfJoining=@DateOfJoining, WorkEmail=@WorkEmail, Department=@Department, Designation=@Designation, Grade=@Grade, WorkLocationId=@WorkLocationId, ReportingManagerId=@ReportingManagerId, PortalAccess=@PortalAccess, SalaryStructureId=@SalaryStructureId, AnnualCtc=@AnnualCtc, SalaryJson=@SalaryJson, PersonalJson=@PersonalJson, PaymentJson=@PaymentJson, IsActive=@IsActive WHERE Id=@Id", employee);
+            await connection.ExecuteAsync(@"UPDATE employees SET ClientId=@ClientId, EmployeeCode=@EmployeeCode, FirstName=@FirstName, LastName=@LastName, Gender=@Gender, DateOfJoining=@DateOfJoining, WorkEmail=@WorkEmail, Department=@Department, Designation=@Designation, Grade=@Grade, WorkLocationId=@WorkLocationId, ReportingManagerId=@ReportingManagerId, ReportingManagerUserId=@ReportingManagerUserId, PortalAccess=@PortalAccess, SalaryStructureId=@SalaryStructureId, AnnualCtc=@AnnualCtc, SalaryJson=@SalaryJson, PersonalJson=@PersonalJson, PaymentJson=@PaymentJson, IsActive=@IsActive WHERE Id=@Id", employee);
         await PayrollDataTableStore.SyncEmployeeTablesAsync(connection, employee);
         return employee.Id;
     }
@@ -1425,7 +1442,7 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
     private static bool ParseClientActive(string value) =>
         string.IsNullOrWhiteSpace(value) || !new[] { "false", "no", "inactive", "0" }.Contains(value.Trim(), StringComparer.OrdinalIgnoreCase);
 
-    private static readonly string[] DropdownImportTypes = ["Department", "Designation", "Work Week", "Employment Type", "Employee Grade", "Cost Center", "Location Tag", "State", "City"];
+    private static readonly string[] DropdownImportTypes = ["Department", "Designation", "Work Week", "Employment Type", "Employee Grade", "Cost Center", "Location Tag", "State", "City", "Travel Type", "Travel Location", "Travel Class"];
     private static string[] DropdownSheetHeaders(string type) =>
         type == "Employee Grade" ? ["Client Id", "Value", "Active"] :
         type == "City" ? ["State", "Value", "Active"] :
@@ -1435,7 +1452,7 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
         type == "Employee Grade" ? [clientId, "G1", "TRUE"] :
         type == "City" ? ["Delhi", "New Delhi", "TRUE"] :
         type == "Work Week" ? ["Second & Fourth Saturday + Sunday off", "TRUE", "Mon, Tue, Wed, Thu, Fri, Sat", "2nd, 4th"] :
-        [type == "State" ? "Delhi" : type == "Department" ? "Finance" : type == "Designation" ? "Manager" : type == "Employment Type" ? "Full Time" : type == "Cost Center" ? "CC-001" : "Head Office", "TRUE"];
+        [type == "State" ? "Delhi" : type == "Department" ? "Finance" : type == "Designation" ? "Manager" : type == "Employment Type" ? "Full Time" : type == "Cost Center" ? "CC-001" : type == "Travel Type" ? "Client Visit" : type == "Travel Location" ? "New Delhi" : type == "Travel Class" ? "Economy" : "Head Office", "TRUE"];
     private static readonly string[] SalaryComponentImportHeaders = ["Code", "Category", "Name", "Component Type", "Component Role", "Statutory Type", "Pay Type", "Calculation Type", "Value", "Formula", "Base Component", "Taxable", "Part Of CTC", "Pro Rata", "FBP", "Restrict FBP", "EPF", "ESI", "Recurring", "Scheduled", "Investment Type", "Correction Of", "Priority", "Active"];
     private static readonly string[] SalaryTemplateImportHeaders = ["Client Ids", "Template Name", "Annual CTC", "Active", "Component Code", "Value"];
     private static readonly string[] SalaryComponentCategories = ["Earning", "Deduction", "Reimbursement", "Benefit", "Correction"];

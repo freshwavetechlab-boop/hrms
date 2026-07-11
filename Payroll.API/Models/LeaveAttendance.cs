@@ -252,6 +252,7 @@ public class LeaveType
     public bool EncashUnusedLeaves { get; set; }
     public decimal? MaxEncashmentLimit { get; set; }
     public bool AllowNegativeLeaveBalance { get; set; }
+    public bool AllowHalfDay { get; set; } = true;
     public string NegativeBalanceHandling { get; set; } = "Mark as LOP";
     public bool AllowPastDates { get; set; }
     public string PastDateLimitType { get; set; } = "No limit";

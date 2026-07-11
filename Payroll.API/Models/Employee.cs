@@ -15,6 +15,7 @@ public class Employee
     public string Grade { get; set; } = string.Empty;
     public int WorkLocationId { get; set; }
     public int ReportingManagerId { get; set; }
+    public int? ReportingManagerUserId { get; set; }
     public bool PortalAccess { get; set; }
     public string SalaryStructureId { get; set; } = string.Empty;
     public decimal AnnualCtc { get; set; }

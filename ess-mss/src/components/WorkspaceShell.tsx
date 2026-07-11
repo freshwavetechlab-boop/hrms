@@ -15,7 +15,7 @@ type Props = {
 export function WorkspaceShell({ user, view, manager, onNavigate, onLogout, children }: Props) {
   const [accountOpen, setAccountOpen] = useState(false)
   const nav = useMemo(
-    () => (manager ? ['Dashboard', 'My Tasks', 'Leave', 'Attendance', 'Pay', 'Tax', 'Team', 'Approvals'] : ['Dashboard', 'My Tasks', 'Leave', 'Attendance', 'Pay', 'Tax']) as View[],
+    () => (manager ? ['Dashboard', 'My Tasks', 'Leave', 'Travel', 'Attendance', 'Pay', 'Tax', 'Team', 'Approvals'] : ['Dashboard', 'My Tasks', 'Leave', 'Travel', 'Attendance', 'Pay', 'Tax']) as View[],
     [manager],
   )
 

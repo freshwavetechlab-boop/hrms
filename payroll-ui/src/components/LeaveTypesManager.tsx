@@ -17,8 +17,8 @@ import SearchSelect, { type SearchOption } from './SearchSelect'
 import { useToast } from './ToastProvider'
 
 const today = new Date().toISOString().slice(0, 10)
-const blank: LeaveType = { id: 0, clientId: 0, name: '', code: '', type: 'Paid', description: '', entitlement: 0, entitlementPeriod: 'Yearly', proRateForNewJoinees: false, resetEnabled: false, resetFrequency: 'Yearly', carryForwardUnusedLeaves: false, maxCarryForwardLimit: null, encashUnusedLeaves: false, maxEncashmentLimit: null, allowNegativeLeaveBalance: false, negativeBalanceHandling: 'Mark as LOP', allowPastDates: false, pastDateLimitType: 'No limit', pastDateLimitDays: null, allowFutureDates: true, futureDateLimitType: 'No limit', futureDateLimitDays: null, applicabilityMode: 'All employees', workLocation: '', department: '', designation: '', gender: '', effectiveFrom: today, expiresOn: null, postponeCreditsForNewEmployees: false, postponeCreditValue: null, postponeCreditUnit: 'Days', isActive: true }
-const leaveTypeImportHeaders = ['Leave Type Name', 'Code', 'Type', 'Description', 'Entitlement', 'Entitlement Period', 'Pro Rate New Joinees', 'Reset Enabled', 'Reset Frequency', 'Carry Forward', 'Max Carry Forward', 'Encash', 'Max Encashment', 'Allow Negative Balance', 'Negative Balance Handling', 'Allow Past Dates', 'Past Date Limit Type', 'Past Date Limit Days', 'Allow Future Dates', 'Future Date Limit Type', 'Future Date Limit Days', 'Applicability', 'Work Location', 'Department', 'Designation', 'Gender', 'Effective From', 'Expires On', 'Postpone Credits', 'Postpone Credit Value', 'Postpone Credit Unit', 'Active']
+const blank: LeaveType = { id: 0, clientId: 0, name: '', code: '', type: 'Paid', description: '', entitlement: 0, entitlementPeriod: 'Yearly', proRateForNewJoinees: false, resetEnabled: false, resetFrequency: 'Yearly', carryForwardUnusedLeaves: false, maxCarryForwardLimit: null, encashUnusedLeaves: false, maxEncashmentLimit: null, allowNegativeLeaveBalance: false, allowHalfDay: true, negativeBalanceHandling: 'Mark as LOP', allowPastDates: false, pastDateLimitType: 'No limit', pastDateLimitDays: null, allowFutureDates: true, futureDateLimitType: 'No limit', futureDateLimitDays: null, applicabilityMode: 'All employees', workLocation: '', department: '', designation: '', gender: '', effectiveFrom: today, expiresOn: null, postponeCreditsForNewEmployees: false, postponeCreditValue: null, postponeCreditUnit: 'Days', isActive: true }
+const leaveTypeImportHeaders = ['Leave Type Name', 'Code', 'Type', 'Description', 'Entitlement', 'Entitlement Period', 'Pro Rate New Joinees', 'Reset Enabled', 'Reset Frequency', 'Carry Forward', 'Max Carry Forward', 'Encash', 'Max Encashment', 'Allow Negative Balance', 'Allow Half Day', 'Negative Balance Handling', 'Allow Past Dates', 'Past Date Limit Type', 'Past Date Limit Days', 'Allow Future Dates', 'Future Date Limit Type', 'Future Date Limit Days', 'Applicability', 'Work Location', 'Department', 'Designation', 'Gender', 'Effective From', 'Expires On', 'Postpone Credits', 'Postpone Credit Value', 'Postpone Credit Unit', 'Active']
 const previewDateMs = (text: string) => {
   const clean = text.trim()
   if (!clean) return null
@@ -30,7 +30,7 @@ const previewDateMs = (text: string) => {
 const leaveTypePreviewRules: ImportPreviewRules = {
   required: ['Leave Type Name', 'Code', 'Type', 'Entitlement', 'Entitlement Period', 'Effective From'],
   unique: [['Code']],
-  booleans: ['Pro Rate New Joinees', 'Reset Enabled', 'Carry Forward', 'Encash', 'Allow Negative Balance', 'Allow Past Dates', 'Allow Future Dates', 'Postpone Credits', 'Active'],
+  booleans: ['Pro Rate New Joinees', 'Reset Enabled', 'Carry Forward', 'Encash', 'Allow Negative Balance', 'Allow Half Day', 'Allow Past Dates', 'Allow Future Dates', 'Postpone Credits', 'Active'],
   numbers: ['Entitlement', 'Max Carry Forward', 'Max Encashment', 'Past Date Limit Days', 'Future Date Limit Days', 'Postpone Credit Value'],
   dates: ['Effective From', 'Expires On'],
   enums: {
@@ -177,11 +177,11 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
     const rowValues = rows.length ? rows.map(row => [
       row.name, row.code, row.type, row.description, String(row.entitlement), row.entitlementPeriod,
       flag(row.proRateForNewJoinees), flag(row.resetEnabled), row.resetFrequency, flag(row.carryForwardUnusedLeaves), row.maxCarryForwardLimit == null ? '' : String(row.maxCarryForwardLimit),
-      flag(row.encashUnusedLeaves), row.maxEncashmentLimit == null ? '' : String(row.maxEncashmentLimit), flag(row.allowNegativeLeaveBalance), row.negativeBalanceHandling,
+      flag(row.encashUnusedLeaves), row.maxEncashmentLimit == null ? '' : String(row.maxEncashmentLimit), flag(row.allowNegativeLeaveBalance), flag(row.allowHalfDay), row.negativeBalanceHandling,
       flag(row.allowPastDates), row.pastDateLimitType, row.pastDateLimitDays == null ? '' : String(row.pastDateLimitDays), flag(row.allowFutureDates), row.futureDateLimitType, row.futureDateLimitDays == null ? '' : String(row.futureDateLimitDays),
       row.applicabilityMode, row.workLocation, row.department, row.designation, row.gender, String(row.effectiveFrom).slice(0, 10), row.expiresOn ? String(row.expiresOn).slice(0, 10) : '',
       flag(row.postponeCreditsForNewEmployees), row.postponeCreditValue == null ? '' : String(row.postponeCreditValue), row.postponeCreditUnit, flag(row.isActive)
-    ]) : [['Casual Leave', 'CL', 'Paid', 'Casual leave', '12', 'Yearly', 'TRUE', 'TRUE', 'Yearly', 'TRUE', '6', 'FALSE', '', 'FALSE', 'Mark as LOP', 'FALSE', 'No limit', '', 'TRUE', 'No limit', '', 'All employees', '', '', '', '', today, '', 'FALSE', '', 'Days', 'TRUE']]
+    ]) : [['Casual Leave', 'CL', 'Paid', 'Casual leave', '12', 'Yearly', 'TRUE', 'TRUE', 'Yearly', 'TRUE', '6', 'FALSE', '', 'FALSE', 'TRUE', 'Mark as LOP', 'FALSE', 'No limit', '', 'TRUE', 'No limit', '', 'All employees', '', '', '', '', today, '', 'FALSE', '', 'Days', 'TRUE']]
     downloadXlsx('leave-type-import-template.xlsx', [
       { name: 'Leave Types', rows: [leaveTypeImportHeaders, ...rowValues] },
       { name: 'Reference', rows: [['Options', 'Values', ''], ['Type', 'Paid, Unpaid', ''], ['Period', 'Monthly, Yearly', ''], ['Reset Frequency', 'Monthly, Yearly', ''], ['Negative Balance Handling', 'Mark as LOP, Without limit, Up to year-end limit', ''], ['Date Limit Type', 'No limit, Set number of days', ''], ['Applicability', 'All employees, Criteria based employees', ''], ['Postpone Credit Unit', 'Days, Months', ''], ['Boolean', 'TRUE/FALSE', ''], ['', '', ''], ['Work Locations', '', ''], ...locations.filter(item => item.id).map(item => [item.name, '', '']), ['', '', ''], ['Departments', '', ''], ...departments.map(item => [item, '', '']), ['', '', ''], ['Designations', '', ''], ...designations.map(item => [item, '', ''])] }
@@ -267,6 +267,7 @@ function LeaveTypeForm(p: { form: LeaveType; editing: boolean; errors: string[];
           <h3>Leave request rules</h3>
           <Row gutter={12}>
             <Check label="Allow negative leave balance" value={p.form.allowNegativeLeaveBalance} set={value => p.set('allowNegativeLeaveBalance', value)} />
+            <Check label="Allow half-day leave" value={p.form.allowHalfDay} set={value => p.set('allowHalfDay', value)} />
             <Col xs={24} md={12}><Form.Item label="Negative balance handling"><SearchSelect value={p.form.negativeBalanceHandling} onChange={value => p.set('negativeBalanceHandling', value as LeaveType['negativeBalanceHandling'])} options={opts(['Mark as LOP', 'Without limit', 'Up to year-end limit'])} /></Form.Item></Col>
             <Check label="Allow applying for past dates" value={p.form.allowPastDates} set={value => p.set('allowPastDates', value)} />
             <Col xs={24} md={12}><Form.Item label="Past date limit"><SearchSelect value={p.form.pastDateLimitType} onChange={value => p.set('pastDateLimitType', value as LeaveType['pastDateLimitType'])} options={opts(['No limit', 'Set number of days'])} /></Form.Item></Col>

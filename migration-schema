@@ -11,6 +11,247 @@ Only if you intentionally want migration on API startup, add this to config:
   }
 }
 
+2026-07-10 - Travel & Expense Phase 1 policy configuration engine
+
+CREATE TABLE IF NOT EXISTS travel_policies (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+PolicyCode VARCHAR(40) NOT NULL,
+PolicyName VARCHAR(160) NOT NULL,
+CompanyId INT NOT NULL,
+BusinessUnit VARCHAR(120) NOT NULL DEFAULT '',
+EffectiveFrom DATE NOT NULL,
+EffectiveTo DATE NULL,
+Status VARCHAR(30) NOT NULL DEFAULT 'Draft',
+Description TEXT NULL,
+IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_TravelPolicies_Code (PolicyCode),
+KEY IX_TravelPolicies_Company (CompanyId, Status, EffectiveFrom)
+);
+
+CREATE TABLE IF NOT EXISTS travel_policy_assignments (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+PolicyId BIGINT NOT NULL,
+CompanyId INT NOT NULL,
+BranchId INT NULL,
+Department VARCHAR(120) NOT NULL DEFAULT '',
+Grade VARCHAR(80) NOT NULL DEFAULT '',
+Designation VARCHAR(120) NOT NULL DEFAULT '',
+EmployeeCategory VARCHAR(80) NOT NULL DEFAULT '',
+EmploymentType VARCHAR(80) NOT NULL DEFAULT '',
+EmployeeId INT NULL,
+Priority INT NOT NULL DEFAULT 100,
+EffectiveFrom DATE NOT NULL,
+EffectiveTo DATE NULL,
+IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+KEY IX_TravelPolicyAssignments_Policy (PolicyId),
+KEY IX_TravelPolicyAssignments_Resolve (CompanyId, BranchId, Department, Grade, Designation, EmployeeId, Priority)
+);
+
+CREATE TABLE IF NOT EXISTS travel_policy_rules (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+PolicyId BIGINT NOT NULL,
+RuleType VARCHAR(60) NOT NULL,
+RuleName VARCHAR(160) NOT NULL,
+AppliesTo VARCHAR(120) NOT NULL,
+IsAllowed BOOLEAN NOT NULL DEFAULT TRUE,
+EligibilityJson JSON NULL,
+LimitAmount DECIMAL(18,2) NULL,
+LimitCurrency VARCHAR(10) NOT NULL DEFAULT 'INR',
+ReceiptMandatory BOOLEAN NOT NULL DEFAULT FALSE,
+ApprovalRequired BOOLEAN NOT NULL DEFAULT FALSE,
+WorkflowId BIGINT NULL,
+ExceptionHandling VARCHAR(40) NOT NULL DEFAULT 'Warning',
+ConfigJson JSON NULL,
+IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+KEY IX_TravelPolicyRules_PolicyType (PolicyId, RuleType, AppliesTo)
+);
+
+CREATE TABLE IF NOT EXISTS travel_expense_categories (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ParentId BIGINT NULL,
+CategoryCode VARCHAR(40) NOT NULL,
+CategoryName VARCHAR(160) NOT NULL,
+ReceiptMandatory BOOLEAN NOT NULL DEFAULT FALSE,
+GstApplicable BOOLEAN NOT NULL DEFAULT FALSE,
+DailyLimit DECIMAL(18,2) NULL,
+MaximumClaim DECIMAL(18,2) NULL,
+RequiresFinanceApproval BOOLEAN NOT NULL DEFAULT FALSE,
+RequiresManagerApproval BOOLEAN NOT NULL DEFAULT FALSE,
+IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_TravelExpenseCategories_Code (CategoryCode),
+KEY IX_TravelExpenseCategories_Parent (ParentId)
+);
+
+CREATE TABLE IF NOT EXISTS travel_policy_audit (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+EntityType VARCHAR(80) NOT NULL,
+EntityId BIGINT NOT NULL,
+Action VARCHAR(40) NOT NULL,
+OldValueJson JSON NULL,
+NewValueJson JSON NULL,
+ChangedBy VARCHAR(160) NOT NULL DEFAULT '',
+ChangedOn TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+KEY IX_TravelPolicyAudit_Entity (EntityType, EntityId),
+KEY IX_TravelPolicyAudit_ChangedOn (ChangedOn)
+);
+
+2026-07-10 - Travel & Expense Phase 2 ESS travel request lifecycle
+
+CREATE TABLE IF NOT EXISTS ess_travel_requests (
+Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+RequestNumber VARCHAR(40) NOT NULL,
+RequestDate DATE NOT NULL,
+EmployeeId INT NOT NULL,
+ClientId INT NOT NULL,
+Department VARCHAR(120) NOT NULL DEFAULT '',
+Designation VARCHAR(120) NOT NULL DEFAULT '',
+ReportingManagerId INT NULL,
+Purpose VARCHAR(500) NOT NULL DEFAULT '',
+Customer VARCHAR(180) NOT NULL DEFAULT '',
+Project VARCHAR(180) NOT NULL DEFAULT '',
+CostCenter VARCHAR(120) NOT NULL DEFAULT '',
+TravelScope VARCHAR(40) NOT NULL DEFAULT 'Domestic',
+TravelType VARCHAR(80) NOT NULL DEFAULT 'Official',
+Priority VARCHAR(40) NOT NULL DEFAULT 'Normal',
+FromLocation VARCHAR(180) NOT NULL DEFAULT '',
+ToLocation VARCHAR(180) NOT NULL DEFAULT '',
+StartDateTime DATETIME NOT NULL,
+EndDateTime DATETIME NOT NULL,
+EstimatedCost DECIMAL(18,2) NOT NULL DEFAULT 0,
+PolicyId BIGINT NULL,
+TravelMode VARCHAR(80) NOT NULL DEFAULT '',
+AccommodationRequired BOOLEAN NOT NULL DEFAULT FALSE,
+LocalConveyanceRequired BOOLEAN NOT NULL DEFAULT FALSE,
+AdvanceRequired BOOLEAN NOT NULL DEFAULT FALSE,
+AdvanceAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+Remarks TEXT NULL,
+Status VARCHAR(40) NOT NULL DEFAULT 'Draft',
+PolicyValidationJson JSON NULL,
+SubmittedAt DATETIME NULL,
+CancellationReason TEXT NULL,
+CancellationDate DATETIME NULL,
+CancellationStatus VARCHAR(40) NOT NULL DEFAULT '',
+CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_ess_travel_request_number (RequestNumber),
+INDEX IX_ess_travel_employee_status (EmployeeId, Status, StartDateTime),
+INDEX IX_ess_travel_client_status (ClientId, Status, StartDateTime)
+);
+
+CREATE TABLE IF NOT EXISTS ess_travel_request_audit (
+Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+RequestId BIGINT NOT NULL,
+Action VARCHAR(80) NOT NULL,
+Comment VARCHAR(1000) NOT NULL DEFAULT '',
+CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+INDEX IX_ess_travel_audit_request (RequestId, CreatedAt)
+);
+
+CREATE TABLE IF NOT EXISTS ess_travel_request_legs (
+Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+RequestId BIGINT NOT NULL,
+SequenceNo INT NOT NULL,
+FromLocation VARCHAR(180) NOT NULL DEFAULT '',
+ToLocation VARCHAR(180) NOT NULL DEFAULT '',
+StartDateTime DATETIME NULL,
+EndDateTime DATETIME NULL,
+TravelMode VARCHAR(80) NOT NULL DEFAULT '',
+TravelClass VARCHAR(80) NOT NULL DEFAULT '',
+Remarks VARCHAR(500) NOT NULL DEFAULT '',
+CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_ess_travel_leg_sequence (RequestId, SequenceNo),
+INDEX IX_ess_travel_leg_request (RequestId),
+INDEX IX_ess_travel_leg_route (FromLocation, ToLocation),
+INDEX IX_ess_travel_leg_mode (TravelMode)
+);
+
+INSERT INTO workflowactivities (ActivityCode,DisplayName,ModuleCode,ResourceType,Description,IsActive) VALUES
+('TRAVEL_REQUEST.SUBMIT','Submit travel request','Travel & Expense','TravelRequest','Employee travel request approval.',TRUE)
+ON DUPLICATE KEY UPDATE DisplayName=VALUES(DisplayName),ModuleCode=VALUES(ModuleCode),ResourceType=VALUES(ResourceType),Description=VALUES(Description),IsActive=VALUES(IsActive);
+
+INSERT INTO workflow_action_rules (ActivityCode,HttpMethod,PathPattern,ResourceType,ResourceIdSource,ResourceIdRouteKey,ClientLookupTable,ClientLookupKeyColumn,ClientLookupClientColumn,TriggerMode,IsActive) VALUES
+('TRAVEL_REQUEST.SUBMIT','POST','/api/ess/travel/requests/{id}/submit','TravelRequest','route.id','id','ess_travel_requests','Id','ClientId','AfterSuccess',TRUE)
+ON DUPLICATE KEY UPDATE ResourceType=VALUES(ResourceType),ResourceIdSource=VALUES(ResourceIdSource),ResourceIdRouteKey=VALUES(ResourceIdRouteKey),ClientLookupTable=VALUES(ClientLookupTable),ClientLookupKeyColumn=VALUES(ClientLookupKeyColumn),ClientLookupClientColumn=VALUES(ClientLookupClientColumn),TriggerMode=VALUES(TriggerMode),IsActive=VALUES(IsActive);
+
+2026-07-11 - Travel request trip legs normalized child table
+
+CREATE TABLE IF NOT EXISTS ess_travel_request_legs (
+Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+RequestId BIGINT NOT NULL,
+SequenceNo INT NOT NULL,
+FromLocation VARCHAR(180) NOT NULL DEFAULT '',
+ToLocation VARCHAR(180) NOT NULL DEFAULT '',
+StartDateTime DATETIME NULL,
+EndDateTime DATETIME NULL,
+TravelMode VARCHAR(80) NOT NULL DEFAULT '',
+TravelClass VARCHAR(80) NOT NULL DEFAULT '',
+Remarks VARCHAR(500) NOT NULL DEFAULT '',
+CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_ess_travel_leg_sequence (RequestId, SequenceNo),
+INDEX IX_ess_travel_leg_request (RequestId),
+INDEX IX_ess_travel_leg_route (FromLocation, ToLocation),
+INDEX IX_ess_travel_leg_mode (TravelMode)
+);
+
+2026-07-11 - Client billing advanced payroll costing rules
+
+SET @add_client_billing_advanced = (
+    SELECT IF(
+        COUNT(*) = 0,
+        'ALTER TABLE client_billing_settings ADD COLUMN AdvancedCostingEnabled BOOLEAN NOT NULL DEFAULT FALSE AFTER IsEnabled',
+        'SELECT 1'
+    )
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'client_billing_settings'
+      AND COLUMN_NAME = 'AdvancedCostingEnabled'
+);
+PREPARE stmt FROM @add_client_billing_advanced;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS client_billing_cost_rule_headers (
+Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+ClientId INT NOT NULL,
+WorkLocationId INT NULL,
+RuleName VARCHAR(180) NOT NULL,
+EffectiveFrom DATE NOT NULL,
+EffectiveTo DATE NULL,
+GstRatePercent DECIMAL(8,4) NOT NULL DEFAULT 18,
+IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+INDEX IX_CostRuleHeader_Client (ClientId, WorkLocationId, IsActive, EffectiveFrom)
+);
+
+CREATE TABLE IF NOT EXISTS client_billing_cost_rule_lines (
+Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+HeaderId BIGINT NOT NULL,
+LineType VARCHAR(60) NOT NULL,
+MatchValue VARCHAR(120) NOT NULL DEFAULT '',
+BillingTreatment VARCHAR(60) NOT NULL DEFAULT 'Bill Actual',
+BaseType VARCHAR(60) NOT NULL DEFAULT 'Processed Amount',
+RateType VARCHAR(30) NOT NULL DEFAULT 'Actual',
+RateValue DECIMAL(18,4) NOT NULL DEFAULT 0,
+TaxApplicable BOOLEAN NOT NULL DEFAULT TRUE,
+CommissionApplicable BOOLEAN NOT NULL DEFAULT TRUE,
+DisplayGroup VARCHAR(80) NOT NULL DEFAULT '',
+SortOrder INT NOT NULL DEFAULT 100,
+IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+INDEX IX_CostRuleLine_Header (HeaderId, IsActive, SortOrder),
+INDEX IX_CostRuleLine_Match (LineType, MatchValue)
+);
+
 2026-07-08 - Salary component role and statutory identity
 
 2026-07-08 - Pay-run line statutory identity for processed payroll reports
@@ -194,6 +435,20 @@ CREATE TABLE IF NOT EXISTS employee_it0001_org_assignment (
     INDEX IX_IT0001_Employee (EmployeeId, Status, EffectiveFrom),
     INDEX IX_IT0001_Client (ClientId, Status)
 );
+
+2026-07-09 - Employee reporting manager can be a user
+
+ALTER TABLE employees
+    ADD COLUMN IF NOT EXISTS ReportingManagerUserId INT NULL AFTER ReportingManagerId;
+
+ALTER TABLE employee_it0001_org_assignment
+    ADD COLUMN IF NOT EXISTS ReportingManagerUserId INT NULL AFTER ReportingManagerId;
+
+CREATE INDEX IF NOT EXISTS IX_Employees_ReportingManagerUser
+    ON employees (ReportingManagerUserId);
+
+CREATE INDEX IF NOT EXISTS IX_IT0001_ReportingManagerUser
+    ON employee_it0001_org_assignment (ReportingManagerUserId);
 
 CREATE TABLE IF NOT EXISTS employee_it0002_personal_data (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -404,3 +659,212 @@ WHERE (ResourceIdSource IS NULL OR ResourceIdSource = '') AND ResourceIdRouteKey
 UPDATE workflow_action_rules
 SET ResourceIdSource = 'route.id', ClientIdSource = '', ClientIdSql = '', ClientLookupTable = 'payruns', ClientLookupKeyColumn = 'Id', ClientLookupClientColumn = 'ClientId'
 WHERE ActivityCode = 'PAYRUN.SUBMIT' AND HttpMethod = 'POST' AND PathPattern = '/api/pay-runs/{id}/submit';
+
+INSERT INTO workflow_action_rules (ActivityCode, HttpMethod, PathPattern, ResourceType, ResourceIdSource, ResourceIdRouteKey, ClientIdSource, ClientIdSql, ClientLookupTable, ClientLookupKeyColumn, ClientLookupClientColumn, TriggerMode, IsActive) VALUES
+('LEAVE_REQUEST.SUBMIT', 'POST', '/api/ess/leave/requests', 'LeaveRequest', 'response.id', 'id', '', '', 'essleaverequests', 'Id', 'ClientId', 'AfterSuccess', TRUE)
+ON DUPLICATE KEY UPDATE ResourceType=VALUES(ResourceType), ResourceIdSource=VALUES(ResourceIdSource), ResourceIdRouteKey=VALUES(ResourceIdRouteKey), ClientIdSource=VALUES(ClientIdSource), ClientIdSql=VALUES(ClientIdSql), ClientLookupTable=VALUES(ClientLookupTable), ClientLookupKeyColumn=VALUES(ClientLookupKeyColumn), ClientLookupClientColumn=VALUES(ClientLookupClientColumn), TriggerMode=VALUES(TriggerMode), IsActive=VALUES(IsActive);
+
+2026-07-09 - Configurable notification and mailing engine
+
+CREATE TABLE IF NOT EXISTS notification_smtp_settings (
+    Id TINYINT PRIMARY KEY,
+    IsEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+    Host VARCHAR(220) NOT NULL DEFAULT '',
+    Port INT NOT NULL DEFAULT 587,
+    UserName VARCHAR(220) NOT NULL DEFAULT '',
+    Password VARCHAR(500) NOT NULL DEFAULT '',
+    EnableSsl BOOLEAN NOT NULL DEFAULT TRUE,
+    FromEmail VARCHAR(220) NOT NULL DEFAULT '',
+    FromName VARCHAR(220) NOT NULL DEFAULT '',
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS notification_templates (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    Code VARCHAR(120) NOT NULL,
+    Name VARCHAR(220) NOT NULL,
+    SubjectTemplate VARCHAR(500) NOT NULL,
+    BodyTemplate MEDIUMTEXT NOT NULL,
+    IsHtml BOOLEAN NOT NULL DEFAULT TRUE,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_NotificationTemplate_Code (Code),
+    INDEX IX_NotificationTemplate_Active (IsActive)
+);
+
+CREATE TABLE IF NOT EXISTS notification_rules (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    Name VARCHAR(220) NOT NULL,
+    EventCode VARCHAR(120) NOT NULL,
+    ClientId INT NULL,
+    TemplateId BIGINT NOT NULL,
+    IsEnabled BOOLEAN NOT NULL DEFAULT TRUE,
+    ConditionJson JSON NOT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX IX_NotificationRules_Event (EventCode, ClientId, IsEnabled)
+);
+
+CREATE TABLE IF NOT EXISTS notification_recipients (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    RuleId BIGINT NOT NULL,
+    RecipientType VARCHAR(10) NOT NULL DEFAULT 'To',
+    SourceType VARCHAR(40) NOT NULL DEFAULT 'StaticEmail',
+    SourceValue VARCHAR(500) NOT NULL DEFAULT '',
+    TableName VARCHAR(120) NOT NULL DEFAULT '',
+    MatchColumn VARCHAR(120) NOT NULL DEFAULT '',
+    MatchValueSource VARCHAR(120) NOT NULL DEFAULT 'resourceId',
+    EmailColumn VARCHAR(120) NOT NULL DEFAULT '',
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    INDEX IX_NotificationRecipients_Rule (RuleId, IsActive)
+);
+
+CREATE TABLE IF NOT EXISTS notification_parameter_mappings (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    RuleId BIGINT NOT NULL,
+    ParameterName VARCHAR(120) NOT NULL,
+    SourceType VARCHAR(40) NOT NULL DEFAULT 'Payload',
+    PayloadPath VARCHAR(200) NOT NULL DEFAULT '',
+    TableName VARCHAR(120) NOT NULL DEFAULT '',
+    MatchColumn VARCHAR(120) NOT NULL DEFAULT '',
+    MatchValueSource VARCHAR(120) NOT NULL DEFAULT 'resourceId',
+    ValueColumn VARCHAR(120) NOT NULL DEFAULT '',
+    DefaultValue VARCHAR(1000) NOT NULL DEFAULT '',
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    INDEX IX_NotificationParameters_Rule (RuleId, IsActive)
+);
+
+CREATE TABLE IF NOT EXISTS notification_queue (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    RuleId BIGINT NULL,
+    EventCode VARCHAR(120) NOT NULL,
+    ResourceType VARCHAR(100) NOT NULL,
+    ResourceId VARCHAR(120) NOT NULL,
+    ClientId INT NULL,
+    ToJson JSON NOT NULL,
+    CcJson JSON NOT NULL,
+    BccJson JSON NOT NULL,
+    Subject VARCHAR(500) NOT NULL,
+    BodyHtml MEDIUMTEXT NOT NULL,
+    Status VARCHAR(30) NOT NULL DEFAULT 'Pending',
+    RetryCount INT NOT NULL DEFAULT 0,
+    ErrorMessage TEXT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    SentAt DATETIME NULL,
+    INDEX IX_NotificationQueue_Status (Status, CreatedAt),
+    INDEX IX_NotificationQueue_Resource (ResourceType, ResourceId)
+);
+
+CREATE TABLE IF NOT EXISTS notification_logs (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    QueueId BIGINT NOT NULL,
+    EventCode VARCHAR(120) NOT NULL,
+    ResourceType VARCHAR(100) NOT NULL,
+    ResourceId VARCHAR(120) NOT NULL,
+    Recipient VARCHAR(220) NOT NULL,
+    Status VARCHAR(30) NOT NULL,
+    ProviderMessageId VARCHAR(220) NOT NULL DEFAULT '',
+    ErrorMessage TEXT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_NotificationLogs_Queue (QueueId),
+    INDEX IX_NotificationLogs_Resource (ResourceType, ResourceId)
+);
+
+INSERT INTO notification_smtp_settings (Id, IsEnabled, Host, Port, UserName, Password, EnableSsl, FromEmail, FromName)
+VALUES (1, FALSE, '', 587, '', '', TRUE, '', '')
+ON DUPLICATE KEY UPDATE Id = Id;
+
+INSERT INTO notification_templates (Code, Name, SubjectTemplate, BodyTemplate, IsHtml, IsActive) VALUES
+('PAYRUN_LOCKED_DEFAULT', 'Payroll locked notification', 'Payroll {{resourceId}} is locked', '<p>Payroll request <b>{{resourceId}}</b> has been submitted by {{requestedBy}}.</p><p>Event: {{eventCode}}</p>', TRUE, TRUE),
+('LEAVE_REQUEST_DEFAULT', 'Leave request notification', 'Leave request {{resourceId}} submitted', '<p>Leave request <b>{{resourceId}}</b> has been submitted by {{requestedBy}}.</p>', TRUE, TRUE)
+ON DUPLICATE KEY UPDATE Name = VALUES(Name);
+
+-- Generic scheduled jobs, job logs, and generated leave balance ledger
+CREATE TABLE IF NOT EXISTS scheduled_jobs (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    JobCode VARCHAR(120) NOT NULL,
+    JobName VARCHAR(220) NOT NULL,
+    Description VARCHAR(1000) NOT NULL DEFAULT '',
+    HandlerKey VARCHAR(120) NOT NULL,
+    IsEnabled BOOLEAN NOT NULL DEFAULT TRUE,
+    ScheduleType VARCHAR(30) NOT NULL DEFAULT 'Interval',
+    IntervalMinutes INT NOT NULL DEFAULT 60,
+    DailyRunTime VARCHAR(5) NOT NULL DEFAULT '01:00',
+    MonthlyRunDay INT NOT NULL DEFAULT 1,
+    ConfigJson JSON NOT NULL,
+    LastRunAt DATETIME NULL,
+    NextRunAt DATETIME NULL,
+    LastStatus VARCHAR(40) NOT NULL DEFAULT 'Never Run',
+    LastMessage VARCHAR(1000) NOT NULL DEFAULT '',
+    IsRunning BOOLEAN NOT NULL DEFAULT FALSE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_scheduled_jobs_code (JobCode),
+    INDEX IX_scheduled_jobs_due (IsEnabled, NextRunAt, IsRunning)
+);
+
+CREATE TABLE IF NOT EXISTS scheduled_job_runs (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    JobId INT NOT NULL,
+    JobCode VARCHAR(120) NOT NULL,
+    StartedAt DATETIME NOT NULL,
+    CompletedAt DATETIME NULL,
+    Status VARCHAR(40) NOT NULL DEFAULT 'Running',
+    SuccessCount INT NOT NULL DEFAULT 0,
+    FailureCount INT NOT NULL DEFAULT 0,
+    Message VARCHAR(1000) NOT NULL DEFAULT '',
+    ErrorDetails MEDIUMTEXT NULL,
+    TriggeredBy VARCHAR(120) NOT NULL DEFAULT 'Scheduler',
+    DurationMs BIGINT NOT NULL DEFAULT 0,
+    INDEX IX_scheduled_job_runs_job (JobId, StartedAt)
+);
+
+CREATE TABLE IF NOT EXISTS scheduled_job_actions (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ActionCode VARCHAR(120) NOT NULL,
+    ActionName VARCHAR(220) NOT NULL,
+    ActionType VARCHAR(60) NOT NULL DEFAULT 'Notification Event',
+    Description VARCHAR(1000) NOT NULL DEFAULT '',
+    ConfigJson JSON NOT NULL,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_scheduled_job_actions_code (ActionCode),
+    INDEX IX_scheduled_job_actions_active (IsActive, ActionType)
+);
+
+CREATE TABLE IF NOT EXISTS employee_leave_ledger (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    EmployeeId INT NOT NULL,
+    LeaveTypeId INT NOT NULL,
+    LeaveCode VARCHAR(40) NOT NULL,
+    TransactionDate DATE NOT NULL,
+    PeriodKey VARCHAR(20) NOT NULL,
+    TransactionType VARCHAR(60) NOT NULL,
+    Quantity DECIMAL(10,2) NOT NULL,
+    BalanceAfter DECIMAL(10,2) NOT NULL DEFAULT 0,
+    ReferenceType VARCHAR(80) NOT NULL DEFAULT '',
+    ReferenceId VARCHAR(120) NOT NULL DEFAULT '',
+    DedupKey VARCHAR(190) NULL,
+    Remarks VARCHAR(1000) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_employee_leave_ledger_dedup (DedupKey),
+    INDEX IX_employee_leave_ledger_employee (EmployeeId, LeaveTypeId, TransactionDate)
+);
+
+INSERT INTO scheduled_jobs (JobCode, JobName, Description, HandlerKey, IsEnabled, ScheduleType, IntervalMinutes, DailyRunTime, MonthlyRunDay, ConfigJson, NextRunAt)
+VALUES
+('NOTIFICATION_QUEUE_DISPATCH', 'Send queued emails', 'Sends pending email notifications.', 'NOTIFICATION_QUEUE_DISPATCH', TRUE, 'Interval', 1, '00:00', 1, '{}', DATE_ADD(NOW(), INTERVAL 1 MINUTE)),
+('LEAVE_MONTHLY_ACCRUAL', 'Monthly leave credit', 'Credits monthly leave entitlement to employees.', 'LEAVE_MONTHLY_ACCRUAL', TRUE, 'Monthly', 60, '01:00', 1, '{}', DATE_ADD(NOW(), INTERVAL 1 DAY)),
+('LEAVE_YEAR_END_RESET', 'Year-end leave reset', 'Carries forward or lapses leave balances at year end.', 'LEAVE_YEAR_END_RESET', TRUE, 'Monthly', 60, '01:30', 31, '{}', DATE_ADD(NOW(), INTERVAL 1 DAY))
+ON DUPLICATE KEY UPDATE JobName = VALUES(JobName), Description = VALUES(Description), HandlerKey = VALUES(HandlerKey);
+
+2026-07-09 - Half-day leave request support
+
+ALTER TABLE leave_type_policies
+ADD COLUMN IF NOT EXISTS allow_half_day BOOLEAN NOT NULL DEFAULT TRUE AFTER allow_negative_leave_balance;
+
+ALTER TABLE essleaverequests
+ADD COLUMN IF NOT EXISTS DayType VARCHAR(30) NOT NULL DEFAULT 'Full Day' AFTER ToDate;

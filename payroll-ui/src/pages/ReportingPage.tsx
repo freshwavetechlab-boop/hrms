@@ -13,7 +13,7 @@ export type ReportingMenu = (typeof reportingMenus)[number]
 export type ReportDefinition = { name: string; code?: string }
 const catalogue = {
   'Payroll Reports': [{ name: 'Salary Register', code: 'salary-register' }, { name: 'Payslip Register', code: 'payslip-register' }, { name: 'Payroll Summary', code: 'payroll-summary' }, { name: 'Component Ledger', code: 'component-ledger' }, { name: 'Monthly Advice Report', code: 'monthly-advice-report' }, { name: 'Department Payroll Cost', code: 'headcount' }, { name: 'Location Payroll Cost', code: 'location-cost' }, { name: 'Employee Wise Salary', code: 'salary-register' }, { name: 'Net Pay Report', code: 'net-pay-estimate' }, { name: 'Bank Transfer Report', code: 'bank-transfer-report' }],
-  'Client Billing Report': [{ name: 'Payrun Billing Basis', code: 'client-billing-report' }],
+  'Client Billing Report': [{ name: 'Payrun Billing Basis', code: 'client-billing-report' }, { name: 'Payroll Cost Report', code: 'payroll-cost-report' }],
   'Employee Reports': [
     { name: 'Employee Master Report', code: 'employee-master' },
     { name: 'Employee Directory', code: 'employee-master' },
@@ -49,8 +49,8 @@ export default function ReportingPage({ activeMenu, activeReport }: { activeMenu
   const [payRunId, setPayRunId] = useState(0), [employeeId, setEmployeeId] = useState(0), [componentCode, setComponentCode] = useState('')
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7)), [fromDate, setFromDate] = useState(`${new Date().toISOString().slice(0, 7)}-01`), [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10))
   const periodCodes = ['daily-attendance', 'attendance-trend', 'leave-utilization', 'leave-approval-status']
-  const monthCodes = ['monthly-attendance', 'attendance-exception', 'salary-register', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary', 'client-billing-report', 'monthly-advice-report', 'bank-transfer-report']
-  const payRunCodes = ['salary-register', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary', 'client-billing-report', 'monthly-advice-report', 'bank-transfer-report']
+  const monthCodes = ['monthly-attendance', 'attendance-exception', 'salary-register', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary', 'client-billing-report', 'payroll-cost-report', 'monthly-advice-report', 'bank-transfer-report']
+  const payRunCodes = ['salary-register', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary', 'client-billing-report', 'payroll-cost-report', 'monthly-advice-report', 'bank-transfer-report']
   const employeeCodes = ['salary-register', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary']
   const showPeriod = !!activeReport.code && periodCodes.includes(activeReport.code)
   const showMonth = !!activeReport.code && monthCodes.includes(activeReport.code)

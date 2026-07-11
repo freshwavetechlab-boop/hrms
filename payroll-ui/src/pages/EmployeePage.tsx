@@ -7,8 +7,8 @@ import SearchSelect, { selectOptions } from '../components/SearchSelect'
 import { useToast } from '../components/ToastProvider'
 import { employee0, setup0 } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
-import { deleteEmployee as removeEmployee, downloadEmployeeImportTemplate, getDropdowns, getEmployeeDeletePreview, getEmployeeImportJob, getEmployeeInfotypes, getSetup, getWorkLocations, processEmployeeAction, saveEmployee as persistEmployee, startEmployeeImport } from '../services/settingsService'
-import type { Client, Component, Drop, Employee, EmployeeActionRequest, EmployeeInfotypeRecord, EmployeePaymentDetails, EmployeePersonalDetails, Setup, Structure, WorkLocation } from '../types/payroll'
+import { deleteEmployee as removeEmployee, downloadEmployeeImportTemplate, getDropdowns, getEmployeeDeletePreview, getEmployeeImportJob, getEmployeeInfotypes, getEmployeeManagerUsers, getSetup, getWorkLocations, processEmployeeAction, saveEmployee as persistEmployee, startEmployeeImport } from '../services/settingsService'
+import type { Client, Component, Drop, Employee, EmployeeActionRequest, EmployeeInfotypeRecord, EmployeePaymentDetails, EmployeePersonalDetails, Setup, Structure, WorkLocation, WorkflowApprover } from '../types/payroll'
 import { calculateSalaryJson, calculateSalaryTotals, canOverrideSalaryComponent, money } from '../utils/salary'
 import { parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules, type ImportPreviewSheet } from '../utils/importPreview'
 import { buildXlsxBlob } from '../utils/xlsx'
@@ -28,9 +28,11 @@ const personal0 = employee0.personalDetails
 const payment0 = employee0.paymentDetails
 const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
 
-export default function EmployeePage() {
+export type EmployeePageView = 'master' | 'org'
+
+export default function EmployeePage({ view = 'master' }: { view?: EmployeePageView }) {
   const notify = useToast()
-  const [clients, setClients] = useState<Client[]>([]), [locations, setLocations] = useState<WorkLocation[]>([]), [drops, setDrops] = useState<Drop[]>([]), [setup, setSetup] = useState<Setup>(setup0)
+  const [clients, setClients] = useState<Client[]>([]), [locations, setLocations] = useState<WorkLocation[]>([]), [drops, setDrops] = useState<Drop[]>([]), [setup, setSetup] = useState<Setup>(setup0), [managerUsers, setManagerUsers] = useState<WorkflowApprover[]>([])
   const [employees, setEmployees] = useState<Employee[]>([]), [employee, setEmployee] = useState(employee0), [employeeInfotype, setEmployeeInfotype] = useState<EmployeeInfotypeCode>('0001')
   const [infotypes, setInfotypes] = useState<EmployeeInfotypeRecord[]>([])
   const [changeReason, setChangeReason] = useState('')
@@ -51,10 +53,11 @@ export default function EmployeePage() {
   const grades = drops.filter(item => item.type === 'Employee Grade' && item.isActive && (!item.clientId || item.clientId === employee.clientId)).map(item => item.value)
 
   const load = async () => {
-    const [clientRows, locationRows, dropdownRows, employeeRows, rawSetup] = await Promise.all([getClients(), getWorkLocations(), getDropdowns(), getEmployees(), getSetup(setup0)])
+    const [clientRows, locationRows, dropdownRows, employeeRows, rawSetup, managerRows] = await Promise.all([getClients(), getWorkLocations(), getDropdowns(), getEmployees(), getSetup(setup0), getEmployeeManagerUsers()])
     const activeClientIds = new Set(clientRows.map(client => client.id))
     const activeLocations = locationRows.filter(location => location.isActive && activeClientIds.has(location.clientId))
     setClients(clientRows); setLocations(activeLocations); setDrops(dropdownRows); setEmployees(employeeRows.filter(employee => activeClientIds.has(employee.clientId)).map(normalizeEmployeeDetails))
+    setManagerUsers(managerRows)
     setSetup({ ...setup0, ...rawSetup, salaryComponents: rawSetup.salaryComponents ?? [], salaryStructures: rawSetup.salaryStructures ?? [] })
   }
 
@@ -168,15 +171,113 @@ export default function EmployeePage() {
   const visibleEmployees = employees.filter(row => row.isActive && (!clientFilter || row.clientId === clientFilter) && (!locationFilter || row.workLocationId === locationFilter) && `${row.employeeCode} ${row.firstName} ${row.lastName} ${row.department} ${row.designation} ${row.workEmail} ${workLocationName(locations, row.workLocationId)}`.toLowerCase().includes(query.toLowerCase()))
 
   return <section className="employee-master">
-    <EmployeeDirectory clients={clients} locations={locations} employees={visibleEmployees} allCount={employees.length} clientFilter={clientFilter} setClientFilter={changeClientFilter} locationFilter={locationFilter} setLocationFilter={setLocationFilter} query={query} setQuery={setQuery} templateDownloaded={templateDownloaded} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onDownloadTemplate={downloadTemplate} onUpload={uploadEmployees} />
+    {view === 'master' ? <EmployeeDirectory clients={clients} locations={locations} employees={visibleEmployees} allCount={employees.length} clientFilter={clientFilter} setClientFilter={changeClientFilter} locationFilter={locationFilter} setLocationFilter={setLocationFilter} query={query} setQuery={setQuery} templateDownloaded={templateDownloaded} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onDownloadTemplate={downloadTemplate} onUpload={uploadEmployees} /> : <EmployeeOrgStructure clients={clients} locations={locations} employees={employees.filter(row => row.isActive)} clientFilter={clientFilter} setClientFilter={changeClientFilter} />}
     {modalOpen && <div className="employee-modal-backdrop" onClick={closeModal}>
       <section className="employee-modal" role="dialog" aria-modal="true" aria-label="Employee details" onClick={event => event.stopPropagation()}>
-        <EmployeePanel employee={employee} setEmployee={row => setEmployee(normalizeEmployeeSalary(row))} employeeInfotype={employeeInfotype} setEmployeeInfotype={value => { setEmployeeInfotype(value as EmployeeInfotypeCode); setChangeReason('') }} changeReason={changeReason} setChangeReason={setChangeReason} clients={clients} locations={locations} templates={setup.salaryStructures} salaryComponents={setup.salaryComponents} deps={deps} desigs={desigs} grades={grades} applyClient={applyClient} applyStructure={applyStructure} applyCtc={applyCtc} structureComponents={structureComponents} employeeSalary={employeeSalary} empLine={empLine} empMonthly={empMonthly} saveEmployee={saveEmployee} closeModal={closeModal} infotypes={infotypes} runEmployeeAction={runEmployeeAction} />
+        <EmployeePanel employee={employee} setEmployee={row => setEmployee(normalizeEmployeeSalary(row))} employeeInfotype={employeeInfotype} setEmployeeInfotype={value => { setEmployeeInfotype(value as EmployeeInfotypeCode); setChangeReason('') }} changeReason={changeReason} setChangeReason={setChangeReason} clients={clients} locations={locations} managerUsers={managerUsers} templates={setup.salaryStructures} salaryComponents={setup.salaryComponents} deps={deps} desigs={desigs} grades={grades} applyClient={applyClient} applyStructure={applyStructure} applyCtc={applyCtc} structureComponents={structureComponents} employeeSalary={employeeSalary} empLine={empLine} empMonthly={empMonthly} saveEmployee={saveEmployee} closeModal={closeModal} infotypes={infotypes} runEmployeeAction={runEmployeeAction} />
       </section>
     </div>}
     <BulkUploadProgressModal open={upload.open} title="Employee bulk upload" state={upload.state} percent={upload.percent} summary={upload.summary} onClose={() => setUpload(current => ({ ...current, open: false }))} />
     <BulkUploadPreviewModal preview={preview} importing={previewImporting} onCancel={() => { setPreview(emptyBulkUploadPreview); setPreviewConfirm(null); setEmployeePreviewSource(null) }} onConfirm={draft => void confirmEmployeePreview(draft)} onResolveDuplicates={(mode, sheetName) => void resolveEmployeeDuplicates(mode, sheetName)} />
   </section>
+}
+
+function EmployeeOrgStructure(p: { clients: Client[]; locations: WorkLocation[]; employees: Employee[]; clientFilter: number; setClientFilter: (id: number) => void }) {
+  const [orientation, setOrientation] = useState<'vertical' | 'horizontal'>('vertical')
+  const [zoom, setZoom] = useState(1)
+  const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null)
+  const clientRows = p.clients.filter(client => !p.clientFilter || client.id === p.clientFilter)
+  const employeeCount = clientRows.reduce((sum, client) => sum + p.employees.filter(employee => employee.clientId === client.id).length, 0)
+  const changeZoom = (delta: number) => setZoom(current => Math.min(1.6, Math.max(.55, Number((current + delta).toFixed(2)))))
+  const resetZoom = () => setZoom(1)
+  return <section className="card employee-org-page">
+    <header><i className="blue">O</i><div><h3>Client-wise org structure</h3><p>Visual reporting hierarchy by client. Each tile uses active employee master data.</p></div></header>
+    <div className="employee-org-toolbar">
+      <label><span>Client</span><SearchSelect value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={selectOptions(p.clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label>
+      <div><span>Total employees</span><b>{employeeCount}</b></div>
+      <div className="employee-org-view-toggle"><span>View</span><div><button type="button" className={orientation === 'vertical' ? 'active' : ''} onClick={() => setOrientation('vertical')}>Vertical</button><button type="button" className={orientation === 'horizontal' ? 'active' : ''} onClick={() => setOrientation('horizontal')}>Horizontal</button></div></div>
+      <div className="employee-org-zoom"><span>Zoom</span><div><button type="button" onClick={() => changeZoom(-.1)}>-</button><b>{Math.round(zoom * 100)}%</b><button type="button" onClick={() => changeZoom(.1)}>+</button><button type="button" onClick={resetZoom}>Reset</button></div></div>
+    </div>
+    <div className="employee-org-client-list">
+      {clientRows.map(client => <ClientOrgChart key={client.id} client={client} employees={p.employees.filter(employee => employee.clientId === client.id)} locations={p.locations} orientation={orientation} zoom={zoom} onZoom={changeZoom} onSelectEmployee={setSelectedEmployee} />)}
+      {!clientRows.length && <p className="empty">No client found for org structure.</p>}
+    </div>
+    {selectedEmployee && <EmployeeOrgDetails employee={selectedEmployee} clients={p.clients} locations={p.locations} employees={p.employees} onClose={() => setSelectedEmployee(null)} />}
+  </section>
+}
+
+function ClientOrgChart(p: { client: Client; employees: Employee[]; locations: WorkLocation[]; orientation: 'vertical' | 'horizontal'; zoom: number; onZoom: (delta: number) => void; onSelectEmployee: (employee: Employee) => void }) {
+  const active = p.employees.filter(employee => employee.isActive)
+  const employeeIds = new Set(active.map(employee => employee.id))
+  const childrenByManager = new Map<number, Employee[]>()
+  active.forEach(employee => {
+    const managerId = employee.reportingManagerId || 0
+    if (managerId && employeeIds.has(managerId)) childrenByManager.set(managerId, [...(childrenByManager.get(managerId) ?? []), employee])
+  })
+  childrenByManager.forEach(rows => rows.sort(employeeSort))
+  const roots = active.filter(employee => !employee.reportingManagerId || !employeeIds.has(employee.reportingManagerId)).sort(employeeSort)
+  return <section className="employee-org-client">
+    <div className="employee-org-client-title">
+      <div><span>Client</span><h3>{p.client.name}</h3></div>
+      <b>{active.length} employee{active.length === 1 ? '' : 's'}</b>
+    </div>
+    {roots.length ? <div className="employee-org-canvas" onWheel={event => { event.preventDefault(); p.onZoom(event.deltaY > 0 ? -.05 : .05) }}>
+      <div className={`employee-org-tree ${p.orientation}`} style={{ transform: `scale(${p.zoom})` }}>
+        {roots.map(employee => <OrgNode key={employee.id} employee={employee} childrenByManager={childrenByManager} locations={p.locations} level={0} onSelectEmployee={p.onSelectEmployee} />)}
+      </div>
+    </div> : <p className="empty">No active employees available for this client.</p>}
+  </section>
+}
+
+function OrgNode(p: { employee: Employee; childrenByManager: Map<number, Employee[]>; locations: WorkLocation[]; level: number; onSelectEmployee: (employee: Employee) => void }) {
+  const children = p.childrenByManager.get(p.employee.id) ?? []
+  const initials = `${p.employee.firstName?.[0] ?? ''}${p.employee.lastName?.[0] ?? ''}`.trim() || p.employee.employeeCode.slice(0, 2)
+  return <div className={`employee-org-node level-${Math.min(p.level, 4)}`}>
+    <EmployeeOrgTile employee={p.employee} initials={initials.toUpperCase()} locationName={workLocationName(p.locations, p.employee.workLocationId)} childCount={children.length} onClick={() => p.onSelectEmployee(p.employee)} />
+    {children.length > 0 && <div className="employee-org-children">{children.map(child => <OrgNode key={child.id} employee={child} childrenByManager={p.childrenByManager} locations={p.locations} level={p.level + 1} onSelectEmployee={p.onSelectEmployee} />)}</div>}
+  </div>
+}
+
+function EmployeeOrgTile(p: { employee: Employee; initials: string; locationName: string; childCount: number; onClick: () => void }) {
+  const name = `${p.employee.firstName} ${p.employee.lastName}`.trim() || p.employee.employeeCode
+  return <button type="button" className="employee-org-tile" onClick={p.onClick}>
+    <div className="employee-org-avatar">{p.initials}</div>
+    <div className="employee-org-info">
+      <strong>{name}</strong>
+      <span>{p.employee.employeeCode}</span>
+      <small>{p.employee.designation || 'Designation not assigned'}</small>
+      <em>{[p.employee.department, p.locationName].filter(Boolean).join(' / ') || 'Org assignment pending'}</em>
+    </div>
+    {p.childCount > 0 && <b>{p.childCount}</b>}
+  </button>
+}
+
+function EmployeeOrgDetails(p: { employee: Employee; clients: Client[]; locations: WorkLocation[]; employees: Employee[]; onClose: () => void }) {
+  const name = `${p.employee.firstName} ${p.employee.lastName}`.trim() || p.employee.employeeCode
+  const manager = p.employees.find(employee => employee.id === p.employee.reportingManagerId)
+  const managerName = manager ? `${manager.firstName} ${manager.lastName}`.trim() || manager.employeeCode : 'Not assigned'
+  const rows = [
+    ['Employee code', p.employee.employeeCode],
+    ['Client', p.clients.find(client => client.id === p.employee.clientId)?.name || '-'],
+    ['Work location', workLocationName(p.locations, p.employee.workLocationId) || '-'],
+    ['Department', p.employee.department || '-'],
+    ['Designation', p.employee.designation || '-'],
+    ['Grade', p.employee.grade || '-'],
+    ['Reporting manager', managerName],
+    ['Joining date', p.employee.dateOfJoining || '-'],
+    ['Work email', p.employee.workEmail || '-'],
+    ['Portal access', p.employee.portalAccess ? 'Enabled' : 'Disabled']
+  ]
+  return <div className="employee-org-detail-backdrop" onClick={p.onClose}>
+    <section className="employee-org-detail" role="dialog" aria-modal="true" aria-label="Employee org details" onClick={event => event.stopPropagation()}>
+      <header><div><span>Employee details</span><h3>{name}</h3><p>{p.employee.employeeCode} / {p.employee.designation || 'Designation not assigned'}</p></div><button type="button" onClick={p.onClose}>Close</button></header>
+      <div className="employee-org-detail-grid">{rows.map(([label, value]) => <div key={label}><span>{label}</span><b>{value}</b></div>)}</div>
+    </section>
+  </div>
+}
+
+function employeeSort(a: Employee, b: Employee) {
+  return `${a.firstName} ${a.lastName} ${a.employeeCode}`.localeCompare(`${b.firstName} ${b.lastName} ${b.employeeCode}`)
 }
 
 type EmployeePreviewData = ImportPreviewData & { issues: ImportPreviewIssue[]; sheets: BulkUploadPreviewSheet[]; sourceSheets: ImportPreviewSheet[]; clientId?: number }
@@ -324,7 +425,7 @@ function EmployeeDirectory(p: { clients: Client[]; locations: WorkLocation[]; em
   </section>
 }
 
-function EmployeePanel(p: { employee: Employee; setEmployee: (employee: Employee) => void; employeeInfotype: EmployeeInfotypeCode; setEmployeeInfotype: (code: string) => void; changeReason: string; setChangeReason: (value: string) => void; clients: Client[]; locations: WorkLocation[]; templates: Structure[]; salaryComponents: Component[]; deps: string[]; desigs: string[]; grades: string[]; applyClient: (value: string) => void; applyStructure: (value: string) => void; applyCtc: (value: number) => void; structureComponents: Component[]; employeeSalary: Record<string, string>; empLine: (id: string, value: string) => void; empMonthly: (component: Component) => number; saveEmployee: () => void; closeModal: () => void; infotypes: EmployeeInfotypeRecord[]; runEmployeeAction: (request: EmployeeActionRequest) => Promise<void> }) {
+function EmployeePanel(p: { employee: Employee; setEmployee: (employee: Employee) => void; employeeInfotype: EmployeeInfotypeCode; setEmployeeInfotype: (code: string) => void; changeReason: string; setChangeReason: (value: string) => void; clients: Client[]; locations: WorkLocation[]; managerUsers: WorkflowApprover[]; templates: Structure[]; salaryComponents: Component[]; deps: string[]; desigs: string[]; grades: string[]; applyClient: (value: string) => void; applyStructure: (value: string) => void; applyCtc: (value: number) => void; structureComponents: Component[]; employeeSalary: Record<string, string>; empLine: (id: string, value: string) => void; empMonthly: (component: Component) => number; saveEmployee: () => void; closeModal: () => void; infotypes: EmployeeInfotypeRecord[]; runEmployeeAction: (request: EmployeeActionRequest) => Promise<void> }) {
   const personal = p.employee.personalDetails, payment = p.employee.paymentDetails
   const salaryRows = p.structureComponents.map(component => ({ component, monthly: p.empMonthly(component), annual: p.empMonthly(component) * 12 }))
   const totals = calculateSalaryTotals(salaryRows.map(row => ({ line: { componentId: String(row.component.id), value: '' }, ...row })))
@@ -333,12 +434,13 @@ function EmployeePanel(p: { employee: Employee; setEmployee: (employee: Employee
   const copyCorrespondence = (checked: boolean) => p.setEmployee({ ...p.employee, personalDetails: { ...personal, permanentAddress: checked ? personal.correspondenceAddress : personal.permanentAddress } })
   const setPayment = <K extends keyof EmployeePaymentDetails>(key: K, value: EmployeePaymentDetails[K]) => p.setEmployee({ ...p.employee, paymentDetails: { ...payment, [key]: value } })
   const selectedInfotype = employeeInfotypes.find(item => item.code === p.employeeInfotype) ?? employeeInfotypes[1]
+  const managerOptions = [{ value: '', label: 'No reporting manager' }, ...p.managerUsers.filter(user => !p.employee.clientId || !user.clientId || user.clientId === p.employee.clientId).map(user => ({ value: user.id, label: `${user.displayName || user.email} / ${user.email}${user.clientName ? ` / ${user.clientName}` : ''}` }))]
   return <section className="employee-card"><header><div><span className="eyebrow purple">{p.employee.id ? 'Edit employee' : 'New employee'}</span><h3>{p.employee.id ? `${p.employee.firstName} ${p.employee.lastName}`.trim() || p.employee.employeeCode : 'Employee details'}</h3><p>{p.employee.employeeCode || 'New code'} / {clientNameFor(p.clients, p.employee.clientId)} / {p.employee.isActive ? 'Active' : 'Inactive'}</p></div><button type="button" className="employee-modal-close" onClick={p.closeModal}>x</button></header>
     <section className="employee-basic-strip"><article><span>Code</span><b>{p.employee.employeeCode || '-'}</b></article><article><span>DOJ</span><b>{dateText(p.employee.dateOfJoining) || '-'}</b></article><article><span>Grade</span><b>{p.employee.grade || '-'}</b></article><article><span>Location</span><b>{workLocationName(p.locations, p.employee.workLocationId)}</b></article><article><span>Annual CTC</span><b>{money(p.employee.annualCtc || 0)}</b></article></section>
     <label className="employee-infotype-picker"><span>Infotype</span><SearchSelect value={p.employeeInfotype} onChange={value => p.setEmployeeInfotype(String(value))} options={employeeInfotypes.map(item => ({ value: item.code, label: `${item.code} - ${item.name}` }))} /></label>
     <section className="employee-infotype-editor"><h4>{selectedInfotype.code} - {selectedInfotype.name}</h4>
     {p.employeeInfotype === '0000' && <EmployeeActionEditor employee={p.employee} locations={p.locations} deps={p.deps} desigs={p.desigs} grades={p.grades} runEmployeeAction={p.runEmployeeAction} />}
-    {p.employeeInfotype === '0001' && <div className="grid"><F l="Client"><Sel v={String(p.employee.clientId || '')} set={p.applyClient} a={p.clients.map(item => `${item.id}:${item.name}`)} /></F><F l="Employee code"><input value={p.employee.employeeCode} onChange={event => p.setEmployee({ ...p.employee, employeeCode: event.target.value })} /></F><F l="Work email"><input value={p.employee.workEmail} onChange={event => p.setEmployee({ ...p.employee, workEmail: event.target.value })} /></F><F l="Department"><Sel v={p.employee.department} set={value => p.setEmployee({ ...p.employee, department: value })} a={p.deps} /></F><F l="Designation"><Sel v={p.employee.designation} set={value => p.setEmployee({ ...p.employee, designation: value })} a={p.desigs} /></F><F l="Employee Grade"><Sel v={p.employee.grade} set={value => p.setEmployee({ ...p.employee, grade: value })} a={p.grades} /></F><F l="Work location"><Sel v={String(p.employee.workLocationId || '')} set={value => p.setEmployee({ ...p.employee, workLocationId: Number(value.split(':')[0] || 0) })} a={p.locations.filter(item => item.clientId === p.employee.clientId).map(item => `${item.id}:${item.name}`)} /></F><Chk l="Portal access" v={p.employee.portalAccess} set={value => p.setEmployee({ ...p.employee, portalAccess: value })} /><Chk l="Active" v={p.employee.isActive} set={value => p.setEmployee({ ...p.employee, isActive: value })} /></div>}
+    {p.employeeInfotype === '0001' && <div className="grid"><F l="Client"><Sel v={String(p.employee.clientId || '')} set={p.applyClient} a={p.clients.map(item => `${item.id}:${item.name}`)} /></F><F l="Employee code"><input value={p.employee.employeeCode} onChange={event => p.setEmployee({ ...p.employee, employeeCode: event.target.value })} /></F><F l="Work email"><input value={p.employee.workEmail} onChange={event => p.setEmployee({ ...p.employee, workEmail: event.target.value })} /></F><F l="Department"><Sel v={p.employee.department} set={value => p.setEmployee({ ...p.employee, department: value })} a={p.deps} /></F><F l="Designation"><Sel v={p.employee.designation} set={value => p.setEmployee({ ...p.employee, designation: value })} a={p.desigs} /></F><F l="Employee Grade"><Sel v={p.employee.grade} set={value => p.setEmployee({ ...p.employee, grade: value })} a={p.grades} /></F><F l="Work location"><Sel v={String(p.employee.workLocationId || '')} set={value => p.setEmployee({ ...p.employee, workLocationId: Number(value.split(':')[0] || 0) })} a={p.locations.filter(item => item.clientId === p.employee.clientId).map(item => `${item.id}:${item.name}`)} /></F><F l="Reporting manager"><SearchSelect value={p.employee.reportingManagerUserId ?? ''} onChange={value => p.setEmployee({ ...p.employee, reportingManagerUserId: value ? Number(value) : null })} options={managerOptions} /></F><Chk l="Portal access" v={p.employee.portalAccess} set={value => p.setEmployee({ ...p.employee, portalAccess: value })} /><Chk l="Active" v={p.employee.isActive} set={value => p.setEmployee({ ...p.employee, isActive: value })} /></div>}
     {p.employeeInfotype === '0002' && <div className="grid"><F l="First name"><input value={p.employee.firstName} onChange={event => p.setEmployee({ ...p.employee, firstName: event.target.value })} /></F><F l="Last name"><input value={p.employee.lastName} onChange={event => p.setEmployee({ ...p.employee, lastName: event.target.value })} /></F><F l="Gender"><Sel v={p.employee.gender} set={value => p.setEmployee({ ...p.employee, gender: value })} a={['Male', 'Female', 'Other']} /></F><F l="Date of joining"><input type="date" value={p.employee.dateOfJoining} onChange={event => p.setEmployee({ ...p.employee, dateOfJoining: event.target.value })} /></F><F l="Date of birth"><input type="date" value={personal.dateOfBirth || ''} onChange={event => setPersonal('dateOfBirth', event.target.value)} /></F><F l="PAN"><input value={personal.panNumber || ''} onChange={event => setPersonal('panNumber', event.target.value.toUpperCase())} /></F><F l="Aadhaar"><input value={personal.aadhaarNumber || ''} onChange={event => setPersonal('aadhaarNumber', event.target.value.replace(/\D/g, '').slice(0, 12))} /></F><F l="UAN Number"><input value={personal.uanNumber || ''} onChange={event => setPersonal('uanNumber', event.target.value)} /></F><F l="Mobile"><input value={personal.mobile || ''} onChange={event => setPersonal('mobile', event.target.value)} /></F></div>}
     {p.employeeInfotype === '0006' && <div className="grid"><F l="Address" w><input value={personal.address || ''} onChange={event => setPersonal('address', event.target.value)} /></F><F l="Correspondence Address" w><input value={personal.correspondenceAddress || ''} onChange={event => setPersonal('correspondenceAddress', event.target.value)} /></F><label className="employee-same-address"><input type="checkbox" checked={!!personal.correspondenceAddress && personal.permanentAddress === personal.correspondenceAddress} onChange={event => copyCorrespondence(event.target.checked)} />Same as correspondence address</label><F l="Permanent Address" w><input value={personal.permanentAddress || ''} onChange={event => setPersonal('permanentAddress', event.target.value)} /></F></div>}
     {p.employeeInfotype === '0008' && <div className="employee-salary-panel">
@@ -358,7 +460,7 @@ function EmployeePanel(p: { employee: Employee; setEmployee: (employee: Employee
     {p.employeeInfotype === '0009' && <div className="grid"><F l="Bank"><input value={payment.bankName || ''} onChange={event => setPayment('bankName', event.target.value)} /></F><F l="Account no"><input value={payment.bankAccountNo || ''} onChange={event => setPayment('bankAccountNo', event.target.value)} /></F><F l="IFSC"><input value={payment.ifscCode || ''} onChange={event => setPayment('ifscCode', event.target.value.toUpperCase())} /></F><F l="Payment mode"><Sel v={payment.paymentMode || ''} set={value => setPayment('paymentMode', value)} a={['Bank Transfer', 'Cheque', 'Cash']} /></F></div>}
     {p.employeeInfotype !== '0000' && <div className="grid"><F l="Change reason" w><input value={p.changeReason} onChange={event => p.setChangeReason(event.target.value)} placeholder="Reason for this infotype change" /></F></div>}
     </section>
-    <InfotypeHistory employee={p.employee} infotypeCode={p.employeeInfotype} infotypes={p.infotypes} clients={p.clients} locations={p.locations} templates={p.templates} />
+    <InfotypeHistory employee={p.employee} infotypeCode={p.employeeInfotype} infotypes={p.infotypes} clients={p.clients} locations={p.locations} managerUsers={p.managerUsers} templates={p.templates} />
     <div className="actions"><button type="button" className="secondary" onClick={p.closeModal}>Cancel</button><button type="button" disabled={p.employeeInfotype === '0000'} onClick={p.saveEmployee}>Save infotype</button></div></section>
 }
 
@@ -373,14 +475,14 @@ function EmployeeActionEditor(p: { employee: Employee; locations: WorkLocation[]
   return <section className="employee-action-box"><div className="grid"><F l="Action"><Sel v={action.actionType} set={value => set('actionType', value)} a={['Promotion', 'Demotion', 'Transfer', 'Retire', 'Terminate', 'Resign', 'Rehire']} /></F><F l="Effective date"><input type="date" value={action.effectiveDate} onChange={event => set('effectiveDate', event.target.value)} /></F><F l="Reason"><input value={action.reason} onChange={event => set('reason', event.target.value)} /></F><F l="Department"><Sel v={action.department} set={value => set('department', value)} a={p.deps} /></F><F l="Designation"><Sel v={action.designation} set={value => set('designation', value)} a={p.desigs} /></F><F l="Grade"><Sel v={action.grade} set={value => set('grade', value)} a={p.grades} /></F><F l="Work location"><Sel v={String(action.workLocationId || '')} set={value => set('workLocationId', Number(value.split(':')[0] || 0))} a={p.locations.filter(item => item.clientId === p.employee.clientId).map(item => `${item.id}:${item.name}`)} /></F></div><button type="button" onClick={submit}>Save action</button></section>
 }
 
-function InfotypeHistory(p: { employee: Employee; infotypeCode: EmployeeInfotypeCode; infotypes: EmployeeInfotypeRecord[]; clients: Client[]; locations: WorkLocation[]; templates: Structure[] }) {
+function InfotypeHistory(p: { employee: Employee; infotypeCode: EmployeeInfotypeCode; infotypes: EmployeeInfotypeRecord[]; clients: Client[]; locations: WorkLocation[]; managerUsers: WorkflowApprover[]; templates: Structure[] }) {
   if (!p.employee.id) return null
   const rows = p.infotypes.filter(row => row.infotypeCode === p.infotypeCode).sort((a, b) => statusRank(a.status) - statusRank(b.status) || String(b.effectiveFrom).localeCompare(String(a.effectiveFrom)))
   const infotypeName = employeeInfotypes.find(item => item.code === p.infotypeCode)?.name ?? 'Infotype'
   return <section className="employee-history-grid single"><div><h4>{p.infotypeCode} - {infotypeName} historical records</h4><DataTable rows={rows} getRowId={row => row.id} emptyText="No records for this infotype yet." exportFileName={`employee-infotypes-${p.employee.employeeCode}-${p.infotypeCode}`} columns={infotypeHistoryColumns(p.infotypeCode, p)} /></div></section>
 }
 
-function infotypeHistoryColumns(code: EmployeeInfotypeCode, refs: { clients: Client[]; locations: WorkLocation[]; templates: Structure[] }): Column<EmployeeInfotypeRecord>[] {
+function infotypeHistoryColumns(code: EmployeeInfotypeCode, refs: { clients: Client[]; locations: WorkLocation[]; managerUsers: WorkflowApprover[]; templates: Structure[] }): Column<EmployeeInfotypeRecord>[] {
   const common: Column<EmployeeInfotypeRecord>[] = [
     { key: 'status', label: 'Status', width: '110px', render: row => <span className={`employee-status-pill ${row.status.toLowerCase()}`}>{row.status}</span>, value: row => row.status },
     { key: 'actionType', label: 'Action', width: '130px' },
@@ -394,10 +496,11 @@ function infotypeHistoryColumns(code: EmployeeInfotypeCode, refs: { clients: Cli
   const valueColumn = (key: string, label: string, path: string[], width = '150px', map?: (value: unknown) => string): Column<EmployeeInfotypeRecord> => ({ key, label, width, value: row => infotypeValue(row, path, map) })
   const clientName = (value: unknown) => refs.clients.find(client => client.id === Number(value))?.name || String(value || '')
   const locationName = (value: unknown) => refs.locations.find(location => location.id === Number(value))?.name || String(value || '')
+  const managerName = (value: unknown) => refs.managerUsers.find(user => user.id === Number(value))?.displayName || String(value || '')
   const templateName = (value: unknown) => refs.templates.find(template => String(template.id) === String(value))?.name || String(value || '')
   const byCode: Record<EmployeeInfotypeCode, Column<EmployeeInfotypeRecord>[]> = {
     '0000': [valueColumn('activeValue', 'Active', ['IsActive', 'isActive']), valueColumn('dojValue', 'Joining date', ['DateOfJoining', 'dateOfJoining'])],
-    '0001': [valueColumn('clientValue', 'Client', ['ClientId', 'clientId'], '170px', clientName), valueColumn('deptValue', 'Department', ['Department', 'department']), valueColumn('desigValue', 'Designation', ['Designation', 'designation']), valueColumn('gradeValue', 'Grade', ['Grade', 'grade']), valueColumn('locationValue', 'Location', ['WorkLocationId', 'workLocationId'], '170px', locationName), valueColumn('emailValue', 'Work email', ['WorkEmail', 'workEmail'], '190px')],
+    '0001': [valueColumn('clientValue', 'Client', ['ClientId', 'clientId'], '170px', clientName), valueColumn('deptValue', 'Department', ['Department', 'department']), valueColumn('desigValue', 'Designation', ['Designation', 'designation']), valueColumn('gradeValue', 'Grade', ['Grade', 'grade']), valueColumn('locationValue', 'Location', ['WorkLocationId', 'workLocationId'], '170px', locationName), valueColumn('managerUserValue', 'Manager user', ['ReportingManagerUser', 'reportingManagerUser', 'ReportingManagerUserId', 'reportingManagerUserId'], '190px', managerName), valueColumn('emailValue', 'Work email', ['WorkEmail', 'workEmail'], '190px')],
     '0002': [valueColumn('firstNameValue', 'First name', ['FirstName', 'firstName']), valueColumn('lastNameValue', 'Last name', ['LastName', 'lastName']), valueColumn('genderValue', 'Gender', ['Gender', 'gender']), valueColumn('dobValue', 'DOB', ['PersonalDetails.DateOfBirth', 'personalDetails.dateOfBirth', 'PersonalDetails.dateOfBirth']), valueColumn('panValue', 'PAN', ['PersonalDetails.PanNumber', 'personalDetails.panNumber']), valueColumn('uanValue', 'UAN', ['PersonalDetails.UanNumber', 'personalDetails.uanNumber']), valueColumn('mobileValue', 'Mobile', ['PersonalDetails.Mobile', 'personalDetails.mobile'])],
     '0006': [valueColumn('addressValue', 'Address', ['Address', 'address'], '220px'), valueColumn('correspondenceValue', 'Correspondence', ['CorrespondenceAddress', 'correspondenceAddress'], '220px'), valueColumn('permanentValue', 'Permanent', ['PermanentAddress', 'permanentAddress'], '220px')],
     '0008': [valueColumn('templateValue', 'Template', ['SalaryStructureId', 'salaryStructureId'], '180px', templateName), valueColumn('ctcValue', 'Annual CTC', ['AnnualCtc', 'annualCtc']), valueColumn('componentsValue', 'Components', ['SalaryComponents', 'salaryComponents'], '260px')],
@@ -455,6 +558,7 @@ function normalizeEmployeeDetails(row: Employee): Employee {
   return {
     ...row,
     grade: row.grade || '',
+    reportingManagerUserId: row.reportingManagerUserId ? Number(row.reportingManagerUserId) : null,
     salaryComponents,
     salaryJson: JSON.stringify(salaryComponents),
     personalDetails: {
@@ -522,7 +626,7 @@ function toEmployeePayload(row: Employee): Employee {
     mode: row.paymentDetails.paymentMode,
     paymentMode: row.paymentDetails.paymentMode
   }
-  return { ...row, salaryComponents, salaryJson: JSON.stringify(salaryComponents), personalJson: JSON.stringify(personalJson), paymentJson: JSON.stringify(paymentJson) }
+  return { ...row, reportingManagerUserId: row.reportingManagerUserId ? Number(row.reportingManagerUserId) : null, salaryComponents, salaryJson: JSON.stringify(salaryComponents), personalJson: JSON.stringify(personalJson), paymentJson: JSON.stringify(paymentJson) }
 }
 
 function salaryRecord(row: Employee) {

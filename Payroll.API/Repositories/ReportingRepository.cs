@@ -13,7 +13,7 @@ public class ReportingRepository(IConfiguration configuration)
         filter.Month = string.IsNullOrWhiteSpace(filter.Month) ? DateTime.Today.ToString("yyyy-MM") : filter.Month;
         filter.FromDate = string.IsNullOrWhiteSpace(filter.FromDate) ? $"{filter.Month}-01" : filter.FromDate;
         filter.ToDate = string.IsNullOrWhiteSpace(filter.ToDate) ? DateTime.Parse($"{filter.Month}-01").AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd") : filter.ToDate;
-        if (code == "client-billing-report")
+        if (code == "client-billing-report" || code == "payroll-cost-report")
             return await RunClientBillingReportAsync(db, filter);
         var monthlyAdviceSql = @"SELECT p.EmployeeCode AS `Emp Code`,
 p.EmployeeName AS `Name`,
@@ -278,7 +278,7 @@ GROUP BY a.attendance_date,a.status
 ORDER BY a.attendance_date, a.status",
             "leave-balance" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, lt.Name AS `Leave Type`, b.BalanceDate AS Date, b.BalanceCount AS Balance FROM employee_leave_balances b JOIN employees e ON e.Id=b.employee_id JOIN leave_types lt ON lt.Id=b.leave_type_id WHERE b.client_id=@ClientId ORDER BY e.EmployeeCode,lt.Name,b.BalanceDate",
             "lwp-balance" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, b.BalanceDate AS Date, b.BalanceCount AS `LWP Balance` FROM employee_leave_balances b JOIN employees e ON e.Id=b.employee_id JOIN leave_types lt ON lt.Id=b.leave_type_id WHERE b.client_id=@ClientId AND lt.Code='LWP' ORDER BY e.EmployeeCode",
-            "leave-accrual" => @"SELECT lt.Code AS `Leave Code`, lt.Name AS `Leave Type`, lt.Type, p.entitlement AS Entitlement, p.entitlement_period AS `Entitlement Period`, p.pro_rate_for_new_joinees AS `Pro-rate New Joiners`, p.reset_enabled AS `Reset Enabled`, p.reset_frequency AS `Reset Frequency`, p.carry_forward_unused_leaves AS `Carry Forward`, p.max_carry_forward_limit AS `Carry Forward Limit`, p.encash_unused_leaves AS Encashment, p.effective_from AS `Effective From`, p.expires_on AS `Expires On`, a.applicability_mode AS Applicability, a.department AS Department, a.designation AS Designation, a.work_location AS `Work Location`
+            "leave-accrual" => @"SELECT lt.Code AS `Leave Code`, lt.Name AS `Leave Type`, lt.Type, p.entitlement AS Entitlement, p.entitlement_period AS `Entitlement Period`, p.pro_rate_for_new_joinees AS `Pro-rate New Joiners`, p.reset_enabled AS `Reset Enabled`, p.reset_frequency AS `Reset Frequency`, p.carry_forward_unused_leaves AS `Carry Forward`, p.max_carry_forward_limit AS `Carry Forward Limit`, p.encash_unused_leaves AS Encashment, COALESCE(p.allow_half_day,TRUE) AS `Half Day Allowed`, p.effective_from AS `Effective From`, p.expires_on AS `Expires On`, a.applicability_mode AS Applicability, a.department AS Department, a.designation AS Designation, a.work_location AS `Work Location`
 FROM leave_types lt
 JOIN leave_type_policies p ON p.leave_type_id=lt.id
 JOIN leave_type_applicability a ON a.leave_type_id=lt.id
@@ -291,7 +291,7 @@ WHERE a.client_id=@ClientId AND a.attendance_date BETWEEN @FromDate AND @ToDate 
 AND (@Department IS NULL OR e.Department=@Department) AND (@WorkLocationId IS NULL OR e.WorkLocationId=@WorkLocationId)
 GROUP BY e.EmployeeCode, Employee, e.Department, DATE_FORMAT(a.attendance_date,'%Y-%m'), a.status
 ORDER BY e.EmployeeCode, Month, `Leave/Absence Type`",
-            "leave-approval-status" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, lt.Name AS `Leave Type`, r.FromDate AS `From Date`, r.ToDate AS `To Date`, r.Days, r.Status, r.Reason, r.CreatedAt AS `Requested On`
+            "leave-approval-status" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, lt.Name AS `Leave Type`, COALESCE(r.DayType,'Full Day') AS `Day Type`, r.FromDate AS `From Date`, r.ToDate AS `To Date`, r.Days, r.Status, r.Reason, r.CreatedAt AS `Requested On`
 FROM essleaverequests r
 JOIN employees e ON e.Id=r.EmployeeId
 JOIN leave_types lt ON lt.Id=r.LeaveTypeId
@@ -348,7 +348,7 @@ ORDER BY r.PayPeriod DESC, r.Id DESC, w.Name, p.EmployeeCode;", filter)).ToList(
 
         var employeeRowIds = employees.Select(row => row.PayRunEmployeeId).Distinct().ToArray();
         var lines = (await db.QueryAsync<BillingComponentLine>(@"
-SELECT PayRunEmployeeId, ComponentCode, Name, Category, COALESCE(StatutoryType,'None') StatutoryType, Amount, SortOrder
+SELECT PayRunEmployeeId, ComponentCode, Name, Category, COALESCE(ComponentRole,'') ComponentRole, COALESCE(StatutoryType,'None') StatutoryType, Amount, SortOrder
 FROM payrunemployeelines
 WHERE PayRunEmployeeId IN @EmployeeRowIds
 ORDER BY SortOrder, ComponentCode;", new { EmployeeRowIds = employeeRowIds })).ToList();
@@ -367,6 +367,16 @@ WHERE ClientId=@ClientId
   AND EffectiveFrom<=@PeriodDate
   AND (EffectiveTo IS NULL OR EffectiveTo>=@PeriodDate)
 ORDER BY CASE WHEN WorkLocationId IS NULL THEN 1 ELSE 0 END, RateCardType, Id;", new { filter.ClientId, PeriodDate = periodDate })).ToList();
+        var advancedEnabled = await db.ExecuteScalarAsync<bool?>(@"SELECT AdvancedCostingEnabled FROM client_billing_settings WHERE Id=1") ?? false;
+        var advancedRules = advancedEnabled ? (await db.QueryAsync<AdvancedBillingRuleRow>(@"
+SELECT h.Id HeaderId,h.ClientId,h.WorkLocationId,h.RuleName,h.GstRatePercent,l.Id LineId,l.LineType,l.MatchValue,l.BillingTreatment,l.BaseType,l.RateType,l.RateValue,l.TaxApplicable,l.CommissionApplicable,l.DisplayGroup,l.SortOrder
+FROM client_billing_cost_rule_headers h
+JOIN client_billing_cost_rule_lines l ON l.HeaderId=h.Id AND l.IsActive=TRUE
+WHERE h.ClientId=@ClientId
+  AND h.IsActive=TRUE
+  AND h.EffectiveFrom<=@PeriodDate
+  AND (h.EffectiveTo IS NULL OR h.EffectiveTo>=@PeriodDate)
+ORDER BY CASE WHEN h.WorkLocationId IS NULL THEN 1 ELSE 0 END,h.Id,l.SortOrder,l.Id", new { filter.ClientId, PeriodDate = periodDate })).ToList() : [];
 
         var columns = BaseBillingColumns().Concat(componentColumns.Select(column => column.Label)).Concat([
             "Gross Pay",
@@ -388,7 +398,8 @@ ORDER BY CASE WHEN WorkLocationId IS NULL THEN 1 ELSE 0 END, RateCardType, Id;",
         {
             var employeeLines = linesByEmployeeRow.GetValueOrDefault(employee.PayRunEmployeeId) ?? [];
             var matchingConfigs = configs.Where(config => !config.WorkLocationId.HasValue || config.WorkLocationId.Value == employee.WorkLocationId).ToList();
-            var billing = CalculateBilling(employee, employeeLines, matchingConfigs);
+            var matchingAdvanced = advancedRules.Where(rule => !rule.WorkLocationId.HasValue || rule.WorkLocationId.Value == employee.WorkLocationId).ToList();
+            var billing = matchingAdvanced.Count > 0 ? CalculateAdvancedBilling(employee, employeeLines, matchingAdvanced) : CalculateBilling(employee, employeeLines, matchingConfigs);
             var row = new Dictionary<string, object?>
             {
                 ["Pay Run"] = string.IsNullOrWhiteSpace(employee.RunName) ? $"Run #{employee.PayRunId}" : employee.RunName,
@@ -474,6 +485,73 @@ ORDER BY CASE WHEN WorkLocationId IS NULL THEN 1 ELSE 0 END, RateCardType, Id;",
         return new BillingAmount(decimal.Round(baseTotal, 2), string.Join(", ", rules.Distinct()), string.Join(", ", rates), string.Join(", ", taxBasis.Distinct()), string.Join(", ", configs.Select(config => $"{config.GstRatePercent:0.####}%").Distinct()), decimal.Round(beforeGst, 2), decimal.Round(gst, 2), decimal.Round(final, 2));
     }
 
+    private static BillingAmount CalculateAdvancedBilling(BillingEmployeeRow employee, List<BillingComponentLine> lines, List<AdvancedBillingRuleRow> rules)
+    {
+        decimal baseTotal = 0;
+        decimal beforeGst = 0;
+        decimal gst = 0;
+        var summaries = new List<string>();
+        var rates = new List<string>();
+        var taxBasis = new List<string>();
+        var selectedHeaderId = rules.Where(rule => rule.WorkLocationId == employee.WorkLocationId).Select(rule => (long?)rule.HeaderId).FirstOrDefault()
+            ?? rules.Select(rule => (long?)rule.HeaderId).FirstOrDefault();
+        var activeRules = rules.Where(rule => rule.HeaderId == selectedHeaderId).OrderBy(rule => rule.SortOrder).ThenBy(rule => rule.LineId).ToList();
+        decimal billableSalaryBase = 0;
+
+        foreach (var rule in activeRules.Where(rule => !rule.LineType.Equals("Commission", StringComparison.OrdinalIgnoreCase)))
+        {
+            var baseAmount = AdvancedBaseAmount(rule, employee, lines, beforeGst);
+            var amount = AdvancedRuleAmount(rule, baseAmount);
+            if (amount == 0 && rule.RateType.Equals("Actual", StringComparison.OrdinalIgnoreCase)) continue;
+            baseTotal += amount;
+            beforeGst += amount;
+            if (rule.CommissionApplicable) billableSalaryBase += amount;
+            if (rule.TaxApplicable) gst += decimal.Round(amount * Math.Max(0, rule.GstRatePercent) / 100m, 2);
+            summaries.Add($"{rule.DisplayGroup}: {RuleLabel(rule)}");
+            rates.Add(RateLabel(rule, baseAmount));
+            if (rule.TaxApplicable) taxBasis.Add("GST");
+        }
+
+        foreach (var rule in activeRules.Where(rule => rule.LineType.Equals("Commission", StringComparison.OrdinalIgnoreCase)))
+        {
+            var baseAmount = rule.BaseType.Equals("Billable Salary", StringComparison.OrdinalIgnoreCase) ? billableSalaryBase : AdvancedBaseAmount(rule, employee, lines, beforeGst);
+            var amount = AdvancedRuleAmount(rule, baseAmount);
+            beforeGst += amount;
+            if (rule.TaxApplicable) gst += decimal.Round(amount * Math.Max(0, rule.GstRatePercent) / 100m, 2);
+            summaries.Add($"{rule.DisplayGroup}: {RuleLabel(rule)}");
+            rates.Add(RateLabel(rule, baseAmount));
+            if (rule.TaxApplicable) taxBasis.Add("GST");
+        }
+
+        return new BillingAmount(decimal.Round(baseTotal, 2), string.Join(", ", summaries.Distinct()), string.Join(", ", rates), string.Join(", ", taxBasis.Distinct()), string.Join(", ", activeRules.Select(rule => $"{rule.GstRatePercent:0.####}%").Distinct()), decimal.Round(beforeGst, 2), decimal.Round(gst, 2), decimal.Round(beforeGst + gst, 2));
+    }
+
+    private static decimal AdvancedBaseAmount(AdvancedBillingRuleRow rule, BillingEmployeeRow employee, List<BillingComponentLine> lines, decimal currentBillable)
+    {
+        if (rule.BaseType.Equals("Gross Pay", StringComparison.OrdinalIgnoreCase)) return employee.GrossPay + employee.OneTimeEarnings;
+        if (rule.BaseType.Equals("Net Pay", StringComparison.OrdinalIgnoreCase)) return employee.NetPay;
+        if (rule.BaseType.Equals("Employer Cost", StringComparison.OrdinalIgnoreCase)) return employee.GrossPay + employee.OneTimeEarnings + lines.Where(line => line.Category.Contains("Benefit", StringComparison.OrdinalIgnoreCase) || line.ComponentRole.Contains("Employer", StringComparison.OrdinalIgnoreCase)).Sum(line => line.Amount);
+        if (rule.BaseType.Equals("Billable Salary", StringComparison.OrdinalIgnoreCase)) return currentBillable;
+        if (rule.LineType.Equals("Base Amount", StringComparison.OrdinalIgnoreCase)) return rule.BaseType.Equals("Net Pay", StringComparison.OrdinalIgnoreCase) ? employee.NetPay : employee.GrossPay + employee.OneTimeEarnings;
+        if (rule.LineType.Equals("Payroll Component", StringComparison.OrdinalIgnoreCase)) return lines.Where(line => line.ComponentCode.Equals(rule.MatchValue, StringComparison.OrdinalIgnoreCase)).Sum(line => line.Amount);
+        if (rule.LineType.Equals("Component Category", StringComparison.OrdinalIgnoreCase)) return lines.Where(line => line.Category.Equals(rule.MatchValue, StringComparison.OrdinalIgnoreCase)).Sum(line => line.Amount);
+        if (rule.LineType.Equals("Statutory Type", StringComparison.OrdinalIgnoreCase)) return lines.Where(line => line.StatutoryType.Equals(rule.MatchValue, StringComparison.OrdinalIgnoreCase)).Sum(line => line.Amount);
+        return 0;
+    }
+
+    private static decimal AdvancedRuleAmount(AdvancedBillingRuleRow rule, decimal baseAmount) =>
+        rule.RateType.Equals("Percent", StringComparison.OrdinalIgnoreCase) ? decimal.Round(baseAmount * rule.RateValue / 100m, 2) :
+        rule.RateType.Equals("Fixed", StringComparison.OrdinalIgnoreCase) || rule.LineType.Equals("Fixed Charge", StringComparison.OrdinalIgnoreCase) ? decimal.Round(rule.RateValue, 2) :
+        decimal.Round(baseAmount, 2);
+
+    private static string RuleLabel(AdvancedBillingRuleRow rule) =>
+        string.IsNullOrWhiteSpace(rule.MatchValue) ? rule.LineType : $"{rule.LineType} {rule.MatchValue}";
+
+    private static string RateLabel(AdvancedBillingRuleRow rule, decimal baseAmount) =>
+        rule.RateType.Equals("Percent", StringComparison.OrdinalIgnoreCase) ? $"{rule.RateValue:0.####}% on {RuleLabel(rule)} ({baseAmount:0.##})" :
+        rule.RateType.Equals("Fixed", StringComparison.OrdinalIgnoreCase) ? $"{rule.RateValue:0.##} fixed {RuleLabel(rule)}" :
+        $"Actual {RuleLabel(rule)}";
+
     private static decimal BaseAmountFor(string rateCardType, BillingEmployeeRow employee, List<BillingComponentLine> lines)
     {
         var key = (rateCardType ?? "").ToLowerInvariant();
@@ -526,9 +604,10 @@ ORDER BY CASE WHEN WorkLocationId IS NULL THEN 1 ELSE 0 END, RateCardType, Id;",
         _ => 9
     };
 
-    private sealed record BillingEmployeeRow(int PayRunId, string PayPeriod, string RunName, string Status, int PayRunEmployeeId, int EmployeeId, string EmployeeCode, string EmployeeName, string Department, decimal PresentDays, decimal PayableDays, decimal GrossPay, decimal StatutoryDeductions, decimal OneTimeEarnings, decimal OneTimeDeductions, decimal NetPay, string ClientName, int WorkLocationId, string WorkLocationName);
-    private sealed record BillingComponentLine(int PayRunEmployeeId, string ComponentCode, string Name, string Category, string StatutoryType, decimal Amount, int SortOrder);
+    private sealed record BillingEmployeeRow(int PayRunId, string PayPeriod, string RunName, string Status, int PayRunEmployeeId, int EmployeeId, string EmployeeCode, string EmployeeName, string Department, decimal PresentDays, decimal PayableDays, decimal GrossPay, decimal StatutoryDeductions, decimal OneTimeEarnings, decimal OneTimeDeductions, decimal NetPay, string ClientName, long WorkLocationId, string WorkLocationName);
+    private sealed record BillingComponentLine(int PayRunEmployeeId, string ComponentCode, string Name, string Category, string ComponentRole, string StatutoryType, decimal Amount, int SortOrder);
     private sealed record BillingConfigRow(long Id, int ClientId, int? WorkLocationId, string RateCardType, string RateType, decimal Value, bool TaxInclusive, decimal GstRatePercent, DateTime EffectiveFrom, DateTime? EffectiveTo);
+    private sealed record AdvancedBillingRuleRow(long HeaderId, int ClientId, int? WorkLocationId, string RuleName, decimal GstRatePercent, long LineId, string LineType, string MatchValue, string BillingTreatment, string BaseType, string RateType, decimal RateValue, bool TaxApplicable, bool CommissionApplicable, string DisplayGroup, int SortOrder);
     private sealed record BillingComponentColumn(string Category, string ComponentCode, string Name, int SortOrder, string Label);
     private sealed record BillingAmount(decimal BaseTotal, string RuleSummary, string RateSummary, string TaxBasisSummary, string GstRateSummary, decimal AmountBeforeGst, decimal GstAmount, decimal FinalAmount);
 }

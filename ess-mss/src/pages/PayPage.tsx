@@ -1,10 +1,141 @@
 import { useEffect, useState } from 'react'
-import type { LoadState, Payslip, User } from '../types'
+import type { LoadState, Payslip, PayslipDocument, User } from '../types'
 import { essApi } from '../services/essApi'
 
+const money = (value: number) => `Rs ${Number(value || 0).toLocaleString('en-IN')}`
+
+const dateText = (value?: string) => {
+  if (!value) return '-'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+
+const periodText = (period: string) => {
+  const date = new Date(`${period}-01T00:00:00`)
+  return Number.isNaN(date.getTime()) ? period : date.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })
+}
+
 export function PayPage({ user }: { user: User }) {
-  const [rows, setRows] = useState<Payslip[]>([]), [selected, setSelected] = useState<Payslip | null>(null), [state, setState] = useState<LoadState>('loading')
-  useEffect(() => { void essApi.payslips().then(items => { setRows(items); setState('ready') }).catch(() => setState('error')) }, [user.email])
-  const download = () => { if (!selected) return; const deductions = selected.statutoryDeductions + selected.oneTimeDeductions; const body = `<!doctype html><html><head><meta charset="utf-8"><title>Payslip ${selected.payPeriod}</title><style>body{font-family:Arial;max-width:680px;margin:38px auto;color:#172136}header{border-bottom:2px solid #6546e8;padding-bottom:12px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:22px 0}.box{padding:12px;border:1px solid #e5e8f0;border-radius:8px}.label{display:block;color:#64748b;font-size:12px}.amount{font-size:19px;font-weight:bold}</style></head><body><header><h1>Frevo One HR Payslip</h1><small>Pay period: ${selected.payPeriod}</small></header><div class="grid"><div class="box"><span class="label">Gross pay</span><span class="amount">Rs ${selected.grossPay.toLocaleString('en-IN')}</span></div><div class="box"><span class="label">Deductions</span><span class="amount">Rs ${deductions.toLocaleString('en-IN')}</span></div><div class="box"><span class="label">Net pay</span><span class="amount">Rs ${selected.netPay.toLocaleString('en-IN')}</span></div><div class="box"><span class="label">Payment status</span><span class="amount">${selected.paymentStatus}</span></div></div></body></html>`; const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([body], { type: 'text/html' })); link.download = `payslip-${selected.payPeriod}.html`; link.click(); URL.revokeObjectURL(link.href) }
-  return <section className="pay-workspace"><div className="feature-heading"><span className="eyebrow">My pay</span><h3>Payslips & payment history</h3><p>Access payroll periods that have been approved for you.</p></div>{state === 'loading' && <div className="empty-work"><span>Loading payslips...</span></div>}{state === 'error' && <div className="empty-work"><b>Pay information is unavailable.</b><span>Contact payroll if you expect a payslip for a completed pay run.</span></div>}{state === 'ready' && <><div className="pay-list">{rows.map(item => <article key={item.payRunId}><div><b>{item.payPeriod}</b><span>Gross Rs {item.grossPay.toLocaleString('en-IN')} / Net Rs {item.netPay.toLocaleString('en-IN')}</span></div><em>{item.paymentStatus}</em><button type="button" onClick={() => setSelected(item)}>View payslip</button></article>)}{!rows.length && <div className="empty-work"><b>No payslips are available yet.</b><span>Your payslips appear here after payroll approves your pay run.</span></div>}</div>{selected && <div className="ess-modal-backdrop" onClick={() => setSelected(null)}><section className="ess-payslip-modal" onClick={event => event.stopPropagation()}><header><div><span className="eyebrow">Payslip</span><h3>{selected.payPeriod}</h3><p>Payment status: {selected.paymentStatus}</p></div><button type="button" onClick={() => setSelected(null)}>x</button></header><div className="payslip-summary"><span>Gross pay <b>Rs {selected.grossPay.toLocaleString('en-IN')}</b></span><span>Deductions <b>Rs {(selected.statutoryDeductions + selected.oneTimeDeductions).toLocaleString('en-IN')}</b></span><span>Net pay <b>Rs {selected.netPay.toLocaleString('en-IN')}</b></span></div><button type="button" className="download-payslip" onClick={download}>Download payslip</button></section></div>}</>}</section>
+  const [rows, setRows] = useState<Payslip[]>([])
+  const [document, setDocument] = useState<PayslipDocument | null>(null)
+  const [state, setState] = useState<LoadState>('loading')
+  const [busy, setBusy] = useState<string | null>(null)
+
+  useEffect(() => {
+    setState('loading')
+    void essApi.payslips()
+      .then(items => { setRows(items); setState('ready') })
+      .catch(() => setState('error'))
+  }, [user.email])
+
+  const fetchDocument = async (row: Payslip) => {
+    setBusy(`view-${row.payRunId}`)
+    try {
+      const next = await essApi.payslipDocument(row.payRunId)
+      setDocument(next)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const downloadDocument = async (row: Payslip) => {
+    setBusy(`download-${row.payRunId}`)
+    try {
+      const next = await essApi.payslipDocument(row.payRunId)
+      const link = window.document.createElement('a')
+      link.href = URL.createObjectURL(new Blob([next.html], { type: 'text/html' }))
+      link.download = next.fileName || `payslip-${next.payPeriod}.html`
+      link.click()
+      URL.revokeObjectURL(link.href)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <section className="pay-workspace">
+      <div className="feature-heading">
+        <span className="eyebrow">My pay</span>
+        <h3>Payslips & payment history</h3>
+        <p>Access payroll periods that have been approved for you.</p>
+      </div>
+
+      {state === 'loading' && <div className="empty-work"><span>Loading payslips...</span></div>}
+      {state === 'error' && <div className="empty-work"><b>Pay information is unavailable.</b><span>Contact payroll if you expect a payslip for a completed pay run.</span></div>}
+
+      {state === 'ready' && (
+        <div className="pay-table-card">
+          {rows.length ? (
+            <div className="pay-table-scroll">
+              <table className="pay-table">
+                <thead>
+                  <tr>
+                    <th>Pay period</th>
+                    <th>Pay date</th>
+                    <th>Gross pay</th>
+                    <th>Deductions</th>
+                    <th>Net pay</th>
+                    <th>Payment</th>
+                    <th>Run status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(item => {
+                    const deductions = item.statutoryDeductions + item.oneTimeDeductions
+                    return (
+                      <tr key={item.payRunId}>
+                        <td><b>{periodText(item.payPeriod)}</b><span>{item.payPeriod}</span></td>
+                        <td>{dateText(item.payDate)}</td>
+                        <td>{money(item.grossPay)}</td>
+                        <td>{money(deductions)}</td>
+                        <td><b>{money(item.netPay)}</b></td>
+                        <td><span className="pay-status-pill">{item.paymentStatus || 'Pending'}</span></td>
+                        <td>{item.runStatus}</td>
+                        <td>
+                          <div className="pay-actions">
+                            <button type="button" onClick={() => void fetchDocument(item)} disabled={busy !== null}>
+                              {busy === `view-${item.payRunId}` ? 'Opening...' : 'View'}
+                            </button>
+                            <button type="button" className="secondary" onClick={() => void downloadDocument(item)} disabled={busy !== null}>
+                              {busy === `download-${item.payRunId}` ? 'Preparing...' : 'Download'}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="empty-work"><b>No payslips are available yet.</b><span>Your payslips appear here after payroll approves your pay run.</span></div>
+          )}
+        </div>
+      )}
+
+      {document && (
+        <div className="ess-modal-backdrop" onClick={() => setDocument(null)}>
+          <section className="ess-payslip-modal" onClick={event => event.stopPropagation()}>
+            <header>
+              <div>
+                <span className="eyebrow">Payslip</span>
+                <h3>{periodText(document.payPeriod)}</h3>
+                <p>{document.employeeCode}</p>
+              </div>
+              <button type="button" onClick={() => setDocument(null)}>x</button>
+            </header>
+            <iframe title={`Payslip ${document.payPeriod}`} srcDoc={document.html} />
+            <button type="button" className="download-payslip" onClick={() => {
+              const link = window.document.createElement('a')
+              link.href = URL.createObjectURL(new Blob([document.html], { type: 'text/html' }))
+              link.download = document.fileName || `payslip-${document.payPeriod}.html`
+              link.click()
+              URL.revokeObjectURL(link.href)
+            }}>Download payslip</button>
+          </section>
+        </div>
+      )}
+    </section>
+  )
 }

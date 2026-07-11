@@ -8,7 +8,7 @@ import type { IconName } from './components/AppIcon'
 import SecurityPanel from './components/SecurityPanel'
 import { leaveAttendanceMenus, org0, reportingMenus, securityMenus, settingsMenus, workflowMenus } from './data/payrollDefaults'
 import DashboardPage from './pages/DashboardPage'
-import EmployeePage from './pages/EmployeePage'
+import EmployeePage, { type EmployeePageView } from './pages/EmployeePage'
 import LeaveAttendancePage from './pages/LeaveAttendancePage'
 import type { LeaveAttendanceMenu } from './pages/LeaveAttendancePage'
 import PayHistoryPage from './pages/PayHistoryPage'
@@ -31,6 +31,7 @@ type ModuleCode = 'Dashboard' | 'Settings' | 'Employees' | 'Payroll' | 'LeaveAtt
 type SettingsTab = (typeof settingsMenus)[number]
 type SecurityTab = (typeof securityMenus)[number]
 type PayrollTab = 'Regular Run' | 'Off-cycle Run' | 'Adjustments' | 'Employee Tax Profile'
+type EmployeeTab = 'Employee Master' | 'Org Structure'
 type SettingsSection = 'General' | 'LeaveAttendance'
 const allPayrollSetupMenus: SettingsTab[] = ['Tax Engine', 'Statutory Setup', 'Salary Components', 'Salary Templates', 'Payslip Templates']
 const compactSidebarQuery = '(max-width: 640px)'
@@ -55,7 +56,7 @@ const modulePaths: Record<ModuleCode, string> = {
   Dashboard: '/dashboard',
   Payroll: '/payroll/regular',
   LeaveAttendance: '/attendance',
-  Employees: '/employees',
+  Employees: '/employees/master',
   Security: '/security/users',
   Workflows: '/workflows/workflow-setup',
   Settings: '/settings/organization',
@@ -97,6 +98,7 @@ export default function SettingsApp() {
   const [leaveAttendanceOpen, setLeaveAttendanceOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('General')
   const [securityTab, setSecurityTab] = useState<SecurityTab>(savedSecurityTab && securityMenus.includes(savedSecurityTab) ? savedSecurityTab : 'Users')
+  const [employeeTab, setEmployeeTab] = useState<EmployeeTab>('Employee Master')
   const [payrollTab, setPayrollTab] = useState<PayrollTab>((localStorage.getItem('payroll.payrollTab') as PayrollTab | null) ?? 'Regular Run')
   const [leaveAttendanceTab, setLeaveAttendanceTab] = useState<LeaveAttendanceMenu>(savedLeaveAttendanceTab && leaveAttendanceMenus.includes(savedLeaveAttendanceTab) ? savedLeaveAttendanceTab : 'Attendance Policies')
   const [reportingTab, setReportingTab] = useState<ReportingMenu>(savedReportingTab && reportingMenus.includes(savedReportingTab) ? savedReportingTab : 'Payroll Reports')
@@ -105,7 +107,7 @@ export default function SettingsApp() {
   const [mainModule, setMainModule] = useState<ModuleCode>(initialModule)
   const [shellOrg, setShellOrg] = useState<Org>(org0)
   const activeModule = modules.find(module => module.code === mainModule)!
-  const pageTitle = showMyTasks ? 'My Tasks' : mainModule === 'Dashboard' ? 'Dashboard' : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? 'Employee Master' : mainModule === 'Security' ? securityTab : mainModule === 'Reports' ? reportingTab : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
+  const pageTitle = showMyTasks ? 'My Tasks' : mainModule === 'Dashboard' ? 'Dashboard' : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? employeeTab : mainModule === 'Security' ? securityTab : mainModule === 'Reports' ? reportingTab : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
   const currentUser = session?.user
   const userInitials = (currentUser?.displayName || 'User').split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase()
   const accountMenu: MenuProps = {
@@ -188,6 +190,7 @@ export default function SettingsApp() {
       return
     }
     if (parts[0] === 'employees') {
+      setEmployeeTab(parts[1] === 'org-structure' ? 'Org Structure' : 'Employee Master')
       setMainModule('Employees')
       return
     }
@@ -253,6 +256,7 @@ export default function SettingsApp() {
   const setTab = (nextTab: SettingsTab) => { setShowMyTasks(false); setSettingsSection('General'); localStorage.setItem('payroll.module', 'Settings'); localStorage.setItem('payroll.tab', nextTab); setActiveTab(nextTab); navigate(`/settings/${slug(nextTab)}`) }
   const setModule = (nextModule: ModuleCode) => { setShowMyTasks(false); localStorage.setItem('payroll.module', nextModule); setMainModule(nextModule); navigate(modulePaths[nextModule]) }
   const setPayrollModuleTab = (nextTab: PayrollTab) => { localStorage.setItem('payroll.payrollTab', nextTab); setPayrollTab(nextTab); setShowMyTasks(false); setMainModule('Payroll'); navigate(nextTab === 'Adjustments' ? '/payroll/adjustments' : nextTab === 'Off-cycle Run' ? '/payroll/off-cycle' : nextTab === 'Employee Tax Profile' ? '/payroll/tax-profile' : '/payroll/regular') }
+  const setEmployeeModuleTab = (nextTab: EmployeeTab) => { setEmployeeTab(nextTab); setShowMyTasks(false); setMainModule('Employees'); navigate(nextTab === 'Org Structure' ? '/employees/org-structure' : '/employees/master') }
   const setPayHistory = () => { setShowMyTasks(false); localStorage.setItem('payroll.module', 'Payroll'); setMainModule('Payroll'); navigate('/pay-runs/history') }
   const setSecurityModuleTab = (nextTab: SecurityTab) => { localStorage.setItem('payroll.securityTab', nextTab); setSecurityTab(nextTab); setShowMyTasks(false); setMainModule('Security'); navigate(`/security/${slug(nextTab)}`) }
   const setLeaveAttendanceSettingsTab = (nextTab: LeaveAttendanceMenu) => { setShowMyTasks(false); setSettingsSection('LeaveAttendance'); localStorage.setItem('payroll.module', 'Settings'); localStorage.setItem('payroll.leaveAttendanceTab', nextTab); setLeaveAttendanceTab(nextTab); setMainModule('Settings'); navigate(`/settings/leave-attendance/${slug(nextTab)}`) }
@@ -288,6 +292,7 @@ export default function SettingsApp() {
       <Link {...navAttrs('Pay History')} className={isPayHistory ? 'active' : ''} to="/pay-runs/history" onClick={() => navigateFromMenu(setPayHistory)}>Pay History</Link>
     </>
     if (mainModule === 'LeaveAttendance') return <>{tasks}<Link {...navAttrs('Attendance Review')} className="active" to="/attendance" onClick={() => navigateFromMenu(() => setModule('LeaveAttendance'))}>Attendance Review<small>Pre-payroll</small></Link></>
+    if (mainModule === 'Employees') return <>{tasks}<Link {...navAttrs('Employee Master')} className={employeeTab === 'Employee Master' ? 'active' : ''} to="/employees/master" onClick={() => navigateFromMenu(() => setEmployeeModuleTab('Employee Master'))}>Employee Master<small>Core HR</small></Link><Link {...navAttrs('Org Structure')} className={employeeTab === 'Org Structure' ? 'active' : ''} to="/employees/org-structure" onClick={() => navigateFromMenu(() => setEmployeeModuleTab('Org Structure'))}>Org Structure<small>Hierarchy</small></Link></>
     if (mainModule === 'Security') return <>{tasks}{securityMenus.map(item => <button {...navAttrs(item)} className={securityTab === item ? 'active' : ''} type="button" onClick={() => navigateFromMenu(() => setSecurityModuleTab(item))} key={item}>{item}</button>)}</>
     if (mainModule === 'Reports') return <>{tasks}{reportingMenus.map(item => {
       const expanded = reportingTab === item
@@ -305,7 +310,7 @@ export default function SettingsApp() {
     if (mainModule === 'Security') return <SecurityPanel initialTab={securityTab} />
     if (mainModule === 'LeaveAttendance') return <PayrollAttendancePage />
     if (mainModule === 'Payroll') return isPayHistory ? <PayHistoryPage /> : payrollTab === 'Employee Tax Profile' ? <EmployeeTaxProfileManager /> : <PayrollPage key={payrollTab} mode={payrollTab === 'Adjustments' ? 'adjustments' : 'payrun'} runType={payrollTab === 'Off-cycle Run' ? 'Off-cycle Run' : 'Regular Run'} />
-    if (mainModule === 'Employees') return <EmployeePage />
+    if (mainModule === 'Employees') return <EmployeePage view={(employeeTab === 'Org Structure' ? 'org' : 'master') as EmployeePageView} />
     if (mainModule === 'Reports') return <ReportingPage activeMenu={reportingTab} activeReport={reportingReport} />
     if (mainModule === 'Workflows') return <WorkflowPage activeMenu={workflowTab} />
     return settingsSection === 'LeaveAttendance' ? <LeaveAttendancePage activeMenu={leaveAttendanceTab} onSelectMenu={setLeaveAttendanceSettingsTab} /> : <SettingsPage tab={tab} onMessage={() => undefined} />
