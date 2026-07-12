@@ -323,12 +323,17 @@ function employeeClientIdFromSheets(sheets: ImportPreviewSheet[]) {
 
 function employeeSheetPreviewRules(headers: string[]): ImportPreviewRules {
   const has = (name: string) => headers.some(header => importNorm(header) === importNorm(name))
+  const isSingleEmployeeSheet = headers.some(header => importNorm(header) === 'salarytemplate') || headers.some(header => importNorm(header) === 'reportingmanageremail')
   return {
-    required: ['Employee Code'],
+    required: isSingleEmployeeSheet ? ['Employee Code', 'First Name', 'Date Of Joining'] : ['Employee Code'],
     unique: [['Employee Code']],
     booleans: ['Portal Access', 'Active'].filter(has),
     numbers: ['Work Location Id', 'Annual CTC'].filter(has),
     dates: ['Date Of Joining', 'Date Of Birth'].filter(has),
+    enums: {
+      ...(has('Gender') ? { Gender: ['Male', 'Female', 'Other'] } : {}),
+      ...(has('Payment Mode') ? { 'Payment Mode': ['Bank Transfer', 'Cheque', 'Cash'] } : {})
+    },
     custom: (row, rowNumber) => {
       const issues: ImportPreviewIssue[] = []
       const salaryJson = row['Salary Json']?.trim()
@@ -336,6 +341,16 @@ function employeeSheetPreviewRules(headers: string[]): ImportPreviewRules {
         try { const parsed = JSON.parse(salaryJson); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) issues.push({ rowNumber, column: 'Salary Json', message: 'Salary Json must be a JSON object.' }) }
         catch { issues.push({ rowNumber, column: 'Salary Json', message: 'Salary Json must be valid JSON.' }) }
       }
+      const email = row['Work Email']?.trim()
+      if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) issues.push({ rowNumber, column: 'Work Email', message: 'Work Email must be a valid email address.' })
+      const managerEmail = row['Reporting Manager Email']?.trim()
+      if (managerEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(managerEmail)) issues.push({ rowNumber, column: 'Reporting Manager Email', message: 'Reporting Manager Email must be a valid email address.' })
+      const pan = row.PAN?.trim()
+      if (pan && !/^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(pan)) issues.push({ rowNumber, column: 'PAN', message: 'PAN must be in format ABCDE1234F.' })
+      const aadhaar = row.Aadhaar?.trim()
+      if (aadhaar && !/^\d{12}$/.test(aadhaar)) issues.push({ rowNumber, column: 'Aadhaar', message: 'Aadhaar must be 12 digits.' })
+      const ifsc = row.IFSC?.trim()
+      if (ifsc && !/^[A-Z]{4}0[A-Z0-9]{6}$/i.test(ifsc)) issues.push({ rowNumber, column: 'IFSC', message: 'IFSC must be in format ABCD0123456.' })
       return issues
     }
   }
@@ -409,7 +424,7 @@ function EmployeeDirectory(p: { clients: Client[]; locations: WorkLocation[]; em
   const clientName = (id: number) => p.clients.find(client => client.id === id)?.name ?? `Client #${id || '-'}`
   const locationName = (id: number) => workLocationName(p.locations, id)
   const locationOptions = p.locations.filter(location => !p.clientFilter || location.clientId === p.clientFilter).map(location => ({ value: location.id, label: p.clientFilter ? location.name : `${location.name} - ${clientName(location.clientId)}` }))
-  return <section className="card employee-directory"><header><i className="blue">E</i><div><h3>Employee master</h3><p>Search client-wise employees. Create or edit details in a focused popup.</p></div><div className="employee-directory-actions"><button type="button" title={p.clientFilter ? 'Download Excel template' : 'Select a client first'} onClick={p.onDownloadTemplate}>Download Excel template</button><label className="employee-upload-action" title={!p.clientFilter ? 'Select a client first' : 'Upload Excel or CSV'}><input type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { p.onUpload(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} />Bulk upload</label><button type="button" onClick={p.onNew}>New employee</button></div></header>
+  return <section className="card employee-directory"><header><i className="blue">E</i><div><h3>Employee master</h3><p>Search client-wise employees. Create or edit details in a focused popup.</p></div><div className="employee-directory-actions"><button type="button" disabled={!p.clientFilter} title={p.clientFilter ? 'Download Excel template' : 'Select a client first'} onClick={p.onDownloadTemplate}>Download Excel template</button><label className={`employee-upload-action${!p.clientFilter ? ' disabled' : ''}`} title={!p.clientFilter ? 'Select a client first' : 'Upload Excel or CSV'}><input type="file" disabled={!p.clientFilter} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { p.onUpload(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} />Bulk upload</label><button type="button" onClick={p.onNew}>New employee</button></div></header>
     <div className="employee-directory-tools"><label><span>Client</span><SearchSelect value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={selectOptions(p.clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label><label><span>Work Location</span><SearchSelect value={p.locationFilter} onChange={value => p.setLocationFilter(Number(value))} options={selectOptions(locationOptions, 'All locations', 0)} /></label><label><span>Search</span><input value={p.query} onChange={event => p.setQuery(event.target.value)} placeholder="Code, name, location, department, email..." /></label><div className="employee-directory-count"><span>Showing</span><b>{p.employees.length} / {p.allCount}</b></div></div>
     <DataTable rows={p.employees} emptyText="No employees found for the selected filters." exportFileName="employees" columns={[
       { key: 'employeeName', label: 'Employee', value: row => `${row.firstName} ${row.lastName}`.trim(), render: row => <strong>{row.firstName} {row.lastName}</strong> },

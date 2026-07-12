@@ -1257,10 +1257,14 @@ app.MapDelete("/api/employees/{id:int}", async (EmployeeRepository repository, i
 .WithName("DeleteEmployee")
 .WithOpenApi();
 
-app.MapGet("/api/employees/import-template", async (EmployeeRepository repository, int clientId) =>
-    clientId <= 0
-        ? Results.BadRequest(new { error = "Select a client." })
-        : Results.File(await repository.BuildImportTemplateAsync(clientId), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "employee-import-template.xlsx"))
+app.MapGet("/api/employees/import-template", async (OrganizationRepository organizationRepository, AuthRepository authRepository, EmployeeRepository repository, int clientId) =>
+{
+    if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    await organizationRepository.InitializeAsync();
+    await authRepository.InitializeAsync();
+    await repository.InitializeAsync();
+    return Results.File(await repository.BuildImportTemplateAsync(clientId), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "employee-import-template.xlsx");
+})
 .WithName("DownloadEmployeeImportTemplate")
 .WithOpenApi();
 

@@ -5,6 +5,7 @@ using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 namespace Payroll.API.Repositories;
@@ -182,16 +183,37 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         var template = templates.FirstOrDefault();
         var managerUsers = (await db.QueryAsync<UserRef>("SELECT Id,DisplayName,Email FROM authusers WHERE IsActive=TRUE AND (ClientId IS NULL OR ClientId=@clientId) ORDER BY DisplayName,Email", new { clientId })).ToList();
         var manager = managerUsers.FirstOrDefault();
-        var orgHeaders = new[] { "Employee Code", "Date Of Joining", "Work Email", "Department", "Designation", "Grade", "Work Location Id", "Work Location", "Reporting Manager User Id", "Reporting Manager Email", "Portal Access", "Active", "Change Reason" };
-        var orgExample = new[] { "EMP001", "2026-04-01", "rahul@example.com", First("Department", ""), First("Designation", ""), First("Employee Grade", ""), location?.Id.ToString() ?? "", location?.Name ?? "", manager?.Id.ToString() ?? "", manager?.Email ?? "", "TRUE", "TRUE", "Initial upload" };
-        var personalHeaders = new[] { "Employee Code", "First Name", "Last Name", "Gender", "Date Of Birth", "Mobile", "PAN", "Aadhaar", "UAN Number", "ESIC Number", "Change Reason" };
-        var personalExample = new[] { "EMP001", "Rahul", "Sharma", "Male", "1995-01-15", "9876543210", "ABCDE1234F", "123412341234", "100200300400", "", "Initial upload" };
-        var addressHeaders = new[] { "Employee Code", "Address", "Correspondence Address", "Permanent Address", "Change Reason" };
-        var addressExample = new[] { "EMP001", "Local address", "Correspondence address", "Permanent address", "Initial upload" };
-        var payHeaders = new[] { "Employee Code", "Salary Template Id", "Salary Template", "Annual CTC", "Salary Json", "Change Reason" };
-        var payExample = new[] { "EMP001", template?.Id ?? "", template?.Name ?? "", template?.AnnualCtc ?? "600000", "", "Initial upload" };
-        var bankHeaders = new[] { "Employee Code", "Bank Name", "Bank Account No", "IFSC", "Payment Mode", "Change Reason" };
-        var bankExample = new[] { "EMP001", "HDFC Bank", "50100123456789", "HDFC0001234", "Bank Transfer", "Initial upload" };
+        var employeeHeaders = new[]
+        {
+            "Employee Code", "First Name", "Last Name", "Gender", "Date Of Joining", "Date Of Birth", "Work Email", "Mobile",
+            "Department", "Designation", "Grade", "Work Location", "Reporting Manager Email", "Portal Access", "Active",
+            "Salary Template", "Annual CTC", "PAN", "Aadhaar", "UAN Number", "ESIC Number", "Address", "Correspondence Address",
+            "Permanent Address", "Bank Name", "Bank Account No", "IFSC", "Payment Mode", "Change Reason"
+        };
+        var employeeExample = new[]
+        {
+            "EMP001", "Rahul", "Sharma", "Male", "2026-04-01", "1995-01-15", "rahul@example.com", "9876543210",
+            First("Department", ""), First("Designation", ""), First("Employee Grade", ""), location?.Name ?? "", manager?.Email ?? "",
+            "TRUE", "TRUE", template?.Name ?? "", template?.AnnualCtc ?? "600000", "ABCDE1234F", "123412341234", "100200300400", "",
+            "Local address", "Correspondence address", "Permanent address", "HDFC Bank", "50100123456789", "HDFC0001234", "Bank Transfer", "Initial upload"
+        };
+        var instructions = new List<string[]>
+        {
+            new[] { "Column", "Required", "How to fill", "Validation" },
+            new[] { "Employee Code", "Yes", "Unique employee code. Existing code updates that employee.", "No duplicate code in the file." },
+            new[] { "First Name", "Yes", "Employee first name.", "Required." },
+            new[] { "Last Name", "No", "Employee last name.", "" },
+            new[] { "Gender", "No", "Male, Female, or Other.", "Must match allowed values." },
+            new[] { "Date Of Joining", "Yes", "Use yyyy-MM-dd, e.g. 2026-04-01.", "Required valid date." },
+            new[] { "Work Email", "No", "Employee office email.", "Cannot already belong to another employee." },
+            new[] { "Department / Designation / Grade", "No", "Use text from Dropdown Masters.", "Must match active master data for the client." },
+            new[] { "Work Location", "No", "Use the work location name, not ID.", "Must match one active work location for the client." },
+            new[] { "Reporting Manager Email", "No", "Use manager login email from Users.", "Must match an active user for the client or global user." },
+            new[] { "Salary Template", "No", "Use salary template name, not ID.", "Must match one active salary template for the client." },
+            new[] { "Annual CTC", "No", "Numeric amount only.", "If blank, template CTC is used where available." },
+            new[] { "Portal Access / Active", "No", "TRUE/FALSE, YES/NO, 1/0, Active/Inactive.", "Defaults are preserved for existing employees." },
+            new[] { "Bank / Address / Statutory IDs", "No", "Fill text values directly.", "PAN, Aadhaar, IFSC are format validated where provided." }
+        };
         var references = new List<string[]> { new[] { "Reference Type", "Id", "Value", "Extra", "Notes" } };
         if (client.Id > 0) references.Add(new[] { "Client", client.Id.ToString(), client.Name, "", "Selected client" });
         references.AddRange(drops.Select(item => new[] { item.Type, "", item.Value, "", "" }));
@@ -201,13 +223,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         references.AddRange(new[] { new[] { "Gender", "", "Male", "", "" }, new[] { "Gender", "", "Female", "", "" }, new[] { "Gender", "", "Other", "", "" } });
         references.AddRange(new[] { new[] { "Payment Mode", "", "Bank Transfer", "", "" }, new[] { "Payment Mode", "", "Cheque", "", "" }, new[] { "Payment Mode", "", "Cash", "", "" } });
         references.AddRange(new[] { new[] { "Boolean", "", "TRUE", "", "Allowed values: TRUE/FALSE, YES/NO, 1/0, Active/Inactive" }, new[] { "Date Format", "", "yyyy-MM-dd", "", "Example: 2026-04-01" } });
-        return BuildXlsx(
-            ("0001 Org Assignment", new[] { orgHeaders, orgExample }),
-            ("0002 Personal Data", new[] { personalHeaders, personalExample }),
-            ("0006 Addresses", new[] { addressHeaders, addressExample }),
-            ("0008 Basic Pay", new[] { payHeaders, payExample }),
-            ("0009 Bank Details", new[] { bankHeaders, bankExample }),
-            ("References", references));
+        return BuildXlsx(("Employees", new[] { employeeHeaders, employeeExample }), ("Instructions", instructions), ("References", references));
     }
 
     async Task<EmployeeImportResult> ImportWorkbookAsync(int clientId, EmployeeImportWorkbook workbook, Action<int, int, int>? progress = null)
@@ -389,24 +405,52 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                     var draft = DraftFor(code, rowNumber); var employee = draft.Employee; var personal = employee.PersonalDetails ?? new EmployeePersonalDetails(); employee.PersonalDetails = personal;
                     SetIfAny(value => employee.FirstName = value, Cell(row, map, "First Name"));
                     SetIfAny(value => employee.LastName = value, Cell(row, map, "Last Name"));
-                    SetIfAny(value => employee.Gender = value, Cell(row, map, "Gender"));
+                    var gender = Cell(row, map, "Gender");
+                    if (!string.IsNullOrWhiteSpace(gender))
+                    {
+                        if (!new[] { "Male", "Female", "Other" }.Contains(gender, StringComparer.OrdinalIgnoreCase)) errors.Add($"Employees row {rowNumber}: Gender must be Male, Female, or Other.");
+                        else employee.Gender = gender;
+                    }
                     if (TryDate(Cell(row, map, "Date Of Joining"), out var doj)) { if (!string.IsNullOrWhiteSpace(doj)) employee.DateOfJoining = doj; } else errors.Add($"Employees row {rowNumber}: Date Of Joining must be yyyy-MM-dd.");
                     SetIfAny(value => employee.WorkEmail = value, Cell(row, map, "Work Email"));
+                    if (!string.IsNullOrWhiteSpace(employee.WorkEmail) && !EmailOk(employee.WorkEmail)) errors.Add($"Employees row {rowNumber}: Work Email is not a valid email address.");
+                    if (!string.IsNullOrWhiteSpace(employee.WorkEmail) && existingByEmail.TryGetValue(employee.WorkEmail, out var emailOwner) && !string.Equals(emailOwner.EmployeeCode, employee.EmployeeCode, StringComparison.OrdinalIgnoreCase)) errors.Add($"Employees row {rowNumber}: Work Email already belongs to employee {emailOwner.EmployeeCode}.");
                     var dep = Cell(row, map, "Department"); ValidateMaster("Department", dep, validDrops, errors, rowNumber, "Department", "Employees"); SetIfAny(value => employee.Department = value, dep);
                     var desig = Cell(row, map, "Designation"); ValidateMaster("Designation", desig, validDrops, errors, rowNumber, "Designation", "Employees"); SetIfAny(value => employee.Designation = value, desig);
                     var grade = Cell(row, map, "Grade"); ValidateMaster("Employee Grade", grade, validDrops, errors, rowNumber, "Grade", "Employees"); SetIfAny(value => employee.Grade = value, grade);
                     var locationId = ResolveWorkLocationId(Cell(row, map, "Work Location Id"), Cell(row, map, "Work Location"), locationsById, locationsByName, errors, "Employees", rowNumber); if (locationId.HasValue) employee.WorkLocationId = locationId.Value;
                     var managerUserId = ResolveManagerUserId(Cell(row, map, "Reporting Manager User Id"), Cell(row, map, "Reporting Manager Email"), managerUsersById, managerUsersByEmail, errors, "Employees", rowNumber); if (managerUserId.HasValue) employee.ReportingManagerUserId = managerUserId.Value;
-                    if (decimal.TryParse(Cell(row, map, "Annual CTC"), System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var ctc)) employee.AnnualCtc = ctc;
+                    var template = ResolveSalaryTemplate(Cell(row, map, "Salary Template Id"), Cell(row, map, "Salary Template"), salaryTemplateById, salaryTemplateByName, errors, "Employees", rowNumber);
+                    if (template is not null) employee.SalaryStructureId = template.Id;
+                    var ctcText = Cell(row, map, "Annual CTC");
+                    if (!string.IsNullOrWhiteSpace(ctcText))
+                    {
+                        if (decimal.TryParse(ctcText, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var ctc)) employee.AnnualCtc = ctc;
+                        else errors.Add($"Employees row {rowNumber}: Annual CTC must be numeric.");
+                    }
+                    else if (template is not null && decimal.TryParse(template.AnnualCtc, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var templateCtc) && employee.AnnualCtc <= 0) employee.AnnualCtc = templateCtc;
+                    if (TryBool(Cell(row, map, "Portal Access"), employee.PortalAccess, out var portal)) employee.PortalAccess = portal; else errors.Add($"Employees row {rowNumber}: Portal Access must be TRUE/FALSE.");
+                    if (TryBool(Cell(row, map, "Active"), employee.IsActive, out var active)) employee.IsActive = active; else errors.Add($"Employees row {rowNumber}: Active must be TRUE/FALSE.");
                     if (TryDate(Cell(row, map, "Date Of Birth"), out var dob)) { if (!string.IsNullOrWhiteSpace(dob)) personal.DateOfBirth = dob; } else errors.Add($"Employees row {rowNumber}: Date Of Birth must be yyyy-MM-dd.");
                     SetIfAny(value => personal.Mobile = value, Cell(row, map, "Mobile"));
                     SetIfAny(value => personal.PanNumber = value.ToUpperInvariant(), Cell(row, map, "PAN"));
                     SetIfAny(value => personal.AadhaarNumber = value, Cell(row, map, "Aadhaar"));
                     SetIfAny(value => personal.UanNumber = value, Cell(row, map, "UAN Number"));
+                    SetIfAny(value => personal.EsicNumber = value, Cell(row, map, "ESIC Number"));
+                    if (!string.IsNullOrWhiteSpace(personal.PanNumber) && !PanOk(personal.PanNumber)) errors.Add($"Employees row {rowNumber}: PAN must be in format ABCDE1234F.");
+                    if (!string.IsNullOrWhiteSpace(personal.AadhaarNumber) && !AadhaarOk(personal.AadhaarNumber)) errors.Add($"Employees row {rowNumber}: Aadhaar must be 12 digits.");
                     SetIfAny(value => personal.Address = value, Cell(row, map, "Address"));
                     SetIfAny(value => personal.CorrespondenceAddress = value, Cell(row, map, "Correspondence Address"));
                     SetIfAny(value => personal.PermanentAddress = value, Cell(row, map, "Permanent Address"));
-                    Mark(draft, "0001", "Bulk upload"); Mark(draft, "0002", "Bulk upload"); Mark(draft, "0006", "Bulk upload"); Mark(draft, "0008", "Bulk upload"); Mark(draft, "0000", "Bulk upload");
+                    var payment = employee.PaymentDetails ?? new EmployeePaymentDetails(); employee.PaymentDetails = payment;
+                    SetIfAny(value => payment.BankName = value, Cell(row, map, "Bank Name"));
+                    SetIfAny(value => payment.BankAccountNo = value, Cell(row, map, "Bank Account No"));
+                    SetIfAny(value => payment.IfscCode = value.ToUpperInvariant(), Cell(row, map, "IFSC"));
+                    if (!string.IsNullOrWhiteSpace(payment.IfscCode) && !IfscOk(payment.IfscCode)) errors.Add($"Employees row {rowNumber}: IFSC must be in format ABCD0123456.");
+                    var mode = Cell(row, map, "Payment Mode");
+                    if (!string.IsNullOrWhiteSpace(mode)) { if (!new[] { "Bank Transfer", "Cheque", "Cash" }.Contains(mode, StringComparer.OrdinalIgnoreCase)) errors.Add($"Employees row {rowNumber}: Payment Mode must be Bank Transfer, Cheque, or Cash."); else payment.PaymentMode = mode; }
+                    var reason = Cell(row, map, "Change Reason");
+                    Mark(draft, "0001", reason); Mark(draft, "0002", reason); Mark(draft, "0006", reason); Mark(draft, "0008", reason); Mark(draft, "0000", reason); Mark(draft, "0009", reason);
                 }
             }
 
@@ -939,6 +983,10 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
         try { using var doc = JsonDocument.Parse(value); return doc.RootElement.ValueKind == JsonValueKind.Object; }
         catch { return false; }
     }
+    static bool EmailOk(string value) => Regex.IsMatch(value.Trim(), @"^[^@\s]+@[^@\s]+\.[^@\s]+$");
+    static bool PanOk(string value) => Regex.IsMatch(value.Trim(), @"^[A-Z]{5}[0-9]{4}[A-Z]$", RegexOptions.IgnoreCase);
+    static bool AadhaarOk(string value) => Regex.IsMatch(value.Trim(), @"^\d{12}$");
+    static bool IfscOk(string value) => Regex.IsMatch(value.Trim(), @"^[A-Z]{4}0[A-Z0-9]{6}$", RegexOptions.IgnoreCase);
     static int? ResolveWorkLocationId(string idText, string name, Dictionary<int, LocationRef> byId, Dictionary<string, List<LocationRef>> byName, List<string> errors, string sheet, int row)
     {
         if (!string.IsNullOrWhiteSpace(idText))
@@ -948,8 +996,8 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
             return null;
         }
         if (string.IsNullOrWhiteSpace(name)) return null;
-        if (!byName.TryGetValue(name, out var matches)) { errors.Add($"{sheet} row {row}: Work Location \"{name}\" is not in Work Locations for this client."); return null; }
-        if (matches.Count > 1) { errors.Add($"{sheet} row {row}: Work Location \"{name}\" is duplicate. Use Work Location Id."); return null; }
+        if (!byName.TryGetValue(name, out var matches)) { errors.Add($"{sheet} row {row}: Work Location \"{name}\" is not an active Work Location for this client."); return null; }
+        if (matches.Count > 1) { errors.Add($"{sheet} row {row}: Work Location \"{name}\" is found more than once. Rename one location or use a unique location name."); return null; }
         return matches[0].Id;
     }
     static int? ResolveManagerUserId(string idText, string email, Dictionary<int, UserRef> byId, Dictionary<string, UserRef> byEmail, List<string> errors, string sheet, int row)
@@ -974,8 +1022,8 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
             return null;
         }
         if (string.IsNullOrWhiteSpace(name)) return null;
-        if (!byName.TryGetValue(name, out var matches)) { errors.Add($"{sheet} row {row}: Salary Template \"{name}\" is not in Salary Templates for this client."); return null; }
-        if (matches.Count > 1) { errors.Add($"{sheet} row {row}: Salary Template \"{name}\" is duplicate. Use Salary Template Id."); return null; }
+        if (!byName.TryGetValue(name, out var matches)) { errors.Add($"{sheet} row {row}: Salary Template \"{name}\" is not active for this client."); return null; }
+        if (matches.Count > 1) { errors.Add($"{sheet} row {row}: Salary Template \"{name}\" is found more than once. Rename one salary template or use a unique template name."); return null; }
         return matches[0];
     }
     static List<SalaryTemplateRef> ReadSalaryTemplates(string setupJson)
