@@ -19,6 +19,9 @@ export function TasksPage({ user }: { user: User }) {
   })
 
   useEffect(() => { void load(view) }, [user.email, view])
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('ess:page-title', { detail: { section: 'Approvals', title: view === 'pending' ? 'Pending approval tasks' : 'Actioned tasks' } }))
+  }, [view])
 
   const detailRows = useMemo(() => selected ? taskDetails(selected) : [], [selected])
 
@@ -40,11 +43,6 @@ export function TasksPage({ user }: { user: User }) {
   }
 
   return <section className="leave-workspace task-workspace">
-    <div className="feature-heading">
-      <span className="eyebrow">My tasks</span>
-      <h3>Approvals assigned to you</h3>
-      <p>Review pending approvals and revisit requests where you already took action.</p>
-    </div>
     <div className="task-tabs">
       <button type="button" className={view === 'pending' ? 'active' : ''} onClick={() => { setView('pending'); setSelected(null); setMessage('') }}>Pending</button>
       <button type="button" className={view === 'actioned' ? 'active' : ''} onClick={() => { setView('actioned'); setSelected(null); setMessage('') }}>Actioned by me</button>

@@ -45,6 +45,8 @@ public class EssTravelRequest
     public string FromLocation { get; set; } = "";
     public string ToLocation { get; set; } = "";
     public List<EssTravelCity> Legs { get; set; } = [];
+    public List<EssTravelAccommodation> AccommodationDetails { get; set; } = [];
+    public List<EssLocalTravelDetail> LocalTravelDetails { get; set; } = [];
     public DateTime StartDateTime { get; set; }
     public DateTime EndDateTime { get; set; }
     public decimal EstimatedCost { get; set; }
@@ -77,6 +79,8 @@ public class SaveEssTravelRequest
     public string FromLocation { get; set; } = "";
     public string ToLocation { get; set; } = "";
     public List<EssTravelCity> Cities { get; set; } = [];
+    public List<EssTravelAccommodation> AccommodationDetails { get; set; } = [];
+    public List<EssLocalTravelDetail> LocalTravelDetails { get; set; } = [];
     public DateTime StartDateTime { get; set; }
     public DateTime EndDateTime { get; set; }
     public decimal EstimatedCost { get; set; }
@@ -88,9 +92,88 @@ public class SaveEssTravelRequest
     public string Remarks { get; set; } = "";
 }
 public class EssTravelCity { public string FromLocation { get; set; } = ""; public string ToLocation { get; set; } = ""; public string TravelMode { get; set; } = ""; public string TravelClass { get; set; } = ""; public string Remarks { get; set; } = ""; public DateTime? StartDateTime { get; set; } public DateTime? EndDateTime { get; set; } }
-public class EssTravelOptions { public long? PolicyId { get; set; } public string PolicyName { get; set; } = ""; public string ClientName { get; set; } = ""; public List<string> TravelModes { get; set; } = []; public List<string> TravelTypes { get; set; } = []; public List<string> Priorities { get; set; } = []; public List<string> Locations { get; set; } = []; public List<string> TravelClasses { get; set; } = []; public List<string> ValidationMessages { get; set; } = []; }
+public class EssTravelAccommodation { public string City { get; set; } = ""; public DateTime? CheckInDateTime { get; set; } public DateTime? CheckOutDateTime { get; set; } public string Occupancy { get; set; } = ""; public string RoomPreference { get; set; } = ""; public string Remarks { get; set; } = ""; }
+public class EssLocalTravelDetail { public string City { get; set; } = ""; public DateTime? TravelDateTime { get; set; } public string FromLocation { get; set; } = ""; public string ToLocation { get; set; } = ""; public string TravelMode { get; set; } = ""; public string Remarks { get; set; } = ""; }
+public class EssTravelOptions { public long? PolicyId { get; set; } public string PolicyName { get; set; } = ""; public string ClientName { get; set; } = ""; public List<string> TravelModes { get; set; } = []; public List<string> LocalTravelModes { get; set; } = []; public List<string> TravelTypes { get; set; } = []; public List<string> Priorities { get; set; } = []; public List<string> Locations { get; set; } = []; public List<string> TravelClasses { get; set; } = []; public bool ShowTripDetails { get; set; } = true; public bool ShowAccommodationDetails { get; set; } public bool ShowLocalTravelDetails { get; set; } public List<string> ValidationMessages { get; set; } = []; }
 public class EssTravelDashboard { public int DraftRequests { get; set; } public int PendingApproval { get; set; } public int Approved { get; set; } public int Rejected { get; set; } public int UpcomingTravel { get; set; } public int CancelledTrips { get; set; } }
 public class EssTravelValidationResult { public string Severity { get; set; } = ""; public string Message { get; set; } = ""; public string RuleName { get; set; } = ""; public string Behavior { get; set; } = ""; }
+public class EssExpenseClaim
+{
+    public long Id { get; set; }
+    public string ClaimNumber { get; set; } = "";
+    public DateTime ClaimDate { get; set; }
+    public int EmployeeId { get; set; }
+    public int ClientId { get; set; }
+    public string EmployeeName { get; set; } = "";
+    public string Department { get; set; } = "";
+    public string Designation { get; set; } = "";
+    public long? TravelRequestId { get; set; }
+    public string TravelRequestNumber { get; set; } = "";
+    public string ExpenseType { get; set; } = "";
+    public string Purpose { get; set; } = "";
+    public string Customer { get; set; } = "";
+    public string Project { get; set; } = "";
+    public string CostCenter { get; set; } = "";
+    public string Currency { get; set; } = "INR";
+    public decimal TotalClaimAmount { get; set; }
+    public decimal TotalApprovedAmount { get; set; }
+    public decimal TotalGstAmount { get; set; }
+    public string PayrollStatus { get; set; } = "Not Ready";
+    public int? PayrollRunId { get; set; }
+    public string ReimbursementComponentCode { get; set; } = "REIMBURSEMENT";
+    public string Status { get; set; } = "Draft";
+    public string PolicyValidationJson { get; set; } = "[]";
+    public string Remarks { get; set; } = "";
+    public DateTime? SubmittedAt { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+    public List<EssExpenseClaimLine> Lines { get; set; } = [];
+}
+public class SaveEssExpenseClaim
+{
+    public long Id { get; set; }
+    public long? TravelRequestId { get; set; }
+    public string ExpenseType { get; set; } = "";
+    public string Purpose { get; set; } = "";
+    public string Customer { get; set; } = "";
+    public string Project { get; set; } = "";
+    public string CostCenter { get; set; } = "";
+    public string Currency { get; set; } = "INR";
+    public string Remarks { get; set; } = "";
+    public List<EssExpenseClaimLine> Lines { get; set; } = [];
+}
+public class EssExpenseClaimLine
+{
+    public long Id { get; set; }
+    public long ClaimId { get; set; }
+    public DateTime ExpenseDate { get; set; }
+    public long CategoryId { get; set; }
+    public string CategoryCode { get; set; } = "";
+    public string CategoryName { get; set; } = "";
+    public string SubCategory { get; set; } = "";
+    public string VendorName { get; set; } = "";
+    public string BillNumber { get; set; } = "";
+    public string InvoiceNumber { get; set; } = "";
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = "INR";
+    public decimal ExchangeRate { get; set; } = 1;
+    public decimal GstAmount { get; set; }
+    public decimal ApprovedAmount { get; set; }
+    public string CostCenter { get; set; } = "";
+    public string Project { get; set; } = "";
+    public string Customer { get; set; } = "";
+    public string Location { get; set; } = "";
+    public string PaymentMethod { get; set; } = "Employee Paid";
+    public bool ReceiptAttached { get; set; }
+    public string ReceiptFileName { get; set; } = "";
+    public string Description { get; set; } = "";
+    public string Status { get; set; } = "Draft";
+    public string ValidationJson { get; set; } = "[]";
+}
+public class EssExpenseCategoryOption { public long Id { get; set; } public int ClientId { get; set; } public long? ParentId { get; set; } public string ParentName { get; set; } = ""; public string ExpenseType { get; set; } = ""; public bool IsClaimHeader { get; set; } public string CategoryCode { get; set; } = ""; public string CategoryName { get; set; } = ""; public bool ReceiptMandatory { get; set; } public bool GstApplicable { get; set; } public decimal? DailyLimit { get; set; } public decimal? MaximumClaim { get; set; } public bool RequiresFinanceApproval { get; set; } public bool RequiresManagerApproval { get; set; } }
+public class EssExpenseTravelOption { public long Id { get; set; } public string RequestNumber { get; set; } = ""; public string Purpose { get; set; } = ""; public string Customer { get; set; } = ""; public string Project { get; set; } = ""; public string CostCenter { get; set; } = ""; public DateTime StartDateTime { get; set; } public DateTime EndDateTime { get; set; } public string TravelMode { get; set; } = ""; public bool AccommodationRequired { get; set; } public bool LocalConveyanceRequired { get; set; } }
+public class EssExpenseOptions { public string ClientName { get; set; } = ""; public long? PolicyId { get; set; } public string PolicyName { get; set; } = ""; public List<EssExpenseCategoryOption> Headers { get; set; } = []; public List<EssExpenseCategoryOption> Categories { get; set; } = []; public List<EssExpenseTravelOption> TravelRequests { get; set; } = []; public List<string> Currencies { get; set; } = []; public List<string> Locations { get; set; } = []; public List<string> PaymentMethods { get; set; } = []; public List<string> ValidationMessages { get; set; } = []; }
+public class EssExpenseDashboard { public int DraftClaims { get; set; } public int PendingApproval { get; set; } public int Approved { get; set; } public int Rejected { get; set; } public int PendingPayroll { get; set; } public decimal ApprovedAmount { get; set; } }
 public class EssWorkflowTrail { public long? InstanceId { get; set; } public string WorkflowCode { get; set; } = ""; public string WorkflowName { get; set; } = ""; public string ResourceType { get; set; } = ""; public string MatchScope { get; set; } = ""; public string Status { get; set; } = ""; public DateTime? CreatedAt { get; set; } public DateTime? CompletedAt { get; set; } public List<EssWorkflowTrailItem> Events { get; set; } = []; }
 public class EssWorkflowTrailItem { public string StageName { get; set; } = ""; public string Action { get; set; } = ""; public string Actor { get; set; } = ""; public string Comment { get; set; } = ""; public DateTime CreatedAt { get; set; } public bool IsPending { get; set; } }
 public class EssPayslip { public int PayRunId { get; set; } public string PayPeriod { get; set; } = ""; public DateTime PayDate { get; set; } public string RunStatus { get; set; } = ""; public decimal GrossPay { get; set; } public decimal StatutoryDeductions { get; set; } public decimal OneTimeDeductions { get; set; } public decimal NetPay { get; set; } public string PaymentStatus { get; set; } = ""; public DateTime? PaymentDate { get; set; } }

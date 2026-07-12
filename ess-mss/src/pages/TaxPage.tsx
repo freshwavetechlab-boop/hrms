@@ -15,6 +15,9 @@ export function TaxPage({ user }: { user: User }) {
 
   const load = () => essApi.taxPortal().then(data => { setPortal(data); setRegime(data.selectedRegime || data.defaultRegime); setSections(data.sections); setState('ready') }).catch(() => setState('error'))
   useEffect(() => { load() }, [user.email])
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('ess:page-title', { detail: { section: 'Pay & tax', title: 'Tax declarations' } }))
+  }, [])
 
   const saveRegime = async () => {
     setMessage('')
@@ -31,7 +34,6 @@ export function TaxPage({ user }: { user: User }) {
   if (state === 'error' || !portal) return <section className="tax-workspace"><div className="empty-work"><b>Tax information is unavailable.</b><span>Please contact payroll if this continues.</span></div></section>
 
   return <section className="tax-workspace">
-    <div className="feature-heading"><span className="eyebrow">My tax</span><h3>Tax regime & declarations</h3><p>Follow the available actions for FY {portal.financialYear}. Frevo One HR opens each activity based on payroll settings.</p></div>
     <div className={`tax-guidance ${portal.enabled ? 'open' : 'closed'}`}><b>{portal.enabled ? 'Guidance' : 'Not available'}</b><span>{portal.message || 'Tax self-service is available.'}</span>{message && <em>{message}</em>}</div>
     <div className="tax-status-grid">
       <article><span>Regime cutoff</span><b>{date(portal.regimeSelectionCutoff)}</b></article>

@@ -15,14 +15,16 @@ import { ProfilePage } from './pages/ProfilePage'
 import { TaxPage } from './pages/TaxPage'
 import { TasksPage } from './pages/TasksPage'
 import { TravelPage } from './pages/TravelPage'
+import { ExpensePage } from './pages/ExpensePage'
 
 const viewStorageKey = 'ess.current.view'
-const views: View[] = ['Dashboard', 'My Profile', 'Leave', 'Travel', 'Attendance', 'Pay', 'Tax', 'My Tasks', 'Team', 'Approvals']
+const views: View[] = ['Dashboard', 'My Profile', 'Leave', 'Travel', 'Expense', 'Attendance', 'Pay', 'Tax', 'My Tasks', 'Team', 'Approvals']
 const viewRoutes: Record<View, string> = {
   Dashboard: 'home',
   'My Profile': 'profile',
   Leave: 'leave',
   Travel: 'travel',
+  Expense: 'expenses',
   Attendance: 'attendance',
   Pay: 'pay',
   Tax: 'tax',
@@ -85,7 +87,8 @@ function Page({ view, manager, user, setView }: { view: View; manager: boolean; 
   if (view === 'My Profile') return <ProfilePage user={user} />
   if (view === 'My Tasks') return <TasksPage user={user} />
   if (view === 'Leave') return <LeavePage user={user} />
-  if (view === 'Travel') return <TravelPage user={user} />
+  if (view === 'Travel') return <TravelPage user={user} setView={setView} />
+  if (view === 'Expense') return <ExpensePage user={user} />
   if (view === 'Pay') return <PayPage user={user} />
   if (view === 'Tax') return <TaxPage user={user} />
   return <PlaceholderPage view={view} manager={manager} />

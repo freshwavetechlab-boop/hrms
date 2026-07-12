@@ -1360,6 +1360,7 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 body.portal-shell-mounted #root .module-shell .side-head .brand.product-brand{width:190px!important;height:54px!important;flex:0 0 190px!important;display:flex!important;align-items:center!important;justify-content:center!important;margin:0!important;padding:0!important;border:1px solid #e1e7ef!important;border-radius:12px!important;background:#fff!important;box-shadow:0 10px 24px #17213610!important;overflow:hidden!important}
 body.portal-shell-mounted #root .module-shell .side-head .brand.product-brand span{display:none!important}
 body.portal-shell-mounted #root .module-shell .side-head .brand.product-brand .product-brand-logo{width:100%!important;height:100%!important;max-width:none!important;flex:0 0 auto!important;object-fit:contain!important;transform:scale(1.55)!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+body.portal-shell-mounted #root .module-shell .side-head .brand.product-brand .product-brand-mark{display:none!important}
 body.portal-shell-mounted #root .module-shell.nav-collapsed .side-head .brand.product-brand{width:42px!important;height:42px!important;flex-basis:42px!important;padding:3px!important;border-radius:11px!important}
 body.portal-shell-mounted #root .module-shell .compact-main{min-height:100vh!important;display:flex!important;flex-direction:column!important}
 body.portal-shell-mounted #root .module-shell .module-content{flex:1 0 auto!important}
@@ -1368,6 +1369,111 @@ body.portal-shell-mounted #root .module-shell .module-content{flex:1 0 auto!impo
 .payslip-preview header b.payslip-logo-mark{background:#fff!important;border:1px solid #e5e8f0!important;color:inherit!important;overflow:hidden!important}
 .payslip-preview header b.payslip-logo-mark img{width:100%!important;height:100%!important;object-fit:contain!important;padding:4px!important}
 @media(max-width:640px){.auth-card.auth-login-card,.auth-card{padding:22px!important;border-radius:15px!important}.auth-product-logo{width:100%!important;height:110px!important}.shell-bottom-brand{margin-left:-12px!important;margin-right:-10px!important;padding-inline:14px!important}}
+
+/* Edited product logo has no extra canvas padding; keep sidebar branding clean and unclipped. */
+body.portal-shell-mounted #root .module-shell .side-head .brand.product-brand .product-brand-logo{
+  width:calc(100% - 16px)!important;
+  height:calc(100% - 12px)!important;
+  object-fit:contain!important;
+  transform:none!important;
+  padding:0!important;
+}
+body.portal-shell-mounted #root .module-shell.nav-collapsed .side-head .brand.product-brand .product-brand-logo{
+  display:none!important;
+}
+body.portal-shell-mounted #root .module-shell.nav-collapsed .side-head .brand.product-brand .product-brand-mark{
+  display:block!important;
+  width:calc(100% - 6px)!important;
+  height:calc(100% - 6px)!important;
+  object-fit:contain!important;
+  transform:none!important;
+  padding:0!important;
+  border:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+}
+
+/* Sidebar menu icons: real icons in expanded and collapsed states. */
+.module-shell .context-menu .menu-label,
+.module-shell .settings-nav-submenu .menu-label,
+.module-shell .report-nav-submenu .menu-label{
+  min-width:0!important;
+  display:inline-flex!important;
+  align-items:center!important;
+  gap:9px!important;
+  overflow:hidden!important;
+  color:inherit!important;
+}
+.module-shell .context-menu .menu-label>.ui-icon,
+.module-shell .settings-nav-submenu .menu-label>.ui-icon,
+.module-shell .report-nav-submenu .menu-label>.ui-icon{
+  width:17px!important;
+  height:17px!important;
+  flex:0 0 17px!important;
+  color:#6546e8!important;
+}
+.module-shell .settings-nav-submenu .menu-label>.ui-icon,
+.module-shell .report-nav-submenu .menu-label>.ui-icon{
+  width:15px!important;
+  height:15px!important;
+  flex-basis:15px!important;
+  color:#7b8496!important;
+}
+.module-shell .context-menu .menu-label>span,
+.module-shell .settings-nav-submenu .menu-label>span,
+.module-shell .report-nav-submenu .menu-label>span{
+  min-width:0!important;
+  overflow:hidden!important;
+  text-overflow:ellipsis!important;
+  white-space:nowrap!important;
+}
+.module-shell .context-menu button.active .menu-label>.ui-icon,
+.module-shell .context-menu a.active .menu-label>.ui-icon,
+.module-shell .settings-nav-submenu button.active .menu-label>.ui-icon,
+.module-shell .settings-nav-submenu a.active .menu-label>.ui-icon,
+.module-shell .report-nav-submenu button.active .menu-label>.ui-icon{
+  color:#5133cc!important;
+}
+.module-shell.nav-collapsed .context-menu button:before,
+.module-shell.nav-collapsed .context-menu a:before,
+.module-shell.nav-collapsed .settings-nav-submenu button:before,
+.module-shell.nav-collapsed .settings-nav-submenu a:before,
+.module-shell.nav-collapsed .report-nav-submenu button:before,
+.module-shell.nav-collapsed .report-nav-submenu a:before{
+  display:none!important;
+  content:none!important;
+}
+.module-shell.nav-collapsed .context-menu button,
+.module-shell.nav-collapsed .context-menu a{
+  color:transparent!important;
+}
+.module-shell.nav-collapsed .context-menu button>.menu-label,
+.module-shell.nav-collapsed .context-menu a>.menu-label{
+  display:grid!important;
+  place-items:center!important;
+  width:36px!important;
+  height:36px!important;
+  border-radius:12px!important;
+  background:#f3f0ff!important;
+  color:#6546e8!important;
+}
+.module-shell.nav-collapsed .context-menu button.active>.menu-label,
+.module-shell.nav-collapsed .context-menu a.active>.menu-label{
+  background:#6546e8!important;
+  color:#fff!important;
+}
+.module-shell.nav-collapsed .context-menu button>.menu-label>.ui-icon,
+.module-shell.nav-collapsed .context-menu a>.menu-label>.ui-icon{
+  width:18px!important;
+  height:18px!important;
+  color:currentColor!important;
+}
+.module-shell.nav-collapsed .context-menu button>.menu-label>span,
+.module-shell.nav-collapsed .context-menu a>.menu-label>span,
+.module-shell.nav-collapsed .context-menu button>small,
+.module-shell.nav-collapsed .context-menu a>small{
+  display:none!important;
+}
 
 /* Holiday Management: keep AntD controls readable and scoped to the selected client */
 .leave-attendance .holiday-manager{display:grid!important;grid-template-columns:1fr!important;gap:12px!important;align-items:start!important}

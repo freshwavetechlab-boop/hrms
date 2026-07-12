@@ -172,18 +172,24 @@ app.MapGet("/api/workflows/tasks/actioned", async (WorkflowRepository repository
 });
 app.MapGet("/api/workflows/history", async (WorkflowRepository repository,HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetInstancesAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/{instanceId:long}/history", async (WorkflowRepository repository,long instanceId,HttpContext context) => Results.Ok(await repository.HistoryAsync(instanceId)));
-app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository, PayRunRepository payRuns,long taskId,string action,WorkflowActionRequest request,HttpContext context) =>
+app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository, PayRunRepository payRuns, NotificationRepository notifications,long taskId,string action,WorkflowActionRequest request,HttpContext context) =>
 {
     if(action is not ("Approved" or "Rejected" or "Sent Back")) return Results.BadRequest();
-    var task=await repository.ActionAsync(taskId,CurrentUser(context).Id,action,request.Comment);
+    var user=CurrentUser(context);
+    var task=await repository.ActionAsync(taskId,user.Id,action,request.Comment);
     if(!task)return Results.NotFound();
     var instance=await repository.GetInstanceForTaskAsync(taskId);
     if(instance?.ResourceType=="LeaveRequest")await essRepository.SyncLeaveWorkflowStatusAsync(instance.ResourceId,instance.Status);
     if(instance?.ResourceType=="TravelRequest")await essRepository.SyncTravelWorkflowStatusAsync(instance.ResourceId,instance.Status);
+    if(instance?.ResourceType=="ExpenseClaim")await essRepository.SyncExpenseWorkflowStatusAsync(instance.ResourceId,instance.Status);
     if(instance?.ResourceType=="PayRun" && int.TryParse(instance.ResourceId,out var payRunId))
     {
         if(instance.Status=="Approved") await payRuns.ApproveAsync(payRunId);
         if(instance.Status is "Rejected" or "Sent Back") await payRuns.RecallAsync(payRunId);
+    }
+    if(instance?.ResourceType=="ExpenseClaim")
+    {
+        await notifications.PublishEventAsync(new NotificationEvent{EventCode=$"EXPENSE_CLAIM.{action.ToUpperInvariant().Replace(" ","_")}",ResourceType="ExpenseClaim",ResourceId=instance.ResourceId,ClientId=user.ClientId,ActorUserId=user.Id,ActorName=user.DisplayName,ActorEmail=user.Email,PayloadJson=System.Text.Json.JsonSerializer.Serialize(new{Action=action,Status=instance.Status,Comment=request.Comment,TaskId=taskId})});
     }
     return Results.NoContent();
 });
@@ -250,6 +256,23 @@ app.MapPost("/api/ess/travel/requests/{id:long}/cancel", async (EssMssRepository
 app.MapGet("/api/ess/travel/requests/{id:long}/trail", async (EssMssRepository repository,long id,HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var trail=await repository.GetTravelRequestTrailAsync(id,user.EmployeeId.Value,user.ClientId); return trail is null ? Results.NotFound() : Results.Ok(trail); });
 app.MapGet("/api/ess/travel/dashboard", async (EssMssRepository repository,HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetTravelDashboardAsync(user.EmployeeId.Value,user.ClientId)); });
 app.MapGet("/api/ess/travel/calendar", async (EssMssRepository repository,string from,string to,HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetTravelCalendarAsync(user.EmployeeId.Value,user.ClientId,from,to)); });
+
+app.MapGet("/api/ess/expenses/options", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetExpenseOptionsAsync(user.EmployeeId.Value,user.ClientId)); });
+app.MapGet("/api/ess/expenses/dashboard", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetExpenseDashboardAsync(user.EmployeeId.Value,user.ClientId)); });
+app.MapGet("/api/ess/expenses/claims", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetExpenseClaimsAsync(user.EmployeeId.Value,user.ClientId)); });
+app.MapGet("/api/ess/expenses/claims/{id:long}", async (EssMssRepository repository,long id,HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var claim=await repository.GetExpenseClaimAsync(id,user.EmployeeId.Value,user.ClientId); return claim is null ? Results.NotFound() : Results.Ok(claim); });
+app.MapPost("/api/ess/expenses/claims", async (EssMssRepository repository, SaveEssExpenseClaim request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(result,error)=await repository.SaveExpenseDraftAsync(user.EmployeeId.Value,user.ClientId,request); return result is null ? Results.BadRequest(new{error}) : Results.Ok(result); });
+app.MapPost("/api/ess/expenses/claims/{id:long}/submit", async (EssMssRepository repository, WorkflowRepository workflows,long id,HttpContext context) =>
+{
+    var user=CurrentUser(context);
+    if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403);
+    var(result,error)=await repository.SubmitExpenseClaimAsync(user.EmployeeId.Value,user.ClientId,id);
+    if(result is null)return Results.BadRequest(new{error});
+    var workflowId=await workflows.GetDefaultIdAsync("ExpenseClaim",user.ClientId);
+    if(workflowId is not null) await workflows.StartAsync(new StartWorkflowRequest{WorkflowId=workflowId.Value,ResourceType="ExpenseClaim",ResourceId=result.Id.ToString(),PayloadJson=System.Text.Json.JsonSerializer.Serialize(result)},user.Id);
+    return Results.Ok(result);
+});
+app.MapGet("/api/ess/expenses/claims/{id:long}/trail", async (EssMssRepository repository,long id,HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var trail=await repository.GetExpenseClaimTrailAsync(id,user.EmployeeId.Value,user.ClientId); return trail is null ? Results.NotFound() : Results.Ok(trail); });
 
 app.MapPost("/api/auth/logout", async (AuthRepository repository, HttpContext context) =>
 {

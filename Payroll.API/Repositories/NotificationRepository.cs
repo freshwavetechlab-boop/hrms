@@ -375,6 +375,18 @@ WHERE request.Id=@ResourceId
 ORDER BY managerUser.Id
 LIMIT 1", new { evt.ResourceId });
 
+        if (evt.ResourceType.Equals("ExpenseClaim", StringComparison.OrdinalIgnoreCase))
+            return await db.ExecuteScalarAsync<string?>(@"SELECT managerUser.Email
+FROM ess_expense_claims request
+JOIN employees employee ON employee.Id=request.EmployeeId
+JOIN authusers managerUser ON managerUser.IsActive=TRUE
+LEFT JOIN employees manager ON manager.Id=employee.ReportingManagerId
+WHERE request.Id=@ResourceId
+  AND (managerUser.Id=employee.ReportingManagerUserId OR (COALESCE(employee.ReportingManagerUserId,0)=0 AND managerUser.EmployeeId=manager.Id))
+  AND managerUser.Email <> ''
+ORDER BY managerUser.Id
+LIMIT 1", new { evt.ResourceId });
+
         if (evt.ResourceType.Equals("Employee", StringComparison.OrdinalIgnoreCase) || evt.ResourceType.Equals("EmployeeAction", StringComparison.OrdinalIgnoreCase))
             return await db.ExecuteScalarAsync<string?>(@"SELECT managerUser.Email
 FROM employees employee
@@ -481,6 +493,26 @@ VALUES (@QueueId,@EventCode,@ResourceType,@ResourceId,@Recipient,@Status,@Error)
 
     private static Task EnsureDefaultsAsync(MySqlConnection db) => db.ExecuteAsync(@"INSERT INTO notification_templates (Code,Name,SubjectTemplate,BodyTemplate,IsHtml,IsActive) VALUES
 ('PAYRUN_LOCKED_DEFAULT','Payroll locked notification','Payroll {{resourceId}} is locked','<p>Payroll request <b>{{resourceId}}</b> has been submitted by {{requestedBy}}.</p><p>Event: {{eventCode}}</p>',TRUE,TRUE),
-('LEAVE_REQUEST_DEFAULT','Leave request notification','Leave request {{resourceId}} submitted','<p>Leave request <b>{{resourceId}}</b> has been submitted by {{requestedBy}}.</p>',TRUE,TRUE)
-ON DUPLICATE KEY UPDATE Name=VALUES(Name);");
+('LEAVE_REQUEST_DEFAULT','Leave request notification','Leave request {{resourceId}} submitted','<p>Leave request <b>{{resourceId}}</b> has been submitted by {{requestedBy}}.</p>',TRUE,TRUE),
+('EXPENSE_CLAIM_SUBMIT_DEFAULT','Expense claim submission','Expense claim {{resourceId}} submitted','<p>Expense claim <b>{{resourceId}}</b> has been submitted by {{requestedBy}}.</p><p>Use My Tasks to review the request.</p>',TRUE,TRUE),
+('EXPENSE_CLAIM_ACTION_DEFAULT','Expense claim workflow action','Expense claim {{resourceId}} updated','<p>Expense claim <b>{{resourceId}}</b> has been updated.</p><p>Event: {{eventCode}}</p>',TRUE,TRUE)
+ON DUPLICATE KEY UPDATE Name=VALUES(Name);
+
+INSERT INTO notification_rules (Name,EventCode,ClientId,TemplateId,IsEnabled,ConditionJson)
+SELECT 'Expense claim submission to manager','EXPENSE_CLAIM.SUBMIT',NULL,t.Id,TRUE,'{}'
+FROM notification_templates t
+WHERE t.Code='EXPENSE_CLAIM_SUBMIT_DEFAULT'
+  AND NOT EXISTS (SELECT 1 FROM notification_rules r WHERE r.EventCode='EXPENSE_CLAIM.SUBMIT' AND r.Name='Expense claim submission to manager');
+
+INSERT INTO notification_recipients (RuleId,RecipientType,SourceType,SourceValue,TableName,MatchColumn,MatchValueSource,EmailColumn,IsActive)
+SELECT r.Id,'To','ReportingManager','','','','resourceId','',TRUE
+FROM notification_rules r
+WHERE r.EventCode='EXPENSE_CLAIM.SUBMIT' AND r.Name='Expense claim submission to manager'
+  AND NOT EXISTS (SELECT 1 FROM notification_recipients x WHERE x.RuleId=r.Id AND x.RecipientType='To' AND x.SourceType='ReportingManager');
+
+INSERT INTO notification_recipients (RuleId,RecipientType,SourceType,SourceValue,TableName,MatchColumn,MatchValueSource,EmailColumn,IsActive)
+SELECT r.Id,'Cc','RequestorEmail','','','','resourceId','',TRUE
+FROM notification_rules r
+WHERE r.EventCode='EXPENSE_CLAIM.SUBMIT' AND r.Name='Expense claim submission to manager'
+  AND NOT EXISTS (SELECT 1 FROM notification_recipients x WHERE x.RuleId=r.Id AND x.RecipientType='Cc' AND x.SourceType='RequestorEmail');");
 }

@@ -76,8 +76,12 @@ public class TravelPolicyRule
 public class TravelExpenseCategory
 {
     public long Id { get; set; }
+    public int ClientId { get; set; }
+    public string ClientName { get; set; } = string.Empty;
     public long? ParentId { get; set; }
     public string ParentName { get; set; } = string.Empty;
+    public string ExpenseType { get; set; } = string.Empty;
+    public bool IsClaimHeader { get; set; }
     public string CategoryCode { get; set; } = string.Empty;
     public string CategoryName { get; set; } = string.Empty;
     public bool ReceiptMandatory { get; set; }

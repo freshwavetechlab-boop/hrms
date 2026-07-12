@@ -31,7 +31,19 @@ LEFT JOIN worklocations w ON w.Id=a.BranchId
 LEFT JOIN employees e ON e.Id=a.EmployeeId
 ORDER BY a.Priority, p.PolicyName, a.Id DESC"),
             Rules = await db.QueryAsync<TravelPolicyRule>(@"SELECT r.*, p.PolicyName, COALESCE(w.Name,'') WorkflowName FROM travel_policy_rules r JOIN travel_policies p ON p.Id=r.PolicyId LEFT JOIN workflowmasters w ON w.Id=r.WorkflowId ORDER BY p.PolicyName, r.RuleType, r.RuleName"),
-            Categories = await db.QueryAsync<TravelExpenseCategory>(@"SELECT c.*, COALESCE(p.CategoryName,'') ParentName FROM travel_expense_categories c LEFT JOIN travel_expense_categories p ON p.Id=c.ParentId ORDER BY COALESCE(p.CategoryName,c.CategoryName), c.CategoryName"),
+            Categories = await db.QueryAsync<TravelExpenseCategory>(@"SELECT h.Id,hs.ClientId,COALESCE(client.Name,'') ClientName,NULL ParentId,'' ParentName,h.HeaderName ExpenseType,TRUE IsClaimHeader,h.HeaderCode CategoryCode,h.HeaderName CategoryName,
+FALSE ReceiptMandatory,FALSE GstApplicable,NULL DailyLimit,NULL MaximumClaim,FALSE RequiresFinanceApproval,FALSE RequiresManagerApproval,hs.IsEnabled IsActive,h.CreatedAt,h.UpdatedAt
+FROM expense_headers h
+JOIN client_expense_header_settings hs ON hs.HeaderId=h.Id
+JOIN clients client ON client.Id=hs.ClientId
+UNION ALL
+SELECT c.Id,cs.ClientId,COALESCE(client.Name,'') ClientName,h.Id ParentId,h.HeaderName ParentName,h.HeaderName ExpenseType,FALSE IsClaimHeader,c.CategoryCode,c.CategoryName,
+cs.ReceiptMandatory,cs.GstApplicable,cs.DailyLimit,cs.MaximumClaim,cs.RequiresFinanceApproval,cs.RequiresManagerApproval,cs.IsEnabled IsActive,c.CreatedAt,c.UpdatedAt
+FROM expense_categories c
+JOIN expense_headers h ON h.Id=c.HeaderId
+JOIN client_expense_category_settings cs ON cs.CategoryId=c.Id
+JOIN clients client ON client.Id=cs.ClientId
+ORDER BY ClientId, ExpenseType, IsClaimHeader DESC, CategoryName"),
             Audit = await db.QueryAsync<TravelPolicyAudit>("SELECT * FROM travel_policy_audit ORDER BY ChangedOn DESC, Id DESC LIMIT 250")
         };
     }
@@ -110,19 +122,49 @@ VALUES (@PolicyId,@RuleType,@RuleName,@AppliesTo,@IsAllowed,@EligibilityJson,@Li
         await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
         row.CategoryCode = row.CategoryCode.Trim().ToUpperInvariant();
         row.CategoryName = row.CategoryName.Trim();
+        row.ExpenseType = string.IsNullOrWhiteSpace(row.ExpenseType) ? row.CategoryName.Trim() : row.ExpenseType.Trim();
+        if (row.ClientId <= 0) return (0, "Client is required for expense category.");
+        if (await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM clients WHERE Id=@ClientId AND IsActive=TRUE", row) == 0) return (0, "Select an active client.");
         row.ParentId = row.ParentId is > 0 ? row.ParentId : null;
-        var old = row.Id > 0 ? await db.QueryFirstOrDefaultAsync<TravelExpenseCategory>("SELECT * FROM travel_expense_categories WHERE Id=@Id", row) : null;
-        if (row.Id <= 0)
+        if (row.IsClaimHeader || row.ParentId is null)
         {
-            var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO travel_expense_categories (ParentId,CategoryCode,CategoryName,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsActive)
-VALUES (@ParentId,@CategoryCode,@CategoryName,@ReceiptMandatory,@GstApplicable,@DailyLimit,@MaximumClaim,@RequiresFinanceApproval,@RequiresManagerApproval,@IsActive); SELECT LAST_INSERT_ID();", row);
-            await AuditAsync(db, "TravelExpenseCategory", id, "Create", null, row, changedBy);
-            return (id, "");
+            var old = row.Id > 0 ? await db.QueryFirstOrDefaultAsync<object>("SELECT * FROM expense_headers WHERE Id=@Id", row) : null;
+            var existingHeaderId = await db.ExecuteScalarAsync<long?>("SELECT Id FROM expense_headers WHERE HeaderCode=@CategoryCode LIMIT 1", row);
+            if (row.Id > 0 && existingHeaderId is not null && existingHeaderId.Value != row.Id) return (0, "Header code already exists globally.");
+            var headerId = row.Id > 0 && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM expense_headers WHERE Id=@Id", row) > 0
+                ? row.Id
+                : existingHeaderId ?? await db.ExecuteScalarAsync<long>(@"INSERT INTO expense_headers (HeaderCode,HeaderName,IsActive) VALUES (@CategoryCode,@CategoryName,TRUE); SELECT LAST_INSERT_ID();", row);
+            if (row.Id > 0 && headerId == row.Id)
+                await db.ExecuteAsync("UPDATE expense_headers SET HeaderCode=@CategoryCode,HeaderName=@CategoryName,IsActive=TRUE,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id", row);
+            await db.ExecuteAsync(@"INSERT INTO client_expense_header_settings (ClientId,HeaderId,IsEnabled)
+VALUES (@ClientId,@HeaderId,@IsActive)
+ON DUPLICATE KEY UPDATE IsEnabled=VALUES(IsEnabled),UpdatedAt=CURRENT_TIMESTAMP", new { row.ClientId, HeaderId = headerId, row.IsActive });
+            await AuditAsync(db, "ExpenseHeader", headerId, old is null ? "Create" : "Update", old, row, changedBy);
+            return (headerId, "");
         }
+
         if (row.ParentId == row.Id) return (0, "A category cannot be its own parent.");
-        await db.ExecuteAsync(@"UPDATE travel_expense_categories SET ParentId=@ParentId,CategoryCode=@CategoryCode,CategoryName=@CategoryName,ReceiptMandatory=@ReceiptMandatory,GstApplicable=@GstApplicable,DailyLimit=@DailyLimit,MaximumClaim=@MaximumClaim,RequiresFinanceApproval=@RequiresFinanceApproval,RequiresManagerApproval=@RequiresManagerApproval,IsActive=@IsActive,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id", row);
-        await AuditAsync(db, "TravelExpenseCategory", row.Id, "Update", old, row, changedBy);
-        return (row.Id, "");
+        var header = await db.QueryFirstOrDefaultAsync<ExpenseHeaderRow>("SELECT Id,HeaderName FROM expense_headers WHERE Id=@ParentId AND IsActive=TRUE", row);
+        if (header is null) return (0, "Select a valid global expense header.");
+        row.ExpenseType = header.HeaderName;
+        var categoryExists = row.Id > 0 && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM expense_categories WHERE Id=@Id", row) > 0;
+        var oldCategory = categoryExists ? await db.QueryFirstOrDefaultAsync<object>("SELECT * FROM expense_categories WHERE Id=@Id", row) : null;
+        var existingCategoryId = await db.ExecuteScalarAsync<long?>("SELECT Id FROM expense_categories WHERE HeaderId=@ParentId AND CategoryCode=@CategoryCode LIMIT 1", row);
+        if (row.Id > 0 && existingCategoryId is not null && existingCategoryId.Value != row.Id) return (0, "Category code already exists under this global header.");
+        var categoryId = categoryExists
+            ? row.Id
+            : existingCategoryId ?? await db.ExecuteScalarAsync<long>(@"INSERT INTO expense_categories (HeaderId,CategoryCode,CategoryName,IsActive) VALUES (@ParentId,@CategoryCode,@CategoryName,TRUE); SELECT LAST_INSERT_ID();", row);
+        if (categoryExists)
+            await db.ExecuteAsync("UPDATE expense_categories SET HeaderId=@ParentId,CategoryCode=@CategoryCode,CategoryName=@CategoryName,IsActive=TRUE,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id", row);
+        await db.ExecuteAsync(@"INSERT INTO client_expense_header_settings (ClientId,HeaderId,IsEnabled)
+VALUES (@ClientId,@HeaderId,TRUE)
+ON DUPLICATE KEY UPDATE IsEnabled=TRUE,UpdatedAt=CURRENT_TIMESTAMP", new { row.ClientId, HeaderId = row.ParentId });
+        await db.ExecuteAsync(@"INSERT INTO client_expense_category_settings (ClientId,CategoryId,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsEnabled)
+VALUES (@ClientId,@CategoryId,@ReceiptMandatory,@GstApplicable,@DailyLimit,@MaximumClaim,@RequiresFinanceApproval,@RequiresManagerApproval,@IsActive)
+ON DUPLICATE KEY UPDATE ReceiptMandatory=VALUES(ReceiptMandatory),GstApplicable=VALUES(GstApplicable),DailyLimit=VALUES(DailyLimit),MaximumClaim=VALUES(MaximumClaim),RequiresFinanceApproval=VALUES(RequiresFinanceApproval),RequiresManagerApproval=VALUES(RequiresManagerApproval),IsEnabled=VALUES(IsEnabled),UpdatedAt=CURRENT_TIMESTAMP",
+            new { row.ClientId, CategoryId = categoryId, row.ReceiptMandatory, row.GstApplicable, row.DailyLimit, row.MaximumClaim, row.RequiresFinanceApproval, row.RequiresManagerApproval, row.IsActive });
+        await AuditAsync(db, "ExpenseCategory", categoryId, oldCategory is null ? "Create" : "Update", oldCategory, row, changedBy);
+        return (categoryId, "");
     }
 
     private static string ValidatePolicy(TravelPolicy row)
@@ -233,7 +275,10 @@ KEY IX_TravelPolicyRules_PolicyType (PolicyId, RuleType, AppliesTo)
 );
 CREATE TABLE IF NOT EXISTS travel_expense_categories (
 Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ClientId INT NOT NULL DEFAULT 0,
 ParentId BIGINT NULL,
+ExpenseType VARCHAR(120) NOT NULL DEFAULT '',
+IsClaimHeader BOOLEAN NOT NULL DEFAULT FALSE,
 CategoryCode VARCHAR(40) NOT NULL,
 CategoryName VARCHAR(160) NOT NULL,
 ReceiptMandatory BOOLEAN NOT NULL DEFAULT FALSE,
@@ -248,6 +293,56 @@ UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTA
 UNIQUE KEY UX_TravelExpenseCategories_Code (CategoryCode),
 KEY IX_TravelExpenseCategories_Parent (ParentId)
 );
+CREATE TABLE IF NOT EXISTS expense_headers (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+HeaderCode VARCHAR(60) NOT NULL,
+HeaderName VARCHAR(160) NOT NULL,
+IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_ExpenseHeaders_Code (HeaderCode)
+);
+CREATE TABLE IF NOT EXISTS expense_categories (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+HeaderId BIGINT NOT NULL,
+CategoryCode VARCHAR(60) NOT NULL,
+CategoryName VARCHAR(160) NOT NULL,
+IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_ExpenseCategories_HeaderCode (HeaderId, CategoryCode),
+KEY IX_ExpenseCategories_Header (HeaderId)
+);
+CREATE TABLE IF NOT EXISTS client_expense_header_settings (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ClientId INT NOT NULL,
+HeaderId BIGINT NOT NULL,
+IsEnabled BOOLEAN NOT NULL DEFAULT TRUE,
+EffectiveFrom DATE NULL,
+EffectiveTo DATE NULL,
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_ClientExpenseHeader (ClientId, HeaderId),
+KEY IX_ClientExpenseHeader_Client (ClientId, IsEnabled)
+);
+CREATE TABLE IF NOT EXISTS client_expense_category_settings (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ClientId INT NOT NULL,
+CategoryId BIGINT NOT NULL,
+ReceiptMandatory BOOLEAN NOT NULL DEFAULT FALSE,
+GstApplicable BOOLEAN NOT NULL DEFAULT FALSE,
+DailyLimit DECIMAL(18,2) NULL,
+MaximumClaim DECIMAL(18,2) NULL,
+RequiresFinanceApproval BOOLEAN NOT NULL DEFAULT FALSE,
+RequiresManagerApproval BOOLEAN NOT NULL DEFAULT FALSE,
+IsEnabled BOOLEAN NOT NULL DEFAULT TRUE,
+EffectiveFrom DATE NULL,
+EffectiveTo DATE NULL,
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_ClientExpenseCategory (ClientId, CategoryId),
+KEY IX_ClientExpenseCategory_Client (ClientId, IsEnabled)
+);
 CREATE TABLE IF NOT EXISTS travel_policy_audit (
 Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
 EntityType VARCHAR(80) NOT NULL,
@@ -260,31 +355,43 @@ ChangedOn TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 KEY IX_TravelPolicyAudit_Entity (EntityType, EntityId),
 KEY IX_TravelPolicyAudit_ChangedOn (ChangedOn)
 );");
+        await EnsureColumnAsync(db, "travel_expense_categories", "ClientId", "INT NOT NULL DEFAULT 0 AFTER Id");
+        await EnsureColumnAsync(db, "travel_expense_categories", "ExpenseType", "VARCHAR(120) NOT NULL DEFAULT '' AFTER ParentId");
+        await EnsureColumnAsync(db, "travel_expense_categories", "IsClaimHeader", "BOOLEAN NOT NULL DEFAULT FALSE AFTER ExpenseType");
+        await DropIndexIfExistsAsync(db, "travel_expense_categories", "UX_TravelExpenseCategories_Code");
+        await MigrateLegacyExpenseCategoriesAsync(db);
     }
+
+    private static async Task MigrateLegacyExpenseCategoriesAsync(MySqlConnection db) =>
+        await db.ExecuteAsync(@"INSERT INTO expense_headers (HeaderCode,HeaderName,IsActive)
+SELECT DISTINCT CategoryCode,CategoryName,TRUE FROM travel_expense_categories WHERE IsClaimHeader=TRUE AND CategoryCode<>''
+ON DUPLICATE KEY UPDATE HeaderName=VALUES(HeaderName), IsActive=TRUE;
+INSERT INTO expense_categories (HeaderId,CategoryCode,CategoryName,IsActive)
+SELECT h.Id,child.CategoryCode,child.CategoryName,TRUE
+FROM travel_expense_categories child
+JOIN travel_expense_categories parent ON parent.Id=child.ParentId
+JOIN expense_headers h ON h.HeaderCode=parent.CategoryCode
+WHERE child.IsClaimHeader=FALSE AND child.CategoryCode<>''
+ON DUPLICATE KEY UPDATE CategoryName=VALUES(CategoryName), IsActive=TRUE;
+INSERT INTO client_expense_header_settings (ClientId,HeaderId,IsEnabled)
+SELECT old.ClientId,h.Id,old.IsActive
+FROM travel_expense_categories old
+JOIN expense_headers h ON h.HeaderCode=old.CategoryCode
+WHERE old.IsClaimHeader=TRUE AND old.ClientId>0
+ON DUPLICATE KEY UPDATE IsEnabled=VALUES(IsEnabled);
+INSERT INTO client_expense_category_settings (ClientId,CategoryId,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsEnabled)
+SELECT old.ClientId,c.Id,old.ReceiptMandatory,old.GstApplicable,old.DailyLimit,old.MaximumClaim,old.RequiresFinanceApproval,old.RequiresManagerApproval,old.IsActive
+FROM travel_expense_categories old
+JOIN travel_expense_categories parent ON parent.Id=old.ParentId
+JOIN expense_headers h ON h.HeaderCode=parent.CategoryCode
+JOIN expense_categories c ON c.HeaderId=h.Id AND c.CategoryCode=old.CategoryCode
+WHERE old.IsClaimHeader=FALSE AND old.ClientId>0
+ON DUPLICATE KEY UPDATE ReceiptMandatory=VALUES(ReceiptMandatory),GstApplicable=VALUES(GstApplicable),DailyLimit=VALUES(DailyLimit),MaximumClaim=VALUES(MaximumClaim),RequiresFinanceApproval=VALUES(RequiresFinanceApproval),RequiresManagerApproval=VALUES(RequiresManagerApproval),IsEnabled=VALUES(IsEnabled);");
 
     private static async Task SeedSampleDataAsync(MySqlConnection db)
     {
-        await db.ExecuteAsync(@"INSERT INTO travel_expense_categories (ParentId,CategoryCode,CategoryName,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsActive)
-SELECT NULL,'TRAVEL','Travel',FALSE,FALSE,NULL,NULL,FALSE,FALSE,TRUE WHERE NOT EXISTS (SELECT 1 FROM travel_expense_categories WHERE CategoryCode='TRAVEL');
-INSERT INTO travel_expense_categories (ParentId,CategoryCode,CategoryName,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsActive)
-SELECT NULL,'LODGING','Lodging',FALSE,FALSE,NULL,NULL,FALSE,FALSE,TRUE WHERE NOT EXISTS (SELECT 1 FROM travel_expense_categories WHERE CategoryCode='LODGING');
-INSERT INTO travel_expense_categories (ParentId,CategoryCode,CategoryName,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsActive)
-SELECT NULL,'FOOD','Food & Meals',FALSE,FALSE,NULL,NULL,FALSE,FALSE,TRUE WHERE NOT EXISTS (SELECT 1 FROM travel_expense_categories WHERE CategoryCode='FOOD');
-INSERT INTO travel_expense_categories (ParentId,CategoryCode,CategoryName,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsActive)
-SELECT NULL,'LOCAL_CONV','Local Conveyance',FALSE,FALSE,NULL,NULL,FALSE,FALSE,TRUE WHERE NOT EXISTS (SELECT 1 FROM travel_expense_categories WHERE CategoryCode='LOCAL_CONV');
-INSERT INTO travel_expense_categories (ParentId,CategoryCode,CategoryName,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsActive)
-SELECT NULL,'ADVANCE','Travel Advance',FALSE,FALSE,NULL,NULL,TRUE,TRUE,TRUE WHERE NOT EXISTS (SELECT 1 FROM travel_expense_categories WHERE CategoryCode='ADVANCE');
-
-INSERT INTO travel_expense_categories (ParentId,CategoryCode,CategoryName,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsActive)
-SELECT p.Id,'AIR_FARE','Air Fare',TRUE,TRUE,NULL,50000,TRUE,TRUE,TRUE FROM travel_expense_categories p WHERE p.CategoryCode='TRAVEL' AND NOT EXISTS (SELECT 1 FROM travel_expense_categories WHERE CategoryCode='AIR_FARE');
-INSERT INTO travel_expense_categories (ParentId,CategoryCode,CategoryName,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsActive)
-SELECT p.Id,'TRAIN_FARE','Train Fare',TRUE,TRUE,NULL,10000,FALSE,TRUE,TRUE FROM travel_expense_categories p WHERE p.CategoryCode='TRAVEL' AND NOT EXISTS (SELECT 1 FROM travel_expense_categories WHERE CategoryCode='TRAIN_FARE');
-INSERT INTO travel_expense_categories (ParentId,CategoryCode,CategoryName,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsActive)
-SELECT p.Id,'HOTEL_STAY','Hotel Stay',TRUE,TRUE,6000,60000,TRUE,TRUE,TRUE FROM travel_expense_categories p WHERE p.CategoryCode='LODGING' AND NOT EXISTS (SELECT 1 FROM travel_expense_categories WHERE CategoryCode='HOTEL_STAY');
-INSERT INTO travel_expense_categories (ParentId,CategoryCode,CategoryName,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsActive)
-SELECT p.Id,'MEALS','Meals',FALSE,FALSE,1200,12000,FALSE,TRUE,TRUE FROM travel_expense_categories p WHERE p.CategoryCode='FOOD' AND NOT EXISTS (SELECT 1 FROM travel_expense_categories WHERE CategoryCode='MEALS');
-INSERT INTO travel_expense_categories (ParentId,CategoryCode,CategoryName,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsActive)
-SELECT p.Id,'CAB_TAXI','Cab / Taxi',TRUE,TRUE,2500,25000,FALSE,TRUE,TRUE FROM travel_expense_categories p WHERE p.CategoryCode='LOCAL_CONV' AND NOT EXISTS (SELECT 1 FROM travel_expense_categories WHERE CategoryCode='CAB_TAXI');");
+        var clientIds = (await db.QueryAsync<int>("SELECT Id FROM clients WHERE IsActive=TRUE ORDER BY Id")).ToList();
+        foreach (var activeClientId in clientIds) await SeedExpenseCategoriesForClientAsync(db, activeClientId);
 
         var hasPolicy = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM travel_policies");
         if (hasPolicy > 0) return;
@@ -332,4 +439,64 @@ VALUES (@PolicyId,@ClientId,NULL,'','','','','',@EmployeeId,10,'2026-04-01',NULL
         await db.ExecuteAsync(@"INSERT INTO travel_policy_rules (PolicyId,RuleType,RuleName,AppliesTo,IsAllowed,EligibilityJson,LimitAmount,LimitCurrency,ReceiptMandatory,ApprovalRequired,WorkflowId,ExceptionHandling,ConfigJson,IsActive)
 VALUES (@PolicyId,@RuleType,@RuleName,@AppliesTo,@IsAllowed,@EligibilityJson,@LimitAmount,@LimitCurrency,@ReceiptMandatory,@ApprovalRequired,@WorkflowId,@ExceptionHandling,@ConfigJson,@IsActive);", rules);
     }
+
+    private static async Task SeedExpenseCategoriesForClientAsync(MySqlConnection db, int clientId)
+    {
+        await SeedHeaderAsync(db, clientId, "MEDICAL_EXPENSE", "Medical Expense");
+        await SeedHeaderAsync(db, clientId, "TRAVEL_EXPENSE", "Travel Expense");
+        await SeedHeaderAsync(db, clientId, "OFFICE_EXPENSE", "Office Expense");
+        await SeedHeaderAsync(db, clientId, "LOCAL_CONVEYANCE", "Local Conveyance");
+
+        await SeedChildAsync(db, clientId, "MEDICAL_EXPENSE", "MEDICINE", "Medicine", true, false, 5000, 50000);
+        await SeedChildAsync(db, clientId, "MEDICAL_EXPENSE", "CONSULTANCY", "Consultancy", true, false, 3000, 30000);
+        await SeedChildAsync(db, clientId, "MEDICAL_EXPENSE", "PATHOLOGY", "Pathology", true, false, 5000, 50000);
+        await SeedChildAsync(db, clientId, "MEDICAL_EXPENSE", "HOSPITALIZATION", "Hospitalization", true, false, null, 200000, true);
+
+        await SeedChildAsync(db, clientId, "TRAVEL_EXPENSE", "AIR_FARE", "Air Fare", true, true, null, 50000, true);
+        await SeedChildAsync(db, clientId, "TRAVEL_EXPENSE", "TRAIN_FARE", "Train Fare", true, true, null, 10000);
+        await SeedChildAsync(db, clientId, "TRAVEL_EXPENSE", "BUS_FARE", "Bus Fare", true, true, null, 8000);
+        await SeedChildAsync(db, clientId, "TRAVEL_EXPENSE", "HOTEL_STAY", "Hotel Stay", true, true, 6000, 60000, true);
+        await SeedChildAsync(db, clientId, "TRAVEL_EXPENSE", "MEALS", "Meals", false, false, 1200, 12000);
+        await SeedChildAsync(db, clientId, "TRAVEL_EXPENSE", "CAB_TAXI", "Cab / Taxi", true, true, 2500, 25000);
+
+        await SeedChildAsync(db, clientId, "OFFICE_EXPENSE", "INTERNET", "Internet", true, true, null, 2000);
+        await SeedChildAsync(db, clientId, "OFFICE_EXPENSE", "MOBILE", "Mobile", true, true, null, 1500);
+        await SeedChildAsync(db, clientId, "OFFICE_EXPENSE", "STATIONERY", "Stationery", true, true, null, 5000);
+
+        await SeedChildAsync(db, clientId, "LOCAL_CONVEYANCE", "FUEL", "Fuel", true, true, 1500, 15000);
+        await SeedChildAsync(db, clientId, "LOCAL_CONVEYANCE", "PARKING", "Parking", true, true, 500, 5000);
+        await SeedChildAsync(db, clientId, "LOCAL_CONVEYANCE", "TOLL", "Toll", true, true, 1000, 10000);
+        await SeedChildAsync(db, clientId, "LOCAL_CONVEYANCE", "METRO", "Metro", false, false, 500, 5000);
+    }
+
+    private static async Task SeedHeaderAsync(MySqlConnection db, int clientId, string code, string name) =>
+        await db.ExecuteAsync(@"INSERT INTO expense_headers (HeaderCode,HeaderName,IsActive)
+SELECT @Code,@Name,TRUE WHERE NOT EXISTS (SELECT 1 FROM expense_headers WHERE HeaderCode=@Code);
+INSERT INTO client_expense_header_settings (ClientId,HeaderId,IsEnabled)
+SELECT @ClientId,h.Id,TRUE FROM expense_headers h WHERE h.HeaderCode=@Code
+ON DUPLICATE KEY UPDATE IsEnabled=VALUES(IsEnabled),UpdatedAt=CURRENT_TIMESTAMP", new { ClientId = clientId, Code = code, Name = name });
+
+    private static async Task SeedChildAsync(MySqlConnection db, int clientId, string parentCode, string code, string name, bool receipt, bool gst, decimal? dailyLimit, decimal? maximumClaim, bool financeApproval = false) =>
+        await db.ExecuteAsync(@"INSERT INTO expense_categories (HeaderId,CategoryCode,CategoryName,IsActive)
+SELECT h.Id,@Code,@Name,TRUE FROM expense_headers h
+WHERE h.HeaderCode=@ParentCode AND NOT EXISTS (SELECT 1 FROM expense_categories c WHERE c.HeaderId=h.Id AND c.CategoryCode=@Code);
+INSERT INTO client_expense_category_settings (ClientId,CategoryId,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsEnabled)
+SELECT @ClientId,c.Id,@Receipt,@Gst,@DailyLimit,@MaximumClaim,@FinanceApproval,TRUE,TRUE
+FROM expense_categories c JOIN expense_headers h ON h.Id=c.HeaderId
+WHERE h.HeaderCode=@ParentCode AND c.CategoryCode=@Code
+ON DUPLICATE KEY UPDATE ReceiptMandatory=VALUES(ReceiptMandatory),GstApplicable=VALUES(GstApplicable),DailyLimit=VALUES(DailyLimit),MaximumClaim=VALUES(MaximumClaim),RequiresFinanceApproval=VALUES(RequiresFinanceApproval),RequiresManagerApproval=VALUES(RequiresManagerApproval),IsEnabled=VALUES(IsEnabled),UpdatedAt=CURRENT_TIMESTAMP", new { ClientId = clientId, ParentCode = parentCode, Code = code, Name = name, Receipt = receipt, Gst = gst, DailyLimit = dailyLimit, MaximumClaim = maximumClaim, FinanceApproval = financeApproval });
+
+    private static async Task EnsureColumnAsync(MySqlConnection db, string tableName, string columnName, string definition)
+    {
+        var exists = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@TableName AND COLUMN_NAME=@ColumnName", new { TableName = tableName, ColumnName = columnName });
+        if (exists == 0) await db.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition}");
+    }
+
+    private static async Task DropIndexIfExistsAsync(MySqlConnection db, string tableName, string indexName)
+    {
+        var exists = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@TableName AND INDEX_NAME=@IndexName", new { TableName = tableName, IndexName = indexName });
+        if (exists > 0) await db.ExecuteAsync($"ALTER TABLE `{tableName}` DROP INDEX `{indexName}`");
+    }
+
+    private sealed class ExpenseHeaderRow { public long Id { get; set; } public string HeaderName { get; set; } = ""; }
 }

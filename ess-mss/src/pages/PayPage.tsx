@@ -27,6 +27,9 @@ export function PayPage({ user }: { user: User }) {
       .then(items => { setRows(items); setState('ready') })
       .catch(() => setState('error'))
   }, [user.email])
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('ess:page-title', { detail: { section: 'Pay & tax', title: 'Payslips' } }))
+  }, [])
 
   const fetchDocument = async (row: Payslip) => {
     setBusy(`view-${row.payRunId}`)
@@ -54,12 +57,6 @@ export function PayPage({ user }: { user: User }) {
 
   return (
     <section className="pay-workspace">
-      <div className="feature-heading">
-        <span className="eyebrow">My pay</span>
-        <h3>Payslips & payment history</h3>
-        <p>Access payroll periods that have been approved for you.</p>
-      </div>
-
       {state === 'loading' && <div className="empty-work"><span>Loading payslips...</span></div>}
       {state === 'error' && <div className="empty-work"><b>Pay information is unavailable.</b><span>Contact payroll if you expect a payslip for a completed pay run.</span></div>}
 

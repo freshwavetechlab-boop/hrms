@@ -74,7 +74,10 @@ KEY IX_TravelPolicyRules_PolicyType (PolicyId, RuleType, AppliesTo)
 
 CREATE TABLE IF NOT EXISTS travel_expense_categories (
 Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ClientId INT NOT NULL DEFAULT 0,
 ParentId BIGINT NULL,
+ExpenseType VARCHAR(120) NOT NULL DEFAULT '',
+IsClaimHeader BOOLEAN NOT NULL DEFAULT FALSE,
 CategoryCode VARCHAR(40) NOT NULL,
 CategoryName VARCHAR(160) NOT NULL,
 ReceiptMandatory BOOLEAN NOT NULL DEFAULT FALSE,
@@ -89,6 +92,160 @@ UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTA
 UNIQUE KEY UX_TravelExpenseCategories_Code (CategoryCode),
 KEY IX_TravelExpenseCategories_Parent (ParentId)
 );
+
+ALTER TABLE travel_expense_categories ADD COLUMN IF NOT EXISTS ClientId INT NOT NULL DEFAULT 0 AFTER Id;
+ALTER TABLE travel_expense_categories ADD COLUMN IF NOT EXISTS ExpenseType VARCHAR(120) NOT NULL DEFAULT '' AFTER ParentId;
+ALTER TABLE travel_expense_categories ADD COLUMN IF NOT EXISTS IsClaimHeader BOOLEAN NOT NULL DEFAULT FALSE AFTER ExpenseType;
+SET @drop_expense_category_code_idx := (SELECT IF(COUNT(*) > 0, 'ALTER TABLE travel_expense_categories DROP INDEX UX_TravelExpenseCategories_Code', 'SELECT 1') FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='travel_expense_categories' AND INDEX_NAME='UX_TravelExpenseCategories_Code');
+PREPARE stmt FROM @drop_expense_category_code_idx;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS expense_headers (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+HeaderCode VARCHAR(60) NOT NULL,
+HeaderName VARCHAR(160) NOT NULL,
+IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_ExpenseHeaders_Code (HeaderCode)
+);
+
+CREATE TABLE IF NOT EXISTS expense_categories (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+HeaderId BIGINT NOT NULL,
+CategoryCode VARCHAR(60) NOT NULL,
+CategoryName VARCHAR(160) NOT NULL,
+IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_ExpenseCategories_HeaderCode (HeaderId, CategoryCode),
+KEY IX_ExpenseCategories_Header (HeaderId)
+);
+
+CREATE TABLE IF NOT EXISTS client_expense_header_settings (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ClientId INT NOT NULL,
+HeaderId BIGINT NOT NULL,
+IsEnabled BOOLEAN NOT NULL DEFAULT TRUE,
+EffectiveFrom DATE NULL,
+EffectiveTo DATE NULL,
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_ClientExpenseHeader (ClientId, HeaderId),
+KEY IX_ClientExpenseHeader_Client (ClientId, IsEnabled)
+);
+
+CREATE TABLE IF NOT EXISTS client_expense_category_settings (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ClientId INT NOT NULL,
+CategoryId BIGINT NOT NULL,
+ReceiptMandatory BOOLEAN NOT NULL DEFAULT FALSE,
+GstApplicable BOOLEAN NOT NULL DEFAULT FALSE,
+DailyLimit DECIMAL(18,2) NULL,
+MaximumClaim DECIMAL(18,2) NULL,
+RequiresFinanceApproval BOOLEAN NOT NULL DEFAULT FALSE,
+RequiresManagerApproval BOOLEAN NOT NULL DEFAULT FALSE,
+IsEnabled BOOLEAN NOT NULL DEFAULT TRUE,
+EffectiveFrom DATE NULL,
+EffectiveTo DATE NULL,
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_ClientExpenseCategory (ClientId, CategoryId),
+KEY IX_ClientExpenseCategory_Client (ClientId, IsEnabled)
+);
+
+INSERT INTO expense_headers (HeaderCode,HeaderName,IsActive)
+SELECT DISTINCT CategoryCode,CategoryName,TRUE
+FROM travel_expense_categories
+WHERE IsClaimHeader=TRUE AND CategoryCode<>''
+ON DUPLICATE KEY UPDATE HeaderName=VALUES(HeaderName), IsActive=TRUE;
+
+INSERT INTO expense_categories (HeaderId,CategoryCode,CategoryName,IsActive)
+SELECT h.Id,child.CategoryCode,child.CategoryName,TRUE
+FROM travel_expense_categories child
+JOIN travel_expense_categories parent ON parent.Id=child.ParentId
+JOIN expense_headers h ON h.HeaderCode=parent.CategoryCode
+WHERE child.IsClaimHeader=FALSE AND child.CategoryCode<>''
+ON DUPLICATE KEY UPDATE CategoryName=VALUES(CategoryName), IsActive=TRUE;
+
+INSERT INTO client_expense_header_settings (ClientId,HeaderId,IsEnabled)
+SELECT old.ClientId,h.Id,old.IsActive
+FROM travel_expense_categories old
+JOIN expense_headers h ON h.HeaderCode=old.CategoryCode
+WHERE old.IsClaimHeader=TRUE AND old.ClientId>0
+ON DUPLICATE KEY UPDATE IsEnabled=VALUES(IsEnabled);
+
+INSERT INTO client_expense_category_settings (ClientId,CategoryId,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsEnabled)
+SELECT old.ClientId,c.Id,old.ReceiptMandatory,old.GstApplicable,old.DailyLimit,old.MaximumClaim,old.RequiresFinanceApproval,old.RequiresManagerApproval,old.IsActive
+FROM travel_expense_categories old
+JOIN travel_expense_categories parent ON parent.Id=old.ParentId
+JOIN expense_headers h ON h.HeaderCode=parent.CategoryCode
+JOIN expense_categories c ON c.HeaderId=h.Id AND c.CategoryCode=old.CategoryCode
+WHERE old.IsClaimHeader=FALSE AND old.ClientId>0
+ON DUPLICATE KEY UPDATE ReceiptMandatory=VALUES(ReceiptMandatory),GstApplicable=VALUES(GstApplicable),DailyLimit=VALUES(DailyLimit),MaximumClaim=VALUES(MaximumClaim),RequiresFinanceApproval=VALUES(RequiresFinanceApproval),RequiresManagerApproval=VALUES(RequiresManagerApproval),IsEnabled=VALUES(IsEnabled);
+
+INSERT INTO expense_headers (HeaderCode,HeaderName,IsActive) VALUES
+('MEDICAL_EXPENSE','Medical Expense',TRUE),
+('TRAVEL_EXPENSE','Travel Expense',TRUE),
+('OFFICE_EXPENSE','Office Expense',TRUE),
+('LOCAL_CONVEYANCE','Local Conveyance',TRUE)
+ON DUPLICATE KEY UPDATE HeaderName=VALUES(HeaderName), IsActive=VALUES(IsActive);
+
+INSERT INTO expense_categories (HeaderId,CategoryCode,CategoryName,IsActive)
+SELECT h.Id,x.CategoryCode,x.CategoryName,TRUE
+FROM expense_headers h
+JOIN (
+    SELECT 'MEDICAL_EXPENSE' HeaderCode,'MEDICINE' CategoryCode,'Medicine' CategoryName UNION ALL
+    SELECT 'MEDICAL_EXPENSE','CONSULTANCY','Consultancy' UNION ALL
+    SELECT 'MEDICAL_EXPENSE','PATHOLOGY','Pathology' UNION ALL
+    SELECT 'MEDICAL_EXPENSE','HOSPITALIZATION','Hospitalization' UNION ALL
+    SELECT 'TRAVEL_EXPENSE','AIR_FARE','Air Fare' UNION ALL
+    SELECT 'TRAVEL_EXPENSE','TRAIN_FARE','Train Fare' UNION ALL
+    SELECT 'TRAVEL_EXPENSE','BUS_FARE','Bus Fare' UNION ALL
+    SELECT 'TRAVEL_EXPENSE','HOTEL_STAY','Hotel Stay' UNION ALL
+    SELECT 'TRAVEL_EXPENSE','MEALS','Meals' UNION ALL
+    SELECT 'TRAVEL_EXPENSE','CAB_TAXI','Cab / Taxi' UNION ALL
+    SELECT 'OFFICE_EXPENSE','INTERNET','Internet' UNION ALL
+    SELECT 'OFFICE_EXPENSE','MOBILE','Mobile' UNION ALL
+    SELECT 'OFFICE_EXPENSE','STATIONERY','Stationery' UNION ALL
+    SELECT 'LOCAL_CONVEYANCE','FUEL','Fuel' UNION ALL
+    SELECT 'LOCAL_CONVEYANCE','PARKING','Parking' UNION ALL
+    SELECT 'LOCAL_CONVEYANCE','TOLL','Toll' UNION ALL
+    SELECT 'LOCAL_CONVEYANCE','METRO','Metro'
+) x ON x.HeaderCode=h.HeaderCode
+ON DUPLICATE KEY UPDATE CategoryName=VALUES(CategoryName), IsActive=VALUES(IsActive);
+
+INSERT INTO client_expense_header_settings (ClientId,HeaderId,IsEnabled)
+SELECT c.Id,h.Id,TRUE FROM clients c CROSS JOIN expense_headers h WHERE c.IsActive=TRUE
+ON DUPLICATE KEY UPDATE IsEnabled=VALUES(IsEnabled);
+
+INSERT INTO client_expense_category_settings (ClientId,CategoryId,ReceiptMandatory,GstApplicable,DailyLimit,MaximumClaim,RequiresFinanceApproval,RequiresManagerApproval,IsEnabled)
+SELECT client.Id,cat.Id,defaults.ReceiptMandatory,defaults.GstApplicable,defaults.DailyLimit,defaults.MaximumClaim,defaults.RequiresFinanceApproval,TRUE,TRUE
+FROM clients client
+JOIN expense_headers h
+JOIN expense_categories cat ON cat.HeaderId=h.Id
+JOIN (
+    SELECT 'MEDICINE' CategoryCode,TRUE ReceiptMandatory,FALSE GstApplicable,5000 DailyLimit,50000 MaximumClaim,FALSE RequiresFinanceApproval UNION ALL
+    SELECT 'CONSULTANCY',TRUE,FALSE,3000,30000,FALSE UNION ALL
+    SELECT 'PATHOLOGY',TRUE,FALSE,5000,50000,FALSE UNION ALL
+    SELECT 'HOSPITALIZATION',TRUE,FALSE,NULL,200000,TRUE UNION ALL
+    SELECT 'AIR_FARE',TRUE,TRUE,NULL,50000,TRUE UNION ALL
+    SELECT 'TRAIN_FARE',TRUE,TRUE,NULL,10000,FALSE UNION ALL
+    SELECT 'BUS_FARE',TRUE,TRUE,NULL,8000,FALSE UNION ALL
+    SELECT 'HOTEL_STAY',TRUE,TRUE,6000,60000,TRUE UNION ALL
+    SELECT 'MEALS',FALSE,FALSE,1200,12000,FALSE UNION ALL
+    SELECT 'CAB_TAXI',TRUE,TRUE,2500,25000,FALSE UNION ALL
+    SELECT 'INTERNET',TRUE,TRUE,NULL,2000,FALSE UNION ALL
+    SELECT 'MOBILE',TRUE,TRUE,NULL,1500,FALSE UNION ALL
+    SELECT 'STATIONERY',TRUE,TRUE,NULL,5000,FALSE UNION ALL
+    SELECT 'FUEL',TRUE,TRUE,1500,15000,FALSE UNION ALL
+    SELECT 'PARKING',TRUE,TRUE,500,5000,FALSE UNION ALL
+    SELECT 'TOLL',TRUE,TRUE,1000,10000,FALSE UNION ALL
+    SELECT 'METRO',FALSE,FALSE,500,5000,FALSE
+) defaults ON defaults.CategoryCode=cat.CategoryCode
+WHERE client.IsActive=TRUE
+ON DUPLICATE KEY UPDATE ReceiptMandatory=VALUES(ReceiptMandatory),GstApplicable=VALUES(GstApplicable),DailyLimit=VALUES(DailyLimit),MaximumClaim=VALUES(MaximumClaim),RequiresFinanceApproval=VALUES(RequiresFinanceApproval),RequiresManagerApproval=VALUES(RequiresManagerApproval),IsEnabled=VALUES(IsEnabled);
 
 CREATE TABLE IF NOT EXISTS travel_policy_audit (
 Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -868,3 +1025,154 @@ ADD COLUMN IF NOT EXISTS allow_half_day BOOLEAN NOT NULL DEFAULT TRUE AFTER allo
 
 ALTER TABLE essleaverequests
 ADD COLUMN IF NOT EXISTS DayType VARCHAR(30) NOT NULL DEFAULT 'Full Day' AFTER ToDate;
+
+2026-07-12 - Travel phase 2 company-arranged accommodation and local travel details
+
+CREATE TABLE IF NOT EXISTS ess_travel_request_accommodation (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    RequestId BIGINT NOT NULL,
+    SequenceNo INT NOT NULL,
+    City VARCHAR(180) NOT NULL DEFAULT '',
+    CheckInDateTime DATETIME NULL,
+    CheckOutDateTime DATETIME NULL,
+    Occupancy VARCHAR(80) NOT NULL DEFAULT '',
+    RoomPreference VARCHAR(120) NOT NULL DEFAULT '',
+    Remarks VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_ess_travel_accommodation_sequence (RequestId, SequenceNo),
+    INDEX IX_ess_travel_accommodation_request (RequestId),
+    INDEX IX_ess_travel_accommodation_city (City)
+);
+
+CREATE TABLE IF NOT EXISTS ess_travel_request_local_travel (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    RequestId BIGINT NOT NULL,
+    SequenceNo INT NOT NULL,
+    City VARCHAR(180) NOT NULL DEFAULT '',
+    TravelDateTime DATETIME NULL,
+    FromLocation VARCHAR(180) NOT NULL DEFAULT '',
+    ToLocation VARCHAR(180) NOT NULL DEFAULT '',
+    TravelMode VARCHAR(80) NOT NULL DEFAULT '',
+    Remarks VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_ess_travel_local_sequence (RequestId, SequenceNo),
+    INDEX IX_ess_travel_local_request (RequestId),
+    INDEX IX_ess_travel_local_city (City),
+    INDEX IX_ess_travel_local_mode (TravelMode)
+);
+
+2026-07-12 - Travel expense phase 3 expense claims and reimbursement queue
+
+CREATE TABLE IF NOT EXISTS ess_expense_claims (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    ClaimNumber VARCHAR(40) NOT NULL,
+    ClaimDate DATE NOT NULL,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    Department VARCHAR(120) NOT NULL DEFAULT '',
+    Designation VARCHAR(120) NOT NULL DEFAULT '',
+    TravelRequestId BIGINT NULL,
+    ExpenseType VARCHAR(120) NOT NULL DEFAULT '',
+    Purpose VARCHAR(500) NOT NULL DEFAULT '',
+    Customer VARCHAR(180) NOT NULL DEFAULT '',
+    Project VARCHAR(180) NOT NULL DEFAULT '',
+    CostCenter VARCHAR(120) NOT NULL DEFAULT '',
+    Currency VARCHAR(12) NOT NULL DEFAULT 'INR',
+    TotalClaimAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    TotalApprovedAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    TotalGstAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    PayrollStatus VARCHAR(40) NOT NULL DEFAULT 'Not Ready',
+    PayrollRunId INT NULL,
+    ReimbursementComponentCode VARCHAR(80) NOT NULL DEFAULT 'REIMBURSEMENT',
+    Status VARCHAR(40) NOT NULL DEFAULT 'Draft',
+    PolicyValidationJson JSON NULL,
+    Remarks TEXT NULL,
+    SubmittedAt DATETIME NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_ess_expense_claim_number (ClaimNumber),
+    INDEX IX_ess_expense_employee_status (EmployeeId, Status, ClaimDate),
+    INDEX IX_ess_expense_client_status (ClientId, Status, ClaimDate),
+    INDEX IX_ess_expense_travel_request (TravelRequestId)
+);
+ALTER TABLE ess_expense_claims ADD COLUMN IF NOT EXISTS ExpenseType VARCHAR(120) NOT NULL DEFAULT '' AFTER TravelRequestId;
+
+CREATE TABLE IF NOT EXISTS ess_expense_claim_lines (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    ClaimId BIGINT NOT NULL,
+    ExpenseDate DATE NOT NULL,
+    CategoryId BIGINT NOT NULL,
+    CategoryCode VARCHAR(80) NOT NULL DEFAULT '',
+    CategoryName VARCHAR(180) NOT NULL DEFAULT '',
+    SubCategory VARCHAR(180) NOT NULL DEFAULT '',
+    VendorName VARCHAR(180) NOT NULL DEFAULT '',
+    BillNumber VARCHAR(120) NOT NULL DEFAULT '',
+    InvoiceNumber VARCHAR(120) NOT NULL DEFAULT '',
+    Amount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    Currency VARCHAR(12) NOT NULL DEFAULT 'INR',
+    ExchangeRate DECIMAL(18,6) NOT NULL DEFAULT 1,
+    GstAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    ApprovedAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    CostCenter VARCHAR(120) NOT NULL DEFAULT '',
+    Project VARCHAR(180) NOT NULL DEFAULT '',
+    Customer VARCHAR(180) NOT NULL DEFAULT '',
+    Location VARCHAR(180) NOT NULL DEFAULT '',
+    PaymentMethod VARCHAR(80) NOT NULL DEFAULT 'Employee Paid',
+    ReceiptAttached BOOLEAN NOT NULL DEFAULT FALSE,
+    ReceiptFileName VARCHAR(260) NOT NULL DEFAULT '',
+    Description VARCHAR(1000) NOT NULL DEFAULT '',
+    Status VARCHAR(40) NOT NULL DEFAULT 'Draft',
+    ValidationJson JSON NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX IX_ess_expense_line_claim (ClaimId),
+    INDEX IX_ess_expense_line_category (CategoryId, ExpenseDate)
+);
+
+CREATE TABLE IF NOT EXISTS ess_expense_claim_audit (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    ClaimId BIGINT NOT NULL,
+    Action VARCHAR(80) NOT NULL,
+    Comment VARCHAR(1000) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_ess_expense_audit_claim (ClaimId, CreatedAt)
+);
+
+CREATE TABLE IF NOT EXISTS ess_expense_claim_attachments (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    ClaimId BIGINT NOT NULL,
+    LineId BIGINT NULL,
+    FileName VARCHAR(260) NOT NULL DEFAULT '',
+    ContentType VARCHAR(120) NOT NULL DEFAULT '',
+    StoragePath VARCHAR(500) NOT NULL DEFAULT '',
+    UploadedBy INT NULL,
+    UploadedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_ess_expense_attachment_claim (ClaimId, LineId)
+);
+
+CREATE TABLE IF NOT EXISTS payroll_reimbursement_queue (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    EmployeeId INT NOT NULL,
+    ExpenseClaimId BIGINT NOT NULL,
+    ExpenseLineId BIGINT NOT NULL,
+    ComponentCode VARCHAR(80) NOT NULL,
+    Amount DECIMAL(18,2) NOT NULL,
+    Taxable BOOLEAN NOT NULL DEFAULT FALSE,
+    Status VARCHAR(40) NOT NULL DEFAULT 'Pending',
+    PayrollRunId INT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_payroll_reimb_expense_line (ExpenseLineId),
+    INDEX IX_payroll_reimb_employee_status (ClientId, EmployeeId, Status)
+);
+
+INSERT INTO workflowactivities (ActivityCode, DisplayName, ModuleCode, ResourceType, Description, IsActive)
+VALUES ('EXPENSE_CLAIM.SUBMIT','Submit expense claim','Travel & Expense','ExpenseClaim','Employee expense claim reimbursement approval.',TRUE)
+ON DUPLICATE KEY UPDATE DisplayName=VALUES(DisplayName), ModuleCode=VALUES(ModuleCode), ResourceType=VALUES(ResourceType), Description=VALUES(Description), IsActive=VALUES(IsActive);
+
+INSERT INTO workflow_action_rules (ActivityCode,HttpMethod,PathPattern,ResourceType,ResourceIdSource,ResourceIdRouteKey,ClientIdSource,ClientIdSql,ClientLookupTable,ClientLookupKeyColumn,ClientLookupClientColumn,TriggerMode,IsActive)
+VALUES ('EXPENSE_CLAIM.SUBMIT','POST','/api/ess/expenses/claims/{id}/submit','ExpenseClaim','route.id','id','','','ess_expense_claims','Id','ClientId','AfterSuccess',TRUE)
+ON DUPLICATE KEY UPDATE ResourceType=VALUES(ResourceType), ResourceIdSource=VALUES(ResourceIdSource), ResourceIdRouteKey=VALUES(ResourceIdRouteKey), ClientLookupTable=VALUES(ClientLookupTable), ClientLookupKeyColumn=VALUES(ClientLookupKeyColumn), ClientLookupClientColumn=VALUES(ClientLookupClientColumn), TriggerMode=VALUES(TriggerMode), IsActive=VALUES(IsActive);

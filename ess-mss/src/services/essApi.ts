@@ -1,4 +1,4 @@
-import type { AttendanceSummary, Birthday, DailyAttendance, Holiday, LeaveBalance, LeaveRequest, OrganizationBrand, Payslip, PayslipDocument, ProfileData, SaveTravelRequest, Task, TaxPortal, TravelDashboard, TravelOptions, TravelRequest, User, WorkflowTrail } from '../types'
+import type { AttendanceSummary, Birthday, DailyAttendance, ExpenseClaim, ExpenseDashboard, ExpenseOptions, Holiday, LeaveBalance, LeaveRequest, OrganizationBrand, Payslip, PayslipDocument, ProfileData, SaveExpenseClaim, SaveTravelRequest, Task, TaxPortal, TravelDashboard, TravelOptions, TravelRequest, User, WorkflowTrail } from '../types'
 
 export const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:5062'
 const tokenKey = 'ess.auth.token'
@@ -84,4 +84,11 @@ export const essApi = {
   submitTravelRequest: (id: number) => essFetch(`/api/ess/travel/requests/${id}/submit`, { method: 'POST' }).then(jsonOrThrow<TravelRequest>),
   withdrawTravelRequest: (id: number) => essFetch(`/api/ess/travel/requests/${id}/withdraw`, { method: 'POST' }).then(async r => { if (!r.ok) await jsonOrThrow<unknown>(r) }),
   cancelTravelRequest: (id: number, reason: string) => essFetch(`/api/ess/travel/requests/${id}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) }).then(async r => { if (!r.ok) await jsonOrThrow<unknown>(r) }),
+  expenseOptions: () => essFetch('/api/ess/expenses/options').then(r => r.ok ? r.json() as Promise<ExpenseOptions> : Promise.reject()),
+  expenseDashboard: () => essFetch('/api/ess/expenses/dashboard').then(r => r.ok ? r.json() as Promise<ExpenseDashboard> : Promise.reject()),
+  expenseClaims: () => essFetch('/api/ess/expenses/claims').then(r => r.ok ? r.json() as Promise<ExpenseClaim[]> : []),
+  expenseClaim: (id: number) => essFetch(`/api/ess/expenses/claims/${id}`).then(r => r.ok ? r.json() as Promise<ExpenseClaim> : Promise.reject()),
+  expenseTrail: (id: number) => essFetch(`/api/ess/expenses/claims/${id}/trail`).then(r => r.ok ? r.json() as Promise<WorkflowTrail> : Promise.reject()),
+  saveExpenseClaim: (claim: SaveExpenseClaim) => essFetch('/api/ess/expenses/claims', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(claim) }).then(jsonOrThrow<ExpenseClaim>),
+  submitExpenseClaim: (id: number) => essFetch(`/api/ess/expenses/claims/${id}/submit`, { method: 'POST' }).then(jsonOrThrow<ExpenseClaim>),
 }
