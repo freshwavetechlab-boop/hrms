@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { Button, Select, Space } from 'antd'
 import DataTable from './DataTable'
@@ -27,34 +27,26 @@ export default function SalaryTemplateDesigner({ clients, components, structure,
   const [dragId, setDragId] = useState('')
   const [dragLineId, setDragLineId] = useState('')
   const library = components.filter(component => component.active && component.category === tab)
-  const basic = components.find(component => component.code === 'BASIC')
   const selectedClientIds = String(structure.clientId || '').split(/[;,|]/).map(item => item.split(':')[0].trim()).filter(Boolean)
   const clientOptions = clients.map(client => ({ value: String(client.id), label: client.name }))
-  const hasDraft = !!(structure.clientId || structure.name || structure.annualCtc || structure.lines.length)
-  const hasBasic = basic ? structure.lines.some(line => line.componentId === String(basic.id)) : true
-  const lines = hasDraft && basic && !hasBasic ? [{ componentId: String(basic.id), value: basic.formula || basic.value || 'CTC * 40%' }, ...structure.lines] : structure.lines
+  const lines = structure.lines
   const calculated = calculateSalaryDetails(Number(structure.annualCtc || 0), components, { ...structure, lines })
   const preview = calculateSalaryTotals(calculated).net
   const clientName = (id: string | number) => clients.find(client => String(client.id) === String(id).split(':')[0])?.name || (id ? `Client #${String(id).split(':')[0]}` : 'Default')
 
-  useEffect(() => {
-    if (hasDraft && basic && !hasBasic) setStructure({ ...structure, lines })
-  }, [basic, hasBasic, hasDraft, lines, setStructure, structure])
-
-  const isBasic = (id: string) => components.find(component => String(component.id) === id)?.code === 'BASIC'
   const add = (id: string) => {
     const component = components.find(item => String(item.id) === id)
     if (component && !lines.some(line => line.componentId === id)) setStructure({ ...structure, lines: [...lines, { componentId: id, value: component.formula || component.value || '' }] })
   }
-  const remove = (id: string) => !isBasic(id) && setStructure({ ...structure, lines: lines.filter(line => line.componentId !== id) })
+  const remove = (id: string) => setStructure({ ...structure, lines: lines.filter(line => line.componentId !== id) })
   const setLine = (id: string, value: string) => setStructure({ ...structure, lines: lines.map(line => line.componentId === id ? { ...line, value } : line) })
   const moveTo = (targetId: string) => {
-    if (!dragLineId || dragLineId === targetId || isBasic(dragLineId)) return
+    if (!dragLineId || dragLineId === targetId) return
     const source = lines.find(line => line.componentId === dragLineId)
     const next = lines.filter(line => line.componentId !== dragLineId)
     const target = next.findIndex(line => line.componentId === targetId)
     if (!source) return
-    next.splice(Math.max(1, target), 0, source)
+    next.splice(Math.max(0, target), 0, source)
     setStructure({ ...structure, lines: next })
   }
 
@@ -90,14 +82,14 @@ export default function SalaryTemplateDesigner({ clients, components, structure,
             <span>Drag rows to reorder</span>
           </div>
           <div className="salary-line-grid salary-line-head"><span /><span>Component</span><span>Name</span><span>Formula / value</span><span>Monthly</span><span>Annual</span><span /></div>
-          <div className="salary-line-list">{calculated.map(row => <div className="salary-line-grid salary-line" draggable={row.component.code !== 'BASIC'} onDragStart={() => setDragLineId(String(row.component.id))} onDragOver={event => event.preventDefault()} onDrop={() => moveTo(String(row.component.id))} key={row.component.id}>
+          <div className="salary-line-list">{calculated.map(row => <div className="salary-line-grid salary-line" draggable onDragStart={() => setDragLineId(String(row.component.id))} onDragOver={event => event.preventDefault()} onDrop={() => moveTo(String(row.component.id))} key={row.component.id}>
             <span className="salary-drag-handle">⋮⋮</span>
             <div className="salary-code-cell"><span className={`salary-badge ${row.component.category.toLowerCase()}`}>{row.component.category}</span><b title={row.component.code}>{row.component.code}</b></div>
             <strong title={row.component.name}>{row.component.name}</strong>
-            <input value={row.line.value} onChange={event => setLine(String(row.component.id), event.target.value)} placeholder={row.component.formula || row.component.value} disabled={row.component.code === 'BASIC'} title={row.line.value || row.component.formula || row.component.value} />
+            <input value={row.line.value} onChange={event => setLine(String(row.component.id), event.target.value)} placeholder={row.component.formula || row.component.value} title={row.line.value || row.component.formula || row.component.value} />
             <output>Rs {Math.round(row.monthly).toLocaleString('en-IN')}</output>
             <output>Rs {Math.round(row.annual).toLocaleString('en-IN')}</output>
-            <button type="button" disabled={row.component.code === 'BASIC'} onClick={() => remove(String(row.component.id))}>{row.component.code === 'BASIC' ? 'Locked' : 'Remove'}</button>
+            <button type="button" onClick={() => remove(String(row.component.id))}>Remove</button>
           </div>)}</div>
           <div className="salary-template-preview"><b>Preview net</b><span>Monthly Rs {Math.round(preview).toLocaleString('en-IN')}</span><span>Annual Rs {Math.round(preview * 12).toLocaleString('en-IN')}</span></div>
         </section>
