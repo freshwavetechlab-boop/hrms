@@ -395,7 +395,10 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             await WriteCalculationTracesAsync(connection, transaction, row, employeeWorkingDays);
         }
         if (adjustments.Count > 0)
+        {
             await connection.ExecuteAsync("UPDATE payrolladjustments SET Status = 'Applied', PayRunId = @PayRunId WHERE Id IN @Ids", new { PayRunId = payRunId, Ids = adjustments.Select(item => item.Id).ToArray() }, transaction);
+            await SyncExpenseClaimPayrollStatusAsync(connection, transaction, payRunId, "Applied");
+        }
 
         await RefreshTotalsAsync(connection, transaction, payRunId);
         await WriteReconciliationResultsAsync(connection, transaction, payRunId);
@@ -500,7 +503,10 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             await WriteCalculationTracesAsync(connection, transaction, row, employeeWorkingDays);
         }
         if (adjustments.Count > 0)
+        {
             await connection.ExecuteAsync("UPDATE payrolladjustments SET Status = 'Applied', PayRunId = @PayRunId WHERE Id IN @Ids", new { PayRunId = payRunId, Ids = adjustments.Select(item => item.Id).ToArray() }, transaction);
+            await SyncExpenseClaimPayrollStatusAsync(connection, transaction, payRunId, "Applied");
+        }
         await RefreshTotalsAsync(connection, transaction, payRunId);
         await WriteReconciliationResultsAsync(connection, transaction, payRunId);
         await connection.ExecuteAsync("UPDATE payruns SET Status='Draft', ProcessingCompletedAt=UTC_TIMESTAMP(), ProcessingError='' WHERE Id=@PayRunId", new { PayRunId = payRunId }, transaction);
@@ -646,6 +652,7 @@ AND NOT EXISTS (
             employeeIds = (await connection.QueryAsync<int>("SELECT EmployeeId FROM payrunemployees WHERE PayRunId = @Id AND IsSkipped = FALSE AND PaymentStatus != 'Paid'", new { Id = id }, transaction)).ToArray();
         if (employeeIds.Length == 0) return null;
         await connection.ExecuteAsync("UPDATE payrunemployees SET PaymentStatus = 'Paid', PaymentDate = @PaymentDate WHERE PayRunId = @Id AND IsSkipped = FALSE AND EmployeeId IN @EmployeeIds", new { Id = id, PaymentDate = request.PaymentDate.ToDateTime(TimeOnly.MinValue), EmployeeIds = employeeIds }, transaction);
+        await SyncExpenseClaimPayrollStatusAsync(connection, transaction, id, "Paid", employeeIds);
         var pending = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM payrunemployees WHERE PayRunId = @Id AND IsSkipped = FALSE AND PaymentStatus != 'Paid'", new { Id = id }, transaction);
         await connection.ExecuteAsync("UPDATE payruns SET Status = @Status WHERE Id = @Id", new { Id = id, Status = pending == 0 ? "Paid" : "Partially Paid" }, transaction);
         await transaction.CommitAsync();
@@ -1819,13 +1826,53 @@ ORDER BY EmployeeId, EffectiveFrom DESC, Id DESC", new { EmployeeIds = employeeI
 
     private static async Task DeletePayRunAttemptAsync(MySqlConnection connection, MySqlTransaction transaction, int payRunId)
     {
+        await SyncExpenseClaimPayrollStatusAsync(connection, transaction, payRunId, "Pending Payroll");
         await connection.ExecuteAsync("UPDATE payrolladjustments SET Status='Approved', PayRunId=NULL WHERE PayRunId=@PayRunId;DELETE FROM tax_computation_snapshots WHERE pay_run_id=@PayRunId;DELETE FROM payrunemployeelines WHERE PayRunId=@PayRunId;DELETE FROM payrunemployees WHERE PayRunId=@PayRunId;DELETE FROM payrun_step_logs WHERE PayRunId=@PayRunId;DELETE FROM payroll_validation_issues WHERE PayRunId=@PayRunId;DELETE FROM payroll_calculation_traces WHERE PayRunId=@PayRunId;DELETE FROM payroll_reconciliation_results WHERE PayRunId=@PayRunId;DELETE FROM payruns WHERE Id=@PayRunId;", new { PayRunId = payRunId }, transaction);
     }
 
     private static async Task ClearPayRunDetailsAsync(MySqlConnection connection, MySqlTransaction transaction, int payRunId)
     {
+        await SyncExpenseClaimPayrollStatusAsync(connection, transaction, payRunId, "Pending Payroll");
         await connection.ExecuteAsync("UPDATE payrolladjustments SET Status='Approved', PayRunId=NULL WHERE PayRunId=@PayRunId;DELETE FROM payrunemployeelines WHERE PayRunId=@PayRunId;DELETE FROM payrunemployees WHERE PayRunId=@PayRunId;DELETE FROM payrun_step_logs WHERE PayRunId=@PayRunId;DELETE FROM payroll_validation_issues WHERE PayRunId=@PayRunId;DELETE FROM payroll_calculation_traces WHERE PayRunId=@PayRunId;DELETE FROM payroll_reconciliation_results WHERE PayRunId=@PayRunId;UPDATE payruns SET PayrollCost=0, NetPay=0 WHERE Id=@PayRunId;", new { PayRunId = payRunId }, transaction);
     }
+
+    private static async Task SyncExpenseClaimPayrollStatusAsync(MySqlConnection connection, MySqlTransaction transaction, int payRunId, string payrollStatus, IEnumerable<int>? employeeIds = null)
+    {
+        if (!await TableExistsAsync(connection, transaction, "ess_expense_claims") || !await TableExistsAsync(connection, transaction, "payroll_reimbursement_queue"))
+            return;
+
+        var employees = employeeIds?.Distinct().ToArray() ?? [];
+        var employeeFilter = employees.Length > 0 ? "AND c.EmployeeId IN @EmployeeIds" : "";
+        var queueEmployeeFilter = employees.Length > 0 ? "AND q.EmployeeId IN @EmployeeIds" : "";
+        var claimStatus = payrollStatus == "Pending Payroll" ? "Pending Payroll" : payrollStatus;
+        int? claimRunId = payrollStatus == "Pending Payroll" ? null : payRunId;
+        await connection.ExecuteAsync(@$"
+UPDATE ess_expense_claims c
+JOIN payrolladjustments a ON a.ClientId=c.ClientId
+    AND a.EmployeeId=c.EmployeeId
+    AND a.ReasonCode='EXPENSE_CLAIM'
+    AND a.PayRunId=@PayRunId
+    AND a.Notes LIKE CONCAT('Expense claim ', c.ClaimNumber, ' line %')
+SET c.PayrollStatus=@PayrollStatus,
+    c.PayrollRunId=@ClaimRunId,
+    c.UpdatedAt=CURRENT_TIMESTAMP
+WHERE 1=1 {employeeFilter};", new { PayRunId = payRunId, PayrollStatus = claimStatus, ClaimRunId = claimRunId, EmployeeIds = employees }, transaction);
+
+        await connection.ExecuteAsync(@$"
+UPDATE payroll_reimbursement_queue q
+JOIN payrolladjustments a ON a.ClientId=q.ClientId
+    AND a.EmployeeId=q.EmployeeId
+    AND a.ReasonCode='EXPENSE_CLAIM'
+    AND a.PayRunId=@PayRunId
+    AND a.Notes=CONCAT('Expense claim ', (SELECT c.ClaimNumber FROM ess_expense_claims c WHERE c.Id=q.ExpenseClaimId), ' line ', q.ExpenseLineId)
+SET q.Status=@PayrollStatus,
+    q.PayrollRunId=@ClaimRunId,
+    q.UpdatedAt=CURRENT_TIMESTAMP
+WHERE 1=1 {queueEmployeeFilter};", new { PayRunId = payRunId, PayrollStatus = claimStatus, ClaimRunId = claimRunId, EmployeeIds = employees }, transaction);
+    }
+
+    private static async Task<bool> TableExistsAsync(MySqlConnection connection, MySqlTransaction transaction, string tableName) =>
+        await connection.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@TableName", new { TableName = tableName }, transaction) > 0;
 
     private static string Trunc(string? value, int max) =>
         string.IsNullOrEmpty(value) || value.Length <= max ? value ?? "" : value[..max];

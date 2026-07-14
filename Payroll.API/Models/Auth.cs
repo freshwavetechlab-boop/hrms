@@ -5,12 +5,24 @@ public class AuthUser
     public int Id { get; set; }
     public string Email { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
+    public string Mobile { get; set; } = string.Empty;
     public int? ClientId { get; set; }
     public int? EmployeeId { get; set; }
     public bool IsActive { get; set; }
     public bool MustChangePassword { get; set; }
     public List<string> Roles { get; set; } = [];
     public List<string> Permissions { get; set; } = [];
+    public List<DashboardAccessItem> DashboardAccess { get; set; } = [];
+    public string DefaultDashboardCode { get; set; } = string.Empty;
+}
+
+public class DashboardAccessItem
+{
+    public string Code { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public string Route { get; set; } = string.Empty;
+    public int SortOrder { get; set; }
 }
 
 public class SaveAuthUserRequest
@@ -18,6 +30,7 @@ public class SaveAuthUserRequest
     public int Id { get; set; }
     public string Email { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
+    public string Mobile { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
     public int? ClientId { get; set; }
     public int? EmployeeId { get; set; }
@@ -43,6 +56,7 @@ public class EmployeeLoginProvisionPreview
     public string EmployeeCode { get; set; } = string.Empty;
     public string EmployeeName { get; set; } = string.Empty;
     public string WorkEmail { get; set; } = string.Empty;
+    public string AadhaarNumber { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
     public string Designation { get; set; } = string.Empty;
 }
@@ -64,6 +78,13 @@ public class ProvisionEmployeeLoginResult
     public string Email { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public string Message { get; set; } = string.Empty;
+}
+
+public class EmployeeLoginProvisionResult : ProvisionEmployeeLoginResult
+{
+    public string TemporaryPassword { get; set; } = string.Empty;
+    public int ClientId { get; set; }
+    public string NotificationEmail { get; set; } = string.Empty;
 }
 
 public class ProvisionEmployeeLoginsResponse
@@ -97,6 +118,13 @@ public class LoginRequest
 {
     public string Email { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
+    public string Portal { get; set; } = string.Empty;
+}
+
+public class ChangePasswordRequest
+{
+    public string CurrentPassword { get; set; } = string.Empty;
+    public string NewPassword { get; set; } = string.Empty;
 }
 
 public class LoginResponse

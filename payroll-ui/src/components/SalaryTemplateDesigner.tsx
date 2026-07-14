@@ -7,7 +7,8 @@ import { calculateSalaryDetails, calculateSalaryTotals } from '../utils/salary'
 import PageTabs from './PageTabs'
 import '../TemplateDesigner.css'
 
-const componentTabs = ['Earning', 'Deduction', 'Reimbursement'] as const
+const componentTabs = ['Earning', 'Deduction', 'Reimbursement', 'Benefit'] as const
+type ComponentTab = (typeof componentTabs)[number]
 
 type SalaryTemplateDesignerProps = {
   clients: Client[]
@@ -23,7 +24,7 @@ type SalaryTemplateDesignerProps = {
 }
 
 export default function SalaryTemplateDesigner({ clients, components, structure, setStructure, templates, saveTemplate, saving = false, templateDownloaded = false, onDownloadTemplate, onUploadTemplate }: SalaryTemplateDesignerProps) {
-  const [tab, setTab] = useState<'Earning' | 'Deduction' | 'Reimbursement'>('Earning')
+  const [tab, setTab] = useState<ComponentTab>('Earning')
   const [dragId, setDragId] = useState('')
   const [dragLineId, setDragLineId] = useState('')
   const library = components.filter(component => component.active && component.category === tab)

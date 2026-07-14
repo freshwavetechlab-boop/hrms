@@ -10,7 +10,7 @@ using System.Xml.Linq;
 
 namespace Payroll.API.Repositories;
 
-public class EmployeeRepository(IConfiguration configuration)
+public class EmployeeRepository(IConfiguration configuration, AuthRepository authRepository, NotificationRepository notificationRepository)
 {
     private static readonly ConcurrentDictionary<Guid, EmployeeImportJobStatus> ImportJobs = new();
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
@@ -28,6 +28,11 @@ ORDER BY u.DisplayName,u.Email");
     public async Task<int> SaveAsync(Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db);
+        return await SaveWithOpenConnectionAsync(db, employee, changedBy, infotypeCode, changeReason);
+    }
+
+    private static async Task<int> SaveWithOpenConnectionAsync(MySqlConnection db, Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null)
+    {
         var wasNew = employee.Id == 0;
         var before = employee.Id > 0 ? await LoadEmployeeAsync(db, employee.Id) : null;
         var actionType = wasNew ? "Hire" : "Master Update";
@@ -201,10 +206,10 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         {
             new[] { "Column", "Required", "How to fill", "Validation" },
             new[] { "Employee Code", "Yes", "Unique employee code. Existing code updates that employee.", "No duplicate code in the file." },
-            new[] { "First Name", "Yes", "Employee first name.", "Required." },
+            new[] { "First Name", "No", "Employee first name.", "Optional for bulk upload." },
             new[] { "Last Name", "No", "Employee last name.", "" },
             new[] { "Gender", "No", "Male, Female, or Other.", "Must match allowed values." },
-            new[] { "Date Of Joining", "Yes", "Use yyyy-MM-dd, e.g. 2026-04-01.", "Required valid date." },
+            new[] { "Date Of Joining", "No", "Use yyyy-MM-dd, e.g. 2026-04-01.", "Optional. If filled, it must be a valid date." },
             new[] { "Work Email", "No", "Employee office email.", "Cannot already belong to another employee." },
             new[] { "Department / Designation / Grade", "No", "Use text from Dropdown Masters.", "Must match active master data for the client." },
             new[] { "Work Location", "No", "Use the work location name, not ID.", "Must match one active work location for the client." },
@@ -212,7 +217,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             new[] { "Salary Template", "No", "Use salary template name, not ID.", "Must match one active salary template for the client." },
             new[] { "Annual CTC", "No", "Numeric amount only.", "If blank, template CTC is used where available." },
             new[] { "Portal Access / Active", "No", "TRUE/FALSE, YES/NO, 1/0, Active/Inactive.", "Defaults are preserved for existing employees." },
-            new[] { "Bank / Address / Statutory IDs", "No", "Fill text values directly.", "PAN, Aadhaar, IFSC are format validated where provided." }
+            new[] { "Bank / Address / Statutory IDs", "No", "Fill text values directly.", "Stored as provided. Format validation is currently relaxed." }
         };
         var references = new List<string[]> { new[] { "Reference Type", "Id", "Value", "Extra", "Notes" } };
         if (client.Id > 0) references.Add(new[] { "Client", client.Id.ToString(), client.Name, "", "Selected client" });
@@ -316,7 +321,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                     var gender = Cell(row, map, "Gender"); if (!string.IsNullOrWhiteSpace(gender)) { if (!new[] { "Male", "Female", "Other" }.Contains(gender, StringComparer.OrdinalIgnoreCase)) errors.Add($"{sheet} row {rowNumber}: Gender must be Male, Female, or Other."); else employee.Gender = gender; }
                     if (TryDate(Cell(row, map, "Date Of Birth"), out var dob)) { if (!string.IsNullOrWhiteSpace(dob)) personal.DateOfBirth = dob; } else errors.Add($"{sheet} row {rowNumber}: Date Of Birth must be yyyy-MM-dd.");
                     SetIfAny(value => personal.Mobile = value, Cell(row, map, "Mobile"));
-                    SetIfAny(value => personal.PanNumber = value.ToUpperInvariant(), Cell(row, map, "PAN"));
+                    SetIfAny(value => personal.PanNumber = value, Cell(row, map, "PAN"));
                     SetIfAny(value => personal.AadhaarNumber = value, Cell(row, map, "Aadhaar"));
                     SetIfAny(value => personal.UanNumber = value, Cell(row, map, "UAN Number"));
                     SetIfAny(value => personal.EsicNumber = value, Cell(row, map, "ESIC Number"));
@@ -386,7 +391,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                     var draft = DraftFor(code, rowNumber); var payment = draft.Employee.PaymentDetails ?? new EmployeePaymentDetails(); draft.Employee.PaymentDetails = payment;
                     SetIfAny(value => payment.BankName = value, Cell(row, map, "Bank Name"));
                     SetIfAny(value => payment.BankAccountNo = value, Cell(row, map, "Bank Account No"));
-                    SetIfAny(value => payment.IfscCode = value.ToUpperInvariant(), Cell(row, map, "IFSC"));
+                    SetIfAny(value => payment.IfscCode = value, Cell(row, map, "IFSC"));
                     var mode = Cell(row, map, "Payment Mode"); if (!string.IsNullOrWhiteSpace(mode)) { if (!new[] { "Bank Transfer", "Cheque", "Cash" }.Contains(mode, StringComparer.OrdinalIgnoreCase)) errors.Add($"{sheet} row {rowNumber}: Payment Mode must be Bank Transfer, Cheque, or Cash."); else payment.PaymentMode = mode; }
                     Mark(draft, "0009", Cell(row, map, "Change Reason"));
                 }
@@ -433,20 +438,17 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                     if (TryBool(Cell(row, map, "Active"), employee.IsActive, out var active)) employee.IsActive = active; else errors.Add($"Employees row {rowNumber}: Active must be TRUE/FALSE.");
                     if (TryDate(Cell(row, map, "Date Of Birth"), out var dob)) { if (!string.IsNullOrWhiteSpace(dob)) personal.DateOfBirth = dob; } else errors.Add($"Employees row {rowNumber}: Date Of Birth must be yyyy-MM-dd.");
                     SetIfAny(value => personal.Mobile = value, Cell(row, map, "Mobile"));
-                    SetIfAny(value => personal.PanNumber = value.ToUpperInvariant(), Cell(row, map, "PAN"));
+                    SetIfAny(value => personal.PanNumber = value, Cell(row, map, "PAN"));
                     SetIfAny(value => personal.AadhaarNumber = value, Cell(row, map, "Aadhaar"));
                     SetIfAny(value => personal.UanNumber = value, Cell(row, map, "UAN Number"));
                     SetIfAny(value => personal.EsicNumber = value, Cell(row, map, "ESIC Number"));
-                    if (!string.IsNullOrWhiteSpace(personal.PanNumber) && !PanOk(personal.PanNumber)) errors.Add($"Employees row {rowNumber}: PAN must be in format ABCDE1234F.");
-                    if (!string.IsNullOrWhiteSpace(personal.AadhaarNumber) && !AadhaarOk(personal.AadhaarNumber)) errors.Add($"Employees row {rowNumber}: Aadhaar must be 12 digits.");
                     SetIfAny(value => personal.Address = value, Cell(row, map, "Address"));
                     SetIfAny(value => personal.CorrespondenceAddress = value, Cell(row, map, "Correspondence Address"));
                     SetIfAny(value => personal.PermanentAddress = value, Cell(row, map, "Permanent Address"));
                     var payment = employee.PaymentDetails ?? new EmployeePaymentDetails(); employee.PaymentDetails = payment;
                     SetIfAny(value => payment.BankName = value, Cell(row, map, "Bank Name"));
                     SetIfAny(value => payment.BankAccountNo = value, Cell(row, map, "Bank Account No"));
-                    SetIfAny(value => payment.IfscCode = value.ToUpperInvariant(), Cell(row, map, "IFSC"));
-                    if (!string.IsNullOrWhiteSpace(payment.IfscCode) && !IfscOk(payment.IfscCode)) errors.Add($"Employees row {rowNumber}: IFSC must be in format ABCD0123456.");
+                    SetIfAny(value => payment.IfscCode = value, Cell(row, map, "IFSC"));
                     var mode = Cell(row, map, "Payment Mode");
                     if (!string.IsNullOrWhiteSpace(mode)) { if (!new[] { "Bank Transfer", "Cheque", "Cash" }.Contains(mode, StringComparer.OrdinalIgnoreCase)) errors.Add($"Employees row {rowNumber}: Payment Mode must be Bank Transfer, Cheque, or Cash."); else payment.PaymentMode = mode; }
                     var reason = Cell(row, map, "Change Reason");
@@ -463,30 +465,71 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                 ProcessPayRows(GetSheet(workbook, "0008 Basic Pay"), "0008 Basic Pay");
                 ProcessBankRows(GetSheet(workbook, "0009 Bank Details"), "0009 Bank Details");
             }
-            else ProcessFlatRows(GetSheet(workbook, "Employees", "Employee", "CSV"));
+            else ProcessFlatRows(GetEmployeeDataSheet(workbook));
 
             foreach (var draft in drafts.Values)
             {
-                if (string.IsNullOrWhiteSpace(draft.Employee.FirstName)) errors.Add($"Employee {draft.Employee.EmployeeCode}: First Name is required in 0002 Personal Data.");
-                if (string.IsNullOrWhiteSpace(draft.Employee.DateOfJoining)) errors.Add($"Employee {draft.Employee.EmployeeCode}: Date Of Joining is required in 0001 Org Assignment.");
+                if (string.IsNullOrWhiteSpace(draft.Employee.FirstName)) draft.Employee.FirstName = draft.Employee.EmployeeCode;
             }
             if (errors.Count > 0) return new EmployeeImportResult(totalRows, 0, 0, errors);
 
             var inserted = 0; var updated = 0; var completed = 0;
+            var savedEmployees = new List<Employee>();
             foreach (var draft in drafts.Values.OrderBy(x => x.FirstRow))
             {
                 var isNew = draft.Employee.Id == 0;
-                await SaveAsync(draft.Employee, "Bulk Upload", isNew ? null : string.Join(',', draft.Infotypes.OrderBy(x => x)), draft.ChangeReason);
+                if (draft.Employee.IsActive && !string.IsNullOrWhiteSpace(draft.Employee.EmployeeCode))
+                    draft.Employee.PortalAccess = true;
+                await SaveWithOpenConnectionAsync(db, draft.Employee, "Bulk Upload", isNew ? null : string.Join(',', draft.Infotypes.OrderBy(x => x)), draft.ChangeReason);
+                if (draft.Employee.IsActive && draft.Employee.PortalAccess) savedEmployees.Add(draft.Employee);
                 if (isNew) inserted++; else updated++;
                 completed++;
-                progress?.Invoke(Math.Min(totalRows, completed), inserted, updated);
+                if (completed == drafts.Count || completed % 25 == 0) progress?.Invoke(Math.Min(totalRows, completed), inserted, updated);
             }
+            if (savedEmployees.Count > 0) _ = Task.Run(() => ProvisionAndQueueWelcomeBatchAsync(savedEmployees));
             return new EmployeeImportResult(totalRows, inserted, updated, []);
         }
         catch (Exception ex) { return new EmployeeImportResult(0, 0, 0, [$"Import failed: {ex.Message}"]); }
     }
 
     static void SetJob(Guid jobId, Func<EmployeeImportJobStatus, EmployeeImportJobStatus> update) => ImportJobs.AddOrUpdate(jobId, _ => update(new EmployeeImportJobStatus(jobId, "Processing", 0, 0, 0, 0, [])), (_, current) => update(current));
+
+    async Task ProvisionAndQueueWelcomeAsync(Employee employee)
+    {
+        var provision = await authRepository.EnsureEmployeeLoginAsync(employee.Id);
+        if (string.IsNullOrWhiteSpace(provision.TemporaryPassword) || provision.UserId is null || string.IsNullOrWhiteSpace(provision.NotificationEmail) || !EmailOk(provision.NotificationEmail)) return;
+        var portalUrl = configuration["EssPortal:Url"] ?? configuration["AppUrls:EssPortal"] ?? "http://localhost:5174";
+        await notificationRepository.PublishEventAsync(new NotificationEvent
+        {
+            EventCode = "ESS.WELCOME",
+            ResourceType = "Employee",
+            ResourceId = employee.Id.ToString(),
+            ClientId = employee.ClientId,
+            ActorName = "Bulk Upload",
+            ActorEmail = "bulk-upload@system.local",
+            PayloadJson = JsonSerializer.Serialize(new
+            {
+                employeeId = employee.Id,
+                employeeCode = employee.EmployeeCode,
+                employeeName = string.IsNullOrWhiteSpace(provision.EmployeeName) ? $"{employee.FirstName} {employee.LastName}".Trim() : provision.EmployeeName,
+                employeeEmail = provision.NotificationEmail,
+                loginId = provision.Email,
+                temporaryPassword = provision.TemporaryPassword,
+                essPortalUrl = portalUrl,
+                loginUrl = portalUrl,
+                mustChangePassword = true
+            })
+        });
+    }
+
+    async Task ProvisionAndQueueWelcomeBatchAsync(IEnumerable<Employee> employees)
+    {
+        foreach (var employee in employees)
+        {
+            try { await ProvisionAndQueueWelcomeAsync(employee); }
+            catch { }
+        }
+    }
     static readonly HashSet<string> EmployeeActions = new(StringComparer.OrdinalIgnoreCase) { "Hire", "Promotion", "Salary Change", "Demotion", "Transfer", "Retire", "Terminate", "Resign", "Rehire", "Master Update" };
     static readonly HashSet<string> EmployeeInfotypeCodes = new(StringComparer.OrdinalIgnoreCase) { "0000", "0001", "0002", "0006", "0008", "0009" };
 
@@ -841,7 +884,14 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
     static bool DateOk(string value) => TryDate(value, out _);
     static string? DbDate(string value) => TryDate(value, out var date) && !string.IsNullOrWhiteSpace(date) ? date : null;
     static string Norm(string value) => value.Replace(" ", "").Replace("_", "").Replace("-", "").ToLowerInvariant();
-    static async Task<EmployeeImportWorkbook> ParseImportWorkbookAsync(IFormFile file) { using var ms = new MemoryStream(); await file.CopyToAsync(ms); var bytes = ms.ToArray(); return file.FileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) ? ParseXlsxWorkbook(bytes) : new EmployeeImportWorkbook(new Dictionary<string, List<List<string>>>(StringComparer.OrdinalIgnoreCase) { ["Employees"] = ParseCsv(Encoding.UTF8.GetString(bytes)) }); }
+    static async Task<EmployeeImportWorkbook> ParseImportWorkbookAsync(IFormFile file)
+    {
+        using var ms = new MemoryStream();
+        await file.CopyToAsync(ms);
+        var bytes = ms.ToArray();
+        var isXlsx = file.FileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) || (bytes.Length > 4 && bytes[0] == 0x50 && bytes[1] == 0x4B && bytes[2] == 0x03 && bytes[3] == 0x04);
+        return isXlsx ? ParseXlsxWorkbook(bytes) : new EmployeeImportWorkbook(new Dictionary<string, List<List<string>>>(StringComparer.OrdinalIgnoreCase) { ["Employees"] = ParseCsv(Encoding.UTF8.GetString(bytes)) });
+    }
     static List<List<string>> ParseCsv(string text) { var rows = new List<List<string>>(); var row = new List<string>(); var cell = new StringBuilder(); var q = false; for (var i = 0; i < text.Length; i++) { var c = text[i]; if (q && c == '"' && i + 1 < text.Length && text[i + 1] == '"') { cell.Append('"'); i++; } else if (c == '"') q = !q; else if (!q && c == ',') { row.Add(cell.ToString()); cell.Clear(); } else if (!q && (c == '\n' || c == '\r')) { if (c == '\r' && i + 1 < text.Length && text[i + 1] == '\n') i++; row.Add(cell.ToString()); cell.Clear(); rows.Add(row); row = []; } else cell.Append(c); } row.Add(cell.ToString()); if (row.Any(x => x.Length > 0)) rows.Add(row); return rows; }
     static EmployeeImportWorkbook ParseXlsxWorkbook(byte[] bytes)
     {
@@ -943,12 +993,21 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
         var wanted = names.Select(Norm).ToHashSet(StringComparer.OrdinalIgnoreCase);
         return workbook.Sheets.FirstOrDefault(sheet => wanted.Contains(Norm(sheet.Key))).Value ?? [];
     }
+    static List<List<string>> GetEmployeeDataSheet(EmployeeImportWorkbook workbook)
+    {
+        var rows = GetSheet(workbook, "Employees", "Employee", "CSV");
+        if (rows.Count > 0) return rows;
+        return workbook.Sheets
+            .Where(sheet => !new[] { "references", "reference", "masters", "instructions" }.Contains(Norm(sheet.Key), StringComparer.OrdinalIgnoreCase))
+            .Select(sheet => sheet.Value)
+            .FirstOrDefault(sheetRows => sheetRows.Skip(1).Any(row => !Blank(row))) ?? [];
+    }
     static bool HasDataSheet(EmployeeImportWorkbook workbook, params string[] names) => names.Any(name => GetSheet(workbook, name).Skip(1).Any(row => !Blank(row)));
     static int CountImportRows(EmployeeImportWorkbook workbook)
     {
         var known = new[] { "0001 Org Assignment", "0002 Personal Data", "0006 Addresses", "0008 Basic Pay", "0009 Bank Details" };
         var total = known.Sum(name => GetSheet(workbook, name).Skip(1).Count(row => !Blank(row)));
-        return total > 0 ? total : GetSheet(workbook, "Employees", "Employee", "CSV").Skip(1).Count(row => !Blank(row));
+        return total > 0 ? total : GetEmployeeDataSheet(workbook).Skip(1).Count(row => !Blank(row));
     }
     static bool TryDate(string value, out string date)
     {
@@ -984,9 +1043,6 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
         catch { return false; }
     }
     static bool EmailOk(string value) => Regex.IsMatch(value.Trim(), @"^[^@\s]+@[^@\s]+\.[^@\s]+$");
-    static bool PanOk(string value) => Regex.IsMatch(value.Trim(), @"^[A-Z]{5}[0-9]{4}[A-Z]$", RegexOptions.IgnoreCase);
-    static bool AadhaarOk(string value) => Regex.IsMatch(value.Trim(), @"^\d{12}$");
-    static bool IfscOk(string value) => Regex.IsMatch(value.Trim(), @"^[A-Z]{4}0[A-Z0-9]{6}$", RegexOptions.IgnoreCase);
     static int? ResolveWorkLocationId(string idText, string name, Dictionary<int, LocationRef> byId, Dictionary<string, List<LocationRef>> byName, List<string> errors, string sheet, int row)
     {
         if (!string.IsNullOrWhiteSpace(idText))

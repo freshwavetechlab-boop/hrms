@@ -22,6 +22,10 @@ public class TravelExpenseRepository(IConfiguration configuration)
         await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db); await SeedSampleDataAsync(db);
         return new TravelExpenseSetup
         {
+            ClientSettings = await db.QueryAsync<TravelExpenseClientSetting>(@"SELECT s.*, COALESCE(c.Name,'') ClientName
+FROM travel_expense_client_settings s
+JOIN clients c ON c.Id=s.ClientId
+ORDER BY c.Name"),
             Policies = await db.QueryAsync<TravelPolicy>(@"SELECT p.*, COALESCE(c.Name,'') CompanyName FROM travel_policies p LEFT JOIN clients c ON c.Id=p.CompanyId ORDER BY p.CompanyId, p.EffectiveFrom DESC, p.PolicyName"),
             Assignments = await db.QueryAsync<TravelPolicyAssignment>(@"SELECT a.*, p.PolicyName, COALESCE(c.Name,'') CompanyName, COALESCE(w.Name,'') BranchName, COALESCE(CONCAT(e.FirstName,' ',e.LastName,' / ',e.EmployeeCode),'') EmployeeName
 FROM travel_policy_assignments a
@@ -46,6 +50,24 @@ JOIN clients client ON client.Id=cs.ClientId
 ORDER BY ClientId, ExpenseType, IsClaimHeader DESC, CategoryName"),
             Audit = await db.QueryAsync<TravelPolicyAudit>("SELECT * FROM travel_policy_audit ORDER BY ChangedOn DESC, Id DESC LIMIT 250")
         };
+    }
+
+    public async Task<TravelExpenseClientSetting> SaveClientSettingAsync(TravelExpenseClientSetting row, string changedBy)
+    {
+        if (row.ClientId <= 0) throw new InvalidOperationException("Select a client.");
+        if (row.EffectiveTo.HasValue && row.EffectiveFrom.HasValue && row.EffectiveTo.Value.Date < row.EffectiveFrom.Value.Date)
+            throw new InvalidOperationException("Effective to cannot be before effective from.");
+        await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
+        if (await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM clients WHERE Id=@ClientId AND IsActive=TRUE", row) == 0)
+            throw new InvalidOperationException("Select an active client.");
+        var old = row.Id > 0 ? await db.QueryFirstOrDefaultAsync<TravelExpenseClientSetting>("SELECT * FROM travel_expense_client_settings WHERE Id=@Id", row) : null;
+        var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO travel_expense_client_settings (Id,ClientId,IsEnabled,EffectiveFrom,EffectiveTo,Remarks)
+VALUES (@Id,@ClientId,@IsEnabled,@EffectiveFrom,@EffectiveTo,@Remarks)
+ON DUPLICATE KEY UPDATE Id=LAST_INSERT_ID(Id),IsEnabled=VALUES(IsEnabled),EffectiveFrom=VALUES(EffectiveFrom),EffectiveTo=VALUES(EffectiveTo),Remarks=VALUES(Remarks),UpdatedAt=CURRENT_TIMESTAMP;
+SELECT LAST_INSERT_ID();", row);
+        await AuditAsync(db, "TravelExpenseClientSetting", id, old is null ? "Create" : "Update", old, row, changedBy);
+        return await db.QueryFirstAsync<TravelExpenseClientSetting>(@"SELECT s.*, COALESCE(c.Name,'') ClientName
+FROM travel_expense_client_settings s JOIN clients c ON c.Id=s.ClientId WHERE s.Id=@Id", new { Id = id });
     }
 
     public async Task<(long Id, string Error)> SavePolicyAsync(TravelPolicy row, string changedBy)
@@ -343,6 +365,18 @@ UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTA
 UNIQUE KEY UX_ClientExpenseCategory (ClientId, CategoryId),
 KEY IX_ClientExpenseCategory_Client (ClientId, IsEnabled)
 );
+CREATE TABLE IF NOT EXISTS travel_expense_client_settings (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ClientId INT NOT NULL,
+IsEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+EffectiveFrom DATE NULL,
+EffectiveTo DATE NULL,
+Remarks VARCHAR(500) NOT NULL DEFAULT '',
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_TravelExpenseClientSettings_Client (ClientId),
+KEY IX_TravelExpenseClientSettings_Enabled (ClientId, IsEnabled)
+);
 CREATE TABLE IF NOT EXISTS travel_policy_audit (
 Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
 EntityType VARCHAR(80) NOT NULL,
@@ -358,6 +392,9 @@ KEY IX_TravelPolicyAudit_ChangedOn (ChangedOn)
         await EnsureColumnAsync(db, "travel_expense_categories", "ClientId", "INT NOT NULL DEFAULT 0 AFTER Id");
         await EnsureColumnAsync(db, "travel_expense_categories", "ExpenseType", "VARCHAR(120) NOT NULL DEFAULT '' AFTER ParentId");
         await EnsureColumnAsync(db, "travel_expense_categories", "IsClaimHeader", "BOOLEAN NOT NULL DEFAULT FALSE AFTER ExpenseType");
+        await db.ExecuteAsync(@"INSERT INTO travel_expense_client_settings (ClientId,IsEnabled)
+SELECT Id,FALSE FROM clients WHERE IsActive=TRUE
+ON DUPLICATE KEY UPDATE ClientId=ClientId");
         await DropIndexIfExistsAsync(db, "travel_expense_categories", "UX_TravelExpenseCategories_Code");
         await MigrateLegacyExpenseCategoriesAsync(db);
     }

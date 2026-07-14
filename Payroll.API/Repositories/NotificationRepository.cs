@@ -23,6 +23,7 @@ public class NotificationRepository(IConfiguration configuration, ILogger<Notifi
 CREATE TABLE IF NOT EXISTS notification_smtp_settings (
     Id TINYINT PRIMARY KEY,
     IsEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+    DeliveryPaused BOOLEAN NOT NULL DEFAULT FALSE,
     Host VARCHAR(220) NOT NULL DEFAULT '',
     Port INT NOT NULL DEFAULT 587,
     UserName VARCHAR(220) NOT NULL DEFAULT '',
@@ -118,8 +119,9 @@ CREATE TABLE IF NOT EXISTS notification_logs (
     INDEX IX_NotificationLogs_Queue (QueueId),
     INDEX IX_NotificationLogs_Resource (ResourceType, ResourceId)
 );");
-        await db.ExecuteAsync(@"INSERT INTO notification_smtp_settings (Id,IsEnabled,Host,Port,UserName,Password,EnableSsl,FromEmail,FromName)
-VALUES (1,FALSE,'',587,'','',TRUE,'','')
+        await EnsureColumnAsync(db, "notification_smtp_settings", "DeliveryPaused", "BOOLEAN NOT NULL DEFAULT FALSE AFTER IsEnabled");
+        await db.ExecuteAsync(@"INSERT INTO notification_smtp_settings (Id,IsEnabled,DeliveryPaused,Host,Port,UserName,Password,EnableSsl,FromEmail,FromName)
+VALUES (1,FALSE,FALSE,'',587,'','',TRUE,'','')
 ON DUPLICATE KEY UPDATE Id=Id;");
         await EnsureDefaultsAsync(db);
     }
@@ -151,9 +153,10 @@ FROM notification_rules r LEFT JOIN clients c ON c.Id=r.ClientId LEFT JOIN notif
     {
         await using var db = Db();
         await db.OpenAsync();
-        await db.ExecuteAsync(@"INSERT INTO notification_smtp_settings (Id,IsEnabled,Host,Port,UserName,Password,EnableSsl,FromEmail,FromName)
-VALUES (1,@IsEnabled,@Host,@Port,@UserName,@Password,@EnableSsl,@FromEmail,@FromName)
-ON DUPLICATE KEY UPDATE IsEnabled=@IsEnabled,Host=@Host,Port=@Port,UserName=@UserName,Password=@Password,EnableSsl=@EnableSsl,FromEmail=@FromEmail,FromName=@FromName", NormalizeSmtp(request));
+        await EnsureColumnAsync(db, "notification_smtp_settings", "DeliveryPaused", "BOOLEAN NOT NULL DEFAULT FALSE AFTER IsEnabled");
+        await db.ExecuteAsync(@"INSERT INTO notification_smtp_settings (Id,IsEnabled,DeliveryPaused,Host,Port,UserName,Password,EnableSsl,FromEmail,FromName)
+VALUES (1,@IsEnabled,@DeliveryPaused,@Host,@Port,@UserName,@Password,@EnableSsl,@FromEmail,@FromName)
+ON DUPLICATE KEY UPDATE IsEnabled=@IsEnabled,DeliveryPaused=@DeliveryPaused,Host=@Host,Port=@Port,UserName=@UserName,Password=@Password,EnableSsl=@EnableSsl,FromEmail=@FromEmail,FromName=@FromName", NormalizeSmtp(request));
         return await db.QuerySingleAsync<NotificationSmtpSetting>("SELECT * FROM notification_smtp_settings WHERE Id=1");
     }
 
@@ -233,19 +236,27 @@ ORDER BY r.ClientId IS NULL, r.Id", new { EventCode = CleanCode(notificationEven
         }
     }
 
-    public async Task<int> ProcessPendingAsync(CancellationToken cancellationToken)
+    public async Task<int> ProcessPendingAsync(CancellationToken cancellationToken, long? queueId = null)
     {
         await using var db = Db();
         await db.OpenAsync(cancellationToken);
         var smtp = await db.QueryFirstOrDefaultAsync<NotificationSmtpSetting>("SELECT * FROM notification_smtp_settings WHERE Id=1") ?? new NotificationSmtpSetting();
-        var rows = (await db.QueryAsync<NotificationQueueItem>("SELECT * FROM notification_queue WHERE Status IN ('Pending','Retry') AND RetryCount < 5 ORDER BY CreatedAt LIMIT 20")).ToList();
+        if (!smtp.IsEnabled || smtp.DeliveryPaused) return 0;
+        var rows = (await db.QueryAsync<NotificationQueueItem>(@"SELECT * FROM notification_queue
+WHERE Status IN ('Pending','Retry') AND RetryCount < 5
+  AND (@QueueId IS NULL OR Id=@QueueId)
+ORDER BY CreatedAt LIMIT 20", new { QueueId = queueId })).ToList();
         var count = 0;
         foreach (var row in rows)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var claimed = await db.ExecuteAsync(@"UPDATE notification_queue
+SET Status='Processing'
+WHERE Id=@Id AND Status IN ('Pending','Retry') AND RetryCount < 5", new { row.Id });
+            if (claimed == 0) continue;
+
             try
             {
-                if (!smtp.IsEnabled) throw new InvalidOperationException("SMTP is disabled. Configure Settings / Notifications / SMTP.");
                 await SendAsync(smtp, row, cancellationToken);
                 await db.ExecuteAsync("UPDATE notification_queue SET Status='Sent',SentAt=UTC_TIMESTAMP(),ErrorMessage='' WHERE Id=@Id", new { row.Id });
                 await WriteLogsAsync(db, row, "Sent", "");
@@ -266,7 +277,13 @@ ORDER BY r.ClientId IS NULL, r.Id", new { EventCode = CleanCode(notificationEven
     {
         await using var db = Db();
         await db.OpenAsync();
-        await db.ExecuteAsync("UPDATE notification_queue SET Status='Pending',RetryCount=0,ErrorMessage='' WHERE Id=@Id", new { Id = id });
+        await db.ExecuteAsync("UPDATE notification_queue SET Status='Pending',RetryCount=0,ErrorMessage='',SentAt=NULL WHERE Id=@Id", new { Id = id });
+    }
+
+    public async Task<int> RetryAndProcessAsync(long id, CancellationToken cancellationToken)
+    {
+        await RetryAsync(id);
+        return await ProcessPendingAsync(cancellationToken, id);
     }
 
     public async Task QueueTestAsync(NotificationTestRequest request, int actorUserId)
@@ -478,6 +495,7 @@ VALUES (@QueueId,@EventCode,@ResourceType,@ResourceId,@Recipient,@Status,@Error)
     private static NotificationSmtpSetting NormalizeSmtp(NotificationSmtpSetting row) => new()
     {
         IsEnabled = row.IsEnabled,
+        DeliveryPaused = row.DeliveryPaused,
         Host = row.Host.Trim(),
         Port = row.Port <= 0 ? 587 : row.Port,
         UserName = row.UserName.Trim(),
@@ -487,6 +505,14 @@ VALUES (@QueueId,@EventCode,@ResourceType,@ResourceId,@Recipient,@Status,@Error)
         FromName = row.FromName.Trim()
     };
 
+    private static async Task EnsureColumnAsync(MySqlConnection connection, string tableName, string columnName, string definition)
+    {
+        var exists = await connection.ExecuteScalarAsync<int>(@"SELECT COUNT(*)
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @TableName AND COLUMN_NAME = @ColumnName", new { TableName = tableName, ColumnName = columnName });
+        if (exists == 0) await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition}");
+    }
+
     private static string CleanCode(string value) => (value ?? "").Trim().ToUpperInvariant();
     private static string CleanRecipientType(string value) => value.Equals("Cc", StringComparison.OrdinalIgnoreCase) ? "Cc" : value.Equals("Bcc", StringComparison.OrdinalIgnoreCase) ? "Bcc" : "To";
     private static bool Safe(string value) => Regex.IsMatch(value ?? "", @"^[A-Za-z_][A-Za-z0-9_]*$");
@@ -494,9 +520,26 @@ VALUES (@QueueId,@EventCode,@ResourceType,@ResourceId,@Recipient,@Status,@Error)
     private static Task EnsureDefaultsAsync(MySqlConnection db) => db.ExecuteAsync(@"INSERT INTO notification_templates (Code,Name,SubjectTemplate,BodyTemplate,IsHtml,IsActive) VALUES
 ('PAYRUN_LOCKED_DEFAULT','Payroll locked notification','Payroll {{resourceId}} is locked','<p>Payroll request <b>{{resourceId}}</b> has been submitted by {{requestedBy}}.</p><p>Event: {{eventCode}}</p>',TRUE,TRUE),
 ('LEAVE_REQUEST_DEFAULT','Leave request notification','Leave request {{resourceId}} submitted','<p>Leave request <b>{{resourceId}}</b> has been submitted by {{requestedBy}}.</p>',TRUE,TRUE),
+('ESS_WELCOME_DEFAULT','ESS welcome onboarding','Welcome to Frevo One HR','<p>Hello {{employeeName}},</p><p>Your ESS portal login has been created.</p><p><b>Portal:</b> <a href=""{{essPortalUrl}"">{{essPortalUrl}}</a><br/><b>Login ID:</b> {{loginId}}<br/><b>Temporary password:</b> {{temporaryPassword}}</p><p>You will be asked to change this password on first login.</p>',TRUE,TRUE),
 ('EXPENSE_CLAIM_SUBMIT_DEFAULT','Expense claim submission','Expense claim {{resourceId}} submitted','<p>Expense claim <b>{{resourceId}}</b> has been submitted by {{requestedBy}}.</p><p>Use My Tasks to review the request.</p>',TRUE,TRUE),
 ('EXPENSE_CLAIM_ACTION_DEFAULT','Expense claim workflow action','Expense claim {{resourceId}} updated','<p>Expense claim <b>{{resourceId}}</b> has been updated.</p><p>Event: {{eventCode}}</p>',TRUE,TRUE)
 ON DUPLICATE KEY UPDATE Name=VALUES(Name);
+
+UPDATE notification_templates
+SET BodyTemplate=REPLACE(BodyTemplate,'{{employeeEmail}}','{{loginId}}')
+WHERE Code='ESS_WELCOME_DEFAULT' AND BodyTemplate LIKE '%Login ID:%{{employeeEmail}}%';
+
+INSERT INTO notification_rules (Name,EventCode,ClientId,TemplateId,IsEnabled,ConditionJson)
+SELECT 'ESS welcome email to employee','ESS.WELCOME',NULL,t.Id,TRUE,'{}'
+FROM notification_templates t
+WHERE t.Code='ESS_WELCOME_DEFAULT'
+  AND NOT EXISTS (SELECT 1 FROM notification_rules r WHERE r.EventCode='ESS.WELCOME' AND r.Name='ESS welcome email to employee');
+
+INSERT INTO notification_recipients (RuleId,RecipientType,SourceType,SourceValue,TableName,MatchColumn,MatchValueSource,EmailColumn,IsActive)
+SELECT r.Id,'To','PayloadEmail','employeeEmail','','','resourceId','',TRUE
+FROM notification_rules r
+WHERE r.EventCode='ESS.WELCOME' AND r.Name='ESS welcome email to employee'
+  AND NOT EXISTS (SELECT 1 FROM notification_recipients x WHERE x.RuleId=r.Id AND x.RecipientType='To' AND x.SourceType='PayloadEmail');
 
 INSERT INTO notification_rules (Name,EventCode,ClientId,TemplateId,IsEnabled,ConditionJson)
 SELECT 'Expense claim submission to manager','EXPENSE_CLAIM.SUBMIT',NULL,t.Id,TRUE,'{}'

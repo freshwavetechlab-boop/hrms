@@ -1,37 +1,58 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { User, View } from '../types'
+import type { OrganizationBrand, User, View } from '../types'
+import { essApi, organizationBrand } from '../services/essApi'
 import { initials } from '../utils/ui'
 
 type Props = {
   user: User
   view: View
   manager: boolean
+  employeeSelf: boolean
   onNavigate: (view: View) => void
   onLogout: () => void
+  onChangePassword: () => void
   children: ReactNode
 }
 
-type IconName = 'home' | 'dashboard' | 'profile' | 'leave' | 'plus' | 'list' | 'travel' | 'expense' | 'work' | 'attendance' | 'pay' | 'tax' | 'tasks' | 'manager' | 'team' | 'approval' | 'collapse' | 'expand'
+type IconName = 'home' | 'dashboard' | 'profile' | 'leave' | 'plus' | 'list' | 'travel' | 'expense' | 'recruitment' | 'work' | 'attendance' | 'pay' | 'tax' | 'tasks' | 'manager' | 'team' | 'approval' | 'collapse' | 'expand'
 type NavItem = { icon: IconName; label: string; view: View; action?: string }
 
-export function WorkspaceShell({ user, view, manager, onNavigate, onLogout, children }: Props) {
+export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, onLogout, onChangePassword, children }: Props) {
   const [accountOpen, setAccountOpen] = useState(false)
   const [activeAction, setActiveAction] = useState<string | null>(null)
   const [openGroup, setOpenGroup] = useState('home')
   const [pageTitle, setPageTitle] = useState<{ title: string; section?: string } | null>(null)
-  const [navCollapsed, setNavCollapsed] = useState(false)
+  const [navCollapsed, setNavCollapsed] = useState(() => typeof window !== 'undefined' ? window.innerWidth <= 760 : false)
+  const [recruitmentEnabled, setRecruitmentEnabled] = useState<boolean | null>(null)
+  const [travelExpenseEnabled, setTravelExpenseEnabled] = useState<boolean | null>(null)
+  const [organization, setOrganization] = useState<OrganizationBrand | null>(null)
+  const hasRecruitmentAccess = canAccessRecruitment(user)
   const groups = useMemo(
     () => [
-      { key: 'home', icon: 'home' as IconName, label: 'Home', items: [{ icon: 'dashboard' as IconName, label: 'Dashboard', view: 'Dashboard' as View }, { icon: 'profile' as IconName, label: 'My profile', view: 'My Profile' as View }] },
-      { key: 'time', icon: 'attendance' as IconName, label: 'Time & leave', items: [{ icon: 'attendance' as IconName, label: 'Attendance calendar', view: 'Attendance' as View }, { icon: 'plus' as IconName, label: 'Apply leave', view: 'Leave' as View, action: 'ess:leave:new' }, { icon: 'list' as IconName, label: 'Leave history', view: 'Leave' as View, action: 'ess:leave:list' }] },
-      { key: 'payroll', icon: 'pay' as IconName, label: 'Pay & tax', items: [{ icon: 'pay' as IconName, label: 'Payslips', view: 'Pay' as View }, { icon: 'tax' as IconName, label: 'Tax declarations', view: 'Tax' as View }] },
-      { key: 'travel', icon: 'travel' as IconName, label: 'Travel & expense', items: [{ icon: 'plus' as IconName, label: 'Create travel request', view: 'Travel' as View, action: 'ess:travel:new' }, { icon: 'list' as IconName, label: 'Travel requests', view: 'Travel' as View, action: 'ess:travel:list' }, { icon: 'expense' as IconName, label: 'Other expense claim', view: 'Expense' as View, action: 'ess:expense:new' }, { icon: 'list' as IconName, label: 'Expense claims', view: 'Expense' as View, action: 'ess:expense:list' }] },
+      { key: 'home', icon: 'home' as IconName, label: 'Home', items: [{ icon: 'dashboard' as IconName, label: 'Dashboard', view: 'Dashboard' as View }, ...(employeeSelf ? [{ icon: 'profile' as IconName, label: 'My profile', view: 'My Profile' as View }] : [])] },
+      ...(employeeSelf ? [{ key: 'time', icon: 'attendance' as IconName, label: 'Time & leave', items: [{ icon: 'attendance' as IconName, label: 'Attendance calendar', view: 'Attendance' as View }, { icon: 'plus' as IconName, label: 'Apply leave', view: 'Leave' as View, action: 'ess:leave:new' }, { icon: 'list' as IconName, label: 'Leave history', view: 'Leave' as View, action: 'ess:leave:list' }] }] : []),
+      ...(employeeSelf ? [{ key: 'payroll', icon: 'pay' as IconName, label: 'Pay & tax', items: [{ icon: 'pay' as IconName, label: 'Payslips', view: 'Pay' as View }, { icon: 'tax' as IconName, label: 'Tax declarations', view: 'Tax' as View }] }] : []),
+      ...(employeeSelf && travelExpenseEnabled === true ? [{ key: 'travel', icon: 'travel' as IconName, label: 'Travel & expense', items: [{ icon: 'plus' as IconName, label: 'Create travel request', view: 'Travel' as View, action: 'ess:travel:new' }, { icon: 'list' as IconName, label: 'Travel requests', view: 'Travel' as View, action: 'ess:travel:list' }, { icon: 'expense' as IconName, label: 'Other expense claim', view: 'Expense' as View, action: 'ess:expense:new' }, { icon: 'list' as IconName, label: 'Expense claims', view: 'Expense' as View, action: 'ess:expense:list' }] }] : []),
+      ...(employeeSelf && recruitmentEnabled === true ? [{ key: 'recruitment', icon: 'recruitment' as IconName, label: 'Recruitment', items: [{ icon: 'plus' as IconName, label: 'Create requisition', view: 'Recruitment' as View, action: 'ess:recruitment:new' }, { icon: 'list' as IconName, label: 'My requisitions', view: 'Recruitment' as View, action: 'ess:recruitment:list' }] }] : []),
       { key: 'tasks', icon: 'tasks' as IconName, label: 'Approvals', items: [{ icon: 'tasks' as IconName, label: 'My approval tasks', view: 'My Tasks' as View }] },
       ...(manager ? [{ key: 'manager', icon: 'manager' as IconName, label: 'Manager workspace', items: [{ icon: 'team' as IconName, label: 'Team overview', view: 'Team' as View }, { icon: 'approval' as IconName, label: 'Team approvals', view: 'Approvals' as View }] }] : []),
     ],
-    [manager],
+    [employeeSelf, manager, recruitmentEnabled, travelExpenseEnabled],
   )
+
+  useEffect(() => {
+    if (!employeeSelf) { setTravelExpenseEnabled(false); return }
+    void essApi.features().then(features => setTravelExpenseEnabled(features.travelExpenseEnabled)).catch(() => setTravelExpenseEnabled(false))
+  }, [employeeSelf, user.email])
+  useEffect(() => {
+    if (!employeeSelf || !hasRecruitmentAccess) { setRecruitmentEnabled(false); return }
+    void essApi.recruitmentOptions().then(options => setRecruitmentEnabled(options.moduleEnabled && hasRecruitmentAccess)).catch(() => setRecruitmentEnabled(false))
+  }, [employeeSelf, hasRecruitmentAccess, user.email])
+  useEffect(() => { void organizationBrand().then(setOrganization).catch(() => undefined) }, [])
+  useEffect(() => { if (recruitmentEnabled === false && view === 'Recruitment') onNavigate('Dashboard') }, [onNavigate, recruitmentEnabled, view])
+  useEffect(() => { if (travelExpenseEnabled === false && (view === 'Travel' || view === 'Expense')) onNavigate('Dashboard') }, [onNavigate, travelExpenseEnabled, view])
+  useEffect(() => { if (!employeeSelf && isEmployeeOnlyView(view)) onNavigate('Dashboard') }, [employeeSelf, onNavigate, view])
 
   useEffect(() => {
     const active = groups.find(group => group.items.some(item => item.view === view))
@@ -53,11 +74,13 @@ export function WorkspaceShell({ user, view, manager, onNavigate, onLogout, chil
     if (activeAction.includes(':leave:') && view !== 'Leave') setActiveAction(null)
     if (activeAction.includes(':travel:') && view !== 'Travel') setActiveAction(null)
     if (activeAction.includes(':expense:') && view !== 'Expense') setActiveAction(null)
+    if (activeAction.includes(':recruitment:') && view !== 'Recruitment') setActiveAction(null)
   }, [activeAction, view])
 
   const navigate = (item: NavItem) => {
     setActiveAction(item.action ?? null)
     onNavigate(item.view)
+    if (typeof window !== 'undefined' && window.innerWidth <= 760) setNavCollapsed(true)
     const action = item.action
     if (action) window.setTimeout(() => window.dispatchEvent(new CustomEvent(action)), 0)
   }
@@ -67,6 +90,7 @@ export function WorkspaceShell({ user, view, manager, onNavigate, onLogout, chil
     if (view === 'Leave') return item.action === 'ess:leave:list'
     if (view === 'Travel') return item.action === 'ess:travel:list'
     if (view === 'Expense') return item.action === 'ess:expense:list'
+    if (view === 'Recruitment') return item.action === 'ess:recruitment:list'
     return !item.action
   }
   const activeGroup = groups.find(group => group.items.some(item => item.view === view))
@@ -74,7 +98,7 @@ export function WorkspaceShell({ user, view, manager, onNavigate, onLogout, chil
     ? activeGroup?.items.find(item => item.action === activeAction)
     : activeGroup?.items.find(item => isActiveItem(item)) ?? activeGroup?.items.find(item => item.view === view)
   const title = pageTitle?.title || activeItem?.label || view
-  const section = pageTitle?.section || activeGroup?.label || (manager ? 'Manager workspace' : 'Employee workspace')
+  const section = pageTitle?.section || activeGroup?.label || (manager && !employeeSelf ? 'Manager workspace' : 'Employee workspace')
 
   return <div className={`ess-shell ${navCollapsed ? 'ess-nav-collapsed' : ''}`}>
     <aside className="ess-sidebar">
@@ -102,15 +126,26 @@ export function WorkspaceShell({ user, view, manager, onNavigate, onLogout, chil
     </aside>
     <main className="ess-main">
       <header className="ess-topbar">
-        <div><span className="eyebrow">{manager ? 'Manager workspace' : 'Employee workspace'} / {section}</span><h2>{title}</h2></div>
+        <div className="ess-titlebar">
+          {organization?.logoDataUrl && <img className="ess-topbar-org-logo" src={organization.logoDataUrl} alt={organization.name || 'Organization logo'} />}
+          <div><span className="eyebrow">{manager && !employeeSelf ? 'Manager workspace' : 'Employee workspace'} / {section}</span><h2>{title}</h2></div>
+        </div>
         <div className="account-menu">
           <button className="user-menu" type="button" onClick={() => setAccountOpen(open => !open)} aria-expanded={accountOpen}><span>{initials(user.displayName)}</span><div><b>{user.displayName}</b><small>{manager ? 'Manager access' : 'Employee access'}</small></div><i>v</i></button>
-          {accountOpen && <div className="account-dropdown"><button type="button" onClick={() => { setActiveAction(null); onNavigate('My Profile'); setAccountOpen(false) }}>My profile</button><button type="button" onClick={onLogout}>Logout</button></div>}
+          {accountOpen && <div className="account-dropdown">{employeeSelf && <button type="button" onClick={() => { setActiveAction(null); onNavigate('My Profile'); setAccountOpen(false) }}>My profile</button>}<button type="button" onClick={() => { setAccountOpen(false); onChangePassword() }}>Change password</button><button type="button" onClick={onLogout}>Logout</button></div>}
         </div>
       </header>
       {children}
     </main>
   </div>
+}
+
+function isEmployeeOnlyView(view: View) {
+  return ['My Profile', 'Leave', 'Travel', 'Expense', 'Recruitment', 'Attendance', 'Pay', 'Tax'].includes(view)
+}
+
+function canAccessRecruitment(user: User) {
+  return user.permissions.some(permission => ['recruitment.rfr.view', 'recruitment.rfr.create', 'recruitment.manage'].includes(permission.toLowerCase()))
 }
 
 function MenuIcon({ name }: { name: IconName }) {
@@ -125,6 +160,7 @@ function MenuIcon({ name }: { name: IconName }) {
   if (name === 'list') return <svg {...common}><path d="M8 6h13" /><path d="M8 12h13" /><path d="M8 18h13" /><path d="M3 6h.01" /><path d="M3 12h.01" /><path d="M3 18h.01" /></svg>
   if (name === 'travel') return <svg {...common}><path d="M10 21l2-6" /><path d="M14 21l-2-6" /><path d="M3 9l18-5-5 18-4-7-7-4z" /></svg>
   if (name === 'expense') return <svg {...common}><path d="M7 3h10l3 3v15H7z" /><path d="M17 3v4h4" /><path d="M10 12h7" /><path d="M10 16h5" /><path d="M4 7v14" /></svg>
+  if (name === 'recruitment') return <svg {...common}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M8 2v4" /><path d="M16 2v4" /><path d="M8 11h8" /><path d="M8 15h5" /></svg>
   if (name === 'work') return <svg {...common}><rect x="3" y="7" width="18" height="13" rx="2" /><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" /><path d="M3 13h18" /></svg>
   if (name === 'attendance') return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
   if (name === 'pay') return <svg {...common}><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h4" /><path d="M7 14h2" /><circle cx="16" cy="12" r="2" /></svg>

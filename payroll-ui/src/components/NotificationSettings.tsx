@@ -9,7 +9,7 @@ import type { Client, NotificationParameterMapping, NotificationRecipient, Notif
 
 type Activity = { id: number; activityCode: string; displayName: string; moduleCode: string; resourceType: string; description: string; isActive: boolean }
 
-const smtp0: NotificationSmtpSetting = { id: 1, isEnabled: false, host: '', port: 587, userName: '', password: '', enableSsl: true, fromEmail: '', fromName: '' }
+const smtp0: NotificationSmtpSetting = { id: 1, isEnabled: false, deliveryPaused: false, host: '', port: 587, userName: '', password: '', enableSsl: true, fromEmail: '', fromName: '' }
 const template0: NotificationTemplate = { id: 0, code: '', name: '', subjectTemplate: '', bodyTemplate: '', isHtml: true, isActive: true }
 const rule0: NotificationRule = { id: 0, name: '', eventCode: '', clientId: null, clientName: '', templateId: 0, templateName: '', isEnabled: true, conditionJson: '{}', recipients: [], parameters: [] }
 const recipient0 = (): NotificationRecipient => ({ id: 0, ruleId: 0, recipientType: 'To', sourceType: 'StaticEmail', sourceValue: '', tableName: '', matchColumn: '', matchValueSource: 'resourceId', emailColumn: '', isActive: true })
@@ -56,8 +56,9 @@ export default function NotificationSettings() {
       <Tabs items={[
         { key: 'smtp', label: 'SMTP', children: <div className="settings-quick-form notification-form">
           <Row gutter={12}>
-            <Col xs={24} md={6}><Form.Item label="Enable mailing"><Switch checked={smtp.isEnabled} onChange={value => setSmtp({ ...smtp, isEnabled: value })} /></Form.Item></Col>
-            <Col xs={24} md={10}><Form.Item label="SMTP host"><Input value={smtp.host} onChange={event => setSmtp({ ...smtp, host: event.target.value })} placeholder="smtp.office365.com" /></Form.Item></Col>
+            <Col xs={24} md={6}><Form.Item label="Enable SMTP"><Switch checked={smtp.isEnabled} onChange={value => setSmtp({ ...smtp, isEnabled: value })} /></Form.Item></Col>
+            <Col xs={24} md={6}><Form.Item label="Pause delivery"><Switch checked={smtp.deliveryPaused} onChange={value => setSmtp({ ...smtp, deliveryPaused: value })} /></Form.Item></Col>
+            <Col xs={24} md={8}><Form.Item label="SMTP host"><Input value={smtp.host} onChange={event => setSmtp({ ...smtp, host: event.target.value })} placeholder="smtp.office365.com" /></Form.Item></Col>
             <Col xs={24} md={4}><Form.Item label="Port"><InputNumber min={1} max={65535} value={smtp.port} onChange={value => setSmtp({ ...smtp, port: Number(value || 587) })} /></Form.Item></Col>
             <Col xs={24} md={4}><Form.Item label="SSL"><Switch checked={smtp.enableSsl} onChange={value => setSmtp({ ...smtp, enableSsl: value })} /></Form.Item></Col>
             <Col xs={24} md={8}><Form.Item label="User name"><Input value={smtp.userName} onChange={event => setSmtp({ ...smtp, userName: event.target.value })} /></Form.Item></Col>
@@ -65,6 +66,7 @@ export default function NotificationSettings() {
             <Col xs={24} md={8}><Form.Item label="From email"><Input value={smtp.fromEmail} onChange={event => setSmtp({ ...smtp, fromEmail: event.target.value })} /></Form.Item></Col>
             <Col xs={24} md={8}><Form.Item label="From name"><Input value={smtp.fromName} onChange={event => setSmtp({ ...smtp, fromName: event.target.value })} /></Form.Item></Col>
           </Row>
+          <p className="form-helper-text">When SMTP is disabled or delivery is paused, emails remain queued as Pending. Retry counts are not consumed.</p>
           <Row justify="end"><Button type="primary" onClick={() => void saveSmtp()}>Save SMTP</Button></Row>
         </div> },
         { key: 'templates', label: 'Templates', children: <>

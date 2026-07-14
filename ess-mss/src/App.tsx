@@ -16,15 +16,18 @@ import { TaxPage } from './pages/TaxPage'
 import { TasksPage } from './pages/TasksPage'
 import { TravelPage } from './pages/TravelPage'
 import { ExpensePage } from './pages/ExpensePage'
+import { RecruitmentPage } from './pages/RecruitmentPage'
+import { ChangePasswordPage } from './pages/ChangePasswordPage'
 
 const viewStorageKey = 'ess.current.view'
-const views: View[] = ['Dashboard', 'My Profile', 'Leave', 'Travel', 'Expense', 'Attendance', 'Pay', 'Tax', 'My Tasks', 'Team', 'Approvals']
+const views: View[] = ['Dashboard', 'My Profile', 'Leave', 'Travel', 'Expense', 'Recruitment', 'Attendance', 'Pay', 'Tax', 'My Tasks', 'Team', 'Approvals']
 const viewRoutes: Record<View, string> = {
   Dashboard: 'home',
   'My Profile': 'profile',
   Leave: 'leave',
   Travel: 'travel',
   Expense: 'expenses',
+  Recruitment: 'recruitment',
   Attendance: 'attendance',
   Pay: 'pay',
   Tax: 'tax',
@@ -55,6 +58,7 @@ const setViewUrl = (view: View, replace = false) => {
 export default function App() {
   const [user, setUser] = useState<User | null>(null)
   const [view, setView] = useState<View>(savedView)
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false)
 
   useEffect(() => { if (!getToken()) return; void me().then(setUser).catch(() => undefined) }, [])
   useEffect(() => {
@@ -75,21 +79,29 @@ export default function App() {
   }, [view])
 
   if (!user) return <LoginPage onLogin={setUser} />
+  if (user.mustChangePassword || changePasswordOpen) return <ChangePasswordPage forced={user.mustChangePassword} onChanged={next => { setUser(next); setChangePasswordOpen(false) }} onCancel={() => setChangePasswordOpen(false)} />
 
-  const manager = !user.roles.includes('employee') || user.roles.some(role => ['hr_manager', 'payroll_approver', 'super_admin'].includes(role))
+  const employeeSelf = Boolean(user.employeeId && user.roles.includes('employee'))
+  const manager = !employeeSelf || user.roles.some(role => ['mss_manager', 'hr_manager', 'payroll_approver', 'super_admin'].includes(role))
   const logout = () => { clearToken(); setUser(null); setView('Dashboard'); setViewUrl('Dashboard', true) }
 
-  return <WorkspaceShell user={user} view={view} manager={manager} onNavigate={setView} onLogout={logout}><Page view={view} manager={manager} user={user} setView={setView} /></WorkspaceShell>
+  return <WorkspaceShell user={user} view={view} manager={manager} employeeSelf={employeeSelf} onNavigate={setView} onLogout={logout} onChangePassword={() => setChangePasswordOpen(true)}><Page view={view} manager={manager} employeeSelf={employeeSelf} user={user} setView={setView} /></WorkspaceShell>
 }
 
-function Page({ view, manager, user, setView }: { view: View; manager: boolean; user: User; setView: (view: View) => void }) {
-  if (view === 'Dashboard') return <DashboardPage user={user} manager={manager} setView={setView} />
+function Page({ view, manager, employeeSelf, user, setView }: { view: View; manager: boolean; employeeSelf: boolean; user: User; setView: (view: View) => void }) {
+  if (!employeeSelf && isEmployeeOnlyView(view)) return <PlaceholderPage view="Team" manager={manager} />
+  if (view === 'Dashboard') return <DashboardPage user={user} manager={manager} employeeSelf={employeeSelf} setView={setView} />
   if (view === 'My Profile') return <ProfilePage user={user} />
   if (view === 'My Tasks') return <TasksPage user={user} />
   if (view === 'Leave') return <LeavePage user={user} />
   if (view === 'Travel') return <TravelPage user={user} setView={setView} />
   if (view === 'Expense') return <ExpensePage user={user} />
+  if (view === 'Recruitment') return <RecruitmentPage user={user} />
   if (view === 'Pay') return <PayPage user={user} />
   if (view === 'Tax') return <TaxPage user={user} />
   return <PlaceholderPage view={view} manager={manager} />
+}
+
+function isEmployeeOnlyView(view: View) {
+  return ['My Profile', 'Leave', 'Travel', 'Expense', 'Recruitment', 'Attendance', 'Pay', 'Tax'].includes(view)
 }

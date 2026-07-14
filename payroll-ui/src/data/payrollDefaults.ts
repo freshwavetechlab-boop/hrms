@@ -59,7 +59,7 @@ export const employee0: Employee = { id: 0, clientId: 0, employeeCode: '', first
 export const client0: Client = { id: 0, name: '', code: '', contactPerson: '', email: '', phone: '', address: '', payScheduleJson: '{}', isActive: true }
 export const location0: WorkLocation = { id: 0, clientId: 0, clientName: '', name: '', address: '', city: '', state: '', postalCode: '', gstin: '', isPrimary: false, isActive: true }
 export const drop0: Drop = { id: 0, clientId: 0, type: 'Department', value: '', configJson: '', isActive: true }
-export const settingsMenus = ['Organization', 'Clients', 'Work Locations', 'Dropdown Masters', 'Tax Engine', 'Statutory Setup', 'Client Billing Configuration', 'Travel & Expense Policies', 'Salary Components', 'Salary Templates', 'Payslip Templates', 'Notifications', 'Scheduled Jobs'] as const
+export const settingsMenus = ['Organization', 'Clients', 'Work Locations', 'Dropdown Masters', 'ESS Settings', 'Tax Engine', 'Statutory Setup', 'Client Billing Configuration', 'Travel & Expense Policies', 'Recruitment Administration', 'Salary Components', 'Salary Templates', 'Payslip Templates', 'Notifications', 'Scheduled Jobs'] as const
 export const securityMenus = ['Users', 'Roles', 'Audit'] as const
 export const leaveAttendanceMenus = ['Attendance Policies', 'Leave Types', 'Holiday', 'Attendance', 'Geo-Fencing', 'Import Balance'] as const
 export const reportingMenus = [
@@ -87,4 +87,4 @@ export const reportingMenus = [
 ] as const
 export const workflowMenus = ['Workflow Setup', 'API Catalog', 'Department Head Assignments', 'My Tasks', 'Workflow History'] as const
 export const workWeekOptions = workWeekPatternConfigs.map(item => item.value)
-export const dropTypes = ['Department', 'Designation', 'Work Week', 'Employment Type', 'Employee Category', 'Employee Grade', 'Cost Center', 'Location Tag', 'State', 'City', 'Travel Type', 'Travel Location', 'Travel Class']
+export const dropTypes = ['Business Unit', 'Department', 'Designation', 'Work Week', 'Employment Type', 'Employee Category', 'Employee Grade', 'Cost Center', 'Location Tag', 'State', 'City', 'Travel Type', 'Travel Location', 'Travel Class', 'Recruitment Status', 'Position Status', 'Publishing Channel', 'Assignment Priority', 'Recruitment Source', 'Hiring Type', 'Position Category', 'Experience Range', 'Budget Amount', 'Interview Type', 'Interview Result', 'Interview Round', 'Candidate Status', 'Offer Status']

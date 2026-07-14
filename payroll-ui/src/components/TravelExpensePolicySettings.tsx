@@ -3,12 +3,12 @@ import { Button, Card, Checkbox, Col, Drawer, Form, Input, InputNumber, Row, Sel
 import DataTable from './DataTable'
 import SearchSelect, { selectOptions } from './SearchSelect'
 import { getClients, getEmployees } from '../services/payrollService'
-import { getDropdowns, getTravelExpenseSetup, getWorkLocations, saveTravelExpenseCategory, saveTravelPolicy, saveTravelPolicyAssignment, saveTravelPolicyRule } from '../services/settingsService'
+import { getDropdowns, getTravelExpenseSetup, getWorkLocations, saveTravelExpenseCategory, saveTravelExpenseClientSetting, saveTravelPolicy, saveTravelPolicyAssignment, saveTravelPolicyRule } from '../services/settingsService'
 import { getJson } from '../services/apiClient'
-import type { Client, Drop, Employee, TravelExpenseCategory, TravelExpenseSetup, TravelPolicy, TravelPolicyAssignment, TravelPolicyRule, TravelPolicyRuleType, WorkLocation } from '../types/payroll'
+import type { Client, Drop, Employee, TravelExpenseCategory, TravelExpenseClientSetting, TravelExpenseSetup, TravelPolicy, TravelPolicyAssignment, TravelPolicyRule, TravelPolicyRuleType, WorkLocation } from '../types/payroll'
 
 type WorkflowOption = { id: number; name: string; workflowCode?: string; resourceType?: string; isActive?: boolean }
-type DrawerMode = 'policy' | 'assignment' | 'rule' | 'category'
+type DrawerMode = 'clientSetting' | 'policy' | 'assignment' | 'rule' | 'category'
 type CategoryMode = 'globalHeader' | 'globalCategory' | 'clientSetting'
 
 const today = new Date().toISOString().slice(0, 10)
@@ -24,9 +24,10 @@ const policy0: TravelPolicy = { id: 0, policyCode: '', policyName: '', companyId
 const assignment0: TravelPolicyAssignment = { id: 0, policyId: 0, policyName: '', companyId: 0, companyName: '', branchId: null, branchName: '', department: '', grade: '', designation: '', employeeCategory: '', employmentType: '', employeeId: null, employeeName: '', priority: 100, effectiveFrom: today, effectiveTo: null, isActive: true }
 const rule0: TravelPolicyRule = { id: 0, policyId: 0, policyName: '', ruleType: 'Travel Mode', ruleName: '', appliesTo: 'Flight', isAllowed: true, eligibilityJson: '{}', limitAmount: null, limitCurrency: 'INR', receiptMandatory: false, approvalRequired: false, workflowId: null, workflowName: '', exceptionHandling: 'Warning', configJson: '{}', isActive: true }
 const category0: TravelExpenseCategory = { id: 0, clientId: 0, clientName: '', parentId: null, parentName: '', expenseType: '', isClaimHeader: true, categoryCode: '', categoryName: '', receiptMandatory: false, gstApplicable: false, dailyLimit: null, maximumClaim: null, requiresFinanceApproval: false, requiresManagerApproval: false, isActive: true }
+const clientSetting0: TravelExpenseClientSetting = { id: 0, clientId: 0, clientName: '', isEnabled: false, effectiveFrom: today, effectiveTo: null, remarks: '' }
 
 export default function TravelExpensePolicySettings() {
-  const [setup, setSetup] = useState<TravelExpenseSetup>({ policies: [], assignments: [], rules: [], categories: [], audit: [] })
+  const [setup, setSetup] = useState<TravelExpenseSetup>({ clientSettings: [], policies: [], assignments: [], rules: [], categories: [], audit: [] })
   const [clients, setClients] = useState<Client[]>([]), [locations, setLocations] = useState<WorkLocation[]>([]), [employees, setEmployees] = useState<Employee[]>([]), [drops, setDrops] = useState<Drop[]>([])
   const [workflows, setWorkflows] = useState<WorkflowOption[]>([])
   const [drawer, setDrawer] = useState<DrawerMode | null>(null)
@@ -34,6 +35,7 @@ export default function TravelExpensePolicySettings() {
   const [assignment, setAssignment] = useState<TravelPolicyAssignment>(assignment0)
   const [rule, setRule] = useState<TravelPolicyRule>(rule0)
   const [category, setCategory] = useState<TravelExpenseCategory>(category0)
+  const [clientSetting, setClientSetting] = useState<TravelExpenseClientSetting>(clientSetting0)
   const [categoryMode, setCategoryMode] = useState<CategoryMode>('clientSetting')
   const [activeRuleType, setActiveRuleType] = useState<TravelPolicyRuleType>('Travel Mode')
 
@@ -73,6 +75,7 @@ export default function TravelExpensePolicySettings() {
   const categoryHeaders = categoryMode === 'globalCategory' ? globalHeaders.filter(item => item.id !== category.id) : setup.categories.filter(item => item.clientId === category.clientId && item.isClaimHeader && item.id !== category.id)
 
   const openPolicy = (row?: TravelPolicy) => { setPolicy(row ? normalizePolicy(row) : policy0); setDrawer('policy') }
+  const openClientSetting = (row?: TravelExpenseClientSetting) => { setClientSetting(row ? normalizeClientSetting(row) : { ...clientSetting0, clientId: clients[0]?.id ?? 0 }); setDrawer('clientSetting') }
   const openAssignment = (row?: TravelPolicyAssignment) => { setAssignment(row ? normalizeAssignment(row) : { ...assignment0, policyId: activePolicies[0]?.id ?? 0, companyId: activePolicies[0]?.companyId ?? 0 }); setDrawer('assignment') }
   const openRule = (type: TravelPolicyRuleType, row?: TravelPolicyRule) => { setActiveRuleType(type); setRule(row ? { ...rule0, ...row, limitAmount: row.limitAmount ?? null, workflowId: row.workflowId ?? null } : { ...rule0, ruleType: type, appliesTo: optionsForRuleType(type)[0] ?? '', policyId: activePolicies[0]?.id ?? 0 }); setDrawer('rule') }
   const openCategory = (mode: CategoryMode, row?: TravelExpenseCategory) => {
@@ -83,6 +86,7 @@ export default function TravelExpensePolicySettings() {
   const closeDrawer = () => setDrawer(null)
 
   const savePolicyRow = async () => { const response = await saveTravelPolicy(policy); if (response.ok) { closeDrawer(); await load() } }
+  const saveClientSettingRow = async () => { const response = await saveTravelExpenseClientSetting(clientSetting); if (response.ok) { closeDrawer(); await load() } }
   const saveAssignmentRow = async () => { const response = await saveTravelPolicyAssignment(assignment); if (response.ok) { closeDrawer(); await load() } }
   const saveRuleRow = async () => { const response = await saveTravelPolicyRule(rule); if (response.ok) { closeDrawer(); await load() } }
   const saveCategoryRow = async () => { const response = await saveTravelExpenseCategory(category); if (response.ok) { closeDrawer(); await load() } }
@@ -90,6 +94,13 @@ export default function TravelExpensePolicySettings() {
   return <section className="travel-policy-settings">
     <Card title="Travel & Expense Policy Configuration" size="small" className="settings-panel settings-table-panel">
       <Tabs items={[
+        { key: 'clientSettings', label: 'Client Enablement', children: <><Header title="Client-wise enablement" text="Enable this switch to show Travel & Expense in ESS for that client." action="Add / edit client" onClick={() => openClientSetting()} /><DataTable rows={setup.clientSettings} exportFileName="travel-expense-client-settings" actions={row => <Button size="small" type="primary" onClick={() => openClientSetting(row)}>Edit</Button>} columns={[
+          { key: 'clientName', label: 'Client' },
+          { key: 'isEnabled', label: 'ESS visible', render: row => <Tag color={row.isEnabled ? 'green' : 'default'}>{row.isEnabled ? 'Enabled' : 'Disabled'}</Tag> },
+          { key: 'effectiveFrom', label: 'From', value: row => row.effectiveFrom ? dateText(row.effectiveFrom) : 'Immediate' },
+          { key: 'effectiveTo', label: 'To', value: row => row.effectiveTo ? dateText(row.effectiveTo) : 'Open' },
+          { key: 'remarks', label: 'Remarks' }
+        ]} /></> },
         { key: 'policies', label: 'Policy Master', children: <><Header title="Travel policies" text="Company-wise effective-dated policy headers." action="Add policy" onClick={() => openPolicy()} /><DataTable rows={setup.policies} exportFileName="travel-policies" actions={row => <Button size="small" type="primary" onClick={() => openPolicy(row)}>Edit</Button>} columns={[
           { key: 'policyCode', label: 'Code' },
           { key: 'policyName', label: 'Policy' },
@@ -151,7 +162,14 @@ export default function TravelExpensePolicySettings() {
         ]} /> }
       ]} />
     </Card>
-    <Drawer className="settings-master-drawer travel-policy-drawer" title={drawerTitle(drawer)} open={drawer !== null} width="min(980px, 96vw)" destroyOnClose onClose={closeDrawer} footer={<Space><Button onClick={closeDrawer}>Cancel</Button><Button type="primary" onClick={() => drawer === 'policy' ? void savePolicyRow() : drawer === 'assignment' ? void saveAssignmentRow() : drawer === 'rule' ? void saveRuleRow() : void saveCategoryRow()}>Save</Button></Space>}>
+    <Drawer className="settings-master-drawer travel-policy-drawer" title={drawerTitle(drawer)} open={drawer !== null} width="min(980px, 96vw)" destroyOnClose onClose={closeDrawer} footer={<Space><Button onClick={closeDrawer}>Cancel</Button><Button type="primary" onClick={() => drawer === 'clientSetting' ? void saveClientSettingRow() : drawer === 'policy' ? void savePolicyRow() : drawer === 'assignment' ? void saveAssignmentRow() : drawer === 'rule' ? void saveRuleRow() : void saveCategoryRow()}>Save</Button></Space>}>
+      {drawer === 'clientSetting' && <Form layout="vertical" requiredMark={false}><Row gutter={12}>
+        <Col xs={24} md={10}><Form.Item label="Client"><SearchSelect value={clientSetting.clientId} onChange={value => setClientSetting({ ...clientSetting, clientId: Number(value) })} options={selectOptions(clients.map(item => ({ value: item.id, label: item.name })), 'Select client', 0)} /></Form.Item></Col>
+        <Col xs={24} md={6}><Form.Item label="Visible in ESS"><Switch checked={clientSetting.isEnabled} onChange={value => setClientSetting({ ...clientSetting, isEnabled: value })} /></Form.Item></Col>
+        <Col xs={24} md={4}><Form.Item label="Effective from"><Input type="date" value={clientSetting.effectiveFrom || ''} onChange={event => setClientSetting({ ...clientSetting, effectiveFrom: event.target.value || null })} /></Form.Item></Col>
+        <Col xs={24} md={4}><Form.Item label="Effective to"><Input type="date" value={clientSetting.effectiveTo || ''} onChange={event => setClientSetting({ ...clientSetting, effectiveTo: event.target.value || null })} /></Form.Item></Col>
+        <Col xs={24}><Form.Item label="Remarks"><Input.TextArea rows={3} value={clientSetting.remarks} onChange={event => setClientSetting({ ...clientSetting, remarks: event.target.value })} placeholder="Optional note for why this module is enabled or disabled." /></Form.Item></Col>
+      </Row></Form>}
       {drawer === 'policy' && <Form layout="vertical" requiredMark={false}><Row gutter={12}>
         <Col xs={24} md={8}><Form.Item label="Policy code"><Input value={policy.policyCode} onChange={event => setPolicy({ ...policy, policyCode: event.target.value.toUpperCase() })} /></Form.Item></Col>
         <Col xs={24} md={16}><Form.Item label="Policy name"><Input value={policy.policyName} onChange={event => setPolicy({ ...policy, policyName: event.target.value })} /></Form.Item></Col>
@@ -231,11 +249,16 @@ function optionsForRuleType(type: TravelPolicyRuleType) {
 }
 
 function drawerTitle(mode: DrawerMode | null) {
+  if (mode === 'clientSetting') return 'Travel & Expense client enablement'
   if (mode === 'policy') return 'Travel policy'
   if (mode === 'assignment') return 'Policy assignment rule'
   if (mode === 'rule') return 'Policy rule'
   if (mode === 'category') return 'Expense category'
   return ''
+}
+
+function normalizeClientSetting(row: TravelExpenseClientSetting): TravelExpenseClientSetting {
+  return { ...clientSetting0, ...row, effectiveFrom: row.effectiveFrom ? dateText(row.effectiveFrom) : null, effectiveTo: row.effectiveTo ? dateText(row.effectiveTo) : null }
 }
 
 function normalizePolicy(row: TravelPolicy): TravelPolicy {

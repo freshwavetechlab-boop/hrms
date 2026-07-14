@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS employee_attendance_punches (
         await EnsureTravelTablesAsync(db);
         await EnsureExpenseClaimTablesAsync(db);
         await EnsureColumnAsync(db, "essleaverequests", "DayType", "VARCHAR(30) NOT NULL DEFAULT 'Full Day' AFTER ToDate");
+        await EnsureProfileTablesAsync(db);
     }
 
     public async Task<IEnumerable<EssLeaveBalance>> GetLeaveBalancesAsync(int employeeId, int? clientId)
@@ -71,10 +72,85 @@ ORDER BY lt.Name", new { EmployeeId = employeeId, ClientId = clientId });
     {
         await using var db = Connection();
         await db.OpenAsync();
-        return await db.QueryFirstOrDefaultAsync<EssProfile>(@"SELECT e.EmployeeCode, e.FirstName, e.LastName, e.WorkEmail, e.Department, e.Designation, e.DateOfJoining,
-COALESCE(w.Name, '') AS WorkLocation, COALESCE(NULLIF(mu.DisplayName,''), CONCAT(m.FirstName, ' ', m.LastName), '') AS ReportingManager
+        await EnsureProfileTablesAsync(db);
+        return await db.QueryFirstOrDefaultAsync<EssProfile>(@"SELECT e.ClientId,e.EmployeeCode,e.FirstName,e.LastName,e.WorkEmail,e.Department,e.Designation,e.DateOfJoining,
+COALESCE(p.DateOfBirth,'') DateOfBirth,COALESCE(p.Mobile,'') Mobile,COALESCE(p.PanNumber,'') PanNumber,COALESCE(p.AadhaarNumber,'') AadhaarNumber,
+COALESCE(p.Address,'') Address,COALESCE(p.CorrespondenceAddress,'') CorrespondenceAddress,COALESCE(p.PermanentAddress,'') PermanentAddress,
+COALESCE(p.City,'') City,COALESCE(p.District,'') District,COALESCE(p.State,'') State,
+COALESCE(pay.BankName,'') BankName,COALESCE(pay.BankAccountNo,'') BankAccountNo,COALESCE(pay.IfscCode,'') IfscCode,COALESCE(pay.PaymentMode,'') PaymentMode,
+COALESCE(w.Name, '') AS WorkLocation, COALESCE(NULLIF(mu.DisplayName,''), CONCAT(m.FirstName, ' ', m.LastName), '') AS ReportingManager,
+COALESCE(s.AllowProfileEdit,FALSE) CanEdit,
+COALESCE(te.IsEnabled,FALSE) TravelExpenseEnabled
 FROM employees e LEFT JOIN worklocations w ON w.Id=e.WorkLocationId LEFT JOIN authusers mu ON mu.Id=e.ReportingManagerUserId LEFT JOIN employees m ON m.Id=e.ReportingManagerId
+LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id
+LEFT JOIN employeepaymentdetails pay ON pay.EmployeeId=e.Id
+LEFT JOIN ess_client_settings s ON s.ClientId=e.ClientId AND s.IsActive=TRUE
+LEFT JOIN travel_expense_client_settings te ON te.ClientId=e.ClientId
+  AND te.IsEnabled=TRUE
+  AND (te.EffectiveFrom IS NULL OR te.EffectiveFrom<=CURRENT_DATE)
+  AND (te.EffectiveTo IS NULL OR te.EffectiveTo>=CURRENT_DATE)
 WHERE e.Id=@EmployeeId AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { EmployeeId = employeeId, ClientId = clientId });
+    }
+
+    public async Task<EssFeatureAccess> GetFeatureAccessAsync(int employeeId, int? clientId)
+    {
+        await using var db = Connection();
+        await db.OpenAsync();
+        return new EssFeatureAccess { TravelExpenseEnabled = await IsTravelExpenseEnabledAsync(db, employeeId, clientId) };
+    }
+
+    public async Task<(EssProfile? Profile, string? Error)> SaveProfileAsync(int employeeId, int? clientId, SaveEssProfileRequest request, string changedBy)
+    {
+        await using var db = Connection();
+        await db.OpenAsync();
+        await EnsureProfileTablesAsync(db);
+        var employee = await db.QueryFirstOrDefaultAsync<(int Id, int ClientId)>("SELECT Id,ClientId FROM employees WHERE Id=@EmployeeId AND IsActive=TRUE AND (@ClientId IS NULL OR ClientId=@ClientId)", new { EmployeeId = employeeId, ClientId = clientId });
+        if (employee.Id == 0) return (null, "Employee profile was not found.");
+        var allowed = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM ess_client_settings WHERE ClientId=@ClientId AND AllowProfileEdit=TRUE AND IsActive=TRUE", new { employee.ClientId });
+        if (allowed == 0) return (null, "Profile self-update is not enabled for your client.");
+        var pan = Clean(request.PanNumber);
+        var ifsc = Clean(request.IfscCode);
+        var email = request.WorkEmail.Trim();
+        if (!string.IsNullOrWhiteSpace(email) && !System.Text.RegularExpressions.Regex.IsMatch(email, @"^[^@\s]+@[^@\s]+\.[^@\s]+$")) return (null, "Enter a valid email address.");
+        var before = await GetProfileAsync(employeeId, clientId);
+        await using var tx = await db.BeginTransactionAsync();
+        await db.ExecuteAsync(@"UPDATE employees
+SET FirstName=@FirstName,LastName=@LastName,WorkEmail=@WorkEmail
+WHERE Id=@EmployeeId", new { EmployeeId = employeeId, FirstName = Clean(request.FirstName), LastName = Clean(request.LastName), WorkEmail = email }, tx);
+        await db.ExecuteAsync(@"INSERT INTO employeepersonaldetails (EmployeeId,DateOfBirth,Mobile,PanNumber,AadhaarNumber,UanNumber,EsicNumber,Address,CorrespondenceAddress,PermanentAddress,Source,SourceLocation,City,District,State,RawDesignation,OriginalEmployeeCode,DuplicateResolution,ExcelRow,EsicEmployee,PtLwfWorkmenComp,Tds,Recovery)
+VALUES (@EmployeeId,@DateOfBirth,@Mobile,@PanNumber,@AadhaarNumber,'','',@Address,@CorrespondenceAddress,@PermanentAddress,'','',@City,@District,@State,'','', '',0,0,0,0,0)
+ON DUPLICATE KEY UPDATE DateOfBirth=@DateOfBirth,Mobile=@Mobile,PanNumber=@PanNumber,AadhaarNumber=@AadhaarNumber,Address=@Address,CorrespondenceAddress=@CorrespondenceAddress,PermanentAddress=@PermanentAddress,City=@City,District=@District,State=@State", new { EmployeeId = employeeId, DateOfBirth = Clean(request.DateOfBirth), Mobile = Clean(request.Mobile), PanNumber = pan, AadhaarNumber = Clean(request.AadhaarNumber), Address = Clean(request.Address), CorrespondenceAddress = Clean(request.CorrespondenceAddress), PermanentAddress = Clean(request.PermanentAddress), City = Clean(request.City), District = Clean(request.District), State = Clean(request.State) }, tx);
+        await db.ExecuteAsync(@"INSERT INTO employeepaymentdetails (EmployeeId,BankName,BankAccountNo,IfscCode,PaymentMode)
+VALUES (@EmployeeId,@BankName,@BankAccountNo,@IfscCode,@PaymentMode)
+ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode=@IfscCode,PaymentMode=@PaymentMode", new { EmployeeId = employeeId, BankName = Clean(request.BankName), BankAccountNo = Clean(request.BankAccountNo), IfscCode = ifsc, PaymentMode = Clean(request.PaymentMode) }, tx);
+        await db.ExecuteAsync(@"INSERT INTO ess_profile_update_audit (EmployeeId,ClientId,ChangedBy,OldValueJson,NewValueJson)
+VALUES (@EmployeeId,@ClientId,@ChangedBy,@OldValue,@NewValue)", new { EmployeeId = employeeId, employee.ClientId, ChangedBy = changedBy, OldValue = JsonSerializer.Serialize(before), NewValue = JsonSerializer.Serialize(request) }, tx);
+        await tx.CommitAsync();
+        return (await GetProfileAsync(employeeId, clientId), null);
+    }
+
+    public async Task<IEnumerable<EssClientSetting>> GetEssClientSettingsAsync()
+    {
+        await using var db = Connection();
+        await db.OpenAsync();
+        await EnsureProfileTablesAsync(db);
+        await db.ExecuteAsync(@"INSERT INTO ess_client_settings (ClientId,AllowProfileEdit,InitialPasswordMode,FixedPassword,IsActive)
+SELECT Id,FALSE,'App Default','',TRUE FROM clients WHERE IsActive=TRUE
+ON DUPLICATE KEY UPDATE ClientId=ClientId");
+        return await db.QueryAsync<EssClientSetting>(@"SELECT s.*,COALESCE(c.Name,'') ClientName
+FROM ess_client_settings s JOIN clients c ON c.Id=s.ClientId ORDER BY c.Name");
+    }
+
+    public async Task<EssClientSetting> SaveEssClientSettingAsync(EssClientSetting setting)
+    {
+        await using var db = Connection();
+        await db.OpenAsync();
+        await EnsureProfileTablesAsync(db);
+        var id = await db.ExecuteScalarAsync<int>(@"INSERT INTO ess_client_settings (Id,ClientId,AllowProfileEdit,InitialPasswordMode,FixedPassword,IsActive)
+VALUES (@Id,@ClientId,@AllowProfileEdit,@InitialPasswordMode,@FixedPassword,@IsActive)
+ON DUPLICATE KEY UPDATE Id=LAST_INSERT_ID(Id),AllowProfileEdit=VALUES(AllowProfileEdit),InitialPasswordMode=VALUES(InitialPasswordMode),FixedPassword=VALUES(FixedPassword),IsActive=VALUES(IsActive),UpdatedAt=CURRENT_TIMESTAMP;
+SELECT LAST_INSERT_ID();", setting);
+        return await db.QueryFirstAsync<EssClientSetting>(@"SELECT s.*,COALESCE(c.Name,'') ClientName FROM ess_client_settings s JOIN clients c ON c.Id=s.ClientId WHERE s.Id=@Id", new { Id = id });
     }
 
     public async Task<(EssLeaveRequest? Request, string? Error)> CreateLeaveRequestAsync(int employeeId, int? clientId, CreateEssLeaveRequest request)
@@ -113,6 +189,8 @@ LIMIT 1", new { EmployeeId = employeeId, ClientId = clientId, Code = request.Lea
     public async Task<EssTravelOptions> GetTravelOptionsAsync(int employeeId, int? clientId)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
+        if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId))
+            return new EssTravelOptions { ValidationMessages = ["Travel & Expense is not enabled for your client."] };
         var policy = await ResolveTravelPolicyAsync(db, employeeId, clientId);
         var modes = policy is null ? [] : (await db.QueryAsync<string>(@"SELECT AppliesTo FROM travel_policy_rules WHERE PolicyId=@PolicyId AND RuleType='Travel Mode' AND IsAllowed=TRUE AND IsActive=TRUE ORDER BY AppliesTo", new { PolicyId = policy.Value.Id })).ToList();
         var hotelEnabled = policy is not null && await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM travel_policy_rules WHERE PolicyId=@PolicyId AND RuleType='Hotel' AND IsAllowed=TRUE AND IsActive=TRUE", new { PolicyId = policy.Value.Id }) > 0;
@@ -149,6 +227,7 @@ SELECT DISTINCT City FROM worklocations WHERE IsActive=TRUE AND City<>'' AND (@C
     public async Task<IEnumerable<EssTravelRequest>> GetTravelRequestsAsync(int employeeId, int? clientId)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
+        if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId)) return [];
         var rows = (await db.QueryAsync<EssTravelRequest>(TravelRequestSelect("r.EmployeeId=@EmployeeId AND (@ClientId IS NULL OR r.ClientId=@ClientId)") + " ORDER BY r.UpdatedAt DESC, r.Id DESC", new { EmployeeId = employeeId, ClientId = clientId })).ToList();
         await AttachTravelSectionsAsync(db, rows);
         return rows;
@@ -156,6 +235,7 @@ SELECT DISTINCT City FROM worklocations WHERE IsActive=TRUE AND City<>'' AND (@C
     public async Task<EssTravelRequest?> GetTravelRequestAsync(long id, int employeeId, int? clientId)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
+        if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId)) return null;
         var row = await db.QueryFirstOrDefaultAsync<EssTravelRequest>(TravelRequestSelect("r.Id=@Id AND r.EmployeeId=@EmployeeId AND (@ClientId IS NULL OR r.ClientId=@ClientId)") + " LIMIT 1", new { Id = id, EmployeeId = employeeId, ClientId = clientId });
         if (row is not null) await AttachTravelSectionsAsync(db, [row]);
         return row;
@@ -163,6 +243,7 @@ SELECT DISTINCT City FROM worklocations WHERE IsActive=TRUE AND City<>'' AND (@C
     public async Task<(EssTravelRequest? Request, string? Error)> SaveTravelDraftAsync(int employeeId, int? clientId, SaveEssTravelRequest request)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
+        if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId)) return (null, "Travel & Expense is not enabled for your client.");
         var employee = await db.QueryFirstOrDefaultAsync<EssTravelEmployee>(@"SELECT e.Id EmployeeId,e.ClientId,COALESCE(c.Name,'') ClientName,CONCAT(e.FirstName,' ',e.LastName) EmployeeName,e.Department,e.Designation,COALESCE(e.ReportingManagerId,0) ReportingManagerId,COALESCE(NULLIF(mu.DisplayName,''), CONCAT(m.FirstName,' ',m.LastName), '') ReportingManager
 FROM employees e LEFT JOIN clients c ON c.Id=e.ClientId LEFT JOIN authusers mu ON mu.Id=e.ReportingManagerUserId LEFT JOIN employees m ON m.Id=e.ReportingManagerId
 WHERE e.Id=@EmployeeId AND e.IsActive=TRUE AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { EmployeeId = employeeId, ClientId = clientId });
@@ -202,6 +283,7 @@ VALUES (@RequestNumber,CURRENT_DATE,@EmployeeId,@ClientId,@Department,@Designati
     public async Task<(EssTravelRequest? Request, string? Error)> SubmitTravelRequestAsync(int employeeId, int? clientId, long id)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
+        if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId)) return (null, "Travel & Expense is not enabled for your client.");
         var request = await db.QueryFirstOrDefaultAsync<SaveEssTravelRequest>(@"SELECT Id,Purpose,Customer,Project,CostCenter,TravelScope,TravelType,Priority,FromLocation,ToLocation,StartDateTime,EndDateTime,EstimatedCost,TravelMode,AccommodationRequired,LocalConveyanceRequired,AdvanceRequired,AdvanceAmount,Remarks FROM ess_travel_requests WHERE Id=@Id AND EmployeeId=@EmployeeId AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, EmployeeId = employeeId, ClientId = clientId });
         if (request is null) return (null, "Travel request was not found.");
         request.Cities = await GetTravelLegsAsync(db, id);
@@ -244,6 +326,7 @@ VALUES (@RequestNumber,CURRENT_DATE,@EmployeeId,@ClientId,@Department,@Designati
     public async Task<EssTravelDashboard> GetTravelDashboardAsync(int employeeId, int? clientId)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
+        if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId)) return new EssTravelDashboard();
         return await db.QueryFirstAsync<EssTravelDashboard>(@"SELECT
 COALESCE(SUM(Status='Draft'),0) DraftRequests,
 COALESCE(SUM(Status='Pending Approval'),0) PendingApproval,
@@ -256,11 +339,14 @@ FROM ess_travel_requests WHERE EmployeeId=@EmployeeId AND (@ClientId IS NULL OR 
     public async Task<IEnumerable<EssTravelRequest>> GetTravelCalendarAsync(int employeeId, int? clientId, string from, string to)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
+        if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId)) return [];
         return await db.QueryAsync<EssTravelRequest>(TravelRequestSelect("r.Status='Approved' AND r.EmployeeId=@EmployeeId AND (@ClientId IS NULL OR r.ClientId=@ClientId) AND r.StartDateTime<=@ToDate AND r.EndDateTime>=@FromDate") + " ORDER BY r.StartDateTime", new { EmployeeId = employeeId, ClientId = clientId, FromDate = from, ToDate = to });
     }
     public async Task<EssExpenseOptions> GetExpenseOptionsAsync(int employeeId, int? clientId)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureExpenseClaimTablesAsync(db);
+        if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId))
+            return new EssExpenseOptions { ValidationMessages = ["Travel & Expense is not enabled for your client."] };
         var policy = await ResolveTravelPolicyAsync(db, employeeId, clientId);
         var employee = await db.QueryFirstOrDefaultAsync<EssTravelEmployee>(@"SELECT e.Id EmployeeId,e.ClientId,COALESCE(c.Name,'') ClientName,CONCAT(e.FirstName,' ',e.LastName) EmployeeName,e.Department,e.Designation,COALESCE(e.ReportingManagerId,0) ReportingManagerId,'' ReportingManager
 FROM employees e LEFT JOIN clients c ON c.Id=e.ClientId WHERE e.Id=@EmployeeId AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { EmployeeId = employeeId, ClientId = clientId });
@@ -302,6 +388,7 @@ FROM ess_travel_requests WHERE EmployeeId=@EmployeeId AND (@ClientId IS NULL OR 
     public async Task<IEnumerable<EssExpenseClaim>> GetExpenseClaimsAsync(int employeeId, int? clientId)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureExpenseClaimTablesAsync(db);
+        if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId)) return [];
         var rows = (await db.QueryAsync<EssExpenseClaim>(ExpenseClaimSelect("c.EmployeeId=@EmployeeId AND (@ClientId IS NULL OR c.ClientId=@ClientId)") + " ORDER BY c.UpdatedAt DESC,c.Id DESC", new { EmployeeId = employeeId, ClientId = clientId })).ToList();
         await AttachExpenseLinesAsync(db, rows);
         return rows;
@@ -309,6 +396,7 @@ FROM ess_travel_requests WHERE EmployeeId=@EmployeeId AND (@ClientId IS NULL OR 
     public async Task<EssExpenseClaim?> GetExpenseClaimAsync(long id, int employeeId, int? clientId)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureExpenseClaimTablesAsync(db);
+        if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId)) return null;
         var row = await db.QueryFirstOrDefaultAsync<EssExpenseClaim>(ExpenseClaimSelect("c.Id=@Id AND c.EmployeeId=@EmployeeId AND (@ClientId IS NULL OR c.ClientId=@ClientId)") + " LIMIT 1", new { Id = id, EmployeeId = employeeId, ClientId = clientId });
         if (row is not null) await AttachExpenseLinesAsync(db, [row]);
         return row;
@@ -316,6 +404,7 @@ FROM ess_travel_requests WHERE EmployeeId=@EmployeeId AND (@ClientId IS NULL OR 
     public async Task<(EssExpenseClaim? Claim, string? Error)> SaveExpenseDraftAsync(int employeeId, int? clientId, SaveEssExpenseClaim request)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureExpenseClaimTablesAsync(db);
+        if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId)) return (null, "Travel & Expense is not enabled for your client.");
         var employee = await db.QueryFirstOrDefaultAsync<EssTravelEmployee>(@"SELECT e.Id EmployeeId,e.ClientId,COALESCE(c.Name,'') ClientName,CONCAT(e.FirstName,' ',e.LastName) EmployeeName,e.Department,e.Designation,COALESCE(e.ReportingManagerId,0) ReportingManagerId,COALESCE(NULLIF(mu.DisplayName,''), CONCAT(m.FirstName,' ',m.LastName), '') ReportingManager
 FROM employees e LEFT JOIN clients c ON c.Id=e.ClientId LEFT JOIN authusers mu ON mu.Id=e.ReportingManagerUserId LEFT JOIN employees m ON m.Id=e.ReportingManagerId
 WHERE e.Id=@EmployeeId AND e.IsActive=TRUE AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { EmployeeId = employeeId, ClientId = clientId });
@@ -348,6 +437,7 @@ VALUES (@ClaimNumber,CURRENT_DATE,@EmployeeId,@ClientId,@Department,@Designation
     public async Task<(EssExpenseClaim? Claim, string? Error)> SubmitExpenseClaimAsync(int employeeId, int? clientId, long id)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureExpenseClaimTablesAsync(db);
+        if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId)) return (null, "Travel & Expense is not enabled for your client.");
         var request = await db.QueryFirstOrDefaultAsync<SaveEssExpenseClaim>(@"SELECT Id,TravelRequestId,ExpenseType,Purpose,Customer,Project,CostCenter,Currency,Remarks FROM ess_expense_claims WHERE Id=@Id AND EmployeeId=@EmployeeId AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, EmployeeId = employeeId, ClientId = clientId });
         if (request is null) return (null, "Expense claim was not found.");
         request.Lines = (await db.QueryAsync<EssExpenseClaimLine>(@"SELECT Id,ClaimId,ExpenseDate,CategoryId,CategoryCode,CategoryName,SubCategory,VendorName,BillNumber,InvoiceNumber,Amount,Currency,ExchangeRate,GstAmount,ApprovedAmount,CostCenter,Project,Customer,Location,PaymentMethod,ReceiptAttached,ReceiptFileName,Description,Status,ValidationJson FROM ess_expense_claim_lines WHERE ClaimId=@Id ORDER BY ExpenseDate,Id", new { Id = id })).ToList();
@@ -363,6 +453,7 @@ VALUES (@ClaimNumber,CURRENT_DATE,@EmployeeId,@ClientId,@Department,@Designation
     public async Task<EssExpenseDashboard> GetExpenseDashboardAsync(int employeeId, int? clientId)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureExpenseClaimTablesAsync(db);
+        if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId)) return new EssExpenseDashboard();
         return await db.QueryFirstAsync<EssExpenseDashboard>(@"SELECT
 COALESCE(SUM(Status='Draft'),0) DraftClaims,
 COALESCE(SUM(Status='Pending Approval'),0) PendingApproval,
@@ -371,6 +462,64 @@ COALESCE(SUM(Status='Rejected'),0) Rejected,
 COALESCE(SUM(PayrollStatus='Pending Payroll'),0) PendingPayroll,
 COALESCE(SUM(CASE WHEN Status='Approved' THEN TotalApprovedAmount ELSE 0 END),0) ApprovedAmount
 FROM ess_expense_claims WHERE EmployeeId=@EmployeeId AND (@ClientId IS NULL OR ClientId=@ClientId)", new { EmployeeId = employeeId, ClientId = clientId });
+    }
+
+    public async Task<IEnumerable<EssTravelAdvance>> GetTravelAdvancesAsync(int? clientId, string status)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
+        return await db.QueryAsync<EssTravelAdvance>(TravelAdvanceSelect(@"
+(@ClientId IS NULL OR a.ClientId=@ClientId)
+AND (@Status='' OR a.Status=@Status)") + " ORDER BY a.UpdatedAt DESC,a.Id DESC", new { ClientId = clientId, Status = status?.Trim() ?? "" });
+    }
+
+    public async Task<(EssTravelAdvance? Advance, string? Error)> PayTravelAdvanceAsync(long id, PayTravelAdvanceRequest request, int userId)
+    {
+        if (request.PaidAmount <= 0) return (null, "Paid amount must be greater than zero.");
+        await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
+        await using var tx = await db.BeginTransactionAsync();
+        var advance = await db.QueryFirstOrDefaultAsync<EssTravelAdvance>("SELECT * FROM ess_travel_advances WHERE Id=@Id FOR UPDATE", new { Id = id }, tx);
+        if (advance is null) return (null, "Travel advance was not found.");
+        if (advance.Status is "Cancelled" or "Recovered" or "Settled") return (null, $"Cannot pay an advance in {advance.Status} status.");
+        var paid = Math.Min(request.PaidAmount, Math.Max(advance.ApprovedAmount - advance.PaidAmount, 0));
+        if (paid <= 0) return (null, "Approved advance amount is already paid.");
+        var nextPaid = advance.PaidAmount + paid;
+        var nextStatus = nextPaid >= advance.ApprovedAmount ? "Paid" : "Partially Paid";
+        await db.ExecuteAsync(@"UPDATE ess_travel_advances SET PaidAmount=@PaidAmount,PaymentMode=@PaymentMode,PaymentReference=@PaymentReference,PaidDate=@PaidDate,Status=@Status,Remarks=@Remarks,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id",
+            new { Id = id, PaidAmount = nextPaid, PaymentMode = CleanText(request.PaymentMode, ""), PaymentReference = CleanText(request.PaymentReference, ""), PaidDate = (request.PaidDate ?? DateTime.Today).Date, Status = nextStatus, Remarks = CleanText(request.Remarks, "") }, tx);
+        await AuditTravelAdvanceAsync(db, tx, id, "Paid", paid, request.Remarks, userId);
+        await tx.CommitAsync();
+        return (await GetTravelAdvanceAsync(id), null);
+    }
+
+    public async Task<(EssTravelAdvance? Advance, string? Error)> SettleTravelAdvanceAsync(long id, SettleTravelAdvanceRequest request, int userId)
+    {
+        if (request.SettledAmount <= 0) return (null, "Settlement amount must be greater than zero.");
+        await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
+        await using var tx = await db.BeginTransactionAsync();
+        var advance = await db.QueryFirstOrDefaultAsync<EssTravelAdvance>("SELECT * FROM ess_travel_advances WHERE Id=@Id FOR UPDATE", new { Id = id }, tx);
+        if (advance is null) return (null, "Travel advance was not found.");
+        var openPaid = Math.Max(advance.PaidAmount - advance.SettledAmount, 0);
+        var settled = Math.Min(request.SettledAmount, openPaid);
+        if (settled <= 0) return (null, "No paid advance amount is available for settlement.");
+        await SettleTravelAdvanceLockedAsync(db, tx, advance, settled, "Manual settlement", request.Remarks, userId);
+        await tx.CommitAsync();
+        return (await GetTravelAdvanceAsync(id), null);
+    }
+
+    public async Task<(EssTravelAdvance? Advance, string? Error)> MarkTravelAdvanceRecoverableAsync(long id, RecoverTravelAdvanceRequest request, int userId)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
+        await using var tx = await db.BeginTransactionAsync();
+        var advance = await db.QueryFirstOrDefaultAsync<EssTravelAdvance>("SELECT * FROM ess_travel_advances WHERE Id=@Id FOR UPDATE", new { Id = id }, tx);
+        if (advance is null) return (null, "Travel advance was not found.");
+        var openPaid = Math.Max(advance.PaidAmount - advance.SettledAmount - advance.RecoverableAmount, 0);
+        var recoverable = request.RecoverableAmount > 0 ? Math.Min(request.RecoverableAmount, openPaid) : openPaid;
+        if (recoverable <= 0) return (null, "No unsettled paid advance amount is available for recovery.");
+        var nextRecoverable = advance.RecoverableAmount + recoverable;
+        await db.ExecuteAsync("UPDATE ess_travel_advances SET RecoverableAmount=@RecoverableAmount,Status='Recoverable',Remarks=@Remarks,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id", new { Id = id, RecoverableAmount = nextRecoverable, Remarks = CleanText(request.Remarks, "") }, tx);
+        await AuditTravelAdvanceAsync(db, tx, id, "Marked Recoverable", recoverable, request.Remarks, userId);
+        await tx.CommitAsync();
+        return (await GetTravelAdvanceAsync(id), null);
     }
     public async Task<EssWorkflowTrail?> GetExpenseClaimTrailAsync(long claimId, int employeeId, int? clientId)
     {
@@ -557,7 +706,12 @@ ON DUPLICATE KEY UPDATE declared_amount=@Amount,planned_amount=IF(@Phase='Planne
         await using var db=Connection();
         await db.OpenAsync();
         await EnsureTravelTablesAsync(db);
-        await db.ExecuteAsync("UPDATE ess_travel_requests SET Status=@Status,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id", new { Id = id, Status = status });
+        await using var tx = await db.BeginTransactionAsync();
+        await db.ExecuteAsync("UPDATE ess_travel_requests SET Status=@Status,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id", new { Id = id, Status = status }, tx);
+        if (status == "Approved") await CreateTravelAdvanceIfRequiredAsync(db, tx, id);
+        if (status is "Rejected" or "Sent Back")
+            await db.ExecuteAsync("UPDATE ess_travel_advances SET Status='Cancelled',UpdatedAt=CURRENT_TIMESTAMP WHERE TravelRequestId=@Id AND Status IN ('Approved','Pending Payment')", new { Id = id }, tx);
+        await tx.CommitAsync();
         await AuditTravelAsync(db, id, status, $"Workflow {status}");
     }
     public async Task SyncExpenseWorkflowStatusAsync(string resourceId, string status)
@@ -571,19 +725,7 @@ ON DUPLICATE KEY UPDATE declared_amount=@Amount,planned_amount=IF(@Phase='Planne
         await db.ExecuteAsync("UPDATE ess_expense_claims SET Status=@Status,PayrollStatus=@PayrollStatus,TotalApprovedAmount=CASE WHEN @Status='Approved' THEN TotalClaimAmount ELSE TotalApprovedAmount END,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id", new { Id = id, Status = status, PayrollStatus = payrollStatus }, tx);
         if (status == "Approved")
         {
-            await db.ExecuteAsync(@"INSERT INTO payroll_reimbursement_queue (ClientId,EmployeeId,ExpenseClaimId,ExpenseLineId,ComponentCode,Amount,Taxable,Status,CreatedAt)
-SELECT c.ClientId,c.EmployeeId,c.Id,l.Id,c.ReimbursementComponentCode,COALESCE(NULLIF(l.ApprovedAmount,0),l.Amount),FALSE,'Pending',CURRENT_TIMESTAMP
-FROM ess_expense_claims c JOIN ess_expense_claim_lines l ON l.ClaimId=c.Id
-WHERE c.Id=@Id AND l.Status<>'Rejected'
-ON DUPLICATE KEY UPDATE Amount=VALUES(Amount),Status='Pending',UpdatedAt=CURRENT_TIMESTAMP", new { Id = id }, tx);
-            await db.ExecuteAsync(@"INSERT INTO payrolladjustments (ClientId,EmployeeId,EmployeeName,EmployeeCode,ComponentId,ComponentCode,ComponentName,AdjustmentType,Amount,PayPeriod,PayRunType,ReasonCode,Notes,Taxable,Status)
-SELECT c.ClientId,c.EmployeeId,CONCAT(e.FirstName,' ',e.LastName),e.EmployeeCode,COALESCE(sc.Id,0),COALESCE(NULLIF(c.ReimbursementComponentCode,''),NULLIF(sc.Code,''),'REIMBURSEMENT'),COALESCE(NULLIF(sc.Name,''),'Expense Reimbursement'),'Earning',COALESCE(NULLIF(l.ApprovedAmount,0),l.Amount),DATE_FORMAT(CURDATE(),'%Y-%m'),'Regular','EXPENSE_CLAIM',CONCAT('Expense claim ',c.ClaimNumber,' line ',l.Id),FALSE,'Approved'
-FROM ess_expense_claims c
-JOIN ess_expense_claim_lines l ON l.ClaimId=c.Id
-JOIN employees e ON e.Id=c.EmployeeId
-LEFT JOIN salarycomponents sc ON sc.Id=(SELECT sc2.Id FROM salarycomponents sc2 WHERE sc2.Active=TRUE AND (sc2.Code=c.ReimbursementComponentCode OR sc2.ComponentRole='Reimbursement') ORDER BY CASE WHEN sc2.Code=c.ReimbursementComponentCode THEN 0 ELSE 1 END, sc2.Priority, sc2.Id LIMIT 1)
-WHERE c.Id=@Id AND l.Status<>'Rejected'
-AND NOT EXISTS (SELECT 1 FROM payrolladjustments a WHERE a.ClientId=c.ClientId AND a.EmployeeId=c.EmployeeId AND a.ReasonCode='EXPENSE_CLAIM' AND a.Notes=CONCAT('Expense claim ',c.ClaimNumber,' line ',l.Id))", new { Id = id }, tx);
+            await QueueApprovedExpenseReimbursementAsync(db, tx, id);
         }
         await tx.CommitAsync();
         await AuditExpenseAsync(db, id, status, $"Workflow {status}");
@@ -615,6 +757,118 @@ VALUES (@ClientId,@EmployeeId,@LeaveTypeId,@LeaveCode,@TransactionDate,@PeriodKe
 VALUES (@ClientId,@EmployeeId,@LeaveTypeId,@BalanceDate,@Balance)
 ON DUPLICATE KEY UPDATE balance_count=VALUES(balance_count);", new { row.ClientId, row.EmployeeId, row.LeaveTypeId, BalanceDate = row.ToDate.Date, Balance = next }, tx);
     }
+
+    private async Task<EssTravelAdvance?> GetTravelAdvanceAsync(long id)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
+        return await db.QueryFirstOrDefaultAsync<EssTravelAdvance>(TravelAdvanceSelect("a.Id=@Id") + " LIMIT 1", new { Id = id });
+    }
+
+    private static string TravelAdvanceSelect(string where) => $@"SELECT a.*,r.RequestNumber,e.EmployeeCode,CONCAT(e.FirstName,' ',e.LastName) EmployeeName,COALESCE(c.Name,'') ClientName
+FROM ess_travel_advances a
+JOIN ess_travel_requests r ON r.Id=a.TravelRequestId
+JOIN employees e ON e.Id=a.EmployeeId
+LEFT JOIN clients c ON c.Id=a.ClientId
+WHERE {where}";
+
+    private static async Task CreateTravelAdvanceIfRequiredAsync(MySqlConnection db, System.Data.IDbTransaction tx, long travelRequestId)
+    {
+        var row = await db.QueryFirstOrDefaultAsync<TravelAdvanceSeed>(@"SELECT Id TravelRequestId,EmployeeId,ClientId,AdvanceAmount,EndDateTime
+FROM ess_travel_requests
+WHERE Id=@Id AND AdvanceRequired=TRUE AND AdvanceAmount>0", new { Id = travelRequestId }, tx);
+        if (row is null) return;
+        var settlementDays = await ResolveTravelAdvanceSettlementDaysAsync(db, tx, row.TravelRequestId);
+        var dueDate = row.EndDateTime.Date.AddDays(settlementDays);
+        await db.ExecuteAsync(@"INSERT INTO ess_travel_advances (TravelRequestId,EmployeeId,ClientId,RequestedAmount,ApprovedAmount,DueDate,Status)
+VALUES (@TravelRequestId,@EmployeeId,@ClientId,@AdvanceAmount,@AdvanceAmount,@DueDate,'Approved')
+ON DUPLICATE KEY UPDATE RequestedAmount=VALUES(RequestedAmount),ApprovedAmount=VALUES(ApprovedAmount),DueDate=VALUES(DueDate),Status=IF(Status='Cancelled','Approved',Status),UpdatedAt=CURRENT_TIMESTAMP",
+            new { row.TravelRequestId, row.EmployeeId, row.ClientId, row.AdvanceAmount, DueDate = dueDate }, tx);
+    }
+
+    private static async Task<int> ResolveTravelAdvanceSettlementDaysAsync(MySqlConnection db, System.Data.IDbTransaction tx, long travelRequestId)
+    {
+        var config = await db.ExecuteScalarAsync<string>(@"SELECT pr.ConfigJson
+FROM ess_travel_requests r
+JOIN travel_policy_rules pr ON pr.PolicyId=r.PolicyId AND pr.RuleType='Travel Advance' AND pr.IsActive=TRUE
+WHERE r.Id=@TravelRequestId
+ORDER BY pr.Id DESC LIMIT 1", new { TravelRequestId = travelRequestId }, tx) ?? "";
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(config) ? "{}" : config);
+            return doc.RootElement.TryGetProperty("settlementDays", out var value) && value.TryGetInt32(out var days) && days > 0 ? days : 7;
+        }
+        catch { return 7; }
+    }
+
+    private static async Task QueueApprovedExpenseReimbursementAsync(MySqlConnection db, System.Data.IDbTransaction tx, long claimId)
+    {
+        var claim = await db.QueryFirstOrDefaultAsync<ExpenseClaimQueueHeader>(@"SELECT c.Id,c.ClientId,c.EmployeeId,c.TravelRequestId,c.ClaimNumber,c.ReimbursementComponentCode,CONCAT(e.FirstName,' ',e.LastName) EmployeeName,e.EmployeeCode,
+COALESCE(sc.Id,0) ComponentId,COALESCE(NULLIF(c.ReimbursementComponentCode,''),NULLIF(sc.Code,''),'REIMBURSEMENT') ComponentCode,COALESCE(NULLIF(sc.Name,''),'Expense Reimbursement') ComponentName
+FROM ess_expense_claims c
+JOIN employees e ON e.Id=c.EmployeeId
+LEFT JOIN salarycomponents sc ON sc.Id=(SELECT sc2.Id FROM salarycomponents sc2 WHERE sc2.Active=TRUE AND (sc2.Code=c.ReimbursementComponentCode OR sc2.ComponentRole='Reimbursement') ORDER BY CASE WHEN sc2.Code=c.ReimbursementComponentCode THEN 0 ELSE 1 END, sc2.Priority, sc2.Id LIMIT 1)
+WHERE c.Id=@Id", new { Id = claimId }, tx);
+        if (claim is null) return;
+        var lines = (await db.QueryAsync<ExpenseClaimQueueLine>(@"SELECT Id,COALESCE(NULLIF(ApprovedAmount,0),Amount) Amount FROM ess_expense_claim_lines WHERE ClaimId=@Id AND Status<>'Rejected' ORDER BY ExpenseDate,Id", new { Id = claimId }, tx)).ToList();
+        var advanceOffset = claim.TravelRequestId.HasValue ? await ApplyTravelAdvanceSettlementForClaimAsync(db, tx, claim.TravelRequestId.Value, lines.Sum(l => l.Amount)) : 0;
+        foreach (var line in lines)
+        {
+            var payable = line.Amount;
+            if (advanceOffset > 0)
+            {
+                var used = Math.Min(payable, advanceOffset);
+                payable -= used;
+                advanceOffset -= used;
+            }
+            if (payable <= 0) continue;
+            await db.ExecuteAsync(@"INSERT INTO payroll_reimbursement_queue (ClientId,EmployeeId,ExpenseClaimId,ExpenseLineId,ComponentCode,Amount,Taxable,Status,CreatedAt)
+VALUES (@ClientId,@EmployeeId,@ExpenseClaimId,@ExpenseLineId,@ComponentCode,@Amount,FALSE,'Pending',CURRENT_TIMESTAMP)
+ON DUPLICATE KEY UPDATE Amount=VALUES(Amount),Status='Pending',UpdatedAt=CURRENT_TIMESTAMP", new { claim.ClientId, claim.EmployeeId, ExpenseClaimId = claim.Id, ExpenseLineId = line.Id, claim.ComponentCode, Amount = payable }, tx);
+            await db.ExecuteAsync(@"INSERT INTO payrolladjustments (ClientId,EmployeeId,EmployeeName,EmployeeCode,ComponentId,ComponentCode,ComponentName,AdjustmentType,Amount,PayPeriod,PayRunType,ReasonCode,Notes,Taxable,Status)
+SELECT @ClientId,@EmployeeId,@EmployeeName,@EmployeeCode,@ComponentId,@ComponentCode,@ComponentName,'Earning',@Amount,DATE_FORMAT(CURDATE(),'%Y-%m'),'Regular','EXPENSE_CLAIM',@Notes,FALSE,'Approved'
+WHERE NOT EXISTS (SELECT 1 FROM payrolladjustments a WHERE a.ClientId=@ClientId AND a.EmployeeId=@EmployeeId AND a.ReasonCode='EXPENSE_CLAIM' AND a.Notes=@Notes)",
+                new { claim.ClientId, claim.EmployeeId, claim.EmployeeName, claim.EmployeeCode, claim.ComponentId, claim.ComponentCode, claim.ComponentName, Amount = payable, Notes = $"Expense claim {claim.ClaimNumber} line {line.Id}" }, tx);
+        }
+    }
+
+    private static async Task<decimal> ApplyTravelAdvanceSettlementForClaimAsync(MySqlConnection db, System.Data.IDbTransaction tx, long travelRequestId, decimal claimAmount)
+    {
+        if (claimAmount <= 0) return 0;
+        var advances = (await db.QueryAsync<EssTravelAdvance>("SELECT * FROM ess_travel_advances WHERE TravelRequestId=@TravelRequestId AND Status NOT IN ('Cancelled','Recovered') ORDER BY Id FOR UPDATE", new { TravelRequestId = travelRequestId }, tx)).ToList();
+        var remaining = claimAmount;
+        var settledTotal = 0m;
+        foreach (var advance in advances)
+        {
+            var openPaid = Math.Max(advance.PaidAmount - advance.SettledAmount - advance.RecoverableAmount, 0);
+            if (openPaid <= 0 || remaining <= 0) continue;
+            var settle = Math.Min(openPaid, remaining);
+            await SettleTravelAdvanceLockedAsync(db, tx, advance, settle, "Expense claim settlement", $"Auto-settled from approved expense claim for travel request {travelRequestId}", null);
+            remaining -= settle;
+            settledTotal += settle;
+        }
+        return settledTotal;
+    }
+
+    private static async Task SettleTravelAdvanceLockedAsync(MySqlConnection db, System.Data.IDbTransaction tx, EssTravelAdvance advance, decimal settled, string action, string comment, int? userId)
+    {
+        var nextSettled = advance.SettledAmount + settled;
+        var openAfter = Math.Max(advance.PaidAmount - nextSettled - advance.RecoverableAmount, 0);
+        var status = nextSettled >= advance.PaidAmount ? "Settled" : openAfter > 0 ? "Partially Settled" : advance.Status;
+        await db.ExecuteAsync("UPDATE ess_travel_advances SET SettledAmount=@SettledAmount,Status=@Status,Remarks=@Remarks,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id", new { advance.Id, SettledAmount = nextSettled, Status = status, Remarks = CleanText(comment, "") }, tx);
+        await AuditTravelAdvanceAsync(db, tx, advance.Id, action, settled, comment, userId);
+    }
+
+    private static async Task BackfillTravelAdvancesAsync(MySqlConnection db)
+    {
+        await db.ExecuteAsync(@"INSERT INTO ess_travel_advances (TravelRequestId,EmployeeId,ClientId,RequestedAmount,ApprovedAmount,DueDate,Status)
+SELECT r.Id,r.EmployeeId,r.ClientId,r.AdvanceAmount,r.AdvanceAmount,DATE_ADD(DATE(r.EndDateTime), INTERVAL 7 DAY),'Approved'
+FROM ess_travel_requests r
+WHERE r.Status='Approved' AND r.AdvanceRequired=TRUE AND r.AdvanceAmount>0
+ON DUPLICATE KEY UPDATE TravelRequestId=VALUES(TravelRequestId)");
+    }
+
+    private static Task AuditTravelAdvanceAsync(MySqlConnection db, System.Data.IDbTransaction tx, long id, string action, decimal amount, string comment, int? userId) =>
+        db.ExecuteAsync("INSERT INTO ess_travel_advance_audit (AdvanceId,Action,Amount,Comment,CreatedBy) VALUES (@Id,@Action,@Amount,@Comment,@UserId)", new { Id = id, Action = action, Amount = amount, Comment = CleanText(comment, ""), UserId = userId }, tx);
 
     private static async Task EnsureColumnAsync(MySqlConnection connection, string table, string column, string definition)
     {
@@ -903,8 +1157,41 @@ UNIQUE KEY UX_ess_travel_local_sequence (RequestId, SequenceNo),
 INDEX IX_ess_travel_local_request (RequestId),
 INDEX IX_ess_travel_local_city (City),
 INDEX IX_ess_travel_local_mode (TravelMode)
+);
+CREATE TABLE IF NOT EXISTS ess_travel_advances (
+Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+TravelRequestId BIGINT NOT NULL,
+EmployeeId INT NOT NULL,
+ClientId INT NOT NULL,
+RequestedAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+ApprovedAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+PaidAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+SettledAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+RecoverableAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+PaymentMode VARCHAR(80) NOT NULL DEFAULT '',
+PaymentReference VARCHAR(160) NOT NULL DEFAULT '',
+PaidDate DATE NULL,
+DueDate DATE NULL,
+Status VARCHAR(40) NOT NULL DEFAULT 'Approved',
+Remarks VARCHAR(1000) NOT NULL DEFAULT '',
+CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_ess_travel_advance_request (TravelRequestId),
+INDEX IX_ess_travel_advance_status (ClientId, Status, DueDate),
+INDEX IX_ess_travel_advance_employee (EmployeeId, Status)
+);
+CREATE TABLE IF NOT EXISTS ess_travel_advance_audit (
+Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+AdvanceId BIGINT NOT NULL,
+Action VARCHAR(80) NOT NULL,
+Amount DECIMAL(18,2) NOT NULL DEFAULT 0,
+Comment VARCHAR(1000) NOT NULL DEFAULT '',
+CreatedBy INT NULL,
+CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+INDEX IX_ess_travel_advance_audit (AdvanceId, CreatedAt)
 );");
         await MigrateLegacyTravelLegsAsync(db);
+        await BackfillTravelAdvancesAsync(db);
     }
 
     private static async Task EnsureExpenseClaimTablesAsync(MySqlConnection db)
@@ -1207,6 +1494,37 @@ AND (a.EmployeeId IS NULL OR a.EmployeeId=e.Id)
 ORDER BY a.Priority ASC, a.Id DESC
 LIMIT 1", new { EmployeeId = employeeId, ClientId = clientId });
     }
+
+    private static async Task<bool> IsTravelExpenseEnabledAsync(MySqlConnection db, int employeeId, int? clientId)
+    {
+        await EnsureTravelExpenseClientSettingsAsync(db);
+        return await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*)
+FROM employees e
+JOIN travel_expense_client_settings s ON s.ClientId=e.ClientId
+WHERE e.Id=@EmployeeId
+  AND (@ClientId IS NULL OR e.ClientId=@ClientId)
+  AND e.IsActive=TRUE
+  AND s.IsEnabled=TRUE
+  AND (s.EffectiveFrom IS NULL OR s.EffectiveFrom<=CURRENT_DATE)
+  AND (s.EffectiveTo IS NULL OR s.EffectiveTo>=CURRENT_DATE)", new { EmployeeId = employeeId, ClientId = clientId }) > 0;
+    }
+
+    private static Task EnsureTravelExpenseClientSettingsAsync(MySqlConnection db) =>
+        db.ExecuteAsync(@"CREATE TABLE IF NOT EXISTS travel_expense_client_settings (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ClientId INT NOT NULL,
+IsEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+EffectiveFrom DATE NULL,
+EffectiveTo DATE NULL,
+Remarks VARCHAR(500) NOT NULL DEFAULT '',
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_TravelExpenseClientSettings_Client (ClientId),
+KEY IX_TravelExpenseClientSettings_Enabled (ClientId, IsEnabled)
+);
+INSERT INTO travel_expense_client_settings (ClientId,IsEnabled)
+SELECT Id,FALSE FROM clients WHERE IsActive=TRUE
+ON DUPLICATE KEY UPDATE ClientId=ClientId;");
 
     private static List<EssTravelValidationResult> ValidateTravelRequest(SaveEssTravelRequest request, bool submit)
     {
@@ -1566,6 +1884,68 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND COLUMN_NAME = @Colum
     private static string Html(object? value) => WebUtility.HtmlEncode(Convert.ToString(value) ?? "");
     private static string Attr(object? value) => Html(value).Replace("\"", "&quot;");
     private static string CleanText(params string?[] values) => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? "";
+    private static string Clean(string? value) => (value ?? "").Trim();
+    private static async Task EnsureProfileTablesAsync(MySqlConnection db)
+    {
+        await db.ExecuteAsync(@"
+CREATE TABLE IF NOT EXISTS ess_client_settings (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    AllowProfileEdit BOOLEAN NOT NULL DEFAULT FALSE,
+    InitialPasswordMode VARCHAR(30) NOT NULL DEFAULT 'App Default',
+    FixedPassword VARCHAR(200) NOT NULL DEFAULT '',
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_ess_client_settings_client (ClientId)
+);
+CREATE TABLE IF NOT EXISTS employeepersonaldetails (
+    EmployeeId INT PRIMARY KEY,
+    DateOfBirth VARCHAR(30) NOT NULL DEFAULT '',
+    Mobile VARCHAR(50) NOT NULL DEFAULT '',
+    PanNumber VARCHAR(50) NOT NULL DEFAULT '',
+    AadhaarNumber VARCHAR(50) NOT NULL DEFAULT '',
+    UanNumber VARCHAR(50) NOT NULL DEFAULT '',
+    EsicNumber VARCHAR(50) NOT NULL DEFAULT '',
+    Address VARCHAR(800) NOT NULL DEFAULT '',
+    CorrespondenceAddress VARCHAR(800) NOT NULL DEFAULT '',
+    PermanentAddress VARCHAR(800) NOT NULL DEFAULT '',
+    Source VARCHAR(120) NOT NULL DEFAULT '',
+    SourceLocation VARCHAR(200) NOT NULL DEFAULT '',
+    City VARCHAR(100) NOT NULL DEFAULT '',
+    District VARCHAR(100) NOT NULL DEFAULT '',
+    State VARCHAR(100) NOT NULL DEFAULT '',
+    RawDesignation VARCHAR(160) NOT NULL DEFAULT '',
+    OriginalEmployeeCode VARCHAR(80) NOT NULL DEFAULT '',
+    DuplicateResolution VARCHAR(500) NOT NULL DEFAULT '',
+    ExcelRow INT NOT NULL DEFAULT 0,
+    EsicEmployee DECIMAL(18,4) NOT NULL DEFAULT 0,
+    PtLwfWorkmenComp DECIMAL(18,4) NOT NULL DEFAULT 0,
+    Tds DECIMAL(18,4) NOT NULL DEFAULT 0,
+    Recovery DECIMAL(18,4) NOT NULL DEFAULT 0,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS employeepaymentdetails (
+    EmployeeId INT PRIMARY KEY,
+    BankName VARCHAR(160) NOT NULL DEFAULT '',
+    BankAccountNo VARCHAR(100) NOT NULL DEFAULT '',
+    IfscCode VARCHAR(40) NOT NULL DEFAULT '',
+    PaymentMode VARCHAR(60) NOT NULL DEFAULT '',
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS ess_profile_update_audit (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ChangedBy VARCHAR(180) NOT NULL DEFAULT '',
+    OldValueJson JSON NULL,
+    NewValueJson JSON NULL,
+    ChangedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_ess_profile_update_audit_employee (EmployeeId, ChangedAt)
+);");
+        await EnsureColumnAsync(db, "ess_client_settings", "InitialPasswordMode", "VARCHAR(30) NOT NULL DEFAULT 'App Default' AFTER AllowProfileEdit");
+        await EnsureColumnAsync(db, "ess_client_settings", "FixedPassword", "VARCHAR(200) NOT NULL DEFAULT '' AFTER InitialPasswordMode");
+    }
     private static string SafeFile(string value) => new(value.Select(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '-').ToArray());
     private static string Amount(decimal value) => value.ToString("N2", System.Globalization.CultureInfo.GetCultureInfo("en-IN"));
     private static string DateText(DateTime? value) => value.HasValue ? value.Value.ToString("dd-MMM-yyyy", System.Globalization.CultureInfo.InvariantCulture) : "-";
@@ -1581,6 +1961,9 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND COLUMN_NAME = @Colum
       private sealed class EssTravelAccommodationRow { public long RequestId { get; set; } public string City { get; set; } = ""; public DateTime? CheckInDateTime { get; set; } public DateTime? CheckOutDateTime { get; set; } public string Occupancy { get; set; } = ""; public string RoomPreference { get; set; } = ""; public string Remarks { get; set; } = ""; }
       private sealed class EssLocalTravelRow { public long RequestId { get; set; } public string City { get; set; } = ""; public DateTime? TravelDateTime { get; set; } public string FromLocation { get; set; } = ""; public string ToLocation { get; set; } = ""; public string TravelMode { get; set; } = ""; public string Remarks { get; set; } = ""; }
       private sealed class EssTravelEmployee { public int EmployeeId { get; set; } public int ClientId { get; set; } public string ClientName { get; set; } = ""; public string EmployeeName { get; set; } = ""; public string Department { get; set; } = ""; public string Designation { get; set; } = ""; public int ReportingManagerId { get; set; } public string ReportingManager { get; set; } = ""; }
+    private sealed class TravelAdvanceSeed { public long TravelRequestId { get; set; } public int EmployeeId { get; set; } public int ClientId { get; set; } public decimal AdvanceAmount { get; set; } public DateTime EndDateTime { get; set; } }
+    private sealed class ExpenseClaimQueueHeader { public long Id { get; set; } public int ClientId { get; set; } public int EmployeeId { get; set; } public long? TravelRequestId { get; set; } public string ClaimNumber { get; set; } = ""; public string ReimbursementComponentCode { get; set; } = ""; public string EmployeeName { get; set; } = ""; public string EmployeeCode { get; set; } = ""; public int ComponentId { get; set; } public string ComponentCode { get; set; } = ""; public string ComponentName { get; set; } = ""; }
+    private sealed class ExpenseClaimQueueLine { public long Id { get; set; } public decimal Amount { get; set; } }
     private sealed class EssLeaveSelection { public int Id { get; set; } public int ClientId { get; set; } public string Name { get; set; } = ""; public string Code { get; set; } = ""; public string Type { get; set; } = "Paid"; public decimal Balance { get; set; } public bool AllowNegativeLeaveBalance { get; set; } public bool AllowHalfDay { get; set; } = true; }
     private sealed class ApprovedLeaveRequestRow { public long Id { get; set; } public int EmployeeId { get; set; } public int ClientId { get; set; } public int LeaveTypeId { get; set; } public string DayType { get; set; } = "Full Day"; public decimal Days { get; set; } public DateTime ToDate { get; set; } public string LeaveCode { get; set; } = ""; public string LeaveTypeKind { get; set; } = "Paid"; }
     private sealed class EssPayslipTemplate { public long Id { get; set; } public int ClientId { get; set; } public string Name { get; set; } = "Standard Payslip"; public string Theme { get; set; } = "Classic"; public bool ShowLogo { get; set; } = true; public bool ShowClient { get; set; } = true; public bool ShowYtd { get; set; } = true; public bool ShowBank { get; set; } = true; public string Note { get; set; } = "This is a system generated payslip."; public bool Active { get; set; } = true; }

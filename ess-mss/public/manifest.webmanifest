@@ -1,0 +1,25 @@
+{
+  "name": "Frevo One HR Employee Self Service",
+  "short_name": "Frevo One HR",
+  "description": "Employee self-service portal for profile, leave, pay, tax, travel, expenses, recruitment, and approvals.",
+  "start_url": "/#/home",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f8fc",
+  "theme_color": "#6546e8",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/assets/FrevoOneLogo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

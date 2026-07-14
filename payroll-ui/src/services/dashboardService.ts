@@ -19,7 +19,25 @@ const fallbackDashboard: DashboardSnapshot = {
     payrollExceptions: 0
   },
   payRunStatuses: [],
-  recentPayRuns: []
+  recentPayRuns: [],
+  departmentHeadcount: [],
+  locationHeadcount: [],
+  payrollTrend: [],
+  attendanceMix: [],
+  attendancePayability: [],
+  approvalStageBreakup: [],
+  approvalActionMix: [],
+  designationHeadcount: [],
+  gradeHeadcount: [],
+  genderHeadcount: [],
+  essAdoption: [],
+  payrollPaymentStatus: [],
+  payrollRunType: [],
+  payrollCostBreakup: { grossEarnings: 0, statutoryDeductions: 0, otherDeductions: 0, netPay: 0 },
+  attendanceDailyStatus: [],
+  attendanceSourceType: [],
+  approvalResourceBreakup: [],
+  approvalAging: []
 }
 
 export const getDashboard = (clientId = 0) => getJson<DashboardSnapshot>(`/api/dashboard?clientId=${clientId}`, fallbackDashboard)

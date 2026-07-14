@@ -4,6 +4,7 @@ public class NotificationSmtpSetting
 {
     public int Id { get; set; } = 1;
     public bool IsEnabled { get; set; }
+    public bool DeliveryPaused { get; set; }
     public string Host { get; set; } = "";
     public int Port { get; set; } = 587;
     public string UserName { get; set; } = "";

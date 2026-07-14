@@ -2,11 +2,25 @@ namespace Payroll.API.Models;
 
 public class TravelExpenseSetup
 {
+    public IEnumerable<TravelExpenseClientSetting> ClientSettings { get; set; } = [];
     public IEnumerable<TravelPolicy> Policies { get; set; } = [];
     public IEnumerable<TravelPolicyAssignment> Assignments { get; set; } = [];
     public IEnumerable<TravelPolicyRule> Rules { get; set; } = [];
     public IEnumerable<TravelExpenseCategory> Categories { get; set; } = [];
     public IEnumerable<TravelPolicyAudit> Audit { get; set; } = [];
+}
+
+public class TravelExpenseClientSetting
+{
+    public long Id { get; set; }
+    public int ClientId { get; set; }
+    public string ClientName { get; set; } = string.Empty;
+    public bool IsEnabled { get; set; }
+    public DateTime? EffectiveFrom { get; set; }
+    public DateTime? EffectiveTo { get; set; }
+    public string Remarks { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
 }
 
 public class TravelPolicy

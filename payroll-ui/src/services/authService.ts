@@ -9,7 +9,7 @@ export async function getCurrentUser() {
 }
 
 export async function login(email: string, password: string) {
-  return postJson('/api/auth/login', { email, password }, null as LoginData | null, { toast: false })
+  return postJson('/api/auth/login', { email, password, portal: 'Admin' }, null as LoginData | null, { toast: false })
 }
 
 export const logout = () => postEmpty('/api/auth/logout', null, { toast: false })

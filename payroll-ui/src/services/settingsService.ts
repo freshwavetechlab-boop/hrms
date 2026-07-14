@@ -1,4 +1,4 @@
-import type { Client, ClientBillingAdvancedSetup, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingModule, Drop, Employee, EmployeeActionRequest, EmployeeAuditTrail, EmployeeInfotypeRecord, Org, ScheduledJob, ScheduledJobAction, ScheduledJobHandlerOption, ScheduledJobRun, Setup, TravelExpenseCategory, TravelExpenseSetup, TravelPolicy, TravelPolicyAssignment, TravelPolicyRule, WorkLocation, WorkflowApprover } from '../types/payroll'
+import type { Client, ClientBillingAdvancedSetup, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingModule, Drop, Employee, EmployeeActionRequest, EmployeeAuditTrail, EmployeeInfotypeRecord, EssClientSetting, Org, PayTravelAdvanceRequest, RecoverTravelAdvanceRequest, RecruitmentAdminSetup, RecruitmentApprovalMapping, RecruitmentAssignmentRule, RecruitmentDocumentChecklist, RecruitmentMasterValue, RecruitmentPartner, RecruitmentSetting, RecruitmentSlaRule, RecruitmentTemplate, ScheduledJob, ScheduledJobAction, ScheduledJobHandlerOption, ScheduledJobRun, SettleTravelAdvanceRequest, Setup, TravelAdvance, TravelExpenseCategory, TravelExpenseClientSetting, TravelExpenseSetup, TravelPolicy, TravelPolicyAssignment, TravelPolicyRule, WorkLocation, WorkflowApprover } from '../types/payroll'
 import { deleteJson, getBlob, getJson, postForm, postJson, type ApiOptions } from './apiClient'
 
 export type BulkImportStatus = { jobId: string; state: 'Queued' | 'Processing' | 'Completed' | 'Failed'; totalRows: number; completedRows: number; inserted: number; updated: number; errors: string[] }
@@ -23,11 +23,27 @@ export const startClientBillingImport = (file: File) => {
   return postForm<BulkImportStatus>('/api/client-billing/configurations/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
 }
 export const getClientBillingImportJob = (jobId: string) => getJson<BulkImportStatus>(`/api/client-billing/configurations/import-jobs/${jobId}`, { jobId, state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: ['Import job not found.'] })
-export const getTravelExpenseSetup = () => getJson<TravelExpenseSetup>('/api/travel-expense/setup', { policies: [], assignments: [], rules: [], categories: [], audit: [] })
+export const getTravelExpenseSetup = () => getJson<TravelExpenseSetup>('/api/travel-expense/setup', { clientSettings: [], policies: [], assignments: [], rules: [], categories: [], audit: [] })
 export const saveTravelPolicy = (row: TravelPolicy) => postJson('/api/travel-expense/policies', row, { id: row.id }, { successMessage: 'Travel policy saved.' })
+export const saveTravelExpenseClientSetting = (row: TravelExpenseClientSetting) => postJson('/api/travel-expense/client-settings', row, row, { successMessage: 'Travel & Expense client setting saved.' })
 export const saveTravelPolicyAssignment = (row: TravelPolicyAssignment) => postJson('/api/travel-expense/assignments', row, { id: row.id }, { successMessage: 'Policy assignment saved.' })
 export const saveTravelPolicyRule = (row: TravelPolicyRule) => postJson('/api/travel-expense/rules', row, { id: row.id }, { successMessage: 'Policy rule saved.' })
 export const saveTravelExpenseCategory = (row: TravelExpenseCategory) => postJson('/api/travel-expense/categories', row, { id: row.id }, { successMessage: 'Expense category saved.' })
+export const getTravelAdvances = (clientId = 0, status = '') => getJson<TravelAdvance[]>(`/api/travel-advances?${new URLSearchParams({ ...(clientId ? { clientId: String(clientId) } : {}), ...(status ? { status } : {}) })}`, [])
+export const payTravelAdvance = (id: number, request: PayTravelAdvanceRequest) => postJson(`/api/travel-advances/${id}/pay`, request, null as TravelAdvance | null, { successMessage: 'Travel advance paid.' })
+export const settleTravelAdvance = (id: number, request: SettleTravelAdvanceRequest) => postJson(`/api/travel-advances/${id}/settle`, request, null as TravelAdvance | null, { successMessage: 'Travel advance settled.' })
+export const recoverTravelAdvance = (id: number, request: RecoverTravelAdvanceRequest) => postJson(`/api/travel-advances/${id}/recover`, request, null as TravelAdvance | null, { successMessage: 'Travel advance marked recoverable.' })
+export const getRecruitmentAdminSetup = () => getJson<RecruitmentAdminSetup>('/api/recruitment-admin', { settings: [], masters: [], consultants: [], vendors: [], assignmentRules: [], slaRules: [], documentChecklist: [], approvalMappings: [], templates: [] })
+export const saveRecruitmentSetting = (row: RecruitmentSetting) => postJson('/api/recruitment-admin/settings', row, row, { successMessage: 'Recruitment settings saved.' })
+export const saveRecruitmentMaster = (row: RecruitmentMasterValue) => postJson('/api/recruitment-admin/masters', row, row, { successMessage: 'Recruitment master saved.' })
+export const saveRecruitmentPartner = (row: RecruitmentPartner) => postJson('/api/recruitment-admin/partners', row, row, { successMessage: 'Recruitment partner saved.' })
+export const saveRecruitmentAssignmentRule = (row: RecruitmentAssignmentRule) => postJson('/api/recruitment-admin/assignment-rules', row, row, { successMessage: 'Recruiter assignment rule saved.' })
+export const saveRecruitmentSlaRule = (row: RecruitmentSlaRule) => postJson('/api/recruitment-admin/sla-rules', row, row, { successMessage: 'Recruitment SLA saved.' })
+export const saveRecruitmentDocumentChecklist = (row: RecruitmentDocumentChecklist) => postJson('/api/recruitment-admin/document-checklist', row, row, { successMessage: 'Document checklist saved.' })
+export const saveRecruitmentApprovalMapping = (row: RecruitmentApprovalMapping) => postJson('/api/recruitment-admin/approval-mappings', row, row, { successMessage: 'Approval mapping saved.' })
+export const saveRecruitmentTemplate = (row: RecruitmentTemplate) => postJson('/api/recruitment-admin/templates', row, row, { successMessage: 'Recruitment template saved.' })
+export const getEssClientSettings = () => getJson<EssClientSetting[]>('/api/ess-admin/settings', [])
+export const saveEssClientSetting = (row: EssClientSetting) => postJson('/api/ess-admin/settings', row, row, { successMessage: 'ESS settings saved.' })
 export const getScheduledJobs = () => getJson<ScheduledJob[]>('/api/scheduled-jobs', [])
 export const getScheduledJobActions = () => getJson<ScheduledJobAction[]>('/api/scheduled-jobs/actions', [])
 export const saveScheduledJobAction = (action: ScheduledJobAction) => postJson<ScheduledJobAction, ScheduledJobAction | null>('/api/scheduled-jobs/actions', action, null)

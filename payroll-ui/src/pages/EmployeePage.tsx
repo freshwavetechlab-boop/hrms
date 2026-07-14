@@ -123,7 +123,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     if (!start.ok || !start.data.jobId) { setUpload({ open: true, state: 'error', percent: 100, summary: { ...start.data, errors: start.data.errors?.length ? start.data.errors : [start.error || 'Upload failed.'] } }); return }
     let job = start.data
     while (job.state === 'Queued' || job.state === 'Processing') {
-      const percent = job.totalRows ? Math.min(99, Math.round((job.completedRows / job.totalRows) * 100)) : 5
+      const percent = job.totalRows && job.completedRows >= job.totalRows ? 99 : job.totalRows ? Math.min(98, Math.round((job.completedRows / job.totalRows) * 100)) : 5
       setUpload({ open: true, state: 'uploading', percent, summary: job })
       await wait(700)
       job = await getEmployeeImportJob(job.jobId)
@@ -323,9 +323,8 @@ function employeeClientIdFromSheets(sheets: ImportPreviewSheet[]) {
 
 function employeeSheetPreviewRules(headers: string[]): ImportPreviewRules {
   const has = (name: string) => headers.some(header => importNorm(header) === importNorm(name))
-  const isSingleEmployeeSheet = headers.some(header => importNorm(header) === 'salarytemplate') || headers.some(header => importNorm(header) === 'reportingmanageremail')
   return {
-    required: isSingleEmployeeSheet ? ['Employee Code', 'First Name', 'Date Of Joining'] : ['Employee Code'],
+    required: ['Employee Code'],
     unique: [['Employee Code']],
     booleans: ['Portal Access', 'Active'].filter(has),
     numbers: ['Work Location Id', 'Annual CTC'].filter(has),
@@ -345,12 +344,6 @@ function employeeSheetPreviewRules(headers: string[]): ImportPreviewRules {
       if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) issues.push({ rowNumber, column: 'Work Email', message: 'Work Email must be a valid email address.' })
       const managerEmail = row['Reporting Manager Email']?.trim()
       if (managerEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(managerEmail)) issues.push({ rowNumber, column: 'Reporting Manager Email', message: 'Reporting Manager Email must be a valid email address.' })
-      const pan = row.PAN?.trim()
-      if (pan && !/^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(pan)) issues.push({ rowNumber, column: 'PAN', message: 'PAN must be in format ABCDE1234F.' })
-      const aadhaar = row.Aadhaar?.trim()
-      if (aadhaar && !/^\d{12}$/.test(aadhaar)) issues.push({ rowNumber, column: 'Aadhaar', message: 'Aadhaar must be 12 digits.' })
-      const ifsc = row.IFSC?.trim()
-      if (ifsc && !/^[A-Z]{4}0[A-Z0-9]{6}$/i.test(ifsc)) issues.push({ rowNumber, column: 'IFSC', message: 'IFSC must be in format ABCD0123456.' })
       return issues
     }
   }
@@ -368,12 +361,16 @@ function resolveDuplicateEmployeeSheets(sheets: ImportPreviewSheet[], mode: 'ski
 }
 
 function employeePreviewFile(draft: BulkUploadPreviewState, sourceSheets: ImportPreviewSheet[], fileName: string) {
+  const isInfotype = (name: string) => /^000[12689]\b/i.test(name.trim())
+  const cleanSheetName = (name: string) => isInfotype(name) ? name : 'Employees'
   const importNames = new Set((draft.sheets?.map(sheet => sheet.name.toLowerCase()) ?? []))
-  const importSheets = draft.sheets?.length ? draft.sheets.map(sheet => ({ name: sheet.name, rows: [sheet.headers, ...sheet.rows] })) : [{ name: 'Employees', rows: [draft.headers, ...draft.rows] }]
+  const importSheets = draft.sheets?.length
+    ? draft.sheets.map(sheet => ({ name: cleanSheetName(sheet.name), rows: [sheet.headers.map(header => header.trim()), ...sheet.rows] }))
+    : [{ name: 'Employees', rows: [draft.headers.map(header => header.trim()), ...draft.rows] }]
   const referenceSheets = sourceSheets
     .filter(sheet => !importNames.has(sheet.name.toLowerCase()))
     .map(sheet => ({ name: sheet.name, rows: [sheet.headers, ...sheet.rows] }))
-  const name = fileName.replace(/\.xlsx$/i, '-preview.xlsx')
+  const name = fileName.replace(/\.[^.]+$/i, '') + '-preview.xlsx'
   return new File([buildXlsxBlob([...importSheets, ...referenceSheets])], name, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
 }
 
@@ -456,7 +453,7 @@ function EmployeePanel(p: { employee: Employee; setEmployee: (employee: Employee
     <section className="employee-infotype-editor"><h4>{selectedInfotype.code} - {selectedInfotype.name}</h4>
     {p.employeeInfotype === '0000' && <EmployeeActionEditor employee={p.employee} locations={p.locations} deps={p.deps} desigs={p.desigs} grades={p.grades} runEmployeeAction={p.runEmployeeAction} />}
     {p.employeeInfotype === '0001' && <div className="grid"><F l="Client"><Sel v={String(p.employee.clientId || '')} set={p.applyClient} a={p.clients.map(item => `${item.id}:${item.name}`)} /></F><F l="Employee code"><input value={p.employee.employeeCode} onChange={event => p.setEmployee({ ...p.employee, employeeCode: event.target.value })} /></F><F l="Work email"><input value={p.employee.workEmail} onChange={event => p.setEmployee({ ...p.employee, workEmail: event.target.value })} /></F><F l="Department"><Sel v={p.employee.department} set={value => p.setEmployee({ ...p.employee, department: value })} a={p.deps} /></F><F l="Designation"><Sel v={p.employee.designation} set={value => p.setEmployee({ ...p.employee, designation: value })} a={p.desigs} /></F><F l="Employee Grade"><Sel v={p.employee.grade} set={value => p.setEmployee({ ...p.employee, grade: value })} a={p.grades} /></F><F l="Work location"><Sel v={String(p.employee.workLocationId || '')} set={value => p.setEmployee({ ...p.employee, workLocationId: Number(value.split(':')[0] || 0) })} a={p.locations.filter(item => item.clientId === p.employee.clientId).map(item => `${item.id}:${item.name}`)} /></F><F l="Reporting manager"><SearchSelect value={p.employee.reportingManagerUserId ?? ''} onChange={value => p.setEmployee({ ...p.employee, reportingManagerUserId: value ? Number(value) : null })} options={managerOptions} /></F><Chk l="Portal access" v={p.employee.portalAccess} set={value => p.setEmployee({ ...p.employee, portalAccess: value })} /><Chk l="Active" v={p.employee.isActive} set={value => p.setEmployee({ ...p.employee, isActive: value })} /></div>}
-    {p.employeeInfotype === '0002' && <div className="grid"><F l="First name"><input value={p.employee.firstName} onChange={event => p.setEmployee({ ...p.employee, firstName: event.target.value })} /></F><F l="Last name"><input value={p.employee.lastName} onChange={event => p.setEmployee({ ...p.employee, lastName: event.target.value })} /></F><F l="Gender"><Sel v={p.employee.gender} set={value => p.setEmployee({ ...p.employee, gender: value })} a={['Male', 'Female', 'Other']} /></F><F l="Date of joining"><input type="date" value={p.employee.dateOfJoining} onChange={event => p.setEmployee({ ...p.employee, dateOfJoining: event.target.value })} /></F><F l="Date of birth"><input type="date" value={personal.dateOfBirth || ''} onChange={event => setPersonal('dateOfBirth', event.target.value)} /></F><F l="PAN"><input value={personal.panNumber || ''} onChange={event => setPersonal('panNumber', event.target.value.toUpperCase())} /></F><F l="Aadhaar"><input value={personal.aadhaarNumber || ''} onChange={event => setPersonal('aadhaarNumber', event.target.value.replace(/\D/g, '').slice(0, 12))} /></F><F l="UAN Number"><input value={personal.uanNumber || ''} onChange={event => setPersonal('uanNumber', event.target.value)} /></F><F l="Mobile"><input value={personal.mobile || ''} onChange={event => setPersonal('mobile', event.target.value)} /></F></div>}
+    {p.employeeInfotype === '0002' && <div className="grid"><F l="First name"><input value={p.employee.firstName} onChange={event => p.setEmployee({ ...p.employee, firstName: event.target.value })} /></F><F l="Last name"><input value={p.employee.lastName} onChange={event => p.setEmployee({ ...p.employee, lastName: event.target.value })} /></F><F l="Gender"><Sel v={p.employee.gender} set={value => p.setEmployee({ ...p.employee, gender: value })} a={['Male', 'Female', 'Other']} /></F><F l="Date of joining"><input type="date" value={p.employee.dateOfJoining} onChange={event => p.setEmployee({ ...p.employee, dateOfJoining: event.target.value })} /></F><F l="Date of birth"><input type="date" value={personal.dateOfBirth || ''} onChange={event => setPersonal('dateOfBirth', event.target.value)} /></F><F l="PAN"><input value={personal.panNumber || ''} onChange={event => setPersonal('panNumber', event.target.value)} /></F><F l="Aadhaar"><input value={personal.aadhaarNumber || ''} onChange={event => setPersonal('aadhaarNumber', event.target.value)} /></F><F l="UAN Number"><input value={personal.uanNumber || ''} onChange={event => setPersonal('uanNumber', event.target.value)} /></F><F l="Mobile"><input value={personal.mobile || ''} onChange={event => setPersonal('mobile', event.target.value)} /></F></div>}
     {p.employeeInfotype === '0006' && <div className="grid"><F l="Address" w><input value={personal.address || ''} onChange={event => setPersonal('address', event.target.value)} /></F><F l="Correspondence Address" w><input value={personal.correspondenceAddress || ''} onChange={event => setPersonal('correspondenceAddress', event.target.value)} /></F><label className="employee-same-address"><input type="checkbox" checked={!!personal.correspondenceAddress && personal.permanentAddress === personal.correspondenceAddress} onChange={event => copyCorrespondence(event.target.checked)} />Same as correspondence address</label><F l="Permanent Address" w><input value={personal.permanentAddress || ''} onChange={event => setPersonal('permanentAddress', event.target.value)} /></F></div>}
     {p.employeeInfotype === '0008' && <div className="employee-salary-panel">
       <div className="employee-salary-controls"><F l="Salary template"><Sel v={p.employee.salaryStructureId} set={p.applyStructure} a={templatesForClient(p.templates, p.employee.clientId).map(item => `${item.id}:${item.name}`)} /></F><F l="Annual CTC"><input value={p.employee.annualCtc} onChange={event => p.applyCtc(Number(event.target.value.replace(/\D/g, '')))} /></F></div>
@@ -472,7 +469,7 @@ function EmployeePanel(p: { employee: Employee; setEmployee: (employee: Employee
         </div>) : <p className="employee-salary-empty">Select a client and salary template, then enter Annual CTC to calculate the salary breakup.</p>}
       </div>
     </div>}
-    {p.employeeInfotype === '0009' && <div className="grid"><F l="Bank"><input value={payment.bankName || ''} onChange={event => setPayment('bankName', event.target.value)} /></F><F l="Account no"><input value={payment.bankAccountNo || ''} onChange={event => setPayment('bankAccountNo', event.target.value)} /></F><F l="IFSC"><input value={payment.ifscCode || ''} onChange={event => setPayment('ifscCode', event.target.value.toUpperCase())} /></F><F l="Payment mode"><Sel v={payment.paymentMode || ''} set={value => setPayment('paymentMode', value)} a={['Bank Transfer', 'Cheque', 'Cash']} /></F></div>}
+    {p.employeeInfotype === '0009' && <div className="grid"><F l="Bank"><input value={payment.bankName || ''} onChange={event => setPayment('bankName', event.target.value)} /></F><F l="Account no"><input value={payment.bankAccountNo || ''} onChange={event => setPayment('bankAccountNo', event.target.value)} /></F><F l="IFSC"><input value={payment.ifscCode || ''} onChange={event => setPayment('ifscCode', event.target.value)} /></F><F l="Payment mode"><Sel v={payment.paymentMode || ''} set={value => setPayment('paymentMode', value)} a={['Bank Transfer', 'Cheque', 'Cash']} /></F></div>}
     {p.employeeInfotype !== '0000' && <div className="grid"><F l="Change reason" w><input value={p.changeReason} onChange={event => p.setChangeReason(event.target.value)} placeholder="Reason for this infotype change" /></F></div>}
     </section>
     <InfotypeHistory employee={p.employee} infotypeCode={p.employeeInfotype} infotypes={p.infotypes} clients={p.clients} locations={p.locations} managerUsers={p.managerUsers} templates={p.templates} />

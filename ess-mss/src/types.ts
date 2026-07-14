@@ -1,19 +1,23 @@
 export type User = {
+  id: number
   email: string
   displayName: string
   roles: string[]
   permissions: string[]
+  mustChangePassword: boolean
   employeeId?: number
   clientId?: number
 }
 
 export type OrganizationBrand = { name: string; logoDataUrl: string }
 
-export type View = 'Dashboard' | 'My Profile' | 'Leave' | 'Travel' | 'Expense' | 'Attendance' | 'Pay' | 'Tax' | 'My Tasks' | 'Team' | 'Approvals'
+export type View = 'Dashboard' | 'My Profile' | 'Leave' | 'Travel' | 'Expense' | 'Recruitment' | 'Attendance' | 'Pay' | 'Tax' | 'My Tasks' | 'Team' | 'Approvals'
 export type LoadState = 'loading' | 'ready' | 'error'
 
 export type Task = { id: number; instanceId: number; resourceType: string; resourceId: string; stageName: string; payloadJson: string; status?: string; comment?: string; createdAt: string; actionedAt?: string }
-export type ProfileData = { employeeCode: string; firstName: string; lastName: string; workEmail: string; department: string; designation: string; dateOfJoining: string; workLocation: string; reportingManager: string }
+export type ProfileData = { clientId: number; employeeCode: string; firstName: string; lastName: string; workEmail: string; dateOfBirth: string; mobile: string; panNumber: string; aadhaarNumber: string; address: string; correspondenceAddress: string; permanentAddress: string; city: string; district: string; state: string; bankName: string; bankAccountNo: string; ifscCode: string; paymentMode: string; department: string; designation: string; dateOfJoining: string; workLocation: string; reportingManager: string; canEdit: boolean; travelExpenseEnabled: boolean }
+export type FeatureAccess = { travelExpenseEnabled: boolean }
+export type SaveProfileData = Omit<ProfileData, 'clientId' | 'employeeCode' | 'department' | 'designation' | 'dateOfJoining' | 'workLocation' | 'reportingManager' | 'canEdit' | 'travelExpenseEnabled'>
 export type LeaveBalance = { leaveCode: string; leaveType: string; balance: number; balanceDate: string; allowHalfDay: boolean }
 export type LeaveRequest = { id: number; leaveCode: string; leaveType: string; fromDate: string; toDate: string; dayType: string; days: number; reason: string; status: string; createdAt: string }
 export type TravelCity = { fromLocation: string; toLocation: string; travelMode: string; travelClass: string; remarks: string; startDateTime?: string; endDateTime?: string }
@@ -30,6 +34,13 @@ export type ExpenseCategoryOption = { id: number; clientId: number; parentId?: n
 export type ExpenseTravelOption = { id: number; requestNumber: string; purpose: string; customer: string; project: string; costCenter: string; startDateTime: string; endDateTime: string; travelMode: string; accommodationRequired: boolean; localConveyanceRequired: boolean }
 export type ExpenseOptions = { clientName: string; policyId?: number; policyName: string; headers: ExpenseCategoryOption[]; categories: ExpenseCategoryOption[]; travelRequests: ExpenseTravelOption[]; currencies: string[]; locations: string[]; paymentMethods: string[]; validationMessages: string[] }
 export type ExpenseDashboard = { draftClaims: number; pendingApproval: number; approved: number; rejected: number; pendingPayroll: number; approvedAmount: number }
+export type RecruitmentRequisition = { id: number; rfrNumber: string; requestDate: string; requestedByName: string; clientId: number; clientName: string; branchId: number; branchName: string; businessUnit: string; department: string; costCenter: string; positionTitle: string; positionCategory: string; employmentType: string; hiringType: string; numberOfOpenings: number; isReplacement: boolean; replacementEmployeeId?: number; replacementEmployeeName: string; targetJoiningDate?: string; jobLocation: string; workMode: string; project: string; budgetAvailable: boolean; budgetAmount: number; hiringPriority: string; businessJustification: string; reasonForHiring: string; experienceRange: string; qualification: string; requiredSkills: string; preferredSkills: string; certifications: string; languages: string; salaryMin: number; salaryMax: number; currency: string; benefits: string; status: string; workflowInstanceId?: number; openPositionId?: number; submittedAt?: string; createdAt: string; updatedAt: string }
+export type SaveRecruitmentRequisition = { id: number; branchId: number; businessUnit: string; department: string; costCenter: string; positionTitle: string; positionCategory: string; employmentType: string; hiringType: string; numberOfOpenings: number; isReplacement: boolean; replacementEmployeeId?: number; targetJoiningDate?: string; jobLocation: string; workMode: string; clientId?: number; project: string; budgetAvailable: boolean; budgetAmount: number; hiringPriority: string; businessJustification: string; reasonForHiring: string; experienceRange: string; qualification: string; requiredSkills: string; preferredSkills: string; certifications: string; languages: string; salaryMin: number; salaryMax: number; currency: string; benefits: string }
+export type RecruitmentOptions = { moduleEnabled: boolean; enabled: boolean; allowReplacementHiring: boolean; enableInternalHiring: boolean; enableReferralHiring: boolean; displayName: string; clientName: string; positionCategories: string[]; hiringTypes: string[]; employmentTypes: string[]; departments: string[]; designations: string[]; grades: string[]; workLocations: string[]; businessUnits: string[]; costCenters: string[]; experienceRanges: string[]; budgetAmounts: string[]; priorities: string[]; employees: { id: number; employeeCode: string; employeeName: string; department: string; designation: string }[]; validationMessages: string[] }
+export type RecruitmentDashboard = { drafts: number; pendingApproval: number; approved: number; rejected: number; returned: number; withdrawn: number; openPositions: number }
+export type RecruitmentInternalOpening = { positionId: number; positionCode: string; positionTitle: string; department: string; jobLocation: string; employmentType: string; hiringType: string; experienceRange: string; requiredSkills: string; targetJoiningDate?: string; campaignName: string; referralReward: number; endDate: string }
+export type RecruitmentEmployeeReferral = { id: number; positionId: number; positionCode: string; positionTitle: string; candidateName: string; candidateEmail: string; candidatePhone: string; relationship: string; remarks: string; status: string; createdAt: string }
+export type SaveEmployeeReferral = { positionId: number; candidateName: string; candidateEmail: string; candidatePhone: string; relationship: string; remarks: string }
 export type WorkflowTrail = { instanceId?: number; workflowCode: string; workflowName: string; resourceType: string; matchScope: string; status: string; createdAt?: string; completedAt?: string; events: WorkflowTrailItem[] }
 export type WorkflowTrailItem = { stageName: string; action: string; actor: string; comment: string; createdAt: string; isPending: boolean }
 export type DailyAttendance = { attendanceDate: string; status: string; payableValue: number; remarks: string }

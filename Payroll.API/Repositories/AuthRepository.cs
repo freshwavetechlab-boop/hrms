@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS authusers (
     Id INT PRIMARY KEY AUTO_INCREMENT,
     Email VARCHAR(190) NOT NULL,
     DisplayName VARCHAR(190) NOT NULL,
+    Mobile VARCHAR(40) NOT NULL DEFAULT '',
     PasswordHash VARCHAR(500) NOT NULL,
     ClientId INT NULL,
     EmployeeId INT NULL,
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS auditlogs (
         await EnsureForeignKeyAsync(connection, "authrolepermissions", "FK_AuthRolePermissions_Permission", "FOREIGN KEY (PermissionId) REFERENCES authpermissions(Id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "authsessions", "FK_AuthSessions_User", "FOREIGN KEY (UserId) REFERENCES authusers(Id) ON DELETE CASCADE");
         await EnsureColumnAsync(connection, "authusers", "EmployeeId", "INT NULL");
+        await EnsureColumnAsync(connection, "authusers", "Mobile", "VARCHAR(40) NOT NULL DEFAULT '' AFTER DisplayName");
         await SeedSecurityCatalogAsync(connection);
 
     }
@@ -113,14 +115,21 @@ CREATE TABLE IF NOT EXISTS auditlogs (
         if (row is null || !row.IsActive || !VerifyPassword(request.Password, row.PasswordHash))
             return null;
 
+        var user = await BuildUserAsync(connection, row.Id) ?? new AuthUser();
+        if (request.Portal.Equals("Admin", StringComparison.OrdinalIgnoreCase) && !HasBackofficeAccess(user))
+            return null;
+
         var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(TokenBytes));
         var tokenHash = HashToken(token);
         var expiresAt = DateTime.UtcNow.AddHours(12);
         await connection.ExecuteAsync(@"INSERT INTO authsessions (UserId, TokenHash, IpAddress, UserAgent, ExpiresAt) VALUES (@UserId, @TokenHash, @IpAddress, @UserAgent, @ExpiresAt);
 UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { UserId = row.Id, TokenHash = tokenHash, IpAddress = ipAddress, UserAgent = userAgent, ExpiresAt = expiresAt });
         await WriteAuditAsync(connection, row.Id, row.Email, "auth.login", "AuthSession", "POST", "/api/auth/login", 200, ipAddress, userAgent, "{}");
-        return new LoginResponse { Token = token, ExpiresAt = expiresAt, User = await BuildUserAsync(connection, row.Id) ?? new AuthUser() };
+        return new LoginResponse { Token = token, ExpiresAt = expiresAt, User = user };
     }
+
+    public static bool HasBackofficeAccess(AuthUser user) =>
+        user.Permissions.Any(permission => !permission.Equals("ess.self", StringComparison.OrdinalIgnoreCase));
 
     public async Task<AuthUser?> GetUserByTokenAsync(string token)
     {
@@ -181,11 +190,41 @@ ORDER BY r.Name;");
 
     private static async Task<AuthUser?> BuildUserAsync(MySqlConnection connection, int userId)
     {
-        var user = await connection.QueryFirstOrDefaultAsync<AuthUser>("SELECT Id, Email, DisplayName, ClientId, EmployeeId, IsActive, MustChangePassword FROM authusers WHERE Id = @UserId", new { UserId = userId });
+        var user = await connection.QueryFirstOrDefaultAsync<AuthUser>("SELECT Id, Email, DisplayName, Mobile, ClientId, EmployeeId, IsActive, MustChangePassword FROM authusers WHERE Id = @UserId", new { UserId = userId });
         if (user is null) return null;
         user.Roles = (await connection.QueryAsync<string>(@"SELECT r.Code FROM authroles r JOIN authuserroles ur ON ur.RoleId = r.Id WHERE ur.UserId = @UserId ORDER BY r.Code", new { UserId = userId })).ToList();
         user.Permissions = (await connection.QueryAsync<string>(@"SELECT DISTINCT p.Code FROM authpermissions p JOIN authrolepermissions rp ON rp.PermissionId = p.Id JOIN authuserroles ur ON ur.RoleId = rp.RoleId WHERE ur.UserId = @UserId ORDER BY p.Code", new { UserId = userId })).ToList();
+        user.DashboardAccess = BuildDashboardAccess(user.Permissions);
+        user.DefaultDashboardCode = user.DashboardAccess.FirstOrDefault()?.Code ?? string.Empty;
         return user;
+    }
+
+    private sealed record DashboardAccessRule(string Code, string Name, string Description, string Route, int SortOrder, string[] PermissionHints);
+
+    private static readonly DashboardAccessRule[] DashboardCatalog =
+    [
+        new("overview", "Overview Dashboard", "Combined HR, payroll, attendance and approval summary.", "/dashboard", 10, ["dashboard.view", "security.manage"]),
+        new("workforce", "Workforce Dashboard", "Employee strength, ESS adoption and workforce movement.", "/dashboard/workforce", 20, ["dashboard.workforce.view", "employees.view", "employees.manage", "security.manage"]),
+        new("payroll", "Payroll Dashboard", "Pay run status, payroll cost and recent run activity.", "/dashboard/payroll", 30, ["dashboard.payroll.view", "payroll.run", "payroll.approve", "payroll.payments", "security.manage"]),
+        new("attendance", "Attendance Dashboard", "Attendance readiness, exceptions and leave blockers.", "/dashboard/attendance", 40, ["dashboard.attendance.view", "leave.manage", "attendance.manage", "settings.manage", "security.manage"]),
+        new("approvals", "Approvals Dashboard", "Pending workflow tasks and approval workload.", "/dashboard/approvals", 50, ["dashboard.approvals.view", "workflow.manage", "payroll.approve", "security.manage"])
+    ];
+
+    private static List<DashboardAccessItem> BuildDashboardAccess(IEnumerable<string> permissions)
+    {
+        var granted = permissions.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return DashboardCatalog
+            .Where(rule => rule.PermissionHints.Any(granted.Contains))
+            .OrderBy(rule => rule.SortOrder)
+            .Select(rule => new DashboardAccessItem
+            {
+                Code = rule.Code,
+                Name = rule.Name,
+                Description = rule.Description,
+                Route = rule.Route,
+                SortOrder = rule.SortOrder
+            })
+            .ToList();
     }
 
     private static Task WriteAuditAsync(MySqlConnection connection, int? userId, string userEmail, string action, string resource, string method, string path, int statusCode, string ipAddress, string userAgent, string detailsJson) =>
@@ -212,19 +251,20 @@ SELECT
     e.EmployeeCode,
     TRIM(CONCAT(COALESCE(e.FirstName, ''), ' ', COALESCE(e.LastName, ''))) AS EmployeeName,
     e.WorkEmail,
+    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(e.PersonalJson, '$.aadhaarNumber')), JSON_UNQUOTE(JSON_EXTRACT(e.PersonalJson, '$.AadhaarNumber')), '') AS AadhaarNumber,
     e.Department,
     e.Designation
 FROM employees e
 LEFT JOIN clients c ON c.Id = e.ClientId
 WHERE e.IsActive = TRUE
   AND (c.Id IS NULL OR c.IsActive = TRUE)
-  AND NULLIF(TRIM(e.WorkEmail), '') IS NOT NULL
+  AND NULLIF(TRIM(e.EmployeeCode), '') IS NOT NULL
   AND (@ClientId IS NULL OR @ClientId = 0 OR e.ClientId = @ClientId)
   AND NOT EXISTS (
       SELECT 1
       FROM authusers u
       WHERE u.EmployeeId = e.Id
-         OR LOWER(TRIM(u.Email)) = LOWER(TRIM(e.WorkEmail))
+         OR LOWER(TRIM(u.Email)) = LOWER(TRIM(e.EmployeeCode))
   )
 ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = clientId.GetValueOrDefault() });
     }
@@ -247,10 +287,10 @@ ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = cli
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .DefaultIfEmpty("employee")
             .ToArray();
-        var temporaryPassword = string.IsNullOrWhiteSpace(request.TemporaryPassword)
-            ? GenerateTemporaryPassword()
+        var fixedTemporaryPassword = string.IsNullOrWhiteSpace(request.TemporaryPassword)
+            ? ""
             : request.TemporaryPassword.Trim();
-        response.TemporaryPassword = temporaryPassword;
+        response.TemporaryPassword = fixedTemporaryPassword;
 
         if (employeeIds.Length == 0)
         {
@@ -266,6 +306,7 @@ SELECT
     e.EmployeeCode,
     TRIM(CONCAT(COALESCE(e.FirstName, ''), ' ', COALESCE(e.LastName, ''))) AS EmployeeName,
     e.WorkEmail,
+    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(e.PersonalJson, '$.aadhaarNumber')), JSON_UNQUOTE(JSON_EXTRACT(e.PersonalJson, '$.AadhaarNumber')), '') AS AadhaarNumber,
     e.Department,
     e.Designation
 FROM employees e
@@ -280,13 +321,13 @@ ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { EmployeeIds = 
                 EmployeeId = employee.EmployeeId,
                 EmployeeCode = employee.EmployeeCode,
                 EmployeeName = employee.EmployeeName,
-                Email = NormalizeEmail(employee.WorkEmail)
+                Email = NormalizeLoginId(employee.EmployeeCode)
             };
 
-            if (string.IsNullOrWhiteSpace(employee.WorkEmail))
+            if (string.IsNullOrWhiteSpace(employee.EmployeeCode))
             {
                 result.Status = "Skipped";
-                result.Message = "Work email is missing.";
+                result.Message = "Employee code is missing.";
                 response.Results.Add(result);
                 continue;
             }
@@ -301,12 +342,13 @@ ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { EmployeeIds = 
                 result.Status = "Skipped";
                 result.Message = existingUser.EmployeeId == employee.EmployeeId
                     ? "Employee already has a login."
-                    : "Email/login ID already exists.";
+                    : "Login ID already exists.";
                 response.Results.Add(result);
                 continue;
             }
 
             var displayName = string.IsNullOrWhiteSpace(employee.EmployeeName) ? employee.EmployeeCode : employee.EmployeeName;
+            var temporaryPassword = await ResolveInitialPasswordAsync(connection, employee, fixedTemporaryPassword, transaction);
             var userId = (int)await connection.ExecuteScalarAsync<long>(@"
 INSERT INTO authusers (Email, DisplayName, PasswordHash, ClientId, EmployeeId, IsActive, MustChangePassword)
 VALUES (@Email, @DisplayName, @PasswordHash, @ClientId, @EmployeeId, TRUE, @MustChangePassword);
@@ -356,6 +398,115 @@ SELECT @UserId, Id FROM authroles WHERE Code = 'employee';", new { UserId = user
         return response;
     }
 
+    public async Task<EmployeeLoginProvisionResult> EnsureEmployeeLoginAsync(int employeeId, bool resetExistingPassword = false)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await SeedSecurityCatalogAsync(connection);
+        await using var transaction = await connection.BeginTransactionAsync();
+        var employee = await connection.QueryFirstOrDefaultAsync<EmployeeLoginProvisionPreview>(@"
+SELECT
+    e.Id AS EmployeeId,
+    e.ClientId,
+    COALESCE(c.Name, '') AS ClientName,
+    e.EmployeeCode,
+    TRIM(CONCAT(COALESCE(e.FirstName, ''), ' ', COALESCE(e.LastName, ''))) AS EmployeeName,
+    e.WorkEmail,
+    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(e.PersonalJson, '$.aadhaarNumber')), JSON_UNQUOTE(JSON_EXTRACT(e.PersonalJson, '$.AadhaarNumber')), '') AS AadhaarNumber,
+    e.Department,
+    e.Designation
+FROM employees e
+LEFT JOIN clients c ON c.Id = e.ClientId
+WHERE e.Id=@EmployeeId AND e.IsActive=TRUE;", new { EmployeeId = employeeId }, transaction);
+        var result = new EmployeeLoginProvisionResult { EmployeeId = employeeId };
+        if (employee is null)
+        {
+            result.Status = "Skipped";
+            result.Message = "Employee not found or inactive.";
+            await transaction.CommitAsync();
+            return result;
+        }
+
+        result.ClientId = employee.ClientId;
+        result.EmployeeCode = employee.EmployeeCode;
+        result.EmployeeName = employee.EmployeeName;
+        result.Email = NormalizeLoginId(employee.EmployeeCode);
+        result.NotificationEmail = NormalizeEmail(employee.WorkEmail);
+        if (string.IsNullOrWhiteSpace(result.Email))
+        {
+            result.Status = "Skipped";
+            result.Message = "Employee code is missing.";
+            await transaction.CommitAsync();
+            return result;
+        }
+
+        var displayName = string.IsNullOrWhiteSpace(employee.EmployeeName) ? employee.EmployeeCode : employee.EmployeeName;
+        var temporaryPassword = await ResolveInitialPasswordAsync(connection, employee, transaction: transaction);
+        var existingUser = await connection.QueryFirstOrDefaultAsync<(int Id, int? EmployeeId)>(
+            "SELECT Id, EmployeeId FROM authusers WHERE LOWER(TRIM(Email)) = LOWER(TRIM(@Email)) OR EmployeeId = @EmployeeId LIMIT 1",
+            new { Email = result.Email, employee.EmployeeId },
+            transaction);
+        if (existingUser.Id > 0)
+        {
+            result.UserId = existingUser.Id;
+            if (resetExistingPassword)
+            {
+                await connection.ExecuteAsync(@"UPDATE authusers
+SET Email=@Email, DisplayName=@DisplayName, ClientId=@ClientId, EmployeeId=@EmployeeId, IsActive=TRUE, PasswordHash=@PasswordHash, MustChangePassword=TRUE
+WHERE Id=@Id", new { Id = existingUser.Id, Email = result.Email, DisplayName = displayName, employee.ClientId, employee.EmployeeId, PasswordHash = HashPassword(temporaryPassword) }, transaction);
+                result.Status = "Reset";
+                result.Message = "Existing login reset.";
+                result.TemporaryPassword = temporaryPassword;
+            }
+            else
+            {
+                await connection.ExecuteAsync(@"UPDATE authusers
+SET Email=@Email, DisplayName=@DisplayName, ClientId=@ClientId, EmployeeId=@EmployeeId, IsActive=TRUE
+WHERE Id=@Id", new { Id = existingUser.Id, Email = result.Email, DisplayName = displayName, employee.ClientId, employee.EmployeeId }, transaction);
+                result.Status = "Existing";
+                result.Message = "Existing login enabled/linked.";
+            }
+        }
+        else
+        {
+            var userId = (int)await connection.ExecuteScalarAsync<long>(@"
+INSERT INTO authusers (Email, DisplayName, PasswordHash, ClientId, EmployeeId, IsActive, MustChangePassword)
+VALUES (@Email, @DisplayName, @PasswordHash, @ClientId, @EmployeeId, TRUE, TRUE);
+SELECT LAST_INSERT_ID();", new
+            {
+                Email = result.Email,
+                DisplayName = displayName,
+                PasswordHash = HashPassword(temporaryPassword),
+                employee.ClientId,
+                employee.EmployeeId
+            }, transaction);
+            result.UserId = userId;
+            result.Status = "Created";
+            result.Message = "Login created.";
+            result.TemporaryPassword = temporaryPassword;
+        }
+
+        if (result.UserId is not null)
+            await connection.ExecuteAsync(@"INSERT IGNORE INTO authuserroles (UserId, RoleId)
+SELECT @UserId, Id FROM authroles WHERE Code = 'employee';", new { UserId = result.UserId.Value }, transaction);
+
+        await transaction.CommitAsync();
+        return result;
+    }
+
+    public async Task<(AuthUser? User, string? Error)> ChangePasswordAsync(int userId, string currentPassword, string newPassword)
+    {
+        if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Trim().Length < 8)
+            return (null, "New password must be at least 8 characters.");
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        var row = await connection.QueryFirstOrDefaultAsync<AuthUserRecord>("SELECT * FROM authusers WHERE Id=@UserId AND IsActive=TRUE", new { UserId = userId });
+        if (row is null) return (null, "User was not found.");
+        if (!VerifyPassword(currentPassword, row.PasswordHash)) return (null, "Current password is incorrect.");
+        await connection.ExecuteAsync("UPDATE authusers SET PasswordHash=@PasswordHash, MustChangePassword=FALSE WHERE Id=@UserId", new { UserId = userId, PasswordHash = HashPassword(newPassword.Trim()) });
+        return (await BuildUserAsync(connection, userId), null);
+    }
+
     public async Task<AuthUser?> SaveUserAsync(SaveAuthUserRequest request)
     {
         await using var connection = CreateConnection();
@@ -366,13 +517,13 @@ SELECT @UserId, Id FROM authroles WHERE Code = 'employee';", new { UserId = user
         var userId = request.Id;
         if (userId == 0)
         {
-            userId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO authusers (Email, DisplayName, PasswordHash, ClientId, EmployeeId, IsActive, MustChangePassword)
-VALUES (@Email, @DisplayName, @PasswordHash, @ClientId, @EmployeeId, @IsActive, @MustChangePassword);
-SELECT LAST_INSERT_ID();", new { Email = email, request.DisplayName, PasswordHash = HashPassword(request.Password), request.ClientId, request.EmployeeId, request.IsActive, request.MustChangePassword }, transaction);
+            userId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO authusers (Email, DisplayName, Mobile, PasswordHash, ClientId, EmployeeId, IsActive, MustChangePassword)
+VALUES (@Email, @DisplayName, @Mobile, @PasswordHash, @ClientId, @EmployeeId, @IsActive, @MustChangePassword);
+SELECT LAST_INSERT_ID();", new { Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), PasswordHash = HashPassword(request.Password), request.ClientId, request.EmployeeId, request.IsActive, request.MustChangePassword }, transaction);
         }
         else
         {
-            await connection.ExecuteAsync(@"UPDATE authusers SET Email=@Email, DisplayName=@DisplayName, ClientId=@ClientId, EmployeeId=@EmployeeId, IsActive=@IsActive, MustChangePassword=@MustChangePassword WHERE Id=@Id", new { Id = userId, Email = email, request.DisplayName, request.ClientId, request.EmployeeId, request.IsActive, request.MustChangePassword }, transaction);
+            await connection.ExecuteAsync(@"UPDATE authusers SET Email=@Email, DisplayName=@DisplayName, Mobile=@Mobile, ClientId=@ClientId, EmployeeId=@EmployeeId, IsActive=@IsActive, MustChangePassword=@MustChangePassword WHERE Id=@Id", new { Id = userId, Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), request.ClientId, request.EmployeeId, request.IsActive, request.MustChangePassword }, transaction);
             if (!string.IsNullOrWhiteSpace(request.Password))
                 await connection.ExecuteAsync("UPDATE authusers SET PasswordHash=@PasswordHash, MustChangePassword=TRUE WHERE Id=@Id", new { Id = userId, PasswordHash = HashPassword(request.Password) }, transaction);
         }
@@ -523,6 +674,15 @@ LIMIT 5;", new { Id = id }, transaction)).ToList();
             new { Code = "settings.manage", Name = "Manage settings", Module = "Settings", Description = "Configure organization, clients, masters and setup data." },
             new { Code = "tax.statutory.manage", Name = "Manage statutory tax", Module = "Settings", Description = "Maintain statutory and income tax rules." },
             new { Code = "workflow.manage", Name = "Manage workflows", Module = "Workflows", Description = "Configure approval workflows and department heads." },
+            new { Code = "recruitment.manage", Name = "Manage recruitment", Module = "Talent Acquisition", Description = "Monitor recruitment requisitions and open positions." },
+            new { Code = "recruitment.position.view", Name = "View recruitment positions", Module = "Talent Acquisition", Description = "View recruitment open positions and workspace." },
+            new { Code = "recruitment.position.manage", Name = "Manage recruitment positions", Module = "Talent Acquisition", Description = "Manage recruitment open position operations." },
+            new { Code = "recruitment.assign.recruiter", Name = "Assign recruiter", Module = "Talent Acquisition", Description = "Assign or reassign recruiters to open positions." },
+            new { Code = "recruitment.assign.partner", Name = "Assign recruitment partners", Module = "Talent Acquisition", Description = "Assign vendors and consultants to open positions." },
+            new { Code = "recruitment.publish", Name = "Publish job", Module = "Talent Acquisition", Description = "Publish open positions to configured channels." },
+            new { Code = "recruitment.referral.manage", Name = "Manage referral campaigns", Module = "Talent Acquisition", Description = "Create and manage employee referral campaigns." },
+            new { Code = "recruitment.rfr.create", Name = "Create recruitment requisition", Module = "Talent Acquisition", Description = "Create recruitment requisitions on behalf of the organization." },
+            new { Code = "recruitment.rfr.view", Name = "View recruitment requisitions", Module = "Talent Acquisition", Description = "View recruitment requisitions for permitted scope." },
             new { Code = "reports.view", Name = "View reports", Module = "Reports", Description = "Open reports and exports." },
             new { Code = "security.manage", Name = "Manage security", Module = "Security", Description = "Manage users, roles and permissions." },
             new { Code = "audit.view", Name = "View audit logs", Module = "Security", Description = "View identity and operational audit logs." },
@@ -541,6 +701,7 @@ ON DUPLICATE KEY UPDATE
         {
             new { Code = "admin", Name = "Administrator", Description = "Full HRMS administration access.", IsSystem = true },
             new { Code = "employee", Name = "Employee", Description = "Employee self-service access.", IsSystem = true },
+            new { Code = "mss_manager", Name = "MSS Manager", Description = "Manager self-service access for approvals and assigned workflow tasks.", IsSystem = true },
             new { Code = "payroll_maker", Name = "Payroll Maker", Description = "Payroll preparation and employee master operations.", IsSystem = true },
             new { Code = "payroll_approver", Name = "Payroll Approver", Description = "Payroll approval and review access.", IsSystem = true },
             new { Code = "hr_manager", Name = "HR Manager", Description = "HR, attendance, leave and employee operations.", IsSystem = true }
@@ -558,9 +719,10 @@ ON DUPLICATE KEY UPDATE
         {
             ["admin"] = permissions.Select(permission => permission.Code).ToArray(),
             ["employee"] = ["ess.self"],
+            ["mss_manager"] = ["ess.self", "dashboard.approvals.view"],
             ["payroll_maker"] = ["dashboard.view", "dashboard.payroll.view", "dashboard.workforce.view", "employees.view", "employees.manage", "payroll.run", "reports.view"],
             ["payroll_approver"] = ["dashboard.view", "dashboard.payroll.view", "payroll.approve", "reports.view"],
-            ["hr_manager"] = ["dashboard.view", "dashboard.workforce.view", "dashboard.attendance.view", "employees.view", "employees.manage", "leave.manage", "attendance.manage", "workflow.manage", "reports.view"]
+            ["hr_manager"] = ["dashboard.view", "dashboard.workforce.view", "dashboard.attendance.view", "employees.view", "employees.manage", "leave.manage", "attendance.manage", "workflow.manage", "recruitment.manage", "recruitment.position.view", "recruitment.position.manage", "recruitment.assign.recruiter", "recruitment.assign.partner", "recruitment.publish", "recruitment.referral.manage", "recruitment.rfr.create", "recruitment.rfr.view", "reports.view"]
         };
 
         foreach (var (roleCode, permissionCodes) in rolePermissions)
@@ -613,6 +775,46 @@ WHERE CONSTRAINT_SCHEMA = DATABASE()
     }
 
     private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
+    private static string NormalizeLoginId(string value) => value.Trim().ToLowerInvariant();
+
+    private async Task<string> ResolveInitialPasswordAsync(MySqlConnection connection, EmployeeLoginProvisionPreview employee, string fixedPassword = "", System.Data.IDbTransaction? transaction = null)
+    {
+        if (!string.IsNullOrWhiteSpace(fixedPassword))
+            return fixedPassword.Trim();
+
+        var clientSetting = await connection.QueryFirstOrDefaultAsync<ClientPasswordSetting>(@"
+SELECT InitialPasswordMode, FixedPassword
+FROM ess_client_settings
+WHERE ClientId=@ClientId AND IsActive=TRUE
+LIMIT 1;", new { employee.ClientId }, transaction);
+
+        var mode = CleanMode(clientSetting?.InitialPasswordMode);
+        var clientFixedPassword = clientSetting?.FixedPassword?.Trim() ?? "";
+        if (mode == "App Default")
+        {
+            mode = CleanMode(configuration["EmployeeLogin:InitialPasswordMode"] ?? configuration["EmployeeLogin:InitialPasswordSource"] ?? "Random");
+            clientFixedPassword = configuration["EmployeeLogin:FixedPassword"]?.Trim() ?? "";
+        }
+
+        var configured = mode.ToLowerInvariant() switch
+        {
+            "aadhaar" or "aadhar" => CleanPasswordValue(employee.AadhaarNumber),
+            "employeecode" or "employee_code" or "empcode" => CleanPasswordValue(employee.EmployeeCode),
+            "fixed" => clientFixedPassword,
+            _ => ""
+        };
+
+        return configured.Length >= 8 ? configured : GenerateTemporaryPassword();
+    }
+
+    private static string CleanMode(string? value)
+    {
+        var mode = string.IsNullOrWhiteSpace(value) ? "App Default" : value.Trim();
+        return mode.Equals("Aadhar", StringComparison.OrdinalIgnoreCase) ? "Aadhaar" : mode;
+    }
+
+    private static string CleanPasswordValue(string value) =>
+        new((value ?? string.Empty).Trim().Where(char.IsLetterOrDigit).ToArray());
 
     private static string HashPassword(string password)
     {
@@ -653,5 +855,11 @@ WHERE CONSTRAINT_SCHEMA = DATABASE()
         public string Email { get; set; } = string.Empty;
         public string PasswordHash { get; set; } = string.Empty;
         public bool IsActive { get; set; }
+    }
+
+    private sealed class ClientPasswordSetting
+    {
+        public string InitialPasswordMode { get; set; } = "App Default";
+        public string FixedPassword { get; set; } = string.Empty;
     }
 }

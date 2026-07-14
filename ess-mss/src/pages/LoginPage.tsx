@@ -18,7 +18,7 @@ export function LoginPage({ onLogin }: { onLogin: (user: User) => void }) {
           <p>Use your organization login credentials to continue.</p>
         </div>
         <form onSubmit={submit}>
-          <label><span>Email</span><input type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="username" placeholder="Enter email or login ID" required /></label>
+          <label><span>Employee code / Login ID</span><input type="text" value={email} onChange={e => setEmail(e.target.value)} autoComplete="username" placeholder="Enter employee code" required /></label>
           <label><span>Password</span><div className="ess-password-field"><input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" placeholder="Enter password" required /><button type="button" onClick={() => setShowPassword(value => !value)}>{showPassword ? 'Hide' : 'Show'}</button></div></label>
           {error && <p className="form-error">{error}</p>}
           <button disabled={busy}>{busy ? 'Signing in...' : 'Sign in'}</button>

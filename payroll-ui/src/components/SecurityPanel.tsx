@@ -11,9 +11,9 @@ import DataTable from './DataTable'
 import SearchSelect from './SearchSelect'
 import '../SecurityAccess.css'
 
-const user0 = { id: 0, email: '', displayName: '', password: '', clientId: '', employeeId: '', isActive: true, mustChangePassword: true, roles: ['employee'] }
+const user0 = { id: 0, email: '', displayName: '', mobile: '', password: '', clientId: '', employeeId: '', isActive: true, mustChangePassword: true, roles: ['mss_manager'] }
 const role0 = { id: 0, code: '', name: '', description: '', permissions: [] as string[], isSystem: false }
-const userImportHeaders = ['Email', 'Display Name', 'Client Id', 'Employee Code', 'Roles', 'Temporary Password', 'Active', 'Must Change Password']
+const userImportHeaders = ['Email', 'Display Name', 'Mobile', 'Employee Code', 'Roles', 'Temporary Password', 'Active', 'Must Change Password']
 const securityTabs = ['Users', 'Roles', 'Audit'] as const
 
 type SecurityTab = (typeof securityTabs)[number]
@@ -100,10 +100,10 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     setAccessPermissions(current => selected ? Array.from(new Set([...current, ...codes])) : current.filter(code => !codes.includes(code)))
   }
 
-  const openNewUser = () => { setCreatedCredentials(null); setUser(user0); setUserDrawerOpen(true) }
+  const openNewUser = () => { setCreatedCredentials(null); setUser({ ...user0, clientId: directoryClientId }); setUserDrawerOpen(true) }
   const editUser = (selected: AuthUser) => {
     setCreatedCredentials(null)
-    setUser({ id: selected.id, email: selected.email, displayName: selected.displayName, password: '', clientId: selected.clientId ? String(selected.clientId) : '', employeeId: selected.employeeId ? String(selected.employeeId) : '', isActive: selected.isActive, mustChangePassword: selected.mustChangePassword, roles: selected.roles })
+    setUser({ id: selected.id, email: selected.email, displayName: selected.displayName, mobile: selected.mobile || '', password: '', clientId: selected.clientId ? String(selected.clientId) : '', employeeId: selected.employeeId ? String(selected.employeeId) : '', isActive: selected.isActive, mustChangePassword: selected.mustChangePassword, roles: selected.roles })
     setUserDrawerOpen(true)
   }
   const openNewRole = () => { setRole(role0); setRoleDrawerOpen(true) }
@@ -119,7 +119,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     if (user.roles.length === 0) { setMsg('Select at least one role before saving the user.'); return }
     setSaving(true)
     try {
-      const body = { ...user, email: user.email.trim(), displayName: user.displayName.trim(), clientId: user.clientId ? Number(user.clientId) : null, employeeId: user.employeeId ? Number(user.employeeId) : null }
+      const body = { ...user, email: user.email.trim(), displayName: user.displayName.trim(), mobile: user.mobile.trim(), clientId: user.clientId ? Number(user.clientId) : null, employeeId: user.employeeId ? Number(user.employeeId) : null }
       const response = await saveSecurityUser(body)
       setMsg(response.ok ? 'User saved and role assignments updated.' : response.error || 'User save failed.')
       if (response.ok) {
@@ -200,7 +200,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   }
   const provisionEmployee = (employee: Employee) => {
     setCreatedCredentials(null)
-    setUser({ ...user0, employeeId: String(employee.id), clientId: String(employee.clientId), email: employee.workEmail, displayName: `${employee.firstName} ${employee.lastName}`.trim(), roles: ['employee'] })
+    setUser({ ...user0, employeeId: String(employee.id), clientId: String(employee.clientId), email: employee.workEmail, displayName: `${employee.firstName} ${employee.lastName}`.trim(), mobile: employee.personalDetails?.mobile || '', roles: ['employee'] })
     setUserDrawerOpen(true)
     setMsg(`Provisioning login access for ${employee.firstName} ${employee.lastName}.`)
   }
@@ -251,6 +251,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     unique: [['Email'], ['Employee Code']],
     custom: (row, rowNumber) => {
       const issues = []
+      const selectedClientId = Number(directoryClientId || 0)
       const email = normalizeEmail(cell(row, 'Email'))
       const employeeCode = cell(row, 'Employee Code')
       const employee = employeeCode ? employeeByCode.get(employeeCode.toLowerCase()) : null
@@ -263,6 +264,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
       if (!email && !employeeCode) issues.push({ rowNumber, column: 'Email', message: 'Email or Employee Code is required.' })
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) issues.push({ rowNumber, column: 'Email', message: 'Email must be valid.' })
       if (employeeCode && !employee) issues.push({ rowNumber, column: 'Employee Code', message: 'Employee Code was not found in Employee Master.' })
+      if (employee && selectedClientId && employee.clientId !== selectedClientId) issues.push({ rowNumber, column: 'Employee Code', message: 'Employee Code belongs to another client.' })
       if (employeeCode && employee && !employee.workEmail && !email) issues.push({ rowNumber, column: 'Email', message: 'Employee work email is missing; provide Email in file.' })
       if (existingByEmployee && existingByEmail && existingByEmployee.id !== existingByEmail.id) issues.push({ rowNumber, column: 'Employee Code', message: 'Employee and Email are linked to different users.' })
       if (employeeCode && existingByEmployee && (!existingByEmail || existingByEmail.id !== existingByEmployee.id)) issues.push({ rowNumber, column: 'Employee Code', message: 'Employee already has a login with another email.' })
@@ -274,15 +276,17 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   })
 
   const downloadUserTemplate = () => {
-    const sampleEmployee = unlinkedEmployees[0] || employees[0]
+    if (!directoryClientId) { setMsg('Select a client before downloading the user upload template.'); return }
+    const sampleEmployee = unlinkedEmployees[0] || employees.find(employee => employee.clientId === Number(directoryClientId))
     downloadXlsx('security-user-import-template.xlsx', [
-      { name: 'Users', rows: [userImportHeaders, ['manager@company.com', 'Payroll Manager', '', '', 'payroll_maker,hr_manager', 'Temp@12345', 'TRUE', 'TRUE'], ['', '', sampleEmployee ? String(sampleEmployee.clientId) : '', sampleEmployee?.employeeCode || 'EMP001', 'employee', 'Temp@12345', 'TRUE', 'TRUE']] },
+      { name: 'Users', rows: [userImportHeaders, ['manager@company.com', 'Reporting Manager', '9876543210', '', 'mss_manager', 'Temp@12345', 'TRUE', 'TRUE'], [sampleEmployee?.workEmail || 'employee-login@company.com', `${sampleEmployee?.firstName || 'Employee'} ${sampleEmployee?.lastName || 'User'}`.trim(), sampleEmployee?.personalDetails?.mobile || '', sampleEmployee?.employeeCode || 'EMP001', 'employee', 'Temp@12345', 'TRUE', 'TRUE']] },
       { name: 'Roles', rows: [['Role Code', 'Role Name'], ...roles.map(item => [item.code, item.name])] }
     ])
     setUserTemplateDownloaded(true)
   }
   const uploadUserImport = async (file: File | null) => {
     if (!file) return
+    if (!directoryClientId) { setMsg('Select a client before uploading users.'); return }
     try {
       const data = await parseImportPreviewFile(file)
       const issues = validateImportPreview(data, userImportRules())
@@ -308,14 +312,15 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
       const employee = employeeCode ? employeeByCode.get(employeeCode.toLowerCase()) : null
       const email = normalizeEmail(cell(map, 'Email') || employee?.workEmail)
       const existing = users.find(item => normalizeEmail(item.email) === email)
-      const rolesForRow = parseRoleCodes(cell(map, 'Roles'), employee ? ['employee'] : ['payroll_maker'])
+      const standaloneDefaultRole = roles.some(role => role.code === 'mss_manager') ? 'mss_manager' : 'employee'
+      const rolesForRow = parseRoleCodes(cell(map, 'Roles'), employee ? ['employee'] : [standaloneDefaultRole])
       const tempPassword = cell(map, 'Temporary Password')
-      const clientText = cell(map, 'Client Id')
-      const clientId = employee?.clientId || Number(String(clientText).split(':')[0]) || existing?.clientId || null
+      const clientId = employee?.clientId || Number(directoryClientId) || existing?.clientId || null
       const body = {
         id: existing?.id ?? 0,
         email,
         displayName: cell(map, 'Display Name') || (employee ? `${employee.firstName} ${employee.lastName}`.trim() : existing?.displayName || ''),
+        mobile: cell(map, 'Mobile') || existing?.mobile || '',
         password: existing && !tempPassword ? '' : tempPassword,
         clientId,
         employeeId: employee?.id ?? existing?.employeeId ?? null,
@@ -348,11 +353,12 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     <aside className="component-drawer security-component-drawer" role="dialog" aria-modal="true" aria-label={user.id ? 'Edit user' : 'Add user'} onClick={event => event.stopPropagation()}>
       <header><div><span className="eyebrow purple">User access</span><h3>{user.id ? 'Edit user' : 'Add user'}</h3><p>Create an employee-linked login or a standalone business user.</p></div><button type="button" aria-label="Close user drawer" onClick={closeUserDrawer}>x</button></header>
       <div className="component-drawer-form security-component-drawer-form">
-        <InfoField label="User type" help="Choose employee-linked ESS access or a standalone business login."><SearchSelect value={user.roles.includes('employee') && user.employeeId ? 'employee' : 'business'} onChange={value => value === 'employee' ? setUser({ ...user, roles: ['employee'] }) : setUser({ ...user, employeeId: '', roles: ['payroll_maker'] })} options={[{ value: 'business', label: 'Business user' }, { value: 'employee', label: 'Employee / ESS user' }]} /></InfoField>
+        <InfoField label="User type" help="Choose employee-linked ESS access or a standalone business login."><SearchSelect value={user.roles.includes('employee') && user.employeeId ? 'employee' : 'business'} onChange={value => value === 'employee' ? setUser({ ...user, roles: ['employee'] }) : setUser({ ...user, employeeId: '', roles: ['mss_manager'] })} options={[{ value: 'business', label: 'Business user' }, { value: 'employee', label: 'Employee / ESS user' }]} /></InfoField>
         <InfoField label="Client scope" help="Leave blank for cross-client access."><SearchSelect value={user.clientId} onChange={value => setUser({ ...user, clientId: value, employeeId: '' })} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></InfoField>
         <InfoField label="Employee link" help="Employee Master records not yet linked to another login." className="wide"><SearchSelect value={user.employeeId} onChange={useEmployee} options={[{ value: '', label: 'No employee link' }, ...employeeOptions.map(employee => ({ value: employee.id, label: `${employee.firstName} ${employee.lastName} / ${employee.employeeCode} / ${employee.department}` }))]} /></InfoField>
         <InfoField label="Display name"><Input value={user.displayName} onChange={event => setUser({ ...user, displayName: event.target.value })} /></InfoField>
         <InfoField label="Email / Login ID"><Input value={user.email} onChange={event => setUser({ ...user, email: event.target.value })} /></InfoField>
+        <InfoField label="Mobile number"><Input value={user.mobile} onChange={event => setUser({ ...user, mobile: event.target.value })} /></InfoField>
         <InfoField label={user.id ? 'Reset password' : 'Temporary password'} help={user.id ? 'Leave blank to keep the current password.' : 'Required for a new login.'}><Input.Password value={user.password} onChange={event => setUser({ ...user, password: event.target.value })} placeholder={user.id ? 'Leave blank to keep existing' : 'Enter temporary password'} /></InfoField>
         <InfoField label="Status"><SearchSelect value={user.isActive ? 'active' : 'inactive'} onChange={value => setUser({ ...user, isActive: value === 'active' })} options={[{ value: 'active', label: 'Active' }, { value: 'inactive', label: 'Inactive' }]} /></InfoField>
         <InfoField label="Password policy"><AntCheckbox checked={user.mustChangePassword} onChange={event => setUser({ ...user, mustChangePassword: event.target.checked })}>Require change on first login</AntCheckbox></InfoField>
@@ -417,11 +423,12 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   const renderUsers = () => <section className="security-page-stack">
     {msg && <Alert className="security-message-alert" type={/unable|required|failed|cannot/i.test(msg) ? 'warning' : 'info'} showIcon message={msg} closable onClose={() => setMsg('')} />}
     <AntCard title="Users" size="small" className="settings-panel settings-table-panel security-table-panel">
-      <div className="component-table-head security-table-head"><div><b>User directory</b><span>{directoryClientId ? clientName(Number(directoryClientId)) : 'All clients'} / {visibleUsers.length} users shown / {unlinkedEmployees.length} employees awaiting login</span></div><Space className="settings-master-actions" size={8} wrap><label className="security-filter-field"><span>Filter by client</span><SearchSelect value={directoryClientId} onChange={setDirectoryClientId} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></label><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadUserTemplate}>Template</Button><label className={`settings-upload-action ${!userTemplateDownloaded ? 'disabled' : ''}`} title={userTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!userTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadUserImport(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button className="settings-toolbar-secondary" icon={<ImportOutlined />} onClick={() => void openProvisionModal()}>Import Employees</Button><Button type="primary" icon={<PlusOutlined />} onClick={openNewUser}>New user</Button></Space></div>
+      <div className="component-table-head security-table-head"><div><b>User directory</b><span>{directoryClientId ? clientName(Number(directoryClientId)) : 'Select a client for user upload'} / {visibleUsers.length} users shown / {unlinkedEmployees.length} employees awaiting login</span></div><Space className="settings-master-actions" size={8} wrap><label className="security-filter-field"><span>Filter by client</span><SearchSelect value={directoryClientId} onChange={value => { setDirectoryClientId(value); setUserTemplateDownloaded(false) }} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></label><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} disabled={!directoryClientId} title={directoryClientId ? 'Download client-wise template' : 'Select a client first'} onClick={downloadUserTemplate}>Template</Button><label className={`settings-upload-action ${!userTemplateDownloaded || !directoryClientId ? 'disabled' : ''}`} title={!directoryClientId ? 'Select a client first' : userTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!userTemplateDownloaded || !directoryClientId} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadUserImport(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button className="settings-toolbar-secondary" icon={<ImportOutlined />} onClick={() => void openProvisionModal()}>Import Employees</Button><Button type="primary" icon={<PlusOutlined />} onClick={openNewUser}>New user</Button></Space></div>
       {createdCredentials && <Alert className="security-message-alert" type="success" showIcon message="Login created" description={`Temporary password for ${createdCredentials.email}: ${createdCredentials.password}`} closable onClose={() => setCreatedCredentials(null)} />}
       <DataTable rows={visibleUsers} getRowId={row => row.id} exportFileName="security-users" actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editUser(row)}>Edit</Button><Button size="small" danger onClick={() => void removeUser(row)}>Delete</Button></Space>} columns={[
       { key: 'displayName', label: 'User', width: '190px' },
       { key: 'email', label: 'Email / Login ID', width: '220px' },
+      { key: 'mobile', label: 'Mobile', value: row => row.mobile || '-' },
       { key: 'clientId', label: 'Client', value: row => clientName(row.clientId), width: '180px' },
       { key: 'employeeId', label: 'Employee Link', value: row => row.employeeId ? `Employee #${row.employeeId}` : 'Standalone' },
       { key: 'roles', label: 'Roles', value: row => row.roles.map(roleName).join(', '), render: row => <Space size={4} wrap>{row.roles.map(code => <Tag key={code}>{roleName(code)}</Tag>)}</Space>, width: '240px' },

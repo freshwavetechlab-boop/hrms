@@ -11,7 +11,7 @@ Only if you intentionally want migration on API startup, add this to config:
   }
 }
 
-2026-07-10 - Travel & Expense Phase 1 policy configuration engine
+-- 2026-07-10 - Travel & Expense Phase 1 policy configuration engine
 
 CREATE TABLE IF NOT EXISTS travel_policies (
 Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -93,9 +93,18 @@ UNIQUE KEY UX_TravelExpenseCategories_Code (CategoryCode),
 KEY IX_TravelExpenseCategories_Parent (ParentId)
 );
 
-ALTER TABLE travel_expense_categories ADD COLUMN IF NOT EXISTS ClientId INT NOT NULL DEFAULT 0 AFTER Id;
-ALTER TABLE travel_expense_categories ADD COLUMN IF NOT EXISTS ExpenseType VARCHAR(120) NOT NULL DEFAULT '' AFTER ParentId;
-ALTER TABLE travel_expense_categories ADD COLUMN IF NOT EXISTS IsClaimHeader BOOLEAN NOT NULL DEFAULT FALSE AFTER ExpenseType;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='travel_expense_categories' AND LOWER(column_name)='clientid')=0,'ALTER TABLE travel_expense_categories ADD COLUMN clientid INT NOT NULL DEFAULT 0 AFTER id','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='travel_expense_categories' AND LOWER(column_name)='expensetype')=0,'ALTER TABLE travel_expense_categories ADD COLUMN expensetype VARCHAR(120) NOT NULL DEFAULT '''' AFTER parentid','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='travel_expense_categories' AND LOWER(column_name)='isclaimheader')=0,'ALTER TABLE travel_expense_categories ADD COLUMN isclaimheader BOOLEAN NOT NULL DEFAULT FALSE AFTER expensetype','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 SET @drop_expense_category_code_idx := (SELECT IF(COUNT(*) > 0, 'ALTER TABLE travel_expense_categories DROP INDEX UX_TravelExpenseCategories_Code', 'SELECT 1') FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='travel_expense_categories' AND INDEX_NAME='UX_TravelExpenseCategories_Code');
 PREPARE stmt FROM @drop_expense_category_code_idx;
 EXECUTE stmt;
@@ -154,6 +163,23 @@ UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTA
 UNIQUE KEY UX_ClientExpenseCategory (ClientId, CategoryId),
 KEY IX_ClientExpenseCategory_Client (ClientId, IsEnabled)
 );
+
+CREATE TABLE IF NOT EXISTS travel_expense_client_settings (
+Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ClientId INT NOT NULL,
+IsEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+EffectiveFrom DATE NULL,
+EffectiveTo DATE NULL,
+Remarks VARCHAR(500) NOT NULL DEFAULT '',
+CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+UNIQUE KEY UX_TravelExpenseClientSettings_Client (ClientId),
+KEY IX_TravelExpenseClientSettings_Enabled (ClientId, IsEnabled)
+);
+
+INSERT INTO travel_expense_client_settings (ClientId,IsEnabled)
+SELECT Id,FALSE FROM clients WHERE IsActive=TRUE
+ON DUPLICATE KEY UPDATE ClientId=ClientId;
 
 INSERT INTO expense_headers (HeaderCode,HeaderName,IsActive)
 SELECT DISTINCT CategoryCode,CategoryName,TRUE
@@ -260,7 +286,7 @@ KEY IX_TravelPolicyAudit_Entity (EntityType, EntityId),
 KEY IX_TravelPolicyAudit_ChangedOn (ChangedOn)
 );
 
-2026-07-10 - Travel & Expense Phase 2 ESS travel request lifecycle
+-- 2026-07-10 - Travel & Expense Phase 2 ESS travel request lifecycle
 
 CREATE TABLE IF NOT EXISTS ess_travel_requests (
 Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -339,7 +365,7 @@ INSERT INTO workflow_action_rules (ActivityCode,HttpMethod,PathPattern,ResourceT
 ('TRAVEL_REQUEST.SUBMIT','POST','/api/ess/travel/requests/{id}/submit','TravelRequest','route.id','id','ess_travel_requests','Id','ClientId','AfterSuccess',TRUE)
 ON DUPLICATE KEY UPDATE ResourceType=VALUES(ResourceType),ResourceIdSource=VALUES(ResourceIdSource),ResourceIdRouteKey=VALUES(ResourceIdRouteKey),ClientLookupTable=VALUES(ClientLookupTable),ClientLookupKeyColumn=VALUES(ClientLookupKeyColumn),ClientLookupClientColumn=VALUES(ClientLookupClientColumn),TriggerMode=VALUES(TriggerMode),IsActive=VALUES(IsActive);
 
-2026-07-11 - Travel request trip legs normalized child table
+-- 2026-07-11 - Travel request trip legs normalized child table
 
 CREATE TABLE IF NOT EXISTS ess_travel_request_legs (
 Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -360,7 +386,7 @@ INDEX IX_ess_travel_leg_route (FromLocation, ToLocation),
 INDEX IX_ess_travel_leg_mode (TravelMode)
 );
 
-2026-07-11 - Client billing advanced payroll costing rules
+-- 2026-07-11 - Client billing advanced payroll costing rules
 
 SET @add_client_billing_advanced = (
     SELECT IF(
@@ -409,9 +435,9 @@ INDEX IX_CostRuleLine_Header (HeaderId, IsActive, SortOrder),
 INDEX IX_CostRuleLine_Match (LineType, MatchValue)
 );
 
-2026-07-08 - Salary component role and statutory identity
+-- 2026-07-08 - Salary component role and statutory identity
 
-2026-07-08 - Pay-run line statutory identity for processed payroll reports
+-- 2026-07-08 - Pay-run line statutory identity for processed payroll reports
 
 SET @add_payrun_line_component_role = (
     SELECT IF(
@@ -476,7 +502,7 @@ SET ComponentRole = 'Recovery',
 WHERE Category = 'Deduction'
   AND Code IN ('RECOVERY', 'LOAN', 'ADVANCE');
 
-2026-07-08 - Split combined PT/LWF/WC salary component
+-- 2026-07-08 - Split combined PT/LWF/WC salary component
 
 UPDATE salarycomponents
 SET Code = 'PT',
@@ -516,7 +542,7 @@ INSERT INTO salarycomponents
 SELECT 205, 'WC', 'Workmen Compensation', 'Employer Contribution', 'Workmen Compensation', 'Benefit', 'Workmen Compensation', 'Variable Pay', 'Manual / Variable', '', '', '', FALSE, TRUE, FALSE, FALSE, FALSE, 'Never', FALSE, TRUE, FALSE, '', '', TRUE, 240
 WHERE NOT EXISTS (SELECT 1 FROM salarycomponents WHERE Code = 'WC');
 
-2026-07-03 - Employee infotype and audit trail schema
+-- 2026-07-03 - Employee infotype and audit trail schema
 
 CREATE TABLE IF NOT EXISTS employee_infotype_records (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -552,7 +578,7 @@ CREATE TABLE IF NOT EXISTS employee_audit_trail (
     INDEX IX_EmployeeAudit_Action (ActionType, InfotypeCode)
 );
 
-2026-07-03 - Physical employee infotype tables
+-- 2026-07-03 - Physical employee infotype tables
 
 CREATE TABLE IF NOT EXISTS employee_it0000_actions (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -593,19 +619,25 @@ CREATE TABLE IF NOT EXISTS employee_it0001_org_assignment (
     INDEX IX_IT0001_Client (ClientId, Status)
 );
 
-2026-07-09 - Employee reporting manager can be a user
+-- 2026-07-09 - Employee reporting manager can be a user
 
-ALTER TABLE employees
-    ADD COLUMN IF NOT EXISTS ReportingManagerUserId INT NULL AFTER ReportingManagerId;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='employees' AND LOWER(column_name)='reportingmanageruserid')=0,'ALTER TABLE employees ADD COLUMN reportingmanageruserid INT NULL AFTER reportingmanagerid','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='employee_it0001_org_assignment' AND LOWER(column_name)='reportingmanageruserid')=0,'ALTER TABLE employee_it0001_org_assignment ADD COLUMN reportingmanageruserid INT NULL AFTER reportingmanagerid','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='employees' AND LOWER(index_name)='ix_employees_reportingmanageruser')=0,'CREATE INDEX ix_employees_reportingmanageruser ON employees (reportingmanageruserid)','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-ALTER TABLE employee_it0001_org_assignment
-    ADD COLUMN IF NOT EXISTS ReportingManagerUserId INT NULL AFTER ReportingManagerId;
-
-CREATE INDEX IF NOT EXISTS IX_Employees_ReportingManagerUser
-    ON employees (ReportingManagerUserId);
-
-CREATE INDEX IF NOT EXISTS IX_IT0001_ReportingManagerUser
-    ON employee_it0001_org_assignment (ReportingManagerUserId);
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='employee_it0001_org_assignment' AND LOWER(index_name)='ix_it0001_reportingmanageruser')=0,'CREATE INDEX ix_it0001_reportingmanageruser ON employee_it0001_org_assignment (reportingmanageruserid)','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS employee_it0002_personal_data (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -686,7 +718,7 @@ CREATE TABLE IF NOT EXISTS employee_it0009_bank_details (
     INDEX IX_IT0009_Client (ClientId, Status)
 );
 
-2026-07-03 - Client billing configuration
+-- 2026-07-03 - Client billing configuration
 
 CREATE TABLE IF NOT EXISTS client_billing_settings (
     Id TINYINT PRIMARY KEY,
@@ -713,17 +745,19 @@ CREATE TABLE IF NOT EXISTS client_billing_configurations (
     INDEX IX_ClientBilling_Type (RateCardType, RateType)
 );
 
-2026-07-04 - Remove client billing invoice module
+-- 2026-07-04 - Remove client billing invoice module
 
 DROP TABLE IF EXISTS client_billing_invoice_lines;
 DROP TABLE IF EXISTS client_billing_invoices;
 
-2026-07-04 - Client billing GST rate configuration
+-- 2026-07-04 - Client billing GST rate configuration
 
-ALTER TABLE client_billing_configurations
-ADD COLUMN IF NOT EXISTS GstRatePercent DECIMAL(8,4) NOT NULL DEFAULT 18 AFTER TaxInclusive;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='client_billing_configurations' AND LOWER(column_name)='gstratepercent')=0,'ALTER TABLE client_billing_configurations ADD COLUMN gstratepercent DECIMAL(8,4) NOT NULL DEFAULT 18 AFTER taxinclusive','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-2026-07-04 - Workflow activity catalogue and generic resource states
+-- 2026-07-04 - Workflow activity catalogue and generic resource states
 
 CREATE TABLE IF NOT EXISTS workflowactivities (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -792,22 +826,28 @@ INSERT INTO workflow_action_rules (ActivityCode, HttpMethod, PathPattern, Resour
 ('PAYRUN.SUBMIT', 'POST', '/api/pay-runs/{id}/submit', 'PayRun', 'route.id', 'id', '', '', 'payruns', 'Id', 'ClientId', 'AfterSuccess', TRUE)
 ON DUPLICATE KEY UPDATE ResourceType=VALUES(ResourceType), ResourceIdSource=VALUES(ResourceIdSource), ResourceIdRouteKey=VALUES(ResourceIdRouteKey), ClientIdSource=VALUES(ClientIdSource), ClientIdSql=VALUES(ClientIdSql), ClientLookupTable=VALUES(ClientLookupTable), ClientLookupKeyColumn=VALUES(ClientLookupKeyColumn), ClientLookupClientColumn=VALUES(ClientLookupClientColumn), TriggerMode=VALUES(TriggerMode), IsActive=VALUES(IsActive);
 
-2026-07-04 - Workflow action source expressions
+-- 2026-07-04 - Workflow action source expressions
 
-ALTER TABLE workflow_action_rules
-ADD COLUMN IF NOT EXISTS ResourceIdSource VARCHAR(120) NOT NULL DEFAULT 'route.id' AFTER ResourceType;
-
-ALTER TABLE workflow_action_rules
-ADD COLUMN IF NOT EXISTS ClientIdSource VARCHAR(120) NOT NULL DEFAULT '' AFTER ResourceIdRouteKey;
-
-ALTER TABLE workflow_action_rules
-ADD COLUMN IF NOT EXISTS ClientLookupTable VARCHAR(120) NOT NULL DEFAULT '' AFTER ClientIdSql;
-
-ALTER TABLE workflow_action_rules
-ADD COLUMN IF NOT EXISTS ClientLookupKeyColumn VARCHAR(120) NOT NULL DEFAULT '' AFTER ClientLookupTable;
-
-ALTER TABLE workflow_action_rules
-ADD COLUMN IF NOT EXISTS ClientLookupClientColumn VARCHAR(120) NOT NULL DEFAULT '' AFTER ClientLookupKeyColumn;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='workflow_action_rules' AND LOWER(column_name)='resourceidsource')=0,'ALTER TABLE workflow_action_rules ADD COLUMN resourceidsource VARCHAR(120) NOT NULL DEFAULT ''route.id'' AFTER resourcetype','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='workflow_action_rules' AND LOWER(column_name)='clientidsource')=0,'ALTER TABLE workflow_action_rules ADD COLUMN clientidsource VARCHAR(120) NOT NULL DEFAULT '''' AFTER resourceidroutekey','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='workflow_action_rules' AND LOWER(column_name)='clientlookuptable')=0,'ALTER TABLE workflow_action_rules ADD COLUMN clientlookuptable VARCHAR(120) NOT NULL DEFAULT '''' AFTER clientidsql','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='workflow_action_rules' AND LOWER(column_name)='clientlookupkeycolumn')=0,'ALTER TABLE workflow_action_rules ADD COLUMN clientlookupkeycolumn VARCHAR(120) NOT NULL DEFAULT '''' AFTER clientlookuptable','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='workflow_action_rules' AND LOWER(column_name)='clientlookupclientcolumn')=0,'ALTER TABLE workflow_action_rules ADD COLUMN clientlookupclientcolumn VARCHAR(120) NOT NULL DEFAULT '''' AFTER clientlookupkeycolumn','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 UPDATE workflow_action_rules
 SET ResourceIdSource = CONCAT('route.', ResourceIdRouteKey)
@@ -821,11 +861,12 @@ INSERT INTO workflow_action_rules (ActivityCode, HttpMethod, PathPattern, Resour
 ('LEAVE_REQUEST.SUBMIT', 'POST', '/api/ess/leave/requests', 'LeaveRequest', 'response.id', 'id', '', '', 'essleaverequests', 'Id', 'ClientId', 'AfterSuccess', TRUE)
 ON DUPLICATE KEY UPDATE ResourceType=VALUES(ResourceType), ResourceIdSource=VALUES(ResourceIdSource), ResourceIdRouteKey=VALUES(ResourceIdRouteKey), ClientIdSource=VALUES(ClientIdSource), ClientIdSql=VALUES(ClientIdSql), ClientLookupTable=VALUES(ClientLookupTable), ClientLookupKeyColumn=VALUES(ClientLookupKeyColumn), ClientLookupClientColumn=VALUES(ClientLookupClientColumn), TriggerMode=VALUES(TriggerMode), IsActive=VALUES(IsActive);
 
-2026-07-09 - Configurable notification and mailing engine
+-- 2026-07-09 - Configurable notification and mailing engine
 
 CREATE TABLE IF NOT EXISTS notification_smtp_settings (
     Id TINYINT PRIMARY KEY,
     IsEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+    DeliveryPaused BOOLEAN NOT NULL DEFAULT FALSE,
     Host VARCHAR(220) NOT NULL DEFAULT '',
     Port INT NOT NULL DEFAULT 587,
     UserName VARCHAR(220) NOT NULL DEFAULT '',
@@ -835,6 +876,9 @@ CREATE TABLE IF NOT EXISTS notification_smtp_settings (
     FromName VARCHAR(220) NOT NULL DEFAULT '',
     UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
+
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='notification_smtp_settings' AND LOWER(column_name)='deliverypaused')=0,'ALTER TABLE notification_smtp_settings ADD COLUMN DeliveryPaused BOOLEAN NOT NULL DEFAULT FALSE AFTER IsEnabled','SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS notification_templates (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -1018,15 +1062,18 @@ VALUES
 ('LEAVE_YEAR_END_RESET', 'Year-end leave reset', 'Carries forward or lapses leave balances at year end.', 'LEAVE_YEAR_END_RESET', TRUE, 'Monthly', 60, '01:30', 31, '{}', DATE_ADD(NOW(), INTERVAL 1 DAY))
 ON DUPLICATE KEY UPDATE JobName = VALUES(JobName), Description = VALUES(Description), HandlerKey = VALUES(HandlerKey);
 
-2026-07-09 - Half-day leave request support
+-- 2026-07-09 - Half-day leave request support
 
-ALTER TABLE leave_type_policies
-ADD COLUMN IF NOT EXISTS allow_half_day BOOLEAN NOT NULL DEFAULT TRUE AFTER allow_negative_leave_balance;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='leave_type_policies' AND LOWER(column_name)='allow_half_day')=0,'ALTER TABLE leave_type_policies ADD COLUMN allow_half_day BOOLEAN NOT NULL DEFAULT TRUE AFTER allow_negative_leave_balance','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='essleaverequests' AND LOWER(column_name)='daytype')=0,'ALTER TABLE essleaverequests ADD COLUMN daytype VARCHAR(30) NOT NULL DEFAULT ''Full Day'' AFTER todate','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-ALTER TABLE essleaverequests
-ADD COLUMN IF NOT EXISTS DayType VARCHAR(30) NOT NULL DEFAULT 'Full Day' AFTER ToDate;
-
-2026-07-12 - Travel phase 2 company-arranged accommodation and local travel details
+-- 2026-07-12 - Travel phase 2 company-arranged accommodation and local travel details
 
 CREATE TABLE IF NOT EXISTS ess_travel_request_accommodation (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -1063,7 +1110,7 @@ CREATE TABLE IF NOT EXISTS ess_travel_request_local_travel (
     INDEX IX_ess_travel_local_mode (TravelMode)
 );
 
-2026-07-12 - Travel expense phase 3 expense claims and reimbursement queue
+-- 2026-07-12 - Travel expense phase 3 expense claims and reimbursement queue
 
 CREATE TABLE IF NOT EXISTS ess_expense_claims (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -1097,7 +1144,10 @@ CREATE TABLE IF NOT EXISTS ess_expense_claims (
     INDEX IX_ess_expense_client_status (ClientId, Status, ClaimDate),
     INDEX IX_ess_expense_travel_request (TravelRequestId)
 );
-ALTER TABLE ess_expense_claims ADD COLUMN IF NOT EXISTS ExpenseType VARCHAR(120) NOT NULL DEFAULT '' AFTER TravelRequestId;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='ess_expense_claims' AND LOWER(column_name)='expensetype')=0,'ALTER TABLE ess_expense_claims ADD COLUMN expensetype VARCHAR(120) NOT NULL DEFAULT '''' AFTER travelrequestid','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS ess_expense_claim_lines (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -1176,3 +1226,869 @@ ON DUPLICATE KEY UPDATE DisplayName=VALUES(DisplayName), ModuleCode=VALUES(Modul
 INSERT INTO workflow_action_rules (ActivityCode,HttpMethod,PathPattern,ResourceType,ResourceIdSource,ResourceIdRouteKey,ClientIdSource,ClientIdSql,ClientLookupTable,ClientLookupKeyColumn,ClientLookupClientColumn,TriggerMode,IsActive)
 VALUES ('EXPENSE_CLAIM.SUBMIT','POST','/api/ess/expenses/claims/{id}/submit','ExpenseClaim','route.id','id','','','ess_expense_claims','Id','ClientId','AfterSuccess',TRUE)
 ON DUPLICATE KEY UPDATE ResourceType=VALUES(ResourceType), ResourceIdSource=VALUES(ResourceIdSource), ResourceIdRouteKey=VALUES(ResourceIdRouteKey), ClientLookupTable=VALUES(ClientLookupTable), ClientLookupKeyColumn=VALUES(ClientLookupKeyColumn), ClientLookupClientColumn=VALUES(ClientLookupClientColumn), TriggerMode=VALUES(TriggerMode), IsActive=VALUES(IsActive);
+
+-- 2026-07-13 - Travel advance payment and settlement tracking
+
+CREATE TABLE IF NOT EXISTS ess_travel_advances (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    TravelRequestId BIGINT NOT NULL,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    RequestedAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    ApprovedAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    PaidAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    SettledAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    RecoverableAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    PaymentMode VARCHAR(80) NOT NULL DEFAULT '',
+    PaymentReference VARCHAR(160) NOT NULL DEFAULT '',
+    PaidDate DATE NULL,
+    DueDate DATE NULL,
+    Status VARCHAR(40) NOT NULL DEFAULT 'Approved',
+    Remarks VARCHAR(1000) NOT NULL DEFAULT '',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_ess_travel_advance_request (TravelRequestId),
+    INDEX IX_ess_travel_advance_status (ClientId, Status, DueDate),
+    INDEX IX_ess_travel_advance_employee (EmployeeId, Status)
+);
+
+CREATE TABLE IF NOT EXISTS ess_travel_advance_audit (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    AdvanceId BIGINT NOT NULL,
+    Action VARCHAR(80) NOT NULL,
+    Amount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    Comment VARCHAR(1000) NOT NULL DEFAULT '',
+    CreatedBy INT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_ess_travel_advance_audit (AdvanceId, CreatedAt)
+);
+
+INSERT INTO ess_travel_advances (TravelRequestId, EmployeeId, ClientId, RequestedAmount, ApprovedAmount, DueDate, Status)
+SELECT r.Id, r.EmployeeId, r.ClientId, r.AdvanceAmount, r.AdvanceAmount, DATE_ADD(DATE(r.EndDateTime), INTERVAL 7 DAY), 'Approved'
+FROM ess_travel_requests r
+WHERE r.Status='Approved' AND r.AdvanceRequired=TRUE AND r.AdvanceAmount>0
+ON DUPLICATE KEY UPDATE Id=Id;
+
+-- 2026-07-13 - Recruitment administration phase 1
+
+CREATE TABLE IF NOT EXISTS recruitment_settings (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    RecruitmentEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+    AllowEmployeeRfrCreation BOOLEAN NOT NULL DEFAULT FALSE,
+    AllowReplacementHiring BOOLEAN NOT NULL DEFAULT TRUE,
+    AllowMultipleHiringManagers BOOLEAN NOT NULL DEFAULT FALSE,
+    AllowMultipleRecruiters BOOLEAN NOT NULL DEFAULT FALSE,
+    AutoGeneratePositionCode BOOLEAN NOT NULL DEFAULT TRUE,
+    AutoGenerateRfrNumber BOOLEAN NOT NULL DEFAULT TRUE,
+    EnableVendorHiring BOOLEAN NOT NULL DEFAULT FALSE,
+    EnableConsultantHiring BOOLEAN NOT NULL DEFAULT FALSE,
+    EnableInternalHiring BOOLEAN NOT NULL DEFAULT TRUE,
+    EnableReferralHiring BOOLEAN NOT NULL DEFAULT TRUE,
+    EnableCampusHiring BOOLEAN NOT NULL DEFAULT FALSE,
+    EnableWalkInHiring BOOLEAN NOT NULL DEFAULT FALSE,
+    EnableOfferApproval BOOLEAN NOT NULL DEFAULT TRUE,
+    EnablePreOfferProcess BOOLEAN NOT NULL DEFAULT FALSE,
+    EnableBackgroundVerification BOOLEAN NOT NULL DEFAULT FALSE,
+    EnableDocumentVerification BOOLEAN NOT NULL DEFAULT FALSE,
+    EnableCandidatePortal BOOLEAN NOT NULL DEFAULT FALSE,
+    EnableVendorPortal BOOLEAN NOT NULL DEFAULT FALSE,
+    EnableJobPortalIntegration BOOLEAN NOT NULL DEFAULT FALSE,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_recruitment_settings_client (ClientId)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_master_values (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL DEFAULT 0,
+    MasterType VARCHAR(80) NOT NULL,
+    Code VARCHAR(80) NOT NULL,
+    Name VARCHAR(180) NOT NULL,
+    Description VARCHAR(500) NOT NULL DEFAULT '',
+    SortOrder INT NOT NULL DEFAULT 100,
+    IsSystem BOOLEAN NOT NULL DEFAULT FALSE,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_recruitment_master (ClientId, MasterType, Code)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_partners (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    PartnerType VARCHAR(40) NOT NULL,
+    ClientId INT NOT NULL,
+    Code VARCHAR(80) NOT NULL,
+    Name VARCHAR(180) NOT NULL,
+    Company VARCHAR(180) NOT NULL DEFAULT '',
+    ContactPerson VARCHAR(160) NOT NULL DEFAULT '',
+    Email VARCHAR(160) NOT NULL DEFAULT '',
+    Phone VARCHAR(40) NOT NULL DEFAULT '',
+    Address VARCHAR(500) NOT NULL DEFAULT '',
+    Gstin VARCHAR(40) NOT NULL DEFAULT '',
+    Pan VARCHAR(20) NOT NULL DEFAULT '',
+    AgreementStartDate DATE NULL,
+    AgreementEndDate DATE NULL,
+    CommissionType VARCHAR(40) NOT NULL DEFAULT 'Percentage',
+    CommissionValue DECIMAL(18,2) NOT NULL DEFAULT 0,
+    Status VARCHAR(40) NOT NULL DEFAULT 'Active',
+    PerformanceRating DECIMAL(5,2) NOT NULL DEFAULT 0,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_recruitment_partner (PartnerType, ClientId, Code)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_assignment_rules (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    RuleName VARCHAR(180) NOT NULL,
+    BusinessUnit VARCHAR(120) NOT NULL DEFAULT '',
+    Department VARCHAR(120) NOT NULL DEFAULT '',
+    PositionCategory VARCHAR(120) NOT NULL DEFAULT '',
+    SkillCategory VARCHAR(120) NOT NULL DEFAULT '',
+    Project VARCHAR(120) NOT NULL DEFAULT '',
+    Location VARCHAR(120) NOT NULL DEFAULT '',
+    ExperienceRange VARCHAR(80) NOT NULL DEFAULT '',
+    JobLevel VARCHAR(80) NOT NULL DEFAULT '',
+    RecruitmentSource VARCHAR(120) NOT NULL DEFAULT '',
+    Priority VARCHAR(40) NOT NULL DEFAULT '',
+    RecruiterUserId INT NOT NULL DEFAULT 0,
+    MaximumOpenPositions INT NOT NULL DEFAULT 0,
+    WorkloadBased BOOLEAN NOT NULL DEFAULT FALSE,
+    ManualOverrideAllowed BOOLEAN NOT NULL DEFAULT TRUE,
+    SortOrder INT NOT NULL DEFAULT 100,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_sla_rules (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    ProcessName VARCHAR(120) NOT NULL,
+    DurationDays INT NOT NULL DEFAULT 0,
+    ReminderEnabled BOOLEAN NOT NULL DEFAULT TRUE,
+    ReminderBeforeDays INT NOT NULL DEFAULT 1,
+    EscalationEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+    EscalationAfterDays INT NOT NULL DEFAULT 0,
+    NotificationRuleId INT NOT NULL DEFAULT 0,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_document_checklist (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    HiringType VARCHAR(120) NOT NULL,
+    DocumentName VARCHAR(180) NOT NULL,
+    Mandatory BOOLEAN NOT NULL DEFAULT TRUE,
+    Stage VARCHAR(120) NOT NULL DEFAULT 'Pre-Onboarding',
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_recruitment_doc (ClientId, HiringType, DocumentName)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_approval_mappings (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    ProcessCode VARCHAR(80) NOT NULL,
+    WorkflowId BIGINT NOT NULL DEFAULT 0,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_recruitment_approval (ClientId, ProcessCode)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_templates (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    TemplateType VARCHAR(80) NOT NULL,
+    TemplateCode VARCHAR(80) NOT NULL,
+    TemplateName VARCHAR(180) NOT NULL,
+    SubjectTemplate VARCHAR(300) NOT NULL DEFAULT '',
+    BodyTemplate TEXT NULL,
+    IsHtml BOOLEAN NOT NULL DEFAULT TRUE,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_recruitment_template (ClientId, TemplateCode)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_admin_audit (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EntityType VARCHAR(80) NOT NULL,
+    EntityId INT NOT NULL,
+    Action VARCHAR(80) NOT NULL,
+    OldValueJson JSON NULL,
+    NewValueJson JSON NULL,
+    ChangedByUserId INT NULL,
+    ChangedOn DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_recruitment_audit (EntityType, EntityId, ChangedOn)
+);
+
+INSERT INTO recruitment_master_values (ClientId, MasterType, Code, Name, SortOrder, IsSystem, IsActive) VALUES
+(0,'Recruitment Status','DRAFT','Draft',10,TRUE,TRUE),
+(0,'Recruitment Status','PENDING_APPROVAL','Pending Approval',20,TRUE,TRUE),
+(0,'Recruitment Status','APPROVED','Approved',30,TRUE,TRUE),
+(0,'Recruitment Status','ASSIGNED','Assigned',40,TRUE,TRUE),
+(0,'Recruitment Status','PUBLISHED','Published',50,TRUE,TRUE),
+(0,'Recruitment Status','SOURCING','Sourcing',60,TRUE,TRUE),
+(0,'Recruitment Status','SCREENING','Screening',70,TRUE,TRUE),
+(0,'Recruitment Status','INTERVIEW','Interview',80,TRUE,TRUE),
+(0,'Recruitment Status','SELECTED','Selected',90,TRUE,TRUE),
+(0,'Recruitment Status','REJECTED','Rejected',100,TRUE,TRUE),
+(0,'Recruitment Status','OFFER','Offer',110,TRUE,TRUE),
+(0,'Recruitment Status','PRE_ONBOARDING','Pre-Onboarding',120,TRUE,TRUE),
+(0,'Recruitment Status','JOINED','Joined',130,TRUE,TRUE),
+(0,'Recruitment Status','CLOSED','Closed',140,TRUE,TRUE),
+(0,'Recruitment Status','CANCELLED','Cancelled',150,TRUE,TRUE),
+(0,'Recruitment Source','COMPANY_CAREER_PORTAL','Company Career Portal',10,TRUE,TRUE),
+(0,'Recruitment Source','EMPLOYEE_REFERRAL','Employee Referral',20,TRUE,TRUE),
+(0,'Recruitment Source','CONSULTANT','Consultant',30,TRUE,TRUE),
+(0,'Recruitment Source','VENDOR','Vendor',40,TRUE,TRUE),
+(0,'Recruitment Source','NAUKRI','Naukri',50,TRUE,TRUE),
+(0,'Recruitment Source','LINKEDIN','LinkedIn',60,TRUE,TRUE),
+(0,'Recruitment Source','INDEED','Indeed',70,TRUE,TRUE),
+(0,'Recruitment Source','WALK_IN','Walk-In',80,TRUE,TRUE),
+(0,'Recruitment Source','CAMPUS','Campus',90,TRUE,TRUE),
+(0,'Hiring Type','PERMANENT','Permanent',10,TRUE,TRUE),
+(0,'Hiring Type','CONTRACT','Contract',20,TRUE,TRUE),
+(0,'Hiring Type','INTERN','Intern',30,TRUE,TRUE),
+(0,'Hiring Type','CONSULTANT','Consultant',40,TRUE,TRUE),
+(0,'Hiring Type','TEMPORARY','Temporary',50,TRUE,TRUE),
+(0,'Position Category','IT','IT',10,TRUE,TRUE),
+(0,'Position Category','ENGINEERING','Engineering',20,TRUE,TRUE),
+(0,'Position Category','FINANCE','Finance',30,TRUE,TRUE),
+(0,'Position Category','HR','HR',40,TRUE,TRUE),
+(0,'Position Category','SALES','Sales',50,TRUE,TRUE),
+(0,'Position Category','OPERATIONS','Operations',60,TRUE,TRUE),
+(0,'Experience Range','0_1','0-1 years',10,TRUE,TRUE),
+(0,'Experience Range','1_3','1-3 years',20,TRUE,TRUE),
+(0,'Experience Range','3_5','3-5 years',30,TRUE,TRUE),
+(0,'Experience Range','5_8','5-8 years',40,TRUE,TRUE),
+(0,'Experience Range','8_12','8-12 years',50,TRUE,TRUE),
+(0,'Experience Range','12_PLUS','12+ years',60,TRUE,TRUE),
+(0,'Budget Amount','300000','300000',10,TRUE,TRUE),
+(0,'Budget Amount','500000','500000',20,TRUE,TRUE),
+(0,'Budget Amount','750000','750000',30,TRUE,TRUE),
+(0,'Budget Amount','1000000','1000000',40,TRUE,TRUE),
+(0,'Budget Amount','1500000','1500000',50,TRUE,TRUE),
+(0,'Budget Amount','2000000','2000000',60,TRUE,TRUE),
+(0,'Budget Amount','2500000','2500000',70,TRUE,TRUE),
+(0,'Budget Amount','3000000','3000000',80,TRUE,TRUE),
+(0,'Interview Type','HR','HR',10,TRUE,TRUE),
+(0,'Interview Type','TECHNICAL','Technical',20,TRUE,TRUE),
+(0,'Interview Type','MANAGERIAL','Managerial',30,TRUE,TRUE),
+(0,'Interview Type','CLIENT','Client',40,TRUE,TRUE),
+(0,'Interview Type','PANEL','Panel',50,TRUE,TRUE),
+(0,'Interview Result','SELECTED','Selected',10,TRUE,TRUE),
+(0,'Interview Result','REJECTED','Rejected',20,TRUE,TRUE),
+(0,'Interview Result','ON_HOLD','On Hold',30,TRUE,TRUE),
+(0,'Interview Result','NO_SHOW','No Show',40,TRUE,TRUE),
+(0,'Interview Result','RESCHEDULE','Reschedule',50,TRUE,TRUE),
+(0,'Interview Round','ROUND_1','Round 1',10,TRUE,TRUE),
+(0,'Interview Round','ROUND_2','Round 2',20,TRUE,TRUE),
+(0,'Interview Round','ROUND_3','Round 3',30,TRUE,TRUE),
+(0,'Interview Round','HR','HR',40,TRUE,TRUE),
+(0,'Interview Round','MANAGEMENT','Management',50,TRUE,TRUE),
+(0,'Candidate Status','NEW','New',10,TRUE,TRUE),
+(0,'Candidate Status','SCREENING','Screening',20,TRUE,TRUE),
+(0,'Candidate Status','SHORTLISTED','Shortlisted',30,TRUE,TRUE),
+(0,'Candidate Status','INTERVIEW_SCHEDULED','Interview Scheduled',40,TRUE,TRUE),
+(0,'Candidate Status','INTERVIEW_COMPLETED','Interview Completed',50,TRUE,TRUE),
+(0,'Candidate Status','SELECTED','Selected',60,TRUE,TRUE),
+(0,'Candidate Status','REJECTED','Rejected',70,TRUE,TRUE),
+(0,'Candidate Status','OFFER_RELEASED','Offer Released',80,TRUE,TRUE),
+(0,'Candidate Status','OFFER_ACCEPTED','Offer Accepted',90,TRUE,TRUE),
+(0,'Candidate Status','JOINED','Joined',100,TRUE,TRUE),
+(0,'Offer Status','DRAFT','Draft',10,TRUE,TRUE),
+(0,'Offer Status','INTERNAL_APPROVAL','Internal Approval',20,TRUE,TRUE),
+(0,'Offer Status','PENDING_CANDIDATE','Pending Candidate',30,TRUE,TRUE),
+(0,'Offer Status','NEGOTIATION','Negotiation',40,TRUE,TRUE),
+(0,'Offer Status','ACCEPTED','Accepted',50,TRUE,TRUE),
+(0,'Offer Status','REJECTED','Rejected',60,TRUE,TRUE),
+(0,'Offer Status','EXPIRED','Expired',70,TRUE,TRUE),
+(0,'Offer Status','WITHDRAWN','Withdrawn',80,TRUE,TRUE)
+ON DUPLICATE KEY UPDATE Name=VALUES(Name), SortOrder=VALUES(SortOrder), IsSystem=TRUE, IsActive=VALUES(IsActive);
+
+CREATE TABLE IF NOT EXISTS dropdownmasters (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL DEFAULT 0,
+    Type VARCHAR(100) NOT NULL,
+    Value VARCHAR(255) NOT NULL,
+    ConfigJson JSON NULL,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    UNIQUE KEY UX_DropdownMasters_Client_Type_Value (ClientId, Type, Value)
+);
+
+INSERT INTO dropdownmasters (ClientId, Type, Value, ConfigJson, IsActive) VALUES
+(0,'Recruitment Status','Draft',NULL,TRUE),
+(0,'Recruitment Status','Pending Approval',NULL,TRUE),
+(0,'Recruitment Status','Approved',NULL,TRUE),
+(0,'Recruitment Status','Sent Back',NULL,TRUE),
+(0,'Recruitment Status','Withdrawn',NULL,TRUE),
+(0,'Recruitment Status','Rejected',NULL,TRUE),
+(0,'Recruitment Status','Closed',NULL,TRUE),
+(0,'Recruitment Status','Cancelled',NULL,TRUE),
+(0,'Position Status','Open',NULL,TRUE),
+(0,'Position Status','Recruiter Assigned',NULL,TRUE),
+(0,'Position Status','Published',NULL,TRUE),
+(0,'Position Status','Candidate Screening',NULL,TRUE),
+(0,'Position Status','Interview In Progress',NULL,TRUE),
+(0,'Position Status','Offer Released',NULL,TRUE),
+(0,'Position Status','Offer Accepted',NULL,TRUE),
+(0,'Position Status','Joining Pending',NULL,TRUE),
+(0,'Position Status','Filled',NULL,TRUE),
+(0,'Position Status','Partially Filled',NULL,TRUE),
+(0,'Position Status','Cancelled',NULL,TRUE),
+(0,'Position Status','Closed',NULL,TRUE),
+(0,'Position Status','On Hold',NULL,TRUE),
+(0,'Publishing Channel','Career Portal',NULL,TRUE),
+(0,'Publishing Channel','Company Website',NULL,TRUE),
+(0,'Publishing Channel','LinkedIn',NULL,TRUE),
+(0,'Publishing Channel','Naukri',NULL,TRUE),
+(0,'Publishing Channel','Indeed',NULL,TRUE),
+(0,'Publishing Channel','Monster',NULL,TRUE),
+(0,'Publishing Channel','Internal Job Portal',NULL,TRUE),
+(0,'Publishing Channel','Employee Referral',NULL,TRUE),
+(0,'Publishing Channel','Walk-In',NULL,TRUE),
+(0,'Publishing Channel','Campus',NULL,TRUE),
+(0,'Publishing Channel','Social Media',NULL,TRUE),
+(0,'Assignment Priority','Low',NULL,TRUE),
+(0,'Assignment Priority','Normal',NULL,TRUE),
+(0,'Assignment Priority','High',NULL,TRUE),
+(0,'Assignment Priority','Critical',NULL,TRUE),
+(0,'Recruitment Source','Company Career Portal',NULL,TRUE),
+(0,'Recruitment Source','Employee Referral',NULL,TRUE),
+(0,'Recruitment Source','Consultant',NULL,TRUE),
+(0,'Recruitment Source','Vendor',NULL,TRUE),
+(0,'Recruitment Source','Naukri',NULL,TRUE),
+(0,'Recruitment Source','LinkedIn',NULL,TRUE),
+(0,'Recruitment Source','Indeed',NULL,TRUE),
+(0,'Recruitment Source','Walk-In',NULL,TRUE),
+(0,'Recruitment Source','Campus',NULL,TRUE),
+(0,'Recruitment Source','Internal Transfer',NULL,TRUE),
+(0,'Recruitment Source','Social Media',NULL,TRUE),
+(0,'Recruitment Source','Job Fair',NULL,TRUE),
+(0,'Recruitment Source','Email',NULL,TRUE),
+(0,'Recruitment Source','Recruitment Drive',NULL,TRUE),
+(0,'Hiring Type','Permanent',NULL,TRUE),
+(0,'Hiring Type','Contract',NULL,TRUE),
+(0,'Hiring Type','Intern',NULL,TRUE),
+(0,'Hiring Type','Consultant',NULL,TRUE),
+(0,'Hiring Type','Temporary',NULL,TRUE),
+(0,'Hiring Type','Apprentice',NULL,TRUE),
+(0,'Hiring Type','Freelancer',NULL,TRUE),
+(0,'Hiring Type','Fixed Term',NULL,TRUE),
+(0,'Position Category','IT',NULL,TRUE),
+(0,'Position Category','Engineering',NULL,TRUE),
+(0,'Position Category','Finance',NULL,TRUE),
+(0,'Position Category','HR',NULL,TRUE),
+(0,'Position Category','Sales',NULL,TRUE),
+(0,'Position Category','Procurement',NULL,TRUE),
+(0,'Position Category','Operations',NULL,TRUE),
+(0,'Position Category','Legal',NULL,TRUE),
+(0,'Position Category','Administration',NULL,TRUE),
+(0,'Position Category','Marketing',NULL,TRUE),
+(0,'Experience Range','0-1 years',NULL,TRUE),
+(0,'Experience Range','1-3 years',NULL,TRUE),
+(0,'Experience Range','3-5 years',NULL,TRUE),
+(0,'Experience Range','5-8 years',NULL,TRUE),
+(0,'Experience Range','8-12 years',NULL,TRUE),
+(0,'Experience Range','12+ years',NULL,TRUE),
+(0,'Budget Amount','300000',NULL,TRUE),
+(0,'Budget Amount','500000',NULL,TRUE),
+(0,'Budget Amount','750000',NULL,TRUE),
+(0,'Budget Amount','1000000',NULL,TRUE),
+(0,'Budget Amount','1500000',NULL,TRUE),
+(0,'Budget Amount','2000000',NULL,TRUE),
+(0,'Budget Amount','2500000',NULL,TRUE),
+(0,'Budget Amount','3000000',NULL,TRUE),
+(0,'Interview Type','HR',NULL,TRUE),
+(0,'Interview Type','Technical',NULL,TRUE),
+(0,'Interview Type','Managerial',NULL,TRUE),
+(0,'Interview Type','Client',NULL,TRUE),
+(0,'Interview Type','Panel',NULL,TRUE),
+(0,'Interview Type','Final',NULL,TRUE),
+(0,'Interview Type','Virtual',NULL,TRUE),
+(0,'Interview Type','Face-to-Face',NULL,TRUE),
+(0,'Interview Type','Telephonic',NULL,TRUE),
+(0,'Interview Type','Group Discussion',NULL,TRUE),
+(0,'Interview Type','Assessment',NULL,TRUE),
+(0,'Interview Type','Coding Test',NULL,TRUE),
+(0,'Interview Result','Selected',NULL,TRUE),
+(0,'Interview Result','Rejected',NULL,TRUE),
+(0,'Interview Result','On Hold',NULL,TRUE),
+(0,'Interview Result','No Show',NULL,TRUE),
+(0,'Interview Result','Reschedule',NULL,TRUE),
+(0,'Interview Result','Feedback Pending',NULL,TRUE),
+(0,'Interview Round','Round 1',NULL,TRUE),
+(0,'Interview Round','Round 2',NULL,TRUE),
+(0,'Interview Round','Round 3',NULL,TRUE),
+(0,'Interview Round','HR',NULL,TRUE),
+(0,'Interview Round','Management',NULL,TRUE),
+(0,'Interview Round','Client',NULL,TRUE),
+(0,'Candidate Status','New',NULL,TRUE),
+(0,'Candidate Status','Screening',NULL,TRUE),
+(0,'Candidate Status','Shortlisted',NULL,TRUE),
+(0,'Candidate Status','Interview Scheduled',NULL,TRUE),
+(0,'Candidate Status','Interview Completed',NULL,TRUE),
+(0,'Candidate Status','Selected',NULL,TRUE),
+(0,'Candidate Status','Rejected',NULL,TRUE),
+(0,'Candidate Status','Offer Released',NULL,TRUE),
+(0,'Candidate Status','Offer Accepted',NULL,TRUE),
+(0,'Candidate Status','Offer Rejected',NULL,TRUE),
+(0,'Candidate Status','Joined',NULL,TRUE),
+(0,'Candidate Status','On Hold',NULL,TRUE),
+(0,'Offer Status','Draft',NULL,TRUE),
+(0,'Offer Status','Internal Approval',NULL,TRUE),
+(0,'Offer Status','Pending Candidate',NULL,TRUE),
+(0,'Offer Status','Negotiation',NULL,TRUE),
+(0,'Offer Status','Accepted',NULL,TRUE),
+(0,'Offer Status','Rejected',NULL,TRUE),
+(0,'Offer Status','Expired',NULL,TRUE),
+(0,'Offer Status','Withdrawn',NULL,TRUE)
+ON DUPLICATE KEY UPDATE IsActive=VALUES(IsActive);
+
+INSERT INTO dropdownmasters (ClientId, Type, Value, ConfigJson, IsActive)
+SELECT ClientId, MasterType, Name, NULL, IsActive
+FROM recruitment_master_values
+WHERE MasterType IN (
+    'Recruitment Status',
+    'Position Status',
+    'Publishing Channel',
+    'Assignment Priority',
+    'Recruitment Source',
+    'Hiring Type',
+    'Position Category',
+    'Experience Range',
+    'Budget Amount',
+    'Interview Type',
+    'Interview Result',
+    'Interview Round',
+    'Candidate Status',
+    'Offer Status'
+)
+ON DUPLICATE KEY UPDATE IsActive=VALUES(IsActive);
+
+-- 2026-07-14 - ESS profile self-update settings and audit
+CREATE TABLE IF NOT EXISTS ess_client_settings (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    AllowProfileEdit BOOLEAN NOT NULL DEFAULT FALSE,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_ess_client_settings_client (ClientId)
+);
+
+INSERT INTO ess_client_settings (ClientId, AllowProfileEdit, IsActive)
+SELECT Id, FALSE, TRUE
+FROM clients
+WHERE IsActive=TRUE
+ON DUPLICATE KEY UPDATE ClientId=VALUES(ClientId);
+
+CREATE TABLE IF NOT EXISTS ess_profile_update_audit (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EmployeeId INT NOT NULL,
+    ClientId INT NOT NULL,
+    ChangedBy VARCHAR(180) NOT NULL DEFAULT '',
+    OldValueJson JSON NULL,
+    NewValueJson JSON NULL,
+    ChangedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_ess_profile_update_audit_employee (EmployeeId, ChangedAt)
+);
+
+-- 2026-07-13 - Talent Acquisition phase 2 recruitment requisition
+
+CREATE TABLE IF NOT EXISTS recruitment_requisitions (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    RfrNumber VARCHAR(80) NOT NULL,
+    RequestDate DATE NOT NULL DEFAULT (CURRENT_DATE),
+    RequestedByEmployeeId INT NOT NULL,
+    RequestedByUserId INT NOT NULL,
+    ClientId INT NOT NULL,
+    BranchId INT NOT NULL DEFAULT 0,
+    BusinessUnit VARCHAR(120) NOT NULL DEFAULT '',
+    Department VARCHAR(120) NOT NULL DEFAULT '',
+    CostCenter VARCHAR(120) NOT NULL DEFAULT '',
+    PositionTitle VARCHAR(180) NOT NULL,
+    PositionCategory VARCHAR(120) NOT NULL DEFAULT '',
+    EmploymentType VARCHAR(80) NOT NULL DEFAULT '',
+    HiringType VARCHAR(80) NOT NULL DEFAULT '',
+    NumberOfOpenings INT NOT NULL DEFAULT 1,
+    IsReplacement BOOLEAN NOT NULL DEFAULT FALSE,
+    ReplacementEmployeeId INT NULL,
+    TargetJoiningDate DATE NULL,
+    JobLocation VARCHAR(160) NOT NULL DEFAULT '',
+    WorkMode VARCHAR(40) NOT NULL DEFAULT 'Office',
+    ClientProjectId INT NULL,
+    Project VARCHAR(160) NOT NULL DEFAULT '',
+    BudgetAvailable BOOLEAN NOT NULL DEFAULT FALSE,
+    BudgetAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    HiringPriority VARCHAR(40) NOT NULL DEFAULT 'Normal',
+    BusinessJustification TEXT NULL,
+    ReasonForHiring VARCHAR(500) NOT NULL DEFAULT '',
+    ExperienceRange VARCHAR(80) NOT NULL DEFAULT '',
+    Qualification VARCHAR(250) NOT NULL DEFAULT '',
+    RequiredSkills TEXT NULL,
+    PreferredSkills TEXT NULL,
+    Certifications VARCHAR(500) NOT NULL DEFAULT '',
+    Languages VARCHAR(250) NOT NULL DEFAULT '',
+    SalaryMin DECIMAL(18,2) NOT NULL DEFAULT 0,
+    SalaryMax DECIMAL(18,2) NOT NULL DEFAULT 0,
+    Currency VARCHAR(10) NOT NULL DEFAULT 'INR',
+    Benefits TEXT NULL,
+    Status VARCHAR(40) NOT NULL DEFAULT 'Draft',
+    WorkflowInstanceId BIGINT NULL,
+    OpenPositionId BIGINT NULL,
+    SubmittedAt DATETIME NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_recruitment_rfr_number (RfrNumber),
+    INDEX IX_recruitment_rfr_client_status (ClientId, Status),
+    INDEX IX_recruitment_rfr_requester (RequestedByEmployeeId, Status)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_open_positions (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    RequisitionId BIGINT NOT NULL,
+    PositionCode VARCHAR(80) NOT NULL,
+    ClientId INT NOT NULL,
+    BranchId INT NOT NULL DEFAULT 0,
+    Department VARCHAR(120) NOT NULL DEFAULT '',
+    PositionTitle VARCHAR(180) NOT NULL,
+    PositionCategory VARCHAR(120) NOT NULL DEFAULT '',
+    EmploymentType VARCHAR(80) NOT NULL DEFAULT '',
+    HiringType VARCHAR(80) NOT NULL DEFAULT '',
+    NumberOfPositions INT NOT NULL DEFAULT 1,
+    TargetJoiningDate DATE NULL,
+    JobLocation VARCHAR(160) NOT NULL DEFAULT '',
+    Project VARCHAR(160) NOT NULL DEFAULT '',
+    SalaryMin DECIMAL(18,2) NOT NULL DEFAULT 0,
+    SalaryMax DECIMAL(18,2) NOT NULL DEFAULT 0,
+    Currency VARCHAR(10) NOT NULL DEFAULT 'INR',
+    HiringPriority VARCHAR(40) NOT NULL DEFAULT '',
+    RequiredSkills TEXT NULL,
+    ExperienceRange VARCHAR(80) NOT NULL DEFAULT '',
+    Status VARCHAR(40) NOT NULL DEFAULT 'Open',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_recruitment_open_position_rfr (RequisitionId),
+    UNIQUE KEY UX_recruitment_position_code (PositionCode),
+    INDEX IX_recruitment_position_client_status (ClientId, Status)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_requisition_documents (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    RequisitionId BIGINT NOT NULL,
+    FileName VARCHAR(260) NOT NULL DEFAULT '',
+    ContentType VARCHAR(120) NOT NULL DEFAULT '',
+    StoragePath VARCHAR(500) NOT NULL DEFAULT '',
+    UploadedBy INT NULL,
+    UploadedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_recruitment_doc_rfr (RequisitionId)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_audit (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    EntityType VARCHAR(80) NOT NULL,
+    EntityId BIGINT NOT NULL,
+    Action VARCHAR(80) NOT NULL,
+    OldValueJson JSON NULL,
+    NewValueJson JSON NULL,
+    ChangedByUserId INT NULL,
+    ChangedOn DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_recruitment_audit (EntityType, EntityId, ChangedOn)
+);
+
+INSERT INTO authpermissions (Code, Name, Module, Description) VALUES
+('recruitment.manage','Manage recruitment','Talent Acquisition','Monitor recruitment requisitions and open positions.'),
+('recruitment.rfr.create','Create recruitment requisition','Talent Acquisition','Create recruitment requisitions on behalf of the organization.'),
+('recruitment.rfr.view','View recruitment requisitions','Talent Acquisition','View recruitment requisitions for permitted scope.')
+ON DUPLICATE KEY UPDATE Name=VALUES(Name), Module=VALUES(Module), Description=VALUES(Description);
+
+INSERT INTO workflowactivities (ActivityCode, DisplayName, ModuleCode, ResourceType, Description, IsActive)
+VALUES ('RFR.SUBMIT','Submit recruitment requisition','Talent Acquisition','RecruitmentRequisition','Recruitment requisition approval before open position creation.',TRUE)
+ON DUPLICATE KEY UPDATE DisplayName=VALUES(DisplayName), ModuleCode=VALUES(ModuleCode), ResourceType=VALUES(ResourceType), Description=VALUES(Description), IsActive=VALUES(IsActive);
+
+INSERT INTO workflow_action_rules (ActivityCode,HttpMethod,PathPattern,ResourceType,ResourceIdSource,ResourceIdRouteKey,ClientIdSource,ClientIdSql,ClientLookupTable,ClientLookupKeyColumn,ClientLookupClientColumn,TriggerMode,IsActive)
+VALUES ('RFR.SUBMIT','POST','/api/ess/recruitment/requisitions/{id}/submit','RecruitmentRequisition','route.id','id','','','recruitment_requisitions','Id','ClientId','AfterSuccess',TRUE)
+ON DUPLICATE KEY UPDATE ResourceType=VALUES(ResourceType),ResourceIdSource=VALUES(ResourceIdSource),ResourceIdRouteKey=VALUES(ResourceIdRouteKey),ClientLookupTable=VALUES(ClientLookupTable),ClientLookupKeyColumn=VALUES(ClientLookupKeyColumn),ClientLookupClientColumn=VALUES(ClientLookupClientColumn),TriggerMode=VALUES(TriggerMode),IsActive=VALUES(IsActive);
+
+-- 2026-07-13 - Talent Acquisition phase 2 enhancement sprint
+CREATE TABLE IF NOT EXISTS recruitment_number_sequences (
+    Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL DEFAULT 0,
+    SeriesCode VARCHAR(30) NOT NULL,
+    LastNumber INT NOT NULL DEFAULT 0,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_recruitment_number_sequence (ClientId, SeriesCode)
+);
+
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='businessunit')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN businessunit VARCHAR(120) NOT NULL DEFAULT ''''','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='costcenter')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN costcenter VARCHAR(120) NOT NULL DEFAULT ''''','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='approvedpositions')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN approvedpositions INT NOT NULL DEFAULT 1','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='filledpositions')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN filledpositions INT NOT NULL DEFAULT 0','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='cancelledpositions')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN cancelledpositions INT NOT NULL DEFAULT 0','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='onholdpositions')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN onholdpositions INT NOT NULL DEFAULT 0','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='remainingpositions')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN remainingpositions INT NOT NULL DEFAULT 1','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='budgetavailable')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN budgetavailable BOOLEAN NOT NULL DEFAULT FALSE','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='budgetamount')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN budgetamount DECIMAL(18,2) NOT NULL DEFAULT 0','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='preferredskills')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN preferredskills TEXT NULL','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='recruiteruserid')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN recruiteruserid INT NOT NULL DEFAULT 0','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='candidatecount')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN candidatecount INT NOT NULL DEFAULT 0','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='interviewcount')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN interviewcount INT NOT NULL DEFAULT 0','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='offercount')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN offercount INT NOT NULL DEFAULT 0','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='joinedcount')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN joinedcount INT NOT NULL DEFAULT 0','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='snapshotjson')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN snapshotjson JSON NULL','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='publishedat')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN publishedat DATETIME NULL','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_open_positions' AND LOWER(column_name)='closedat')=0,'ALTER TABLE recruitment_open_positions ADD COLUMN closedat DATETIME NULL','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_requisition_documents' AND LOWER(column_name)='documentcategory')=0,'ALTER TABLE recruitment_requisition_documents ADD COLUMN documentcategory VARCHAR(120) NOT NULL DEFAULT ''Other''','SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+UPDATE recruitment_open_positions
+SET ApprovedPositions = NumberOfPositions
+WHERE ApprovedPositions = 1 AND NumberOfPositions <> 1;
+
+UPDATE recruitment_open_positions
+SET RemainingPositions = GREATEST(0, ApprovedPositions - FilledPositions - CancelledPositions - OnHoldPositions)
+WHERE RemainingPositions = 1 OR RemainingPositions IS NULL;
+
+CREATE TABLE IF NOT EXISTS recruitment_position_timeline (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PositionId BIGINT NOT NULL,
+    EventType VARCHAR(80) NOT NULL,
+    EventTitle VARCHAR(180) NOT NULL,
+    EventDetails VARCHAR(1000) NOT NULL DEFAULT '',
+    ActorUserId INT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_recruitment_position_timeline (PositionId, CreatedAt)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_position_notes (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PositionId BIGINT NOT NULL,
+    NoteType VARCHAR(80) NOT NULL DEFAULT 'General',
+    NoteText TEXT NOT NULL,
+    CreatedByUserId INT NOT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_recruitment_position_notes (PositionId, CreatedAt)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_position_checklist (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PositionId BIGINT NOT NULL,
+    ChecklistName VARCHAR(180) NOT NULL,
+    Stage VARCHAR(120) NOT NULL DEFAULT '',
+    Mandatory BOOLEAN NOT NULL DEFAULT TRUE,
+    IsCompleted BOOLEAN NOT NULL DEFAULT FALSE,
+    CompletedByUserId INT NULL,
+    CompletedAt DATETIME NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_recruitment_position_checklist (PositionId, ChecklistName)
+);
+
+INSERT INTO recruitment_master_values (ClientId,MasterType,Code,Name,SortOrder,IsSystem,IsActive) VALUES
+(0,'Position Status','OPEN','Open',10,TRUE,TRUE),
+(0,'Position Status','RECRUITER_ASSIGNED','Recruiter Assigned',20,TRUE,TRUE),
+(0,'Position Status','PUBLISHED','Published',30,TRUE,TRUE),
+(0,'Position Status','CANDIDATE_SCREENING','Candidate Screening',40,TRUE,TRUE),
+(0,'Position Status','INTERVIEW_IN_PROGRESS','Interview In Progress',50,TRUE,TRUE),
+(0,'Position Status','OFFER_RELEASED','Offer Released',60,TRUE,TRUE),
+(0,'Position Status','OFFER_ACCEPTED','Offer Accepted',70,TRUE,TRUE),
+(0,'Position Status','JOINING_PENDING','Joining Pending',80,TRUE,TRUE),
+(0,'Position Status','FILLED','Filled',90,TRUE,TRUE),
+(0,'Position Status','PARTIALLY_FILLED','Partially Filled',100,TRUE,TRUE),
+(0,'Position Status','CANCELLED','Cancelled',110,TRUE,TRUE),
+(0,'Position Status','CLOSED','Closed',120,TRUE,TRUE),
+(0,'Position Status','ON_HOLD','On Hold',130,TRUE,TRUE),
+(0,'Recruitment Checklist','JD_ATTACHED','Job Description Attached',10,TRUE,TRUE),
+(0,'Recruitment Checklist','BUDGET_APPROVED','Budget Approved',20,TRUE,TRUE),
+(0,'Recruitment Checklist','REPLACEMENT_APPROVED','Replacement Approved',30,TRUE,TRUE),
+(0,'Recruitment Checklist','ORG_STRUCTURE_UPDATED','Organization Structure Updated',40,TRUE,TRUE),
+(0,'Recruitment Checklist','CLIENT_APPROVAL','Client Approval',50,TRUE,TRUE),
+(0,'Recruitment Checklist','SALARY_APPROVAL','Salary Approval',60,TRUE,TRUE),
+(0,'Recruitment Checklist','BUSINESS_CASE_ATTACHED','Business Case Attached',70,TRUE,TRUE)
+ON DUPLICATE KEY UPDATE Name=VALUES(Name), SortOrder=VALUES(SortOrder), IsSystem=TRUE, IsActive=TRUE;
+
+-- 2026-07-13 - Talent Acquisition phase 3 recruitment operations
+CREATE TABLE IF NOT EXISTS recruitment_recruiter_assignments (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PositionId BIGINT NOT NULL,
+    PrimaryRecruiterUserId INT NOT NULL,
+    SecondaryRecruiterUserId INT NOT NULL DEFAULT 0,
+    AssignmentDate DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    AssignmentReason VARCHAR(1000) NOT NULL DEFAULT '',
+    AssignmentStatus VARCHAR(40) NOT NULL DEFAULT 'Active',
+    AssignedByUserId INT NOT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_recruitment_recruiter_assignment (PositionId, AssignmentStatus)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_partner_assignments (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PositionId BIGINT NOT NULL,
+    PartnerType VARCHAR(40) NOT NULL,
+    PartnerId INT NOT NULL,
+    AssignmentDate DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    Priority VARCHAR(40) NOT NULL DEFAULT 'Normal',
+    DueDate DATE NULL,
+    ExpectedProfiles INT NOT NULL DEFAULT 0,
+    Status VARCHAR(40) NOT NULL DEFAULT 'Assigned',
+    Remarks VARCHAR(1000) NOT NULL DEFAULT '',
+    AssignedByUserId INT NOT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_recruitment_partner_assignment (PositionId, PartnerType, Status)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_job_publications (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PositionId BIGINT NOT NULL,
+    Channel VARCHAR(120) NOT NULL,
+    PublishingDate DATE NOT NULL,
+    ExpiryDate DATE NULL,
+    Status VARCHAR(40) NOT NULL DEFAULT 'Published',
+    Remarks VARCHAR(1000) NOT NULL DEFAULT '',
+    PublishedByUserId INT NOT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_recruitment_publication (PositionId, Channel, Status)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_referral_campaigns (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PositionId BIGINT NOT NULL,
+    CampaignName VARCHAR(180) NOT NULL,
+    StartDate DATE NOT NULL,
+    EndDate DATE NOT NULL,
+    ReferralReward DECIMAL(18,2) NOT NULL DEFAULT 0,
+    VisibilityCompany VARCHAR(120) NOT NULL DEFAULT '',
+    VisibilityDepartment VARCHAR(120) NOT NULL DEFAULT '',
+    VisibilityBusinessUnit VARCHAR(120) NOT NULL DEFAULT '',
+    VisibilityLocation VARCHAR(120) NOT NULL DEFAULT '',
+    VisibilityEmploymentType VARCHAR(120) NOT NULL DEFAULT '',
+    Status VARCHAR(40) NOT NULL DEFAULT 'Open',
+    CreatedByUserId INT NOT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX IX_recruitment_referral_campaign (PositionId, Status, EndDate)
+);
+
+CREATE TABLE IF NOT EXISTS recruitment_employee_referrals (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    PositionId BIGINT NOT NULL,
+    ReferrerEmployeeId INT NOT NULL,
+    CandidateName VARCHAR(180) NOT NULL,
+    CandidateEmail VARCHAR(180) NOT NULL DEFAULT '',
+    CandidatePhone VARCHAR(50) NOT NULL DEFAULT '',
+    Relationship VARCHAR(120) NOT NULL DEFAULT '',
+    Remarks VARCHAR(1000) NOT NULL DEFAULT '',
+    Status VARCHAR(40) NOT NULL DEFAULT 'Submitted',
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX IX_recruitment_employee_referrals (ReferrerEmployeeId, Status),
+    INDEX IX_recruitment_position_referrals (PositionId, Status)
+);
+
+INSERT INTO recruitment_master_values (ClientId,MasterType,Code,Name,SortOrder,IsSystem,IsActive) VALUES
+(0,'Publishing Channel','CAREER_PORTAL','Career Portal',10,TRUE,TRUE),
+(0,'Publishing Channel','COMPANY_WEBSITE','Company Website',20,TRUE,TRUE),
+(0,'Publishing Channel','LINKEDIN','LinkedIn',30,TRUE,TRUE),
+(0,'Publishing Channel','NAUKRI','Naukri',40,TRUE,TRUE),
+(0,'Publishing Channel','INDEED','Indeed',50,TRUE,TRUE),
+(0,'Publishing Channel','MONSTER','Monster',60,TRUE,TRUE),
+(0,'Publishing Channel','INTERNAL_JOB_PORTAL','Internal Job Portal',70,TRUE,TRUE),
+(0,'Publishing Channel','EMPLOYEE_REFERRAL','Employee Referral',80,TRUE,TRUE),
+(0,'Publishing Channel','WALK_IN','Walk-In',90,TRUE,TRUE),
+(0,'Publishing Channel','CAMPUS','Campus',100,TRUE,TRUE),
+(0,'Publishing Channel','SOCIAL_MEDIA','Social Media',110,TRUE,TRUE),
+(0,'Assignment Priority','LOW','Low',10,TRUE,TRUE),
+(0,'Assignment Priority','NORMAL','Normal',20,TRUE,TRUE),
+(0,'Assignment Priority','HIGH','High',30,TRUE,TRUE),
+(0,'Assignment Priority','CRITICAL','Critical',40,TRUE,TRUE)
+ON DUPLICATE KEY UPDATE Name=VALUES(Name), SortOrder=VALUES(SortOrder), IsSystem=TRUE, IsActive=TRUE;
+
+INSERT INTO authpermissions (Code, Name, Module, Description) VALUES
+('recruitment.position.view','View recruitment positions','Talent Acquisition','View recruitment open positions and workspace.'),
+('recruitment.position.manage','Manage recruitment positions','Talent Acquisition','Manage recruitment open position operations.'),
+('recruitment.assign.recruiter','Assign recruiter','Talent Acquisition','Assign or reassign recruiters to open positions.'),
+('recruitment.assign.partner','Assign recruitment partners','Talent Acquisition','Assign vendors and consultants to open positions.'),
+('recruitment.publish','Publish job','Talent Acquisition','Publish open positions to configured channels.'),
+('recruitment.referral.manage','Manage referral campaigns','Talent Acquisition','Create and manage employee referral campaigns.')
+ON DUPLICATE KEY UPDATE Name=VALUES(Name), Module=VALUES(Module), Description=VALUES(Description);
+
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='ess_client_settings' AND column_name='InitialPasswordMode')=0,'ALTER TABLE ess_client_settings ADD COLUMN InitialPasswordMode VARCHAR(30) NOT NULL DEFAULT ''App Default'' AFTER AllowProfileEdit','SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='ess_client_settings' AND column_name='FixedPassword')=0,'ALTER TABLE ess_client_settings ADD COLUMN FixedPassword VARCHAR(200) NOT NULL DEFAULT '''' AFTER InitialPasswordMode','SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='authusers' AND column_name='Mobile')=0,'ALTER TABLE authusers ADD COLUMN Mobile VARCHAR(40) NOT NULL DEFAULT '''' AFTER DisplayName','SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+INSERT INTO authroles (Code, Name, Description, IsSystem) VALUES
+('mss_manager','MSS Manager','Manager self-service access for approvals and assigned workflow tasks.',TRUE)
+ON DUPLICATE KEY UPDATE Name=VALUES(Name), Description=VALUES(Description), IsSystem=TRUE;
+
+INSERT IGNORE INTO authrolepermissions (RoleId, PermissionId)
+SELECT r.Id, p.Id FROM authroles r JOIN authpermissions p ON p.Code IN ('ess.self','dashboard.approvals.view')
+WHERE r.Code='mss_manager';

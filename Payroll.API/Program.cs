@@ -55,8 +55,11 @@ builder.Services.AddSingleton<DashboardRepository>();
 builder.Services.AddSingleton<NotificationRepository>();
 builder.Services.AddSingleton<ScheduledJobRepository>();
 builder.Services.AddSingleton<TravelExpenseRepository>();
+builder.Services.AddSingleton<RecruitmentAdminRepository>();
+builder.Services.AddSingleton<RecruitmentRepository>();
 builder.Services.AddHostedService<PayrollRunWorker>();
 builder.Services.AddHostedService<ScheduledJobWorker>();
+builder.Services.AddHostedService<NotificationWorker>();
 
 var app = builder.Build();
 const string AuthCookieName = "payroll_auth";
@@ -107,6 +110,13 @@ app.Use(async (context, next) =>
         return;
     }
 
+    if (!IsEssAllowedApi(context.Request.Path) && !AuthRepository.HasBackofficeAccess(user))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        await context.Response.WriteAsJsonAsync(new { error = "Admin portal access is not enabled for this user." });
+        return;
+    }
+
     context.Items["User"] = user;
     await next();
 
@@ -143,6 +153,15 @@ app.MapGet("/api/auth/me", (HttpContext context) =>
 .WithName("GetCurrentUser")
 .WithOpenApi();
 
+app.MapPost("/api/auth/change-password", async (AuthRepository repository, ChangePasswordRequest request, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    var (updated, error) = await repository.ChangePasswordAsync(user.Id, request.CurrentPassword, request.NewPassword);
+    return updated is null ? Results.BadRequest(new { error }) : Results.Ok(updated);
+})
+.WithName("ChangePassword")
+.WithOpenApi();
+
 app.MapGet("/api/dashboard", async (DashboardRepository repository, int? clientId, HttpContext context) =>
 {
     var user = CurrentUser(context);
@@ -172,7 +191,7 @@ app.MapGet("/api/workflows/tasks/actioned", async (WorkflowRepository repository
 });
 app.MapGet("/api/workflows/history", async (WorkflowRepository repository,HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetInstancesAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/{instanceId:long}/history", async (WorkflowRepository repository,long instanceId,HttpContext context) => Results.Ok(await repository.HistoryAsync(instanceId)));
-app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository, PayRunRepository payRuns, NotificationRepository notifications,long taskId,string action,WorkflowActionRequest request,HttpContext context) =>
+app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository, PayRunRepository payRuns, RecruitmentRepository recruitment, NotificationRepository notifications,long taskId,string action,WorkflowActionRequest request,HttpContext context) =>
 {
     if(action is not ("Approved" or "Rejected" or "Sent Back")) return Results.BadRequest();
     var user=CurrentUser(context);
@@ -182,6 +201,7 @@ app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowReposi
     if(instance?.ResourceType=="LeaveRequest")await essRepository.SyncLeaveWorkflowStatusAsync(instance.ResourceId,instance.Status);
     if(instance?.ResourceType=="TravelRequest")await essRepository.SyncTravelWorkflowStatusAsync(instance.ResourceId,instance.Status);
     if(instance?.ResourceType=="ExpenseClaim")await essRepository.SyncExpenseWorkflowStatusAsync(instance.ResourceId,instance.Status);
+    if(instance?.ResourceType=="RecruitmentRequisition")await recruitment.SyncWorkflowStatusAsync(instance.ResourceId,instance.Status,user.Id);
     if(instance?.ResourceType=="PayRun" && int.TryParse(instance.ResourceId,out var payRunId))
     {
         if(instance.Status=="Approved") await payRuns.ApproveAsync(payRunId);
@@ -220,6 +240,46 @@ app.MapGet("/api/ess/profile", async (EssMssRepository repository, HttpContext c
     return profile is null ? Results.NotFound() : Results.Ok(profile);
 })
 .WithName("GetEssProfile")
+.WithOpenApi();
+
+app.MapPost("/api/ess/profile", async (EssMssRepository repository, SaveEssProfileRequest request, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!user.Permissions.Contains("ess.self", StringComparer.OrdinalIgnoreCase) || user.EmployeeId is null)
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (profile, error) = await repository.SaveProfileAsync(user.EmployeeId.Value, user.ClientId, request, user.Email);
+    return profile is null ? Results.BadRequest(new { error }) : Results.Ok(profile);
+})
+.WithName("SaveEssProfile")
+.WithOpenApi();
+
+app.MapGet("/api/ess/features", async (EssMssRepository repository, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!user.Permissions.Contains("ess.self", StringComparer.OrdinalIgnoreCase) || user.EmployeeId is null)
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Results.Ok(await repository.GetFeatureAccessAsync(user.EmployeeId.Value, user.ClientId));
+})
+.WithName("GetEssFeatures")
+.WithOpenApi();
+
+app.MapGet("/api/ess-admin/settings", async (EssMssRepository repository, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "employees.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Results.Ok(await repository.GetEssClientSettingsAsync());
+})
+.WithName("GetEssClientSettings")
+.WithOpenApi();
+
+app.MapPost("/api/ess-admin/settings", async (EssMssRepository repository, EssClientSetting setting, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "employees.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (setting.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    return Results.Ok(await repository.SaveEssClientSettingAsync(setting));
+})
+.WithName("SaveEssClientSetting")
 .WithOpenApi();
 
 app.MapGet("/api/ess/leave/requests", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetLeaveRequestsAsync(user.EmployeeId.Value,user.ClientId)); });
@@ -273,6 +333,166 @@ app.MapPost("/api/ess/expenses/claims/{id:long}/submit", async (EssMssRepository
     return Results.Ok(result);
 });
 app.MapGet("/api/ess/expenses/claims/{id:long}/trail", async (EssMssRepository repository,long id,HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var trail=await repository.GetExpenseClaimTrailAsync(id,user.EmployeeId.Value,user.ClientId); return trail is null ? Results.NotFound() : Results.Ok(trail); });
+
+app.MapGet("/api/ess/recruitment/options", async (RecruitmentRepository repository, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetOptionsAsync(user.EmployeeId.Value, user.ClientId, user));
+});
+app.MapGet("/api/ess/recruitment/dashboard", async (RecruitmentRepository repository, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    return user.EmployeeId is null || !RecruitmentRepository.HasRecruitmentAccess(user) ? Results.StatusCode(403) : Results.Ok(await repository.DashboardAsync(user, true));
+});
+app.MapGet("/api/ess/recruitment/requisitions", async (RecruitmentRepository repository, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    return user.EmployeeId is null || !RecruitmentRepository.HasRecruitmentAccess(user) ? Results.StatusCode(403) : Results.Ok(await repository.GetMineAsync(user.EmployeeId.Value, user.ClientId));
+});
+app.MapGet("/api/ess/recruitment/requisitions/{id:long}", async (RecruitmentRepository repository, long id, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!RecruitmentRepository.HasRecruitmentAccess(user)) return Results.StatusCode(403);
+    return await repository.GetAsync(id, user) is { } row ? Results.Ok(row) : Results.NotFound();
+});
+app.MapPost("/api/ess/recruitment/requisitions", async (RecruitmentRepository repository, SaveRecruitmentRequisition request, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user.EmployeeId is null || !RecruitmentRepository.HasRecruitmentCreateAccess(user)) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveDraftAsync(request, user);
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapDelete("/api/ess/recruitment/requisitions/{id:long}", async (RecruitmentRepository repository, long id, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!RecruitmentRepository.HasRecruitmentCreateAccess(user)) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteDraftAsync(id, user);
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
+app.MapPost("/api/ess/recruitment/requisitions/{id:long}/submit", async (RecruitmentRepository repository, WorkflowRepository workflows, long id, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!RecruitmentRepository.HasRecruitmentCreateAccess(user)) return Results.StatusCode(403);
+    var (row, error) = await repository.SubmitAsync(id, user, workflows);
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/ess/recruitment/requisitions/{id:long}/withdraw", async (RecruitmentRepository repository, long id, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!RecruitmentRepository.HasRecruitmentCreateAccess(user)) return Results.StatusCode(403);
+    var (ok, error) = await repository.WithdrawAsync(id, user);
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
+app.MapGet("/api/ess/recruitment/requisitions/{id:long}/trail", async (RecruitmentRepository repository, long id, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    return RecruitmentRepository.HasRecruitmentAccess(user) ? Results.Ok(await repository.TrailAsync(id, user)) : Results.StatusCode(403);
+});
+app.MapGet("/api/ess/recruitment/internal-openings", async (RecruitmentRepository repository, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    return user.EmployeeId is null || !RecruitmentRepository.HasRecruitmentAccess(user) ? Results.StatusCode(403) : Results.Ok(await repository.InternalOpeningsAsync(user));
+});
+app.MapGet("/api/ess/recruitment/referrals", async (RecruitmentRepository repository, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    return user.EmployeeId is null || !RecruitmentRepository.HasRecruitmentAccess(user) ? Results.StatusCode(403) : Results.Ok(await repository.MyReferralsAsync(user));
+});
+app.MapPost("/api/ess/recruitment/referrals", async (RecruitmentRepository repository, NotificationRepository notifications, SaveEmployeeReferral request, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user.EmployeeId is null || !RecruitmentRepository.HasRecruitmentAccess(user)) return Results.StatusCode(403);
+    var (row, error) = await repository.SubmitReferralAsync(request, user, notifications);
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+
+app.MapGet("/api/recruitment/dashboard", async (RecruitmentRepository repository, HttpContext context) =>
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.DashboardAsync(CurrentUser(context), false)) : Results.StatusCode(403));
+app.MapGet("/api/recruitment/requisitions", async (RecruitmentRepository repository, int? clientId, string? status, string? query, string? department, string? hiringType, string? employmentType, string? priority, string? businessUnit, string? positionCategory, string? experience, string? location, string? project, bool? replacementHiring, decimal? budgetMin, decimal? budgetMax, DateTime? dateFrom, DateTime? dateTo, int? recruiterUserId, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    return Results.Ok(await repository.SearchAsync(new RecruitmentSearchRequest { ClientId = clientId, Status = status ?? "", Query = query ?? "", Department = department ?? "", HiringType = hiringType ?? "", EmploymentType = employmentType ?? "", Priority = priority ?? "", BusinessUnit = businessUnit ?? "", PositionCategory = positionCategory ?? "", Experience = experience ?? "", Location = location ?? "", Project = project ?? "", ReplacementHiring = replacementHiring, BudgetMin = budgetMin, BudgetMax = budgetMax, DateFrom = dateFrom, DateTo = dateTo, RecruiterUserId = recruiterUserId }, CurrentUser(context)));
+});
+app.MapGet("/api/recruitment/open-positions", async (RecruitmentRepository repository, HttpContext context) =>
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.OpenPositionsAsync(CurrentUser(context))) : Results.StatusCode(403));
+app.MapGet("/api/recruitment/operations/options", async (RecruitmentRepository repository, HttpContext context) =>
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "recruitment.position.view") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.OperationsOptionsAsync(CurrentUser(context))) : Results.StatusCode(403));
+app.MapGet("/api/recruitment/masters/{masterType}", async (RecruitmentRepository repository, string masterType, HttpContext context) =>
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.MasterOptionsAsync(masterType, CurrentUser(context))) : Results.StatusCode(403));
+app.MapGet("/api/recruitment/open-positions/{id:long}", async (RecruitmentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var detail = await repository.OpenPositionDetailAsync(id, CurrentUser(context));
+    return detail is null ? Results.NotFound() : Results.Ok(detail);
+});
+app.MapPost("/api/recruitment/open-positions/{id:long}/status", async (RecruitmentRepository repository, long id, UpdateRecruitmentPositionStatus request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (detail, error) = await repository.UpdatePositionStatusAsync(id, request, CurrentUser(context));
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(detail) : Results.BadRequest(new { message = error });
+});
+app.MapPost("/api/recruitment/open-positions/{id:long}/notes", async (RecruitmentRepository repository, long id, SaveRecruitmentPositionNote request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (detail, error) = await repository.AddPositionNoteAsync(id, request, CurrentUser(context));
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(detail) : Results.BadRequest(new { message = error });
+});
+app.MapPost("/api/recruitment/open-positions/{id:long}/assign-recruiter", async (RecruitmentRepository repository, NotificationRepository notifications, long id, SaveRecruiterAssignment request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.assign.recruiter") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (detail, error) = await repository.AssignRecruiterAsync(id, request, CurrentUser(context), notifications);
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(detail) : Results.BadRequest(new { message = error });
+});
+app.MapPost("/api/recruitment/open-positions/{id:long}/vendors", async (RecruitmentRepository repository, NotificationRepository notifications, long id, SavePartnerAssignment request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.assign.partner") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (detail, error) = await repository.AssignPartnerAsync(id, "Vendor", request, CurrentUser(context), notifications);
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(detail) : Results.BadRequest(new { message = error });
+});
+app.MapPost("/api/recruitment/open-positions/{id:long}/consultants", async (RecruitmentRepository repository, NotificationRepository notifications, long id, SavePartnerAssignment request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.assign.partner") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (detail, error) = await repository.AssignPartnerAsync(id, "Consultant", request, CurrentUser(context), notifications);
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(detail) : Results.BadRequest(new { message = error });
+});
+app.MapPost("/api/recruitment/open-positions/{id:long}/publish", async (RecruitmentRepository repository, NotificationRepository notifications, long id, SaveJobPublication request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.publish") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (detail, error) = await repository.PublishPositionAsync(id, request, CurrentUser(context), notifications);
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(detail) : Results.BadRequest(new { message = error });
+});
+app.MapPost("/api/recruitment/open-positions/{id:long}/referral-campaigns", async (RecruitmentRepository repository, NotificationRepository notifications, long id, SaveReferralCampaign request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.referral.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (detail, error) = await repository.CreateReferralCampaignAsync(id, request, CurrentUser(context), notifications);
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(detail) : Results.BadRequest(new { message = error });
+});
+
+app.MapGet("/api/travel-advances", async (EssMssRepository repository, int? clientId, string? status, HttpContext context) =>
+{
+    if (!HasPermission(context, "payroll.payments") && !HasPermission(context, "payroll.run")) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var scopedClientId = user.ClientId ?? clientId;
+    return Results.Ok(await repository.GetTravelAdvancesAsync(scopedClientId, status ?? ""));
+});
+app.MapPost("/api/travel-advances/{id:long}/pay", async (EssMssRepository repository, long id, PayTravelAdvanceRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "payroll.payments")) return Results.StatusCode(403);
+    var(result,error)=await repository.PayTravelAdvanceAsync(id,request,CurrentUser(context).Id);
+    return result is null ? Results.BadRequest(new{error}) : Results.Ok(result);
+});
+app.MapPost("/api/travel-advances/{id:long}/settle", async (EssMssRepository repository, long id, SettleTravelAdvanceRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "payroll.payments")) return Results.StatusCode(403);
+    var(result,error)=await repository.SettleTravelAdvanceAsync(id,request,CurrentUser(context).Id);
+    return result is null ? Results.BadRequest(new{error}) : Results.Ok(result);
+});
+app.MapPost("/api/travel-advances/{id:long}/recover", async (EssMssRepository repository, long id, RecoverTravelAdvanceRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "payroll.payments")) return Results.StatusCode(403);
+    var(result,error)=await repository.MarkTravelAdvanceRecoverableAsync(id,request,CurrentUser(context).Id);
+    return result is null ? Results.BadRequest(new{error}) : Results.Ok(result);
+});
 
 app.MapPost("/api/auth/logout", async (AuthRepository repository, HttpContext context) =>
 {
@@ -449,8 +669,8 @@ app.MapPost("/api/notifications/rules", async (NotificationRepository repository
 app.MapPost("/api/notifications/queue/{id:long}/retry", async (NotificationRepository repository, long id, HttpContext context) =>
 {
     if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
-    await repository.RetryAsync(id);
-    return Results.NoContent();
+    var processed = await repository.RetryAndProcessAsync(id, context.RequestAborted);
+    return Results.Ok(new { processed });
 });
 app.MapPost("/api/notifications/test", async (NotificationRepository repository, NotificationTestRequest request, HttpContext context) =>
 {
@@ -681,6 +901,15 @@ app.MapPost("/api/travel-expense/policies", async (TravelExpenseRepository repos
 .WithName("SaveTravelPolicy")
 .WithOpenApi();
 
+app.MapPost("/api/travel-expense/client-settings", async (TravelExpenseRepository repository, TravelExpenseClientSetting request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    try { return Results.Ok(await repository.SaveClientSettingAsync(request, CurrentUser(context).Email)); }
+    catch (Exception exception) { return Results.BadRequest(new { error = exception.Message }); }
+})
+.WithName("SaveTravelExpenseClientSetting")
+.WithOpenApi();
+
 app.MapPost("/api/travel-expense/assignments", async (TravelExpenseRepository repository, TravelPolicyAssignment request, HttpContext context) =>
 {
     if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
@@ -714,6 +943,27 @@ app.MapPost("/api/travel-expense/categories", async (TravelExpenseRepository rep
 })
 .WithName("SaveTravelExpenseCategory")
 .WithOpenApi();
+
+app.MapGet("/api/recruitment-admin", async (RecruitmentAdminRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403))
+.WithName("GetRecruitmentAdminSetup")
+.WithOpenApi();
+app.MapPost("/api/recruitment-admin/settings", async (RecruitmentAdminRepository repository, RecruitmentSetting request, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveSettingAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+app.MapPost("/api/recruitment-admin/masters", async (RecruitmentAdminRepository repository, RecruitmentMasterValue request, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveMasterAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+app.MapPost("/api/recruitment-admin/partners", async (RecruitmentAdminRepository repository, RecruitmentPartner request, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.SavePartnerAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+app.MapPost("/api/recruitment-admin/assignment-rules", async (RecruitmentAdminRepository repository, RecruitmentAssignmentRule request, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveAssignmentRuleAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+app.MapPost("/api/recruitment-admin/sla-rules", async (RecruitmentAdminRepository repository, RecruitmentSlaRule request, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveSlaRuleAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+app.MapPost("/api/recruitment-admin/document-checklist", async (RecruitmentAdminRepository repository, RecruitmentDocumentChecklist request, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveDocumentChecklistAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+app.MapPost("/api/recruitment-admin/approval-mappings", async (RecruitmentAdminRepository repository, RecruitmentApprovalMapping request, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveApprovalMappingAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+app.MapPost("/api/recruitment-admin/templates", async (RecruitmentAdminRepository repository, RecruitmentTemplate request, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveTemplateAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
 
 app.MapGet("/api/tax-engine", async (TaxEngineRepository repository, HttpContext context) => HasPermission(context, "settings.manage") || HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403));
 app.MapPost("/api/tax-engine/client-settings", async (TaxEngineRepository repository, ClientTaxSetting request, HttpContext context) => HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveClientSettingAsync(request)) : Results.StatusCode(403));
@@ -1491,6 +1741,16 @@ static AuthUser CurrentUser(HttpContext context) =>
 static bool HasPermission(HttpContext context, string permission) =>
     CurrentUser(context).Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
 
+static bool IsEssAllowedApi(PathString path)
+{
+    if (path.StartsWithSegments("/api/ess")) return true;
+    if (path.StartsWithSegments("/api/auth/me")) return true;
+    if (path.StartsWithSegments("/api/auth/logout")) return true;
+    if (path.StartsWithSegments("/api/auth/change-password")) return true;
+    if (path.StartsWithSegments("/api/workflows/tasks")) return true;
+    return false;
+}
+
 static string ReadAuthToken(HttpContext context, string cookieName)
 {
     var authorization = context.Request.Headers.Authorization.ToString();
@@ -1538,6 +1798,8 @@ static async Task RunDatabaseSetupAsync(IServiceProvider services, IConfiguratio
     await scopedServices.GetRequiredService<NotificationRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<ScheduledJobRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<TravelExpenseRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<RecruitmentAdminRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<RecruitmentRepository>().InitializeAsync();
 
     await using var workflowDb = new MySqlConnector.MySqlConnection(configuration.GetConnectionString("Default"));
     await workflowDb.OpenAsync();

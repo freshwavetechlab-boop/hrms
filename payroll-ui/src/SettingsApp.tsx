@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { AppstoreOutlined, BellOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons'
+import { AppstoreOutlined, BellOutlined, DownOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons'
 import { Avatar, Badge, Breadcrumb, Button, Dropdown, Input, Space, Tooltip } from 'antd'
 import type { MenuProps } from 'antd'
 import AppIcon from './components/AppIcon'
 import type { IconName } from './components/AppIcon'
 import SecurityPanel from './components/SecurityPanel'
 import { leaveAttendanceMenus, org0, reportingMenus, securityMenus, settingsMenus, workflowMenus } from './data/payrollDefaults'
-import DashboardPage from './pages/DashboardPage'
+import DashboardPage, { type DashboardView } from './pages/DashboardPage'
 import EmployeePage, { type EmployeePageView } from './pages/EmployeePage'
 import LeaveAttendancePage from './pages/LeaveAttendancePage'
 import type { LeaveAttendanceMenu } from './pages/LeaveAttendancePage'
@@ -16,6 +16,8 @@ import PayrollAttendancePage from './pages/PayrollAttendancePage'
 import PayrollPage from './pages/PayrollPage'
 import ReportingPage, { reportItems } from './pages/ReportingPage'
 import type { ReportDefinition, ReportingMenu } from './pages/ReportingPage'
+import RecruitmentPage from './pages/RecruitmentPage'
+import TravelAdvancesPage from './pages/TravelAdvancesPage'
 import WorkflowPage from './pages/WorkflowPage'
 import type { WorkflowMenu } from './pages/WorkflowPage'
 import EmployeeTaxProfileManager from './components/EmployeeTaxProfileManager'
@@ -27,22 +29,25 @@ import type { Org } from './types/payroll'
 import './OrganizationSetup.css'
 import './ModuleDrawer.css'
 
-type ModuleCode = 'Dashboard' | 'Settings' | 'Employees' | 'Payroll' | 'LeaveAttendance' | 'Security' | 'Reports' | 'Workflows'
+type ModuleCode = 'Dashboard' | 'Settings' | 'Employees' | 'Payroll' | 'LeaveAttendance' | 'TalentAcquisition' | 'Security' | 'Reports' | 'Workflows'
 type SettingsTab = (typeof settingsMenus)[number]
 type SecurityTab = (typeof securityMenus)[number]
-type PayrollTab = 'Regular Run' | 'Off-cycle Run' | 'Adjustments' | 'Employee Tax Profile'
+type PayrollTab = 'Regular Run' | 'Off-cycle Run' | 'Adjustments' | 'Employee Tax Profile' | 'Travel Advances'
 type EmployeeTab = 'Employee Master' | 'Org Structure'
 type SettingsSection = 'General' | 'LeaveAttendance'
 const allPayrollSetupMenus: SettingsTab[] = ['Tax Engine', 'Statutory Setup', 'Salary Components', 'Salary Templates', 'Payslip Templates']
 const compactSidebarQuery = '(max-width: 640px)'
 const productLogo = '/assets/FrevoOneLogo.png'
 const productMark = '/favicon.svg'
+const dashboardViews: DashboardView[] = ['overview', 'workforce', 'payroll', 'attendance', 'approvals']
+const fallbackDashboardAccess = [{ code: 'overview', name: 'Overview Dashboard', description: 'Combined HR, payroll, attendance and approval summary.', route: '/dashboard', sortOrder: 10 }]
 
 const modules: { code: ModuleCode | 'Reports'; label: string; icon: IconName; description: string; disabled?: boolean }[] = [
   { code: 'Dashboard', label: 'Dashboard', icon: 'reports', description: 'Client-wise payroll, attendance and approval overview.' },
   { code: 'Payroll', label: 'Payroll', icon: 'payruns', description: 'Run payroll, compare variances and review history.' },
   { code: 'LeaveAttendance', label: 'Leave & Attendance', icon: 'calendar', description: 'Review attendance before payroll processing.' },
   { code: 'Employees', label: 'Employees', icon: 'employees', description: 'Manage employee master, salary and statutory profile.' },
+  { code: 'TalentAcquisition', label: 'Talent Acquisition', icon: 'employees', description: 'Monitor requisitions and open positions.' },
   { code: 'Security', label: 'Security', icon: 'security', description: 'Control users, roles, permissions and audit evidence.' },
   { code: 'Workflows', label: 'Workflows', icon: 'reports', description: 'Configure reusable approval workflows and tasks.' },
   { code: 'Settings', label: 'Settings', icon: 'settings', description: 'Configure organization, clients and payroll setup.' },
@@ -59,6 +64,7 @@ const menuIcon = (label: string): IconName => {
   if (value.includes('history')) return 'history'
   if (value.includes('tax') || value.includes('statutory') || value.includes('tds')) return 'tax'
   if (value.includes('employee')) return 'employees'
+  if (value.includes('recruit') || value.includes('talent') || value.includes('position')) return 'employees'
   if (value.includes('org')) return 'org'
   if (value.includes('attendance')) return 'attendance'
   if (value.includes('leave') || value.includes('holiday')) return value.includes('holiday') ? 'holiday' : 'calendar'
@@ -71,6 +77,7 @@ const menuIcon = (label: string): IconName => {
   if (value.includes('notification')) return 'notification'
   if (value.includes('scheduled') || value.includes('job')) return 'job'
   if (value.includes('billing')) return 'billing'
+  if (value.includes('advance')) return 'money'
   if (value.includes('payroll') || value.includes('pay')) return 'payruns'
   if (value.includes('report') || value.includes('mis') || value.includes('dashboard')) return 'reports'
   if (value.includes('security')) return 'security'
@@ -89,6 +96,7 @@ const modulePaths: Record<ModuleCode, string> = {
   Payroll: '/payroll/regular',
   LeaveAttendance: '/attendance',
   Employees: '/employees/master',
+  TalentAcquisition: '/recruitment',
   Security: '/security/users',
   Workflows: '/workflows/workflow-setup',
   Settings: '/settings/organization',
@@ -109,10 +117,12 @@ export default function SettingsApp() {
   const savedWorkflowTab = localStorage.getItem('payroll.workflowTab') as WorkflowMenu | null
   const payrollSetupMenus = allPayrollSetupMenus.filter(item => item !== 'Statutory Setup' || canManageStatutory)
   const routeParts = routeLocation.pathname.split('/').filter(Boolean)
+  const dashboardView = routeParts[0] === 'dashboard' && dashboardViews.includes(routeParts[1] as DashboardView) ? routeParts[1] as DashboardView : 'overview'
   const routeModule = (() : ModuleCode => {
     if (routeParts[0] === 'pay-runs' || routeParts[0] === 'payroll') return 'Payroll'
     if (routeParts[0] === 'attendance') return 'LeaveAttendance'
     if (routeParts[0] === 'employees') return 'Employees'
+    if (routeParts[0] === 'recruitment') return 'TalentAcquisition'
     if (routeParts[0] === 'security') return 'Security'
     if (routeParts[0] === 'reports') return 'Reports'
     if (routeParts[0] === 'workflows') return 'Workflows'
@@ -139,8 +149,21 @@ export default function SettingsApp() {
   const [mainModule, setMainModule] = useState<ModuleCode>(initialModule)
   const [shellOrg, setShellOrg] = useState<Org>(org0)
   const activeModule = modules.find(module => module.code === mainModule)!
-  const pageTitle = showMyTasks ? 'My Tasks' : mainModule === 'Dashboard' ? 'Dashboard' : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? employeeTab : mainModule === 'Security' ? securityTab : mainModule === 'Reports' ? reportingTab : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
   const currentUser = session?.user
+  const dashboardAccess = [...(currentUser?.dashboardAccess?.length ? currentUser.dashboardAccess : fallbackDashboardAccess)].sort((left, right) => left.sortOrder - right.sortOrder)
+  const activeDashboard = dashboardAccess.find(item => item.code === dashboardView) ?? dashboardAccess[0]
+  const dashboardMenu: MenuProps = {
+    items: dashboardAccess.map(item => ({ key: item.code, label: <div className="dashboard-switch-item"><strong>{item.name}</strong><small>{item.description}</small></div> })),
+    selectedKeys: [activeDashboard.code],
+    onClick: ({ key }) => {
+      const item = dashboardAccess.find(option => option.code === key)
+      if (!item) return
+      setShowMyTasks(false)
+      setMainModule('Dashboard')
+      navigate(item.route || '/dashboard')
+    }
+  }
+  const pageTitle = showMyTasks ? 'My Tasks' : mainModule === 'Dashboard' ? activeDashboard.name : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? employeeTab : mainModule === 'TalentAcquisition' ? 'Talent Acquisition' : mainModule === 'Security' ? securityTab : mainModule === 'Reports' ? reportingTab : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
   const userInitials = (currentUser?.displayName || 'User').split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase()
   const accountMenu: MenuProps = {
     items: [
@@ -211,7 +234,7 @@ export default function SettingsApp() {
       return
     }
     if (parts[0] === 'payroll') {
-      const nextTab: PayrollTab = parts[1] === 'adjustments' ? 'Adjustments' : parts[1] === 'off-cycle' ? 'Off-cycle Run' : parts[1] === 'tax-profile' ? 'Employee Tax Profile' : 'Regular Run'
+      const nextTab: PayrollTab = parts[1] === 'adjustments' ? 'Adjustments' : parts[1] === 'off-cycle' ? 'Off-cycle Run' : parts[1] === 'tax-profile' ? 'Employee Tax Profile' : parts[1] === 'travel-advances' ? 'Travel Advances' : 'Regular Run'
       setPayrollTab(nextTab)
       localStorage.setItem('payroll.payrollTab', nextTab)
       setMainModule('Payroll')
@@ -224,6 +247,10 @@ export default function SettingsApp() {
     if (parts[0] === 'employees') {
       setEmployeeTab(parts[1] === 'org-structure' ? 'Org Structure' : 'Employee Master')
       setMainModule('Employees')
+      return
+    }
+    if (parts[0] === 'recruitment') {
+      setMainModule('TalentAcquisition')
       return
     }
     if (parts[0] === 'security') {
@@ -287,7 +314,7 @@ export default function SettingsApp() {
   const openTasks = () => { setShowMyTasks(true); navigate('/tasks') }
   const setTab = (nextTab: SettingsTab) => { setShowMyTasks(false); setSettingsSection('General'); localStorage.setItem('payroll.module', 'Settings'); localStorage.setItem('payroll.tab', nextTab); setActiveTab(nextTab); navigate(`/settings/${slug(nextTab)}`) }
   const setModule = (nextModule: ModuleCode) => { setShowMyTasks(false); localStorage.setItem('payroll.module', nextModule); setMainModule(nextModule); navigate(modulePaths[nextModule]) }
-  const setPayrollModuleTab = (nextTab: PayrollTab) => { localStorage.setItem('payroll.payrollTab', nextTab); setPayrollTab(nextTab); setShowMyTasks(false); setMainModule('Payroll'); navigate(nextTab === 'Adjustments' ? '/payroll/adjustments' : nextTab === 'Off-cycle Run' ? '/payroll/off-cycle' : nextTab === 'Employee Tax Profile' ? '/payroll/tax-profile' : '/payroll/regular') }
+  const setPayrollModuleTab = (nextTab: PayrollTab) => { localStorage.setItem('payroll.payrollTab', nextTab); setPayrollTab(nextTab); setShowMyTasks(false); setMainModule('Payroll'); navigate(nextTab === 'Adjustments' ? '/payroll/adjustments' : nextTab === 'Off-cycle Run' ? '/payroll/off-cycle' : nextTab === 'Employee Tax Profile' ? '/payroll/tax-profile' : nextTab === 'Travel Advances' ? '/payroll/travel-advances' : '/payroll/regular') }
   const setEmployeeModuleTab = (nextTab: EmployeeTab) => { setEmployeeTab(nextTab); setShowMyTasks(false); setMainModule('Employees'); navigate(nextTab === 'Org Structure' ? '/employees/org-structure' : '/employees/master') }
   const setPayHistory = () => { setShowMyTasks(false); localStorage.setItem('payroll.module', 'Payroll'); setMainModule('Payroll'); navigate('/pay-runs/history') }
   const setSecurityModuleTab = (nextTab: SecurityTab) => { localStorage.setItem('payroll.securityTab', nextTab); setSecurityTab(nextTab); setShowMyTasks(false); setMainModule('Security'); navigate(`/security/${slug(nextTab)}`) }
@@ -321,10 +348,12 @@ export default function SettingsApp() {
       <Link {...navAttrs('Adjustments')} className={!isPayHistory && payrollTab === 'Adjustments' ? 'active' : ''} to="/payroll/adjustments" onClick={() => navigateFromMenu(() => setPayrollModuleTab('Adjustments'))}>{menuContent('Adjustments', 'Variable pay')}</Link>
       <div className={`settings-nav-group expanded ${collapsedFlyout === 'payroll-run' ? 'flyout-open' : ''}`}><button {...navAttrs('Pay Run')} className={!isPayHistory && ['Regular Run', 'Off-cycle Run'].includes(payrollTab) ? 'active' : ''} type="button" onClick={() => toggleNavGroup('payroll-run', () => undefined)}>{menuLabel('Pay Run')}</button><div className="settings-nav-submenu"><Link {...navAttrs('Regular Run')} className={!isPayHistory && payrollTab === 'Regular Run' ? 'active' : ''} to="/payroll/regular" onClick={() => navigateFromMenu(() => setPayrollModuleTab('Regular Run'))}>{menuContent('Regular Run')}</Link><Link {...navAttrs('Off-cycle Run')} className={!isPayHistory && payrollTab === 'Off-cycle Run' ? 'active' : ''} to="/payroll/off-cycle" onClick={() => navigateFromMenu(() => setPayrollModuleTab('Off-cycle Run'))}>{menuContent('Off-cycle Run')}</Link></div></div>
       <Link {...navAttrs('Employee Tax Profile')} className={!isPayHistory && payrollTab === 'Employee Tax Profile' ? 'active' : ''} to="/payroll/tax-profile" onClick={() => navigateFromMenu(() => setPayrollModuleTab('Employee Tax Profile'))}>{menuContent('Employee Tax Profile', 'TDS profile')}</Link>
+      <Link {...navAttrs('Travel Advances')} className={!isPayHistory && payrollTab === 'Travel Advances' ? 'active' : ''} to="/payroll/travel-advances" onClick={() => navigateFromMenu(() => setPayrollModuleTab('Travel Advances'))}>{menuContent('Travel Advances', 'Pay & settle')}</Link>
       <Link {...navAttrs('Pay History')} className={isPayHistory ? 'active' : ''} to="/pay-runs/history" onClick={() => navigateFromMenu(setPayHistory)}>{menuContent('Pay History')}</Link>
     </>
     if (mainModule === 'LeaveAttendance') return <>{tasks}<Link {...navAttrs('Attendance Review')} className="active" to="/attendance" onClick={() => navigateFromMenu(() => setModule('LeaveAttendance'))}>{menuContent('Attendance Review', 'Pre-payroll')}</Link></>
     if (mainModule === 'Employees') return <>{tasks}<Link {...navAttrs('Employee Master')} className={employeeTab === 'Employee Master' ? 'active' : ''} to="/employees/master" onClick={() => navigateFromMenu(() => setEmployeeModuleTab('Employee Master'))}>{menuContent('Employee Master', 'Core HR')}</Link><Link {...navAttrs('Org Structure')} className={employeeTab === 'Org Structure' ? 'active' : ''} to="/employees/org-structure" onClick={() => navigateFromMenu(() => setEmployeeModuleTab('Org Structure'))}>{menuContent('Org Structure', 'Hierarchy')}</Link></>
+    if (mainModule === 'TalentAcquisition') return <>{tasks}<Link {...navAttrs('Recruitment Requisitions')} className="active" to="/recruitment" onClick={() => navigateFromMenu(() => setModule('TalentAcquisition'))}>{menuContent('Recruitment Requisitions', 'RFR & positions')}</Link></>
     if (mainModule === 'Security') return <>{tasks}{securityMenus.map(item => <button {...navAttrs(item)} className={securityTab === item ? 'active' : ''} type="button" onClick={() => navigateFromMenu(() => setSecurityModuleTab(item))} key={item}>{menuContent(item)}</button>)}</>
     if (mainModule === 'Reports') return <>{tasks}{reportingMenus.map(item => {
       const expanded = reportingTab === item
@@ -338,11 +367,12 @@ export default function SettingsApp() {
   }
   const renderPage = () => {
     if (showMyTasks) return <WorkflowTasks />
-    if (mainModule === 'Dashboard') return <DashboardPage />
+    if (mainModule === 'Dashboard') return <DashboardPage view={dashboardView} />
     if (mainModule === 'Security') return <SecurityPanel initialTab={securityTab} />
     if (mainModule === 'LeaveAttendance') return <PayrollAttendancePage />
-    if (mainModule === 'Payroll') return isPayHistory ? <PayHistoryPage /> : payrollTab === 'Employee Tax Profile' ? <EmployeeTaxProfileManager /> : <PayrollPage key={payrollTab} mode={payrollTab === 'Adjustments' ? 'adjustments' : 'payrun'} runType={payrollTab === 'Off-cycle Run' ? 'Off-cycle Run' : 'Regular Run'} />
+    if (mainModule === 'Payroll') return isPayHistory ? <PayHistoryPage /> : payrollTab === 'Employee Tax Profile' ? <EmployeeTaxProfileManager /> : payrollTab === 'Travel Advances' ? <TravelAdvancesPage /> : <PayrollPage key={payrollTab} mode={payrollTab === 'Adjustments' ? 'adjustments' : 'payrun'} runType={payrollTab === 'Off-cycle Run' ? 'Off-cycle Run' : 'Regular Run'} />
     if (mainModule === 'Employees') return <EmployeePage view={(employeeTab === 'Org Structure' ? 'org' : 'master') as EmployeePageView} />
+    if (mainModule === 'TalentAcquisition') return <RecruitmentPage />
     if (mainModule === 'Reports') return <ReportingPage activeMenu={reportingTab} activeReport={reportingReport} />
     if (mainModule === 'Workflows') return <WorkflowPage activeMenu={workflowTab} />
     return settingsSection === 'LeaveAttendance' ? <LeaveAttendancePage activeMenu={leaveAttendanceTab} onSelectMenu={setLeaveAttendanceSettingsTab} /> : <SettingsPage tab={tab} onMessage={() => undefined} />
@@ -372,6 +402,13 @@ export default function SettingsApp() {
           </div>
         </div>
         <Space className="topbar-tools" size={10}>
+          {dashboardAccess.length > 1 && <Dropdown menu={dashboardMenu} trigger={['click']} placement="bottomRight">
+            <button className="dashboard-switcher" type="button" aria-label="Switch dashboard">
+              <AppIcon name="dashboard" />
+              <span>{activeDashboard.name}</span>
+              <DownOutlined />
+            </button>
+          </Dropdown>}
           <Input className="global-search-antd" prefix={<SearchOutlined />} placeholder="Search..." allowClear suffix={<span className="search-shortcut">Ctrl K</span>} />
           <Tooltip title="Notifications"><Badge dot><Button className="topbar-icon-btn" type="default" icon={<BellOutlined />} aria-label="Notifications" /></Badge></Tooltip>
           <Tooltip title="Open app modules"><Button className="topbar-icon-btn" type="default" icon={<AppstoreOutlined />} aria-label="Open app modules" onClick={() => setAppDrawerOpen(true)} /></Tooltip>
