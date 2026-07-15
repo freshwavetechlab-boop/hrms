@@ -3,19 +3,43 @@ import { toast } from '../components/ToastProvider'
 export const api = import.meta.env.VITE_API_URL ?? 'http://localhost:5062'
 
 type ToastMode = boolean | 'error-only'
-export type ApiOptions = RequestInit & { timeoutMs?: number; toast?: ToastMode; successMessage?: string }
+export type ApiOptions = RequestInit & { timeoutMs?: number; toast?: ToastMode; successMessage?: string; loader?: boolean }
 type ApiResult<TResult> = { ok: boolean; data: TResult; error: string; status: number }
+type LoadingListener = (activeRequests: number) => void
 
 const legacyTokenKey = 'payroll.auth.token'
 const jsonContent = 'application/json'
+const loadingListeners = new Set<LoadingListener>()
+let activeRequests = 0
 
 export function apiUrl(path: string) {
   return path.startsWith('http') ? path : `${api}${path}`
 }
 
+export function subscribeApiLoading(listener: LoadingListener) {
+  loadingListeners.add(listener)
+  listener(activeRequests)
+  return () => { loadingListeners.delete(listener) }
+}
+
+function startLoading(options: ApiOptions) {
+  if (options.loader === false) return () => {}
+  activeRequests += 1
+  notifyLoading()
+  return () => {
+    activeRequests = Math.max(0, activeRequests - 1)
+    notifyLoading()
+  }
+}
+
+function notifyLoading() {
+  loadingListeners.forEach(listener => listener(activeRequests))
+}
+
 export async function apiRequest(path: string, options: ApiOptions = {}) {
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? 30000)
+  const stopLoading = startLoading(options)
   const headers = new Headers(options.headers)
   const isFormData = options.body instanceof FormData
   const legacyToken = sessionStorage.getItem(legacyTokenKey) || localStorage.getItem(legacyTokenKey)
@@ -33,6 +57,7 @@ export async function apiRequest(path: string, options: ApiOptions = {}) {
     return response
   } finally {
     window.clearTimeout(timeout)
+    stopLoading()
   }
 }
 

@@ -906,9 +906,9 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 .dashboard-action-list a:hover{border-color:#cfc6f5!important;background:#faf7ff!important}
 .dashboard-action-list strong{display:grid!important;place-items:center!important;min-height:34px!important;border-radius:8px!important;background:#f3f0ff!important;color:#5133cc!important;font-size:1rem!important}
 .dashboard-action-list span{min-width:0!important;overflow:hidden!important;text-overflow:ellipsis!important;color:#465067!important;font-size:.78rem!important;font-weight:800!important;white-space:nowrap!important}
-.dashboard-chart-grid,.dashboard-deep-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:10px!important}
-.dashboard-deep-grid{align-items:stretch!important}
-.dashboard-chart-card{min-height:0!important;align-content:start!important}
+.dashboard-chart-grid,.dashboard-deep-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:10px!important;align-items:start!important}
+.dashboard-deep-grid{align-items:start!important}
+.dashboard-chart-card{min-height:0!important;height:auto!important;align-self:start!important;align-content:start!important}
 .dashboard-chart-card header{margin-bottom:8px!important}
 .dashboard-two-chart{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:10px!important;align-items:start!important}
 .dashboard-two-chart section{min-width:0!important;display:grid!important;gap:6px!important}
@@ -1744,3 +1744,75 @@ body.portal-shell-mounted #root .module-shell.nav-collapsed .side-head .brand.pr
 .ess-settings-note b{color:#172136!important;font-size:.82rem!important}
 .ess-settings-note span{color:#526277!important;font-size:.76rem!important;line-height:1.45!important}
 @media(max-width:720px){.ess-settings-summary,.ess-settings-drawer .settings-quick-form.ess-settings-form{grid-template-columns:1fr!important}}
+
+/* Dashboard final layout guard: charts should never stretch to fill the shell height. */
+body.portal-shell-mounted #root .module-shell .module-content:has(>.dashboard-page){
+  flex:0 0 auto!important;
+  align-content:start!important;
+  align-items:start!important;
+}
+.dashboard-page{
+  position:relative!important;
+  align-self:start!important;
+  align-content:start!important;
+  grid-auto-rows:max-content!important;
+  min-height:0!important;
+  height:auto!important;
+}
+.dashboard-page .dashboard-chart-grid,
+.dashboard-page .dashboard-deep-grid{
+  align-items:start!important;
+  align-content:start!important;
+  grid-auto-rows:max-content!important;
+}
+.dashboard-page .dashboard-chart-card{
+  display:block!important;
+  align-self:start!important;
+  min-height:0!important;
+  height:fit-content!important;
+}
+.dashboard-page .dashboard-two-chart,
+.dashboard-page .dashboard-line-chart,
+.dashboard-page .dashboard-donut-wrap,
+.dashboard-page .dashboard-bar-chart{
+  height:auto!important;
+  min-height:0!important;
+}
+.app-global-loader{
+  position:fixed!important;
+  top:50%!important;
+  right:28px!important;
+  z-index:10000!important;
+  display:flex!important;
+  align-items:center!important;
+  gap:9px!important;
+  min-height:38px!important;
+  padding:8px 13px!important;
+  border:1px solid #dfe7ff!important;
+  border-radius:999px!important;
+  background:#fff!important;
+  color:#465067!important;
+  box-shadow:0 16px 42px #17213624!important;
+  font-size:.76rem!important;
+  font-weight:900!important;
+  transform:translateY(-50%)!important;
+  pointer-events:none!important;
+}
+.app-global-loader i{
+  width:16px!important;
+  height:16px!important;
+  flex:0 0 16px!important;
+  border:2px solid #d8d2ff!important;
+  border-top-color:#6546e8!important;
+  border-radius:999px!important;
+  animation:dashboard-spin .75s linear infinite!important;
+}
+@keyframes dashboard-spin{to{transform:rotate(360deg)}}
+@media(max-width:760px){
+  .app-global-loader{
+    right:14px!important;
+    top:auto!important;
+    bottom:18px!important;
+    transform:none!important;
+  }
+}

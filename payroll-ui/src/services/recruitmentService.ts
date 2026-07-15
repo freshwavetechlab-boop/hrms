@@ -1,4 +1,4 @@
-import { getJson } from './apiClient'
+import { apiRequest, getJson } from './apiClient'
 import type { RecruitmentDashboard, RecruitmentOpenPosition, RecruitmentOperationsOptions, RecruitmentPositionDetail, RecruitmentRequisition } from '../types/payroll'
 
 const emptyDashboard: RecruitmentDashboard = { drafts: 0, pendingApproval: 0, approved: 0, rejected: 0, returned: 0, withdrawn: 0, openPositions: 0, filledPositions: 0, cancelledPositions: 0, onHoldPositions: 0, remainingPositions: 0, averageApprovalHours: 0, departmentWiseHiring: [], companyWiseHiring: [], priorityWiseHiring: [], upcomingJoiningTargets: [] }
@@ -15,9 +15,9 @@ export const getRecruitmentOpenPositions = () => getJson<RecruitmentOpenPosition
 export const getRecruitmentOperationsOptions = () => getJson<RecruitmentOperationsOptions>('/api/recruitment/operations/options', { allowMultipleRecruiters: false, enableVendorHiring: false, enableConsultantHiring: false, enableInternalHiring: false, enableReferralHiring: false, enableDocumentVerification: false, recruiters: [], vendors: [], consultants: [], positionStatuses: [], publishingChannels: [], assignmentPriorities: [] })
 export const getRecruitmentMasterOptions = (masterType: string) => getJson<string[]>(`/api/recruitment/masters/${encodeURIComponent(masterType)}`, [])
 export const getRecruitmentOpenPositionDetail = (id: number) => getJson<RecruitmentPositionDetail | null>(`/api/recruitment/open-positions/${id}`, null)
-export const saveRecruitmentPositionNote = (id: number, request: { noteType: string; noteText: string }) => fetch(`/api/recruitment/open-positions/${id}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(request) })
-export const updateRecruitmentPositionStatus = (id: number, request: { status: string; comment: string }) => fetch(`/api/recruitment/open-positions/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(request) })
-const postPositionAction = (id: number, path: string, request: unknown) => fetch(`/api/recruitment/open-positions/${id}/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(request) })
+export const saveRecruitmentPositionNote = (id: number, request: { noteType: string; noteText: string }) => apiRequest(`/api/recruitment/open-positions/${id}/notes`, { method: 'POST', body: JSON.stringify(request) })
+export const updateRecruitmentPositionStatus = (id: number, request: { status: string; comment: string }) => apiRequest(`/api/recruitment/open-positions/${id}/status`, { method: 'POST', body: JSON.stringify(request) })
+const postPositionAction = (id: number, path: string, request: unknown) => apiRequest(`/api/recruitment/open-positions/${id}/${path}`, { method: 'POST', body: JSON.stringify(request) })
 export const assignRecruiter = (id: number, request: { primaryRecruiterUserId: number; secondaryRecruiterUserId: number; assignmentReason: string }) => postPositionAction(id, 'assign-recruiter', request)
 export const assignVendor = (id: number, request: { partnerId: number; priority: string; dueDate?: string; expectedProfiles: number; remarks: string }) => postPositionAction(id, 'vendors', request)
 export const assignConsultant = (id: number, request: { partnerId: number; priority: string; dueDate?: string; expectedProfiles: number; remarks: string }) => postPositionAction(id, 'consultants', request)

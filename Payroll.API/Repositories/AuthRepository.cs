@@ -128,8 +128,32 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
         return new LoginResponse { Token = token, ExpiresAt = expiresAt, User = user };
     }
 
+    private static readonly string[] BackofficePermissionCodes =
+    [
+        "security.manage",
+        "settings.manage",
+        "employees.view",
+        "employees.manage",
+        "payroll.run",
+        "payroll.approve",
+        "payroll.payments",
+        "leave.manage",
+        "attendance.manage",
+        "tax.statutory.manage",
+        "workflow.manage",
+        "reports.view",
+        "audit.view",
+        "recruitment.manage",
+        "recruitment.position.view",
+        "recruitment.position.manage",
+        "recruitment.assign.recruiter",
+        "recruitment.assign.partner",
+        "recruitment.publish",
+        "recruitment.referral.manage"
+    ];
+
     public static bool HasBackofficeAccess(AuthUser user) =>
-        user.Permissions.Any(permission => !permission.Equals("ess.self", StringComparison.OrdinalIgnoreCase));
+        user.Permissions.Any(permission => BackofficePermissionCodes.Contains(permission, StringComparer.OrdinalIgnoreCase));
 
     public async Task<AuthUser?> GetUserByTokenAsync(string token)
     {

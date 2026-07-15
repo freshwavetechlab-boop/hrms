@@ -1774,7 +1774,19 @@ WHERE EmployeeId IN @EmployeeIds
 ORDER BY EmployeeId, EffectiveFrom DESC, Id DESC", new { EmployeeIds = employeeIds, PeriodStart = periodStart, PeriodEnd = periodEnd }, transaction))
             .GroupBy(row => row.EmployeeId)
             .ToDictionary(group => group.Key, group => group.First());
-        var personalRows = (await connection.QueryAsync<EmployeePersonalPayrollRow>("SELECT EmployeeId,State,PanNumber,UanNumber,EsicNumber,EsicEmployee,PtLwfWorkmenComp,Tds,Recovery FROM employeepersonaldetails WHERE EmployeeId IN @EmployeeIds", new { EmployeeIds = employeeIds }, transaction)).ToDictionary(row => row.EmployeeId);
+        var personalRows = (await connection.QueryAsync<EmployeePersonalPayrollRow>(@"
+SELECT
+    EmployeeId,
+    State,
+    PanNumber,
+    UanNumber,
+    EsicNumber,
+    CASE WHEN CAST(EsicEmployee AS CHAR) REGEXP '^-?[0-9]+(\\.[0-9]+)?$' THEN CAST(EsicEmployee AS DECIMAL(18,4)) ELSE 0 END EsicEmployee,
+    PtLwfWorkmenComp,
+    Tds,
+    Recovery
+FROM employeepersonaldetails
+WHERE EmployeeId IN @EmployeeIds", new { EmployeeIds = employeeIds }, transaction)).ToDictionary(row => row.EmployeeId);
         var paymentRows = (await connection.QueryAsync<EmployeePaymentPayrollRow>("SELECT EmployeeId,BankAccountNo,IfscCode FROM employeepaymentdetails WHERE EmployeeId IN @EmployeeIds", new { EmployeeIds = employeeIds }, transaction)).ToDictionary(row => row.EmployeeId);
         foreach (var employee in employees)
         {

@@ -139,7 +139,7 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
   const clientName = clientId === 0 ? 'All clients' : dashboard?.clients.find(client => client.id === clientId)?.name ?? 'Selected client'
   const recentTotals = ['Approved', 'Processing', 'Pending Approval'].map(status => dashboard?.payRunStatuses.find(item => item.status === status) ?? { status, count: 0, netPay: 0 })
 
-  return <section className="dashboard-page">
+  return <section className={`dashboard-page dashboard-view-${view}`}>
     <header className="dashboard-header">
       <div>
         <span className="eyebrow purple">{dashboardTitles[view]}</span>
