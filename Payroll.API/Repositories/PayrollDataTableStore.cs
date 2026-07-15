@@ -261,7 +261,29 @@ ON DUPLICATE KEY UPDATE WorkWeek=@WorkWeek,SalaryDays=@SalaryDays,FixedDays=@Fix
         var ids = list.Select(x => x.Id).ToArray();
         var salaryRows = (await connection.QueryAsync<EmployeeSalaryComponentRow>("SELECT EmployeeId,ComponentId,Amount FROM employeesalarycomponents WHERE EmployeeId IN @ids", new { ids })).GroupBy(x => x.EmployeeId).ToDictionary(g => g.Key, g => g.ToList());
         var personalRows = (await connection.QueryAsync<EmployeePersonalRow>("SELECT * FROM employeepersonaldetails WHERE EmployeeId IN @ids", new { ids })).ToDictionary(x => x.EmployeeId);
-        var paymentRows = (await connection.QueryAsync<EmployeePaymentRow>("SELECT * FROM employeepaymentdetails WHERE EmployeeId IN @ids", new { ids })).ToDictionary(x => x.EmployeeId);
+        var paymentRows = (await connection.QueryAsync<EmployeePaymentRow>(@"
+SELECT
+    base.EmployeeId,
+    COALESCE(NULLIF(it9.BankName,''), base.BankName, '') BankName,
+    COALESCE(NULLIF(it9.BankAccountNo,''), base.BankAccountNo, '') BankAccountNo,
+    COALESCE(NULLIF(it9.IfscCode,''), base.IfscCode, '') IfscCode,
+    COALESCE(NULLIF(it9.PaymentMode,''), base.PaymentMode, '') PaymentMode
+FROM (
+    SELECT e.Id EmployeeId, COALESCE(p.BankName,'') BankName, COALESCE(p.BankAccountNo,'') BankAccountNo, COALESCE(p.IfscCode,'') IfscCode, COALESCE(p.PaymentMode,'') PaymentMode
+    FROM employees e
+    LEFT JOIN employeepaymentdetails p ON p.EmployeeId=e.Id
+    WHERE e.Id IN @ids
+) base
+LEFT JOIN (
+    SELECT t.EmployeeId,t.BankName,t.BankAccountNo,t.IfscCode,t.PaymentMode
+    FROM employee_it0009_bank_details t
+    JOIN (
+        SELECT EmployeeId, MAX(Id) Id
+        FROM employee_it0009_bank_details
+        WHERE Status='Active' AND EmployeeId IN @ids
+        GROUP BY EmployeeId
+    ) latest ON latest.Id=t.Id
+) it9 ON it9.EmployeeId=base.EmployeeId", new { ids })).ToDictionary(x => x.EmployeeId);
 
         foreach (var employee in list)
         {

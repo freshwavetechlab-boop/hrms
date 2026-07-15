@@ -664,6 +664,7 @@ AND NOT EXISTS (
         var setup = ReadPayrollSetup(setupJson);
         var salary = CalculateConfiguredSalary(employee, setup, totalWorkingDays, presentDays, payableDays);
         var salaryDeductionCodes = salary.Where(row => IsDeductionCategory(row.Component.Category) && row.Monthly > 0).Select(row => row.Component.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var salaryDeductionStatutoryTypes = salary.Where(row => IsDeductionCategory(row.Component.Category) && row.Monthly > 0 && !string.IsNullOrWhiteSpace(row.Component.StatutoryType)).Select(row => row.Component.StatutoryType).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var factor = totalWorkingDays == 0 || isSkipped ? 0 : (decimal)payableDays / totalWorkingDays;
         var lines = new List<object>();
         decimal monthlyGross = 0, grossPay = 0, deductions = 0;
@@ -685,6 +686,7 @@ AND NOT EXISTS (
         foreach (var seededDeduction in seededDeductions)
         {
             if (salaryDeductionCodes.Contains(seededDeduction.Code)) continue;
+            if (!string.IsNullOrWhiteSpace(seededDeduction.StatutoryType) && salaryDeductionStatutoryTypes.Contains(seededDeduction.StatutoryType)) continue;
             var amount = isSkipped ? 0 : seededDeduction.Amount;
             if (amount <= 0) continue;
             deductions += amount;
@@ -838,6 +840,9 @@ AND NOT EXISTS (
             monthly = Math.Max(0, decimal.Round(monthly, 2));
             values[component.Id] = monthly;
             values[component.Code] = monthly;
+            var earned = component.ProRata && payrollDays > 0 ? decimal.Round(monthly * payableDays / payrollDays, 2) : monthly;
+            values[$"{component.Id}_EARNED"] = earned;
+            values[$"{component.Code}_EARNED"] = earned;
             rows.Add(new CalculatedPayrollComponent(component, monthly));
         }
 
@@ -1787,7 +1792,27 @@ SELECT
     Recovery
 FROM employeepersonaldetails
 WHERE EmployeeId IN @EmployeeIds", new { EmployeeIds = employeeIds }, transaction)).ToDictionary(row => row.EmployeeId);
-        var paymentRows = (await connection.QueryAsync<EmployeePaymentPayrollRow>("SELECT EmployeeId,BankAccountNo,IfscCode FROM employeepaymentdetails WHERE EmployeeId IN @EmployeeIds", new { EmployeeIds = employeeIds }, transaction)).ToDictionary(row => row.EmployeeId);
+        var paymentRows = (await connection.QueryAsync<EmployeePaymentPayrollRow>(@"
+SELECT
+    base.EmployeeId,
+    COALESCE(NULLIF(it9.BankAccountNo,''), base.BankAccountNo, '') BankAccountNo,
+    COALESCE(NULLIF(it9.IfscCode,''), base.IfscCode, '') IfscCode
+FROM (
+    SELECT e.Id EmployeeId, COALESCE(p.BankAccountNo,'') BankAccountNo, COALESCE(p.IfscCode,'') IfscCode
+    FROM employees e
+    LEFT JOIN employeepaymentdetails p ON p.EmployeeId=e.Id
+    WHERE e.Id IN @EmployeeIds
+) base
+LEFT JOIN (
+    SELECT t.EmployeeId,t.BankAccountNo,t.IfscCode
+    FROM employee_it0009_bank_details t
+    JOIN (
+        SELECT EmployeeId, MAX(Id) Id
+        FROM employee_it0009_bank_details
+        WHERE Status='Active' AND EmployeeId IN @EmployeeIds
+        GROUP BY EmployeeId
+    ) latest ON latest.Id=t.Id
+) it9 ON it9.EmployeeId=base.EmployeeId", new { EmployeeIds = employeeIds }, transaction)).ToDictionary(row => row.EmployeeId);
         foreach (var employee in employees)
         {
             employee.SalaryComponents = salaryRows.GetValueOrDefault(employee.Id) ?? [];
