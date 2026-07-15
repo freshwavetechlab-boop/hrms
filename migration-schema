@@ -2092,3 +2092,19 @@ ON DUPLICATE KEY UPDATE Name=VALUES(Name), Description=VALUES(Description), IsSy
 INSERT IGNORE INTO authrolepermissions (RoleId, PermissionId)
 SELECT r.Id, p.Id FROM authroles r JOIN authpermissions p ON p.Code IN ('ess.self','dashboard.approvals.view')
 WHERE r.Code='mss_manager';
+
+-- 2026-07-15 - Salary template line formula override fields
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='salarystructurelines' AND column_name='CalculationType')=0,'ALTER TABLE salarystructurelines ADD COLUMN CalculationType VARCHAR(80) NOT NULL DEFAULT '''' AFTER ValueText','SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='salarystructurelines' AND column_name='Formula')=0,'ALTER TABLE salarystructurelines ADD COLUMN Formula VARCHAR(1000) NOT NULL DEFAULT '''' AFTER CalculationType','SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='salarystructurelines' AND column_name='BaseComponent')=0,'ALTER TABLE salarystructurelines ADD COLUMN BaseComponent VARCHAR(80) NOT NULL DEFAULT '''' AFTER Formula','SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='salarystructurelines' AND column_name='ProRataOverride')=0,'ALTER TABLE salarystructurelines ADD COLUMN ProRataOverride VARCHAR(20) NOT NULL DEFAULT '''' AFTER BaseComponent','SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='salarystructurelines' AND column_name='RoundingMode')=0,'ALTER TABLE salarystructurelines ADD COLUMN RoundingMode VARCHAR(40) NOT NULL DEFAULT '''' AFTER ProRataOverride','SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;

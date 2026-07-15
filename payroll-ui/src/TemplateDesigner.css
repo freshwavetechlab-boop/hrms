@@ -9,7 +9,7 @@
 .salary-template-action-button span,.salary-template-action-button svg{color:#fff!important}
 .salary-template-action-button:hover{border-color:#5133cc!important;background:linear-gradient(135deg,#6546e8,#4f2fca)!important;color:#fff!important}
 .salary-template-workbench{display:grid;grid-template-columns:280px minmax(0,1fr);gap:12px;align-items:start}
-.salary-component-palette,.salary-template-canvas{min-width:0;border:1px solid #e5e8f0;border-radius:10px;background:#fafbfc;padding:10px}
+.salary-component-palette,.salary-template-canvas,.salary-formula-builder{min-width:0;border:1px solid #e5e8f0;border-radius:10px;background:#fafbfc;padding:10px}
 .salary-tabs.page-tabs{display:flex;grid-template-columns:none;gap:2px;margin-bottom:10px}
 .salary-tabs.page-tabs button{min-width:max-content;border-radius:8px 8px 0 0;padding:0 10px;font-size:.7rem;white-space:nowrap}
 .salary-palette-list{display:grid;gap:7px;max-height:560px;overflow:auto;padding-right:2px}
@@ -25,9 +25,10 @@
 .salary-canvas-head p{margin:2px 0 0;color:#7b8496;font-size:.68rem}
 .salary-canvas-head>span{flex:none;border-radius:999px;padding:3px 8px;background:#eef2ff;color:#4338ca;font-size:.64rem;font-weight:800}
 .salary-line-list{display:grid;gap:7px;overflow:auto;max-height:620px;padding-right:2px}
-.salary-line-grid{display:grid;grid-template-columns:24px minmax(150px,190px) minmax(150px,1fr) minmax(250px,1.35fr) 92px 100px 68px;gap:8px;align-items:center;min-width:940px}
+.salary-line-grid{display:grid;grid-template-columns:24px minmax(150px,190px) minmax(150px,1fr) minmax(250px,1.35fr) 92px 100px 86px;gap:8px;align-items:center;min-width:958px}
 .salary-line-head{position:sticky;top:0;z-index:1;margin-bottom:7px;padding:0 8px;color:#7b8496;font-size:.66rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
 .salary-line{padding:8px;border:1px solid #e5e8f0;border-radius:9px;background:#fff}
+.salary-line.selected{border-color:#7c6cf2;box-shadow:0 0 0 2px #ede9fe}
 .salary-drag-handle{color:#9aa3b6;font-weight:800;cursor:grab}
 .salary-code-cell{display:grid;grid-template-columns:minmax(74px,132px) minmax(0,1fr);gap:8px;align-items:center;min-width:0}
 .salary-code-cell b,.salary-line strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -46,8 +47,76 @@
 .salary-template-canvas::-webkit-scrollbar-track,.salary-palette-list::-webkit-scrollbar-track,.salary-line-list::-webkit-scrollbar-track{background:#eef0f4}
 .salary-template-preview{display:grid;grid-template-columns:1fr auto auto;gap:10px;margin-top:10px;padding:9px 10px;border-radius:9px;background:#172136;color:#fff;font-size:.78rem}
 .salary-template-preview span{white-space:nowrap}
+.salary-simulate-button.ant-btn{border-color:#c7d2fe!important;background:#eef2ff!important;color:#4338ca!important;font-weight:800!important}
+.salary-calculation-player{display:grid;gap:12px;border:1px solid #e5e8f0;border-radius:12px;background:#fff;padding:14px}
+.salary-player-modal{position:relative;width:min(1120px,100%);max-height:calc(100vh - 40px);overflow:auto;padding:18px;box-shadow:0 24px 70px rgba(15,23,42,.28)}
+.salary-player-kicker{display:block;margin-bottom:4px;color:#6546e8;font-size:.68rem;font-weight:900;letter-spacing:.08em;text-transform:uppercase}
+.salary-player-head{display:flex;justify-content:space-between;gap:14px;align-items:end;border-bottom:1px solid #edf0f6;padding-bottom:12px}
+.salary-player-head h3{margin:0;color:#172136;font-size:1rem}
+.salary-player-head p{margin:3px 0 0;color:#667085;font-size:.76rem}
+.salary-player-days{display:grid;grid-template-columns:repeat(2,120px);gap:9px}
+.salary-player-days label{display:grid;gap:4px;color:#465067;font-size:.68rem;font-weight:900}
+.salary-player-days input{height:34px;border:1px solid #dfe3ed;border-radius:9px;padding:0 10px;font:inherit;text-align:right}
+.salary-player-summary{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:10px}
+.salary-player-summary article{padding:10px;border:1px solid #e5e8f0;border-radius:10px;background:#fafbfc}
+.salary-player-summary span{display:block;color:#667085;font-size:.66rem;font-weight:900;text-transform:uppercase;letter-spacing:.04em}
+.salary-player-summary b{display:block;margin-top:4px;color:#172136;font-size:.95rem}
+.salary-player-table{overflow:auto;border:1px solid #e5e8f0;border-radius:10px;background:#fafbfc}
+.salary-player-row{display:grid;grid-template-columns:minmax(170px,220px) 110px minmax(280px,1fr) 110px 110px 80px;gap:10px;align-items:center;min-width:900px;padding:9px 10px;border-top:1px solid #e5e8f0;background:#fff}
+.salary-player-row:first-child{border-top:0}
+.salary-player-row-head{position:sticky;top:0;z-index:1;background:#f8fafc;color:#667085;font-size:.66rem;font-weight:900;text-transform:uppercase;letter-spacing:.05em}
+.salary-player-row b,.salary-player-row small{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.salary-player-row b{color:#172136;font-size:.76rem}
+.salary-player-row small{margin-top:2px;color:#667085;font-size:.68rem}
+.salary-player-row span{color:#465067;font-size:.74rem;font-weight:800}
+.salary-player-row code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:8px;background:#f5f3ff;color:#4338ca;padding:6px 8px;font-size:.72rem}
+.salary-player-row output{text-align:right;color:#172136;font-size:.76rem;font-weight:900;font-variant-numeric:tabular-nums}
+.salary-player-empty{margin:0;padding:14px;color:#667085;font-size:.78rem}
+.salary-formula-builder{display:grid;gap:12px;background:#fff}
+.formula-modal-backdrop{position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:20px;background:rgba(15,23,42,.48);backdrop-filter:blur(2px)}
+.formula-modal{position:relative;width:min(980px,100%);max-height:calc(100vh - 40px);overflow:auto;border:1px solid #e5e8f0;border-radius:14px;background:#fff;padding:18px;box-shadow:0 24px 70px rgba(15,23,42,.28)}
+.formula-modal-close{position:absolute;right:16px;top:16px;width:34px;height:34px;border:1px solid #dfe3ed;border-radius:10px;background:#fff;color:#172136;font-size:1.35rem;font-weight:800;line-height:1}
+.formula-builder-title{display:grid;gap:4px;padding:0 44px 12px 0;border-bottom:1px solid #edf0f6}
+.formula-builder-title span{color:#6546e8;font-size:.68rem;font-weight:900;letter-spacing:.08em;text-transform:uppercase}
+.formula-builder-title b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#172136;font-size:1.08rem}
+.formula-builder-title p{margin:0;color:#667085;font-size:.78rem}
+.formula-help{margin:0;color:#667085;font-size:.78rem}
+.formula-builder-grid{display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:12px}
+.formula-builder-grid label,.formula-editor{display:grid;gap:5px;min-width:0;color:#465067;font-size:.7rem;font-weight:900}
+.formula-builder-grid label:first-child{grid-column:span 2}
+.formula-editor{grid-column:1/-1}
+.formula-builder-grid input,.formula-editor textarea{width:100%;min-width:0;border:1px solid #dfe3ed;border-radius:9px;background:#fff;color:#172136;font:inherit}
+.formula-builder-grid input{height:34px;padding:0 10px}
+.formula-editor textarea{min-height:92px;padding:10px;resize:vertical;line-height:1.4}
+.formula-apply{justify-self:start;height:34px;border:0;border-radius:9px;background:#6546e8;color:#fff;padding:0 13px;font-size:.74rem;font-weight:900}
+.formula-remove{justify-self:start;height:32px;border:1px solid #fecdd3;border-radius:9px;background:#fff1f2;color:#be123c;padding:0 11px;font-size:.72rem;font-weight:900}
+.formula-token-bank{display:flex;flex-wrap:wrap;gap:7px;align-items:center;padding:9px;border:1px dashed #d7dcee;border-radius:10px;background:#fbfcff}
+.formula-token-bank span{flex-basis:100%;color:#667085;font-size:.66rem;font-weight:900;text-transform:uppercase}
+.formula-token-bank button{height:28px;border:1px solid #dfe3ed;border-radius:999px;background:#fff;color:#4338ca;padding:0 9px;font-size:.68rem;font-weight:900}
+.formula-check{display:grid;gap:3px;padding:9px 10px;border-radius:10px;font-size:.72rem}
+.formula-check b{font-size:.76rem}
+.formula-check p{margin:0;color:inherit}
+.formula-check.ok{border:1px solid #bbf7d0;background:#f0fdf4;color:#166534}
+.formula-check.danger{border:1px solid #fecdd3;background:#fff1f2;color:#9f1239}
+.formula-modal-actions{display:flex;justify-content:flex-end;gap:9px;padding-top:4px}
+.formula-help-panel{display:grid;gap:10px;padding:12px;border:1px solid #e5e8f0;border-radius:12px;background:#fbfcff}
+.formula-help-head{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,300px);gap:12px;align-items:end}
+.formula-help-head b{display:block;color:#172136;font-size:.86rem}
+.formula-help-head p{margin:2px 0 0;color:#667085;font-size:.72rem}
+.formula-help-head input{height:34px;border:1px solid #dfe3ed;border-radius:9px;padding:0 10px;font:inherit}
+.formula-help-grid{display:grid;grid-template-columns:1fr 1fr 1.4fr;gap:10px}
+.formula-help-grid article{display:grid;align-content:start;gap:6px;min-width:0}
+.formula-help-grid h4{margin:0 0 2px;color:#465067;font-size:.68rem;font-weight:900;letter-spacing:.06em;text-transform:uppercase}
+.formula-help-grid button{display:grid;grid-template-columns:minmax(120px,.45fr) minmax(0,1fr);gap:8px;align-items:start;width:100%;border:1px solid #e5e8f0;border-radius:9px;background:#fff;padding:8px;text-align:left}
+.formula-help-grid button strong{color:#4338ca;font-size:.68rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.formula-help-grid button span{color:#667085;font-size:.68rem;line-height:1.35}
+.formula-component-token-list{max-height:270px;overflow:auto;padding-right:2px}
+.formula-component-token-list p{margin:0;color:#667085;font-size:.72rem}
+.formula-examples{display:flex;flex-wrap:wrap;gap:7px;align-items:center;padding-top:2px}
+.formula-examples b{flex-basis:100%;color:#465067;font-size:.68rem;font-weight:900;text-transform:uppercase;letter-spacing:.06em}
+.formula-examples button{border:1px solid #dfe3ed;border-radius:999px;background:#fff;color:#172136;padding:7px 10px;font-size:.68rem;font-weight:800}
 @media(max-width:1180px){.salary-template-workbench{grid-template-columns:1fr}.salary-palette-list{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));max-height:none}.salary-template-head{grid-template-columns:1fr 1fr}.salary-template-head button{width:100%}}
-@media(max-width:720px){.salary-template-head,.salary-template-preview{grid-template-columns:1fr}.salary-tabs{grid-template-columns:1fr}.salary-canvas-head{display:grid}.salary-canvas-head>span{justify-self:start}.salary-line-grid{grid-template-columns:22px 150px 150px 240px 88px 96px 68px;min-width:840px}}
+@media(max-width:720px){.salary-template-head,.salary-template-preview,.formula-builder-grid,.formula-help-head,.formula-help-grid,.salary-player-summary{grid-template-columns:1fr}.salary-player-head{display:grid}.salary-player-days{grid-template-columns:1fr 1fr}.formula-builder-grid label:first-child{grid-column:auto}.formula-modal-backdrop{padding:10px;place-items:end stretch}.formula-modal{max-height:calc(100vh - 20px);padding:14px}.formula-help-grid button{grid-template-columns:1fr}.salary-tabs{grid-template-columns:1fr}.salary-canvas-head{display:grid}.salary-canvas-head>span{justify-self:start}.salary-line-grid{grid-template-columns:22px 150px 150px 240px 88px 96px 82px;min-width:854px}}
 .employee-salary-panel{display:grid;gap:12px}
 .employee-salary-controls{display:grid;grid-template-columns:minmax(240px,1fr) 160px;gap:12px;align-items:end}
 .employee-salary-summary{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px}

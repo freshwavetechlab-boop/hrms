@@ -773,9 +773,9 @@ WHERE age.employee_id=@EmployeeId AND g.client_id=@ClientId", new { EmployeeId =
 SELECT g.id, @EmployeeId
 FROM attendance_groups g
 WHERE g.client_id=@ClientId
-  AND g.work_location_id=@WorkLocationId
-  AND g.department=@Department
-  AND g.designation=@Designation
+  AND (g.work_location_id=0 OR g.work_location_id=@WorkLocationId)
+  AND (g.department='' OR g.department='All' OR g.department=@Department)
+  AND (g.designation='' OR g.designation='All' OR g.designation=@Designation)
   AND g.is_active=TRUE", new
         {
             EmployeeId = employee.Id,

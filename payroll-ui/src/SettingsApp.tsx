@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState, type MouseEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { AppstoreOutlined, BellOutlined, DownOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons'
 import { Avatar, Badge, Breadcrumb, Button, Dropdown, Input, Space, Tooltip } from 'antd'
@@ -91,6 +91,7 @@ const menuContent = (label: string, detail?: string) => <>{menuLabel(label)}{det
 
 const slug = (value: string) => value.toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 const fromSlug = <T extends string>(items: readonly T[], value: string | undefined, fallback: T) => items.find(item => slug(item) === value) ?? fallback
+const menuClickIsNewTabIntent = (event: MouseEvent<HTMLAnchorElement>) => event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey
 const modulePaths: Record<ModuleCode, string> = {
   Dashboard: '/dashboard',
   Payroll: '/payroll/regular',
@@ -262,8 +263,11 @@ export default function SettingsApp() {
     }
     if (parts[0] === 'reports') {
       const nextTab = fromSlug(reportingMenus, tabSlug, 'Payroll Reports')
+      const reports = reportItems(nextTab)
+      const reportSlug = new URLSearchParams(routeLocation.search).get('report') || ''
+      const nextReport = reports.find(report => slug(report.name) === reportSlug) ?? reports[0]
       setReportingTab(nextTab)
-      setReportingReport(reportItems(nextTab)[0])
+      setReportingReport(nextReport)
       localStorage.setItem('payroll.reportingTab', nextTab)
       setMainModule('Reports')
       return
@@ -294,13 +298,19 @@ export default function SettingsApp() {
       return
     }
     setMainModule('Dashboard')
-  }, [canManageStatutory, routeLocation.pathname])
+  }, [canManageStatutory, routeLocation.pathname, routeLocation.search])
 
   const navigateFromMenu = (action: () => void) => {
     action()
     setCollapsedFlyout(null)
     if (mobileShell) setNavOpen(false)
   }
+
+  const menuLink = (to: string, label: string, active: boolean, action: () => void, detail?: string) =>
+    <Link {...navAttrs(label)} className={active ? 'active' : ''} to={to} onClick={event => {
+      if (menuClickIsNewTabIntent(event)) return
+      navigateFromMenu(action)
+    }}>{menuContent(label, detail)}</Link>
 
   const toggleNavGroup = (key: string, action: () => void) => {
     if (!navOpen) {
@@ -320,11 +330,12 @@ export default function SettingsApp() {
   const setSecurityModuleTab = (nextTab: SecurityTab) => { localStorage.setItem('payroll.securityTab', nextTab); setSecurityTab(nextTab); setShowMyTasks(false); setMainModule('Security'); navigate(`/security/${slug(nextTab)}`) }
   const setLeaveAttendanceSettingsTab = (nextTab: LeaveAttendanceMenu) => { setShowMyTasks(false); setSettingsSection('LeaveAttendance'); localStorage.setItem('payroll.module', 'Settings'); localStorage.setItem('payroll.leaveAttendanceTab', nextTab); setLeaveAttendanceTab(nextTab); setMainModule('Settings'); navigate(`/settings/leave-attendance/${slug(nextTab)}`) }
   const setReportingModuleTab = (nextTab: ReportingMenu) => { localStorage.setItem('payroll.reportingTab', nextTab); setReportingTab(nextTab); setReportingReport(reportItems(nextTab)[0]); setShowMyTasks(false); setMainModule('Reports'); navigate(`/reports/${slug(nextTab)}`) }
+  const setReportingReportTab = (nextTab: ReportingMenu, report: ReportDefinition) => { localStorage.setItem('payroll.reportingTab', nextTab); setReportingTab(nextTab); setReportingReport(report); setShowMyTasks(false); setMainModule('Reports'); navigate(`/reports/${slug(nextTab)}?report=${slug(report.name)}`) }
   const setWorkflowModuleTab = (nextTab: WorkflowMenu) => { localStorage.setItem('payroll.workflowTab', nextTab); setWorkflowTab(nextTab); setShowMyTasks(false); setMainModule('Workflows'); navigate(`/workflows/${slug(nextTab)}`) }
   const renderContextMenu = () => {
-    const tasks = <button {...navAttrs('My Tasks')} className={showMyTasks ? 'active' : ''} type="button" onClick={() => navigateFromMenu(openTasks)}>{menuContent('My Tasks', 'Approvals')}</button>
+    const tasks = menuLink('/tasks', 'My Tasks', showMyTasks, openTasks, 'Approvals')
     if (mainModule === 'Dashboard') return <>
-      <button {...navAttrs('Dashboard')} className={!showMyTasks ? 'active' : ''} type="button" onClick={() => navigateFromMenu(() => setModule('Dashboard'))}>{menuContent('Dashboard', 'Overview')}</button>
+      {menuLink('/dashboard', 'Dashboard', !showMyTasks, () => setModule('Dashboard'), 'Overview')}
       {tasks}
     </>
     if (mainModule === 'Settings') {
@@ -332,38 +343,38 @@ export default function SettingsApp() {
       const payrollSetupActive = payrollSetupMenus.includes(tab)
       return <>
         {tasks}
-        {generalSettings.map(item => <button {...navAttrs(item)} className={settingsSection === 'General' && tab === item ? 'active' : ''} type="button" onClick={() => navigateFromMenu(() => setTab(item))} key={item}>{menuContent(item)}</button>)}
+        {generalSettings.map(item => <Fragment key={item}>{menuLink(`/settings/${slug(item)}`, item, settingsSection === 'General' && tab === item, () => setTab(item))}</Fragment>)}
         <div className={`settings-nav-group ${payrollSetupOpen ? 'expanded' : ''} ${collapsedFlyout === 'settings-payroll' ? 'flyout-open' : ''}`}>
           <button {...navAttrs('Payroll Setup')} className={settingsSection === 'General' && payrollSetupActive ? 'active' : ''} type="button" aria-expanded={payrollSetupOpen} onClick={() => toggleNavGroup('settings-payroll', () => setPayrollSetupOpen(open => navOpen ? !open : true))}>{menuLabel('Payroll Setup')}<small>{payrollSetupOpen ? '-' : '+'}</small></button>
-          {payrollSetupOpen && <div className="settings-nav-submenu">{payrollSetupMenus.map(item => <button {...navAttrs(item)} className={settingsSection === 'General' && tab === item ? 'active' : ''} type="button" onClick={() => navigateFromMenu(() => setTab(item))} key={item}>{menuContent(item, item === 'Salary Templates' ? 'Client-wise' : undefined)}</button>)}</div>}
+          {payrollSetupOpen && <div className="settings-nav-submenu">{payrollSetupMenus.map(item => <Fragment key={item}>{menuLink(`/settings/${slug(item)}`, item, settingsSection === 'General' && tab === item, () => setTab(item), item === 'Salary Templates' ? 'Client-wise' : undefined)}</Fragment>)}</div>}
         </div>
         <div className={`settings-nav-group ${leaveAttendanceOpen ? 'expanded' : ''} ${collapsedFlyout === 'settings-leave-attendance' ? 'flyout-open' : ''}`}>
           <button {...navAttrs('Leave & Attendance')} className={settingsSection === 'LeaveAttendance' ? 'active' : ''} type="button" aria-expanded={leaveAttendanceOpen} onClick={() => toggleNavGroup('settings-leave-attendance', () => setLeaveAttendanceOpen(open => navOpen ? !open : true))}>{menuLabel('Leave & Attendance')}<small>{leaveAttendanceOpen ? '-' : '+'}</small></button>
-          {leaveAttendanceOpen && <div className="settings-nav-submenu">{leaveAttendanceMenus.map(item => <button {...navAttrs(item)} className={settingsSection === 'LeaveAttendance' && leaveAttendanceTab === item ? 'active' : ''} type="button" onClick={() => navigateFromMenu(() => setLeaveAttendanceSettingsTab(item))} key={item}>{menuContent(item)}</button>)}</div>}
+          {leaveAttendanceOpen && <div className="settings-nav-submenu">{leaveAttendanceMenus.map(item => <Fragment key={item}>{menuLink(`/settings/leave-attendance/${slug(item)}`, item, settingsSection === 'LeaveAttendance' && leaveAttendanceTab === item, () => setLeaveAttendanceSettingsTab(item))}</Fragment>)}</div>}
         </div>
       </>
     }
     if (mainModule === 'Payroll') return <>
       {tasks}
-      <Link {...navAttrs('Adjustments')} className={!isPayHistory && payrollTab === 'Adjustments' ? 'active' : ''} to="/payroll/adjustments" onClick={() => navigateFromMenu(() => setPayrollModuleTab('Adjustments'))}>{menuContent('Adjustments', 'Variable pay')}</Link>
-      <div className={`settings-nav-group expanded ${collapsedFlyout === 'payroll-run' ? 'flyout-open' : ''}`}><button {...navAttrs('Pay Run')} className={!isPayHistory && ['Regular Run', 'Off-cycle Run'].includes(payrollTab) ? 'active' : ''} type="button" onClick={() => toggleNavGroup('payroll-run', () => undefined)}>{menuLabel('Pay Run')}</button><div className="settings-nav-submenu"><Link {...navAttrs('Regular Run')} className={!isPayHistory && payrollTab === 'Regular Run' ? 'active' : ''} to="/payroll/regular" onClick={() => navigateFromMenu(() => setPayrollModuleTab('Regular Run'))}>{menuContent('Regular Run')}</Link><Link {...navAttrs('Off-cycle Run')} className={!isPayHistory && payrollTab === 'Off-cycle Run' ? 'active' : ''} to="/payroll/off-cycle" onClick={() => navigateFromMenu(() => setPayrollModuleTab('Off-cycle Run'))}>{menuContent('Off-cycle Run')}</Link></div></div>
-      <Link {...navAttrs('Employee Tax Profile')} className={!isPayHistory && payrollTab === 'Employee Tax Profile' ? 'active' : ''} to="/payroll/tax-profile" onClick={() => navigateFromMenu(() => setPayrollModuleTab('Employee Tax Profile'))}>{menuContent('Employee Tax Profile', 'TDS profile')}</Link>
-      <Link {...navAttrs('Travel Advances')} className={!isPayHistory && payrollTab === 'Travel Advances' ? 'active' : ''} to="/payroll/travel-advances" onClick={() => navigateFromMenu(() => setPayrollModuleTab('Travel Advances'))}>{menuContent('Travel Advances', 'Pay & settle')}</Link>
-      <Link {...navAttrs('Pay History')} className={isPayHistory ? 'active' : ''} to="/pay-runs/history" onClick={() => navigateFromMenu(setPayHistory)}>{menuContent('Pay History')}</Link>
+      {menuLink('/payroll/adjustments', 'Adjustments', !isPayHistory && payrollTab === 'Adjustments', () => setPayrollModuleTab('Adjustments'), 'Variable pay')}
+      <div className={`settings-nav-group expanded ${collapsedFlyout === 'payroll-run' ? 'flyout-open' : ''}`}><button {...navAttrs('Pay Run')} className={!isPayHistory && ['Regular Run', 'Off-cycle Run'].includes(payrollTab) ? 'active' : ''} type="button" onClick={() => toggleNavGroup('payroll-run', () => undefined)}>{menuLabel('Pay Run')}</button><div className="settings-nav-submenu">{menuLink('/payroll/regular', 'Regular Run', !isPayHistory && payrollTab === 'Regular Run', () => setPayrollModuleTab('Regular Run'))}{menuLink('/payroll/off-cycle', 'Off-cycle Run', !isPayHistory && payrollTab === 'Off-cycle Run', () => setPayrollModuleTab('Off-cycle Run'))}</div></div>
+      {menuLink('/payroll/tax-profile', 'Employee Tax Profile', !isPayHistory && payrollTab === 'Employee Tax Profile', () => setPayrollModuleTab('Employee Tax Profile'), 'TDS profile')}
+      {menuLink('/payroll/travel-advances', 'Travel Advances', !isPayHistory && payrollTab === 'Travel Advances', () => setPayrollModuleTab('Travel Advances'), 'Pay & settle')}
+      {menuLink('/pay-runs/history', 'Pay History', isPayHistory, setPayHistory)}
     </>
-    if (mainModule === 'LeaveAttendance') return <>{tasks}<Link {...navAttrs('Attendance Review')} className="active" to="/attendance" onClick={() => navigateFromMenu(() => setModule('LeaveAttendance'))}>{menuContent('Attendance Review', 'Pre-payroll')}</Link></>
-    if (mainModule === 'Employees') return <>{tasks}<Link {...navAttrs('Employee Master')} className={employeeTab === 'Employee Master' ? 'active' : ''} to="/employees/master" onClick={() => navigateFromMenu(() => setEmployeeModuleTab('Employee Master'))}>{menuContent('Employee Master', 'Core HR')}</Link><Link {...navAttrs('Org Structure')} className={employeeTab === 'Org Structure' ? 'active' : ''} to="/employees/org-structure" onClick={() => navigateFromMenu(() => setEmployeeModuleTab('Org Structure'))}>{menuContent('Org Structure', 'Hierarchy')}</Link></>
-    if (mainModule === 'TalentAcquisition') return <>{tasks}<Link {...navAttrs('Recruitment Requisitions')} className="active" to="/recruitment" onClick={() => navigateFromMenu(() => setModule('TalentAcquisition'))}>{menuContent('Recruitment Requisitions', 'RFR & positions')}</Link></>
-    if (mainModule === 'Security') return <>{tasks}{securityMenus.map(item => <button {...navAttrs(item)} className={securityTab === item ? 'active' : ''} type="button" onClick={() => navigateFromMenu(() => setSecurityModuleTab(item))} key={item}>{menuContent(item)}</button>)}</>
+    if (mainModule === 'LeaveAttendance') return <>{tasks}{menuLink('/attendance', 'Attendance Review', true, () => setModule('LeaveAttendance'), 'Pre-payroll')}</>
+    if (mainModule === 'Employees') return <>{tasks}{menuLink('/employees/master', 'Employee Master', employeeTab === 'Employee Master', () => setEmployeeModuleTab('Employee Master'), 'Core HR')}{menuLink('/employees/org-structure', 'Org Structure', employeeTab === 'Org Structure', () => setEmployeeModuleTab('Org Structure'), 'Hierarchy')}</>
+    if (mainModule === 'TalentAcquisition') return <>{tasks}{menuLink('/recruitment', 'Recruitment Requisitions', true, () => setModule('TalentAcquisition'), 'RFR & positions')}</>
+    if (mainModule === 'Security') return <>{tasks}{securityMenus.map(item => <Fragment key={item}>{menuLink(`/security/${slug(item)}`, item, securityTab === item, () => setSecurityModuleTab(item))}</Fragment>)}</>
     if (mainModule === 'Reports') return <>{tasks}{reportingMenus.map(item => {
       const expanded = reportingTab === item
       return <div className={`report-nav-group ${expanded ? 'expanded' : ''} ${collapsedFlyout === `reports-${slug(item)}` ? 'flyout-open' : ''}`} key={item}>
         <button {...navAttrs(item)} className={expanded ? 'active' : ''} type="button" aria-expanded={expanded} onClick={() => toggleNavGroup(`reports-${slug(item)}`, () => setReportingModuleTab(item))}>{menuLabel(item)}<small>{expanded ? '-' : '+'}</small></button>
-        {expanded && <div className="report-nav-submenu">{reportItems(item).map(report => <button {...navAttrs(report.name)} className={reportingReport.name === report.name ? 'active' : ''} type="button" onClick={() => navigateFromMenu(() => setReportingReport(report))} key={report.name}>{menuContent(report.name)}</button>)}</div>}
+        {expanded && <div className="report-nav-submenu">{reportItems(item).map(report => <Fragment key={report.name}>{menuLink(`/reports/${slug(item)}?report=${slug(report.name)}`, report.name, reportingReport.name === report.name, () => setReportingReportTab(item, report))}</Fragment>)}</div>}
       </div>
     })}</>
-    if (mainModule === 'Workflows') return workflowMenus.map(item => <button {...navAttrs(item)} className={workflowTab === item ? 'active' : ''} type="button" onClick={() => navigateFromMenu(() => setWorkflowModuleTab(item))} key={item}>{menuContent(item)}</button>)
-    return <button {...navAttrs('Employee Master')} className="active" type="button" onClick={() => navigateFromMenu(() => setModule('Employees'))}>{menuContent('Employee Master', 'Core HR')}</button>
+    if (mainModule === 'Workflows') return workflowMenus.map(item => <Fragment key={item}>{menuLink(`/workflows/${slug(item)}`, item, workflowTab === item, () => setWorkflowModuleTab(item))}</Fragment>)
+    return menuLink('/employees/master', 'Employee Master', true, () => setModule('Employees'), 'Core HR')
   }
   const renderPage = () => {
     if (showMyTasks) return <WorkflowTasks />
@@ -428,7 +439,11 @@ export default function SettingsApp() {
     {appDrawerOpen && <div className="drawer-scrim" onClick={() => setAppDrawerOpen(false)} />}
     <aside className="module-drawer" aria-hidden={!appDrawerOpen}>
       <header><div><span className="eyebrow purple">App Launcher</span><h3>Choose module</h3></div><button type="button" aria-label="Close app modules" onClick={() => setAppDrawerOpen(false)}><AppIcon name="close" /></button></header>
-      {modules.map(module => <button className={mainModule === module.code ? 'active' : ''} type="button" disabled={module.disabled} onClick={() => { if (!module.disabled) { setModule(module.code as ModuleCode); setAppDrawerOpen(false) } }} key={module.code}><AppIcon name={module.icon} /><strong>{module.label}</strong><small>{module.description}</small></button>)}
+      {modules.map(module => module.disabled ? <button className={mainModule === module.code ? 'active' : ''} type="button" disabled key={module.code}><AppIcon name={module.icon} /><strong>{module.label}</strong><small>{module.description}</small></button> : <Link className={mainModule === module.code ? 'active' : ''} to={modulePaths[module.code as ModuleCode]} onClick={event => {
+        if (menuClickIsNewTabIntent(event)) return
+        setModule(module.code as ModuleCode)
+        setAppDrawerOpen(false)
+      }} key={module.code}><AppIcon name={module.icon} /><strong>{module.label}</strong><small>{module.description}</small></Link>)}
     </aside>
   </div>
 }

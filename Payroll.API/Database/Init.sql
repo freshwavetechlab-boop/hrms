@@ -449,8 +449,7 @@ CREATE TABLE IF NOT EXISTS attendance_groups (
     UNIQUE KEY UX_attendance_groups_client_name (client_id, name),
     INDEX IX_attendance_groups_batch (policy_batch_id),
     INDEX IX_attendance_groups_client_location (client_id, work_location_id),
-    CONSTRAINT FK_attendance_groups_client FOREIGN KEY (client_id) REFERENCES clients(Id) ON DELETE CASCADE,
-    CONSTRAINT FK_attendance_groups_location FOREIGN KEY (work_location_id) REFERENCES worklocations(Id)
+    CONSTRAINT FK_attendance_groups_client FOREIGN KEY (client_id) REFERENCES clients(Id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS attendance_group_employees (

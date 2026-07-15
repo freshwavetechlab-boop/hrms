@@ -2,7 +2,8 @@ import type { Component, Structure } from '../types/payroll'
 
 export const money = (value: number | undefined) => `Rs ${Math.round(value || 0).toLocaleString('en-IN')}`
 export const percent = (value: number | undefined) => value === undefined || value === null ? '-' : `${value > 0 ? '+' : ''}${value}%`
-export type SalaryCalculationRow = { line: Structure['lines'][number]; component: Component; monthly: number; annual: number }
+export type SalaryCalculationContext = { payrollDays?: number; payableDays?: number; presentDays?: number }
+export type SalaryCalculationRow = { line: Structure['lines'][number]; component: Component; monthly: number; annual: number; earned?: number; source?: string; calculationType?: string; proRata?: boolean }
 export type SalaryTotals = { gross: number; deductions: number; net: number; employerCost: number }
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -12,7 +13,8 @@ const numberFrom = (value: string | number | undefined) => {
 }
 
 const hasFormulaSyntax = (value: string) => /[-+*/()%A-Z_]/i.test(value)
-const sourceFor = (line: Structure['lines'][number], component: Component) => line.value || component.formula || component.value
+const sourceFor = (line: Structure['lines'][number], component: Component) => line.formula || line.value || component.formula || component.value
+const lineCalculationType = (line: Structure['lines'][number], component: Component) => line.calculationType || component.calculationType
 const isSummaryCode = (code: string) => ['GROSS_EARNED', 'NET_PAY', 'EMPLOYER_COST'].includes(code.toUpperCase())
 const normalizeCalculationType = (value: string) =>
   value === 'Percentage of CTC' || value === 'Percentage of Component' || value === 'Formula' ? 'Formula' :
@@ -33,18 +35,25 @@ function slabValue(source: string, baseAmount: number) {
   return 0
 }
 
-export function calculateSalaryDetails(ctc: number, components: Component[], salaryStructure?: Structure, overrides: Record<string, string | number> = {}): SalaryCalculationRow[] {
+export function calculateSalaryDetails(ctc: number, components: Component[], salaryStructure?: Structure, overrides: Record<string, string | number> = {}, context: SalaryCalculationContext = {}): SalaryCalculationRow[] {
   const monthlyCtc = ctc / 12
   const values: Record<string, string> = {}
+  const earnedValues: Record<string, string> = {}
+  const payrollDays = Math.max(1, Number(context.payrollDays || 30))
+  const payableDays = Math.max(0, Number(context.payableDays ?? payrollDays))
+  const presentDays = Math.max(0, Number(context.presentDays ?? payableDays))
   const componentById = new Map(components.map(component => [String(component.id), component]))
   const structureLines = salaryStructure?.lines ?? []
-  const ordered = structureLines.map((line, index) => ({ line, index, component: componentById.get(String(line.componentId)) })).filter((item): item is { line: { componentId: string; value: string }; index: number; component: Component } => !!item.component?.active).sort((a, b) => (Number(a.component.priority) || 999) - (Number(b.component.priority) || 999) || a.index - b.index)
+  const ordered = structureLines.map((line, index) => ({ line, index, component: componentById.get(String(line.componentId)) })).filter((item): item is { line: Structure['lines'][number]; index: number; component: Component } => !!item.component?.active).sort((a, b) => (Number(a.component.priority) || 999) - (Number(b.component.priority) || 999) || a.index - b.index)
   const evaluate = (text: string, byCode: Record<string, number>) => {
-    const references = { GROSS: monthlyCtc, CTC: monthlyCtc, MONTHLY_CTC: monthlyCtc, ANNUAL_CTC: ctc, PAYROLL_DAYS: 30, PAYABLE_DAYS: 30, PRESENT_DAYS: 30, LOP_DAYS: 0, ...byCode }
+    const references = { GROSS: monthlyCtc, CTC: monthlyCtc, MONTHLY_CTC: monthlyCtc, ANNUAL_CTC: ctc, PAYROLL_DAYS: payrollDays, PAYABLE_DAYS: payableDays, PRESENT_DAYS: presentDays, LOP_DAYS: Math.max(0, payrollDays - payableDays), ...byCode }
     const earningsSum = Object.entries(byCode).filter(([code]) => !/^\d+$/.test(code)).reduce((sum, [, value]) => sum + value, 0)
     let formula = text.toUpperCase()
       .replace(/×/g, '*')
       .replace(/÷/g, '/')
+      .replace(/\bMIN\s*\(/g, 'Math.min(')
+      .replace(/\bMAX\s*\(/g, 'Math.max(')
+      .replace(/\bROUND\s*\(/g, 'Math.round(')
       .replace(/SUM\s*\(\s*(FIXED\s+)?EARNINGS(_BEFORE_THIS)?\s*\)/g, String(earningsSum))
       .replace(/(\d+(?:\.\d+)?)\s*%\s*OF\s*([A-Z0-9_]+)/g, '$2*$1/100')
       .replace(/([A-Z0-9_]+)\s*\*\s*(\d+(?:\.\d+)?)\s*%/g, '$1*$2/100')
@@ -63,15 +72,24 @@ export function calculateSalaryDetails(ctc: number, components: Component[], sal
   }
   const rows: SalaryCalculationRow[] = []
   for (const { line, component } of ordered) {
-    const byCode = Object.fromEntries(Object.entries(values).map(([id, value]) => [componentById.get(id)?.code.toUpperCase() ?? id, numberFrom(value)]))
+    const byCode = Object.entries(values).reduce<Record<string, number>>((acc, [id, value]) => {
+      const code = componentById.get(id)?.code.toUpperCase() ?? id.toUpperCase()
+      const amount = numberFrom(value)
+      const earnedAmount = numberFrom(earnedValues[id] ?? value)
+      acc[code] = amount
+      acc[`${code}_MONTHLY`] = amount
+      acc[`${code}_EARNED`] = earnedAmount
+      return acc
+    }, {})
     const source = sourceFor(line, component)
     let monthly = 0
-    const calcType = normalizeCalculationType(component.calculationType)
+    const calcType = normalizeCalculationType(lineCalculationType(line, component))
     if (calcType === 'Manual / Variable') monthly = 0
     else if (calcType === 'Slab Based') monthly = slabValue(source, byCode.GROSS_EARNED || monthlyCtc)
     else if (/SUM\s+EARNED\s+COMPONENTS/i.test(source)) monthly = rows.filter(row => row.component.category === 'Earning' && (row.component.code.toUpperCase().includes('EARNED') || row.component.code.toUpperCase() === 'LAPTOP_ALLOWANCE')).reduce((sum, row) => sum + row.monthly, 0) + (byCode.TA_DA || 0)
     else if (calcType === 'Formula') {
-      const fallback = component.calculationType === 'Percentage of CTC' ? `CTC * ${component.value}%` : component.calculationType === 'Percentage of Component' ? `${component.baseComponent || 'BASIC'} * ${component.value}%` : source
+      const originalType = lineCalculationType(line, component)
+      const fallback = originalType === 'Percentage of CTC' ? `CTC * ${line.value || component.value}%` : originalType === 'Percentage of Component' ? `${line.baseComponent || component.baseComponent || 'BASIC'} * ${line.value || component.value}%` : source
       monthly = evaluate(source || fallback, byCode)
     }
     else if (calcType === 'Residual / Balancing') {
@@ -82,8 +100,12 @@ export function calculateSalaryDetails(ctc: number, components: Component[], sal
       monthly = amount || (hasFormulaSyntax(source) ? evaluate(source, byCode) : 0)
     }
     if (canOverrideSalaryComponent(component) && overrides[String(component.id)] !== undefined) monthly = numberFrom(overrides[String(component.id)])
+    const proRataText = (line.proRataOverride || '').toLowerCase()
+    const proRata = proRataText === 'true' || proRataText === 'yes' ? true : proRataText === 'false' || proRataText === 'no' ? false : component.proRata
+    const earned = proRata ? Math.round((monthly * payableDays / payrollDays) * 100) / 100 : monthly
     values[component.id] = String(monthly)
-    rows.push({ line, component, monthly, annual: monthly * 12 })
+    earnedValues[component.id] = String(earned)
+    rows.push({ line, component, monthly, earned, annual: monthly * 12, source, calculationType: calcType, proRata })
   }
   return rows
 }

@@ -602,20 +602,17 @@ WHERE IsActive=TRUE AND ClientId=@ClientId AND WorkLocationId IN @LocationIds", 
         if (matchingEmployees.Where(employee => employeeIds.Contains(employee.Id)).Select(employee => employee.Id).Distinct().Count() != employeeIds.Length)
             return ([], "Selected employees must match the selected client and selected filters.");
 
-        var combos = (from locationId in locationIds
-                      from department in departments
-                      from designation in designations
-                      let comboEmployeeIds = matchingEmployees
-                          .Where(employee => employee.WorkLocationId == locationId && employee.Department == department && employee.Designation == designation)
-                          .Select(employee => employee.Id)
-                          .Distinct()
-                          .ToArray()
-                      where comboEmployeeIds.Length > 0
-                      select new { LocationId = locationId, Department = department, Designation = designation, EmployeeIds = comboEmployeeIds }).ToList();
+        var selectedEmployees = matchingEmployees.Where(employee => employeeIds.Contains(employee.Id)).ToList();
+        if (selectedEmployees.Count == 0) return ([], "No selected employees match the selected policy scope.");
 
-        if (combos.Count == 0) return ([], "No selected employees match the selected policy scope.");
+        var selectedLocationIds = selectedEmployees.Select(employee => employee.WorkLocationId).Distinct().ToArray();
+        var selectedDepartments = selectedEmployees.Select(employee => employee.Department.Trim()).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var selectedDesignations = selectedEmployees.Select(employee => employee.Designation.Trim()).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var groupLocationId = requestedLocationIds.Length == 1 ? requestedLocationIds[0] : 0;
+        var groupDepartment = requestedDepartments.Length == 1 ? requestedDepartments[0] : "All";
+        var groupDesignation = requestedDesignations.Length == 1 ? requestedDesignations[0] : "All";
 
-        var duplicateError = request.IsActive ? await FindAttendanceGroupDuplicateForCombosAsync(connection, request.ClientId, batchId, 0, combos.SelectMany(combo => combo.EmployeeIds).Distinct().ToArray(), combos.Select(combo => (combo.LocationId, combo.Department, combo.Designation))) : null;
+        var duplicateError = request.IsActive ? await FindAttendanceGroupDuplicateAsync(connection, request.ClientId, batchId, 0, selectedLocationIds.Length == 0 ? [0] : selectedLocationIds, selectedDepartments.Length == 0 ? ["All"] : selectedDepartments, selectedDesignations.Length == 0 ? ["All"] : selectedDesignations, employeeIds) : null;
         if (duplicateError is not null) return ([], duplicateError);
 
         await using var transaction = await connection.BeginTransactionAsync();
@@ -625,27 +622,24 @@ WHERE client_id=@ClientId AND (@PolicyBatchId='' OR COALESCE(policy_batch_id, ''
         var usedNames = new HashSet<string>(existingNames, StringComparer.OrdinalIgnoreCase);
         try
         {
-            foreach (var combo in combos)
-            {
-                var name = UniqueAttendancePolicyName(BuildAttendancePolicyName(request.Name, locations[combo.LocationId], combo.Department, combo.Designation, combos.Count), usedNames);
-                var groupId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO attendance_groups (client_id, policy_batch_id, name, work_location_id, department, designation, work_week, attendance_cycle_start_day, attendance_cycle_end_day, payroll_report_generation_day, is_active)
+            var name = UniqueAttendancePolicyName(request.Name.Trim(), usedNames);
+            var groupId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO attendance_groups (client_id, policy_batch_id, name, work_location_id, department, designation, work_week, attendance_cycle_start_day, attendance_cycle_end_day, payroll_report_generation_day, is_active)
 VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designation, @WorkWeek, @AttendanceCycleStartDay, @AttendanceCycleEndDay, @PayrollReportGenerationDay, @IsActive); SELECT LAST_INSERT_ID();",
-                    new
-                    {
-                        request.ClientId,
-                        PolicyBatchId = batchId,
-                        Name = name,
-                        WorkLocationId = combo.LocationId,
-                        Department = combo.Department,
-                        Designation = combo.Designation,
-                        WorkWeek = request.WorkWeek.Trim(),
-                        request.AttendanceCycleStartDay,
-                        request.AttendanceCycleEndDay,
-                        request.PayrollReportGenerationDay,
-                        request.IsActive
-                    }, transaction);
-                await connection.ExecuteAsync("INSERT INTO attendance_group_employees (attendance_group_id, employee_id) VALUES (@GroupId, @EmployeeId)", combo.EmployeeIds.Select(employeeId => new { GroupId = groupId, EmployeeId = employeeId }), transaction);
-            }
+                new
+                {
+                    request.ClientId,
+                    PolicyBatchId = batchId,
+                    Name = name,
+                    WorkLocationId = groupLocationId,
+                    Department = groupDepartment,
+                    Designation = groupDesignation,
+                    WorkWeek = request.WorkWeek.Trim(),
+                    request.AttendanceCycleStartDay,
+                    request.AttendanceCycleEndDay,
+                    request.PayrollReportGenerationDay,
+                    request.IsActive
+                }, transaction);
+            await connection.ExecuteAsync("INSERT INTO attendance_group_employees (attendance_group_id, employee_id) VALUES (@GroupId, @EmployeeId)", employeeIds.Distinct().Select(employeeId => new { GroupId = groupId, EmployeeId = employeeId }), transaction);
             await transaction.CommitAsync();
         }
         catch

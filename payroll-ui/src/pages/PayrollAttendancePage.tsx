@@ -12,6 +12,11 @@ type AttendanceRouteState = { clientId?: number; period?: string; groupIds?: num
 const idsFrom = (value?: string | null) => Array.from(new Set((value || '').split(',').map(item => Number(item)).filter(id => Number.isFinite(id) && id > 0)))
 const idsFromState = (value: unknown) => Array.isArray(value) ? Array.from(new Set(value.map(item => Number(item)).filter(id => Number.isFinite(id) && id > 0))) : []
 const validPeriod = (value?: string | null) => value && /^\d{4}-\d{2}$/.test(value) ? value : ''
+const policyBatchKey = (group: AttendanceGroup) => group.policyBatchId?.trim() || `group:${group.id}`
+const policyBatchName = (groups: AttendanceGroup[]) => {
+  const name = groups[0]?.name || 'Attendance policy'
+  return name.replace(/\s+-\s+.+$/i, '').trim() || name
+}
 
 export default function PayrollAttendancePage() {
   const location = useLocation()
@@ -57,16 +62,27 @@ export default function PayrollAttendancePage() {
       const active = rows.filter(row => row.isActive)
       setGroups(active)
       setReviewScope(current => {
+        const firstBatch = Array.from(active.reduce((map, group) => {
+          const key = policyBatchKey(group)
+          if (!map.has(key)) map.set(key, [])
+          map.get(key)!.push(group)
+          return map
+        }, new Map<string, AttendanceGroup[]>()).entries()).find(([, rows]) => rows.length > 1)?.[0] ?? ''
         const requestedIds = current.startsWith('groups:') ? idsFrom(current.slice(7)).filter(id => active.some(group => group.id === id)) : []
         if (requestedIds.length > 1) return `groups:${requestedIds.join(',')}`
         if (requestedIds.length === 1) return `group:${requestedIds[0]}`
-        return active.some(group => `group:${group.id}` === current) ? current : active[0] ? `group:${active[0].id}` : ''
+        if (current.startsWith('batch:') && active.some(group => policyBatchKey(group) === current.slice(6))) return current
+        return active.some(group => `group:${group.id}` === current) ? current : firstBatch ? `batch:${firstBatch}` : active[0] ? `group:${active[0].id}` : ''
       })
       setGroupsLoaded(true)
     })
   }, [clientId])
 
   const selectedGroups = useMemo(() => {
+    if (reviewScope.startsWith('batch:')) {
+      const key = reviewScope.slice(6)
+      return groups.filter(group => policyBatchKey(group) === key)
+    }
     if (reviewScope.startsWith('groups:')) {
       const ids = idsFrom(reviewScope.slice(7))
       return groups.filter(group => ids.includes(group.id))
@@ -93,7 +109,15 @@ export default function PayrollAttendancePage() {
     }
   }, [focusedEmployeeIds, selectedGroups])
   const reviewScopeOptions = useMemo(() => {
-    const options = groups.map(group => ({ value: `group:${group.id}`, label: `${group.name} - ${group.workLocationName || 'Location'}` }))
+    const batchOptions = Array.from(groups.reduce((map, group) => {
+      const key = policyBatchKey(group)
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(group)
+      return map
+    }, new Map<string, AttendanceGroup[]>()).entries())
+      .filter(([, rows]) => rows.length > 1)
+      .map(([key, rows]) => ({ value: `batch:${key}`, label: `${policyBatchName(rows)} - ${Array.from(new Set(rows.flatMap(row => row.employeeIds))).length} employees` }))
+    const options = [...batchOptions, ...groups.map(group => ({ value: `group:${group.id}`, label: `${group.name} - ${group.workLocationName || 'Location'}` }))]
     return reviewScope.startsWith('groups:') && selectedGroups.length > 1 ? [{ value: reviewScope, label: `${selectedGroups.length} selected policies` }, ...options] : options
   }, [groups, reviewScope, selectedGroups.length])
 

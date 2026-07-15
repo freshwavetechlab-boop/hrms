@@ -126,9 +126,9 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
       if (!grouped.has(key)) grouped.set(key, { ...group, policyBatchId: group.policyBatchId || key, name: baseName, rows: [], locationSet: new Set(), departmentSet: new Set(), designationSet: new Set(), employeeSet: new Set(), locationCount: 0, departmentCount: 0, designationCount: 0 })
       const row = grouped.get(key)!
       row.rows.push(group)
-      if (group.workLocationName) row.locationSet.add(group.workLocationName)
-      if (group.department) row.departmentSet.add(group.department)
-      if (group.designation) row.designationSet.add(group.designation)
+      row.locationSet.add(group.workLocationId ? group.workLocationName : 'All locations')
+      row.departmentSet.add(group.department || 'All')
+      row.designationSet.add(group.designation || 'All')
       group.employeeIds.forEach(id => row.employeeSet.add(id))
       row.isActive = row.isActive || group.isActive
     })
@@ -209,18 +209,13 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
   const save = async () => {
     if (!validate()) return
     setSaving(true)
-    const payloadLocationIds = form.workLocationIds.length ? form.workLocationIds : clientLocations.map(location => location.id)
-    const employeesForPayloadLocations = activeEmployees.filter(employee => employee.clientId === form.clientId && (!payloadLocationIds.length || payloadLocationIds.includes(employee.workLocationId)))
-    const payloadDepartments = form.departments.length ? form.departments : unique(employeesForPayloadLocations.map(employee => employee.department))
-    const employeesForPayloadDepartments = employeesForPayloadLocations.filter(employee => !payloadDepartments.length || payloadDepartments.includes(employee.department))
-    const payloadDesignations = form.designations.length ? form.designations : unique(employeesForPayloadDepartments.map(employee => employee.designation))
     const response = await saveAttendanceGroupBatch({
       policyBatchId: form.policyBatchId,
       clientId: form.clientId,
       name: form.name,
-      workLocationIds: payloadLocationIds,
-      departments: payloadDepartments,
-      designations: payloadDesignations,
+      workLocationIds: form.workLocationIds,
+      departments: form.departments,
+      designations: form.designations,
       workWeek: form.workWeek,
       attendanceCycleStartDay: form.attendanceCycleStartDay,
       attendanceCycleEndDay: form.attendanceCycleEndDay,
@@ -247,8 +242,8 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
       ...emptyForm,
       ...group,
       workLocationIds: Array.from(new Set(rows.map(row => row.workLocationId).filter(Boolean))),
-      departments: unique(rows.map(row => row.department)),
-      designations: unique(rows.map(row => row.designation)),
+      departments: unique(rows.map(row => row.department).filter(item => item && item.toLowerCase() !== 'all')),
+      designations: unique(rows.map(row => row.designation).filter(item => item && item.toLowerCase() !== 'all')),
       employeeIds: Array.from(new Set(rows.flatMap(row => row.employeeIds || [])))
     })
     setDrawerOpen(true)

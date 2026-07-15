@@ -188,6 +188,7 @@ CREATE TABLE IF NOT EXISTS payroll_reconciliation_results (
         await EnsureColumnAsync(connection, "payruns", "ProcessingCompletedAt", "DATETIME NULL");
         await EnsureColumnAsync(connection, "payruns", "ProcessingError", "VARCHAR(1000) NOT NULL DEFAULT ''");
         await EnsurePayRunIndexAsync(connection);
+        await CleanupObsoletePayRunValidationIssuesAsync(connection);
         await PayrollDataTableStore.EnsureAsync(connection);
         await connection.ExecuteAsync(@"UPDATE payrunemployees p JOIN employees e ON e.Id = p.EmployeeId LEFT JOIN clients c ON c.Id = e.ClientId SET p.ClientId = e.ClientId, p.ClientName = c.Name WHERE p.ClientId = 0 OR p.ClientName IS NULL;");
     }
@@ -365,9 +366,10 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         }
         var validationIssues = ValidatePayRunInputs(0, request, runType, employees.Where(employee => includedEmployeeIds.Contains(employee.Id)).ToList(), attendance, setupJson);
         var hasBlockingIssues = validationIssues.Any(issue => issue.IsBlocking);
+        var processingError = hasBlockingIssues ? Trunc(string.Join(" ", validationIssues.Where(issue => issue.IsBlocking).Take(3).Select(issue => issue.Message)), 1000) : "";
         var payRunId = (int)await connection.ExecuteScalarAsync<long>(@"
-INSERT INTO payruns (ClientId, ClientName, PayPeriod, RunCode, AttendancePolicyBatchId, RunType, RunName, Reason, PayDate, TotalWorkingDays, Status) VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @AttendancePolicyBatchId, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays, @Status);
-SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, AttendancePolicyBatchId = request.AttendancePolicyBatchId, RunType = runType, RunName = runName, Reason = request.Reason.Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays, Status = hasBlockingIssues ? "Failed" : "Draft" }, transaction);
+INSERT INTO payruns (ClientId, ClientName, PayPeriod, RunCode, AttendancePolicyBatchId, RunType, RunName, Reason, PayDate, TotalWorkingDays, Status, ProcessingError) VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @AttendancePolicyBatchId, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays, @Status, @ProcessingError);
+SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, AttendancePolicyBatchId = request.AttendancePolicyBatchId, RunType = runType, RunName = runName, Reason = request.Reason.Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays, Status = hasBlockingIssues ? "Failed" : "Draft", ProcessingError = processingError }, transaction);
         validationIssues.ForEach(issue => issue.PayRunId = payRunId);
         await WriteValidationIssuesAsync(connection, transaction, validationIssues);
         await WritePipelineStepLogsAsync(connection, transaction, payRunId, performedBy, validationIssues);
@@ -428,8 +430,8 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             }
         }
         var payRunId = (int)await connection.ExecuteScalarAsync<long>(@"
-INSERT INTO payruns (ClientId, ClientName, PayPeriod, RunCode, AttendancePolicyBatchId, RunType, RunName, Reason, PayDate, TotalWorkingDays, Status) VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @AttendancePolicyBatchId, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays, 'Failed');
-SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, AttendancePolicyBatchId = request.AttendancePolicyBatchId, RunType = runType, RunName = runName, Reason = FirstText(request.Reason, "Payroll engine exception").Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays }, transaction);
+INSERT INTO payruns (ClientId, ClientName, PayPeriod, RunCode, AttendancePolicyBatchId, RunType, RunName, Reason, PayDate, TotalWorkingDays, Status, ProcessingError) VALUES (@ClientId, @ClientName, @PayPeriod, @RunCode, @AttendancePolicyBatchId, @RunType, @RunName, @Reason, @PayDate, @TotalWorkingDays, 'Failed', @ProcessingError);
+SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, request.PayPeriod, RunCode = runCode, AttendancePolicyBatchId = request.AttendancePolicyBatchId, RunType = runType, RunName = runName, Reason = FirstText(request.Reason, "Payroll engine exception").Trim(), PayDate = request.PayDate.ToDateTime(TimeOnly.MinValue), request.TotalWorkingDays, ProcessingError = Trunc(exception.Message, 1000) }, transaction);
         var issue = Issue(payRunId, null, "", "Run", "Critical", "Payroll Validation", exception.Message, true);
         issue.IssueType = "Exception";
         issue.DataJson = JsonSerializer.Serialize(new { exception = exception.GetType().Name, stackTrace = Trunc(exception.StackTrace, 6000) });
@@ -827,23 +829,35 @@ AND NOT EXISTS (
         {
             var line = item.line;
             var component = item.component!;
-            var source = FirstText(line.Value, component.Formula, component.Value);
-            var type = NormalizeCalculationType(component.CalculationType);
+            var calculationType = FirstText(line.CalculationType, component.CalculationType);
+            var formula = FirstText(line.Formula, line.Value, component.Formula, component.Value);
+            var proRata = NullableBool(line.ProRataOverride) ?? component.ProRata;
+            var effectiveComponent = component with
+            {
+                CalculationType = calculationType,
+                Formula = formula,
+                Value = FirstText(line.Value, component.Value),
+                BaseComponent = FirstText(line.BaseComponent, component.BaseComponent),
+                ProRata = proRata
+            };
+            var type = NormalizeCalculationType(calculationType);
             var monthly = type switch
             {
                 "Manual / Variable" => 0,
-                "Slab Based" => SlabValue(source, values.GetValueOrDefault("GROSS_EARNED", monthlyTarget)),
-                "Residual / Balancing" => CalculateResidual(component, source, monthlyTarget, values),
-                "Formula" => EvaluateComponentFormula(component, source, monthlyTarget, payrollDays, presentDays, payableDays, values),
-                _ => NumberFrom(source)
+                "Slab Based" => SlabValue(formula, values.GetValueOrDefault("GROSS_EARNED", monthlyTarget)),
+                "Residual / Balancing" => CalculateResidual(effectiveComponent, formula, monthlyTarget, values),
+                "Formula" => EvaluateComponentFormula(effectiveComponent, formula, monthlyTarget, payrollDays, presentDays, payableDays, values),
+                _ => NumberFrom(formula)
             };
             monthly = Math.Max(0, decimal.Round(monthly, 2));
             values[component.Id] = monthly;
             values[component.Code] = monthly;
-            var earned = component.ProRata && payrollDays > 0 ? decimal.Round(monthly * payableDays / payrollDays, 2) : monthly;
+            values[$"{component.Id}_MONTHLY"] = monthly;
+            values[$"{component.Code}_MONTHLY"] = monthly;
+            var earned = effectiveComponent.ProRata && payrollDays > 0 ? decimal.Round(monthly * payableDays / payrollDays, 2) : monthly;
             values[$"{component.Id}_EARNED"] = earned;
             values[$"{component.Code}_EARNED"] = earned;
-            rows.Add(new CalculatedPayrollComponent(component, monthly));
+            rows.Add(new CalculatedPayrollComponent(effectiveComponent, monthly));
         }
 
         return rows;
@@ -987,7 +1001,14 @@ AND NOT EXISTS (
     private static SalaryStructureSetup ReadStructure(JsonElement element)
     {
         var lines = element.TryGetProperty("lines", out var lineJson) && lineJson.ValueKind == JsonValueKind.Array
-            ? lineJson.EnumerateArray().Select(line => new SalaryStructureLine(Text(line, "componentId"), Text(line, "value"))).Where(line => !string.IsNullOrWhiteSpace(line.ComponentId)).ToList()
+            ? lineJson.EnumerateArray().Select(line => new SalaryStructureLine(
+                Text(line, "componentId"),
+                Text(line, "value"),
+                Text(line, "calculationType"),
+                Text(line, "formula"),
+                Text(line, "baseComponent"),
+                Text(line, "proRataOverride"),
+                Text(line, "roundingMode"))).Where(line => !string.IsNullOrWhiteSpace(line.ComponentId)).ToList()
             : [];
         return new SalaryStructureSetup(Text(element, "id"), Text(element, "clientId"), Text(element, "annualCtc"), lines, Bool(element, "active", true));
     }
@@ -1010,6 +1031,7 @@ AND NOT EXISTS (
     private static string FirstText(params string[] values) => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
     private static string Text(JsonElement element, string property, string fallback = "") => element.TryGetProperty(property, out var value) ? value.ValueKind == JsonValueKind.String ? value.GetString() ?? fallback : value.ToString() : fallback;
     private static bool Bool(JsonElement element, string property, bool fallback) => element.TryGetProperty(property, out var value) ? value.ValueKind switch { JsonValueKind.True => true, JsonValueKind.False => false, JsonValueKind.String => bool.TryParse(value.GetString(), out var parsed) ? parsed : fallback, _ => fallback } : fallback;
+    private static bool? NullableBool(string value) => string.IsNullOrWhiteSpace(value) ? null : bool.TryParse(value, out var parsed) ? parsed : value.Equals("Yes", StringComparison.OrdinalIgnoreCase) ? true : value.Equals("No", StringComparison.OrdinalIgnoreCase) ? false : null;
     private static decimal NumberFrom(string value) => decimal.TryParse(Regex.Replace(value ?? "", @"[^\d.-]", ""), NumberStyles.Any, CultureInfo.InvariantCulture, out var result) ? result : 0;
     private static DateTime? DateFrom(string value) => DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date) ? date.Date : null;
     private static string FinancialYearFromPayPeriod(string payPeriod)
@@ -1085,7 +1107,7 @@ AND NOT EXISTS (
     private sealed record PayrollSetupData(List<PayrollComponent> Components, List<SalaryStructureSetup> Structures, ProfessionalTaxSetup ProfessionalTax);
     private sealed record PayrollPipelineStep(int Number, string Name);
     private sealed record SalaryStructureSetup(string Id, string ClientId, string AnnualCtc, List<SalaryStructureLine> Lines, bool Active);
-    private sealed record SalaryStructureLine(string ComponentId, string Value);
+    private sealed record SalaryStructureLine(string ComponentId, string Value, string CalculationType, string Formula, string BaseComponent, string ProRataOverride, string RoundingMode);
     private sealed record PayrollComponent(string Id, string Code, string Name, string Category, string ComponentRole, string StatutoryType, string CalculationType, string Value, string Formula, string BaseComponent, bool ProRata, bool Active, int Priority, string PayType);
     private sealed record ProfessionalTaxSetup(bool Enabled, string DefaultState, string Cycle, List<ProfessionalTaxSlab> Slabs);
     private sealed record ProfessionalTaxSlab(string State, decimal SalaryFrom, decimal? SalaryTo, decimal DeductionAmount, DateTime? EffectiveFrom, DateTime? EffectiveTo, string Gender, bool Active);
@@ -1195,9 +1217,6 @@ SELECT LAST_INSERT_ID();", row, transaction);
         if (runType == "Regular" && request.AttendanceGroupId > 0 && request.IncludedEmployeeIds.Count == 0)
             issues.Add(Issue(payRunId, null, "", "Run", "Critical", "Attendance Policy", "Attendance policy has no mapped employees. Select a policy with employees before running payroll.", true));
         issues.AddRange(ValidateFormulaMasters(payRunId, setup.Components));
-        var epfEnabled = SetupBool(setupJson, "statutory", "epf");
-        var esiEnabled = SetupBool(setupJson, "statutory", "esi");
-
         foreach (var employee in employees)
         {
             if (string.IsNullOrWhiteSpace(employee.EmployeeCode))
@@ -1214,14 +1233,6 @@ SELECT LAST_INSERT_ID();", row, transaction);
                 issues.Add(Issue(payRunId, employee.Id, employee.EmployeeCode, "Employee", "Critical", "Attendance Freeze", "Attendance cycle cannot exceed 31 days in any payroll month.", true));
             if (employee.AnnualCtc <= 0 && employee.SalaryComponents.Count == 0 && string.IsNullOrWhiteSpace(employee.SalaryStructureId))
                 issues.Add(Issue(payRunId, employee.Id, employee.EmployeeCode, "Employee", "Critical", "Salary Structure Validation", "Employee has no annual CTC, salary components, or salary structure.", true));
-            if (string.IsNullOrWhiteSpace(FirstText(employee.BankAccountNo, JsonValue(employee.PaymentJson, "bankAccountNo"))) || string.IsNullOrWhiteSpace(FirstText(employee.IfscCode, JsonValue(employee.PaymentJson, "ifscCode"))))
-                issues.Add(Issue(payRunId, employee.Id, employee.EmployeeCode, "Employee", "Critical", "Bank Details Validation", "Bank account number or IFSC is missing.", true));
-            if (string.IsNullOrWhiteSpace(FirstText(employee.PanNumber, JsonValue(employee.PersonalJson, "panNumber"))))
-                issues.Add(Issue(payRunId, employee.Id, employee.EmployeeCode, "Employee", "Warning", "PAN Validation", "PAN is missing; income tax reporting may be incomplete.", false));
-            if (epfEnabled && string.IsNullOrWhiteSpace(FirstText(employee.UanNumber, JsonValue(employee.PersonalJson, "uanNumber"))))
-                issues.Add(Issue(payRunId, employee.Id, employee.EmployeeCode, "Employee", "Warning", "Provident Fund", "UAN is missing while EPF is enabled.", false));
-            if (esiEnabled && string.IsNullOrWhiteSpace(FirstText(employee.EsicNumber, JsonValue(employee.PersonalJson, "esicNumber"))))
-                issues.Add(Issue(payRunId, employee.Id, employee.EmployeeCode, "Employee", "Warning", "ESI", "ESIC number is missing while ESI is enabled.", false));
             if (setup.ProfessionalTax.Enabled && string.IsNullOrWhiteSpace(FirstText(employee.PersonalState, employee.WorkState, setup.ProfessionalTax.DefaultState)))
                 issues.Add(Issue(payRunId, employee.Id, employee.EmployeeCode, "Employee", "Warning", "Professional Tax", "State is missing while Professional Tax is enabled.", false));
         }
@@ -1952,5 +1963,32 @@ WHERE CONSTRAINT_SCHEMA = DATABASE()
         if (clientPeriodIndex > 0) await connection.ExecuteAsync("ALTER TABLE payruns DROP INDEX UX_PayRuns_Client_Period");
         var runCodeIndex = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'payruns' AND INDEX_NAME = 'UX_PayRuns_Client_Period_Code'");
         if (runCodeIndex == 0) await connection.ExecuteAsync("ALTER TABLE payruns ADD UNIQUE KEY UX_PayRuns_Client_Period_Code (ClientId, PayPeriod, RunCode)");
+    }
+
+    private static async Task CleanupObsoletePayRunValidationIssuesAsync(MySqlConnection connection)
+    {
+        const string bankValidationMessage = "Bank account number or IFSC is missing.";
+        const string panValidationMessage = "PAN is missing; income tax reporting may be incomplete.";
+        const string uanValidationMessage = "UAN is missing while EPF is enabled.";
+        await connection.ExecuteAsync(@"DELETE FROM payroll_validation_issues
+WHERE StepName='Bank Details Validation'
+   OR StepName='PAN Validation'
+   OR StepName='Provident Fund'
+   OR Message IN @Messages;", new { Messages = new[] { bankValidationMessage, panValidationMessage, uanValidationMessage } });
+        await connection.ExecuteAsync(@"UPDATE payruns
+SET ProcessingError = TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ProcessingError, @BankTriple, ''), @BankDouble, ''), @Bank, ''), @Pan, ''), @Uan, ''))
+WHERE ProcessingError LIKE @LikeBank
+   OR ProcessingError LIKE @LikePan
+   OR ProcessingError LIKE @LikeUan;", new
+        {
+            Bank = bankValidationMessage,
+            BankDouble = $"{bankValidationMessage} {bankValidationMessage}",
+            BankTriple = $"{bankValidationMessage} {bankValidationMessage} {bankValidationMessage}",
+            Pan = panValidationMessage,
+            Uan = uanValidationMessage,
+            LikeBank = $"%{bankValidationMessage}%",
+            LikePan = $"%{panValidationMessage}%",
+            LikeUan = $"%{uanValidationMessage}%"
+        });
     }
 }

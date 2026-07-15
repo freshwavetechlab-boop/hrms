@@ -62,6 +62,11 @@ CREATE TABLE IF NOT EXISTS salarystructurelines (
     StructureId BIGINT NOT NULL,
     ComponentId VARCHAR(80) NOT NULL,
     ValueText VARCHAR(1000) NOT NULL DEFAULT '',
+    CalculationType VARCHAR(80) NOT NULL DEFAULT '',
+    Formula VARCHAR(1000) NOT NULL DEFAULT '',
+    BaseComponent VARCHAR(80) NOT NULL DEFAULT '',
+    ProRataOverride VARCHAR(20) NOT NULL DEFAULT '',
+    RoundingMode VARCHAR(40) NOT NULL DEFAULT '',
     SortOrder INT NOT NULL DEFAULT 0,
     UNIQUE KEY UX_SalaryStructureLines_Structure_Component (StructureId, ComponentId)
 );
@@ -167,6 +172,11 @@ CREATE TABLE IF NOT EXISTS payrunemployeelines (
         await EnsureColumnAsync(connection, "payrunemployeelines", "StatutoryType", "VARCHAR(80) NOT NULL DEFAULT 'None' AFTER ComponentRole");
         await EnsureColumnAsync(connection, "salarycomponents", "ComponentRole", "VARCHAR(80) NOT NULL DEFAULT 'Regular Earning' AFTER ComponentType");
         await EnsureColumnAsync(connection, "salarycomponents", "StatutoryType", "VARCHAR(80) NOT NULL DEFAULT 'None' AFTER ComponentRole");
+        await EnsureColumnAsync(connection, "salarystructurelines", "CalculationType", "VARCHAR(80) NOT NULL DEFAULT '' AFTER ValueText");
+        await EnsureColumnAsync(connection, "salarystructurelines", "Formula", "VARCHAR(1000) NOT NULL DEFAULT '' AFTER CalculationType");
+        await EnsureColumnAsync(connection, "salarystructurelines", "BaseComponent", "VARCHAR(80) NOT NULL DEFAULT '' AFTER Formula");
+        await EnsureColumnAsync(connection, "salarystructurelines", "ProRataOverride", "VARCHAR(20) NOT NULL DEFAULT '' AFTER BaseComponent");
+        await EnsureColumnAsync(connection, "salarystructurelines", "RoundingMode", "VARCHAR(40) NOT NULL DEFAULT '' AFTER ProRataOverride");
     }
 
     public static async Task<string> GetSetupJsonAsync(MySqlConnection connection, MySqlTransaction? transaction = null)
@@ -384,7 +394,8 @@ ON DUPLICATE KEY UPDATE ClientId=@ClientId,ClientRef=@ClientRef,Name=@Name,Annua
             await connection.ExecuteAsync("DELETE FROM salarystructurelines WHERE StructureId=@Id", new { row.Id });
             var index = 0;
             foreach (var line in row.Lines)
-                await connection.ExecuteAsync(@"INSERT INTO salarystructurelines (StructureId,ComponentId,ValueText,SortOrder) VALUES (@StructureId,@ComponentId,@ValueText,@SortOrder)", new { StructureId = row.Id, line.ComponentId, ValueText = line.Value ?? "", SortOrder = index++ });
+                await connection.ExecuteAsync(@"INSERT INTO salarystructurelines (StructureId,ComponentId,ValueText,CalculationType,Formula,BaseComponent,ProRataOverride,RoundingMode,SortOrder)
+VALUES (@StructureId,@ComponentId,@ValueText,@CalculationType,@Formula,@BaseComponent,@ProRataOverride,@RoundingMode,@SortOrder)", new { StructureId = row.Id, line.ComponentId, ValueText = line.Value ?? "", line.CalculationType, line.Formula, line.BaseComponent, line.ProRataOverride, line.RoundingMode, SortOrder = index++ });
         }
     }
 
@@ -468,7 +479,7 @@ VALUES (@EmployeeId,@BankName,@BankAccountNo,@IfscCode,@PaymentMode)
 ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode=@IfscCode,PaymentMode=@PaymentMode", new { EmployeeId = employeeId, payment.BankName, payment.BankAccountNo, payment.IfscCode, payment.PaymentMode });
 
     private static object ToDto(ComponentRow row) => new { row.Id, row.Code, row.ComponentType, componentRole = Clean(row.ComponentRole, DefaultComponentRole(row.Category)), statutoryType = Clean(row.StatutoryType, "None"), row.Category, row.Name, row.PayType, row.CalculationType, value = row.ValueText, row.Formula, row.BaseComponent, row.Taxable, row.Ctc, row.ProRata, row.Fbp, row.RestrictFbp, row.Epf, row.Esi, row.Recurring, row.Scheduled, row.InvestmentType, row.CorrectionOf, row.Active, priority = row.Priority.ToString(CultureInfo.InvariantCulture) };
-    private static object ToDto(StructureRow row, List<StructureLineRow> lines) => new { row.Id, clientId = string.IsNullOrWhiteSpace(row.ClientRef) ? row.ClientId.ToString(CultureInfo.InvariantCulture) : row.ClientRef, row.Name, annualCtc = row.AnnualCtc.ToString(CultureInfo.InvariantCulture), lines = lines.Select(x => new { x.ComponentId, value = x.ValueText }), row.Active };
+    private static object ToDto(StructureRow row, List<StructureLineRow> lines) => new { row.Id, clientId = string.IsNullOrWhiteSpace(row.ClientRef) ? row.ClientId.ToString(CultureInfo.InvariantCulture) : row.ClientRef, row.Name, annualCtc = row.AnnualCtc.ToString(CultureInfo.InvariantCulture), lines = lines.Select(x => new { x.ComponentId, value = x.ValueText, x.CalculationType, x.Formula, x.BaseComponent, x.ProRataOverride, x.RoundingMode }), row.Active };
     private static object ToDto(PayslipTemplateRow row) => new { row.Id, clientId = string.IsNullOrWhiteSpace(row.ClientRef) ? row.ClientId.ToString(CultureInfo.InvariantCulture) : row.ClientRef, row.Name, row.Theme, row.ShowLogo, row.ShowClient, row.ShowYtd, row.ShowBank, row.Note, row.Active };
     private static object ToDto(ClientScheduleRow row) => new { row.WorkWeek, row.SalaryDays, row.FixedDays, row.PayDay, row.FirstPayPeriod };
 
@@ -610,7 +621,7 @@ ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode
 
     private class ComponentDto { public long Id { get; set; } public string Code { get; set; } = ""; public string ComponentType { get; set; } = ""; public string ComponentRole { get; set; } = ""; public string StatutoryType { get; set; } = "None"; public string Category { get; set; } = "Earning"; public string Name { get; set; } = ""; public string PayType { get; set; } = "Fixed Pay"; public string CalculationType { get; set; } = "Fixed Amount"; public string Value { get; set; } = ""; public string Formula { get; set; } = ""; public string BaseComponent { get; set; } = ""; public bool Taxable { get; set; } = true; public bool Ctc { get; set; } = true; public bool ProRata { get; set; } = true; public bool Fbp { get; set; } public bool RestrictFbp { get; set; } public string Epf { get; set; } = "Never"; public bool Esi { get; set; } public bool Recurring { get; set; } = true; public bool Scheduled { get; set; } public string InvestmentType { get; set; } = ""; public string CorrectionOf { get; set; } = ""; public bool Active { get; set; } = true; public string Priority { get; set; } = "999"; }
     private sealed class StructureDto { public long Id { get; set; } public string ClientId { get; set; } = ""; public string Name { get; set; } = ""; public string AnnualCtc { get; set; } = "0"; public List<StructureLineDto> Lines { get; set; } = []; public bool Active { get; set; } = true; }
-    private sealed class StructureLineDto { public string ComponentId { get; set; } = ""; public string Value { get; set; } = ""; }
+    private sealed class StructureLineDto { public string ComponentId { get; set; } = ""; public string Value { get; set; } = ""; public string CalculationType { get; set; } = ""; public string Formula { get; set; } = ""; public string BaseComponent { get; set; } = ""; public string ProRataOverride { get; set; } = ""; public string RoundingMode { get; set; } = ""; }
     private sealed class PayslipTemplateDto { public long Id { get; set; } public string ClientId { get; set; } = ""; public string Name { get; set; } = ""; public string Theme { get; set; } = "Classic"; public bool ShowLogo { get; set; } = true; public bool ShowClient { get; set; } = true; public bool ShowYtd { get; set; } = true; public bool ShowBank { get; set; } = true; public string Note { get; set; } = ""; public bool Active { get; set; } = true; }
     private class ScheduleDto { public string WorkWeek { get; set; } = "Monday - Friday"; public string SalaryDays { get; set; } = "Actual days"; public string FixedDays { get; set; } = "30"; public string PayDay { get; set; } = "Last working day"; public string FirstPayPeriod { get; set; } = ""; }
     private sealed class ProfessionalTaxSlabDto { public long Id { get; set; } public string State { get; set; } = ""; public string SalaryFrom { get; set; } = "0"; public string SalaryTo { get; set; } = ""; public string DeductionAmount { get; set; } = ""; public string EffectiveFrom { get; set; } = ""; public string EffectiveTo { get; set; } = ""; public string Gender { get; set; } = "All"; public string Notes { get; set; } = ""; public bool Active { get; set; } = true; }
@@ -618,7 +629,7 @@ ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode
     private sealed class PayRunLineDto { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string Category { get; set; } = ""; public string ComponentRole { get; set; } = ""; public string StatutoryType { get; set; } = "None"; public decimal MonthlyAmount { get; set; } public decimal Amount { get; set; } public bool ProRata { get; set; } }
     private sealed class ComponentRow { public long Id { get; set; } public string Code { get; set; } = ""; public string ComponentType { get; set; } = ""; public string ComponentRole { get; set; } = ""; public string StatutoryType { get; set; } = "None"; public string Category { get; set; } = "Earning"; public string Name { get; set; } = ""; public string PayType { get; set; } = "Fixed Pay"; public string CalculationType { get; set; } = "Fixed Amount"; public string ValueText { get; set; } = ""; public string Formula { get; set; } = ""; public string BaseComponent { get; set; } = ""; public bool Taxable { get; set; } = true; public bool Ctc { get; set; } = true; public bool ProRata { get; set; } = true; public bool Fbp { get; set; } public bool RestrictFbp { get; set; } public string Epf { get; set; } = "Never"; public bool Esi { get; set; } public bool Recurring { get; set; } = true; public bool Scheduled { get; set; } public string InvestmentType { get; set; } = ""; public string CorrectionOf { get; set; } = ""; public bool Active { get; set; } = true; public int Priority { get; set; } = 999; }
     private sealed class StructureRow { public long Id { get; set; } public int ClientId { get; set; } public string ClientRef { get; set; } = ""; public string Name { get; set; } = ""; public decimal AnnualCtc { get; set; } public bool Active { get; set; } }
-    private sealed class StructureLineRow { public long StructureId { get; set; } public string ComponentId { get; set; } = ""; public string ValueText { get; set; } = ""; }
+    private sealed class StructureLineRow { public long StructureId { get; set; } public string ComponentId { get; set; } = ""; public string ValueText { get; set; } = ""; public string CalculationType { get; set; } = ""; public string Formula { get; set; } = ""; public string BaseComponent { get; set; } = ""; public string ProRataOverride { get; set; } = ""; public string RoundingMode { get; set; } = ""; }
     private sealed class PayslipTemplateRow { public long Id { get; set; } public int ClientId { get; set; } public string ClientRef { get; set; } = ""; public string Name { get; set; } = ""; public string Theme { get; set; } = "Classic"; public bool ShowLogo { get; set; } = true; public bool ShowClient { get; set; } = true; public bool ShowYtd { get; set; } = true; public bool ShowBank { get; set; } = true; public string Note { get; set; } = ""; public bool Active { get; set; } = true; }
     private sealed class ClientScheduleRow : ClientScheduleDto { public int ClientId { get; set; } }
     private sealed class EmployeeSalaryComponentRow { public int EmployeeId { get; set; } public string ComponentId { get; set; } = ""; public decimal Amount { get; set; } }
