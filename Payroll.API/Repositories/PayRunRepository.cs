@@ -1242,14 +1242,26 @@ SELECT LAST_INSERT_ID();", row, transaction);
             }
             foreach (var token in FormulaReferences(formula).Where(token => !KnownFormulaTokens.Contains(token)).Distinct(StringComparer.OrdinalIgnoreCase))
             {
-                if (!knownCodes.Contains(token))
+                if (!knownCodes.Contains(token) && !IsKnownDerivedComponentToken(token, knownCodes))
                     issues.Add(Issue(payRunId, null, "", "Run", "Critical", "Formula Validation", $"{component.Code} formula references missing component/token {token}.", true));
-                var dependency = components.FirstOrDefault(item => item.Code.Equals(token, StringComparison.OrdinalIgnoreCase) || item.Id.Equals(token, StringComparison.OrdinalIgnoreCase));
+                var dependencyToken = BaseComponentToken(token);
+                var dependency = components.FirstOrDefault(item => item.Code.Equals(dependencyToken, StringComparison.OrdinalIgnoreCase) || item.Id.Equals(dependencyToken, StringComparison.OrdinalIgnoreCase));
                 if (dependency is not null && dependency.Priority >= component.Priority)
                     issues.Add(Issue(payRunId, null, "", "Run", "Warning", "Formula Validation", $"{component.Code} depends on {dependency.Code}, but dependency priority is not earlier.", false));
             }
         }
         return issues;
+    }
+
+    private static bool IsKnownDerivedComponentToken(string token, HashSet<string> knownCodes) =>
+        knownCodes.Contains(BaseComponentToken(token));
+
+    private static string BaseComponentToken(string token)
+    {
+        foreach (var suffix in new[] { "_EARNED", "_MONTHLY" })
+            if (token.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                return token[..^suffix.Length];
+        return token;
     }
 
     private static PayrollValidationIssue Issue(int payRunId, int? employeeId, string employeeCode, string scope, string severity, string stepName, string message, bool blocking) => new()
