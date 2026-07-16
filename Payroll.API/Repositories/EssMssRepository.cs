@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS employee_attendance_punches (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     client_id INT NOT NULL,
     employee_id INT NOT NULL,
+    client_request_id VARCHAR(100) NULL,
     action VARCHAR(20) NOT NULL,
     captured_at DATETIME NOT NULL,
     latitude DECIMAL(10,7) NOT NULL,
@@ -36,10 +37,31 @@ CREATE TABLE IF NOT EXISTS employee_attendance_punches (
     liveness_score DECIMAL(6,3) NULL,
     face_provider VARCHAR(80),
     face_reference_id VARCHAR(180),
+    device_id VARCHAR(180) NOT NULL DEFAULT '',
+    network_type VARCHAR(40) NOT NULL DEFAULT '',
+    app_version VARCHAR(80) NOT NULL DEFAULT '',
+    camera_capture_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+    biometric_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+    battery_percent DECIMAL(5,2) NULL,
+    device_model VARCHAR(180) NOT NULL DEFAULT '',
+    os_version VARCHAR(80) NOT NULL DEFAULT '',
+    selfie_path VARCHAR(500) NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_attendance_punch_request (client_id, employee_id, client_request_id),
     INDEX IX_attendance_punch_employee_date (client_id, employee_id, captured_at),
     INDEX IX_attendance_punch_rule (geo_fence_rule_id)
 );");
+        await EnsureColumnAsync(db, "employee_attendance_punches", "client_request_id", "VARCHAR(100) NULL AFTER employee_id");
+        await EnsureColumnAsync(db, "employee_attendance_punches", "device_id", "VARCHAR(180) NOT NULL DEFAULT '' AFTER face_reference_id");
+        await EnsureColumnAsync(db, "employee_attendance_punches", "network_type", "VARCHAR(40) NOT NULL DEFAULT '' AFTER device_id");
+        await EnsureColumnAsync(db, "employee_attendance_punches", "app_version", "VARCHAR(80) NOT NULL DEFAULT '' AFTER network_type");
+        await EnsureColumnAsync(db, "employee_attendance_punches", "camera_capture_confirmed", "BOOLEAN NOT NULL DEFAULT FALSE AFTER app_version");
+        await EnsureColumnAsync(db, "employee_attendance_punches", "biometric_confirmed", "BOOLEAN NOT NULL DEFAULT FALSE AFTER camera_capture_confirmed");
+        await EnsureColumnAsync(db, "employee_attendance_punches", "battery_percent", "DECIMAL(5,2) NULL AFTER biometric_confirmed");
+        await EnsureColumnAsync(db, "employee_attendance_punches", "device_model", "VARCHAR(180) NOT NULL DEFAULT '' AFTER battery_percent");
+        await EnsureColumnAsync(db, "employee_attendance_punches", "os_version", "VARCHAR(80) NOT NULL DEFAULT '' AFTER device_model");
+        await EnsureColumnAsync(db, "employee_attendance_punches", "selfie_path", "VARCHAR(500) NOT NULL DEFAULT '' AFTER os_version");
+        await EnsureIndexAsync(db, "employee_attendance_punches", "UX_attendance_punch_request", "CREATE UNIQUE INDEX UX_attendance_punch_request ON employee_attendance_punches (client_id, employee_id, client_request_id)");
         await EnsureTravelTablesAsync(db);
         await EnsureExpenseClaimTablesAsync(db);
         await EnsureColumnAsync(db, "essleaverequests", "DayType", "VARCHAR(30) NOT NULL DEFAULT 'Full Day' AFTER ToDate");
@@ -73,7 +95,7 @@ ORDER BY lt.Name", new { EmployeeId = employeeId, ClientId = clientId });
         await using var db = Connection();
         await db.OpenAsync();
         await EnsureProfileTablesAsync(db);
-        return await db.QueryFirstOrDefaultAsync<EssProfile>(@"SELECT e.ClientId,e.EmployeeCode,e.FirstName,e.LastName,e.WorkEmail,e.Department,e.Designation,e.DateOfJoining,
+        var profile = await db.QueryFirstOrDefaultAsync<EssProfile>(@"SELECT e.ClientId,e.EmployeeCode,e.FirstName,e.LastName,e.WorkEmail,e.Department,e.Designation,e.DateOfJoining,
 COALESCE(p.DateOfBirth,'') DateOfBirth,COALESCE(p.Mobile,'') Mobile,COALESCE(p.PanNumber,'') PanNumber,COALESCE(p.AadhaarNumber,'') AadhaarNumber,
 COALESCE(p.Address,'') Address,COALESCE(p.CorrespondenceAddress,'') CorrespondenceAddress,COALESCE(p.PermanentAddress,'') PermanentAddress,
 COALESCE(p.City,'') City,COALESCE(p.District,'') District,COALESCE(p.State,'') State,
@@ -90,6 +112,13 @@ LEFT JOIN travel_expense_client_settings te ON te.ClientId=e.ClientId
   AND (te.EffectiveFrom IS NULL OR te.EffectiveFrom<=CURRENT_DATE)
   AND (te.EffectiveTo IS NULL OR te.EffectiveTo>=CURRENT_DATE)
 WHERE e.Id=@EmployeeId AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { EmployeeId = employeeId, ClientId = clientId });
+        if (profile is null) return null;
+        var applicableOffices = await GetApplicableGeoFenceRulesAsync(db, null, employeeId, profile.ClientId, AttendanceNow().Date);
+        profile.AttendanceOffice = string.Join(", ", applicableOffices
+            .Select(rule => rule.Name.Trim())
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase));
+        return profile;
     }
 
     public async Task<EssFeatureAccess> GetFeatureAccessAsync(int employeeId, int? clientId)
@@ -685,7 +714,55 @@ ON DUPLICATE KEY UPDATE declared_amount=@Amount,planned_amount=IF(@Phase='Planne
     public async Task<EssAttendanceSummary?> GetAttendanceSummaryAsync(int employeeId, int? clientId, string month)
     { await using var db=Connection();await db.OpenAsync();return await db.QueryFirstOrDefaultAsync<EssAttendanceSummary>(@"SELECT r.PayPeriod Month,p.PresentDays,p.PayableDays,r.TotalWorkingDays FROM payrunemployees p JOIN payruns r ON r.Id=p.PayRunId WHERE p.EmployeeId=@EmployeeId AND (@ClientId IS NULL OR p.ClientId=@ClientId) AND r.PayPeriod=@Month ORDER BY r.Id DESC LIMIT 1",new{EmployeeId=employeeId,ClientId=clientId,Month=month}); }
     public async Task<IEnumerable<EssDailyAttendance>> GetDailyAttendanceAsync(int employeeId, int? clientId, string month)
-    { await using var db=Connection();await db.OpenAsync();return await db.QueryAsync<EssDailyAttendance>(@"SELECT attendance_date AS AttendanceDate,status AS Status,payable_value AS PayableValue,COALESCE(remarks,'') AS Remarks FROM employee_daily_attendance WHERE employee_id=@EmployeeId AND (@ClientId IS NULL OR client_id=@ClientId) AND DATE_FORMAT(attendance_date,'%Y-%m')=@Month ORDER BY attendance_date",new{EmployeeId=employeeId,ClientId=clientId,Month=month}); }
+    { await using var db=Connection();await db.OpenAsync();return await db.QueryAsync<EssDailyAttendance>(@"SELECT attendance_date AS AttendanceDate,status AS Status,payable_value AS PayableValue,check_in_time AS CheckInTime,check_out_time AS CheckOutTime,total_hours AS TotalHours,COALESCE(remarks,'') AS Remarks FROM employee_daily_attendance WHERE employee_id=@EmployeeId AND (@ClientId IS NULL OR client_id=@ClientId) AND DATE_FORMAT(attendance_date,'%Y-%m')=@Month ORDER BY attendance_date",new{EmployeeId=employeeId,ClientId=clientId,Month=month}); }
+
+    public async Task<EssAttendancePeriodResponse?> GetAttendanceHistoryAsync(int employeeId, int? clientId, string month, string scope)
+    {
+        if (!DateTime.TryParseExact(month + "-01", "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var monthStart))
+            return null;
+        await using var db = Connection();
+        await db.OpenAsync();
+        var identity = await GetPunchIdentityAsync(db, null, employeeId, clientId, false);
+        if (identity is null) return null;
+        var policy = await db.QueryFirstOrDefaultAsync<EssAttendancePolicySummary>(@"SELECT g.id AS Id, COALESCE(g.policy_batch_id,'') AS PolicyBatchId, g.name AS Name,
+g.attendance_cycle_start_day AS AttendanceCycleStartDay, g.attendance_cycle_end_day AS AttendanceCycleEndDay
+FROM attendance_group_employees age
+JOIN attendance_groups g ON g.id=age.attendance_group_id AND g.client_id=@ClientId AND g.is_active=TRUE
+WHERE age.employee_id=@EmployeeId
+ORDER BY g.id LIMIT 1;", new { identity.ClientId, EmployeeId = employeeId });
+        var normalizedScope = string.Equals(scope, "attendance-cycle", StringComparison.OrdinalIgnoreCase)
+            ? "attendance-cycle"
+            : "calendar-month";
+        DateTime fromDate;
+        DateTime toDate;
+        if (normalizedScope == "attendance-cycle" && policy is not null)
+        {
+            var anchor = DateWithClampedDay(monthStart.Year, monthStart.Month, policy.AttendanceCycleEndDay);
+            var cycle = ResolveAttendanceCycle(anchor, policy.AttendanceCycleStartDay, policy.AttendanceCycleEndDay);
+            fromDate = cycle.CycleStart;
+            toDate = cycle.CycleEnd;
+        }
+        else
+        {
+            fromDate = monthStart.Date;
+            toDate = monthStart.AddMonths(1).AddDays(-1).Date;
+        }
+        var records = await db.QueryAsync<EssDailyAttendance>(@"SELECT attendance_date AS AttendanceDate,status AS Status,payable_value AS PayableValue,
+check_in_time AS CheckInTime,check_out_time AS CheckOutTime,total_hours AS TotalHours,COALESCE(remarks,'') AS Remarks
+FROM employee_daily_attendance
+WHERE client_id=@ClientId AND employee_id=@EmployeeId AND attendance_date BETWEEN @FromDate AND @ToDate
+ORDER BY attendance_date;", new { identity.ClientId, EmployeeId = employeeId, FromDate = fromDate, ToDate = toDate });
+        return new EssAttendancePeriodResponse
+        {
+            Scope = normalizedScope,
+            Month = month,
+            FromDate = fromDate,
+            ToDate = toDate,
+            CycleAvailable = policy is not null,
+            Policy = policy,
+            Records = records
+        };
+    }
     public async Task<IEnumerable<EssHoliday>> GetHolidaysAsync(int? clientId, string month)
     { await using var db=Connection();await db.OpenAsync();return await db.QueryAsync<EssHoliday>(@"SELECT name AS Name,start_date AS StartDate,end_date AS EndDate FROM holidays WHERE client_id=@ClientId AND start_date < DATE_ADD(STR_TO_DATE(CONCAT(@Month,'-01'),'%Y-%m-%d'),INTERVAL 1 MONTH) AND end_date >= STR_TO_DATE(CONCAT(@Month,'-01'),'%Y-%m-%d') ORDER BY start_date",new{ClientId=clientId,Month=month}); }
     public async Task<IEnumerable<EssBirthday>> GetTodaysBirthdaysAsync(int? clientId)
@@ -877,6 +954,13 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND COLUMN_NAME = @Colum
         if (exists == 0) await connection.ExecuteAsync($"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}");
     }
 
+    private static async Task EnsureIndexAsync(MySqlConnection connection, string table, string index, string createSql)
+    {
+        var exists = await connection.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND INDEX_NAME = @Index", new { Table = table, Index = index });
+        if (exists == 0) await connection.ExecuteAsync(createSql);
+    }
+
     private static string NormalizeDayType(string? value) => value?.Trim().ToLowerInvariant() switch
     {
         "first half" or "firsthalf" or "fh" => "First Half",
@@ -906,18 +990,68 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND COLUMN_NAME = @Colum
         else notes.Add("Investment declaration is not open right now.");
         return string.Join(" ", notes);
     }
+    public async Task<EssAttendanceTodayState?> GetAttendanceTodayAsync(int employeeId, int? clientId)
+    {
+        await using var db = Connection();
+        await db.OpenAsync();
+        var identity = await GetPunchIdentityAsync(db, null, employeeId, clientId, false);
+        return identity is null
+            ? null
+            : await GetAttendanceStateAsync(db, null, identity.ClientId, employeeId, AttendanceNow().Date);
+    }
+
     public async Task<AttendancePunchValidationResponse> ValidateAttendancePunchAsync(int employeeId, int? clientId, ValidateAttendancePunchRequest request)
     {
         await using var db = Connection();
         await db.OpenAsync();
-        return await ValidateAttendancePunchAsync(db, employeeId, clientId, request);
+        var identity = await GetPunchIdentityAsync(db, null, employeeId, clientId, false);
+        if (identity is null)
+            return Block("EmployeeOrClientInactive", "The active employee and client mapping was not found.", "ContactHR");
+        var capturedAt = ResolveAttendanceDateTime(request.CapturedAt);
+        return await ValidateAttendancePunchAsync(db, null, identity.ClientId, employeeId, request, capturedAt);
     }
 
     public async Task<AttendancePunchValidationResponse> RecordAttendancePunchAsync(int employeeId, int? clientId, ValidateAttendancePunchRequest request)
     {
         await using var db = Connection();
         await db.OpenAsync();
-        var validation = await ValidateAttendancePunchAsync(db, employeeId, clientId, request);
+        await using var transaction = await db.BeginTransactionAsync();
+        var identity = await GetPunchIdentityAsync(db, transaction, employeeId, clientId, true);
+        if (identity is null)
+            return Block("EmployeeOrClientInactive", "The active employee and client mapping was not found.", "ContactHR");
+
+        var action = CleanPunchAction(request.Action);
+        var clientRequestId = CleanText(request.ClientRequestId, "");
+        if (clientRequestId.Length > 0)
+        {
+            var existing = await db.QueryFirstOrDefaultAsync<ExistingAttendancePunch>(@"SELECT id AS Id, action AS Action, captured_at AS CapturedAt, decision AS Decision
+FROM employee_attendance_punches
+WHERE client_id=@ClientId AND employee_id=@EmployeeId AND client_request_id=@ClientRequestId
+LIMIT 1;", new { identity.ClientId, EmployeeId = employeeId, ClientRequestId = clientRequestId }, transaction);
+            if (existing is not null)
+            {
+                if (!string.Equals(existing.Action, action, StringComparison.OrdinalIgnoreCase))
+                    return Block("IdempotencyKeyConflict", "This attendance request id was already used for a different action.", "RefreshAttendance");
+                var replayState = await GetAttendanceStateAsync(db, transaction, identity.ClientId, employeeId, existing.CapturedAt.Date);
+                await transaction.CommitAsync();
+                return new AttendancePunchValidationResponse
+                {
+                    Allowed = true,
+                    PunchRecorded = true,
+                    PunchId = existing.Id,
+                    Status = "IdempotentReplay",
+                    Decision = existing.Decision,
+                    Message = "Attendance was already recorded for this request.",
+                    NextAction = "ShowSuccess",
+                    NextExpectedAction = replayState.NextExpectedAction,
+                    IdempotentReplay = true,
+                    AttendanceDate = replayState.AttendanceDate
+                };
+            }
+        }
+
+        var capturedAt = ResolveAttendanceDateTime(request.CapturedAt);
+        var validation = await ValidateAttendancePunchAsync(db, transaction, identity.ClientId, employeeId, request, capturedAt);
         if (!validation.Allowed || (validation.RequiresReason && string.IsNullOrWhiteSpace(request.Reason)))
         {
             if (validation.RequiresReason && string.IsNullOrWhiteSpace(request.Reason))
@@ -930,15 +1064,17 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND COLUMN_NAME = @Colum
             return validation;
         }
 
-        var capturedAt = request.CapturedAt ?? DateTime.Now;
-        var decision = validation.RequiresApproval ? "PendingApproval" : validation.RequiresReason ? "SubmittedWithReason" : "Accepted";
-        var punchId = await db.ExecuteScalarAsync<long>(@"INSERT INTO employee_attendance_punches (client_id, employee_id, action, captured_at, latitude, longitude, accuracy_meters, geo_fence_rule_id, distance_meters, effective_radius_meters, outside_by_meters, validation_status, decision, reason, face_verified, face_match_score, liveness_score, face_provider, face_reference_id)
-VALUES (@ClientId, @EmployeeId, @Action, @CapturedAt, @Latitude, @Longitude, @AccuracyMeters, @RuleId, @DistanceMeters, @EffectiveRadiusMeters, @OutsideByMeters, @Status, @Decision, @Reason, @FaceVerified, @FaceMatchScore, @LivenessScore, @FaceProvider, @FaceReferenceId);
+        var decision = validation.RequiresReason ? "AcceptedWithReason" : "Accepted";
+        var punchId = await db.ExecuteScalarAsync<long>(@"INSERT INTO employee_attendance_punches
+ (client_id, employee_id, client_request_id, action, captured_at, latitude, longitude, accuracy_meters, geo_fence_rule_id, distance_meters, effective_radius_meters, outside_by_meters, validation_status, decision, reason, face_verified, face_match_score, liveness_score, face_provider, face_reference_id, device_id, network_type, app_version, camera_capture_confirmed, biometric_confirmed, device_model, os_version)
+ VALUES
+ (@ClientId, @EmployeeId, @ClientRequestId, @Action, @CapturedAt, @Latitude, @Longitude, @AccuracyMeters, @RuleId, @DistanceMeters, @EffectiveRadiusMeters, @OutsideByMeters, @Status, @Decision, @Reason, FALSE, NULL, NULL, '', '', @DeviceId, @NetworkType, @AppVersion, @CameraCaptureConfirmed, @BiometricConfirmed, @DeviceModel, @OsVersion);
 SELECT LAST_INSERT_ID();", new
         {
-            ClientId = clientId ?? 0,
+            ClientId = identity.ClientId,
             EmployeeId = employeeId,
-            Action = CleanPunchAction(request.Action),
+            ClientRequestId = clientRequestId,
+            Action = action,
             CapturedAt = capturedAt,
             request.Latitude,
             request.Longitude,
@@ -949,60 +1085,128 @@ SELECT LAST_INSERT_ID();", new
             validation.OutsideByMeters,
             validation.Status,
             Decision = decision,
-            Reason = request.Reason.Trim(),
-            FaceVerified = validation.FacialPassed,
-            request.Facial?.FaceMatchScore,
-            request.Facial?.LivenessScore,
-            FaceProvider = request.Facial?.Provider ?? "",
-            FaceReferenceId = request.Facial?.ReferenceId ?? ""
-        });
+            Reason = CleanText(request.Reason, ""),
+            DeviceId = CleanText(request.DeviceId, ""),
+            NetworkType = CleanText(request.NetworkType, ""),
+            AppVersion = CleanText(request.AppVersion, ""),
+            request.CameraCaptureConfirmed,
+            request.BiometricConfirmed,
+            DeviceModel = CleanText(request.DeviceModel, ""),
+            OsVersion = CleanText(request.OsVersion, "")
+        }, transaction);
+
+        var state = await ProjectAcceptedPunchAsync(db, transaction, identity.ClientId, employeeId, action, capturedAt);
+        await transaction.CommitAsync();
         validation.PunchRecorded = true;
         validation.PunchId = punchId;
-        validation.NextAction = decision == "PendingApproval" ? "WaitForApproval" : "ShowSuccess";
+        validation.Decision = decision;
+        validation.AttendanceDate = state.AttendanceDate;
+        validation.NextAction = "ShowSuccess";
+        validation.NextExpectedAction = state.NextExpectedAction;
         return validation;
     }
 
-    private static async Task<AttendancePunchValidationResponse> ValidateAttendancePunchAsync(MySqlConnection db, int employeeId, int? clientId, ValidateAttendancePunchRequest request)
+    private static async Task<AttendancePunchValidationResponse> ValidateAttendancePunchAsync(MySqlConnection db, System.Data.IDbTransaction? transaction, int clientId, int employeeId, ValidateAttendancePunchRequest request, DateTime capturedAt)
     {
         var action = CleanPunchAction(request.Action);
         if (action == "")
             return Block("InvalidAction", "Attendance action must be CheckIn or CheckOut.", "Retry");
-        if (request.Latitude is < -90 or > 90 || request.Longitude is < -180 or > 180)
+        if (string.IsNullOrWhiteSpace(request.ClientRequestId))
+            return Block("ClientRequestIdRequired", "A unique attendance request id is required.", "Retry");
+        if (request.ClientRequestId.Trim().Length > 100)
+            return Block("ClientRequestIdRequired", "The attendance request id is too long.", "Retry");
+        if (string.IsNullOrWhiteSpace(request.DeviceId))
+            return Block("DeviceIdRequired", "Device id is required for attendance.", "Retry");
+        if (string.IsNullOrWhiteSpace(request.NetworkType))
+            return Block("NetworkTypeRequired", "Network type is required for attendance.", "Retry");
+        if (string.IsNullOrWhiteSpace(request.AppVersion))
+            return Block("AppVersionRequired", "App version is required for attendance.", "Retry");
+        if (!request.CameraCaptureConfirmed)
+            return Block("CameraConfirmationRequired", "Open the front camera before marking attendance.", "OpenCamera");
+        if (!request.BiometricConfirmed)
+            return Block("BiometricConfirmationRequired", "Device biometric confirmation is required for attendance.", "AuthenticateBiometric");
+        if (request.Latitude is < -90 or > 90 || request.Longitude is < -180 or > 180 || (request.Latitude == 0 && request.Longitude == 0))
             return Block("InvalidLocation", "Valid latitude and longitude are required.", "Retry");
-        if (request.Facial is null)
-            return Block("FacialVerificationRequired", "Facial verification is required before marking attendance.", "CaptureFace");
-        if (!request.Facial.Passed)
-            return Block("FacialVerificationFailed", "Facial verification failed. Try again.", "CaptureFace");
+        if (request.AccuracyMeters is < 0 or > 100)
+            return Block("LocationAccuracyTooLow", "A precise GPS reading within 100 meters is required.", "RetryLocation");
+        if (capturedAt > AttendanceNow().AddMinutes(10))
+            return Block("InvalidCapturedAt", "The device attendance time is ahead of the server time.", "CorrectDeviceTime");
 
-        var rule = await GetApplicableGeoFenceRuleAsync(db, employeeId, clientId, request.CapturedAt ?? DateTime.Today);
-        if (rule is null)
-            return new AttendancePunchValidationResponse { Allowed = true, Status = "NoGeoFenceConfigured", Message = "No geo-fence rule is configured for this employee.", NextAction = "SubmitPunch", FacialPassed = true, DeviceAccuracyMeters = Math.Max(0, request.AccuracyMeters) };
-        if (action == "CheckIn" && !rule.AllowCheckIn)
-            return WithRule(Block("ActionNotAllowed", "Check-in is not allowed under the applicable geo-fence rule.", "Retry"), rule, request);
-        if (action == "CheckOut" && !rule.AllowCheckOut)
-            return WithRule(Block("ActionNotAllowed", "Check-out is not allowed under the applicable geo-fence rule.", "Retry"), rule, request);
+        var state = await GetAttendanceStateAsync(db, transaction, clientId, employeeId, capturedAt.Date);
+        if (state.ApprovalPending)
+            return Block("ApprovalPending", "An attendance request is already waiting for approval.", "WaitForApproval");
+        if (state.NextExpectedAction == "Unavailable")
+            return Block("AttendanceLocked", $"Attendance is already marked as {state.Status} for this date.", "ContactHR");
+        if (action == "CheckIn" && state.NextExpectedAction == "CheckOut")
+            return Block("AlreadyCheckedIn", "Check-in is already complete. Use Punch Out.", "CheckOut");
+        if (action == "CheckIn" && state.NextExpectedAction == "Completed")
+            return Block("AlreadyCheckedOut", "Attendance is already complete for this date.", "RefreshAttendance");
+        if (action == "CheckOut" && state.NextExpectedAction == "CheckIn")
+            return Block("CheckInRequired", "Complete Punch In before Punch Out.", "CheckIn");
+        if (action == "CheckOut" && state.NextExpectedAction == "Completed")
+            return Block("AlreadyCheckedOut", "Punch Out is already complete for this date.", "RefreshAttendance");
 
-        var distance = DistanceMeters((double)request.Latitude, (double)request.Longitude, (double)rule.Latitude, (double)rule.Longitude);
+        var rules = await GetApplicableGeoFenceRulesAsync(db, transaction, employeeId, clientId, capturedAt);
+        if (rules.Count == 0)
+            return new AttendancePunchValidationResponse
+            {
+                Allowed = true,
+                Status = "NoGeoFenceConfigured",
+                Message = "No geo-fence rule is configured for this employee.",
+                NextAction = "SubmitPunch",
+                NextExpectedAction = state.NextExpectedAction,
+                AttendanceDate = capturedAt.Date,
+                DeviceAccuracyMeters = Math.Max(0, request.AccuracyMeters)
+            };
+        var actionRules = rules.Where(rule => action == "CheckIn" ? rule.AllowCheckIn : rule.AllowCheckOut).ToList();
+        if (actionRules.Count == 0)
+        {
+            var blockedRule = rules.OrderBy(rule => rule.Priority).ThenBy(rule => rule.Id).First();
+            var actionLabel = action == "CheckIn" ? "Check-in" : "Check-out";
+            return WithRule(Block("ActionNotAllowed", $"{actionLabel} is not allowed under the applicable geo-fence rules.", "Retry"), blockedRule, request);
+        }
+
         var deviceAccuracy = Math.Max(0, request.AccuracyMeters);
-        var effectiveRadius = rule.RadiusMeters + rule.GpsToleranceMeters + deviceAccuracy;
-        var outsideBy = Math.Max(0, distance - effectiveRadius);
+        var evaluations = actionRules.Select(rule =>
+        {
+            var distance = DistanceMeters((double)request.Latitude, (double)request.Longitude, (double)rule.Latitude, (double)rule.Longitude);
+            var effectiveRadius = rule.RadiusMeters + rule.GpsToleranceMeters;
+            return new GeoFenceEvaluation
+            {
+                Rule = rule,
+                DistanceMeters = distance,
+                EffectiveRadiusMeters = effectiveRadius,
+                OutsideByMeters = Math.Max(0, distance - effectiveRadius)
+            };
+        }).ToList();
+        var evaluation = evaluations
+            .Where(item => item.OutsideByMeters <= 0)
+            .OrderBy(item => item.DistanceMeters)
+            .ThenBy(item => item.Rule.Priority)
+            .FirstOrDefault()
+            ?? evaluations.OrderBy(item => item.OutsideByMeters).ThenBy(item => item.DistanceMeters).ThenBy(item => item.Rule.Priority).First();
+        var rule = evaluation.Rule;
+        var distance = evaluation.DistanceMeters;
+        var effectiveRadius = evaluation.EffectiveRadiusMeters;
+        var outsideBy = evaluation.OutsideByMeters;
         var response = new AttendancePunchValidationResponse
         {
             Allowed = outsideBy <= 0,
             Status = outsideBy <= 0 ? "InsideFence" : "OutsideFence",
             Message = outsideBy <= 0 ? "Attendance punch allowed." : $"You are {Math.Ceiling(outsideBy)} meters outside the allowed attendance range.",
             NextAction = outsideBy <= 0 ? "SubmitPunch" : "MoveInsideFence",
+            NextExpectedAction = state.NextExpectedAction,
+            AttendanceDate = capturedAt.Date,
             DistanceMeters = Math.Round((decimal)distance, 2),
             AllowedRadiusMeters = rule.RadiusMeters,
             GpsToleranceMeters = rule.GpsToleranceMeters,
             DeviceAccuracyMeters = deviceAccuracy,
             EffectiveRadiusMeters = effectiveRadius,
             OutsideByMeters = Math.Round((decimal)outsideBy, 2),
-            FacialPassed = true,
             Rule = new AttendancePunchRuleSummary { Id = rule.Id, Name = rule.Name, ScopeType = rule.ScopeType, Strictness = rule.Strictness }
         };
         if (outsideBy <= 0) return response;
-        if (rule.Strictness == "Allow with reason")
+        if (rule.Strictness.Equals("Allow with reason", StringComparison.OrdinalIgnoreCase))
         {
             response.Allowed = true;
             response.RequiresReason = true;
@@ -1010,14 +1214,8 @@ SELECT LAST_INSERT_ID();", new
             response.NextAction = "CaptureReason";
             return response;
         }
-        if (rule.Strictness == "Allow with approval")
-        {
-            response.Allowed = true;
-            response.RequiresApproval = true;
-            response.Status = "OutsideFenceApprovalRequired";
-            response.NextAction = "SubmitForApproval";
-            return response;
-        }
+        if (rule.Strictness.Equals("Allow with approval", StringComparison.OrdinalIgnoreCase))
+            return WithRule(Block("ApprovalWorkflowUnavailable", "Outside-fence attendance approval is not available yet. Move inside the configured office range.", "MoveInsideFence"), rule, request);
         return response;
     }
 
@@ -1028,34 +1226,266 @@ SELECT LAST_INSERT_ID();", new
     {
         response.Rule = new AttendancePunchRuleSummary { Id = rule.Id, Name = rule.Name, ScopeType = rule.ScopeType, Strictness = rule.Strictness };
         response.DeviceAccuracyMeters = Math.Max(0, request.AccuracyMeters);
-        response.FacialPassed = request.Facial?.Passed == true;
         return response;
     }
 
-    private static async Task<GeoFenceRule?> GetApplicableGeoFenceRuleAsync(MySqlConnection db, int employeeId, int? clientId, DateTime onDate)
+    private static async Task<PunchIdentity?> GetPunchIdentityAsync(MySqlConnection db, System.Data.IDbTransaction? transaction, int employeeId, int? clientId, bool forUpdate)
+    {
+        var lockClause = forUpdate ? " FOR UPDATE" : "";
+        return await db.QueryFirstOrDefaultAsync<PunchIdentity>(@"SELECT e.Id AS EmployeeId, e.ClientId AS ClientId
+FROM employees e
+JOIN clients c ON c.Id=e.ClientId AND c.IsActive=TRUE
+WHERE e.Id=@EmployeeId AND e.IsActive=TRUE AND (@ClientId IS NULL OR e.ClientId=@ClientId)" + lockClause,
+            new { EmployeeId = employeeId, ClientId = clientId }, transaction);
+    }
+
+    private static async Task<EssAttendanceTodayState> GetAttendanceStateAsync(MySqlConnection db, System.Data.IDbTransaction? transaction, int clientId, int employeeId, DateTime attendanceDate)
+    {
+        var daily = await db.QueryFirstOrDefaultAsync<AttendanceDailyStateRow>(@"SELECT status AS Status, payable_value AS PayableValue, check_in_time AS CheckInTime,
+check_out_time AS CheckOutTime, total_hours AS TotalHours
+FROM employee_daily_attendance
+WHERE client_id=@ClientId AND employee_id=@EmployeeId AND attendance_date=@AttendanceDate
+LIMIT 1;", new { ClientId = clientId, EmployeeId = employeeId, AttendanceDate = attendanceDate.Date }, transaction);
+        var punches = await db.QuerySingleAsync<AttendancePunchAggregate>(@"SELECT
+MIN(CASE WHEN action='CheckIn' AND decision IN ('Accepted','AcceptedWithReason','SubmittedWithReason') THEN captured_at END) AS CheckInAt,
+MAX(CASE WHEN action='CheckOut' AND decision IN ('Accepted','AcceptedWithReason','SubmittedWithReason') THEN captured_at END) AS CheckOutAt,
+SUM(CASE WHEN decision='PendingApproval' THEN 1 ELSE 0 END) AS ApprovalPendingCount
+FROM employee_attendance_punches
+WHERE client_id=@ClientId AND employee_id=@EmployeeId AND captured_at>=@DayStart AND captured_at<@DayEnd;",
+            new { ClientId = clientId, EmployeeId = employeeId, DayStart = attendanceDate.Date, DayEnd = attendanceDate.Date.AddDays(1) }, transaction);
+        var settings = await GetAttendanceSettingsAsync(db, transaction, clientId);
+        var checkIn = daily?.CheckInTime ?? punches.CheckInAt?.TimeOfDay;
+        var checkOut = daily?.CheckOutTime ?? punches.CheckOutAt?.TimeOfDay;
+        var lockedStatus = daily is not null &&
+            !string.Equals(daily.Status, "Present", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(daily.Status, "A", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(daily.Status, "Absent", StringComparison.OrdinalIgnoreCase);
+        var approvalPending = punches.ApprovalPendingCount > 0;
+        var nextExpectedAction = approvalPending
+            ? "WaitForApproval"
+            : lockedStatus
+                ? "Unavailable"
+                : checkOut.HasValue
+                    ? "Completed"
+                    : checkIn.HasValue
+                        ? "CheckOut"
+                        : "CheckIn";
+        var totalHours = daily?.TotalHours ?? 0;
+        if (totalHours <= 0 && checkIn.HasValue && checkOut.HasValue)
+            totalHours = CalculatePunchHours(checkIn.Value, checkOut.Value);
+        return new EssAttendanceTodayState
+        {
+            AttendanceDate = attendanceDate.Date,
+            Status = daily?.Status ?? (checkIn.HasValue ? "Present" : "NotMarked"),
+            CheckInTime = checkIn,
+            CheckOutTime = checkOut,
+            TotalHours = totalHours,
+            PayableValue = daily?.PayableValue ?? (checkIn.HasValue ? 1 : 0),
+            NextExpectedAction = nextExpectedAction,
+            ApprovalPending = approvalPending,
+            ShiftCheckInTime = settings.CheckInTime,
+            ShiftCheckOutTime = settings.CheckOutTime,
+            MinimumHoursForHalfDay = settings.MinimumHoursForHalfDay,
+            MinimumHoursForFullDay = settings.MinimumHoursForFullDay,
+            MaximumHoursAllowedForFullDay = settings.MaximumHoursAllowedForFullDay
+        };
+    }
+
+    private static async Task<AttendanceSettings> GetAttendanceSettingsAsync(MySqlConnection db, System.Data.IDbTransaction? transaction, int clientId) =>
+        await db.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId, check_in_time AS CheckInTime,
+check_out_time AS CheckOutTime, working_hours_calculation AS WorkingHoursCalculation,
+minimum_hours_for_half_day AS MinimumHoursForHalfDay, minimum_hours_for_full_day AS MinimumHoursForFullDay,
+maximum_hours_allowed_for_full_day AS MaximumHoursAllowedForFullDay
+FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { ClientId = clientId }, transaction)
+        ?? new AttendanceSettings { ClientId = clientId };
+
+    private static async Task<EssAttendanceTodayState> ProjectAcceptedPunchAsync(MySqlConnection db, MySqlTransaction transaction, int clientId, int employeeId, string action, DateTime capturedAt)
+    {
+        var attendanceDate = capturedAt.Date;
+        if (action == "CheckIn")
+        {
+            await db.ExecuteAsync(@"INSERT INTO employee_daily_attendance
+(client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
+VALUES (@ClientId, @EmployeeId, @AttendanceDate, 'Present', 1, @CheckInTime, NULL, 0, 'Mobile Punch In')
+ON DUPLICATE KEY UPDATE status='Present', payable_value=1,
+check_in_time=COALESCE(check_in_time, VALUES(check_in_time)), remarks='Mobile Punch In';",
+                new { ClientId = clientId, EmployeeId = employeeId, AttendanceDate = attendanceDate, CheckInTime = capturedAt.TimeOfDay }, transaction);
+        }
+        else
+        {
+            var beforeCheckout = await GetAttendanceStateAsync(db, transaction, clientId, employeeId, attendanceDate);
+            var checkIn = beforeCheckout.CheckInTime ?? capturedAt.TimeOfDay;
+            var totalHours = CalculatePunchHours(checkIn, capturedAt.TimeOfDay);
+            var settings = await GetAttendanceSettingsAsync(db, transaction, clientId);
+            var maximum = settings.MaximumHoursAllowedForFullDay > 0 ? settings.MaximumHoursAllowedForFullDay : 24;
+            var evaluatedHours = Math.Min(totalHours, maximum);
+            var payableValue = evaluatedHours >= settings.MinimumHoursForFullDay
+                ? 1m
+                : evaluatedHours >= settings.MinimumHoursForHalfDay
+                    ? 0.5m
+                    : 0m;
+            var status = payableValue > 0 ? "Present" : "A";
+            await db.ExecuteAsync(@"INSERT INTO employee_daily_attendance
+(client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
+VALUES (@ClientId, @EmployeeId, @AttendanceDate, @Status, @PayableValue, @CheckInTime, @CheckOutTime, @TotalHours, 'Mobile Punch Out')
+ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value),
+check_in_time=COALESCE(check_in_time, VALUES(check_in_time)), check_out_time=VALUES(check_out_time),
+total_hours=VALUES(total_hours), remarks='Mobile Punch Out';",
+                new
+                {
+                    ClientId = clientId,
+                    EmployeeId = employeeId,
+                    AttendanceDate = attendanceDate,
+                    Status = status,
+                    PayableValue = payableValue,
+                    CheckInTime = checkIn,
+                    CheckOutTime = capturedAt.TimeOfDay,
+                    TotalHours = totalHours
+                }, transaction);
+        }
+        await RollupMobileAttendanceAsync(db, transaction, clientId, employeeId, attendanceDate);
+        return await GetAttendanceStateAsync(db, transaction, clientId, employeeId, attendanceDate);
+    }
+
+    private static async Task RollupMobileAttendanceAsync(MySqlConnection db, MySqlTransaction transaction, int clientId, int employeeId, DateTime attendanceDate)
+    {
+        var policy = await db.QueryFirstOrDefaultAsync<AttendanceCycleRow>(@"SELECT g.attendance_cycle_start_day AS StartDay, g.attendance_cycle_end_day AS EndDay
+FROM attendance_group_employees age
+JOIN attendance_groups g ON g.id=age.attendance_group_id AND g.client_id=@ClientId AND g.is_active=TRUE
+WHERE age.employee_id=@EmployeeId
+ORDER BY g.id LIMIT 1;", new { ClientId = clientId, EmployeeId = employeeId }, transaction);
+        var cycle = ResolveAttendanceCycle(attendanceDate, policy?.StartDay ?? 1, policy?.EndDay ?? DateTime.DaysInMonth(attendanceDate.Year, attendanceDate.Month));
+        var summary = await db.QuerySingleAsync<AttendanceMonthlySummary>(@"SELECT COUNT(*) AS WorkingDays,
+COALESCE(SUM(CASE WHEN status='Present' THEN payable_value ELSE 0 END),0) AS PresentDays,
+COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 1 ELSE payable_value END),0) AS PayableDays
+FROM employee_daily_attendance
+WHERE client_id=@ClientId AND employee_id=@EmployeeId AND attendance_date BETWEEN @CycleStart AND @CycleEnd;",
+            new { ClientId = clientId, EmployeeId = employeeId, cycle.CycleStart, cycle.CycleEnd }, transaction);
+        var lopDays = Math.Max(0, summary.WorkingDays - summary.PayableDays);
+        await db.ExecuteAsync(@"INSERT INTO employee_monthly_attendance
+(client_id, employee_id, attendance_month, working_days, present_days, payable_days, lop_days, source_type, remarks)
+VALUES (@ClientId, @EmployeeId, @Month, @WorkingDays, @PresentDays, @PayableDays, @LopDays, 'Date-wise', 'Rolled up from mobile attendance')
+ON DUPLICATE KEY UPDATE
+working_days=IF(source_type='Date-wise',VALUES(working_days),working_days),
+present_days=IF(source_type='Date-wise',VALUES(present_days),present_days),
+payable_days=IF(source_type='Date-wise',VALUES(payable_days),payable_days),
+lop_days=IF(source_type='Date-wise',VALUES(lop_days),lop_days),
+remarks=IF(source_type='Date-wise',VALUES(remarks),remarks);",
+            new
+            {
+                ClientId = clientId,
+                EmployeeId = employeeId,
+                cycle.Month,
+                summary.WorkingDays,
+                summary.PresentDays,
+                summary.PayableDays,
+                LopDays = lopDays
+            }, transaction);
+    }
+
+    private static AttendanceCycleRange ResolveAttendanceCycle(DateTime attendanceDate, int startDay, int endDay)
+    {
+        startDay = Math.Clamp(startDay, 1, 31);
+        endDay = Math.Clamp(endDay, 1, 31);
+        DateTime start;
+        DateTime end;
+        if (startDay <= endDay)
+        {
+            start = DateWithClampedDay(attendanceDate.Year, attendanceDate.Month, startDay);
+            end = DateWithClampedDay(attendanceDate.Year, attendanceDate.Month, endDay);
+        }
+        else if (attendanceDate.Day <= endDay)
+        {
+            var previous = attendanceDate.AddMonths(-1);
+            start = DateWithClampedDay(previous.Year, previous.Month, startDay);
+            end = DateWithClampedDay(attendanceDate.Year, attendanceDate.Month, endDay);
+        }
+        else
+        {
+            var next = attendanceDate.AddMonths(1);
+            start = DateWithClampedDay(attendanceDate.Year, attendanceDate.Month, startDay);
+            end = DateWithClampedDay(next.Year, next.Month, endDay);
+        }
+        return new AttendanceCycleRange(start, end, end.ToString("yyyy-MM"));
+    }
+
+    private static DateTime DateWithClampedDay(int year, int month, int day) =>
+        new(year, month, Math.Min(day, DateTime.DaysInMonth(year, month)));
+
+    private static decimal CalculatePunchHours(TimeSpan checkIn, TimeSpan checkOut)
+    {
+        var minutes = (decimal)(checkOut - checkIn).TotalMinutes;
+        if (minutes < 0) minutes += 24 * 60;
+        return Math.Clamp(Math.Round(minutes / 60, 2), 0, 24);
+    }
+
+    private static DateTime ResolveAttendanceDateTime(DateTime? capturedAt)
+    {
+        var value = capturedAt ?? DateTime.UtcNow;
+        if (value.Kind == DateTimeKind.Unspecified) return value;
+        var utc = value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
+        return TimeZoneInfo.ConvertTimeFromUtc(utc, AttendanceTimeZone);
+    }
+
+    private static DateTime AttendanceNow() => TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, AttendanceTimeZone);
+
+    private static TimeZoneInfo ResolveAttendanceTimeZone()
+    {
+        foreach (var id in new[] { "Asia/Kolkata", "India Standard Time" })
+            try { return TimeZoneInfo.FindSystemTimeZoneById(id); } catch (TimeZoneNotFoundException) { } catch (InvalidTimeZoneException) { }
+        return TimeZoneInfo.Utc;
+    }
+
+    private static async Task<List<GeoFenceRule>> GetApplicableGeoFenceRulesAsync(MySqlConnection db, System.Data.IDbTransaction? transaction, int employeeId, int clientId, DateTime onDate)
     {
         var rows = (await db.QueryAsync<GeoFenceRule>(@"SELECT r.id AS Id, r.client_id AS ClientId, r.name AS Name, r.scope_type AS ScopeType, r.work_location_id AS WorkLocationId,
 r.latitude AS Latitude, r.longitude AS Longitude, r.radius_meters AS RadiusMeters, r.gps_tolerance_meters AS GpsToleranceMeters,
 r.strictness AS Strictness, r.allow_check_in AS AllowCheckIn, r.allow_check_out AS AllowCheckOut, r.effective_from AS EffectiveFrom, r.effective_to AS EffectiveTo,
 r.is_active AS IsActive, r.priority AS Priority
 FROM attendance_geo_fence_rules r
-LEFT JOIN attendance_geo_fence_rule_employees ge ON ge.geo_fence_rule_id = r.id
-LEFT JOIN Employees e ON e.Id=@EmployeeId AND e.ClientId=r.client_id
-WHERE (@ClientId IS NULL OR r.client_id=@ClientId) AND r.is_active=TRUE AND r.effective_from <= @Date AND (r.effective_to IS NULL OR r.effective_to >= @Date)
+LEFT JOIN employees target_employee ON target_employee.Id=@EmployeeId AND target_employee.ClientId=r.client_id
+WHERE r.client_id=@ClientId AND r.is_active=TRUE AND r.effective_from <= @Date AND (r.effective_to IS NULL OR r.effective_to >= @Date)
 AND (
-    (r.scope_type='Employee' AND ge.employee_id=@EmployeeId)
-    OR (r.scope_type='Work Location' AND r.work_location_id=e.WorkLocationId)
+    (r.scope_type='Employee' AND EXISTS (
+        SELECT 1 FROM attendance_geo_fence_rule_employees employee_rule
+        WHERE employee_rule.geo_fence_rule_id=r.id AND employee_rule.employee_id=@EmployeeId
+    ))
+    OR (r.scope_type='Work Location' AND r.work_location_id=target_employee.WorkLocationId AND (
+        NOT EXISTS (
+            SELECT 1 FROM attendance_geo_fence_rule_employees location_rule
+            WHERE location_rule.geo_fence_rule_id=r.id
+        )
+        OR EXISTS (
+            SELECT 1 FROM attendance_geo_fence_rule_employees location_employee_rule
+            WHERE location_employee_rule.geo_fence_rule_id=r.id AND location_employee_rule.employee_id=@EmployeeId
+        )
+    ))
     OR r.scope_type='Client Default'
 )
 GROUP BY r.id
-ORDER BY CASE r.scope_type WHEN 'Employee' THEN 1 WHEN 'Work Location' THEN 2 ELSE 3 END, r.priority
-LIMIT 1;", new { EmployeeId = employeeId, ClientId = clientId, Date = onDate.Date })).ToList();
-        return rows.FirstOrDefault();
+ORDER BY CASE r.scope_type WHEN 'Employee' THEN 1 WHEN 'Work Location' THEN 2 ELSE 3 END, r.priority, r.id;", new { EmployeeId = employeeId, ClientId = clientId, Date = onDate.Date }, transaction)).ToList();
+        if (rows.Count == 0) return [];
+        var highestScopeRank = GeoFenceScopeRank(rows[0].ScopeType);
+        return rows.Where(rule => GeoFenceScopeRank(rule.ScopeType) == highestScopeRank).ToList();
     }
 
-    private static string CleanPunchAction(string action) =>
-        action.Equals("CheckIn", StringComparison.OrdinalIgnoreCase) ? "CheckIn" :
-        action.Equals("CheckOut", StringComparison.OrdinalIgnoreCase) ? "CheckOut" : "";
+    private static int GeoFenceScopeRank(string scopeType) =>
+        scopeType.Equals("Employee", StringComparison.OrdinalIgnoreCase) ? 1 :
+        scopeType.Equals("Work Location", StringComparison.OrdinalIgnoreCase) ? 2 : 3;
+
+    private static string CleanPunchAction(string? action) =>
+        string.Equals(action, "CheckIn", StringComparison.OrdinalIgnoreCase) ? "CheckIn" :
+        string.Equals(action, "CheckOut", StringComparison.OrdinalIgnoreCase) ? "CheckOut" : "";
+
+    private static readonly TimeZoneInfo AttendanceTimeZone = ResolveAttendanceTimeZone();
+    private sealed class PunchIdentity { public int EmployeeId { get; set; } public int ClientId { get; set; } }
+    private sealed class ExistingAttendancePunch { public long Id { get; set; } public string Action { get; set; } = ""; public DateTime CapturedAt { get; set; } public string Decision { get; set; } = "Accepted"; }
+    private sealed class AttendanceDailyStateRow { public string Status { get; set; } = ""; public decimal PayableValue { get; set; } public TimeSpan? CheckInTime { get; set; } public TimeSpan? CheckOutTime { get; set; } public decimal TotalHours { get; set; } }
+    private sealed class AttendancePunchAggregate { public DateTime? CheckInAt { get; set; } public DateTime? CheckOutAt { get; set; } public int ApprovalPendingCount { get; set; } }
+    private sealed class GeoFenceEvaluation { public GeoFenceRule Rule { get; set; } = new(); public double DistanceMeters { get; set; } public int EffectiveRadiusMeters { get; set; } public double OutsideByMeters { get; set; } }
+    private sealed class AttendanceCycleRow { public int StartDay { get; set; } public int EndDay { get; set; } }
+    private sealed class AttendanceMonthlySummary { public decimal WorkingDays { get; set; } public decimal PresentDays { get; set; } public decimal PayableDays { get; set; } }
+    private sealed record AttendanceCycleRange(DateTime CycleStart, DateTime CycleEnd, string Month);
 
     private static async Task EnsureTravelTablesAsync(MySqlConnection db)
     {

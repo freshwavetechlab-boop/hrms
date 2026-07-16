@@ -106,6 +106,18 @@ public class GeoFenceRule
 
 public class SaveGeoFenceRuleRequest : GeoFenceRule { }
 
+public class GeoFenceEmployeeOption
+{
+    public int Id { get; set; }
+    public int ClientId { get; set; }
+    public int WorkLocationId { get; set; }
+    public string EmployeeCode { get; set; } = string.Empty;
+    public string FirstName { get; set; } = string.Empty;
+    public string LastName { get; set; } = string.Empty;
+    public string Department { get; set; } = string.Empty;
+    public string Designation { get; set; } = string.Empty;
+}
+
 public class AttendanceGroup
 {
     public int Id { get; set; }

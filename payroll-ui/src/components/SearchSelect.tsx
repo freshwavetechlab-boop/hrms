@@ -28,6 +28,7 @@ export const selectOptions = (items: Array<string | number | SearchOption>, empt
 function resolveSelectedValue(value: string | number, options: SearchOption[]) {
   const raw = String(value ?? '')
   if (options.some(option => option.value === raw)) return raw
+  if (!raw || raw === '0') return undefined
   const token = raw.match(/^([^:]+):(.+)$/)?.[1] || raw.match(/^(\d+)[.\-]\s*(.+)$/)?.[1]
   return token && options.some(option => option.value === token) ? token : raw
 }

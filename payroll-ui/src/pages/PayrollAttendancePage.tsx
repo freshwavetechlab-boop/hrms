@@ -44,7 +44,10 @@ export default function PayrollAttendancePage() {
     void getClients().then((rows) => {
       const active = rows.filter(row => row.isActive)
       setClients(active)
-      setClientId(current => current || (routeContext.clientId && active.some(client => client.id === routeContext.clientId) ? routeContext.clientId : active[0]?.id || 0))
+      setClientId(current => {
+        if (current && active.some(client => client.id === current)) return current
+        return routeContext.clientId && active.some(client => client.id === routeContext.clientId) ? routeContext.clientId : 0
+      })
     })
   }, [routeContext.clientId])
 
@@ -62,23 +65,19 @@ export default function PayrollAttendancePage() {
       const active = rows.filter(row => row.isActive)
       setGroups(active)
       setReviewScope(current => {
-        const firstBatch = Array.from(active.reduce((map, group) => {
-          const key = policyBatchKey(group)
-          if (!map.has(key)) map.set(key, [])
-          map.get(key)!.push(group)
-          return map
-        }, new Map<string, AttendanceGroup[]>()).entries()).find(([, rows]) => rows.length > 1)?.[0] ?? ''
         const requestedIds = current.startsWith('groups:') ? idsFrom(current.slice(7)).filter(id => active.some(group => group.id === id)) : []
         if (requestedIds.length > 1) return `groups:${requestedIds.join(',')}`
         if (requestedIds.length === 1) return `group:${requestedIds[0]}`
+        if (current === 'all' && active.length) return current
         if (current.startsWith('batch:') && active.some(group => policyBatchKey(group) === current.slice(6))) return current
-        return active.some(group => `group:${group.id}` === current) ? current : firstBatch ? `batch:${firstBatch}` : active[0] ? `group:${active[0].id}` : ''
+        return active.some(group => `group:${group.id}` === current) ? current : active.length ? 'all' : ''
       })
       setGroupsLoaded(true)
     })
   }, [clientId])
 
   const selectedGroups = useMemo(() => {
+    if (reviewScope === 'all') return groups
     if (reviewScope.startsWith('batch:')) {
       const key = reviewScope.slice(6)
       return groups.filter(group => policyBatchKey(group) === key)
@@ -99,7 +98,7 @@ export default function PayrollAttendancePage() {
     return {
       ...base,
       id: 0,
-      name: selectedGroups.length === 1 ? base.name : `${selectedGroups.length} selected policies`,
+      name: reviewScope === 'all' ? 'All attendance policies' : selectedGroups.length === 1 ? base.name : `${selectedGroups.length} selected policies`,
       workLocationId: selectedGroups.length === 1 ? base.workLocationId : 0,
       workLocationName: selectedGroups.length === 1 ? base.workLocationName : 'Selected locations',
       workWeek: selectedGroups.length === 1 ? base.workWeek : '',
@@ -107,7 +106,7 @@ export default function PayrollAttendancePage() {
       employeeCount: employeeIds.length,
       employeeNames: ''
     }
-  }, [focusedEmployeeIds, selectedGroups])
+  }, [focusedEmployeeIds, reviewScope, selectedGroups])
   const reviewScopeOptions = useMemo(() => {
     const batchOptions = Array.from(groups.reduce((map, group) => {
       const key = policyBatchKey(group)
@@ -117,18 +116,39 @@ export default function PayrollAttendancePage() {
     }, new Map<string, AttendanceGroup[]>()).entries())
       .filter(([, rows]) => rows.length > 1)
       .map(([key, rows]) => ({ value: `batch:${key}`, label: `${policyBatchName(rows)} - ${Array.from(new Set(rows.flatMap(row => row.employeeIds))).length} employees` }))
-    const options = [...batchOptions, ...groups.map(group => ({ value: `group:${group.id}`, label: `${group.name} - ${group.workLocationName || 'Location'}` }))]
+    const allEmployeeCount = Array.from(new Set(groups.flatMap(group => group.employeeIds))).length
+    const options = [
+      { value: 'all', label: `All attendance policies - ${allEmployeeCount} employees` },
+      ...batchOptions,
+      ...groups.map(group => ({ value: `group:${group.id}`, label: `${group.name} - ${group.workLocationName || 'Location'}` }))
+    ]
     return reviewScope.startsWith('groups:') && selectedGroups.length > 1 ? [{ value: reviewScope, label: `${selectedGroups.length} selected policies` }, ...options] : options
   }, [groups, reviewScope, selectedGroups.length])
 
-  if (!clientId) return <section className="pay-runs"><div className="card report-empty"><p>Create an active client before entering payroll attendance.</p></div></section>
   const clientControl = <>
-    <label className="attendance-client-control attendance-client-field"><span>Client</span><SearchSelect value={clientId} onChange={value => { setClientId(Number(value)); setReviewScope(''); setFocusedEmployeeIds([]) }} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label>
-    <label className="attendance-client-control attendance-scope-field"><span>Attendance policy</span><SearchSelect value={reviewScope} onChange={value => { setReviewScope(value); setFocusedEmployeeIds([]) }} options={groups.length ? reviewScopeOptions : [{ value: '', label: 'No policy configured' }]} /></label>
+    <label className="attendance-client-control attendance-client-field"><span>Client</span><SearchSelect value={clientId || ''} placeholder="Select client" onChange={value => { setClientId(Number(value)); setGroups([]); setGroupsLoaded(false); setReviewScope(''); setFocusedEmployeeIds([]) }} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label>
+    <label className="attendance-client-control attendance-scope-field"><span>Attendance policy</span><SearchSelect value={reviewScope} placeholder={clientId ? 'Select attendance policy' : 'Select client first'} disabled={!clientId || !groupsLoaded || !groups.length} onChange={value => { setReviewScope(value); setFocusedEmployeeIds([]) }} options={groups.length ? reviewScopeOptions : [{ value: '', label: !clientId ? 'Select client first' : groupsLoaded ? 'No policy configured' : 'Loading policies...' }]} /></label>
   </>
 
+  if (!clientId) return <section className="pay-runs payroll-attendance-page">
+    <div className="card attendance-policy-empty attendance-client-empty">
+      <div className="attendance-toolbar attendance-simple-toolbar attendance-empty-toolbar">{clientControl}</div>
+      <div className="attendance-empty-copy"><span>Attendance Review</span><h3>Select a client to continue</h3><p>Choose a client to load its attendance policies and employees.</p></div>
+    </div>
+  </section>
+
+  if (!groupsLoaded) return <section className="pay-runs payroll-attendance-page">
+    <div className="card attendance-policy-empty">
+      <div className="attendance-toolbar attendance-simple-toolbar attendance-empty-toolbar">{clientControl}</div>
+      <div className="attendance-empty-copy"><span>Attendance Review</span><h3>Loading attendance policies</h3><p>Please wait while the selected client configuration is loaded.</p></div>
+    </div>
+  </section>
+
   if (groupsLoaded && !selectedGroup) return <section className="pay-runs payroll-attendance-page">
-    <div className="card attendance-policy-empty">{clientControl}<p>Create an attendance policy in Settings before reviewing attendance.</p></div>
+    <div className="card attendance-policy-empty">
+      <div className="attendance-toolbar attendance-simple-toolbar attendance-empty-toolbar">{clientControl}</div>
+      <div className="attendance-empty-copy"><span>Attendance Review</span><h3>No attendance policy configured</h3><p>Create an attendance policy in Settings for the selected client before reviewing attendance.</p></div>
+    </div>
   </section>
 
   return <section className="pay-runs payroll-attendance-page">

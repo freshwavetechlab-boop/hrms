@@ -458,22 +458,44 @@ ORDER BY r.priority, r.name;", new { ClientId = clientId, ScopeType = string.IsN
         return rows;
     }
 
+    public async Task<IEnumerable<GeoFenceEmployeeOption>> GetGeoFenceEmployeesAsync(int clientId, int workLocationId)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        return await connection.QueryAsync<GeoFenceEmployeeOption>(@"SELECT Id, ClientId, WorkLocationId, EmployeeCode,
+FirstName, LastName, COALESCE(Department, '') AS Department, COALESCE(Designation, '') AS Designation
+FROM employees
+WHERE ClientId=@ClientId AND WorkLocationId=@WorkLocationId AND IsActive=TRUE
+ORDER BY FirstName, LastName, EmployeeCode;", new { ClientId = clientId, WorkLocationId = workLocationId });
+    }
+
     public async Task<GeoFenceRule?> GetApplicableGeoFenceRuleAsync(int clientId, int employeeId, DateTime? onDate = null)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         var date = (onDate ?? DateTime.Today).Date;
         var rows = (await connection.QueryAsync<GeoFenceRule>(GeoFenceRuleSelectSql + @"
-LEFT JOIN attendance_geo_fence_rule_employees ge ON ge.geo_fence_rule_id = r.id
-LEFT JOIN employees e ON e.Id=@EmployeeId AND e.ClientId=r.client_id
+LEFT JOIN employees target_employee ON target_employee.Id=@EmployeeId AND target_employee.ClientId=r.client_id
 WHERE r.client_id=@ClientId AND r.is_active=TRUE AND r.effective_from <= @Date AND (r.effective_to IS NULL OR r.effective_to >= @Date)
 AND (
-    (r.scope_type='Employee' AND ge.employee_id=@EmployeeId)
-    OR (r.scope_type='Work Location' AND r.work_location_id=e.WorkLocationId)
+    (r.scope_type='Employee' AND EXISTS (
+        SELECT 1 FROM attendance_geo_fence_rule_employees employee_rule
+        WHERE employee_rule.geo_fence_rule_id=r.id AND employee_rule.employee_id=@EmployeeId
+    ))
+    OR (r.scope_type='Work Location' AND r.work_location_id=target_employee.WorkLocationId AND (
+        NOT EXISTS (
+            SELECT 1 FROM attendance_geo_fence_rule_employees location_rule
+            WHERE location_rule.geo_fence_rule_id=r.id
+        )
+        OR EXISTS (
+            SELECT 1 FROM attendance_geo_fence_rule_employees location_employee_rule
+            WHERE location_employee_rule.geo_fence_rule_id=r.id AND location_employee_rule.employee_id=@EmployeeId
+        )
+    ))
     OR r.scope_type='Client Default'
 )
 GROUP BY r.id
-ORDER BY CASE r.scope_type WHEN 'Employee' THEN 1 WHEN 'Work Location' THEN 2 ELSE 3 END, r.priority
+ORDER BY CASE r.scope_type WHEN 'Employee' THEN 1 WHEN 'Work Location' THEN 2 ELSE 3 END, r.priority, r.id
 LIMIT 1;", new { ClientId = clientId, EmployeeId = employeeId, Date = date })).ToList();
         await LoadGeoFenceEmployeesAsync(connection, rows);
         return rows.FirstOrDefault();
@@ -485,6 +507,8 @@ LIMIT 1;", new { ClientId = clientId, EmployeeId = employeeId, Date = date })).T
         if (error is not null) return (null, error);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
+        var employeeError = await ValidateGeoFenceEmployeesAsync(connection, request);
+        if (employeeError is not null) return (null, employeeError);
         request.Priority = request.ScopeType == "Employee" ? 10 : request.ScopeType == "Work Location" ? 20 : 30;
         await using var transaction = await connection.BeginTransactionAsync();
         var id = request.Id;
@@ -499,7 +523,7 @@ VALUES (@ClientId, @Name, @ScopeType, @WorkLocationId, @Latitude, @Longitude, @R
             if (updated == 0) return (null, "Geo-fence rule was not found for the selected client.");
             await connection.ExecuteAsync("DELETE FROM attendance_geo_fence_rule_employees WHERE geo_fence_rule_id=@Id", new { Id = id }, transaction);
         }
-        if (request.ScopeType == "Employee" && request.EmployeeIds.Count > 0)
+        if (request.ScopeType is "Employee" or "Work Location" && request.EmployeeIds.Count > 0)
             await connection.ExecuteAsync("INSERT INTO attendance_geo_fence_rule_employees (geo_fence_rule_id, employee_id) VALUES (@RuleId, @EmployeeId)", request.EmployeeIds.Distinct().Select(employeeId => new { RuleId = id, EmployeeId = employeeId }), transaction);
         await transaction.CommitAsync();
         return (await GetGeoFenceRuleAsync(id, request.ClientId), null);
@@ -846,13 +870,9 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
             .ToList();
         if (groupedRows.Count == 0) return (null, "No valid employee attendance rows were submitted.");
 
-        var expectedDays = groupedRows.Max(group => group.Select(row => row.AttendanceDate.Date).Distinct().Count());
-        var cycleDates = request.Rows.Select(row => row.AttendanceDate.Date).Distinct().OrderBy(date => date).ToArray();
         var rows = new List<object>();
         foreach (var group in groupedRows)
         {
-            if (group.Select(row => row.AttendanceDate.Date).Distinct().Count() != expectedDays)
-                return (null, "Save the complete attendance cycle before payroll review.");
             var invalidStatus = group.FirstOrDefault(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes) is null);
             if (invalidStatus is not null) return (null, $"Attendance status '{invalidStatus.Status}' is not valid.");
             var employeeRows = group.Select(row =>
@@ -873,7 +893,7 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
         await connection.ExecuteAsync(@"INSERT INTO employee_daily_attendance (client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
 VALUES (@ClientId, @EmployeeId, @AttendanceDate, @Status, @PayableValue, @CheckInTime, @CheckOutTime, @TotalHours, @Remarks)
 ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), check_in_time=VALUES(check_in_time), check_out_time=VALUES(check_out_time), total_hours=VALUES(total_hours), remarks=VALUES(remarks);", rows, transaction);
-        await RollupDailyAttendanceBatchAsync(connection, transaction, request.ClientId, groupedRows.Select(row => row.Key).ToArray(), request.Month, cycleDates.First(), cycleDates.Last());
+        await RollupDailyAttendanceBatchAsync(connection, transaction, request.ClientId, groupedRows.Select(row => row.Key).ToArray(), request.Month);
         await transaction.CommitAsync();
         return (await GetMonthlyAttendanceAsync(request.ClientId, request.Month), null);
     }
@@ -1618,6 +1638,20 @@ FROM attendance_group_employees WHERE attendance_group_id IN @Ids", new { Ids = 
         return null;
     }
 
+    private static async Task<string?> ValidateGeoFenceEmployeesAsync(MySqlConnection connection, SaveGeoFenceRuleRequest request)
+    {
+        var employeeIds = request.EmployeeIds.Distinct().ToArray();
+        if (employeeIds.Length == 0) return null;
+        var employees = (await connection.QueryAsync<GeoFenceEmployeeTarget>(@"SELECT Id, WorkLocationId
+FROM employees
+WHERE ClientId=@ClientId AND IsActive=TRUE AND Id IN @EmployeeIds;", new { request.ClientId, EmployeeIds = employeeIds })).ToList();
+        if (employees.Count != employeeIds.Length)
+            return "One or more selected employees are inactive or do not belong to the selected client.";
+        if (request.ScopeType == "Work Location" && employees.Any(employee => employee.WorkLocationId != request.WorkLocationId))
+            return "Every selected employee must belong to the selected work location.";
+        return null;
+    }
+
     private async Task<string?> ValidateAttendanceGroupAsync(SaveAttendanceGroupRequest request)
     {
         if (request.ClientId <= 0) return "Select a client.";
@@ -1792,36 +1826,49 @@ LIMIT 1;", new { ClientId = clientId, PolicyBatchId = policyBatchId, ExcludeGrou
         return null;
     }
 
-    private static async Task RollupDailyAttendanceAsync(MySqlConnection connection, int clientId, int employeeId, string month, DateTime cycleStart, DateTime cycleEnd)
+    private static async Task RollupDailyAttendanceAsync(MySqlConnection connection, int clientId, int employeeId, string month, DateTime cycleStart, DateTime cycleEnd, MySqlTransaction? transaction = null)
     {
         var summary = await connection.QuerySingleAsync<(decimal WorkingDays, decimal PresentDays, decimal PayableDays)>(@"SELECT COALESCE(COUNT(*), 0) AS WorkingDays,
 COALESCE(SUM(CASE WHEN status='Present' THEN payable_value ELSE 0 END), 0) AS PresentDays,
 COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 1 ELSE payable_value END), 0) AS PayableDays
 FROM employee_daily_attendance
-WHERE client_id=@ClientId AND employee_id=@EmployeeId AND attendance_date BETWEEN @CycleStart AND @CycleEnd;", new { ClientId = clientId, EmployeeId = employeeId, CycleStart = cycleStart, CycleEnd = cycleEnd });
+WHERE client_id=@ClientId AND employee_id=@EmployeeId AND attendance_date BETWEEN @CycleStart AND @CycleEnd;", new { ClientId = clientId, EmployeeId = employeeId, CycleStart = cycleStart, CycleEnd = cycleEnd }, transaction);
         var lop = Math.Max(0, summary.WorkingDays - summary.PayableDays);
         await connection.ExecuteAsync(@"INSERT INTO employee_monthly_attendance (client_id, employee_id, attendance_month, working_days, present_days, payable_days, lop_days, source_type, remarks)
 VALUES (@ClientId, @EmployeeId, @Month, @WorkingDays, @PresentDays, @PayableDays, @LopDays, 'Date-wise', 'Rolled up from date-wise attendance')
 ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(present_days), payable_days=VALUES(payable_days), lop_days=VALUES(lop_days), source_type='Date-wise', remarks=VALUES(remarks);",
-            new { ClientId = clientId, EmployeeId = employeeId, Month = month, summary.WorkingDays, summary.PresentDays, summary.PayableDays, LopDays = lop });
+            new { ClientId = clientId, EmployeeId = employeeId, Month = month, summary.WorkingDays, summary.PresentDays, summary.PayableDays, LopDays = lop }, transaction);
     }
 
-    private static async Task RollupDailyAttendanceBatchAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, int[] employeeIds, string month, DateTime cycleStart, DateTime cycleEnd)
+    private static async Task RollupDailyAttendanceBatchAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, int[] employeeIds, string month)
     {
         if (employeeIds.Length == 0) return;
-        await connection.ExecuteAsync(@"INSERT INTO employee_monthly_attendance (client_id, employee_id, attendance_month, working_days, present_days, payable_days, lop_days, source_type, remarks)
-SELECT @ClientId, employee_id, @Month,
-COUNT(*) AS working_days,
-COALESCE(SUM(CASE WHEN status='Present' THEN payable_value ELSE 0 END), 0) AS present_days,
-COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 1 ELSE payable_value END), 0) AS payable_days,
-GREATEST(0, COUNT(*) - COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 1 ELSE payable_value END), 0)) AS lop_days,
-'Date-wise',
-'Rolled up from date-wise attendance'
-FROM employee_daily_attendance
-WHERE client_id=@ClientId AND employee_id IN @EmployeeIds AND attendance_date BETWEEN @CycleStart AND @CycleEnd
-GROUP BY employee_id
-ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(present_days), payable_days=VALUES(payable_days), lop_days=VALUES(lop_days), source_type='Date-wise', remarks=VALUES(remarks);",
-            new { ClientId = clientId, EmployeeIds = employeeIds, Month = month, CycleStart = cycleStart, CycleEnd = cycleEnd }, transaction);
+        var policyRows = await connection.QueryAsync<EmployeeAttendanceCycleRow>(@"SELECT age.employee_id AS EmployeeId,
+g.attendance_cycle_start_day AS AttendanceCycleStartDay,
+g.attendance_cycle_end_day AS AttendanceCycleEndDay,
+g.id AS AttendanceGroupId
+FROM attendance_group_employees age
+JOIN attendance_groups g ON g.id=age.attendance_group_id AND g.client_id=@ClientId AND g.is_active=TRUE
+WHERE age.employee_id IN @EmployeeIds
+ORDER BY age.employee_id, g.id;", new { ClientId = clientId, EmployeeIds = employeeIds }, transaction);
+        var cycleByEmployee = policyRows
+            .GroupBy(row => row.EmployeeId)
+            .ToDictionary(group => group.Key, group => group.First());
+        foreach (var employeeId in employeeIds.Distinct())
+        {
+            var policy = cycleByEmployee.GetValueOrDefault(employeeId);
+            var (cycleStart, cycleEnd) = AttendanceCycleRange(month, policy?.AttendanceCycleStartDay ?? 1, policy?.AttendanceCycleEndDay ?? 31);
+            await RollupDailyAttendanceAsync(connection, clientId, employeeId, month, cycleStart, cycleEnd, transaction);
+        }
+    }
+
+    private static (DateTime Start, DateTime End) AttendanceCycleRange(string month, int startDay, int endDay)
+    {
+        var endMonth = DateTime.ParseExact($"{month}-01", "yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var startMonth = startDay > 1 ? endMonth.AddMonths(-1) : endMonth;
+        var safeStartDay = Math.Clamp(startDay, 1, DateTime.DaysInMonth(startMonth.Year, startMonth.Month));
+        var safeEndDay = Math.Clamp(endDay, 1, DateTime.DaysInMonth(endMonth.Year, endMonth.Month));
+        return (new DateTime(startMonth.Year, startMonth.Month, safeStartDay), new DateTime(endMonth.Year, endMonth.Month, safeEndDay));
     }
 
     private static string? NormalizeAttendanceStatus(string? status, IReadOnlyDictionary<string, AttendanceLeaveRule> leaveTypes)
@@ -1914,6 +1961,7 @@ WHERE lt.client_id=@ClientId AND lt.code IN @Codes;", new { ClientId = clientId,
     private sealed record AttendanceSaveRow(string Status, decimal PayableValue);
     private sealed class AttendanceLeaveRule { public int Id { get; set; } public string Code { get; set; } = string.Empty; public string Name { get; set; } = string.Empty; public string Type { get; set; } = "Paid"; public bool AllowNegativeLeaveBalance { get; set; } }
     private sealed class LeaveBalanceRow { public string Code { get; set; } = string.Empty; public decimal Balance { get; set; } }
+    private sealed class EmployeeAttendanceCycleRow { public int EmployeeId { get; set; } public int AttendanceCycleStartDay { get; set; } = 1; public int AttendanceCycleEndDay { get; set; } = 31; public int AttendanceGroupId { get; set; } }
 
     private static readonly string[] LeaveTypeImportHeaders = ["Leave Type Name", "Code", "Type", "Description", "Entitlement", "Entitlement Period", "Pro Rate New Joinees", "Reset Enabled", "Reset Frequency", "Carry Forward", "Max Carry Forward", "Encash", "Max Encashment", "Allow Negative Balance", "Allow Half Day", "Negative Balance Handling", "Allow Past Dates", "Past Date Limit Type", "Past Date Limit Days", "Allow Future Dates", "Future Date Limit Type", "Future Date Limit Days", "Applicability", "Work Location", "Department", "Designation", "Gender", "Effective From", "Expires On", "Postpone Credits", "Postpone Credit Value", "Postpone Credit Unit", "Active"];
     private static readonly string[] LeaveTypeTypes = ["Paid", "Unpaid"];
@@ -2367,5 +2415,11 @@ WHERE table_schema = DATABASE() AND table_name = @TableName AND index_name = @In
 WHERE table_schema = DATABASE() AND table_name = @TableName AND index_name = @IndexName", new { TableName = table, IndexName = indexName });
         if (exists > 0)
             await connection.ExecuteAsync($"DROP INDEX `{indexName}` ON `{table}`");
+    }
+
+    private sealed class GeoFenceEmployeeTarget
+    {
+        public int Id { get; set; }
+        public int WorkLocationId { get; set; }
     }
 }

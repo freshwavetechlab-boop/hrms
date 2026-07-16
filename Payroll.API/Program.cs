@@ -291,6 +291,8 @@ app.MapPost("/api/ess/tax/regime", async (EssMssRepository repository, SaveEssTa
 app.MapPost("/api/ess/tax/declarations", async (EssMssRepository repository, SaveEssTaxDeclarationsRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(ok,error)=await repository.SaveTaxDeclarationsAsync(user.EmployeeId.Value,user.ClientId,request); return ok ? Results.NoContent() : Results.BadRequest(new{error}); });
 app.MapGet("/api/ess/dashboard/attendance", async (EssMssRepository repository, string month, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetAttendanceSummaryAsync(user.EmployeeId.Value,user.ClientId,month)); });
 app.MapGet("/api/ess/dashboard/attendance/daily", async (EssMssRepository repository, string month, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetDailyAttendanceAsync(user.EmployeeId.Value,user.ClientId,month)); });
+app.MapGet("/api/ess/attendance/history", async (EssMssRepository repository, string month, string? scope, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var result=await repository.GetAttendanceHistoryAsync(user.EmployeeId.Value,user.ClientId,month,scope??"calendar-month"); return result is null ? Results.BadRequest(new{error=new{code="ATTENDANCE_POLICY_INVALID",message="Attendance month or employee mapping is invalid."}}) : Results.Ok(result); });
+app.MapGet("/api/ess/attendance/today", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var state=await repository.GetAttendanceTodayAsync(user.EmployeeId.Value,user.ClientId); return state is null ? Results.NotFound(new{error="Active employee attendance profile was not found."}) : Results.Ok(state); });
 app.MapPost("/api/ess/attendance/punch/validate", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); return Results.Ok(await repository.ValidateAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request)); });
 app.MapPost("/api/ess/attendance/punch", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var result=await repository.RecordAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request); return result.PunchRecorded ? Results.Created($"/api/ess/attendance/punch/{result.PunchId}",result) : Results.BadRequest(result); });
 app.MapGet("/api/ess/dashboard/holidays", async (EssMssRepository repository, string month, HttpContext context) => Results.Ok(await repository.GetHolidaysAsync(CurrentUser(context).ClientId,month)));
@@ -1046,6 +1048,13 @@ app.MapPost("/api/leave-attendance/attendance-settings", async (LeaveAttendanceR
 app.MapGet("/api/leave-attendance/geo-fences", async (LeaveAttendanceRepository repository, int clientId, string? scopeType) =>
     clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetGeoFenceRulesAsync(clientId, scopeType)))
 .WithName("GetGeoFenceRules")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/geo-fences/employees", async (LeaveAttendanceRepository repository, int clientId, int workLocationId) =>
+    clientId <= 0 || workLocationId <= 0
+        ? Results.BadRequest(new { error = "Select a client and work location." })
+        : Results.Ok(await repository.GetGeoFenceEmployeesAsync(clientId, workLocationId)))
+.WithName("GetGeoFenceEmployees")
 .WithOpenApi();
 
 app.MapGet("/api/leave-attendance/geo-fences/applicable", async (LeaveAttendanceRepository repository, int clientId, int employeeId, DateTime? onDate) =>

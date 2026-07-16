@@ -34,6 +34,7 @@ public class EssProfile
     public string Designation { get; set; } = string.Empty;
     public string DateOfJoining { get; set; } = string.Empty;
     public string WorkLocation { get; set; } = string.Empty;
+    public string AttendanceOffice { get; set; } = string.Empty;
     public string ReportingManager { get; set; } = string.Empty;
     public bool CanEdit { get; set; }
     public bool TravelExpenseEnabled { get; set; }
@@ -260,7 +261,9 @@ public class EssWorkflowTrailItem { public string StageName { get; set; } = ""; 
 public class EssPayslip { public int PayRunId { get; set; } public string PayPeriod { get; set; } = ""; public DateTime PayDate { get; set; } public string RunStatus { get; set; } = ""; public decimal GrossPay { get; set; } public decimal StatutoryDeductions { get; set; } public decimal OneTimeDeductions { get; set; } public decimal NetPay { get; set; } public string PaymentStatus { get; set; } = ""; public DateTime? PaymentDate { get; set; } }
 public class EssPayslipDocument { public int PayRunId { get; set; } public string PayPeriod { get; set; } = ""; public string EmployeeCode { get; set; } = ""; public string FileName { get; set; } = ""; public string Html { get; set; } = ""; }
 public class EssAttendanceSummary { public string Month { get; set; } = ""; public decimal PresentDays { get; set; } public decimal PayableDays { get; set; } public int TotalWorkingDays { get; set; } }
-public class EssDailyAttendance { public DateTime AttendanceDate { get; set; } public string Status { get; set; } = ""; public decimal PayableValue { get; set; } public string Remarks { get; set; } = ""; }
+public class EssDailyAttendance { public DateTime AttendanceDate { get; set; } public string Status { get; set; } = ""; public decimal PayableValue { get; set; } public TimeSpan? CheckInTime { get; set; } public TimeSpan? CheckOutTime { get; set; } public decimal TotalHours { get; set; } public string Remarks { get; set; } = ""; }
+public class EssAttendancePolicySummary { public int Id { get; set; } public string PolicyBatchId { get; set; } = ""; public string Name { get; set; } = ""; public int AttendanceCycleStartDay { get; set; } public int AttendanceCycleEndDay { get; set; } }
+public class EssAttendancePeriodResponse { public string Scope { get; set; } = "calendar-month"; public string Month { get; set; } = ""; public DateTime FromDate { get; set; } public DateTime ToDate { get; set; } public bool CycleAvailable { get; set; } public EssAttendancePolicySummary? Policy { get; set; } public IEnumerable<EssDailyAttendance> Records { get; set; } = []; }
 public class EssHoliday { public string Name { get; set; } = ""; public DateTime StartDate { get; set; } public DateTime EndDate { get; set; } }
 public class EssBirthday { public string Name { get; set; } = ""; public string Department { get; set; } = ""; }
 
@@ -327,11 +330,19 @@ public class AttendanceFacialVerification
 
 public class ValidateAttendancePunchRequest
 {
+    public string ClientRequestId { get; set; } = "";
     public string Action { get; set; } = "CheckIn";
     public decimal Latitude { get; set; }
     public decimal Longitude { get; set; }
     public int AccuracyMeters { get; set; }
     public DateTime? CapturedAt { get; set; }
+    public string DeviceId { get; set; } = "";
+    public string DeviceModel { get; set; } = "";
+    public string OsVersion { get; set; } = "";
+    public string NetworkType { get; set; } = "";
+    public string AppVersion { get; set; } = "";
+    public bool CameraCaptureConfirmed { get; set; }
+    public bool BiometricConfirmed { get; set; }
     public string Reason { get; set; } = "";
     public AttendanceFacialVerification? Facial { get; set; }
 }
@@ -352,16 +363,37 @@ public class AttendancePunchValidationResponse
     public bool PunchRecorded { get; set; }
     public long? PunchId { get; set; }
     public string Status { get; set; } = "";
+    public string Decision { get; set; } = "";
     public string Message { get; set; } = "";
     public string NextAction { get; set; } = "";
+    public string NextExpectedAction { get; set; } = "";
+    public bool IdempotentReplay { get; set; }
+    public DateTime? AttendanceDate { get; set; }
     public decimal? DistanceMeters { get; set; }
     public int? AllowedRadiusMeters { get; set; }
     public int? GpsToleranceMeters { get; set; }
     public int DeviceAccuracyMeters { get; set; }
     public int? EffectiveRadiusMeters { get; set; }
     public decimal? OutsideByMeters { get; set; }
-    public bool FacialRequired { get; set; } = true;
+    public bool FacialRequired { get; set; }
     public bool FacialPassed { get; set; }
     public AttendancePunchRuleSummary? Rule { get; set; }
+}
+
+public class EssAttendanceTodayState
+{
+    public DateTime AttendanceDate { get; set; }
+    public string Status { get; set; } = "NotMarked";
+    public TimeSpan? CheckInTime { get; set; }
+    public TimeSpan? CheckOutTime { get; set; }
+    public decimal TotalHours { get; set; }
+    public decimal PayableValue { get; set; }
+    public string NextExpectedAction { get; set; } = "CheckIn";
+    public bool ApprovalPending { get; set; }
+    public TimeSpan ShiftCheckInTime { get; set; } = new(9, 0, 0);
+    public TimeSpan ShiftCheckOutTime { get; set; } = new(18, 0, 0);
+    public decimal MinimumHoursForHalfDay { get; set; } = 4;
+    public decimal MinimumHoursForFullDay { get; set; } = 8;
+    public decimal MaximumHoursAllowedForFullDay { get; set; } = 12;
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { OrganizationBrand, User, View } from '../types'
+import type { OrganizationBrand, ProfileData, User, View } from '../types'
 import { essApi, organizationBrand } from '../services/essApi'
 import { initials } from '../utils/ui'
 
@@ -27,6 +27,7 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
   const [recruitmentEnabled, setRecruitmentEnabled] = useState<boolean | null>(null)
   const [travelExpenseEnabled, setTravelExpenseEnabled] = useState<boolean | null>(null)
   const [organization, setOrganization] = useState<OrganizationBrand | null>(null)
+  const [profile, setProfile] = useState<ProfileData | null>(null)
   const hasRecruitmentAccess = canAccessRecruitment(user)
   const groups = useMemo(
     () => [
@@ -44,6 +45,16 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
   useEffect(() => {
     if (!employeeSelf) { setTravelExpenseEnabled(false); return }
     void essApi.features().then(features => setTravelExpenseEnabled(features.travelExpenseEnabled)).catch(() => setTravelExpenseEnabled(false))
+  }, [employeeSelf, user.email])
+  useEffect(() => {
+    let active = true
+    const request = employeeSelf ? essApi.profile() : Promise.resolve(null)
+    void request.then(nextProfile => {
+      if (active) setProfile(nextProfile)
+    }).catch(() => {
+      if (active) setProfile(null)
+    })
+    return () => { active = false }
   }, [employeeSelf, user.email])
   useEffect(() => {
     if (!employeeSelf || !hasRecruitmentAccess) { setRecruitmentEnabled(false); return }
@@ -131,8 +142,8 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
           <div><span className="eyebrow">{manager && !employeeSelf ? 'Manager workspace' : 'Employee workspace'} / {section}</span><h2>{title}</h2></div>
         </div>
         <div className="account-menu">
-          <button className="user-menu" type="button" onClick={() => setAccountOpen(open => !open)} aria-expanded={accountOpen}><span>{initials(user.displayName)}</span><div><b>{user.displayName}</b><small>{manager ? 'Manager access' : 'Employee access'}</small></div><i>v</i></button>
-          {accountOpen && <div className="account-dropdown">{employeeSelf && <button type="button" onClick={() => { setActiveAction(null); onNavigate('My Profile'); setAccountOpen(false) }}>My profile</button>}<button type="button" onClick={() => { setAccountOpen(false); onChangePassword() }}>Change password</button><button type="button" onClick={onLogout}>Logout</button></div>}
+          <button className="user-menu" type="button" onClick={() => setAccountOpen(open => !open)} aria-expanded={accountOpen}><span>{initials(user.displayName)}</span><div><b>{user.displayName}</b><small title={profile?.attendanceOffice || undefined}>{profile?.attendanceOffice || (manager ? 'Manager access' : 'Employee access')}</small></div><i>v</i></button>
+          {accountOpen && <div className="account-dropdown">{profile?.attendanceOffice && <div className="account-office"><span>Attendance office</span><b>{profile.attendanceOffice}</b></div>}{employeeSelf && <button type="button" onClick={() => { setActiveAction(null); onNavigate('My Profile'); setAccountOpen(false) }}>My profile</button>}<button type="button" onClick={() => { setAccountOpen(false); onChangePassword() }}>Change password</button><button type="button" onClick={onLogout}>Logout</button></div>}
         </div>
       </header>
       {children}

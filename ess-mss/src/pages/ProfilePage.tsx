@@ -45,7 +45,7 @@ export function ProfilePage({ user }: { user: User }) {
 
   if (state === 'loading') return <section className="feature-page"><div className="empty-work"><span>Loading your profile...</span></div></section>
   if (state === 'error' || !profile || !form) return <section className="feature-page"><div className="empty-work"><b>Profile is unavailable.</b><span>Your account may not yet be linked to an active employee record. Contact HR for assistance.</span></div></section>
-  const fields = [['Employee code', profile.employeeCode], ['Department', profile.department || 'Not assigned'], ['Designation', profile.designation || 'Not assigned'], ['Work location', profile.workLocation || 'Not assigned'], ['Joining date', profile.dateOfJoining ? new Date(profile.dateOfJoining).toLocaleDateString('en-IN') : 'Not available'], ['Reporting manager', profile.reportingManager.trim() || 'Not assigned']]
+  const fields = [['Employee code', profile.employeeCode], ['Department', profile.department || 'Not assigned'], ['Designation', profile.designation || 'Not assigned'], ['Work location', profile.workLocation || 'Not assigned'], ['Attendance office', profile.attendanceOffice || 'Not configured'], ['Joining date', profile.dateOfJoining ? new Date(profile.dateOfJoining).toLocaleDateString('en-IN') : 'Not available'], ['Reporting manager', profile.reportingManager.trim() || 'Not assigned']]
   return <form className="profile-page profile-edit-page" onSubmit={save}>
     <div className="profile-head">
       <span>{initials(`${profile.firstName} ${profile.lastName}`)}</span>

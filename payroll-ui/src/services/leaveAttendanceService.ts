@@ -1,4 +1,4 @@
-import type { AttendanceGroup, AttendanceReviewContext, AttendanceSettings, EmployeeDailyAttendance, EmployeeMonthlyAttendance, GeoFenceRule, GeoFenceScope, Holiday, LeaveAttendancePreferences, LeaveAttendanceSetup, LeaveBalanceImportMapping, LeaveBalanceImportPreview, LeaveBalanceImportResult, LeaveType, SetupStatus } from '../types/payroll'
+import type { AttendanceGroup, AttendanceReviewContext, AttendanceSettings, EmployeeDailyAttendance, EmployeeMonthlyAttendance, GeoFenceEmployeeOption, GeoFenceRule, GeoFenceScope, Holiday, LeaveAttendancePreferences, LeaveAttendanceSetup, LeaveBalanceImportMapping, LeaveBalanceImportPreview, LeaveBalanceImportResult, LeaveType, SetupStatus } from '../types/payroll'
 import { apiUrl, deleteJson, getBlob, getJson, postForm, postFormWithProgress, postJson, putJson } from './apiClient'
 import type { BulkImportStatus } from './settingsService'
 
@@ -20,6 +20,7 @@ export async function saveAttendanceSettings(settings: AttendanceSettings) {
   return postJson('/api/leave-attendance/attendance-settings', settings, attendanceFallback)
 }
 export const getGeoFenceRules = (clientId: number, scopeType?: GeoFenceScope) => getJson<GeoFenceRule[]>(`/api/leave-attendance/geo-fences?${new URLSearchParams({ clientId: String(clientId), ...(scopeType ? { scopeType } : {}) })}`, [])
+export const getGeoFenceEmployees = (clientId: number, workLocationId: number) => getJson<GeoFenceEmployeeOption[]>(`/api/leave-attendance/geo-fences/employees?${new URLSearchParams({ clientId: String(clientId), workLocationId: String(workLocationId) })}`, [])
 export const getApplicableGeoFenceRule = (clientId: number, employeeId: number, onDate?: string) => getJson<GeoFenceRule | null>(`/api/leave-attendance/geo-fences/applicable?${new URLSearchParams({ clientId: String(clientId), employeeId: String(employeeId), ...(onDate ? { onDate } : {}) })}`, null)
 export async function saveGeoFenceRule(rule: GeoFenceRule) {
   return postJson('/api/leave-attendance/geo-fences', rule, null as GeoFenceRule | null)
