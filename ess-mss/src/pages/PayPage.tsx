@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { LoadState, Payslip, PayslipDocument, User } from '../types'
 import { essApi } from '../services/essApi'
+import { downloadHtmlPdf } from '../utils/htmlPdf'
 
 const money = (value: number) => `Rs ${Number(value || 0).toLocaleString('en-IN')}`
 
@@ -20,6 +21,7 @@ export function PayPage({ user }: { user: User }) {
   const [document, setDocument] = useState<PayslipDocument | null>(null)
   const [state, setState] = useState<LoadState>('loading')
   const [busy, setBusy] = useState<string | null>(null)
+  const [selectedPeriod, setSelectedPeriod] = useState('')
 
   useEffect(() => {
     setState('loading')
@@ -30,6 +32,8 @@ export function PayPage({ user }: { user: User }) {
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('ess:page-title', { detail: { section: 'Pay & tax', title: 'Payslips' } }))
   }, [])
+  const periods = useMemo(() => Array.from(new Set(rows.map(row => row.payPeriod))).sort((a, b) => b.localeCompare(a)), [rows])
+  const visibleRows = useMemo(() => selectedPeriod ? rows.filter(row => row.payPeriod === selectedPeriod) : rows, [rows, selectedPeriod])
 
   const fetchDocument = async (row: Payslip) => {
     setBusy(`view-${row.payRunId}`)
@@ -45,11 +49,17 @@ export function PayPage({ user }: { user: User }) {
     setBusy(`download-${row.payRunId}`)
     try {
       const next = await essApi.payslipDocument(row.payRunId)
-      const link = window.document.createElement('a')
-      link.href = URL.createObjectURL(new Blob([next.html], { type: 'text/html' }))
-      link.download = next.fileName || `payslip-${next.payPeriod}.html`
-      link.click()
-      URL.revokeObjectURL(link.href)
+      await downloadHtmlPdf(next.html, next.fileName || `payslip-${next.payPeriod}`)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const downloadOpenDocument = async () => {
+    if (!document) return
+    setBusy(`modal-${document.payRunId}`)
+    try {
+      await downloadHtmlPdf(document.html, document.fileName || `payslip-${document.payPeriod}`)
     } finally {
       setBusy(null)
     }
@@ -61,7 +71,18 @@ export function PayPage({ user }: { user: User }) {
       {state === 'error' && <div className="empty-work"><b>Pay information is unavailable.</b><span>Contact payroll if you expect a payslip for a completed pay run.</span></div>}
 
       {state === 'ready' && (
-        <div className="pay-table-card">
+        <>
+          <div className="pay-filter-bar">
+            <label>
+              <span>Pay month</span>
+              <select value={selectedPeriod} onChange={event => setSelectedPeriod(event.target.value)}>
+                <option value="">All available months</option>
+                {periods.map(period => <option value={period} key={period}>{periodText(period)}</option>)}
+              </select>
+            </label>
+            <small>{visibleRows.length} payslip{visibleRows.length === 1 ? '' : 's'} shown</small>
+          </div>
+          <div className="pay-table-card">
           {rows.length ? (
             <div className="pay-table-scroll">
               <table className="pay-table">
@@ -78,7 +99,7 @@ export function PayPage({ user }: { user: User }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map(item => {
+                  {visibleRows.map(item => {
                     const deductions = item.statutoryDeductions + item.oneTimeDeductions
                     return (
                       <tr key={item.payRunId}>
@@ -108,7 +129,8 @@ export function PayPage({ user }: { user: User }) {
           ) : (
             <div className="empty-work"><b>No payslips are available yet.</b><span>Your payslips appear here after payroll approves your pay run.</span></div>
           )}
-        </div>
+          </div>
+        </>
       )}
 
       {document && (
@@ -123,13 +145,9 @@ export function PayPage({ user }: { user: User }) {
               <button type="button" onClick={() => setDocument(null)}>x</button>
             </header>
             <iframe title={`Payslip ${document.payPeriod}`} srcDoc={document.html} />
-            <button type="button" className="download-payslip" onClick={() => {
-              const link = window.document.createElement('a')
-              link.href = URL.createObjectURL(new Blob([document.html], { type: 'text/html' }))
-              link.download = document.fileName || `payslip-${document.payPeriod}.html`
-              link.click()
-              URL.revokeObjectURL(link.href)
-            }}>Download payslip</button>
+            <button type="button" className="download-payslip" disabled={busy !== null} onClick={() => void downloadOpenDocument()}>
+              {busy === `modal-${document.payRunId}` ? 'Preparing PDF...' : 'Download PDF'}
+            </button>
           </section>
         </div>
       )}

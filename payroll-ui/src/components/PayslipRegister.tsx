@@ -4,6 +4,7 @@ import { getOrganization, getWorkLocations } from '../services/settingsService'
 import { org0 } from '../data/payrollDefaults'
 import type { Client, Employee, Org, PayRun, PayRunSalaryLine, RunEmployee, WorkLocation } from '../types/payroll'
 import { money } from '../utils/salary'
+import { downloadHtmlPdf } from '../utils/htmlPdf'
 import DataTable from './DataTable'
 import SearchSelect, { selectOptions } from './SearchSelect'
 import './PayslipRegister.css'
@@ -122,6 +123,7 @@ export default function PayslipRegister() {
   const [runId, setRunId] = useState(0)
   const [run, setRun] = useState<PayRun | null>(null)
   const [selected, setSelected] = useState<RunEmployee | null>(null)
+  const [pdfBusy, setPdfBusy] = useState(false)
 
   useEffect(() => {
     void Promise.all([getClients(), getPayRuns(), getEmployees(), getWorkLocations(), getOrganization(org0)]).then(([clientRows, runRows, employeeRows, locationRows, organization]) => {
@@ -166,6 +168,19 @@ export default function PayslipRegister() {
     popup.focus()
   }
 
+  const downloadPdf = async () => {
+    if (!run || !selected || !payslipContext) return
+    setPdfBusy(true)
+    try {
+      await downloadHtmlPdf(
+        payslipHtml(org, run, selected, payslipContext),
+        `payslip-${selected.employeeCode}-${run.payPeriod}`
+      )
+    } finally {
+      setPdfBusy(false)
+    }
+  }
+
   return (
     <section className="payslip-register">
       <section className="card report-workspace">
@@ -177,7 +192,7 @@ export default function PayslipRegister() {
       </section>
       {run && <section className="card payslip-list"><DataTable rows={run.employees.filter(employee => !employee.isSkipped)} getRowId={row => row.employeeId} exportFileName={`payslip-register-${run.payPeriod}`} columns={[{ key: 'employee', label: 'Employee', value: row => row.employeeName, render: row => <>{row.employeeName}<small>{row.employeeCode}</small></> }, { key: 'department', label: 'Department' }, { key: 'grossPay', label: 'Gross', value: row => money(row.grossPay) }, { key: 'deductions', label: 'Deductions', value: row => money(row.statutoryDeductions + row.oneTimeDeductions) }, { key: 'netPay', label: 'Net pay', value: row => money(row.netPay) }, { key: 'paymentStatus', label: 'Payment' }]} actions={row => <button type="button" onClick={() => setSelected(row)}>Preview</button>} /></section>}
       {!run && <section className="card report-empty"><p>No approved pay run is available for this client.</p></section>}
-      {selected && run && payslipContext && <div className="payslip-modal-backdrop" onClick={() => setSelected(null)}><section className="payslip-preview-panel payslip-document-panel" role="dialog" aria-modal="true" aria-label="Payslip preview" onClick={event => event.stopPropagation()}><header><div><span className="eyebrow purple">{run.payPeriod}</span><h3>{selected.employeeName}</h3><p>{selected.employeeCode} - {selected.department}</p></div><button type="button" className="payslip-close" onClick={() => setSelected(null)}>x</button></header><iframe title="Payslip document preview" srcDoc={payslipHtml(org, run, selected, payslipContext)} /><footer><small>Payment status: <b>{selected.paymentStatus}</b></small><div><button type="button" onClick={printPreview}>Open printable</button><button type="button" onClick={download}>Download payslip</button></div></footer></section></div>}
+      {selected && run && payslipContext && <div className="payslip-modal-backdrop" onClick={() => setSelected(null)}><section className="payslip-preview-panel payslip-document-panel" role="dialog" aria-modal="true" aria-label="Payslip preview" onClick={event => event.stopPropagation()}><header><div><span className="eyebrow purple">{run.payPeriod}</span><h3>{selected.employeeName}</h3><p>{selected.employeeCode} - {selected.department}</p></div><button type="button" className="payslip-close" onClick={() => setSelected(null)}>x</button></header><iframe title="Payslip document preview" srcDoc={payslipHtml(org, run, selected, payslipContext)} /><footer><small>Payment status: <b>{selected.paymentStatus}</b></small><div><button type="button" onClick={printPreview}>Open printable</button><button type="button" onClick={download}>Download HTML</button><button type="button" className="payslip-pdf-button" disabled={pdfBusy} onClick={() => void downloadPdf()}>{pdfBusy ? 'Preparing PDF...' : 'Export PDF'}</button></div></footer></section></div>}
     </section>
   )
 }
