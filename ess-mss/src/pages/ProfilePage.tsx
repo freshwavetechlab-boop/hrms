@@ -1,20 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { LoadState, ProfileData, SaveProfileData, User } from '../types'
 import { essApi } from '../services/essApi'
 import { initials, showToast } from '../utils/ui'
+import { ProfileDocuments } from '../components/ProfileDocuments'
 
 export function ProfilePage({ user }: { user: User }) {
   const [profile, setProfile] = useState<ProfileData | null>(null)
   const [form, setForm] = useState<SaveProfileData | null>(null)
   const [state, setState] = useState<LoadState>('loading')
   const [saving, setSaving] = useState(false)
-  useEffect(() => { void load() }, [user.email])
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent('ess:page-title', { detail: { section: 'Home', title: 'My profile' } }))
-  }, [])
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setState('loading')
     try {
       const data = await essApi.profile()
@@ -24,7 +21,14 @@ export function ProfilePage({ user }: { user: User }) {
     } catch {
       setState('error')
     }
-  }
+  }, [])
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0)
+    return () => window.clearTimeout(timer)
+  }, [load, user.email])
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('ess:page-title', { detail: { section: 'Home', title: 'My profile' } }))
+  }, [])
 
   const set = <K extends keyof SaveProfileData>(key: K, value: SaveProfileData[K]) => setForm(current => current ? { ...current, [key]: value } : current)
   const save = async (event: FormEvent) => {
@@ -79,6 +83,7 @@ export function ProfilePage({ user }: { user: User }) {
       </div></section>
       <div className="profile-actions"><button type="button" className="secondary" onClick={() => setForm(toForm(profile))}>Reset</button><button disabled={saving}>{saving ? 'Saving...' : 'Save profile'}</button></div>
     </>}
+    {user.employeeId && <ProfileDocuments employeeId={user.employeeId} clientId={profile.clientId} />}
   </form>
 }
 

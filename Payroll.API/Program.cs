@@ -2,6 +2,7 @@ using Payroll.API.Models;
 using Payroll.API.Repositories;
 using Payroll.API.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.DataProtection;
 using System.Text.Json;
 using Dapper;
 
@@ -12,6 +13,17 @@ builder.Logging.AddConsole();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddHttpClient();
+var attachmentDataRoot = builder.Configuration["AttachmentStorage:DataRootPath"];
+if (string.IsNullOrWhiteSpace(attachmentDataRoot))
+    attachmentDataRoot = Path.Combine(builder.Environment.ContentRootPath, "App_Data");
+var attachmentKeyPath = builder.Configuration["AttachmentStorage:DataProtectionKeyPath"];
+if (string.IsNullOrWhiteSpace(attachmentKeyPath))
+    attachmentKeyPath = Path.Combine(attachmentDataRoot, "data-protection-keys");
+Directory.CreateDirectory(attachmentKeyPath);
+builder.Services.AddDataProtection()
+    .SetApplicationName("Payroll.API.Attachments")
+    .PersistKeysToFileSystem(new DirectoryInfo(attachmentKeyPath));
 // builder.Services.AddCors(options =>
 // {
 //     options.AddDefaultPolicy(policy =>
@@ -57,6 +69,8 @@ builder.Services.AddSingleton<ScheduledJobRepository>();
 builder.Services.AddSingleton<TravelExpenseRepository>();
 builder.Services.AddSingleton<RecruitmentAdminRepository>();
 builder.Services.AddSingleton<RecruitmentRepository>();
+builder.Services.AddSingleton<AttachmentStorageService>();
+builder.Services.AddSingleton<AttachmentRepository>();
 builder.Services.AddHostedService<PayrollRunWorker>();
 builder.Services.AddHostedService<ScheduledJobWorker>();
 builder.Services.AddHostedService<NotificationWorker>();
@@ -160,6 +174,202 @@ app.MapPost("/api/auth/change-password", async (AuthRepository repository, Chang
     return updated is null ? Results.BadRequest(new { error }) : Results.Ok(updated);
 })
 .WithName("ChangePassword")
+.WithOpenApi();
+
+app.MapGet("/api/attachment-targets", (HttpContext context) =>
+    HasPermission(context, "settings.manage") || HasPermission(context, "attachment.config.manage")
+        ? Results.Ok(AttachmentRepository.Targets)
+        : Results.StatusCode(403))
+.WithName("GetAttachmentTargets")
+.WithOpenApi();
+
+app.MapGet("/api/attachment-attributes", async (AttachmentRepository repository, int? clientId, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage")) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var effectiveClientId = user.ClientId ?? clientId;
+    return Results.Ok(await repository.GetAttributesAsync(effectiveClientId));
+})
+.WithName("GetAttachmentAttributes")
+.WithOpenApi();
+
+app.MapPost("/api/attachment-attributes", async (AttachmentRepository repository, AttachmentAttribute request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage")) return Results.StatusCode(403);
+    var (item, error) = await repository.SaveAttributeAsync(request, CurrentUser(context));
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("SaveAttachmentAttribute")
+.WithOpenApi();
+
+app.MapGet("/api/attachment-configurations", async (AttachmentRepository repository, int? clientId, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage")) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var effectiveClientId = user.ClientId ?? clientId;
+    return Results.Ok(await repository.GetConfigurationsAsync(effectiveClientId));
+})
+.WithName("GetAttachmentConfigurations")
+.WithOpenApi();
+
+app.MapGet("/api/attachment-configurations/effective", async (AttachmentRepository repository, int clientId, string moduleCode, string formCode, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user.ClientId is not null && user.ClientId != clientId) return Results.StatusCode(403);
+    return Results.Ok(await repository.GetEffectiveConfigurationsAsync(clientId, moduleCode, formCode));
+})
+.WithName("GetEffectiveAttachmentConfigurations")
+.WithOpenApi();
+
+app.MapPost("/api/attachment-configurations", async (AttachmentRepository repository, AttachmentFieldConfiguration request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage")) return Results.StatusCode(403);
+    var (item, error) = await repository.SaveConfigurationAsync(request, CurrentUser(context));
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("SaveAttachmentConfiguration")
+.WithOpenApi();
+
+app.MapGet("/api/attachment-storage-servers", async (AttachmentRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage") || HasPermission(context, "attachment.config.manage")
+        ? Results.Ok(await repository.GetStorageServersAsync())
+        : Results.StatusCode(403))
+.WithName("GetAttachmentStorageServers")
+.WithOpenApi();
+
+app.MapPost("/api/attachment-storage-servers", async (AttachmentRepository repository, AttachmentStorageServer request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage")) return Results.StatusCode(403);
+    var (item, error) = await repository.SaveStorageServerAsync(request, CurrentUser(context));
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("SaveAttachmentStorageServer")
+.WithOpenApi();
+
+app.MapPost("/api/attachment-storage-servers/{id:long}/test", async (AttachmentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage")) return Results.StatusCode(403);
+    var result = await repository.TestStorageServerAsync(id);
+    return result.Healthy ? Results.Ok(result) : Results.BadRequest(result);
+})
+.WithName("TestAttachmentStorageServer")
+.WithOpenApi();
+
+app.MapGet("/api/attachments", async (AttachmentRepository repository, string entityType, long entityId, HttpContext context) =>
+    Results.Ok(await repository.GetAttachmentsAsync(entityType, entityId, CurrentUser(context))))
+.WithName("GetEntityAttachments")
+.WithOpenApi();
+
+app.MapPost("/api/attachments", async (
+    AttachmentRepository repository,
+    [FromForm] AttachmentUploadRequest request,
+    HttpContext context,
+    ILoggerFactory loggerFactory) =>
+{
+    if (request.File is null)
+        return Results.BadRequest(new { error = "Select a file." });
+    var metadata = new AttachmentUploadMetadata
+    {
+        FieldConfigurationId = request.FieldConfigurationId,
+        EntityType = request.EntityType ?? "",
+        EntityId = request.EntityId,
+        DocumentNumber = request.DocumentNumber ?? "",
+        IssueDate = request.IssueDate,
+        ExpiryDate = request.ExpiryDate
+    };
+    try
+    {
+        var (attachment, error) = await repository.UploadAsync(metadata, request.File, CurrentUser(context),
+            context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+        return attachment is null ? Results.BadRequest(new { error }) : Results.Created($"/api/attachments/{attachment.PublicId}", attachment);
+    }
+    catch (Exception exception)
+    {
+        loggerFactory.CreateLogger("AttachmentUpload").LogError(exception,
+            "Attachment upload failed for entity {EntityType}/{EntityId} and field {FieldConfigurationId}.",
+            metadata.EntityType, metadata.EntityId, metadata.FieldConfigurationId);
+        return Results.Problem(
+            title: "Attachment upload failed",
+            detail: "The document could not be uploaded. Please retry or contact support.",
+            statusCode: StatusCodes.Status500InternalServerError);
+    }
+})
+.DisableAntiforgery()
+.WithMetadata(new RequestSizeLimitAttribute(30L * 1024 * 1024))
+.WithName("UploadAttachment")
+.WithOpenApi();
+
+app.MapGet("/api/attachments/{publicId:guid}/content", async (
+    AttachmentRepository repository,
+    AttachmentStorageService storage,
+    Guid publicId,
+    bool? download,
+    HttpContext context) =>
+{
+    var action = download == true ? "DOWNLOAD" : "PREVIEW";
+    var (attachment, server, error) = await repository.GetForContentAsync(publicId, CurrentUser(context), action,
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return attachment is null || server is null
+        ? Results.NotFound(new { error })
+        : new AttachmentContentResult(storage, server, attachment, download != true);
+})
+.WithName("ReadAttachmentContent")
+.WithOpenApi();
+
+app.MapPost("/api/attachments/{publicId:guid}/access-ticket", async (
+    AttachmentRepository repository,
+    Guid publicId,
+    JsonElement body,
+    HttpContext context) =>
+{
+    var purpose = body.TryGetProperty("purpose", out var value) ? value.GetString() ?? "Preview" : "Preview";
+    var (ticket, error) = await repository.IssueAccessTicketAsync(publicId, CurrentUser(context), purpose,
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return ticket is null ? Results.NotFound(new { error }) : Results.Ok(ticket);
+})
+.WithName("IssueAttachmentAccessTicket")
+.WithOpenApi();
+
+app.MapDelete("/api/attachments/{publicId:guid}", async (AttachmentRepository repository, Guid publicId, HttpContext context) =>
+{
+    var (ok, error) = await repository.DeleteAsync(publicId, CurrentUser(context),
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+})
+.WithName("DeleteAttachment")
+.WithOpenApi();
+
+app.MapPost("/api/attachments/{publicId:guid}/verify", async (AttachmentRepository repository, Guid publicId, HttpContext context) =>
+{
+    var (item, error) = await repository.ReviewAsync(publicId, true, "", CurrentUser(context),
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("VerifyAttachment")
+.WithOpenApi();
+
+app.MapPost("/api/attachments/{publicId:guid}/reject", async (AttachmentRepository repository, Guid publicId, AttachmentReviewRequest request, HttpContext context) =>
+{
+    var (item, error) = await repository.ReviewAsync(publicId, false, request.Reason, CurrentUser(context),
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("RejectAttachment")
+.WithOpenApi();
+
+app.MapGet("/api/public/attachments/content", async (
+    AttachmentRepository repository,
+    AttachmentStorageService storage,
+    string token,
+    HttpContext context) =>
+{
+    var (attachment, server, purpose) = await repository.ConsumeAccessTicketAsync(token,
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return attachment is null || server is null
+        ? Results.NotFound()
+        : new AttachmentContentResult(storage, server, attachment, !purpose!.Equals("Download", StringComparison.OrdinalIgnoreCase));
+})
+.WithName("ReadAttachmentByTicket")
 .WithOpenApi();
 
 app.MapGet("/api/dashboard", async (DashboardRepository repository, int? clientId, HttpContext context) =>
@@ -1206,13 +1416,13 @@ app.MapGet("/api/leave-attendance/leave-types/import-template", async (LeaveAtte
 .WithName("DownloadLeaveTypeImportTemplate")
 .WithOpenApi();
 
-app.MapPost("/api/leave-attendance/leave-types/import-jobs", async (LeaveAttendanceRepository repository, [FromForm] int clientId, [FromForm] IFormFile file, HttpContext context) =>
+app.MapPost("/api/leave-attendance/leave-types/import-jobs", async (LeaveAttendanceRepository repository, [FromForm] ClientFileUploadRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "settings.manage"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
-    if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
-    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a leave type import file." });
-    return Results.Accepted("/api/leave-attendance/leave-types/import-jobs", await repository.StartLeaveTypeImportJobAsync(clientId, file));
+    if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select a leave type import file." });
+    return Results.Accepted("/api/leave-attendance/leave-types/import-jobs", await repository.StartLeaveTypeImportJobAsync(request.ClientId, request.File));
 })
 .DisableAntiforgery()
 .WithName("StartLeaveTypeImportJob")
@@ -1254,13 +1464,13 @@ app.MapGet("/api/leave-attendance/holidays/import-template", async (LeaveAttenda
 .WithName("DownloadHolidayImportTemplate")
 .WithOpenApi();
 
-app.MapPost("/api/leave-attendance/holidays/import-jobs", async (LeaveAttendanceRepository repository, [FromForm] int clientId, [FromForm] IFormFile file, HttpContext context) =>
+app.MapPost("/api/leave-attendance/holidays/import-jobs", async (LeaveAttendanceRepository repository, [FromForm] ClientFileUploadRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "settings.manage"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
-    if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
-    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a holiday import file." });
-    return Results.Accepted("/api/leave-attendance/holidays/import-jobs", await repository.StartHolidayImportJobAsync(clientId, file));
+    if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select a holiday import file." });
+    return Results.Accepted("/api/leave-attendance/holidays/import-jobs", await repository.StartHolidayImportJobAsync(request.ClientId, request.File));
 })
 .DisableAntiforgery()
 .WithName("StartHolidayImportJob")
@@ -1283,15 +1493,15 @@ app.MapGet("/api/leave-attendance/import-balances/sample", async (LeaveBalanceIm
 .WithName("DownloadLeaveBalanceImportSample")
 .WithOpenApi();
 
-app.MapPost("/api/leave-attendance/import-balances/preview", async (LeaveBalanceImportRepository repository, [FromForm] int clientId, [FromForm] IFormFile file, [FromForm] string encoding, [FromForm] string? mappingJson, HttpContext context) =>
+app.MapPost("/api/leave-attendance/import-balances/preview", async (LeaveBalanceImportRepository repository, [FromForm] LeaveBalancePreviewUploadRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "settings.manage"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
-    if (clientId <= 0)
+    if (request.ClientId <= 0)
         return Results.BadRequest(new { error = "Select a client." });
-    if (file.Length == 0)
+    if (request.File is null || request.File.Length == 0)
         return Results.BadRequest(new { error = "Select a CSV, XLS or XLSX file." });
-    var preview = await repository.PreviewAsync(clientId, file, encoding, mappingJson);
+    var preview = await repository.PreviewAsync(request.ClientId, request.File, request.Encoding, request.MappingJson);
     return Results.Ok(preview);
 })
 .DisableAntiforgery()
@@ -1527,22 +1737,22 @@ app.MapGet("/api/employees/import-template", async (OrganizationRepository organ
 .WithName("DownloadEmployeeImportTemplate")
 .WithOpenApi();
 
-app.MapPost("/api/employees/import", async (EmployeeRepository repository, [FromForm] int clientId, [FromForm] IFormFile file) =>
+app.MapPost("/api/employees/import", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request) =>
 {
-    if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
-    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select an employee CSV file." });
-    var result = await repository.ImportCsvAsync(clientId, file);
+    if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select an employee CSV file." });
+    var result = await repository.ImportCsvAsync(request.ClientId, request.File);
     return result.Errors.Count > 0 ? Results.BadRequest(result) : Results.Ok(result);
 })
 .DisableAntiforgery()
 .WithName("ImportEmployees")
 .WithOpenApi();
 
-app.MapPost("/api/employees/import-jobs", async (EmployeeRepository repository, [FromForm] int clientId, [FromForm] IFormFile file) =>
+app.MapPost("/api/employees/import-jobs", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request) =>
 {
-    if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
-    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select an employee CSV file." });
-    return Results.Accepted($"/api/employees/import-jobs", await repository.StartImportCsvJobAsync(clientId, file));
+    if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select an employee CSV file." });
+    return Results.Accepted($"/api/employees/import-jobs", await repository.StartImportCsvJobAsync(request.ClientId, request.File));
 })
 .DisableAntiforgery()
 .WithName("StartEmployeeImportJob")
@@ -1753,6 +1963,8 @@ static bool HasPermission(HttpContext context, string permission) =>
 static bool IsEssAllowedApi(PathString path)
 {
     if (path.StartsWithSegments("/api/ess")) return true;
+    if (path.StartsWithSegments("/api/attachments")) return true;
+    if (path.StartsWithSegments("/api/attachment-configurations/effective")) return true;
     if (path.StartsWithSegments("/api/auth/me")) return true;
     if (path.StartsWithSegments("/api/auth/logout")) return true;
     if (path.StartsWithSegments("/api/auth/change-password")) return true;
@@ -1809,6 +2021,7 @@ static async Task RunDatabaseSetupAsync(IServiceProvider services, IConfiguratio
     await scopedServices.GetRequiredService<TravelExpenseRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<RecruitmentAdminRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<RecruitmentRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<AttachmentRepository>().InitializeAsync();
 
     await using var workflowDb = new MySqlConnector.MySqlConnection(configuration.GetConnectionString("Default"));
     await workflowDb.OpenAsync();

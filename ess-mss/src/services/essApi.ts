@@ -1,4 +1,4 @@
-import type { AttendanceSummary, Birthday, DailyAttendance, ExpenseClaim, ExpenseDashboard, ExpenseOptions, FeatureAccess, Holiday, LeaveBalance, LeaveRequest, OrganizationBrand, Payslip, PayslipDocument, ProfileData, RecruitmentDashboard, RecruitmentEmployeeReferral, RecruitmentInternalOpening, RecruitmentOptions, RecruitmentRequisition, SaveEmployeeReferral, SaveExpenseClaim, SaveProfileData, SaveRecruitmentRequisition, SaveTravelRequest, Task, TaxPortal, TravelDashboard, TravelOptions, TravelRequest, User, WorkflowTrail } from '../types'
+import type { AttachmentAccessTicket, AttachmentFieldConfiguration, AttendanceSummary, Birthday, DailyAttendance, EntityAttachment, ExpenseClaim, ExpenseDashboard, ExpenseOptions, FeatureAccess, Holiday, LeaveBalance, LeaveRequest, OrganizationBrand, Payslip, PayslipDocument, ProfileData, RecruitmentDashboard, RecruitmentEmployeeReferral, RecruitmentInternalOpening, RecruitmentOptions, RecruitmentRequisition, SaveEmployeeReferral, SaveExpenseClaim, SaveProfileData, SaveRecruitmentRequisition, SaveTravelRequest, Task, TaxPortal, TravelDashboard, TravelOptions, TravelRequest, User, WorkflowTrail } from '../types'
 
 export const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:5062'
 const tokenKey = 'ess.auth.token'
@@ -60,6 +60,34 @@ export const essApi = {
   features: () => essFetch('/api/ess/features').then(r => r.ok ? r.json() as Promise<FeatureAccess> : { travelExpenseEnabled: false }),
   profile: () => essFetch('/api/ess/profile').then(r => r.ok ? r.json() as Promise<ProfileData> : null),
   saveProfile: (request: SaveProfileData) => essFetch('/api/ess/profile', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) }).then(jsonOrThrow<ProfileData>),
+  attachmentConfigurations: async (clientId: number) => {
+    const forms = ['EMPLOYEE_PROFILE', 'EMPLOYEE_CREATE_EDIT']
+    const responses = await Promise.all(forms.map(formCode =>
+      essFetch(`/api/attachment-configurations/effective?clientId=${clientId}&moduleCode=EMPLOYEE&formCode=${formCode}`)
+        .then(response => response.ok ? response.json() as Promise<AttachmentFieldConfiguration[]> : [])
+    ))
+    return [...new Map(responses.flat().map(row => [row.id, row])).values()]
+  },
+  attachments: (employeeId: number) => essFetch(`/api/attachments?entityType=EMPLOYEE&entityId=${employeeId}`).then(r => r.ok ? r.json() as Promise<EntityAttachment[]> : []),
+  uploadAttachment: (configurationId: number, employeeId: number, file: File, metadata: { documentNumber: string; issueDate: string; expiryDate: string }) => {
+    const body = new FormData()
+    body.append('fieldConfigurationId', String(configurationId))
+    body.append('entityType', 'EMPLOYEE')
+    body.append('entityId', String(employeeId))
+    body.append('documentNumber', metadata.documentNumber.trim())
+    if (metadata.issueDate) body.append('issueDate', metadata.issueDate)
+    if (metadata.expiryDate) body.append('expiryDate', metadata.expiryDate)
+    body.append('file', file)
+    return essFetch('/api/attachments', { method: 'POST', body }).then(jsonOrThrow<EntityAttachment>)
+  },
+  deleteAttachment: (publicId: string) => essFetch(`/api/attachments/${publicId}`, { method: 'DELETE' }).then(async response => {
+    if (!response.ok) await jsonOrThrow<unknown>(response)
+  }),
+  attachmentTicket: (publicId: string, purpose: 'Preview' | 'Download') => essFetch(`/api/attachments/${publicId}/access-ticket`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ purpose }),
+  }).then(jsonOrThrow<AttachmentAccessTicket>),
   leaveBalances: () => essFetch('/api/ess/leave/balances').then(r => r.ok ? r.json() as Promise<LeaveBalance[]> : []),
   leaveRequests: () => essFetch('/api/ess/leave/requests').then(r => r.ok ? r.json() as Promise<LeaveRequest[]> : []),
   leaveTrail: (id: number) => essFetch(`/api/ess/leave/requests/${id}/trail`).then(r => r.ok ? r.json() as Promise<WorkflowTrail> : Promise.reject()),

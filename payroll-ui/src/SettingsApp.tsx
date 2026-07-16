@@ -17,6 +17,7 @@ import PayrollPage from './pages/PayrollPage'
 import ReportingPage, { reportItems } from './pages/ReportingPage'
 import type { ReportDefinition, ReportingMenu } from './pages/ReportingPage'
 import RecruitmentPage from './pages/RecruitmentPage'
+import MyProfilePage from './pages/MyProfilePage'
 import TravelAdvancesPage from './pages/TravelAdvancesPage'
 import WorkflowPage from './pages/WorkflowPage'
 import type { WorkflowMenu } from './pages/WorkflowPage'
@@ -111,6 +112,7 @@ export default function SettingsApp() {
   const routeLocation = useLocation()
   const navigate = useNavigate()
   const isPayHistory = routeLocation.pathname === '/pay-runs/history'
+  const isProfile = routeLocation.pathname === '/profile'
   const savedTab = localStorage.getItem('payroll.tab') as SettingsTab | null
   const savedSecurityTab = localStorage.getItem('payroll.securityTab') as SecurityTab | null
   const savedLeaveAttendanceTab = localStorage.getItem('payroll.leaveAttendanceTab') as LeaveAttendanceMenu | null
@@ -164,15 +166,19 @@ export default function SettingsApp() {
       navigate(item.route || '/dashboard')
     }
   }
-  const pageTitle = showMyTasks ? 'My Tasks' : mainModule === 'Dashboard' ? activeDashboard.name : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? employeeTab : mainModule === 'TalentAcquisition' ? 'Talent Acquisition' : mainModule === 'Security' ? securityTab : mainModule === 'Reports' ? reportingTab : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
+  const pageTitle = isProfile ? 'My Profile' : showMyTasks ? 'My Tasks' : mainModule === 'Dashboard' ? activeDashboard.name : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? employeeTab : mainModule === 'TalentAcquisition' ? 'Talent Acquisition' : mainModule === 'Security' ? securityTab : mainModule === 'Reports' ? reportingTab : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
   const userInitials = (currentUser?.displayName || 'User').split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase()
   const accountMenu: MenuProps = {
     items: [
-      { key: 'profile', label: <div className="account-menu-card"><strong>{currentUser?.displayName}</strong><small>{currentUser?.email}</small><span>{currentUser?.roles.join(', ')}</span></div> },
+      { key: 'account-info', disabled: true, label: <div className="account-menu-card"><strong>{currentUser?.displayName}</strong><small>{currentUser?.email}</small><span>{currentUser?.roles.join(', ')}</span></div> },
+      { key: 'profile', icon: <UserOutlined />, label: 'My Profile & Documents' },
       { type: 'divider' },
       { key: 'logout', danger: true, icon: <LogoutOutlined />, label: 'Logout' }
     ],
-    onClick: ({ key }) => { if (key === 'logout') void session?.logout() }
+    onClick: ({ key }) => {
+      if (key === 'profile') navigate('/profile')
+      if (key === 'logout') void session?.logout()
+    }
   }
 
   useEffect(() => {
@@ -377,6 +383,7 @@ export default function SettingsApp() {
     return menuLink('/employees/master', 'Employee Master', true, () => setModule('Employees'), 'Core HR')
   }
   const renderPage = () => {
+    if (isProfile && currentUser) return <MyProfilePage user={currentUser} />
     if (showMyTasks) return <WorkflowTasks />
     if (mainModule === 'Dashboard') return <DashboardPage view={dashboardView} />
     if (mainModule === 'Security') return <SecurityPanel initialTab={securityTab} />

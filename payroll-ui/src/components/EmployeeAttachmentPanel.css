@@ -1,0 +1,28 @@
+.employee-document-panel{display:grid;gap:12px}
+.employee-document-summary{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.employee-document-summary h4,.employee-document-empty h4{margin:0;color:#172136;font-size:14px}
+.employee-document-summary p,.employee-document-empty p{margin:4px 0 0;color:#667085;font-size:11px}
+.employee-document-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.employee-document-card{display:grid;align-content:start;gap:10px;padding:13px;border:1px solid #e4e7ec;border-radius:11px;background:#fff}
+.employee-document-card.required-missing{border-color:#fdba74;background:#fffbeb}
+.employee-document-card>header{display:flex;align-items:start;justify-content:space-between;gap:8px}
+.employee-document-card>header>div{display:grid;gap:2px;min-width:0}
+.employee-document-card>header strong{color:#172136;font-size:13px}
+.employee-document-card>header span,.employee-document-card>p{color:#667085;font-size:10px}
+.employee-document-card>p{margin:0}
+.employee-document-files{display:grid;gap:7px}
+.employee-document-file{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center;padding:9px;border:1px solid #eaecf0;border-radius:8px;background:#f8fafc}
+.employee-document-file>div:first-child{display:grid;min-width:0}
+.employee-document-file b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#344054;font-size:11px}
+.employee-document-file span{color:#7b8496;font-size:9px}
+.employee-document-file .ant-space{grid-column:1/-1}
+.employee-document-upload{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding-top:3px}
+.employee-document-metadata{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;width:100%}
+.employee-document-metadata label{display:grid;gap:3px}
+.employee-document-metadata span{color:#667085;font-size:9px;font-weight:800;text-transform:uppercase}
+.employee-document-file-picker{display:flex;min-width:160px;flex:1;align-items:center;padding:7px 9px;border:1px dashed #b7b1dc;border-radius:8px;background:#faf9ff;color:#5133cc;font-size:10px;font-weight:800;cursor:pointer}
+.employee-document-file-picker input{display:none}
+.employee-document-file-picker span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.employee-document-upload .ant-progress{width:100%}
+.employee-document-empty{padding:18px;border:1px dashed #cbd5e1;border-radius:10px;background:#f8fafc;text-align:center}
+@media(max-width:850px){.employee-document-grid{grid-template-columns:1fr}.employee-document-metadata{grid-template-columns:1fr}}

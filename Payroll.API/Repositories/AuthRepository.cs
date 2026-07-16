@@ -149,7 +149,14 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
         "recruitment.assign.recruiter",
         "recruitment.assign.partner",
         "recruitment.publish",
-        "recruitment.referral.manage"
+        "recruitment.referral.manage",
+        "attachment.config.manage",
+        "attachment.employee.view",
+        "attachment.employee.upload",
+        "attachment.employee.verify",
+        "attachment.recruitment.view",
+        "attachment.recruitment.upload",
+        "attachment.recruitment.verify"
     ];
 
     public static bool HasBackofficeAccess(AuthUser user) =>
@@ -696,6 +703,13 @@ LIMIT 5;", new { Id = id }, transaction)).ToList();
             new { Code = "leave.manage", Name = "Manage leave", Module = "Leave & Attendance", Description = "Configure and process leave records." },
             new { Code = "attendance.manage", Name = "Manage attendance", Module = "Leave & Attendance", Description = "Configure attendance and review attendance data." },
             new { Code = "settings.manage", Name = "Manage settings", Module = "Settings", Description = "Configure organization, clients, masters and setup data." },
+            new { Code = "attachment.config.manage", Name = "Manage attachment configuration", Module = "Attachments", Description = "Configure attachment attributes, form fields and storage servers." },
+            new { Code = "attachment.employee.view", Name = "View employee attachments", Module = "Attachments", Description = "View and download employee attachments." },
+            new { Code = "attachment.employee.upload", Name = "Upload employee attachments", Module = "Attachments", Description = "Upload, replace and delete employee attachments." },
+            new { Code = "attachment.employee.verify", Name = "Verify employee attachments", Module = "Attachments", Description = "Verify or reject employee attachments." },
+            new { Code = "attachment.recruitment.view", Name = "View recruitment attachments", Module = "Attachments", Description = "View candidate and recruitment attachments." },
+            new { Code = "attachment.recruitment.upload", Name = "Upload recruitment attachments", Module = "Attachments", Description = "Upload and maintain candidate and recruitment attachments." },
+            new { Code = "attachment.recruitment.verify", Name = "Verify recruitment attachments", Module = "Attachments", Description = "Verify or reject candidate and recruitment attachments." },
             new { Code = "tax.statutory.manage", Name = "Manage statutory tax", Module = "Settings", Description = "Maintain statutory and income tax rules." },
             new { Code = "workflow.manage", Name = "Manage workflows", Module = "Workflows", Description = "Configure approval workflows and department heads." },
             new { Code = "recruitment.manage", Name = "Manage recruitment", Module = "Talent Acquisition", Description = "Monitor recruitment requisitions and open positions." },
@@ -744,9 +758,9 @@ ON DUPLICATE KEY UPDATE
             ["admin"] = permissions.Select(permission => permission.Code).ToArray(),
             ["employee"] = ["ess.self"],
             ["mss_manager"] = ["ess.self", "dashboard.approvals.view"],
-            ["payroll_maker"] = ["dashboard.view", "dashboard.payroll.view", "dashboard.workforce.view", "employees.view", "employees.manage", "payroll.run", "reports.view"],
+            ["payroll_maker"] = ["dashboard.view", "dashboard.payroll.view", "dashboard.workforce.view", "employees.view", "employees.manage", "attachment.employee.view", "attachment.employee.upload", "payroll.run", "reports.view"],
             ["payroll_approver"] = ["dashboard.view", "dashboard.payroll.view", "payroll.approve", "reports.view"],
-            ["hr_manager"] = ["dashboard.view", "dashboard.workforce.view", "dashboard.attendance.view", "employees.view", "employees.manage", "leave.manage", "attendance.manage", "workflow.manage", "recruitment.manage", "recruitment.position.view", "recruitment.position.manage", "recruitment.assign.recruiter", "recruitment.assign.partner", "recruitment.publish", "recruitment.referral.manage", "recruitment.rfr.create", "recruitment.rfr.view", "reports.view"]
+            ["hr_manager"] = ["dashboard.view", "dashboard.workforce.view", "dashboard.attendance.view", "employees.view", "employees.manage", "attachment.employee.view", "attachment.employee.upload", "attachment.employee.verify", "attachment.recruitment.view", "attachment.recruitment.upload", "attachment.recruitment.verify", "leave.manage", "attendance.manage", "workflow.manage", "recruitment.manage", "recruitment.position.view", "recruitment.position.manage", "recruitment.assign.recruiter", "recruitment.assign.partner", "recruitment.publish", "recruitment.referral.manage", "recruitment.rfr.create", "recruitment.rfr.view", "reports.view"]
         };
 
         foreach (var (roleCode, permissionCodes) in rolePermissions)

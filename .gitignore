@@ -24,6 +24,8 @@ coverage/
 !.env.example
 .bootstrap/
 .build/
+Payroll.API/App_Data/
+Payroll.API/.codex-*/
 
 # IDE
 .vs/

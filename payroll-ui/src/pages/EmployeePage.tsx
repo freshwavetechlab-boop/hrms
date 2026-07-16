@@ -13,6 +13,7 @@ import { calculateSalaryJson, calculateSalaryTotals, canOverrideSalaryComponent,
 import { parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules, type ImportPreviewSheet } from '../utils/importPreview'
 import { buildXlsxBlob } from '../utils/xlsx'
 import { safeJsonRecord } from '../shared/json'
+import EmployeeAttachmentPanel from '../components/EmployeeAttachmentPanel'
 import '../TemplateDesigner.css'
 
 const employeeInfotypes = [
@@ -21,7 +22,8 @@ const employeeInfotypes = [
   { code: '0002', name: 'Personal Data' },
   { code: '0006', name: 'Addresses' },
   { code: '0008', name: 'Basic Pay' },
-  { code: '0009', name: 'Bank Details' }
+  { code: '0009', name: 'Bank Details' },
+  { code: 'DOCS', name: 'Documents' }
 ] as const
 type EmployeeInfotypeCode = typeof employeeInfotypes[number]['code']
 const personal0 = employee0.personalDetails
@@ -93,7 +95,16 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     const isNew = !employee.id
     const response = await persistEmployee(toEmployeePayload(normalizeEmployeeSalary(employee)), employeeInfotype, changeReason)
     if (!response.ok) { notify(response.error || 'Unable to save employee.', 'error'); return }
-    closeModal(); await load(); notify(isNew ? 'Employee created successfully.' : 'Employee saved successfully.', 'success')
+    if (isNew) {
+      const saved = { ...employee, id: response.data.id }
+      setEmployee(saved)
+      setEmployeeInfotype('DOCS')
+      await load()
+      await loadEmployeeHistory(saved.id)
+      notify('Employee created. Add the configured documents now.', 'success')
+      return
+    }
+    closeModal(); await load(); notify('Employee saved successfully.', 'success')
   }
   const runEmployeeAction = async (request: EmployeeActionRequest) => {
     const response = await processEmployeeAction(request)
@@ -470,10 +481,15 @@ function EmployeePanel(p: { employee: Employee; setEmployee: (employee: Employee
       </div>
     </div>}
     {p.employeeInfotype === '0009' && <div className="grid"><F l="Bank"><input value={payment.bankName || ''} onChange={event => setPayment('bankName', event.target.value)} /></F><F l="Account no"><input value={payment.bankAccountNo || ''} onChange={event => setPayment('bankAccountNo', event.target.value)} /></F><F l="IFSC"><input value={payment.ifscCode || ''} onChange={event => setPayment('ifscCode', event.target.value)} /></F><F l="Payment mode"><Sel v={payment.paymentMode || ''} set={value => setPayment('paymentMode', value)} a={['Bank Transfer', 'Cheque', 'Cash']} /></F></div>}
-    {p.employeeInfotype !== '0000' && <div className="grid"><F l="Change reason" w><input value={p.changeReason} onChange={event => p.setChangeReason(event.target.value)} placeholder="Reason for this infotype change" /></F></div>}
+    {p.employeeInfotype === 'DOCS' && <EmployeeAttachmentPanel employeeId={p.employee.id} clientId={p.employee.clientId} />}
+    {p.employeeInfotype !== '0000' && p.employeeInfotype !== 'DOCS' && <div className="grid"><F l="Change reason" w><input value={p.changeReason} onChange={event => p.setChangeReason(event.target.value)} placeholder="Reason for this infotype change" /></F></div>}
     </section>
     <InfotypeHistory employee={p.employee} infotypeCode={p.employeeInfotype} infotypes={p.infotypes} clients={p.clients} locations={p.locations} managerUsers={p.managerUsers} templates={p.templates} />
-    <div className="actions"><button type="button" className="secondary" onClick={p.closeModal}>Cancel</button><button type="button" disabled={p.employeeInfotype === '0000'} onClick={p.saveEmployee}>Save infotype</button></div></section>
+    <div className="actions">
+      <button type="button" className="secondary" onClick={p.closeModal}>{p.employeeInfotype === 'DOCS' ? 'Close' : 'Cancel'}</button>
+      {p.employeeInfotype === 'DOCS' && !p.employee.id && <button type="button" onClick={() => p.setEmployeeInfotype('0001')}>Enter employee details</button>}
+      {p.employeeInfotype !== 'DOCS' && <button type="button" disabled={p.employeeInfotype === '0000'} onClick={p.saveEmployee}>Save infotype</button>}
+    </div></section>
 }
 
 function EmployeeActionEditor(p: { employee: Employee; locations: WorkLocation[]; deps: string[]; desigs: string[]; grades: string[]; runEmployeeAction: (request: EmployeeActionRequest) => Promise<void> }) {
@@ -488,7 +504,7 @@ function EmployeeActionEditor(p: { employee: Employee; locations: WorkLocation[]
 }
 
 function InfotypeHistory(p: { employee: Employee; infotypeCode: EmployeeInfotypeCode; infotypes: EmployeeInfotypeRecord[]; clients: Client[]; locations: WorkLocation[]; managerUsers: WorkflowApprover[]; templates: Structure[] }) {
-  if (!p.employee.id) return null
+  if (!p.employee.id || p.infotypeCode === 'DOCS') return null
   const rows = p.infotypes.filter(row => row.infotypeCode === p.infotypeCode).sort((a, b) => statusRank(a.status) - statusRank(b.status) || String(b.effectiveFrom).localeCompare(String(a.effectiveFrom)))
   const infotypeName = employeeInfotypes.find(item => item.code === p.infotypeCode)?.name ?? 'Infotype'
   return <section className="employee-history-grid single"><div><h4>{p.infotypeCode} - {infotypeName} historical records</h4><DataTable rows={rows} getRowId={row => row.id} emptyText="No records for this infotype yet." exportFileName={`employee-infotypes-${p.employee.employeeCode}-${p.infotypeCode}`} columns={infotypeHistoryColumns(p.infotypeCode, p)} /></div></section>
@@ -516,7 +532,8 @@ function infotypeHistoryColumns(code: EmployeeInfotypeCode, refs: { clients: Cli
     '0002': [valueColumn('firstNameValue', 'First name', ['FirstName', 'firstName']), valueColumn('lastNameValue', 'Last name', ['LastName', 'lastName']), valueColumn('genderValue', 'Gender', ['Gender', 'gender']), valueColumn('dobValue', 'DOB', ['PersonalDetails.DateOfBirth', 'personalDetails.dateOfBirth', 'PersonalDetails.dateOfBirth']), valueColumn('panValue', 'PAN', ['PersonalDetails.PanNumber', 'personalDetails.panNumber']), valueColumn('uanValue', 'UAN', ['PersonalDetails.UanNumber', 'personalDetails.uanNumber']), valueColumn('mobileValue', 'Mobile', ['PersonalDetails.Mobile', 'personalDetails.mobile'])],
     '0006': [valueColumn('addressValue', 'Address', ['Address', 'address'], '220px'), valueColumn('correspondenceValue', 'Correspondence', ['CorrespondenceAddress', 'correspondenceAddress'], '220px'), valueColumn('permanentValue', 'Permanent', ['PermanentAddress', 'permanentAddress'], '220px')],
     '0008': [valueColumn('templateValue', 'Template', ['SalaryStructureId', 'salaryStructureId'], '180px', templateName), valueColumn('ctcValue', 'Annual CTC', ['AnnualCtc', 'annualCtc']), valueColumn('componentsValue', 'Components', ['SalaryComponents', 'salaryComponents'], '260px')],
-    '0009': [valueColumn('bankValue', 'Bank', ['BankName', 'bankName']), valueColumn('accountValue', 'Account no', ['BankAccountNo', 'bankAccountNo'], '180px'), valueColumn('ifscValue', 'IFSC', ['IfscCode', 'ifscCode']), valueColumn('modeValue', 'Mode', ['PaymentMode', 'paymentMode'])]
+    '0009': [valueColumn('bankValue', 'Bank', ['BankName', 'bankName']), valueColumn('accountValue', 'Account no', ['BankAccountNo', 'bankAccountNo'], '180px'), valueColumn('ifscValue', 'IFSC', ['IfscCode', 'ifscCode']), valueColumn('modeValue', 'Mode', ['PaymentMode', 'paymentMode'])],
+    'DOCS': []
   }
   return [...common, ...byCode[code], ...trail]
 }
