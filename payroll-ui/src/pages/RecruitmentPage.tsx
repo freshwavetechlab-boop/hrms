@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Card, Input, InputNumber, Modal, Select, Space, Tabs, message } from 'antd'
 import DataTable from '../components/DataTable'
+import RecruitmentJobDescriptionManager from '../components/RecruitmentJobDescriptionManager'
+import RecruitmentJobPostingManager from '../components/RecruitmentJobPostingManager'
+import RecruitmentPipelineBoard from '../components/RecruitmentPipelineBoard'
+import RecruitmentTalentWorkspace from '../components/RecruitmentTalentWorkspace'
 import SearchSelect, { selectOptions } from '../components/SearchSelect'
 import { getClients } from '../services/payrollService'
 import { assignConsultant, assignRecruiter, assignVendor, createReferralCampaign, getRecruitmentDashboard, getRecruitmentMasterOptions, getRecruitmentOpenPositionDetail, getRecruitmentOpenPositions, getRecruitmentOperationsOptions, getRecruitmentRequisitions, publishPosition, saveRecruitmentPositionNote, updateRecruitmentPositionStatus } from '../services/recruitmentService'
@@ -12,7 +16,20 @@ const money = (value: number, currency = 'INR') => `${currency} ${Number(value |
 const dateText = (value?: string | null) => value ? new Date(value).toLocaleDateString('en-GB') : '-'
 const dashboard0: RecruitmentDashboard = { drafts: 0, pendingApproval: 0, approved: 0, rejected: 0, returned: 0, withdrawn: 0, openPositions: 0, filledPositions: 0, cancelledPositions: 0, onHoldPositions: 0, remainingPositions: 0, averageApprovalHours: 0, departmentWiseHiring: [], companyWiseHiring: [], priorityWiseHiring: [], upcomingJoiningTargets: [] }
 
-export default function RecruitmentPage() {
+export const recruitmentViews = ['Dashboard', 'Requisitions', 'Open Positions', 'Job Descriptions', 'Job Postings', 'Hiring Pipeline', 'Talent Pool', 'Applications', 'Interviews', 'Offers & Pre-Onboarding'] as const
+export type RecruitmentPageView = (typeof recruitmentViews)[number]
+
+const recruitmentViewGroup = (view: RecruitmentPageView) => view === 'Dashboard'
+  ? 'Overview'
+  : ['Requisitions', 'Open Positions'].includes(view)
+    ? 'Demand planning'
+    : ['Job Descriptions', 'Job Postings'].includes(view)
+      ? 'Content & publishing'
+      : ['Hiring Pipeline', 'Talent Pool', 'Applications'].includes(view)
+        ? 'Candidate lifecycle'
+        : 'Selection & onboarding'
+
+export default function RecruitmentPage({ view = 'Dashboard' }: { view?: RecruitmentPageView }) {
   const [clients, setClients] = useState<Client[]>([])
   const [dashboard, setDashboard] = useState<RecruitmentDashboard>(dashboard0)
   const [requisitions, setRequisitions] = useState<RecruitmentRequisition[]>([])
@@ -100,10 +117,10 @@ export default function RecruitmentPage() {
   }
 
   return <section className="recruitment-monitor-page">
-    <Card title="Talent Acquisition" size="small" className="settings-panel settings-table-panel">
-      <Tabs items={[
-        { key: 'dashboard', label: 'Dashboard', children: <Dashboard summary={summary} dashboard={dashboard} /> },
-        { key: 'rfr', label: 'Requisitions', children: <><div className="travel-advance-filters recruitment-filters"><label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={selectOptions(clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label><label><span>Status</span><SearchSelect value={status} onChange={setStatus} options={selectOptions(rfrStatusOptions, 'All statuses')} /></label><label><span>Search</span><input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void load() }} placeholder="RFR, position, requester" /></label><Button onClick={() => void load()}>Search</Button></div><DataTable rows={requisitions} exportFileName="recruitment-requisitions" columns={[
+    <Card title={view} extra={<span className="recruitment-workspace-group">{recruitmentViewGroup(view)}</span>} size="small" className="settings-panel settings-table-panel recruitment-root-card">
+      <div className="recruitment-workspace-content">
+        {view === 'Dashboard' && <Dashboard summary={summary} dashboard={dashboard} />}
+        {view === 'Requisitions' && <><div className="recruitment-filters"><label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={selectOptions(clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label><label><span>Status</span><SearchSelect value={status} onChange={setStatus} options={selectOptions(rfrStatusOptions, 'All statuses')} /></label><label><span>Search</span><Input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void load() }} placeholder="RFR, position, requester" allowClear /></label><Button type="primary" onClick={() => void load()}>Search</Button></div><DataTable rows={requisitions} exportFileName="recruitment-requisitions" columns={[
           { key: 'rfrNumber', label: 'RFR', render: row => <><b>{row.rfrNumber}</b><small>{dateText(row.requestDate)}</small></>, value: row => row.rfrNumber },
           { key: 'positionTitle', label: 'Position', render: row => <><b>{row.positionTitle}</b><small>{row.hiringType} / {row.employmentType}</small></>, value: row => row.positionTitle },
           { key: 'requestedByName', label: 'Requester' },
@@ -113,8 +130,8 @@ export default function RecruitmentPage() {
           { key: 'targetJoiningDate', label: 'Target', render: row => dateText(row.targetJoiningDate), value: row => row.targetJoiningDate || '' },
           { key: 'status', label: 'Status' },
           { key: 'openPositionId', label: 'Open position', value: row => row.openPositionId || '-', render: row => row.openPositionId ? `#${row.openPositionId}` : '-' }
-        ]} /></> },
-        { key: 'positions', label: 'Open Positions', children: <DataTable rows={positions} exportFileName="recruitment-open-positions" actions={row => <Button size="small" type="primary" onClick={() => void openDetail(row)}>View</Button>} columns={[
+        ]} /></>}
+        {view === 'Open Positions' && <DataTable rows={positions} exportFileName="recruitment-open-positions" actions={row => <Button size="small" type="primary" onClick={() => void openDetail(row)}>View</Button>} columns={[
           { key: 'positionCode', label: 'Position', render: row => <><b>{row.positionCode}</b><small>{row.rfrNumber}</small></>, value: row => row.positionCode },
           { key: 'positionTitle', label: 'Title' },
           { key: 'clientName', label: 'Client' },
@@ -123,8 +140,15 @@ export default function RecruitmentPage() {
           { key: 'targetJoiningDate', label: 'Target', render: row => dateText(row.targetJoiningDate), value: row => row.targetJoiningDate || '' },
           { key: 'salary', label: 'Salary range', value: row => `${row.salaryMin}-${row.salaryMax}`, render: row => `${money(row.salaryMin, row.currency)} - ${money(row.salaryMax, row.currency)}` },
           { key: 'status', label: 'Status' }
-        ]} /> }
-      ]} />
+        ]} />}
+        {view === 'Job Descriptions' && <RecruitmentJobDescriptionManager initialClientId={clientId} />}
+        {view === 'Job Postings' && <RecruitmentJobPostingManager initialClientId={clientId} />}
+        {view === 'Hiring Pipeline' && <RecruitmentPipelineBoard />}
+        {view === 'Talent Pool' && <RecruitmentTalentWorkspace mode="candidates" />}
+        {view === 'Applications' && <RecruitmentTalentWorkspace mode="applications" />}
+        {view === 'Interviews' && <RecruitmentTalentWorkspace mode="interviews" />}
+        {view === 'Offers & Pre-Onboarding' && <RecruitmentTalentWorkspace mode="offers" />}
+      </div>
     </Card>
     <Modal open={!!detail} footer={null} width={1120} onCancel={() => setDetail(null)} title={detail?.position?.positionCode ? `${detail.position.positionCode} - ${detail.position.positionTitle}` : 'Open position'}>
       {detail?.position && <section className="recruitment-position-detail">

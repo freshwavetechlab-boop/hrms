@@ -9,7 +9,7 @@ export default function BulkUploadProgressModal(p: { open: boolean; title: strin
   const completed = p.summary.completedRows ?? (done ? p.summary.totalRows : Math.floor((p.summary.totalRows || 0) * p.percent / 100))
   const savedRows = (p.summary.inserted ?? 0) + (p.summary.updated ?? 0)
   return <Modal open={p.open} title={p.title} footer={<Button disabled={p.state === 'uploading'} onClick={p.onClose}>Close</Button>} onCancel={p.onClose} closable={p.state !== 'uploading'} maskClosable={p.state !== 'uploading'}>
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+    <Space data-testid="bulk-upload-progress" data-state={p.state} direction="vertical" size="middle" style={{ width: '100%' }}>
       <Progress percent={p.percent} status={failed ? 'exception' : done ? 'success' : 'active'} />
       <Space wrap>
         <Tag>Total {p.summary.totalRows || '-'}</Tag>

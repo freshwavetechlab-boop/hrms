@@ -236,6 +236,40 @@ ORDER BY r.ClientId IS NULL, r.Id", new { EventCode = CleanCode(notificationEven
         }
     }
 
+    public async Task<long?> QueueTemplateAsync(long templateId, string recipientEmail, NotificationEvent notificationEvent)
+    {
+        if (templateId <= 0 || string.IsNullOrWhiteSpace(recipientEmail)
+            || !MailboxAddress.TryParse(recipientEmail.Trim(), out var mailbox)
+            || string.IsNullOrWhiteSpace(notificationEvent.ResourceType)
+            || string.IsNullOrWhiteSpace(notificationEvent.ResourceId)) return null;
+
+        await using var db = Db();
+        await db.OpenAsync();
+        var template = await db.QueryFirstOrDefaultAsync<NotificationTemplate>(@"SELECT Id,TemplateCode Code,TemplateName Name,
+SubjectTemplate,COALESCE(BodyTemplate,'') BodyTemplate,IsHtml,IsActive
+FROM recruitment_templates
+WHERE Id=@Id AND IsActive=TRUE AND (ClientId=0 OR ClientId=@ClientId)",
+            new { Id = templateId, ClientId = notificationEvent.ClientId });
+        if (template is null) return null;
+        notificationEvent.EventCode = CleanCode(string.IsNullOrWhiteSpace(notificationEvent.EventCode)
+            ? "RECRUITMENT_STAGE_ACTION" : notificationEvent.EventCode);
+        var values = BuildBaseValues(notificationEvent);
+        var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO notification_queue
+(RuleId,EventCode,ResourceType,ResourceId,ClientId,ToJson,CcJson,BccJson,Subject,BodyHtml,Status)
+VALUES (NULL,@EventCode,@ResourceType,@ResourceId,@ClientId,@ToJson,'[]','[]',@Subject,@BodyHtml,'Pending');
+SELECT LAST_INSERT_ID();", new
+        {
+            notificationEvent.EventCode,
+            notificationEvent.ResourceType,
+            notificationEvent.ResourceId,
+            notificationEvent.ClientId,
+            ToJson = JsonSerializer.Serialize(new[] { mailbox.Address }),
+            Subject = Render(template.SubjectTemplate, values),
+            BodyHtml = Render(template.BodyTemplate, values)
+        });
+        return id;
+    }
+
     public async Task<int> ProcessPendingAsync(CancellationToken cancellationToken, long? queueId = null)
     {
         await using var db = Db();

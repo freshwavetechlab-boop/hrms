@@ -383,7 +383,10 @@ VALUES (@Id,@CampaignName,@StartDate,@EndDate,@ReferralReward,'',@VisibilityDepa
         if (user.EmployeeId is null) return [];
         await using var db = Db();
         await db.OpenAsync();
-        var employee = await db.QueryFirstOrDefaultAsync<EmployeeScope>("SELECT ClientId,Department,BusinessUnit,WorkLocation,EmploymentType FROM employees WHERE Id=@Id", new { Id = user.EmployeeId });
+        var employee = await db.QueryFirstOrDefaultAsync<EmployeeScope>(@"SELECT e.ClientId,e.Department,'' BusinessUnit,
+COALESCE(w.Name,'') WorkLocation,'' EmploymentType
+FROM employees e LEFT JOIN worklocations w ON w.Id=e.WorkLocationId
+WHERE e.Id=@Id", new { Id = user.EmployeeId });
         if (employee is null) return [];
         var setting = await GetSettingAsync(db, employee.ClientId);
         if (setting?.EnableInternalHiring != true || setting?.EnableReferralHiring != true) return [];
@@ -411,6 +414,7 @@ ORDER BY c.EndDate,p.HiringPriority DESC,p.PositionTitle", employee);
     {
         if (user.EmployeeId is null) return (null, "Employee profile is required.");
         if (string.IsNullOrWhiteSpace(request.CandidateName)) return (null, "Candidate name is required.");
+        if (string.IsNullOrWhiteSpace(request.CandidateEmail) && string.IsNullOrWhiteSpace(request.CandidatePhone)) return (null, "Candidate email or phone is required so the referral can be linked to a talent profile.");
         await using var db = Db();
         await db.OpenAsync();
         var visible = (await InternalOpeningsAsync(user)).Any(x => x.PositionId == request.PositionId);
@@ -486,7 +490,13 @@ SELECT LAST_INSERT_ID();", new { r.Id, Code = code, r.ClientId, r.BranchId, r.Bu
         return id;
     }
 
-    private static bool CanView(RecruitmentRequisition row, AuthUser user) => user.Permissions.Contains("recruitment.manage", StringComparer.OrdinalIgnoreCase) || user.Permissions.Contains("recruitment.rfr.view", StringComparer.OrdinalIgnoreCase) || row.RequestedByUserId == user.Id || (user.ClientId is not null && row.ClientId == user.ClientId);
+    private static bool CanView(RecruitmentRequisition row, AuthUser user)
+    {
+        if (row.RequestedByUserId == user.Id) return true;
+        if (user.ClientId is not null && user.ClientId != row.ClientId) return false;
+        return user.Permissions.Contains("recruitment.manage", StringComparer.OrdinalIgnoreCase) ||
+               user.Permissions.Contains("recruitment.rfr.view", StringComparer.OrdinalIgnoreCase);
+    }
     private static async Task<bool> IsRequesterAllowedAsync(MySqlConnection db, int clientId, AuthUser user)
     {
         if (!HasRecruitmentCreateAccess(user)) return false;
@@ -552,10 +562,10 @@ SELECT LAST_INSERT_ID();", new { r.Id, Code = code, r.ClientId, r.BranchId, r.Bu
     private static async Task<List<string>> DropdownOrEmployeeValuesAsync(MySqlConnection db, int clientId, string type, string employeeColumn)
     {
         var values = await DropdownValuesAsync(db, clientId, type);
-        if (values.Count > 0) return values;
         var allowedColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Department", "Designation", "Grade" };
         if (!allowedColumns.Contains(employeeColumn)) return values;
-        return (await db.QueryAsync<string>($"SELECT DISTINCT {employeeColumn} FROM employees WHERE ClientId=@ClientId AND IsActive=TRUE AND {employeeColumn}<>'' ORDER BY {employeeColumn}", new { ClientId = clientId })).ToList();
+        var employeeValues = await db.QueryAsync<string>($"SELECT DISTINCT {employeeColumn} FROM employees WHERE ClientId=@ClientId AND IsActive=TRUE AND {employeeColumn}<>'' ORDER BY {employeeColumn}", new { ClientId = clientId });
+        return values.Concat(employeeValues).Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(value => value).ToList();
     }
     private static async Task<string> NextRfrNumberAsync(MySqlConnection db, int clientId)
     {
@@ -669,7 +679,7 @@ ORDER BY a.CreatedAt DESC,a.Id DESC", new { PositionId = positionId, PartnerType
         request.TargetJoiningDate,
         request.JobLocation,
         request.WorkMode,
-        ClientProjectId = request.ClientId,
+        ClientProjectId = (int?)null,
         request.Project,
         request.BudgetAvailable,
         request.BudgetAmount,
@@ -745,7 +755,7 @@ Id BIGINT PRIMARY KEY AUTO_INCREMENT,PositionId BIGINT NOT NULL,Channel VARCHAR(
 CREATE TABLE IF NOT EXISTS recruitment_referral_campaigns (
 Id BIGINT PRIMARY KEY AUTO_INCREMENT,PositionId BIGINT NOT NULL,CampaignName VARCHAR(180) NOT NULL,StartDate DATE NOT NULL,EndDate DATE NOT NULL,ReferralReward DECIMAL(18,2) NOT NULL DEFAULT 0,VisibilityCompany VARCHAR(120) NOT NULL DEFAULT '',VisibilityDepartment VARCHAR(120) NOT NULL DEFAULT '',VisibilityBusinessUnit VARCHAR(120) NOT NULL DEFAULT '',VisibilityLocation VARCHAR(120) NOT NULL DEFAULT '',VisibilityEmploymentType VARCHAR(120) NOT NULL DEFAULT '',Status VARCHAR(40) NOT NULL DEFAULT 'Open',CreatedByUserId INT NOT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,INDEX IX_recruitment_referral_campaign (PositionId,Status,EndDate));
 CREATE TABLE IF NOT EXISTS recruitment_employee_referrals (
-Id BIGINT PRIMARY KEY AUTO_INCREMENT,PositionId BIGINT NOT NULL,ReferrerEmployeeId INT NOT NULL,CandidateName VARCHAR(180) NOT NULL,CandidateEmail VARCHAR(180) NOT NULL DEFAULT '',CandidatePhone VARCHAR(50) NOT NULL DEFAULT '',Relationship VARCHAR(120) NOT NULL DEFAULT '',Remarks VARCHAR(1000) NOT NULL DEFAULT '',Status VARCHAR(40) NOT NULL DEFAULT 'Submitted',CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,INDEX IX_recruitment_employee_referrals (ReferrerEmployeeId,Status),INDEX IX_recruitment_position_referrals (PositionId,Status));
+Id BIGINT PRIMARY KEY AUTO_INCREMENT,PositionId BIGINT NOT NULL,ReferrerEmployeeId INT NOT NULL,CandidateId BIGINT NULL,ApplicationId BIGINT NULL,CandidateName VARCHAR(180) NOT NULL,CandidateEmail VARCHAR(180) NOT NULL DEFAULT '',CandidatePhone VARCHAR(50) NOT NULL DEFAULT '',Relationship VARCHAR(120) NOT NULL DEFAULT '',Remarks VARCHAR(1000) NOT NULL DEFAULT '',Status VARCHAR(40) NOT NULL DEFAULT 'Submitted',CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,INDEX IX_recruitment_employee_referrals (ReferrerEmployeeId,Status),INDEX IX_recruitment_position_referrals (PositionId,Status),INDEX IX_recruitment_referral_candidate (CandidateId));
 CREATE TABLE IF NOT EXISTS recruitment_requisition_documents (
 Id BIGINT PRIMARY KEY AUTO_INCREMENT,RequisitionId BIGINT NOT NULL,DocumentCategory VARCHAR(120) NOT NULL DEFAULT 'Other',FileName VARCHAR(260) NOT NULL DEFAULT '',ContentType VARCHAR(120) NOT NULL DEFAULT '',StoragePath VARCHAR(500) NOT NULL DEFAULT '',UploadedBy INT NULL,UploadedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,INDEX IX_recruitment_doc_rfr (RequisitionId));
 CREATE TABLE IF NOT EXISTS recruitment_audit (

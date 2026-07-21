@@ -12,7 +12,7 @@ import PageTabs from '../components/PageTabs'
 import SalaryTemplateDesigner from '../components/SalaryTemplateDesigner'
 import TaxEngineManager from '../components/TaxEngineManager'
 import NotificationSettings from '../components/NotificationSettings'
-import RecruitmentAdminSettings from '../components/RecruitmentAdminSettings'
+import RecruitmentAdminSettings, { type RecruitmentAdminSection } from '../components/RecruitmentAdminSettings'
 import ScheduledJobsManager from '../components/ScheduledJobsManager'
 import TravelExpensePolicySettings from '../components/TravelExpensePolicySettings'
 import AttachmentSettings from '../components/AttachmentSettings'
@@ -216,7 +216,7 @@ const workWeekPayload = (config: WorkWeekConfig) => {
   return { value: workWeekLabel(normalized), configJson: JSON.stringify(normalized) }
 }
 
-export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onMessage: (message: string) => void }) {
+export default function SettingsPage({ tab, onMessage, recruitmentSection = 'settings' }: { tab: SettingsTab; onMessage: (message: string) => void; recruitmentSection?: RecruitmentAdminSection }) {
   const toast = useToast()
   const [org, setOrg] = useState(org0), [setup, setSetup] = useState(settingsSetup0), [clients, setClients] = useState<Client[]>([]), [client, setClient] = useState(client0)
   const [locations, setLocations] = useState<WorkLocation[]>([]), [location, setLocation] = useState(location0), [drops, setDrops] = useState<Drop[]>([]), [drop, setDrop] = useState(drop0)
@@ -702,7 +702,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     if (!actualType || !drop.value.trim()) return notify(drop.type === 'City' ? 'Select a state and city for the city master.' : 'Dropdown value is required.', 'error')
     const value = drop.value.trim()
     if (actualType === 'Work Week' && !parseWorkWeekConfig(drop).workingDays.length) return notify('Select at least one working day.', 'error')
-    const clientId = actualType === 'Employee Grade' ? Number(drop.clientId || 0) : 0
+    const clientId = actualType === 'Employee Grade' ? Number(drop.clientId || 0) : drop.id ? Number(drop.clientId || 0) : 0
     if (actualType === 'Employee Grade' && !clientId) return notify('Select a client for Employee Grade.', 'error')
     const duplicate = drops.find(item => item.id !== drop.id && Number(item.clientId || 0) === clientId && item.type.toLowerCase() === actualType.toLowerCase() && item.value.trim().toLowerCase() === value.toLowerCase())
     if (duplicate?.isActive) return notify(`${value} already exists in ${drop.type === 'City' ? dropState : actualType}.`, 'error')
@@ -990,7 +990,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
           {selectedDropType === 'City' && <Form.Item label="State"><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></Form.Item>}
           <span>{visibleDrops.length} active value{visibleDrops.length === 1 ? '' : 's'}</span>
         </Form>
-        <DataTable rows={visibleDrops} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editDrop(row)}>Edit</Button><Button size="small" danger onClick={() => void deleteDrop(row)}>Delete</Button></Space>} columns={[{ key: 'master', label: 'Master', value: row => isCityType(row.type) ? 'City' : row.type }, { key: 'clientId', label: 'Client', value: row => row.type === 'Employee Grade' ? clientName(row.clientId) : '-' }, { key: 'state', label: 'State', value: row => cityState(row.type) || '-' }, { key: 'value', label: 'Value' }, { key: 'isActive', label: 'Status', render: item => item.isActive ? 'Active' : 'Inactive' }]} />
+        <DataTable rows={visibleDrops} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editDrop(row)}>Edit</Button><Button size="small" danger onClick={() => void deleteDrop(row)}>Delete</Button></Space>} columns={[{ key: 'master', label: 'Master', value: row => isCityType(row.type) ? 'City' : row.type }, { key: 'clientId', label: 'Scope', value: row => Number(row.clientId || 0) ? clientName(row.clientId) : 'Global' }, { key: 'state', label: 'State', value: row => cityState(row.type) || '-' }, { key: 'value', label: 'Value' }, { key: 'isActive', label: 'Status', render: item => item.isActive ? 'Active' : 'Inactive' }]} />
       </AntCard>
       <Drawer className="settings-master-drawer dropdown-master-drawer" title={<div className="settings-drawer-title"><span>{selectedDropType === 'Work Week' ? 'Work week pattern' : 'Dropdown master'}</span><h3>{drop.id ? 'Edit dropdown value' : 'Add dropdown value'}</h3><p>{selectedDropType === 'Work Week' ? 'Maintain weekly off rules used by attendance policy, review, payroll attendance, and reports.' : 'Maintain reusable values for departments, designations, states, cities, grades, and work weeks.'}</p></div>} open={dropDrawerOpen} width={760} onClose={() => { setDropDrawerOpen(false); setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }} destroyOnClose><Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Master type" required><Sel v={selectedDropType} set={changeDropType} a={dropTypes} /></Form.Item>{selectedDropType === 'Employee Grade' && <Form.Item label="Client" required><Sel v={drop.clientId || ''} set={value => setDrop({ ...drop, clientId: Number(refId(value) || 0) })} a={clients.map(item => `${item.id}:${item.name}`)} /></Form.Item>}{selectedDropType === 'City' && <Form.Item label="State" required><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></Form.Item>}{selectedDropType === 'Work Week' ? <WorkWeekMasterFields drop={drop} setDrop={setDrop} /> : <Form.Item label={selectedDropType === 'City' ? 'City' : 'Value'} required><Input value={drop.value} onChange={event => setDrop({ ...drop, value: event.target.value })} placeholder={selectedDropType === 'City' ? 'e.g. Bengaluru / Pune' : selectedDropType === 'Employee Grade' ? 'e.g. G1 / Supervisor' : 'e.g. Finance / Manager'} /></Form.Item>}<Form.Item><AntCheckbox checked={drop.isActive} onChange={event => setDrop({ ...drop, isActive: event.target.checked })}>Active</AntCheckbox></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => { setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }}>Reset</Button><Button type="primary" style={drop.id ? { background: '#f59e0b', borderColor: '#f59e0b' } : undefined} onClick={saveDrop}>{drop.id ? 'Update value' : 'Add value'}</Button></Space></Row></Form></Drawer>
     </>}
@@ -1026,7 +1026,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     {tab === 'Statutory Setup' && <><PageTabs items={statutoryTabs} value={statutoryTab} onChange={setStatutoryTab} label="Statutory setup sections" />{statutoryTab === 'Income Tax Rules' ? <TaxEngineManager clients={clients} onMessage={notifyFromChild} mode="statutory" /> : renderProfessionalTaxSetup()}</>}
     {tab === 'Client Billing Configuration' && renderClientBilling()}
     {tab === 'Travel & Expense Policies' && <TravelExpensePolicySettings />}
-    {tab === 'Recruitment Administration' && <RecruitmentAdminSettings />}
+    {tab === 'Recruitment Administration' && <RecruitmentAdminSettings section={recruitmentSection} />}
     {tab === 'Notifications' && <NotificationSettings />}
     {tab === 'Scheduled Jobs' && <ScheduledJobsManager />}
     {tab === 'Attachments' && <AttachmentSettings />}

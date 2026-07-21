@@ -1,8 +1,10 @@
-import { Select } from 'antd'
+import { PlusOutlined } from '@ant-design/icons'
+import { Button, Divider, Select } from 'antd'
 
 export type SearchOption = { value: string | number; label: string }
+export type SearchSelectAddAction = { label: string; onClick: () => void; disabled?: boolean; disabledReason?: string; testId?: string }
 
-export default function SearchSelect({ value, options, onChange, placeholder = 'Select', disabled = false }: { value: string | number; options: SearchOption[]; onChange: (value: string) => void; placeholder?: string; disabled?: boolean }) {
+export default function SearchSelect({ value, options, onChange, placeholder = 'Select', disabled = false, addAction, testId }: { value: string | number; options: SearchOption[]; onChange: (value: string) => void; placeholder?: string; disabled?: boolean; addAction?: SearchSelectAddAction; testId?: string }) {
   const normalizedOptions = options.map(item => ({ value: String(item.value), label: item.label }))
   const selectedValue = resolveSelectedValue(value, normalizedOptions)
   return <Select
@@ -11,12 +13,28 @@ export default function SearchSelect({ value, options, onChange, placeholder = '
     showSearch
       allowClear={false}
     disabled={disabled}
+    data-testid={testId}
     value={selectedValue}
     placeholder={placeholder}
     optionFilterProp="label"
     filterOption={(input, option) => String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())}
     onChange={next => onChange(String(next))}
     options={normalizedOptions}
+    dropdownRender={menu => addAction ? <>
+      <Button
+        block
+        type="text"
+        icon={<PlusOutlined />}
+        disabled={addAction.disabled}
+        title={addAction.disabled ? addAction.disabledReason : undefined}
+        data-testid={addAction.testId}
+        style={{ justifyContent: 'flex-start' }}
+        onMouseDown={event => event.preventDefault()}
+        onClick={addAction.onClick}
+      >{addAction.label}</Button>
+      <Divider style={{ margin: '4px 0' }} />
+      {menu}
+    </> : menu}
   />
 }
 

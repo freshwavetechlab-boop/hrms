@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Chk, F, Sel } from '../components/FormPrimitives'
-import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewSheet, type BulkUploadPreviewState } from '../components/BulkUploadPreviewModal'
+import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewColumnMeta, type BulkUploadPreviewSheet, type BulkUploadPreviewState } from '../components/BulkUploadPreviewModal'
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from '../components/BulkUploadProgressModal'
 import DataTable, { type Column } from '../components/DataTable'
 import SearchSelect, { selectOptions } from '../components/SearchSelect'
@@ -14,6 +14,14 @@ import { parseImportPreviewSheets, validateImportPreview, type ImportPreviewData
 import { buildXlsxBlob } from '../utils/xlsx'
 import { safeJsonRecord } from '../shared/json'
 import EmployeeAttachmentPanel from '../components/EmployeeAttachmentPanel'
+import EmployeeDynamicFields from '../components/EmployeeDynamicFields'
+import EntityAttachmentPanel from '../components/EntityAttachmentPanel'
+import SmartBulkUploadMapper from '../components/SmartBulkUploadMapper'
+import { employeeBulkImportDefinition } from '../config/bulkImportDefinitions'
+import type { BulkImportOperation, PreparedBulkImport } from '../utils/smartBulkImport'
+import { getEmployeeActivity360 } from '../services/recruitmentTalentService'
+import type { PersonActivityEvent } from '../types/payroll'
+import '../components/Employee360.css'
 import '../TemplateDesigner.css'
 
 const employeeInfotypes = [
@@ -23,7 +31,8 @@ const employeeInfotypes = [
   { code: '0006', name: 'Addresses' },
   { code: '0008', name: 'Basic Pay' },
   { code: '0009', name: 'Bank Details' },
-  { code: 'DOCS', name: 'Documents' }
+  { code: 'DOCS', name: 'Documents' },
+  { code: '360', name: 'Employee 360 Activity' }
 ] as const
 type EmployeeInfotypeCode = typeof employeeInfotypes[number]['code']
 const personal0 = employee0.personalDetails
@@ -41,10 +50,12 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const [modalOpen, setModalOpen] = useState(false), [clientFilter, setClientFilter] = useState(0), [locationFilter, setLocationFilter] = useState(0), [query, setQuery] = useState('')
   const [upload, setUpload] = useState<{ open: boolean; state: BulkUploadState; percent: number; summary: BulkUploadSummary }>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
   const [templateDownloaded, setTemplateDownloaded] = useState(false)
+  const [bulkMapperOpen, setBulkMapperOpen] = useState(false)
   const [preview, setPreview] = useState<BulkUploadPreviewState>(emptyBulkUploadPreview)
+  const [mappedPreviewColumns, setMappedPreviewColumns] = useState<Record<string, BulkUploadPreviewColumnMeta>>({})
   const [previewConfirm, setPreviewConfirm] = useState<null | ((draft: BulkUploadPreviewState) => Promise<void>)>(null)
   const [previewImporting, setPreviewImporting] = useState(false)
-  const [employeePreviewSource, setEmployeePreviewSource] = useState<{ sheets: ImportPreviewSheet[]; clientId: number; fileName: string } | null>(null)
+  const [employeePreviewSource, setEmployeePreviewSource] = useState<{ sheets: ImportPreviewSheet[]; clientId: number; fileName: string; operation: BulkImportOperation } | null>(null)
   const clientStructure = templatesForClient(setup.salaryStructures, employee.clientId)[0]
   const chosenStructure = setup.salaryStructures.find(item => String(item.id) === employee.salaryStructureId) ?? clientStructure
   const rawEmployeeSalary = salaryRecord(employee)
@@ -120,17 +131,34 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     notify(response.ok ? 'Employee deleted.' : response.error || 'Unable to delete employee.', response.ok ? 'success' : 'error')
     if (response.ok) await load()
   }
-  const downloadTemplate = async () => {
+  const downloadTemplate = async (operation?: BulkImportOperation, selectedFieldCodes?: string[]) => {
     if (!clientFilter) { setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: ['Select a client before downloading employee template.'] } }); return }
+    if (operation && selectedFieldCodes?.length) {
+      const selected = employeeBulkImportDefinition.fields.filter(field => selectedFieldCodes.includes(field.code) || field.required)
+      const headers = [...(operation === 'update' ? ['Employee ID'] : []), ...selected.map(field => field.header)]
+      const rows = operation === 'update'
+        ? employees.filter(row => row.clientId === clientFilter).map(row => [String(row.id), ...selected.map(field => employeeImportFieldValue(row, field.code, locations, managerUsers, setup.salaryStructures))])
+        : []
+      const instructions = [
+        ['Mode', operation],
+        ['Rule', operation === 'update' ? 'Only existing Employee IDs are updated. Blank cells preserve current values.' : operation === 'insert' ? 'Only new Employee Codes are accepted.' : 'Existing Employee Codes update; new codes insert.'],
+        ['Selected fields', selected.map(field => field.header).join(', ')]
+      ]
+      const blob = buildXlsxBlob([{ name: 'Employees', rows: [headers, ...rows] }, { name: 'Instructions', rows: instructions }])
+      saveBlob(blob, `employee-${operation}-selected-fields.xlsx`)
+      setTemplateDownloaded(true)
+      notify(`${operation === 'update' ? 'Update' : 'Insert'} template downloaded with ${selected.length} selected field(s).`, 'info')
+      return
+    }
     const response = await downloadEmployeeImportTemplate(clientFilter)
     if (!response.ok || !response.data) { setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: [response.error || 'Unable to download employee template.'] } }); return }
     saveBlob(response.data, 'employee-import-template.xlsx')
     setTemplateDownloaded(true)
     notify('Employee import template downloaded.', 'info')
   }
-  const runEmployeeImport = async (file: File, importClientId = clientFilter) => {
+  const runEmployeeImport = async (file: File, importClientId = clientFilter, operation: BulkImportOperation = 'upsert') => {
     setUpload({ open: true, state: 'uploading', percent: 1, summary: { totalRows: 0 } })
-    const start = await startEmployeeImport(importClientId, file)
+    const start = await startEmployeeImport(importClientId, file, operation)
     if (!start.ok || !start.data.jobId) { setUpload({ open: true, state: 'error', percent: 100, summary: { ...start.data, errors: start.data.errors?.length ? start.data.errors : [start.error || 'Upload failed.'] } }); return }
     let job = start.data
     while (job.state === 'Queued' || job.state === 'Processing') {
@@ -143,15 +171,16 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     if (job.state === 'Completed') { setUpload({ open: true, state: 'success', percent: 100, summary: job }); await load(); return }
     setUpload({ open: true, state: 'error', percent, summary: { ...job, errors: job.errors?.length ? job.errors : ['Import failed. No rows were saved.'] } })
   }
-  const previewEmployeeUpload = async (file: File) => {
+  const previewEmployeeUpload = async (file: File, columnMeta: Record<string, BulkUploadPreviewColumnMeta> = {}, operation: BulkImportOperation = 'upsert') => {
     try {
       const data = await parseEmployeePreviewData(file)
       const importClientId = clientFilter || data.clientId || 0
       if (!clientFilter && data.clientId) setClientFilter(data.clientId)
       const clientIssues: ImportPreviewIssue[] = importClientId ? [] : [{ rowNumber: 1, column: 'Client', message: 'Select a client before import or upload a template with Client in References sheet.' }]
-      setPreview({ open: true, title: 'Employee bulk upload preview', fileName: file.name, headers: data.headers, rows: data.rows, issues: [...clientIssues, ...data.issues], sheets: data.sheets })
-      setPreviewConfirm(() => async (draft: BulkUploadPreviewState) => runEmployeeImport(employeePreviewFile(draft, data.sourceSheets, file.name), importClientId))
-      setEmployeePreviewSource({ sheets: data.sourceSheets, clientId: importClientId, fileName: file.name })
+      setMappedPreviewColumns(columnMeta)
+      setPreview({ open: true, title: 'Employee bulk upload preview', fileName: file.name, headers: data.headers, rows: data.rows, issues: [...clientIssues, ...data.issues], sheets: data.sheets, columnMeta })
+      setPreviewConfirm(() => async (draft: BulkUploadPreviewState) => runEmployeeImport(employeePreviewFile(draft, data.sourceSheets, file.name), importClientId, operation))
+      setEmployeePreviewSource({ sheets: data.sourceSheets, clientId: importClientId, fileName: file.name, operation })
     } catch (error) {
       setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: [error instanceof Error ? error.message : 'Unable to preview employee import file.'] } })
     }
@@ -168,6 +197,21 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     if (!file) return
     await previewEmployeeUpload(file)
   }
+  const openEmployeeBulkUpload = () => {
+    if (!clientFilter) { notify('Select a client before starting employee bulk upload.', 'warning'); return }
+    setBulkMapperOpen(true)
+  }
+  const reviewMappedEmployeeUpload = async (result: PreparedBulkImport) => {
+    setBulkMapperOpen(false)
+    notify(`${result.mappedFields} fields mapped. ${result.skippedColumns} unused source column(s) will be skipped.`, 'info')
+    const columnMeta = Object.fromEntries(result.columns.map(column => [column.targetHeader, { sourceHeader: column.sourceHeader, color: column.color, kind: column.kind } satisfies BulkUploadPreviewColumnMeta] as const))
+    await previewEmployeeUpload(result.file, columnMeta, result.operation)
+  }
+  const reviewTemplateEmployeeUpload = async (file: File, operation: BulkImportOperation) => {
+    setBulkMapperOpen(false)
+    setMappedPreviewColumns({})
+    await previewEmployeeUpload(file, {}, operation)
+  }
   const resolveEmployeeDuplicates = async (mode: 'skip' | 'replace' | 'replaceAll', sheetName: string) => {
     if (!employeePreviewSource) return
     const resolvedSheets = resolveDuplicateEmployeeSheets(employeePreviewSource.sheets, mode, sheetName)
@@ -175,21 +219,22 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     const resolvedFile = new File([buildXlsxBlob(resolvedSheets.map(sheet => ({ name: sheet.name, rows: [sheet.headers, ...sheet.rows] })))], fileName, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
     const data = await parseEmployeePreviewData(resolvedFile)
     const clientIssues: ImportPreviewIssue[] = employeePreviewSource.clientId ? [] : [{ rowNumber: 1, column: 'Client', message: 'Select a client before import or upload a template with Client in References sheet.' }]
-    setPreview({ open: true, title: 'Employee bulk upload preview', fileName: resolvedFile.name, headers: data.headers, rows: data.rows, issues: [...clientIssues, ...data.issues], sheets: data.sheets })
-    setPreviewConfirm(() => async (draft: BulkUploadPreviewState) => runEmployeeImport(employeePreviewFile(draft, data.sourceSheets, resolvedFile.name), employeePreviewSource.clientId))
-    setEmployeePreviewSource({ sheets: data.sourceSheets, clientId: employeePreviewSource.clientId, fileName: resolvedFile.name })
+    setPreview({ open: true, title: 'Employee bulk upload preview', fileName: resolvedFile.name, headers: data.headers, rows: data.rows, issues: [...clientIssues, ...data.issues], sheets: data.sheets, columnMeta: mappedPreviewColumns })
+    setPreviewConfirm(() => async (draft: BulkUploadPreviewState) => runEmployeeImport(employeePreviewFile(draft, data.sourceSheets, resolvedFile.name), employeePreviewSource.clientId, employeePreviewSource.operation))
+    setEmployeePreviewSource({ sheets: data.sourceSheets, clientId: employeePreviewSource.clientId, fileName: resolvedFile.name, operation: employeePreviewSource.operation })
   }
   const visibleEmployees = employees.filter(row => row.isActive && (!clientFilter || row.clientId === clientFilter) && (!locationFilter || row.workLocationId === locationFilter) && `${row.employeeCode} ${row.firstName} ${row.lastName} ${row.department} ${row.designation} ${row.workEmail} ${workLocationName(locations, row.workLocationId)}`.toLowerCase().includes(query.toLowerCase()))
 
   return <section className="employee-master">
-    {view === 'master' ? <EmployeeDirectory clients={clients} locations={locations} employees={visibleEmployees} allCount={employees.length} clientFilter={clientFilter} setClientFilter={changeClientFilter} locationFilter={locationFilter} setLocationFilter={setLocationFilter} query={query} setQuery={setQuery} templateDownloaded={templateDownloaded} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onDownloadTemplate={downloadTemplate} onUpload={uploadEmployees} /> : <EmployeeOrgStructure clients={clients} locations={locations} employees={employees.filter(row => row.isActive)} clientFilter={clientFilter} setClientFilter={changeClientFilter} />}
+    {view === 'master' ? <EmployeeDirectory clients={clients} locations={locations} employees={visibleEmployees} allCount={employees.length} clientFilter={clientFilter} setClientFilter={changeClientFilter} locationFilter={locationFilter} setLocationFilter={setLocationFilter} query={query} setQuery={setQuery} templateDownloaded={templateDownloaded} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onDownloadTemplate={downloadTemplate} onBulkUpload={openEmployeeBulkUpload} /> : <EmployeeOrgStructure clients={clients} locations={locations} employees={employees.filter(row => row.isActive)} clientFilter={clientFilter} setClientFilter={changeClientFilter} />}
     {modalOpen && <div className="employee-modal-backdrop" onClick={closeModal}>
       <section className="employee-modal" role="dialog" aria-modal="true" aria-label="Employee details" onClick={event => event.stopPropagation()}>
         <EmployeePanel employee={employee} setEmployee={row => setEmployee(normalizeEmployeeSalary(row))} employeeInfotype={employeeInfotype} setEmployeeInfotype={value => { setEmployeeInfotype(value as EmployeeInfotypeCode); setChangeReason('') }} changeReason={changeReason} setChangeReason={setChangeReason} clients={clients} locations={locations} managerUsers={managerUsers} templates={setup.salaryStructures} salaryComponents={setup.salaryComponents} deps={deps} desigs={desigs} grades={grades} applyClient={applyClient} applyStructure={applyStructure} applyCtc={applyCtc} structureComponents={structureComponents} employeeSalary={employeeSalary} empLine={empLine} empMonthly={empMonthly} saveEmployee={saveEmployee} closeModal={closeModal} infotypes={infotypes} runEmployeeAction={runEmployeeAction} />
       </section>
     </div>}
+    <SmartBulkUploadMapper open={bulkMapperOpen} definition={employeeBulkImportDefinition} clientCode={clients.find(client => client.id === clientFilter)?.code ?? ''} existingEmployeeCodes={employees.filter(row => row.clientId === clientFilter).map(row => row.employeeCode)} onCancel={() => setBulkMapperOpen(false)} onPrepared={reviewMappedEmployeeUpload} onTemplateFile={reviewTemplateEmployeeUpload} onDownloadTemplate={downloadTemplate} />
     <BulkUploadProgressModal open={upload.open} title="Employee bulk upload" state={upload.state} percent={upload.percent} summary={upload.summary} onClose={() => setUpload(current => ({ ...current, open: false }))} />
-    <BulkUploadPreviewModal preview={preview} importing={previewImporting} onCancel={() => { setPreview(emptyBulkUploadPreview); setPreviewConfirm(null); setEmployeePreviewSource(null) }} onConfirm={draft => void confirmEmployeePreview(draft)} onResolveDuplicates={(mode, sheetName) => void resolveEmployeeDuplicates(mode, sheetName)} />
+    <BulkUploadPreviewModal preview={preview} importing={previewImporting} uniqueFields={[["Employee Code"]]} onCancel={() => { setPreview(emptyBulkUploadPreview); setMappedPreviewColumns({}); setPreviewConfirm(null); setEmployeePreviewSource(null) }} onConfirm={draft => void confirmEmployeePreview(draft)} onResolveDuplicates={(mode, sheetName) => void resolveEmployeeDuplicates(mode, sheetName)} />
   </section>
 }
 
@@ -428,12 +473,12 @@ function previewDate(value: string) {
   return value
 }
 
-function EmployeeDirectory(p: { clients: Client[]; locations: WorkLocation[]; employees: Employee[]; allCount: number; clientFilter: number; setClientFilter: (id: number) => void; locationFilter: number; setLocationFilter: (id: number) => void; query: string; setQuery: (value: string) => void; templateDownloaded: boolean; onNew: () => void; onEdit: (employee: Employee) => void; onDelete: (employee: Employee) => void; onDownloadTemplate: () => void; onUpload: (file: File | null) => void }) {
+function EmployeeDirectory(p: { clients: Client[]; locations: WorkLocation[]; employees: Employee[]; allCount: number; clientFilter: number; setClientFilter: (id: number) => void; locationFilter: number; setLocationFilter: (id: number) => void; query: string; setQuery: (value: string) => void; templateDownloaded: boolean; onNew: () => void; onEdit: (employee: Employee) => void; onDelete: (employee: Employee) => void; onDownloadTemplate: () => void; onBulkUpload: () => void }) {
   const clientName = (id: number) => p.clients.find(client => client.id === id)?.name ?? `Client #${id || '-'}`
   const locationName = (id: number) => workLocationName(p.locations, id)
   const locationOptions = p.locations.filter(location => !p.clientFilter || location.clientId === p.clientFilter).map(location => ({ value: location.id, label: p.clientFilter ? location.name : `${location.name} - ${clientName(location.clientId)}` }))
-  return <section className="card employee-directory"><header><i className="blue">E</i><div><h3>Employee master</h3><p>Search client-wise employees. Create or edit details in a focused popup.</p></div><div className="employee-directory-actions"><button type="button" disabled={!p.clientFilter} title={p.clientFilter ? 'Download Excel template' : 'Select a client first'} onClick={p.onDownloadTemplate}>Download Excel template</button><label className={`employee-upload-action${!p.clientFilter ? ' disabled' : ''}`} title={!p.clientFilter ? 'Select a client first' : 'Upload Excel or CSV'}><input type="file" disabled={!p.clientFilter} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { p.onUpload(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} />Bulk upload</label><button type="button" onClick={p.onNew}>New employee</button></div></header>
-    <div className="employee-directory-tools"><label><span>Client</span><SearchSelect value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={selectOptions(p.clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label><label><span>Work Location</span><SearchSelect value={p.locationFilter} onChange={value => p.setLocationFilter(Number(value))} options={selectOptions(locationOptions, 'All locations', 0)} /></label><label><span>Search</span><input value={p.query} onChange={event => p.setQuery(event.target.value)} placeholder="Code, name, location, department, email..." /></label><div className="employee-directory-count"><span>Showing</span><b>{p.employees.length} / {p.allCount}</b></div></div>
+  return <section className="card employee-directory"><header><i className="blue">E</i><div><h3>Employee master</h3><p>Search client-wise employees. Create or edit details in a focused popup.</p></div><div className="employee-directory-actions"><button type="button" disabled={!p.clientFilter} title={p.clientFilter ? 'Download Excel template' : 'Select a client first'} onClick={p.onDownloadTemplate}>Download Excel template</button><button type="button" data-testid="employee-bulk-upload-open" className="employee-upload-action" disabled={!p.clientFilter} title={!p.clientFilter ? 'Select a client first' : 'Use a template or map any Excel/CSV file'} onClick={p.onBulkUpload}>Bulk upload</button><button type="button" onClick={p.onNew}>New employee</button></div></header>
+    <div className="employee-directory-tools"><label><span>Client</span><SearchSelect testId="employee-client-filter" value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={selectOptions(p.clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label><label><span>Work Location</span><SearchSelect value={p.locationFilter} onChange={value => p.setLocationFilter(Number(value))} options={selectOptions(locationOptions, 'All locations', 0)} /></label><label><span>Search</span><input value={p.query} onChange={event => p.setQuery(event.target.value)} placeholder="Code, name, location, department, email..." /></label><div className="employee-directory-count"><span>Showing</span><b>{p.employees.length} / {p.allCount}</b></div></div>
     <DataTable rows={p.employees} emptyText="No employees found for the selected filters." exportFileName="employees" columns={[
       { key: 'employeeName', label: 'Employee', value: row => `${row.firstName} ${row.lastName}`.trim(), render: row => <strong>{row.firstName} {row.lastName}</strong> },
       { key: 'employeeCode', label: 'Code' },
@@ -482,14 +527,31 @@ function EmployeePanel(p: { employee: Employee; setEmployee: (employee: Employee
     </div>}
     {p.employeeInfotype === '0009' && <div className="grid"><F l="Bank"><input value={payment.bankName || ''} onChange={event => setPayment('bankName', event.target.value)} /></F><F l="Account no"><input value={payment.bankAccountNo || ''} onChange={event => setPayment('bankAccountNo', event.target.value)} /></F><F l="IFSC"><input value={payment.ifscCode || ''} onChange={event => setPayment('ifscCode', event.target.value)} /></F><F l="Payment mode"><Sel v={payment.paymentMode || ''} set={value => setPayment('paymentMode', value)} a={['Bank Transfer', 'Cheque', 'Cash']} /></F></div>}
     {p.employeeInfotype === 'DOCS' && <EmployeeAttachmentPanel employeeId={p.employee.id} clientId={p.employee.clientId} />}
-    {p.employeeInfotype !== '0000' && p.employeeInfotype !== 'DOCS' && <div className="grid"><F l="Change reason" w><input value={p.changeReason} onChange={event => p.setChangeReason(event.target.value)} placeholder="Reason for this infotype change" /></F></div>}
+    {p.employeeInfotype === '360' && <EmployeeActivity360 employeeId={p.employee.id} clientId={p.employee.clientId} />}
+    {p.employeeInfotype !== '0000' && p.employeeInfotype !== 'DOCS' && p.employeeInfotype !== '360' && <div className="grid"><F l="Change reason" w><input value={p.changeReason} onChange={event => p.setChangeReason(event.target.value)} placeholder="Reason for this infotype change" /></F></div>}
     </section>
+    {p.employee.id > 0 && p.employee.clientId > 0 && !['0000', 'DOCS', '360'].includes(p.employeeInfotype) && <EmployeeDynamicFields employeeId={p.employee.id} clientId={p.employee.clientId} infotypeCode={p.employeeInfotype} changeReason={p.changeReason} />}
     <InfotypeHistory employee={p.employee} infotypeCode={p.employeeInfotype} infotypes={p.infotypes} clients={p.clients} locations={p.locations} managerUsers={p.managerUsers} templates={p.templates} />
     <div className="actions">
-      <button type="button" className="secondary" onClick={p.closeModal}>{p.employeeInfotype === 'DOCS' ? 'Close' : 'Cancel'}</button>
+      <button type="button" className="secondary" onClick={p.closeModal}>{p.employeeInfotype === 'DOCS' || p.employeeInfotype === '360' ? 'Close' : 'Cancel'}</button>
       {p.employeeInfotype === 'DOCS' && !p.employee.id && <button type="button" onClick={() => p.setEmployeeInfotype('0001')}>Enter employee details</button>}
-      {p.employeeInfotype !== 'DOCS' && <button type="button" disabled={p.employeeInfotype === '0000'} onClick={p.saveEmployee}>Save infotype</button>}
+      {p.employeeInfotype !== 'DOCS' && p.employeeInfotype !== '360' && <button type="button" disabled={p.employeeInfotype === '0000'} onClick={p.saveEmployee}>Save infotype</button>}
     </div></section>
+}
+
+function EmployeeActivity360({ employeeId, clientId }: { employeeId: number; clientId: number }) {
+  const [events, setEvents] = useState<PersonActivityEvent[]>([])
+  const [module, setModule] = useState('')
+  useEffect(() => { if (employeeId) void getEmployeeActivity360(employeeId).then(setEvents) }, [employeeId])
+  if (!employeeId) return <p className="employee-salary-empty">Save the employee first to view the consolidated activity timeline.</p>
+  const modules = Array.from(new Set(events.map(row => row.moduleCode).filter(Boolean)))
+  const visible = module ? events.filter(row => row.moduleCode === module) : events
+  const candidateId = events.find(row => Number(row.candidateId) > 0)?.candidateId || 0
+  return <section className="employee-360-panel">
+    <header><div><h4>Person-centric activity timeline</h4><p>Recruitment history, infotype changes and secure document actions remain connected after candidate-to-employee conversion.</p></div><SearchSelect value={module} onChange={value => setModule(String(value))} options={selectOptions(modules, 'All modules')} /></header>
+    <div className="employee-360-timeline">{visible.map(row => <article key={`${row.moduleCode}-${row.eventType}-${row.id}`}><i /><div><b>{row.eventTitle}</b><p>{row.eventSummary || row.eventType}</p><small>{new Date(row.occurredAt).toLocaleString('en-IN')} · {row.actorName || 'System'} · {row.moduleCode}</small></div></article>)}{!visible.length && <p>No consolidated activity is available yet.</p>}</div>
+    {candidateId > 0 && <EntityAttachmentPanel entityType="CANDIDATE" entityId={candidateId} clientId={clientId} moduleCode="RECRUITMENT" formCodes={['EMPLOYEE_REFERRAL', 'CANDIDATE_APPLICATION', 'PRE_ONBOARDING']} title="Recruitment documents" description="Read-only candidate documents retained in the global document system; files are not duplicated during employee conversion." readOnly />}
+  </section>
 }
 
 function EmployeeActionEditor(p: { employee: Employee; locations: WorkLocation[]; deps: string[]; desigs: string[]; grades: string[]; runEmployeeAction: (request: EmployeeActionRequest) => Promise<void> }) {
@@ -504,7 +566,7 @@ function EmployeeActionEditor(p: { employee: Employee; locations: WorkLocation[]
 }
 
 function InfotypeHistory(p: { employee: Employee; infotypeCode: EmployeeInfotypeCode; infotypes: EmployeeInfotypeRecord[]; clients: Client[]; locations: WorkLocation[]; managerUsers: WorkflowApprover[]; templates: Structure[] }) {
-  if (!p.employee.id || p.infotypeCode === 'DOCS') return null
+  if (!p.employee.id || p.infotypeCode === 'DOCS' || p.infotypeCode === '360') return null
   const rows = p.infotypes.filter(row => row.infotypeCode === p.infotypeCode).sort((a, b) => statusRank(a.status) - statusRank(b.status) || String(b.effectiveFrom).localeCompare(String(a.effectiveFrom)))
   const infotypeName = employeeInfotypes.find(item => item.code === p.infotypeCode)?.name ?? 'Infotype'
   return <section className="employee-history-grid single"><div><h4>{p.infotypeCode} - {infotypeName} historical records</h4><DataTable rows={rows} getRowId={row => row.id} emptyText="No records for this infotype yet." exportFileName={`employee-infotypes-${p.employee.employeeCode}-${p.infotypeCode}`} columns={infotypeHistoryColumns(p.infotypeCode, p)} /></div></section>
@@ -533,7 +595,8 @@ function infotypeHistoryColumns(code: EmployeeInfotypeCode, refs: { clients: Cli
     '0006': [valueColumn('addressValue', 'Address', ['Address', 'address'], '220px'), valueColumn('correspondenceValue', 'Correspondence', ['CorrespondenceAddress', 'correspondenceAddress'], '220px'), valueColumn('permanentValue', 'Permanent', ['PermanentAddress', 'permanentAddress'], '220px')],
     '0008': [valueColumn('templateValue', 'Template', ['SalaryStructureId', 'salaryStructureId'], '180px', templateName), valueColumn('ctcValue', 'Annual CTC', ['AnnualCtc', 'annualCtc']), valueColumn('componentsValue', 'Components', ['SalaryComponents', 'salaryComponents'], '260px')],
     '0009': [valueColumn('bankValue', 'Bank', ['BankName', 'bankName']), valueColumn('accountValue', 'Account no', ['BankAccountNo', 'bankAccountNo'], '180px'), valueColumn('ifscValue', 'IFSC', ['IfscCode', 'ifscCode']), valueColumn('modeValue', 'Mode', ['PaymentMode', 'paymentMode'])],
-    'DOCS': []
+    'DOCS': [],
+    '360': []
   }
   return [...common, ...byCode[code], ...trail]
 }
@@ -578,6 +641,43 @@ function clientNameFor(clients: Client[], id: number) {
 
 function workLocationName(locations: WorkLocation[], id: number) {
   return locations.find(location => location.id === id)?.name || '-'
+}
+
+function employeeImportFieldValue(row: Employee, code: string, locations: WorkLocation[], users: WorkflowApprover[], templates: Structure[]) {
+  const personal = row.personalDetails ?? personal0
+  const payment = row.paymentDetails ?? payment0
+  switch (code) {
+    case 'EmployeeCode': return row.employeeCode
+    case 'FirstName': return row.firstName
+    case 'LastName': return row.lastName
+    case 'Gender': return row.gender
+    case 'DateOfJoining': return row.dateOfJoining
+    case 'DateOfBirth': return personal.dateOfBirth || ''
+    case 'WorkEmail': return row.workEmail
+    case 'Mobile': return personal.mobile || ''
+    case 'Department': return row.department
+    case 'Designation': return row.designation
+    case 'Grade': return row.grade
+    case 'WorkLocation': return locations.find(location => location.id === row.workLocationId)?.name || ''
+    case 'ReportingManagerEmail': return users.find(user => user.id === row.reportingManagerUserId)?.email || ''
+    case 'PortalAccess': return row.portalAccess ? 'TRUE' : 'FALSE'
+    case 'Active': return row.isActive ? 'TRUE' : 'FALSE'
+    case 'SalaryTemplate': return templates.find(template => String(template.id) === String(row.salaryStructureId))?.name || ''
+    case 'AnnualCtc': return String(row.annualCtc || '')
+    case 'Pan': return personal.panNumber || ''
+    case 'Aadhaar': return personal.aadhaarNumber || ''
+    case 'UanNumber': return personal.uanNumber || ''
+    case 'EsicNumber': return personal.esicNumber || ''
+    case 'Address': return personal.address || ''
+    case 'CorrespondenceAddress': return personal.correspondenceAddress || ''
+    case 'PermanentAddress': return personal.permanentAddress || ''
+    case 'BankName': return payment.bankName || ''
+    case 'BankAccountNo': return payment.bankAccountNo || ''
+    case 'Ifsc': return payment.ifscCode || ''
+    case 'PaymentMode': return payment.paymentMode || ''
+    case 'ChangeReason': return ''
+    default: return ''
+  }
 }
 
 function normalizeEmployeeDetails(row: Employee): Employee {

@@ -1,11 +1,12 @@
 import { Fragment, useEffect, useRef, useState, type MouseEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { AppstoreOutlined, BellOutlined, DownOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons'
-import { Avatar, Badge, Breadcrumb, Button, Dropdown, Input, Space, Tooltip } from 'antd'
+import { Avatar, Badge, Breadcrumb, Button, Dropdown, Input, Menu, Space, Tooltip } from 'antd'
 import type { MenuProps } from 'antd'
 import AppIcon from './components/AppIcon'
 import type { IconName } from './components/AppIcon'
 import SecurityPanel from './components/SecurityPanel'
+import { recruitmentAdminNavigation, recruitmentAdminSectionLabel, recruitmentAdminSections, type RecruitmentAdminSection } from './components/RecruitmentAdminSettings'
 import { leaveAttendanceMenus, org0, reportingMenus, securityMenus, settingsMenus, workflowMenus } from './data/payrollDefaults'
 import DashboardPage, { type DashboardView } from './pages/DashboardPage'
 import EmployeePage, { type EmployeePageView } from './pages/EmployeePage'
@@ -16,7 +17,7 @@ import PayrollAttendancePage from './pages/PayrollAttendancePage'
 import PayrollPage from './pages/PayrollPage'
 import ReportingPage, { reportItems } from './pages/ReportingPage'
 import type { ReportDefinition, ReportingMenu } from './pages/ReportingPage'
-import RecruitmentPage from './pages/RecruitmentPage'
+import RecruitmentPage, { recruitmentViews, type RecruitmentPageView } from './pages/RecruitmentPage'
 import MyProfilePage from './pages/MyProfilePage'
 import TravelAdvancesPage from './pages/TravelAdvancesPage'
 import WorkflowPage from './pages/WorkflowPage'
@@ -42,6 +43,12 @@ const productLogo = '/assets/FrevoOneLogo.png'
 const productMark = '/favicon.svg'
 const dashboardViews: DashboardView[] = ['overview', 'workforce', 'payroll', 'attendance', 'approvals']
 const fallbackDashboardAccess = [{ code: 'overview', name: 'Overview Dashboard', description: 'Combined HR, payroll, attendance and approval summary.', route: '/dashboard', sortOrder: 10 }]
+const recruitmentNavigation: Array<{ key: string; label: string; children: RecruitmentPageView[] }> = [
+  { key: 'demand', label: 'Demand Planning', children: ['Dashboard', 'Requisitions', 'Open Positions'] },
+  { key: 'publishing', label: 'Content & Publishing', children: ['Job Descriptions', 'Job Postings'] },
+  { key: 'candidates', label: 'Candidate Lifecycle', children: ['Hiring Pipeline', 'Talent Pool', 'Applications'] },
+  { key: 'selection', label: 'Selection & Onboarding', children: ['Interviews', 'Offers & Pre-Onboarding'] },
+]
 
 const modules: { code: ModuleCode | 'Reports'; label: string; icon: IconName; description: string; disabled?: boolean }[] = [
   { code: 'Dashboard', label: 'Dashboard', icon: 'reports', description: 'Client-wise payroll, attendance and approval overview.' },
@@ -98,7 +105,7 @@ const modulePaths: Record<ModuleCode, string> = {
   Payroll: '/payroll/regular',
   LeaveAttendance: '/attendance',
   Employees: '/employees/master',
-  TalentAcquisition: '/recruitment',
+  TalentAcquisition: '/recruitment/dashboard',
   Security: '/security/users',
   Workflows: '/workflows/workflow-setup',
   Settings: '/settings/organization',
@@ -121,6 +128,10 @@ export default function SettingsApp() {
   const payrollSetupMenus = allPayrollSetupMenus.filter(item => item !== 'Statutory Setup' || canManageStatutory)
   const routeParts = routeLocation.pathname.split('/').filter(Boolean)
   const dashboardView = routeParts[0] === 'dashboard' && dashboardViews.includes(routeParts[1] as DashboardView) ? routeParts[1] as DashboardView : 'overview'
+  const recruitmentView = routeParts[0] === 'recruitment' ? fromSlug(recruitmentViews, routeParts[1], 'Dashboard') : 'Dashboard'
+  const recruitmentAdminSection = routeParts[0] === 'settings' && routeParts[1] === 'recruitment-administration' && recruitmentAdminSections.includes(routeParts[2] as RecruitmentAdminSection)
+    ? routeParts[2] as RecruitmentAdminSection
+    : 'settings'
   const routeModule = (() : ModuleCode => {
     if (routeParts[0] === 'pay-runs' || routeParts[0] === 'payroll') return 'Payroll'
     if (routeParts[0] === 'attendance') return 'LeaveAttendance'
@@ -166,7 +177,10 @@ export default function SettingsApp() {
       navigate(item.route || '/dashboard')
     }
   }
-  const pageTitle = isProfile ? 'My Profile' : showMyTasks ? 'My Tasks' : mainModule === 'Dashboard' ? activeDashboard.name : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? employeeTab : mainModule === 'TalentAcquisition' ? 'Talent Acquisition' : mainModule === 'Security' ? securityTab : mainModule === 'Reports' ? reportingTab : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
+  const pageTitle = isProfile ? 'My Profile' : showMyTasks ? 'My Tasks' : mainModule === 'Dashboard' ? activeDashboard.name : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab === 'Recruitment Administration' ? recruitmentAdminSectionLabel(recruitmentAdminSection) : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? employeeTab : mainModule === 'TalentAcquisition' ? recruitmentView : mainModule === 'Security' ? securityTab : mainModule === 'Reports' ? reportingTab : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
+  const breadcrumbItems = mainModule === 'Settings' && settingsSection === 'General' && tab === 'Recruitment Administration'
+    ? [{ title: activeModule.label }, { title: 'Recruitment Administration' }, { title: pageTitle }]
+    : [{ title: activeModule.label }, { title: pageTitle }]
   const userInitials = (currentUser?.displayName || 'User').split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase()
   const accountMenu: MenuProps = {
     items: [
@@ -293,7 +307,7 @@ export default function SettingsApp() {
         setLeaveAttendanceTab(nextTab)
         localStorage.setItem('payroll.leaveAttendanceTab', nextTab)
       } else {
-        const nextTab = fromSlug(settingsMenus, tabSlug, 'Organization')
+        const nextTab = parts[1] === 'recruitment-administration' ? 'Recruitment Administration' : fromSlug(settingsMenus, tabSlug, 'Organization')
         const allowedTab = nextTab === 'Statutory Setup' && !canManageStatutory ? 'Organization' : nextTab
         setSettingsSection('General')
         setActiveTab(allowedTab)
@@ -328,10 +342,12 @@ export default function SettingsApp() {
   }
 
   const openTasks = () => { setShowMyTasks(true); navigate('/tasks') }
-  const setTab = (nextTab: SettingsTab) => { setShowMyTasks(false); setSettingsSection('General'); localStorage.setItem('payroll.module', 'Settings'); localStorage.setItem('payroll.tab', nextTab); setActiveTab(nextTab); navigate(`/settings/${slug(nextTab)}`) }
+  const setTab = (nextTab: SettingsTab) => { setShowMyTasks(false); setSettingsSection('General'); localStorage.setItem('payroll.module', 'Settings'); localStorage.setItem('payroll.tab', nextTab); setActiveTab(nextTab); navigate(nextTab === 'Recruitment Administration' ? '/settings/recruitment-administration/settings' : `/settings/${slug(nextTab)}`) }
   const setModule = (nextModule: ModuleCode) => { setShowMyTasks(false); localStorage.setItem('payroll.module', nextModule); setMainModule(nextModule); navigate(modulePaths[nextModule]) }
   const setPayrollModuleTab = (nextTab: PayrollTab) => { localStorage.setItem('payroll.payrollTab', nextTab); setPayrollTab(nextTab); setShowMyTasks(false); setMainModule('Payroll'); navigate(nextTab === 'Adjustments' ? '/payroll/adjustments' : nextTab === 'Off-cycle Run' ? '/payroll/off-cycle' : nextTab === 'Employee Tax Profile' ? '/payroll/tax-profile' : nextTab === 'Travel Advances' ? '/payroll/travel-advances' : '/payroll/regular') }
   const setEmployeeModuleTab = (nextTab: EmployeeTab) => { setEmployeeTab(nextTab); setShowMyTasks(false); setMainModule('Employees'); navigate(nextTab === 'Org Structure' ? '/employees/org-structure' : '/employees/master') }
+  const setRecruitmentModuleView = (nextView: RecruitmentPageView) => { setShowMyTasks(false); setMainModule('TalentAcquisition'); localStorage.setItem('payroll.module', 'TalentAcquisition'); navigate(`/recruitment/${slug(nextView)}`) }
+  const setRecruitmentAdminSection = (nextSection: RecruitmentAdminSection) => { setShowMyTasks(false); setSettingsSection('General'); setActiveTab('Recruitment Administration'); localStorage.setItem('payroll.module', 'Settings'); localStorage.setItem('payroll.tab', 'Recruitment Administration'); setMainModule('Settings'); navigate(`/settings/recruitment-administration/${nextSection}`) }
   const setPayHistory = () => { setShowMyTasks(false); localStorage.setItem('payroll.module', 'Payroll'); setMainModule('Payroll'); navigate('/pay-runs/history') }
   const setSecurityModuleTab = (nextTab: SecurityTab) => { localStorage.setItem('payroll.securityTab', nextTab); setSecurityTab(nextTab); setShowMyTasks(false); setMainModule('Security'); navigate(`/security/${slug(nextTab)}`) }
   const setLeaveAttendanceSettingsTab = (nextTab: LeaveAttendanceMenu) => { setShowMyTasks(false); setSettingsSection('LeaveAttendance'); localStorage.setItem('payroll.module', 'Settings'); localStorage.setItem('payroll.leaveAttendanceTab', nextTab); setLeaveAttendanceTab(nextTab); setMainModule('Settings'); navigate(`/settings/leave-attendance/${slug(nextTab)}`) }
@@ -349,7 +365,24 @@ export default function SettingsApp() {
       const payrollSetupActive = payrollSetupMenus.includes(tab)
       return <>
         {tasks}
-        {generalSettings.map(item => <Fragment key={item}>{menuLink(`/settings/${slug(item)}`, item, settingsSection === 'General' && tab === item, () => setTab(item))}</Fragment>)}
+        {generalSettings.map(item => item === 'Recruitment Administration' ? <div className={`settings-nav-group recruitment-admin-shell-group ${settingsSection === 'General' && tab === item ? 'expanded' : ''}`} key={item}>
+          <button {...navAttrs(item)} className={settingsSection === 'General' && tab === item ? 'active' : ''} type="button" aria-expanded={settingsSection === 'General' && tab === item} onClick={() => setTab(item)}>{menuLabel(item)}<small>{settingsSection === 'General' && tab === item ? '-' : '+'}</small></button>
+          {settingsSection === 'General' && tab === item && <Menu
+            className="recruitment-admin-shell-menu"
+            mode="inline"
+            inlineIndent={14}
+            selectedKeys={[recruitmentAdminSection]}
+            defaultOpenKeys={recruitmentAdminNavigation.map(group => `recruitment-admin-${group.key}`)}
+            items={recruitmentAdminNavigation.map(group => ({
+              key: `recruitment-admin-${group.key}`,
+              label: group.label,
+              children: group.children.map(section => ({ key: section.key, label: section.label })),
+            }))}
+            onClick={({ key }) => {
+              if (recruitmentAdminSections.includes(key as RecruitmentAdminSection)) setRecruitmentAdminSection(key as RecruitmentAdminSection)
+            }}
+          />}
+        </div> : <Fragment key={item}>{menuLink(`/settings/${slug(item)}`, item, settingsSection === 'General' && tab === item, () => setTab(item))}</Fragment>)}
         <div className={`settings-nav-group ${payrollSetupOpen ? 'expanded' : ''} ${collapsedFlyout === 'settings-payroll' ? 'flyout-open' : ''}`}>
           <button {...navAttrs('Payroll Setup')} className={settingsSection === 'General' && payrollSetupActive ? 'active' : ''} type="button" aria-expanded={payrollSetupOpen} onClick={() => toggleNavGroup('settings-payroll', () => setPayrollSetupOpen(open => navOpen ? !open : true))}>{menuLabel('Payroll Setup')}<small>{payrollSetupOpen ? '-' : '+'}</small></button>
           {payrollSetupOpen && <div className="settings-nav-submenu">{payrollSetupMenus.map(item => <Fragment key={item}>{menuLink(`/settings/${slug(item)}`, item, settingsSection === 'General' && tab === item, () => setTab(item), item === 'Salary Templates' ? 'Client-wise' : undefined)}</Fragment>)}</div>}
@@ -370,7 +403,25 @@ export default function SettingsApp() {
     </>
     if (mainModule === 'LeaveAttendance') return <>{tasks}{menuLink('/attendance', 'Attendance Review', true, () => setModule('LeaveAttendance'), 'Pre-payroll')}</>
     if (mainModule === 'Employees') return <>{tasks}{menuLink('/employees/master', 'Employee Master', employeeTab === 'Employee Master', () => setEmployeeModuleTab('Employee Master'), 'Core HR')}{menuLink('/employees/org-structure', 'Org Structure', employeeTab === 'Org Structure', () => setEmployeeModuleTab('Org Structure'), 'Hierarchy')}</>
-    if (mainModule === 'TalentAcquisition') return <>{tasks}{menuLink('/recruitment', 'Recruitment Requisitions', true, () => setModule('TalentAcquisition'), 'RFR & positions')}</>
+    if (mainModule === 'TalentAcquisition') return <>
+      {tasks}
+      <Menu
+        className="recruitment-nav-menu"
+        mode="inline"
+        inlineIndent={14}
+        selectedKeys={[slug(recruitmentView)]}
+        defaultOpenKeys={recruitmentNavigation.map(group => `recruitment-${group.key}`)}
+        items={recruitmentNavigation.map(group => ({
+          key: `recruitment-${group.key}`,
+          label: group.label,
+          children: group.children.map(item => ({ key: slug(item), label: item })),
+        }))}
+        onClick={({ key }) => {
+          const next = recruitmentViews.find(item => slug(item) === key)
+          if (next) setRecruitmentModuleView(next)
+        }}
+      />
+    </>
     if (mainModule === 'Security') return <>{tasks}{securityMenus.map(item => <Fragment key={item}>{menuLink(`/security/${slug(item)}`, item, securityTab === item, () => setSecurityModuleTab(item))}</Fragment>)}</>
     if (mainModule === 'Reports') return <>{tasks}{reportingMenus.map(item => {
       const expanded = reportingTab === item
@@ -390,10 +441,10 @@ export default function SettingsApp() {
     if (mainModule === 'LeaveAttendance') return <PayrollAttendancePage />
     if (mainModule === 'Payroll') return isPayHistory ? <PayHistoryPage /> : payrollTab === 'Employee Tax Profile' ? <EmployeeTaxProfileManager /> : payrollTab === 'Travel Advances' ? <TravelAdvancesPage /> : <PayrollPage key={payrollTab} mode={payrollTab === 'Adjustments' ? 'adjustments' : 'payrun'} runType={payrollTab === 'Off-cycle Run' ? 'Off-cycle Run' : 'Regular Run'} />
     if (mainModule === 'Employees') return <EmployeePage view={(employeeTab === 'Org Structure' ? 'org' : 'master') as EmployeePageView} />
-    if (mainModule === 'TalentAcquisition') return <RecruitmentPage />
+    if (mainModule === 'TalentAcquisition') return <RecruitmentPage view={recruitmentView} />
     if (mainModule === 'Reports') return <ReportingPage activeMenu={reportingTab} activeReport={reportingReport} />
     if (mainModule === 'Workflows') return <WorkflowPage activeMenu={workflowTab} />
-    return settingsSection === 'LeaveAttendance' ? <LeaveAttendancePage activeMenu={leaveAttendanceTab} onSelectMenu={setLeaveAttendanceSettingsTab} /> : <SettingsPage tab={tab} onMessage={() => undefined} />
+    return settingsSection === 'LeaveAttendance' ? <LeaveAttendancePage activeMenu={leaveAttendanceTab} onSelectMenu={setLeaveAttendanceSettingsTab} /> : <SettingsPage tab={tab} recruitmentSection={recruitmentAdminSection} onMessage={() => undefined} />
   }
 
   const shellClassName = ['payroll-app compact module-shell', navOpen ? '' : 'nav-collapsed', appDrawerOpen ? 'drawer-open' : '', mobileShell && navOpen ? 'mobile-nav-open' : ''].filter(Boolean).join(' ')
@@ -414,7 +465,7 @@ export default function SettingsApp() {
           <div className="topbar-title-line">
             {shellOrg.logoDataUrl && <img className="topbar-org-logo" src={shellOrg.logoDataUrl} alt="Organization logo" />}
             <div>
-              <Breadcrumb className="topbar-breadcrumb" items={[{ title: activeModule.label }, { title: pageTitle }]} />
+              <Breadcrumb className="topbar-breadcrumb" items={breadcrumbItems} />
               <h2 title={pageTitle}>{pageTitle}</h2>
             </div>
           </div>

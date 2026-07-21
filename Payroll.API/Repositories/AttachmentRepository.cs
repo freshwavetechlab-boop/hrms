@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS entity_attachments (
     is_current BOOLEAN NOT NULL DEFAULT TRUE,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
     uploaded_by_user_id INT NOT NULL,
+    uploaded_by_external_subject_id BIGINT NULL,
     uploaded_at_utc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     deleted_by_user_id INT NULL,
     deleted_at_utc DATETIME(6) NULL,
@@ -181,6 +182,12 @@ CREATE TABLE IF NOT EXISTS attachment_audit_logs (
     INDEX IX_attachment_audit_action (action, created_at_utc)
 );");
 
+        var externalSubjectColumnExists = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*)
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='entity_attachments' AND COLUMN_NAME='uploaded_by_external_subject_id';");
+        if (externalSubjectColumnExists == 0)
+            await db.ExecuteAsync("ALTER TABLE entity_attachments ADD COLUMN uploaded_by_external_subject_id BIGINT NULL AFTER uploaded_by_user_id");
+
         var count = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM attachment_storage_servers");
         if (count == 0)
         {
@@ -199,6 +206,7 @@ VALUES ('API_LOCAL','API local attachment storage','LocalFileSystem',@RootPath,T
         new() { ModuleCode = "EMPLOYEE", ModuleName = "Employees", FormCode = "EMPLOYEE_PROFILE", FormName = "Employee Profile", EntityType = "EMPLOYEE" },
         new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "EMPLOYEE_REFERRAL", FormName = "Employee Referral Candidate", EntityType = "CANDIDATE" },
         new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "CANDIDATE_APPLICATION", FormName = "Candidate Application", EntityType = "CANDIDATE" },
+        new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "PUBLIC_CANDIDATE_APPLICATION", FormName = "Public Candidate Application", EntityType = "FORM_SUBMISSION" },
         new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "PRE_ONBOARDING", FormName = "Pre-Onboarding", EntityType = "CANDIDATE" }
     ];
 
@@ -433,8 +441,8 @@ last_health_check_message=@Message WHERE id=@Id", new { Id = id, result.Status, 
     {
         entityType = NormalizeCode(entityType);
         var clientId = await GetEntityClientIdAsync(entityType, entityId);
-        if (clientId is null || !CanReadEntity(user, entityType, entityId, clientId.Value)) return [];
-        var ownerOnly = entityType == "EMPLOYEE" && user.EmployeeId == entityId;
+        if (clientId is null || !await CanReadEntityAsync(user, entityType, entityId, clientId.Value)) return [];
+        var ownerOnly = await IsEntityOwnerAsync(user, entityType, entityId);
         await using var db = Connection();
         await db.OpenAsync();
         return await db.QueryAsync<EntityAttachment>($@"{AttachmentSelect}
@@ -453,7 +461,7 @@ ORDER BY f.display_order,a.uploaded_at_utc DESC;", new { ClientId = clientId.Val
         if (clientId is null) return (null, "Target record was not found.");
         var configurationRow = await GetEffectiveConfigurationByIdAsync(metadata.FieldConfigurationId, clientId.Value);
         if (configurationRow is null) return (null, "Attachment field configuration is inactive or not applicable.");
-        if (!CanUploadEntity(user, metadata.EntityType, metadata.EntityId, clientId.Value, configurationRow))
+        if (!await CanUploadEntityAsync(user, metadata.EntityType, metadata.EntityId, clientId.Value, configurationRow))
             return (null, "You are not allowed to upload this attachment.");
         var validationError = ValidateMetadata(configurationRow, metadata, file);
         if (validationError is not null) return (null, validationError);
@@ -569,7 +577,8 @@ SELECT LAST_INSERT_ID();", new
     {
         var row = await GetAccessRowAsync(publicId);
         if (row is null || !row.IsCurrent || row.IsDeleted) return (null, null, "Attachment was not found.");
-        if (!CanReadEntity(user, row.EntityType, row.EntityId, row.ClientId) || (IsOwner(user, row) && !row.OwnerCanView))
+        var isOwner = await IsEntityOwnerAsync(user, row.EntityType, row.EntityId);
+        if (!await CanReadEntityAsync(user, row.EntityType, row.EntityId, row.ClientId) || (isOwner && !row.OwnerCanView))
         {
             await LogFailedAccessAsync(row, action, user.Id, "Access denied.", ipAddress, userAgent);
             return (null, null, "Attachment was not found.");
@@ -626,7 +635,7 @@ WHERE token_hash=@TokenHash AND revoked_at_utc IS NULL AND expires_at_utc>UTC_TI
     {
         var row = await GetAccessRowAsync(publicId);
         if (row is null || row.IsDeleted) return (false, "Attachment was not found.");
-        var allowed = CanManageEntity(user, row.EntityType, row.ClientId) || (IsOwner(user, row) && row.OwnerCanDelete);
+        var allowed = await CanManageEntityAsync(user, row.EntityType, row.EntityId, row.ClientId) || (await IsEntityOwnerAsync(user, row.EntityType, row.EntityId) && row.OwnerCanDelete);
         if (!allowed) return (false, "You are not allowed to delete this attachment.");
         await using var db = Connection();
         await db.OpenAsync();
@@ -642,7 +651,7 @@ WHERE id=@Id AND is_deleted=FALSE", new { row.Id, UserId = user.Id }, transactio
     {
         var row = await GetAccessRowAsync(publicId);
         if (row is null || row.IsDeleted) return (null, "Attachment was not found.");
-        if (!CanVerifyEntity(user, row.EntityType, row.ClientId)) return (null, "You are not allowed to verify this attachment.");
+        if (!await CanVerifyEntityAsync(user, row.EntityType, row.EntityId, row.ClientId)) return (null, "You are not allowed to verify this attachment.");
         await using var db = Connection();
         await db.OpenAsync();
         await using var transaction = await db.BeginTransactionAsync();
@@ -703,7 +712,7 @@ rejection_reason=@Reason WHERE id=@Id", new { row.Id, Status = approve ? "Verifi
 WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='recruitment_candidates';");
             if (candidateTableExists > 0)
             {
-                var candidateClientId = await db.ExecuteScalarAsync<int?>("SELECT client_id FROM recruitment_candidates WHERE id=@Id", new { Id = entityId });
+                var candidateClientId = await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM recruitment_candidates WHERE Id=@Id", new { Id = entityId });
                 if (candidateClientId.HasValue) return candidateClientId;
             }
             var referralTableExists = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
@@ -712,6 +721,8 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='recruitment_employee_referrals';")
                 return await db.ExecuteScalarAsync<int?>(@"SELECT p.ClientId FROM recruitment_employee_referrals r
 JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id = entityId });
         }
+        if (entityType == "FORM_SUBMISSION")
+            return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM form_submissions WHERE Id=@Id", new { Id = entityId });
         return null;
     }
 
@@ -719,33 +730,60 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
         (user.ClientId is null || user.ClientId == clientId) &&
         HasAnyPermission(user, "attachment.config.manage", "settings.manage", "security.manage");
 
-    private static bool CanReadEntity(AuthUser user, string entityType, long entityId, int clientId)
+    private async Task<bool> CanReadEntityAsync(AuthUser user, string entityType, long entityId, int clientId)
     {
-        if (user.ClientId is not null && user.ClientId != clientId) return false;
-        if (entityType == "EMPLOYEE" && user.EmployeeId == entityId) return true;
+        if (await IsEntityOwnerAsync(user, entityType, entityId)) return true;
+        if (!await HasEntityClientAccessAsync(user, entityType, entityId, clientId)) return false;
         return entityType == "EMPLOYEE"
             ? HasAnyPermission(user, "attachment.employee.view", "employees.view", "employees.manage", "settings.manage", "security.manage")
             : HasAnyPermission(user, "attachment.recruitment.view", "recruitment.manage", "security.manage");
     }
 
-    private static bool CanUploadEntity(AuthUser user, string entityType, long entityId, int clientId, AttachmentFieldConfiguration config)
+    private async Task<bool> CanUploadEntityAsync(AuthUser user, string entityType, long entityId, int clientId, AttachmentFieldConfiguration config)
     {
-        if (user.ClientId is not null && user.ClientId != clientId) return false;
-        if (entityType == "EMPLOYEE" && user.EmployeeId == entityId) return config.OwnerCanUpload;
-        return CanManageEntity(user, entityType, clientId);
+        if (await IsEntityOwnerAsync(user, entityType, entityId)) return config.OwnerCanUpload;
+        return await CanManageEntityAsync(user, entityType, entityId, clientId);
     }
 
-    private static bool CanManageEntity(AuthUser user, string entityType, int clientId)
+    private async Task<bool> IsEntityOwnerAsync(AuthUser user, string entityType, long entityId)
     {
-        if (user.ClientId is not null && user.ClientId != clientId) return false;
+        if (!user.EmployeeId.HasValue) return false;
+        if (entityType == "EMPLOYEE") return user.EmployeeId.Value == entityId;
+        if (entityType != "CANDIDATE") return false;
+        await using var db = Connection();
+        await db.OpenAsync();
+        return await db.ExecuteScalarAsync<int>(@"SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM recruitment_candidates c WHERE c.Id=@EntityId AND c.EmployeeId=@EmployeeId
+) OR EXISTS (
+    SELECT 1 FROM recruitment_employee_referrals r WHERE r.CandidateId=@EntityId AND r.ReferrerEmployeeId=@EmployeeId
+) THEN 1 ELSE 0 END", new { EntityId = entityId, EmployeeId = user.EmployeeId.Value }) == 1;
+    }
+
+    private async Task<bool> HasEntityClientAccessAsync(AuthUser user, string entityType, long entityId, int storedClientId)
+    {
+        if (user.ClientId is null || user.ClientId == storedClientId) return true;
+        if (entityType != "CANDIDATE") return false;
+        await using var db = Connection();
+        await db.OpenAsync();
+        return await db.ExecuteScalarAsync<int>(@"SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM recruitment_candidate_applications a WHERE a.CandidateId=@EntityId AND a.ClientId=@ClientId
+) OR EXISTS (
+    SELECT 1 FROM recruitment_employee_referrals r JOIN recruitment_open_positions p ON p.Id=r.PositionId
+    WHERE r.CandidateId=@EntityId AND p.ClientId=@ClientId
+) THEN 1 ELSE 0 END", new { EntityId = entityId, ClientId = user.ClientId.Value }) == 1;
+    }
+
+    private async Task<bool> CanManageEntityAsync(AuthUser user, string entityType, long entityId, int clientId)
+    {
+        if (!await HasEntityClientAccessAsync(user, entityType, entityId, clientId)) return false;
         return entityType == "EMPLOYEE"
             ? HasAnyPermission(user, "attachment.employee.upload", "employees.manage", "settings.manage", "security.manage")
             : HasAnyPermission(user, "attachment.recruitment.upload", "recruitment.manage", "security.manage");
     }
 
-    private static bool CanVerifyEntity(AuthUser user, string entityType, int clientId)
+    private async Task<bool> CanVerifyEntityAsync(AuthUser user, string entityType, long entityId, int clientId)
     {
-        if (user.ClientId is not null && user.ClientId != clientId) return false;
+        if (!await HasEntityClientAccessAsync(user, entityType, entityId, clientId)) return false;
         return entityType == "EMPLOYEE"
             ? HasAnyPermission(user, "attachment.employee.verify", "employees.manage", "security.manage")
             : HasAnyPermission(user, "attachment.recruitment.verify", "recruitment.manage", "security.manage");
@@ -753,8 +791,6 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
 
     private static bool HasAnyPermission(AuthUser user, params string[] permissions) =>
         permissions.Any(permission => user.Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase));
-
-    private static bool IsOwner(AuthUser user, AttachmentAccessRow row) => row.EntityType == "EMPLOYEE" && user.EmployeeId == row.EntityId;
 
     private string? ValidateMetadata(AttachmentFieldConfiguration config, AttachmentUploadMetadata metadata, IFormFile file)
     {

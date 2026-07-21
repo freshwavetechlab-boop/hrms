@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type Key, type ReactNode } from 'react'
 import { DownOutlined, FileExcelOutlined, FileOutlined, FilePdfOutlined, FileTextOutlined, FileWordOutlined } from '@ant-design/icons'
-import { Button, Dropdown, Input, Space, Table } from 'antd'
+import { Button, Dropdown, Input, Table } from 'antd'
 import type { ColumnsType, TablePaginationConfig, TableRowSelection } from 'antd/es/table/interface'
 import type { MenuProps } from 'antd'
 import { jsPDF } from 'jspdf'
@@ -137,13 +137,13 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
   return <div className="ant-smart-table">
     <div className="ant-table-toolbar">
       <div className="ant-table-summary">{title && <strong>{title}</strong>}<span>{data.length} of {rows.length} rows</span></div>
-      <Space className="ant-table-actions" wrap>
+      <div className="ant-table-actions">
         <Input allowClear className="table-filter" placeholder="Search table..." value={query} onChange={event => setQuery(event.target.value)} />
         <Button onClick={clear} disabled={!query && !dirtyTable}>Clear</Button>
         <Dropdown.Button className={`export-split-btn export-${exportFormat}`} menu={exportMenu} icon={<DownOutlined />} onClick={downloadExport} disabled={!exportRows.length}>
           <span className="export-button-label">{exportIcons[exportFormat]} Export {exportLabels[exportFormat]}</span>
         </Dropdown.Button>
-      </Space>
+      </div>
     </div>
     <Table<T>
       key={tableKey}
@@ -151,7 +151,10 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
       className="zoho-ant-table"
       columns={antColumns}
       dataSource={data}
-      rowKey={(row, index) => String(props.getRowId ? props.getRowId(row, index ?? 0) : (row as Record<string, unknown>).id ?? index)}
+      rowKey={row => {
+        const rowIndex = rows.indexOf(row)
+        return String(props.getRowId ? props.getRowId(row, rowIndex) : (row as Record<string, unknown>).id ?? rowIndex)
+      }}
       rowClassName={row => rowClassName?.(row) ?? ''}
       locale={{ emptyText }}
       pagination={pagination}

@@ -55,7 +55,10 @@ All users use password: `Test@12345`
 - Recruiter assignment rule
 - SLA rule
 - Document checklist
-- JD and communication templates
+- JD, communication, and Offer Letter templates
+- Published, versioned application and pre-onboarding forms
+- Published hiring pipeline with ATS, document, interview, HR, offer, and joining stages
+- Configured stage transitions, SLA clocks, interview competencies, external candidate actions, and offer policy
 
 ## Suggested Test Flow
 
@@ -73,3 +76,19 @@ All users use password: `Test@12345`
    - checklist
    - recruiter/vendor/consultant operations
 8. From ESS, check internal openings and submit a referral if a referral campaign is created.
+
+## Full Orchestration Test Flow
+
+1. In Recruitment, create and submit a JD version for workflow approval, then approve it from My Tasks.
+2. Open Job Postings, select the approved JD, published application form, and published pipeline; publish the posting.
+3. Copy the generated `/careers/{slug}` URL and submit a candidate application without logging in. Upload the resume through the configured upload field.
+4. Open Hiring Pipeline and confirm the candidate is in the first stage with a live SLA clock.
+5. Move the candidate to the ATS stage. Confirm the normalized score, criterion evidence, matched/missing skills, and configured manual/automatic outcome.
+6. Schedule each configured interview round from its calendar picker, assign the panel, and submit competency feedback.
+7. Move the candidate to the Offer stage, create a Draft offer, then choose **Generate letter**. Preview it through **View letter**; it must open through a short-lived attachment ticket rather than a storage path.
+8. Choose **Submit / release**. If the stage/global policy requires approval, approve it from My Tasks and then choose **Release**.
+9. Open the generated candidate action link and verify that the candidate can securely view the offer and accept, reject, or request negotiation.
+10. Complete the configured pre-onboarding form/documents through the candidate link. Verify required global documents before advancing.
+11. Convert the accepted candidate to an employee and confirm that candidate activity and secured recruitment documents remain visible from the employee 360 profile.
+
+Generated offer letters use the global attachment system. Re-generating one offer retires only that offer's prior letter; other offers for the same candidate remain independently accessible.

@@ -1357,6 +1357,7 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 .bulk-preview-table table{min-width:100%;border-collapse:collapse}
 .bulk-preview-table th,.bulk-preview-table td{padding:8px 10px;border-bottom:1px solid #eef0f4;border-right:1px solid #eef0f4;white-space:nowrap;font-size:.74rem;text-align:left}
 .bulk-preview-table th{position:sticky;top:0;z-index:1;background:#f8fafc;color:#475569;font-size:.68rem;font-weight:900;text-transform:uppercase}
+.bulk-preview-table th.mapped-preview-column{border-top:3px solid var(--preview-map-color);background:color-mix(in srgb,var(--preview-map-color) 8%,#fff)}.bulk-preview-table td.mapped-preview-column:not(.cell-error){background:color-mix(in srgb,var(--preview-map-color) 3.5%,#fff)}.bulk-preview-column-head{display:grid;gap:3px}.bulk-preview-column-head>span{font:inherit}.bulk-preview-column-head>small{max-width:180px;overflow:hidden;border-radius:999px;background:color-mix(in srgb,var(--preview-map-color) 12%,#fff);padding:3px 6px;color:var(--preview-map-color);font-size:.55rem;font-weight:900;text-overflow:ellipsis;text-transform:none;white-space:nowrap}
 .bulk-preview-table tr.has-error td:first-child{background:#fff1f2;color:#be123c;font-weight:900}
 .bulk-preview-table td.cell-error{background:#fee2e2!important;color:#991b1b!important;box-shadow:inset 0 0 0 1px #ef4444}
 .bulk-preview-table td input{width:100%;min-width:90px;border:0;background:transparent;color:inherit;font:inherit;outline:0;padding:0}
@@ -1368,6 +1369,7 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 .bulk-preview-sheet-tabs button.active{background:#fff;color:#4f46e5;border-color:#8b5cf6;border-bottom-color:#fff;box-shadow:0 -2px 8px rgba(79,70,229,.08)}
 .bulk-preview-sheet-tabs button span{margin-left:6px;color:#64748b;font-weight:700}
 .bulk-preview-sheet-tabs button b{display:inline-grid;place-items:center;min-width:18px;height:18px;margin-left:6px;border-radius:999px;background:#ef4444;color:#fff;font-size:.68rem}
+.bulk-preview-pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 4px 1px;color:#64748b;font-size:.68rem}.bulk-preview-pagination .ant-pagination{margin-left:auto}
 .bulk-preview-note{color:#64748b;font-size:.72rem}
 .employee-same-address{grid-column:1/-1!important;display:flex!important;align-items:center!important;gap:8px!important;margin:-2px 0 2px!important;color:#475569!important;font-size:.74rem!important;font-weight:800!important}
 .employee-same-address input{width:15px!important;height:15px!important}
@@ -1827,6 +1829,385 @@ body.portal-shell-mounted #root .module-shell .module-content:has(>.dashboard-pa
   }
 }
 
+/* Workflow Setup: business-first guidance with technical controls inside AntD panels. */
+.workflow-setup-guide {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+  margin: 0 0 14px !important;
+}
+
+.workflow-setup-guide article {
+  display: grid !important;
+  grid-template-columns: 32px minmax(0, 1fr) !important;
+  gap: 10px !important;
+  align-items: center !important;
+  min-width: 0 !important;
+  padding: 11px 12px !important;
+  border: 1px solid #e5e8f1 !important;
+  border-radius: 10px !important;
+  background: #fbfcff !important;
+  color: #64748b !important;
+}
+
+.workflow-setup-guide article > b {
+  display: grid !important;
+  width: 30px !important;
+  height: 30px !important;
+  place-items: center !important;
+  border-radius: 50% !important;
+  background: #eef1f6 !important;
+  color: #64748b !important;
+  font-size: .72rem !important;
+  font-weight: 800 !important;
+}
+
+.workflow-setup-guide article > div {
+  display: grid !important;
+  gap: 2px !important;
+  min-width: 0 !important;
+}
+
+.workflow-setup-guide article strong {
+  color: #334155 !important;
+  font-size: .76rem !important;
+  line-height: 1.3 !important;
+}
+
+.workflow-setup-guide article span {
+  color: #7b8496 !important;
+  font-size: .67rem !important;
+  line-height: 1.35 !important;
+}
+
+.workflow-setup-guide article.active {
+  border-color: #cfc6f5 !important;
+  background: #f8f6ff !important;
+  box-shadow: 0 0 0 1px #ddd6fe inset !important;
+}
+
+.workflow-setup-guide article.active > b {
+  background: #6546e8 !important;
+  color: #fff !important;
+}
+
+.workflow-setup-guide article.active strong {
+  color: #5133cc !important;
+}
+
+.workflow-business-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 12px 14px !important;
+  align-items: start !important;
+}
+
+.workflow-business-grid > * {
+  min-width: 0 !important;
+}
+
+.workflow-business-grid .app-search-select,
+.workflow-business-grid .ant-select,
+.workflow-business-grid input,
+.workflow-business-grid textarea {
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+.workflow-wide {
+  grid-column: 1 / -1 !important;
+}
+
+.workflow-generated-summary {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+  align-items: center !important;
+  min-width: 0 !important;
+  margin: 12px 0 0 !important;
+  padding: 10px 12px !important;
+  border: 1px solid #dfe4ee !important;
+  border-radius: 10px !important;
+  background: #f8fafc !important;
+}
+
+.workflow-generated-summary > div {
+  flex: 1 1 180px !important;
+  min-width: 0 !important;
+}
+
+.workflow-generated-summary span {
+  display: block !important;
+  color: #7b8496 !important;
+  font-size: .62rem !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: .04em !important;
+}
+
+.workflow-generated-summary b {
+  display: block !important;
+  margin-top: 3px !important;
+  color: #27324a !important;
+  font-size: .75rem !important;
+  line-height: 1.35 !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+
+.workflow-generated-summary > .ant-tag {
+  flex: 0 0 auto !important;
+  margin-inline: auto 0 !important;
+  white-space: nowrap !important;
+}
+
+.workflow-advanced-collapse {
+  overflow: hidden !important;
+  margin-top: 12px !important;
+  border: 1px solid #e5e8f1 !important;
+  border-radius: 10px !important;
+  background: #fbfcff !important;
+}
+
+.workflow-advanced-collapse > .ant-collapse-item {
+  border-bottom: 0 !important;
+}
+
+.workflow-advanced-collapse .ant-collapse-header {
+  align-items: center !important;
+  padding: 10px 12px !important;
+  color: #475569 !important;
+  font-size: .73rem !important;
+  font-weight: 700 !important;
+}
+
+.workflow-advanced-collapse .ant-collapse-content {
+  border-top: 1px solid #edf0f5 !important;
+  background: #fff !important;
+}
+
+.workflow-advanced-collapse .ant-collapse-content-box {
+  display: grid !important;
+  gap: 12px !important;
+  padding: 12px !important;
+}
+
+.workflow-advanced-collapse .ant-collapse-content-box > .grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 12px 14px !important;
+}
+
+.workflow-advanced-collapse .ant-alert {
+  border-radius: 9px !important;
+}
+
+.workflow-advanced-collapse .actions {
+  justify-content: flex-end !important;
+  padding-top: 0 !important;
+}
+
+.workflow-advanced-collapse .actions .secondary {
+  width: auto !important;
+  min-width: 0 !important;
+}
+
+.workflow-quick-presets {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+  align-items: center !important;
+  min-width: 0 !important;
+  margin: 12px 0 !important;
+  padding: 10px 12px !important;
+  border: 1px solid #e5e8f1 !important;
+  border-radius: 10px !important;
+  background: #fff !important;
+}
+
+.workflow-quick-presets > div {
+  display: grid !important;
+  gap: 2px !important;
+  min-width: 190px !important;
+  margin-right: auto !important;
+}
+
+.workflow-quick-presets strong {
+  color: #334155 !important;
+  font-size: .76rem !important;
+}
+
+.workflow-quick-presets span {
+  color: #7b8496 !important;
+  font-size: .67rem !important;
+}
+
+.workflow-quick-presets button {
+  width: auto !important;
+  min-width: 0 !important;
+  height: 32px !important;
+  padding: 0 10px !important;
+  border-radius: 8px !important;
+  box-shadow: none !important;
+  white-space: nowrap !important;
+}
+
+.workflow-direct-note {
+  margin: 12px 0 !important;
+  border-radius: 10px !important;
+}
+
+.workflow-direct-note .ant-alert-message {
+  font-size: .76rem !important;
+  font-weight: 700 !important;
+}
+
+.workflow-direct-note .ant-alert-description {
+  font-size: .7rem !important;
+  line-height: 1.5 !important;
+}
+
+.workflow-stage-section {
+  min-width: 0 !important;
+  margin-top: 12px !important;
+  padding: 14px !important;
+  border: 1px solid #e5e8f1 !important;
+  border-radius: 10px !important;
+  background: #fafbfc !important;
+}
+
+.workflow-stage-section .approval-stages-heading {
+  margin-bottom: 10px !important;
+}
+
+.workflow-stage-section .workflow-stage,
+.workflow-stage-section .workflow-stage .ant-select {
+  min-width: 0 !important;
+}
+
+.workflow-stage-section .workflow-stage .ant-select,
+.workflow-stage-section .workflow-stage .ant-select-selector {
+  width: 100% !important;
+  height: 32px !important;
+}
+
+.workflow-stage-section .workflow-stage .ant-select-selector {
+  min-height: 32px !important;
+  border-radius: 8px !important;
+}
+
+.workflow-stage-section .workflow-stage .ant-select-selection-item,
+.workflow-stage-section .workflow-stage .ant-select-selection-placeholder {
+  line-height: 30px !important;
+}
+
+.workflow-stage-section .add-stage {
+  margin-top: 10px !important;
+}
+
+.workflow-approver-preview {
+  display: block !important;
+  margin-top: 6px !important;
+  padding: 6px 8px !important;
+  border: 1px solid #b7ebc6 !important;
+  border-radius: 7px !important;
+  background: #f0fff4 !important;
+  color: #16803a !important;
+  font-size: .67rem !important;
+  font-weight: 700 !important;
+  line-height: 1.4 !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+  overflow-wrap: anywhere !important;
+}
+
+.workflow-approver-preview::before {
+  content: '✓' !important;
+  margin-right: 5px !important;
+}
+
+.workflow-approver-preview.warning {
+  border-color: #ffd2cc !important;
+  background: #fff6f5 !important;
+  color: #c43d32 !important;
+}
+
+.workflow-approver-preview.warning::before {
+  content: '!' !important;
+}
+
+.workflow-simple-request {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+  padding: 2px 0 !important;
+}
+
+.workflow-simple-request > label {
+  min-width: 0 !important;
+}
+
+@media (max-width: 900px) {
+  .workflow-setup-guide {
+    grid-template-columns: 1fr !important;
+  }
+
+  .workflow-setup-guide article {
+    grid-template-columns: 28px minmax(0, 1fr) !important;
+  }
+
+  .workflow-business-grid,
+  .workflow-simple-request {
+    grid-template-columns: 1fr !important;
+  }
+
+  .workflow-wide {
+    grid-column: auto !important;
+  }
+
+  .workflow-advanced-collapse .ant-collapse-content-box > .grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .workflow-setup-guide {
+    gap: 7px !important;
+  }
+
+  .workflow-setup-guide article {
+    padding: 9px 10px !important;
+  }
+
+  .workflow-generated-summary > .ant-tag {
+    margin-inline: 0 !important;
+  }
+
+  .workflow-quick-presets {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+  }
+
+  .workflow-quick-presets > div {
+    min-width: 0 !important;
+    margin-right: 0 !important;
+  }
+
+  .workflow-quick-presets button {
+    width: 100% !important;
+  }
+
+  .workflow-stage-section {
+    padding: 10px !important;
+  }
+
+  .workflow-advanced-collapse .ant-collapse-content-box {
+    padding: 10px !important;
+  }
+
+  .workflow-advanced-collapse .actions,
+  .workflow-advanced-collapse .actions .secondary {
+    width: 100% !important;
+  }
+}
+
 /* Attendance review multi-cell editing */
 .payroll-attendance-page .cell-selection-action.active,
 .payroll-attendance-page .apply-selected-action{
@@ -1897,4 +2278,176 @@ body.portal-shell-mounted #root .module-shell .module-content:has(>.dashboard-pa
 .payroll-attendance-page .attendance-empty-copy p{margin:0!important;color:#64748b!important;font-size:13px!important}
 @media(max-width:700px){
   .payroll-attendance-page .attendance-policy-empty .attendance-empty-toolbar{grid-template-columns:1fr!important}
+}
+
+/* Global Ant Design layout guards: pages own their width and scroll locally. */
+body.portal-shell-mounted #root .module-shell .module-content,
+body.portal-shell-mounted #root .module-shell .module-content > *,
+body.portal-shell-mounted #root .module-shell .module-content .ant-card,
+body.portal-shell-mounted #root .module-shell .module-content .ant-card-body,
+body.portal-shell-mounted #root .module-shell .module-content .ant-tabs,
+body.portal-shell-mounted #root .module-shell .module-content .ant-tabs-content-holder,
+body.portal-shell-mounted #root .module-shell .module-content .ant-tabs-content,
+body.portal-shell-mounted #root .module-shell .module-content .ant-tabs-tabpane,
+body.portal-shell-mounted #root .module-shell .module-content .ant-table-wrapper,
+body.portal-shell-mounted #root .module-shell .module-content .ant-smart-table{
+  min-width:0!important;
+  max-width:100%!important;
+}
+body.portal-shell-mounted #root .module-shell .module-content{align-content:start!important;overflow:visible!important}
+body.portal-shell-mounted #root .module-shell .module-content > *{width:100%!important}
+body.portal-shell-mounted #root .module-shell .module-content .ant-card{overflow:hidden!important}
+body.portal-shell-mounted #root .module-shell .module-content .ant-table-container,
+body.portal-shell-mounted #root .module-shell .module-content .ant-table-content,
+body.portal-shell-mounted #root .module-shell .module-content .ant-table-body{max-width:100%!important}
+body.portal-shell-mounted #root .module-shell .module-content .ant-table-content,
+body.portal-shell-mounted #root .module-shell .module-content .ant-table-body{overscroll-behavior-inline:contain!important;scrollbar-gutter:stable!important}
+body.portal-shell-mounted #root .module-shell .shell-bottom-brand{
+  position:static!important;
+  inset:auto!important;
+  z-index:auto!important;
+  flex:0 0 auto!important;
+  margin-top:auto!important;
+}
+
+/* Talent Acquisition uses the shell menu hierarchy instead of a page-wide tab strip. */
+.module-shell .context-menu :is(.recruitment-nav-menu,.recruitment-admin-shell-menu).ant-menu{
+  width:100%!important;
+  min-width:0!important;
+  margin:2px 0 8px!important;
+  border-inline-end:0!important;
+  background:transparent!important;
+  color:#4f5b73!important;
+  font-size:.74rem!important;
+}
+.module-shell .context-menu :is(.recruitment-nav-menu,.recruitment-admin-shell-menu) .ant-menu-submenu-title,
+.module-shell .context-menu :is(.recruitment-nav-menu,.recruitment-admin-shell-menu) .ant-menu-item{
+  width:calc(100% - 4px)!important;
+  margin:2px!important;
+  border-radius:10px!important;
+}
+.module-shell .context-menu :is(.recruitment-nav-menu,.recruitment-admin-shell-menu) .ant-menu-submenu-title{
+  height:38px!important;
+  line-height:38px!important;
+  color:#334155!important;
+  font-size:.72rem!important;
+  font-weight:800!important;
+}
+.module-shell .context-menu :is(.recruitment-nav-menu,.recruitment-admin-shell-menu) .ant-menu-item{
+  height:34px!important;
+  line-height:34px!important;
+  color:#64748b!important;
+  font-size:.7rem!important;
+  font-weight:650!important;
+}
+.module-shell .context-menu :is(.recruitment-nav-menu,.recruitment-admin-shell-menu) .ant-menu-submenu-title:hover,
+.module-shell .context-menu :is(.recruitment-nav-menu,.recruitment-admin-shell-menu) .ant-menu-item:hover{background:#faf7ff!important;color:#5133cc!important}
+.module-shell .context-menu :is(.recruitment-nav-menu,.recruitment-admin-shell-menu) .ant-menu-item-selected{background:#f3f0ff!important;color:#5133cc!important;font-weight:800!important}
+.module-shell .context-menu :is(.recruitment-nav-menu,.recruitment-admin-shell-menu) .ant-menu-item-selected:after{display:none!important}
+.module-shell .context-menu .recruitment-admin-shell-menu.ant-menu{margin:2px 0 8px 5px!important;width:calc(100% - 5px)!important;border-left:1px solid #e2ddf8!important}
+.module-shell.nav-collapsed .context-menu :is(.recruitment-nav-menu,.recruitment-admin-shell-menu){display:none!important}
+
+/* Recruitment page layout, built from the same Ant cards, forms and tables as other modules. */
+.recruitment-monitor-page,
+.recruitment-admin,
+.recruitment-root-card,
+.recruitment-root-card > .ant-card-body,
+.recruitment-workspace-content,
+.recruitment-admin-workspace,
+.recruitment-admin-content{min-width:0!important;max-width:100%!important}
+.recruitment-monitor-page,.recruitment-admin{width:100%!important;display:grid!important;gap:12px!important;align-content:start!important}
+.recruitment-root-card > .ant-card-head{min-height:48px!important;border-bottom:1px solid #e8ebf2!important;background:#fff!important}
+.recruitment-root-card > .ant-card-head .ant-card-head-title{color:#172136!important;font-size:1rem!important;font-weight:850!important}
+.recruitment-root-card > .ant-card-body{height:auto!important;min-height:0!important;padding:18px!important;overflow:hidden!important}
+.recruitment-workspace-group{display:inline-flex!important;align-items:center!important;min-height:25px!important;padding:0 9px!important;border-radius:999px!important;background:#f3f0ff!important;color:#5b3fd0!important;font-size:.66rem!important;font-weight:850!important;text-transform:uppercase!important;letter-spacing:.04em!important}
+.recruitment-workspace-content{display:grid!important;min-width:0!important;max-width:100%!important;gap:14px!important;align-content:start!important}
+.recruitment-monitor-page,.recruitment-root-card,.recruitment-root-card>.ant-card-body{min-width:0!important;max-width:100%!important}
+.recruitment-summary{display:grid!important;grid-template-columns:repeat(6,minmax(0,1fr))!important;gap:10px!important;margin:0 0 14px!important}
+.recruitment-summary article{display:grid!important;gap:4px!important;min-width:0!important;padding:13px 14px!important;border:1px solid #e6eaf2!important;border-radius:11px!important;background:linear-gradient(180deg,#fff,#fbfcff)!important;box-shadow:0 6px 16px #17213608!important}
+.recruitment-summary span{min-width:0!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;color:#667085!important;font-size:.66rem!important;font-weight:850!important;text-transform:uppercase!important;letter-spacing:.045em!important}
+.recruitment-summary b{color:#172136!important;font-size:1.15rem!important;line-height:1.1!important;font-variant-numeric:tabular-nums!important}
+.recruitment-filters,.recruitment-monitor-page .recruitment-filters{display:grid!important;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr))!important;gap:10px!important;align-items:end!important;margin:0 0 4px!important;padding:12px!important;border:1px solid #e8ebf2!important;border-radius:12px!important;background:#fbfcff!important}
+.recruitment-filters label{display:grid!important;gap:5px!important;min-width:0!important}
+.recruitment-filters label > span:first-child{margin:0!important;color:#475569!important;font-size:.68rem!important;font-weight:850!important}
+.recruitment-filters .app-search-select,.recruitment-filters .ant-input,.recruitment-filters .ant-input-affix-wrapper{width:100%!important;min-width:0!important;height:38px!important}
+.recruitment-monitor-page .recruitment-filters .ant-input-affix-wrapper > input.ant-input{height:auto!important;min-height:0!important;padding:0!important;border:0!important;border-radius:0!important;box-shadow:none!important}
+.recruitment-filters .ant-select-selector{height:38px!important;min-height:38px!important;border-radius:9px!important}
+.recruitment-filters .ant-btn{width:100%!important;height:38px!important;min-width:94px!important;border-radius:9px!important}
+.recruitment-dashboard-grid{align-items:start!important}
+.recruitment-monitor-page .ant-smart-table,.recruitment-admin .ant-smart-table{width:100%!important;overflow:hidden!important}
+
+/* Recruitment Administration now uses the application sidebar; content gets the full workspace width. */
+.recruitment-admin-content{display:grid!important;min-width:0!important;max-width:100%!important;gap:12px!important;align-content:start!important;overflow:visible!important}
+.recruitment-admin-content .orchestration-shell{min-height:0!important}
+.recruitment-config-heading{display:grid!important;gap:2px!important;margin:4px 0 9px!important}
+.recruitment-config-heading b{color:#27324a!important;font-size:.82rem!important}
+.recruitment-config-heading span{color:#758096!important;font-size:.72rem!important}
+.recruitment-advanced-collapse{margin-top:14px!important;border-color:#e5e8f1!important;background:#fbfcff!important}
+.recruitment-advanced-collapse .ant-collapse-content-box{display:grid!important;gap:12px!important}
+.recruitment-monitor-page .candidate-hero,
+.recruitment-monitor-page .candidate-hero>div,
+.recruitment-monitor-page .candidate-hero>.ant-space{min-width:0!important}
+.recruitment-monitor-page .candidate-hero h2,
+.recruitment-monitor-page .candidate-hero p{overflow-wrap:anywhere!important}
+.recruitment-monitor-page .candidate-hero>.ant-space{justify-content:flex-end!important}
+
+/* Candidate 360 is rendered in an Ant Drawer portal, outside the page wrapper. */
+.candidate-360,
+.candidate-facts,
+.candidate-facts article{min-width:0!important;max-width:100%!important}
+.candidate-facts{
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,170px),1fr))!important;
+  gap:10px!important;
+}
+.candidate-facts article{overflow:hidden!important}
+.candidate-facts article b{
+  display:block!important;
+  min-width:0!important;
+  max-width:100%!important;
+  overflow-wrap:anywhere!important;
+  word-break:break-word!important;
+  line-height:1.35!important;
+}
+
+/* Shared DataTable toolbar: actions shrink and wrap inside the owning card. */
+.module-content .ant-table-toolbar{display:grid!important;grid-template-columns:minmax(90px,1fr) minmax(0,auto)!important;align-items:end!important}
+.module-content .ant-table-actions{display:flex!important;max-width:100%!important;min-width:0!important;margin-left:0!important;justify-content:flex-end!important;align-items:center!important;gap:8px!important;flex-wrap:wrap!important}
+.module-content .ant-table-actions .table-filter{flex:1 1 190px!important;min-width:160px!important;max-width:240px!important}
+.module-content .ant-table-actions > :not(.table-filter){flex:0 0 auto!important}
+
+/* Recruitment orchestration hero and editor grids must contract inside the shell. */
+.recruitment-monitor-page .orchestration-shell,.recruitment-admin .orchestration-shell{min-height:0!important;max-width:100%!important}
+.recruitment-monitor-page .orchestration-shell > .orchestration-toolbar,
+.recruitment-admin .orchestration-shell > .orchestration-toolbar{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;gap:16px!important;align-items:start!important;padding:2px 0 14px!important;border-bottom:1px solid #edf0f5!important}
+.recruitment-monitor-page .orchestration-shell > .orchestration-toolbar > div:first-child,
+.recruitment-admin .orchestration-shell > .orchestration-toolbar > div:first-child{display:grid!important;gap:4px!important;align-items:start!important}
+.recruitment-monitor-page .orchestration-shell > .orchestration-toolbar > div:last-child,
+.recruitment-admin .orchestration-shell > .orchestration-toolbar > div:last-child{display:flex!important;justify-content:flex-end!important;align-items:center!important;gap:8px!important;flex-wrap:wrap!important}
+.recruitment-monitor-page .orchestration-title,.recruitment-admin .orchestration-title{font-size:1.08rem!important;line-height:1.25!important}
+.recruitment-monitor-page .orchestration-subtitle,.recruitment-admin .orchestration-subtitle{margin:0!important;max-width:760px!important;line-height:1.5!important}
+.recruitment-monitor-page :is(.form-builder-layout,.pipeline-designer-layout,.jd-workspace-layout,.posting-workspace-layout),
+.recruitment-admin :is(.form-builder-layout,.pipeline-designer-layout,.jd-workspace-layout,.posting-workspace-layout){grid-template-columns:minmax(220px,270px) minmax(0,1fr)!important;max-width:100%!important}
+
+@media(max-width:1200px){
+  .recruitment-summary{grid-template-columns:repeat(3,minmax(0,1fr))!important}
+  .recruitment-filters,.recruitment-monitor-page .recruitment-filters{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .recruitment-filters .ant-btn{width:100%!important}
+  .recruitment-monitor-page :is(.form-builder-layout,.pipeline-designer-layout,.jd-workspace-layout,.posting-workspace-layout),
+  .recruitment-admin :is(.form-builder-layout,.pipeline-designer-layout,.jd-workspace-layout,.posting-workspace-layout){grid-template-columns:1fr!important}
+  .recruitment-monitor-page :is(.jd-manager,.posting-manager) > .orchestration-toolbar{grid-template-columns:1fr!important}
+  .recruitment-monitor-page :is(.jd-manager,.posting-manager) > .orchestration-toolbar > div:last-child{justify-content:flex-start!important}
+}
+@media(max-width:820px){
+  .module-content .ant-table-toolbar{grid-template-columns:1fr!important}
+  .module-content .ant-table-actions{justify-content:flex-start!important}
+  .recruitment-monitor-page .orchestration-shell > .orchestration-toolbar,
+  .recruitment-admin .orchestration-shell > .orchestration-toolbar{grid-template-columns:1fr!important}
+  .recruitment-monitor-page .orchestration-shell > .orchestration-toolbar > div:last-child,
+  .recruitment-admin .orchestration-shell > .orchestration-toolbar > div:last-child{justify-content:flex-start!important}
+}
+@media(max-width:640px){
+  .recruitment-root-card > .ant-card-body{padding:12px!important}
+  .recruitment-summary,.recruitment-filters,.recruitment-monitor-page .recruitment-filters{grid-template-columns:1fr!important}
+  .recruitment-table-header{display:grid!important}
+  .recruitment-table-header .ant-btn{width:100%!important}
 }

@@ -141,4 +141,9 @@ export const essApi = {
   recruitmentInternalOpenings: () => essFetch('/api/ess/recruitment/internal-openings').then(r => r.ok ? r.json() as Promise<RecruitmentInternalOpening[]> : []),
   recruitmentReferrals: () => essFetch('/api/ess/recruitment/referrals').then(r => r.ok ? r.json() as Promise<RecruitmentEmployeeReferral[]> : []),
   submitRecruitmentReferral: (request: SaveEmployeeReferral) => essFetch('/api/ess/recruitment/referrals', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) }).then(jsonOrThrow<RecruitmentEmployeeReferral>),
+  recruitmentAttachmentConfigurations: (clientId: number) => essFetch(`/api/attachment-configurations/effective?clientId=${clientId}&moduleCode=RECRUITMENT&formCode=EMPLOYEE_REFERRAL`).then(response => response.ok ? response.json() as Promise<AttachmentFieldConfiguration[]> : []),
+  uploadReferralResume: (referralId: number, configurationId: number, file: File) => {
+    const body = new FormData(); body.append('fieldConfigurationId', String(configurationId)); body.append('file', file)
+    return essFetch(`/api/ess/recruitment/referrals/${referralId}/resume`, { method: 'POST', body }).then(jsonOrThrow<unknown>)
+  },
 }

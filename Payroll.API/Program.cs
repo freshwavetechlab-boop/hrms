@@ -55,6 +55,7 @@ builder.Services.AddSingleton<OrganizationRepository>();
 builder.Services.AddSingleton<SettingsRepository>();
 builder.Services.AddSingleton<ClientBillingRepository>();
 builder.Services.AddSingleton<EmployeeRepository>();
+builder.Services.AddSingleton<EmployeeAttributeRepository>();
 builder.Services.AddSingleton<PayRunRepository>();
 builder.Services.AddSingleton<AuthRepository>();
 builder.Services.AddSingleton<LeaveAttendanceRepository>();
@@ -69,11 +70,19 @@ builder.Services.AddSingleton<ScheduledJobRepository>();
 builder.Services.AddSingleton<TravelExpenseRepository>();
 builder.Services.AddSingleton<RecruitmentAdminRepository>();
 builder.Services.AddSingleton<RecruitmentRepository>();
+builder.Services.AddSingleton<ResumeParsingService>();
+builder.Services.AddSingleton<TemplatePdfService>();
+builder.Services.AddSingleton<RecruitmentTalentRepository>();
+builder.Services.AddSingleton<RecruitmentFormRepository>();
+builder.Services.AddSingleton<RecruitmentPipelineRepository>();
+builder.Services.AddSingleton<RecruitmentCandidateActionRepository>();
+builder.Services.AddSingleton<RecruitmentPipelineActionService>();
 builder.Services.AddSingleton<AttachmentStorageService>();
 builder.Services.AddSingleton<AttachmentRepository>();
 builder.Services.AddHostedService<PayrollRunWorker>();
 builder.Services.AddHostedService<ScheduledJobWorker>();
 builder.Services.AddHostedService<NotificationWorker>();
+builder.Services.AddHostedService<RecruitmentPipelineAutomationWorker>();
 
 var app = builder.Build();
 const string AuthCookieName = "payroll_auth";
@@ -386,6 +395,7 @@ app.MapGet("/api/workflows/activities", async (WorkflowRepository repository, Ht
 app.MapGet("/api/workflows/activities/catalog", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetActivitiesForSetupAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/action-rules", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetActionRulesForSetupAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/approvers", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetApproversAsync()) : Results.StatusCode(403));
+app.MapGet("/api/workflows/approver-preview", async (WorkflowRepository repository, string? approverType, int? clientId, int? approverUserId, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetApproverPreviewAsync(approverType,clientId,approverUserId)) : Results.StatusCode(403));
 app.MapGet("/api/workflows/departments", async (WorkflowRepository repository, int clientId, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetDepartmentsAsync(clientId)) : Results.StatusCode(403));
 app.MapGet("/api/workflows/department-heads", async (WorkflowRepository repository, int clientId, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetDepartmentHeadsAsync(clientId)) : Results.StatusCode(403));
 app.MapPost("/api/workflows/department-heads", async (WorkflowRepository repository, SaveDepartmentHeadAssignmentRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); if(request.ClientId<=0||string.IsNullOrWhiteSpace(request.Department)||request.UserId<=0)return Results.BadRequest(new{error="Client, department, and assigned user are required."}); return Results.Ok(await repository.SaveDepartmentHeadAsync(request)); });
@@ -401,7 +411,7 @@ app.MapGet("/api/workflows/tasks/actioned", async (WorkflowRepository repository
 });
 app.MapGet("/api/workflows/history", async (WorkflowRepository repository,HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetInstancesAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/{instanceId:long}/history", async (WorkflowRepository repository,long instanceId,HttpContext context) => Results.Ok(await repository.HistoryAsync(instanceId)));
-app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository, PayRunRepository payRuns, RecruitmentRepository recruitment, NotificationRepository notifications,long taskId,string action,WorkflowActionRequest request,HttpContext context) =>
+app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository, PayRunRepository payRuns, RecruitmentRepository recruitment, RecruitmentTalentRepository recruitmentTalent, RecruitmentPipelineRepository recruitmentPipeline, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, NotificationRepository notifications,long taskId,string action,WorkflowActionRequest request,HttpContext context) =>
 {
     if(action is not ("Approved" or "Rejected" or "Sent Back")) return Results.BadRequest();
     var user=CurrentUser(context);
@@ -412,6 +422,26 @@ app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowReposi
     if(instance?.ResourceType=="TravelRequest")await essRepository.SyncTravelWorkflowStatusAsync(instance.ResourceId,instance.Status);
     if(instance?.ResourceType=="ExpenseClaim")await essRepository.SyncExpenseWorkflowStatusAsync(instance.ResourceId,instance.Status);
     if(instance?.ResourceType=="RecruitmentRequisition")await recruitment.SyncWorkflowStatusAsync(instance.ResourceId,instance.Status,user.Id);
+    if(instance?.ResourceType=="RecruitmentOffer")await recruitmentTalent.SyncOfferWorkflowStatusAsync(instance.ResourceId,instance.Status,user,instance.Id);
+    if(instance?.ResourceType=="RecruitmentJobDescription" && long.TryParse(instance.ResourceId,out var jobDescriptionId))await recruitmentPipeline.SyncJobDescriptionWorkflowStatusAsync(jobDescriptionId,instance.Status,user);
+    if(instance?.ResourceType=="RecruitmentPipelineTransition" && long.TryParse(instance.ResourceId,out var transitionRequestId))
+    {
+        var transition = await recruitmentPipeline.SyncTransitionWorkflowStatusAsync(transitionRequestId,instance.Status,user);
+        if(transition.Result?.Status=="Applied")
+        {
+            await pipelineActions.ExecuteAsync(transition.Result.ApplicationId,"OnApproval",user);
+            await pipelineActions.ExecuteAsync(transition.Result.ApplicationId,"OnExit",user);
+            var entry = await pipelineActions.ExecuteAsync(transition.Result.ApplicationId,"OnEntry",user);
+            if (!entry.Executions.Any(item => item.ActionCode=="GENERATE_ACTION_LINK"))
+                await candidateActions.EnsureForCurrentStageAsync(transition.Result.ApplicationId,user);
+        }
+    }
+    if(instance?.ResourceType=="RecruitmentPipelineStageAction")
+    {
+        var completion = await pipelineActions.CompleteWorkflowAsync(instance.Id,instance.Status);
+        if(completion.Approved && completion.ApplicationId>0)
+            await pipelineActions.ExecuteAsync(completion.ApplicationId,"OnApproval",user,completion.StageInstanceId);
+    }
     if(instance?.ResourceType=="PayRun" && int.TryParse(instance.ResourceId,out var payRunId))
     {
         if(instance.Status=="Approved") await payRuns.ApproveAsync(payRunId);
@@ -610,12 +640,13 @@ app.MapGet("/api/ess/recruitment/referrals", async (RecruitmentRepository reposi
     var user = CurrentUser(context);
     return user.EmployeeId is null || !RecruitmentRepository.HasRecruitmentAccess(user) ? Results.StatusCode(403) : Results.Ok(await repository.MyReferralsAsync(user));
 });
-app.MapPost("/api/ess/recruitment/referrals", async (RecruitmentRepository repository, NotificationRepository notifications, SaveEmployeeReferral request, HttpContext context) =>
+app.MapPost("/api/ess/recruitment/referrals", async (RecruitmentRepository repository, RecruitmentTalentRepository talent, NotificationRepository notifications, SaveEmployeeReferral request, HttpContext context) =>
 {
     var user = CurrentUser(context);
     if (user.EmployeeId is null || !RecruitmentRepository.HasRecruitmentAccess(user)) return Results.StatusCode(403);
     var (row, error) = await repository.SubmitReferralAsync(request, user, notifications);
-    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+    if (row is null) return Results.BadRequest(new { error });
+    return Results.Ok(await talent.LinkReferralAsync(row, user));
 });
 
 app.MapGet("/api/recruitment/dashboard", async (RecruitmentRepository repository, HttpContext context) =>
@@ -678,6 +709,535 @@ app.MapPost("/api/recruitment/open-positions/{id:long}/referral-campaigns", asyn
     if (!HasPermission(context, "recruitment.referral.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var (detail, error) = await repository.CreateReferralCampaignAsync(id, request, CurrentUser(context), notifications);
     return string.IsNullOrWhiteSpace(error) ? Results.Ok(detail) : Results.BadRequest(new { message = error });
+});
+
+app.MapGet("/api/recruitment/talent/dashboard", async (RecruitmentTalentRepository repository, HttpContext context) =>
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage")
+        ? Results.Ok(await repository.DashboardAsync(CurrentUser(context)))
+        : Results.StatusCode(403));
+app.MapGet("/api/recruitment/candidates", async (RecruitmentTalentRepository repository, int? clientId, string? query, string? status, HttpContext context) =>
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage")
+        ? Results.Ok(await repository.SearchCandidatesAsync(CurrentUser(context), clientId, query ?? "", status ?? ""))
+        : Results.StatusCode(403));
+app.MapGet("/api/recruitment/candidates/{id:long}", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var row = await repository.GetCandidateDetailAsync(id, CurrentUser(context));
+    return row is null ? Results.NotFound() : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/candidates", async (RecruitmentTalentRepository repository, SaveRecruitmentCandidate request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveCandidateAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPut("/api/recruitment/candidates/{id:long}/profile-sections", async (RecruitmentTalentRepository repository, long id, SaveCandidateProfileSections request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveCandidateProfileSectionsAsync(id, request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/candidates/{candidateId:long}/resume", async (RecruitmentTalentRepository repository, long candidateId, [FromForm] CandidateResumeUploadRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "attachment.recruitment.upload") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (attachment, resume, error) = await repository.UploadResumeAsync(candidateId, request, CurrentUser(context), context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+    return attachment is null ? Results.BadRequest(new { error }) : Results.Ok(new { attachment, resume });
+}).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(30L * 1024 * 1024));
+app.MapPost("/api/ess/recruitment/referrals/{referralId:long}/resume", async (RecruitmentTalentRepository repository, long referralId, [FromForm] CandidateResumeUploadRequest request, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user.EmployeeId is null || !RecruitmentRepository.HasRecruitmentAccess(user)) return Results.StatusCode(403);
+    var (attachment, resume, error) = await repository.UploadReferralResumeAsync(referralId, request, user, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+    return attachment is null ? Results.BadRequest(new { error }) : Results.Ok(new { attachment, resume });
+}).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(30L * 1024 * 1024));
+app.MapGet("/api/recruitment/applications", async (RecruitmentTalentRepository repository, long? positionId, long? candidateId, string? stage, HttpContext context) =>
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage")
+        ? Results.Ok(await repository.GetApplicationsAsync(CurrentUser(context), positionId, candidateId, stage ?? ""))
+        : Results.StatusCode(403));
+app.MapPost("/api/recruitment/applications", async (RecruitmentTalentRepository repository, SaveCandidateApplication request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.CreateApplicationAsync(request, CurrentUser(context));
+    return row is null || !string.IsNullOrWhiteSpace(error) ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/applications/{id:long}/stage", async (RecruitmentTalentRepository repository, long id, ChangeCandidateStageRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.ChangeStageAsync(id, request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/applications/{id:long}/score", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.ScoreApplicationAsync(id, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/application-scores/{id:long}/override", async (RecruitmentTalentRepository repository, long id, OverrideApplicationScoreRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.OverrideScoreAsync(id, request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapGet("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, long? applicationId, HttpContext context) =>
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetInterviewsAsync(CurrentUser(context), applicationId)) : Results.StatusCode(403));
+app.MapGet("/api/recruitment/interviews/scheduling-context/{applicationId:long}", async (RecruitmentTalentRepository repository, long applicationId, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.GetInterviewSchedulingContextAsync(applicationId, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, SaveRecruitmentInterview request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveInterviewAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapGet("/api/recruitment/interviews/{id:long}/feedback", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetInterviewFeedbackAsync(id, CurrentUser(context))) : Results.StatusCode(403));
+app.MapPost("/api/recruitment/interviews/{id:long}/feedback", async (RecruitmentTalentRepository repository, long id, SaveRecruitmentInterviewFeedback request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveInterviewFeedbackAsync(id, request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapGet("/api/recruitment/offers", async (RecruitmentTalentRepository repository, long? applicationId, HttpContext context) =>
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetOffersAsync(CurrentUser(context), applicationId)) : Results.StatusCode(403));
+app.MapPost("/api/recruitment/offers", async (RecruitmentTalentRepository repository, SaveRecruitmentOffer request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveOfferAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/offers/{id:long}/generate-letter", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.GenerateOfferLetterAsync(id, CurrentUser(context),
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/offers/{id:long}/status", async (RecruitmentTalentRepository repository, RecruitmentPipelineActionService pipelineActions, long id, JsonElement request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var status = request.TryGetProperty("status", out var value) ? value.GetString() ?? "" : "";
+    var remarks = request.TryGetProperty("remarks", out var note) ? note.GetString() ?? "" : "";
+    var (row, error) = await repository.UpdateOfferStatusAsync(id, status, remarks, user);
+    if (row?.Status == "Pending Candidate")
+        await pipelineActions.ExecuteAsync(row.ApplicationId, "OnEntry", user, row.PipelineStageInstanceId);
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/applications/{applicationId:long}/checklist/{itemId:long}/complete", async (RecruitmentTalentRepository repository, long applicationId, long itemId, JsonElement request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    Guid? publicId = request.TryGetProperty("attachmentPublicId", out var value) && Guid.TryParse(value.GetString(), out var parsed) ? parsed : null;
+    var (row, error) = await repository.CompleteChecklistItemAsync(applicationId, itemId, publicId, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/applications/{applicationId:long}/convert-to-employee", async (RecruitmentTalentRepository repository, long applicationId, ConvertCandidateToEmployeeRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "employees.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.ConvertToEmployeeAsync(applicationId, request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapGet("/api/employees/{employeeId:int}/activity-360", async (RecruitmentTalentRepository repository, int employeeId, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user.EmployeeId != employeeId && !HasPermission(context, "employees.view") && !HasPermission(context, "employees.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    return Results.Ok(await repository.GetEmployee360Async(employeeId, user));
+});
+
+var recruitmentOrchestration = app.MapGroup("/api/recruitment-orchestration");
+
+recruitmentOrchestration.MapGet("/lookups", async (RecruitmentFormRepository forms, AttachmentRepository attachments, WorkflowRepository workflows, RecruitmentRepository recruitment, RecruitmentTalentRepository talent, RecruitmentPipelineRepository pipelines, RecruitmentAdminRepository recruitmentAdmin, int? clientId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var scopedClientId = user.ClientId ?? clientId;
+    var administration = await recruitmentAdmin.GetAsync();
+    return Results.Ok(new
+    {
+        lookupSources = await forms.LookupSourcesAsync(),
+        attachmentConfigurations = await attachments.GetConfigurationsAsync(scopedClientId),
+        workflows = await workflows.GetAsync(),
+        forms = await forms.ListAsync(user, scopedClientId),
+        positions = await recruitment.OpenPositionsAsync(user),
+        atsScoringProfiles = await talent.GetScoringProfilesAsync(user, scopedClientId),
+        interviewCompetencies = await pipelines.GetInterviewCompetenciesAsync(scopedClientId, user),
+        templates = administration.Templates.Where(row => !scopedClientId.HasValue || row.ClientId == 0 || row.ClientId == scopedClientId.Value)
+    });
+});
+recruitmentOrchestration.MapGet("/lookups/{sourceCode}/options", async (RecruitmentFormRepository repository, string sourceCode, int clientId, string? search, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.ResolveLookupAsync(sourceCode, CurrentUser(context).ClientId ?? clientId, search ?? "")));
+
+recruitmentOrchestration.MapGet("/forms", async (RecruitmentFormRepository repository, int? clientId, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.ListAsync(CurrentUser(context), clientId)));
+recruitmentOrchestration.MapGet("/forms/{id:long}", async (RecruitmentFormRepository repository, long id, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var row = await repository.GetAsync(id, CurrentUser(context));
+    return row is null ? Results.NotFound() : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/forms", async (RecruitmentFormRepository repository, SaveDynamicFormDefinition request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveDefinitionAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/forms/{id:long}/versions", async (RecruitmentFormRepository repository, long id, SaveDynamicFormVersion request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    request.FormDefinitionId = id;
+    var (row, error) = await repository.SaveVersionAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/form-versions/{versionId:long}/publish", async (RecruitmentFormRepository repository, long versionId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.PublishAsync(versionId, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+
+recruitmentOrchestration.MapGet("/job-descriptions", async (RecruitmentPipelineRepository repository, long requisitionId, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetJobDescriptionVersionsAsync(requisitionId, CurrentUser(context))));
+recruitmentOrchestration.MapGet("/job-descriptions/{id:long}", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var row = await repository.GetJobDescriptionVersionAsync(id, CurrentUser(context));
+    return row is null ? Results.NotFound() : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/job-descriptions", async (RecruitmentPipelineRepository repository, SaveRecruitmentJobDescriptionVersion request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveJobDescriptionVersionAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/job-descriptions/{id:long}/submit", async (RecruitmentPipelineRepository repository, long id, long workflowId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.SubmitJobDescriptionForApprovalAsync(id, workflowId, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+
+recruitmentOrchestration.MapGet("/job-postings", async (RecruitmentPipelineRepository repository, int? clientId, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetJobPostingsAsync(clientId, CurrentUser(context))));
+recruitmentOrchestration.MapGet("/job-postings/{id:long}", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var row = await repository.GetJobPostingAsync(id, CurrentUser(context));
+    return row is null ? Results.NotFound() : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/job-postings", async (RecruitmentPipelineRepository repository, SaveRecruitmentJobPosting request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveJobPostingAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/job-postings/{id:long}/publish", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.PublishJobPostingAsync(id, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/job-postings/{id:long}/close", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : await repository.CloseJobPostingAsync(id, CurrentUser(context)) ? Results.NoContent() : Results.NotFound());
+
+recruitmentOrchestration.MapGet("/pipelines", async (RecruitmentPipelineRepository repository, int? clientId, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetPipelinesAsync(clientId, CurrentUser(context))));
+recruitmentOrchestration.MapGet("/pipelines/{id:long}", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var definition = (await repository.GetPipelinesAsync(CurrentUser(context).ClientId, CurrentUser(context))).FirstOrDefault(row => row.Id == id);
+    if (definition is null) return Results.NotFound();
+    return Results.Ok(new { definition, versions = await repository.GetPipelineVersionsAsync(id, CurrentUser(context)) });
+});
+recruitmentOrchestration.MapPost("/pipelines", async (RecruitmentPipelineRepository repository, SaveRecruitmentPipelineDefinition request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.SavePipelineAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapGet("/pipelines/{id:long}/versions", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetPipelineVersionsAsync(id, CurrentUser(context))));
+recruitmentOrchestration.MapGet("/pipeline-versions/{versionId:long}", async (RecruitmentPipelineRepository repository, long versionId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var row = await repository.GetPipelineVersionAsync(versionId, CurrentUser(context));
+    return row is null ? Results.NotFound() : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/pipelines/{id:long}/versions", async (RecruitmentPipelineRepository repository, long id, SaveRecruitmentPipelineVersion request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    request.PipelineDefinitionId = id;
+    var (row, error) = await repository.SavePipelineVersionAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/pipeline-versions/{versionId:long}/publish", async (RecruitmentPipelineRepository repository, long versionId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.PublishPipelineVersionAsync(versionId, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/pipeline-assignments", async (RecruitmentPipelineRepository repository, AssignRecruitmentPipelineRequest request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.AssignPipelineAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapGet("/pipeline-assignments/{positionId:long}", async (RecruitmentPipelineRepository repository, long positionId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var row = await repository.GetPositionPipelineAssignmentAsync(positionId, CurrentUser(context));
+    return row is null ? Results.NotFound() : Results.Ok(row);
+});
+recruitmentOrchestration.MapGet("/interview-competencies", async (RecruitmentPipelineRepository repository, int? clientId, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetInterviewCompetenciesAsync(clientId, CurrentUser(context))));
+recruitmentOrchestration.MapPost("/interview-competencies", async (RecruitmentPipelineRepository repository, RecruitmentInterviewCompetencyDefinition request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveInterviewCompetencyAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+
+recruitmentOrchestration.MapPost("/applications/{applicationId:long}/pipeline", async (RecruitmentPipelineRepository repository, RecruitmentPipelineActionService actions, RecruitmentCandidateActionRepository candidateActions, long applicationId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var (id, error) = await repository.EnsureApplicationPipelineAsync(applicationId, user);
+    if (id.HasValue)
+    {
+        var entry = await actions.ExecuteAsync(applicationId, "OnEntry", user);
+        if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
+            await candidateActions.EnsureForCurrentStageAsync(applicationId, user);
+    }
+    return id.HasValue ? Results.Ok(new { pipelineInstanceId = id.Value }) : Results.BadRequest(new { error });
+});
+recruitmentOrchestration.MapGet("/pipeline-board", async (RecruitmentPipelineRepository repository, long positionId, long? jobPostingId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var board = await repository.GetPipelineBoardAsync(positionId, CurrentUser(context), jobPostingId);
+    return board is null ? Results.NotFound() : Results.Ok(board);
+});
+recruitmentOrchestration.MapGet("/applications/{applicationId:long}/transitions", async (RecruitmentPipelineRepository repository, long applicationId, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetAvailableTransitionsAsync(applicationId, CurrentUser(context))));
+recruitmentOrchestration.MapGet("/pipeline-stages/{stageId:long}/actions", async (RecruitmentPipelineRepository repository, long stageId, string? triggerEvent, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetStageActionsAsync(stageId, triggerEvent ?? "OnEntry", CurrentUser(context))));
+recruitmentOrchestration.MapGet("/applications/{applicationId:long}/stage-action-executions", async (RecruitmentPipelineActionService actions, long applicationId, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await actions.GetExecutionsAsync(applicationId, CurrentUser(context))));
+recruitmentOrchestration.MapPost("/applications/{applicationId:long}/stage-actions/{triggerEvent}", async (RecruitmentPipelineActionService actions, long applicationId, string triggerEvent, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var result = await actions.ExecuteAsync(applicationId, triggerEvent, CurrentUser(context));
+    return string.IsNullOrWhiteSpace(result.TriggerEvent) ? Results.BadRequest(new { error = "Unsupported stage action trigger." }) : Results.Ok(result);
+});
+recruitmentOrchestration.MapPost("/applications/{applicationId:long}/evaluate-ats", async (RecruitmentPipelineRepository repository, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService actions, long applicationId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var (row, error) = await repository.EvaluateAtsStageAutomationAsync(applicationId, user);
+    if (row?.Status == "Applied")
+    {
+        await actions.ExecuteAsync(applicationId, "OnExit", user);
+        var entry = await actions.ExecuteAsync(applicationId, "OnEntry", user);
+        if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
+            await candidateActions.EnsureForCurrentStageAsync(applicationId, user);
+    }
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/applications/{applicationId:long}/transitions/{transitionId:long}", async (RecruitmentPipelineRepository repository, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService actions, long applicationId, long transitionId, RecruitmentPipelineTransitionRequest request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var currentActions = await actions.ExecuteAsync(applicationId, "OnEntry", user);
+    if (currentActions.HasBlockingFailure)
+    {
+        var blockers = currentActions.Executions
+            .Where(item => item.IsBlocking && !item.Status.Equals("Completed", StringComparison.OrdinalIgnoreCase))
+            .Select(item =>
+            {
+                var actionName = item.ActionCode.Replace('_', ' ').ToLowerInvariant();
+                var reason = !string.IsNullOrWhiteSpace(item.ErrorMessage)
+                    ? item.ErrorMessage
+                    : item.Status.Equals("Pending Approval", StringComparison.OrdinalIgnoreCase)
+                        ? "Approval is still pending."
+                        : $"Current status is {item.Status}.";
+                return $"{actionName}: {reason}";
+            })
+            .ToList();
+        var detail = blockers.Count > 0
+            ? string.Join(" ", blockers)
+            : "A required stage action is still incomplete.";
+        return Results.BadRequest(new
+        {
+            code = "RECRUITMENT_STAGE_ACTION_BLOCKED",
+            error = $"Candidate cannot leave this stage yet. {detail}",
+            executions = currentActions.Executions
+        });
+    }
+    request.TransitionId = transitionId;
+    var (row, error) = await repository.RequestTransitionAsync(applicationId, request, user);
+    if (row?.Status == "Applied")
+    {
+        await actions.ExecuteAsync(applicationId, "OnExit", user);
+        var entry = await actions.ExecuteAsync(applicationId, "OnEntry", user);
+        if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
+            await candidateActions.EnsureForCurrentStageAsync(applicationId, user);
+    }
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/applications/{applicationId:long}/pause", async (RecruitmentPipelineRepository repository, long applicationId, RecruitmentStagePauseRequest request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.PauseStageAsync(applicationId, request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/applications/{applicationId:long}/resume", async (RecruitmentPipelineRepository repository, long applicationId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.ResumeStageAsync(applicationId, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+
+recruitmentOrchestration.MapGet("/applications/{applicationId:long}/candidate-actions", async (RecruitmentCandidateActionRepository repository, long applicationId, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.ListAsync(applicationId, CurrentUser(context))));
+recruitmentOrchestration.MapPost("/applications/{applicationId:long}/candidate-actions", async (RecruitmentCandidateActionRepository repository, long applicationId, CreateRecruitmentCandidateActionRequest request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    request.ApplicationId = applicationId;
+    var (row, error) = await repository.CreateAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/applications/{applicationId:long}/candidate-actions/current-stage", async (RecruitmentCandidateActionRepository repository, long applicationId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.CreateForCurrentStageAsync(applicationId, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/candidate-actions/{id:long}/revoke", async (RecruitmentCandidateActionRepository repository, long id, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : await repository.RevokeAsync(id, CurrentUser(context)) ? Results.NoContent() : Results.NotFound());
+
+app.MapGet("/api/public/recruitment/jobs/{slug}", async (RecruitmentFormRepository repository, string slug) =>
+{
+    var row = await repository.GetPublicJobAsync(slug);
+    return row is null ? Results.NotFound(new { error = "This vacancy is unavailable or closed." }) : Results.Ok(row);
+});
+app.MapPost("/api/public/recruitment/jobs/{slug}/sessions", async (RecruitmentFormRepository repository, string slug, StartPublicApplicationRequest request, HttpContext context) =>
+{
+    var (row, error) = await repository.StartPublicSessionAsync(slug, request, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPut("/api/public/recruitment/sessions/{token}/values", async (RecruitmentFormRepository repository, string token, SavePublicFormValuesRequest request, HttpContext context) =>
+{
+    var (ok, error) = await repository.SavePublicValuesAsync(token, request, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
+app.MapGet("/api/public/recruitment/sessions/{token}/fields/{fieldId:long}/options", async (RecruitmentFormRepository repository, string token, long fieldId, string? search) =>
+{
+    var (items, error) = await repository.ResolvePublicLookupAsync(token, fieldId, search ?? "");
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(items) : Results.BadRequest(new { error });
+});
+app.MapPost("/api/public/recruitment/sessions/{token}/files/{fieldId:long}", async (RecruitmentFormRepository forms, AttachmentRepository attachments, string token, long fieldId, [FromForm] PublicFormAttachmentUploadRequest request, HttpContext context) =>
+{
+    if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select a non-empty file." });
+    var (authorization, authorizationError) = await forms.AuthorizeUploadAsync(token, fieldId);
+    if (authorization is null) return Results.BadRequest(new { error = authorizationError });
+    var externalUser = new AuthUser
+    {
+        Id = 0,
+        ClientId = authorization.ClientId,
+        IsActive = true,
+        DisplayName = "External candidate",
+        Permissions = ["attachment.recruitment.upload"]
+    };
+    var (attachment, uploadError) = await attachments.UploadAsync(new AttachmentUploadMetadata
+    {
+        FieldConfigurationId = authorization.AttachmentFieldConfigurationId,
+        EntityType = "FORM_SUBMISSION",
+        EntityId = authorization.SubmissionId,
+        DocumentNumber = request.DocumentNumber,
+        IssueDate = request.IssueDate,
+        ExpiryDate = request.ExpiryDate
+    }, request.File, externalUser, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+    if (attachment is null) return Results.BadRequest(new { error = uploadError });
+    await forms.LinkAttachmentAsync(token, fieldId, attachment.Id, attachment.PublicId, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return Results.Ok(new { fieldId, attachmentPublicId = attachment.PublicId, attachment.OriginalFileName, attachment.FileSizeBytes, attachment.UploadedAtUtc });
+}).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(30L * 1024 * 1024));
+app.MapPost("/api/public/recruitment/sessions/{token}/submit", async (RecruitmentFormRepository forms, RecruitmentTalentRepository talent, RecruitmentPipelineRepository pipelines, RecruitmentPipelineActionService pipelineActions, RecruitmentCandidateActionRepository candidateActions, string token, HttpContext context) =>
+{
+    var (row, error) = await forms.SubmitPublicApplicationAsync(token, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    if (row is null) return Results.BadRequest(new { error });
+    var systemUser = new AuthUser { Id = 0, ClientId = null, IsActive = true, DisplayName = "Public recruitment portal", Permissions = ["recruitment.manage"] };
+    var (_, resumeWarning) = await talent.ProcessPublicApplicationResumeAsync(row.ApplicationId, systemUser,
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+    var (_, pipelineError) = await pipelines.EnsureApplicationPipelineAsync(row.ApplicationId, systemUser);
+    if (string.IsNullOrWhiteSpace(pipelineError))
+    {
+        var entry = await pipelineActions.ExecuteAsync(row.ApplicationId, "OnEntry", systemUser);
+        if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
+            await candidateActions.EnsureForCurrentStageAsync(row.ApplicationId, systemUser);
+    }
+    return string.IsNullOrWhiteSpace(resumeWarning) && string.IsNullOrWhiteSpace(pipelineError)
+        ? Results.Ok(row)
+        : Results.Ok(new
+        {
+            row.SubmissionId,
+            row.CandidateId,
+            row.ApplicationId,
+            row.ApplicationCode,
+            row.Status,
+            row.Message,
+            resumeWarning,
+            pipelineWarning = pipelineError
+        });
+});
+
+app.MapGet("/api/public/recruitment/actions/{token}", async (RecruitmentCandidateActionRepository repository, string token) =>
+{
+    var row = await repository.GetPublicAsync(token);
+    return row is null ? Results.NotFound(new { error = "This secure candidate link is invalid, expired or already completed." }) : Results.Ok(row);
+});
+app.MapPut("/api/public/recruitment/actions/{token}/values", async (RecruitmentCandidateActionRepository repository, string token, SavePublicFormValuesRequest request) =>
+{
+    var (ok, error) = await repository.SaveValuesAsync(token, request);
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
+app.MapGet("/api/public/recruitment/actions/{token}/fields/{fieldId:long}/options", async (RecruitmentCandidateActionRepository actions, string token, long fieldId, string? search) =>
+    Results.Ok(await actions.ResolveLookupAsync(token, fieldId, search ?? "")));
+app.MapPost("/api/public/recruitment/actions/{token}/files/{fieldId:long}", async (RecruitmentCandidateActionRepository actions, AttachmentRepository attachments, string token, long fieldId, [FromForm] PublicFormAttachmentUploadRequest request, HttpContext context) =>
+{
+    if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select a non-empty file." });
+    var (authorization, authorizationError) = await actions.AuthorizeUploadAsync(token, fieldId);
+    if (authorization is null) return Results.BadRequest(new { error = authorizationError });
+    var externalUser = new AuthUser { Id = 0, ClientId = authorization.ClientId, IsActive = true, DisplayName = "External candidate", Permissions = ["attachment.recruitment.upload"] };
+    var (attachment, uploadError) = await attachments.UploadAsync(new AttachmentUploadMetadata
+    {
+        FieldConfigurationId = authorization.AttachmentFieldConfigurationId,
+        EntityType = "FORM_SUBMISSION",
+        EntityId = authorization.SubmissionId,
+        DocumentNumber = request.DocumentNumber,
+        IssueDate = request.IssueDate,
+        ExpiryDate = request.ExpiryDate
+    }, request.File, externalUser, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+    if (attachment is null) return Results.BadRequest(new { error = uploadError });
+    await actions.LinkAttachmentAsync(token, fieldId, attachment.Id, attachment.PublicId);
+    return Results.Ok(new { fieldId, attachmentPublicId = attachment.PublicId, attachment.OriginalFileName, attachment.FileSizeBytes, attachment.UploadedAtUtc });
+}).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(30L * 1024 * 1024));
+app.MapPost("/api/public/recruitment/actions/{token}", async (RecruitmentCandidateActionRepository repository, RecruitmentPipelineActionService pipelineActions, string token, CompletePublicCandidateActionRequest request, HttpContext context) =>
+{
+    var (row, error) = await repository.CompleteAsync(token, request, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    if (row is not null)
+    {
+        var systemUser = new AuthUser { Id = 0, ClientId = null, IsActive = true, DisplayName = "External candidate portal" };
+        await pipelineActions.ExecuteAsync(row.ApplicationId, "OnSubmission", systemUser, row.PipelineStageInstanceId);
+    }
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapGet("/api/public/recruitment/actions/{token}/offer-document", async (RecruitmentCandidateActionRepository actions, AttachmentRepository attachments, AttachmentStorageService storage, string token, HttpContext context) =>
+{
+    var document = await actions.GetOfferDocumentAsync(token);
+    if (!document.PublicId.HasValue) return Results.NotFound();
+    var externalUser = new AuthUser { Id = 0, ClientId = document.ClientId, IsActive = true, DisplayName = "External candidate", Permissions = ["attachment.recruitment.view"] };
+    var (attachment, server, _) = await attachments.GetForContentAsync(document.PublicId.Value, externalUser, "CANDIDATE_OFFER_PREVIEW", context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return attachment is null || server is null ? Results.NotFound() : new AttachmentContentResult(storage, server, attachment, true);
 });
 
 app.MapGet("/api/travel-advances", async (EssMssRepository repository, int? clientId, string? status, HttpContext context) =>
@@ -1161,7 +1721,11 @@ app.MapGet("/api/recruitment-admin", async (RecruitmentAdminRepository repositor
 .WithName("GetRecruitmentAdminSetup")
 .WithOpenApi();
 app.MapPost("/api/recruitment-admin/settings", async (RecruitmentAdminRepository repository, RecruitmentSetting request, HttpContext context) =>
-    HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveSettingAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    try { return Results.Ok(await repository.SaveSettingAsync(request, CurrentUser(context).Id)); }
+    catch (InvalidOperationException exception) { return Results.BadRequest(exception.Message); }
+});
 app.MapPost("/api/recruitment-admin/masters", async (RecruitmentAdminRepository repository, RecruitmentMasterValue request, HttpContext context) =>
     HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveMasterAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
 app.MapPost("/api/recruitment-admin/partners", async (RecruitmentAdminRepository repository, RecruitmentPartner request, HttpContext context) =>
@@ -1176,6 +1740,24 @@ app.MapPost("/api/recruitment-admin/approval-mappings", async (RecruitmentAdminR
     HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveApprovalMappingAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
 app.MapPost("/api/recruitment-admin/templates", async (RecruitmentAdminRepository repository, RecruitmentTemplate request, HttpContext context) =>
     HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveTemplateAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+app.MapGet("/api/recruitment-admin/ats-profiles", async (RecruitmentTalentRepository repository, int? clientId, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetScoringProfilesAsync(CurrentUser(context), clientId)) : Results.StatusCode(403));
+app.MapGet("/api/recruitment-admin/ats-criteria", (RecruitmentTalentRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(repository.GetScoringCriterionCatalog()) : Results.StatusCode(403));
+app.MapPost("/api/recruitment-admin/ats-profiles", async (RecruitmentTalentRepository repository, RecruitmentAtsScoringProfile request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveScoringProfileAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapGet("/api/recruitment-admin/skills", async (RecruitmentTalentRepository repository, int? clientId, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetSkillsAsync(CurrentUser(context), clientId)) : Results.StatusCode(403));
+app.MapPost("/api/recruitment-admin/skills", async (RecruitmentTalentRepository repository, RecruitmentSkill request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveSkillAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
 
 app.MapGet("/api/tax-engine", async (TaxEngineRepository repository, HttpContext context) => HasPermission(context, "settings.manage") || HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403));
 app.MapPost("/api/tax-engine/client-settings", async (TaxEngineRepository repository, ClientTaxSetting request, HttpContext context) => HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveClientSettingAsync(request)) : Results.StatusCode(403));
@@ -1726,6 +2308,43 @@ app.MapDelete("/api/employees/{id:int}", async (EmployeeRepository repository, i
 .WithName("DeleteEmployee")
 .WithOpenApi();
 
+app.MapGet("/api/employees/{id:int}/dynamic-fields", async (EmployeeAttributeRepository repository, int id, int clientId, string? infotypeCode, DateTime? asOfUtc, HttpContext context) =>
+{
+    var (item, error) = await repository.GetEmployeeFieldsAsync(id, clientId, infotypeCode, CurrentUser(context), asOfUtc);
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("GetEmployeeDynamicFields")
+.WithOpenApi();
+
+app.MapPost("/api/employees/{id:int}/dynamic-fields", async (EmployeeAttributeRepository repository, int id, SaveEmployeeAttributeValuesRequest request, HttpContext context) =>
+{
+    var (item, error) = await repository.SaveEffectiveRevisionAsync(id, request, CurrentUser(context));
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("SaveEmployeeDynamicFields")
+.WithOpenApi();
+
+app.MapGet("/api/employees/{id:int}/dynamic-fields/{fieldId:long}/lookup", async (EmployeeAttributeRepository repository, int id, long fieldId, int clientId, string? search, HttpContext context) =>
+{
+    var (items, error) = await repository.ResolveLookupAsync(id, clientId, fieldId, search ?? "", CurrentUser(context));
+    return string.IsNullOrWhiteSpace(error) ? Results.Ok(items) : Results.BadRequest(new { error });
+})
+.WithName("ResolveEmployeeDynamicFieldLookup")
+.WithOpenApi();
+
+app.MapGet("/api/employee-form-bindings", async (EmployeeAttributeRepository repository, int? clientId, HttpContext context) =>
+    Results.Ok(await repository.ListBindingsAsync(clientId, CurrentUser(context))))
+.WithName("GetEmployeeFormBindings")
+.WithOpenApi();
+
+app.MapPost("/api/employee-form-bindings", async (EmployeeAttributeRepository repository, SaveEmployeeFormBinding request, HttpContext context) =>
+{
+    var (item, error) = await repository.SaveBindingAsync(request, CurrentUser(context));
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("SaveEmployeeFormBinding")
+.WithOpenApi();
+
 app.MapGet("/api/employees/import-template", async (OrganizationRepository organizationRepository, AuthRepository authRepository, EmployeeRepository repository, int clientId) =>
 {
     if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
@@ -1741,7 +2360,7 @@ app.MapPost("/api/employees/import", async (EmployeeRepository repository, [From
 {
     if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select an employee CSV file." });
-    var result = await repository.ImportCsvAsync(request.ClientId, request.File);
+    var result = await repository.ImportCsvAsync(request.ClientId, request.File, request.Mode);
     return result.Errors.Count > 0 ? Results.BadRequest(result) : Results.Ok(result);
 })
 .DisableAntiforgery()
@@ -1752,7 +2371,7 @@ app.MapPost("/api/employees/import-jobs", async (EmployeeRepository repository, 
 {
     if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select an employee CSV file." });
-    return Results.Accepted($"/api/employees/import-jobs", await repository.StartImportCsvJobAsync(request.ClientId, request.File));
+    return Results.Accepted($"/api/employees/import-jobs", await repository.StartImportCsvJobAsync(request.ClientId, request.File, request.Mode));
 })
 .DisableAntiforgery()
 .WithName("StartEmployeeImportJob")
@@ -1960,6 +2579,9 @@ static AuthUser CurrentUser(HttpContext context) =>
 static bool HasPermission(HttpContext context, string permission) =>
     CurrentUser(context).Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
 
+static bool HasRecruitmentManagement(HttpContext context) =>
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage");
+
 static bool IsEssAllowedApi(PathString path)
 {
     if (path.StartsWithSegments("/api/ess")) return true;
@@ -2022,6 +2644,11 @@ static async Task RunDatabaseSetupAsync(IServiceProvider services, IConfiguratio
     await scopedServices.GetRequiredService<RecruitmentAdminRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<RecruitmentRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<AttachmentRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<RecruitmentTalentRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<RecruitmentPipelineRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<RecruitmentFormRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<EmployeeAttributeRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<RecruitmentCandidateActionRepository>().InitializeAsync();
 
     await using var workflowDb = new MySqlConnector.MySqlConnection(configuration.GetConnectionString("Default"));
     await workflowDb.OpenAsync();

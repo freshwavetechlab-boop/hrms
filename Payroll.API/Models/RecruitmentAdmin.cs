@@ -36,8 +36,18 @@ public class RecruitmentSetting
     public bool EnableBackgroundVerification { get; set; }
     public bool EnableDocumentVerification { get; set; }
     public bool EnableCandidatePortal { get; set; }
+    public string PublicPortalBaseUrl { get; set; } = "";
     public bool EnableVendorPortal { get; set; }
     public bool EnableJobPortalIntegration { get; set; }
+    public bool EnableTalentPool { get; set; } = true;
+    public bool EnableResumeParsing { get; set; } = true;
+    public bool EnableAtsScoring { get; set; } = true;
+    public bool RequireResumeForApplication { get; set; } = true;
+    public bool AllowManualScoreOverride { get; set; } = true;
+    public bool AllowDuplicateCandidate { get; set; }
+    public bool AutoCreateApplicationFromReferral { get; set; } = true;
+    public long? DefaultAtsScoringProfileId { get; set; }
+    public int CandidateRetentionMonths { get; set; } = 24;
     public bool IsActive { get; set; } = true;
 }
 
@@ -128,6 +138,10 @@ public class RecruitmentDocumentChecklist
     public string DocumentName { get; set; } = "";
     public bool Mandatory { get; set; } = true;
     public string Stage { get; set; } = "Pre-Onboarding";
+    public long? AttachmentAttributeId { get; set; }
+    public bool RequiresVerification { get; set; }
+    public int DueOffsetDays { get; set; }
+    public int DisplayOrder { get; set; } = 100;
     public bool IsActive { get; set; } = true;
 }
 

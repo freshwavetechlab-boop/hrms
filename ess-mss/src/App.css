@@ -183,7 +183,7 @@
   transform:none!important;
   padding:0!important;
 }
-.ess-referral-panel{display:grid;gap:0}.ess-referral-form{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:12px;border-top:1px solid #edf1f6;background:#fbfcff}.ess-referral-form h4{grid-column:1/-1;margin:0;color:#111827;font-size:.9rem}.ess-referral-form input,.ess-referral-form textarea{min-height:38px;border:1px solid #dbe1ea;border-radius:8px;background:#fff;color:#172136;padding:0 10px;font:inherit;font-size:.76rem}.ess-referral-form textarea{grid-column:1/-1;min-height:76px;padding:10px;resize:vertical}.ess-referral-form button{width:max-content;height:34px;border:1px solid #6546e8;border-radius:8px;background:#6546e8;color:#fff;padding:0 12px;font-size:.72rem;font-weight:900}@media(max-width:760px){.ess-referral-form{grid-template-columns:1fr}}
+.ess-referral-panel{display:grid;gap:0}.ess-referral-form{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:12px;border-top:1px solid #edf1f6;background:#fbfcff}.ess-referral-form h4{grid-column:1/-1;margin:0;color:#111827;font-size:.9rem}.ess-referral-form input,.ess-referral-form textarea{min-height:38px;border:1px solid #dbe1ea;border-radius:8px;background:#fff;color:#172136;padding:0 10px;font:inherit;font-size:.76rem}.ess-referral-form textarea{grid-column:1/-1;min-height:76px;padding:10px;resize:vertical}.ess-referral-form button{width:max-content;height:34px;border:1px solid #6546e8;border-radius:8px;background:#6546e8;color:#fff;padding:0 12px;font-size:.72rem;font-weight:900}.ess-referral-resume{grid-column:1/-1;display:grid;gap:5px;border:1px dashed #cfd6e5;border-radius:8px;padding:10px;background:#fff}.ess-referral-resume span{font-weight:800;font-size:.74rem}.ess-referral-resume input{border:0!important;padding:6px 0!important}.ess-referral-resume small{color:#667085}@media(max-width:760px){.ess-referral-form{grid-template-columns:1fr}}
 .ess-nav-collapsed .ess-brand img{
   width:calc(100% - 16px)!important;
   height:calc(100% - 12px)!important;
@@ -464,3 +464,4 @@
 .password-change-card button.secondary{border-color:#dbe1ea;background:#fff;color:#475569}
 .password-change-card button:disabled{opacity:.65;cursor:not-allowed}
 @media(max-width:540px){.password-change-shell{padding:14px}.password-change-card{padding:20px}.password-change-card>div{display:grid}.password-change-card button{width:100%}}
+.ess-inline-upload{display:inline-flex;cursor:pointer}.ess-inline-upload input{display:none}.ess-inline-upload span{display:inline-flex;align-items:center;min-height:32px;padding:0 11px;border:1px solid #6c4cf1;border-radius:8px;color:#5b3ee4;font-size:12px;font-weight:800;background:#fff}

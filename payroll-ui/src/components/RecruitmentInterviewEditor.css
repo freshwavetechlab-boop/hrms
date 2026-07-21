@@ -1,0 +1,70 @@
+.interview-editor {
+  display: grid;
+  gap: 16px;
+}
+
+.interview-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+}
+
+.interview-editor-span {
+  grid-column: 1 / -1;
+}
+
+.interview-round-card {
+  border-color: #d8ceff;
+  background: linear-gradient(135deg, #fbfaff 0%, #f4f7ff 100%);
+}
+
+.interview-competency-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.feedback-editor .ant-card {
+  box-shadow: 0 6px 22px rgb(31 45 61 / 5%);
+}
+
+.competency-score-grid {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.competency-score-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.competency-score-heading .ant-typography {
+  margin: 0;
+}
+
+.competency-score-row {
+  display: grid;
+  grid-template-columns: 120px minmax(120px, .55fr) minmax(220px, 1.45fr);
+  align-items: center;
+  gap: 14px;
+}
+
+@media (max-width: 760px) {
+  .interview-editor-grid,
+  .competency-score-row {
+    grid-template-columns: 1fr;
+  }
+
+  .interview-editor-span {
+    grid-column: auto;
+  }
+
+  .competency-score-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

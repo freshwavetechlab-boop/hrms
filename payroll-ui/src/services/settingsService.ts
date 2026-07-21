@@ -106,9 +106,10 @@ export const processEmployeeAction = (request: EmployeeActionRequest) => postJso
 export const getEmployeeDeletePreview = (id: number) => getJson<EmployeeDeletePreview>(`/api/employees/${id}/delete-preview`, { employeeId: id, employeeCode: '', employeeName: '', links: ['Unable to validate employee links.'], canDelete: false })
 export const deleteEmployee = (id: number) => deleteJson(`/api/employees/${id}`, null, { toast: false })
 export const downloadEmployeeImportTemplate = (clientId: number) => getBlob(`/api/employees/import-template?clientId=${clientId}`)
-export const startEmployeeImport = (clientId: number, file: File) => {
+export const startEmployeeImport = (clientId: number, file: File, mode: 'insert' | 'update' | 'upsert' = 'upsert') => {
   const body = new FormData()
   body.append('clientId', String(clientId))
+  body.append('mode', mode)
   body.append('file', file)
   return postForm<BulkImportStatus>('/api/employees/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
 }
