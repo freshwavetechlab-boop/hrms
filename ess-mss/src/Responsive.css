@@ -1,0 +1,367 @@
+/*
+ * Final responsive layer.
+ * This file is intentionally imported after the feature styles so mobile
+ * behaviour cannot be undone by older desktop-specific overrides.
+ */
+
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 980px) {
+  .ess-login {
+    width: 100% !important;
+    height: auto !important;
+    min-height: 100svh !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    overflow: visible !important;
+  }
+
+  .ess-login .login-panel,
+  .ess-login .login-intro {
+    min-width: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    grid-column: 1 !important;
+    grid-row: auto !important;
+  }
+
+  .ess-login .login-panel {
+    order: 1 !important;
+  }
+
+  .ess-login .login-intro {
+    order: 2 !important;
+  }
+}
+
+@media (max-width: 760px) {
+  body {
+    overflow-x: hidden;
+  }
+
+  /* A phone login should be a single focused form, not two desktop columns. */
+  .ess-login {
+    display: grid !important;
+    place-items: center !important;
+    padding: 16px !important;
+    background: linear-gradient(155deg, #f8fafc 0%, #eef6ff 52%, #f6f3ff 100%) !important;
+  }
+
+  .ess-login .login-intro {
+    display: none !important;
+  }
+
+  .ess-login .login-panel {
+    min-height: calc(100svh - 32px) !important;
+    display: grid !important;
+    align-content: center !important;
+    padding: 0 !important;
+    background: transparent !important;
+  }
+
+  .ess-login .login-card {
+    width: min(100%, 440px) !important;
+    max-width: 440px !important;
+    justify-self: center !important;
+    gap: 16px !important;
+    padding: clamp(18px, 5vw, 24px) !important;
+    border-radius: 18px !important;
+  }
+
+  .ess-login .login-card-head img {
+    width: 100% !important;
+    max-width: 290px !important;
+    height: 92px !important;
+    justify-self: center !important;
+  }
+
+  .ess-login .login-card h2 {
+    font-size: clamp(1.35rem, 6vw, 1.6rem) !important;
+  }
+
+  .ess-login .login-card p,
+  .ess-login .login-card small {
+    font-size: .8rem !important;
+  }
+
+  /* Prevent Safari/Chrome input focus zoom and keep touch targets usable. */
+  .ess-login input,
+  .ess-shell input:not([type='checkbox']):not([type='radio']),
+  .ess-shell select,
+  .ess-shell textarea,
+  .password-change-card input {
+    font-size: 16px !important;
+  }
+
+  .ess-main,
+  .ess-main > *,
+  .feature-page,
+  .profile-page,
+  .pay-workspace,
+  .leave-workspace,
+  .travel-workspace,
+  .travel-editor-page {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  /* Compact header: page identity gets the available width, account is avatar-only. */
+  .ess-topbar {
+    gap: 8px !important;
+  }
+
+  .ess-titlebar {
+    flex: 1 1 auto !important;
+    overflow: hidden !important;
+  }
+
+  .ess-titlebar > div {
+    overflow: hidden !important;
+  }
+
+  .ess-titlebar .eyebrow,
+  .ess-titlebar h2 {
+    display: block !important;
+    max-width: 100% !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  .ess-topbar-org-logo {
+    width: 38px !important;
+    height: 38px !important;
+    flex-basis: 38px !important;
+  }
+
+  .ess-topbar .account-menu {
+    flex: 0 0 auto !important;
+    min-width: 0 !important;
+  }
+
+  .ess-topbar .user-menu {
+    min-width: 40px !important;
+    min-height: 40px !important;
+    justify-content: center !important;
+    padding: 4px !important;
+  }
+
+  .ess-topbar .user-menu > div,
+  .ess-topbar .user-menu > i {
+    display: none !important;
+  }
+
+  .ess-topbar .user-menu > span {
+    width: 32px !important;
+    height: 32px !important;
+  }
+
+  .account-dropdown {
+    min-width: min(260px, calc(100vw - 28px)) !important;
+    max-width: calc(100vw - 28px) !important;
+  }
+
+  .ess-shell:not(.ess-nav-collapsed) .ess-nav {
+    max-height: calc(100dvh - 86px) !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain;
+  }
+
+  /* Calendar tracks must be allowed to shrink to seven real phone columns. */
+  .attendance-home > div:first-child {
+    align-items: stretch !important;
+    flex-direction: column !important;
+  }
+
+  .attendance-home > div:first-child input {
+    width: 100% !important;
+  }
+
+  .attendance-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .attendance-summary span {
+    min-width: 0 !important;
+    padding: 8px !important;
+  }
+
+  .employee-calendar {
+    width: 100% !important;
+    min-width: 0 !important;
+    grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
+  }
+
+  .employee-calendar > * {
+    min-width: 0 !important;
+  }
+
+  .employee-calendar > div,
+  .employee-calendar > button {
+    min-width: 0 !important;
+    min-height: 54px !important;
+    padding: 5px 3px !important;
+  }
+
+  .employee-calendar > div:nth-child(-n + 7) {
+    min-height: auto !important;
+    padding: 7px 1px !important;
+    font-size: .58rem !important;
+  }
+
+  .calendar-day b {
+    width: 20px !important;
+    height: 20px !important;
+  }
+
+  .calendar-day small {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    margin-top: 1px !important;
+    padding: 2px 1px !important;
+    overflow: hidden !important;
+    overflow-wrap: anywhere !important;
+    text-align: center !important;
+    white-space: normal !important;
+    font-size: .48rem !important;
+    line-height: 1.05 !important;
+  }
+
+  /* Existing side margins plus width:100% made these arrows leave the card. */
+  .dashboard-grid .compact-card > button {
+    width: calc(100% - 28px) !important;
+  }
+
+  .profile-head {
+    align-items: flex-start !important;
+    flex-wrap: wrap !important;
+  }
+
+  .profile-head > div {
+    min-width: 0 !important;
+    flex: 1 1 180px !important;
+  }
+
+  .profile-edit-badge {
+    margin-left: 54px !important;
+  }
+
+  .pay-table-scroll,
+  .task-table-scroll,
+  .travel-table-scroll,
+  .travel-trip-table-wrap {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: auto !important;
+    overscroll-behavior-inline: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Dense read-only lists become labelled cards; editors remain scrollable tables. */
+  .mobile-card-table {
+    display: block !important;
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .mobile-card-table thead {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: -1px !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    clip: rect(0 0 0 0) !important;
+    clip-path: inset(50%) !important;
+    white-space: nowrap !important;
+  }
+
+  .mobile-card-table tbody {
+    display: grid !important;
+    width: 100% !important;
+    gap: 10px !important;
+    padding: 10px !important;
+  }
+
+  .mobile-card-table tbody tr {
+    display: grid !important;
+    min-width: 0 !important;
+    border: 1px solid #e5e8f0 !important;
+    border-radius: 10px !important;
+    background: #fff !important;
+    box-shadow: 0 8px 20px #1721360a !important;
+    overflow: hidden !important;
+  }
+
+  .mobile-card-table tbody td {
+    width: 100% !important;
+    min-width: 0 !important;
+    display: grid !important;
+    grid-template-columns: minmax(88px, .65fr) minmax(0, 1fr) !important;
+    align-items: center !important;
+    gap: 10px !important;
+    padding: 9px 11px !important;
+    border: 0 !important;
+    border-bottom: 1px solid #eef1f5 !important;
+    overflow-wrap: anywhere !important;
+  }
+
+  .mobile-card-table tbody td:last-child {
+    border-bottom: 0 !important;
+  }
+
+  .mobile-card-table tbody td::before {
+    content: attr(data-label);
+    color: #64748b;
+    font-size: .65rem;
+    font-weight: 900;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+
+  .mobile-card-table tbody td > * {
+    min-width: 0 !important;
+    justify-self: start !important;
+  }
+
+  .mobile-card-table .pay-actions {
+    width: 100% !important;
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .mobile-card-table .pay-actions button,
+  .mobile-card-table td > button {
+    width: 100% !important;
+  }
+
+  .ess-modal-backdrop,
+  .task-modal-backdrop,
+  .drawer-backdrop {
+    min-width: 0 !important;
+  }
+}
+
+@media (max-width: 420px) {
+  .ess-main {
+    padding-right: 10px !important;
+    padding-left: 10px !important;
+  }
+
+  .ess-shell .ess-sidebar,
+  .ess-shell.ess-nav-collapsed .ess-sidebar {
+    padding-right: 10px !important;
+    padding-left: 10px !important;
+  }
+
+  .ess-shell .ess-side-head > .ess-product-brand,
+  .ess-shell.ess-nav-collapsed .ess-side-head > .ess-product-brand {
+    width: 174px !important;
+    flex-basis: 174px !important;
+  }
+}

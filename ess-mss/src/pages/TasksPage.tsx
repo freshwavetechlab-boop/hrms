@@ -50,17 +50,17 @@ export function TasksPage({ user }: { user: User }) {
     {message && <p className={message.includes('Unable') ? 'task-message error' : 'task-message'}>{message}</p>}
     <div className="task-table-card">
       <div className="task-table-scroll">
-        <table className="task-table">
+        <table className="task-table mobile-card-table">
           <thead><tr><th>Resource</th><th>Reference</th><th>Stage</th><th>Received</th>{view === 'actioned' && <th>Actioned on</th>}<th>Status</th><th>Action</th></tr></thead>
           <tbody>
             {rows.map(task => <tr key={task.id}>
-              <td>{resourceName(task.resourceType)}</td>
-              <td><b>{referenceText(task)}</b><small>Task #{task.id}</small></td>
-              <td>{task.stageName}</td>
-              <td>{formatDate(task.createdAt)}</td>
-              {view === 'actioned' && <td>{formatDate(task.actionedAt || '')}</td>}
-              <td><span className={`task-status ${statusTone(task.status || (view === 'pending' ? 'Pending' : ''))}`}>{task.status || (view === 'pending' ? 'Pending' : '-')}</span></td>
-              <td><button type="button" onClick={() => { setSelected(task); setRemark(''); setMessage('') }}>{view === 'pending' ? 'Process' : 'View'}</button></td>
+              <td data-label="Resource">{resourceName(task.resourceType)}</td>
+              <td data-label="Reference"><div><b>{referenceText(task)}</b><small>Task #{task.id}</small></div></td>
+              <td data-label="Stage">{task.stageName}</td>
+              <td data-label="Received">{formatDate(task.createdAt)}</td>
+              {view === 'actioned' && <td data-label="Actioned on">{formatDate(task.actionedAt || '')}</td>}
+              <td data-label="Status"><span className={`task-status ${statusTone(task.status || (view === 'pending' ? 'Pending' : ''))}`}>{task.status || (view === 'pending' ? 'Pending' : '-')}</span></td>
+              <td data-label="Action"><button type="button" onClick={() => { setSelected(task); setRemark(''); setMessage('') }}>{view === 'pending' ? 'Process' : 'View'}</button></td>
             </tr>)}
           </tbody>
         </table>

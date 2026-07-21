@@ -16,6 +16,7 @@ appsettings.Development.json
 node_modules/
 dist/
 coverage/
+playwright-e2e/
 
 # Logs and local environment
 *.log

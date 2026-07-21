@@ -28,6 +28,12 @@ async function jsonOrThrow<T>(response: Response): Promise<T> {
   return data as T
 }
 
+async function jsonOrDefault<T>(response: Response, fallback: T): Promise<T> {
+  if (!response.ok) return fallback
+  const body = await response.text()
+  return body.trim() ? JSON.parse(body) as T : fallback
+}
+
 export async function login(email: string, password: string) {
   const response = await fetch(`${apiBase}/api/auth/login`, {
     method: 'POST',
@@ -101,10 +107,10 @@ export const essApi = {
     const data = await response.json().catch(() => ({}))
     throw new Error(data.error || 'Unable to update task.')
   }),
-  birthdays: () => essFetch('/api/ess/dashboard/birthdays').then(r => r.ok ? r.json() as Promise<Birthday[]> : []),
-  attendance: (month: string) => essFetch(`/api/ess/dashboard/attendance?month=${month}`).then(r => r.ok ? r.json() as Promise<AttendanceSummary> : null),
-  dailyAttendance: (month: string) => essFetch(`/api/ess/dashboard/attendance/daily?month=${month}`).then(r => r.ok ? r.json() as Promise<DailyAttendance[]> : []),
-  holidays: (month: string) => essFetch(`/api/ess/dashboard/holidays?month=${month}`).then(r => r.ok ? r.json() as Promise<Holiday[]> : []),
+  birthdays: () => essFetch('/api/ess/dashboard/birthdays').then(r => jsonOrDefault<Birthday[]>(r, [])),
+  attendance: (month: string) => essFetch(`/api/ess/dashboard/attendance?month=${month}`).then(r => jsonOrDefault<AttendanceSummary | null>(r, null)),
+  dailyAttendance: (month: string) => essFetch(`/api/ess/dashboard/attendance/daily?month=${month}`).then(r => jsonOrDefault<DailyAttendance[]>(r, [])),
+  holidays: (month: string) => essFetch(`/api/ess/dashboard/holidays?month=${month}`).then(r => jsonOrDefault<Holiday[]>(r, [])),
   payslips: () => essFetch('/api/ess/pay/payslips').then(r => r.ok ? r.json() as Promise<Payslip[]> : Promise.reject()),
   payslipDocument: (payRunId: number) => essFetch(`/api/ess/pay/payslips/${payRunId}`).then(r => r.ok ? r.json() as Promise<PayslipDocument> : Promise.reject()),
   taxPortal: () => essFetch('/api/ess/tax').then(r => r.ok ? r.json() as Promise<TaxPortal> : Promise.reject()),

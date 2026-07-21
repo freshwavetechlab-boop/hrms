@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { OrganizationBrand, ProfileData, User, View } from '../types'
 import { essApi, organizationBrand } from '../services/essApi'
@@ -20,6 +20,7 @@ type NavItem = { icon: IconName; label: string; view: View; action?: string }
 
 export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, onLogout, onChangePassword, children }: Props) {
   const [accountOpen, setAccountOpen] = useState(false)
+  const accountMenuRef = useRef<HTMLDivElement>(null)
   const [activeAction, setActiveAction] = useState<string | null>(null)
   const [openGroup, setOpenGroup] = useState('home')
   const [pageTitle, setPageTitle] = useState<{ title: string; section?: string } | null>(null)
@@ -79,6 +80,22 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
     window.addEventListener('ess:page-title', updateTitle as EventListener)
     return () => window.removeEventListener('ess:page-title', updateTitle as EventListener)
   }, [])
+
+  useEffect(() => {
+    if (!accountOpen) return
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      if (!accountMenuRef.current?.contains(event.target as Node)) setAccountOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAccountOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePress)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePress)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [accountOpen])
 
   useEffect(() => {
     if (!activeAction) return
@@ -141,9 +158,9 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
           {organization?.logoDataUrl && <img className="ess-topbar-org-logo" src={organization.logoDataUrl} alt={organization.name || 'Organization logo'} />}
           <div><span className="eyebrow">{manager && !employeeSelf ? 'Manager workspace' : 'Employee workspace'} / {section}</span><h2>{title}</h2></div>
         </div>
-        <div className="account-menu">
-          <button className="user-menu" type="button" onClick={() => setAccountOpen(open => !open)} aria-expanded={accountOpen}><span>{initials(user.displayName)}</span><div><b>{user.displayName}</b><small title={profile?.attendanceOffice || undefined}>{profile?.attendanceOffice || (manager ? 'Manager access' : 'Employee access')}</small></div><i>v</i></button>
-          {accountOpen && <div className="account-dropdown">{profile?.attendanceOffice && <div className="account-office"><span>Attendance office</span><b>{profile.attendanceOffice}</b></div>}{employeeSelf && <button type="button" onClick={() => { setActiveAction(null); onNavigate('My Profile'); setAccountOpen(false) }}>My profile</button>}<button type="button" onClick={() => { setAccountOpen(false); onChangePassword() }}>Change password</button><button type="button" onClick={onLogout}>Logout</button></div>}
+        <div className={`account-menu ${accountOpen ? 'open' : ''}`} ref={accountMenuRef}>
+          <button className="user-menu" type="button" title="Account menu" aria-label={`Open account menu for ${user.displayName}`} onClick={() => setAccountOpen(open => !open)} aria-haspopup="menu" aria-expanded={accountOpen}><span>{initials(user.displayName)}</span><div><b>{user.displayName}</b><small title={profile?.attendanceOffice || undefined}>{profile?.attendanceOffice || (manager ? 'Manager access' : 'Employee access')}</small></div><i>v</i></button>
+          {accountOpen && <div className="account-dropdown" role="menu">{profile?.attendanceOffice && <div className="account-office"><span>Attendance office</span><b>{profile.attendanceOffice}</b></div>}{employeeSelf && <button role="menuitem" type="button" onClick={() => { setActiveAction(null); onNavigate('My Profile'); setAccountOpen(false) }}>My profile</button>}<button role="menuitem" type="button" onClick={() => { setAccountOpen(false); onChangePassword() }}>Change password</button><button role="menuitem" type="button" onClick={onLogout}>Logout</button></div>}
         </div>
       </header>
       {children}

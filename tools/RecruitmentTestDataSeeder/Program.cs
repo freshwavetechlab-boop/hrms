@@ -44,11 +44,14 @@ var masters = await ScalarAsync(connection, $"SELECT COUNT(*) FROM recruitment_m
 var forms = await ScalarAsync(connection, $"SELECT COUNT(*) FROM form_definitions WHERE ClientId={clientId} AND ModuleCode='RECRUITMENT';");
 var pipelines = await ScalarAsync(connection, $"SELECT COUNT(*) FROM recruitment_pipeline_definitions WHERE ClientId={clientId};");
 var postings = await ScalarAsync(connection, $"SELECT COUNT(*) FROM recruitment_job_postings WHERE ClientId={clientId};");
+var leaveTypes = await ScalarAsync(connection, $"SELECT COUNT(*) FROM leave_types WHERE client_id={clientId} AND code='TAT_CL';");
+var leaveWorkflows = await ScalarAsync(connection, $"SELECT COUNT(*) FROM workflowmasters WHERE ClientId={clientId} AND ResourceType='LeaveRequest' AND IsActive=TRUE;");
 
 Console.WriteLine("Recruitment test data ready.");
 Console.WriteLine($"Client: TAT / TA Test Client Pvt Ltd (Id: {clientId})");
 Console.WriteLine($"Employees: {employees} | Users: {users} | Recruitment masters: {masters}");
 Console.WriteLine($"Dynamic forms: {forms} | Pipelines: {pipelines} | Public postings: {postings}");
+Console.WriteLine($"ESS leave types: {leaveTypes} | Active leave workflows: {leaveWorkflows}");
 Console.WriteLine($"Password for test users: {password}");
 
 static string FindRepoRoot(string start)
@@ -138,6 +141,35 @@ INSERT IGNORE INTO authuserroles (UserId, RoleId) SELECT @user_requester, Id FRO
 INSERT IGNORE INTO authuserroles (UserId, RoleId) SELECT @user_approver, Id FROM authroles WHERE Code IN ('employee','hr_manager');
 INSERT IGNORE INTO authuserroles (UserId, RoleId) SELECT @user_recruiter, Id FROM authroles WHERE Code IN ('employee','hr_manager');
 INSERT IGNORE INTO authuserroles (UserId, RoleId) SELECT @user_admin, Id FROM authroles WHERE Code='admin';
+
+INSERT INTO leave_types (client_id, name, code, type, description, is_active)
+VALUES (@client_id, 'TAT Casual Leave', 'TAT_CL', 'Paid', 'Repeatable Playwright ESS leave approval test balance.', TRUE)
+ON DUPLICATE KEY UPDATE client_id=VALUES(client_id), name=VALUES(name), type=VALUES(type), description=VALUES(description), is_active=TRUE;
+SET @tat_leave_type_id := (SELECT id FROM leave_types WHERE code='TAT_CL' ORDER BY id LIMIT 1);
+
+INSERT INTO leave_type_policies
+(leave_type_id, entitlement, entitlement_period, allow_negative_leave_balance, allow_half_day, allow_past_dates, allow_future_dates, effective_from, expires_on)
+VALUES (@tat_leave_type_id, 100, 'Yearly', FALSE, TRUE, TRUE, TRUE, '2026-01-01', NULL)
+ON DUPLICATE KEY UPDATE entitlement=100, entitlement_period='Yearly', allow_negative_leave_balance=FALSE, allow_half_day=TRUE, allow_past_dates=TRUE, allow_future_dates=TRUE, effective_from='2026-01-01', expires_on=NULL;
+
+INSERT INTO leave_type_applicability
+(leave_type_id, applicability_mode, work_location, department, designation, gender)
+VALUES (@tat_leave_type_id, 'All employees', '', '', '', '')
+ON DUPLICATE KEY UPDATE applicability_mode='All employees', work_location='', department='', designation='', gender='';
+
+INSERT INTO employee_leave_balances
+(client_id, employee_id, leave_type_id, balance_date, balance_count)
+VALUES (@client_id, @emp_requester, @tat_leave_type_id, CURDATE(), 100)
+ON DUPLICATE KEY UPDATE client_id=VALUES(client_id), balance_count=100;
+
+INSERT INTO workflowmasters (ClientId, Code, Name, ResourceType, IsActive)
+VALUES (@client_id, 'TAT_LEAVE_APPROVAL', 'TAT ESS Leave Approval', 'LeaveRequest', TRUE)
+ON DUPLICATE KEY UPDATE Name=VALUES(Name), ResourceType='LeaveRequest', IsActive=TRUE;
+SET @tat_leave_workflow_id := (SELECT Id FROM workflowmasters WHERE ClientId=@client_id AND Code='TAT_LEAVE_APPROVAL' ORDER BY Id LIMIT 1);
+UPDATE workflowmasters SET IsActive=FALSE WHERE ClientId=@client_id AND ResourceType='LeaveRequest' AND Id<>@tat_leave_workflow_id;
+INSERT INTO workflowstages (WorkflowId, StageOrder, Name, ApproverType, ApproverUserId)
+VALUES (@tat_leave_workflow_id, 1, 'Playwright manager approval', 'Specific User', @user_approver)
+ON DUPLICATE KEY UPDATE Name=VALUES(Name), ApproverType=VALUES(ApproverType), ApproverUserId=VALUES(ApproverUserId);
 
 INSERT INTO recruitment_settings (ClientId, RecruitmentEnabled, AllowEmployeeRfrCreation, AllowReplacementHiring, AllowMultipleHiringManagers, AllowMultipleRecruiters, AutoGeneratePositionCode, AutoGenerateRfrNumber, EnableVendorHiring, EnableConsultantHiring, EnableInternalHiring, EnableReferralHiring, EnableCampusHiring, EnableWalkInHiring, EnableOfferApproval, EnablePreOfferProcess, EnableBackgroundVerification, EnableDocumentVerification, EnableCandidatePortal, PublicPortalBaseUrl, EnableVendorPortal, EnableJobPortalIntegration, IsActive)
 VALUES (@client_id, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, FALSE, TRUE, FALSE, TRUE, TRUE, TRUE, 'http://localhost:5173', FALSE, FALSE, TRUE)

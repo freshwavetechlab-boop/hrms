@@ -85,7 +85,7 @@ export function PayPage({ user }: { user: User }) {
           <div className="pay-table-card">
           {rows.length ? (
             <div className="pay-table-scroll">
-              <table className="pay-table">
+              <table className="pay-table mobile-card-table">
                 <thead>
                   <tr>
                     <th>Pay period</th>
@@ -103,14 +103,14 @@ export function PayPage({ user }: { user: User }) {
                     const deductions = item.statutoryDeductions + item.oneTimeDeductions
                     return (
                       <tr key={item.payRunId}>
-                        <td><b>{periodText(item.payPeriod)}</b><span>{item.payPeriod}</span></td>
-                        <td>{dateText(item.payDate)}</td>
-                        <td>{money(item.grossPay)}</td>
-                        <td>{money(deductions)}</td>
-                        <td><b>{money(item.netPay)}</b></td>
-                        <td><span className="pay-status-pill">{item.paymentStatus || 'Pending'}</span></td>
-                        <td>{item.runStatus}</td>
-                        <td>
+                        <td data-label="Pay period"><div><b>{periodText(item.payPeriod)}</b><span>{item.payPeriod}</span></div></td>
+                        <td data-label="Pay date">{dateText(item.payDate)}</td>
+                        <td data-label="Gross pay">{money(item.grossPay)}</td>
+                        <td data-label="Deductions">{money(deductions)}</td>
+                        <td data-label="Net pay"><b>{money(item.netPay)}</b></td>
+                        <td data-label="Payment"><span className="pay-status-pill">{item.paymentStatus || 'Pending'}</span></td>
+                        <td data-label="Run status">{item.runStatus}</td>
+                        <td data-label="Actions">
                           <div className="pay-actions">
                             <button type="button" onClick={() => void fetchDocument(item)} disabled={busy !== null}>
                               {busy === `view-${item.payRunId}` ? 'Opening...' : 'View'}

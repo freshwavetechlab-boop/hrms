@@ -1,5 +1,5 @@
-const CACHE_NAME = 'frevo-one-ess-v1'
-const APP_SHELL = ['/', '/index.html', '/favicon.svg', '/manifest.webmanifest', '/assets/FrevoOneLogo.png']
+const CACHE_NAME = 'frevo-one-ess-v2'
+const APP_SHELL = ['/', '/index.html', '/favicon.svg', '/manifest.webmanifest', '/pwa-192x192.png', '/pwa-512x512.png', '/assets/FrevoOneLogo.png']
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()))
