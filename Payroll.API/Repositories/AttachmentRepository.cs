@@ -1264,7 +1264,7 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
             return HasAnyPermission(user, "recruitment.document.manage", "attachment.recruitment.upload", "recruitment.manage", "settings.manage", "security.manage");
         return entityType == "EMPLOYEE"
             ? HasAnyPermission(user, "attachment.employee.upload", "employees.manage", "settings.manage", "security.manage")
-            : HasAnyPermission(user, "attachment.recruitment.upload", "recruitment.manage", "security.manage");
+            : HasAnyPermission(user, "attachment.recruitment.upload", "recruitment.manage", "settings.manage", "security.manage");
     }
 
     private async Task<bool> CanVerifyEntityAsync(AuthUser user, string entityType, long entityId, int clientId)

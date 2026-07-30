@@ -12,8 +12,15 @@
     <PackageReference Include="MailKit" Version="4.14.1" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.28" />
     <PackageReference Include="MySqlConnector" Version="2.6.0" />
+    <PackageReference Include="SmartComponents.LocalEmbeddings" Version="0.1.0-preview10148" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
     <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <!-- Pin the small MIT-licensed model used by the in-process semantic scorer. -->
+    <LocalEmbeddingsModelUrl>https://huggingface.co/SmartComponents/bge-micro-v2/resolve/7ec22bc9929092529cc25e9debdfa88509eb4dbf/onnx/model_quantized.onnx</LocalEmbeddingsModelUrl>
+    <LocalEmbeddingsVocabUrl>https://huggingface.co/SmartComponents/bge-micro-v2/resolve/7ec22bc9929092529cc25e9debdfa88509eb4dbf/vocab.txt</LocalEmbeddingsVocabUrl>
+  </PropertyGroup>
 
 </Project>

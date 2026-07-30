@@ -100,6 +100,7 @@ export const saveRecruitmentSlaRule = (row: RecruitmentSlaRule) => postJson('/ap
 export const saveRecruitmentDocumentChecklist = (row: RecruitmentDocumentChecklist) => postJson('/api/recruitment-admin/document-checklist', row, row, { successMessage: 'Document checklist saved.' })
 export const saveRecruitmentApprovalMapping = (row: RecruitmentApprovalMapping) => postJson('/api/recruitment-admin/approval-mappings', row, row, { successMessage: 'Approval mapping saved.' })
 export const saveRecruitmentTemplate = (row: RecruitmentTemplate) => postJson('/api/recruitment-admin/templates', row, row, { successMessage: 'Recruitment template saved.' })
+export const deleteRecruitmentAdminConfiguration = (kind: string, id: number) => deleteJson(`/api/recruitment-admin/${kind}/${id}`, null, { successMessage: 'Recruitment configuration deleted.' })
 export const getEssClientSettings = () => getJson<EssClientSetting[]>('/api/ess-admin/settings', [])
 export const saveEssClientSetting = (row: EssClientSetting) => postJson('/api/ess-admin/settings', row, row, { successMessage: 'ESS settings saved.' })
 export const getScheduledJobs = () => getJson<ScheduledJob[]>('/api/scheduled-jobs', [])

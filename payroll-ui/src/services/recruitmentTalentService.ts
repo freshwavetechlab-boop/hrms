@@ -1,5 +1,5 @@
-import type { ConvertCandidateToEmployeeRequest, Employee, EntityAttachment, PersonActivityEvent, RecruitmentApplicationScore, RecruitmentAtsScoringCriterion, RecruitmentAtsScoringProfile, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateChecklistItem, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, RecruitmentOffer, RecruitmentOpenPosition, RecruitmentResumeIntakeResult, RecruitmentSkill, RecruitmentTalentDashboard, SaveRecruitmentCandidate, SaveRecruitmentInterviewFeedbackCompetencyScore } from '../types/payroll'
-import { getJson, postFormWithProgress, postJson, putJson } from './apiClient'
+import type { ConvertCandidateToEmployeeRequest, Employee, EntityAttachment, PersonActivityEvent, RecruitmentAiScoringSettings, RecruitmentApplicationScore, RecruitmentAtsScoringCriterion, RecruitmentAtsScoringProfile, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateChecklistItem, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, RecruitmentOffer, RecruitmentOpenPosition, RecruitmentResumeIntakeResult, RecruitmentSkill, RecruitmentTalentDashboard, SaveRecruitmentCandidate, SaveRecruitmentInterviewFeedbackCompetencyScore } from '../types/payroll'
+import { deleteJson, getJson, postFormWithProgress, postJson, putJson } from './apiClient'
 
 export const getTalentDashboard = () => getJson<RecruitmentTalentDashboard>('/api/recruitment/talent/dashboard', { talentProfiles: 0, activeApplications: 0, interviewsScheduled: 0, offersPending: 0, preOnboardingPending: 0, joined: 0 })
 export const getCandidates = (query = '', status = '', clientId?: number) => {
@@ -8,12 +8,14 @@ export const getCandidates = (query = '', status = '', clientId?: number) => {
 }
 export const getCandidate = (id: number) => getJson<RecruitmentCandidateDetail | null>(`/api/recruitment/candidates/${id}`, null)
 export const saveCandidate = (row: SaveRecruitmentCandidate) => postJson('/api/recruitment/candidates', row, null as RecruitmentCandidate | null, { successMessage: 'Talent profile saved.' })
+export const deleteCandidate = (id: number) => deleteJson(`/api/recruitment/candidates/${id}`, null, { successMessage: 'Candidate and safe test-stage recruitment data deleted.' })
 export const saveCandidateProfileSections = (candidateId: number, row: { experience: RecruitmentCandidateExperience[]; education: RecruitmentCandidateEducation[]; certifications: RecruitmentCandidateCertification[] }) => putJson(`/api/recruitment/candidates/${candidateId}/profile-sections`, row, null as RecruitmentCandidateDetail | null)
 export const getApplications = (filters: { positionId?: number; candidateId?: number; stage?: string } = {}) => {
   const search = new URLSearchParams(); Object.entries(filters).forEach(([key, value]) => { if (value != null && value !== '') search.set(key, String(value)) })
   return getJson<RecruitmentCandidateApplication[]>(`/api/recruitment/applications?${search}`, [])
 }
 export const createApplication = (row: { candidateId: number; positionId: number; sourceType: string; resumeId?: number | null; recruiterUserId?: number | null }) => postJson('/api/recruitment/applications', row, null as RecruitmentCandidateApplication | null, { successMessage: 'Application created.' })
+export const deleteApplication = (id: number) => deleteJson(`/api/recruitment/applications/${id}`, null, { successMessage: 'Application and ATS screening data deleted.' })
 export const changeApplicationStage = (id: number, stage: string, reason: string) => postJson(`/api/recruitment/applications/${id}/stage`, { stage, status: stage, reason }, null as RecruitmentCandidateApplication | null, { successMessage: 'Candidate stage updated.' })
 export const scoreApplication = (id: number) => postJson(`/api/recruitment/applications/${id}/score`, {}, null, { successMessage: 'ATS score recalculated.' })
 export const overrideApplicationScore = (scoreId: number, score: number, reason: string) => postJson(`/api/recruitment/application-scores/${scoreId}/override`, { score, reason }, null as RecruitmentApplicationScore | null, { successMessage: 'ATS score override saved.' })
@@ -45,7 +47,13 @@ export const intakeRecruitmentResumes = (request: { clientId: number; positionId
 export const getAtsProfiles = (clientId?: number) => getJson<RecruitmentAtsScoringProfile[]>(`/api/recruitment-admin/ats-profiles${clientId ? `?clientId=${clientId}` : ''}`, [])
 export const getAtsCriterionCatalog = () => getJson<RecruitmentAtsScoringCriterion[]>('/api/recruitment-admin/ats-criteria', [])
 export const saveAtsProfile = (row: RecruitmentAtsScoringProfile) => postJson('/api/recruitment-admin/ats-profiles', row, null as RecruitmentAtsScoringProfile | null, { successMessage: 'ATS profile saved.' })
+export const deleteAtsProfile = (id: number) => deleteJson(`/api/recruitment-admin/ats-profiles/${id}`, null, { successMessage: 'ATS profile deleted.' })
 export const getRecruitmentSkills = (clientId?: number) => getJson<RecruitmentSkill[]>(`/api/recruitment-admin/skills${clientId ? `?clientId=${clientId}` : ''}`, [])
 export const saveRecruitmentSkill = (row: RecruitmentSkill) => postJson('/api/recruitment-admin/skills', row, null as RecruitmentSkill | null, { successMessage: 'Skill saved.' })
+export const deleteRecruitmentSkill = (id: number) => deleteJson(`/api/recruitment-admin/skills/${id}`, null, { successMessage: 'Skill deleted.' })
+export const getRecruitmentAiScoringSettings = (clientId: number) => getJson<RecruitmentAiScoringSettings>(`/api/recruitment-admin/ai-scoring?clientId=${clientId}`, { id: 0, clientId, clientName: '', enableAiScoring: false, providerCode: 'Gemini', modelName: 'gemini-3.5-flash', aiBlendWeight: 20, minimumConfidence: .65, maximumResumeCharacters: 40000, requestTimeoutSeconds: 45, hasApiKey: false, apiKey: '', healthStatus: 'NotTested', lastHealthMessage: '', lastTestedAt: null, isActive: true })
+export const saveRecruitmentAiScoringSettings = (row: RecruitmentAiScoringSettings) => postJson('/api/recruitment-admin/ai-scoring', row, null as RecruitmentAiScoringSettings | null, { successMessage: 'AI scoring setup saved securely.' })
+export const testRecruitmentAiScoringSettings = (clientId: number) => postJson(`/api/recruitment-admin/ai-scoring/${clientId}/test`, {}, null as RecruitmentAiScoringSettings | null, { successMessage: 'Gemini scoring connection is healthy.', timeoutMs: 120000 })
+export const deleteRecruitmentAiScoringSettings = (clientId: number) => deleteJson(`/api/recruitment-admin/ai-scoring/${clientId}`, null, { successMessage: 'AI scoring setup and encrypted API key deleted.' })
 export const getEmployeeActivity360 = (employeeId: number) => getJson<PersonActivityEvent[]>(`/api/employees/${employeeId}/activity-360`, [])
 export type { RecruitmentOpenPosition }

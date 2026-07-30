@@ -70,7 +70,8 @@ function ScoreEvidence({ score, application }: { score: RecruitmentApplicationSc
         <Col xs={24} sm={7} style={{ textAlign: 'center' }}><Progress type="dashboard" percent={Math.max(0, Math.min(100, value))} strokeColor={scoreColor(value, score.shortlistThreshold)} format={() => <span>{value.toFixed(1)}</span>} /></Col>
         <Col xs={24} sm={17}>
           <Typography.Title level={4} style={{ marginTop: 0 }}>{application?.positionTitle ?? snapshot?.positionTitle ?? 'Application score'}</Typography.Title>
-          <Space wrap><Tag color={value >= score.shortlistThreshold ? 'green' : 'orange'}>{value >= score.shortlistThreshold ? 'Reached threshold' : 'Below threshold'}</Tag><Tag color="blue">Threshold {score.shortlistThreshold.toFixed(2)}%</Tag><Tag>Profile v{score.profileVersionNumber || 1}</Tag>{score.humanReviewRequired && <Tag color="purple">Human review required</Tag>}</Space>
+          <Space wrap><Tag color={value >= score.shortlistThreshold ? 'green' : 'orange'}>{value >= score.shortlistThreshold ? 'Reached threshold' : 'Below threshold'}</Tag><Tag color="blue">Threshold {score.shortlistThreshold.toFixed(2)}%</Tag><Tag>Profile v{score.profileVersionNumber || 1}</Tag><Tag color="purple">{score.scoringMethod || 'Rule based'}</Tag>{score.humanReviewRequired && <Tag color="purple">Human review required</Tag>}</Space>
+          <Space wrap style={{ marginTop: 8 }}><Tag>Local score {Number(score.localScore ?? score.totalScore).toFixed(2)}</Tag>{score.aiScore != null && <Tag color="geekblue">AI analysis {score.aiScore.toFixed(2)} · blend {score.aiBlendWeight.toFixed(0)}%</Tag>}<Tag color={score.aiAnalysisStatus === 'Completed' ? 'green' : score.aiAnalysisStatus === 'NotEnabled' ? 'default' : 'gold'}>AI: {score.aiAnalysisStatus || 'Not enabled'}</Tag></Space>
           <Typography.Paragraph style={{ marginTop: 12, marginBottom: 4 }}><strong>{score.recommendation || 'Recruiter review required'}</strong></Typography.Paragraph>
           <Typography.Paragraph type="secondary">{score.explanationText || 'This deterministic score is decision support and does not make the hiring decision.'}</Typography.Paragraph>
           {score.overrideScore != null && <Typography.Paragraph><Tag color="magenta">Manually overridden</Tag> Calculated {score.totalScore.toFixed(2)} to effective {score.overrideScore.toFixed(2)}. {score.overrideReason}</Typography.Paragraph>}
@@ -85,13 +86,14 @@ function ScoreEvidence({ score, application }: { score: RecruitmentApplicationSc
     <Card size="small" title="Skill evidence">
       {skillMatches.length ? <List dataSource={skillMatches} renderItem={item => <List.Item>
         <List.Item.Meta
-          title={<Space wrap><Typography.Text strong>{item.skillName}</Typography.Text><Tag>{item.skillType}</Tag><Tag color={statusColor(item.matchStatus)}>{item.matchStatus}</Tag>{item.matchedTerm && <Tag color="blue">Matched: {item.matchedTerm}</Tag>}</Space>}
+          title={<Space wrap><Typography.Text strong>{item.skillName}</Typography.Text><Tag>{item.skillType}</Tag><Tag color={statusColor(item.matchStatus)}>{item.matchStatus}</Tag><Tag color={item.matchMethod === 'Semantic' ? 'purple' : item.matchMethod === 'Alias' ? 'cyan' : 'default'}>{item.matchMethod || 'Exact/alias'}</Tag>{item.confidence > 0 && <Tag>{Math.round(item.confidence * 100)}% confidence</Tag>}</Space>}
           description={<Space direction="vertical" size={2}>
             {(item.requirementWeight > 0 || item.minimumYears > 0 || item.minimumProficiency) && <Space wrap>
               {item.requirementWeight > 0 && <Tag>JD weight {item.requirementWeight.toFixed(2)}%</Tag>}
               {item.minimumYears > 0 && <Tag>Minimum {item.minimumYears.toFixed(1)} years</Tag>}
               {item.minimumProficiency && <Tag>Proficiency {item.minimumProficiency}</Tag>}
             </Space>}
+            {item.matchedTerm && <Typography.Text type="secondary">Matched evidence: {item.matchedTerm}</Typography.Text>}
             <Typography.Text type="secondary">{item.evidenceExcerpt || 'No matching resume excerpt was recorded.'}</Typography.Text>
           </Space>}
         />

@@ -14,6 +14,8 @@ public sealed class RecruitmentTalentRepository(
     AttachmentRepository attachments,
     AttachmentStorageService attachmentStorage,
     ResumeParsingService resumeParser,
+    RecruitmentSemanticScoringService semanticScoring,
+    RecruitmentAiScoringService aiScoring,
     TemplatePdfService templatePdf,
     EmployeeRepository employees,
     WorkflowRepository workflows,
@@ -266,7 +268,7 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
         await AddPositionTimelineAsync(db, position.Id, "Candidate Added", "Candidate added", $"{candidate.FirstName} {candidate.LastName} / {code}", user.Id);
         await WriteActivityAsync(db, position.ClientId, candidate.Id, candidate.EmployeeId, "RECRUITMENT", "APPLICATION_CREATED", "Application created", $"Applied for {position.PositionTitle} ({position.PositionCode})", "RecruitmentApplication", id.ToString(), user);
         await RefreshPositionCountersAsync(db, position.Id);
-        if (resumeId.HasValue) await ScoreApplicationInternalAsync(db, id, user, false);
+        if (resumeId.HasValue) await QueueApplicationScoreAsync(db, id, user, false);
         return (await ApplicationByIdAsync(db, id, user), "");
     }
 
@@ -501,11 +503,20 @@ ORDER BY Id", new { ClientId = clientId, Email = normalizedEmail, Phone = normal
                 }
                 if (needsScoring)
                 {
-                    var (_, scoringError) = await ScoreApplicationAsync(application.Id, user);
-                    if (!string.IsNullOrWhiteSpace(scoringError))
+                    if (files.Count > 20)
                     {
-                        item.Error = $"Resume imported; ATS score needs review: {scoringError}";
-                        result.NeedsReview++;
+                        await using var scoreDb = Db();
+                        await scoreDb.OpenAsync(cancellationToken);
+                        await QueueApplicationScoreAsync(scoreDb, application.Id, user, true);
+                    }
+                    else
+                    {
+                        var (_, scoringError) = await ScoreApplicationAsync(application.Id, user);
+                        if (!string.IsNullOrWhiteSpace(scoringError))
+                        {
+                            item.Error = $"Resume imported; ATS score needs review: {scoringError}";
+                            result.NeedsReview++;
+                        }
                     }
                 }
                 application = (await GetApplicationsAsync(user, application.PositionId, candidateId.Value, "")).FirstOrDefault(row => row.Id == application.Id) ?? application;
@@ -557,7 +568,34 @@ WHERE Id=@ReferralId AND ReferrerEmployeeId=@EmployeeId", new { ReferralId = ref
     {
         await using var db = Db();
         await db.OpenAsync();
-        return await ScoreApplicationInternalAsync(db, applicationId, user, true);
+        var jobId = await QueueApplicationScoreAsync(db, applicationId, user, true);
+        if (!jobId.HasValue) return (null, "The ATS scoring request could not be queued.");
+        await ProcessAtsScoringJobAsync(jobId.Value, CancellationToken.None);
+        var job = await WaitForAtsScoringJobAsync(db, jobId.Value, CancellationToken.None);
+        if (!string.Equals(job.Status, "Completed", StringComparison.OrdinalIgnoreCase))
+            return (null, string.IsNullOrWhiteSpace(job.LastError) ? "ATS scoring is queued for retry." : job.LastError);
+        var row = await db.QueryFirstOrDefaultAsync<RecruitmentApplicationScore>("SELECT * FROM recruitment_application_scores WHERE ApplicationId=@ApplicationId AND IsCurrent=TRUE ORDER BY ScoredAt DESC,Id DESC LIMIT 1", new { ApplicationId = applicationId });
+        if (row is not null) await HydrateScoresAsync(db, [row]);
+        return row is null ? (null, "ATS scoring completed without producing a score.") : (row, "");
+    }
+
+    private static async Task<(string Status, string LastError)> WaitForAtsScoringJobAsync(
+        MySqlConnection db,
+        long jobId,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 260; attempt++)
+        {
+            var job = await db.QueryFirstOrDefaultAsync<(string Status, string LastError)>(
+                "SELECT Status,LastError FROM recruitment_ats_scoring_jobs WHERE Id=@Id",
+                new { Id = jobId });
+            if (!string.Equals(job.Status, "Queued", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(job.Status, "Retry", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(job.Status, "Processing", StringComparison.OrdinalIgnoreCase))
+                return job;
+            await Task.Delay(500, cancellationToken);
+        }
+        return ("Processing", "ATS scoring is still running in the background.");
     }
 
     public async Task<(RecruitmentApplicationScore? Score, string Warning)> ProcessPublicApplicationResumeAsync(
@@ -649,7 +687,12 @@ WHERE Id=@ResumeId AND CandidateId=@CandidateId", link);
         }
 
         if (!features.EnableAtsScoring) return (null, "");
-        var (score, scoringError) = await ScoreApplicationInternalAsync(db, applicationId, user, false);
+        var jobId = await QueueApplicationScoreAsync(db, applicationId, user, false);
+        if (!jobId.HasValue) return (null, "The application was submitted, but ATS scoring could not be queued.");
+        await ProcessAtsScoringJobAsync(jobId.Value, cancellationToken);
+        var score = await db.QueryFirstOrDefaultAsync<RecruitmentApplicationScore>("SELECT * FROM recruitment_application_scores WHERE ApplicationId=@ApplicationId AND IsCurrent=TRUE ORDER BY ScoredAt DESC,Id DESC LIMIT 1", new { ApplicationId = applicationId });
+        var scoringError = await db.ExecuteScalarAsync<string>("SELECT LastError FROM recruitment_ats_scoring_jobs WHERE Id=@Id", new { Id = jobId.Value }) ?? "";
+        if (score is not null) await HydrateScoresAsync(db, [score]);
         if (score is not null || scoringError.Contains("Automatic ATS scoring is disabled", StringComparison.OrdinalIgnoreCase))
             return (score, "");
         return (null, string.IsNullOrWhiteSpace(scoringError) ? "" : $"The application was submitted, but ATS scoring needs HR review: {scoringError}");
@@ -1416,14 +1459,19 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         if (row.ClientId <= 0 || string.IsNullOrWhiteSpace(row.ProfileName)) return (null, "Client and profile name are required.");
         if (!CanAccessClient(user, row.ClientId)) return (null, "Scoring profile is outside your client scope.");
         if (row.ProfileName.Length > 180 || row.PositionCategory.Length > 120) return (null, "Profile name or position category is too long.");
-        if (!row.ScoringMethod.Equals("RuleBased", StringComparison.OrdinalIgnoreCase)) return (null, "Only the explainable rule-based scoring method is currently supported.");
-        if (!row.ParserProvider.Equals("BuiltIn", StringComparison.OrdinalIgnoreCase) || !row.ScoringProvider.Equals("BuiltIn", StringComparison.OrdinalIgnoreCase))
-            return (null, "Only the built-in secured parser and deterministic scorer are currently supported.");
-        row.ScoringMethod = "RuleBased";
+        if (!row.ScoringMethod.Equals("RuleBased", StringComparison.OrdinalIgnoreCase) && !row.ScoringMethod.Equals("Hybrid", StringComparison.OrdinalIgnoreCase))
+            return (null, "Only explainable rule-based or hybrid semantic scoring is supported.");
+        if (!row.ParserProvider.Equals("BuiltIn", StringComparison.OrdinalIgnoreCase))
+            return (null, "Only the secured built-in resume parser is currently supported.");
+        row.ScoringMethod = row.EnableSemanticMatching || row.EnableAiScoring ? "Hybrid" : "RuleBased";
         row.ParserProvider = "BuiltIn";
-        row.ScoringProvider = "BuiltIn";
-        row.ModelName = string.IsNullOrWhiteSpace(row.ModelName) ? "Deterministic-v1" : row.ModelName;
+        row.ScoringProvider = row.EnableAiScoring ? "BuiltInLocalGemini" : row.EnableSemanticMatching ? "BuiltInLocal" : "BuiltIn";
+        row.ModelName = string.IsNullOrWhiteSpace(row.ModelName)
+            ? row.EnableSemanticMatching ? "Deterministic-v2 + bge-micro-v2" : "Deterministic-v2"
+            : row.ModelName;
         if (row.ModelName.Length > 120) return (null, "Model name cannot exceed 120 characters.");
+        if (row.SemanticMinimumSimilarity is < .5m or > .95m)
+            return (null, "Semantic matching threshold must be between 0.50 and 0.95.");
         var (criteria, criteriaError) = NormalizeScoringCriteria(row);
         if (!string.IsNullOrWhiteSpace(criteriaError)) return (null, criteriaError);
         if (row.MinimumShortlistScore is < 0 or > 100) return (null, "Minimum shortlist score must be between 0 and 100.");
@@ -1440,9 +1488,9 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         await using var transaction = await db.BeginTransactionAsync();
         if (row.IsDefault) await db.ExecuteAsync("UPDATE recruitment_ats_scoring_profiles SET IsDefault=FALSE WHERE ClientId=@ClientId", row, transaction);
         if (row.Id <= 0)
-            row.Id = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_ats_scoring_profiles (ClientId,ProfileName,PositionCategory,ScoringMethod,MinimumShortlistScore,AutoScoreOnResumeUpload,AllowManualOverride,ParserProvider,ScoringProvider,ModelName,VersionNumber,IsDefault,IsActive) VALUES (@ClientId,@ProfileName,@PositionCategory,@ScoringMethod,@MinimumShortlistScore,@AutoScoreOnResumeUpload,@AllowManualOverride,@ParserProvider,@ScoringProvider,@ModelName,1,@IsDefault,@IsActive);SELECT LAST_INSERT_ID();", new { row.ClientId, ProfileName = row.ProfileName.Trim(), PositionCategory = row.PositionCategory.Trim(), row.ScoringMethod, row.MinimumShortlistScore, row.AutoScoreOnResumeUpload, row.AllowManualOverride, row.ParserProvider, row.ScoringProvider, row.ModelName, row.IsDefault, row.IsActive }, transaction);
+            row.Id = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_ats_scoring_profiles (ClientId,ProfileName,PositionCategory,ScoringMethod,MinimumShortlistScore,AutoScoreOnResumeUpload,AllowManualOverride,ParserProvider,ScoringProvider,ModelName,EnableSemanticMatching,SemanticMinimumSimilarity,EnableAiScoring,VersionNumber,IsDefault,IsActive) VALUES (@ClientId,@ProfileName,@PositionCategory,@ScoringMethod,@MinimumShortlistScore,@AutoScoreOnResumeUpload,@AllowManualOverride,@ParserProvider,@ScoringProvider,@ModelName,@EnableSemanticMatching,@SemanticMinimumSimilarity,@EnableAiScoring,1,@IsDefault,@IsActive);SELECT LAST_INSERT_ID();", new { row.ClientId, ProfileName = row.ProfileName.Trim(), PositionCategory = row.PositionCategory.Trim(), row.ScoringMethod, row.MinimumShortlistScore, row.AutoScoreOnResumeUpload, row.AllowManualOverride, row.ParserProvider, row.ScoringProvider, row.ModelName, row.EnableSemanticMatching, row.SemanticMinimumSimilarity, row.EnableAiScoring, row.IsDefault, row.IsActive }, transaction);
         else
-            await db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_profiles SET ProfileName=@ProfileName,PositionCategory=@PositionCategory,ScoringMethod=@ScoringMethod,MinimumShortlistScore=@MinimumShortlistScore,AutoScoreOnResumeUpload=@AutoScoreOnResumeUpload,AllowManualOverride=@AllowManualOverride,ParserProvider=@ParserProvider,ScoringProvider=@ScoringProvider,ModelName=@ModelName,VersionNumber=VersionNumber+1,IsDefault=@IsDefault,IsActive=@IsActive,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id AND ClientId=@ClientId", new { row.Id, row.ClientId, ProfileName = row.ProfileName.Trim(), PositionCategory = row.PositionCategory.Trim(), row.ScoringMethod, row.MinimumShortlistScore, row.AutoScoreOnResumeUpload, row.AllowManualOverride, row.ParserProvider, row.ScoringProvider, row.ModelName, row.IsDefault, row.IsActive }, transaction);
+            await db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_profiles SET ProfileName=@ProfileName,PositionCategory=@PositionCategory,ScoringMethod=@ScoringMethod,MinimumShortlistScore=@MinimumShortlistScore,AutoScoreOnResumeUpload=@AutoScoreOnResumeUpload,AllowManualOverride=@AllowManualOverride,ParserProvider=@ParserProvider,ScoringProvider=@ScoringProvider,ModelName=@ModelName,EnableSemanticMatching=@EnableSemanticMatching,SemanticMinimumSimilarity=@SemanticMinimumSimilarity,EnableAiScoring=@EnableAiScoring,VersionNumber=VersionNumber+1,IsDefault=@IsDefault,IsActive=@IsActive,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id AND ClientId=@ClientId", new { row.Id, row.ClientId, ProfileName = row.ProfileName.Trim(), PositionCategory = row.PositionCategory.Trim(), row.ScoringMethod, row.MinimumShortlistScore, row.AutoScoreOnResumeUpload, row.AllowManualOverride, row.ParserProvider, row.ScoringProvider, row.ModelName, row.EnableSemanticMatching, row.SemanticMinimumSimilarity, row.EnableAiScoring, row.IsDefault, row.IsActive }, transaction);
         await db.ExecuteAsync("DELETE FROM recruitment_ats_profile_criteria WHERE ScoringProfileId=@Id", new { row.Id }, transaction);
         foreach (var criterion in criteria)
             await db.ExecuteAsync(@"INSERT INTO recruitment_ats_profile_criteria (ScoringProfileId,CriterionCode,CriterionLabel,EvaluationType,Weight,DisplayOrder,IsActive) VALUES (@ScoringProfileId,@CriterionCode,@CriterionLabel,@EvaluationType,@Weight,@DisplayOrder,@IsActive)", new { ScoringProfileId = row.Id, criterion.CriterionCode, criterion.CriterionLabel, criterion.EvaluationType, criterion.Weight, criterion.DisplayOrder, criterion.IsActive }, transaction);
@@ -1450,6 +1498,28 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         var saved = await db.QueryFirstAsync<RecruitmentAtsScoringProfile>("SELECT * FROM recruitment_ats_scoring_profiles WHERE Id=@Id", new { row.Id });
         await HydrateScoringProfilesAsync(db, [saved]);
         return (saved, "");
+    }
+
+    public async Task<(bool Ok, string Error)> DeleteScoringProfileAsync(long id, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var row = await db.QueryFirstOrDefaultAsync<RecruitmentAtsScoringProfile>("SELECT * FROM recruitment_ats_scoring_profiles WHERE Id=@Id", new { Id = id });
+        if (row is null || !CanAccessClient(user, row.ClientId)) return (false, "ATS scoring profile was not found.");
+        var pipelineReferences = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_stage_ats_configurations WHERE ScoringProfileId=@Id", new { Id = id });
+        if (pipelineReferences > 0)
+            return (false, $"This profile is used by {pipelineReferences} pipeline stage(s). Select another ATS profile on those stages before deleting it.");
+
+        await using var transaction = await db.BeginTransactionAsync();
+        await db.ExecuteAsync("UPDATE recruitment_settings SET DefaultAtsScoringProfileId=NULL WHERE DefaultAtsScoringProfileId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("UPDATE recruitment_requisitions SET AtsScoringProfileId=NULL WHERE AtsScoringProfileId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("UPDATE recruitment_open_positions SET AtsScoringProfileId=NULL WHERE AtsScoringProfileId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("UPDATE recruitment_application_scores SET ScoringProfileId=NULL WHERE ScoringProfileId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_ats_profile_criteria WHERE ScoringProfileId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_ats_scoring_profiles WHERE Id=@Id", new { Id = id }, transaction);
+        await transaction.CommitAsync();
+        await WriteRecruitmentAuditAsync(db, "RecruitmentAtsScoringProfile", id, "Delete", user.Id, new { row.ProfileName, row.ClientId });
+        return (true, "");
     }
 
     public async Task<IEnumerable<RecruitmentSkill>> GetSkillsAsync(AuthUser user, int? clientId)
@@ -1511,6 +1581,188 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         return ((await GetSkillsAsync(user, row.ClientId)).FirstOrDefault(value => value.Id == row.Id), "");
     }
 
+    public async Task<(bool Ok, string Error)> DeleteSkillAsync(long id, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var row = await db.QueryFirstOrDefaultAsync<RecruitmentSkill>("SELECT * FROM recruitment_skills WHERE Id=@Id", new { Id = id });
+        if (row is null || (!CanAccessClient(user, row.ClientId) && row.ClientId != 0))
+            return (false, "Recruitment skill was not found.");
+        if (row.ClientId == 0 && user.ClientId.HasValue)
+            return (false, "Only an organization administrator can delete a global skill.");
+
+        await using var transaction = await db.BeginTransactionAsync();
+        // Historical JD and resume evidence keeps its denormalized skill name while the dictionary link is removed.
+        await db.ExecuteAsync("UPDATE recruitment_jd_skill_requirements SET SkillId=NULL WHERE SkillId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("UPDATE recruitment_resume_skills SET SkillId=NULL WHERE SkillId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("UPDATE recruitment_candidate_skills SET SkillId=NULL WHERE SkillId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_skill_aliases WHERE SkillId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_skills WHERE Id=@Id", new { Id = id }, transaction);
+        await transaction.CommitAsync();
+        await WriteRecruitmentAuditAsync(db, "RecruitmentSkill", id, "Delete", user.Id, new { row.SkillName, row.ClientId });
+        return (true, "");
+    }
+
+    public async Task<(bool Ok, string Error)> DeleteApplicationAsync(long applicationId, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var application = await db.QueryFirstOrDefaultAsync<RecruitmentCandidateApplication>(
+            "SELECT * FROM recruitment_candidate_applications WHERE Id=@Id", new { Id = applicationId });
+        if (application is null || !CanAccessClient(user, application.ClientId))
+            return (false, "Application was not found in your permitted scope.");
+        var guardError = await ValidateApplicationDeletionAsync(db, [applicationId]);
+        if (guardError.Length > 0) return (false, guardError);
+
+        await using var transaction = await db.BeginTransactionAsync();
+        await DeleteApplicationsAsync(db, transaction, [applicationId]);
+        await transaction.CommitAsync();
+        await RefreshPositionCountersAsync(db, application.PositionId);
+        await WriteRecruitmentAuditAsync(db, "RecruitmentApplication", applicationId, "Delete", user.Id, new
+        {
+            application.ApplicationCode,
+            application.CandidateId,
+            application.PositionId,
+            application.ClientId
+        });
+        return (true, "");
+    }
+
+    public async Task<(bool Ok, string Error)> DeleteCandidateAsync(
+        long candidateId,
+        AuthUser user,
+        string ipAddress,
+        string userAgent)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var candidate = await CandidateByIdAsync(db, candidateId);
+        if (candidate is null || !await CanAccessCandidateAsync(db, user, candidate))
+            return (false, "Candidate was not found in your permitted scope.");
+        if (candidate.EmployeeId.HasValue || candidate.ProfileStatus.Equals("Joined", StringComparison.OrdinalIgnoreCase))
+            return (false, "An employee-converted candidate cannot be deleted. Retain the recruitment audit and use the employee lifecycle controls.");
+
+        var applications = (await db.QueryAsync<RecruitmentCandidateApplication>(
+            "SELECT * FROM recruitment_candidate_applications WHERE CandidateId=@CandidateId ORDER BY Id",
+            new { CandidateId = candidateId })).ToList();
+        var applicationIds = applications.Select(row => row.Id).ToArray();
+        var guardError = await ValidateApplicationDeletionAsync(db, applicationIds);
+        if (guardError.Length > 0) return (false, guardError);
+
+        var candidateReferences = await db.ExecuteScalarAsync<int>(@"SELECT
+(SELECT COUNT(*) FROM form_submissions WHERE CandidateId=@CandidateId)+
+(SELECT COUNT(*) FROM recruitment_profile_submission_batch_items WHERE CandidateId=@CandidateId)", new { CandidateId = candidateId });
+        if (candidateReferences > 0)
+            return (false, "This candidate is part of a submitted form or profile-forwarding batch and must be retained for audit.");
+
+        var attachmentIds = (await db.QueryAsync<string>(@"SELECT CAST(public_id AS CHAR) FROM entity_attachments
+WHERE entity_type='CANDIDATE' AND entity_id=@CandidateId AND is_deleted=FALSE", new { CandidateId = candidateId })).ToList();
+        foreach (var value in attachmentIds)
+        {
+            if (!Guid.TryParse(value, out var publicId)) continue;
+            var (deleted, attachmentError) = await attachments.DeleteAsync(publicId, user, ipAddress, userAgent);
+            if (!deleted) return (false, attachmentError ?? "A candidate document could not be safely deleted.");
+        }
+
+        await using var transaction = await db.BeginTransactionAsync();
+        if (applicationIds.Length > 0) await DeleteApplicationsAsync(db, transaction, applicationIds);
+        await db.ExecuteAsync("UPDATE recruitment_employee_referrals SET CandidateId=NULL,ApplicationId=NULL WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction);
+        await db.ExecuteAsync("UPDATE external_portal_subjects SET CandidateId=NULL WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_resume_skills WHERE ResumeId IN (SELECT Id FROM recruitment_candidate_resumes WHERE CandidateId=@CandidateId)", new { CandidateId = candidateId }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_resume_sections WHERE ResumeId IN (SELECT Id FROM recruitment_candidate_resumes WHERE CandidateId=@CandidateId)", new { CandidateId = candidateId }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_resume_parse_facts WHERE ResumeId IN (SELECT Id FROM recruitment_candidate_resumes WHERE CandidateId=@CandidateId)", new { CandidateId = candidateId }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_resume_parser_runs WHERE ResumeId IN (SELECT Id FROM recruitment_candidate_resumes WHERE CandidateId=@CandidateId)", new { CandidateId = candidateId }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_candidate_resumes WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_candidate_skills WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_candidate_experience WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_candidate_education WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_candidate_certifications WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction);
+        await db.ExecuteAsync("DELETE FROM person_activity_events WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_candidates WHERE Id=@CandidateId", new { CandidateId = candidateId }, transaction);
+        await transaction.CommitAsync();
+
+        foreach (var positionId in applications.Select(row => row.PositionId).Distinct())
+            await RefreshPositionCountersAsync(db, positionId);
+        await WriteRecruitmentAuditAsync(db, "RecruitmentCandidate", candidateId, "Delete", user.Id, new
+        {
+            candidate.CandidateCode,
+            candidate.ClientId,
+            ApplicationsDeleted = applications.Count,
+            DocumentsSoftDeleted = attachmentIds.Count
+        });
+        return (true, "");
+    }
+
+    private static async Task<string> ValidateApplicationDeletionAsync(MySqlConnection db, long[] applicationIds)
+    {
+        if (applicationIds.Length == 0) return "";
+        var converted = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_candidate_applications
+WHERE Id IN @Ids AND (JoinedEmployeeId IS NOT NULL OR CurrentStage='Joined')", new { Ids = applicationIds });
+        if (converted > 0) return "Joined or employee-converted applications cannot be deleted.";
+
+        var businessRecords = await db.ExecuteScalarAsync<int>(@"SELECT
+(SELECT COUNT(*) FROM recruitment_interviews WHERE ApplicationId IN @Ids)+
+(SELECT COUNT(*) FROM recruitment_offers WHERE ApplicationId IN @Ids)+
+(SELECT COUNT(*) FROM recruitment_process_documents WHERE ApplicationId IN @Ids)+
+(SELECT COUNT(*) FROM recruitment_profile_submission_batch_items WHERE ApplicationId IN @Ids)+
+(SELECT COUNT(*) FROM form_submissions WHERE ApplicationId IN @Ids)", new { Ids = applicationIds });
+        if (businessRecords > 0)
+            return "This application has interviews, offers, signed/process documents, submitted forms, or a profile-forwarding batch. Retain it for audit.";
+
+        var approvalRecords = await db.ExecuteScalarAsync<int>(@"SELECT
+(SELECT COUNT(*) FROM recruitment_stage_action_executions WHERE ApplicationId IN @Ids AND WorkflowInstanceId IS NOT NULL)+
+(SELECT COUNT(*) FROM recruitment_pipeline_transition_requests WHERE ApplicationId IN @Ids AND WorkflowInstanceId IS NOT NULL)", new { Ids = applicationIds });
+        return approvalRecords > 0
+            ? "This application is linked to a global workflow approval and cannot be deleted."
+            : "";
+    }
+
+    private static async Task DeleteApplicationsAsync(
+        MySqlConnection db,
+        MySqlTransaction transaction,
+        long[] applicationIds)
+    {
+        if (applicationIds.Length == 0) return;
+        var scoreIds = (await db.QueryAsync<long>(
+            "SELECT Id FROM recruitment_application_scores WHERE ApplicationId IN @Ids",
+            new { Ids = applicationIds }, transaction)).ToArray();
+        var stageIds = (await db.QueryAsync<long>(
+            "SELECT Id FROM recruitment_application_stage_instances WHERE ApplicationId IN @Ids",
+            new { Ids = applicationIds }, transaction)).ToArray();
+        var executionIds = stageIds.Length == 0
+            ? []
+            : (await db.QueryAsync<long>(
+                "SELECT Id FROM recruitment_stage_action_executions WHERE StageInstanceId IN @Ids",
+                new { Ids = stageIds }, transaction)).ToArray();
+
+        if (executionIds.Length > 0)
+            await db.ExecuteAsync("DELETE FROM recruitment_stage_action_notification_deliveries WHERE StageActionExecutionId IN @Ids", new { Ids = executionIds }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_candidate_action_sessions WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_pipeline_transition_requests WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
+        if (stageIds.Length > 0)
+        {
+            await db.ExecuteAsync("DELETE FROM recruitment_stage_action_executions WHERE StageInstanceId IN @Ids", new { Ids = stageIds }, transaction);
+            await db.ExecuteAsync("DELETE FROM recruitment_stage_pause_periods WHERE StageInstanceId IN @Ids", new { Ids = stageIds }, transaction);
+            await db.ExecuteAsync("DELETE FROM recruitment_stage_events WHERE StageInstanceId IN @Ids", new { Ids = stageIds }, transaction);
+        }
+        await db.ExecuteAsync("UPDATE recruitment_candidate_applications SET PipelineInstanceId=NULL,CurrentPipelineStageInstanceId=NULL WHERE Id IN @Ids", new { Ids = applicationIds }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_application_stage_instances WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_application_pipeline_instances WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_ats_scoring_jobs WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
+        if (scoreIds.Length > 0)
+        {
+            await db.ExecuteAsync("DELETE FROM recruitment_application_score_components WHERE ApplicationScoreId IN @Ids", new { Ids = scoreIds }, transaction);
+            await db.ExecuteAsync("DELETE FROM recruitment_application_score_skill_matches WHERE ApplicationScoreId IN @Ids", new { Ids = scoreIds }, transaction);
+            await db.ExecuteAsync("DELETE FROM recruitment_application_score_evidence WHERE ApplicationScoreId IN @Ids", new { Ids = scoreIds }, transaction);
+            await db.ExecuteAsync("DELETE FROM recruitment_application_score_position_snapshots WHERE ApplicationScoreId IN @Ids", new { Ids = scoreIds }, transaction);
+        }
+        await db.ExecuteAsync("DELETE FROM recruitment_application_scores WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_candidate_checklist_items WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_application_stage_history WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
+        await db.ExecuteAsync("UPDATE recruitment_employee_referrals SET ApplicationId=NULL WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_candidate_applications WHERE Id IN @Ids", new { Ids = applicationIds }, transaction);
+    }
+
     public async Task<RecruitmentEmployeeReferral> LinkReferralAsync(RecruitmentEmployeeReferral referral, AuthUser user)
     {
         await using var db = Db();
@@ -1570,11 +1822,106 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         if (parse.Status == "Parsed")
         {
             var applications = await db.QueryAsync<long>("SELECT Id FROM recruitment_candidate_applications WHERE CandidateId=@CandidateId AND CurrentStage NOT IN ('Rejected','Withdrawn','Joined')", new { CandidateId = candidate.Id });
-            foreach (var applicationId in applications) await ScoreApplicationInternalAsync(db, applicationId, user, false);
+            foreach (var applicationId in applications) await QueueApplicationScoreAsync(db, applicationId, user, false);
         }
         var result = await db.QueryFirstAsync<RecruitmentCandidateResume>($"{ResumeSummarySelect} WHERE r.Id=@Id", new { Id = id });
         await HydrateResumeIntelligenceAsync(db, [result]);
         return result;
+    }
+
+    private static async Task<long?> QueueApplicationScoreAsync(MySqlConnection db, long applicationId, AuthUser user, bool force)
+    {
+        var existing = await db.ExecuteScalarAsync<long?>(@"SELECT Id FROM recruitment_ats_scoring_jobs
+WHERE ApplicationId=@ApplicationId AND Status IN ('Queued','Retry','Processing')
+ORDER BY Id DESC LIMIT 1", new { ApplicationId = applicationId });
+        if (existing.HasValue)
+        {
+            if (force)
+                await db.ExecuteAsync("UPDATE recruitment_ats_scoring_jobs SET ForceScore=TRUE,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = existing.Value });
+            return existing;
+        }
+        return await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_ats_scoring_jobs
+(ApplicationId,RequestedByUserId,RequestedByClientId,ForceScore,Status,AvailableAt)
+VALUES (@ApplicationId,@UserId,@ClientId,@Force,'Queued',UTC_TIMESTAMP());SELECT LAST_INSERT_ID();",
+            new { ApplicationId = applicationId, UserId = user.Id, user.ClientId, Force = force });
+    }
+
+    public async Task<bool> ProcessNextAtsScoringJobAsync(CancellationToken cancellationToken)
+    {
+        await using var db = Db();
+        await db.OpenAsync(cancellationToken);
+        await db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_jobs SET Status='Retry',AvailableAt=UTC_TIMESTAMP(),
+LastError='Recovered after an interrupted worker execution.',UpdatedAt=UTC_TIMESTAMP()
+WHERE Status='Processing' AND StartedAt<DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 MINUTE)");
+        var jobId = await db.ExecuteScalarAsync<long?>(@"SELECT Id FROM recruitment_ats_scoring_jobs
+WHERE Status IN ('Queued','Retry') AND AvailableAt<=UTC_TIMESTAMP()
+ORDER BY AvailableAt,Id LIMIT 1");
+        if (!jobId.HasValue) return false;
+        return await ProcessAtsScoringJobAsync(jobId.Value, cancellationToken);
+    }
+
+    private async Task<bool> ProcessAtsScoringJobAsync(long jobId, CancellationToken cancellationToken)
+    {
+        await using var db = Db();
+        await db.OpenAsync(cancellationToken);
+        var claimed = await db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_jobs SET Status='Processing',
+AttemptCount=AttemptCount+1,StartedAt=UTC_TIMESTAMP(),LastError='',UpdatedAt=UTC_TIMESTAMP()
+WHERE Id=@Id AND Status IN ('Queued','Retry') AND AvailableAt<=UTC_TIMESTAMP()", new { Id = jobId });
+        if (claimed == 0)
+        {
+            var status = await db.ExecuteScalarAsync<string>("SELECT Status FROM recruitment_ats_scoring_jobs WHERE Id=@Id", new { Id = jobId });
+            return status?.Equals("Completed", StringComparison.OrdinalIgnoreCase) == true;
+        }
+
+        var job = await db.QueryFirstOrDefaultAsync<AtsScoringJobRow>("SELECT * FROM recruitment_ats_scoring_jobs WHERE Id=@Id", new { Id = jobId });
+        if (job is null) return false;
+        try
+        {
+            var user = new AuthUser { Id = job.RequestedByUserId, ClientId = job.RequestedByClientId, IsActive = true };
+            var (score, error) = await ScoreApplicationInternalAsync(db, job.ApplicationId, user, job.ForceScore);
+            if (score is not null)
+            {
+                await db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_jobs SET Status='Completed',CompletedAt=UTC_TIMESTAMP(),
+LastError='',UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = jobId });
+                return true;
+            }
+
+            var terminal = error.Contains("disabled", StringComparison.OrdinalIgnoreCase)
+                || error.Contains("not found", StringComparison.OrdinalIgnoreCase)
+                || error.Contains("requires", StringComparison.OrdinalIgnoreCase)
+                || error.Contains("cannot be recalculated", StringComparison.OrdinalIgnoreCase);
+            await CompleteFailedAtsJobAsync(db, job, error, terminal);
+            return false;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_jobs SET Status='Retry',
+AvailableAt=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 MINUTE),LastError='Worker cancellation interrupted scoring.',
+UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = jobId });
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "ATS scoring job {JobId} failed for application {ApplicationId}.", job.Id, job.ApplicationId);
+            await CompleteFailedAtsJobAsync(db, job, "ATS scoring failed unexpectedly; the queued job will retry.", false);
+            return false;
+        }
+    }
+
+    private static Task CompleteFailedAtsJobAsync(MySqlConnection db, AtsScoringJobRow job, string error, bool terminal)
+    {
+        var exhausted = job.AttemptCount >= 3;
+        var status = terminal || exhausted ? "Failed" : "Retry";
+        var delayMinutes = Math.Min(15, Math.Max(1, job.AttemptCount * job.AttemptCount));
+        return db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_jobs SET Status=@Status,
+AvailableAt=DATE_ADD(UTC_TIMESTAMP(),INTERVAL @Delay MINUTE),CompletedAt=IF(@Status='Failed',UTC_TIMESTAMP(),NULL),
+LastError=@Error,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new
+        {
+            job.Id,
+            Status = status,
+            Delay = delayMinutes,
+            Error = Truncate(string.IsNullOrWhiteSpace(error) ? "ATS scoring did not produce a score." : error, 1000)
+        });
     }
 
     private async Task<(RecruitmentApplicationScore? Row, string Error)> ScoreApplicationInternalAsync(MySqlConnection db, long applicationId, AuthUser user, bool force)
@@ -1659,15 +2006,39 @@ WHERE JobDescriptionVersionId=@Id ORDER BY IsMandatory DESC,DisplayOrder,Id", ne
         var preferredMatches = preferredRequirements.Count > 0
             ? preferredRequirements.Select(requirement => ResolveSkillMatch(data.ResumeText, resumeSearch, requirement.SkillName, "Preferred", skillAliases, requirement)).ToList()
             : preferred.Select(term => ResolveSkillMatch(data.ResumeText, resumeSearch, term, "Preferred", skillAliases)).ToList();
+        var semanticDocument = semanticScoring.CreateDocument(data.ResumeText, data.CurrentTitle, data.HighestQualification, data.CurrentLocation);
+        if (profile.EnableSemanticMatching)
+        {
+            requiredMatches = ApplySemanticSkillMatches(requiredMatches, semanticDocument, profile.SemanticMinimumSimilarity);
+            preferredMatches = ApplySemanticSkillMatches(preferredMatches, semanticDocument, profile.SemanticMinimumSimilarity);
+        }
         var requiredRatio = SkillRequirementRatio(requiredMatches);
         var preferredRatio = SkillRequirementRatio(preferredMatches);
         var experienceRatio = ExperienceRatio(data.TotalExperienceMonths, experienceRange);
         var qualificationRatio = TextCriterionScore(resumeSearch, qualificationRequirement, data.HighestQualification);
         var certificationRatio = TextCriterionScore(resumeSearch, certificationRequirement, "");
         var roleRatio = TokenSimilarity(data.CurrentTitle, scoringPositionTitle);
+        var roleSemantic = SemanticComparison.Empty;
+        var qualificationSemantic = SemanticComparison.Empty;
+        var certificationSemantic = SemanticComparison.Empty;
+        if (profile.EnableSemanticMatching)
+        {
+            roleSemantic = semanticScoring.FindBest(scoringPositionTitle, semanticDocument);
+            roleRatio = Math.Max(roleRatio, roleSemantic.CalibratedRatio);
+            if (qualificationRatio < 1m && !string.IsNullOrWhiteSpace(qualificationRequirement))
+            {
+                qualificationSemantic = semanticScoring.FindBest(qualificationRequirement, semanticDocument);
+                qualificationRatio = Math.Max(qualificationRatio, qualificationSemantic.CalibratedRatio);
+            }
+            if (certificationRatio < 1m && !string.IsNullOrWhiteSpace(certificationRequirement))
+            {
+                certificationSemantic = semanticScoring.FindBest(certificationRequirement, semanticDocument);
+                certificationRatio = Math.Max(certificationRatio, certificationSemantic.CalibratedRatio);
+            }
+        }
         var locationRatio = string.IsNullOrWhiteSpace(data.JobLocation) || ContainsTerm(resumeSearch, data.JobLocation) || ContainsTerm(NormalizeSearch(data.CurrentLocation), data.JobLocation) ? 1m : 0m;
         var noticeRatio = !data.NoticePeriodDays.HasValue ? 0m : data.NoticePeriodDays <= 30 ? 1m : data.NoticePeriodDays <= 60 ? .6m : data.NoticePeriodDays <= 90 ? .3m : 0m;
-        var ratios = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+        var localRatios = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
         {
             ["requiredSkills"] = requiredRatio,
             ["preferredSkills"] = preferredRatio,
@@ -1678,17 +2049,52 @@ WHERE JobDescriptionVersionId=@Id ORDER BY IsMandatory DESC,DisplayOrder,Id", ne
             ["location"] = locationRatio,
             ["noticePeriod"] = noticeRatio
         };
+        var ratios = new Dictionary<string, decimal>(localRatios, StringComparer.OrdinalIgnoreCase);
+        var aiSettings = profile.EnableAiScoring ? await aiScoring.GetAsync(user, data.ClientId) : new RecruitmentAiScoringSettings();
+        var aiAnalysis = profile.EnableAiScoring
+            ? await aiScoring.AnalyzeAsync(data.ClientId, new RecruitmentAiAnalysisRequest
+            {
+                PositionTitle = scoringPositionTitle,
+                PositionCategory = data.PositionCategory,
+                RequiredSkills = required,
+                PreferredSkills = preferred,
+                ExperienceRange = experienceRange,
+                Qualification = qualificationRequirement,
+                Certifications = certificationRequirement,
+                Location = data.JobLocation,
+                ResumeText = data.ResumeText
+            })
+            : new RecruitmentAiAnalysis { Status = "NotEnabled" };
+        var aiBlendWeight = aiAnalysis.Applied && aiSettings.EnableAiScoring ? Math.Clamp(aiSettings.AiBlendWeight, 0m, 30m) : 0m;
+        var aiBlendRatio = aiBlendWeight / 100m;
+        if (aiBlendRatio > 0)
+            foreach (var (criterion, aiRatio) in aiAnalysis.Criteria)
+                if (ratios.ContainsKey(criterion))
+                    ratios[criterion] = Math.Clamp((localRatios[criterion] * (1m - aiBlendRatio)) + (aiRatio * aiBlendRatio), 0m, 1m);
         var evidenceSummaries = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["requiredSkills"] = $"{requiredMatches.Count(row => row.IsMatched)} of {requiredMatches.Count} required skills matched",
-            ["preferredSkills"] = $"{preferredMatches.Count(row => row.IsMatched)} of {preferredMatches.Count} preferred skills matched",
+            ["requiredSkills"] = SkillEvidenceSummary(requiredMatches),
+            ["preferredSkills"] = SkillEvidenceSummary(preferredMatches),
             ["experience"] = $"{data.TotalExperienceMonths} months against requirement '{experienceRange}'",
             ["qualification"] = $"Candidate '{data.HighestQualification}' against '{qualificationRequirement}'",
             ["certifications"] = string.IsNullOrWhiteSpace(certificationRequirement) ? "No certification requirement" : $"Required: {certificationRequirement}",
-            ["roleSimilarity"] = $"Current title '{data.CurrentTitle}' against '{scoringPositionTitle}'",
+            ["roleSimilarity"] = profile.EnableSemanticMatching
+                ? $"Current title '{data.CurrentTitle}' against '{scoringPositionTitle}'; semantic similarity {roleSemantic.Similarity:P0}"
+                : $"Current title '{data.CurrentTitle}' against '{scoringPositionTitle}'",
             ["location"] = $"Candidate '{data.CurrentLocation}' against '{data.JobLocation}'",
             ["noticePeriod"] = data.NoticePeriodDays.HasValue ? $"Candidate notice period: {data.NoticePeriodDays} days" : "Candidate notice period: not provided"
         };
+        if (aiBlendRatio > 0)
+            foreach (var criterion in aiAnalysis.Criteria.Keys.Where(evidenceSummaries.ContainsKey))
+                evidenceSummaries[criterion] = $"{evidenceSummaries[criterion]}; Gemini validation blended at {aiBlendWeight:0.##}%";
+        var localComponents = criteria.Select(criterion => new CalculatedScoreComponent(
+            criterion.CriterionCode,
+            criterion.CriterionLabel,
+            criterion.Weight,
+            Round(localRatios.GetValueOrDefault(criterion.CriterionCode)),
+            Round(localRatios.GetValueOrDefault(criterion.CriterionCode) * criterion.Weight),
+            evidenceSummaries.GetValueOrDefault(criterion.CriterionCode, ""),
+            criterion.DisplayOrder)).ToList();
         var components = criteria.Select(criterion => new CalculatedScoreComponent(
             criterion.CriterionCode,
             criterion.CriterionLabel,
@@ -1697,12 +2103,22 @@ WHERE JobDescriptionVersionId=@Id ORDER BY IsMandatory DESC,DisplayOrder,Id", ne
             Round(ratios.GetValueOrDefault(criterion.CriterionCode) * criterion.Weight),
             evidenceSummaries.GetValueOrDefault(criterion.CriterionCode, ""),
             criterion.DisplayOrder)).ToList();
+        var localTotal = Math.Clamp(Round(localComponents.Sum(row => row.AwardedScore)), 0, 100);
+        decimal? aiTotal = aiAnalysis.Applied
+            ? Math.Clamp(Round(criteria.Sum(criterion => aiAnalysis.Criteria.GetValueOrDefault(criterion.CriterionCode, localRatios.GetValueOrDefault(criterion.CriterionCode)) * criterion.Weight)), 0, 100)
+            : null;
         var total = Math.Clamp(Round(components.Sum(row => row.AwardedScore)), 0, 100);
         var recommendation = total >= profile.MinimumShortlistScore ? "Review for shortlist" : "Below shortlist threshold";
         var humanReviewRequired = pipelineSelection?.RequireHumanConfirmation ?? true;
+        var methodLabel = aiBlendRatio > 0
+            ? $"Hybrid ATS used deterministic rules, local semantic vectors and {aiAnalysis.Model} at a bounded {aiBlendWeight:0.##}% contribution"
+            : profile.EnableSemanticMatching
+                ? "Hybrid ATS used deterministic rules and local semantic vectors"
+                : "Deterministic ATS rules were used";
+        var fallbackNote = profile.EnableAiScoring && !aiAnalysis.Applied ? $" External AI was not applied ({aiAnalysis.Status}); local scoring was retained." : "";
         var explanationText = humanReviewRequired
-            ? $"{recommendation}. Deterministic ATS score is decision support; the current pipeline stage requires human confirmation."
-            : $"{recommendation}. Deterministic ATS score is decision support; any configured pipeline automation remains audit logged.";
+            ? $"{recommendation}. {methodLabel}; the current pipeline stage requires human confirmation.{fallbackNote}"
+            : $"{recommendation}. {methodLabel}; any configured pipeline automation remains audit logged.{fallbackNote}";
         var evidence = new[]
         {
             new CalculatedScoreEvidence("experience", "Experience", experienceRange, $"{data.TotalExperienceMonths} months", experienceRatio),
@@ -1718,14 +2134,27 @@ WHERE JobDescriptionVersionId=@Id ORDER BY IsMandatory DESC,DisplayOrder,Id", ne
 
         await using var transaction = await db.BeginTransactionAsync();
         await db.ExecuteAsync("UPDATE recruitment_application_scores SET IsCurrent=FALSE WHERE ApplicationId=@Id AND IsCurrent=TRUE", new { Id = applicationId }, transaction);
-        var scoreId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_application_scores (ApplicationId,ResumeId,ScoringProfileId,PositionSnapshotJson,PositionSnapshotHash,TotalScore,ComponentScoresJson,MatchedSkillsJson,MissingSkillsJson,ExplanationJson,ScoringMethod,ModelName,ModelVersion,ScoreStatus,IsCurrent,ShortlistThreshold,Recommendation,ExplanationText,ProfileVersionNumber,HumanReviewRequired,ScoredAt) VALUES (@ApplicationId,@ResumeId,@ProfileId,NULL,SHA2(CONCAT_WS('|',@JobDescriptionVersionId,@PositionCode,@PositionTitle,@PositionCategory,@RequiredSkills,@PreferredSkills,@ExperienceRange,@Qualification,@Certifications,@JobLocation),256),@Total,JSON_OBJECT(),JSON_ARRAY(),JSON_ARRAY(),JSON_OBJECT(),@Method,@Model,@Version,'Completed',TRUE,@Threshold,@Recommendation,@ExplanationText,@ProfileVersion,@HumanReviewRequired,UTC_TIMESTAMP());SELECT LAST_INSERT_ID();", new { ApplicationId = applicationId, ResumeId = data.EffectiveResumeId, ProfileId = profile.Id > 0 ? (long?)profile.Id : null, Total = total, Method = profile.ScoringMethod, Model = profile.ModelName, Version = profile.VersionNumber.ToString(CultureInfo.InvariantCulture), Threshold = profile.MinimumShortlistScore, Recommendation = recommendation, ExplanationText = explanationText, ProfileVersion = profile.VersionNumber, HumanReviewRequired = humanReviewRequired, data.JobDescriptionVersionId, data.PositionCode, PositionTitle = scoringPositionTitle, data.PositionCategory, RequiredSkills = requiredSkillsSnapshot, PreferredSkills = preferredSkillsSnapshot, ExperienceRange = experienceRange, Qualification = qualificationRequirement, Certifications = certificationRequirement, data.JobLocation }, transaction);
+        var scoreStatus = profile.EnableAiScoring && !aiAnalysis.Applied ? "CompletedWithAiFallback" : "Completed";
+        var scoreId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_application_scores (ApplicationId,ResumeId,ScoringProfileId,PositionSnapshotJson,PositionSnapshotHash,TotalScore,LocalScore,AiScore,AiBlendWeight,AiAnalysisStatus,AiProvider,AiModel,AiConfidence,ComponentScoresJson,MatchedSkillsJson,MissingSkillsJson,ExplanationJson,ScoringMethod,ModelName,ModelVersion,ScoreStatus,IsCurrent,ShortlistThreshold,Recommendation,ExplanationText,ProfileVersionNumber,HumanReviewRequired,ScoredAt) VALUES (@ApplicationId,@ResumeId,@ProfileId,NULL,SHA2(CONCAT_WS('|',@JobDescriptionVersionId,@PositionCode,@PositionTitle,@PositionCategory,@RequiredSkills,@PreferredSkills,@ExperienceRange,@Qualification,@Certifications,@JobLocation),256),@Total,@LocalScore,@AiScore,@AiBlendWeight,@AiAnalysisStatus,@AiProvider,@AiModel,@AiConfidence,JSON_OBJECT(),JSON_ARRAY(),JSON_ARRAY(),JSON_OBJECT(),@Method,@Model,@Version,@ScoreStatus,TRUE,@Threshold,@Recommendation,@ExplanationText,@ProfileVersion,@HumanReviewRequired,UTC_TIMESTAMP());SELECT LAST_INSERT_ID();", new { ApplicationId = applicationId, ResumeId = data.EffectiveResumeId, ProfileId = profile.Id > 0 ? (long?)profile.Id : null, Total = total, LocalScore = localTotal, AiScore = aiTotal, AiBlendWeight = aiBlendWeight, AiAnalysisStatus = aiAnalysis.Status, AiProvider = aiAnalysis.Provider, AiModel = aiAnalysis.Model, AiConfidence = aiAnalysis.Confidence, Method = profile.ScoringMethod, Model = profile.ModelName, Version = profile.VersionNumber.ToString(CultureInfo.InvariantCulture), ScoreStatus = scoreStatus, Threshold = profile.MinimumShortlistScore, Recommendation = recommendation, ExplanationText = explanationText, ProfileVersion = profile.VersionNumber, HumanReviewRequired = humanReviewRequired, data.JobDescriptionVersionId, data.PositionCode, PositionTitle = scoringPositionTitle, data.PositionCategory, RequiredSkills = requiredSkillsSnapshot, PreferredSkills = preferredSkillsSnapshot, ExperienceRange = experienceRange, Qualification = qualificationRequirement, Certifications = certificationRequirement, data.JobLocation }, transaction);
         await db.ExecuteAsync(@"INSERT INTO recruitment_application_score_position_snapshots (ApplicationScoreId,PositionId,JobDescriptionVersionId,JobDescriptionVersionNumber,PositionCode,PositionTitle,PositionCategory,RequiredSkills,PreferredSkills,ExperienceRange,Qualification,Certifications,JobLocation) VALUES (@ScoreId,@PositionId,@JobDescriptionVersionId,@JobDescriptionVersionNumber,@PositionCode,@PositionTitle,@PositionCategory,@RequiredSkills,@PreferredSkills,@ExperienceRange,@Qualification,@Certifications,@JobLocation)", new { ScoreId = scoreId, data.PositionId, data.JobDescriptionVersionId, data.JobDescriptionVersionNumber, data.PositionCode, PositionTitle = scoringPositionTitle, data.PositionCategory, RequiredSkills = requiredSkillsSnapshot, PreferredSkills = preferredSkillsSnapshot, ExperienceRange = experienceRange, Qualification = qualificationRequirement, Certifications = certificationRequirement, data.JobLocation }, transaction);
         foreach (var component in components)
             await db.ExecuteAsync(@"INSERT INTO recruitment_application_score_components (ApplicationScoreId,CriterionCode,CriterionLabel,Weight,RawRatio,AwardedScore,MaximumScore,EvidenceSummary,DisplayOrder) VALUES (@ScoreId,@CriterionCode,@CriterionLabel,@Weight,@RawRatio,@AwardedScore,@Weight,@EvidenceSummary,@DisplayOrder)", new { ScoreId = scoreId, component.CriterionCode, component.CriterionLabel, component.Weight, component.RawRatio, component.AwardedScore, component.EvidenceSummary, component.DisplayOrder }, transaction);
         foreach (var skill in requiredMatches.Concat(preferredMatches))
-            await db.ExecuteAsync(@"INSERT INTO recruitment_application_score_skill_matches (ApplicationScoreId,SkillType,SkillName,MatchStatus,MatchedTerm,EvidenceExcerpt,RequirementWeight,MinimumYears,MinimumProficiency,Confidence) VALUES (@ScoreId,@SkillType,@SkillName,@MatchStatus,@MatchedTerm,@EvidenceExcerpt,@RequirementWeight,@MinimumYears,@MinimumProficiency,@Confidence)", new { ScoreId = scoreId, skill.SkillType, skill.SkillName, MatchStatus = skill.IsMatched ? "Matched" : "Missing", skill.MatchedTerm, skill.EvidenceExcerpt, skill.RequirementWeight, skill.MinimumYears, skill.MinimumProficiency, Confidence = skill.IsMatched ? 0.9m : 0m }, transaction);
+            await db.ExecuteAsync(@"INSERT INTO recruitment_application_score_skill_matches (ApplicationScoreId,SkillType,SkillName,MatchStatus,MatchMethod,MatchedTerm,EvidenceExcerpt,RequirementWeight,MinimumYears,MinimumProficiency,Confidence,SemanticSimilarity) VALUES (@ScoreId,@SkillType,@SkillName,@MatchStatus,@MatchMethod,@MatchedTerm,@EvidenceExcerpt,@RequirementWeight,@MinimumYears,@MinimumProficiency,@Confidence,@SemanticSimilarity)", new { ScoreId = scoreId, skill.SkillType, skill.SkillName, MatchStatus = skill.IsMatched ? "Matched" : "Missing", skill.MatchMethod, skill.MatchedTerm, skill.EvidenceExcerpt, skill.RequirementWeight, skill.MinimumYears, skill.MinimumProficiency, skill.Confidence, skill.SemanticSimilarity }, transaction);
         foreach (var item in evidence)
             await db.ExecuteAsync(@"INSERT INTO recruitment_application_score_evidence (ApplicationScoreId,CriterionCode,EvidenceType,ExpectedValue,ActualValue,MatchStatus,Confidence,ResumeSectionId) VALUES (@ScoreId,@CriterionCode,@EvidenceType,@ExpectedValue,@ActualValue,@MatchStatus,@Confidence,@ResumeSectionId)", new { ScoreId = scoreId, item.CriterionCode, item.EvidenceType, item.ExpectedValue, item.ActualValue, MatchStatus = item.Ratio >= 1m ? "Matched" : item.Ratio > 0 ? "Partial" : "NotMatched", Confidence = Round(item.Ratio), ResumeSectionId = EvidenceSectionId(item.CriterionCode, resumeSectionReferences) }, transaction);
+        if (profile.EnableSemanticMatching)
+        {
+            await InsertSemanticEvidenceAsync(db, transaction, scoreId, "roleSimilarity", scoringPositionTitle, roleSemantic, EvidenceSectionId("roleSimilarity", resumeSectionReferences));
+            await InsertSemanticEvidenceAsync(db, transaction, scoreId, "qualification", qualificationRequirement, qualificationSemantic, EvidenceSectionId("qualification", resumeSectionReferences));
+            await InsertSemanticEvidenceAsync(db, transaction, scoreId, "certifications", certificationRequirement, certificationSemantic, EvidenceSectionId("certifications", resumeSectionReferences));
+        }
+        if (profile.EnableAiScoring)
+        {
+            await db.ExecuteAsync(@"INSERT INTO recruitment_application_score_evidence (ApplicationScoreId,CriterionCode,EvidenceType,ExpectedValue,ActualValue,MatchStatus,Confidence,ResumeSectionId) VALUES (@ScoreId,'aiAnalysis','GenerativeAiSummary',@Expected,@Actual,@Status,@Confidence,NULL)", new { ScoreId = scoreId, Expected = "Job-relevant evidence only; no protected attributes", Actual = Truncate(aiAnalysis.Summary.Length > 0 ? aiAnalysis.Summary : aiAnalysis.Error, 1000), Status = aiAnalysis.Applied ? "Applied" : aiAnalysis.Status, Confidence = aiAnalysis.Confidence }, transaction);
+            foreach (var flag in aiAnalysis.ReviewFlags)
+                await db.ExecuteAsync(@"INSERT INTO recruitment_application_score_evidence (ApplicationScoreId,CriterionCode,EvidenceType,ExpectedValue,ActualValue,MatchStatus,Confidence,ResumeSectionId) VALUES (@ScoreId,'aiAnalysis','HumanReviewFlag','',@Flag,'ReviewRequired',@Confidence,NULL)", new { ScoreId = scoreId, Flag = Truncate(flag, 1000), Confidence = aiAnalysis.Confidence }, transaction);
+        }
         await db.ExecuteAsync("UPDATE recruitment_candidate_applications SET ResumeId=@ResumeId,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = applicationId, ResumeId = data.EffectiveResumeId }, transaction);
         await transaction.CommitAsync();
         await WriteActivityAsync(db, data.ClientId, data.CandidateId, null, "RECRUITMENT", "ATS_SCORE_GENERATED", "ATS score generated", $"Score {total:0.##}/100 for {data.PositionTitle}", "RecruitmentApplicationScore", scoreId.ToString(), user);
@@ -2105,7 +2534,52 @@ AND (@UseIds=FALSE OR o.ApplicationId IN @Ids) ORDER BY o.UpdatedAt DESC", new {
         var group = aliases.FirstOrDefault(pair => NormalizeSearch(pair.Key) == normalizedTerm || pair.Value.Any(alias => NormalizeSearch(alias) == normalizedTerm));
         var candidates = string.IsNullOrWhiteSpace(group.Key) ? new[] { skillName } : group.Value.Append(group.Key).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var matched = candidates.FirstOrDefault(term => ContainsTerm(normalizedResumeText, term)) ?? "";
-        return new CalculatedSkillMatch(skillType, skillName, !string.IsNullOrWhiteSpace(matched), matched, string.IsNullOrWhiteSpace(matched) ? "" : ExtractEvidenceExcerpt(originalResumeText, matched), requirement?.WeightPercent ?? 0, requirement?.MinimumYears ?? 0, requirement?.MinimumProficiency ?? "");
+        var isMatched = !string.IsNullOrWhiteSpace(matched);
+        var method = !isMatched ? "Missing" : matched.Equals(skillName, StringComparison.OrdinalIgnoreCase) ? "Exact" : "Alias";
+        return new CalculatedSkillMatch(skillType, skillName, isMatched, matched, isMatched ? ExtractEvidenceExcerpt(originalResumeText, matched) : "", requirement?.WeightPercent ?? 0, requirement?.MinimumYears ?? 0, requirement?.MinimumProficiency ?? "", method, isMatched ? .95m : 0m, 0m);
+    }
+
+    private List<CalculatedSkillMatch> ApplySemanticSkillMatches(IEnumerable<CalculatedSkillMatch> matches, SemanticDocument document, decimal minimumSimilarity)
+    {
+        return matches.Select(skill =>
+        {
+            if (skill.IsMatched) return skill;
+            var semantic = semanticScoring.FindBest(skill.SkillName, document);
+            if (semantic.Similarity < minimumSimilarity) return skill with { SemanticSimilarity = semantic.Similarity };
+            return skill with
+            {
+                IsMatched = true,
+                MatchMethod = "Semantic",
+                MatchedTerm = Truncate(semantic.Evidence, 180),
+                EvidenceExcerpt = Truncate(semantic.Evidence, 500),
+                Confidence = semantic.Similarity,
+                SemanticSimilarity = semantic.Similarity
+            };
+        }).ToList();
+    }
+
+    private static string SkillEvidenceSummary(IReadOnlyCollection<CalculatedSkillMatch> matches)
+    {
+        var matched = matches.Count(row => row.IsMatched);
+        var semantic = matches.Count(row => row.IsMatched && row.MatchMethod == "Semantic");
+        return semantic > 0
+            ? $"{matched} of {matches.Count} skills matched ({semantic} semantic)"
+            : $"{matched} of {matches.Count} skills matched";
+    }
+
+    private static Task InsertSemanticEvidenceAsync(MySqlConnection db, MySqlTransaction transaction, long scoreId, string criterionCode, string expected, SemanticComparison comparison, long? sectionId)
+    {
+        if (string.IsNullOrWhiteSpace(expected) || comparison.Similarity <= 0) return Task.CompletedTask;
+        return db.ExecuteAsync(@"INSERT INTO recruitment_application_score_evidence (ApplicationScoreId,CriterionCode,EvidenceType,ExpectedValue,ActualValue,MatchStatus,Confidence,ResumeSectionId) VALUES (@ScoreId,@CriterionCode,'LocalSemanticVector',@Expected,@Actual,@Status,@Confidence,@ResumeSectionId)", new
+        {
+            ScoreId = scoreId,
+            CriterionCode = criterionCode,
+            Expected = Truncate(expected, 1000),
+            Actual = Truncate(comparison.Evidence, 1000),
+            Status = comparison.CalibratedRatio >= .75m ? "Matched" : comparison.CalibratedRatio > 0 ? "Partial" : "NotMatched",
+            Confidence = comparison.Similarity,
+            ResumeSectionId = sectionId
+        }, transaction);
     }
 
     private static decimal SkillRequirementRatio(IReadOnlyCollection<CalculatedSkillMatch> matches)
@@ -2229,6 +2703,11 @@ WHERE resume.CandidateId=@CandidateId AND (@ResumeId IS NULL OR resume.Id=@Resum
 
     private static string NormalizeEmail(string value) => value?.Trim().ToLowerInvariant() ?? "";
     private static string NormalizePhone(string value) => new((value ?? "").Where(char.IsDigit).ToArray());
+    private static string Truncate(string value, int maximumLength)
+    {
+        var safe = value ?? "";
+        return safe.Length <= maximumLength ? safe : safe[..maximumLength];
+    }
     private static string NormalizeCode(string value) => Regex.Replace((value ?? "").Trim().ToUpperInvariant(), @"[^A-Z0-9]+", "_").Trim('_');
     private static string NormalizeSearch(string value) => Regex.Replace((value ?? "").ToLowerInvariant(), @"[^a-z0-9+#.]+", " ").Trim();
     private static bool ContainsTerm(string normalizedText, string term)
@@ -2303,7 +2782,7 @@ WHERE resume.CandidateId=@CandidateId AND (@ResumeId IS NULL OR resume.Id=@Resum
         await db.ExecuteAsync(@"INSERT INTO attachment_field_configurations (client_id,attachment_attribute_id,module_code,form_code,section_code,field_key,field_label,help_text,is_required,allow_multiple,minimum_file_count,maximum_file_count,allowed_extensions_json,allowed_mime_types_json,maximum_file_size_bytes,owner_can_view,owner_can_upload,owner_can_replace,owner_can_delete,requires_verification,versioning_enabled,requirement_scope,display_order,is_active) VALUES (0,@AttributeId,'RECRUITMENT','PRE_ONBOARDING','DOCUMENTS','OFFER_LETTER','Offer letter','Offer letter managed through the global document system.',FALSE,TRUE,0,50,'[""pdf""]','[""application/pdf""]',10485760,FALSE,FALSE,FALSE,FALSE,FALSE,TRUE,'AllEntities',10,TRUE) ON DUPLICATE KEY UPDATE attachment_attribute_id=VALUES(attachment_attribute_id),allow_multiple=TRUE,maximum_file_count=50,owner_can_view=FALSE,owner_can_upload=FALSE,owner_can_replace=FALSE,owner_can_delete=FALSE,versioning_enabled=TRUE,is_active=TRUE", new { AttributeId = offerAttributeId });
     }
 
-    private static async Task SeedScoringProfilesAsync(MySqlConnection db) => await db.ExecuteAsync(@"INSERT INTO recruitment_ats_scoring_profiles (ClientId,ProfileName,PositionCategory,ScoringMethod,MinimumShortlistScore,AutoScoreOnResumeUpload,AllowManualOverride,ParserProvider,ScoringProvider,ModelName,VersionNumber,IsDefault,IsActive) SELECT s.ClientId,'Default ATS profile','','RuleBased',60,TRUE,TRUE,'BuiltIn','BuiltIn','Deterministic-v1',1,TRUE,TRUE FROM recruitment_settings s WHERE s.RecruitmentEnabled=TRUE AND NOT EXISTS (SELECT 1 FROM recruitment_ats_scoring_profiles p WHERE p.ClientId=s.ClientId) ");
+    private static async Task SeedScoringProfilesAsync(MySqlConnection db) => await db.ExecuteAsync(@"INSERT INTO recruitment_ats_scoring_profiles (ClientId,ProfileName,PositionCategory,ScoringMethod,MinimumShortlistScore,AutoScoreOnResumeUpload,AllowManualOverride,ParserProvider,ScoringProvider,ModelName,EnableSemanticMatching,SemanticMinimumSimilarity,EnableAiScoring,VersionNumber,IsDefault,IsActive) SELECT s.ClientId,'Default ATS profile','','Hybrid',60,TRUE,TRUE,'BuiltIn','BuiltInLocal','Deterministic-v2 + bge-micro-v2',TRUE,0.7200,FALSE,1,TRUE,TRUE FROM recruitment_settings s WHERE s.RecruitmentEnabled=TRUE AND NOT EXISTS (SELECT 1 FROM recruitment_ats_scoring_profiles p WHERE p.ClientId=s.ClientId) ");
 
     private static async Task SeedMissingScoringProfileCriteriaAsync(MySqlConnection db)
     {
@@ -2519,6 +2998,9 @@ WHERE table_schema=DATABASE() AND table_name=@Table AND LOWER(column_name)=LOWER
             ("recruitment_settings","autocreateapplicationfromreferral","BOOLEAN NOT NULL DEFAULT TRUE"),
             ("recruitment_settings","defaultatsscoringprofileid","BIGINT NULL"),
             ("recruitment_settings","candidateretentionmonths","INT NOT NULL DEFAULT 24"),
+            ("recruitment_ats_scoring_profiles","enablesemanticmatching","BOOLEAN NOT NULL DEFAULT TRUE"),
+            ("recruitment_ats_scoring_profiles","semanticminimumsimilarity","DECIMAL(5,4) NOT NULL DEFAULT 0.7200"),
+            ("recruitment_ats_scoring_profiles","enableaiscoring","BOOLEAN NOT NULL DEFAULT FALSE"),
             ("recruitment_requisitions","jobdescriptiontemplateid","BIGINT NULL"),
             ("recruitment_requisitions","jobdescriptiontext","LONGTEXT NULL"),
             ("recruitment_requisitions","atsscoringprofileid","BIGINT NULL"),
@@ -2531,9 +3013,18 @@ WHERE table_schema=DATABASE() AND table_name=@Table AND LOWER(column_name)=LOWER
             ("recruitment_application_scores","explanationtext","VARCHAR(1000) NOT NULL DEFAULT ''"),
             ("recruitment_application_scores","profileversionnumber","INT NOT NULL DEFAULT 0"),
             ("recruitment_application_scores","humanreviewrequired","BOOLEAN NOT NULL DEFAULT TRUE"),
+            ("recruitment_application_scores","localscore","DECIMAL(5,2) NOT NULL DEFAULT 0"),
+            ("recruitment_application_scores","aiscore","DECIMAL(5,2) NULL"),
+            ("recruitment_application_scores","aiblendweight","DECIMAL(5,2) NOT NULL DEFAULT 0"),
+            ("recruitment_application_scores","aianalysisstatus","VARCHAR(40) NOT NULL DEFAULT 'NotEnabled'"),
+            ("recruitment_application_scores","aiprovider","VARCHAR(80) NOT NULL DEFAULT ''"),
+            ("recruitment_application_scores","aimodel","VARCHAR(120) NOT NULL DEFAULT ''"),
+            ("recruitment_application_scores","aiconfidence","DECIMAL(5,4) NOT NULL DEFAULT 0"),
             ("recruitment_application_score_skill_matches","requirementweight","DECIMAL(5,2) NOT NULL DEFAULT 0"),
             ("recruitment_application_score_skill_matches","minimumyears","DECIMAL(5,2) NOT NULL DEFAULT 0"),
             ("recruitment_application_score_skill_matches","minimumproficiency","VARCHAR(80) NOT NULL DEFAULT ''"),
+            ("recruitment_application_score_skill_matches","matchmethod","VARCHAR(40) NOT NULL DEFAULT 'ExactOrAlias'"),
+            ("recruitment_application_score_skill_matches","semanticsimilarity","DECIMAL(5,4) NOT NULL DEFAULT 0"),
             ("recruitment_application_score_position_snapshots","jobdescriptionversionid","BIGINT NULL"),
             ("recruitment_application_score_position_snapshots","jobdescriptionversionnumber","INT NOT NULL DEFAULT 0"),
             ("recruitment_employee_referrals","candidateid","BIGINT NULL"),
@@ -2617,15 +3108,19 @@ CREATE TABLE IF NOT EXISTS recruitment_candidate_education (
 CREATE TABLE IF NOT EXISTS recruitment_candidate_certifications (
  Id BIGINT PRIMARY KEY AUTO_INCREMENT,CandidateId BIGINT NOT NULL,CertificationName VARCHAR(180) NOT NULL,Issuer VARCHAR(180) NOT NULL DEFAULT '',IssueDate DATE NULL,ExpiryDate DATE NULL,CredentialId VARCHAR(180) NOT NULL DEFAULT '',INDEX IX_recruitment_candidate_certification (CandidateId,CertificationName));
 CREATE TABLE IF NOT EXISTS recruitment_ats_scoring_profiles (
- Id BIGINT PRIMARY KEY AUTO_INCREMENT,ClientId INT NOT NULL,ProfileName VARCHAR(180) NOT NULL,PositionCategory VARCHAR(120) NOT NULL DEFAULT '',ScoringMethod VARCHAR(40) NOT NULL DEFAULT 'RuleBased',MinimumShortlistScore DECIMAL(5,2) NOT NULL DEFAULT 60,AutoScoreOnResumeUpload BOOLEAN NOT NULL DEFAULT TRUE,AllowManualOverride BOOLEAN NOT NULL DEFAULT TRUE,ParserProvider VARCHAR(80) NOT NULL DEFAULT 'BuiltIn',ScoringProvider VARCHAR(80) NOT NULL DEFAULT 'BuiltIn',ModelName VARCHAR(120) NOT NULL DEFAULT 'Deterministic-v1',VersionNumber INT NOT NULL DEFAULT 1,IsDefault BOOLEAN NOT NULL DEFAULT FALSE,IsActive BOOLEAN NOT NULL DEFAULT TRUE,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,INDEX IX_recruitment_ats_profile (ClientId,PositionCategory,IsDefault,IsActive));
+ Id BIGINT PRIMARY KEY AUTO_INCREMENT,ClientId INT NOT NULL,ProfileName VARCHAR(180) NOT NULL,PositionCategory VARCHAR(120) NOT NULL DEFAULT '',ScoringMethod VARCHAR(40) NOT NULL DEFAULT 'Hybrid',MinimumShortlistScore DECIMAL(5,2) NOT NULL DEFAULT 60,AutoScoreOnResumeUpload BOOLEAN NOT NULL DEFAULT TRUE,AllowManualOverride BOOLEAN NOT NULL DEFAULT TRUE,ParserProvider VARCHAR(80) NOT NULL DEFAULT 'BuiltIn',ScoringProvider VARCHAR(80) NOT NULL DEFAULT 'BuiltInLocal',ModelName VARCHAR(120) NOT NULL DEFAULT 'Deterministic-v2 + bge-micro-v2',EnableSemanticMatching BOOLEAN NOT NULL DEFAULT TRUE,SemanticMinimumSimilarity DECIMAL(5,4) NOT NULL DEFAULT 0.7200,EnableAiScoring BOOLEAN NOT NULL DEFAULT FALSE,VersionNumber INT NOT NULL DEFAULT 1,IsDefault BOOLEAN NOT NULL DEFAULT FALSE,IsActive BOOLEAN NOT NULL DEFAULT TRUE,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,INDEX IX_recruitment_ats_profile (ClientId,PositionCategory,IsDefault,IsActive));
 CREATE TABLE IF NOT EXISTS recruitment_ats_profile_criteria (
  Id BIGINT PRIMARY KEY AUTO_INCREMENT,ScoringProfileId BIGINT NOT NULL,CriterionCode VARCHAR(80) NOT NULL,CriterionLabel VARCHAR(180) NOT NULL,EvaluationType VARCHAR(80) NOT NULL DEFAULT 'TextMatch',Weight DECIMAL(5,2) NOT NULL DEFAULT 0,DisplayOrder INT NOT NULL DEFAULT 100,IsActive BOOLEAN NOT NULL DEFAULT TRUE,UNIQUE KEY UX_recruitment_ats_profile_criterion (ScoringProfileId,CriterionCode),INDEX IX_recruitment_ats_profile_criterion_order (ScoringProfileId,DisplayOrder));
 CREATE TABLE IF NOT EXISTS recruitment_application_scores (
- Id BIGINT PRIMARY KEY AUTO_INCREMENT,ApplicationId BIGINT NOT NULL,ResumeId BIGINT NOT NULL,ScoringProfileId BIGINT NULL,PositionSnapshotJson JSON NULL,PositionSnapshotHash CHAR(64) NOT NULL DEFAULT '',TotalScore DECIMAL(5,2) NOT NULL,ComponentScoresJson JSON NOT NULL,MatchedSkillsJson JSON NOT NULL,MissingSkillsJson JSON NOT NULL,ExplanationJson JSON NOT NULL,ScoringMethod VARCHAR(40) NOT NULL,ModelName VARCHAR(120) NOT NULL DEFAULT '',ModelVersion VARCHAR(80) NOT NULL DEFAULT '',ScoreStatus VARCHAR(40) NOT NULL DEFAULT 'Completed',IsCurrent BOOLEAN NOT NULL DEFAULT TRUE,OverrideScore DECIMAL(5,2) NULL,OverrideReason VARCHAR(500) NOT NULL DEFAULT '',OverriddenByUserId INT NULL,OverriddenAt DATETIME NULL,ScoredAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,INDEX IX_recruitment_application_score (ApplicationId,IsCurrent,ScoredAt));
+ Id BIGINT PRIMARY KEY AUTO_INCREMENT,ApplicationId BIGINT NOT NULL,ResumeId BIGINT NOT NULL,ScoringProfileId BIGINT NULL,PositionSnapshotJson JSON NULL,PositionSnapshotHash CHAR(64) NOT NULL DEFAULT '',TotalScore DECIMAL(5,2) NOT NULL,LocalScore DECIMAL(5,2) NOT NULL DEFAULT 0,AiScore DECIMAL(5,2) NULL,AiBlendWeight DECIMAL(5,2) NOT NULL DEFAULT 0,AiAnalysisStatus VARCHAR(40) NOT NULL DEFAULT 'NotEnabled',AiProvider VARCHAR(80) NOT NULL DEFAULT '',AiModel VARCHAR(120) NOT NULL DEFAULT '',AiConfidence DECIMAL(5,4) NOT NULL DEFAULT 0,ComponentScoresJson JSON NOT NULL,MatchedSkillsJson JSON NOT NULL,MissingSkillsJson JSON NOT NULL,ExplanationJson JSON NOT NULL,ScoringMethod VARCHAR(40) NOT NULL,ModelName VARCHAR(120) NOT NULL DEFAULT '',ModelVersion VARCHAR(80) NOT NULL DEFAULT '',ScoreStatus VARCHAR(40) NOT NULL DEFAULT 'Completed',IsCurrent BOOLEAN NOT NULL DEFAULT TRUE,OverrideScore DECIMAL(5,2) NULL,OverrideReason VARCHAR(500) NOT NULL DEFAULT '',OverriddenByUserId INT NULL,OverriddenAt DATETIME NULL,ScoredAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,INDEX IX_recruitment_application_score (ApplicationId,IsCurrent,ScoredAt));
 CREATE TABLE IF NOT EXISTS recruitment_application_score_components (
  Id BIGINT PRIMARY KEY AUTO_INCREMENT,ApplicationScoreId BIGINT NOT NULL,CriterionCode VARCHAR(80) NOT NULL,CriterionLabel VARCHAR(180) NOT NULL,Weight DECIMAL(5,2) NOT NULL,RawRatio DECIMAL(7,4) NOT NULL DEFAULT 0,AwardedScore DECIMAL(5,2) NOT NULL DEFAULT 0,MaximumScore DECIMAL(5,2) NOT NULL DEFAULT 0,EvidenceSummary VARCHAR(1000) NOT NULL DEFAULT '',DisplayOrder INT NOT NULL DEFAULT 100,UNIQUE KEY UX_recruitment_score_component (ApplicationScoreId,CriterionCode),INDEX IX_recruitment_score_component_order (ApplicationScoreId,DisplayOrder));
 CREATE TABLE IF NOT EXISTS recruitment_application_score_skill_matches (
- Id BIGINT PRIMARY KEY AUTO_INCREMENT,ApplicationScoreId BIGINT NOT NULL,SkillType VARCHAR(40) NOT NULL,SkillName VARCHAR(180) NOT NULL,MatchStatus VARCHAR(40) NOT NULL,MatchedTerm VARCHAR(180) NOT NULL DEFAULT '',EvidenceExcerpt VARCHAR(500) NOT NULL DEFAULT '',RequirementWeight DECIMAL(5,2) NOT NULL DEFAULT 0,MinimumYears DECIMAL(5,2) NOT NULL DEFAULT 0,MinimumProficiency VARCHAR(80) NOT NULL DEFAULT '',Confidence DECIMAL(5,4) NOT NULL DEFAULT 0,UNIQUE KEY UX_recruitment_score_skill (ApplicationScoreId,SkillType,SkillName),INDEX IX_recruitment_score_skill_status (ApplicationScoreId,MatchStatus));
+ Id BIGINT PRIMARY KEY AUTO_INCREMENT,ApplicationScoreId BIGINT NOT NULL,SkillType VARCHAR(40) NOT NULL,SkillName VARCHAR(180) NOT NULL,MatchStatus VARCHAR(40) NOT NULL,MatchMethod VARCHAR(40) NOT NULL DEFAULT 'ExactOrAlias',MatchedTerm VARCHAR(180) NOT NULL DEFAULT '',EvidenceExcerpt VARCHAR(500) NOT NULL DEFAULT '',RequirementWeight DECIMAL(5,2) NOT NULL DEFAULT 0,MinimumYears DECIMAL(5,2) NOT NULL DEFAULT 0,MinimumProficiency VARCHAR(80) NOT NULL DEFAULT '',Confidence DECIMAL(5,4) NOT NULL DEFAULT 0,SemanticSimilarity DECIMAL(5,4) NOT NULL DEFAULT 0,UNIQUE KEY UX_recruitment_score_skill (ApplicationScoreId,SkillType,SkillName),INDEX IX_recruitment_score_skill_status (ApplicationScoreId,MatchStatus));
+CREATE TABLE IF NOT EXISTS recruitment_ai_scoring_settings (
+ Id BIGINT PRIMARY KEY AUTO_INCREMENT,ClientId INT NOT NULL,EnableAiScoring BOOLEAN NOT NULL DEFAULT FALSE,ProviderCode VARCHAR(40) NOT NULL DEFAULT 'Gemini',ModelName VARCHAR(120) NOT NULL DEFAULT 'gemini-3.5-flash',AiBlendWeight DECIMAL(5,2) NOT NULL DEFAULT 20,MinimumConfidence DECIMAL(5,4) NOT NULL DEFAULT 0.6500,MaximumResumeCharacters INT NOT NULL DEFAULT 40000,RequestTimeoutSeconds INT NOT NULL DEFAULT 45,ApiKeyCipherText MEDIUMTEXT NULL,HealthStatus VARCHAR(40) NOT NULL DEFAULT 'NotTested',LastHealthMessage VARCHAR(500) NOT NULL DEFAULT '',LastTestedAt DATETIME NULL,IsActive BOOLEAN NOT NULL DEFAULT TRUE,CreatedByUserId INT NULL,UpdatedByUserId INT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,UNIQUE KEY UX_recruitment_ai_scoring_client (ClientId));
+CREATE TABLE IF NOT EXISTS recruitment_ats_scoring_jobs (
+ Id BIGINT PRIMARY KEY AUTO_INCREMENT,ApplicationId BIGINT NOT NULL,RequestedByUserId INT NOT NULL,RequestedByClientId INT NULL,ForceScore BOOLEAN NOT NULL DEFAULT FALSE,Status VARCHAR(30) NOT NULL DEFAULT 'Queued',AttemptCount INT NOT NULL DEFAULT 0,AvailableAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,StartedAt DATETIME NULL,CompletedAt DATETIME NULL,LastError VARCHAR(1000) NOT NULL DEFAULT '',CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,INDEX IX_recruitment_ats_job_queue (Status,AvailableAt,Id),INDEX IX_recruitment_ats_job_application (ApplicationId,CreatedAt));
 CREATE TABLE IF NOT EXISTS recruitment_application_score_evidence (
  Id BIGINT PRIMARY KEY AUTO_INCREMENT,ApplicationScoreId BIGINT NOT NULL,CriterionCode VARCHAR(80) NOT NULL,EvidenceType VARCHAR(80) NOT NULL,ExpectedValue VARCHAR(1000) NOT NULL DEFAULT '',ActualValue VARCHAR(1000) NOT NULL DEFAULT '',MatchStatus VARCHAR(40) NOT NULL,Confidence DECIMAL(5,4) NOT NULL DEFAULT 0,ResumeSectionId BIGINT NULL,INDEX IX_recruitment_score_evidence (ApplicationScoreId,CriterionCode));
 CREATE TABLE IF NOT EXISTS recruitment_application_score_position_snapshots (
@@ -2653,7 +3148,7 @@ CREATE TABLE IF NOT EXISTS person_activity_events (
     private sealed record AtsCriterionDefinition(string Code, string Label, string EvaluationType, decimal DefaultWeight, int DisplayOrder);
     private sealed record CalculatedScoreComponent(string CriterionCode, string CriterionLabel, decimal Weight, decimal RawRatio, decimal AwardedScore, string EvidenceSummary, int DisplayOrder);
     private sealed record CalculatedScoreEvidence(string CriterionCode, string EvidenceType, string ExpectedValue, string ActualValue, decimal Ratio);
-    private sealed record CalculatedSkillMatch(string SkillType, string SkillName, bool IsMatched, string MatchedTerm, string EvidenceExcerpt, decimal RequirementWeight, decimal MinimumYears, string MinimumProficiency);
+    private sealed record CalculatedSkillMatch(string SkillType, string SkillName, bool IsMatched, string MatchedTerm, string EvidenceExcerpt, decimal RequirementWeight, decimal MinimumYears, string MinimumProficiency, string MatchMethod, decimal Confidence, decimal SemanticSimilarity);
 
     private sealed class InterviewPipelineContextRow
     {
@@ -2896,6 +3391,15 @@ CREATE TABLE IF NOT EXISTS person_activity_events (
         public bool AllowManualScoreOverride { get; set; } = true;
         public bool AutoCreateApplicationFromReferral { get; set; } = true;
         public long? DefaultAtsScoringProfileId { get; set; }
+    }
+    private sealed class AtsScoringJobRow
+    {
+        public long Id { get; set; }
+        public long ApplicationId { get; set; }
+        public int RequestedByUserId { get; set; }
+        public int? RequestedByClientId { get; set; }
+        public bool ForceScore { get; set; }
+        public int AttemptCount { get; set; }
     }
 
     private sealed class IntakeCandidateMatchRow

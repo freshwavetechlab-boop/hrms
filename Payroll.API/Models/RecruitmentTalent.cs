@@ -278,7 +278,10 @@ public class RecruitmentAtsScoringProfile
     public bool AllowManualOverride { get; set; } = true;
     public string ParserProvider { get; set; } = "BuiltIn";
     public string ScoringProvider { get; set; } = "BuiltIn";
-    public string ModelName { get; set; } = "Deterministic-v1";
+    public string ModelName { get; set; } = "Deterministic-v2 + bge-micro-v2";
+    public bool EnableSemanticMatching { get; set; } = true;
+    public decimal SemanticMinimumSimilarity { get; set; } = .72m;
+    public bool EnableAiScoring { get; set; }
     public int VersionNumber { get; set; } = 1;
     public bool IsDefault { get; set; }
     public bool IsActive { get; set; } = true;
@@ -306,6 +309,13 @@ public class RecruitmentApplicationScore
     public long ResumeId { get; set; }
     public long? ScoringProfileId { get; set; }
     public decimal TotalScore { get; set; }
+    public decimal LocalScore { get; set; }
+    public decimal? AiScore { get; set; }
+    public decimal AiBlendWeight { get; set; }
+    public string AiAnalysisStatus { get; set; } = "NotEnabled";
+    public string AiProvider { get; set; } = "";
+    public string AiModel { get; set; } = "";
+    public decimal AiConfidence { get; set; }
     public string ComponentScoresJson { get; set; } = "{}";
     public string MatchedSkillsJson { get; set; } = "[]";
     public string MissingSkillsJson { get; set; } = "[]";
@@ -352,12 +362,14 @@ public class RecruitmentApplicationScoreSkillMatch
     public string SkillType { get; set; } = "Required";
     public string SkillName { get; set; } = "";
     public string MatchStatus { get; set; } = "Missing";
+    public string MatchMethod { get; set; } = "Missing";
     public string MatchedTerm { get; set; } = "";
     public string EvidenceExcerpt { get; set; } = "";
     public decimal RequirementWeight { get; set; }
     public decimal MinimumYears { get; set; }
     public string MinimumProficiency { get; set; } = "";
     public decimal Confidence { get; set; }
+    public decimal SemanticSimilarity { get; set; }
 }
 
 public class RecruitmentApplicationScoreEvidence

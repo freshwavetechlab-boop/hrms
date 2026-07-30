@@ -58,6 +58,72 @@ SELECT LAST_INSERT_ID();", row);
     public Task<RecruitmentApprovalMapping> SaveApprovalMappingAsync(RecruitmentApprovalMapping row, int userId) => SaveAsync<RecruitmentApprovalMapping>("recruitment_approval_mappings", row, userId, "RecruitmentApprovalMapping");
     public Task<RecruitmentTemplate> SaveTemplateAsync(RecruitmentTemplate row, int userId) => SaveAsync<RecruitmentTemplate>("recruitment_templates", row, userId, "RecruitmentTemplate");
 
+    public async Task<(bool Ok, string Error)> DeleteAsync(string kind, int id, AuthUser user)
+    {
+        var definitions = new Dictionary<string, (string Table, string AuditEntity)>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["settings"] = ("recruitment_settings", "RecruitmentSetting"),
+            ["masters"] = ("recruitment_master_values", "RecruitmentMaster"),
+            ["partners"] = ("recruitment_partners", "RecruitmentPartner"),
+            ["assignment-rules"] = ("recruitment_assignment_rules", "RecruitmentAssignmentRule"),
+            ["sla-rules"] = ("recruitment_sla_rules", "RecruitmentSlaRule"),
+            ["document-checklist"] = ("recruitment_document_checklist", "RecruitmentDocumentChecklist"),
+            ["approval-mappings"] = ("recruitment_approval_mappings", "RecruitmentApprovalMapping"),
+            ["templates"] = ("recruitment_templates", "RecruitmentTemplate")
+        };
+        if (!definitions.TryGetValue(kind, out var definition)) return (false, "Unsupported recruitment configuration type.");
+        await using var db = Connection();
+        await db.OpenAsync();
+        await EnsureTablesAsync(db);
+        var row = await db.QueryFirstOrDefaultAsync<DeleteConfigurationRow>($"SELECT Id,ClientId FROM `{definition.Table}` WHERE Id=@Id", new { Id = id });
+        if (row is null || (user.ClientId.HasValue && row.ClientId != user.ClientId.Value))
+            return (false, "Recruitment configuration was not found in your permitted scope.");
+
+        if (kind.Equals("masters", StringComparison.OrdinalIgnoreCase))
+        {
+            var master = await db.QueryFirstAsync<DeleteMasterRow>("SELECT Id,ClientId,MasterType,Code,Name,IsSystem FROM recruitment_master_values WHERE Id=@Id", new { Id = id });
+            if (master.IsSystem) return (false, "System recruitment master values cannot be deleted. Mark them inactive if they should not be selectable.");
+        }
+        if (kind.Equals("partners", StringComparison.OrdinalIgnoreCase))
+        {
+            var references = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_partner_assignments WHERE PartnerId=@Id", new { Id = id });
+            if (references > 0) return (false, $"This partner has {references} position assignment(s). Remove those assignments before deleting it.");
+        }
+        if (kind.Equals("templates", StringComparison.OrdinalIgnoreCase))
+        {
+            var references = await db.ExecuteScalarAsync<int>(@"SELECT
+(SELECT COUNT(*) FROM recruitment_requisitions WHERE JobDescriptionTemplateId=@Id)+
+(SELECT COUNT(*) FROM recruitment_pipeline_stage_actions WHERE TemplateId=@Id)+
+(SELECT COUNT(*) FROM recruitment_stage_process_document_requirements WHERE TemplateId=@Id)+
+(SELECT COUNT(*) FROM recruitment_stage_offer_configurations WHERE OfferTemplateId=@Id)+
+(SELECT COUNT(*) FROM recruitment_offers WHERE OfferTemplateId=@Id)+
+(SELECT COUNT(*) FROM recruitment_process_documents WHERE TemplateId=@Id)", new { Id = id });
+            if (references > 0) return (false, $"This template is used by {references} recruitment configuration or transaction record(s). Remove those references before deleting it.");
+        }
+        if (kind.Equals("settings", StringComparison.OrdinalIgnoreCase))
+        {
+            var transactions = await db.ExecuteScalarAsync<int>(@"SELECT
+(SELECT COUNT(*) FROM recruitment_requisitions WHERE ClientId=@ClientId)+
+(SELECT COUNT(*) FROM recruitment_open_positions WHERE ClientId=@ClientId)+
+(SELECT COUNT(*) FROM recruitment_candidate_applications WHERE ClientId=@ClientId)", new { row.ClientId });
+            if (transactions > 0) return (false, $"This client has {transactions} recruitment transaction record(s). Delete or archive those records before removing its module settings.");
+        }
+
+        await using var transaction = await db.BeginTransactionAsync();
+        if (kind.Equals("masters", StringComparison.OrdinalIgnoreCase))
+        {
+            var master = await db.QueryFirstAsync<DeleteMasterRow>("SELECT Id,ClientId,MasterType,Code,Name,IsSystem FROM recruitment_master_values WHERE Id=@Id", new { Id = id }, transaction);
+            if (CentralDropdownTypes.Contains(master.MasterType))
+                await db.ExecuteAsync("DELETE FROM dropdownmasters WHERE ClientId=@ClientId AND Type=@MasterType AND Value=@Name", master, transaction);
+        }
+        if (kind.Equals("document-checklist", StringComparison.OrdinalIgnoreCase))
+            await db.ExecuteAsync("UPDATE recruitment_candidate_checklist_items SET ChecklistConfigurationId=0 WHERE ChecklistConfigurationId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync($"DELETE FROM `{definition.Table}` WHERE Id=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("INSERT INTO recruitment_admin_audit (EntityType,EntityId,Action,NewValueJson,ChangedByUserId) VALUES (@Entity,@Id,'Delete',JSON_OBJECT('kind',@Kind,'clientId',@ClientId),@UserId)", new { Entity = definition.AuditEntity, Id = id, Kind = kind, row.ClientId, UserId = user.Id }, transaction);
+        await transaction.CommitAsync();
+        return (true, "");
+    }
+
     private async Task<T> SaveAsync<T>(string table, T row, int userId, string auditEntity) where T : class
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
@@ -169,4 +235,18 @@ ON DUPLICATE KEY UPDATE IsActive=VALUES(IsActive)", new { Type = type, Value = v
         "Candidate Status",
         "Offer Status"
     };
+
+    private class DeleteConfigurationRow
+    {
+        public int Id { get; set; }
+        public int ClientId { get; set; }
+    }
+
+    private sealed class DeleteMasterRow : DeleteConfigurationRow
+    {
+        public string MasterType { get; set; } = "";
+        public string Code { get; set; } = "";
+        public string Name { get; set; } = "";
+        public bool IsSystem { get; set; }
+    }
 }

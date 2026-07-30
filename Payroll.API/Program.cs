@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.DataProtection;
 using System.Text.Json;
 using Dapper;
+using SmartComponents.LocalEmbeddings;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -72,6 +73,9 @@ builder.Services.AddSingleton<TravelExpenseRepository>();
 builder.Services.AddSingleton<RecruitmentAdminRepository>();
 builder.Services.AddSingleton<RecruitmentRepository>();
 builder.Services.AddSingleton<ResumeParsingService>();
+builder.Services.AddSingleton<LocalEmbedder>();
+builder.Services.AddSingleton<RecruitmentSemanticScoringService>();
+builder.Services.AddSingleton<RecruitmentAiScoringService>();
 builder.Services.AddSingleton<TemplatePdfService>();
 builder.Services.AddSingleton<RecruitmentTalentRepository>();
 builder.Services.AddSingleton<RecruitmentFormRepository>();
@@ -88,6 +92,7 @@ builder.Services.AddHostedService<ScheduledJobWorker>();
 builder.Services.AddHostedService<NotificationWorker>();
 builder.Services.AddHostedService<CommunicationWorker>();
 builder.Services.AddHostedService<RecruitmentPipelineAutomationWorker>();
+builder.Services.AddHostedService<RecruitmentAtsScoringWorker>();
 builder.Services.AddHostedService<AttendanceBatchJobWorker>();
 
 var app = builder.Build();
@@ -1163,6 +1168,12 @@ app.MapPost("/api/recruitment/candidates", async (RecruitmentTalentRepository re
     var (row, error) = await repository.SaveCandidateAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
+app.MapDelete("/api/recruitment/candidates/{id:long}", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteCandidateAsync(id, CurrentUser(context), context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
 app.MapPut("/api/recruitment/candidates/{id:long}/profile-sections", async (RecruitmentTalentRepository repository, long id, SaveCandidateProfileSections request, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
@@ -1217,6 +1228,12 @@ app.MapPost("/api/recruitment/applications", async (RecruitmentTalentRepository 
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var (row, error) = await repository.CreateApplicationAsync(request, CurrentUser(context));
     return row is null || !string.IsNullOrWhiteSpace(error) ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapDelete("/api/recruitment/applications/{id:long}", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteApplicationAsync(id, CurrentUser(context));
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
 app.MapPost("/api/recruitment/applications/{id:long}/stage", async (RecruitmentTalentRepository repository, long id, ChangeCandidateStageRequest request, HttpContext context) =>
 {
@@ -2349,6 +2366,12 @@ app.MapPost("/api/recruitment-admin/approval-mappings", async (RecruitmentAdminR
     HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveApprovalMappingAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
 app.MapPost("/api/recruitment-admin/templates", async (RecruitmentAdminRepository repository, RecruitmentTemplate request, HttpContext context) =>
     HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveTemplateAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+app.MapDelete("/api/recruitment-admin/{kind}/{id:int}", async (RecruitmentAdminRepository repository, string kind, int id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteAsync(kind, id, CurrentUser(context));
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
 app.MapGet("/api/recruitment-admin/ats-profiles", async (RecruitmentTalentRepository repository, int? clientId, HttpContext context) =>
     HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetScoringProfilesAsync(CurrentUser(context), clientId)) : Results.StatusCode(403));
 app.MapGet("/api/recruitment-admin/ats-criteria", (RecruitmentTalentRepository repository, HttpContext context) =>
@@ -2359,6 +2382,12 @@ app.MapPost("/api/recruitment-admin/ats-profiles", async (RecruitmentTalentRepos
     var (row, error) = await repository.SaveScoringProfileAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
+app.MapDelete("/api/recruitment-admin/ats-profiles/{id:long}", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteScoringProfileAsync(id, CurrentUser(context));
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
 app.MapGet("/api/recruitment-admin/skills", async (RecruitmentTalentRepository repository, int? clientId, HttpContext context) =>
     HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetSkillsAsync(CurrentUser(context), clientId)) : Results.StatusCode(403));
 app.MapPost("/api/recruitment-admin/skills", async (RecruitmentTalentRepository repository, RecruitmentSkill request, HttpContext context) =>
@@ -2366,6 +2395,32 @@ app.MapPost("/api/recruitment-admin/skills", async (RecruitmentTalentRepository 
     if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var (row, error) = await repository.SaveSkillAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapDelete("/api/recruitment-admin/skills/{id:long}", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteSkillAsync(id, CurrentUser(context));
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
+app.MapGet("/api/recruitment-admin/ai-scoring", async (RecruitmentAiScoringService service, int? clientId, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await service.GetAsync(CurrentUser(context), clientId)) : Results.StatusCode(403));
+app.MapPost("/api/recruitment-admin/ai-scoring", async (RecruitmentAiScoringService service, SaveRecruitmentAiScoringSettings request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await service.SaveAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment-admin/ai-scoring/{clientId:int}/test", async (RecruitmentAiScoringService service, int clientId, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await service.TestAsync(clientId, CurrentUser(context), context.RequestAborted);
+    return row is null || !string.IsNullOrWhiteSpace(error) ? Results.BadRequest(new { error, row }) : Results.Ok(row);
+});
+app.MapDelete("/api/recruitment-admin/ai-scoring/{clientId:int}", async (RecruitmentAiScoringService service, int clientId, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await service.DeleteAsync(clientId, CurrentUser(context));
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
 
 app.MapGet("/api/tax-engine", async (TaxEngineRepository repository, HttpContext context) => HasPermission(context, "settings.manage") || HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403));
