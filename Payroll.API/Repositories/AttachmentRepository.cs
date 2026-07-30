@@ -14,7 +14,8 @@ public class AttachmentRepository(
     IConfiguration configuration,
     IWebHostEnvironment environment,
     IDataProtectionProvider dataProtectionProvider,
-    AttachmentStorageService storageService)
+    AttachmentStorageService storageService,
+    GoogleDriveOAuthService googleDrive)
 {
     private const long DefaultGlobalMaximumBytes = 25L * 1024 * 1024;
     private readonly IDataProtector credentialProtector = dataProtectionProvider.CreateProtector("Payroll.API.AttachmentStorageCredentials.v1");
@@ -198,16 +199,92 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='entity_attachments' AND COLUMN_NAM
 (server_code,server_name,storage_type,base_path,is_read_enabled,is_write_enabled,is_default_write_server,priority,is_active)
 VALUES ('API_LOCAL','API local attachment storage','LocalFileSystem',@RootPath,TRUE,TRUE,TRUE,100,TRUE);", new { RootPath = rootPath });
         }
+
+        await db.ExecuteAsync(@"
+INSERT INTO attachment_attributes
+(client_id,attribute_code,attribute_name,description,data_classification,is_active)
+SELECT 0,'EMPLOYEE_COMMUNICATION_FILE','Employee communication file','Files attached to employee email and messaging conversations.','Confidential',TRUE
+WHERE NOT EXISTS (
+    SELECT 1 FROM attachment_attributes WHERE client_id=0 AND attribute_code='EMPLOYEE_COMMUNICATION_FILE'
+);");
+        var communicationAttributeId = await db.ExecuteScalarAsync<long>(@"
+SELECT id FROM attachment_attributes
+WHERE client_id=0 AND attribute_code='EMPLOYEE_COMMUNICATION_FILE'
+ORDER BY id LIMIT 1;");
+        await db.ExecuteAsync(@"
+INSERT INTO attachment_field_configurations
+(client_id,attachment_attribute_id,module_code,form_code,section_code,field_key,field_label,help_text,is_required,allow_multiple,minimum_file_count,maximum_file_count,
+ allowed_extensions_json,allowed_mime_types_json,maximum_file_size_bytes,maximum_total_size_bytes,owner_can_view,owner_can_upload,owner_can_replace,owner_can_delete,
+ requires_verification,versioning_enabled,requirement_scope,display_order,is_active)
+SELECT 0,@AttributeId,'EMPLOYEE','EMPLOYEE_COMMUNICATION','ATTACHMENTS','MESSAGE_ATTACHMENTS','Message attachments',
+       'Secure files added to an employee communication draft.',FALSE,TRUE,0,20,
+       '[""pdf"",""jpg"",""jpeg"",""png"",""docx""]',
+       '[""application/pdf"",""image/jpeg"",""image/png"",""application/vnd.openxmlformats-officedocument.wordprocessingml.document""]',
+       10485760,26214400,TRUE,TRUE,TRUE,TRUE,FALSE,FALSE,'AllEntities',10,TRUE
+WHERE NOT EXISTS (
+    SELECT 1 FROM attachment_field_configurations
+    WHERE client_id=0 AND module_code='EMPLOYEE' AND form_code='EMPLOYEE_COMMUNICATION' AND field_key='MESSAGE_ATTACHMENTS'
+);", new { AttributeId = communicationAttributeId });
+
+        await db.ExecuteAsync(@"
+INSERT INTO attachment_attributes
+(client_id,attribute_code,attribute_name,description,data_classification,is_active)
+SELECT 0,'RECRUITMENT_WORK_ORDER_FILE','Recruitment work order document','Original client work order and its JD annexures.','Confidential',TRUE
+WHERE NOT EXISTS (
+    SELECT 1 FROM attachment_attributes WHERE client_id=0 AND attribute_code='RECRUITMENT_WORK_ORDER_FILE'
+);
+INSERT INTO attachment_attributes
+(client_id,attribute_code,attribute_name,description,data_classification,is_active)
+SELECT 0,'RECRUITMENT_PROCESS_DOCUMENT','Recruitment process document','Generated and final signed MoM, score annexure, proposal and joining documents.','Restricted',TRUE
+WHERE NOT EXISTS (
+    SELECT 1 FROM attachment_attributes WHERE client_id=0 AND attribute_code='RECRUITMENT_PROCESS_DOCUMENT'
+);");
+        var workOrderAttributeId = await db.ExecuteScalarAsync<long>(@"
+SELECT id FROM attachment_attributes
+WHERE client_id=0 AND attribute_code='RECRUITMENT_WORK_ORDER_FILE'
+ORDER BY id LIMIT 1;");
+        var processDocumentAttributeId = await db.ExecuteScalarAsync<long>(@"
+SELECT id FROM attachment_attributes
+WHERE client_id=0 AND attribute_code='RECRUITMENT_PROCESS_DOCUMENT'
+ORDER BY id LIMIT 1;");
+        await db.ExecuteAsync(@"
+INSERT INTO attachment_field_configurations
+(client_id,attachment_attribute_id,module_code,form_code,section_code,field_key,field_label,help_text,is_required,allow_multiple,minimum_file_count,maximum_file_count,
+ allowed_extensions_json,allowed_mime_types_json,maximum_file_size_bytes,maximum_total_size_bytes,owner_can_view,owner_can_upload,owner_can_replace,owner_can_delete,
+ requires_verification,versioning_enabled,requirement_scope,display_order,is_active)
+SELECT 0,@WorkOrderAttributeId,'RECRUITMENT','WORK_ORDER','DOCUMENTS','WORK_ORDER_AND_JD','Work order / JD annexure',
+       'Original client work order and all approved job-description annexures.',FALSE,TRUE,0,10,
+       '[""pdf"",""docx"",""jpg"",""jpeg"",""png""]',
+       '[""application/pdf"",""application/vnd.openxmlformats-officedocument.wordprocessingml.document"",""image/jpeg"",""image/png""]',
+       10485760,52428800,TRUE,FALSE,FALSE,FALSE,FALSE,TRUE,'AllEntities',10,TRUE
+WHERE NOT EXISTS (
+    SELECT 1 FROM attachment_field_configurations
+    WHERE client_id=0 AND module_code='RECRUITMENT' AND form_code='WORK_ORDER' AND field_key='WORK_ORDER_AND_JD'
+);
+INSERT INTO attachment_field_configurations
+(client_id,attachment_attribute_id,module_code,form_code,section_code,field_key,field_label,help_text,is_required,allow_multiple,minimum_file_count,maximum_file_count,
+ allowed_extensions_json,allowed_mime_types_json,maximum_file_size_bytes,maximum_total_size_bytes,owner_can_view,owner_can_upload,owner_can_replace,owner_can_delete,
+ requires_verification,versioning_enabled,requirement_scope,display_order,is_active)
+SELECT 0,@ProcessDocumentAttributeId,'RECRUITMENT','PROCESS_DOCUMENT','DOCUMENTS','FINAL_PROCESS_DOCUMENT','MoM / score annexure / process document',
+       'Generate the draft here, then replace it with the final committee-signed PDF before marking it signed.',FALSE,FALSE,0,1,
+       '[""pdf""]','[""application/pdf""]',15728640,15728640,TRUE,FALSE,FALSE,FALSE,FALSE,TRUE,'AllEntities',10,TRUE
+WHERE NOT EXISTS (
+    SELECT 1 FROM attachment_field_configurations
+    WHERE client_id=0 AND module_code='RECRUITMENT' AND form_code='PROCESS_DOCUMENT' AND field_key='FINAL_PROCESS_DOCUMENT'
+);", new { WorkOrderAttributeId = workOrderAttributeId, ProcessDocumentAttributeId = processDocumentAttributeId });
     }
 
     public static IReadOnlyList<AttachmentTargetOption> Targets { get; } =
     [
         new() { ModuleCode = "EMPLOYEE", ModuleName = "Employees", FormCode = "EMPLOYEE_CREATE_EDIT", FormName = "Add / Edit Employee", EntityType = "EMPLOYEE" },
         new() { ModuleCode = "EMPLOYEE", ModuleName = "Employees", FormCode = "EMPLOYEE_PROFILE", FormName = "Employee Profile", EntityType = "EMPLOYEE" },
+        new() { ModuleCode = "EMPLOYEE", ModuleName = "Employees", FormCode = "EMPLOYEE_COMMUNICATION", FormName = "Employee Communication", EntityType = "EMPLOYEE_COMMUNICATION_DRAFT" },
         new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "EMPLOYEE_REFERRAL", FormName = "Employee Referral Candidate", EntityType = "CANDIDATE" },
         new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "CANDIDATE_APPLICATION", FormName = "Candidate Application", EntityType = "CANDIDATE" },
         new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "PUBLIC_CANDIDATE_APPLICATION", FormName = "Public Candidate Application", EntityType = "FORM_SUBMISSION" },
-        new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "PRE_ONBOARDING", FormName = "Pre-Onboarding", EntityType = "CANDIDATE" }
+        new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "PRE_ONBOARDING", FormName = "Pre-Onboarding", EntityType = "CANDIDATE" },
+        new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "WORK_ORDER", FormName = "Client Work Order and JD Annexure", EntityType = "RECRUITMENT_WORK_ORDER" },
+        new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "PROCESS_DOCUMENT", FormName = "MoM, Score Annexure and HR Proposal", EntityType = "RECRUITMENT_PROCESS_DOCUMENT" }
     ];
 
     public async Task<IEnumerable<AttachmentAttribute>> GetAttributesAsync(int? clientId = null)
@@ -350,7 +427,7 @@ FROM attachment_storage_servers s ORDER BY s.is_default_write_server DESC,s.prio
     {
         item.ServerCode = NormalizeCode(item.ServerCode);
         item.ServerName = item.ServerName.Trim();
-        item.StorageType = NormalizeChoice(item.StorageType, ["LocalFileSystem", "MountedFileSystem", "HttpFileServer"], "LocalFileSystem");
+        item.StorageType = NormalizeChoice(item.StorageType, ["LocalFileSystem", "MountedFileSystem", "HttpFileServer", GoogleDriveOAuthService.StorageType], "LocalFileSystem");
         item.BasePath = item.BasePath.Trim();
         item.ServiceUrl = item.ServiceUrl.Trim();
         item.WarningCapacityPercent = Math.Clamp(item.WarningCapacityPercent, 1, 100);
@@ -363,9 +440,9 @@ FROM attachment_storage_servers s ORDER BY s.is_default_write_server DESC,s.prio
             if (remoteUri.Scheme != Uri.UriSchemeHttps && !environment.IsDevelopment())
                 return (null, "Remote file server must use HTTPS.");
         }
-        if (item.StorageType != "HttpFileServer" && string.IsNullOrWhiteSpace(item.BasePath))
+        if (item.StorageType is "LocalFileSystem" or "MountedFileSystem" && string.IsNullOrWhiteSpace(item.BasePath))
             return (null, "Storage folder path is required.");
-        if (item.StorageType != "HttpFileServer")
+        if (item.StorageType is "LocalFileSystem" or "MountedFileSystem")
         {
             try { _ = storageService.ResolveRoot(item); }
             catch (Exception exception) { return (null, exception.Message); }
@@ -377,15 +454,55 @@ FROM attachment_storage_servers s ORDER BY s.is_default_write_server DESC,s.prio
             item.IsReadEnabled = true;
         }
 
+        if (item.Id > 0)
+        {
+            var existingServer = await GetStorageServerAsync(item.Id, true);
+            if (existingServer is not null)
+            {
+                var googleWillLoseAccess = item.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase) &&
+                                           !googleDrive.IsConnected(googleDrive.TryReadCredential(existingServer.Credential));
+                var removesReadAccess = (existingServer.IsActive && (!item.IsActive || googleWillLoseAccess)) ||
+                                        (existingServer.IsReadEnabled && (!item.IsReadEnabled || googleWillLoseAccess));
+                var relocatesStorage = StorageLocationChanges(existingServer, item);
+                if (removesReadAccess || relocatesStorage)
+                {
+                    var chatStorageBlock = await FrevoPilotStorageChangeBlockAsync(
+                        existingServer,
+                        "This storage server contains encrypted FrevoPilot chat history. Keep its current storage type and path active and read-enabled, or move the chats to another mount first.");
+                    if (chatStorageBlock is not null) return (null, chatStorageBlock);
+                }
+            }
+        }
+
         await using var db = Connection();
         await db.OpenAsync();
         await using var transaction = await db.BeginTransactionAsync();
         try
         {
-            var existingSecret = item.Id > 0
-                ? await db.ExecuteScalarAsync<string?>("SELECT credential_cipher_text FROM attachment_storage_servers WHERE id=@Id", new { item.Id }, transaction)
+            var existingStorage = item.Id > 0
+                ? await db.QueryFirstOrDefaultAsync<ExistingStorageServerRow>(
+                    "SELECT storage_type StorageType,credential_cipher_text CredentialCipherText FROM attachment_storage_servers WHERE id=@Id",
+                    new { item.Id }, transaction)
                 : null;
-            var protectedCredential = string.IsNullOrWhiteSpace(item.Credential) ? existingSecret : credentialProtector.Protect(item.Credential.Trim());
+            var existingSecret = existingStorage is not null &&
+                                 existingStorage.StorageType.Equals(item.StorageType, StringComparison.OrdinalIgnoreCase)
+                ? existingStorage.CredentialCipherText
+                : null;
+            var submittedCredential = item.StorageType == GoogleDriveOAuthService.StorageType ? "" : item.Credential.Trim();
+            var protectedCredential = string.IsNullOrWhiteSpace(submittedCredential) ? existingSecret : credentialProtector.Protect(submittedCredential);
+            var googleConnected = false;
+            if (item.StorageType == GoogleDriveOAuthService.StorageType && !string.IsNullOrWhiteSpace(protectedCredential))
+            {
+                try { googleConnected = googleDrive.IsConnected(googleDrive.TryReadCredential(credentialProtector.Unprotect(protectedCredential))); }
+                catch { googleConnected = false; }
+            }
+            if (item.StorageType == GoogleDriveOAuthService.StorageType && !googleConnected)
+            {
+                item.IsActive = false;
+                item.IsReadEnabled = false;
+                item.IsWriteEnabled = false;
+                item.IsDefaultWriteServer = false;
+            }
             if (item.Id == 0)
                 item.Id = await db.ExecuteScalarAsync<long>(@"INSERT INTO attachment_storage_servers
 (server_code,server_name,storage_type,base_path,service_url,credential_cipher_text,is_read_enabled,is_write_enabled,is_default_write_server,priority,
@@ -435,6 +552,339 @@ is_active=@IsActive,updated_by_user_id=@UserId WHERE id=@Id",
         await db.ExecuteAsync(@"UPDATE attachment_storage_servers SET last_health_check_at_utc=UTC_TIMESTAMP(6),last_health_check_status=@Status,
 last_health_check_message=@Message WHERE id=@Id", new { Id = id, result.Status, result.Message });
         return result;
+    }
+
+    public async Task<(AttachmentStorageServer? Item, string? Error)> EnsureGoogleDriveStorageServerAsync(long? requestedId, AuthUser user)
+    {
+        var servers = (await GetStorageServersAsync()).ToList();
+        if (requestedId.HasValue)
+        {
+            var requested = servers.FirstOrDefault(server => server.Id == requestedId.Value);
+            if (requested is null) return (null, "Storage server was not found.");
+            return requested.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase)
+                ? (requested, null)
+                : (null, "The selected storage server is not a Google Drive connection.");
+        }
+
+        var existing = servers
+            .Where(server => server.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(server => server.IsDefaultWriteServer)
+            .ThenBy(server => server.Id)
+            .FirstOrDefault();
+        if (existing is not null) return (existing, null);
+
+        await using var db = Connection();
+        await db.OpenAsync();
+        try
+        {
+            var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO attachment_storage_servers
+(server_code,server_name,storage_type,base_path,service_url,credential_cipher_text,is_read_enabled,is_write_enabled,is_default_write_server,priority,
+maximum_capacity_bytes,warning_capacity_percent,is_active,last_health_check_status,last_health_check_message,created_by_user_id,updated_by_user_id)
+VALUES ('GOOGLE_DRIVE','Google Drive',@StorageType,'','',NULL,FALSE,FALSE,FALSE,50,NULL,85,FALSE,'Not configured',
+'Upload a Google Web OAuth client JSON to configure Drive storage.',@UserId,@UserId);
+SELECT LAST_INSERT_ID();", new { StorageType = GoogleDriveOAuthService.StorageType, UserId = user.Id });
+            return ((await GetStorageServersAsync()).FirstOrDefault(server => server.Id == id), null);
+        }
+        catch (MySqlException exception) when (exception.Number == 1062)
+        {
+            var concurrent = (await GetStorageServersAsync()).FirstOrDefault(server =>
+                server.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase));
+            return concurrent is not null
+                ? (concurrent, null)
+                : (null, "The reserved GOOGLE_DRIVE storage code is already used by another server.");
+        }
+    }
+
+    public async Task<(GoogleDriveCredential? Credential, string? Error)> GetGoogleDriveCredentialAsync(long id)
+    {
+        var server = await GetStorageServerAsync(id, true);
+        if (server is null) return (null, "Storage server was not found.");
+        if (!server.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+            return (null, "The selected storage server is not a Google Drive connection.");
+        return (googleDrive.TryReadCredential(server.Credential), null);
+    }
+
+    public async Task<(AttachmentStorageServer? Item, string? Error)> ConfigureGoogleDriveOAuthAsync(
+        long id,
+        GoogleDriveOAuthClient oauthClient,
+        AuthUser user)
+    {
+        var currentServer = await GetStorageServerAsync(id, true);
+        if (currentServer is not null &&
+            currentServer.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+        {
+            var currentCredential = googleDrive.TryReadCredential(currentServer.Credential);
+            var currentClient = googleDrive.TryResolveOAuthClient(currentCredential);
+            var currentUsesSubmittedClientId = currentClient is not null &&
+                                               currentClient.ClientId.Equals(oauthClient.ClientId, StringComparison.Ordinal);
+            var wouldReplaceClientOrRemoveAccess = !currentUsesSubmittedClientId || !googleDrive.IsConnected(currentCredential);
+            if (wouldReplaceClientOrRemoveAccess && GoogleStorageMayContainData(currentServer, currentCredential))
+            {
+                var chatStorageBlock = await FrevoPilotStorageChangeBlockAsync(
+                    currentServer,
+                    "This Google Drive contains encrypted FrevoPilot chat history. Keep the same OAuth client and reconnect the existing account before changing its OAuth setup.");
+                if (chatStorageBlock is not null) return (null, chatStorageBlock);
+            }
+        }
+
+        await using var db = Connection();
+        await db.OpenAsync();
+        await using var transaction = await db.BeginTransactionAsync();
+        var row = await db.QueryFirstOrDefaultAsync<GoogleDriveConfigurationRow>(@"SELECT s.id Id,s.storage_type StorageType,
+s.credential_cipher_text CredentialCipherText,s.is_default_write_server IsDefaultWriteServer,
+(SELECT COUNT(*) FROM entity_attachments a WHERE a.storage_server_id=s.id AND a.is_deleted=FALSE) LinkedAttachmentCount
+FROM attachment_storage_servers s WHERE s.id=@Id FOR UPDATE;",
+            new { Id = id }, transaction);
+        if (row is null || !row.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+        {
+            await transaction.RollbackAsync();
+            return (null, "Google Drive storage server was not found.");
+        }
+
+        GoogleDriveCredential? credential = null;
+        if (!string.IsNullOrWhiteSpace(row.CredentialCipherText))
+        {
+            try { credential = googleDrive.TryReadCredential(credentialProtector.Unprotect(row.CredentialCipherText)); }
+            catch { credential = null; }
+        }
+        var existingClient = googleDrive.TryResolveOAuthClient(credential);
+        var sameClientId = existingClient is not null &&
+                           existingClient.ClientId.Equals(oauthClient.ClientId, StringComparison.Ordinal);
+        if (row.LinkedAttachmentCount > 0 && !sameClientId)
+        {
+            await transaction.RollbackAsync();
+            return (null, "This Google Drive OAuth client is linked to existing attachments. Upload credentials for the same Google OAuth client_id; switching client IDs would make those files unreadable.");
+        }
+        if (row.LinkedAttachmentCount > 0 && !googleDrive.IsConnected(credential))
+        {
+            await transaction.RollbackAsync();
+            return (null, "The existing encrypted Google Drive connection could not be retained. Reconnect or recover its credential before rotating OAuth settings for linked attachments.");
+        }
+
+        credential ??= new GoogleDriveCredential();
+        if (!sameClientId)
+            ClearGoogleDriveConnection(credential);
+        credential.OAuthClientId = oauthClient.ClientId;
+        credential.OAuthClientSecret = oauthClient.ClientSecret;
+
+        var remainsConnected = googleDrive.IsConnected(credential);
+        if (!remainsConnected && row.IsDefaultWriteServer)
+        {
+            var replacementId = await db.ExecuteScalarAsync<long?>(@"SELECT id FROM attachment_storage_servers
+WHERE id<>@Id AND is_active=TRUE AND is_write_enabled=TRUE ORDER BY priority,id LIMIT 1 FOR UPDATE;",
+                new { Id = id }, transaction);
+            if (!replacementId.HasValue)
+            {
+                await transaction.RollbackAsync();
+                return (null, "Configure another active write server before changing the OAuth client for the default Google Drive.");
+            }
+            await db.ExecuteAsync("UPDATE attachment_storage_servers SET is_default_write_server=TRUE,updated_by_user_id=@UserId WHERE id=@Id",
+                new { Id = replacementId.Value, UserId = user.Id }, transaction);
+        }
+
+        var protectedCredential = credentialProtector.Protect(googleDrive.SerializeCredential(credential));
+        if (remainsConnected)
+        {
+            await db.ExecuteAsync(@"UPDATE attachment_storage_servers SET credential_cipher_text=@CredentialCipherText,
+updated_by_user_id=@UserId WHERE id=@Id;",
+                new { Id = id, CredentialCipherText = protectedCredential, UserId = user.Id }, transaction);
+        }
+        else
+        {
+            await db.ExecuteAsync(@"UPDATE attachment_storage_servers SET credential_cipher_text=@CredentialCipherText,base_path='',service_url='',
+is_read_enabled=FALSE,is_write_enabled=FALSE,is_default_write_server=FALSE,is_active=FALSE,
+last_health_check_at_utc=NULL,last_health_check_status='Ready to connect',
+last_health_check_message='OAuth client configured. Connect a Google account to activate Drive storage.',
+updated_by_user_id=@UserId WHERE id=@Id;",
+                new { Id = id, CredentialCipherText = protectedCredential, UserId = user.Id }, transaction);
+        }
+        await transaction.CommitAsync();
+        return ((await GetStorageServersAsync()).FirstOrDefault(server => server.Id == id), null);
+    }
+
+    public async Task<(AttachmentStorageServer? Item, string? Error)> CompleteGoogleDriveConnectionAsync(
+        GoogleDriveAuthorizationResult authorization)
+    {
+        var currentServer = await GetStorageServerAsync(authorization.StorageServerId, true);
+        if (currentServer is not null &&
+            currentServer.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+        {
+            var currentCredential = googleDrive.TryReadCredential(currentServer.Credential);
+            if (GoogleStorageMayContainData(currentServer, currentCredential) &&
+                !SameGoogleConnection(currentCredential, authorization.Credential))
+            {
+                var chatStorageBlock = await FrevoPilotStorageChangeBlockAsync(
+                    currentServer,
+                    "This Google Drive contains encrypted FrevoPilot chat history. Reconnect the same Google account, OAuth client, and Drive folder, or move the chats before switching the connection.");
+                if (chatStorageBlock is not null) return (null, chatStorageBlock);
+            }
+        }
+
+        await using var db = Connection();
+        await db.OpenAsync();
+        await using var transaction = await db.BeginTransactionAsync();
+        var row = await db.QueryFirstOrDefaultAsync<GoogleDriveConnectRow>(@"SELECT s.id Id,s.storage_type StorageType,
+s.credential_cipher_text CredentialCipherText,
+(SELECT COUNT(*) FROM entity_attachments a WHERE a.storage_server_id=s.id AND a.is_deleted=FALSE) LinkedAttachmentCount
+FROM attachment_storage_servers s WHERE s.id=@Id FOR UPDATE;",
+            new { Id = authorization.StorageServerId }, transaction);
+        if (row is null || !row.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+        {
+            await transaction.RollbackAsync();
+            return (null, "Google Drive storage server was not found.");
+        }
+
+        GoogleDriveCredential? existingCredential = null;
+        if (!string.IsNullOrWhiteSpace(row.CredentialCipherText))
+        {
+            try { existingCredential = googleDrive.TryReadCredential(credentialProtector.Unprotect(row.CredentialCipherText)); }
+            catch { existingCredential = null; }
+        }
+        var existingClient = googleDrive.TryResolveOAuthClient(existingCredential);
+        if (row.LinkedAttachmentCount > 0 &&
+            (existingClient is null ||
+             !existingClient.ClientId.Equals(authorization.Credential.OAuthClientId, StringComparison.Ordinal)))
+        {
+            await transaction.RollbackAsync();
+            return (null, "The Google OAuth client_id cannot be changed while existing attachments use this Drive storage.");
+        }
+        if (row.LinkedAttachmentCount > 0 && !googleDrive.IsConnected(existingCredential))
+        {
+            await transaction.RollbackAsync();
+            return (null, "The existing encrypted Google Drive connection could not be verified for linked attachments. Account replacement was blocked.");
+        }
+        if (row.LinkedAttachmentCount > 0 &&
+            existingCredential is not null &&
+            !SameGoogleAccount(existingCredential, authorization.Credential))
+        {
+            await transaction.RollbackAsync();
+            return (null, "This Google Drive contains existing HRMS attachments. Reconnect the same Google account; switching accounts would make those files unreadable.");
+        }
+
+        var protectedCredential = credentialProtector.Protect(authorization.CredentialJson);
+        await db.ExecuteAsync(@"UPDATE attachment_storage_servers
+SET is_default_write_server=FALSE,updated_by_user_id=@UserId
+WHERE is_default_write_server=TRUE AND id<>@Id;",
+            new { Id = authorization.StorageServerId, UserId = authorization.ActorUserId }, transaction);
+        await db.ExecuteAsync(@"UPDATE attachment_storage_servers SET
+storage_type=@StorageType,base_path=@FolderId,service_url=@FolderUrl,credential_cipher_text=@CredentialCipherText,
+is_read_enabled=TRUE,is_write_enabled=TRUE,is_default_write_server=TRUE,is_active=TRUE,
+last_health_check_at_utc=UTC_TIMESTAMP(6),last_health_check_status='Healthy',
+last_health_check_message=@HealthMessage,updated_by_user_id=@UserId
+WHERE id=@Id;",
+            new
+            {
+                Id = authorization.StorageServerId,
+                StorageType = GoogleDriveOAuthService.StorageType,
+                FolderId = authorization.Credential.FolderId,
+                authorization.FolderUrl,
+                CredentialCipherText = protectedCredential,
+                HealthMessage = $"Connected to Google Drive folder '{authorization.Credential.FolderName}' for {authorization.Credential.AccountEmail}.".Trim(),
+                UserId = authorization.ActorUserId
+            }, transaction);
+        await transaction.CommitAsync();
+        return ((await GetStorageServersAsync()).FirstOrDefault(server => server.Id == authorization.StorageServerId), null);
+    }
+
+    public async Task<(GoogleDriveConnectionStatus? Status, string? Error)> GetGoogleDriveConnectionStatusAsync(long id)
+    {
+        var server = await GetStorageServerAsync(id, true);
+        if (server is null) return (null, "Storage server was not found.");
+        if (!server.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+            return (null, "The selected storage server is not a Google Drive connection.");
+        var credential = googleDrive.TryReadCredential(server.Credential);
+        var oauthConfigured = googleDrive.HasOAuthClientConfiguration(credential);
+        var connected = googleDrive.IsConnected(credential);
+        return (new GoogleDriveConnectionStatus
+        {
+            StorageServerId = server.Id,
+            GoogleOAuthConfigured = oauthConfigured,
+            Connected = connected,
+            ConnectionStatus = googleDrive.ConnectionStatus(credential),
+            AccountEmail = credential?.AccountEmail ?? "",
+            AccountName = credential?.AccountName ?? "",
+            FolderName = credential?.FolderName ?? "",
+            FolderUrl = connected ? GoogleDriveOAuthService.FolderUrl(credential!.FolderId) : "",
+            IsDefaultWriteServer = server.IsDefaultWriteServer,
+            Healthy = server.LastHealthCheckStatus.Equals("Healthy", StringComparison.OrdinalIgnoreCase),
+            ConnectedAtUtc = connected ? credential!.ConnectedAtUtc : null
+        }, null);
+    }
+
+    public async Task<(bool Ok, string? Error)> DisconnectGoogleDriveAsync(long id, AuthUser user)
+    {
+        var currentServer = await GetStorageServerAsync(id, true);
+        if (currentServer is not null &&
+            currentServer.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+        {
+            var currentCredential = googleDrive.TryReadCredential(currentServer.Credential);
+            if (GoogleStorageMayContainData(currentServer, currentCredential))
+            {
+                var chatStorageBlock = await FrevoPilotStorageChangeBlockAsync(
+                    currentServer,
+                    "Google Drive cannot be disconnected because encrypted FrevoPilot chat history is stored there. Move the chats to another mount first.");
+                if (chatStorageBlock is not null) return (false, chatStorageBlock);
+            }
+        }
+
+        await using var db = Connection();
+        await db.OpenAsync();
+        await using var transaction = await db.BeginTransactionAsync();
+        var row = await db.QueryFirstOrDefaultAsync<GoogleDriveDisconnectRow>(@"SELECT s.id Id,s.storage_type StorageType,
+s.is_default_write_server IsDefaultWriteServer,s.credential_cipher_text CredentialCipherText,
+(SELECT COUNT(*) FROM entity_attachments a WHERE a.storage_server_id=s.id AND a.is_deleted=FALSE) LinkedAttachmentCount
+FROM attachment_storage_servers s WHERE s.id=@Id FOR UPDATE;",
+            new { Id = id }, transaction);
+        if (row is null || !row.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+        {
+            await transaction.RollbackAsync();
+            return (false, "Google Drive storage server was not found.");
+        }
+        if (row.LinkedAttachmentCount > 0)
+        {
+            await transaction.RollbackAsync();
+            return (false, "Google Drive cannot be disconnected because existing attachments still use it. Reconnect the same account instead.");
+        }
+
+        if (row.IsDefaultWriteServer)
+        {
+            var replacementId = await db.ExecuteScalarAsync<long?>(@"SELECT id FROM attachment_storage_servers
+WHERE id<>@Id AND is_active=TRUE AND is_write_enabled=TRUE ORDER BY priority,id LIMIT 1 FOR UPDATE;",
+                new { Id = id }, transaction);
+            if (!replacementId.HasValue)
+            {
+                await transaction.RollbackAsync();
+                return (false, "Configure another active write server before disconnecting the default Google Drive.");
+            }
+            await db.ExecuteAsync("UPDATE attachment_storage_servers SET is_default_write_server=TRUE,updated_by_user_id=@UserId WHERE id=@Id",
+                new { Id = replacementId.Value, UserId = user.Id }, transaction);
+        }
+
+        GoogleDriveCredential? credential = null;
+        if (!string.IsNullOrWhiteSpace(row.CredentialCipherText))
+        {
+            try { credential = googleDrive.TryReadCredential(credentialProtector.Unprotect(row.CredentialCipherText)); }
+            catch { credential = null; }
+        }
+        credential ??= new GoogleDriveCredential();
+        ClearGoogleDriveConnection(credential);
+        var storedOAuthConfiguration = !string.IsNullOrWhiteSpace(credential.OAuthClientId) &&
+                                       !string.IsNullOrWhiteSpace(credential.OAuthClientSecret);
+        var protectedCredential = storedOAuthConfiguration
+            ? credentialProtector.Protect(googleDrive.SerializeCredential(credential))
+            : null;
+        var connectionStatus = googleDrive.HasOAuthClientConfiguration(credential) ? "Ready to connect" : "Not configured";
+        var statusMessage = connectionStatus == "Ready to connect"
+            ? "Google account disconnected. OAuth client is ready for another connection."
+            : "Google account disconnected. Upload a Google Web OAuth client JSON before reconnecting.";
+
+        await db.ExecuteAsync(@"UPDATE attachment_storage_servers SET credential_cipher_text=@CredentialCipherText,base_path='',service_url='',
+is_read_enabled=FALSE,is_write_enabled=FALSE,is_default_write_server=FALSE,is_active=FALSE,
+last_health_check_at_utc=UTC_TIMESTAMP(6),last_health_check_status=@ConnectionStatus,
+last_health_check_message=@StatusMessage,updated_by_user_id=@UserId WHERE id=@Id;",
+            new { Id = id, CredentialCipherText = protectedCredential, ConnectionStatus = connectionStatus, StatusMessage = statusMessage, UserId = user.Id }, transaction);
+        await transaction.CommitAsync();
+        return (true, null);
     }
 
     public async Task<IEnumerable<EntityAttachment>> GetAttachmentsAsync(string entityType, long entityId, AuthUser user)
@@ -493,7 +943,7 @@ ORDER BY f.display_order,a.uploaded_at_utc DESC;", new { ClientId = clientId.Val
         var storageKey = BuildStorageKey(clientId.Value, metadata.EntityType, metadata.EntityId, configurationRow.AttributeCode, storedFileName);
 
         await using (var source = file.OpenReadStream())
-            await storageService.WriteAsync(server, storageKey, source, cancellationToken);
+            storageKey = await storageService.WriteAsync(server, storageKey, source, cancellationToken);
 
         try
         {
@@ -587,6 +1037,15 @@ SELECT LAST_INSERT_ID();", new
         if (server is null || !server.IsActive || !server.IsReadEnabled) return (null, null, "Attachment storage is currently unavailable.");
         await LogAccessAsync(row, action, user.Id, ipAddress, userAgent);
         return (row, server, null);
+    }
+
+    public async Task<(EntityAttachment? Attachment, AttachmentFileHandle? Handle)> OpenForSystemDeliveryAsync(long attachmentId, CancellationToken cancellationToken)
+    {
+        var attachment = await GetAttachmentByIdAsync(attachmentId);
+        if (attachment is null || !attachment.IsCurrent || attachment.IsDeleted) return (null, null);
+        var server = await GetStorageServerAsync(attachment.StorageServerId, true);
+        if (server is null || !server.IsActive || !server.IsReadEnabled) return (null, null);
+        return (attachment, await storageService.OpenReadAsync(server, attachment.StorageKey, cancellationToken));
     }
 
     public async Task<(AttachmentAccessTicket? Ticket, string? Error)> IssueAccessTicketAsync(Guid publicId, AuthUser user, string purpose, string ipAddress, string userAgent)
@@ -723,6 +1182,12 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
         }
         if (entityType == "FORM_SUBMISSION")
             return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM form_submissions WHERE Id=@Id", new { Id = entityId });
+        if (entityType == "RECRUITMENT_WORK_ORDER")
+            return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM recruitment_work_orders WHERE Id=@Id", new { Id = entityId });
+        if (entityType == "RECRUITMENT_PROCESS_DOCUMENT")
+            return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM recruitment_process_documents WHERE Id=@Id", new { Id = entityId });
+        if (entityType == "EMPLOYEE_COMMUNICATION_DRAFT")
+            return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM employee_communication_drafts WHERE Id=@Id", new { Id = entityId });
         return null;
     }
 
@@ -734,6 +1199,12 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
     {
         if (await IsEntityOwnerAsync(user, entityType, entityId)) return true;
         if (!await HasEntityClientAccessAsync(user, entityType, entityId, clientId)) return false;
+        if (entityType == "EMPLOYEE_COMMUNICATION_DRAFT")
+            return HasAnyPermission(user, "employee.communication.view", "employee.communication.send", "settings.manage", "security.manage");
+        if (entityType == "RECRUITMENT_WORK_ORDER")
+            return HasAnyPermission(user, "recruitment.work-order.view", "recruitment.work-order.manage", "attachment.recruitment.view", "recruitment.manage", "settings.manage", "security.manage");
+        if (entityType == "RECRUITMENT_PROCESS_DOCUMENT")
+            return HasAnyPermission(user, "recruitment.document.view", "recruitment.document.manage", "recruitment.document.sign", "attachment.recruitment.view", "recruitment.manage", "settings.manage", "security.manage");
         return entityType == "EMPLOYEE"
             ? HasAnyPermission(user, "attachment.employee.view", "employees.view", "employees.manage", "settings.manage", "security.manage")
             : HasAnyPermission(user, "attachment.recruitment.view", "recruitment.manage", "security.manage");
@@ -741,12 +1212,21 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
 
     private async Task<bool> CanUploadEntityAsync(AuthUser user, string entityType, long entityId, int clientId, AttachmentFieldConfiguration config)
     {
+        if (entityType == "EMPLOYEE_COMMUNICATION_DRAFT")
+            return await IsEntityOwnerAsync(user, entityType, entityId) && config.OwnerCanUpload;
         if (await IsEntityOwnerAsync(user, entityType, entityId)) return config.OwnerCanUpload;
         return await CanManageEntityAsync(user, entityType, entityId, clientId);
     }
 
     private async Task<bool> IsEntityOwnerAsync(AuthUser user, string entityType, long entityId)
     {
+        if (entityType == "EMPLOYEE_COMMUNICATION_DRAFT")
+        {
+            await using var communicationDb = Connection();
+            await communicationDb.OpenAsync();
+            return await communicationDb.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM employee_communication_drafts
+WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { EntityId = entityId, UserId = user.Id }) > 0;
+        }
         if (!user.EmployeeId.HasValue) return false;
         if (entityType == "EMPLOYEE") return user.EmployeeId.Value == entityId;
         if (entityType != "CANDIDATE") return false;
@@ -776,6 +1256,12 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
     private async Task<bool> CanManageEntityAsync(AuthUser user, string entityType, long entityId, int clientId)
     {
         if (!await HasEntityClientAccessAsync(user, entityType, entityId, clientId)) return false;
+        if (entityType == "EMPLOYEE_COMMUNICATION_DRAFT")
+            return await IsEntityOwnerAsync(user, entityType, entityId);
+        if (entityType == "RECRUITMENT_WORK_ORDER")
+            return HasAnyPermission(user, "recruitment.work-order.manage", "attachment.recruitment.upload", "recruitment.manage", "settings.manage", "security.manage");
+        if (entityType == "RECRUITMENT_PROCESS_DOCUMENT")
+            return HasAnyPermission(user, "recruitment.document.manage", "attachment.recruitment.upload", "recruitment.manage", "settings.manage", "security.manage");
         return entityType == "EMPLOYEE"
             ? HasAnyPermission(user, "attachment.employee.upload", "employees.manage", "settings.manage", "security.manage")
             : HasAnyPermission(user, "attachment.recruitment.upload", "recruitment.manage", "security.manage");
@@ -784,6 +1270,12 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
     private async Task<bool> CanVerifyEntityAsync(AuthUser user, string entityType, long entityId, int clientId)
     {
         if (!await HasEntityClientAccessAsync(user, entityType, entityId, clientId)) return false;
+        if (entityType == "EMPLOYEE_COMMUNICATION_DRAFT")
+            return HasAnyPermission(user, "employee.communication.send", "settings.manage", "security.manage");
+        if (entityType == "RECRUITMENT_WORK_ORDER")
+            return HasAnyPermission(user, "recruitment.work-order.manage", "attachment.recruitment.verify", "recruitment.manage", "security.manage");
+        if (entityType == "RECRUITMENT_PROCESS_DOCUMENT")
+            return HasAnyPermission(user, "recruitment.document.sign", "attachment.recruitment.verify", "recruitment.manage", "security.manage");
         return entityType == "EMPLOYEE"
             ? HasAnyPermission(user, "attachment.employee.verify", "employees.manage", "security.manage")
             : HasAnyPermission(user, "attachment.recruitment.verify", "recruitment.manage", "security.manage");
@@ -917,19 +1409,36 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
     private AttachmentStorageServer ToStorageServer(StorageServerRow row, bool includeCredential)
     {
         var credential = "";
-        if (includeCredential && !string.IsNullOrWhiteSpace(row.CredentialCipherText))
+        if (!string.IsNullOrWhiteSpace(row.CredentialCipherText) &&
+            (includeCredential || row.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase)))
         {
             try { credential = credentialProtector.Unprotect(row.CredentialCipherText); }
             catch { credential = ""; }
         }
+        var googleCredential = row.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase)
+            ? googleDrive.TryReadCredential(credential)
+            : null;
+        var googleOAuthConfigured = row.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase) &&
+                                    googleDrive.HasOAuthClientConfiguration(googleCredential);
+        var googleConnected = row.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase) &&
+                              googleDrive.IsConnected(googleCredential);
         return new AttachmentStorageServer
         {
             Id = row.Id, ServerCode = row.ServerCode, ServerName = row.ServerName, StorageType = row.StorageType, BasePath = row.BasePath,
-            ServiceUrl = row.ServiceUrl, Credential = credential, HasCredential = !string.IsNullOrWhiteSpace(row.CredentialCipherText),
+            ServiceUrl = row.ServiceUrl, Credential = includeCredential ? credential : "", HasCredential = !string.IsNullOrWhiteSpace(row.CredentialCipherText),
             IsReadEnabled = row.IsReadEnabled, IsWriteEnabled = row.IsWriteEnabled, IsDefaultWriteServer = row.IsDefaultWriteServer,
             Priority = row.Priority, MaximumCapacityBytes = row.MaximumCapacityBytes, WarningCapacityPercent = row.WarningCapacityPercent,
             IsActive = row.IsActive, LastHealthCheckAtUtc = row.LastHealthCheckAtUtc, LastHealthCheckStatus = row.LastHealthCheckStatus,
-            LastHealthCheckMessage = row.LastHealthCheckMessage, LinkedAttachmentCount = row.LinkedAttachmentCount,
+            LastHealthCheckMessage = row.LastHealthCheckMessage,
+            GoogleAccountEmail = googleCredential?.AccountEmail ?? "",
+            GoogleFolderId = googleCredential?.FolderId ?? "",
+            GoogleFolderName = googleCredential?.FolderName ?? "",
+            GoogleFolderUrl = googleConnected ? GoogleDriveOAuthService.FolderUrl(googleCredential!.FolderId) : "",
+            GoogleOAuthConfigured = googleOAuthConfigured,
+            GoogleConnectionStatus = row.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase)
+                ? googleDrive.ConnectionStatus(googleCredential)
+                : "",
+            LinkedAttachmentCount = row.LinkedAttachmentCount,
             CreatedByUserId = row.CreatedByUserId, CreatedAtUtc = row.CreatedAtUtc, UpdatedByUserId = row.UpdatedByUserId, UpdatedAtUtc = row.UpdatedAtUtc
         };
     }
@@ -954,6 +1463,79 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
 (attachment_id,client_id,entity_type,entity_id,action,actor_user_id,success,failure_reason,ip_address,user_agent,metadata_json)
 VALUES (@AttachmentId,@ClientId,@EntityType,@EntityId,@Action,@ActorUserId,@Success,@FailureReason,@IpAddress,@UserAgent,@MetadataJson);",
             new { AttachmentId = attachmentId, ClientId = clientId, EntityType = entityType, EntityId = entityId, Action = action, ActorUserId = actorUserId, Success = success, FailureReason = failureReason, IpAddress = ipAddress, UserAgent = userAgent, MetadataJson = JsonSerializer.Serialize(metadata) }, transaction);
+
+    private static bool SameGoogleAccount(GoogleDriveCredential existing, GoogleDriveCredential replacement)
+    {
+        if (!string.IsNullOrWhiteSpace(existing.AccountSubject) &&
+            !string.IsNullOrWhiteSpace(replacement.AccountSubject))
+            return existing.AccountSubject.Equals(replacement.AccountSubject, StringComparison.Ordinal);
+        return !string.IsNullOrWhiteSpace(existing.AccountEmail) &&
+               !string.IsNullOrWhiteSpace(replacement.AccountEmail) &&
+               existing.AccountEmail.Equals(replacement.AccountEmail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool SameGoogleConnection(GoogleDriveCredential? existing, GoogleDriveCredential replacement)
+    {
+        if (existing is null ||
+            !string.Equals(existing.OAuthClientId, replacement.OAuthClientId, StringComparison.Ordinal) ||
+            !string.Equals(existing.FolderId, replacement.FolderId, StringComparison.Ordinal))
+            return false;
+        return SameGoogleAccount(existing, replacement);
+    }
+
+    private static bool GoogleStorageMayContainData(AttachmentStorageServer server, GoogleDriveCredential? credential) =>
+        !string.IsNullOrWhiteSpace(server.BasePath) || !string.IsNullOrWhiteSpace(credential?.FolderId);
+
+    private bool StorageLocationChanges(AttachmentStorageServer existing, AttachmentStorageServer replacement)
+    {
+        if (!existing.StorageType.Equals(replacement.StorageType, StringComparison.OrdinalIgnoreCase)) return true;
+        if (existing.StorageType is "LocalFileSystem" or "MountedFileSystem")
+        {
+            try
+            {
+                var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+                return !storageService.ResolveRoot(existing).Equals(storageService.ResolveRoot(replacement), comparison);
+            }
+            catch
+            {
+                // An unresolvable current or replacement path cannot be proven safe.
+                return true;
+            }
+        }
+        if (existing.StorageType.Equals("HttpFileServer", StringComparison.OrdinalIgnoreCase))
+            return !existing.ServiceUrl.TrimEnd('/').Equals(replacement.ServiceUrl.TrimEnd('/'), StringComparison.Ordinal);
+        if (existing.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+            return !existing.BasePath.Equals(replacement.BasePath, StringComparison.Ordinal) ||
+                   !existing.ServiceUrl.TrimEnd('/').Equals(replacement.ServiceUrl.TrimEnd('/'), StringComparison.Ordinal);
+        return true;
+    }
+
+    private async Task<string?> FrevoPilotStorageChangeBlockAsync(AttachmentStorageServer server, string markerMessage)
+    {
+        try
+        {
+            await using var marker = await storageService.TryOpenPathAsync(
+                server,
+                FrevoPilotChatStorageService.StorageMarkerPath,
+                CancellationToken.None);
+            return marker is null ? null : markerMessage;
+        }
+        catch
+        {
+            return "FrevoPilot chat storage could not be verified, so this potentially destructive storage change was blocked. Restore access to the current mount and try again.";
+        }
+    }
+
+    private static void ClearGoogleDriveConnection(GoogleDriveCredential credential)
+    {
+        credential.RefreshToken = "";
+        credential.AccountSubject = "";
+        credential.AccountEmail = "";
+        credential.AccountName = "";
+        credential.FolderId = "";
+        credential.FolderName = "";
+        credential.ConnectedAtUtc = default;
+    }
 
     private static string HashToken(string token) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token))).ToLowerInvariant();
     private static string FormatBytes(long value) => value >= 1024 * 1024 ? $"{value / 1024d / 1024d:0.##} MB" : $"{value / 1024d:0.##} KB";
@@ -1008,6 +1590,34 @@ LEFT JOIN authusers u ON u.Id=a.uploaded_by_user_id";
     private sealed class StorageServerRow : AttachmentStorageServer
     {
         public string CredentialCipherText { get; set; } = string.Empty;
+    }
+
+    private sealed class ExistingStorageServerRow
+    {
+        public string StorageType { get; set; } = "";
+        public string CredentialCipherText { get; set; } = "";
+    }
+
+    private class GoogleDriveConnectRow
+    {
+        public long Id { get; set; }
+        public string StorageType { get; set; } = "";
+        public string CredentialCipherText { get; set; } = "";
+        public long LinkedAttachmentCount { get; set; }
+    }
+
+    private sealed class GoogleDriveConfigurationRow : GoogleDriveConnectRow
+    {
+        public bool IsDefaultWriteServer { get; set; }
+    }
+
+    private sealed class GoogleDriveDisconnectRow
+    {
+        public long Id { get; set; }
+        public string StorageType { get; set; } = "";
+        public bool IsDefaultWriteServer { get; set; }
+        public string CredentialCipherText { get; set; } = "";
+        public long LinkedAttachmentCount { get; set; }
     }
 
     private sealed class AttachmentAccessRow : EntityAttachment

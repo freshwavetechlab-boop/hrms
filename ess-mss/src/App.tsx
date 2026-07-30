@@ -4,6 +4,7 @@ import './Dashboard.css'
 import './Pay.css'
 import './AccountMenu.css'
 import './Responsive.css'
+import './AttendanceReview.css'
 import { WorkspaceShell } from './components/WorkspaceShell'
 import { clearToken, getToken, me } from './services/essApi'
 import type { User, View } from './types'
@@ -19,9 +20,10 @@ import { TravelPage } from './pages/TravelPage'
 import { ExpensePage } from './pages/ExpensePage'
 import { RecruitmentPage } from './pages/RecruitmentPage'
 import { ChangePasswordPage } from './pages/ChangePasswordPage'
+import { AttendanceReviewPage } from './pages/AttendanceReviewPage'
 
 const viewStorageKey = 'ess.current.view'
-const views: View[] = ['Dashboard', 'My Profile', 'Leave', 'Travel', 'Expense', 'Recruitment', 'Attendance', 'Pay', 'Tax', 'My Tasks', 'Team', 'Approvals']
+const views: View[] = ['Dashboard', 'My Profile', 'Leave', 'Travel', 'Expense', 'Recruitment', 'Attendance', 'Attendance Review', 'Pay', 'Tax', 'My Tasks', 'Team', 'Approvals']
 const viewRoutes: Record<View, string> = {
   Dashboard: 'home',
   'My Profile': 'profile',
@@ -30,6 +32,7 @@ const viewRoutes: Record<View, string> = {
   Expense: 'expenses',
   Recruitment: 'recruitment',
   Attendance: 'attendance',
+  'Attendance Review': 'attendance-review',
   Pay: 'pay',
   Tax: 'tax',
   'My Tasks': 'my-tasks',
@@ -83,7 +86,7 @@ export default function App() {
   if (user.mustChangePassword || changePasswordOpen) return <ChangePasswordPage forced={user.mustChangePassword} onChanged={next => { setUser(next); setChangePasswordOpen(false) }} onCancel={() => setChangePasswordOpen(false)} />
 
   const employeeSelf = Boolean(user.employeeId && user.roles.includes('employee'))
-  const manager = !employeeSelf || user.roles.some(role => ['mss_manager', 'hr_manager', 'payroll_approver', 'super_admin'].includes(role))
+  const manager = !employeeSelf || user.roles.some(role => ['mss_manager', 'hr_manager', 'payroll_approver', 'super_admin'].includes(role)) || user.permissions.some(permission => permission.toLowerCase() === 'mss.attendance.manage')
   const logout = () => { clearToken(); setUser(null); setView('Dashboard'); setViewUrl('Dashboard', true) }
 
   return <WorkspaceShell user={user} view={view} manager={manager} employeeSelf={employeeSelf} onNavigate={setView} onLogout={logout} onChangePassword={() => setChangePasswordOpen(true)}><Page view={view} manager={manager} employeeSelf={employeeSelf} user={user} setView={setView} /></WorkspaceShell>
@@ -100,6 +103,7 @@ function Page({ view, manager, employeeSelf, user, setView }: { view: View; mana
   if (view === 'Recruitment') return <RecruitmentPage user={user} />
   if (view === 'Pay') return <PayPage user={user} />
   if (view === 'Tax') return <TaxPage user={user} />
+  if (view === 'Attendance Review' && user.permissions.some(permission => permission.toLowerCase() === 'mss.attendance.manage')) return <AttendanceReviewPage user={user} />
   return <PlaceholderPage view={view} manager={manager} />
 }
 

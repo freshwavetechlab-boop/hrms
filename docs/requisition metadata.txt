@@ -1,0 +1,501 @@
+Bhai, सबसे important clarification: current Playwright run **empty business-data DB** पर UIDAI setup कर सकता है, लेकिन database में migrations, permission catalog, attachment configuration और एक super-admin account पहले से होना चाहिए। एकदम schema-less DB पर पहले `dotnet run -- --migrate` जरूरी है।
+
+Current UIDAI run का total setup:
+
+- 1 client
+- 2 work locations
+- 3 roles
+- 6 users
+- 12 recruitment switches
+- 1 ATS profile
+- 7 reusable templates + 1 MoM template
+- 1 candidate-information form with 12 fields
+- 1 pipeline with 10 stages
+- 3 global workflows
+- 3 workflow-to-pipeline mappings
+- 2 interview competencies
+- 3 panel members
+- 6 notification rules
+- 7 process-document rules
+- 1 work order
+- 1 position
+- 1 hiring case
+
+## Phase 0 — System bootstrap data
+
+यह business data नहीं है, लेकिन Playwright चलने के लिए चाहिए:
+
+| Field | Value/Requirement |
+|---|---|
+| HRMS Web URL | `http://localhost:5173` |
+| HRMS API URL | `http://localhost:5062` |
+| Super-admin login | Global admin, किसी client से restricted नहीं |
+| Super-admin password | Runtime पर FrevoPilot पूछेगा |
+| Provisioned-user temporary password | सभी नए approvers/panel users के लिए runtime पर पूछा जाएगा |
+| Database | Migrations completed |
+| Attachment baseline | `RECRUITMENT_WORK_ORDER_FILE` और `RECRUITMENT_PROCESS_DOCUMENT` |
+| Permission baseline | Recruitment और attachment permission catalog |
+
+Passwords scripts/defaults में save नहीं होते।
+
+## Phase 1 — Client Master
+
+UIDAI के लिए यह fields दिए गए:
+
+| Field | UIDAI value |
+|---|---|
+| Client code | `UIDAI` |
+| Client name | `Unique Identification Authority of India` |
+| Operational contact | `GAD Hiring Operations` |
+| General email | Blank |
+| General phone | Blank |
+| Address | `India` |
+
+Playwright `/settings/clients` पर पहले exact code/name search करता है। नहीं मिलने पर client create करता है।
+
+## Phase 2 — Work Locations
+
+हर location के लिए छह fields:
+
+```text
+Location Name | State | City | PIN | Address | Primary YES/NO
+```
+
+UIDAI data:
+
+```text
+UIDAI Regional Office Ranchi
+State: Jharkhand
+City: Ranchi
+PIN: blank
+Address: Regional Office, Ranchi
+Primary: Yes
+```
+
+```text
+Aadhaar Seva Kendra Dakshin Dinajpur
+State: West Bengal
+City: Dakshin Dinajpur
+PIN: blank
+Address: Aadhaar Seva Kendra, Dakshin Dinajpur, West Bengal
+Primary: No
+```
+
+City master में city नहीं हो तो Playwright visible modal से city create करता है।
+
+## Phase 3 — Roles and permissions
+
+### UIDAI GAD Recruiter
+
+Role code:
+
+```text
+UIDAI_GAD_RECRUITER
+```
+
+Main permissions:
+
+- Position view/manage/publish
+- Work order view/manage
+- Hiring case view/manage
+- SLA pause
+- Candidate view/manage/profile request
+- Shortlist forward
+- ATS review/manual override
+- Interview scheduling
+- Documents view/manage/sign
+- Proposal manage
+- Offer manage/issue
+- Recruitment attachments view/upload/verify
+
+### UIDAI Stakeholder Approver
+
+Role code:
+
+```text
+UIDAI_STAKEHOLDER_APPROVER
+```
+
+Permissions:
+
+- Position/work-order/hiring-case/candidate view
+- Shortlist approval
+- Interview panel access
+- Document view
+- Proposal approval
+- Recruitment attachment view
+
+### UIDAI Interview Panel
+
+Role code:
+
+```text
+UIDAI_INTERVIEW_PANEL
+```
+
+Permissions:
+
+- Position/hiring-case/candidate view
+- Interview panel access
+- Document and recruitment attachment view
+
+## Phase 4 — Users and role assignment
+
+प्रत्येक user के लिए:
+
+```text
+Display Name | Login Email | Role Code | Temporary Password | Client Scope
+```
+
+Configured users:
+
+| User | Login | Role |
+|---|---|---|
+| GAD UIDAI Recruiter | `gad.uidai.recruiter@frevo.local` | GAD Recruiter |
+| GAD Recruitment Approver | `gad.uidai.approver@frevo.local` | Stakeholder Approver |
+| UIDAI HR Approver | `uidai.hr.approver@frevo.local` | Stakeholder Approver |
+| Niraj Kumar | `niraj.kumar.uidai@frevo.local` | Interview Panel |
+| Swapan Kumar Saxena | `swapan.saxena.uidai@frevo.local` | Interview Panel |
+| Ajay Kumar R | `ajay.kumar.gad@frevo.local` | Interview Panel |
+
+सभी users का client scope UIDAI रखा गया।
+
+## Phase 5 — Recruitment feature settings
+
+UIDAI के लिए enabled switches:
+
+```text
+Recruitment enabled
+Replacement hiring
+Offer approval
+Pre-offer process
+Document verification
+Candidate portal
+Talent pool
+Resume parsing
+ATS scoring
+Resume required
+Manual ATS score override
+Internal hiring
+```
+
+Candidate portal base URL local testing में:
+
+```text
+http://localhost:5173
+```
+
+Production में इसे production portal URL करना होगा।
+
+## Phase 6 — ATS profile
+
+Profile data:
+
+| Field | Value |
+|---|---|
+| Client | UIDAI |
+| Profile name | `UIDAI Centre Manager ATS` |
+| Minimum shortlist score | `75` |
+| Active/default | Yes |
+
+Pipeline stage ATS rule:
+
+| Field | Value |
+|---|---|
+| ATS stage | Stage 2 |
+| Advance score | `75` |
+| Reject up to score | `50` |
+| Auto advance | No |
+| Auto reject | No |
+| Human confirmation | Yes |
+
+मतलब:
+
+- 75 या अधिक: shortlist recommendation
+- 50 या कम: reject recommendation
+- बीच के scores: manual review
+- Final movement human confirmation से
+
+ATS criteria/weights अभी Playwright से अलग-अलग नहीं लिए जाते; profile creation पर system के existing default criteria लगते हैं।
+
+## Phase 7 — Reusable templates
+
+इन templates के लिए data structure है:
+
+```text
+Template Type | Code | Name | Subject | Body
+```
+
+Configured templates:
+
+| Code | Use |
+|---|---|
+| `UIDAI_CANDIDATE_INFO_REQUEST` | Candidate को secure information link |
+| `UIDAI_SHORTLIST_FORWARD` | Approved shortlist UIDAI stakeholder को |
+| `UIDAI_INTERVIEW_SCHEDULED` | Candidate और panel interview notification |
+| `UIDAI_SCORE_ANNEXURE` | Annexure A score table |
+| `UIDAI_HR_PROPOSAL` | HR Division proposal |
+| `UIDAI_OFFER_LETTER` | Candidate offer |
+| `UIDAI_JOINING_INTIMATION` | HR को joining-date information |
+
+Important placeholders:
+
+```text
+{{candidateName}}
+{{positionTitle}}
+{{candidateActionUrl}}
+#SCOREANNEXURETABLE#
+```
+
+## Phase 8 — Work order
+
+Work-order fields:
+
+| Field | UIDAI value |
+|---|---|
+| Work-order number | `UIDAI-WO-CM-2026-001` |
+| Received date/time | `30-07-2026 09:00` |
+| Received from | UIDAI client name |
+| Overall SLA | 50 days |
+| Status | Active |
+| Incoming email parsing | Disabled/manual |
+
+Position line:
+
+| Field | Value |
+|---|---|
+| Position | Centre Manager |
+| Pay band/level | A |
+| Number of positions | 1 |
+| Location | Aadhaar Seva Kendra Dakshin Dinajpur |
+| Division | Regional Office Ranchi |
+
+हर additional position के लिए यही पाँच fields दोबारा चाहिए।
+
+## Phase 9 — Pipeline identity and SLA
+
+| Field | Value |
+|---|---|
+| Pipeline name | `UIDAI GAD 50-Day Hiring` |
+| Pipeline code | `UIDAI_GAD_50_DAY_HIRING` |
+| Scope | Hybrid — position + candidate |
+| SLA mode | Cumulative from work-order date |
+| Overall SLA | 50 days |
+
+### Stage-wise data
+
+| # | Stage | Cumulative day | Stakeholder | Type | Pause effect |
+|---:|---|---:|---|---|---|
+| 1 | Work Order Intake | 0 | UIDAI | Standard | Keep existing due dates |
+| 2 | Profile Sharing and ATS Screening | 25 | GAD | ATS | Shift due dates |
+| 3 | Candidate Information and Shortlist Approval | 25 | GAD | Candidate Form | Shift |
+| 4 | Interview Process | 30 | UIDAI | Interview | Shift |
+| 5 | Signing of MoM | 33 | GAD | Documents | Shift |
+| 6 | Negotiation and HR Proposal | 38 | GAD | Approval | Shift |
+| 7 | Approval from HR | 45 | UIDAI | Approval | Shift |
+| 8 | Issue Offer Letter | 48 | GAD | Offer | Shift |
+| 9 | Convey Joining Date to HR | 50 | GAD | Joining | Shift |
+| 10 | Completed | 50 | UIDAI | Completed | Shift |
+
+Pause होने पर application runtime में reason मांगती है। Playwright ने pause behavior configure किया है, लेकिन कोई hardcoded pause-reason list नहीं बनाई और pause scenario execute नहीं किया।
+
+## Phase 10 — Global Workflow Setup
+
+Workflows custom recruitment table में नहीं, existing **Workflow Setup** module में बनते हैं।
+
+### Shortlist approval
+
+```text
+Workflow code: UIDAI_SHORTLIST_APPROVAL
+Name: UIDAI shortlist approval
+Approval step: GAD shortlist approval
+Approver type: Specific User
+Approver: gad.uidai.approver@frevo.local
+```
+
+### HR proposal approval
+
+```text
+Workflow code: UIDAI_PROPOSAL_APPROVAL
+Name: UIDAI HR proposal approval
+Approval step: UIDAI proposal review
+Approver: uidai.hr.approver@frevo.local
+```
+
+### Final HR approval
+
+```text
+Workflow code: UIDAI_HR_APPROVAL
+Name: UIDAI final HR approval
+Approval step: UIDAI final HR approval
+Approver: uidai.hr.approver@frevo.local
+```
+
+Pipeline mappings:
+
+```text
+Stage 3 → UIDAI_SHORTLIST_APPROVAL
+Stage 6 → UIDAI_PROPOSAL_APPROVAL
+Stage 7 → UIDAI_HR_APPROVAL
+```
+
+इन stages पर case पहले `Pending Approval` होता है, task global **My Tasks** में जाता है और approval के बाद ही case आगे बढ़ता है।
+
+## Phase 11 — Candidate information form
+
+Form:
+
+```text
+Name: UIDAI Candidate Information
+Code: UIDAI_CANDIDATE_INFORMATION
+Purpose: CANDIDATE_INFORMATION_UPDATE
+Status: Published
+```
+
+Fields:
+
+| Semantic field | Label | Type | Required |
+|---|---|---|---|
+| `FIRST_NAME` | First name | Text | Yes |
+| `LAST_NAME` | Last name | Text | No |
+| `EMAIL` | Email | Email | Yes |
+| `PHONE` | Contact number | Phone | Yes |
+| `CURRENT_DESIGNATION` | Experience area and current designation | Text | Yes |
+| `TOTAL_EXPERIENCE_MONTHS` | Total experience in months | Number | Yes |
+| `HIGHEST_QUALIFICATION` | Highest qualification | Text | Yes |
+| `CERTIFICATIONS` | Certifications | Text area | No |
+| `CURRENT_COMPANY` | Current company | Text | Yes |
+| `CURRENT_CTC` | Current CTC | Number | Yes |
+| `NOTICE_PERIOD_DAYS` | Notice period in days | Number | Yes |
+| `EXPECTED_CTC` | Expected CTC | Number | Yes |
+
+Stage 3 में `GENERATE ACTION LINK` configured है। Candidate को `{{candidateActionUrl}}` भेजा जाएगा।
+
+## Phase 12 — Interview core, scoring and feedback
+
+Interview configuration:
+
+| Field | Value |
+|---|---|
+| Stage | 4 |
+| Score mode | Points |
+| Aggregation | Average of all panel members |
+| Passing score | 60/100 |
+| Duration | 45 minutes |
+| Minimum panel members | 3 |
+
+Competency library:
+
+| Code | Name | Maximum |
+|---|---|---:|
+| `SUBJECT_KNOWLEDGE` | Subject Knowledge | 70 |
+| `ASSESSMENT` | Assessment | 30 |
+
+Descriptions:
+
+- Subject Knowledge: position domain और UIDAI operations knowledge
+- Assessment: problem-solving, communication और overall suitability
+
+Panel:
+
+| Member | Committee role |
+|---|---|
+| Niraj Kumar | Chairperson |
+| Swapan Kumar Saxena | Member |
+| Ajay Kumar R | SME / Domain Expert |
+
+Current Playwright panel structure और scoring core configure करता है। किसी real candidate का actual score या textual feedback अभी enter नहीं करता।
+
+## Phase 13 — Notifications
+
+| Stage | Event | Template | Recipient |
+|---:|---|---|---|
+| 3 | Enter stage | Candidate information request | Candidate |
+| 3 | Profile batch forward | Shortlist forward | UIDAI HR approver |
+| 4 | Enter stage | Interview scheduled | Candidate + stage panel |
+| 6 | Enter stage | HR proposal | UIDAI HR approver |
+| 8 | Enter stage | Offer letter | Candidate |
+| 9 | Enter stage | Joining intimation | UIDAI HR approver |
+
+Actual email delivery के लिए SMTP/email configuration पहले से valid होना चाहिए। Current test pipeline automation mapping verify करता है, inbox delivery नहीं।
+
+## Phase 14 — MoM and Annexure A
+
+MoM template:
+
+```text
+Code: UIDAI_SELECTION_COMMITTEE_MOM
+Name: UIDAI Selection Committee MoM with Annexure A
+Layout: UIDAI
+Subject: Selection Committee MoM - #POSITION_NAME# - #INTERVIEWDATE#
+```
+
+Dynamic placeholders:
+
+```text
+#POSITION_NAME#
+#CLIENT_NAME#
+#PAYBANDLEVEL#
+#LOCATION#
+#DIVISION#
+#INTERVIEWDATE#
+#APPROVALDATE#
+#PANELMEMBERSLIST#
+#SHORTLISTEDCOUNT#
+#PRESENTCOUNT#
+#CANDIDATEATTENDANCETABLE#
+#CANDIDATERESULTTABLE#
+#PANELSIGNATUREBLOCK#
+#SCOREANNEXURETABLE#
+```
+
+Annexure A के candidate rows template में hardcoded नहीं होते। वे actual interview score data से generate होने हैं:
+
+```text
+Candidate name
+Subject Knowledge score
+Assessment score
+Total score
+Final result
+```
+
+## Phase 15 — Process documents
+
+| Stage | Document | Source | Required | Signature |
+|---:|---|---|---|---|
+| 1 | Work Order | Manual attachment | Yes | No |
+| 1 | JD Annexure | Manual attachment | Yes | No |
+| 4 | MoM | MoM template | No | No |
+| 4 | Score Annexure | Score template | No | No |
+| 5 | Signed MoM | MoM template | Yes | Yes |
+| 6 | HR Proposal | HR proposal template | Yes | No |
+| 9 | Joining Intimation | Joining template | Yes | No |
+
+Workflow verification में signed-MoM gate test करने के लिए Playwright एक minimal test PDF upload करता है। वह छह candidates वाला actual rendered production MoM नहीं है।
+
+## Phase 16 — Current run में क्या नहीं बनाया गया
+
+यह distinction जरूरी है। Current Playwright ने configuration और hiring case बनाया है, लेकिन अभी ये runtime records नहीं बनाए:
+
+- Actual job posting/public vacancy
+- LinkedIn/Naukri publishing
+- Public job-posting URL/slug
+- Actual candidate master
+- Resume file upload
+- ATS resume parsing और real candidate score
+- Candidate secure form का actual submission
+- Interview date/time/meeting link
+- Candidate attendance
+- हर panel member का actual feedback/marks
+- Selected/rejected/waiting-list results
+- Actual populated MoM/Annexure A generation
+- Real Work Order और JD files upload
+- Final signed MoM business document
+- Actual offer values/CTC
+- Joining date
+- Real email inbox-delivery verification
+- SLA pause और pause-reason test
+
+इसलिए current run को सही नाम देना हो तो यह है: **complete UIDAI configuration bootstrap + work-order hiring-case start + real workflow approval verification**। यह अभी candidate-to-joining transactional demo नहीं है।
+
+अगर हमें बिल्कुल empty business DB से candidate-to-joining तक पूरा Playwright करवाना है, तो ऊपर वाले existing inputs के साथ job-posting, candidate/resume, interview schedule, panel scores/results, signed documents, offer और joining-date का दूसरा runtime dataset भी FrevoPilot को collect करना पड़ेगा।

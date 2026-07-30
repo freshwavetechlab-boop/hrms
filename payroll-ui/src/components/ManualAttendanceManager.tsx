@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { Button, Card, Input, Space, Typography } from 'antd'
-import type { AttendanceGroup, AttendanceReviewContext, Drop, EmployeeDailyAttendance, EmployeeMonthlyAttendance, LeaveAttendancePreferences, LeaveType } from '../types/payroll'
-import { getAttendanceReviewContext, getDailyAttendanceGrid, getLeaveTypes, getMonthlyAttendance, saveDailyAttendanceBatch } from '../services/leaveAttendanceService'
-import { getDropdowns } from '../services/settingsService'
+import type { AttendanceBatchJobStatus, AttendanceGroup, AttendanceReviewContext, Drop, EmployeeDailyAttendance, EmployeeMonthlyAttendance, LeaveAttendancePreferences, LeaveType } from '../types/payroll'
+import { getAttendanceReviewContextResult, getDailyAttendanceBatchJob, getDailyAttendanceGridResult, getLeaveTypesResult, getMonthlyAttendanceResult, startDailyAttendanceBatchJob } from '../services/leaveAttendanceService'
+import { getDropdownsResult } from '../services/settingsService'
+import BulkUploadProgressModal, { type BulkUploadState } from './BulkUploadProgressModal'
 import SearchSelect from './SearchSelect'
 import type { ToastType } from './ToastProvider'
 
@@ -16,6 +17,7 @@ type CellSelectionAnchor = { employeeId: number; date: string } | null
 type BulkScope = 'all' | 'cycle' | 'weekends' | 'saturday' | 'sunday' | 'date'
 type RowPatch = Partial<Pick<EmployeeDailyAttendance, 'checkInTime' | 'checkOutTime' | 'payableValue'>>
 type WorkWeekConfig = { workingDays: number[]; offSaturdays: number[] }
+type AttendanceSaveProgress = { open: boolean; state: BulkUploadState; percent: number; summary: AttendanceBatchJobStatus }
 
 const fallbackContext: AttendanceReviewContext = {
   settings: { id: 0, clientId: 0, checkInTime: '09:00:00', checkOutTime: '18:00:00', workingHoursCalculation: 'First check-in and last check-out', minimumHoursForHalfDay: 4, minimumHoursForFullDay: 8, maximumHoursAllowedForFullDay: 12, allowRegularizationRequests: true, regularizationWindow: 'Anytime', pastDaysAllowed: 7, restrictRegularizationRequestsPerMonth: false, maxRegularizationRequestsPerMonth: 3 },
@@ -35,6 +37,7 @@ const bulkScopeOptions = [
 ]
 
 const currentMonth = () => new Date().toISOString().slice(0, 7)
+const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
 const toNumber = (value: number | string | undefined | null) => Number.isFinite(Number(value)) ? Number(value) : 0
 const isoDate = (value: string) => value.slice(0, 10)
 const attendanceCellKey = (employeeId: number, date: string) => `${employeeId}|${date}`
@@ -68,6 +71,12 @@ const dateRangeDates = (start: string, end: string) => {
 }
 const monthsInRange = (start: string, end: string) => unique(dateRangeDates(start, end).map(date => date.slice(0, 7)))
 const rangeLabel = (start: string, end: string) => `${new Date(`${start}T00:00:00`).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })} - ${new Date(`${end}T00:00:00`).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })}`
+const attendanceSaveStatus = (clientId: number, month: string, totalRows = 0, stage = 'Preparing'): AttendanceBatchJobStatus => ({ jobId: '', clientId, month, state: 'Queued', stage, totalRows, completedRows: 0, savedRows: 0, errors: [] })
+const attendanceSavePercent = (job: AttendanceBatchJobStatus) => job.state === 'Completed'
+  ? 100
+  : job.totalRows > 0
+    ? Math.max(5, Math.min(99, Math.round((job.completedRows / job.totalRows) * 100)))
+    : job.state === 'Processing' ? 10 : 5
 const csvEscape = (value: unknown) => {
   const text = String(value ?? '')
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
@@ -182,6 +191,12 @@ export default function ManualAttendanceManager({ clientId, group = null, review
   const [cellSelectionAnchor, setCellSelectionAnchor] = useState<CellSelectionAnchor>(null)
   const [loadingMonthly, setLoadingMonthly] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [saveProgress, setSaveProgress] = useState<AttendanceSaveProgress>({ open: false, state: 'uploading', percent: 0, summary: attendanceSaveStatus(clientId, reviewMonth || currentMonth()) })
+  const activeScope = useRef({ clientId, month, groupId: group?.id ?? 0 })
+
+  useEffect(() => {
+    activeScope.current = { clientId, month, groupId: group?.id ?? 0 }
+  }, [clientId, month, group?.id])
 
   useEffect(() => {
     if (reviewMonth && /^\d{4}-\d{2}$/.test(reviewMonth)) setMonth(reviewMonth)
@@ -315,19 +330,34 @@ export default function ManualAttendanceManager({ clientId, group = null, review
     setLoadingMonthly(true)
     try {
       const scopeLocationId = group?.workLocationId || 0
-      const context = await getAttendanceReviewContext(clientId, month, scopeLocationId)
+      const contextResult = await getAttendanceReviewContextResult(clientId, month, scopeLocationId)
+      if (!contextResult.ok) throw new Error(contextResult.error || 'Unable to load attendance review context.')
+      const context = contextResult.data
       const nextCycle = group
         ? { attendanceCycleStartDay: group.attendanceCycleStartDay, attendanceCycleEndDay: group.attendanceCycleEndDay }
         : context.preferences
       const nextRange = cycleRangeFor(month, nextCycle.attendanceCycleStartDay, nextCycle.attendanceCycleEndDay)
       const dailyMonths = monthsInRange(nextRange.start, nextRange.end)
-      const [rows, leaveTypeRows, dailyGridRows, dropdownRows] = await Promise.all([getMonthlyAttendance(clientId, month, scopeLocationId), getLeaveTypes(clientId), Promise.all(dailyMonths.map(item => getDailyAttendanceGrid(clientId, item, scopeLocationId))), getDropdowns()])
+      const [rowsResult, leaveTypeResult, dailyGridResults, dropdownResult] = await Promise.all([
+        getMonthlyAttendanceResult(clientId, month, scopeLocationId),
+        getLeaveTypesResult(clientId),
+        Promise.all(dailyMonths.map(item => getDailyAttendanceGridResult(clientId, item, scopeLocationId))),
+        getDropdownsResult()
+      ])
+      const failedResult = [rowsResult, leaveTypeResult, dropdownResult, ...dailyGridResults].find(result => !result.ok)
+      if (failedResult) throw new Error(failedResult.error || 'Unable to load attendance review data.')
+      const rows = rowsResult.data
+      const leaveTypeRows = leaveTypeResult.data
+      const dailyGridRows = dailyGridResults.map(result => result.data)
+      const dropdownRows = dropdownResult.data
       const groupEmployeeIds = new Set(group?.employeeIds ?? [])
       const scopedRows = group ? rows.filter(row => groupEmployeeIds.has(row.employeeId)) : rows
       const scopedDailyRows = dailyGridRows.flat().filter(row => !group || groupEmployeeIds.has(row.employeeId))
       setMonthlyRows(scopedRows); setLeaveTypes(leaveTypeRows); setAllDailyRows(scopedDailyRows); setReviewContext(context); setDropdowns(dropdownRows); setDirtyCellKeys(new Set()); setSelectedCellKeys(new Set()); setCellSelectionMode(null); setCellSelectionAnchor(null); setGridEdit(null)
+      return true
     } catch (error) {
       onMessage(error instanceof Error ? error.message : 'Unable to load monthly attendance', 'error')
+      return false
     } finally {
       setLoadingMonthly(false)
     }
@@ -335,19 +365,18 @@ export default function ManualAttendanceManager({ clientId, group = null, review
 
   useEffect(() => { void loadMonthly() }, [clientId, group?.id, group?.workLocationId, groupEmployeeKey, month])
 
-  const upsertGridRow = (rows: EmployeeDailyAttendance[], employeeId: number, date: string, status: DailyStatus, patch: RowPatch = {}) => {
-    let found = false
-    const next = rows.map((row) => {
-      if (row.employeeId !== employeeId || isoDate(row.attendanceDate) !== date) return row
-      found = true
-      return makeRow(employeeId, date, status, row, patch)
-    })
-    if (!found) next.push(makeRow(employeeId, date, status, undefined, patch))
-    return next
+  const gridRowMap = (rows: EmployeeDailyAttendance[]) => new Map(rows.map((row) => [attendanceCellKey(row.employeeId, isoDate(row.attendanceDate)), row]))
+  const upsertGridRow = (rows: Map<string, EmployeeDailyAttendance>, employeeId: number, date: string, status: DailyStatus, patch: RowPatch = {}) => {
+    const key = attendanceCellKey(employeeId, date)
+    rows.set(key, makeRow(employeeId, date, status, rows.get(key), patch))
   }
   const updateGridStatus = (employeeId: number, date: string, status: DailyStatus) => {
-    if (!normalizeStatus(status)) return
-    setAllDailyRows((rows) => upsertGridRow(rows, employeeId, date, status))
+    if (saving || !normalizeStatus(status)) return
+    setAllDailyRows((rows) => {
+      const next = gridRowMap(rows)
+      upsertGridRow(next, employeeId, date, status)
+      return Array.from(next.values())
+    })
     setDirtyCellKeys((keys) => new Set(keys).add(attendanceCellKey(employeeId, date)))
     setGridEdit(null)
   }
@@ -370,7 +399,7 @@ export default function ManualAttendanceManager({ clientId, group = null, review
     return ''
   }
   const saveGridChanges = async (sourceRows = allDailyRows, keys = dirtyCellKeys) => {
-    if (!keys.size) return
+    if (!keys.size || saving) return
     const rowByKey = new Map(sourceRows.map((row) => [attendanceCellKey(row.employeeId, isoDate(row.attendanceDate)), row]))
     const prepared = new Map<number, EmployeeDailyAttendance[]>()
     keys.forEach((key) => {
@@ -387,13 +416,80 @@ export default function ManualAttendanceManager({ clientId, group = null, review
     }
     const balanceError = validateLeaveBalances(prepared)
     if (balanceError) { onMessage(balanceError, 'error'); return }
+    const preparedRows = Array.from(prepared.values()).flat()
+    const sourceByKey = new Map(sourceRows.map(row => [attendanceCellKey(row.employeeId, isoDate(row.attendanceDate)), row]))
+    const employeeById = new Map(monthlyRows.map(row => [row.employeeId, row]))
+    const rollupEmployeeIds = Array.from(prepared.keys()).filter(employeeId => {
+      const employee = employeeById.get(employeeId)
+      return employee && monthDays.every(date => sourceByKey.has(attendanceCellKey(employeeId, date)) || Boolean(defaultStatusFor(employee, date)))
+    })
+    const rowsToSave = [...preparedRows]
+    rollupEmployeeIds.forEach(employeeId => {
+      const employee = employeeById.get(employeeId)
+      if (!employee) return
+      monthDays.forEach(date => {
+        if (sourceByKey.has(attendanceCellKey(employeeId, date))) return
+        const status = defaultStatusFor(employee, date)
+        if (status) rowsToSave.push(makeRow(employeeId, date, status))
+      })
+    })
+    setSaveProgress({ open: true, state: 'uploading', percent: 1, summary: attendanceSaveStatus(clientId, month, rowsToSave.length, 'Queueing attendance save') })
     setSaving(true)
     try {
-      const response = await saveDailyAttendanceBatch(clientId, month, Array.from(prepared.values()).flat())
-      if (!response.ok) { onMessage(response.error || 'Unable to save attendance.', 'error'); return }
-      const savedCells = Array.from(prepared.values()).reduce((total, rows) => total + rows.length, 0)
+      const start = await startDailyAttendanceBatchJob(clientId, month, rowsToSave, rollupEmployeeIds)
+      if (!start.ok || !start.data.jobId) {
+        const message = start.data.errors?.[0] || start.error || 'Unable to start attendance save.'
+        const failed = { ...attendanceSaveStatus(clientId, month, rowsToSave.length, 'Failed'), ...start.data, state: 'Failed' as const, stage: 'Failed', totalRows: start.data.totalRows || rowsToSave.length, errors: start.data.errors?.length ? start.data.errors : [message] }
+        setSaveProgress({ open: true, state: 'error', percent: 100, summary: failed })
+        onMessage(message, 'error')
+        return
+      }
+      let job = { ...start.data, totalRows: start.data.totalRows || rowsToSave.length, errors: start.data.errors ?? [] }
+      const pollingStartedAt = Date.now()
+      let consecutivePollFailures = 0
+      let mustConfirmJob = true
+      while (mustConfirmJob || job.state === 'Queued' || job.state === 'Processing') {
+        setSaveProgress({ open: true, state: 'uploading', percent: attendanceSavePercent(job), summary: job })
+        await wait(job.state === 'Queued' || job.state === 'Processing' ? 700 : 100)
+        const latest = await getDailyAttendanceBatchJob(job.jobId)
+        if (!latest.ok) {
+          consecutivePollFailures += 1
+          if (consecutivePollFailures >= 5) throw new Error(`${latest.error || 'Unable to read attendance save progress.'} The background save may still be running; refresh the review before retrying.`)
+          await wait(consecutivePollFailures * 500)
+          continue
+        }
+        consecutivePollFailures = 0
+        mustConfirmJob = false
+        job = { ...latest.data, clientId: latest.data.clientId || clientId, month: latest.data.month || month, totalRows: latest.data.totalRows || job.totalRows || rowsToSave.length, errors: latest.data.errors ?? [] }
+        if (Date.now() - pollingStartedAt > 15 * 60 * 1000) throw new Error('Attendance save is taking longer than expected. The background job is still available; refresh the review before retrying.')
+      }
+      if (job.state !== 'Completed') {
+        const message = job.errors?.[0] || 'Attendance save failed. No cells were saved.'
+        setSaveProgress({ open: true, state: 'error', percent: attendanceSavePercent(job), summary: { ...job, stage: job.stage || 'Failed', errors: job.errors?.length ? job.errors : [message] } })
+        onMessage(message, 'error')
+        return
+      }
+      const savedCells = job.savedRows
+      if (activeScope.current.clientId !== clientId || activeScope.current.month !== month || activeScope.current.groupId !== (group?.id ?? 0)) {
+        setDirtyCellKeys(new Set())
+        setSaveProgress({ open: true, state: 'success', percent: 100, summary: { ...job, stage: 'Saved - refresh required' } })
+        onMessage(`${savedCells} attendance ${savedCells === 1 ? 'cell' : 'cells'} saved. Attendance scope changed; refresh the selected review to load the result.`, 'warning')
+        return
+      }
+      setSaveProgress({ open: true, state: 'uploading', percent: 99, summary: { ...job, stage: 'Refreshing attendance review' } })
+      const refreshed = await loadMonthly()
+      if (!refreshed) {
+        setDirtyCellKeys(new Set())
+        setSaveProgress({ open: true, state: 'success', percent: 100, summary: { ...job, stage: 'Saved - refresh required' } })
+        onMessage(`${savedCells} attendance ${savedCells === 1 ? 'cell' : 'cells'} saved, but the review could not refresh. Click Refresh review before making more changes.`, 'warning')
+        return
+      }
+      setSaveProgress({ open: true, state: 'success', percent: 100, summary: { ...job, stage: job.stage || 'Completed' } })
       onMessage(`${savedCells} attendance ${savedCells === 1 ? 'cell' : 'cells'} saved for ${prepared.size} ${prepared.size === 1 ? 'employee' : 'employees'}.`, 'success')
-      await loadMonthly()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to save attendance.'
+      setSaveProgress((current) => ({ open: true, state: 'error', percent: current.percent, summary: { ...current.summary, state: 'Failed', stage: 'Failed', errors: [message] } }))
+      onMessage(message, 'error')
     } finally {
       setSaving(false)
     }
@@ -424,6 +520,7 @@ export default function ManualAttendanceManager({ clientId, group = null, review
     return { status, patch: { payableValue: half ? 0.5 : payableForStatus(status), checkInTime: timeMatch ? apiTime(timeMatch[1]) : undefined, checkOutTime: timeMatch ? apiTime(timeMatch[2]) : undefined } as RowPatch }
   }
   const importAttendanceCsv = async (event: ChangeEvent<HTMLInputElement>) => {
+    if (saving) return
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
@@ -432,7 +529,7 @@ export default function ManualAttendanceManager({ clientId, group = null, review
     if (dateIndexes.some((index) => index < 0)) { onMessage('Selected file does not match current month template.', 'error'); return }
     const employeeIdIndex = header.findIndex((column) => column === 'EmployeeId'), employeeCodeIndex = header.findIndex((column) => column === 'EmployeeCode')
     const byId = new Map(monthlyRows.map((row) => [String(row.employeeId), row.employeeId])), byCode = new Map(monthlyRows.map((row) => [row.employeeCode.toLowerCase(), row.employeeId]))
-    let nextRows = allDailyRows
+    const nextRows = gridRowMap(allDailyRows)
     const imported = new Set<number>()
     const importedCellKeys = new Set<string>()
     for (const row of rows.slice(1)) {
@@ -441,31 +538,33 @@ export default function ManualAttendanceManager({ clientId, group = null, review
       monthDays.forEach((date, index) => {
         const parsed = parseAttendanceCell(row[dateIndexes[index]] ?? '')
         if (!parsed) return
-        nextRows = upsertGridRow(nextRows, employeeId, date, parsed.status, parsed.patch)
+        upsertGridRow(nextRows, employeeId, date, parsed.status, parsed.patch)
         imported.add(employeeId)
         importedCellKeys.add(attendanceCellKey(employeeId, date))
       })
     }
     if (!imported.size) { onMessage('No attendance rows imported.', 'warning'); return }
     const saveKeys = new Set([...dirtyCellKeys, ...importedCellKeys])
-    setAllDailyRows(nextRows); setDirtyCellKeys(saveKeys)
-    await saveGridChanges(nextRows, saveKeys)
+    const nextGridRows = Array.from(nextRows.values())
+    setAllDailyRows(nextGridRows); setDirtyCellKeys(saveKeys)
+    await saveGridChanges(nextGridRows, saveKeys)
   }
   const applyBulkToEmployees = (employees: EmployeeMonthlyAttendance[], dates: string[], label: string) => {
+    if (saving) return
     if (!dates.length) { onMessage('No dates match selected bulk scope.', 'warning'); return }
-    let nextRows = allDailyRows
+    const nextRows = gridRowMap(allDailyRows)
     const touchedCells = new Set<string>()
     let applied = 0, skipped = 0
     employees.forEach((row) => {
       dates.forEach((date) => {
         if (shouldSkipBulk(row, date)) { skipped += 1; return }
-        nextRows = upsertGridRow(nextRows, row.employeeId, date, bulkStatus)
+        upsertGridRow(nextRows, row.employeeId, date, bulkStatus)
         touchedCells.add(attendanceCellKey(row.employeeId, date))
         applied += 1
       })
     })
     if (!applied) { onMessage('Only protected days matched. Nothing changed.', 'warning'); return }
-    setAllDailyRows(nextRows)
+    setAllDailyRows(Array.from(nextRows.values()))
     setDirtyCellKeys((keys) => new Set([...keys, ...touchedCells]))
     onMessage(`Applied ${normalizeStatus(bulkStatus)} to ${label}. ${skipped ? `${skipped} protected skipped.` : ''}`, 'success')
   }
@@ -476,6 +575,7 @@ export default function ManualAttendanceManager({ clientId, group = null, review
     setGridEdit(null)
   }
   const handleCellClick = (event: ReactMouseEvent<HTMLTableCellElement>, employeeId: number, date: string) => {
+    if (saving) return
     const selecting = cellSelectionMode === 'all' || cellSelectionMode === employeeId || event.ctrlKey || event.metaKey || event.shiftKey
     if (!selecting) {
       setGridEdit({ employeeId, date })
@@ -496,17 +596,18 @@ export default function ManualAttendanceManager({ clientId, group = null, review
     setGridEdit(null)
   }
   const applySelectedCells = () => {
+    if (saving) return
     if (!selectedCellKeys.size) { onMessage('Select one or more attendance cells first.', 'warning'); return }
-    let nextRows = allDailyRows
+    const nextRows = gridRowMap(allDailyRows)
     const touchedCells = new Set<string>()
     selectedCellKeys.forEach((key) => {
       const { employeeId, date } = attendanceCellFromKey(key)
       if (!employeeId || !monthDays.includes(date)) return
-      nextRows = upsertGridRow(nextRows, employeeId, date, bulkStatus)
+      upsertGridRow(nextRows, employeeId, date, bulkStatus)
       touchedCells.add(key)
     })
     if (!touchedCells.size) { onMessage('No valid attendance cells were selected.', 'warning'); return }
-    setAllDailyRows(nextRows)
+    setAllDailyRows(Array.from(nextRows.values()))
     setDirtyCellKeys((keys) => new Set([...keys, ...touchedCells]))
     setSelectedCellKeys(new Set())
     setCellSelectionAnchor(null)
@@ -515,9 +616,14 @@ export default function ManualAttendanceManager({ clientId, group = null, review
 
   return <div className="manual-attendance">
     <div className="attendance-toolbar attendance-simple-toolbar">
-      {clientControl}
-      <label className="attendance-cycle-field">Payroll month / cycle<Input type="month" value={month} onChange={(event) => setMonth(event.target.value)} /><small>{cycleRangeDisplay}</small></label>
-      <Button onClick={loadMonthly} loading={loadingMonthly}>Refresh review</Button>
+      <div
+        aria-disabled={saving}
+        style={{ display: 'contents', ...(saving ? { pointerEvents: 'none' as const } : {}) }}
+      >
+        {clientControl}
+      </div>
+      <label className="attendance-cycle-field">Payroll month / cycle<Input disabled={saving} type="month" value={month} onChange={(event) => setMonth(event.target.value)} /><small>{cycleRangeDisplay}</small></label>
+      <Button onClick={loadMonthly} loading={loadingMonthly} disabled={saving}>Refresh review</Button>
     </div>
     <Card className="attendance-panel" title={<div><Typography.Title level={4}>Attendance Summary</Typography.Title><Typography.Text type="secondary">{reviewPatternText} / {cleanTime(settings.checkInTime)}-{cleanTime(settings.checkOutTime)}</Typography.Text></div>} extra={
         <span className={issueRows.length ? 'attendance-status risk' : 'attendance-status'}>{issueRows.length ? `${issueRows.length} employees need review` : 'Ready for payroll'}</span>
@@ -526,14 +632,14 @@ export default function ManualAttendanceManager({ clientId, group = null, review
         <span>Total employees<b>{summary.total}</b></span><span>Ready<b>{summary.ready}</b></span><span>Missing<b>{summary.missing}</b></span><span>Check values<b>{summary.check}</b></span><span>Payable Days<b>{summary.payableDays.toFixed(1)}</b></span><span>LOP<b>{summary.lopDays.toFixed(1)}</b></span>
       </div>
       <Space className="attendance-next-actions" wrap size={8}>
-        <label className="attendance-action-field"><span>Attendance status</span><SearchSelect value={bulkStatus} onChange={(value) => setBulkStatus(String(value))} options={statusChoices} /></label>
-        <label className="attendance-action-field"><span>Date scope</span><SearchSelect value={bulkScope} onChange={(value) => setBulkScope(value as BulkScope)} options={bulkScopeOptions} /></label>
-        {bulkScope === 'date' && <Input className="attendance-bulk-date" type="date" min={monthDays[0]} max={monthDays[monthDays.length - 1]} value={selectedBulkDate} onChange={(event) => setBulkDate(event.target.value)} />}
-        <Button onClick={bulkApplyVisible} disabled={!filteredRows.length}>Apply scope</Button>
-        <Button className={cellSelectionMode === 'all' ? 'cell-selection-action active' : 'cell-selection-action'} onClick={() => toggleCellSelectionMode('all')}>{cellSelectionMode === 'all' ? 'Selecting cells' : 'Select cells'}</Button>
-        {selectedCellKeys.size > 0 && <Button className="apply-selected-action" onClick={applySelectedCells}>Apply selected ({selectedCellKeys.size})</Button>}
-        {selectedCellKeys.size > 0 && <Button onClick={() => { setSelectedCellKeys(new Set()); setCellSelectionAnchor(null) }}>Clear selection</Button>}
-        <Button type="primary" onClick={() => void saveGridChanges()} loading={saving} disabled={!dirtyCellKeys.size}>Save {dirtyCellKeys.size ? `(${dirtyCellKeys.size} cells)` : ''}</Button>
+        <label className="attendance-action-field"><span>Attendance status</span><SearchSelect disabled={saving} value={bulkStatus} onChange={(value) => setBulkStatus(String(value))} options={statusChoices} /></label>
+        <label className="attendance-action-field"><span>Date scope</span><SearchSelect disabled={saving} value={bulkScope} onChange={(value) => setBulkScope(value as BulkScope)} options={bulkScopeOptions} /></label>
+        {bulkScope === 'date' && <Input disabled={saving} className="attendance-bulk-date" type="date" min={monthDays[0]} max={monthDays[monthDays.length - 1]} value={selectedBulkDate} onChange={(event) => setBulkDate(event.target.value)} />}
+        <Button onClick={bulkApplyVisible} disabled={saving || !filteredRows.length}>Apply scope</Button>
+        <Button disabled={saving} className={cellSelectionMode === 'all' ? 'cell-selection-action active' : 'cell-selection-action'} onClick={() => toggleCellSelectionMode('all')}>{cellSelectionMode === 'all' ? 'Selecting cells' : 'Select cells'}</Button>
+        {selectedCellKeys.size > 0 && <Button disabled={saving} className="apply-selected-action" onClick={applySelectedCells}>Apply selected ({selectedCellKeys.size})</Button>}
+        {selectedCellKeys.size > 0 && <Button disabled={saving} onClick={() => { setSelectedCellKeys(new Set()); setCellSelectionAnchor(null) }}>Clear selection</Button>}
+        <Button type="primary" onClick={() => void saveGridChanges()} loading={saving} disabled={saving || !dirtyCellKeys.size}>Save {dirtyCellKeys.size ? `(${dirtyCellKeys.size} cells)` : ''}</Button>
       </Space>
       <div className="attendance-filterbar">
         <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search employee" allowClear />
@@ -544,23 +650,36 @@ export default function ManualAttendanceManager({ clientId, group = null, review
         <div><strong>Attendance Calendar</strong><span>{filteredRows.length} employees shown / {cycleRangeDisplay}</span></div>
         <Space className="attendance-table-actions" size={8}>
           <Button icon={<DownloadOutlined />} onClick={exportAttendanceCsv} disabled={!filteredRows.length}>Export</Button>
-          <label className="attendance-file-action ant-btn ant-btn-default"><input type="file" accept=".csv,text/csv" onChange={importAttendanceCsv} /><UploadOutlined /><span>Import</span></label>
+          <label className={`attendance-file-action ant-btn ant-btn-default${saving ? ' ant-btn-disabled' : ''}`}><input disabled={saving} type="file" accept=".csv,text/csv" onChange={importAttendanceCsv} /><UploadOutlined /><span>Import</span></label>
         </Space>
       </div>
       <div className={cellSelectionMode !== null ? 'attendance-calendar-grid cell-selection-mode' : 'attendance-calendar-grid'}>
         <table>
-          <thead><tr><th className="employee-col">Employee</th>{monthDays.map((date) => <th key={date}><button type="button" className={bulkScope === 'date' && selectedBulkDate === date ? 'bulk-date-on' : ''} onClick={() => { setBulkScope('date'); setBulkDate(date) }}><b>{date.slice(8)}</b><em>{new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { month: 'short' })}</em><span>{new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short' })}</span></button></th>)}</tr></thead>
-          <tbody>{filteredRows.map((row) => <tr key={row.employeeId} className={`attendance-grid-${rowTone(row)}`}><th className="employee-col"><div className="employee-cell"><strong>{row.employeeName}</strong><small>{row.employeeCode || 'No code'} {row.department ? `- ${row.department}` : ''}</small><span className="employee-attendance-line"><em className={`attendance-dot ${rowTone(row)}`} /><i>{reviewStatus(row)}</i><i>Pay {toNumber(row.payableDays).toFixed(1)}</i><i>LOP {toNumber(row.lopDays).toFixed(1)}</i><i>Miss {missingCountFor(row)}</i><button type="button" className="row-apply" onClick={() => applyEmployeeRow(row)}>Apply row</button><button type="button" className={cellSelectionMode === row.employeeId ? 'row-apply row-select-cells active' : 'row-apply row-select-cells'} onClick={() => toggleCellSelectionMode(row.employeeId)}>{cellSelectionMode === row.employeeId ? 'Selecting' : 'Select cells'}</button></span></div></th>{monthDays.map((date) => {
+          <thead><tr><th className="employee-col">Employee</th>{monthDays.map((date) => <th key={date}><button disabled={saving} type="button" className={bulkScope === 'date' && selectedBulkDate === date ? 'bulk-date-on' : ''} onClick={() => { setBulkScope('date'); setBulkDate(date) }}><b>{date.slice(8)}</b><em>{new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { month: 'short' })}</em><span>{new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short' })}</span></button></th>)}</tr></thead>
+          <tbody>{filteredRows.map((row) => <tr key={row.employeeId} className={`attendance-grid-${rowTone(row)}`}><th className="employee-col"><div className="employee-cell"><strong>{row.employeeName}</strong><small>{row.employeeCode || 'No code'} {row.department ? `- ${row.department}` : ''}</small><span className="employee-attendance-line"><em className={`attendance-dot ${rowTone(row)}`} /><i>{reviewStatus(row)}</i><i>Pay {toNumber(row.payableDays).toFixed(1)}</i><i>LOP {toNumber(row.lopDays).toFixed(1)}</i><i>Miss {missingCountFor(row)}</i><button disabled={saving} type="button" className="row-apply" onClick={() => applyEmployeeRow(row)}>Apply row</button><button disabled={saving} type="button" className={cellSelectionMode === row.employeeId ? 'row-apply row-select-cells active' : 'row-apply row-select-cells'} onClick={() => toggleCellSelectionMode(row.employeeId)}>{cellSelectionMode === row.employeeId ? 'Selecting' : 'Select cells'}</button></span></div></th>{monthDays.map((date) => {
             const cell = gridCell(row, date)
             const editing = gridEdit?.employeeId === row.employeeId && gridEdit.date === date
             const editStatus = cell.row?.status ?? cell.status
             const selected = selectedCellKeys.has(attendanceCellKey(row.employeeId, date))
             return <td key={date} className={`${cell.cls}${selected ? ' cell-selected' : ''}`} data-tip={selected ? `Selected - ${cell.title}` : cell.title} aria-selected={selected} onClick={(event) => handleCellClick(event, row.employeeId, date)}>{editing ? <div className="attendance-cell-editor" onClick={(event) => event.stopPropagation()}>
-              <SearchSelect value={editStatus} onChange={(value) => updateGridStatus(row.employeeId, date, value)} options={statusOptions} />
+              <SearchSelect disabled={saving} value={editStatus} onChange={(value) => updateGridStatus(row.employeeId, date, value)} options={statusOptions} />
             </div> : <button type="button" className="attendance-cell-label"><span>{cell.text}</span>{cell.hoursText && <small>{cell.hoursText}</small>}</button>}</td>
           })}</tr>)}{!filteredRows.length && <tr><td colSpan={monthDays.length + 1}>No employees match this review.</td></tr>}</tbody>
         </table>
       </div>
     </Card>
+    <BulkUploadProgressModal
+      open={saveProgress.open}
+      title="Attendance save progress"
+      state={saveProgress.state}
+      percent={saveProgress.percent}
+      summary={saveProgress.summary}
+      stage={saveProgress.summary.stage}
+      labels={{ total: 'Total cells', completed: 'Processed', saved: 'Saved' }}
+      successMessage="Attendance saved successfully."
+      successDescription={saveProgress.summary.stage === 'Saved - refresh required' ? 'Attendance was saved. Refresh the review before making more changes.' : 'Attendance changes were saved and the review was refreshed.'}
+      errorMessage="Attendance save could not be completed or confirmed."
+      onClose={() => setSaveProgress((current) => ({ ...current, open: false }))}
+    />
   </div>
 }

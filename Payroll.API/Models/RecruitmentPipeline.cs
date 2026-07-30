@@ -172,6 +172,9 @@ public class RecruitmentPipelineVersion
     public long PipelineDefinitionId { get; set; }
     public int VersionNumber { get; set; }
     public string Status { get; set; } = "Draft";
+    public string ScopeType { get; set; } = "Application";
+    public string SlaMode { get; set; } = "StageEntry";
+    public int OverallSlaMinutes { get; set; }
     public int CreatedByUserId { get; set; }
     public int? PublishedByUserId { get; set; }
     public DateTime? PublishedAtUtc { get; set; }
@@ -184,6 +187,9 @@ public class SaveRecruitmentPipelineVersion
 {
     public long Id { get; set; }
     public long PipelineDefinitionId { get; set; }
+    public string ScopeType { get; set; } = "Application";
+    public string SlaMode { get; set; } = "StageEntry";
+    public int OverallSlaMinutes { get; set; }
     public List<RecruitmentPipelineStage> Stages { get; set; } = [];
     public List<RecruitmentPipelineTransition> Transitions { get; set; } = [];
 }
@@ -199,6 +205,10 @@ public class RecruitmentPipelineStage
     public int DisplayOrder { get; set; }
     public int SlaDurationMinutes { get; set; }
     public int SlaWarningMinutes { get; set; }
+    public int? TargetOffsetMinutes { get; set; }
+    public string StakeholderCode { get; set; } = "";
+    public bool AllowPause { get; set; } = true;
+    public string PauseBehavior { get; set; } = "ShiftStageAndOverall";
     public long? ApprovalWorkflowId { get; set; }
     public bool RequiresApproval { get; set; }
     public bool CalendarEnabled { get; set; }
@@ -210,8 +220,10 @@ public class RecruitmentPipelineStage
     public RecruitmentStageAtsConfiguration? AtsConfiguration { get; set; }
     public RecruitmentStageExternalFormConfiguration? ExternalFormConfiguration { get; set; }
     public List<RecruitmentStageAttachmentRequirement> AttachmentRequirements { get; set; } = [];
+    public List<RecruitmentStageProcessDocumentRequirement> ProcessDocumentRequirements { get; set; } = [];
     public RecruitmentStageOfferConfiguration? OfferConfiguration { get; set; }
     public RecruitmentInterviewStageConfiguration? InterviewConfiguration { get; set; }
+    public List<RecruitmentStageDefaultPanelMember> DefaultPanelMembers { get; set; } = [];
 }
 
 public class RecruitmentPipelineStageAction
@@ -225,6 +237,7 @@ public class RecruitmentPipelineStageAction
     public long? WorkflowId { get; set; }
     public long? TemplateId { get; set; }
     public bool IsActive { get; set; } = true;
+    public List<RecruitmentStageActionRecipient> Recipients { get; set; } = [];
 }
 
 public class RecruitmentStageActionExecution
@@ -293,6 +306,17 @@ public class RecruitmentStageAttachmentRequirement
     public int DisplayOrder { get; set; } = 100;
 }
 
+public class RecruitmentStageProcessDocumentRequirement
+{
+    public long Id { get; set; }
+    public long PipelineStageId { get; set; }
+    public string DocumentType { get; set; } = "";
+    public long? TemplateId { get; set; }
+    public bool IsRequired { get; set; } = true;
+    public bool RequiresSignature { get; set; }
+    public int DisplayOrder { get; set; } = 100;
+}
+
 public class RecruitmentStageOfferConfiguration
 {
     public long Id { get; set; }
@@ -348,6 +372,8 @@ public class RecruitmentInterviewStageConfiguration
     public int DefaultDurationMinutes { get; set; } = 60;
     public int MinimumPanelCount { get; set; } = 1;
     public decimal MinimumPassingScore { get; set; } = 60;
+    public string ScoreInputMode { get; set; } = "PercentageWeighted";
+    public string PanelAggregationMethod { get; set; } = "Average";
     public bool FeedbackRequired { get; set; } = true;
     public bool CalendarEnabled { get; set; } = true;
     public bool AllowReschedule { get; set; } = true;
@@ -413,6 +439,7 @@ public class RecruitmentApplicationStageInstance
 
 public class RecruitmentPipelineBoard
 {
+    public int ClientId { get; set; }
     public long PositionId { get; set; }
     public long? JobPostingId { get; set; }
     public string PositionCode { get; set; } = "";
@@ -430,6 +457,7 @@ public class RecruitmentPipelineBoardLane
     public int DisplayOrder { get; set; }
     public int SlaDurationMinutes { get; set; }
     public int SlaWarningMinutes { get; set; }
+    public List<RecruitmentStageProcessDocumentRequirement> ProcessDocumentRequirements { get; set; } = [];
     public List<RecruitmentPipelineBoardCard> Applications { get; set; } = [];
 }
 

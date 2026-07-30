@@ -21,7 +21,9 @@ const normalizeCalculationType = (value: string) =>
   value === 'Balancing Amount' || value === 'Residual / Balancing' ? 'Residual / Balancing' :
   value === 'Manual Entry' || value === 'Manual Override' || value === 'Manual / Variable' ? 'Manual / Variable' :
   value === 'Slab Based' ? 'Slab Based' : 'Fixed Amount'
-export const canOverrideSalaryComponent = (component: Component) => ['Fixed Amount', 'Manual / Variable'].includes(normalizeCalculationType(component.calculationType))
+// Employee-specific overrides are valid for fixed, formula, percentage, slab
+// and balancing components. Only calculated summary rows must stay derived.
+export const canOverrideSalaryComponent = (component: Component) => !isSummaryCode(component.code)
 
 function slabValue(source: string, baseAmount: number) {
   for (const slab of source.split(';')) {

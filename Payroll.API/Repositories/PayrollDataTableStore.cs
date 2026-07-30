@@ -172,6 +172,10 @@ CREATE TABLE IF NOT EXISTS payrunemployeelines (
         await EnsureColumnAsync(connection, "payrunemployeelines", "StatutoryType", "VARCHAR(80) NOT NULL DEFAULT 'None' AFTER ComponentRole");
         await EnsureColumnAsync(connection, "salarycomponents", "ComponentRole", "VARCHAR(80) NOT NULL DEFAULT 'Regular Earning' AFTER ComponentType");
         await EnsureColumnAsync(connection, "salarycomponents", "StatutoryType", "VARCHAR(80) NOT NULL DEFAULT 'None' AFTER ComponentRole");
+        await EnsureColumnAsync(connection, "salarycomponents", "Epf", "VARCHAR(40) NOT NULL DEFAULT 'Never' AFTER RestrictFbp");
+        await EnsureColumnAsync(connection, "salarycomponents", "Esi", "BOOLEAN NOT NULL DEFAULT FALSE AFTER Epf");
+        await EnsureColumnAsync(connection, "salarycomponents", "InvestmentType", "VARCHAR(120) NOT NULL DEFAULT '' AFTER Scheduled");
+        await EnsureColumnAsync(connection, "salarycomponents", "CorrectionOf", "VARCHAR(120) NOT NULL DEFAULT '' AFTER InvestmentType");
         await EnsureColumnAsync(connection, "salarystructurelines", "CalculationType", "VARCHAR(80) NOT NULL DEFAULT '' AFTER ValueText");
         await EnsureColumnAsync(connection, "salarystructurelines", "Formula", "VARCHAR(1000) NOT NULL DEFAULT '' AFTER CalculationType");
         await EnsureColumnAsync(connection, "salarystructurelines", "BaseComponent", "VARCHAR(80) NOT NULL DEFAULT '' AFTER Formula");

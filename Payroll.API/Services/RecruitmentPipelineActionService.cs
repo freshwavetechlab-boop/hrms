@@ -219,7 +219,8 @@ SET Status='Pending Approval',WorkflowInstanceId=@WorkflowInstanceId,ErrorMessag
             case "SEND_NOTIFICATION":
             {
                 if (action.TemplateId is null or <= 0) throw new InvalidOperationException("Select a notification template for this stage action.");
-                if (string.IsNullOrWhiteSpace(context.CandidateEmail)) throw new InvalidOperationException("Candidate email is not available.");
+                var recipients = await ResolveRecipientsAsync(db, action.Id, context);
+                if (recipients.Count == 0) throw new InvalidOperationException("No active recipient could be resolved for this stage notification.");
                 var openSession = (await candidateActions.ListAsync(context.ApplicationId, user))
                     .FirstOrDefault(row => row.Status.Equals("Open", StringComparison.OrdinalIgnoreCase)
                         && row.PipelineStageInstanceId == context.StageInstanceId
@@ -243,31 +244,40 @@ FROM recruitment_settings WHERE ClientId=@ClientId AND RecruitmentEnabled=TRUE A
                 var candidateActionUrl = openSession is null || string.IsNullOrWhiteSpace(openSession.ActionToken) || portalBaseUrl.Length == 0
                     ? ""
                     : $"{portalBaseUrl}/candidate-action/{Uri.EscapeDataString(openSession.ActionToken)}";
-                var queueId = await notifications.QueueTemplateAsync(action.TemplateId.Value, context.CandidateEmail, new NotificationEvent
+                long? firstQueueId = null;
+                foreach (var recipient in recipients)
                 {
-                    EventCode = $"RECRUITMENT_STAGE_{action.TriggerEvent}",
-                    ResourceType = "RecruitmentApplication",
-                    ResourceId = context.ApplicationId.ToString(),
-                    ClientId = context.ClientId,
-                    ActorUserId = user.Id,
-                    ActorName = user.DisplayName,
-                    ActorEmail = user.Email,
-                    PayloadJson = JsonSerializer.Serialize(new
+                    var queueId = await notifications.QueueTemplateAsync(action.TemplateId.Value, recipient.Email, new NotificationEvent
                     {
-                        applicationId = context.ApplicationId,
-                        candidateId = context.CandidateId,
-                        candidateName = context.CandidateName,
-                        candidateEmail = context.CandidateEmail,
-                        positionTitle = context.PositionTitle,
-                        stageName = context.StageName,
-                        stageType = context.StageType,
-                        triggerEvent = action.TriggerEvent,
-                        candidateActionUrl,
-                        candidateActionExpiresAt = openSession?.ExpiresAtUtc.ToString("O") ?? ""
-                    })
-                });
-                if (!queueId.HasValue) throw new InvalidOperationException("Notification could not be queued. Check the template and candidate email.");
-                await CompleteAsync(db, executionId, "NotificationQueueId", queueId.Value);
+                        EventCode = $"RECRUITMENT_STAGE_{action.TriggerEvent}",
+                        ResourceType = "RecruitmentApplication",
+                        ResourceId = context.ApplicationId.ToString(),
+                        ClientId = context.ClientId,
+                        ActorUserId = user.Id,
+                        ActorName = user.DisplayName,
+                        ActorEmail = user.Email,
+                        PayloadJson = JsonSerializer.Serialize(new
+                        {
+                            applicationId = context.ApplicationId,
+                            candidateId = context.CandidateId,
+                            candidateName = context.CandidateName,
+                            candidateEmail = context.CandidateEmail,
+                            positionTitle = context.PositionTitle,
+                            stageName = context.StageName,
+                            stageType = context.StageType,
+                            triggerEvent = action.TriggerEvent,
+                            candidateActionUrl,
+                            candidateActionExpiresAt = openSession?.ExpiresAtUtc.ToString("O") ?? ""
+                        })
+                    });
+                    if (!queueId.HasValue) throw new InvalidOperationException($"Notification could not be queued for {recipient.Email}. Check the template and recipient.");
+                    firstQueueId ??= queueId.Value;
+                    await db.ExecuteAsync(@"INSERT INTO recruitment_stage_action_notification_deliveries
+(StageActionExecutionId,RecipientType,RecipientEmail,NotificationQueueId)
+VALUES (@ExecutionId,@RecipientType,@RecipientEmail,@QueueId)
+ON DUPLICATE KEY UPDATE NotificationQueueId=VALUES(NotificationQueueId)", new { ExecutionId = executionId, recipient.RecipientType, RecipientEmail = recipient.Email, QueueId = queueId.Value });
+                }
+                await CompleteAsync(db, executionId, "NotificationQueueId", firstQueueId!.Value);
                 break;
             }
             default:
@@ -322,6 +332,62 @@ SET Status='Completed',{referenceColumn}=@ReferenceId,ErrorMessage='',CompletedA
             new { Id = executionId, ReferenceId = referenceId });
     }
 
+    private static async Task<IReadOnlyList<ResolvedRecipient>> ResolveRecipientsAsync(MySqlConnection db, long stageActionId, ActionContext context)
+    {
+        var configured = (await db.QueryAsync<RecipientConfiguration>(@"SELECT * FROM recruitment_stage_action_recipients
+WHERE StageActionId=@Id AND IsActive=TRUE ORDER BY DisplayOrder,Id", new { Id = stageActionId })).ToList();
+        if (configured.Count == 0)
+            configured.Add(new RecipientConfiguration { RecipientType = "Candidate" });
+        var recipients = new List<ResolvedRecipient>();
+        foreach (var configuration in configured)
+        {
+            var type = (configuration.RecipientType ?? "").Trim();
+            if (type.Equals("Candidate", StringComparison.OrdinalIgnoreCase))
+                Add(type, context.CandidateEmail);
+            else if (type.Equals("SpecificUser", StringComparison.OrdinalIgnoreCase) && configuration.UserId.HasValue)
+                AddRange(type, await db.QueryAsync<string>("SELECT Email FROM authusers WHERE Id=@Id AND IsActive=TRUE AND (ClientId IS NULL OR ClientId=@ClientId)", new { Id = configuration.UserId.Value, context.ClientId }));
+            else if (type.Equals("UserRole", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(configuration.RoleCode))
+                AddRange(type, await db.QueryAsync<string>(@"SELECT DISTINCT userRow.Email FROM authusers userRow
+JOIN authuserroles userRole ON userRole.UserId=userRow.Id JOIN authroles roleRow ON roleRow.Id=userRole.RoleId
+WHERE roleRow.Code=@RoleCode AND userRow.IsActive=TRUE AND (userRow.ClientId IS NULL OR userRow.ClientId=@ClientId)", new { RoleCode = configuration.RoleCode.Trim(), context.ClientId }));
+            else if (type.Equals("StaticEmail", StringComparison.OrdinalIgnoreCase))
+                Add(type, configuration.EmailAddress);
+            else if (type.Equals("InterviewPanelMembers", StringComparison.OrdinalIgnoreCase))
+                AddRange(type, await db.QueryAsync<string>(@"SELECT DISTINCT userRow.Email FROM recruitment_interviews interviewRow
+JOIN recruitment_interview_panel_members panel ON panel.InterviewId=interviewRow.Id
+JOIN authusers userRow ON userRow.Id=panel.PanelUserId AND userRow.IsActive=TRUE
+WHERE interviewRow.ApplicationId=@ApplicationId AND (interviewRow.PipelineStageInstanceId=@StageInstanceId OR @StageInstanceId IS NULL)", new { context.ApplicationId, context.StageInstanceId }));
+            else if (type.Equals("StageDefaultPanelMembers", StringComparison.OrdinalIgnoreCase))
+                AddRange(type, await db.QueryAsync<string>(@"SELECT DISTINCT userRow.Email FROM recruitment_stage_default_panel_members panel
+JOIN authusers userRow ON userRow.Id=panel.PanelUserId AND userRow.IsActive=TRUE
+WHERE panel.PipelineStageId=@PipelineStageId AND (userRow.ClientId IS NULL OR userRow.ClientId=@ClientId)", new { context.PipelineStageId, context.ClientId }));
+            else if (type.Equals("HiringRequester", StringComparison.OrdinalIgnoreCase))
+                AddRange(type, await db.QueryAsync<string>(@"SELECT userRow.Email FROM recruitment_candidate_applications applicationRow
+JOIN recruitment_open_positions positionRow ON positionRow.Id=applicationRow.PositionId
+JOIN recruitment_requisitions requisition ON requisition.Id=positionRow.RequisitionId
+JOIN authusers userRow ON userRow.Id=requisition.RequestedByUserId AND userRow.IsActive=TRUE
+WHERE applicationRow.Id=@ApplicationId", new { context.ApplicationId }));
+            else if (type.Equals("PositionRecruiter", StringComparison.OrdinalIgnoreCase))
+                AddRange(type, await db.QueryAsync<string>(@"SELECT userRow.Email FROM recruitment_candidate_applications applicationRow
+JOIN recruitment_open_positions positionRow ON positionRow.Id=applicationRow.PositionId
+JOIN authusers userRow ON userRow.Id=COALESCE(NULLIF(applicationRow.RecruiterUserId,0),NULLIF(positionRow.RecruiterUserId,0)) AND userRow.IsActive=TRUE
+WHERE applicationRow.Id=@ApplicationId", new { context.ApplicationId }));
+        }
+        return recipients.GroupBy(row => row.Email, StringComparer.OrdinalIgnoreCase).Select(group => group.First()).ToList();
+
+        void Add(string recipientType, string? email)
+        {
+            var value = (email ?? "").Trim();
+            if (value.Length > 0 && System.Net.Mail.MailAddress.TryCreate(value, out var address))
+                recipients.Add(new ResolvedRecipient(recipientType, address.Address));
+        }
+
+        void AddRange(string recipientType, IEnumerable<string> emails)
+        {
+            foreach (var email in emails) Add(recipientType, email);
+        }
+    }
+
     private static string NormalizeTrigger(string value) => (value ?? "").Trim().ToUpperInvariant() switch
     {
         "ONENTRY" => "OnEntry",
@@ -361,4 +427,14 @@ SET Status='Completed',{referenceColumn}=@ReferenceId,ErrorMessage='',CompletedA
         public long ApplicationId { get; set; }
         public string TriggerEvent { get; set; } = "";
     }
+
+    private sealed class RecipientConfiguration
+    {
+        public string RecipientType { get; set; } = "Candidate";
+        public int? UserId { get; set; }
+        public string RoleCode { get; set; } = "";
+        public string EmailAddress { get; set; } = "";
+    }
+
+    private sealed record ResolvedRecipient(string RecipientType, string Email);
 }

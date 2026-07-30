@@ -1,0 +1,19 @@
+{
+  "generatedAt": "2026-07-30T12:48:53.078Z",
+  "webUrl": "http://127.0.0.1:5177",
+  "apiUrl": "http://localhost:5062",
+  "referenceClient": {
+    "id": 1,
+    "code": "PLRS",
+    "name": "Punjab Land Records Society",
+    "employeeCount": 1668,
+    "payRunCount": 2,
+    "payPeriod": "2026-07"
+  },
+  "figures": 30,
+  "htmlPath": "D:\\NewHrms\\hrms\\docs\\client-payroll-lifecycle-user-manual\\Complete-Client-Payroll-Lifecycle-User-Manual.html",
+  "pdfPath": "D:\\NewHrms\\hrms\\docs\\client-payroll-lifecycle-user-manual\\Complete-Client-Payroll-Lifecycle-User-Manual.pdf",
+  "browserDiagnostics": [],
+  "databaseWrites": 0,
+  "captureMode": "Read-only live pages plus browser-only sample responses where configuration was absent"
+}

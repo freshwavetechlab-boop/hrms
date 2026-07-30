@@ -120,23 +120,39 @@ ORDER BY r.UpdatedAt DESC LIMIT 500";
 
     public async Task<(RecruitmentRequisition? Row, string Error)> SaveDraftAsync(SaveRecruitmentRequisition request, AuthUser user)
     {
-        if (user.EmployeeId is null) return (null, "Employee link is required to create a recruitment requisition.");
         await using var db = Db();
         await db.OpenAsync();
         await EnsureTablesAsync(db);
-        var employee = await db.QueryFirstOrDefaultAsync<RequesterRow>("SELECT Id,ClientId,Department FROM employees WHERE Id=@EmployeeId AND IsActive=TRUE", new { EmployeeId = user.EmployeeId.Value });
+        var canManage = user.Permissions.Contains("recruitment.manage", StringComparer.OrdinalIgnoreCase)
+            || user.Permissions.Contains("settings.manage", StringComparer.OrdinalIgnoreCase);
+        RecruitmentRequisition? existing = null;
+        if (request.Id > 0)
+        {
+            existing = await db.QueryFirstOrDefaultAsync<RecruitmentRequisition>("SELECT * FROM recruitment_requisitions WHERE Id=@Id", new { request.Id });
+            if (existing is null || !CanModify(existing, user, canManage)) return (null, "Draft not found.");
+            if (existing.Status is not ("Draft" or "Sent Back")) return (null, "Only draft or sent back requisitions can be edited.");
+            if (request.ClientId is > 0 && request.ClientId.Value != existing.ClientId)
+                return (null, "A requisition's client cannot be changed after creation.");
+            if (request.RequestedByEmployeeId is > 0 && request.RequestedByEmployeeId.Value != existing.RequestedByEmployeeId)
+                return (null, "A requisition's requester cannot be changed after creation.");
+        }
+        var requesterEmployeeId = existing?.RequestedByEmployeeId
+            ?? (canManage && request.RequestedByEmployeeId is > 0 ? request.RequestedByEmployeeId : user.EmployeeId);
+        if (requesterEmployeeId is null)
+            return (null, "Select an active requester employee for this hiring request.");
+        var employee = await db.QueryFirstOrDefaultAsync<RequesterRow>("SELECT Id,ClientId,Department FROM employees WHERE Id=@EmployeeId AND IsActive=TRUE", new { EmployeeId = requesterEmployeeId.Value });
         if (employee is null) return (null, "Requester employee profile was not found.");
-        var clientId = user.ClientId ?? employee.ClientId;
-        var enabled = await IsRequesterAllowedAsync(db, clientId, user);
+        var clientId = existing?.ClientId ?? user.ClientId ?? request.ClientId ?? employee.ClientId;
+        if (employee.ClientId != clientId) return (null, "Requester employee must belong to the selected client.");
+        var enabled = canManage
+            ? await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_settings WHERE ClientId=@ClientId AND RecruitmentEnabled=TRUE AND IsActive=TRUE", new { ClientId = clientId }) > 0
+            : await IsRequesterAllowedAsync(db, clientId, user);
         if (!enabled) return (null, "Recruitment requisition creation is not enabled for your client.");
         var setting = await GetSettingAsync(db, clientId);
         var validation = await ValidateAsync(db, request, clientId, setting);
         if (!string.IsNullOrWhiteSpace(validation)) return (null, validation);
-        if (request.Id > 0)
+        if (existing is not null)
         {
-            var existing = await db.QueryFirstOrDefaultAsync<RecruitmentRequisition>("SELECT * FROM recruitment_requisitions WHERE Id=@Id", new { request.Id });
-            if (existing is null || existing.RequestedByEmployeeId != user.EmployeeId.Value) return (null, "Draft not found.");
-            if (existing.Status is not ("Draft" or "Sent Back")) return (null, "Only draft or sent back requisitions can be edited.");
             await db.ExecuteAsync(UpdateSql, Payload(request, user, employee, clientId, existing.RfrNumber, existing.Id));
             await AuditAsync(db, request.Id, "Edit", user.Id, request);
             return (await GetAsync(request.Id, user), "");
@@ -152,7 +168,9 @@ ORDER BY r.UpdatedAt DESC LIMIT 500";
         await using var db = Db();
         await db.OpenAsync();
         var row = await db.QueryFirstOrDefaultAsync<RecruitmentRequisition>("SELECT * FROM recruitment_requisitions WHERE Id=@Id", new { Id = id });
-        if (row is null || row.RequestedByUserId != user.Id) return (null, "Requisition not found.");
+        var canManage = user.Permissions.Contains("recruitment.manage", StringComparer.OrdinalIgnoreCase)
+            || user.Permissions.Contains("settings.manage", StringComparer.OrdinalIgnoreCase);
+        if (row is null || !CanModify(row, user, canManage)) return (null, "Requisition not found.");
         if (row.Status is not ("Draft" or "Sent Back")) return (null, "Only draft or sent back requisitions can be submitted.");
         await db.ExecuteAsync("UPDATE recruitment_requisitions SET Status='Pending Approval',SubmittedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id });
         await AuditAsync(db, id, "Submit", user.Id, row);
@@ -492,10 +510,16 @@ SELECT LAST_INSERT_ID();", new { r.Id, Code = code, r.ClientId, r.BranchId, r.Bu
 
     private static bool CanView(RecruitmentRequisition row, AuthUser user)
     {
-        if (row.RequestedByUserId == user.Id) return true;
         if (user.ClientId is not null && user.ClientId != row.ClientId) return false;
+        if (row.RequestedByUserId == user.Id || (user.EmployeeId.HasValue && row.RequestedByEmployeeId == user.EmployeeId.Value)) return true;
         return user.Permissions.Contains("recruitment.manage", StringComparer.OrdinalIgnoreCase) ||
                user.Permissions.Contains("recruitment.rfr.view", StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool CanModify(RecruitmentRequisition row, AuthUser user, bool canManage)
+    {
+        if (user.ClientId is not null && user.ClientId != row.ClientId) return false;
+        return canManage || row.RequestedByUserId == user.Id || (user.EmployeeId.HasValue && row.RequestedByEmployeeId == user.EmployeeId.Value);
     }
     private static async Task<bool> IsRequesterAllowedAsync(MySqlConnection db, int clientId, AuthUser user)
     {
@@ -528,6 +552,10 @@ SELECT LAST_INSERT_ID();", new { r.Id, Code = code, r.ClientId, r.BranchId, r.Bu
         if (request.NumberOfOpenings <= 0) return "Number of openings must be greater than zero.";
         if (request.IsReplacement && setting?.AllowReplacementHiring != true) return "Replacement hiring is disabled for this client.";
         if (request.IsReplacement && (request.ReplacementEmployeeId ?? 0) <= 0) return "Replacement employee is required for replacement hiring.";
+        if (request.BranchId > 0 && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM worklocations WHERE Id=@Id AND ClientId=@ClientId AND IsActive=TRUE", new { Id = request.BranchId, ClientId = clientId }) == 0)
+            return "Selected work location is not active for this client.";
+        if (request.IsReplacement && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE Id=@Id AND ClientId=@ClientId AND IsActive=TRUE", new { Id = request.ReplacementEmployeeId, ClientId = clientId }) == 0)
+            return "Replacement employee is not active for this client.";
         if (request.TargetJoiningDate is not null && request.TargetJoiningDate.Value.Date < DateTime.Today.AddDays(-1)) return "Target joining date cannot be in the past.";
         if (!string.IsNullOrWhiteSpace(request.HiringType) && !await ExistsMasterAsync(db, clientId, "Hiring Type", request.HiringType)) return "Selected hiring type is not active in Dropdown Masters.";
         if (!string.IsNullOrWhiteSpace(request.PositionCategory) && !await ExistsMasterAsync(db, clientId, "Position Category", request.PositionCategory)) return "Selected position category is not active in Dropdown Masters.";
@@ -662,7 +690,7 @@ ORDER BY a.CreatedAt DESC,a.Id DESC", new { PositionId = positionId, PartnerType
     {
         Id = id,
         RfrNumber = number,
-        RequestedByEmployeeId = user.EmployeeId ?? 0,
+        RequestedByEmployeeId = employee.Id,
         RequestedByUserId = user.Id,
         ClientId = clientId,
         request.BranchId,

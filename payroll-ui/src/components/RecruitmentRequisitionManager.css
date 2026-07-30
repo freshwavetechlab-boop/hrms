@@ -1,0 +1,192 @@
+.rfr-manager {
+  min-width: 0;
+  color: #172033;
+}
+
+.rfr-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+}
+
+.rfr-header span,
+.rfr-dialog-kicker {
+  color: #6653e8;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+}
+
+.rfr-header h2,
+.rfr-dialog h3 {
+  margin: 3px 0 4px;
+  color: #172033;
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.rfr-header p {
+  margin: 0;
+  color: #6e7890;
+}
+
+.rfr-toolbar {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(210px, 300px) minmax(160px, 210px) auto;
+  gap: 10px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid #e5e8f2;
+  border-radius: 14px;
+  background: #fbfcff;
+}
+
+.rfr-primary-cell,
+.rfr-stacked-cell {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.rfr-primary-cell b,
+.rfr-stacked-cell b {
+  overflow: hidden;
+  color: #1e2740;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rfr-primary-cell span,
+.rfr-stacked-cell span,
+.rfr-muted {
+  overflow: hidden;
+  color: #7a849a;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rfr-dialog .ant-modal-content {
+  overflow: hidden;
+  padding: 0;
+  border-radius: 18px;
+}
+
+.rfr-dialog .ant-modal-header {
+  margin: 0;
+  padding: 22px 26px 18px;
+  border-bottom: 1px solid #eceef5;
+}
+
+.rfr-dialog .ant-modal-body {
+  max-height: calc(100vh - 155px);
+  overflow-y: auto;
+  padding: 22px 26px 0;
+}
+
+.rfr-essential-grid,
+.rfr-advanced-grid,
+.rfr-context-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 18px;
+}
+
+.rfr-essential-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.rfr-essential-grid > :nth-child(3),
+.rfr-essential-grid > :nth-child(4) {
+  grid-column: span 2;
+}
+
+.rfr-switch-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 26px;
+  padding: 13px 15px 0;
+  margin: 1px 0 14px;
+  border: 1px solid #e7e9f2;
+  border-radius: 12px;
+  background: #fafaff;
+}
+
+.rfr-switch-row .ant-form-item {
+  margin-bottom: 13px;
+}
+
+.rfr-switch-row .ant-switch {
+  margin-right: 7px;
+}
+
+.rfr-context-grid {
+  padding: 16px 16px 0;
+  margin-bottom: 14px;
+  border: 1px solid #ddd9ff;
+  border-radius: 12px;
+  background: #faf9ff;
+}
+
+.rfr-advanced {
+  margin: 2px -4px 0;
+  border-top: 1px solid #eceef5;
+}
+
+.rfr-advanced .ant-collapse-header {
+  padding-inline: 4px !important;
+  color: #5040c8 !important;
+  font-weight: 700;
+}
+
+.rfr-advanced .ant-collapse-content-box {
+  padding-inline: 4px !important;
+}
+
+.rfr-span-2 {
+  grid-column: span 2;
+}
+
+.rfr-dialog-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 15px 0 18px;
+  border-top: 1px solid #eceef5;
+  background: rgba(255, 255, 255, .97);
+  backdrop-filter: blur(8px);
+}
+
+.rfr-form .ant-form-item {
+  margin-bottom: 17px;
+}
+
+.rfr-form .ant-form-item-label > label {
+  color: #46516a;
+  font-weight: 650;
+}
+
+@media (max-width: 900px) {
+  .rfr-essential-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rfr-toolbar { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 640px) {
+  .rfr-header { align-items: stretch; flex-direction: column; }
+  .rfr-header .ant-btn { width: 100%; }
+  .rfr-toolbar,
+  .rfr-essential-grid,
+  .rfr-advanced-grid,
+  .rfr-context-grid { grid-template-columns: 1fr; }
+  .rfr-essential-grid > :nth-child(3),
+  .rfr-essential-grid > :nth-child(4),
+  .rfr-span-2 { grid-column: auto; }
+  .rfr-dialog .ant-modal-body { padding-inline: 16px; }
+}

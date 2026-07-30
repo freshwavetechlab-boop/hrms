@@ -460,6 +460,7 @@ WHERE a.entity_type='FORM_SUBMISSION' AND a.entity_id=@SubmissionId AND a.is_del
 UPDATE form_submissions SET CandidateId=@CandidateId,ApplicationId=@ApplicationId,EntityType='CANDIDATE',EntityId=@CandidateId,
 Status='Submitted',SubmittedAtUtc=UTC_TIMESTAMP(6),UpdatedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@SubmissionId",
                     new { SubmissionId = locked.FormSubmissionId.Value, locked.CandidateId, locked.ApplicationId }, transaction);
+                await ProjectSubmissionToCandidateAsync(db, transaction, locked.FormSubmissionId.Value, locked.CandidateId);
             }
             await db.ExecuteAsync("UPDATE recruitment_candidate_action_sessions SET Status='Completed',CompletedAtUtc=UTC_TIMESTAMP(6),LastUsedAtUtc=UTC_TIMESTAMP(6),UseCount=UseCount+1 WHERE Id=@Id", new { locked.Id }, transaction);
             await transaction.CommitAsync();
@@ -475,6 +476,98 @@ Status='Submitted',SubmittedAtUtc=UTC_TIMESTAMP(6),UpdatedAtUtc=UTC_TIMESTAMP(6)
         {
             await transaction.RollbackAsync();
             return (null, exception.Message);
+        }
+    }
+
+    private static async Task ProjectSubmissionToCandidateAsync(MySqlConnection db, MySqlTransaction transaction, long submissionId, long candidateId)
+    {
+        var values = (await db.QueryAsync<SemanticProjectionRow>(@"SELECT semantic.SemanticCode,valueRow.TextValue,valueRow.IntegerValue,valueRow.DecimalValue
+FROM form_field_semantic_mappings mapping
+JOIN form_semantic_attributes semantic ON semantic.Id=mapping.SemanticAttributeId AND semantic.IsActive=TRUE
+JOIN form_submission_values valueRow ON valueRow.FieldId=mapping.FieldId AND valueRow.SubmissionId=@SubmissionId",
+            new { SubmissionId = submissionId }, transaction)).ToList();
+        if (values.Count == 0) return;
+        SemanticProjectionRow? Value(string code) => values.FirstOrDefault(row => row.SemanticCode.Equals(code, StringComparison.OrdinalIgnoreCase));
+        static string Text(SemanticProjectionRow? row) => (row?.TextValue ?? "").Trim();
+        static decimal? Number(SemanticProjectionRow? row)
+        {
+            if (row?.DecimalValue is not null) return row.DecimalValue;
+            if (row?.IntegerValue is not null) return row.IntegerValue.Value;
+            return decimal.TryParse(row?.TextValue, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
+        }
+
+        var firstName = Value("FIRST_NAME");
+        var lastName = Value("LAST_NAME");
+        var email = Value("EMAIL");
+        var phone = Value("PHONE");
+        var currentLocation = Value("CURRENT_LOCATION");
+        var currentCompany = Value("CURRENT_COMPANY");
+        var currentDesignation = Value("CURRENT_DESIGNATION");
+        var experience = Value("TOTAL_EXPERIENCE_MONTHS");
+        var qualification = Value("HIGHEST_QUALIFICATION");
+        var certifications = Value("CERTIFICATIONS");
+        var currentCtc = Value("CURRENT_CTC");
+        var expectedCtc = Value("EXPECTED_CTC");
+        var noticePeriod = Value("NOTICE_PERIOD_DAYS");
+        var emailText = Text(email);
+        var phoneText = Text(phone);
+        var experienceNumber = Number(experience);
+        var currentCtcNumber = Number(currentCtc);
+        var expectedCtcNumber = Number(expectedCtc);
+        var noticePeriodNumber = Number(noticePeriod);
+        await db.ExecuteAsync(@"UPDATE recruitment_candidates SET
+FirstName=CASE WHEN @HasFirstName AND @FirstName<>'' THEN @FirstName ELSE FirstName END,
+LastName=CASE WHEN @HasLastName THEN @LastName ELSE LastName END,
+Email=CASE WHEN @HasEmail AND @Email<>'' THEN @Email ELSE Email END,
+NormalizedEmail=CASE WHEN @HasEmail AND @Email<>'' THEN LOWER(TRIM(@Email)) ELSE NormalizedEmail END,
+Phone=CASE WHEN @HasPhone AND @Phone<>'' THEN @Phone ELSE Phone END,
+NormalizedPhone=CASE WHEN @HasPhone AND @Phone<>'' THEN REGEXP_REPLACE(@Phone,'[^0-9]','') ELSE NormalizedPhone END,
+CurrentLocation=CASE WHEN @HasCurrentLocation THEN @CurrentLocation ELSE CurrentLocation END,
+CurrentCompany=CASE WHEN @HasCurrentCompany THEN @CurrentCompany ELSE CurrentCompany END,
+CurrentTitle=CASE WHEN @HasCurrentDesignation THEN @CurrentDesignation ELSE CurrentTitle END,
+TotalExperienceMonths=CASE WHEN @HasExperience AND @ExperienceMonths IS NOT NULL THEN @ExperienceMonths ELSE TotalExperienceMonths END,
+HighestQualification=CASE WHEN @HasQualification THEN @Qualification ELSE HighestQualification END,
+CurrentCtc=CASE WHEN @HasCurrentCtc THEN @CurrentCtc ELSE CurrentCtc END,
+ExpectedCtc=CASE WHEN @HasExpectedCtc THEN @ExpectedCtc ELSE ExpectedCtc END,
+NoticePeriodDays=CASE WHEN @HasNoticePeriod THEN @NoticePeriodDays ELSE NoticePeriodDays END,
+UpdatedAt=UTC_TIMESTAMP()
+WHERE Id=@CandidateId", new
+        {
+            CandidateId = candidateId,
+            HasFirstName = firstName is not null,
+            FirstName = Text(firstName),
+            HasLastName = lastName is not null,
+            LastName = Text(lastName),
+            HasEmail = email is not null,
+            Email = emailText,
+            HasPhone = phone is not null,
+            Phone = phoneText,
+            HasCurrentLocation = currentLocation is not null,
+            CurrentLocation = Text(currentLocation),
+            HasCurrentCompany = currentCompany is not null,
+            CurrentCompany = Text(currentCompany),
+            HasCurrentDesignation = currentDesignation is not null,
+            CurrentDesignation = Text(currentDesignation),
+            HasExperience = experience is not null,
+            ExperienceMonths = experienceNumber.HasValue ? Math.Max(0, decimal.ToInt32(decimal.Truncate(experienceNumber.Value))) : (int?)null,
+            HasQualification = qualification is not null,
+            Qualification = Text(qualification),
+            HasCurrentCtc = currentCtc is not null,
+            CurrentCtc = currentCtcNumber.HasValue ? Math.Max(0, currentCtcNumber.Value) : (decimal?)null,
+            HasExpectedCtc = expectedCtc is not null,
+            ExpectedCtc = expectedCtcNumber.HasValue ? Math.Max(0, expectedCtcNumber.Value) : (decimal?)null,
+            HasNoticePeriod = noticePeriod is not null,
+            NoticePeriodDays = noticePeriodNumber.HasValue ? Math.Max(0, decimal.ToInt32(decimal.Truncate(noticePeriodNumber.Value))) : (int?)null
+        }, transaction);
+        if (certifications is not null)
+        {
+            var names = Text(certifications).Split([',', ';', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(value => value.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).Take(100).ToArray();
+            await db.ExecuteAsync("DELETE FROM recruitment_candidate_certifications WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction);
+            foreach (var name in names)
+                await db.ExecuteAsync(@"INSERT INTO recruitment_candidate_certifications
+(CandidateId,CertificationName,Issuer,IssueDate,ExpiryDate,CredentialId)
+VALUES (@CandidateId,@CertificationName,'',NULL,NULL,'')", new { CandidateId = candidateId, CertificationName = name[..Math.Min(name.Length, 180)] }, transaction);
         }
     }
 
@@ -623,5 +716,13 @@ WHERE action.TokenHash=@TokenHash";
         public int UseCount { get; set; }
         public DateTime ExpiresAtUtc { get; set; }
         public DateTime? RevokedAtUtc { get; set; }
+    }
+
+    private sealed class SemanticProjectionRow
+    {
+        public string SemanticCode { get; set; } = "";
+        public string? TextValue { get; set; }
+        public long? IntegerValue { get; set; }
+        public decimal? DecimalValue { get; set; }
     }
 }

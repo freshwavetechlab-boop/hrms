@@ -1,4 +1,4 @@
-import type { ConvertCandidateToEmployeeRequest, Employee, EntityAttachment, PersonActivityEvent, RecruitmentApplicationScore, RecruitmentAtsScoringCriterion, RecruitmentAtsScoringProfile, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateChecklistItem, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, RecruitmentOffer, RecruitmentOpenPosition, RecruitmentSkill, RecruitmentTalentDashboard, SaveRecruitmentCandidate, SaveRecruitmentInterviewFeedbackCompetencyScore } from '../types/payroll'
+import type { ConvertCandidateToEmployeeRequest, Employee, EntityAttachment, PersonActivityEvent, RecruitmentApplicationScore, RecruitmentAtsScoringCriterion, RecruitmentAtsScoringProfile, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateChecklistItem, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, RecruitmentOffer, RecruitmentOpenPosition, RecruitmentResumeIntakeResult, RecruitmentSkill, RecruitmentTalentDashboard, SaveRecruitmentCandidate, SaveRecruitmentInterviewFeedbackCompetencyScore } from '../types/payroll'
 import { getJson, postFormWithProgress, postJson, putJson } from './apiClient'
 
 export const getTalentDashboard = () => getJson<RecruitmentTalentDashboard>('/api/recruitment/talent/dashboard', { talentProfiles: 0, activeApplications: 0, interviewsScheduled: 0, offersPending: 0, preOnboardingPending: 0, joined: 0 })
@@ -32,6 +32,15 @@ export const uploadCandidateResume = (candidateId: number, fieldConfigurationId:
   const body = new FormData(); body.append('fieldConfigurationId', String(fieldConfigurationId)); body.append('file', file)
   if (metadata.documentNumber) body.append('documentNumber', metadata.documentNumber); if (metadata.issueDate) body.append('issueDate', metadata.issueDate); if (metadata.expiryDate) body.append('expiryDate', metadata.expiryDate)
   return postFormWithProgress<{ attachment: EntityAttachment }>(`/api/recruitment/candidates/${candidateId}/resume`, body, {} as { attachment: EntityAttachment }, onProgress)
+}
+export const intakeRecruitmentResumes = (request: { clientId: number; positionId: number; jobPostingId?: number | null; sourceType: string; files: File[] }, onProgress: (value: number) => void) => {
+  const body = new FormData()
+  body.append('clientId', String(request.clientId))
+  body.append('positionId', String(request.positionId))
+  if (request.jobPostingId) body.append('jobPostingId', String(request.jobPostingId))
+  body.append('sourceType', request.sourceType)
+  request.files.forEach(file => body.append('files', file, file.name))
+  return postFormWithProgress<RecruitmentResumeIntakeResult>('/api/recruitment/resume-intake', body, { totalFiles: 0, imported: 0, needsReview: 0, items: [] }, onProgress)
 }
 export const getAtsProfiles = (clientId?: number) => getJson<RecruitmentAtsScoringProfile[]>(`/api/recruitment-admin/ats-profiles${clientId ? `?clientId=${clientId}` : ''}`, [])
 export const getAtsCriterionCatalog = () => getJson<RecruitmentAtsScoringCriterion[]>('/api/recruitment-admin/ats-criteria', [])

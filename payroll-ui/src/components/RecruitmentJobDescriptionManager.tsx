@@ -151,10 +151,10 @@ export default function RecruitmentJobDescriptionManager({ initialClientId = 0, 
         <p className="orchestration-subtitle">Create governed JD versions against an approved hiring request and route them through the existing workflow engine.</p>
       </div>
       <Space wrap>
-        <Select value={clientId || undefined} placeholder="Select client" showSearch optionFilterProp="label" style={{ minWidth: 230 }}
+        <Select aria-label="Client" value={clientId || undefined} placeholder="Select client" showSearch optionFilterProp="label" style={{ minWidth: 230 }}
           options={clients.map(row => ({ value: row.id, label: row.name }))}
           onChange={value => { setClientId(value); setRequisitionId(0); setDraft(null); setVersions([]) }} />
-        <Select value={requisitionId || undefined} placeholder="Select requisition" showSearch optionFilterProp="label" style={{ minWidth: 330 }}
+        <Select aria-label="Requisition" value={requisitionId || undefined} placeholder="Select requisition" showSearch optionFilterProp="label" style={{ minWidth: 330 }}
           options={requisitions.map(row => ({ value: row.id, label: `${row.rfrNumber} · ${row.positionTitle} · ${row.status}` }))}
           notFoundContent="No hiring requisitions for this client"
           onChange={setRequisitionId} />

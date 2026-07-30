@@ -73,6 +73,9 @@ export const loadInternalSelectOptions = (sourceCode: string, search: string, cl
 export const getRecruitmentPipelines = (clientId = 0) =>
   getJson<RecruitmentPipelineDefinition[]>(`${internalBase}/pipelines?clientId=${clientId}`, [])
 
+export const saveRecruitmentInterviewCompetency = (request: { id: number; clientId: number; competencyCode: string; competencyName: string; description: string; isActive: boolean }) =>
+  postJson(`${internalBase}/interview-competencies`, request, null as { id: number; clientId: number; competencyCode: string; competencyName: string; description: string; isActive: boolean } | null, { successMessage: 'Interview score component saved.' })
+
 export const getRecruitmentPipeline = (id: number) =>
   getJson<RecruitmentPipelineDetail | null>(`${internalBase}/pipelines/${id}`, null)
 
@@ -89,6 +92,9 @@ export const saveRecruitmentPipelineVersion = (definitionId: number, version: Re
   postJson(`${internalBase}/pipelines/${definitionId}/versions`, {
     id: version.id,
     pipelineDefinitionId: definitionId,
+    scopeType: version.scopeType ?? 'Application',
+    slaMode: version.slaMode ?? 'StageEntry',
+    overallSlaMinutes: version.overallSlaMinutes ?? 0,
     stages: version.stages,
     transitions: version.transitions,
   }, null as RecruitmentPipelineVersion | null, { successMessage: 'Pipeline draft saved.' })

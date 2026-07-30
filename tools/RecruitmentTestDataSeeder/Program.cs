@@ -143,7 +143,7 @@ INSERT IGNORE INTO authuserroles (UserId, RoleId) SELECT @user_recruiter, Id FRO
 INSERT IGNORE INTO authuserroles (UserId, RoleId) SELECT @user_admin, Id FROM authroles WHERE Code='admin';
 
 INSERT INTO leave_types (client_id, name, code, type, description, is_active)
-VALUES (@client_id, 'TAT Casual Leave', 'TAT_CL', 'Paid', 'Repeatable Playwright ESS leave approval test balance.', TRUE)
+VALUES (@client_id, 'TAT Casual Leave', 'TAT_CL', 'Paid', 'Repeatable FrevoPilot ESS leave approval test balance.', TRUE)
 ON DUPLICATE KEY UPDATE client_id=VALUES(client_id), name=VALUES(name), type=VALUES(type), description=VALUES(description), is_active=TRUE;
 SET @tat_leave_type_id := (SELECT id FROM leave_types WHERE code='TAT_CL' ORDER BY id LIMIT 1);
 
@@ -168,7 +168,7 @@ ON DUPLICATE KEY UPDATE Name=VALUES(Name), ResourceType='LeaveRequest', IsActive
 SET @tat_leave_workflow_id := (SELECT Id FROM workflowmasters WHERE ClientId=@client_id AND Code='TAT_LEAVE_APPROVAL' ORDER BY Id LIMIT 1);
 UPDATE workflowmasters SET IsActive=FALSE WHERE ClientId=@client_id AND ResourceType='LeaveRequest' AND Id<>@tat_leave_workflow_id;
 INSERT INTO workflowstages (WorkflowId, StageOrder, Name, ApproverType, ApproverUserId)
-VALUES (@tat_leave_workflow_id, 1, 'Playwright manager approval', 'Specific User', @user_approver)
+VALUES (@tat_leave_workflow_id, 1, 'FrevoPilot manager approval', 'Specific User', @user_approver)
 ON DUPLICATE KEY UPDATE Name=VALUES(Name), ApproverType=VALUES(ApproverType), ApproverUserId=VALUES(ApproverUserId);
 
 INSERT INTO recruitment_settings (ClientId, RecruitmentEnabled, AllowEmployeeRfrCreation, AllowReplacementHiring, AllowMultipleHiringManagers, AllowMultipleRecruiters, AutoGeneratePositionCode, AutoGenerateRfrNumber, EnableVendorHiring, EnableConsultantHiring, EnableInternalHiring, EnableReferralHiring, EnableCampusHiring, EnableWalkInHiring, EnableOfferApproval, EnablePreOfferProcess, EnableBackgroundVerification, EnableDocumentVerification, EnableCandidatePortal, PublicPortalBaseUrl, EnableVendorPortal, EnableJobPortalIntegration, IsActive)

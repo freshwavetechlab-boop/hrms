@@ -20,8 +20,8 @@ import { useToast, type ToastType } from '../components/ToastProvider'
 import { client0, component0, drop0, dropTypes, location0, org0, payslip0, settingsMenus, setup0, structure0, workWeekOptions, workWeekPatternConfigs } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
 import { getAttendanceGroups } from '../services/leaveAttendanceService'
-import { getClientBillingAdvanced, getClientBillingConfigurations, getClientBillingImportJob, getClientBillingModule, getClientImportJob, getDropdownImportJob, getDropdowns, getEssClientSettings, getOrganization, getSalaryComponentImportJob, getSalaryTemplateImportJob, getSetup, getWorkLocationImportJob, getWorkLocations, saveClient as persistClient, saveClientBillingAdvancedLine, saveClientBillingConfiguration, saveClientBillingModule, saveDropdown, saveEssClientSetting, saveOrganization, saveSetup, saveWorkLocation, startClientBillingImport, startClientImport, startDropdownImport, startSalaryComponentImport, startSalaryTemplateImport, startWorkLocationImport, type BulkImportStatus } from '../services/settingsService'
-import type { AttendanceGroup, Client, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingRateCardType, ClientBillingRateType, Component, Drop, Employee, EssClientSetting, Org, ProfessionalTaxSlab, Setup, Structure, WorkLocation } from '../types/payroll'
+import { getClientBillingAdvanced, getClientBillingConfigurations, getClientBillingImportJob, getClientBillingModule, getClientImportJob, getDropdownImportJob, getDropdowns, getOrganization, getSalaryComponentImportJob, getSalaryTemplateImportJob, getSetup, getWorkLocationImportJob, getWorkLocations, saveClient as persistClient, saveClientBillingAdvancedLine, saveClientBillingConfiguration, saveClientBillingModule, saveDropdown, saveOrganization, saveSetup, saveWorkLocation, startClientBillingImport, startClientImport, startDropdownImport, startSalaryComponentImport, startSalaryTemplateImport, startWorkLocationImport, type BulkImportStatus } from '../services/settingsService'
+import type { AttendanceGroup, Client, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingRateCardType, ClientBillingRateType, Component, Drop, Employee, Org, ProfessionalTaxSlab, Setup, Structure, WorkLocation } from '../types/payroll'
 import { money } from '../utils/salary'
 import { parseImportPreviewFile, parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules } from '../utils/importPreview'
 import { downloadXlsx } from '../utils/xlsx'
@@ -53,7 +53,6 @@ const statutoryTypesForRole = (role: string) => role === 'Statutory Deduction'
     : ['None']
 const ptSlab0: ProfessionalTaxSlab = { id: 0, state: '', salaryFrom: '0', salaryTo: '', deductionAmount: '', effectiveFrom: new Date().toISOString().slice(0, 10), effectiveTo: '', gender: 'All', notes: '', active: true }
 const calculationOptions = ['Fixed Amount', 'Formula', 'Residual / Balancing', 'Manual / Variable', 'Slab Based']
-const initialPasswordModeOptions = ['App Default', 'Random', 'Aadhaar', 'EmployeeCode', 'Fixed']
 const formulaChips = ['GROSS', 'CTC', 'MONTHLY_CTC', 'PAYROLL_DAYS', 'PAYABLE_DAYS', 'MIN()', 'MAX()', 'ROUND()', 'ROUNDDOWN()', 'ROUNDUP()']
 const formulaReservedWords = new Set(['GROSS', 'CTC', 'MONTHLY_CTC', 'ANNUAL_CTC', 'PAYROLL_DAYS', 'TOTAL_DAYS', 'WORKING_DAYS', 'PAYABLE_DAYS', 'PRESENT_DAYS', 'LOP_DAYS', 'GROSS_EARNED', 'NET_PAY', 'EMPLOYER_COST', 'MIN', 'MAX', 'ROUND', 'ROUNDDOWN', 'ROUNDUP', 'SUM', 'FIXED', 'EARNINGS', 'EARNINGS_BEFORE_THIS', 'OF'])
 const settingsSetup0: Setup = setup0
@@ -221,10 +220,6 @@ export default function SettingsPage({ tab, onMessage, recruitmentSection = 'set
   const [org, setOrg] = useState(org0), [setup, setSetup] = useState(settingsSetup0), [clients, setClients] = useState<Client[]>([]), [client, setClient] = useState(client0)
   const [locations, setLocations] = useState<WorkLocation[]>([]), [location, setLocation] = useState(location0), [drops, setDrops] = useState<Drop[]>([]), [drop, setDrop] = useState(drop0)
   const [employees, setEmployees] = useState<Employee[]>([]), [attendanceGroups, setAttendanceGroups] = useState<AttendanceGroup[]>([])
-  const [essSettings, setEssSettings] = useState<EssClientSetting[]>([])
-  const [essDraft, setEssDraft] = useState<EssClientSetting | null>(null)
-  const [essDrawerOpen, setEssDrawerOpen] = useState(false)
-  const [essSaving, setEssSaving] = useState(false)
   const [component, setComponent] = useState(component0), [structure, setStructure] = useState(structure0), [payslip, setPayslip] = useState(payslip0), [componentTab, setComponentTab] = useState<ComponentCategory>('Earning')
   const [billingEnabled, setBillingEnabled] = useState(false), [billingRows, setBillingRows] = useState<ClientBillingConfiguration[]>([]), [billingRow, setBillingRow] = useState<ClientBillingConfiguration>(billing0), [billingDrawerOpen, setBillingDrawerOpen] = useState(false)
   const [billingAdvancedEnabled, setBillingAdvancedEnabled] = useState(false), [billingAdvancedHeaders, setBillingAdvancedHeaders] = useState<ClientBillingCostRuleHeader[]>([]), [billingAdvancedLines, setBillingAdvancedLines] = useState<ClientBillingCostRuleLine[]>([]), [billingAdvancedLine, setBillingAdvancedLine] = useState<ClientBillingCostRuleLine>(billingAdvancedLine0), [billingAdvancedLineDrawerOpen, setBillingAdvancedLineDrawerOpen] = useState(false)
@@ -259,7 +254,7 @@ export default function SettingsPage({ tab, onMessage, recruitmentSection = 'set
   const isErrorMessage = (message: string) => /error|unable|failed|required|resolve|select|invalid|must|cannot|some/i.test(message)
 
   const load = async () => {
-    const [organization, rawSetup, clientRows, locationRows, dropdownRows, employeeRows, groupRows, billingModule, billingConfigs, billingAdvanced, essClientSettings] = await Promise.all([getOrganization(org0), getSetup(settingsSetup0), getClients(), getWorkLocations(), getDropdowns(), getEmployees(), getAttendanceGroups(), getClientBillingModule(), getClientBillingConfigurations(), getClientBillingAdvanced(), getEssClientSettings()])
+    const [organization, rawSetup, clientRows, locationRows, dropdownRows, employeeRows, groupRows, billingModule, billingConfigs, billingAdvanced] = await Promise.all([getOrganization(org0), getSetup(settingsSetup0), getClients(), getWorkLocations(), getDropdowns(), getEmployees(), getAttendanceGroups(), getClientBillingModule(), getClientBillingConfigurations(), getClientBillingAdvanced()])
     setOrg({ ...org0, ...organization, pan: organization.pan || rawSetup.tax?.pan || '', tanNumber: organization.tanNumber || rawSetup.tax?.tan || '', professionalTaxNumber: organization.professionalTaxNumber || rawSetup.statutory?.ptNumber || '' })
     setSetup({ ...settingsSetup0, ...rawSetup, tax: { ...setup0.tax, ...rawSetup.tax, clientSettings: rawSetup.tax?.clientSettings ?? setup0.tax.clientSettings, slabs: rawSetup.tax?.slabs ?? setup0.tax.slabs, surcharges: rawSetup.tax?.surcharges ?? setup0.tax.surcharges, finalAdjustments: rawSetup.tax?.finalAdjustments ?? setup0.tax.finalAdjustments, declarationSections: rawSetup.tax?.declarationSections ?? setup0.tax.declarationSections }, schedule: { ...setup0.schedule, ...rawSetup.schedule }, statutory: { ...setup0.statutory, ...rawSetup.statutory }, salaryComponents: (rawSetup.salaryComponents ?? []).map(normalizeComponentForUi), salaryStructures: rawSetup.salaryStructures ?? [], payslipTemplates: rawSetup.payslipTemplates ?? [] })
     setClients(clientRows)
@@ -272,33 +267,9 @@ export default function SettingsPage({ tab, onMessage, recruitmentSection = 'set
     setBillingRows(billingConfigs.map(row => ({ ...billing0, ...row, effectiveFrom: String(row.effectiveFrom).slice(0, 10), effectiveTo: row.effectiveTo ? String(row.effectiveTo).slice(0, 10) : null })))
     setBillingAdvancedHeaders(billingAdvanced.headers.map(row => ({ ...row, effectiveFrom: String(row.effectiveFrom).slice(0, 10), effectiveTo: row.effectiveTo ? String(row.effectiveTo).slice(0, 10) : null })))
     setBillingAdvancedLines(billingAdvanced.lines)
-    setEssSettings(essClientSettings)
   }
 
   useEffect(() => { void load() }, [])
-  const editEssSetting = (row: EssClientSetting) => {
-    setEssDraft({ ...row, initialPasswordMode: row.initialPasswordMode || 'App Default', fixedPassword: row.fixedPassword || '' })
-    setEssDrawerOpen(true)
-  }
-  const patchEssDraft = (patch: Partial<EssClientSetting>) => setEssDraft(current => current ? { ...current, ...patch } : current)
-  const saveEssDraft = async () => {
-    if (!essDraft) return
-    if ((essDraft.initialPasswordMode || 'App Default') === 'Fixed' && !essDraft.fixedPassword.trim()) {
-      notify('Enter fixed password or select another initial password mode.', 'warning')
-      return
-    }
-    setEssSaving(true)
-    const payload = { ...essDraft, fixedPassword: essDraft.initialPasswordMode === 'Fixed' ? essDraft.fixedPassword : '' }
-    const response = await saveEssClientSetting(payload)
-    setEssSaving(false)
-    if (!response.ok) {
-      notify(response.error || 'Unable to save ESS settings.', 'error')
-      return
-    }
-    setEssSettings(current => current.map(item => item.id === response.data.id ? response.data : item))
-    setEssDrawerOpen(false)
-    setEssDraft(null)
-  }
   const o = <K extends keyof Org>(key: K, value: Org[K]) => setOrg(current => ({ ...current, [key]: value }))
   const u = <S extends keyof Setup, K extends keyof Setup[S]>(section: S, key: K, value: Setup[S][K]) => setSetup(current => ({ ...current, [section]: { ...current[section], [key]: value } }))
   const setPtSlabField = <K extends keyof ProfessionalTaxSlab>(key: K, value: ProfessionalTaxSlab[K]) => setPtSlab(current => ({ ...current, [key]: value }))
@@ -994,34 +965,6 @@ export default function SettingsPage({ tab, onMessage, recruitmentSection = 'set
       </AntCard>
       <Drawer className="settings-master-drawer dropdown-master-drawer" title={<div className="settings-drawer-title"><span>{selectedDropType === 'Work Week' ? 'Work week pattern' : 'Dropdown master'}</span><h3>{drop.id ? 'Edit dropdown value' : 'Add dropdown value'}</h3><p>{selectedDropType === 'Work Week' ? 'Maintain weekly off rules used by attendance policy, review, payroll attendance, and reports.' : 'Maintain reusable values for departments, designations, states, cities, grades, and work weeks.'}</p></div>} open={dropDrawerOpen} width={760} onClose={() => { setDropDrawerOpen(false); setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }} destroyOnClose><Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Master type" required><Sel v={selectedDropType} set={changeDropType} a={dropTypes} /></Form.Item>{selectedDropType === 'Employee Grade' && <Form.Item label="Client" required><Sel v={drop.clientId || ''} set={value => setDrop({ ...drop, clientId: Number(refId(value) || 0) })} a={clients.map(item => `${item.id}:${item.name}`)} /></Form.Item>}{selectedDropType === 'City' && <Form.Item label="State" required><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></Form.Item>}{selectedDropType === 'Work Week' ? <WorkWeekMasterFields drop={drop} setDrop={setDrop} /> : <Form.Item label={selectedDropType === 'City' ? 'City' : 'Value'} required><Input value={drop.value} onChange={event => setDrop({ ...drop, value: event.target.value })} placeholder={selectedDropType === 'City' ? 'e.g. Bengaluru / Pune' : selectedDropType === 'Employee Grade' ? 'e.g. G1 / Supervisor' : 'e.g. Finance / Manager'} /></Form.Item>}<Form.Item><AntCheckbox checked={drop.isActive} onChange={event => setDrop({ ...drop, isActive: event.target.checked })}>Active</AntCheckbox></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => { setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }}>Reset</Button><Button type="primary" style={drop.id ? { background: '#f59e0b', borderColor: '#f59e0b' } : undefined} onClick={saveDrop}>{drop.id ? 'Update value' : 'Add value'}</Button></Space></Row></Form></Drawer>
     </>}
-    {tab === 'ESS Settings' && <AntCard title="ESS settings" size="small" className="settings-panel settings-table-panel ess-settings-panel">
-      <div className="component-table-head">
-        <div><b>Client self-service policy</b><span>Configure ESS behavior client-wise. Open a client, change controls, then save once.</span></div>
-      </div>
-      <div className="ess-settings-summary">
-        <article><b>{essSettings.length}</b><span>Configured clients</span></article>
-        <article><b>{essSettings.filter(row => row.allowProfileEdit).length}</b><span>Profile update enabled</span></article>
-        <article><b>{essSettings.filter(row => (row.initialPasswordMode || 'App Default') !== 'App Default').length}</b><span>Custom password policies</span></article>
-      </div>
-      <DataTable rows={essSettings} columns={[
-        { key: 'clientName', label: 'Client' },
-        { key: 'allowProfileEdit', label: 'Profile update', render: row => row.allowProfileEdit ? 'Allowed' : 'Blocked' },
-        { key: 'initialPasswordMode', label: 'Initial password', render: row => row.initialPasswordMode || 'App Default' },
-        { key: 'isActive', label: 'Status', render: row => row.isActive ? 'Active' : 'Inactive' }
-      ]} actions={row => <Button size="small" type="primary" onClick={() => editEssSetting(row)}>Configure</Button>} />
-      <Drawer className="settings-master-drawer ess-settings-drawer" title={<div className="settings-drawer-title"><span>ESS Client Policy</span><h3>{essDraft?.clientName || 'Client settings'}</h3><p>Changes are saved only when you click Save policy.</p></div>} open={essDrawerOpen} width={720} onClose={() => { setEssDrawerOpen(false); setEssDraft(null) }} destroyOnClose>
-        {essDraft && <Form component="div" layout="vertical" className="settings-quick-form ess-settings-form">
-          <Form.Item label="Client"><Input value={essDraft.clientName} disabled /></Form.Item>
-          <Form.Item label="ESS setting status"><AntCheckbox checked={essDraft.isActive} onChange={event => patchEssDraft({ isActive: event.target.checked })}>Active for this client</AntCheckbox></Form.Item>
-          <Form.Item label="Employee profile update"><AntCheckbox checked={essDraft.allowProfileEdit} onChange={event => patchEssDraft({ allowProfileEdit: event.target.checked })}>Allow employees to update basic, contact, address, PAN, Aadhaar and bank information from ESS</AntCheckbox></Form.Item>
-          <Form.Item label="Initial password mode" required><AntSelect value={essDraft.initialPasswordMode || 'App Default'} options={initialPasswordModeOptions.map(value => ({ value, label: value === 'EmployeeCode' ? 'Employee code' : value }))} onChange={value => patchEssDraft({ initialPasswordMode: value, fixedPassword: value === 'Fixed' ? essDraft.fixedPassword : '' })} /></Form.Item>
-          {(essDraft.initialPasswordMode || 'App Default') === 'Fixed' && <Form.Item label="Fixed initial password" required><Input.Password value={essDraft.fixedPassword || ''} onChange={event => patchEssDraft({ fixedPassword: event.target.value })} placeholder="Enter fixed initial password" /></Form.Item>}
-          <div className="ess-settings-note"><b>Login rule</b><span>Username remains employee code. Welcome email is queued only when a valid work email exists. If Aadhaar mode is selected and Aadhaar is missing, the system falls back to a generated temporary password.</span></div>
-          <Divider />
-          <Row justify="end"><Space><Button onClick={() => { setEssDrawerOpen(false); setEssDraft(null) }}>Cancel</Button><Button type="primary" loading={essSaving} onClick={() => void saveEssDraft()}>Save policy</Button></Space></Row>
-        </Form>}
-      </Drawer>
-    </AntCard>}
     {tab === 'Tax Engine' && <TaxEngineManager clients={clients} onMessage={notifyFromChild} mode="company" />}
     {tab === 'Statutory Setup' && <><PageTabs items={statutoryTabs} value={statutoryTab} onChange={setStatutoryTab} label="Statutory setup sections" />{statutoryTab === 'Income Tax Rules' ? <TaxEngineManager clients={clients} onMessage={notifyFromChild} mode="statutory" /> : renderProfessionalTaxSetup()}</>}
     {tab === 'Client Billing Configuration' && renderClientBilling()}

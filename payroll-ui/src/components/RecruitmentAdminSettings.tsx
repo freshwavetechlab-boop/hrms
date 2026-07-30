@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Checkbox, Collapse, Drawer, Form, Input, InputNumber, Select, Space, Tooltip } from 'antd'
+import { Alert, Button, Card, Checkbox, Collapse, Drawer, Form, Input, InputNumber, Select, Space, Tooltip } from 'antd'
 import DataTable from './DataTable'
 import RecruitmentAtsAdmin from './RecruitmentAtsAdmin'
 import RecruitmentFormBuilder from './RecruitmentFormBuilder'
@@ -23,6 +23,62 @@ const sla0: RecruitmentSlaRule = { id: 0, clientId: 0, clientName: '', processNa
 const checklist0: RecruitmentDocumentChecklist = { id: 0, clientId: 0, clientName: '', hiringType: 'Permanent', documentName: '', mandatory: true, stage: 'Pre-Onboarding', attachmentAttributeId: null, requiresVerification: false, dueOffsetDays: 0, displayOrder: 100, isActive: true }
 const approval0: RecruitmentApprovalMapping = { id: 0, clientId: 0, clientName: '', processCode: 'RFR_APPROVAL', workflowId: 0, workflowName: '', isActive: true }
 const template0: RecruitmentTemplate = { id: 0, clientId: 0, clientName: '', templateType: 'Job Description', templateCode: '', templateName: '', subjectTemplate: '', bodyTemplate: '', isHtml: true, isActive: true }
+const selectionCommitteeMomTemplate = `MINUTES OF MEETING OF THE SELECTION COMMITTEE
+FOR HIRING FOR THE POSITION OF #POSITION_NAME#
+FOR #CLIENT_NAME#, BAND '#PAYBANDLEVEL#', AT LOCATION #LOCATION# UNDER #DIVISION# HELD ON #INTERVIEWDATE#
+
+1. With the approval of the Competent Authority vide communication dated #APPROVALDATE#, the hiring process for the position of #POSITION_NAME# (Band #PAYBANDLEVEL#) at #LOCATION# under #DIVISION# through the empanelled Agency was initiated.
+
+2. As per the prevailing HR Policy, the approved Assessment Panel composition for this position was applied.
+
+3. Accordingly, the Selection Committee comprising the following members was constituted:
+#PANELMEMBERSLIST#
+
+4. The interview for the position of #POSITION_NAME# at #LOCATION# was conducted on #INTERVIEWDATE#. Out of #SHORTLISTEDCOUNT# shortlisted candidates, #PRESENTCOUNT# candidates were present:
+#CANDIDATEATTENDANCETABLE#
+
+5. The Selection Committee assessed the candidates using the configured competencies, panel feedback and overall suitability for the role.
+
+6. Based on the overall assessment and deliberations, the Selection Committee recommended:
+#CANDIDATERESULTTABLE#
+
+Submitted.
+
+#PANELSIGNATUREBLOCK#
+
+ANNEXURE A
+
+#SCOREANNEXURETABLE#`
+const uidaiSelectionCommitteeMomTemplate = `MINUTES OF MEETING OF THE SELECTION COMMITTEE
+FOR HIRING FOR THE POSITION OF #POSITION_NAME#
+FOR AADHAAR SEVA KENDRA, BAND '#PAYBANDLEVEL#', AT LOCATION #LOCATION# UNDER #DIVISION# HELD ON #INTERVIEWDATE#
+
+1. With the approval of the Competent Authority vide email dated #APPROVALDATE#, the hiring process for the position of #POSITION_NAME# (Band #PAYBANDLEVEL#) for Aadhaar Seva Kendra (ASK) at #LOCATION# under #DIVISION#, through the empanelled Agency was initiated.
+
+2. As per the prevailing HR Policy vide letter No. HQ-12017/4/2020-HR-HQ (Comp. No. 2357) dated 03.02.2026 for ASK Centre Managers deployed in UIDAI through service providers, the composition of the Assessment Panel for positions at Band '#PAYBANDLEVEL#' is as under:
+a) Deputy Director General of respective Regional Office or Director of respective Regional Office nominated by Deputy Director General - Chairperson
+b) One Director from another Regional Office, nominated by Deputy Director General of respective Regional Office - Member
+c) Subject Matter Expert (SME)/Domain Expert provided by Agency
+d) Deputy Director, E&U-I, UIDAI Head Office may be co-opted as member of committee, subject to availability.
+
+3. Accordingly, the Selection Committee comprising the following members was constituted:
+#PANELMEMBERSLIST#
+
+4. The interview for the position of #POSITION_NAME# at #LOCATION# was conducted on #INTERVIEWDATE#. Out of #SHORTLISTEDCOUNT# shortlisted candidates, #PRESENTCOUNT# candidates were present for the interview, as under:
+#CANDIDATEATTENDANCETABLE#
+
+5. The Selection Committee assessed the candidates based on their experience, qualification, problem-solving ability, communication skills, and overall suitability for the role.
+
+6. Based on the overall assessment and deliberations, the Selection Committee has recommended the following:
+#CANDIDATERESULTTABLE#
+
+Submitted.
+
+#PANELSIGNATUREBLOCK#
+
+ANNEXURE A
+
+#SCOREANNEXURETABLE#`
 const settingOptions: Array<{ key: keyof RecruitmentSetting; label: string; description: string; impact: string; disabled?: boolean }> = [
   { key: 'recruitmentEnabled', label: 'Recruitment enabled', description: 'Use recruitment for this client.', impact: 'ON: ESS Recruitment can appear only for users with recruitment permission. OFF: Recruitment is hidden/blocked for this client.' },
   { key: 'allowEmployeeRfrCreation', label: 'Employee RFR creation', description: 'Let permitted employees raise hiring requests from ESS.', impact: 'ON: users with recruitment.rfr.create or recruitment.manage can create RFRs. OFF: create/save/submit is blocked even if the user has permission.' },
@@ -153,7 +209,8 @@ export default function RecruitmentAdminSettings({ section = 'settings' }: { sec
         {drawer === 'sla' && <><CommonClient value={sla.clientId} set={clientId => setSla({ ...sla, clientId })} options={clientOptions} /><Form.Item label="Process"><Input value={sla.processName} onChange={e => setSla({ ...sla, processName: e.target.value })} /></Form.Item><Form.Item label="Duration days"><InputNumber value={sla.durationDays} onChange={v => setSla({ ...sla, durationDays: Number(v || 0) })} /></Form.Item><Form.Item label="Reminder before days"><InputNumber value={sla.reminderBeforeDays} onChange={v => setSla({ ...sla, reminderBeforeDays: Number(v || 0) })} /></Form.Item><Form.Item><Space direction="vertical"><Checkbox checked={sla.reminderEnabled} onChange={e => setSla({ ...sla, reminderEnabled: e.target.checked })}>Reminder enabled</Checkbox><Checkbox checked={sla.escalationEnabled} onChange={e => setSla({ ...sla, escalationEnabled: e.target.checked })}>Escalation enabled</Checkbox></Space></Form.Item></>}
         {drawer === 'checklist' && <><CommonClient value={checklist.clientId} set={clientId => setChecklist({ ...checklist, clientId })} options={clientOptions} /><Form.Item label="Hiring type"><RecruitmentMasterSelect masterType="Hiring Type" clientId={checklist.clientId} clientName={selectedClientName(checklist.clientId)} value={checklist.hiringType} values={hiringTypes.length ? hiringTypes : ['Permanent', 'Contract', 'Intern']} dropdowns={dropdowns} onDropdownsChange={setDropdowns} onChange={hiringType => setChecklist({ ...checklist, hiringType })} testId="checklist-hiring-type" /></Form.Item><Form.Item label="Document"><Input value={checklist.documentName} onChange={e => setChecklist({ ...checklist, documentName: e.target.value })} /></Form.Item><Form.Item label="Global attachment attribute" extra="The actual file is uploaded, versioned and secured by the global attachment system."><SearchSelect value={checklist.attachmentAttributeId || 0} onChange={value => setChecklist({ ...checklist, attachmentAttributeId: Number(value) || null })} options={selectOptions(attachmentAttributes.filter(row => row.isActive && (row.clientId === 0 || row.clientId === checklist.clientId)).map(row => ({ value: row.id, label: `${row.attributeName} (${row.attributeCode})` })), 'No file required', 0)} /></Form.Item><Form.Item label="Stage"><Input value={checklist.stage} onChange={e => setChecklist({ ...checklist, stage: e.target.value })} /></Form.Item><Form.Item label="Due offset days"><InputNumber value={checklist.dueOffsetDays} onChange={value => setChecklist({ ...checklist, dueOffsetDays: Number(value || 0) })} /></Form.Item><Form.Item label="Display order"><InputNumber value={checklist.displayOrder} onChange={value => setChecklist({ ...checklist, displayOrder: Number(value || 100) })} /></Form.Item><Form.Item><Space direction="vertical"><Checkbox checked={checklist.mandatory} onChange={e => setChecklist({ ...checklist, mandatory: e.target.checked })}>Mandatory</Checkbox><Checkbox checked={checklist.requiresVerification} onChange={e => setChecklist({ ...checklist, requiresVerification: e.target.checked })}>Global document must be verified</Checkbox><Checkbox checked={checklist.isActive} onChange={e => setChecklist({ ...checklist, isActive: e.target.checked })}>Active</Checkbox></Space></Form.Item></>}
         {drawer === 'approval' && <><CommonClient value={approval.clientId} set={clientId => setApproval({ ...approval, clientId })} options={clientOptions} /><Form.Item label="Process"><Select value={approval.processCode} onChange={v => setApproval({ ...approval, processCode: v })} options={['RFR_APPROVAL', 'OFFER_APPROVAL', 'EXCEPTION_APPROVAL'].map(v => ({ value: v, label: v.replace(/_/g, ' ') }))} /></Form.Item><Form.Item label="Workflow"><SearchSelect value={approval.workflowId} onChange={v => setApproval({ ...approval, workflowId: Number(v) })} options={selectOptions(workflows.filter(w => w.isActive !== false).map(w => ({ value: w.id, label: `${w.name} - ${w.resourceType}` })), 'Select workflow', 0)} /></Form.Item></>}
-        {drawer === 'template' && <><CommonClient value={template.clientId} set={clientId => setTemplate({ ...template, clientId })} options={clientOptions} /><Form.Item label="Template type"><Select value={template.templateType} onChange={v => setTemplate({ ...template, templateType: v })} options={['Job Description', 'Interview Feedback', 'Offer Letter', 'Rejection Letter', 'Consultant Email', 'Interview Invitation', 'Reminder', 'Offer Approval', 'Joining Instructions'].map(v => ({ value: v, label: v }))} /></Form.Item><Form.Item label="Code"><Input value={template.templateCode} onChange={e => setTemplate({ ...template, templateCode: e.target.value.toUpperCase().replace(/\s+/g, '_') })} /></Form.Item><Form.Item label="Name"><Input value={template.templateName} onChange={e => setTemplate({ ...template, templateName: e.target.value })} /></Form.Item><Form.Item label="Subject"><Input value={template.subjectTemplate} onChange={e => setTemplate({ ...template, subjectTemplate: e.target.value })} /></Form.Item><Form.Item label="Body" extra={template.templateType === 'Offer Letter' ? 'Supported placeholders: {{candidateName}}, {{candidateFirstName}}, {{positionTitle}}, {{clientName}}, {{currency}}, {{formattedCtc}}, {{joiningDate}}, {{expiryDate}}, {{offerDate}}, {{offerNumber}}, {{remarks}}.' : undefined}><Input.TextArea rows={8} value={template.bodyTemplate} onChange={e => setTemplate({ ...template, bodyTemplate: e.target.value })} /></Form.Item></>}
+        {drawer === 'template' && <><CommonClient value={template.clientId} set={clientId => setTemplate({ ...template, clientId })} options={clientOptions} /><Form.Item label="Template type"><Select value={template.templateType} onChange={v => setTemplate({ ...template, templateType: v })} options={['Job Description', 'Interview Feedback', 'Offer Letter', 'Process Document', 'MoM', 'Score Annexure', 'HR Proposal', 'Joining Intimation', 'Candidate Pack', 'Rejection Letter', 'Consultant Email', 'Interview Invitation', 'Reminder', 'Offer Approval', 'Joining Instructions'].map(v => ({ value: v, label: v }))} /></Form.Item><Form.Item label="Code"><Input value={template.templateCode} onChange={e => setTemplate({ ...template, templateCode: e.target.value.toUpperCase().replace(/\s+/g, '_') })} /></Form.Item><Form.Item label="Name"><Input value={template.templateName} onChange={e => setTemplate({ ...template, templateName: e.target.value })} /></Form.Item><Form.Item label="Subject"><Input value={template.subjectTemplate} onChange={e => setTemplate({ ...template, subjectTemplate: e.target.value })} /></Form.Item><Form.Item label="Body" extra={template.templateType === 'Offer Letter' ? 'Supported placeholders: {{candidateName}}, {{candidateFirstName}}, {{positionTitle}}, {{clientName}}, {{currency}}, {{formattedCtc}}, {{joiningDate}}, {{expiryDate}}, {{offerDate}}, {{offerNumber}}, {{remarks}}.' : ['Process Document', 'MoM', 'Score Annexure', 'HR Proposal', 'Joining Intimation', 'Candidate Pack'].includes(template.templateType) ? 'Use {{name}} or #NAME#. Selection MoM also supports: approvalDate, shortlistedCount, presentCount, panelMembersList, candidateAttendanceTable, candidateResultTable, scoreAnnexureTable and panelSignatureBlock.' : undefined}><Input.TextArea rows={8} value={template.bodyTemplate} onChange={e => setTemplate({ ...template, bodyTemplate: e.target.value })} /></Form.Item></>}
+        {drawer === 'template' && template.templateType === 'MoM' && <Alert showIcon type="info" message="Selection committee MoM" description="Use the normalized shortlist, panel roles, interview result and score data; candidate rows are never stored in the template." action={<Space><Button size="small" onClick={() => setTemplate({ ...template, bodyTemplate: selectionCommitteeMomTemplate })}>Insert generic layout</Button><Button size="small" type="primary" onClick={() => setTemplate({ ...template, bodyTemplate: uidaiSelectionCommitteeMomTemplate })}>Insert UIDAI layout</Button></Space>} />}
         <Space className="settings-drawer-actions"><Button onClick={() => setDrawer('')}>Cancel</Button><Button type="primary" onClick={() => void save()}>Save</Button></Space>
       </Form>
     </Drawer>

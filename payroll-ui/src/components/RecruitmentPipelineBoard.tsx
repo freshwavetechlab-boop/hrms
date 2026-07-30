@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
-  CalendarOutlined, ClockCircleOutlined, PauseCircleOutlined, PlayCircleOutlined,
+  CalendarOutlined, ClockCircleOutlined, FileProtectOutlined, PauseCircleOutlined, PlayCircleOutlined,
   ReloadOutlined, SearchOutlined, UserOutlined,
 } from '@ant-design/icons'
-import { Badge, Button, Card, Empty, Form, Input, Modal, Select, Space, Tag, message } from 'antd'
+import { Badge, Button, Card, Drawer, Empty, Form, Input, Modal, Select, Space, Tag, message } from 'antd'
 import {
   getRecruitmentApplicationTransitions, getRecruitmentJobPostings, getRecruitmentPipelineBoard,
   pauseRecruitmentApplication, resumeRecruitmentApplication, transitionRecruitmentApplication,
@@ -14,6 +14,7 @@ import type {
 } from '../types/recruitmentOrchestration'
 import DataTable from './DataTable'
 import RecruitmentCandidateActionManager from './RecruitmentCandidateActionManager'
+import RecruitmentProcessDocumentPanel from './RecruitmentProcessDocumentPanel'
 import './RecruitmentOrchestration.css'
 
 type Props = {
@@ -23,6 +24,7 @@ type Props = {
 }
 type TransitionDraft = { card: RecruitmentPipelineBoardCard; transition: RecruitmentPipelineTransition; reason: string }
 type PauseDraft = { card: RecruitmentPipelineBoardCard; reason: string }
+type DocumentDraft = { lane: RecruitmentPipelineBoardLane; card: RecruitmentPipelineBoardCard }
 type PipelineViewMode = 'pipeline' | 'table' | 'both'
 type PipelineTableRow = {
   id: number
@@ -57,6 +59,7 @@ export default function RecruitmentPipelineBoard({ positionId: suppliedPositionI
   const [transitions, setTransitions] = useState<Record<number, RecruitmentPipelineTransition[]>>({})
   const [transitionDraft, setTransitionDraft] = useState<TransitionDraft | null>(null)
   const [pauseDraft, setPauseDraft] = useState<PauseDraft | null>(null)
+  const [documentDraft, setDocumentDraft] = useState<DocumentDraft | null>(null)
   const [loading, setLoading] = useState(false)
   const boardRequest = useRef(0)
 
@@ -125,7 +128,7 @@ export default function RecruitmentPipelineBoard({ positionId: suppliedPositionI
     if (!response.ok) return
     message.success(response.data?.message || `${transitionDraft.card.candidateName} moved successfully.`)
     setTransitionDraft(null)
-    await loadBoard()
+    await loadBoard(positionId, postingId || undefined)
   }
   const pauseApplication = async () => {
     if (!pauseDraft?.reason.trim()) return
@@ -157,7 +160,7 @@ export default function RecruitmentPipelineBoard({ positionId: suppliedPositionI
       {viewMode !== 'table' && <div className="pipeline-board" data-testid="pipeline-board-view"><div className="pipeline-board-columns">{filtered.map(lane => <section key={lane.stageId} data-testid={`pipeline-lane-${lane.stageCode}`} className="pipeline-board-column" style={{ '--stage-color': stageColor(lane.stageType) } as CSSProperties}>
         <header><h4>{lane.stageName}</h4><Badge count={lane.applications.length} showZero color={stageColor(lane.stageType)} /></header>
         {!lane.applications.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No candidates" />}
-        {lane.applications.map(card => <CandidateCard key={card.applicationId} lane={lane} card={card} elapsedSinceLoad={elapsedSinceLoad} transitions={transitions[card.applicationId] ?? []} onLoadTransitions={() => void loadTransitions(card.applicationId)} onOpen={onOpenCandidate ? () => onOpenCandidate(card.candidateId, card.applicationId) : undefined} onSchedule={onScheduleInterview && lane.stageType === 'Interview' ? () => onScheduleInterview(card.applicationId) : undefined} onPause={() => setPauseDraft({ card, reason: '' })} onResume={() => void resumeApplication(card)} onTransition={transition => setTransitionDraft({ card, transition, reason: '' })} />)}
+        {lane.applications.map(card => <CandidateCard key={card.applicationId} lane={lane} card={card} elapsedSinceLoad={elapsedSinceLoad} transitions={transitions[card.applicationId] ?? []} onLoadTransitions={() => void loadTransitions(card.applicationId)} onOpen={onOpenCandidate ? () => onOpenCandidate(card.candidateId, card.applicationId) : undefined} onSchedule={onScheduleInterview && lane.stageType === 'Interview' ? () => onScheduleInterview(card.applicationId) : undefined} onDocuments={lane.processDocumentRequirements?.length ? () => setDocumentDraft({ lane, card }) : undefined} onPause={() => setPauseDraft({ card, reason: '' })} onResume={() => void resumeApplication(card)} onTransition={transition => setTransitionDraft({ card, transition, reason: '' })} />)}
       </section>)}</div></div>}
       {viewMode !== 'pipeline' && <Card size="small" className="pipeline-table-view" data-testid="pipeline-table-view"><DataTable
         rows={tableRows}
@@ -176,6 +179,7 @@ export default function RecruitmentPipelineBoard({ positionId: suppliedPositionI
           { key: 'actions', label: 'Actions', width: '390px', sortable: false, filterable: false, render: row => <Space className="pipeline-table-actions" size={4} wrap>
             {onOpenCandidate && <Button size="small" onClick={() => onOpenCandidate(row.card.candidateId, row.card.applicationId)}>Profile</Button>}
             {onScheduleInterview && row.lane.stageType === 'Interview' && <Button size="small" icon={<CalendarOutlined />} onClick={() => onScheduleInterview(row.card.applicationId)}>Schedule</Button>}
+            {!!row.lane.processDocumentRequirements?.length && <Button size="small" icon={<FileProtectOutlined />} onClick={() => setDocumentDraft({ lane: row.lane, card: row.card })}>Documents</Button>}
             <RecruitmentCandidateActionManager applicationId={row.card.applicationId} candidateName={row.card.candidateName} />
             {row.card.stageStatus === 'Paused' ? <Button size="small" icon={<PlayCircleOutlined />} onClick={() => void resumeApplication(row.card)}>Resume</Button> : <Button size="small" icon={<PauseCircleOutlined />} onClick={() => setPauseDraft({ card: row.card, reason: '' })}>Pause</Button>}
             <Select size="small" placeholder="Next action" onDropdownVisibleChange={open => open && void loadTransitions(row.card.applicationId)} notFoundContent="No allowed action" options={(transitions[row.card.applicationId] ?? []).map(item => ({ value: item.id, label: item.actionLabel }))} onChange={id => { const transition = (transitions[row.card.applicationId] ?? []).find(item => item.id === id); if (transition) setTransitionDraft({ card: row.card, transition, reason: '' }) }} />
@@ -189,10 +193,13 @@ export default function RecruitmentPipelineBoard({ positionId: suppliedPositionI
     <Modal open={!!pauseDraft} title={pauseDraft ? `Pause SLA: ${pauseDraft.card.candidateName}` : 'Pause pipeline SLA'} onCancel={() => setPauseDraft(null)} onOk={() => void pauseApplication()} okText="Pause SLA" okButtonProps={{ disabled: !pauseDraft?.reason.trim() }}>
       {pauseDraft && <Form layout="vertical"><p>The live stage timer stops until this application is resumed. Both actions remain audit logged.</p><Form.Item label="Pause reason" required><Input.TextArea rows={4} value={pauseDraft.reason} onChange={event => setPauseDraft({ ...pauseDraft, reason: event.target.value })} placeholder="Why is this application being put on hold?" /></Form.Item></Form>}
     </Modal>
+    <Drawer open={!!documentDraft} width="min(900px, 96vw)" title={documentDraft ? `${documentDraft.card.candidateName} · ${documentDraft.lane.stageName} documents` : 'Stage documents'} onClose={() => setDocumentDraft(null)}>
+      {documentDraft && board && <RecruitmentProcessDocumentPanel clientId={board.clientId} applicationId={documentDraft.card.applicationId} pipelineStageId={documentDraft.lane.stageId} requirements={documentDraft.lane.processDocumentRequirements ?? []} title="Candidate MoM, score annexure, proposal and joining documents" />}
+    </Drawer>
   </section>
 }
 
-function CandidateCard({ lane, card, elapsedSinceLoad, transitions, onLoadTransitions, onOpen, onSchedule, onPause, onResume, onTransition }: {
+function CandidateCard({ lane, card, elapsedSinceLoad, transitions, onLoadTransitions, onOpen, onSchedule, onDocuments, onPause, onResume, onTransition }: {
   lane: RecruitmentPipelineBoardLane
   card: RecruitmentPipelineBoardCard
   elapsedSinceLoad: number
@@ -200,6 +207,7 @@ function CandidateCard({ lane, card, elapsedSinceLoad, transitions, onLoadTransi
   onLoadTransitions: () => void
   onOpen?: () => void
   onSchedule?: () => void
+  onDocuments?: () => void
   onPause: () => void
   onResume: () => void
   onTransition: (transition: RecruitmentPipelineTransition) => void
@@ -212,6 +220,7 @@ function CandidateCard({ lane, card, elapsedSinceLoad, transitions, onLoadTransi
     <div className="pipeline-card-footer"><Tag data-testid="sla-clock" className={`sla-chip ${sla.className}`}>{sla.label}: {sla.clock}</Tag><Space size={4} wrap>
       {onOpen && <Button size="small" onClick={onOpen}>Profile</Button>}
       {onSchedule && <Button size="small" icon={<CalendarOutlined />} onClick={onSchedule}>Schedule</Button>}
+      {onDocuments && <Button size="small" icon={<FileProtectOutlined />} onClick={onDocuments}>Documents</Button>}
       <RecruitmentCandidateActionManager applicationId={card.applicationId} candidateName={card.candidateName} />
       {card.stageStatus === 'Paused' ? <Button size="small" icon={<PlayCircleOutlined />} onClick={onResume}>Resume</Button> : <Button size="small" icon={<PauseCircleOutlined />} onClick={onPause}>Pause</Button>}
       <Select size="small" placeholder="Next action" style={{ minWidth: 130 }} onDropdownVisibleChange={open => open && onLoadTransitions()} notFoundContent="No allowed action" options={transitions.map(row => ({ value: row.id, label: row.actionLabel }))} onChange={id => { const transition = transitions.find(row => row.id === id); if (transition) onTransition(transition) }} />

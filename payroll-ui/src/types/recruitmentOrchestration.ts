@@ -227,6 +227,9 @@ export type RecruitmentPipelineVersion = {
   pipelineDefinitionId: number
   versionNumber: number
   status: DynamicFormVersionStatus
+  scopeType?: 'Application' | 'Position' | 'Hybrid'
+  slaMode?: 'StageEntry' | 'CumulativeFromAnchor'
+  overallSlaMinutes?: number
   createdByUserId?: number
   publishedByUserId?: number | null
   publishedAtUtc?: string | null
@@ -245,6 +248,10 @@ export type RecruitmentPipelineStage = {
   displayOrder: number
   slaDurationMinutes: number
   slaWarningMinutes: number
+  targetOffsetMinutes?: number | null
+  stakeholderCode?: string
+  allowPause?: boolean
+  pauseBehavior?: 'ShiftStageAndOverall' | 'ShiftStageOnly' | 'NoShift'
   approvalWorkflowId?: number | null
   requiresApproval: boolean
   calendarEnabled: boolean
@@ -256,8 +263,10 @@ export type RecruitmentPipelineStage = {
   atsConfiguration?: RecruitmentStageAtsConfiguration | null
   externalFormConfiguration?: RecruitmentStageExternalFormConfiguration | null
   attachmentRequirements: RecruitmentStageAttachmentRequirement[]
+  processDocumentRequirements?: RecruitmentStageProcessDocumentRequirement[]
   offerConfiguration?: RecruitmentStageOfferConfiguration | null
   interviewConfiguration?: RecruitmentInterviewStageConfiguration | null
+  defaultPanelMembers?: RecruitmentStageDefaultPanelMember[]
 }
 
 export type RecruitmentPipelineStageAction = {
@@ -270,6 +279,28 @@ export type RecruitmentPipelineStageAction = {
   workflowId?: number | null
   templateId?: number | null
   isActive: boolean
+  recipients?: RecruitmentStageActionRecipient[]
+}
+
+export type RecruitmentStageActionRecipient = {
+  id: number
+  stageActionId: number
+  recipientType: 'Candidate' | 'InterviewPanelMembers' | 'StageDefaultPanelMembers' | 'SpecificUser' | 'UserRole' | 'StaticEmail' | 'HiringRequester' | 'PositionRecruiter'
+  userId?: number | null
+  roleCode: string
+  emailAddress: string
+  displayOrder: number
+  isActive: boolean
+}
+
+export type RecruitmentStageDefaultPanelMember = {
+  id: number
+  pipelineStageId: number
+  panelUserId: number
+  panelUserName: string
+  panelRole: string
+  isRequired: boolean
+  displayOrder: number
 }
 
 export type RecruitmentStageAtsConfiguration = {
@@ -307,6 +338,16 @@ export type RecruitmentStageAttachmentRequirement = {
   displayOrder: number
 }
 
+export type RecruitmentStageProcessDocumentRequirement = {
+  id: number
+  pipelineStageId: number
+  documentType: string
+  templateId?: number | null
+  isRequired: boolean
+  requiresSignature: boolean
+  displayOrder: number
+}
+
 export type RecruitmentStageOfferConfiguration = {
   id: number
   pipelineStageId: number
@@ -328,6 +369,8 @@ export type RecruitmentInterviewStageConfiguration = {
   defaultDurationMinutes: number
   minimumPanelCount: number
   minimumPassingScore: number
+  scoreInputMode: 'PercentageWeighted' | 'Points'
+  panelAggregationMethod: 'Average' | 'Median' | 'Chairperson'
   feedbackRequired: boolean
   calendarEnabled: boolean
   allowReschedule: boolean
@@ -375,6 +418,7 @@ export type RecruitmentPipelineTransitionRule = {
 }
 
 export type RecruitmentPipelineBoard = {
+  clientId: number
   positionId: number
   jobPostingId?: number | null
   positionCode: string
@@ -391,6 +435,7 @@ export type RecruitmentPipelineBoardLane = {
   displayOrder: number
   slaDurationMinutes: number
   slaWarningMinutes: number
+  processDocumentRequirements: RecruitmentStageProcessDocumentRequirement[]
   applications: RecruitmentPipelineBoardCard[]
 }
 

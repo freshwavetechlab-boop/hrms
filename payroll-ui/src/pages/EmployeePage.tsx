@@ -7,7 +7,7 @@ import SearchSelect, { selectOptions } from '../components/SearchSelect'
 import { useToast } from '../components/ToastProvider'
 import { employee0, setup0 } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
-import { deleteEmployee as removeEmployee, downloadEmployeeImportTemplate, getDropdowns, getEmployeeDeletePreview, getEmployeeImportJob, getEmployeeInfotypes, getEmployeeManagerUsers, getSetup, getWorkLocations, processEmployeeAction, saveEmployee as persistEmployee, startEmployeeImport } from '../services/settingsService'
+import { deleteEmployee as removeEmployee, downloadEmployeeImportTemplate, getDropdowns, getEmployeeDeletePreview, getEmployeeImportJob, getEmployeeInfotypes, getEmployeeManagerUsers, getSetup, getWorkLocations, preflightEmployeeImport, processEmployeeAction, saveEmployee as persistEmployee, startEmployeeImport, type EmployeeImportDecision, type EmployeeImportPreflight } from '../services/settingsService'
 import type { Client, Component, Drop, Employee, EmployeeActionRequest, EmployeeInfotypeRecord, EmployeePaymentDetails, EmployeePersonalDetails, Setup, Structure, WorkLocation, WorkflowApprover } from '../types/payroll'
 import { calculateSalaryJson, calculateSalaryTotals, canOverrideSalaryComponent, money } from '../utils/salary'
 import { parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules, type ImportPreviewSheet } from '../utils/importPreview'
@@ -17,6 +17,7 @@ import EmployeeAttachmentPanel from '../components/EmployeeAttachmentPanel'
 import EmployeeDynamicFields from '../components/EmployeeDynamicFields'
 import EntityAttachmentPanel from '../components/EntityAttachmentPanel'
 import SmartBulkUploadMapper from '../components/SmartBulkUploadMapper'
+import EmployeeImportReviewModal from '../components/EmployeeImportReviewModal'
 import { employeeBulkImportDefinition } from '../config/bulkImportDefinitions'
 import type { BulkImportOperation, PreparedBulkImport } from '../utils/smartBulkImport'
 import { getEmployeeActivity360 } from '../services/recruitmentTalentService'
@@ -45,6 +46,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const notify = useToast()
   const [clients, setClients] = useState<Client[]>([]), [locations, setLocations] = useState<WorkLocation[]>([]), [drops, setDrops] = useState<Drop[]>([]), [setup, setSetup] = useState<Setup>(setup0), [managerUsers, setManagerUsers] = useState<WorkflowApprover[]>([])
   const [employees, setEmployees] = useState<Employee[]>([]), [employee, setEmployee] = useState(employee0), [employeeInfotype, setEmployeeInfotype] = useState<EmployeeInfotypeCode>('0001')
+  const [salaryOverrides, setSalaryOverrides] = useState<Record<string, string>>({})
   const [infotypes, setInfotypes] = useState<EmployeeInfotypeRecord[]>([])
   const [changeReason, setChangeReason] = useState('')
   const [modalOpen, setModalOpen] = useState(false), [clientFilter, setClientFilter] = useState(0), [locationFilter, setLocationFilter] = useState(0), [query, setQuery] = useState('')
@@ -56,11 +58,13 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const [previewConfirm, setPreviewConfirm] = useState<null | ((draft: BulkUploadPreviewState) => Promise<void>)>(null)
   const [previewImporting, setPreviewImporting] = useState(false)
   const [employeePreviewSource, setEmployeePreviewSource] = useState<{ sheets: ImportPreviewSheet[]; clientId: number; fileName: string; operation: BulkImportOperation } | null>(null)
+  const [importReview, setImportReview] = useState<{ file: File; clientId: number; operation: BulkImportOperation; review: EmployeeImportPreflight } | null>(null)
+  const [importReviewBusy, setImportReviewBusy] = useState(false)
   const clientStructure = templatesForClient(setup.salaryStructures, employee.clientId)[0]
   const chosenStructure = setup.salaryStructures.find(item => String(item.id) === employee.salaryStructureId) ?? clientStructure
   const rawEmployeeSalary = salaryRecord(employee)
   const structureLineIds = chosenStructure?.lines.map(line => line.componentId) ?? []
-  const employeeSalary = chosenStructure && employee.annualCtc ? safeJsonRecord(calculateSalaryJson(employee.annualCtc, setup.salaryComponents, chosenStructure, rawEmployeeSalary)) : rawEmployeeSalary
+  const employeeSalary = chosenStructure && employee.annualCtc ? safeJsonRecord(calculateSalaryJson(employee.annualCtc, setup.salaryComponents, chosenStructure, salaryOverrides)) : rawEmployeeSalary
   const structureComponents = setup.salaryComponents.filter(component => component.active && structureLineIds.includes(String(component.id))).sort((a, b) => structureLineIds.indexOf(String(a.id)) - structureLineIds.indexOf(String(b.id)) || Number(a.priority) - Number(b.priority))
   const deps = drops.filter(item => item.type === 'Department' && item.isActive).map(item => item.value), desigs = drops.filter(item => item.type === 'Designation' && item.isActive).map(item => item.value)
   const grades = drops.filter(item => item.type === 'Employee Grade' && item.isActive && (!item.clientId || item.clientId === employee.clientId)).map(item => item.value)
@@ -79,32 +83,48 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const changeClientFilter = (id: number) => { setClientFilter(id); setLocationFilter(0) }
   const calcSalary = (ctc: number, salaryStructure = chosenStructure, overrides: Record<string, string | number> = {}) => calculateSalaryJson(ctc, setup.salaryComponents, salaryStructure, overrides)
   const withSalary = (row: Employee, salaryJson: string): Employee => ({ ...row, salaryJson, salaryComponents: numberRecord(salaryJson) })
-  const normalizeEmployeeSalary = (row: Employee) => {
+  const inferSalaryOverrides = (row: Employee, salaryStructure?: Structure) => {
+    if (!salaryStructure || !row.annualCtc) return {}
+    const stored = salaryRecord(row)
+    const baseline = safeJsonRecord(calcSalary(row.annualCtc, salaryStructure))
+    const componentById = new Map(setup.salaryComponents.map(component => [String(component.id), component]))
+    return Object.fromEntries(Object.entries(stored).filter(([componentId, value]) => {
+      const component = componentById.get(componentId)
+      if (!component || !canOverrideSalaryComponent(component)) return false
+      return Math.abs(Number(value || 0) - Number(baseline[componentId] || 0)) > 0.009
+    }))
+  }
+  const normalizeEmployeeSalary = (row: Employee, overrides?: Record<string, string | number>) => {
     row = normalizeEmployeeDetails(row)
     const salaryStructure = setup.salaryStructures.find(item => String(item.id) === row.salaryStructureId) ?? templatesForClient(setup.salaryStructures, row.clientId)[0]
     if (!salaryStructure || !row.annualCtc) return row
     const normalized = String(row.salaryStructureId) === String(salaryStructure.id) ? row : { ...row, salaryStructureId: String(salaryStructure.id) }
-    return withSalary(normalized, calcSalary(row.annualCtc, salaryStructure, salaryRecord(row)))
+    return withSalary(normalized, calcSalary(row.annualCtc, salaryStructure, overrides ?? inferSalaryOverrides(row, salaryStructure)))
   }
-  const empLine = (componentId: string, value: string) => { const lines = salaryRecord(employee); lines[componentId] = value; setEmployee(withSalary(employee, JSON.stringify(lines))) }
+  const empLine = (componentId: string, value: string) => {
+    const nextOverrides = { ...salaryOverrides, [componentId]: value }
+    setSalaryOverrides(nextOverrides)
+    setEmployee(withSalary(employee, calcSalary(employee.annualCtc, chosenStructure, nextOverrides)))
+  }
   const empMonthly = (component: Component) => Number(employeeSalary[String(component.id)] || 0)
-  const applyStructure = (id: string) => { const selectedId = id.split(':')[0]; const selectedStructure = setup.salaryStructures.find(item => String(item.id) === selectedId); const ctc = Number(selectedStructure?.annualCtc || employee.annualCtc || 0); setEmployee(withSalary({ ...employee, salaryStructureId: selectedId, annualCtc: ctc }, calcSalary(ctc, selectedStructure))) }
-  const applyCtc = (ctc: number) => setEmployee(withSalary({ ...employee, salaryStructureId: chosenStructure ? String(chosenStructure.id) : employee.salaryStructureId, annualCtc: ctc }, calcSalary(ctc, chosenStructure, salaryRecord(employee))))
-  const applyClient = (value: string) => { const clientId = Number(value.split(':')[0] || 0); const selectedStructure = templatesForClient(setup.salaryStructures, clientId)[0]; const ctc = Number(selectedStructure?.annualCtc || employee.annualCtc || 0); setEmployee(withSalary({ ...employee, clientId, salaryStructureId: selectedStructure ? String(selectedStructure.id) : '', annualCtc: ctc }, selectedStructure ? calcSalary(ctc, selectedStructure) : '{}')) }
+  const applyStructure = (id: string) => { const selectedId = id.split(':')[0]; const selectedStructure = setup.salaryStructures.find(item => String(item.id) === selectedId); const ctc = Number(selectedStructure?.annualCtc || employee.annualCtc || 0); setSalaryOverrides({}); setEmployee(withSalary({ ...employee, salaryStructureId: selectedId, annualCtc: ctc }, calcSalary(ctc, selectedStructure))) }
+  const applyCtc = (ctc: number) => setEmployee(withSalary({ ...employee, salaryStructureId: chosenStructure ? String(chosenStructure.id) : employee.salaryStructureId, annualCtc: ctc }, calcSalary(ctc, chosenStructure, salaryOverrides)))
+  const applyClient = (value: string) => { const clientId = Number(value.split(':')[0] || 0); const selectedStructure = templatesForClient(setup.salaryStructures, clientId)[0]; const ctc = Number(selectedStructure?.annualCtc || employee.annualCtc || 0); setSalaryOverrides({}); setEmployee(withSalary({ ...employee, clientId, salaryStructureId: selectedStructure ? String(selectedStructure.id) : '', annualCtc: ctc }, selectedStructure ? calcSalary(ctc, selectedStructure) : '{}')) }
   const newEmployee = () => {
     const selectedStructure = templatesForClient(setup.salaryStructures, clientFilter)[0]
     const ctc = Number(selectedStructure?.annualCtc || 0)
+    setSalaryOverrides({})
     setEmployee(clientFilter ? withSalary({ ...employee0, clientId: clientFilter, salaryStructureId: selectedStructure ? String(selectedStructure.id) : '', annualCtc: ctc }, selectedStructure ? calcSalary(ctc, selectedStructure) : '{}') : employee0)
     setEmployeeInfotype('0001'); setChangeReason(''); setModalOpen(true)
   }
   const loadEmployeeHistory = async (id: number) => {
     setInfotypes(await getEmployeeInfotypes(id))
   }
-  const editEmployee = (row: Employee) => { setEmployee(normalizeEmployeeSalary(row)); setEmployeeInfotype('0001'); setChangeReason(''); setModalOpen(true); void loadEmployeeHistory(row.id) }
-  const closeModal = () => { setModalOpen(false); setEmployee(employee0); setEmployeeInfotype('0001'); setChangeReason(''); setInfotypes([]) }
+  const editEmployee = (row: Employee) => { const normalized = normalizeEmployeeDetails(row); const salaryStructure = setup.salaryStructures.find(item => String(item.id) === normalized.salaryStructureId) ?? templatesForClient(setup.salaryStructures, normalized.clientId)[0]; const overrides = inferSalaryOverrides(normalized, salaryStructure); setSalaryOverrides(overrides); setEmployee(normalizeEmployeeSalary(normalized, overrides)); setEmployeeInfotype('0001'); setChangeReason(''); setModalOpen(true); void loadEmployeeHistory(row.id) }
+  const closeModal = () => { setModalOpen(false); setEmployee(employee0); setSalaryOverrides({}); setEmployeeInfotype('0001'); setChangeReason(''); setInfotypes([]) }
   const saveEmployee = async () => {
     const isNew = !employee.id
-    const response = await persistEmployee(toEmployeePayload(normalizeEmployeeSalary(employee)), employeeInfotype, changeReason)
+    const response = await persistEmployee(toEmployeePayload(normalizeEmployeeSalary(employee, salaryOverrides)), employeeInfotype, changeReason)
     if (!response.ok) { notify(response.error || 'Unable to save employee.', 'error'); return }
     if (isNew) {
       const saved = { ...employee, id: response.data.id }
@@ -120,8 +140,11 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const runEmployeeAction = async (request: EmployeeActionRequest) => {
     const response = await processEmployeeAction(request)
     if (!response.ok || !response.data) { notify(response.error || 'Employee action could not be processed.', 'error'); return }
-    const normalized = normalizeEmployeeSalary(response.data)
-    setEmployee(normalized); await loadEmployeeHistory(normalized.id); await load(); notify(`${request.actionType} saved with history.`, 'success')
+    const normalizedDetails = normalizeEmployeeDetails(response.data)
+    const salaryStructure = setup.salaryStructures.find(item => String(item.id) === normalizedDetails.salaryStructureId) ?? templatesForClient(setup.salaryStructures, normalizedDetails.clientId)[0]
+    const overrides = inferSalaryOverrides(normalizedDetails, salaryStructure)
+    const normalized = normalizeEmployeeSalary(normalizedDetails, overrides)
+    setSalaryOverrides(overrides); setEmployee(normalized); await loadEmployeeHistory(normalized.id); await load(); notify(`${request.actionType} saved with history.`, 'success')
   }
   const deleteEmployee = async (row: Employee) => {
     const preview = await getEmployeeDeletePreview(row.id)
@@ -156,9 +179,9 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     setTemplateDownloaded(true)
     notify('Employee import template downloaded.', 'info')
   }
-  const runEmployeeImport = async (file: File, importClientId = clientFilter, operation: BulkImportOperation = 'upsert') => {
+  const runEmployeeImport = async (file: File, importClientId = clientFilter, operation: BulkImportOperation = 'upsert', reviewToken = '', decisions: EmployeeImportDecision[] = []) => {
     setUpload({ open: true, state: 'uploading', percent: 1, summary: { totalRows: 0 } })
-    const start = await startEmployeeImport(importClientId, file, operation)
+    const start = await startEmployeeImport(importClientId, file, operation, reviewToken, decisions)
     if (!start.ok || !start.data.jobId) { setUpload({ open: true, state: 'error', percent: 100, summary: { ...start.data, errors: start.data.errors?.length ? start.data.errors : [start.error || 'Upload failed.'] } }); return }
     let job = start.data
     while (job.state === 'Queued' || job.state === 'Processing') {
@@ -171,6 +194,35 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     if (job.state === 'Completed') { setUpload({ open: true, state: 'success', percent: 100, summary: job }); await load(); return }
     setUpload({ open: true, state: 'error', percent, summary: { ...job, errors: job.errors?.length ? job.errors : ['Import failed. No rows were saved.'] } })
   }
+  const reviewEmployeeImportIdentity = async (file: File, importClientId: number, operation: BulkImportOperation) => {
+    const result = await preflightEmployeeImport(importClientId, file, operation)
+    if (!result.ok) {
+      setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: [result.error || 'Employee identity preflight failed. Import was not started.'] } })
+      return
+    }
+    const review = normalizeEmployeeImportPreflight(result.data)
+    if (!review.reviewToken) {
+      setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: review.totalRows, errors: ['Employee identity preflight did not return a review token. Import was blocked.'] } })
+      return
+    }
+    if (employeePreflightNeedsReview(review)) {
+      setImportReview({ file, clientId: importClientId, operation, review })
+      return
+    }
+    if (!review.canImport) {
+      setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: review.totalRows, errors: review.errors?.length ? review.errors : ['Employee identity preflight blocked this import.'] } })
+      return
+    }
+    await runEmployeeImport(file, importClientId, operation, review.reviewToken, [])
+  }
+  const confirmEmployeeImportReview = async (decisions: EmployeeImportDecision[]) => {
+    if (!importReview) return
+    const context = importReview
+    setImportReviewBusy(true)
+    setImportReview(null)
+    try { await runEmployeeImport(context.file, context.clientId, context.operation, context.review.reviewToken, decisions) }
+    finally { setImportReviewBusy(false) }
+  }
   const previewEmployeeUpload = async (file: File, columnMeta: Record<string, BulkUploadPreviewColumnMeta> = {}, operation: BulkImportOperation = 'upsert') => {
     try {
       const data = await parseEmployeePreviewData(file)
@@ -179,7 +231,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
       const clientIssues: ImportPreviewIssue[] = importClientId ? [] : [{ rowNumber: 1, column: 'Client', message: 'Select a client before import or upload a template with Client in References sheet.' }]
       setMappedPreviewColumns(columnMeta)
       setPreview({ open: true, title: 'Employee bulk upload preview', fileName: file.name, headers: data.headers, rows: data.rows, issues: [...clientIssues, ...data.issues], sheets: data.sheets, columnMeta })
-      setPreviewConfirm(() => async (draft: BulkUploadPreviewState) => runEmployeeImport(employeePreviewFile(draft, data.sourceSheets, file.name), importClientId, operation))
+      setPreviewConfirm(() => async (draft: BulkUploadPreviewState) => reviewEmployeeImportIdentity(employeePreviewFile(draft, data.sourceSheets, file.name), importClientId, operation))
       setEmployeePreviewSource({ sheets: data.sourceSheets, clientId: importClientId, fileName: file.name, operation })
     } catch (error) {
       setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: [error instanceof Error ? error.message : 'Unable to preview employee import file.'] } })
@@ -220,7 +272,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     const data = await parseEmployeePreviewData(resolvedFile)
     const clientIssues: ImportPreviewIssue[] = employeePreviewSource.clientId ? [] : [{ rowNumber: 1, column: 'Client', message: 'Select a client before import or upload a template with Client in References sheet.' }]
     setPreview({ open: true, title: 'Employee bulk upload preview', fileName: resolvedFile.name, headers: data.headers, rows: data.rows, issues: [...clientIssues, ...data.issues], sheets: data.sheets, columnMeta: mappedPreviewColumns })
-    setPreviewConfirm(() => async (draft: BulkUploadPreviewState) => runEmployeeImport(employeePreviewFile(draft, data.sourceSheets, resolvedFile.name), employeePreviewSource.clientId, employeePreviewSource.operation))
+    setPreviewConfirm(() => async (draft: BulkUploadPreviewState) => reviewEmployeeImportIdentity(employeePreviewFile(draft, data.sourceSheets, resolvedFile.name), employeePreviewSource.clientId, employeePreviewSource.operation))
     setEmployeePreviewSource({ sheets: data.sourceSheets, clientId: employeePreviewSource.clientId, fileName: resolvedFile.name, operation: employeePreviewSource.operation })
   }
   const visibleEmployees = employees.filter(row => row.isActive && (!clientFilter || row.clientId === clientFilter) && (!locationFilter || row.workLocationId === locationFilter) && `${row.employeeCode} ${row.firstName} ${row.lastName} ${row.department} ${row.designation} ${row.workEmail} ${workLocationName(locations, row.workLocationId)}`.toLowerCase().includes(query.toLowerCase()))
@@ -229,13 +281,97 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     {view === 'master' ? <EmployeeDirectory clients={clients} locations={locations} employees={visibleEmployees} allCount={employees.length} clientFilter={clientFilter} setClientFilter={changeClientFilter} locationFilter={locationFilter} setLocationFilter={setLocationFilter} query={query} setQuery={setQuery} templateDownloaded={templateDownloaded} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onDownloadTemplate={downloadTemplate} onBulkUpload={openEmployeeBulkUpload} /> : <EmployeeOrgStructure clients={clients} locations={locations} employees={employees.filter(row => row.isActive)} clientFilter={clientFilter} setClientFilter={changeClientFilter} />}
     {modalOpen && <div className="employee-modal-backdrop" onClick={closeModal}>
       <section className="employee-modal" role="dialog" aria-modal="true" aria-label="Employee details" onClick={event => event.stopPropagation()}>
-        <EmployeePanel employee={employee} setEmployee={row => setEmployee(normalizeEmployeeSalary(row))} employeeInfotype={employeeInfotype} setEmployeeInfotype={value => { setEmployeeInfotype(value as EmployeeInfotypeCode); setChangeReason('') }} changeReason={changeReason} setChangeReason={setChangeReason} clients={clients} locations={locations} managerUsers={managerUsers} templates={setup.salaryStructures} salaryComponents={setup.salaryComponents} deps={deps} desigs={desigs} grades={grades} applyClient={applyClient} applyStructure={applyStructure} applyCtc={applyCtc} structureComponents={structureComponents} employeeSalary={employeeSalary} empLine={empLine} empMonthly={empMonthly} saveEmployee={saveEmployee} closeModal={closeModal} infotypes={infotypes} runEmployeeAction={runEmployeeAction} />
+        <EmployeePanel employee={employee} setEmployee={row => setEmployee(normalizeEmployeeSalary(row, salaryOverrides))} employeeInfotype={employeeInfotype} setEmployeeInfotype={value => { setEmployeeInfotype(value as EmployeeInfotypeCode); setChangeReason('') }} changeReason={changeReason} setChangeReason={setChangeReason} clients={clients} locations={locations} managerUsers={managerUsers} templates={setup.salaryStructures} salaryComponents={setup.salaryComponents} deps={deps} desigs={desigs} grades={grades} applyClient={applyClient} applyStructure={applyStructure} applyCtc={applyCtc} structureComponents={structureComponents} employeeSalary={employeeSalary} salaryOverrides={salaryOverrides} empLine={empLine} empMonthly={empMonthly} saveEmployee={saveEmployee} closeModal={closeModal} infotypes={infotypes} runEmployeeAction={runEmployeeAction} />
       </section>
     </div>}
     <SmartBulkUploadMapper open={bulkMapperOpen} definition={employeeBulkImportDefinition} clientCode={clients.find(client => client.id === clientFilter)?.code ?? ''} existingEmployeeCodes={employees.filter(row => row.clientId === clientFilter).map(row => row.employeeCode)} onCancel={() => setBulkMapperOpen(false)} onPrepared={reviewMappedEmployeeUpload} onTemplateFile={reviewTemplateEmployeeUpload} onDownloadTemplate={downloadTemplate} />
     <BulkUploadProgressModal open={upload.open} title="Employee bulk upload" state={upload.state} percent={upload.percent} summary={upload.summary} onClose={() => setUpload(current => ({ ...current, open: false }))} />
     <BulkUploadPreviewModal preview={preview} importing={previewImporting} uniqueFields={[["Employee Code"]]} onCancel={() => { setPreview(emptyBulkUploadPreview); setMappedPreviewColumns({}); setPreviewConfirm(null); setEmployeePreviewSource(null) }} onConfirm={draft => void confirmEmployeePreview(draft)} onResolveDuplicates={(mode, sheetName) => void resolveEmployeeDuplicates(mode, sheetName)} />
+    <EmployeeImportReviewModal key={importReview?.review.reviewToken ?? 'closed'} open={Boolean(importReview)} fileName={importReview?.file.name ?? ''} operation={importReview?.operation ?? 'upsert'} review={importReview?.review ?? null} busy={importReviewBusy} onCancel={() => setImportReview(null)} onConfirm={decisions => void confirmEmployeeImportReview(decisions)} />
   </section>
+}
+
+function normalizeEmployeeImportPreflight(value: EmployeeImportPreflight): EmployeeImportPreflight {
+  const rows = Array.isArray(value?.rows) ? value.rows.map((row, index) => ({
+    ...row,
+    rowNumber: Number(row?.rowNumber || index + 2),
+    sheet: String(row?.sheet || 'Employees'),
+    proposedEmployeeCode: String(row?.proposedEmployeeCode || ''),
+    matchStatus: String(row?.matchStatus || 'New'),
+    matchedEmployeeId: Number(row?.matchedEmployeeId || 0) || null,
+    matchedEmployeeCode: row?.matchedEmployeeCode ? String(row.matchedEmployeeCode) : null,
+    matchedEmployeeName: row?.matchedEmployeeName ? String(row.matchedEmployeeName) : null,
+    matchReasons: Array.isArray(row?.matchReasons) ? row.matchReasons.map(String).filter(Boolean) : [],
+    blockingReasons: Array.isArray(row?.blockingReasons) ? row.blockingReasons.map(String).filter(Boolean) : [],
+    changes: Array.isArray(row?.changes) ? row.changes.map(change => ({
+      ...change,
+      field: String(change?.field || ''),
+      label: String(change?.label || change?.field || 'Field'),
+      oldValue: change?.oldValue === null || change?.oldValue === undefined ? '' : String(change.oldValue),
+      newValue: change?.newValue === null || change?.newValue === undefined ? '' : String(change.newValue),
+      sensitive: Boolean(change?.sensitive),
+      payrollImpact: Boolean(change?.payrollImpact)
+    })) : [],
+    candidateEmployees: Array.isArray(row?.candidateEmployees) ? row.candidateEmployees.map(candidate => ({
+      employeeId: Number(candidate?.employeeId || 0),
+      employeeCode: String(candidate?.employeeCode || ''),
+      employeeName: String(candidate?.employeeName || ''),
+      matchReasons: Array.isArray(candidate?.matchReasons) ? candidate.matchReasons.map(String).filter(Boolean) : [],
+      changes: Array.isArray(candidate?.changes) ? candidate.changes.map(change => ({
+        ...change,
+        field: String(change?.field || ''),
+        label: String(change?.label || change?.field || 'Field'),
+        oldValue: change?.oldValue === null || change?.oldValue === undefined ? '' : String(change.oldValue),
+        newValue: change?.newValue === null || change?.newValue === undefined ? '' : String(change.newValue),
+        sensitive: Boolean(change?.sensitive),
+        payrollImpact: Boolean(change?.payrollImpact)
+      })) : []
+    })).filter(candidate => candidate.employeeId > 0) : [],
+    identityEvidence: Array.isArray(row?.identityEvidence) ? row.identityEvidence.map(evidence => ({
+      field: String(evidence?.field || ''),
+      label: String(evidence?.label || evidence?.field || 'Identifier'),
+      uploadedValue: String(evidence?.uploadedValue || ''),
+      sensitive: Boolean(evidence?.sensitive),
+      candidates: Array.isArray(evidence?.candidates) ? evidence.candidates.map(candidate => ({
+        employeeId: Number(candidate?.employeeId || 0),
+        employeeCode: String(candidate?.employeeCode || ''),
+        employeeName: String(candidate?.employeeName || ''),
+        existingValue: String(candidate?.existingValue || '')
+      })).filter(candidate => candidate.employeeId > 0) : []
+    })) : [],
+    canResolveConflict: Boolean(row?.canResolveConflict)
+  })) : []
+  return {
+    reviewToken: String(value?.reviewToken || ''),
+    totalRows: Number(value?.totalRows || rows.length),
+    canImport: value?.canImport === true,
+    requiresConfirmation: Boolean(value?.requiresConfirmation),
+    rows,
+    errors: Array.isArray(value?.errors) ? value.errors.map(String).filter(Boolean) : []
+  }
+}
+
+function employeePreflightNeedsReview(review: EmployeeImportPreflight) {
+  return review.rows.some(row => {
+    const status = String(row.matchStatus || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+    const reasons = row.matchReasons.map(reason => String(reason || '').toLowerCase().replace(/[^a-z0-9]/g, ''))
+    const identifierMatch = ['matchedbyidentifier', 'identifiermatch', 'secondaryidentifier', 'identitymatch'].some(value => status.includes(value))
+      || reasons.some(reason => ['mobile', 'phone', 'aadhaar', 'aadhar', 'pan', 'bankaccount', 'nameaddress'].some(value => reason.includes(value)))
+    const conflict = ['conflict', 'blocked', 'ambiguous', 'multiple'].some(value => status.includes(value))
+    const probable = ['probable', 'possible', 'similar', 'nameaddress'].some(value => status.includes(value))
+    return conflict
+      || probable
+      || identifierMatch
+      || Boolean(row.canResolveConflict)
+      || (row.candidateEmployees?.length ?? 0) > 1
+      || row.blockingReasons.length > 0
+      || row.changes.some(change => change.sensitive || change.payrollImpact || sensitiveEmployeeImportField(change.field || change.label))
+  })
+}
+
+function sensitiveEmployeeImportField(value: string) {
+  const key = String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  return ['mobile', 'phone', 'aadhaar', 'aadhar', 'pan', 'bank', 'ifsc', 'salary', 'ctc', 'payment', 'portalaccess', 'active', 'workemail'].some(field => key.includes(field))
 }
 
 function EmployeeOrgStructure(p: { clients: Client[]; locations: WorkLocation[]; employees: Employee[]; clientFilter: number; setClientFilter: (id: number) => void }) {
@@ -493,7 +629,7 @@ function EmployeeDirectory(p: { clients: Client[]; locations: WorkLocation[]; em
   </section>
 }
 
-function EmployeePanel(p: { employee: Employee; setEmployee: (employee: Employee) => void; employeeInfotype: EmployeeInfotypeCode; setEmployeeInfotype: (code: string) => void; changeReason: string; setChangeReason: (value: string) => void; clients: Client[]; locations: WorkLocation[]; managerUsers: WorkflowApprover[]; templates: Structure[]; salaryComponents: Component[]; deps: string[]; desigs: string[]; grades: string[]; applyClient: (value: string) => void; applyStructure: (value: string) => void; applyCtc: (value: number) => void; structureComponents: Component[]; employeeSalary: Record<string, string>; empLine: (id: string, value: string) => void; empMonthly: (component: Component) => number; saveEmployee: () => void; closeModal: () => void; infotypes: EmployeeInfotypeRecord[]; runEmployeeAction: (request: EmployeeActionRequest) => Promise<void> }) {
+function EmployeePanel(p: { employee: Employee; setEmployee: (employee: Employee) => void; employeeInfotype: EmployeeInfotypeCode; setEmployeeInfotype: (code: string) => void; changeReason: string; setChangeReason: (value: string) => void; clients: Client[]; locations: WorkLocation[]; managerUsers: WorkflowApprover[]; templates: Structure[]; salaryComponents: Component[]; deps: string[]; desigs: string[]; grades: string[]; applyClient: (value: string) => void; applyStructure: (value: string) => void; applyCtc: (value: number) => void; structureComponents: Component[]; employeeSalary: Record<string, string>; salaryOverrides: Record<string, string>; empLine: (id: string, value: string) => void; empMonthly: (component: Component) => number; saveEmployee: () => void; closeModal: () => void; infotypes: EmployeeInfotypeRecord[]; runEmployeeAction: (request: EmployeeActionRequest) => Promise<void> }) {
   const personal = p.employee.personalDetails, payment = p.employee.paymentDetails
   const salaryRows = p.structureComponents.map(component => ({ component, monthly: p.empMonthly(component), annual: p.empMonthly(component) * 12 }))
   const totals = calculateSalaryTotals(salaryRows.map(row => ({ line: { componentId: String(row.component.id), value: '' }, ...row })))
@@ -521,7 +657,7 @@ function EmployeePanel(p: { employee: Employee; setEmployee: (employee: Employee
           <strong title={component.name}>{component.name}</strong>
           <output>{money(monthly)}</output>
           <output>{money(annual)}</output>
-          <input value={p.employeeSalary[String(component.id)] ?? ''} readOnly={!canOverrideSalaryComponent(component)} title={canOverrideSalaryComponent(component) ? 'Employee-specific override' : 'Calculated from salary component master and template'} onChange={event => p.empLine(String(component.id), event.target.value.replace(/[^\d.-]/g, ''))} aria-label={`${component.name} override`} />
+          <input inputMode="decimal" value={p.salaryOverrides[String(component.id)] ?? p.employeeSalary[String(component.id)] ?? ''} readOnly={!canOverrideSalaryComponent(component)} title={canOverrideSalaryComponent(component) ? 'Employee-specific override' : 'Calculated from salary component master and template'} onChange={event => p.empLine(String(component.id), event.target.value.replace(/[^\d.-]/g, ''))} aria-label={`${component.name} override`} />
         </div>) : <p className="employee-salary-empty">Select a client and salary template, then enter Annual CTC to calculate the salary breakup.</p>}
       </div>
     </div>}

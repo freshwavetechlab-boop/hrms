@@ -84,6 +84,12 @@ public class AttachmentStorageServer
     public DateTime? LastHealthCheckAtUtc { get; set; }
     public string LastHealthCheckStatus { get; set; } = "Not checked";
     public string LastHealthCheckMessage { get; set; } = string.Empty;
+    public string GoogleAccountEmail { get; set; } = string.Empty;
+    public string GoogleFolderId { get; set; } = string.Empty;
+    public string GoogleFolderName { get; set; } = string.Empty;
+    public string GoogleFolderUrl { get; set; } = string.Empty;
+    public bool GoogleOAuthConfigured { get; set; }
+    public string GoogleConnectionStatus { get; set; } = string.Empty;
     public long LinkedAttachmentCount { get; set; }
     public int? CreatedByUserId { get; set; }
     public DateTime CreatedAtUtc { get; set; }
@@ -184,6 +190,41 @@ public class AttachmentStorageHealthResult
     public string Message { get; set; } = string.Empty;
     public long? AvailableBytes { get; set; }
     public long? TotalBytes { get; set; }
+}
+
+public sealed class GoogleDriveConnectRequest
+{
+    public long? StorageServerId { get; set; }
+}
+
+public sealed class GoogleDriveConnectResponse
+{
+    public long StorageServerId { get; set; }
+    public string AuthorizationUrl { get; set; } = string.Empty;
+}
+
+public sealed class GoogleDriveConnectionStatus
+{
+    public long StorageServerId { get; set; }
+    public bool GoogleOAuthConfigured { get; set; }
+    public bool Connected { get; set; }
+    public string ConnectionStatus { get; set; } = "Not configured";
+    public string AccountEmail { get; set; } = string.Empty;
+    public string AccountName { get; set; } = string.Empty;
+    public string FolderName { get; set; } = string.Empty;
+    public string FolderUrl { get; set; } = string.Empty;
+    public bool IsDefaultWriteServer { get; set; }
+    public bool Healthy { get; set; }
+    public DateTime? ConnectedAtUtc { get; set; }
+}
+
+public sealed class GoogleDriveOAuthSetup
+{
+    public long StorageServerId { get; set; }
+    public bool GoogleOAuthConfigured { get; set; }
+    public string ConnectionStatus { get; set; } = "Not configured";
+    public string CallbackUrl { get; set; } = string.Empty;
+    public string GoogleCloudCredentialsUrl { get; set; } = "https://console.cloud.google.com/apis/credentials";
 }
 
 public sealed class AttachmentFileHandle(Stream stream, IDisposable? owner = null) : IAsyncDisposable

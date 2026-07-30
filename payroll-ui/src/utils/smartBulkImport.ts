@@ -116,7 +116,10 @@ export function prepareMappedBulkImport(file: File, sheet: ImportPreviewSheet, d
   if (split && mappings[firstNameCode] === undefined) transformedCodes.add(firstNameCode)
   if (split && mappings[lastNameCode] === undefined) transformedCodes.add(lastNameCode)
   if (codeGeneration) transformedCodes.add('EmployeeCode')
-  const outputFields = definition.fields.filter(field => mappings[field.code] !== undefined || transformedCodes.has(field.code) || (operation !== 'update' && field.defaultValue !== undefined) || field.required)
+  // Upsert must remain sparse: an unmapped default such as Active or Portal
+  // Access must not overwrite an existing employee. Insert mode may materialize
+  // defaults because every row is guaranteed to be new.
+  const outputFields = definition.fields.filter(field => mappings[field.code] !== undefined || transformedCodes.has(field.code) || (operation === 'insert' && field.defaultValue !== undefined) || field.required)
   const outputHeaders = outputFields.map(field => field.header)
   const generatedCodes = buildEmployeeCodes(sheet.rows, mappings.EmployeeCode, codeGeneration)
   let splitNames = options.preTransformedRows ?? 0
@@ -132,7 +135,7 @@ export function prepareMappedBulkImport(file: File, sheet: ImportPreviewSheet, d
       if (field.code === 'EmployeeCode' && codeGeneration) return generatedCodes[rowIndex] ?? ''
       if (field.code === firstNameCode && nameParts) return nameParts.firstName
       if (field.code === lastNameCode && nameParts) return nameParts.lastName
-      return operation === 'update' ? '' : field.defaultValue ?? ''
+      return operation === 'insert' ? field.defaultValue ?? '' : ''
     })
   })
   const mappedSourceColumns = new Set(Object.values(mappings))

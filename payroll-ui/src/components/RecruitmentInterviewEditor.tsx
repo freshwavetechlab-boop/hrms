@@ -65,6 +65,8 @@ const contextFromInterview = (interview: RecruitmentInterview): RecruitmentInter
   defaultDurationMinutes: interview.defaultDurationMinutes || 60,
   minimumPanelCount: interview.minimumPanelCount || 1,
   minimumPassingScore: interview.minimumPassingScore || 60,
+  scoreInputMode: interview.scoreInputMode || 'PercentageWeighted',
+  panelAggregationMethod: interview.panelAggregationMethod || 'Average',
   feedbackRequired: interview.feedbackRequired,
   calendarEnabled: interview.calendarEnabled,
   allowReschedule: interview.allowReschedule,
@@ -249,8 +251,10 @@ function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved }: Feedb
 
   const selectedScores = competencies.map(row => ({ competency: row, draft: competencyDraft[row.id] })).filter(row => row.draft?.score != null)
   const selectedWeight = selectedScores.reduce((sum, row) => sum + Number(row.competency.weightPercent || 0), 0)
+  const pointsMode = interview.scoreInputMode === 'Points'
+  const totalPoints = selectedScores.reduce((sum, row) => sum + Number(row.draft?.score || 0), 0)
   const weightedScore = competencies.length
-    ? (selectedWeight > 0 ? selectedScores.reduce((sum, row) => sum + Number(row.draft?.score || 0) * Number(row.competency.weightPercent || 0), 0) / selectedWeight : 0)
+    ? (selectedWeight > 0 ? pointsMode ? totalPoints * 100 / selectedWeight : selectedScores.reduce((sum, row) => sum + Number(row.draft?.score || 0) * Number(row.competency.weightPercent || 0), 0) / selectedWeight : 0)
     : overallScore
   const allRequiredScoresPresent = !interview.feedbackRequired || !competencies.length || competencies.every(row => competencyDraft[row.id]?.score != null)
   const hasConfiguredScore = !competencies.length || selectedScores.length > 0
@@ -316,13 +320,14 @@ function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved }: Feedb
         <Form.Item label="Recommendation" required><Select value={recommendation} onChange={setRecommendation} options={['Strong Hire', 'Hire', 'On Hold', 'No Hire', 'Strong No Hire'].map(value => ({ value, label: value }))} /></Form.Item>
 
         {!!competencies.length && <div className="interview-editor-span competency-score-grid">
-          <div className="competency-score-heading"><div><Typography.Title level={5}>Configured competencies</Typography.Title><Typography.Text type="secondary">Scores are weighted automatically; JSON input is not required.</Typography.Text></div><Statistic title="Weighted score" value={Number(weightedScore.toFixed(2))} suffix="/ 100" /></div>
+          <div className="competency-score-heading"><div><Typography.Title level={5}>Configured competencies</Typography.Title><Typography.Text type="secondary">{pointsMode ? 'Enter actual points up to each configured maximum.' : 'Enter percentages; weights are applied automatically.'}</Typography.Text></div><Statistic title={pointsMode ? 'Total points' : 'Weighted score'} value={Number((pointsMode ? totalPoints : weightedScore).toFixed(2))} suffix={`/ ${pointsMode ? competencies.reduce((sum, row) => sum + Number(row.weightPercent || 0), 0) : 100}`} /></div>
           {competencies.map(competency => {
             const value = competencyDraft[competency.id]?.score
-            return <Card size="small" key={competency.id} title={competency.competencyName} extra={<Space><Tag color="blue">{competency.weightPercent}% weight</Tag><Tag color={value != null && value >= competency.minimumScore ? 'green' : 'orange'}>Minimum {competency.minimumScore}</Tag></Space>}>
+            const maximum = pointsMode ? Number(competency.weightPercent) : 100
+            return <Card size="small" key={competency.id} title={competency.competencyName} extra={<Space><Tag color="blue">{pointsMode ? `${competency.weightPercent} max points` : `${competency.weightPercent}% weight`}</Tag><Tag color={value != null && value >= competency.minimumScore ? 'green' : 'orange'}>Minimum {competency.minimumScore}</Tag></Space>}>
               <div className="competency-score-row">
-                <InputNumber min={0} max={100} precision={2} value={value} onChange={score => setCompetencyDraft(current => ({ ...current, [competency.id]: { ...current[competency.id], score: score == null ? undefined : Number(score) } }))} placeholder="0 - 100" />
-                <Progress percent={Number(value || 0)} showInfo={false} status={value != null && value < competency.minimumScore ? 'exception' : 'normal'} />
+                <InputNumber min={0} max={maximum} precision={2} value={value} onChange={score => setCompetencyDraft(current => ({ ...current, [competency.id]: { ...current[competency.id], score: score == null ? undefined : Number(score) } }))} placeholder={`0 - ${maximum}`} />
+                <Progress percent={maximum > 0 ? Number(value || 0) * 100 / maximum : 0} showInfo={false} status={value != null && value < competency.minimumScore ? 'exception' : 'normal'} />
                 <Input placeholder="Competency-specific observation" value={competencyDraft[competency.id]?.comments || ''} onChange={event => setCompetencyDraft(current => ({ ...current, [competency.id]: { ...current[competency.id], comments: event.target.value } }))} />
               </div>
             </Card>

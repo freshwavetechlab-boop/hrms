@@ -11,7 +11,7 @@ export type User = {
 
 export type OrganizationBrand = { name: string; logoDataUrl: string }
 
-export type View = 'Dashboard' | 'My Profile' | 'Leave' | 'Travel' | 'Expense' | 'Recruitment' | 'Attendance' | 'Pay' | 'Tax' | 'My Tasks' | 'Team' | 'Approvals'
+export type View = 'Dashboard' | 'My Profile' | 'Leave' | 'Travel' | 'Expense' | 'Recruitment' | 'Attendance' | 'Attendance Review' | 'Pay' | 'Tax' | 'My Tasks' | 'Team' | 'Approvals'
 export type LoadState = 'loading' | 'ready' | 'error'
 
 export type Task = { id: number; instanceId: number; resourceType: string; resourceId: string; stageName: string; payloadJson: string; status?: string; comment?: string; createdAt: string; actionedAt?: string }
@@ -47,6 +47,22 @@ export type SaveEmployeeReferral = { positionId: number; candidateName: string; 
 export type WorkflowTrail = { instanceId?: number; workflowCode: string; workflowName: string; resourceType: string; matchScope: string; status: string; createdAt?: string; completedAt?: string; events: WorkflowTrailItem[] }
 export type WorkflowTrailItem = { stageName: string; action: string; actor: string; comment: string; createdAt: string; isPending: boolean }
 export type DailyAttendance = { attendanceDate: string; status: string; payableValue: number; remarks: string }
+export type AttendanceGroup = { id: number; clientId: number; clientName: string; policyBatchId?: string; name: string; workLocationId: number; workLocationName: string; department: string; designation: string; workWeek: string; attendanceCycleStartDay: number; attendanceCycleEndDay: number; payrollReportGenerationDay: number; employeeIds: number[]; employeeNames: string; employeeCount: number; isActive: boolean }
+export type ManagedMonthlyAttendance = { employeeId: number; employeeCode: string; employeeName: string; department: string; workLocationId: number; workingDays: number; presentDays: number; payableDays: number; lopDays: number }
+export type ManagedDailyAttendance = { id: number; clientId: number; employeeId: number; attendanceDate: string; status: string; payableValue: number; checkInTime?: string | null; checkOutTime?: string | null; totalHours: number; remarks: string }
+export type EmployeeMonthlyAttendance = ManagedMonthlyAttendance & { attendanceGroupId?: number | null; attendanceGroupName: string; workWeek: string; attendanceCycleStartDay?: number | null; attendanceCycleEndDay?: number | null; payrollReportGenerationDay?: number | null; month: string; sourceType: string; remarks: string }
+export type EmployeeDailyAttendance = ManagedDailyAttendance
+export type AttendanceBatchJobState = 'Queued' | 'Processing' | 'Completed' | 'Failed'
+export type AttendanceBatchJobStatus = { jobId: string; clientId: number; month: string; state: AttendanceBatchJobState; stage: string; totalRows: number; completedRows: number; savedRows: number; errors: string[] }
+export type AttendanceBatchJob = AttendanceBatchJobStatus
+export type Drop = { id: number; clientId: number; type: string; value: string; configJson?: string; isActive: boolean }
+export type AttendanceSettings = { id: number; clientId: number; checkInTime: string; checkOutTime: string; workingHoursCalculation: 'First check-in and last check-out' | 'Every valid check-in and check-out'; minimumHoursForHalfDay: number; minimumHoursForFullDay: number; maximumHoursAllowedForFullDay: number; allowRegularizationRequests: boolean; regularizationWindow: 'Anytime' | 'Limited by past days'; pastDaysAllowed: number; restrictRegularizationRequestsPerMonth: boolean; maxRegularizationRequestsPerMonth: number }
+export type LeaveAttendancePreferences = { id: number; clientId: number; workLocationId?: number | null; workLocationName?: string; workWeek: string; attendanceCycleStartDay: number; attendanceCycleEndDay: number; payrollReportGenerationDay: number; includeLeaveEncashmentInPayRun: boolean; leaveEncashmentSalaryComponentId?: number | null }
+export type ClientAttendanceSchedule = { workWeek: string; salaryDays: string; fixedDays: string; payDay: string; firstPayPeriod: string }
+export type ManagedAttendanceHoliday = { id: number; clientId: number; name: string; holidayType: 'Holiday' | 'Restricted Holiday'; startDate: string; endDate: string; description: string; allLocations: boolean; workLocationIds: number[]; workLocations: string }
+export type EmployeeLeaveBalanceSummary = { employeeId: number; leaveTypeId: number; leaveTypeCode: string; leaveTypeName: string; balance: number; balanceDate: string; allowNegativeLeaveBalance: boolean }
+export type AttendanceReviewContext = { settings: AttendanceSettings; schedule: ClientAttendanceSchedule; preferences: LeaveAttendancePreferences; holidays: ManagedAttendanceHoliday[]; leaveBalances: EmployeeLeaveBalanceSummary[] }
+export type LeaveType = { id: number; clientId: number; name: string; code: string; type: 'Paid' | 'Unpaid'; allowNegativeLeaveBalance: boolean; allowHalfDay: boolean; attendanceAction: 'Mark as leave' | 'Mark as present'; isActive: boolean }
 export type AttendanceSummary = { presentDays: number; payableDays: number; totalWorkingDays: number }
 export type Holiday = { name: string; startDate: string; endDate: string }
 export type Birthday = { name: string; department: string }

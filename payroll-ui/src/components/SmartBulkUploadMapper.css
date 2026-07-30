@@ -9,3 +9,23 @@
 @media(max-width:900px){.smart-bulk-smart-tools{grid-template-columns:1fr}.smart-bulk-operation{align-items:stretch;flex-direction:column}.smart-bulk-operation .ant-select{width:100%;min-width:0}}
 @media(max-width:620px){.smart-bulk-tool-grid{grid-template-columns:1fr}.smart-bulk-smart-tools article>header{flex-direction:column}}
 @media(max-width:760px){.smart-bulk-preview-split-summary{align-items:stretch;flex-direction:column}.smart-bulk-preview-split-summary .ant-select{width:100%;min-width:0}}
+
+/* Keep primary actions readable without changing buttons outside bulk upload. */
+.smart-bulk-drawer .ant-btn-primary,
+.smart-bulk-source-preview-modal .ant-btn-primary {
+  color: #fff !important;
+}
+
+.smart-bulk-drawer .ant-btn-primary .anticon,
+.smart-bulk-drawer .ant-btn-primary span,
+.smart-bulk-source-preview-modal .ant-btn-primary .anticon,
+.smart-bulk-source-preview-modal .ant-btn-primary span {
+  color: #fff !important;
+}
+
+.smart-bulk-drawer .ant-btn-primary:not(:disabled):hover,
+.smart-bulk-drawer .ant-btn-primary:not(:disabled):active,
+.smart-bulk-source-preview-modal .ant-btn-primary:not(:disabled):hover,
+.smart-bulk-source-preview-modal .ant-btn-primary:not(:disabled):active {
+  color: #fff !important;
+}

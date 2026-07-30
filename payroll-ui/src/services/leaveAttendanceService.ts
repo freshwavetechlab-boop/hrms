@@ -1,5 +1,5 @@
-import type { AttendanceGroup, AttendanceReviewContext, AttendanceSettings, EmployeeDailyAttendance, EmployeeMonthlyAttendance, GeoFenceEmployeeOption, GeoFenceRule, GeoFenceScope, Holiday, LeaveAttendancePreferences, LeaveAttendanceSetup, LeaveBalanceImportMapping, LeaveBalanceImportPreview, LeaveBalanceImportResult, LeaveType, SetupStatus } from '../types/payroll'
-import { apiUrl, deleteJson, getBlob, getJson, postForm, postFormWithProgress, postJson, putJson } from './apiClient'
+import type { AttendanceBatchJobStatus, AttendanceGroup, AttendanceReviewContext, AttendanceSettings, EmployeeDailyAttendance, EmployeeMonthlyAttendance, GeoFenceEmployeeOption, GeoFenceRule, GeoFenceScope, Holiday, LeaveAttendancePreferences, LeaveAttendanceSetup, LeaveBalanceImportMapping, LeaveBalanceImportPreview, LeaveBalanceImportResult, LeaveType, SetupStatus } from '../types/payroll'
+import { apiUrl, deleteJson, getBlob, getJson, getJsonResult, postForm, postFormWithProgress, postJson, putJson } from './apiClient'
 import type { BulkImportStatus } from './settingsService'
 
 const fallback: LeaveAttendanceSetup = { clientId: 0, isEnabled: false, steps: [] }
@@ -42,18 +42,27 @@ export async function deleteAttendanceGroup(clientId: number, id: number) {
 }
 export const getMonthlyAttendance = (clientId: number, month: string, workLocationId = 0) => getJson<EmployeeMonthlyAttendance[]>(`/api/leave-attendance/attendance/monthly?${new URLSearchParams({ clientId: String(clientId), month, ...(workLocationId ? { workLocationId: String(workLocationId) } : {}) })}`, [])
 export const getAttendanceReviewContext = (clientId: number, month: string, workLocationId = 0) => getJson<AttendanceReviewContext>(`/api/leave-attendance/attendance/context?${new URLSearchParams({ clientId: String(clientId), month, ...(workLocationId ? { workLocationId: String(workLocationId) } : {}) })}`, reviewContextFallback)
+export const getMonthlyAttendanceResult = (clientId: number, month: string, workLocationId = 0) => getJsonResult<EmployeeMonthlyAttendance[]>(`/api/leave-attendance/attendance/monthly?${new URLSearchParams({ clientId: String(clientId), month, ...(workLocationId ? { workLocationId: String(workLocationId) } : {}) })}`, [])
+export const getAttendanceReviewContextResult = (clientId: number, month: string, workLocationId = 0) => getJsonResult<AttendanceReviewContext>(`/api/leave-attendance/attendance/context?${new URLSearchParams({ clientId: String(clientId), month, ...(workLocationId ? { workLocationId: String(workLocationId) } : {}) })}`, reviewContextFallback)
 export async function saveMonthlyAttendance(clientId: number, month: string, rows: EmployeeMonthlyAttendance[]) {
   return postJson('/api/leave-attendance/attendance/monthly', { clientId, month, rows }, [])
 }
 export const getDailyAttendance = (clientId: number, employeeId: number, month: string) => getJson<EmployeeDailyAttendance[]>(`/api/leave-attendance/attendance/daily?clientId=${clientId}&employeeId=${employeeId}&month=${month}`, [])
 export const getDailyAttendanceGrid = (clientId: number, month: string, workLocationId = 0) => getJson<EmployeeDailyAttendance[]>(`/api/leave-attendance/attendance/daily-grid?${new URLSearchParams({ clientId: String(clientId), month, ...(workLocationId ? { workLocationId: String(workLocationId) } : {}) })}`, [])
+export const getDailyAttendanceGridResult = (clientId: number, month: string, workLocationId = 0) => getJsonResult<EmployeeDailyAttendance[]>(`/api/leave-attendance/attendance/daily-grid?${new URLSearchParams({ clientId: String(clientId), month, ...(workLocationId ? { workLocationId: String(workLocationId) } : {}) })}`, [])
 export async function saveDailyAttendance(clientId: number, employeeId: number, month: string, rows: EmployeeDailyAttendance[]) {
   return postJson('/api/leave-attendance/attendance/daily', { clientId, employeeId, month, rows }, [])
 }
 export async function saveDailyAttendanceBatch(clientId: number, month: string, rows: EmployeeDailyAttendance[]) {
   return postJson('/api/leave-attendance/attendance/daily/batch', { clientId, month, rows }, [])
 }
+const attendanceBatchJobFallback = (jobId = '', clientId = 0, month = '', errors: string[] = []): AttendanceBatchJobStatus => ({ jobId, clientId, month, state: 'Failed', stage: 'Failed', totalRows: 0, completedRows: 0, savedRows: 0, errors })
+export async function startDailyAttendanceBatchJob(clientId: number, month: string, rows: EmployeeDailyAttendance[], rollupEmployeeIds: number[]) {
+  return postJson('/api/leave-attendance/attendance/daily/batch-jobs', { clientId, month, rows, rollupEmployeeIds }, attendanceBatchJobFallback('', clientId, month), { toast: false, loader: false, timeoutMs: 120000 })
+}
+export const getDailyAttendanceBatchJob = (jobId: string) => getJsonResult<AttendanceBatchJobStatus>(`/api/leave-attendance/attendance/daily/batch-jobs/${jobId}`, attendanceBatchJobFallback(jobId, 0, '', ['Attendance save job was not found.']), { loader: false, timeoutMs: 15000 })
 export const getLeaveTypes = (clientId: number) => getJson<LeaveType[]>(`/api/leave-attendance/leave-types?clientId=${clientId}`, [])
+export const getLeaveTypesResult = (clientId: number) => getJsonResult<LeaveType[]>(`/api/leave-attendance/leave-types?clientId=${clientId}`, [])
 export async function saveLeaveType(leaveType: LeaveType) {
   return postJson('/api/leave-attendance/leave-types', leaveType, null as LeaveType | null, { toast: false })
 }

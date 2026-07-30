@@ -1351,6 +1351,11 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 .bulk-preview-modal .ant-drawer-body{overflow:hidden!important;padding:16px!important}
 .bulk-preview-modal .ant-drawer-footer{display:flex!important;justify-content:flex-end!important}
 .bulk-preview-content{height:100%;min-height:0;display:flex;flex-direction:column;gap:14px}
+.bulk-preview-modal .ant-btn-primary,
+.bulk-preview-modal .ant-btn-primary .anticon,
+.bulk-preview-modal .ant-btn-primary span,
+.bulk-preview-modal .ant-btn-primary:not(:disabled):hover,
+.bulk-preview-modal .ant-btn-primary:not(:disabled):active{color:#fff!important}
 .bulk-preview-resolve{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid #fed7aa;background:#fff7ed;border-radius:10px;padding:10px 12px;color:#9a3412;font-size:.78rem;font-weight:800}
 .bulk-preview-grid-shell{flex:1;min-height:0;display:flex;flex-direction:column}
 .bulk-preview-table{flex:1;min-height:0;overflow:auto;border:1px solid #e5e8f0;border-radius:10px;background:#fff}

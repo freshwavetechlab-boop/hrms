@@ -1,0 +1,185 @@
+.communication-settings {
+  --communication-ink: #172136;
+  --communication-muted: #667085;
+  --communication-border: #e6eaf1;
+  --communication-purple: #6546e8;
+  --communication-purple-soft: #f3f0ff;
+  width: 100%;
+}
+
+.communication-settings-hero {
+  position: relative;
+  min-height: 190px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  overflow: hidden;
+  padding: 28px 32px;
+  border: 1px solid #313a69;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 78% -30%, #927aff75 0, transparent 40%),
+    linear-gradient(125deg, #17213f 0%, #25265d 55%, #4f35b6 100%);
+  box-shadow: 0 22px 52px #25306b24;
+  color: #fff;
+}
+
+.communication-settings-hero::before,
+.communication-settings-hero::after {
+  position: absolute;
+  content: '';
+  border: 1px solid #ffffff17;
+  border-radius: 50%;
+}
+
+.communication-settings-hero::before { width: 220px; height: 220px; right: 68px; top: -105px; }
+.communication-settings-hero::after { width: 145px; height: 145px; right: -42px; bottom: -76px; }
+
+.communication-hero-copy { position: relative; z-index: 1; max-width: 760px; }
+.communication-eyebrow { display: inline-flex; align-items: center; gap: 7px; margin-bottom: 8px; color: #c9c2ff; font-size: .68rem; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }
+.communication-hero-copy h2 { margin: 0; color: #fff; font-size: clamp(1.45rem, 2.3vw, 2.1rem); font-weight: 900; letter-spacing: -.035em; }
+.communication-hero-copy p { max-width: 690px; margin: 8px 0 15px; color: #d9ddec; font-size: .82rem; line-height: 1.65; }
+.communication-hero-copy .ant-tag { margin: 0; border-color: #ffffff21; background: #ffffff10; color: #f7f8ff; }
+
+.communication-hero-visual {
+  position: relative;
+  z-index: 1;
+  width: 162px;
+  min-width: 162px;
+  height: 118px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 3px;
+  border: 1px solid #ffffff24;
+  border-radius: 18px;
+  background: #ffffff10;
+  box-shadow: inset 0 1px 0 #ffffff18;
+  backdrop-filter: blur(10px);
+}
+.communication-hero-visual svg { margin-bottom: 5px; color: #c9c2ff; font-size: 1.7rem; transform: rotate(-20deg); }
+.communication-hero-visual span { color: #fff; font-size: 1rem; font-weight: 900; }
+.communication-hero-visual small { color: #cfd4e9; font-size: .64rem; }
+
+.communication-health-grid { margin-top: 0 !important; }
+.communication-health-grid > .ant-col { display: flex; }
+.communication-health-card { width: 100%; overflow: hidden; border-color: var(--communication-border) !important; border-radius: 14px !important; box-shadow: 0 8px 26px #1721360b !important; }
+.communication-health-card::before { position: absolute; inset: 0 auto 0 0; width: 4px; content: ''; background: #5b78e6; }
+.communication-health-card.channel-sms::before { background: #7454e9; }
+.communication-health-card.channel-whatsapp::before { background: #18a56a; }
+.communication-health-card .ant-card-body { min-height: 190px; display: flex; flex-direction: column; padding: 18px 18px 16px !important; }
+.communication-health-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.communication-channel-icon { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 11px; background: #eef3ff; color: #4565cb; font-size: 1.05rem; }
+.channel-sms .communication-channel-icon { background: #f3f0ff; color: #6546e8; }
+.channel-whatsapp .communication-channel-icon { background: #e9f9f1; color: #11885a; }
+.communication-health-card h3 { margin: 12px 0 3px; color: var(--communication-ink); font-size: .95rem; font-weight: 900; }
+.communication-health-card p { min-height: 36px; margin: 0; color: var(--communication-muted); font-size: .7rem; line-height: 1.5; }
+.communication-channel-meta { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: #7b8496; font-size: .65rem; }
+.communication-health-actions { display: flex; gap: 7px; margin-top: auto; padding-top: 13px; }
+.communication-health-actions .ant-btn { height: 31px; border-radius: 8px; font-size: .7rem; font-weight: 700; }
+
+.communication-workspace-card { overflow: hidden; border-radius: 14px !important; }
+.communication-workspace-card > .ant-card-body { height: auto !important; padding: 0 18px 18px !important; }
+.communication-workspace-card > .ant-card-body > .ant-tabs > .ant-tabs-nav { margin: 0 -18px 18px !important; padding: 0 18px; background: #fbfcfe; }
+.communication-workspace-card > .ant-card-body > .ant-tabs > .ant-tabs-nav .ant-tabs-tab { padding: 15px 2px 13px !important; font-size: .75rem; font-weight: 800; }
+.communication-workspace-card .ant-tabs-tab-btn > span { display: inline-flex; align-items: center; gap: 6px; }
+.communication-template-tabs > .ant-tabs-nav { margin-bottom: 14px !important; }
+.communication-template-tabs > .ant-tabs-nav .ant-tabs-tab { padding: 7px 13px !important; font-size: .7rem; }
+
+.communication-channel-workspace { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.communication-config-card { min-width: 0; border-color: var(--communication-border) !important; border-radius: 12px !important; box-shadow: 0 3px 14px #17213608 !important; }
+.communication-email-config { grid-column: 1 / -1; scroll-margin-top: 16px; }
+.communication-config-card > .ant-card-head { min-height: 58px; padding: 0 16px !important; border-bottom-color: #eef1f6 !important; }
+.communication-config-card > .ant-card-body { padding: 16px !important; }
+.communication-card-title { display: flex; align-items: center; gap: 10px; }
+.communication-card-title > span { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: var(--communication-purple-soft); color: var(--communication-purple); }
+.communication-card-title > div { display: grid; gap: 2px; }
+.communication-card-title b { color: var(--communication-ink); font-size: .8rem; font-weight: 900; }
+.communication-card-title small { color: var(--communication-muted); font-size: .64rem; font-weight: 500; }
+.communication-email-config .ant-form-item { margin-bottom: 9px !important; }
+.communication-email-config .ant-form-item-label { padding-bottom: 4px !important; }
+.communication-email-config .ant-form-item-label label { height: auto; color: #475569; font-size: .68rem; font-weight: 800; }
+.communication-email-config .ant-input-number { width: 100%; }
+.communication-config-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 8px; padding: 12px 0 0; border-top: 1px solid #eef1f6; }
+.communication-config-footer p { display: flex; align-items: center; gap: 7px; margin: 0; color: #667085; font-size: .68rem; }
+
+.communication-provider-list { display: grid; gap: 9px; }
+.communication-provider-row { display: grid; grid-template-columns: 36px minmax(130px, 1fr) minmax(130px, .9fr) auto; align-items: center; gap: 10px; padding: 11px; border: 1px solid #e8ebf2; border-radius: 10px; background: #fbfcfe; }
+.communication-provider-logo { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: var(--communication-purple-soft); color: var(--communication-purple); }
+.communication-whatsapp-config .communication-provider-logo { background: #e9f9f1; color: #11885a; }
+.communication-provider-main, .communication-provider-health { min-width: 0; display: grid; gap: 3px; }
+.communication-provider-main b { overflow: hidden; color: var(--communication-ink); font-size: .74rem; text-overflow: ellipsis; white-space: nowrap; }
+.communication-provider-main span, .communication-provider-health small { overflow: hidden; color: var(--communication-muted); font-size: .62rem; text-overflow: ellipsis; white-space: nowrap; }
+.communication-provider-health .ant-tag { width: fit-content; margin: 0; }
+
+.communication-table-primary { min-width: 0; display: grid; gap: 2px; }
+.communication-table-primary b { overflow: hidden; color: var(--communication-ink); text-overflow: ellipsis; white-space: nowrap; }
+.communication-table-primary span { color: #7b8496; font-size: .65rem; }
+.communication-message-preview { max-width: 340px; display: block; overflow: hidden; color: #596579; font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
+.communication-empty { padding: 36px 20px; border: 1px dashed #dce1ea; border-radius: 12px; background: #fbfcfe; }
+
+.communication-provider-drawer .ant-drawer-body,
+.communication-template-drawer .ant-drawer-body { background: #f8fafc !important; }
+.communication-provider-drawer .ant-drawer-footer,
+.communication-template-drawer .ant-drawer-footer { display: flex; justify-content: flex-end; border-top: 1px solid #eef1f6; }
+.communication-provider-form,
+.communication-template-form { padding: 17px !important; border: 1px solid #e6eaf1; border-radius: 12px; background: #fff; box-shadow: 0 5px 22px #17213608; }
+.communication-provider-form > .wide,
+.communication-template-form > .wide { grid-column: 1 / -1 !important; }
+.communication-provider-form .ant-input-number { width: 100%; height: 46px; display: flex; align-items: center; border-radius: 10px; }
+.communication-provider-alert { grid-column: 1 / -1; margin-bottom: 2px; }
+.communication-form-section { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-top: 4px; padding: 14px 0 5px; border-top: 1px solid #eef1f6; }
+.communication-form-section > span { display: inline-flex; align-items: center; gap: 7px; color: var(--communication-ink); font-size: .77rem; font-weight: 900; }
+.communication-form-section p { margin: 0; color: var(--communication-muted); font-size: .65rem; }
+.communication-secret-label { display: inline-flex; align-items: center; gap: 6px; }
+.communication-secret-label .ant-tag { margin: 0; font-size: .58rem; line-height: 17px; }
+.communication-webhook-card { display: grid; gap: 12px; padding: 15px; border: 1px solid #ddd6fe; border-radius: 12px; background: linear-gradient(135deg, #faf8ff, #f7f9ff); }
+.communication-webhook-card > div:first-child > span { display: inline-flex; align-items: center; gap: 7px; color: #3d2f91; font-size: .76rem; font-weight: 900; }
+.communication-webhook-card p { margin: 4px 0 0; color: #697386; font-size: .65rem; line-height: 1.45; }
+.communication-webhook-copy { display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 7px; }
+.communication-webhook-copy .ant-input { height: 40px !important; background: #fff !important; font-family: Consolas, monospace; font-size: .66rem !important; }
+.communication-webhook-copy .ant-btn { height: 40px; border-radius: 9px; }
+.communication-webhook-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.communication-webhook-meta span { color: #697386; font-size: .63rem; }
+
+.communication-variable-card > .ant-card-head { min-height: 52px; }
+.communication-variable-card > .ant-card-head .ant-card-head-title > div { display: grid; gap: 2px; }
+.communication-variable-card > .ant-card-head b { color: var(--communication-ink); font-size: .76rem; }
+.communication-variable-card > .ant-card-head span { color: var(--communication-muted); font-size: .63rem; font-weight: 500; }
+.communication-variable-card > .ant-card-body { padding: 12px !important; }
+.communication-variable-row { display: grid; grid-template-columns: 26px minmax(115px, .85fr) minmax(120px, .9fr) minmax(185px, 1.25fr) minmax(105px, .7fr) 62px 70px; align-items: end; gap: 8px; padding: 10px 0; border-bottom: 1px solid #edf0f5; }
+.communication-variable-row:last-child { border-bottom: 0; }
+.communication-variable-position { width: 24px; height: 24px; display: grid; place-items: center; align-self: center; border-radius: 7px; background: var(--communication-purple-soft); color: var(--communication-purple); font-size: .65rem; font-weight: 900; }
+.communication-variable-row label { min-width: 0; display: grid; gap: 4px; }
+.communication-variable-row label > span { color: #667085; font-size: .61rem; font-weight: 800; }
+.communication-variable-row .ant-input,
+.communication-variable-row .ant-select-selector { height: 34px !important; min-height: 34px !important; border-radius: 8px !important; font-size: .68rem !important; }
+.communication-variable-row label.required { justify-items: center; }
+.communication-variable-row .ant-btn { width: 100%; height: 27px; padding: 0 6px; border-radius: 7px; font-size: .62rem; }
+
+@media (max-width: 1100px) {
+  .communication-channel-workspace { grid-template-columns: 1fr; }
+  .communication-email-config { grid-column: auto; }
+  .communication-variable-row { grid-template-columns: 26px repeat(2, minmax(0, 1fr)); }
+  .communication-variable-row .source { grid-column: 2 / -1; }
+  .communication-variable-row > .ant-space { grid-column: 2 / -1; flex-direction: row !important; }
+}
+
+@media (max-width: 760px) {
+  .communication-settings-hero { min-height: 0; padding: 22px; }
+  .communication-hero-visual { display: none; }
+  .communication-workspace-card > .ant-card-body > .ant-tabs > .ant-tabs-nav { overflow-x: auto; }
+  .communication-config-footer,
+  .communication-form-section,
+  .communication-webhook-meta { align-items: stretch; flex-direction: column; }
+  .communication-config-footer .ant-btn { width: 100%; }
+  .communication-provider-row { grid-template-columns: 36px minmax(0, 1fr); }
+  .communication-provider-health, .communication-provider-row > .ant-space { grid-column: 2; }
+  .communication-provider-row > .ant-space { display: grid; grid-template-columns: 1fr 1fr; }
+  .communication-variable-row { grid-template-columns: 26px minmax(0, 1fr); }
+  .communication-variable-row .source,
+  .communication-variable-row > .ant-space { grid-column: 2; }
+  .communication-provider-drawer .ant-drawer-footer .ant-space,
+  .communication-template-drawer .ant-drawer-footer .ant-space { width: 100%; display: grid; }
+}

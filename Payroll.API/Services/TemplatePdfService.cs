@@ -7,7 +7,7 @@ namespace Payroll.API.Services;
 public sealed class TemplatePdfService
 {
     private static readonly Regex PlaceholderPattern = new(
-        @"\{\{\s*(?<key>[A-Za-z0-9_.]+)\s*\}\}",
+        @"\{\{\s*(?<braced>[A-Za-z0-9_.]+)\s*\}\}|#(?<hash>[A-Za-z0-9_.]+)#",
         RegexOptions.Compiled | RegexOptions.CultureInvariant,
         TimeSpan.FromMilliseconds(250));
     private static readonly Regex HtmlBreakPattern = new(
@@ -28,21 +28,21 @@ public sealed class TemplatePdfService
         var subject = Render(subjectTemplate, values, unresolved);
         var body = Render(bodyTemplate, values, unresolved);
         if (unresolved.Count > 0)
-            return (null, $"Offer template contains unsupported placeholder(s): {string.Join(", ", unresolved.OrderBy(value => value))}.");
+            return (null, $"Template contains unsupported placeholder(s): {string.Join(", ", unresolved.OrderBy(value => value))}.");
 
         subject = HtmlToText(subject);
         body = HtmlToText(body);
         if (string.IsNullOrWhiteSpace(subject) && string.IsNullOrWhiteSpace(body))
-            return (null, "The configured offer template has no printable content.");
+            return (null, "The configured template has no printable content.");
 
         var text = string.Join("\n\n", new[] { subject, body }.Where(value => !string.IsNullOrWhiteSpace(value)));
-        return (BuildPdf(Wrap(text, 86)), "");
+        return (BuildPdf(Wrap(text, 100)), "");
     }
 
     private static string Render(string template, IReadOnlyDictionary<string, string> values, ISet<string> unresolved) =>
         PlaceholderPattern.Replace(template ?? "", match =>
         {
-            var key = match.Groups["key"].Value;
+            var key = match.Groups["braced"].Success ? match.Groups["braced"].Value : match.Groups["hash"].Value;
             if (values.TryGetValue(key, out var value)) return value ?? "";
             unresolved.Add(key);
             return "";
@@ -54,7 +54,7 @@ public sealed class TemplatePdfService
         value = Regex.Replace(value, @"<li\b[^>]*>", "- ", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(250));
         value = HtmlTagPattern.Replace(value, " ");
         value = WebUtility.HtmlDecode(value).Replace("\r\n", "\n").Replace('\r', '\n');
-        var lines = value.Split('\n').Select(line => Regex.Replace(line, @"[ \t]+", " ").Trim()).ToList();
+        var lines = value.Split('\n').Select(line => line.TrimEnd().Replace("\t", "    ")).ToList();
         while (lines.Count > 0 && lines[0].Length == 0) lines.RemoveAt(0);
         while (lines.Count > 0 && lines[^1].Length == 0) lines.RemoveAt(lines.Count - 1);
         return string.Join("\n", lines);
@@ -92,7 +92,7 @@ public sealed class TemplatePdfService
             }
             if (line.Length > 0) result.Add(line.ToString());
         }
-        return result.Count == 0 ? ["Offer letter"] : result;
+        return result.Count == 0 ? ["Document"] : result;
     }
 
     private static byte[] BuildPdf(IReadOnlyList<string> lines)
@@ -110,7 +110,7 @@ public sealed class TemplatePdfService
             var pageId = nextObjectId++;
             var contentId = nextObjectId++;
             pageIds.Add(pageId);
-            var content = new StringBuilder("BT\n/F1 11 Tf\n15 TL\n50 790 Td\n");
+            var content = new StringBuilder("BT\n/F1 9 Tf\n12 TL\n40 800 Td\n");
             foreach (var line in pageLines)
                 content.Append('(').Append(EscapePdf(line)).Append(") Tj\nT*\n");
             content.Append("ET\n");

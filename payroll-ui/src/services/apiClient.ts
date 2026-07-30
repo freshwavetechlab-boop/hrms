@@ -4,7 +4,7 @@ export const api = import.meta.env.VITE_API_URL ?? 'http://localhost:5062'
 
 type ToastMode = boolean | 'error-only'
 export type ApiOptions = RequestInit & { timeoutMs?: number; toast?: ToastMode; successMessage?: string; loader?: boolean }
-type ApiResult<TResult> = { ok: boolean; data: TResult; error: string; status: number }
+export type ApiResult<TResult> = { ok: boolean; data: TResult; error: string; status: number }
 type LoadingListener = (activeRequests: number) => void
 
 const legacyTokenKey = 'payroll.auth.token'
@@ -61,12 +61,25 @@ export async function apiRequest(path: string, options: ApiOptions = {}) {
   }
 }
 
-export async function getJson<T>(path: string, fallback: T): Promise<T> {
+export async function getJson<T>(path: string, fallback: T, options: ApiOptions = {}): Promise<T> {
   try {
-    const response = await apiRequest(path)
+    const response = await apiRequest(path, options)
     return response.ok ? await readJson<T>(response, fallback) : fallback
   } catch {
     return fallback
+  }
+}
+
+export async function getJsonResult<T>(path: string, fallback: T, options: ApiOptions = {}): Promise<ApiResult<T>> {
+  try {
+    const response = await apiRequest(path, options)
+    if (!response.ok) return { ok: false, data: fallback, error: await readError(response), status: response.status }
+    return { ok: true, data: await readJson<T>(response, fallback), error: '', status: response.status }
+  } catch (error) {
+    const message = error instanceof DOMException && error.name === 'AbortError'
+      ? 'Request timed out.'
+      : error instanceof Error ? error.message : 'Request failed.'
+    return { ok: false, data: fallback, error: message, status: 0 }
   }
 }
 

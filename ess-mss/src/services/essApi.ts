@@ -1,4 +1,4 @@
-import type { AttachmentAccessTicket, AttachmentFieldConfiguration, AttendanceSummary, Birthday, DailyAttendance, EntityAttachment, ExpenseClaim, ExpenseDashboard, ExpenseOptions, FeatureAccess, Holiday, LeaveBalance, LeaveRequest, OrganizationBrand, Payslip, PayslipDocument, ProfileData, RecruitmentDashboard, RecruitmentEmployeeReferral, RecruitmentInternalOpening, RecruitmentOptions, RecruitmentRequisition, SaveEmployeeReferral, SaveExpenseClaim, SaveProfileData, SaveRecruitmentRequisition, SaveTravelRequest, Task, TaxPortal, TravelDashboard, TravelOptions, TravelRequest, User, WorkflowTrail } from '../types'
+import type { AttachmentAccessTicket, AttachmentFieldConfiguration, AttendanceBatchJob, AttendanceGroup, AttendanceSummary, Birthday, DailyAttendance, EntityAttachment, ExpenseClaim, ExpenseDashboard, ExpenseOptions, FeatureAccess, Holiday, LeaveBalance, LeaveRequest, ManagedDailyAttendance, ManagedMonthlyAttendance, OrganizationBrand, Payslip, PayslipDocument, ProfileData, RecruitmentDashboard, RecruitmentEmployeeReferral, RecruitmentInternalOpening, RecruitmentOptions, RecruitmentRequisition, SaveEmployeeReferral, SaveExpenseClaim, SaveProfileData, SaveRecruitmentRequisition, SaveTravelRequest, Task, TaxPortal, TravelDashboard, TravelOptions, TravelRequest, User, WorkflowTrail } from '../types'
 
 export const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:5062'
 const tokenKey = 'ess.auth.token'
@@ -63,6 +63,11 @@ export async function organizationBrand() {
 }
 
 export const essApi = {
+  attendanceGroups: (_clientId: number) => essFetch('/api/ess/mss/attendance/groups').then(jsonOrThrow<AttendanceGroup[]>),
+  managedMonthlyAttendance: (_clientId: number, month: string) => essFetch(`/api/ess/mss/attendance/monthly?month=${month}`).then(jsonOrThrow<ManagedMonthlyAttendance[]>),
+  managedDailyAttendance: (_clientId: number, month: string) => essFetch(`/api/ess/mss/attendance/daily-grid?month=${month}`).then(jsonOrThrow<ManagedDailyAttendance[]>),
+  saveManagedAttendance: (clientId: number, month: string, rows: ManagedDailyAttendance[], rollupEmployeeIds: number[]) => essFetch('/api/ess/mss/attendance/daily/batch-jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clientId, month, rows, rollupEmployeeIds }) }).then(jsonOrThrow<AttendanceBatchJob>),
+  attendanceBatchJob: (jobId: string) => essFetch(`/api/ess/mss/attendance/daily/batch-jobs/${jobId}`).then(jsonOrThrow<AttendanceBatchJob>),
   features: () => essFetch('/api/ess/features').then(r => r.ok ? r.json() as Promise<FeatureAccess> : { travelExpenseEnabled: false }),
   profile: () => essFetch('/api/ess/profile').then(r => r.ok ? r.json() as Promise<ProfileData> : null),
   saveProfile: (request: SaveProfileData) => essFetch('/api/ess/profile', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) }).then(jsonOrThrow<ProfileData>),

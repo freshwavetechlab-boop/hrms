@@ -1,0 +1,7 @@
+.communication-rich-editor .sun-editor{border:1px solid #dbe1ec;border-radius:14px;overflow:hidden;background:#fff}
+.communication-rich-editor .se-toolbar{padding:7px 9px;background:#f7f9fc;border-bottom:1px solid #e7ebf2;outline:0}
+.communication-rich-editor .se-btn-module-border,.communication-rich-editor .se-btn-select{border-radius:8px}
+.communication-rich-editor .sun-editor-editable{min-height:285px;padding:18px 20px;background:#fff;overflow-wrap:anywhere}
+.communication-rich-editor.compact .sun-editor-editable{min-height:135px;padding:13px 15px}
+.communication-rich-editor .sun-editor-editable img{max-width:100%;height:auto;border-radius:10px}
+.communication-rich-editor .se-resizing-bar{display:none}

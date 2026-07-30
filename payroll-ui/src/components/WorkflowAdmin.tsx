@@ -396,7 +396,7 @@ export default function WorkflowAdmin() {
         </Collapse.Panel></Collapse>
         <div className="actions">{flow.id > 0 && <button type="button" className="secondary" onClick={cancel}>Cancel</button>}<button type="button" onClick={() => void save()} disabled={!flow.code || !flow.name || !flow.resourceType}>{flow.id ? 'Update approval workflow' : 'Save approval workflow'}</button></div>
         <DataTable rows={rows} emptyText="No workflows have been configured yet." exportFileName="workflows" columns={[
-          { key: 'workflow', label: 'Workflow', value: row => row.name, render: row => <>{row.name}<small>{row.code}</small></> },
+          { key: 'workflow', label: 'Workflow', value: row => `${row.name} ${row.code}`, render: row => <>{row.name}<small>{row.code}</small></> },
           { key: 'clientName', label: 'Applies to', value: row => row.clientId ? clients.find(client => client.id === row.clientId)?.name ?? `Client #${row.clientId}` : 'All clients' },
           { key: 'resourceType', label: 'Record', value: row => humanize(row.resourceType) },
           { key: 'stagesText', label: 'Approval chain', value: row => row.stages.map(stage => stage.name).join(' -> ') },

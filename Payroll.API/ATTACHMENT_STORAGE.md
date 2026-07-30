@@ -28,11 +28,11 @@ AttachmentStorage__PreviewTokenLifetimeSeconds=300
 AttachmentStorage__DownloadTokenLifetimeSeconds=120
 ```
 
-`App_Data` also contains the ASP.NET Data Protection keys used to encrypt remote file-server credentials. The directory must remain persistent when the container is redeployed.
+`App_Data` also contains the ASP.NET Data Protection keys used to encrypt remote file-server and Google Drive credentials. The directory must remain persistent when the container is redeployed.
 
 ## Switching file servers
 
-Use **Settings → Attachments → Storage Servers**:
+Use **Security -> App Settings -> Storage Servers**:
 
 1. Add and test the new server.
 2. Enable read and write.
@@ -45,6 +45,66 @@ Supported server types:
 - `LocalFileSystem`: private folder below `AttachmentStorage:DataRootPath`.
 - `MountedFileSystem`: Docker volume, network share, or another mounted path.
 - `HttpFileServer`: external HTTPS file service.
+- `GoogleDrive`: a private personal Google Drive folder connected with one-click OAuth.
+
+## One-click Google Drive connection
+
+The Storage Servers page never asks an administrator to paste a Google token, client ID,
+client secret, or folder link. Google requires one OAuth application, but its downloaded
+Web OAuth JSON is uploaded once from the portal and stored in the existing encrypted
+`credential_cipher_text` column—no extra configuration table is used.
+
+Initial setup:
+
+1. Enable the Google Drive API in a Google Cloud project.
+2. Configure the OAuth consent screen and create an OAuth client of type **Web application**.
+3. Copy the exact callback URL shown on the Storage Servers page into the client's
+   authorized redirect URIs. For local development it is normally:
+
+```text
+http://localhost:5062/api/public/attachment-storage-servers/google/callback
+```
+
+Use the public HTTPS API URL instead of localhost in production. Google allows plain HTTP
+for localhost testing; a LAN/private-IP callback should use HTTPS.
+
+4. Download that Web OAuth client's `client_secret.json` and upload it on the Storage
+   Servers page. The API accepts only a small, valid Web-client JSON whose redirect URI
+   exactly matches the displayed callback URL.
+5. Click **Connect Google Drive**, choose an account in Google's popup, and approve access.
+   The API creates or reuses a private `Frevo HRMS Attachments` folder. A successful
+   connection becomes the active write target. Existing Local, Mounted, and HTTP
+   locations remain readable for files already linked to them.
+
+The older environment configuration remains supported as a compatibility fallback:
+
+```text
+GoogleDriveOAuth__ClientId=your-google-web-client-id
+GoogleDriveOAuth__ClientSecret=your-google-web-client-secret
+```
+
+Optional production hardening/overrides:
+
+```text
+GoogleDriveOAuth__RedirectUri=https://api.example.com/api/public/attachment-storage-servers/google/callback
+GoogleDriveOAuth__AllowedPortalOrigins__0=https://hrms.example.com
+GoogleDriveOAuth__FolderName=Frevo HRMS Attachments
+```
+
+The integration requests the limited `drive.file` scope. OAuth client credentials, the
+refresh token, and connected-folder metadata are encrypted with the existing ASP.NET
+Data Protection keys in `credential_cipher_text`. Short-lived access tokens are refreshed
+automatically and are never returned to the browser. Rotating the secret for the same
+OAuth client ID retains the connection. Changing the client ID or disconnecting is
+blocked while attachments still depend on that Drive location.
+
+For uninterrupted offline access, do not leave an External OAuth application in
+**Testing** status: refresh tokens for non-basic scopes expire after seven days while the
+app remains in Testing.
+
+The API does not scan or concatenate folder contents. `entity_attachments` remains the
+single attachment catalogue, so changing the write target does not display the same
+document twice. Google Drive file IDs are stored as each new attachment's storage key.
 
 ## HTTP file-server contract
 

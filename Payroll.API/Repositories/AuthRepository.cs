@@ -95,6 +95,10 @@ CREATE TABLE IF NOT EXISTS auditlogs (
     INDEX IX_AuditLogs_CreatedAt (CreatedAt),
     INDEX IX_AuditLogs_UserId (UserId),
     INDEX IX_AuditLogs_Action (Action)
+);
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    MigrationKey VARCHAR(190) PRIMARY KEY,
+    AppliedAtUtc DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );");
         await EnsureForeignKeyAsync(connection, "authuserroles", "FK_AuthUserRoles_User", "FOREIGN KEY (UserId) REFERENCES authusers(Id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "authuserroles", "FK_AuthUserRoles_Role", "FOREIGN KEY (RoleId) REFERENCES authroles(Id) ON DELETE CASCADE");
@@ -134,6 +138,8 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
         "settings.manage",
         "employees.view",
         "employees.manage",
+        "employee.communication.view",
+        "employee.communication.send",
         "payroll.run",
         "payroll.approve",
         "payroll.payments",
@@ -150,6 +156,28 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
         "recruitment.assign.partner",
         "recruitment.publish",
         "recruitment.referral.manage",
+        "recruitment.work-order.view",
+        "recruitment.work-order.manage",
+        "recruitment.hiring-case.view",
+        "recruitment.hiring-case.manage",
+        "recruitment.sla.pause",
+        "recruitment.candidate.view",
+        "recruitment.candidate.manage",
+        "recruitment.candidate.request-profile",
+        "recruitment.shortlist.approve",
+        "recruitment.shortlist.forward",
+        "recruitment.ats.review",
+        "recruitment.ats.override",
+        "recruitment.interview.schedule",
+        "recruitment.interview.panel",
+        "recruitment.document.view",
+        "recruitment.document.manage",
+        "recruitment.document.sign",
+        "recruitment.proposal.manage",
+        "recruitment.proposal.approve",
+        "recruitment.offer.manage",
+        "recruitment.offer.issue",
+        "recruitment.configuration.manage",
         "attachment.config.manage",
         "attachment.employee.view",
         "attachment.employee.upload",
@@ -688,6 +716,12 @@ LIMIT 5;", new { Id = id }, transaction)).ToList();
 
     private static async Task SeedSecurityCatalogAsync(MySqlConnection connection)
     {
+        var existingAttendancePermissions = (await connection.QueryAsync<string>(@"
+SELECT Code
+FROM authpermissions
+WHERE Code IN ('mss.attendance.manage', 'ess.attendance.mark');")).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var mssAttendancePermissionIsNew = !existingAttendancePermissions.Contains("mss.attendance.manage");
+        var attendanceMarkPermissionIsNew = !existingAttendancePermissions.Contains("ess.attendance.mark");
         var permissions = new[]
         {
             new { Code = "dashboard.view", Name = "View dashboard", Module = "Dashboard", Description = "Access the HRMS dashboard shell." },
@@ -697,11 +731,15 @@ LIMIT 5;", new { Id = id }, transaction)).ToList();
             new { Code = "dashboard.approvals.view", Name = "View approvals dashboard", Module = "Dashboard", Description = "View workflow and leave approval dashboard metrics." },
             new { Code = "employees.view", Name = "View employee master", Module = "Employees", Description = "Open employee master and employee reports." },
             new { Code = "employees.manage", Name = "Manage employees", Module = "Employees", Description = "Create, update and maintain employee master data." },
+            new { Code = "employee.communication.view", Name = "View employee communication", Module = "Employees", Description = "Open employee communication campaigns, delivery history and conversations." },
+            new { Code = "employee.communication.send", Name = "Send employee communication", Module = "Employees", Description = "Preview, send, reply to and retry employee communications." },
             new { Code = "payroll.run", Name = "Run payroll", Module = "Payroll", Description = "Create payroll runs and manage payroll inputs." },
             new { Code = "payroll.approve", Name = "Approve payroll", Module = "Payroll", Description = "Approve, recall and review payroll runs." },
             new { Code = "payroll.payments", Name = "Record payroll payments", Module = "Payroll", Description = "Mark payroll payments and payment dates." },
             new { Code = "leave.manage", Name = "Manage leave", Module = "Leave & Attendance", Description = "Configure and process leave records." },
             new { Code = "attendance.manage", Name = "Manage attendance", Module = "Leave & Attendance", Description = "Configure attendance and review attendance data." },
+            new { Code = "mss.attendance.manage", Name = "Manage team attendance in MSS", Module = "MSS", Description = "Open the MSS attendance review and correct attendance for the user's client." },
+            new { Code = "ess.attendance.mark", Name = "Mark attendance in ESS", Module = "ESS", Description = "Show and use attendance punch actions in ESS web and mobile apps." },
             new { Code = "settings.manage", Name = "Manage settings", Module = "Settings", Description = "Configure organization, clients, masters and setup data." },
             new { Code = "attachment.config.manage", Name = "Manage attachment configuration", Module = "Attachments", Description = "Configure attachment attributes, form fields and storage servers." },
             new { Code = "attachment.employee.view", Name = "View employee attachments", Module = "Attachments", Description = "View and download employee attachments." },
@@ -721,6 +759,28 @@ LIMIT 5;", new { Id = id }, transaction)).ToList();
             new { Code = "recruitment.referral.manage", Name = "Manage referral campaigns", Module = "Talent Acquisition", Description = "Create and manage employee referral campaigns." },
             new { Code = "recruitment.rfr.create", Name = "Create recruitment requisition", Module = "Talent Acquisition", Description = "Create recruitment requisitions on behalf of the organization." },
             new { Code = "recruitment.rfr.view", Name = "View recruitment requisitions", Module = "Talent Acquisition", Description = "View recruitment requisitions for permitted scope." },
+            new { Code = "recruitment.work-order.view", Name = "View work orders", Module = "Talent Acquisition", Description = "View client work orders and their position lines." },
+            new { Code = "recruitment.work-order.manage", Name = "Manage work orders", Module = "Talent Acquisition", Description = "Create and maintain manual client work orders and linked position lines." },
+            new { Code = "recruitment.hiring-case.view", Name = "View hiring cases", Module = "Talent Acquisition", Description = "View position-level recruitment timelines and cumulative SLA." },
+            new { Code = "recruitment.hiring-case.manage", Name = "Manage hiring cases", Module = "Talent Acquisition", Description = "Start and move position-level hiring cases through configured stages." },
+            new { Code = "recruitment.sla.pause", Name = "Pause recruitment SLA", Module = "Talent Acquisition", Description = "Pause and resume a recruitment SLA with a mandatory audited reason." },
+            new { Code = "recruitment.candidate.view", Name = "View recruitment candidates", Module = "Talent Acquisition", Description = "View candidate profiles within permitted client or panel scope." },
+            new { Code = "recruitment.candidate.manage", Name = "Manage recruitment candidates", Module = "Talent Acquisition", Description = "Edit candidate profiles and structured profile sections." },
+            new { Code = "recruitment.candidate.request-profile", Name = "Request candidate details", Module = "Talent Acquisition", Description = "Send a secure candidate-specific information update request." },
+            new { Code = "recruitment.shortlist.approve", Name = "Approve shortlisted profiles", Module = "Talent Acquisition", Description = "Approve a complete candidate profile batch before it can be shared with the client." },
+            new { Code = "recruitment.shortlist.forward", Name = "Forward shortlisted profiles", Module = "Talent Acquisition", Description = "Create and forward an auditable batch of approved candidate profiles." },
+            new { Code = "recruitment.ats.review", Name = "Review ATS results", Module = "Talent Acquisition", Description = "Review ATS scores and supporting evidence." },
+            new { Code = "recruitment.ats.override", Name = "Override ATS score", Module = "Talent Acquisition", Description = "Override an ATS result with an audited reason." },
+            new { Code = "recruitment.interview.schedule", Name = "Schedule interviews", Module = "Talent Acquisition", Description = "Schedule and manage interviews and candidate-specific panels." },
+            new { Code = "recruitment.interview.panel", Name = "Interview panel workspace", Module = "Talent Acquisition", Description = "View assigned interviews and submit feedback as the signed-in panel member." },
+            new { Code = "recruitment.document.view", Name = "View recruitment process documents", Module = "Talent Acquisition", Description = "View MoM, score annexure, proposal and joining documents." },
+            new { Code = "recruitment.document.manage", Name = "Manage recruitment process documents", Module = "Talent Acquisition", Description = "Generate, upload and version recruitment process documents." },
+            new { Code = "recruitment.document.sign", Name = "Sign recruitment documents", Module = "Talent Acquisition", Description = "Mark approved recruitment documents as signed with an audit trail." },
+            new { Code = "recruitment.proposal.manage", Name = "Manage HR proposals", Module = "Talent Acquisition", Description = "Prepare and submit candidate proposals to the client HR division." },
+            new { Code = "recruitment.proposal.approve", Name = "Approve HR proposals", Module = "Talent Acquisition", Description = "Approve, reject or send back recruitment proposals." },
+            new { Code = "recruitment.offer.manage", Name = "Manage offers", Module = "Talent Acquisition", Description = "Prepare and maintain candidate offers." },
+            new { Code = "recruitment.offer.issue", Name = "Issue offers", Module = "Talent Acquisition", Description = "Release an approved offer to the candidate." },
+            new { Code = "recruitment.configuration.manage", Name = "Configure recruitment", Module = "Talent Acquisition", Description = "Configure client pipelines, forms, templates, panels, recipients and SLA rules." },
             new { Code = "reports.view", Name = "View reports", Module = "Reports", Description = "Open reports and exports." },
             new { Code = "security.manage", Name = "Manage security", Module = "Security", Description = "Manage users, roles and permissions." },
             new { Code = "audit.view", Name = "View audit logs", Module = "Security", Description = "View identity and operational audit logs." },
@@ -753,14 +813,55 @@ ON DUPLICATE KEY UPDATE
     Description = VALUES(Description),
     IsSystem = VALUES(IsSystem);", roles);
 
+        // Apply new capabilities to the standard roles once. Later role edits remain
+        // authoritative, so removing either permission in Security survives restarts.
+        if (attendanceMarkPermissionIsNew)
+            await connection.ExecuteAsync(@"
+INSERT IGNORE INTO authrolepermissions (RoleId, PermissionId)
+SELECT r.Id, p.Id
+FROM authroles r
+JOIN authpermissions p ON p.Code = 'ess.attendance.mark'
+WHERE r.Code IN ('employee', 'mss_manager');");
+        if (mssAttendancePermissionIsNew)
+            await connection.ExecuteAsync(@"
+INSERT IGNORE INTO authrolepermissions (RoleId, PermissionId)
+SELECT r.Id, p.Id
+FROM authroles r
+JOIN authpermissions p ON p.Code = 'mss.attendance.manage'
+WHERE r.Code = 'mss_manager';");
+        const string communicationGrantMigration = "20260728.employee-communication-default-role-grants.v2";
+        var communicationRoleGrantsApplied = await connection.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM schema_migrations WHERE MigrationKey=@MigrationKey",
+            new { MigrationKey = communicationGrantMigration }) > 0;
+        if (!communicationRoleGrantsApplied)
+        {
+            await using var transaction = await connection.BeginTransactionAsync();
+            await connection.ExecuteAsync(@"
+INSERT IGNORE INTO authrolepermissions (RoleId, PermissionId)
+SELECT r.Id, p.Id
+FROM authroles r
+JOIN authpermissions p ON p.Code IN ('employee.communication.view','employee.communication.send')
+WHERE r.Code IN ('admin','hr_manager')
+   OR EXISTS (
+       SELECT 1
+       FROM authrolepermissions existingGrant
+       JOIN authpermissions existingPermission ON existingPermission.Id=existingGrant.PermissionId
+       WHERE existingGrant.RoleId=r.Id AND existingPermission.Code='security.manage'
+   );", transaction: transaction);
+            await connection.ExecuteAsync(
+                "INSERT INTO schema_migrations (MigrationKey) VALUES (@MigrationKey)",
+                new { MigrationKey = communicationGrantMigration }, transaction);
+            await transaction.CommitAsync();
+        }
+
         var rolePermissions = new Dictionary<string, string[]>
         {
             ["admin"] = permissions.Select(permission => permission.Code).ToArray(),
-            ["employee"] = ["ess.self"],
-            ["mss_manager"] = ["ess.self", "dashboard.approvals.view"],
+            ["employee"] = ["ess.self", "ess.attendance.mark"],
+            ["mss_manager"] = ["ess.self", "ess.attendance.mark", "mss.attendance.manage", "dashboard.approvals.view"],
             ["payroll_maker"] = ["dashboard.view", "dashboard.payroll.view", "dashboard.workforce.view", "employees.view", "employees.manage", "attachment.employee.view", "attachment.employee.upload", "payroll.run", "reports.view"],
             ["payroll_approver"] = ["dashboard.view", "dashboard.payroll.view", "payroll.approve", "reports.view"],
-            ["hr_manager"] = ["dashboard.view", "dashboard.workforce.view", "dashboard.attendance.view", "employees.view", "employees.manage", "attachment.employee.view", "attachment.employee.upload", "attachment.employee.verify", "attachment.recruitment.view", "attachment.recruitment.upload", "attachment.recruitment.verify", "leave.manage", "attendance.manage", "workflow.manage", "recruitment.manage", "recruitment.position.view", "recruitment.position.manage", "recruitment.assign.recruiter", "recruitment.assign.partner", "recruitment.publish", "recruitment.referral.manage", "recruitment.rfr.create", "recruitment.rfr.view", "reports.view"]
+            ["hr_manager"] = ["dashboard.view", "dashboard.workforce.view", "dashboard.attendance.view", "employees.view", "employees.manage", "employee.communication.view", "employee.communication.send", "attachment.employee.view", "attachment.employee.upload", "attachment.employee.verify", "attachment.recruitment.view", "attachment.recruitment.upload", "attachment.recruitment.verify", "leave.manage", "attendance.manage", "workflow.manage", "recruitment.manage", "recruitment.position.view", "recruitment.position.manage", "recruitment.assign.recruiter", "recruitment.assign.partner", "recruitment.publish", "recruitment.referral.manage", "recruitment.rfr.create", "recruitment.rfr.view", "reports.view"]
         };
 
         foreach (var (roleCode, permissionCodes) in rolePermissions)
@@ -786,6 +887,13 @@ JOIN authroles r ON r.Id = rp.RoleId
 JOIN authpermissions p ON p.Id = rp.PermissionId
 WHERE r.Code = 'employee'
   AND p.Code = 'ess.self';") > 0,
+                "mss_manager" => await connection.ExecuteScalarAsync<int>(@"
+SELECT COUNT(*)
+FROM authrolepermissions rp
+JOIN authroles r ON r.Id = rp.RoleId
+JOIN authpermissions p ON p.Id = rp.PermissionId
+WHERE r.Code = 'mss_manager'
+  AND p.Code IN ('ess.self', 'dashboard.approvals.view');") >= 2,
                 _ => true
             };
             if (existingPermissionCount > 0 && hasRequiredPermission)

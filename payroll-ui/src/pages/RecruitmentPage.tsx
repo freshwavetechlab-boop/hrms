@@ -1,45 +1,63 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Card, Input, InputNumber, Modal, Select, Space, Tabs, message } from 'antd'
+import { useLocation, useNavigate } from 'react-router-dom'
 import DataTable from '../components/DataTable'
+import RecruitmentAtsWorkspace from '../components/RecruitmentAtsWorkspace'
 import RecruitmentJobDescriptionManager from '../components/RecruitmentJobDescriptionManager'
 import RecruitmentJobPostingManager from '../components/RecruitmentJobPostingManager'
 import RecruitmentPipelineBoard from '../components/RecruitmentPipelineBoard'
+import RecruitmentRequisitionManager from '../components/RecruitmentRequisitionManager'
 import RecruitmentTalentWorkspace from '../components/RecruitmentTalentWorkspace'
-import SearchSelect, { selectOptions } from '../components/SearchSelect'
-import { getClients } from '../services/payrollService'
-import { assignConsultant, assignRecruiter, assignVendor, createReferralCampaign, getRecruitmentDashboard, getRecruitmentMasterOptions, getRecruitmentOpenPositionDetail, getRecruitmentOpenPositions, getRecruitmentOperationsOptions, getRecruitmentRequisitions, publishPosition, saveRecruitmentPositionNote, updateRecruitmentPositionStatus } from '../services/recruitmentService'
-import type { Client, RecruitmentDashboard, RecruitmentMetric, RecruitmentOpenPosition, RecruitmentOperationsOptions, RecruitmentPositionDetail, RecruitmentRequisition } from '../types/payroll'
+import RecruitmentWorkOrderWorkspace from '../components/RecruitmentWorkOrderWorkspace'
+import { assignConsultant, assignRecruiter, assignVendor, createReferralCampaign, getRecruitmentDashboard, getRecruitmentMasterOptions, getRecruitmentOpenPositionDetail, getRecruitmentOpenPositions, getRecruitmentOperationsOptions, publishPosition, saveRecruitmentPositionNote, updateRecruitmentPositionStatus } from '../services/recruitmentService'
+import type { RecruitmentDashboard, RecruitmentMetric, RecruitmentOpenPosition, RecruitmentOperationsOptions, RecruitmentPositionDetail } from '../types/payroll'
 
-const fallbackRfrStatuses = ['Draft', 'Pending Approval', 'Approved', 'Rejected', 'Sent Back', 'Withdrawn', 'Closed']
 const fallbackPositionStatuses = ['Open', 'Recruiter Assigned', 'Published', 'Candidate Screening', 'Interview In Progress', 'Offer Released', 'Offer Accepted', 'Joining Pending', 'Filled', 'Partially Filled', 'Cancelled', 'Closed', 'On Hold']
 const money = (value: number, currency = 'INR') => `${currency} ${Number(value || 0).toLocaleString('en-IN')}`
 const dateText = (value?: string | null) => value ? new Date(value).toLocaleDateString('en-GB') : '-'
 const dashboard0: RecruitmentDashboard = { drafts: 0, pendingApproval: 0, approved: 0, rejected: 0, returned: 0, withdrawn: 0, openPositions: 0, filledPositions: 0, cancelledPositions: 0, onHoldPositions: 0, remainingPositions: 0, averageApprovalHours: 0, departmentWiseHiring: [], companyWiseHiring: [], priorityWiseHiring: [], upcomingJoiningTargets: [] }
 
-export const recruitmentViews = ['Dashboard', 'Requisitions', 'Open Positions', 'Job Descriptions', 'Job Postings', 'Hiring Pipeline', 'Talent Pool', 'Applications', 'Interviews', 'Offers & Pre-Onboarding'] as const
+export const recruitmentViews = ['Dashboard', 'Work Orders & SLA', 'Requisitions', 'Open Positions', 'Job Descriptions', 'Job Postings', 'ATS Screening', 'Hiring Pipeline', 'Talent Pool', 'Applications', 'Interviews', 'Offers & Pre-Onboarding'] as const
 export type RecruitmentPageView = (typeof recruitmentViews)[number]
 
 const recruitmentViewGroup = (view: RecruitmentPageView) => view === 'Dashboard'
   ? 'Overview'
-  : ['Requisitions', 'Open Positions'].includes(view)
+  : ['Work Orders & SLA', 'Requisitions', 'Open Positions'].includes(view)
     ? 'Demand planning'
     : ['Job Descriptions', 'Job Postings'].includes(view)
       ? 'Content & publishing'
-      : ['Hiring Pipeline', 'Talent Pool', 'Applications'].includes(view)
+      : ['ATS Screening', 'Hiring Pipeline', 'Talent Pool', 'Applications'].includes(view)
         ? 'Candidate lifecycle'
         : 'Selection & onboarding'
 
+const recruitmentViewDescription: Record<RecruitmentPageView, string> = {
+  Dashboard: 'A concise view of hiring demand, approvals, open roles and joining targets.',
+  'Work Orders & SLA': 'Register manual client work orders and run the configurable position-level SLA before candidate pipelines begin.',
+  Requisitions: 'Raise a hiring request in a few fields, then follow its approval and JD readiness.',
+  'Open Positions': 'Track approved vacancies and continue directly to content, publishing and sourcing.',
+  'Job Descriptions': 'Prepare governed role content and ATS requirements from an approved request.',
+  'Job Postings': 'Publish approved jobs, public links and application forms from one workspace.',
+  'ATS Screening': 'Upload one resume or a complete batch against a JD and see the score immediately.',
+  'Hiring Pipeline': 'Move candidates through the configured flow with table and pipeline views.',
+  'Talent Pool': 'Search reusable candidate profiles and securely manage their resumes.',
+  Applications: 'Review every application, ATS result, position and current stage in one table.',
+  Interviews: 'Schedule rounds, capture panel feedback and keep selection evidence together.',
+  'Offers & Pre-Onboarding': 'Release offers, collect configured documents and convert selected talent.',
+}
+
+const recruitmentJourney = [
+  ['Work Orders & SLA', 'Order'], ['Requisitions', 'Request'], ['Job Descriptions', 'Describe'], ['Job Postings', 'Publish'],
+  ['ATS Screening', 'Screen'], ['Hiring Pipeline', 'Select'], ['Offers & Pre-Onboarding', 'Onboard'],
+] as const
+
 export default function RecruitmentPage({ view = 'Dashboard' }: { view?: RecruitmentPageView }) {
-  const [clients, setClients] = useState<Client[]>([])
+  const navigate = useNavigate()
+  const location = useLocation()
+  const routeQuery = useMemo(() => new URLSearchParams(location.search), [location.search])
   const [dashboard, setDashboard] = useState<RecruitmentDashboard>(dashboard0)
-  const [requisitions, setRequisitions] = useState<RecruitmentRequisition[]>([])
   const [positions, setPositions] = useState<RecruitmentOpenPosition[]>([])
   const [detail, setDetail] = useState<RecruitmentPositionDetail | null>(null)
-  const [clientId, setClientId] = useState(0)
-  const [status, setStatus] = useState('')
-  const [query, setQuery] = useState('')
   const [positionStatus, setPositionStatus] = useState('Open')
-  const [rfrStatusOptions, setRfrStatusOptions] = useState<string[]>(fallbackRfrStatuses)
   const [positionStatusOptions, setPositionStatusOptions] = useState<string[]>(fallbackPositionStatuses)
   const [statusComment, setStatusComment] = useState('')
   const [noteText, setNoteText] = useState('')
@@ -51,25 +69,21 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
   const [campaign, setCampaign] = useState({ campaignName: '', startDate: new Date().toISOString().slice(0, 10), endDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), referralReward: 0, visibilityDepartment: '', visibilityBusinessUnit: '', visibilityLocation: '', visibilityEmploymentType: '', status: 'Open' })
 
   const load = async () => {
-    const [metrics, rfrRows, positionRows] = await Promise.all([
+    const [metrics, positionRows] = await Promise.all([
       getRecruitmentDashboard(),
-      getRecruitmentRequisitions({ clientId: clientId || undefined, status, query }),
       getRecruitmentOpenPositions()
     ])
     setDashboard(metrics)
-    setRequisitions(rfrRows)
     setPositions(positionRows)
   }
 
   useEffect(() => {
-    void getClients().then(setClients)
-    void Promise.all([getRecruitmentMasterOptions('Recruitment Status'), getRecruitmentMasterOptions('Position Status')]).then(([rfr, position]) => {
-      if (rfr.length) setRfrStatusOptions(rfr)
+    void getRecruitmentMasterOptions('Position Status').then(position => {
       if (position.length) setPositionStatusOptions(position)
     })
     void getRecruitmentOperationsOptions().then(setOps)
   }, [])
-  useEffect(() => { void load() }, [clientId, status])
+  useEffect(() => { void load() }, [])
   useEffect(() => { if (detail?.position.status) setPositionStatus(detail.position.status) }, [detail?.position.status])
 
   const summary = useMemo<Array<[string, string | number]>>(() => [
@@ -116,22 +130,25 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
     message.success(ok)
   }
 
-  return <section className="recruitment-monitor-page">
-    <Card title={view} extra={<span className="recruitment-workspace-group">{recruitmentViewGroup(view)}</span>} size="small" className="settings-panel settings-table-panel recruitment-root-card">
+  return <section className="recruitment-monitor-page recruitment-experience">
+    <header className="recruitment-experience-header">
+      <div>
+        <span className="recruitment-workspace-group">{recruitmentViewGroup(view)}</span>
+        <h1>{view}</h1>
+        <p>{recruitmentViewDescription[view]}</p>
+      </div>
+      {['Dashboard', 'Requisitions', 'Open Positions'].includes(view) && <Button type="primary" size="large" onClick={() => navigate('/recruitment/requisitions?new=1')}>New hiring request</Button>}
+      {['ATS Screening', 'Talent Pool', 'Applications'].includes(view) && <Button type="primary" size="large" onClick={() => navigate('/recruitment/ats-screening?upload=single')}>Screen resumes</Button>}
+    </header>
+    <nav className="recruitment-journey-rail" aria-label="Recruitment journey">
+      {recruitmentJourney.map(([target, label], index) => <button type="button" key={target} className={view === target ? 'active' : ''} onClick={() => navigate(`/recruitment/${target.toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`)}><i>{index + 1}</i><span>{label}</span></button>)}
+    </nav>
+    <div className="recruitment-workspace-surface">
       <div className="recruitment-workspace-content">
         {view === 'Dashboard' && <Dashboard summary={summary} dashboard={dashboard} />}
-        {view === 'Requisitions' && <><div className="recruitment-filters"><label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={selectOptions(clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label><label><span>Status</span><SearchSelect value={status} onChange={setStatus} options={selectOptions(rfrStatusOptions, 'All statuses')} /></label><label><span>Search</span><Input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void load() }} placeholder="RFR, position, requester" allowClear /></label><Button type="primary" onClick={() => void load()}>Search</Button></div><DataTable rows={requisitions} exportFileName="recruitment-requisitions" columns={[
-          { key: 'rfrNumber', label: 'RFR', render: row => <><b>{row.rfrNumber}</b><small>{dateText(row.requestDate)}</small></>, value: row => row.rfrNumber },
-          { key: 'positionTitle', label: 'Position', render: row => <><b>{row.positionTitle}</b><small>{row.hiringType} / {row.employmentType}</small></>, value: row => row.positionTitle },
-          { key: 'requestedByName', label: 'Requester' },
-          { key: 'department', label: 'Department' },
-          { key: 'clientName', label: 'Client' },
-          { key: 'numberOfOpenings', label: 'Openings' },
-          { key: 'targetJoiningDate', label: 'Target', render: row => dateText(row.targetJoiningDate), value: row => row.targetJoiningDate || '' },
-          { key: 'status', label: 'Status' },
-          { key: 'openPositionId', label: 'Open position', value: row => row.openPositionId || '-', render: row => row.openPositionId ? `#${row.openPositionId}` : '-' }
-        ]} /></>}
-        {view === 'Open Positions' && <DataTable rows={positions} exportFileName="recruitment-open-positions" actions={row => <Button size="small" type="primary" onClick={() => void openDetail(row)}>View</Button>} columns={[
+        {view === 'Work Orders & SLA' && <RecruitmentWorkOrderWorkspace />}
+        {view === 'Requisitions' && <RecruitmentRequisitionManager initialOpen={routeQuery.get('new') === '1'} onChanged={() => void load()} onPrepareJobDescription={row => navigate(`/recruitment/job-descriptions?requisitionId=${row.id}&clientId=${row.clientId}`)} />}
+        {view === 'Open Positions' && <DataTable rows={positions} exportFileName="recruitment-open-positions" actions={row => <Space size={6}><Button size="small" onClick={() => void openDetail(row)}>View</Button><Button size="small" type="primary" onClick={() => navigate(`/recruitment/job-descriptions?requisitionId=${row.requisitionId}&clientId=${row.clientId}`)}>Prepare JD</Button></Space>} columns={[
           { key: 'positionCode', label: 'Position', render: row => <><b>{row.positionCode}</b><small>{row.rfrNumber}</small></>, value: row => row.positionCode },
           { key: 'positionTitle', label: 'Title' },
           { key: 'clientName', label: 'Client' },
@@ -141,15 +158,16 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
           { key: 'salary', label: 'Salary range', value: row => `${row.salaryMin}-${row.salaryMax}`, render: row => `${money(row.salaryMin, row.currency)} - ${money(row.salaryMax, row.currency)}` },
           { key: 'status', label: 'Status' }
         ]} />}
-        {view === 'Job Descriptions' && <RecruitmentJobDescriptionManager initialClientId={clientId} />}
-        {view === 'Job Postings' && <RecruitmentJobPostingManager initialClientId={clientId} />}
+        {view === 'Job Descriptions' && <RecruitmentJobDescriptionManager initialClientId={Number(routeQuery.get('clientId') || 0)} initialRequisitionId={Number(routeQuery.get('requisitionId') || 0)} />}
+        {view === 'Job Postings' && <RecruitmentJobPostingManager initialClientId={Number(routeQuery.get('clientId') || 0)} initialPositionId={Number(routeQuery.get('positionId') || 0)} />}
+        {view === 'ATS Screening' && <RecruitmentAtsWorkspace initialUploadMode={routeQuery.get('upload') === 'bulk' ? 'bulk' : routeQuery.get('upload') === 'single' ? 'single' : undefined} />}
         {view === 'Hiring Pipeline' && <RecruitmentPipelineBoard />}
         {view === 'Talent Pool' && <RecruitmentTalentWorkspace mode="candidates" />}
         {view === 'Applications' && <RecruitmentTalentWorkspace mode="applications" />}
         {view === 'Interviews' && <RecruitmentTalentWorkspace mode="interviews" />}
         {view === 'Offers & Pre-Onboarding' && <RecruitmentTalentWorkspace mode="offers" />}
       </div>
-    </Card>
+    </div>
     <Modal open={!!detail} footer={null} width={1120} onCancel={() => setDetail(null)} title={detail?.position?.positionCode ? `${detail.position.positionCode} - ${detail.position.positionTitle}` : 'Open position'}>
       {detail?.position && <section className="recruitment-position-detail">
         <div className="position-summary-panel">

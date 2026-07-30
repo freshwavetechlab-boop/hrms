@@ -3,9 +3,111 @@ using Payroll.API.Models;
 
 namespace Payroll.API.Services;
 
-public class AttachmentStorageService(IHttpClientFactory httpClientFactory, IWebHostEnvironment environment, IConfiguration configuration)
+public class AttachmentStorageService(
+    IHttpClientFactory httpClientFactory,
+    IWebHostEnvironment environment,
+    IConfiguration configuration,
+    GoogleDriveOAuthService googleDrive)
 {
-    public async Task WriteAsync(AttachmentStorageServer server, string storageKey, Stream content, CancellationToken cancellationToken)
+    public async Task<string> UpsertPathAsync(AttachmentStorageServer server, string storagePath, Stream content, CancellationToken cancellationToken)
+    {
+        if (IsFileSystem(server))
+        {
+            var fullPath = ResolveFilePath(server, storagePath);
+            var directory = Path.GetDirectoryName(fullPath) ?? throw new InvalidOperationException("Attachment directory is invalid.");
+            Directory.CreateDirectory(directory);
+            var temporaryPath = $"{fullPath}.{Guid.NewGuid():N}.uploading";
+            try
+            {
+                await using (var target = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                    await content.CopyToAsync(target, cancellationToken);
+                File.Move(temporaryPath, fullPath, true);
+            }
+            finally
+            {
+                if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+            }
+            return storagePath;
+        }
+
+        if (server.StorageType.Equals("HttpFileServer", StringComparison.OrdinalIgnoreCase))
+        {
+            using var request = CreateRemoteRequest(server, HttpMethod.Put, storagePath);
+            request.Content = new StreamContent(content);
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            using var response = await httpClientFactory.CreateClient(nameof(AttachmentStorageService)).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException($"Remote file server rejected the upload ({(int)response.StatusCode}).");
+            return storagePath;
+        }
+
+        if (server.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+            return await googleDrive.UpsertPathAsync(server, storagePath, content, cancellationToken);
+
+        throw new InvalidOperationException($"Storage type '{server.StorageType}' is not supported.");
+    }
+
+    public async Task<AttachmentFileHandle?> TryOpenPathAsync(AttachmentStorageServer server, string storagePath, CancellationToken cancellationToken)
+    {
+        if (IsFileSystem(server))
+        {
+            var fullPath = ResolveFilePath(server, storagePath);
+            if (!File.Exists(fullPath)) return null;
+            return new AttachmentFileHandle(new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan));
+        }
+
+        if (server.StorageType.Equals("HttpFileServer", StringComparison.OrdinalIgnoreCase))
+        {
+            var request = CreateRemoteRequest(server, HttpMethod.Get, storagePath);
+            var response = await httpClientFactory.CreateClient(nameof(AttachmentStorageService)).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            request.Dispose();
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                response.Dispose();
+                return null;
+            }
+            if (!response.IsSuccessStatusCode)
+            {
+                response.Dispose();
+                throw new InvalidOperationException($"Remote file server rejected the read ({(int)response.StatusCode}).");
+            }
+            return new AttachmentFileHandle(await response.Content.ReadAsStreamAsync(cancellationToken), response);
+        }
+
+        if (server.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+            return await googleDrive.TryOpenPathAsync(server, storagePath, cancellationToken);
+
+        throw new InvalidOperationException($"Storage type '{server.StorageType}' is not supported.");
+    }
+
+    public async Task DeletePathAsync(AttachmentStorageServer server, string storagePath, CancellationToken cancellationToken)
+    {
+        if (IsFileSystem(server))
+        {
+            var fullPath = ResolveFilePath(server, storagePath);
+            if (File.Exists(fullPath)) File.Delete(fullPath);
+            return;
+        }
+
+        if (server.StorageType.Equals("HttpFileServer", StringComparison.OrdinalIgnoreCase))
+        {
+            using var request = CreateRemoteRequest(server, HttpMethod.Delete, storagePath);
+            using var response = await httpClientFactory.CreateClient(nameof(AttachmentStorageService)).SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NotFound)
+                throw new InvalidOperationException($"Remote file server rejected deletion ({(int)response.StatusCode}).");
+            return;
+        }
+
+        if (server.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+        {
+            await googleDrive.DeletePathAsync(server, storagePath, cancellationToken);
+            return;
+        }
+
+        throw new InvalidOperationException($"Storage type '{server.StorageType}' is not supported.");
+    }
+
+    public async Task<string> WriteAsync(AttachmentStorageServer server, string storageKey, Stream content, CancellationToken cancellationToken)
     {
         if (IsFileSystem(server))
         {
@@ -23,7 +125,7 @@ public class AttachmentStorageService(IHttpClientFactory httpClientFactory, IWeb
             {
                 if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
             }
-            return;
+            return storageKey;
         }
 
         if (server.StorageType.Equals("HttpFileServer", StringComparison.OrdinalIgnoreCase))
@@ -34,8 +136,11 @@ public class AttachmentStorageService(IHttpClientFactory httpClientFactory, IWeb
             using var response = await httpClientFactory.CreateClient(nameof(AttachmentStorageService)).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
                 throw new InvalidOperationException($"Remote file server rejected the upload ({(int)response.StatusCode}).");
-            return;
+            return storageKey;
         }
+
+        if (server.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+            return await googleDrive.WriteAsync(server, storageKey, content, cancellationToken);
 
         throw new InvalidOperationException($"Storage type '{server.StorageType}' is not supported.");
     }
@@ -63,6 +168,9 @@ public class AttachmentStorageService(IHttpClientFactory httpClientFactory, IWeb
             return new AttachmentFileHandle(await response.Content.ReadAsStreamAsync(cancellationToken), response);
         }
 
+        if (server.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+            return await googleDrive.OpenReadAsync(server, storageKey, cancellationToken);
+
         throw new InvalidOperationException($"Storage type '{server.StorageType}' is not supported.");
     }
 
@@ -81,6 +189,12 @@ public class AttachmentStorageService(IHttpClientFactory httpClientFactory, IWeb
             using var response = await httpClientFactory.CreateClient(nameof(AttachmentStorageService)).SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NotFound)
                 throw new InvalidOperationException($"Remote file server rejected deletion ({(int)response.StatusCode}).");
+            return;
+        }
+
+        if (server.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+        {
+            await googleDrive.DeleteAsync(server, storageKey, cancellationToken);
             return;
         }
     }
@@ -120,6 +234,9 @@ public class AttachmentStorageService(IHttpClientFactory httpClientFactory, IWeb
                     Message = response.IsSuccessStatusCode ? "Remote file server is reachable." : $"Health check returned {(int)response.StatusCode}."
                 };
             }
+
+            if (server.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+                return await googleDrive.TestAsync(server, cancellationToken);
 
             return new AttachmentStorageHealthResult { Healthy = false, Status = "Unsupported", Message = $"Storage type '{server.StorageType}' is not supported." };
         }

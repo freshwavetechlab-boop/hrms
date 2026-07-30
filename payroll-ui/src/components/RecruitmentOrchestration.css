@@ -49,6 +49,7 @@
 .pipeline-stage-card .stage-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 12px 0; }
 .pipeline-stage-card .stage-facts span { padding: 7px; border-radius: 8px; background: #f6f7fb; color: #687287; font-size: 11px; }
 .pipeline-transition-card { margin-bottom: 12px; padding: 12px; border: 1px solid #e5e8f2; border-radius: 10px; background: #fcfcff; }
+.recruitment-process-documents{display:grid;gap:12px}.recruitment-process-documents>article{display:grid;gap:12px;padding:14px;border:1px solid #e5e8f2;border-radius:14px;background:#fff}.recruitment-process-documents>article>header{display:flex;align-items:center;justify-content:space-between;gap:12px}.recruitment-process-documents>article>header div{display:grid;gap:3px}.recruitment-process-documents>article>header span{color:#72798b;font-size:12px}
 .pipeline-transition-row { display: grid; grid-template-columns: minmax(135px,1fr) auto minmax(135px,1fr) minmax(130px,1fr) minmax(120px,.8fr) minmax(160px,1fr) auto auto auto; gap: 8px; align-items: center; }
 .pipeline-transition-row .ant-select { min-width: 0; }
 .transition-rule-list { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed #dcdff0; }
@@ -162,3 +163,4 @@
   .jd-repeater-actions { position: static; justify-content: flex-end; margin-bottom: 8px; }
   .jd-repeater-content { padding-top: 0; }
 }
+.stage-action-block{display:grid;gap:8px;padding:10px;border:1px solid #ece8f4;border-radius:12px;background:#fff}.stage-action-recipient-panel{display:grid;gap:8px;padding:10px;border-radius:10px;background:#f8f6fc}.stage-action-recipient-panel>div:first-child{display:flex;justify-content:space-between;align-items:center}.stage-action-recipient-row{display:grid;grid-template-columns:190px minmax(180px,1fr) auto;gap:8px;align-items:center}.stage-action-recipient-row .stage-action-runtime-note{padding:7px 10px;border-radius:7px;background:#fff;color:#6f687d}@media(max-width:760px){.stage-action-recipient-row{grid-template-columns:1fr}}

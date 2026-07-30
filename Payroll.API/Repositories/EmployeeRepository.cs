@@ -3,6 +3,7 @@ using MySqlConnector;
 using Payroll.API.Models;
 using System.Collections.Concurrent;
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -16,6 +17,8 @@ public class EmployeeRepository(IConfiguration configuration, AuthRepository aut
     private const string UpdateImportMode = "update";
     private const string UpsertImportMode = "upsert";
     private static readonly ConcurrentDictionary<Guid, EmployeeImportJobStatus> ImportJobs = new();
+    private static readonly ConcurrentDictionary<Guid, EmployeeImportReviewState> ImportReviews = new();
+    private static readonly TimeSpan ImportReviewLifetime = TimeSpan.FromMinutes(30);
     private static readonly string[] It0000ImportHeaders = ["Date Of Joining", "Active"];
     private static readonly string[] It0001ImportHeaders = ["Work Email", "Department", "Designation", "Grade", "Work Location Id", "Work Location", "Reporting Manager User Id", "Reporting Manager Email", "Portal Access"];
     private static readonly string[] It0002ImportHeaders = ["First Name", "Last Name", "Gender", "Date Of Birth", "Mobile", "PAN", "Aadhaar", "UAN Number", "ESIC Number"];
@@ -169,9 +172,16 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
 
     public async Task<EmployeeImportResult> ImportCsvAsync(int clientId, IFormFile file, string? mode)
     {
+        return await ImportCsvAsync(clientId, file, mode, null, null);
+    }
+
+    public async Task<EmployeeImportResult> ImportCsvAsync(int clientId, IFormFile? file, string? mode, Guid? reviewToken, string? decisionsJson)
+    {
         if (!TryNormalizeImportMode(mode, out var normalizedMode, out var error))
             return new EmployeeImportResult(0, 0, 0, [error]);
-        return await ImportWorkbookAsync(clientId, await ParseImportWorkbookAsync(file), normalizedMode);
+        var prepared = await PrepareReviewedImportAsync(clientId, file, normalizedMode, reviewToken, decisionsJson);
+        if (prepared.Error is not null) return prepared.Error;
+        return await ImportWorkbookAsync(clientId, prepared.Workbook!, normalizedMode);
     }
 
     public async Task<EmployeeImportJobStatus> StartImportCsvJobAsync(int clientId, IFormFile file)
@@ -181,13 +191,27 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
 
     public async Task<EmployeeImportJobStatus> StartImportCsvJobAsync(int clientId, IFormFile file, string? mode)
     {
+        return await StartImportCsvJobAsync(clientId, file, mode, null, null);
+    }
+
+    public async Task<EmployeeImportJobStatus> StartImportCsvJobAsync(int clientId, IFormFile? file, string? mode, Guid? reviewToken, string? decisionsJson)
+    {
         if (!TryNormalizeImportMode(mode, out var normalizedMode, out var modeError))
         {
             var failed = new EmployeeImportJobStatus(Guid.NewGuid(), "Failed", 0, 0, 0, 0, [modeError]);
             ImportJobs[failed.JobId] = failed;
             return failed;
         }
-        var workbook = await ParseImportWorkbookAsync(file);
+        var prepared = await PrepareReviewedImportAsync(clientId, file, normalizedMode, reviewToken, decisionsJson);
+        if (prepared.Error is not null)
+        {
+            var result = prepared.Error;
+            var state = result.RequiresConfirmation ? "NeedsConfirmation" : "Failed";
+            var failed = new EmployeeImportJobStatus(Guid.NewGuid(), state, result.TotalRows, 0, 0, 0, result.Errors, result.ReviewToken, result.RequiresConfirmation, result.ReviewRows);
+            ImportJobs[failed.JobId] = failed;
+            return failed;
+        }
+        var workbook = prepared.Workbook!;
         var totalRows = CountImportRows(workbook);
         var job = new EmployeeImportJobStatus(Guid.NewGuid(), "Queued", totalRows, 0, 0, 0, []);
         ImportJobs[job.JobId] = job;
@@ -201,6 +225,744 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
     }
 
     public EmployeeImportJobStatus? GetImportJob(Guid jobId) => ImportJobs.TryGetValue(jobId, out var job) ? job : null;
+
+    public async Task<EmployeeImportPreflightResult> PreflightImportCsvAsync(int clientId, IFormFile file, string? mode)
+    {
+        PruneImportReviews();
+        if (!TryNormalizeImportMode(mode, out var normalizedMode, out var modeError))
+            return new EmployeeImportPreflightResult(Guid.Empty, 0, false, false,
+                [new EmployeeImportPreflightRow(1, "Employees", "", "Blocked", null, null, null, [], [modeError], [])],
+                DateTime.UtcNow);
+        var workbook = await ParseImportWorkbookAsync(file);
+        var result = await BuildImportPreflightAsync(clientId, workbook, normalizedMode);
+        if (result.ReviewToken != Guid.Empty)
+            ImportReviews[result.ReviewToken] = new EmployeeImportReviewState(clientId, normalizedMode, workbook, result, result.ExpiresAtUtc, await HashFileAsync(file));
+        return result;
+    }
+
+    private async Task<(EmployeeImportWorkbook? Workbook, EmployeeImportResult? Error)> PrepareReviewedImportAsync(
+        int clientId, IFormFile? file, string normalizedMode, Guid? reviewToken, string? decisionsJson)
+    {
+        PruneImportReviews();
+        if (reviewToken.HasValue)
+        {
+            // Claim the token atomically so two confirmation requests cannot
+            // queue the same reviewed workbook at the same time.
+            if (!ImportReviews.TryRemove(reviewToken.Value, out var review))
+                return (null, new EmployeeImportResult(0, 0, 0, ["Employee import review has expired or was already used. Run preflight again."]));
+            if (review.ClientId != clientId || !string.Equals(review.Mode, normalizedMode, StringComparison.OrdinalIgnoreCase))
+            {
+                RestoreImportReview(reviewToken.Value, review);
+                return (null, new EmployeeImportResult(review.Result.TotalRows, 0, 0, ["Review token does not belong to this client/import mode."]));
+            }
+            if (file is null || file.Length == 0)
+            {
+                RestoreImportReview(reviewToken.Value, review);
+                return (null, new EmployeeImportResult(review.Result.TotalRows, 0, 0, ["Re-upload the reviewed employee file when confirming the import."], review.Result.ReviewToken, true, review.Result.Rows));
+            }
+            if (!string.Equals(await HashFileAsync(file), review.FileHash, StringComparison.Ordinal))
+            {
+                RestoreImportReview(reviewToken.Value, review);
+                return (null, new EmployeeImportResult(review.Result.TotalRows, 0, 0, ["The confirmation file is different from the reviewed file. Run preflight again."], review.Result.ReviewToken, true, review.Result.Rows));
+            }
+            var confirmed = ApplyImportReviewDecisions(review, decisionsJson);
+            if (confirmed.Error is not null)
+            {
+                RestoreImportReview(reviewToken.Value, review);
+                return (null, confirmed.Error);
+            }
+            return (confirmed.Workbook, null);
+        }
+
+        if (file is null || file.Length == 0)
+            return (null, new EmployeeImportResult(0, 0, 0, ["Select an employee CSV or Excel file."]));
+        var workbook = await ParseImportWorkbookAsync(file);
+        var preflight = await BuildImportPreflightAsync(clientId, workbook, normalizedMode);
+        if (!preflight.CanImport || preflight.RequiresConfirmation)
+        {
+            ImportReviews[preflight.ReviewToken] = new EmployeeImportReviewState(clientId, normalizedMode, workbook, preflight, preflight.ExpiresAtUtc, await HashFileAsync(file));
+            var errors = !preflight.CanImport
+                ? preflight.Rows.SelectMany(row => row.BlockingReasons.Select(reason => $"{row.Sheet} row {row.RowNumber}: {reason}")).Distinct().ToList()
+                : ["Employee import needs explicit review before any rows are saved."];
+            return (null, new EmployeeImportResult(preflight.TotalRows, 0, 0, errors, preflight.ReviewToken, preflight.RequiresConfirmation, preflight.Rows));
+        }
+        return (workbook, null);
+    }
+
+    private async Task<EmployeeImportPreflightResult> BuildImportPreflightAsync(int clientId, EmployeeImportWorkbook workbook, string importMode)
+    {
+        var token = Guid.NewGuid();
+        var expiresAt = DateTime.UtcNow.Add(ImportReviewLifetime);
+        var totalRows = CountImportRows(workbook);
+        if (totalRows == 0)
+            return new EmployeeImportPreflightResult(token, 0, false, false,
+                [new EmployeeImportPreflightRow(1, "Employees", "", "Blocked", null, null, null, [], ["Import file has no data rows."], [])],
+                expiresAt);
+
+        // The identity preflight applies to the flat Employees worksheet. Existing
+        // infotype workbooks retain their established Employee Code contract.
+        if (HasDataSheet(workbook, "0001 Org Assignment", "0002 Personal Data", "0006 Addresses", "0008 Basic Pay", "0009 Bank Details"))
+            return new EmployeeImportPreflightResult(token, totalRows, true, false, [], expiresAt);
+
+        await using var db = Connection();
+        await db.OpenAsync();
+        var existing = (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE ClientId=@clientId", new { clientId })).ToList();
+        await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, existing);
+        var byId = existing.ToDictionary(employee => employee.Id);
+        var byCode = BuildIdentityMap(existing, employee => NormalizeCode(employee.EmployeeCode));
+        var byMobile = BuildIdentityMap(existing, employee => NormalizeMobile(employee.PersonalDetails?.Mobile));
+        var byAadhaar = BuildIdentityMap(existing, employee => NormalizeAadhaar(employee.PersonalDetails?.AadhaarNumber));
+        var byPan = BuildIdentityMap(existing, employee => NormalizePan(employee.PersonalDetails?.PanNumber));
+        var byBank = BuildIdentityMap(existing, employee => NormalizeBankAccount(employee.PaymentDetails?.BankAccountNo));
+
+        var rows = GetEmployeeDataSheet(workbook);
+        var sheetName = GetEmployeeDataSheetName(workbook);
+        var map = rows.Count > 0 ? HeaderMap(rows[0]) : new Dictionary<string, int>();
+        var resultRows = new List<EmployeeImportPreflightRow>();
+        var workbookIdentifiers = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+
+        for (var index = 1; index < rows.Count; index++)
+        {
+            var source = rows[index];
+            if (Blank(source)) continue;
+            var rowNumber = index + 1;
+            var blocking = new List<string>();
+            var reasons = new List<string>();
+            var reviewCandidates = new Dictionary<int, (Employee Employee, List<string> Reasons)>();
+            var hardConflict = false;
+            var alternateIdentifierConflict = false;
+            Employee? stableMatch = null;
+
+            var idText = Cell(source, map, "Employee ID");
+            if (!string.IsNullOrWhiteSpace(idText))
+            {
+                if (!int.TryParse(idText, out var employeeId) || employeeId <= 0)
+                {
+                    blocking.Add("Employee ID must be a positive whole number.");
+                    hardConflict = true;
+                }
+                else if (!byId.TryGetValue(employeeId, out stableMatch))
+                {
+                    blocking.Add($"Employee ID {employeeId} does not belong to this client.");
+                    hardConflict = true;
+                }
+                else
+                {
+                    reasons.Add("Exact Employee ID");
+                    AddReviewCandidate(reviewCandidates, stableMatch, "Exact Employee ID");
+                }
+            }
+
+            var code = Cell(source, map, "Employee Code");
+            var codeMatches = LookupIdentity(byCode, NormalizeCode(code));
+            if (codeMatches.Count > 1)
+            {
+                blocking.Add($"Employee Code \"{code}\" is assigned to multiple employees.");
+                hardConflict = true;
+            }
+            foreach (var employee in codeMatches) AddReviewCandidate(reviewCandidates, employee, "Exact Employee Code");
+            var codeMatch = codeMatches.Count == 1 ? codeMatches[0] : null;
+            if (stableMatch is not null && codeMatch is not null && stableMatch.Id != codeMatch.Id)
+            {
+                blocking.Add($"Employee ID and Employee Code \"{code}\" identify different employees.");
+                hardConflict = true;
+            }
+            else if (stableMatch is not null && !string.IsNullOrWhiteSpace(code) && !string.Equals(stableMatch.EmployeeCode, code, StringComparison.OrdinalIgnoreCase))
+            {
+                blocking.Add($"Employee ID {stableMatch.Id} belongs to employee code \"{stableMatch.EmployeeCode}\", not \"{code}\".");
+                hardConflict = true;
+            }
+            else if (stableMatch is null && codeMatch is not null)
+            {
+                stableMatch = codeMatch;
+                reasons.Add("Exact Employee Code");
+            }
+
+            var identifierCandidates = new Dictionary<int, (Employee Employee, List<string> Reasons)>();
+            AddIdentifierMatches(identifierCandidates, LookupIdentity(byMobile, NormalizeMobile(Cell(source, map, "Mobile"))), "Mobile");
+            AddIdentifierMatches(identifierCandidates, LookupIdentity(byAadhaar, NormalizeAadhaar(Cell(source, map, "Aadhaar"))), "Aadhaar");
+            AddIdentifierMatches(identifierCandidates, LookupIdentity(byPan, NormalizePan(Cell(source, map, "PAN"))), "PAN");
+            AddIdentifierMatches(identifierCandidates, LookupIdentity(byBank, NormalizeBankAccount(Cell(source, map, "Bank Account No"))), "Bank Account");
+            foreach (var candidate in identifierCandidates.Values)
+                foreach (var reason in candidate.Reasons)
+                    AddReviewCandidate(reviewCandidates, candidate.Employee, $"Exact {reason}");
+
+            if (identifierCandidates.Count > 1)
+            {
+                var detail = string.Join("; ", identifierCandidates.Values.Select(candidate =>
+                    $"{candidate.Employee.EmployeeCode}: {string.Join(", ", candidate.Reasons)}"));
+                blocking.Add($"Identifiers point to different employees ({detail}).");
+                alternateIdentifierConflict = true;
+            }
+            else if (identifierCandidates.Count == 1)
+            {
+                var identifierMatch = identifierCandidates.Values.Single();
+                if (stableMatch is not null && stableMatch.Id != identifierMatch.Employee.Id)
+                {
+                    blocking.Add($"{string.Join(", ", identifierMatch.Reasons)} belongs to employee {identifierMatch.Employee.EmployeeCode}, not {stableMatch.EmployeeCode}.");
+                    alternateIdentifierConflict = true;
+                }
+                else
+                {
+                    stableMatch ??= identifierMatch.Employee;
+                    reasons.AddRange(identifierMatch.Reasons.Select(reason => $"Exact {reason}"));
+                }
+            }
+
+            var matchStatus = stableMatch is null ? "New" : reasons.Any(reason => reason is "Exact Employee ID" or "Exact Employee Code")
+                ? reasons.Contains("Exact Employee ID") ? "MatchedByEmployeeId" : "MatchedByEmployeeCode"
+                : "MatchedByIdentifiers";
+
+            if (blocking.Count == 0 && stableMatch is null)
+            {
+                var probable = FindNameAddressMatches(existing, source, map);
+                if (probable.Count > 1)
+                {
+                    blocking.Add($"Name and address match multiple employees: {string.Join(", ", probable.Select(employee => employee.EmployeeCode))}.");
+                    hardConflict = true;
+                    foreach (var employee in probable) AddReviewCandidate(reviewCandidates, employee, "Same normalized name and address");
+                }
+                else if (probable.Count == 1)
+                {
+                    stableMatch = probable[0];
+                    matchStatus = "ProbableDuplicate";
+                    reasons.Add("Same normalized name and address; manual decision required");
+                    AddReviewCandidate(reviewCandidates, stableMatch, "Same normalized name and address");
+                }
+            }
+
+            if (importMode == InsertImportMode && stableMatch is not null && matchStatus != "ProbableDuplicate")
+            {
+                blocking.Add($"Employee {stableMatch.EmployeeCode} already exists. Insert mode accepts new employees only.");
+                hardConflict = true;
+            }
+            if (importMode == UpdateImportMode && stableMatch is null)
+            {
+                blocking.Add("No existing employee was identified. Update mode accepts existing employees only.");
+                if (!alternateIdentifierConflict) hardConflict = true;
+            }
+            if (stableMatch is null && string.IsNullOrWhiteSpace(code))
+            {
+                blocking.Add("Employee Code is required for a new employee. Generate or map a code before confirmation.");
+                if (!alternateIdentifierConflict) hardConflict = true;
+            }
+
+            var canResolveConflict = alternateIdentifierConflict && !hardConflict && importMode != InsertImportMode && reviewCandidates.Count > 0;
+            if (canResolveConflict) matchStatus = "IdentityConflict";
+            else if (blocking.Count > 0) matchStatus = "Blocked";
+            var displayedMatch = canResolveConflict ? null : stableMatch;
+            var changes = displayedMatch is null ? [] : BuildImportChanges(source, map, displayedMatch);
+            var candidateEmployees = reviewCandidates.Values.Select(candidate => new EmployeeImportCandidate(
+                candidate.Employee.Id,
+                candidate.Employee.EmployeeCode,
+                $"{candidate.Employee.FirstName} {candidate.Employee.LastName}".Trim(),
+                candidate.Reasons.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                BuildImportChanges(source, map, candidate.Employee))).ToList();
+            var identityEvidence = BuildIdentityEvidence(source, map, byId, byCode, byMobile, byAadhaar, byPan, byBank);
+            resultRows.Add(new EmployeeImportPreflightRow(
+                rowNumber,
+                sheetName,
+                displayedMatch?.EmployeeCode ?? code,
+                matchStatus,
+                displayedMatch?.Id,
+                displayedMatch?.EmployeeCode,
+                displayedMatch is null ? null : $"{displayedMatch.FirstName} {displayedMatch.LastName}".Trim(),
+                reasons.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                blocking.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                changes,
+                candidateEmployees,
+                identityEvidence,
+                canResolveConflict));
+            TrackWorkbookIdentifier(workbookIdentifiers, "Mobile", NormalizeMobile(Cell(source, map, "Mobile")), resultRows.Count - 1);
+            TrackWorkbookIdentifier(workbookIdentifiers, "Aadhaar", NormalizeAadhaar(Cell(source, map, "Aadhaar")), resultRows.Count - 1);
+            TrackWorkbookIdentifier(workbookIdentifiers, "PAN", NormalizePan(Cell(source, map, "PAN")), resultRows.Count - 1);
+            TrackWorkbookIdentifier(workbookIdentifiers, "Bank Account", NormalizeBankAccount(Cell(source, map, "Bank Account No")), resultRows.Count - 1);
+        }
+
+        foreach (var duplicate in workbookIdentifiers.Where(item => item.Value.Distinct().Count() > 1))
+        {
+            var separator = duplicate.Key.IndexOf(':');
+            var label = separator > 0 ? duplicate.Key[..separator] : "Identifier";
+            foreach (var rowIndex in duplicate.Value.Distinct())
+            {
+                var row = resultRows[rowIndex];
+                var otherRows = duplicate.Value.Distinct().Where(index => index != rowIndex).Select(index => resultRows[index].RowNumber);
+                var blockingReasons = row.BlockingReasons
+                    .Append($"{label} is also supplied on workbook row(s) {string.Join(", ", otherRows)}. One person must not be inserted or updated twice.")
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                resultRows[rowIndex] = row with { MatchStatus = "Blocked", BlockingReasons = blockingReasons, CanResolveConflict = false };
+            }
+        }
+
+        // A mixed workbook remains actionable: blocked rows can be explicitly
+        // skipped while clean rows proceed. All-blocked/fatal files cannot import.
+        var canImport = resultRows.Any(row => row.BlockingReasons.Count == 0 || row.CanResolveConflict);
+        var requiresConfirmation = resultRows.Any(RowRequiresConfirmation);
+        return new EmployeeImportPreflightResult(token, totalRows, canImport, requiresConfirmation, resultRows, expiresAt);
+    }
+
+    private static (EmployeeImportWorkbook? Workbook, EmployeeImportResult? Error) ApplyImportReviewDecisions(EmployeeImportReviewState review, string? decisionsJson)
+    {
+        List<EmployeeImportDecision> decisions;
+        try
+        {
+            decisions = string.IsNullOrWhiteSpace(decisionsJson)
+                ? []
+                : JsonSerializer.Deserialize<List<EmployeeImportDecision>>(decisionsJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+        }
+        catch (JsonException ex)
+        {
+            return (null, new EmployeeImportResult(review.Result.TotalRows, 0, 0, [$"Decisions JSON is invalid: {ex.Message}"], review.Result.ReviewToken, true, review.Result.Rows));
+        }
+
+        var decisionMap = decisions
+            .GroupBy(decision => $"{Norm(decision.Sheet)}:{decision.RowNumber}", StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Last(), StringComparer.OrdinalIgnoreCase);
+        var errors = new List<string>();
+        var workbook = CloneWorkbook(review.Workbook);
+        var sheetName = GetEmployeeDataSheetName(workbook);
+        if (!workbook.Sheets.TryGetValue(sheetName, out var rows) || rows.Count == 0)
+            return (null, new EmployeeImportResult(review.Result.TotalRows, 0, 0, ["Employee worksheet is no longer available."], review.Result.ReviewToken, true, review.Result.Rows));
+        var map = HeaderMap(rows[0]);
+        var skipRows = new HashSet<int>();
+
+        foreach (var reviewRow in review.Result.Rows)
+        {
+            var prefix = $"{reviewRow.Sheet} row {reviewRow.RowNumber}";
+            decisionMap.TryGetValue($"{Norm(reviewRow.Sheet)}:{reviewRow.RowNumber}", out var decision);
+            if (reviewRow.BlockingReasons.Count > 0 && !reviewRow.CanResolveConflict)
+            {
+                if (string.Equals(decision?.Action?.Trim(), "skip", StringComparison.OrdinalIgnoreCase))
+                {
+                    skipRows.Add(reviewRow.RowNumber);
+                    continue;
+                }
+                errors.Add($"{prefix}: this row is blocked and must be explicitly skipped. {string.Join(" | ", reviewRow.BlockingReasons)}");
+                continue;
+            }
+
+            if (RowRequiresConfirmation(reviewRow) && decision is null)
+            {
+                errors.Add($"{prefix}: explicit update/insert/skip confirmation is required.");
+                continue;
+            }
+
+            var defaultAction = reviewRow.MatchedEmployeeId.HasValue ? "update" : "insert";
+            var action = (decision?.Action ?? defaultAction).Trim().ToLowerInvariant();
+            if (action == "skip")
+            {
+                skipRows.Add(reviewRow.RowNumber);
+                continue;
+            }
+            if (action is not ("update" or "insert"))
+            {
+                errors.Add($"{prefix}: action must be update, insert, or skip.");
+                continue;
+            }
+
+            if (action == "update")
+            {
+                var employeeId = decision?.EmployeeId ?? reviewRow.MatchedEmployeeId;
+                if (!employeeId.HasValue || employeeId.Value <= 0)
+                {
+                    errors.Add($"{prefix}: select the existing employee to update.");
+                    continue;
+                }
+                var reviewedCandidates = reviewRow.CandidateEmployees ?? [];
+                if (reviewRow.CanResolveConflict && reviewedCandidates.All(candidate => candidate.EmployeeId != employeeId.Value))
+                {
+                    errors.Add($"{prefix}: selected employee is not one of the reviewed identity candidates.");
+                    continue;
+                }
+                if (!reviewRow.CanResolveConflict && reviewRow.MatchedEmployeeId.HasValue && employeeId.Value != reviewRow.MatchedEmployeeId.Value)
+                {
+                    errors.Add($"{prefix}: confirmed employee does not match the reviewed employee.");
+                    continue;
+                }
+                var selectedCandidate = reviewedCandidates.FirstOrDefault(candidate => candidate.EmployeeId == employeeId.Value);
+                var selectedChanges = selectedCandidate?.Changes ?? reviewRow.Changes;
+                var fieldChoices = decision?.FieldChoices is null
+                    ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, string>(decision.FieldChoices, StringComparer.OrdinalIgnoreCase);
+                foreach (var change in selectedChanges.Where(change => change.Sensitive || change.PayrollImpact))
+                {
+                    if (!fieldChoices.TryGetValue(change.Field, out var fieldChoice)
+                        || fieldChoice is null
+                        || (fieldChoice = fieldChoice.Trim()) is not ("keepExisting" or "useImported"))
+                    {
+                        errors.Add($"{prefix}: choose keepExisting or useImported for {change.Label}.");
+                        continue;
+                    }
+                    if (fieldChoice == "keepExisting")
+                    {
+                        BlankImportField(rows[reviewRow.RowNumber - 1], map, change.Field);
+                        continue;
+                    }
+                    if (IsIdentityField(change.Field))
+                    {
+                        var evidence = (reviewRow.IdentityEvidence ?? []).FirstOrDefault(item => item.Field.Equals(change.Field, StringComparison.OrdinalIgnoreCase));
+                        var otherOwners = evidence?.Candidates.Where(candidate => candidate.EmployeeId != employeeId.Value).ToList() ?? [];
+                        if (otherOwners.Count > 0)
+                            errors.Add($"{prefix}: imported {change.Label} already belongs to {string.Join(", ", otherOwners.Select(candidate => candidate.EmployeeCode))}; choose keepExisting.");
+                    }
+                }
+                EnsureImportHeader(rows, map, "Employee ID");
+                EnsureImportHeader(rows, map, "Employee Code");
+                SetImportCell(rows[reviewRow.RowNumber - 1], map, "Employee ID", employeeId.Value.ToString());
+                SetImportCell(rows[reviewRow.RowNumber - 1], map, "Employee Code", selectedCandidate?.EmployeeCode ?? reviewRow.MatchedEmployeeCode ?? reviewRow.ProposedEmployeeCode);
+            }
+            else
+            {
+                if (reviewRow.MatchStatus is "MatchedByEmployeeId" or "MatchedByEmployeeCode" or "MatchedByIdentifiers" or "IdentityConflict")
+                {
+                    errors.Add($"{prefix}: an exact identifier already belongs to {reviewRow.MatchedEmployeeCode}; it cannot be inserted as another employee.");
+                    continue;
+                }
+                if (string.IsNullOrWhiteSpace(reviewRow.ProposedEmployeeCode))
+                {
+                    errors.Add($"{prefix}: Employee Code is required before inserting.");
+                    continue;
+                }
+            }
+        }
+
+        if (errors.Count > 0)
+            return (null, new EmployeeImportResult(review.Result.TotalRows, 0, 0, errors, review.Result.ReviewToken, true, review.Result.Rows));
+        foreach (var rowNumber in skipRows.OrderByDescending(value => value))
+            if (rowNumber > 1 && rowNumber <= rows.Count) rows.RemoveAt(rowNumber - 1);
+        return (workbook, null);
+    }
+
+    private static Dictionary<string, List<Employee>> BuildIdentityMap(IEnumerable<Employee> employees, Func<Employee, string> selector)
+    {
+        var result = new Dictionary<string, List<Employee>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var employee in employees)
+        {
+            var key = selector(employee);
+            if (string.IsNullOrWhiteSpace(key)) continue;
+            if (!result.TryGetValue(key, out var matches)) result[key] = matches = [];
+            matches.Add(employee);
+        }
+        return result;
+    }
+
+    private static List<Employee> LookupIdentity(Dictionary<string, List<Employee>> map, string key) =>
+        string.IsNullOrWhiteSpace(key) || !map.TryGetValue(key, out var matches) ? [] : matches;
+
+    private static void AddIdentifierMatches(
+        Dictionary<int, (Employee Employee, List<string> Reasons)> candidates,
+        IEnumerable<Employee> matches,
+        string reason)
+    {
+        foreach (var employee in matches)
+        {
+            if (!candidates.TryGetValue(employee.Id, out var candidate))
+                candidates[employee.Id] = (employee, [reason]);
+            else if (!candidate.Reasons.Contains(reason, StringComparer.OrdinalIgnoreCase))
+                candidate.Reasons.Add(reason);
+        }
+    }
+
+    private static void AddReviewCandidate(
+        Dictionary<int, (Employee Employee, List<string> Reasons)> candidates,
+        Employee employee,
+        string reason)
+    {
+        if (!candidates.TryGetValue(employee.Id, out var candidate))
+            candidates[employee.Id] = (employee, [reason]);
+        else if (!candidate.Reasons.Contains(reason, StringComparer.OrdinalIgnoreCase))
+            candidate.Reasons.Add(reason);
+    }
+
+    private static List<EmployeeImportIdentityEvidence> BuildIdentityEvidence(
+        List<string> row,
+        Dictionary<string, int> headers,
+        Dictionary<int, Employee> byId,
+        Dictionary<string, List<Employee>> byCode,
+        Dictionary<string, List<Employee>> byMobile,
+        Dictionary<string, List<Employee>> byAadhaar,
+        Dictionary<string, List<Employee>> byPan,
+        Dictionary<string, List<Employee>> byBank)
+    {
+        var evidence = new List<EmployeeImportIdentityEvidence>();
+
+        void Add(string field, string label, string header, bool sensitive, string normalized, IEnumerable<Employee> candidates, Func<Employee, string> existingValue)
+        {
+            if (!HasHeader(headers, header)) return;
+            var uploaded = Cell(row, headers, header);
+            if (string.IsNullOrWhiteSpace(uploaded)) return;
+            evidence.Add(new EmployeeImportIdentityEvidence(
+                field,
+                label,
+                sensitive ? MaskIdentityValue(field, uploaded) : uploaded.Trim(),
+                sensitive,
+                candidates.Select(employee => new EmployeeImportEvidenceCandidate(
+                    employee.Id,
+                    employee.EmployeeCode,
+                    $"{employee.FirstName} {employee.LastName}".Trim(),
+                    sensitive ? MaskIdentityValue(field, existingValue(employee)) : existingValue(employee))).ToList()));
+        }
+
+        var idText = Cell(row, headers, "Employee ID");
+        var idCandidates = int.TryParse(idText, out var employeeId) && byId.TryGetValue(employeeId, out var byIdEmployee) ? new[] { byIdEmployee } : [];
+        Add("employeeId", "Employee ID", "Employee ID", false, idText, idCandidates, employee => employee.Id.ToString());
+        var code = Cell(row, headers, "Employee Code");
+        Add("employeeCode", "Employee Code", "Employee Code", false, NormalizeCode(code), LookupIdentity(byCode, NormalizeCode(code)), employee => employee.EmployeeCode);
+        var mobile = Cell(row, headers, "Mobile");
+        Add("mobile", "Mobile", "Mobile", true, NormalizeMobile(mobile), LookupIdentity(byMobile, NormalizeMobile(mobile)), employee => employee.PersonalDetails?.Mobile ?? "");
+        var aadhaar = Cell(row, headers, "Aadhaar");
+        Add("aadhaar", "Aadhaar", "Aadhaar", true, NormalizeAadhaar(aadhaar), LookupIdentity(byAadhaar, NormalizeAadhaar(aadhaar)), employee => employee.PersonalDetails?.AadhaarNumber ?? "");
+        var pan = Cell(row, headers, "PAN");
+        Add("pan", "PAN", "PAN", true, NormalizePan(pan), LookupIdentity(byPan, NormalizePan(pan)), employee => employee.PersonalDetails?.PanNumber ?? "");
+        var bank = Cell(row, headers, "Bank Account No");
+        Add("bankAccountNo", "Bank Account", "Bank Account No", true, NormalizeBankAccount(bank), LookupIdentity(byBank, NormalizeBankAccount(bank)), employee => employee.PaymentDetails?.BankAccountNo ?? "");
+        return evidence;
+    }
+
+    private static void TrackWorkbookIdentifier(Dictionary<string, List<int>> values, string label, string normalized, int rowIndex)
+    {
+        if (string.IsNullOrWhiteSpace(normalized)) return;
+        var key = $"{label}:{normalized}";
+        if (!values.TryGetValue(key, out var rows)) values[key] = rows = [];
+        rows.Add(rowIndex);
+    }
+
+    private static List<Employee> FindNameAddressMatches(IEnumerable<Employee> existing, List<string> row, Dictionary<string, int> map)
+    {
+        var name = NormalizeWords($"{Cell(row, map, "First Name")} {Cell(row, map, "Last Name")}");
+        var addresses = new[]
+        {
+            Cell(row, map, "Address"),
+            Cell(row, map, "Correspondence Address"),
+            Cell(row, map, "Permanent Address")
+        }.Select(NormalizeWords).Where(value => !string.IsNullOrWhiteSpace(value)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(name) || addresses.Count == 0) return [];
+        return existing.Where(employee =>
+        {
+            if (!string.Equals(NormalizeWords($"{employee.FirstName} {employee.LastName}"), name, StringComparison.OrdinalIgnoreCase)) return false;
+            var personal = employee.PersonalDetails ?? new EmployeePersonalDetails();
+            var employeeAddresses = new[] { personal.Address, personal.CorrespondenceAddress, personal.PermanentAddress }
+                .Select(NormalizeWords)
+                .Where(value => !string.IsNullOrWhiteSpace(value));
+            return employeeAddresses.Any(addresses.Contains);
+        }).ToList();
+    }
+
+    private static List<EmployeeImportFieldChange> BuildImportChanges(List<string> row, Dictionary<string, int> map, Employee? existing)
+    {
+        // New rows are initial data capture, not changes requiring per-row approval.
+        if (existing is not { } current) return [];
+        var personal = current.PersonalDetails ?? new EmployeePersonalDetails();
+        var payment = current.PaymentDetails ?? new EmployeePaymentDetails();
+        var changes = new List<EmployeeImportFieldChange>();
+
+        void Add(string header, string field, string oldValue, bool sensitive = false, bool payrollImpact = false, Func<string, string>? compare = null)
+        {
+            if (!HasHeader(map, header)) return;
+            var next = Cell(row, map, header);
+            if (string.IsNullOrWhiteSpace(next)) return;
+            compare ??= value => value.Trim();
+            if (string.Equals(compare(oldValue ?? ""), compare(next), StringComparison.OrdinalIgnoreCase)) return;
+            changes.Add(new EmployeeImportFieldChange(
+                field,
+                header,
+                sensitive ? MaskIdentityValue(field, oldValue) : oldValue ?? "",
+                sensitive ? MaskIdentityValue(field, next) : next,
+                sensitive,
+                payrollImpact));
+        }
+
+        Add("First Name", "firstName", current.FirstName ?? "");
+        Add("Last Name", "lastName", current.LastName ?? "");
+        Add("Gender", "gender", current.Gender ?? "");
+        Add("Date Of Joining", "dateOfJoining", current.DateOfJoining ?? "", payrollImpact: true, compare: NormalizeDate);
+        Add("Date Of Birth", "dateOfBirth", personal.DateOfBirth, compare: NormalizeDate);
+        Add("Work Email", "workEmail", current.WorkEmail ?? "", sensitive: true);
+        Add("Mobile", "mobile", personal.Mobile, sensitive: true, compare: NormalizeMobileForComparison);
+        Add("Department", "department", current.Department ?? "");
+        Add("Designation", "designation", current.Designation ?? "");
+        Add("Grade", "grade", current.Grade ?? "");
+        Add("Work Location Id", "workLocationId", current.WorkLocationId <= 0 ? "" : current.WorkLocationId.ToString());
+        Add("Reporting Manager User Id", "reportingManagerUserId", current.ReportingManagerUserId?.ToString() ?? "");
+        Add("Portal Access", "portalAccess", current.PortalAccess ? "TRUE" : "FALSE", sensitive: true, compare: NormalizeBoolean);
+        Add("Active", "active", current.IsActive ? "TRUE" : "FALSE", payrollImpact: true, compare: NormalizeBoolean);
+        Add("Salary Template Id", "salaryTemplateId", current.SalaryStructureId ?? "", payrollImpact: true);
+        Add("Annual CTC", "annualCtc", current.AnnualCtc.ToString(System.Globalization.CultureInfo.InvariantCulture), payrollImpact: true, compare: NormalizeNumber);
+        Add("Salary Json", "salaryJson", current.SalaryJson ?? "{}", payrollImpact: true);
+        Add("PAN", "pan", personal.PanNumber, sensitive: true, compare: NormalizePanForComparison);
+        Add("Aadhaar", "aadhaar", personal.AadhaarNumber, sensitive: true, compare: NormalizeAadhaarForComparison);
+        Add("UAN Number", "uanNumber", personal.UanNumber, sensitive: true, compare: NormalizeAlphaNumeric);
+        Add("ESIC Number", "esicNumber", personal.EsicNumber, sensitive: true, compare: NormalizeAlphaNumeric);
+        Add("Address", "address", personal.Address);
+        Add("Correspondence Address", "correspondenceAddress", personal.CorrespondenceAddress);
+        Add("Permanent Address", "permanentAddress", personal.PermanentAddress);
+        Add("Bank Name", "bankName", payment.BankName, payrollImpact: true);
+        Add("Bank Account No", "bankAccountNo", payment.BankAccountNo, sensitive: true, payrollImpact: true, compare: NormalizeBankForComparison);
+        Add("IFSC", "ifsc", payment.IfscCode, sensitive: true, payrollImpact: true, compare: NormalizeAlphaNumeric);
+        Add("Payment Mode", "paymentMode", payment.PaymentMode, payrollImpact: true);
+        return changes;
+    }
+
+    private static bool RowRequiresConfirmation(EmployeeImportPreflightRow row) =>
+        row.BlockingReasons.Count > 0
+        || row.MatchStatus is "MatchedByIdentifiers" or "ProbableDuplicate"
+        || row.Changes.Any(change => change.Sensitive || change.PayrollImpact);
+
+    private static string NormalizeCode(string? value) => (value ?? "").Trim().ToUpperInvariant();
+    private static string NormalizeDigits(string? value) => new((value ?? "").Where(char.IsDigit).ToArray());
+    private static string NormalizeAlphaNumeric(string? value) => new((value ?? "").Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
+    private static string NormalizeMobile(string? value)
+    {
+        var digits = NormalizeDigits(value);
+        if (digits.Length < 10 || IsPlaceholder(digits)) return "";
+        return digits.Length > 10 ? digits[^10..] : digits;
+    }
+    private static string NormalizeMobileForComparison(string? value)
+    {
+        var digits = NormalizeDigits(value);
+        return digits.Length > 10 ? digits[^10..] : digits;
+    }
+    private static string NormalizeAadhaar(string? value)
+    {
+        var digits = NormalizeDigits(value);
+        return digits.Length == 12 && !IsPlaceholder(digits) ? digits : "";
+    }
+    private static string NormalizePan(string? value)
+    {
+        var normalized = NormalizeAlphaNumeric(value);
+        return Regex.IsMatch(normalized, @"^[A-Z]{5}[0-9]{4}[A-Z]$") ? normalized : "";
+    }
+    private static string NormalizeBankAccount(string? value)
+    {
+        var normalized = NormalizeAlphaNumeric(value);
+        return normalized.Length >= 6 && !IsPlaceholder(normalized) ? normalized : "";
+    }
+    private static string NormalizeAadhaarForComparison(string? value) => NormalizeDigits(value);
+    private static string NormalizePanForComparison(string? value) => NormalizeAlphaNumeric(value);
+    private static string NormalizeBankForComparison(string? value) => NormalizeAlphaNumeric(value);
+    private static bool IsPlaceholder(string value) =>
+        string.IsNullOrWhiteSpace(value)
+        || value is "NA" or "NIL" or "NONE" or "NOTAVAILABLE"
+        || value.All(character => character == '0');
+    private static string NormalizeWords(string? value) => string.Join(' ', Regex.Matches((value ?? "").ToLowerInvariant(), @"[\p{L}\p{N}]+").Select(match => match.Value));
+    private static string NormalizeBoolean(string? value) =>
+        (value ?? "").Trim().ToLowerInvariant() switch
+        {
+            "true" or "yes" or "active" or "1" => "true",
+            "false" or "no" or "inactive" or "0" => "false",
+            _ => (value ?? "").Trim().ToLowerInvariant()
+        };
+    private static string NormalizeDate(string? value) => TryDate(value ?? "", out var date) ? date : (value ?? "").Trim();
+    private static string NormalizeNumber(string? value) =>
+        decimal.TryParse((value ?? "").Replace(",", ""), System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var number)
+            ? number.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)
+            : (value ?? "").Trim();
+    private static string MaskIdentityValue(string field, string? value)
+    {
+        var normalized = NormalizeAlphaNumeric(value);
+        if (string.IsNullOrWhiteSpace(normalized)) return "";
+        if (field.Equals("mobile", StringComparison.OrdinalIgnoreCase))
+        {
+            var digits = NormalizeMobileForComparison(value);
+            if (digits.Length <= 6) return $"••{digits}";
+            return $"{digits[..2]}••••{digits[^4..]}";
+        }
+        if (field.Equals("pan", StringComparison.OrdinalIgnoreCase))
+        {
+            if (normalized.Length <= 5) return $"••{normalized}";
+            return $"{normalized[..3]}•••••{normalized[^2..]}";
+        }
+        var visible = normalized.Length <= 4 ? normalized : normalized[^4..];
+        return $"••••{visible}";
+    }
+
+    private static EmployeeImportWorkbook CloneWorkbook(EmployeeImportWorkbook workbook) =>
+        new(workbook.Sheets.ToDictionary(
+            sheet => sheet.Key,
+            sheet => sheet.Value.Select(row => row.ToList()).ToList(),
+            StringComparer.OrdinalIgnoreCase));
+
+    private static string GetEmployeeDataSheetName(EmployeeImportWorkbook workbook)
+    {
+        foreach (var name in new[] { "Employees", "Employee", "CSV" })
+        {
+            var exact = workbook.Sheets.Keys.FirstOrDefault(key => string.Equals(Norm(key), Norm(name), StringComparison.OrdinalIgnoreCase));
+            if (exact is not null) return exact;
+        }
+        return workbook.Sheets
+            .Where(sheet => !new[] { "references", "reference", "masters", "instructions" }.Contains(Norm(sheet.Key), StringComparer.OrdinalIgnoreCase))
+            .FirstOrDefault(sheet => sheet.Value.Skip(1).Any(row => !Blank(row))).Key ?? "Employees";
+    }
+
+    private static void EnsureImportHeader(List<List<string>> rows, Dictionary<string, int> map, string header)
+    {
+        if (HasHeader(map, header)) return;
+        var index = rows[0].Count;
+        rows[0].Add(header);
+        map[Norm(header)] = index;
+        for (var row = 1; row < rows.Count; row++)
+            while (rows[row].Count <= index) rows[row].Add("");
+    }
+
+    private static void SetImportCell(List<string> row, Dictionary<string, int> map, string header, string value)
+    {
+        var index = map[Norm(header)];
+        while (row.Count <= index) row.Add("");
+        row[index] = value;
+    }
+
+    private static void BlankImportField(List<string> row, Dictionary<string, int> map, string field)
+    {
+        var headers = field switch
+        {
+            "dateOfJoining" => new[] { "Date Of Joining" },
+            "workEmail" => ["Work Email"],
+            "portalAccess" => ["Portal Access"],
+            "active" => ["Active"],
+            "salaryTemplateId" => ["Salary Template Id"],
+            "annualCtc" => ["Annual CTC"],
+            "salaryJson" => ["Salary Json"],
+            "mobile" => ["Mobile"],
+            "pan" => ["PAN"],
+            "aadhaar" => ["Aadhaar"],
+            "uanNumber" => ["UAN Number"],
+            "esicNumber" => ["ESIC Number"],
+            "bankAccountNo" => ["Bank Account No"],
+            "bankName" => ["Bank Name"],
+            "ifsc" => ["IFSC"],
+            "paymentMode" => ["Payment Mode"],
+            _ => Array.Empty<string>()
+        };
+        foreach (var header in headers)
+        {
+            if (!map.TryGetValue(Norm(header), out var index)) continue;
+            while (row.Count <= index) row.Add("");
+            row[index] = "";
+        }
+    }
+
+    private static bool IsIdentityField(string field) =>
+        field is "mobile" or "aadhaar" or "pan" or "bankAccountNo";
+
+    private static void PruneImportReviews()
+    {
+        var now = DateTime.UtcNow;
+        foreach (var review in ImportReviews.Where(item => item.Value.ExpiresAtUtc <= now))
+            ImportReviews.TryRemove(review.Key, out _);
+    }
+
+    private static void RestoreImportReview(Guid token, EmployeeImportReviewState review)
+    {
+        if (review.ExpiresAtUtc > DateTime.UtcNow)
+            ImportReviews.TryAdd(token, review);
+    }
+
+    private static async Task<string> HashFileAsync(IFormFile file)
+    {
+        await using var stream = file.OpenReadStream();
+        return Convert.ToHexString(await SHA256.HashDataAsync(stream));
+    }
 
     public async Task<byte[]> BuildImportTemplateAsync(int clientId)
     {
@@ -1034,7 +1796,7 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
     static void ValidateMaster(string type, string value, Dictionary<string, HashSet<string>> masters, List<string> errors, int row, string label, string sheet) { if (!string.IsNullOrWhiteSpace(value) && (!masters.TryGetValue(type, out var values) || !values.Contains(value))) errors.Add($"{sheet} row {row}: {label} \"{value}\" is not in Dropdown Masters."); }
     static bool DateOk(string value) => TryDate(value, out _);
     static string? DbDate(string value) => TryDate(value, out var date) && !string.IsNullOrWhiteSpace(date) ? date : null;
-    static string Norm(string value) => value.Replace(" ", "").Replace("_", "").Replace("-", "").ToLowerInvariant();
+    static string Norm(string? value) => (value ?? "").Replace(" ", "").Replace("_", "").Replace("-", "").ToLowerInvariant();
     static bool HasHeader(Dictionary<string, int> header, string name) => header.ContainsKey(Norm(name));
     static bool HasAnyHeader(Dictionary<string, int> header, params string[] names) => names.Any(name => HasHeader(header, name));
     static bool TryNormalizeImportMode(string? mode, out string normalized, out string error)
@@ -1287,11 +2049,80 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
         public string DisplayName { get; set; } = "";
         public string Email { get; set; } = "";
     }
+    private sealed record EmployeeImportReviewState(
+        int ClientId,
+        string Mode,
+        EmployeeImportWorkbook Workbook,
+        EmployeeImportPreflightResult Result,
+        DateTime ExpiresAtUtc,
+        string FileHash);
     private sealed record SalaryTemplateRef(string Id, string Name, string ClientId, string AnnualCtc);
     private sealed record SheetRef(string Name, string Path);
 }
 
 public record EmployeeImportWorkbook(Dictionary<string, List<List<string>>> Sheets);
-public record EmployeeImportResult(int TotalRows, int Inserted, int Updated, List<string> Errors);
-public record EmployeeImportJobStatus(Guid JobId, string State, int TotalRows, int CompletedRows, int Inserted, int Updated, List<string> Errors);
+public record EmployeeImportDecision(
+    int RowNumber,
+    string Sheet,
+    string Action,
+    int? EmployeeId = null,
+    Dictionary<string, string>? FieldChoices = null);
+public record EmployeeImportFieldChange(string Field, string Label, string OldValue, string NewValue, bool Sensitive, bool PayrollImpact);
+public record EmployeeImportCandidate(
+    int EmployeeId,
+    string EmployeeCode,
+    string EmployeeName,
+    List<string> MatchReasons,
+    List<EmployeeImportFieldChange> Changes);
+public record EmployeeImportEvidenceCandidate(
+    int EmployeeId,
+    string EmployeeCode,
+    string EmployeeName,
+    string ExistingValue);
+public record EmployeeImportIdentityEvidence(
+    string Field,
+    string Label,
+    string UploadedValue,
+    bool Sensitive,
+    List<EmployeeImportEvidenceCandidate> Candidates);
+public record EmployeeImportPreflightRow(
+    int RowNumber,
+    string Sheet,
+    string ProposedEmployeeCode,
+    string MatchStatus,
+    int? MatchedEmployeeId,
+    string? MatchedEmployeeCode,
+    string? MatchedEmployeeName,
+    List<string> MatchReasons,
+    List<string> BlockingReasons,
+    List<EmployeeImportFieldChange> Changes,
+    List<EmployeeImportCandidate>? CandidateEmployees = null,
+    List<EmployeeImportIdentityEvidence>? IdentityEvidence = null,
+    bool CanResolveConflict = false);
+public record EmployeeImportPreflightResult(
+    Guid ReviewToken,
+    int TotalRows,
+    bool CanImport,
+    bool RequiresConfirmation,
+    List<EmployeeImportPreflightRow> Rows,
+    DateTime ExpiresAtUtc);
+public record EmployeeImportResult(
+    int TotalRows,
+    int Inserted,
+    int Updated,
+    List<string> Errors,
+    Guid? ReviewToken = null,
+    bool RequiresConfirmation = false,
+    List<EmployeeImportPreflightRow>? ReviewRows = null);
+public record EmployeeImportJobStatus(
+    Guid JobId,
+    string State,
+    int TotalRows,
+    int CompletedRows,
+    int Inserted,
+    int Updated,
+    List<string> Errors,
+    Guid? ReviewToken = null,
+    bool RequiresConfirmation = false,
+    List<EmployeeImportPreflightRow>? ReviewRows = null);
 public record EmployeeDeletePreview(int EmployeeId, string EmployeeCode, string EmployeeName, List<string> Links, bool CanDelete);

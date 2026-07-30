@@ -284,6 +284,8 @@ CREATE TABLE IF NOT EXISTS recruitment_interview_stage_configurations (
     DefaultDurationMinutes INT NOT NULL DEFAULT 60,
     MinimumPanelCount INT NOT NULL DEFAULT 1,
     MinimumPassingScore DECIMAL(5,2) NOT NULL DEFAULT 60,
+    ScoreInputMode VARCHAR(40) NOT NULL DEFAULT 'PercentageWeighted',
+    PanelAggregationMethod VARCHAR(40) NOT NULL DEFAULT 'Average',
     FeedbackRequired BOOLEAN NOT NULL DEFAULT TRUE,
     CalendarEnabled BOOLEAN NOT NULL DEFAULT TRUE,
     AllowReschedule BOOLEAN NOT NULL DEFAULT TRUE,
@@ -420,6 +422,8 @@ CREATE TABLE IF NOT EXISTS recruitment_pipeline_transition_requests (
         await EnsureColumnAsync(db, "recruitment_interviews", "TimeZoneId", "VARCHAR(80) NOT NULL DEFAULT 'Asia/Kolkata'");
         await EnsureColumnAsync(db, "recruitment_interviews", "AttemptNumber", "INT NOT NULL DEFAULT 1");
         await EnsureColumnAsync(db, "recruitment_interviews", "RescheduleCount", "INT NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "recruitment_interview_stage_configurations", "ScoreInputMode", "VARCHAR(40) NOT NULL DEFAULT 'PercentageWeighted'");
+        await EnsureColumnAsync(db, "recruitment_interview_stage_configurations", "PanelAggregationMethod", "VARCHAR(40) NOT NULL DEFAULT 'Average'");
         await EnsureColumnAsync(db, "recruitment_stage_action_executions", "NotificationQueueId", "BIGINT NULL AFTER WorkflowInstanceId");
         await EnsureColumnAsync(db, "recruitment_stage_action_executions", "CandidateActionSessionId", "BIGINT NULL AFTER NotificationQueueId");
         await EnsureColumnAsync(db, "recruitment_stage_action_executions", "ApplicationScoreId", "BIGINT NULL AFTER CandidateActionSessionId");
@@ -674,9 +678,15 @@ WHERE t.PipelineVersionId=@Id ORDER BY t.DisplayOrder,t.Id", new { Id = id })).T
         foreach (var stage in version.Stages)
         {
             stage.Actions = (await db.QueryAsync<RecruitmentPipelineStageAction>("SELECT * FROM recruitment_pipeline_stage_actions WHERE PipelineStageId=@Id ORDER BY ExecutionOrder,Id", new { stage.Id })).ToList();
+            foreach (var action in stage.Actions)
+                action.Recipients = (await db.QueryAsync<RecruitmentStageActionRecipient>("SELECT * FROM recruitment_stage_action_recipients WHERE StageActionId=@Id ORDER BY DisplayOrder,Id", new { action.Id })).ToList();
+            stage.DefaultPanelMembers = (await db.QueryAsync<RecruitmentStageDefaultPanelMember>(@"SELECT panel.*,COALESCE(userRow.DisplayName,userRow.Email,'') PanelUserName
+FROM recruitment_stage_default_panel_members panel LEFT JOIN authusers userRow ON userRow.Id=panel.PanelUserId
+WHERE panel.PipelineStageId=@Id ORDER BY panel.DisplayOrder,panel.Id", new { stage.Id })).ToList();
             stage.AtsConfiguration = await db.QueryFirstOrDefaultAsync<RecruitmentStageAtsConfiguration>("SELECT * FROM recruitment_stage_ats_configurations WHERE PipelineStageId=@Id", new { stage.Id });
             stage.ExternalFormConfiguration = await db.QueryFirstOrDefaultAsync<RecruitmentStageExternalFormConfiguration>("SELECT * FROM recruitment_stage_external_form_configurations WHERE PipelineStageId=@Id", new { stage.Id });
             stage.AttachmentRequirements = (await db.QueryAsync<RecruitmentStageAttachmentRequirement>("SELECT * FROM recruitment_stage_attachment_requirements WHERE PipelineStageId=@Id ORDER BY DisplayOrder,Id", new { stage.Id })).ToList();
+            stage.ProcessDocumentRequirements = (await db.QueryAsync<RecruitmentStageProcessDocumentRequirement>("SELECT * FROM recruitment_stage_process_document_requirements WHERE PipelineStageId=@Id ORDER BY DisplayOrder,Id", new { stage.Id })).ToList();
             stage.OfferConfiguration = await db.QueryFirstOrDefaultAsync<RecruitmentStageOfferConfiguration>("SELECT * FROM recruitment_stage_offer_configurations WHERE PipelineStageId=@Id", new { stage.Id });
         }
         foreach (var stage in version.Stages.Where(x => x.StageType.Equals("Interview", StringComparison.OrdinalIgnoreCase)))
@@ -701,6 +711,9 @@ ORDER BY v.VersionNumber DESC", new { Id = pipelineDefinitionId, user.ClientId }
 
     public async Task<(RecruitmentPipelineVersion? Row, string Error)> SavePipelineVersionAsync(SaveRecruitmentPipelineVersion request, AuthUser user)
     {
+        request.ScopeType = Canonical(new[] { "Application", "Position", "Hybrid" }, request.ScopeType, "Application");
+        request.SlaMode = Canonical(new[] { "StageEntry", "CumulativeFromAnchor" }, request.SlaMode, "StageEntry");
+        request.OverallSlaMinutes = Math.Max(0, request.OverallSlaMinutes);
         var validation = ValidatePipelineDraft(request);
         if (validation.Length > 0) return (null, validation);
         await using var db = Db();
@@ -713,6 +726,22 @@ ORDER BY v.VersionNumber DESC", new { Id = pipelineDefinitionId, user.ClientId }
             var validCompetencies = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_interview_competency_definitions
 WHERE Id IN @Ids AND ClientId=@ClientId AND IsActive=TRUE", new { Ids = competencyIds, definition.ClientId });
             if (validCompetencies != competencyIds.Length) return (null, "One or more interview competencies are inactive or belong to another client.");
+        }
+        var panelUserIds = request.Stages.SelectMany(stage => stage.DefaultPanelMembers).Select(panel => panel.PanelUserId).Where(id => id > 0).Distinct().ToArray();
+        if (panelUserIds.Length > 0)
+        {
+            var validPanelUsers = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM authusers
+WHERE Id IN @Ids AND IsActive=TRUE AND (ClientId IS NULL OR ClientId=@ClientId)", new { Ids = panelUserIds, definition.ClientId });
+            if (validPanelUsers != panelUserIds.Length) return (null, "One or more default panel members are inactive or outside this client.");
+        }
+        var recipientUserIds = request.Stages.SelectMany(stage => stage.Actions).SelectMany(action => action.Recipients)
+            .Where(recipient => recipient.RecipientType.Equals("SpecificUser", StringComparison.OrdinalIgnoreCase) && recipient.UserId is > 0)
+            .Select(recipient => recipient.UserId!.Value).Distinct().ToArray();
+        if (recipientUserIds.Length > 0)
+        {
+            var validRecipientUsers = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM authusers
+WHERE Id IN @Ids AND IsActive=TRUE AND (ClientId IS NULL OR ClientId=@ClientId)", new { Ids = recipientUserIds, definition.ClientId });
+            if (validRecipientUsers != recipientUserIds.Length) return (null, "One or more notification recipients are inactive or outside this client.");
         }
         var attachmentConfigurationIds = request.Stages.SelectMany(x => x.AttachmentRequirements).Select(x => x.AttachmentFieldConfigurationId).Distinct().ToArray();
         if (attachmentConfigurationIds.Length > 0)
@@ -755,22 +784,18 @@ WHERE f.FormVersionId=@FormVersionId AND f.IsActive=TRUE AND t.TypeCode='UPLOAD'
             if (mappedConfigurationCount != requiredConfigurationIds.Length)
                 return (null, $"The published form selected for {stage.StageName} does not contain every requested global document field.");
         }
-        var templateIds = request.Stages.SelectMany(x => x.Actions.Select(a => a.TemplateId).Append(x.OfferConfiguration?.OfferTemplateId)).Where(x => x is > 0).Select(x => x!.Value).Distinct().ToArray();
+        var templateIds = request.Stages.SelectMany(x => x.Actions.Select(a => a.TemplateId)
+            .Append(x.OfferConfiguration?.OfferTemplateId)
+            .Concat(x.ProcessDocumentRequirements.Select(document => document.TemplateId)))
+            .Where(x => x is > 0).Select(x => x!.Value).Distinct().ToArray();
         if (templateIds.Length > 0)
         {
             var validTemplates = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_templates
 WHERE Id IN @Ids AND ClientId IN (0,@ClientId) AND IsActive=TRUE", new { Ids = templateIds, ClientId = definition.ClientId });
             if (validTemplates != templateIds.Length) return (null, "One or more stage templates are inactive or belong to another client.");
         }
-        var workflowIds = request.Stages.SelectMany(x => x.Actions.Select(a => a.WorkflowId)
-                .Append(x.ApprovalWorkflowId).Append(x.OfferConfiguration?.ApprovalWorkflowId).Append(x.OfferConfiguration?.VarianceApprovalWorkflowId))
-            .Concat(request.Transitions.Select(x => x.ApprovalWorkflowId)).Where(x => x is > 0).Select(x => x!.Value).Distinct().ToArray();
-        if (workflowIds.Length > 0)
-        {
-            var validWorkflows = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM workflowmasters
-WHERE Id IN @Ids AND (ClientId=@ClientId OR ClientId IS NULL) AND IsActive=TRUE", new { Ids = workflowIds, ClientId = definition.ClientId });
-            if (validWorkflows != workflowIds.Length) return (null, "One or more stage workflows are inactive or belong to another client.");
-        }
+        var workflowValidation = await ValidateWorkflowBindingsAsync(db, request.Stages, request.Transitions, definition.ClientId);
+        if (workflowValidation.Length > 0) return (null, workflowValidation);
 
         await using var tx = await db.BeginTransactionAsync();
         long versionId = request.Id;
@@ -778,8 +803,9 @@ WHERE Id IN @Ids AND (ClientId=@ClientId OR ClientId IS NULL) AND IsActive=TRUE"
         {
             var number = await db.ExecuteScalarAsync<int>("SELECT COALESCE(MAX(VersionNumber),0)+1 FROM recruitment_pipeline_versions WHERE PipelineDefinitionId=@Id", new { Id = definition.Id }, tx);
             versionId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_pipeline_versions
-(PipelineDefinitionId,VersionNumber,Status,CreatedByUserId) VALUES (@PipelineDefinitionId,@VersionNumber,'Draft',@UserId);SELECT LAST_INSERT_ID();",
-                new { request.PipelineDefinitionId, VersionNumber = number, UserId = user.Id }, tx);
+(PipelineDefinitionId,VersionNumber,Status,ScopeType,SlaMode,OverallSlaMinutes,CreatedByUserId)
+VALUES (@PipelineDefinitionId,@VersionNumber,'Draft',@ScopeType,@SlaMode,@OverallSlaMinutes,@UserId);SELECT LAST_INSERT_ID();",
+                new { request.PipelineDefinitionId, VersionNumber = number, request.ScopeType, request.SlaMode, request.OverallSlaMinutes, UserId = user.Id }, tx);
         }
         else
         {
@@ -787,6 +813,15 @@ WHERE Id IN @Ids AND (ClientId=@ClientId OR ClientId IS NULL) AND IsActive=TRUE"
 WHERE v.Id=@Id AND v.PipelineDefinitionId=@DefinitionId AND v.Status='Draft' AND d.ClientId=@ClientId",
                 new { Id = versionId, DefinitionId = definition.Id, definition.ClientId }, tx);
             if (editable == 0) return (null, "Only a draft pipeline version can be edited.");
+            await db.ExecuteAsync(@"UPDATE recruitment_pipeline_versions SET ScopeType=@ScopeType,SlaMode=@SlaMode,
+OverallSlaMinutes=@OverallSlaMinutes WHERE Id=@Id", new { Id = versionId, request.ScopeType, request.SlaMode, request.OverallSlaMinutes }, tx);
+            await db.ExecuteAsync(@"DELETE recipient FROM recruitment_stage_action_recipients recipient
+JOIN recruitment_pipeline_stage_actions actionRow ON actionRow.Id=recipient.StageActionId
+JOIN recruitment_pipeline_stages stageRow ON stageRow.Id=actionRow.PipelineStageId
+WHERE stageRow.PipelineVersionId=@Id;
+DELETE panel FROM recruitment_stage_default_panel_members panel
+JOIN recruitment_pipeline_stages stageRow ON stageRow.Id=panel.PipelineStageId
+WHERE stageRow.PipelineVersionId=@Id", new { Id = versionId }, tx);
             await db.ExecuteAsync("DELETE FROM recruitment_pipeline_stages WHERE PipelineVersionId=@Id", new { Id = versionId }, tx);
         }
 
@@ -796,9 +831,9 @@ WHERE v.Id=@Id AND v.PipelineDefinitionId=@DefinitionId AND v.Status='Draft' AND
         {
             var stageCode = stage.StageCode.Trim().ToUpperInvariant();
             var stageId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_pipeline_stages
-(PipelineVersionId,StageCode,StageName,StageType,StageNumber,DisplayOrder,SlaDurationMinutes,SlaWarningMinutes,ApprovalWorkflowId,RequiresApproval,CalendarEnabled,AllowSkip,IsInitial,IsTerminal,IsActive)
-VALUES (@PipelineVersionId,@StageCode,@StageName,@StageType,@StageNumber,@DisplayOrder,@SlaDurationMinutes,@SlaWarningMinutes,@ApprovalWorkflowId,@RequiresApproval,@CalendarEnabled,@AllowSkip,@IsInitial,@IsTerminal,@IsActive);SELECT LAST_INSERT_ID();",
-                new { PipelineVersionId = versionId, StageCode = stageCode, StageName = stage.StageName.Trim(), stage.StageType, stage.StageNumber, stage.DisplayOrder, SlaDurationMinutes = Math.Max(0, stage.SlaDurationMinutes), SlaWarningMinutes = Math.Max(0, stage.SlaWarningMinutes), stage.ApprovalWorkflowId, stage.RequiresApproval, stage.CalendarEnabled, stage.AllowSkip, stage.IsInitial, stage.IsTerminal, stage.IsActive }, tx);
+(PipelineVersionId,StageCode,StageName,StageType,StageNumber,DisplayOrder,SlaDurationMinutes,SlaWarningMinutes,TargetOffsetMinutes,StakeholderCode,AllowPause,PauseBehavior,ApprovalWorkflowId,RequiresApproval,CalendarEnabled,AllowSkip,IsInitial,IsTerminal,IsActive)
+VALUES (@PipelineVersionId,@StageCode,@StageName,@StageType,@StageNumber,@DisplayOrder,@SlaDurationMinutes,@SlaWarningMinutes,@TargetOffsetMinutes,@StakeholderCode,@AllowPause,@PauseBehavior,@ApprovalWorkflowId,@RequiresApproval,@CalendarEnabled,@AllowSkip,@IsInitial,@IsTerminal,@IsActive);SELECT LAST_INSERT_ID();",
+                new { PipelineVersionId = versionId, StageCode = stageCode, StageName = stage.StageName.Trim(), stage.StageType, stage.StageNumber, stage.DisplayOrder, SlaDurationMinutes = Math.Max(0, stage.SlaDurationMinutes), SlaWarningMinutes = Math.Max(0, stage.SlaWarningMinutes), TargetOffsetMinutes = stage.TargetOffsetMinutes is < 0 ? null : stage.TargetOffsetMinutes, StakeholderCode = (stage.StakeholderCode ?? "").Trim().ToUpperInvariant(), stage.AllowPause, PauseBehavior = Canonical(new[] { "ShiftStageAndOverall", "ShiftStageOnly", "NoShift" }, stage.PauseBehavior, "ShiftStageAndOverall"), stage.ApprovalWorkflowId, stage.RequiresApproval, stage.CalendarEnabled, stage.AllowSkip, stage.IsInitial, stage.IsTerminal, stage.IsActive }, tx);
             stageIdsByCode[stageCode] = stageId;
             if (stage.Id != 0) stageIdsByRequestId[stage.Id] = stageId;
             await InsertStageBehaviorAsync(db, tx, stageId, stage);
@@ -830,10 +865,14 @@ VALUES (@TransitionId,@RuleType,@ComparisonOperator,@TextValue,@IntegerValue,@De
         var version = await GetPipelineVersionAsync(id, user);
         if (version is null) return (null, "Pipeline version was not found.");
         if (!version.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase)) return (null, "Only a draft pipeline version can be published.");
-        var validation = ValidatePipelineDraft(new SaveRecruitmentPipelineVersion { Id = version.Id, PipelineDefinitionId = version.PipelineDefinitionId, Stages = version.Stages, Transitions = version.Transitions });
+        var validation = ValidatePipelineDraft(new SaveRecruitmentPipelineVersion { Id = version.Id, PipelineDefinitionId = version.PipelineDefinitionId, ScopeType = version.ScopeType, SlaMode = version.SlaMode, OverallSlaMinutes = version.OverallSlaMinutes, Stages = version.Stages, Transitions = version.Transitions });
         if (validation.Length > 0) return (null, validation);
         await using var db = Db();
         await db.OpenAsync();
+        var clientId = await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM recruitment_pipeline_definitions WHERE Id=@Id", new { Id = version.PipelineDefinitionId });
+        if (!clientId.HasValue) return (null, "Pipeline definition was not found.");
+        var workflowValidation = await ValidateWorkflowBindingsAsync(db, version.Stages, version.Transitions, clientId.Value);
+        if (workflowValidation.Length > 0) return (null, workflowValidation);
         await using var tx = await db.BeginTransactionAsync();
         await db.ExecuteAsync("UPDATE recruitment_pipeline_versions SET Status='Retired' WHERE PipelineDefinitionId=@DefinitionId AND Status='Published' AND Id<>@Id", new { DefinitionId = version.PipelineDefinitionId, Id = id }, tx);
         await db.ExecuteAsync("UPDATE recruitment_pipeline_versions SET Status='Published',PublishedByUserId=@UserId,PublishedAtUtc=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, UserId = user.Id }, tx);
@@ -965,10 +1004,16 @@ WHERE PositionId=@Id AND IsActive=TRUE
 AND ((@JobPostingId IS NULL AND JobPostingId IS NULL)
  OR (@JobPostingId IS NOT NULL AND (JobPostingId=@JobPostingId OR JobPostingId IS NULL)))
 ORDER BY CASE WHEN JobPostingId=@JobPostingId THEN 0 ELSE 1 END,AssignedAtUtc DESC,Id DESC LIMIT 1", new { Id = positionId, JobPostingId = jobPostingId });
-        if (assignment is null) return new RecruitmentPipelineBoard { PositionId = positionId, JobPostingId = jobPostingId, PositionCode = position.PositionCode, PositionTitle = position.PositionTitle };
-        var board = new RecruitmentPipelineBoard { PositionId = positionId, JobPostingId = jobPostingId, PositionCode = position.PositionCode, PositionTitle = position.PositionTitle, PipelineVersionId = assignment.PipelineVersionId };
+        if (assignment is null) return new RecruitmentPipelineBoard { ClientId = position.ClientId, PositionId = positionId, JobPostingId = jobPostingId, PositionCode = position.PositionCode, PositionTitle = position.PositionTitle };
+        var board = new RecruitmentPipelineBoard { ClientId = position.ClientId, PositionId = positionId, JobPostingId = jobPostingId, PositionCode = position.PositionCode, PositionTitle = position.PositionTitle, PipelineVersionId = assignment.PipelineVersionId };
         board.Lanes = (await db.QueryAsync<RecruitmentPipelineBoardLane>(@"SELECT Id StageId,StageCode,StageName,StageType,DisplayOrder,SlaDurationMinutes,SlaWarningMinutes
 FROM recruitment_pipeline_stages WHERE PipelineVersionId=@PipelineVersionId AND IsActive=TRUE ORDER BY DisplayOrder,Id", assignment)).ToList();
+        if (board.Lanes.Count > 0)
+        {
+            var processRequirements = (await db.QueryAsync<RecruitmentStageProcessDocumentRequirement>(@"SELECT * FROM recruitment_stage_process_document_requirements
+WHERE PipelineStageId IN @Ids ORDER BY DisplayOrder,Id", new { Ids = board.Lanes.Select(lane => lane.StageId).ToArray() })).ToLookup(requirement => requirement.PipelineStageId);
+            foreach (var lane in board.Lanes) lane.ProcessDocumentRequirements = processRequirements[lane.StageId].ToList();
+        }
         var cards = (await db.QueryAsync<BoardCardRow>(@"SELECT s.PipelineStageId StageId,a.Id ApplicationId,a.ApplicationCode,a.CandidateId,
 CONCAT(c.FirstName,' ',c.LastName) CandidateName,c.Email CandidateEmail,
 (SELECT COALESCE(sc.OverrideScore,sc.TotalScore) FROM recruitment_application_scores sc WHERE sc.ApplicationId=a.Id AND sc.IsCurrent=TRUE ORDER BY sc.ScoredAt DESC LIMIT 1) AtsScore,
@@ -1277,6 +1322,17 @@ AND (@Verify=FALSE OR verification_status='Verified')", new { CandidateId = cand
             if (count < requirement.MinimumFileCount) return requirement.RequiresVerification ? "A required candidate document is missing or not verified." : "A required candidate document is missing.";
             if (count > requirement.MaximumFileCount) return "The candidate has more files than this stage permits for a required document.";
         }
+        var missingProcessDocuments = (await db.QueryAsync<string>(@"SELECT requirement.DocumentType
+FROM recruitment_stage_process_document_requirements requirement
+WHERE requirement.PipelineStageId=@StageId AND requirement.IsRequired=TRUE
+AND NOT EXISTS (SELECT 1 FROM recruitment_process_documents document
+  WHERE document.ApplicationId=@ApplicationId AND document.PipelineStageId=@StageId
+    AND document.DocumentType=requirement.DocumentType
+    AND (requirement.RequiresSignature=FALSE OR (document.Status='Signed' AND EXISTS (
+      SELECT 1 FROM entity_attachments attachment WHERE attachment.entity_type='RECRUITMENT_PROCESS_DOCUMENT'
+        AND attachment.entity_id=document.Id AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE))))
+ORDER BY requirement.DisplayOrder,requirement.Id", new { StageId = stageId, ApplicationId = applicationId })).ToArray();
+        if (missingProcessDocuments.Length > 0) return $"Complete required process documents before moving this candidate: {string.Join(", ", missingProcessDocuments)}.";
         var form = await db.QueryFirstOrDefaultAsync<RecruitmentStageExternalFormConfiguration>("SELECT * FROM recruitment_stage_external_form_configurations WHERE PipelineStageId=@Id AND SubmissionRequired=TRUE", new { Id = stageId });
         if (form is not null)
         {
@@ -1330,6 +1386,37 @@ WHERE ApplicationId=@ApplicationId AND FormVersionId=@FormVersionId AND Status='
         _ => false
     };
 
+    private static async Task<string> ValidateWorkflowBindingsAsync(
+        MySqlConnection db,
+        IEnumerable<RecruitmentPipelineStage> stages,
+        IEnumerable<RecruitmentPipelineTransition> transitions,
+        int clientId)
+    {
+        var stageRows = stages.ToList();
+        var transitionRows = transitions.ToList();
+        var workflowIds = stageRows.SelectMany(stage => stage.Actions.Select(action => action.WorkflowId)
+                .Append(stage.ApprovalWorkflowId)
+                .Append(stage.OfferConfiguration?.ApprovalWorkflowId)
+                .Append(stage.OfferConfiguration?.VarianceApprovalWorkflowId))
+            .Concat(transitionRows.Select(transition => transition.ApprovalWorkflowId))
+            .Where(id => id is > 0).Select(id => id!.Value).Distinct().ToArray();
+        if (workflowIds.Length == 0) return "";
+
+        var workflowRows = (await db.QueryAsync<WorkflowBindingRow>(@"SELECT Id,ResourceType FROM workflowmasters
+WHERE Id IN @Ids AND (ClientId=@ClientId OR ClientId IS NULL) AND IsActive=TRUE", new { Ids = workflowIds, ClientId = clientId })).ToDictionary(row => row.Id);
+        if (workflowRows.Count != workflowIds.Length) return "One or more stage workflows are inactive or belong to another client.";
+
+        bool UsesOnly(IEnumerable<long?> ids, string resourceType) => ids.Where(id => id is > 0)
+            .All(id => workflowRows.TryGetValue(id!.Value, out var row) && row.ResourceType.Equals(resourceType, StringComparison.OrdinalIgnoreCase));
+        if (!UsesOnly(stageRows.Select(stage => stage.ApprovalWorkflowId).Concat(transitionRows.Select(transition => transition.ApprovalWorkflowId)), "RecruitmentPipelineTransition"))
+            return "Stage and transition approvals must use a Recruitment Pipeline Transition workflow from global Workflow Setup.";
+        if (!UsesOnly(stageRows.SelectMany(stage => stage.Actions.Where(action => action.ActionCode.Equals("START_WORKFLOW", StringComparison.OrdinalIgnoreCase)).Select(action => action.WorkflowId)), "RecruitmentPipelineStageAction"))
+            return "START WORKFLOW actions must use a Recruitment Pipeline Stage Action workflow from global Workflow Setup.";
+        if (!UsesOnly(stageRows.SelectMany(stage => new[] { stage.OfferConfiguration?.ApprovalWorkflowId, stage.OfferConfiguration?.VarianceApprovalWorkflowId }), "RecruitmentOffer"))
+            return "Offer approvals must use a Recruitment Offer workflow from global Workflow Setup.";
+        return "";
+    }
+
     private static string ValidatePipelineDraft(SaveRecruitmentPipelineVersion request)
     {
         if (request.PipelineDefinitionId <= 0) return "Pipeline definition is required.";
@@ -1342,21 +1429,42 @@ WHERE ApplicationId=@ApplicationId AND FormVersionId=@FormVersionId AND Status='
         if (request.Stages.Any(x => x.StageNumber <= 0) || request.Stages.GroupBy(x => x.StageNumber).Any(x => x.Count() > 1)) return "Stage numbers must be positive and unique.";
         if (request.Stages.Any(x => !StageTypes.Contains(x.StageType))) return "One or more pipeline stage types are unsupported.";
         if (request.Stages.Any(x => x.SlaDurationMinutes < 0 || x.SlaWarningMinutes < 0 || (x.SlaDurationMinutes > 0 && x.SlaWarningMinutes > x.SlaDurationMinutes))) return "Stage SLA and warning durations are invalid.";
+        if (request.SlaMode.Equals("CumulativeFromAnchor", StringComparison.OrdinalIgnoreCase))
+        {
+            if (request.OverallSlaMinutes <= 0) return "Cumulative pipelines require an overall SLA.";
+            var orderedTargets = request.Stages.Where(stage => stage.IsActive).OrderBy(stage => stage.DisplayOrder).Select(stage => stage.TargetOffsetMinutes).ToList();
+            if (orderedTargets.Any(value => !value.HasValue || value.Value < 0)) return "Every active cumulative-SLA stage needs a target offset; zero is valid for a same-day stage.";
+            if (orderedTargets.Zip(orderedTargets.Skip(1), (left, right) => right!.Value < left!.Value).Any(value => value)) return "Cumulative stage targets must increase with the configured stage order.";
+            if (orderedTargets.Max()!.Value > request.OverallSlaMinutes) return "A stage target cannot exceed the pipeline overall SLA.";
+        }
         foreach (var stage in request.Stages.Where(x => x.StageType.Equals("Interview", StringComparison.OrdinalIgnoreCase)))
         {
             var config = stage.InterviewConfiguration;
             if (config is null || config.RoundNumber <= 0 || config.DefaultDurationMinutes <= 0 || config.MinimumPanelCount <= 0 || config.MinimumPassingScore is < 0 or > 100) return $"Interview configuration for {stage.StageName} is incomplete.";
-            if (config.Competencies.Any(x => x.CompetencyId <= 0 || x.WeightPercent <= 0 || x.MinimumScore is < 0 or > 100)) return $"Interview competencies for {stage.StageName} are invalid.";
+            if (!new[] { "PercentageWeighted", "Points" }.Contains(config.ScoreInputMode, StringComparer.OrdinalIgnoreCase)) return $"Interview score input mode for {stage.StageName} is invalid.";
+            if (!new[] { "Average", "Median", "Chairperson" }.Contains(config.PanelAggregationMethod, StringComparer.OrdinalIgnoreCase)) return $"Panel aggregation for {stage.StageName} is invalid.";
+            if (config.Competencies.Any(x => x.CompetencyId <= 0 || x.WeightPercent <= 0 || x.MinimumScore < 0 || (config.ScoreInputMode.Equals("Points", StringComparison.OrdinalIgnoreCase) ? x.MinimumScore > x.WeightPercent : x.MinimumScore > 100))) return $"Interview competencies for {stage.StageName} are invalid.";
             if (config.Competencies.Count > 0 && Math.Abs(config.Competencies.Sum(x => x.WeightPercent) - 100m) > 0.01m) return $"Interview competency weights for {stage.StageName} must total 100%.";
+            if (stage.DefaultPanelMembers.Count > 0 && stage.DefaultPanelMembers.Count < config.MinimumPanelCount) return $"Default panel for {stage.StageName} needs at least {config.MinimumPanelCount} member(s).";
+            if (stage.DefaultPanelMembers.Any(panel => panel.PanelUserId <= 0) || stage.DefaultPanelMembers.GroupBy(panel => panel.PanelUserId).Any(group => group.Count() > 1)) return $"Default panel members for {stage.StageName} are invalid.";
         }
         foreach (var stage in request.Stages)
         {
-            var validTriggers = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "OnEntry", "OnExit", "OnSlaWarning", "OnSlaBreach", "OnApproval", "OnSubmission" };
+            var validTriggers = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "OnEntry", "OnExit", "OnSlaWarning", "OnSlaBreach", "OnApproval", "OnSubmission", "OnProfileBatchForward" };
             var validActions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "SEND_NOTIFICATION", "START_WORKFLOW", "GENERATE_ACTION_LINK", "RUN_ATS_SCORE" };
             if (stage.Actions.Any(x => string.IsNullOrWhiteSpace(x.ActionCode) || x.ExecutionOrder < 0 || !validTriggers.Contains(x.TriggerEvent) || !validActions.Contains(x.ActionCode))) return $"Stage actions for {stage.StageName} are invalid.";
             if (stage.Actions.Any(x => x.IsBlocking && !x.TriggerEvent.Equals("OnEntry", StringComparison.OrdinalIgnoreCase) && !x.TriggerEvent.Equals("OnSubmission", StringComparison.OrdinalIgnoreCase))) return $"Blocking actions in {stage.StageName} must run on entry or candidate submission.";
             if (stage.Actions.Any(x => x.ActionCode.Equals("START_WORKFLOW", StringComparison.OrdinalIgnoreCase) && (x.WorkflowId is null or <= 0))) return $"Select a workflow for every workflow action in {stage.StageName}.";
             if (stage.Actions.Any(x => x.ActionCode.Equals("SEND_NOTIFICATION", StringComparison.OrdinalIgnoreCase) && (x.TemplateId is null or <= 0))) return $"Select a notification template for every notification action in {stage.StageName}.";
+            var recipientTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Candidate", "InterviewPanelMembers", "StageDefaultPanelMembers", "SpecificUser", "UserRole", "StaticEmail", "HiringRequester", "PositionRecruiter" };
+            foreach (var action in stage.Actions.Where(action => action.ActionCode.Equals("SEND_NOTIFICATION", StringComparison.OrdinalIgnoreCase)))
+            {
+                if (action.Recipients.Any(recipient => !recipientTypes.Contains(recipient.RecipientType))) return $"Notification recipients for {stage.StageName} contain an unsupported type.";
+                if (action.Recipients.Any(recipient => recipient.RecipientType.Equals("SpecificUser", StringComparison.OrdinalIgnoreCase) && recipient.UserId is null or <= 0)) return $"Choose a user for every specific-user recipient in {stage.StageName}.";
+                if (action.Recipients.Any(recipient => recipient.RecipientType.Equals("UserRole", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(recipient.RoleCode))) return $"Choose a role for every role recipient in {stage.StageName}.";
+                if (action.Recipients.Any(recipient => recipient.RecipientType.Equals("StaticEmail", StringComparison.OrdinalIgnoreCase) && (!System.Net.Mail.MailAddress.TryCreate(recipient.EmailAddress, out _)))) return $"Enter a valid address for every static email recipient in {stage.StageName}.";
+                if (action.TriggerEvent.Equals("OnProfileBatchForward", StringComparison.OrdinalIgnoreCase) && action.Recipients.Any(recipient => recipient.RecipientType.Equals("Candidate", StringComparison.OrdinalIgnoreCase))) return $"Candidate cannot receive the client shortlist batch from {stage.StageName}. Choose client users, roles or panels.";
+            }
             if (stage.Actions.GroupBy(x => x.TriggerEvent, StringComparer.OrdinalIgnoreCase)
                 .Any(group => group.GroupBy(x => x.ExecutionOrder).Any(order => order.Count() > 1)))
                 return $"Action order must be unique within each trigger in {stage.StageName}.";
@@ -1392,8 +1500,10 @@ WHERE ApplicationId=@ApplicationId AND FormVersionId=@FormVersionId AND Status='
                 || stage.StageType.Equals("PreOnboarding", StringComparison.OrdinalIgnoreCase)) && form is null)
                 return $"Candidate-form configuration for {stage.StageName} is required.";
             if (form is not null && (form.FormVersionId <= 0 || form.ActionTokenValidityMinutes is < 5 or > 525600 || form.ActionTokenMaximumUses is < 1 or > 1000)) return $"External-form behavior for {stage.StageName} is invalid.";
-            if (stage.StageType.Equals("Documents", StringComparison.OrdinalIgnoreCase) && stage.AttachmentRequirements.Count == 0) return $"Add at least one document requirement to {stage.StageName}.";
+            if (stage.StageType.Equals("Documents", StringComparison.OrdinalIgnoreCase) && stage.AttachmentRequirements.Count == 0 && stage.ProcessDocumentRequirements.Count == 0) return $"Add at least one candidate attachment or process-document requirement to {stage.StageName}.";
             if (stage.AttachmentRequirements.Any(x => x.AttachmentFieldConfigurationId <= 0 || x.MinimumFileCount < 0 || x.MaximumFileCount < Math.Max(1, x.MinimumFileCount)) || stage.AttachmentRequirements.GroupBy(x => x.AttachmentFieldConfigurationId).Any(x => x.Count() > 1)) return $"Attachment requirements for {stage.StageName} are invalid.";
+            var processDocumentTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "WORK_ORDER", "JD_ANNEXURE", "MOM", "SIGNED_MOM", "SCORE_ANNEXURE", "HR_PROPOSAL", "JOINING_INTIMATION", "CANDIDATE_PACK" };
+            if (stage.ProcessDocumentRequirements.Any(x => !processDocumentTypes.Contains(x.DocumentType)) || stage.ProcessDocumentRequirements.GroupBy(x => x.DocumentType, StringComparer.OrdinalIgnoreCase).Any(x => x.Count() > 1)) return $"Process document requirements for {stage.StageName} are invalid.";
             var offer = stage.OfferConfiguration;
             if (stage.StageType.Equals("Offer", StringComparison.OrdinalIgnoreCase) && offer is null) return $"Offer configuration for {stage.StageName} is required.";
             var validBudgetBases = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "ApprovedMaximum", "ApprovedTotal", "SalaryRangeMaximum" };
@@ -1476,10 +1586,36 @@ WHERE ApplicationId=@ApplicationId AND FormVersionId=@FormVersionId AND Status='
     private static async Task InsertStageBehaviorAsync(MySqlConnection db, MySqlTransaction tx, long stageId, RecruitmentPipelineStage stage)
     {
         foreach (var action in stage.Actions.OrderBy(x => x.ExecutionOrder))
-            await db.ExecuteAsync(@"INSERT INTO recruitment_pipeline_stage_actions
+        {
+            var actionId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_pipeline_stage_actions
 (PipelineStageId,TriggerEvent,ActionCode,ExecutionOrder,IsBlocking,WorkflowId,TemplateId,IsActive)
-VALUES (@StageId,@TriggerEvent,@ActionCode,@ExecutionOrder,@IsBlocking,@WorkflowId,@TemplateId,@IsActive)",
+VALUES (@StageId,@TriggerEvent,@ActionCode,@ExecutionOrder,@IsBlocking,@WorkflowId,@TemplateId,@IsActive);SELECT LAST_INSERT_ID();",
                 new { StageId = stageId, TriggerEvent = NormalizeTriggerEvent(action.TriggerEvent), ActionCode = action.ActionCode.Trim().ToUpperInvariant(), action.ExecutionOrder, action.IsBlocking, action.WorkflowId, action.TemplateId, action.IsActive }, tx);
+            foreach (var recipient in action.Recipients.OrderBy(row => row.DisplayOrder))
+                await db.ExecuteAsync(@"INSERT INTO recruitment_stage_action_recipients
+(StageActionId,RecipientType,UserId,RoleCode,EmailAddress,DisplayOrder,IsActive)
+VALUES (@StageActionId,@RecipientType,@UserId,@RoleCode,@EmailAddress,@DisplayOrder,@IsActive)", new
+                {
+                    StageActionId = actionId,
+                    RecipientType = Canonical(new[] { "Candidate", "InterviewPanelMembers", "StageDefaultPanelMembers", "SpecificUser", "UserRole", "StaticEmail", "HiringRequester", "PositionRecruiter" }, recipient.RecipientType, "Candidate"),
+                    recipient.UserId,
+                    RoleCode = (recipient.RoleCode ?? "").Trim(),
+                    EmailAddress = (recipient.EmailAddress ?? "").Trim(),
+                    recipient.DisplayOrder,
+                    recipient.IsActive
+                }, tx);
+        }
+        foreach (var panel in stage.DefaultPanelMembers.OrderBy(row => row.DisplayOrder))
+            await db.ExecuteAsync(@"INSERT INTO recruitment_stage_default_panel_members
+(PipelineStageId,PanelUserId,PanelRole,IsRequired,DisplayOrder)
+VALUES (@PipelineStageId,@PanelUserId,@PanelRole,@IsRequired,@DisplayOrder)", new
+            {
+                PipelineStageId = stageId,
+                panel.PanelUserId,
+                PanelRole = string.IsNullOrWhiteSpace(panel.PanelRole) ? "Panelist" : panel.PanelRole.Trim(),
+                panel.IsRequired,
+                panel.DisplayOrder
+            }, tx);
         if (stage.AtsConfiguration?.AutoScoreOnEntry == true
             && !stage.Actions.Any(action => action.IsActive && action.ActionCode.Equals("RUN_ATS_SCORE", StringComparison.OrdinalIgnoreCase)))
             await db.ExecuteAsync(@"INSERT INTO recruitment_pipeline_stage_actions
@@ -1507,6 +1643,11 @@ VALUES (@StageId,@FormVersionId,@SubmissionRequired,@AllowSaveDraft,@ActionToken
 (PipelineStageId,AttachmentFieldConfigurationId,IsRequired,MinimumFileCount,MaximumFileCount,RequiresVerification,DisplayOrder)
 VALUES (@StageId,@AttachmentFieldConfigurationId,@IsRequired,@MinimumFileCount,@MaximumFileCount,@RequiresVerification,@DisplayOrder)",
                 new { StageId = stageId, row.AttachmentFieldConfigurationId, row.IsRequired, row.MinimumFileCount, row.MaximumFileCount, row.RequiresVerification, row.DisplayOrder }, tx);
+        foreach (var row in stage.ProcessDocumentRequirements.OrderBy(x => x.DisplayOrder))
+            await db.ExecuteAsync(@"INSERT INTO recruitment_stage_process_document_requirements
+(PipelineStageId,DocumentType,TemplateId,IsRequired,RequiresSignature,DisplayOrder)
+VALUES (@StageId,@DocumentType,@TemplateId,@IsRequired,@RequiresSignature,@DisplayOrder)",
+                new { StageId = stageId, DocumentType = row.DocumentType.Trim().ToUpperInvariant(), row.TemplateId, row.IsRequired, row.RequiresSignature, row.DisplayOrder }, tx);
         if (stage.OfferConfiguration is not null)
         {
             var row = stage.OfferConfiguration;
@@ -1517,13 +1658,16 @@ VALUES (@StageId,@OfferTemplateId,@ApprovalWorkflowId,@BudgetBasis,@MaximumVaria
         }
     }
 
+    private static string Canonical(IEnumerable<string> allowed, string? input, string fallback) =>
+        allowed.FirstOrDefault(value => value.Equals((input ?? "").Trim(), StringComparison.OrdinalIgnoreCase)) ?? fallback;
+
     private static async Task InsertInterviewStageConfigurationAsync(MySqlConnection db, MySqlTransaction tx, long stageId, RecruitmentInterviewStageConfiguration? config, int clientId)
     {
         config ??= new RecruitmentInterviewStageConfiguration();
         var configId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_interview_stage_configurations
-(PipelineStageId,RoundNumber,InterviewType,DefaultDurationMinutes,MinimumPanelCount,MinimumPassingScore,FeedbackRequired,CalendarEnabled,AllowReschedule)
-VALUES (@StageId,@RoundNumber,@InterviewType,@Duration,@PanelCount,@PassingScore,@FeedbackRequired,@CalendarEnabled,@AllowReschedule);SELECT LAST_INSERT_ID();",
-            new { StageId = stageId, RoundNumber = Math.Max(1, config.RoundNumber), InterviewType = config.InterviewType.Trim(), Duration = Math.Max(1, config.DefaultDurationMinutes), PanelCount = Math.Max(1, config.MinimumPanelCount), PassingScore = Math.Clamp(config.MinimumPassingScore, 0, 100), config.FeedbackRequired, config.CalendarEnabled, config.AllowReschedule }, tx);
+(PipelineStageId,RoundNumber,InterviewType,DefaultDurationMinutes,MinimumPanelCount,MinimumPassingScore,ScoreInputMode,PanelAggregationMethod,FeedbackRequired,CalendarEnabled,AllowReschedule)
+VALUES (@StageId,@RoundNumber,@InterviewType,@Duration,@PanelCount,@PassingScore,@ScoreInputMode,@PanelAggregationMethod,@FeedbackRequired,@CalendarEnabled,@AllowReschedule);SELECT LAST_INSERT_ID();",
+            new { StageId = stageId, RoundNumber = Math.Max(1, config.RoundNumber), InterviewType = config.InterviewType.Trim(), Duration = Math.Max(1, config.DefaultDurationMinutes), PanelCount = Math.Max(1, config.MinimumPanelCount), PassingScore = Math.Clamp(config.MinimumPassingScore, 0, 100), ScoreInputMode = Canonical(new[] { "PercentageWeighted", "Points" }, config.ScoreInputMode, "PercentageWeighted"), PanelAggregationMethod = Canonical(new[] { "Average", "Median", "Chairperson" }, config.PanelAggregationMethod, "Average"), config.FeedbackRequired, config.CalendarEnabled, config.AllowReschedule }, tx);
         foreach (var competency in config.Competencies.OrderBy(x => x.DisplayOrder))
         {
             var valid = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_interview_competency_definitions WHERE Id=@Id AND ClientId=@ClientId AND IsActive=TRUE", new { Id = competency.CompetencyId, ClientId = clientId }, tx);
@@ -1615,6 +1759,7 @@ WHERE applicationRow.Id=@ApplicationId LIMIT 1", new { ApplicationId = applicati
         "ONSLABREACH" => "OnSlaBreach",
         "ONAPPROVAL" => "OnApproval",
         "ONSUBMISSION" => "OnSubmission",
+        "ONPROFILEBATCHFORWARD" => "OnProfileBatchForward",
         _ => (value ?? "").Trim()
     };
 
@@ -1654,4 +1799,5 @@ FROM recruitment_job_postings p JOIN recruitment_open_positions o ON o.Id=p.Posi
     private sealed class ApplyTransitionRow : TransitionRequestRow { public long FromStageId { get; set; } public long ToStageId { get; set; } public string OutcomeCode { get; set; } = ""; public string FromStageName { get; set; } = ""; public string ToStageName { get; set; } = ""; public int SlaDurationMinutes { get; set; } public bool IsTerminal { get; set; } public string ToStageType { get; set; } = ""; }
     private sealed class StageLockRow { public long Id { get; set; } public long ApplicationPipelineInstanceId { get; set; } public long ApplicationId { get; set; } public long PipelineStageId { get; set; } public string Status { get; set; } = ""; public DateTime EnteredAtUtc { get; set; } public long PausedDurationSeconds { get; set; } public long CurrentStageInstanceId { get; set; } public long PipelineInstanceId { get; set; } }
     private sealed class PauseRow { public long Id { get; set; } public long DurationSeconds { get; set; } }
+    private sealed class WorkflowBindingRow { public long Id { get; set; } public string ResourceType { get; set; } = ""; }
 }

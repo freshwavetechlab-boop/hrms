@@ -1,8 +1,66 @@
 import type { Client, ClientBillingAdvancedSetup, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingModule, Drop, Employee, EmployeeActionRequest, EmployeeAuditTrail, EmployeeInfotypeRecord, EssClientSetting, Org, PayTravelAdvanceRequest, RecoverTravelAdvanceRequest, RecruitmentAdminSetup, RecruitmentApprovalMapping, RecruitmentAssignmentRule, RecruitmentDocumentChecklist, RecruitmentMasterValue, RecruitmentPartner, RecruitmentSetting, RecruitmentSlaRule, RecruitmentTemplate, ScheduledJob, ScheduledJobAction, ScheduledJobHandlerOption, ScheduledJobRun, SettleTravelAdvanceRequest, Setup, TravelAdvance, TravelExpenseCategory, TravelExpenseClientSetting, TravelExpenseSetup, TravelPolicy, TravelPolicyAssignment, TravelPolicyRule, WorkLocation, WorkflowApprover } from '../types/payroll'
-import { deleteJson, getBlob, getJson, postForm, postJson, type ApiOptions } from './apiClient'
+import { apiRequest, deleteJson, getBlob, getJson, getJsonResult, postForm, postJson, type ApiOptions, type ApiResult } from './apiClient'
 
-export type BulkImportStatus = { jobId: string; state: 'Queued' | 'Processing' | 'Completed' | 'Failed'; totalRows: number; completedRows: number; inserted: number; updated: number; errors: string[] }
+export type BulkImportStatus = { jobId: string; state: 'Queued' | 'Processing' | 'NeedsConfirmation' | 'Completed' | 'Failed'; totalRows: number; completedRows: number; inserted: number; updated: number; errors: string[] }
 export type EmployeeDeletePreview = { employeeId: number; employeeCode: string; employeeName: string; links: string[]; canDelete: boolean }
+export type EmployeeImportReviewChange = {
+  field: string
+  label: string
+  oldValue: string
+  newValue: string
+  sensitive?: boolean
+  payrollImpact?: boolean
+}
+export type EmployeeImportCandidateEmployee = {
+  employeeId: number
+  employeeCode: string
+  employeeName: string
+  matchReasons: string[]
+  changes: EmployeeImportReviewChange[]
+}
+export type EmployeeImportIdentityEvidenceCandidate = {
+  employeeId: number
+  employeeCode: string
+  employeeName: string
+  existingValue: string
+}
+export type EmployeeImportIdentityEvidence = {
+  field: string
+  label: string
+  uploadedValue: string
+  sensitive: boolean
+  candidates: EmployeeImportIdentityEvidenceCandidate[]
+}
+export type EmployeeImportReviewRow = {
+  rowNumber: number
+  sheet: string
+  proposedEmployeeCode: string
+  matchStatus: string
+  matchedEmployeeId?: number | null
+  matchedEmployeeCode?: string | null
+  matchedEmployeeName?: string | null
+  matchReasons: string[]
+  blockingReasons: string[]
+  changes: EmployeeImportReviewChange[]
+  candidateEmployees?: EmployeeImportCandidateEmployee[]
+  identityEvidence?: EmployeeImportIdentityEvidence[]
+  canResolveConflict?: boolean
+}
+export type EmployeeImportPreflight = {
+  reviewToken: string
+  totalRows: number
+  canImport: boolean
+  requiresConfirmation: boolean
+  rows: EmployeeImportReviewRow[]
+  errors?: string[]
+}
+export type EmployeeImportDecision = {
+  rowNumber: number
+  sheet: string
+  action: 'update' | 'insert' | 'skip'
+  employeeId?: number
+  fieldChoices?: Record<string, 'keepExisting' | 'useImported'>
+}
 
 export const getOrganization = (fallback: Org) => getJson<Org>('/api/organization', fallback)
 export const saveOrganization = (organization: Org) => postJson('/api/organization', organization, organization)
@@ -70,6 +128,7 @@ export const startWorkLocationImport = (file: File) => {
 }
 export const getWorkLocationImportJob = (jobId: string) => getJson<BulkImportStatus>(`/api/work-locations/import-jobs/${jobId}`, { jobId, state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: ['Import job not found.'] })
 export const getDropdowns = () => getJson<Drop[]>('/api/dropdowns', [])
+export const getDropdownsResult = () => getJsonResult<Drop[]>('/api/dropdowns', [])
 export const saveDropdown = (drop: Drop, options: ApiOptions = {}) => postJson('/api/dropdowns', drop, { id: drop.id }, options)
 export const downloadDropdownImportTemplate = () => getBlob('/api/dropdowns/import-template')
 export const startDropdownImport = (file: File) => {
@@ -106,11 +165,33 @@ export const processEmployeeAction = (request: EmployeeActionRequest) => postJso
 export const getEmployeeDeletePreview = (id: number) => getJson<EmployeeDeletePreview>(`/api/employees/${id}/delete-preview`, { employeeId: id, employeeCode: '', employeeName: '', links: ['Unable to validate employee links.'], canDelete: false })
 export const deleteEmployee = (id: number) => deleteJson(`/api/employees/${id}`, null, { toast: false })
 export const downloadEmployeeImportTemplate = (clientId: number) => getBlob(`/api/employees/import-template?clientId=${clientId}`)
-export const startEmployeeImport = (clientId: number, file: File, mode: 'insert' | 'update' | 'upsert' = 'upsert') => {
+const emptyEmployeeImportPreflight: EmployeeImportPreflight = { reviewToken: '', totalRows: 0, canImport: false, requiresConfirmation: false, rows: [], errors: [] }
+export const preflightEmployeeImport = async (clientId: number, file: File, mode: 'insert' | 'update' | 'upsert' = 'upsert'): Promise<ApiResult<EmployeeImportPreflight>> => {
   const body = new FormData()
   body.append('clientId', String(clientId))
   body.append('mode', mode)
   body.append('file', file)
+  try {
+    const response = await apiRequest('/api/employees/import-preflight', { method: 'POST', body, toast: false })
+    const text = await response.text()
+    const data: EmployeeImportPreflight & { error?: string; detail?: string; message?: string } = text
+      ? JSON.parse(text) as EmployeeImportPreflight & { error?: string; detail?: string; message?: string }
+      : { ...emptyEmployeeImportPreflight }
+    // 422 is an actionable preflight result (for example all rows blocked),
+    // not a transport failure. Keep its review rows so the user can see why.
+    if (response.ok || response.status === 422) return { ok: true, data, error: '', status: response.status }
+    return { ok: false, data: emptyEmployeeImportPreflight, error: data.error || data.detail || data.message || `Employee identity preflight failed with status ${response.status}.`, status: response.status }
+  } catch (error) {
+    return { ok: false, data: emptyEmployeeImportPreflight, error: error instanceof Error ? error.message : 'Employee identity preflight failed.', status: 0 }
+  }
+}
+export const startEmployeeImport = (clientId: number, file: File, mode: 'insert' | 'update' | 'upsert' = 'upsert', reviewToken = '', decisions: EmployeeImportDecision[] = []) => {
+  const body = new FormData()
+  body.append('clientId', String(clientId))
+  body.append('mode', mode)
+  body.append('file', file)
+  if (reviewToken) body.append('reviewToken', reviewToken)
+  if (decisions.length) body.append('decisionsJson', JSON.stringify(decisions))
   return postForm<BulkImportStatus>('/api/employees/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
 }
 export const getEmployeeImportJob = (jobId: string) => getJson<BulkImportStatus>(`/api/employees/import-jobs/${jobId}`, { jobId, state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: ['Import job not found.'] })

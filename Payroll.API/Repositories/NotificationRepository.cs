@@ -10,7 +10,7 @@ using Payroll.API.Models;
 
 namespace Payroll.API.Repositories;
 
-public class NotificationRepository(IConfiguration configuration, ILogger<NotificationRepository> logger)
+public class NotificationRepository(IConfiguration configuration, AttachmentRepository attachmentRepository, ILogger<NotificationRepository> logger)
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
@@ -118,7 +118,19 @@ CREATE TABLE IF NOT EXISTS notification_logs (
     CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX IX_NotificationLogs_Queue (QueueId),
     INDEX IX_NotificationLogs_Resource (ResourceType, ResourceId)
+);
+CREATE TABLE IF NOT EXISTS notification_queue_attachments (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    QueueId BIGINT NOT NULL,
+    EntityAttachmentId BIGINT NOT NULL,
+    CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_NotificationQueueAttachment (QueueId, EntityAttachmentId),
+    INDEX IX_NotificationQueueAttachment_Entity (EntityAttachmentId),
+    CONSTRAINT FK_NotificationQueueAttachment_Queue FOREIGN KEY (QueueId) REFERENCES notification_queue(Id) ON DELETE CASCADE,
+    CONSTRAINT FK_NotificationQueueAttachment_Entity FOREIGN KEY (EntityAttachmentId) REFERENCES entity_attachments(id)
 );");
+        await EnsureForeignKeyAsync(db, "notification_queue_attachments", "FK_NotificationQueueAttachment_Queue", "FOREIGN KEY (QueueId) REFERENCES notification_queue(Id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(db, "notification_queue_attachments", "FK_NotificationQueueAttachment_Entity", "FOREIGN KEY (EntityAttachmentId) REFERENCES entity_attachments(id)");
         await EnsureColumnAsync(db, "notification_smtp_settings", "DeliveryPaused", "BOOLEAN NOT NULL DEFAULT FALSE AFTER IsEnabled");
         await db.ExecuteAsync(@"INSERT INTO notification_smtp_settings (Id,IsEnabled,DeliveryPaused,Host,Port,UserName,Password,EnableSsl,FromEmail,FromName)
 VALUES (1,FALSE,FALSE,'',587,'','',TRUE,'','')
@@ -291,7 +303,7 @@ WHERE Id=@Id AND Status IN ('Pending','Retry') AND RetryCount < 5", new { row.Id
 
             try
             {
-                await SendAsync(smtp, row, cancellationToken);
+                await SendAsync(db, smtp, row, cancellationToken);
                 await db.ExecuteAsync("UPDATE notification_queue SET Status='Sent',SentAt=UTC_TIMESTAMP(),ErrorMessage='' WHERE Id=@Id", new { row.Id });
                 await WriteLogsAsync(db, row, "Sent", "");
                 count++;
@@ -482,7 +494,7 @@ LIMIT 1", new { evt.ResourceId });
         catch { return null; }
     }
 
-    private static async Task SendAsync(NotificationSmtpSetting smtp, NotificationQueueItem row, CancellationToken cancellationToken)
+    private async Task SendAsync(MySqlConnection db, NotificationSmtpSetting smtp, NotificationQueueItem row, CancellationToken cancellationToken)
     {
         var message = new MimeMessage();
         message.From.Add(new MailboxAddress(string.IsNullOrWhiteSpace(smtp.FromName) ? smtp.FromEmail : smtp.FromName, smtp.FromEmail));
@@ -491,17 +503,39 @@ LIMIT 1", new { evt.ResourceId });
         foreach (var email in ReadEmailArray(row.BccJson)) message.Bcc.Add(MailboxAddress.Parse(email));
         if (message.To.Count == 0 && message.Cc.Count == 0 && message.Bcc.Count == 0) throw new InvalidOperationException("No recipients found.");
         message.Subject = row.Subject;
-        message.Body = new BodyBuilder { HtmlBody = row.BodyHtml, TextBody = StripHtml(row.BodyHtml) }.ToMessageBody();
+        var builder = new BodyBuilder { HtmlBody = row.BodyHtml, TextBody = StripHtml(row.BodyHtml) };
+        var openHandles = new List<AttachmentFileHandle>();
+        try
+        {
+            var attachmentIds = (await db.QueryAsync<long>(@"SELECT EntityAttachmentId FROM notification_queue_attachments
+WHERE QueueId=@QueueId ORDER BY Id", new { QueueId = row.Id })).ToList();
+            foreach (var attachmentId in attachmentIds)
+            {
+                var (attachment, handle) = await attachmentRepository.OpenForSystemDeliveryAsync(attachmentId, cancellationToken);
+                if (attachment is null || handle is null)
+                    throw new InvalidOperationException("A queued attachment is unavailable from secured storage.");
+                openHandles.Add(handle);
+                var contentType = ContentType.TryParse(attachment.DetectedMimeType, out var parsedContentType)
+                    ? parsedContentType
+                    : new ContentType("application", "octet-stream");
+                builder.Attachments.Add(attachment.OriginalFileName, handle.Stream, contentType);
+            }
+            message.Body = builder.ToMessageBody();
 
-        using var client = new SmtpClient();
-        var socketOptions = smtp.EnableSsl
-            ? smtp.Port == 465 ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls
-            : SecureSocketOptions.None;
-        await client.ConnectAsync(smtp.Host, smtp.Port, socketOptions, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(smtp.UserName))
-            await client.AuthenticateAsync(smtp.UserName, smtp.Password, cancellationToken);
-        await client.SendAsync(message, cancellationToken);
-        await client.DisconnectAsync(true, cancellationToken);
+            using var client = new SmtpClient();
+            var socketOptions = smtp.EnableSsl
+                ? smtp.Port == 465 ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls
+                : SecureSocketOptions.None;
+            await client.ConnectAsync(smtp.Host, smtp.Port, socketOptions, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(smtp.UserName))
+                await client.AuthenticateAsync(smtp.UserName, smtp.Password, cancellationToken);
+            await client.SendAsync(message, cancellationToken);
+            await client.DisconnectAsync(true, cancellationToken);
+        }
+        finally
+        {
+            foreach (var handle in openHandles) await handle.DisposeAsync();
+        }
     }
 
     private static string StripHtml(string html) =>
@@ -545,6 +579,13 @@ VALUES (@QueueId,@EventCode,@ResourceType,@ResourceId,@Recipient,@Status,@Error)
 FROM INFORMATION_SCHEMA.COLUMNS
 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @TableName AND COLUMN_NAME = @ColumnName", new { TableName = tableName, ColumnName = columnName });
         if (exists == 0) await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition}");
+    }
+
+    private static async Task EnsureForeignKeyAsync(MySqlConnection connection, string tableName, string constraintName, string definition)
+    {
+        var exists = await connection.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=@TableName AND CONSTRAINT_NAME=@ConstraintName", new { TableName = tableName, ConstraintName = constraintName });
+        if (exists == 0) await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD CONSTRAINT `{constraintName}` {definition}");
     }
 
     private static string CleanCode(string value) => (value ?? "").Trim().ToUpperInvariant();

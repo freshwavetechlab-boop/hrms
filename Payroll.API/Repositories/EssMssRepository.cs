@@ -189,7 +189,7 @@ SELECT LAST_INSERT_ID();", setting);
         if (dayType != "Full Day" && from.Date != to.Date) return (null, "Half-day leave can be applied for one date only.");
         var days = dayType == "Full Day" ? (decimal)(to.Date - from.Date).TotalDays + 1 : 0.5m;
         await using var db = Connection(); await db.OpenAsync();
-        var leave = await db.QueryFirstOrDefaultAsync<EssLeaveSelection>(@"SELECT lt.Id,e.ClientId,lt.Name,lt.Code,lt.Type,COALESCE(b.balance_count,0) Balance,COALESCE(p.allow_negative_leave_balance,FALSE) AllowNegativeLeaveBalance,COALESCE(p.allow_half_day,TRUE) AllowHalfDay
+        var leave = await db.QueryFirstOrDefaultAsync<EssLeaveSelection>(@"SELECT lt.Id,e.ClientId,lt.Name,lt.Code,lt.Type,COALESCE(b.balance_count,0) Balance,COALESCE(p.allow_negative_leave_balance,FALSE) AllowNegativeLeaveBalance,COALESCE(p.allow_half_day,TRUE) AllowHalfDay,COALESCE(p.attendance_action,'Mark as leave') AttendanceAction
 FROM employees e
 JOIN leave_types lt ON lt.client_id=e.ClientId AND lt.code=@Code AND lt.is_active=TRUE
 LEFT JOIN leave_type_policies p ON p.leave_type_id=lt.Id
@@ -207,7 +207,9 @@ WHERE e.Id=@EmployeeId AND (@ClientId IS NULL OR e.ClientId=@ClientId)
 LIMIT 1", new { EmployeeId = employeeId, ClientId = clientId, Code = request.LeaveCode });
         if (leave is null || leave.Id == 0) return (null, "Selected leave type is unavailable.");
         if (dayType != "Full Day" && !leave.AllowHalfDay) return (null, "Selected leave type does not allow half-day leave.");
-        var isPaidLeave = leave.Type.Equals("Paid", StringComparison.OrdinalIgnoreCase) && !leave.Code.Equals("LWP", StringComparison.OrdinalIgnoreCase);
+        var marksPresent = leave.AttendanceAction.Equals("Mark as present", StringComparison.OrdinalIgnoreCase);
+        if (marksPresent && dayType != "Full Day") return (null, "Attendance regularization can only be requested for full days.");
+        var isPaidLeave = !marksPresent && leave.Type.Equals("Paid", StringComparison.OrdinalIgnoreCase) && !leave.Code.Equals("LWP", StringComparison.OrdinalIgnoreCase);
         if (isPaidLeave && !leave.AllowNegativeLeaveBalance && days > leave.Balance) return (null, "Requested days exceed the available leave balance.");
         var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO essleaverequests (EmployeeId,ClientId,LeaveTypeId,FromDate,ToDate,DayType,Days,Reason,Status) VALUES (@EmployeeId,@ClientId,@LeaveTypeId,@FromDate,@ToDate,@DayType,@Days,@Reason,'Pending Approval'); SELECT LAST_INSERT_ID();", new { EmployeeId = employeeId, ClientId = clientId ?? leave.ClientId, LeaveTypeId = leave.Id, FromDate = from.Date, ToDate = to.Date, DayType = dayType, Days = days, Reason = request.Reason.Trim() });
         return (new EssLeaveRequest { Id = id, LeaveCode = request.LeaveCode, LeaveType = leave.Name, FromDate = from.Date, ToDate = to.Date, DayType = dayType, Days = days, Reason = request.Reason, Status = "Pending Approval", CreatedAt = DateTime.UtcNow }, null);
@@ -774,7 +776,7 @@ ORDER BY attendance_date;", new { identity.ClientId, EmployeeId = employeeId, Fr
         await db.OpenAsync();
         await using var tx = await db.BeginTransactionAsync();
         await db.ExecuteAsync("UPDATE essleaverequests SET Status=@Status WHERE Id=@Id",new{Id=id,Status=status}, tx);
-        if (status == "Approved") await ApplyApprovedLeaveBalanceAsync(db, tx, id);
+        if (status == "Approved") await ApplyApprovedLeaveEffectsAsync(db, tx, id);
         await tx.CommitAsync();
     }
     public async Task SyncTravelWorkflowStatusAsync(string resourceId, string status)
@@ -811,28 +813,82 @@ ORDER BY attendance_date;", new { identity.ClientId, EmployeeId = employeeId, Fr
     {
         await using var db=Connection();
         await db.OpenAsync();
-        await db.ExecuteAsync(@"UPDATE essleaverequests r JOIN workflowinstances w ON w.ResourceType='LeaveRequest' AND w.ResourceId=CAST(r.Id AS CHAR) SET r.Status=w.Status WHERE w.Status IN ('Approved','Rejected','Sent Back') AND r.Status<>w.Status");
+        var rows = (await db.QueryAsync<LeaveWorkflowReconciliationRow>(@"SELECT r.Id,w.Status
+FROM essleaverequests r
+JOIN workflowinstances w ON w.ResourceType='LeaveRequest' AND w.ResourceId=CAST(r.Id AS CHAR)
+WHERE w.Status IN ('Approved','Rejected','Sent Back') AND r.Status<>w.Status
+ORDER BY r.Id;")).ToList();
+        foreach (var row in rows)
+            await SyncLeaveWorkflowStatusAsync(row.Id.ToString(), row.Status);
     }
 
-    private static async Task ApplyApprovedLeaveBalanceAsync(MySqlConnection db, System.Data.IDbTransaction tx, long requestId)
+    private static async Task ApplyApprovedLeaveEffectsAsync(MySqlConnection db, MySqlTransaction tx, long requestId)
     {
-        var row = await db.QueryFirstOrDefaultAsync<ApprovedLeaveRequestRow>(@"SELECT r.Id,r.EmployeeId,r.ClientId,r.LeaveTypeId,COALESCE(r.DayType,'Full Day') DayType,r.Days,r.ToDate,lt.Code LeaveCode,lt.Type LeaveTypeKind
+        var row = await db.QueryFirstOrDefaultAsync<ApprovedLeaveRequestRow>(@"SELECT r.Id,r.EmployeeId,r.ClientId,r.LeaveTypeId,r.FromDate,r.ToDate,COALESCE(r.DayType,'Full Day') DayType,r.Days,COALESCE(r.Reason,'') Reason,lt.Code LeaveCode,lt.Type LeaveTypeKind,COALESCE(p.attendance_action,'Mark as leave') AttendanceAction
 FROM essleaverequests r
 JOIN leave_types lt ON lt.Id=r.LeaveTypeId
+LEFT JOIN leave_type_policies p ON p.leave_type_id=lt.Id
 WHERE r.Id=@RequestId", new { RequestId = requestId }, tx);
-        if (row is null || !row.LeaveTypeKind.Equals("Paid", StringComparison.OrdinalIgnoreCase) || row.LeaveCode.Equals("LWP", StringComparison.OrdinalIgnoreCase)) return;
+        if (row is null) return;
 
-        var current = await db.ExecuteScalarAsync<decimal?>(@"SELECT balance_count FROM employee_leave_balances
+        var marksPresent = row.AttendanceAction.Equals("Mark as present", StringComparison.OrdinalIgnoreCase);
+        var deductsBalance = !marksPresent && row.LeaveTypeKind.Equals("Paid", StringComparison.OrdinalIgnoreCase) && !row.LeaveCode.Equals("LWP", StringComparison.OrdinalIgnoreCase);
+        if (deductsBalance)
+        {
+            var current = await db.ExecuteScalarAsync<decimal?>(@"SELECT balance_count FROM employee_leave_balances
 WHERE employee_id=@EmployeeId AND leave_type_id=@LeaveTypeId
 ORDER BY balance_date DESC,id DESC LIMIT 1", new { row.EmployeeId, row.LeaveTypeId }, tx) ?? 0;
-        var next = current - row.Days;
-        var dedupKey = $"LEAVE_REQUEST:{row.Id}";
-        var inserted = await db.ExecuteAsync(@"INSERT IGNORE INTO employee_leave_ledger (ClientId,EmployeeId,LeaveTypeId,LeaveCode,TransactionDate,PeriodKey,TransactionType,Quantity,BalanceAfter,ReferenceType,ReferenceId,DedupKey,Remarks)
+            var next = current - row.Days;
+            var dedupKey = $"LEAVE_REQUEST:{row.Id}";
+            var inserted = await db.ExecuteAsync(@"INSERT IGNORE INTO employee_leave_ledger (ClientId,EmployeeId,LeaveTypeId,LeaveCode,TransactionDate,PeriodKey,TransactionType,Quantity,BalanceAfter,ReferenceType,ReferenceId,DedupKey,Remarks)
 VALUES (@ClientId,@EmployeeId,@LeaveTypeId,@LeaveCode,@TransactionDate,@PeriodKey,'Leave Availment',@Quantity,@BalanceAfter,'ESSLeaveRequest',@ReferenceId,@DedupKey,@Remarks);", new { row.ClientId, row.EmployeeId, row.LeaveTypeId, row.LeaveCode, TransactionDate = row.ToDate.Date, PeriodKey = row.ToDate.ToString("yyyy-MM"), Quantity = -row.Days, BalanceAfter = next, ReferenceId = row.Id.ToString(), DedupKey = dedupKey, Remarks = row.DayType }, tx);
-        if (inserted == 0) return;
-        await db.ExecuteAsync(@"INSERT INTO employee_leave_balances (client_id,employee_id,leave_type_id,balance_date,balance_count)
+            if (inserted > 0)
+            {
+                await db.ExecuteAsync(@"INSERT INTO employee_leave_balances (client_id,employee_id,leave_type_id,balance_date,balance_count)
 VALUES (@ClientId,@EmployeeId,@LeaveTypeId,@BalanceDate,@Balance)
 ON DUPLICATE KEY UPDATE balance_count=VALUES(balance_count);", new { row.ClientId, row.EmployeeId, row.LeaveTypeId, BalanceDate = row.ToDate.Date, Balance = next }, tx);
+            }
+        }
+
+        var status = marksPresent ? "Present" : row.LeaveCode;
+        var payableValue = marksPresent || row.LeaveTypeKind.Equals("Paid", StringComparison.OrdinalIgnoreCase)
+            ? 1m
+            : row.DayType.Equals("Full Day", StringComparison.OrdinalIgnoreCase) ? 0m : 0.5m;
+        var remarks = marksPresent
+            ? $"Approved attendance regularization #{row.Id}: {row.Reason}".TrimEnd(' ', ':')
+            : $"Approved leave request #{row.Id}: {row.Reason}".TrimEnd(' ', ':');
+        var policy = await db.QueryFirstOrDefaultAsync<AttendanceCycleRow>(@"SELECT g.attendance_cycle_start_day AS StartDay,g.attendance_cycle_end_day AS EndDay
+FROM attendance_group_employees age
+JOIN attendance_groups g ON g.id=age.attendance_group_id AND g.client_id=@ClientId AND g.is_active=TRUE
+WHERE age.employee_id=@EmployeeId
+ORDER BY g.id LIMIT 1;", new { row.ClientId, row.EmployeeId }, tx);
+        var rollupCycles = new Dictionary<string, AttendanceCycleRange>(StringComparer.OrdinalIgnoreCase);
+        for (var date = row.FromDate.Date; date <= row.ToDate.Date; date = date.AddDays(1))
+        {
+            await db.ExecuteAsync(@"INSERT INTO employee_daily_attendance
+(client_id,employee_id,attendance_date,status,payable_value,check_in_time,check_out_time,total_hours,remarks)
+VALUES (@ClientId,@EmployeeId,@AttendanceDate,@Status,@PayableValue,NULL,NULL,0,@Remarks)
+ON DUPLICATE KEY UPDATE
+status=VALUES(status),
+payable_value=VALUES(payable_value),
+check_in_time=IF(@MarksPresent,check_in_time,NULL),
+check_out_time=IF(@MarksPresent,check_out_time,NULL),
+total_hours=IF(@MarksPresent,total_hours,0),
+remarks=VALUES(remarks);", new
+            {
+                row.ClientId,
+                row.EmployeeId,
+                AttendanceDate = date,
+                Status = status,
+                PayableValue = payableValue,
+                Remarks = remarks,
+                MarksPresent = marksPresent
+            }, tx);
+            var cycle = ResolveAttendanceCycle(date, policy?.StartDay ?? 1, policy?.EndDay ?? DateTime.DaysInMonth(date.Year, date.Month));
+            rollupCycles.TryAdd(cycle.Month, cycle);
+        }
+        foreach (var cycle in rollupCycles.Values)
+            await RollupApprovedLeaveAttendanceAsync(db, tx, row.ClientId, row.EmployeeId, cycle);
     }
 
     private async Task<EssTravelAdvance?> GetTravelAdvanceAsync(long id)
@@ -1371,6 +1427,33 @@ present_days=IF(source_type='Date-wise',VALUES(present_days),present_days),
 payable_days=IF(source_type='Date-wise',VALUES(payable_days),payable_days),
 lop_days=IF(source_type='Date-wise',VALUES(lop_days),lop_days),
 remarks=IF(source_type='Date-wise',VALUES(remarks),remarks);",
+            new
+            {
+                ClientId = clientId,
+                EmployeeId = employeeId,
+                cycle.Month,
+                summary.WorkingDays,
+                summary.PresentDays,
+                summary.PayableDays,
+                LopDays = lopDays
+            }, transaction);
+    }
+
+    private static async Task RollupApprovedLeaveAttendanceAsync(MySqlConnection db, MySqlTransaction transaction, int clientId, int employeeId, AttendanceCycleRange cycle)
+    {
+        var summary = await db.QuerySingleAsync<AttendanceMonthlySummary>(@"SELECT COUNT(*) AS WorkingDays,
+COALESCE(SUM(CASE WHEN status='Present' THEN payable_value ELSE 0 END),0) AS PresentDays,
+COALESCE(SUM(CASE WHEN status IN ('WO','H') THEN 1 ELSE payable_value END),0) AS PayableDays
+FROM employee_daily_attendance
+WHERE client_id=@ClientId AND employee_id=@EmployeeId AND attendance_date BETWEEN @CycleStart AND @CycleEnd;",
+            new { ClientId = clientId, EmployeeId = employeeId, cycle.CycleStart, cycle.CycleEnd }, transaction);
+        var lopDays = Math.Max(0, summary.WorkingDays - summary.PayableDays);
+        await db.ExecuteAsync(@"INSERT INTO employee_monthly_attendance
+(client_id,employee_id,attendance_month,working_days,present_days,payable_days,lop_days,source_type,remarks)
+VALUES (@ClientId,@EmployeeId,@Month,@WorkingDays,@PresentDays,@PayableDays,@LopDays,'Date-wise','Rolled up from approved leave and regularization')
+ON DUPLICATE KEY UPDATE
+working_days=VALUES(working_days),present_days=VALUES(present_days),payable_days=VALUES(payable_days),
+lop_days=VALUES(lop_days),source_type='Date-wise',remarks=VALUES(remarks);",
             new
             {
                 ClientId = clientId,
@@ -2394,8 +2477,9 @@ CREATE TABLE IF NOT EXISTS ess_profile_update_audit (
     private sealed class TravelAdvanceSeed { public long TravelRequestId { get; set; } public int EmployeeId { get; set; } public int ClientId { get; set; } public decimal AdvanceAmount { get; set; } public DateTime EndDateTime { get; set; } }
     private sealed class ExpenseClaimQueueHeader { public long Id { get; set; } public int ClientId { get; set; } public int EmployeeId { get; set; } public long? TravelRequestId { get; set; } public string ClaimNumber { get; set; } = ""; public string ReimbursementComponentCode { get; set; } = ""; public string EmployeeName { get; set; } = ""; public string EmployeeCode { get; set; } = ""; public int ComponentId { get; set; } public string ComponentCode { get; set; } = ""; public string ComponentName { get; set; } = ""; }
     private sealed class ExpenseClaimQueueLine { public long Id { get; set; } public decimal Amount { get; set; } }
-    private sealed class EssLeaveSelection { public int Id { get; set; } public int ClientId { get; set; } public string Name { get; set; } = ""; public string Code { get; set; } = ""; public string Type { get; set; } = "Paid"; public decimal Balance { get; set; } public bool AllowNegativeLeaveBalance { get; set; } public bool AllowHalfDay { get; set; } = true; }
-    private sealed class ApprovedLeaveRequestRow { public long Id { get; set; } public int EmployeeId { get; set; } public int ClientId { get; set; } public int LeaveTypeId { get; set; } public string DayType { get; set; } = "Full Day"; public decimal Days { get; set; } public DateTime ToDate { get; set; } public string LeaveCode { get; set; } = ""; public string LeaveTypeKind { get; set; } = "Paid"; }
+    private sealed class EssLeaveSelection { public int Id { get; set; } public int ClientId { get; set; } public string Name { get; set; } = ""; public string Code { get; set; } = ""; public string Type { get; set; } = "Paid"; public decimal Balance { get; set; } public bool AllowNegativeLeaveBalance { get; set; } public bool AllowHalfDay { get; set; } = true; public string AttendanceAction { get; set; } = "Mark as leave"; }
+    private sealed class ApprovedLeaveRequestRow { public long Id { get; set; } public int EmployeeId { get; set; } public int ClientId { get; set; } public int LeaveTypeId { get; set; } public DateTime FromDate { get; set; } public DateTime ToDate { get; set; } public string DayType { get; set; } = "Full Day"; public decimal Days { get; set; } public string Reason { get; set; } = ""; public string LeaveCode { get; set; } = ""; public string LeaveTypeKind { get; set; } = "Paid"; public string AttendanceAction { get; set; } = "Mark as leave"; }
+    private sealed class LeaveWorkflowReconciliationRow { public long Id { get; set; } public string Status { get; set; } = ""; }
     private sealed class EssPayslipTemplate { public long Id { get; set; } public int ClientId { get; set; } public string Name { get; set; } = "Standard Payslip"; public string Theme { get; set; } = "Classic"; public bool ShowLogo { get; set; } = true; public bool ShowClient { get; set; } = true; public bool ShowYtd { get; set; } = true; public bool ShowBank { get; set; } = true; public string Note { get; set; } = "This is a system generated payslip."; public bool Active { get; set; } = true; }
     private sealed class EssPayslipYtd { public decimal Gross { get; set; } public decimal Deductions { get; set; } public decimal NetPay { get; set; } }
     private sealed class EssPayslipRow { public int PayRunEmployeeId { get; set; } public int PayRunId { get; set; } public int EmployeeId { get; set; } public int ClientId { get; set; } public string EmployeeCode { get; set; } = ""; public string EmployeeName { get; set; } = ""; public string Department { get; set; } = ""; public decimal PresentDays { get; set; } public decimal PayableDays { get; set; } public decimal GrossPay { get; set; } public decimal StatutoryDeductions { get; set; } public decimal OneTimeEarnings { get; set; } public decimal OneTimeDeductions { get; set; } public decimal NetPay { get; set; } public string PaymentStatus { get; set; } = ""; public DateTime? PaymentDate { get; set; } public string DetailsJson { get; set; } = ""; public string PayPeriod { get; set; } = ""; public DateTime PayDate { get; set; } public string RunStatus { get; set; } = ""; public int TotalWorkingDays { get; set; } public string ClientName { get; set; } = ""; public string WorkEmail { get; set; } = ""; public string Designation { get; set; } = ""; public DateTime? DateOfJoining { get; set; } public string WorkLocation { get; set; } = ""; public string Address { get; set; } = ""; public string PanNumber { get; set; } = ""; public string UanNumber { get; set; } = ""; public string BankName { get; set; } = ""; public string BankAccountNo { get; set; } = ""; public string IfscCode { get; set; } = ""; }

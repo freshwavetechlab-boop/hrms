@@ -30,6 +30,7 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
   const [organization, setOrganization] = useState<OrganizationBrand | null>(null)
   const [profile, setProfile] = useState<ProfileData | null>(null)
   const hasRecruitmentAccess = canAccessRecruitment(user)
+  const canManageAttendance = user.permissions.some(permission => permission.toLowerCase() === 'mss.attendance.manage')
   const groups = useMemo(
     () => [
       { key: 'home', icon: 'home' as IconName, label: 'Home', items: [{ icon: 'dashboard' as IconName, label: 'Dashboard', view: 'Dashboard' as View }, ...(employeeSelf ? [{ icon: 'profile' as IconName, label: 'My profile', view: 'My Profile' as View }] : [])] },
@@ -38,9 +39,9 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
       ...(employeeSelf && travelExpenseEnabled === true ? [{ key: 'travel', icon: 'travel' as IconName, label: 'Travel & expense', items: [{ icon: 'plus' as IconName, label: 'Create travel request', view: 'Travel' as View, action: 'ess:travel:new' }, { icon: 'list' as IconName, label: 'Travel requests', view: 'Travel' as View, action: 'ess:travel:list' }, { icon: 'expense' as IconName, label: 'Other expense claim', view: 'Expense' as View, action: 'ess:expense:new' }, { icon: 'list' as IconName, label: 'Expense claims', view: 'Expense' as View, action: 'ess:expense:list' }] }] : []),
       ...(employeeSelf && recruitmentEnabled === true ? [{ key: 'recruitment', icon: 'recruitment' as IconName, label: 'Recruitment', items: [{ icon: 'plus' as IconName, label: 'Create requisition', view: 'Recruitment' as View, action: 'ess:recruitment:new' }, { icon: 'list' as IconName, label: 'My requisitions', view: 'Recruitment' as View, action: 'ess:recruitment:list' }] }] : []),
       { key: 'tasks', icon: 'tasks' as IconName, label: 'Approvals', items: [{ icon: 'tasks' as IconName, label: 'My approval tasks', view: 'My Tasks' as View }] },
-      ...(manager ? [{ key: 'manager', icon: 'manager' as IconName, label: 'Manager workspace', items: [{ icon: 'team' as IconName, label: 'Team overview', view: 'Team' as View }, { icon: 'approval' as IconName, label: 'Team approvals', view: 'Approvals' as View }] }] : []),
+      ...(manager ? [{ key: 'manager', icon: 'manager' as IconName, label: 'Manager workspace', items: [{ icon: 'team' as IconName, label: 'Team overview', view: 'Team' as View }, ...(canManageAttendance ? [{ icon: 'attendance' as IconName, label: 'Attendance review', view: 'Attendance Review' as View }] : []), { icon: 'approval' as IconName, label: 'Team approvals', view: 'Approvals' as View }] }] : []),
     ],
-    [employeeSelf, manager, recruitmentEnabled, travelExpenseEnabled],
+    [canManageAttendance, employeeSelf, manager, recruitmentEnabled, travelExpenseEnabled],
   )
 
   useEffect(() => {

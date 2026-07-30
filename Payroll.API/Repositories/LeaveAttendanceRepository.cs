@@ -12,6 +12,7 @@ namespace Payroll.API.Repositories;
 
 public class LeaveAttendanceRepository(IConfiguration configuration)
 {
+    public const string ManagedAttendanceScopeError = "One or more employees are outside the reporting manager's active team.";
     private static readonly ConcurrentDictionary<Guid, ClientImportJobStatus> LeaveTypeImportJobs = new();
     private static readonly ConcurrentDictionary<Guid, ClientImportJobStatus> HolidayImportJobs = new();
 
@@ -110,6 +111,50 @@ CREATE TABLE IF NOT EXISTS employee_daily_attendance (
     UNIQUE KEY UX_daily_attendance_employee_date (client_id, employee_id, attendance_date),
     INDEX IX_daily_attendance_client_date (client_id, attendance_date)
 );
+CREATE TABLE IF NOT EXISTS attendance_batch_jobs (
+    job_id CHAR(36) PRIMARY KEY,
+    client_id INT NOT NULL,
+    attendance_month VARCHAR(7) NOT NULL,
+    active_scope_key VARCHAR(80) NULL,
+    state VARCHAR(30) NOT NULL DEFAULT 'Queued',
+    stage VARCHAR(60) NOT NULL DEFAULT 'Queued',
+    total_rows INT NOT NULL DEFAULT 0,
+    completed_rows INT NOT NULL DEFAULT 0,
+    saved_rows INT NOT NULL DEFAULT 0,
+    errors_json JSON NULL,
+    requested_by VARCHAR(190) NOT NULL DEFAULT '',
+    claim_token CHAR(36) NULL,
+    claimed_at DATETIME NULL,
+    lease_expires_at DATETIME NULL,
+    attempt_count INT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at DATETIME NULL,
+    completed_at DATETIME NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_attendance_batch_jobs_active_scope (active_scope_key),
+    INDEX IX_attendance_batch_jobs_queue (state, lease_expires_at, created_at),
+    INDEX IX_attendance_batch_jobs_client_month (client_id, attendance_month, created_at)
+);
+CREATE TABLE IF NOT EXISTS attendance_batch_job_rows (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    job_id CHAR(36) NOT NULL,
+    `row_number` INT NOT NULL,
+    employee_id INT NOT NULL,
+    attendance_date DATE NOT NULL,
+    status VARCHAR(80) NOT NULL DEFAULT '',
+    payable_value DECIMAL(4,2) NOT NULL DEFAULT 0,
+    check_in_time TIME NULL,
+    check_out_time TIME NULL,
+    total_hours DECIMAL(5,2) NOT NULL DEFAULT 0,
+    remarks VARCHAR(600) NOT NULL DEFAULT '',
+    is_valid BOOLEAN NOT NULL DEFAULT FALSE,
+    should_rollup BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_attendance_batch_job_rows_number (job_id, `row_number`),
+    UNIQUE KEY UX_attendance_batch_job_rows_employee_date (job_id, employee_id, attendance_date),
+    INDEX IX_attendance_batch_job_rows_valid (job_id, is_valid),
+    CONSTRAINT FK_attendance_batch_job_rows_job FOREIGN KEY (job_id) REFERENCES attendance_batch_jobs(job_id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS attendance_geo_fence_rules (
     id INT PRIMARY KEY AUTO_INCREMENT,
     client_id INT NOT NULL,
@@ -196,6 +241,7 @@ CREATE TABLE IF NOT EXISTS leave_type_policies (
     allow_negative_leave_balance BOOLEAN NOT NULL DEFAULT FALSE,
     allow_half_day BOOLEAN NOT NULL DEFAULT TRUE,
     negative_balance_handling VARCHAR(50) NOT NULL DEFAULT 'Mark as LOP',
+    attendance_action VARCHAR(30) NOT NULL DEFAULT 'Mark as leave',
     allow_past_dates BOOLEAN NOT NULL DEFAULT FALSE,
     past_date_limit_type VARCHAR(30) NOT NULL DEFAULT 'No limit',
     past_date_limit_days INT NULL,
@@ -290,10 +336,13 @@ CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
         await EnsureForeignKeyAsync(connection, "employee_leave_balances", "FK_employee_leave_balances_leave_type", "FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "leave_balance_import_errors", "FK_leave_balance_import_errors_log", "FOREIGN KEY (import_log_id) REFERENCES leave_balance_import_logs(id) ON DELETE CASCADE");
         await EnsureColumnAsync(connection, "leave_type_policies", "allow_half_day", "BOOLEAN NOT NULL DEFAULT TRUE AFTER allow_negative_leave_balance");
+        await EnsureColumnAsync(connection, "leave_type_policies", "attendance_action", "VARCHAR(30) NOT NULL DEFAULT 'Mark as leave' AFTER negative_balance_handling");
         await EnsureColumnAsync(connection, "holidays", "holiday_type", "VARCHAR(40) NOT NULL DEFAULT 'Holiday' AFTER name");
         await EnsureColumnAsync(connection, "employee_daily_attendance", "check_in_time", "TIME NULL AFTER payable_value");
         await EnsureColumnAsync(connection, "employee_daily_attendance", "check_out_time", "TIME NULL AFTER check_in_time");
         await EnsureColumnAsync(connection, "employee_daily_attendance", "total_hours", "DECIMAL(5,2) NOT NULL DEFAULT 0 AFTER check_out_time");
+        await EnsureColumnAsync(connection, "attendance_batch_jobs", "active_scope_key", "VARCHAR(80) NULL AFTER attendance_month");
+        await EnsureColumnAsync(connection, "attendance_batch_job_rows", "should_rollup", "BOOLEAN NOT NULL DEFAULT TRUE AFTER is_valid");
         await EnsureColumnAsync(connection, "attendance_groups", "policy_batch_id", "CHAR(36) NULL AFTER client_id");
         await EnsureColumnAsync(connection, "attendance_groups", "work_week", "VARCHAR(80) NOT NULL DEFAULT '' AFTER designation");
         await EnsureColumnAsync(connection, "attendance_groups", "attendance_cycle_start_day", "INT NOT NULL DEFAULT 1 AFTER work_week");
@@ -304,6 +353,9 @@ CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
         await EnsureColumnAsync(connection, "dropdownmasters", "ConfigJson", "JSON NULL AFTER Value");
         await connection.ExecuteAsync("UPDATE attendance_groups SET policy_batch_id=UUID() WHERE policy_batch_id IS NULL OR policy_batch_id=''");
         await connection.ExecuteAsync("UPDATE leave_attendance_preferences SET work_location_id=0 WHERE work_location_id IS NULL");
+        await connection.ExecuteAsync("UPDATE attendance_batch_jobs SET active_scope_key=CONCAT(client_id, ':', attendance_month) WHERE state IN ('Queued','Processing') AND active_scope_key IS NULL");
+        await connection.ExecuteAsync("UPDATE attendance_batch_jobs SET active_scope_key=NULL WHERE state NOT IN ('Queued','Processing')");
+        await CreateIndexIfMissingAsync(connection, "attendance_batch_jobs", "UX_attendance_batch_jobs_active_scope", "CREATE UNIQUE INDEX UX_attendance_batch_jobs_active_scope ON attendance_batch_jobs (active_scope_key)");
         await EnsureClientScopeAsync(connection);
     }
 
@@ -536,15 +588,16 @@ VALUES (@ClientId, @Name, @ScopeType, @WorkLocationId, @Latitude, @Longitude, @R
         return await connection.ExecuteAsync("DELETE FROM attendance_geo_fence_rules WHERE id=@Id AND client_id=@ClientId", new { Id = id, ClientId = clientId }) > 0;
     }
 
-    public async Task<IEnumerable<AttendanceGroup>> GetAttendanceGroupsAsync(int clientId = 0)
+    public async Task<IEnumerable<AttendanceGroup>> GetAttendanceGroupsAsync(int clientId = 0, int? reportingManagerUserId = null)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         var rows = (await connection.QueryAsync<AttendanceGroup>(AttendanceGroupSelectSql + @"
 WHERE (@ClientId <= 0 OR g.client_id=@ClientId)
+  AND (@ReportingManagerUserId IS NULL OR (e.ClientId=@ClientId AND e.IsActive=TRUE AND e.ReportingManagerUserId=@ReportingManagerUserId))
 GROUP BY g.id
-ORDER BY c.Name, w.Name, g.name;", new { ClientId = clientId })).ToList();
-        await LoadAttendanceGroupEmployeesAsync(connection, rows);
+ORDER BY c.Name, w.Name, g.name;", new { ClientId = clientId, ReportingManagerUserId = reportingManagerUserId })).ToList();
+        await LoadAttendanceGroupEmployeesAsync(connection, rows, clientId, reportingManagerUserId);
         return rows;
     }
 
@@ -682,7 +735,7 @@ VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designa
         return await connection.ExecuteAsync("DELETE FROM attendance_groups WHERE id=@Id AND client_id=@ClientId", new { Id = id, ClientId = clientId }) > 0;
     }
 
-    public async Task<AttendanceReviewContext> GetAttendanceReviewContextAsync(int clientId, string month, int? workLocationId = null)
+    public async Task<AttendanceReviewContext> GetAttendanceReviewContextAsync(int clientId, string month, int? workLocationId = null, int? reportingManagerUserId = null)
     {
         var monthStart = IsValidMonth(month) ? DateTime.Parse($"{month}-01") : new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
         var monthEnd = monthStart.AddMonths(1).AddDays(-1);
@@ -715,7 +768,11 @@ JOIN (
     WHERE client_id=@ClientId AND balance_date<=@MonthEnd
     GROUP BY employee_id, leave_type_id
 ) latest ON latest.employee_id=b.employee_id AND latest.leave_type_id=b.leave_type_id AND latest.balance_date=b.balance_date
-WHERE b.client_id=@ClientId;", new { ClientId = clientId, MonthEnd = monthEnd })).ToList();
+WHERE b.client_id=@ClientId
+  AND (@ReportingManagerUserId IS NULL OR EXISTS (
+      SELECT 1 FROM employees e
+      WHERE e.Id=b.employee_id AND e.ClientId=@ClientId AND e.IsActive=TRUE AND e.ReportingManagerUserId=@ReportingManagerUserId
+  ));", new { ClientId = clientId, MonthEnd = monthEnd, ReportingManagerUserId = reportingManagerUserId })).ToList();
         var holidayStart = monthStart.AddMonths(-1);
         var holidayRows = new List<Holiday>();
         foreach (var year in new[] { holidayStart.Year, monthStart.Year }.Distinct())
@@ -728,7 +785,7 @@ WHERE b.client_id=@ClientId;", new { ClientId = clientId, MonthEnd = monthEnd })
         return new AttendanceReviewContext { Settings = settings, Schedule = schedule, Preferences = preferences, Holidays = holidays, LeaveBalances = balances };
     }
 
-    public async Task<IEnumerable<EmployeeMonthlyAttendance>> GetMonthlyAttendanceAsync(int clientId, string month, int? workLocationId = null)
+    public async Task<IEnumerable<EmployeeMonthlyAttendance>> GetMonthlyAttendanceAsync(int clientId, string month, int? workLocationId = null, int? reportingManagerUserId = null)
     {
         if (!IsValidMonth(month)) return [];
         await using var connection = CreateConnection();
@@ -761,8 +818,10 @@ LEFT JOIN (
     GROUP BY age.employee_id
 ) employee_group ON employee_group.employee_id=e.Id
 LEFT JOIN attendance_groups g ON g.id=employee_group.group_id
-WHERE e.ClientId=@ClientId AND e.IsActive=TRUE AND (@WorkLocationId <= 0 OR e.WorkLocationId=@WorkLocationId)
-ORDER BY e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = clientId, Month = month, WorkLocationId = locationId });
+WHERE e.ClientId=@ClientId AND e.IsActive=TRUE
+  AND (@ReportingManagerUserId IS NULL OR e.ReportingManagerUserId=@ReportingManagerUserId)
+  AND (@WorkLocationId <= 0 OR e.WorkLocationId=@WorkLocationId)
+ORDER BY e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = clientId, Month = month, WorkLocationId = locationId, ReportingManagerUserId = reportingManagerUserId });
     }
 
     public async Task<(IEnumerable<EmployeeMonthlyAttendance>? Rows, string? Error)> SaveMonthlyAttendanceAsync(SaveMonthlyAttendanceRequest request)
@@ -788,18 +847,22 @@ ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(p
     public async Task<IEnumerable<EmployeeDailyAttendance>> GetDailyAttendanceAsync(int clientId, int employeeId, string month)
     {
         if (!IsValidMonth(month)) return [];
+        var monthStart = DateTime.ParseExact($"{month}-01", "yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var monthEnd = monthStart.AddMonths(1);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         return await connection.QueryAsync<EmployeeDailyAttendance>(@"SELECT id AS Id, client_id AS ClientId, employee_id AS EmployeeId, attendance_date AS AttendanceDate, status AS Status, payable_value AS PayableValue,
 check_in_time AS CheckInTime, check_out_time AS CheckOutTime, total_hours AS TotalHours, COALESCE(remarks, '') AS Remarks
 FROM employee_daily_attendance
-WHERE client_id=@ClientId AND employee_id=@EmployeeId AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month
-ORDER BY attendance_date;", new { ClientId = clientId, EmployeeId = employeeId, Month = month });
+WHERE client_id=@ClientId AND employee_id=@EmployeeId AND attendance_date>=@MonthStart AND attendance_date<@MonthEnd
+ORDER BY attendance_date;", new { ClientId = clientId, EmployeeId = employeeId, MonthStart = monthStart, MonthEnd = monthEnd });
     }
 
-    public async Task<IEnumerable<EmployeeDailyAttendance>> GetDailyAttendanceMonthAsync(int clientId, string month, int? workLocationId = null)
+    public async Task<IEnumerable<EmployeeDailyAttendance>> GetDailyAttendanceMonthAsync(int clientId, string month, int? workLocationId = null, int? reportingManagerUserId = null)
     {
         if (!IsValidMonth(month)) return [];
+        var monthStart = DateTime.ParseExact($"{month}-01", "yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var monthEnd = monthStart.AddMonths(1);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         var locationId = workLocationId.GetValueOrDefault();
@@ -807,8 +870,11 @@ ORDER BY attendance_date;", new { ClientId = clientId, EmployeeId = employeeId, 
 d.check_in_time AS CheckInTime, d.check_out_time AS CheckOutTime, d.total_hours AS TotalHours, COALESCE(d.remarks, '') AS Remarks
 FROM employee_daily_attendance d
 JOIN employees e ON e.Id=d.employee_id AND e.ClientId=d.client_id
-WHERE d.client_id=@ClientId AND DATE_FORMAT(d.attendance_date, '%Y-%m')=@Month AND (@WorkLocationId <= 0 OR e.WorkLocationId=@WorkLocationId)
-ORDER BY d.employee_id, d.attendance_date;", new { ClientId = clientId, Month = month, WorkLocationId = locationId });
+WHERE d.client_id=@ClientId AND d.attendance_date>=@MonthStart AND d.attendance_date<@MonthEnd
+  AND e.IsActive=TRUE
+  AND (@ReportingManagerUserId IS NULL OR e.ReportingManagerUserId=@ReportingManagerUserId)
+  AND (@WorkLocationId <= 0 OR e.WorkLocationId=@WorkLocationId)
+ORDER BY d.employee_id, d.attendance_date;", new { ClientId = clientId, MonthStart = monthStart, MonthEnd = monthEnd, WorkLocationId = locationId, ReportingManagerUserId = reportingManagerUserId });
     }
 
     public async Task<(IEnumerable<EmployeeDailyAttendance>? Rows, string? Error)> SaveDailyAttendanceAsync(SaveDailyAttendanceRequest request)
@@ -893,9 +959,123 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
         await connection.ExecuteAsync(@"INSERT INTO employee_daily_attendance (client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
 VALUES (@ClientId, @EmployeeId, @AttendanceDate, @Status, @PayableValue, @CheckInTime, @CheckOutTime, @TotalHours, @Remarks)
 ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), check_in_time=VALUES(check_in_time), check_out_time=VALUES(check_out_time), total_hours=VALUES(total_hours), remarks=VALUES(remarks);", rows, transaction);
-        await RollupDailyAttendanceBatchAsync(connection, transaction, request.ClientId, groupedRows.Select(row => row.Key).ToArray(), request.Month);
+        var requestedRollupEmployeeIds = request.RollupEmployeeIds?.ToHashSet();
+        var rollupEmployeeIds = requestedRollupEmployeeIds is null
+            ? groupedRows.Select(row => row.Key).ToArray()
+            : groupedRows.Select(row => row.Key).Where(requestedRollupEmployeeIds.Contains).ToArray();
+        await RollupDailyAttendanceBatchAsync(connection, transaction, request.ClientId, rollupEmployeeIds, request.Month);
         await transaction.CommitAsync();
         return (await GetMonthlyAttendanceAsync(request.ClientId, request.Month), null);
+    }
+
+    public async Task<bool> AreActiveDirectReportsAsync(int clientId, int reportingManagerUserId, IEnumerable<int> employeeIds)
+    {
+        var requestedIds = employeeIds.Distinct().ToArray();
+        if (requestedIds.Length == 0) return true;
+        if (clientId <= 0 || reportingManagerUserId <= 0 || requestedIds.Any(employeeId => employeeId <= 0)) return false;
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        var matchedIds = await connection.QueryAsync<int>(@"SELECT Id FROM employees
+WHERE ClientId=@ClientId AND IsActive=TRUE AND ReportingManagerUserId=@ReportingManagerUserId AND Id IN @EmployeeIds;",
+            new { ClientId = clientId, ReportingManagerUserId = reportingManagerUserId, EmployeeIds = requestedIds });
+        return matchedIds.Distinct().Count() == requestedIds.Length;
+    }
+
+    public async Task<(AttendanceBatchJobStatus? Job, string? Error)> StartDailyAttendanceBatchJobAsync(SaveDailyAttendanceBatchRequest request, string requestedBy, int? reportingManagerUserId = null)
+    {
+        var error = ValidateDailyAttendanceBatch(request);
+        if (error is not null) return (null, error);
+
+        // The database key is one row per employee/date. Preserve the synchronous
+        // endpoint's effective "last row wins" behaviour before staging.
+        var requestedRollupEmployeeIds = request.RollupEmployeeIds?.ToHashSet();
+        var stagedRows = request.Rows
+            .Select((row, index) => new AttendanceBatchStagedRow
+            {
+                RowNumber = index + 1,
+                EmployeeId = row.EmployeeId,
+                AttendanceDate = row.AttendanceDate.Date,
+                Status = row.Status ?? string.Empty,
+                PayableValue = row.PayableValue,
+                CheckInTime = row.CheckInTime,
+                CheckOutTime = row.CheckOutTime,
+                TotalHours = row.TotalHours,
+                Remarks = row.Remarks ?? string.Empty,
+                ShouldRollup = requestedRollupEmployeeIds is null || requestedRollupEmployeeIds.Contains(row.EmployeeId)
+            })
+            .GroupBy(row => (row.EmployeeId, row.AttendanceDate))
+            .Select(group => group.Last())
+            .OrderBy(row => row.RowNumber)
+            .ToList();
+        if (stagedRows.Count == 0) return (null, "No attendance rows were submitted.");
+
+        var jobId = Guid.NewGuid();
+        var jobIdText = jobId.ToString();
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+        try
+        {
+            if (reportingManagerUserId.HasValue)
+            {
+                var requestedEmployeeIds = stagedRows.Select(row => row.EmployeeId)
+                    .Concat(request.RollupEmployeeIds ?? [])
+                    .Distinct()
+                    .ToArray();
+                var managedEmployeeIds = (await connection.QueryAsync<int>(@"SELECT Id FROM employees
+WHERE ClientId=@ClientId AND IsActive=TRUE AND ReportingManagerUserId=@ReportingManagerUserId AND Id IN @EmployeeIds
+FOR UPDATE;", new { request.ClientId, ReportingManagerUserId = reportingManagerUserId.Value, EmployeeIds = requestedEmployeeIds }, transaction)).ToHashSet();
+                if (managedEmployeeIds.Count != requestedEmployeeIds.Length)
+                {
+                    await transaction.RollbackAsync();
+                    return (null, ManagedAttendanceScopeError);
+                }
+            }
+            await connection.ExecuteAsync(@"INSERT INTO attendance_batch_jobs
+(job_id, client_id, attendance_month, active_scope_key, state, stage, total_rows, completed_rows, saved_rows, errors_json, requested_by)
+VALUES (@JobId, @ClientId, @Month, @ActiveScopeKey, 'Queued', 'Queued', @TotalRows, 0, 0, JSON_ARRAY(), @RequestedBy);",
+                new
+                {
+                    JobId = jobIdText,
+                    request.ClientId,
+                    request.Month,
+                    ActiveScopeKey = $"{request.ClientId}:{request.Month}",
+                    TotalRows = stagedRows.Count,
+                    RequestedBy = requestedBy ?? string.Empty
+                }, transaction);
+            await UpsertAttendanceBatchJobRowsAsync(connection, transaction, jobIdText, stagedRows);
+            await transaction.CommitAsync();
+        }
+        catch (MySqlException exception) when (exception.Number == 1062)
+        {
+            await transaction.RollbackAsync();
+            return (null, "An attendance save is already queued or processing for this client and month. Wait for it to finish and try again.");
+        }
+        return (await GetDailyAttendanceBatchJobAsync(jobId), null);
+    }
+
+    public async Task<AttendanceBatchJobStatus?> GetDailyAttendanceBatchJobAsync(Guid jobId)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        var row = await ReadAttendanceBatchJobAsync(connection, jobId.ToString());
+        return row is null ? null : ToAttendanceBatchJobStatus(row);
+    }
+
+    public async Task<bool> ProcessNextDailyAttendanceBatchJobAsync(CancellationToken cancellationToken)
+    {
+        var claim = await ClaimNextAttendanceBatchJobAsync(cancellationToken);
+        if (claim is null) return false;
+
+        try
+        {
+            await ProcessAttendanceBatchJobAsync(claim);
+        }
+        catch (Exception exception)
+        {
+            await FailAttendanceBatchJobAsync(claim, exception.Message);
+        }
+        return true;
     }
 
     public async Task<IEnumerable<LeaveType>> GetLeaveTypesAsync(int clientId)
@@ -970,6 +1150,7 @@ VALUES (@ClientId, @Name, @Code, @Type, @Description, TRUE); SELECT LAST_INSERT_
             BoolText(row.AllowNegativeLeaveBalance),
             BoolText(row.AllowHalfDay),
             row.NegativeBalanceHandling,
+            row.AttendanceAction,
             BoolText(row.AllowPastDates),
             row.PastDateLimitType,
             row.PastDateLimitDays?.ToString(CultureInfo.InvariantCulture) ?? "",
@@ -989,7 +1170,7 @@ VALUES (@ClientId, @Name, @Code, @Type, @Description, TRUE); SELECT LAST_INSERT_
             BoolText(row.IsActive)
         }));
         if (templateRows.Count == 1)
-            templateRows.Add(new[] { "Casual Leave", "CL", "Paid", "Casual leave", "12", "Yearly", "TRUE", "TRUE", "Yearly", "TRUE", "6", "FALSE", "", "FALSE", "TRUE", "Mark as LOP", "FALSE", "No limit", "", "TRUE", "No limit", "", "All employees", "", "", "", "", DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), "", "FALSE", "", "Days", "TRUE" });
+            templateRows.Add(new[] { "Casual Leave", "CL", "Paid", "Casual leave", "12", "Yearly", "TRUE", "TRUE", "Yearly", "TRUE", "6", "FALSE", "", "FALSE", "TRUE", "Mark as LOP", "Mark as leave", "FALSE", "No limit", "", "TRUE", "No limit", "", "All employees", "", "", "", "", DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), "", "FALSE", "", "Days", "TRUE" });
 
         var locations = await connection.QueryAsync<string>("SELECT Name FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY Name", new { ClientId = clientId });
         var departments = await connection.QueryAsync<string>("SELECT Value FROM dropdownmasters WHERE Type='Department' AND IsActive=TRUE ORDER BY Value");
@@ -1001,6 +1182,7 @@ VALUES (@ClientId, @Name, @Code, @Type, @Description, TRUE); SELECT LAST_INSERT_
             new[] { "Period", "Monthly, Yearly", "" },
             new[] { "Reset Frequency", "Monthly, Yearly", "" },
             new[] { "Negative Balance Handling", "Mark as LOP, Without limit, Up to year-end limit", "" },
+            new[] { "Attendance Action", "Mark as leave, Mark as present", "" },
             new[] { "Date Limit Type", "No limit, Set number of days", "" },
             new[] { "Applicability", "All employees, Criteria based employees", "" },
             new[] { "Postpone Credit Unit", "Days, Months", "" },
@@ -1082,9 +1264,14 @@ VALUES (@ClientId, @Name, @Code, @Type, @Description, TRUE); SELECT LAST_INSERT_
             var code = V("Code").ToUpperInvariant();
             var name = V("Leave Type Name", "Name");
             var type = NormalizeOption(V("Type", "Paid/Unpaid"), LeaveTypeTypes);
+            var existing = !string.IsNullOrWhiteSpace(code) && existingByCode.TryGetValue(code, out var found) ? found : null;
             var entitlementPeriod = NormalizeOption(V("Entitlement Period", "Period"), LeavePeriods);
             var resetFrequency = NormalizeOption(V("Reset Frequency"), LeavePeriods);
             var negativeHandling = NormalizeOption(V("Negative Balance Handling"), NegativeBalanceHandlingOptions);
+            var attendanceActionText = V("Attendance Action", "After Approval");
+            var attendanceAction = string.IsNullOrWhiteSpace(attendanceActionText)
+                ? existing?.AttendanceAction ?? "Mark as leave"
+                : NormalizeOption(attendanceActionText, AttendanceActionOptions);
             var pastLimitType = NormalizeOption(V("Past Date Limit Type", "Past Date Limit"), DateLimitTypes);
             var futureLimitType = NormalizeOption(V("Future Date Limit Type", "Future Date Limit"), DateLimitTypes);
             var applicability = NormalizeOption(V("Applicability", "Applicability Mode"), ApplicabilityModes);
@@ -1092,7 +1279,6 @@ VALUES (@ClientId, @Name, @Code, @Type, @Description, TRUE); SELECT LAST_INSERT_
             var entitlement = ParseDecimal(V("Entitlement", "Number of leaves"), out var entitlementOk);
             var effectiveFrom = ParseDate(V("Effective From"), out var effectiveOk);
             var expiresOn = ParseOptionalDate(V("Expires On", "Expiry Date"), out var expiresOk);
-            var existing = !string.IsNullOrWhiteSpace(code) && existingByCode.TryGetValue(code, out var found) ? found : null;
             var globalDuplicate = !string.IsNullOrWhiteSpace(code) ? allCodes.FirstOrDefault(item => item.Code.Equals(code, StringComparison.OrdinalIgnoreCase) && item.ClientId != clientId) : default;
 
             if (string.IsNullOrWhiteSpace(name)) rowErrors.Add($"Row {rowNumber}: Leave Type Name is required.");
@@ -1105,6 +1291,7 @@ VALUES (@ClientId, @Name, @Code, @Type, @Description, TRUE); SELECT LAST_INSERT_
             if (!LeavePeriods.Contains(entitlementPeriod)) rowErrors.Add($"Row {rowNumber}: Entitlement Period must be Monthly/Yearly.");
             if (!LeavePeriods.Contains(resetFrequency)) rowErrors.Add($"Row {rowNumber}: Reset Frequency must be Monthly/Yearly.");
             if (!NegativeBalanceHandlingOptions.Contains(negativeHandling)) rowErrors.Add($"Row {rowNumber}: Negative Balance Handling is invalid.");
+            if (!AttendanceActionOptions.Contains(attendanceAction)) rowErrors.Add($"Row {rowNumber}: Attendance Action is invalid.");
             if (!DateLimitTypes.Contains(pastLimitType)) rowErrors.Add($"Row {rowNumber}: Past Date Limit Type is invalid.");
             if (!DateLimitTypes.Contains(futureLimitType)) rowErrors.Add($"Row {rowNumber}: Future Date Limit Type is invalid.");
             if (!ApplicabilityModes.Contains(applicability)) rowErrors.Add($"Row {rowNumber}: Applicability is invalid.");
@@ -1144,6 +1331,7 @@ VALUES (@ClientId, @Name, @Code, @Type, @Description, TRUE); SELECT LAST_INSERT_
                     AllowNegativeLeaveBalance = ParseImportFlag(V("Allow Negative Balance", "Allow Negative Leave Balance"), existing?.AllowNegativeLeaveBalance ?? false),
                     AllowHalfDay = ParseImportFlag(V("Allow Half Day", "Allow Half-Day Leave"), existing?.AllowHalfDay ?? true),
                     NegativeBalanceHandling = negativeHandling,
+                    AttendanceAction = attendanceAction,
                     AllowPastDates = ParseImportFlag(V("Allow Past Dates"), existing?.AllowPastDates ?? false),
                     PastDateLimitType = pastLimitType,
                     PastDateLimitDays = pastDays,
@@ -1520,11 +1708,14 @@ ORDER BY w.Name, g.department, g.designation;", new { PolicyBatchId = policyBatc
         return rows;
     }
 
-    private static async Task LoadAttendanceGroupEmployeesAsync(MySqlConnection connection, List<AttendanceGroup> rows)
+    private static async Task LoadAttendanceGroupEmployeesAsync(MySqlConnection connection, List<AttendanceGroup> rows, int clientId = 0, int? reportingManagerUserId = null)
     {
         if (rows.Count == 0) return;
         var employees = await connection.QueryAsync<(int GroupId, int EmployeeId)>(@"SELECT attendance_group_id AS GroupId, employee_id AS EmployeeId
-FROM attendance_group_employees WHERE attendance_group_id IN @Ids", new { Ids = rows.Select(row => row.Id).ToArray() });
+FROM attendance_group_employees age
+LEFT JOIN employees e ON e.Id=age.employee_id
+WHERE attendance_group_id IN @Ids
+  AND (@ReportingManagerUserId IS NULL OR (e.ClientId=@ClientId AND e.IsActive=TRUE AND e.ReportingManagerUserId=@ReportingManagerUserId))", new { Ids = rows.Select(row => row.Id).ToArray(), ClientId = clientId, ReportingManagerUserId = reportingManagerUserId });
         foreach (var row in rows)
             row.EmployeeIds = employees.Where(employee => employee.GroupId == row.Id).Select(employee => employee.EmployeeId).ToList();
     }
@@ -1596,6 +1787,7 @@ FROM attendance_group_employees WHERE attendance_group_id IN @Ids", new { Ids = 
     {
         if (string.IsNullOrWhiteSpace(request.Name) || string.IsNullOrWhiteSpace(request.Code)) return "Leave type name and code are required.";
         if (request.Type is not ("Paid" or "Unpaid")) return "Leave type must be Paid or Unpaid.";
+        if (!AttendanceActionOptions.Contains(request.AttendanceAction)) return "Select a valid attendance action.";
         if (request.Entitlement < 0) return "Entitlement cannot be negative.";
         if (request.ExpiresOn.HasValue && request.ExpiresOn.Value.Date < request.EffectiveFrom.Date) return "Expiry date cannot be before effective date.";
         return null;
@@ -1803,6 +1995,226 @@ LIMIT 1;", new { ClientId = clientId, PolicyBatchId = policyBatchId, ExcludeGrou
     private static int AttendanceCycleDays(int startDay, int endDay) =>
         startDay == 1 ? endDay : 31 - startDay + 1 + endDay;
 
+    private async Task<AttendanceBatchJobClaim?> ClaimNextAttendanceBatchJobAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var jobIdValue = await connection.QueryFirstOrDefaultAsync<Guid?>(new CommandDefinition(@"SELECT job_id
+FROM attendance_batch_jobs
+WHERE state='Queued'
+   OR (state='Processing' AND lease_expires_at IS NOT NULL AND lease_expires_at<UTC_TIMESTAMP())
+ORDER BY created_at, job_id
+LIMIT 1
+FOR UPDATE;", transaction: transaction, cancellationToken: cancellationToken));
+        if (!jobIdValue.HasValue || jobIdValue.Value == Guid.Empty)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
+        }
+
+        var jobId = jobIdValue.Value.ToString();
+        var claimToken = Guid.NewGuid();
+        var affected = await connection.ExecuteAsync(new CommandDefinition(@"UPDATE attendance_batch_jobs
+SET state='Processing', stage='Validating', completed_rows=0, saved_rows=0, errors_json=JSON_ARRAY(),
+    claim_token=@ClaimToken, claimed_at=UTC_TIMESTAMP(), lease_expires_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 30 MINUTE),
+    attempt_count=attempt_count+1, started_at=COALESCE(started_at, UTC_TIMESTAMP()), completed_at=NULL
+WHERE job_id=@JobId
+  AND (state='Queued' OR (state='Processing' AND lease_expires_at IS NOT NULL AND lease_expires_at<UTC_TIMESTAMP()));",
+            new { JobId = jobId, ClaimToken = claimToken }, transaction, cancellationToken: cancellationToken));
+        if (affected != 1)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return new AttendanceBatchJobClaim(jobId, claimToken);
+    }
+
+    private async Task ProcessAttendanceBatchJobAsync(AttendanceBatchJobClaim claim)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        var job = await ReadAttendanceBatchJobAsync(connection, claim.JobId);
+        if (job is null || !string.Equals(job.State, "Processing", StringComparison.OrdinalIgnoreCase) || job.ClaimToken != claim.ClaimToken)
+            return;
+
+        await UpdateAttendanceBatchJobStageAsync(connection, claim, "Validating", 0);
+        var stagedRows = (await connection.QueryAsync<AttendanceBatchStagedRow>(@"SELECT `row_number` AS RowNumber, employee_id AS EmployeeId, attendance_date AS AttendanceDate,
+status AS Status, payable_value AS PayableValue, check_in_time AS CheckInTime, check_out_time AS CheckOutTime,
+total_hours AS TotalHours, COALESCE(remarks, '') AS Remarks, is_valid AS IsValid, should_rollup AS ShouldRollup
+FROM attendance_batch_job_rows WHERE job_id=@JobId ORDER BY `row_number`;", new { claim.JobId })).ToList();
+        if (stagedRows.Count == 0) throw new InvalidOperationException("No attendance rows were staged for this job.");
+
+        var settings = await connection.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId,
+check_in_time AS CheckInTime, check_out_time AS CheckOutTime, minimum_hours_for_half_day AS MinimumHoursForHalfDay,
+minimum_hours_for_full_day AS MinimumHoursForFullDay, maximum_hours_allowed_for_full_day AS MaximumHoursAllowedForFullDay
+FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { job.ClientId }) ?? new AttendanceSettings { ClientId = job.ClientId };
+        var activeLeaveTypes = (await connection.QueryAsync<AttendanceLeaveRule>(@"SELECT lt.id AS Id, lt.code AS Code, lt.name AS Name, lt.type AS Type, p.allow_negative_leave_balance AS AllowNegativeLeaveBalance
+FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id=lt.id
+WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { job.ClientId }))
+            .ToDictionary(row => row.Code, row => row, StringComparer.OrdinalIgnoreCase);
+        var validEmployeeIds = (await connection.QueryAsync<int>("SELECT Id FROM employees WHERE ClientId=@ClientId AND IsActive=TRUE", new { job.ClientId })).ToHashSet();
+        var invalidEmployeeRows = stagedRows.Count(row => !validEmployeeIds.Contains(row.EmployeeId));
+        if (invalidEmployeeRows > 0)
+            throw new InvalidOperationException($"{invalidEmployeeRows} attendance row(s) reference inactive employees or employees outside the selected client. No attendance was saved.");
+        var groupedRows = stagedRows
+            .GroupBy(row => row.EmployeeId)
+            .ToList();
+        if (groupedRows.Count == 0) throw new InvalidOperationException("No valid employee attendance rows were submitted.");
+
+        var normalizedRows = new List<AttendanceBatchStagedRow>();
+        foreach (var group in groupedRows)
+        {
+            var invalidStatus = group.FirstOrDefault(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes) is null);
+            if (invalidStatus is not null) throw new InvalidOperationException($"Attendance status '{invalidStatus.Status}' is not valid.");
+            normalizedRows.AddRange(group.Select(row =>
+            {
+                var status = NormalizeAttendanceStatus(row.Status, activeLeaveTypes)!;
+                var checkIn = status == "Present" ? row.CheckInTime : null;
+                var checkOut = status == "Present" ? row.CheckOutTime : null;
+                var totalHours = status == "Present" ? CalculateHours(checkIn, checkOut, row.TotalHours) : 0m;
+                return new AttendanceBatchStagedRow
+                {
+                    RowNumber = row.RowNumber,
+                    EmployeeId = row.EmployeeId,
+                    AttendanceDate = row.AttendanceDate.Date,
+                    Status = status,
+                    PayableValue = ResolvePayableValue(status, row.PayableValue, totalHours, checkIn.HasValue && checkOut.HasValue, settings, activeLeaveTypes),
+                    CheckInTime = checkIn,
+                    CheckOutTime = checkOut,
+                    TotalHours = totalHours,
+                    Remarks = row.Remarks ?? string.Empty,
+                    IsValid = true,
+                    ShouldRollup = row.ShouldRollup
+                };
+            }));
+        }
+
+        var balanceError = await ValidateLeaveBalancesBatchAsync(connection, job.ClientId, job.Month, normalizedRows, activeLeaveTypes);
+        if (balanceError is not null) throw new InvalidOperationException(balanceError);
+
+        await UpdateAttendanceBatchJobStageAsync(connection, claim, "Saving", 0);
+        await connection.ExecuteAsync("UPDATE attendance_batch_job_rows SET is_valid=FALSE WHERE job_id=@JobId", new { claim.JobId });
+        await UpsertAttendanceBatchJobRowsAsync(connection, null, claim.JobId, normalizedRows,
+            completed => UpdateAttendanceBatchJobStageAsync(connection, claim, "Saving", Math.Min(job.TotalRows, completed)));
+
+        await UpdateAttendanceBatchJobStageAsync(connection, claim, "Calculating summaries", Math.Min(job.TotalRows, normalizedRows.Count));
+        await using var transaction = await connection.BeginTransactionAsync();
+        await connection.ExecuteAsync(@"INSERT INTO employee_daily_attendance
+(client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
+SELECT @ClientId, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks
+FROM attendance_batch_job_rows
+WHERE job_id=@JobId AND is_valid=TRUE
+ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), check_in_time=VALUES(check_in_time),
+check_out_time=VALUES(check_out_time), total_hours=VALUES(total_hours), remarks=VALUES(remarks);",
+            new { job.ClientId, claim.JobId }, transaction);
+        await RollupDailyAttendanceBatchAsync(connection, transaction, job.ClientId, normalizedRows.Where(row => row.ShouldRollup).Select(row => row.EmployeeId).Distinct().ToArray(), job.Month);
+        await CompleteAttendanceBatchJobAsync(connection, transaction, claim, job.TotalRows, normalizedRows.Count);
+        await transaction.CommitAsync();
+    }
+
+    private async Task UpdateAttendanceBatchJobStageAsync(MySqlConnection connection, AttendanceBatchJobClaim claim, string stage, int completedRows)
+    {
+        var affected = await connection.ExecuteAsync(@"UPDATE attendance_batch_jobs
+SET stage=@Stage, completed_rows=GREATEST(completed_rows, @CompletedRows), lease_expires_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 30 MINUTE)
+WHERE job_id=@JobId AND state='Processing' AND claim_token=@ClaimToken;",
+            new { Stage = stage, CompletedRows = completedRows, claim.JobId, claim.ClaimToken });
+        if (affected != 1) throw new InvalidOperationException("Attendance batch job lease was lost.");
+    }
+
+    private static async Task CompleteAttendanceBatchJobAsync(MySqlConnection connection, MySqlTransaction transaction, AttendanceBatchJobClaim claim, int totalRows, int savedRows)
+    {
+        var affected = await connection.ExecuteAsync(@"UPDATE attendance_batch_jobs
+SET state='Completed', stage='Completed', completed_rows=@TotalRows, saved_rows=@SavedRows, errors_json=JSON_ARRAY(),
+    completed_at=UTC_TIMESTAMP(), active_scope_key=NULL, claim_token=NULL, claimed_at=NULL, lease_expires_at=NULL
+WHERE job_id=@JobId AND state='Processing' AND claim_token=@ClaimToken;",
+            new { TotalRows = totalRows, SavedRows = savedRows, claim.JobId, claim.ClaimToken }, transaction);
+        if (affected != 1)
+            throw new InvalidOperationException("Attendance batch job could not be marked complete.");
+        await connection.ExecuteAsync("DELETE FROM attendance_batch_job_rows WHERE job_id=@JobId", new { claim.JobId }, transaction);
+    }
+
+    private async Task FailAttendanceBatchJobAsync(AttendanceBatchJobClaim claim, string error)
+    {
+        var message = string.IsNullOrWhiteSpace(error) ? "Attendance batch job failed." : error.Trim();
+        if (message.Length > 1000) message = message[..1000];
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+        var affected = await connection.ExecuteAsync(@"UPDATE attendance_batch_jobs
+SET state='Failed', stage='Failed', errors_json=@ErrorsJson, completed_at=UTC_TIMESTAMP(),
+    active_scope_key=NULL, claim_token=NULL, claimed_at=NULL, lease_expires_at=NULL
+WHERE job_id=@JobId AND state='Processing' AND claim_token=@ClaimToken;",
+            new { ErrorsJson = JsonSerializer.Serialize(new[] { message }), claim.JobId, claim.ClaimToken }, transaction);
+        if (affected == 1)
+            await connection.ExecuteAsync("DELETE FROM attendance_batch_job_rows WHERE job_id=@JobId", new { claim.JobId }, transaction);
+        await transaction.CommitAsync();
+    }
+
+    private static async Task<AttendanceBatchJobDbRow?> ReadAttendanceBatchJobAsync(MySqlConnection connection, string jobId) =>
+        await connection.QueryFirstOrDefaultAsync<AttendanceBatchJobDbRow>(@"SELECT job_id AS JobId, client_id AS ClientId, attendance_month AS Month,
+state AS State, stage AS Stage, total_rows AS TotalRows, completed_rows AS CompletedRows, saved_rows AS SavedRows,
+COALESCE(CAST(errors_json AS CHAR), '[]') AS ErrorsJson, claim_token AS ClaimToken, created_at AS CreatedAt, started_at AS StartedAt, completed_at AS CompletedAt
+FROM attendance_batch_jobs WHERE job_id=@JobId;", new { JobId = jobId });
+
+    private static AttendanceBatchJobStatus ToAttendanceBatchJobStatus(AttendanceBatchJobDbRow row)
+    {
+        List<string> errors;
+        try { errors = string.IsNullOrWhiteSpace(row.ErrorsJson) ? [] : JsonSerializer.Deserialize<List<string>>(row.ErrorsJson) ?? []; }
+        catch { errors = string.IsNullOrWhiteSpace(row.ErrorsJson) ? [] : [row.ErrorsJson]; }
+        return new AttendanceBatchJobStatus
+        {
+            JobId = row.JobId,
+            ClientId = row.ClientId,
+            Month = row.Month,
+            State = row.State,
+            Stage = row.Stage,
+            TotalRows = row.TotalRows,
+            CompletedRows = row.CompletedRows,
+            SavedRows = row.SavedRows,
+            Errors = errors,
+            CreatedAt = row.CreatedAt,
+            StartedAt = row.StartedAt,
+            CompletedAt = row.CompletedAt
+        };
+    }
+
+    private static async Task UpsertAttendanceBatchJobRowsAsync(MySqlConnection connection, MySqlTransaction? transaction, string jobId, IReadOnlyList<AttendanceBatchStagedRow> rows, Func<int, Task>? progress = null)
+    {
+        var completed = 0;
+        foreach (var chunk in rows.Chunk(500))
+        {
+            var sql = new StringBuilder(@"INSERT INTO attendance_batch_job_rows
+(job_id, `row_number`, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks, is_valid, should_rollup) VALUES ");
+            var parameters = new DynamicParameters();
+            parameters.Add("JobId", jobId);
+            for (var index = 0; index < chunk.Length; index++)
+            {
+                if (index > 0) sql.Append(',');
+                sql.Append($"(@JobId,@RowNumber{index},@EmployeeId{index},@AttendanceDate{index},@Status{index},@PayableValue{index},@CheckInTime{index},@CheckOutTime{index},@TotalHours{index},@Remarks{index},@IsValid{index},@ShouldRollup{index})");
+                var row = chunk[index];
+                parameters.Add($"RowNumber{index}", row.RowNumber);
+                parameters.Add($"EmployeeId{index}", row.EmployeeId);
+                parameters.Add($"AttendanceDate{index}", row.AttendanceDate.Date);
+                parameters.Add($"Status{index}", row.Status ?? string.Empty);
+                parameters.Add($"PayableValue{index}", row.PayableValue);
+                parameters.Add($"CheckInTime{index}", row.CheckInTime);
+                parameters.Add($"CheckOutTime{index}", row.CheckOutTime);
+                parameters.Add($"TotalHours{index}", row.TotalHours);
+                parameters.Add($"Remarks{index}", row.Remarks ?? string.Empty);
+                parameters.Add($"IsValid{index}", row.IsValid);
+                parameters.Add($"ShouldRollup{index}", row.ShouldRollup);
+            }
+            sql.Append(@" ON DUPLICATE KEY UPDATE employee_id=VALUES(employee_id), attendance_date=VALUES(attendance_date), status=VALUES(status),
+payable_value=VALUES(payable_value), check_in_time=VALUES(check_in_time), check_out_time=VALUES(check_out_time),
+total_hours=VALUES(total_hours), remarks=VALUES(remarks), is_valid=VALUES(is_valid), should_rollup=VALUES(should_rollup);");
+            await connection.ExecuteAsync(sql.ToString(), parameters, transaction);
+            completed += chunk.Length;
+            if (progress is not null) await progress(completed);
+        }
+    }
+
     private static string? ValidateDailyAttendance(SaveDailyAttendanceRequest request)
     {
         if (request.ClientId <= 0 || request.EmployeeId <= 0) return "Select a client and employee.";
@@ -1842,7 +2254,8 @@ ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(p
 
     private static async Task RollupDailyAttendanceBatchAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, int[] employeeIds, string month)
     {
-        if (employeeIds.Length == 0) return;
+        var distinctEmployeeIds = employeeIds.Distinct().ToArray();
+        if (distinctEmployeeIds.Length == 0) return;
         var policyRows = await connection.QueryAsync<EmployeeAttendanceCycleRow>(@"SELECT age.employee_id AS EmployeeId,
 g.attendance_cycle_start_day AS AttendanceCycleStartDay,
 g.attendance_cycle_end_day AS AttendanceCycleEndDay,
@@ -1850,15 +2263,51 @@ g.id AS AttendanceGroupId
 FROM attendance_group_employees age
 JOIN attendance_groups g ON g.id=age.attendance_group_id AND g.client_id=@ClientId AND g.is_active=TRUE
 WHERE age.employee_id IN @EmployeeIds
-ORDER BY age.employee_id, g.id;", new { ClientId = clientId, EmployeeIds = employeeIds }, transaction);
+ORDER BY age.employee_id, g.id;", new { ClientId = clientId, EmployeeIds = distinctEmployeeIds }, transaction);
         var cycleByEmployee = policyRows
             .GroupBy(row => row.EmployeeId)
             .ToDictionary(group => group.Key, group => group.First());
-        foreach (var employeeId in employeeIds.Distinct())
+        var cycles = distinctEmployeeIds.Select(employeeId =>
         {
             var policy = cycleByEmployee.GetValueOrDefault(employeeId);
             var (cycleStart, cycleEnd) = AttendanceCycleRange(month, policy?.AttendanceCycleStartDay ?? 1, policy?.AttendanceCycleEndDay ?? 31);
-            await RollupDailyAttendanceAsync(connection, clientId, employeeId, month, cycleStart, cycleEnd, transaction);
+            return new EmployeeAttendanceCycleRangeRow { EmployeeId = employeeId, CycleStart = cycleStart, CycleEnd = cycleEnd };
+        }).ToArray();
+
+        // A derived cycle table lets MySQL aggregate and upsert an entire chunk in
+        // one round trip instead of issuing SELECT + UPSERT for every employee.
+        foreach (var chunk in cycles.Chunk(400))
+        {
+            var parameters = new DynamicParameters();
+            parameters.Add("ClientId", clientId);
+            parameters.Add("Month", month);
+            var cycleSql = new StringBuilder();
+            for (var index = 0; index < chunk.Length; index++)
+            {
+                if (index > 0) cycleSql.Append(" UNION ALL ");
+                cycleSql.Append($"SELECT @EmployeeId{index} AS employee_id, @CycleStart{index} AS cycle_start, @CycleEnd{index} AS cycle_end");
+                parameters.Add($"EmployeeId{index}", chunk[index].EmployeeId);
+                parameters.Add($"CycleStart{index}", chunk[index].CycleStart);
+                parameters.Add($"CycleEnd{index}", chunk[index].CycleEnd);
+            }
+
+            var sql = $@"INSERT INTO employee_monthly_attendance
+(client_id, employee_id, attendance_month, working_days, present_days, payable_days, lop_days, source_type, remarks)
+SELECT @ClientId, cycle.employee_id, @Month,
+       COUNT(d.id) AS working_days,
+       COALESCE(SUM(CASE WHEN d.status='Present' THEN d.payable_value ELSE 0 END), 0) AS present_days,
+       COALESCE(SUM(CASE WHEN d.status IN ('WO','H') THEN 1 ELSE d.payable_value END), 0) AS payable_days,
+       GREATEST(0, COUNT(d.id) - COALESCE(SUM(CASE WHEN d.status IN ('WO','H') THEN 1 ELSE d.payable_value END), 0)) AS lop_days,
+       'Date-wise', 'Rolled up from date-wise attendance'
+FROM ({cycleSql}) cycle
+LEFT JOIN employee_daily_attendance d
+  ON d.client_id=@ClientId
+ AND d.employee_id=cycle.employee_id
+ AND d.attendance_date BETWEEN cycle.cycle_start AND cycle.cycle_end
+GROUP BY cycle.employee_id
+ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(present_days),
+payable_days=VALUES(payable_days), lop_days=VALUES(lop_days), source_type='Date-wise', remarks=VALUES(remarks);";
+            await connection.ExecuteAsync(sql, parameters, transaction);
         }
     }
 
@@ -1906,6 +2355,40 @@ ORDER BY age.employee_id, g.id;", new { ClientId = clientId, EmployeeIds = emplo
         var minutes = (decimal)(checkOut.Value - checkIn.Value).TotalMinutes;
         if (minutes < 0) minutes += 24 * 60;
         return Math.Clamp(Math.Round(minutes / 60, 2), 0, 24);
+    }
+
+    private static async Task<string?> ValidateLeaveBalancesBatchAsync(MySqlConnection connection, int clientId, string month, IReadOnlyList<AttendanceBatchStagedRow> rows, IReadOnlyDictionary<string, AttendanceLeaveRule> leaveTypes)
+    {
+        var requested = rows
+            .Where(row => leaveTypes.TryGetValue(row.Status, out var leaveType) && string.Equals(leaveType.Type, "Paid", StringComparison.OrdinalIgnoreCase) && !leaveType.AllowNegativeLeaveBalance)
+            .GroupBy(row => (row.EmployeeId, LeaveTypeId: leaveTypes[row.Status].Id))
+            .ToDictionary(group => group.Key, group => group.Sum(row => row.PayableValue > 0 ? row.PayableValue : 1));
+        if (requested.Count == 0) return null;
+
+        var employeeIds = requested.Keys.Select(key => key.EmployeeId).Distinct().ToArray();
+        var leaveTypeIds = requested.Keys.Select(key => key.LeaveTypeId).Distinct().ToArray();
+        var monthEnd = DateTime.ParseExact($"{month}-01", "yyyy-MM-dd", CultureInfo.InvariantCulture).AddMonths(1).AddDays(-1);
+        var balanceRows = await connection.QueryAsync<AttendanceBatchLeaveBalanceRow>(@"SELECT balance.employee_id AS EmployeeId, balance.leave_type_id AS LeaveTypeId, balance.balance_count AS Balance
+FROM employee_leave_balances balance
+JOIN (
+    SELECT employee_id, leave_type_id, MAX(balance_date) AS balance_date
+    FROM employee_leave_balances
+    WHERE client_id=@ClientId AND employee_id IN @EmployeeIds AND leave_type_id IN @LeaveTypeIds AND balance_date<=@MonthEnd
+    GROUP BY employee_id, leave_type_id
+) latest ON latest.employee_id=balance.employee_id AND latest.leave_type_id=balance.leave_type_id AND latest.balance_date=balance.balance_date
+WHERE balance.client_id=@ClientId;", new { ClientId = clientId, EmployeeIds = employeeIds, LeaveTypeIds = leaveTypeIds, MonthEnd = monthEnd });
+        var balances = balanceRows.ToDictionary(row => (row.EmployeeId, row.LeaveTypeId), row => row.Balance);
+        var leaveTypeById = leaveTypes.Values.ToDictionary(row => row.Id);
+        foreach (var item in requested)
+        {
+            var balance = balances.GetValueOrDefault(item.Key);
+            if (item.Value > balance + 0.001m)
+            {
+                var name = leaveTypeById[item.Key.LeaveTypeId].Name;
+                return $"{name} balance is {balance:0.##}; selected {item.Value:0.##}.";
+            }
+        }
+        return null;
     }
 
     private static async Task<string?> ValidateLeaveBalancesAsync(MySqlConnection connection, int clientId, int employeeId, string month, IEnumerable<AttendanceSaveRow> rows, IReadOnlyDictionary<string, AttendanceLeaveRule> leaveTypes)
@@ -1959,14 +2442,48 @@ WHERE lt.client_id=@ClientId AND lt.code IN @Codes;", new { ClientId = clientId,
     }
 
     private sealed record AttendanceSaveRow(string Status, decimal PayableValue);
+    private sealed record AttendanceBatchJobClaim(string JobId, Guid ClaimToken);
+    private sealed class AttendanceBatchJobDbRow
+    {
+        public Guid JobId { get; set; }
+        public int ClientId { get; set; }
+        public string Month { get; set; } = string.Empty;
+        public string State { get; set; } = "Queued";
+        public string Stage { get; set; } = "Queued";
+        public int TotalRows { get; set; }
+        public int CompletedRows { get; set; }
+        public int SavedRows { get; set; }
+        public string ErrorsJson { get; set; } = "[]";
+        public Guid? ClaimToken { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime? StartedAt { get; set; }
+        public DateTime? CompletedAt { get; set; }
+    }
+    private sealed class AttendanceBatchStagedRow
+    {
+        public int RowNumber { get; set; }
+        public int EmployeeId { get; set; }
+        public DateTime AttendanceDate { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public decimal PayableValue { get; set; }
+        public TimeSpan? CheckInTime { get; set; }
+        public TimeSpan? CheckOutTime { get; set; }
+        public decimal TotalHours { get; set; }
+        public string Remarks { get; set; } = string.Empty;
+        public bool IsValid { get; set; }
+        public bool ShouldRollup { get; set; } = true;
+    }
+    private sealed class AttendanceBatchLeaveBalanceRow { public int EmployeeId { get; set; } public int LeaveTypeId { get; set; } public decimal Balance { get; set; } }
     private sealed class AttendanceLeaveRule { public int Id { get; set; } public string Code { get; set; } = string.Empty; public string Name { get; set; } = string.Empty; public string Type { get; set; } = "Paid"; public bool AllowNegativeLeaveBalance { get; set; } }
     private sealed class LeaveBalanceRow { public string Code { get; set; } = string.Empty; public decimal Balance { get; set; } }
     private sealed class EmployeeAttendanceCycleRow { public int EmployeeId { get; set; } public int AttendanceCycleStartDay { get; set; } = 1; public int AttendanceCycleEndDay { get; set; } = 31; public int AttendanceGroupId { get; set; } }
+    private sealed class EmployeeAttendanceCycleRangeRow { public int EmployeeId { get; set; } public DateTime CycleStart { get; set; } public DateTime CycleEnd { get; set; } }
 
-    private static readonly string[] LeaveTypeImportHeaders = ["Leave Type Name", "Code", "Type", "Description", "Entitlement", "Entitlement Period", "Pro Rate New Joinees", "Reset Enabled", "Reset Frequency", "Carry Forward", "Max Carry Forward", "Encash", "Max Encashment", "Allow Negative Balance", "Allow Half Day", "Negative Balance Handling", "Allow Past Dates", "Past Date Limit Type", "Past Date Limit Days", "Allow Future Dates", "Future Date Limit Type", "Future Date Limit Days", "Applicability", "Work Location", "Department", "Designation", "Gender", "Effective From", "Expires On", "Postpone Credits", "Postpone Credit Value", "Postpone Credit Unit", "Active"];
+    private static readonly string[] LeaveTypeImportHeaders = ["Leave Type Name", "Code", "Type", "Description", "Entitlement", "Entitlement Period", "Pro Rate New Joinees", "Reset Enabled", "Reset Frequency", "Carry Forward", "Max Carry Forward", "Encash", "Max Encashment", "Allow Negative Balance", "Allow Half Day", "Negative Balance Handling", "Attendance Action", "Allow Past Dates", "Past Date Limit Type", "Past Date Limit Days", "Allow Future Dates", "Future Date Limit Type", "Future Date Limit Days", "Applicability", "Work Location", "Department", "Designation", "Gender", "Effective From", "Expires On", "Postpone Credits", "Postpone Credit Value", "Postpone Credit Unit", "Active"];
     private static readonly string[] LeaveTypeTypes = ["Paid", "Unpaid"];
     private static readonly string[] LeavePeriods = ["Monthly", "Yearly"];
     private static readonly string[] NegativeBalanceHandlingOptions = ["Mark as LOP", "Without limit", "Up to year-end limit"];
+    private static readonly string[] AttendanceActionOptions = ["Mark as leave", "Mark as present"];
     private static readonly string[] DateLimitTypes = ["No limit", "Set number of days"];
     private static readonly string[] ApplicabilityModes = ["All employees", "Criteria based employees"];
     private static readonly string[] PostponeCreditUnits = ["Days", "Months"];
@@ -2230,9 +2747,9 @@ AND (
             : "Holiday";
 
     private static Task UpsertPolicyAsync(MySqlConnection connection, MySqlTransaction transaction, int leaveTypeId, SaveLeaveTypeRequest request) =>
-        connection.ExecuteAsync(@"INSERT INTO leave_type_policies (leave_type_id, entitlement, entitlement_period, pro_rate_for_new_joinees, reset_enabled, reset_frequency, carry_forward_unused_leaves, max_carry_forward_limit, encash_unused_leaves, max_encashment_limit, allow_negative_leave_balance, allow_half_day, negative_balance_handling, allow_past_dates, past_date_limit_type, past_date_limit_days, allow_future_dates, future_date_limit_type, future_date_limit_days, effective_from, expires_on, postpone_credits_for_new_employees, postpone_credit_value, postpone_credit_unit)
-VALUES (@LeaveTypeId, @Entitlement, @EntitlementPeriod, @ProRateForNewJoinees, @ResetEnabled, @ResetFrequency, @CarryForwardUnusedLeaves, @MaxCarryForwardLimit, @EncashUnusedLeaves, @MaxEncashmentLimit, @AllowNegativeLeaveBalance, @AllowHalfDay, @NegativeBalanceHandling, @AllowPastDates, @PastDateLimitType, @PastDateLimitDays, @AllowFutureDates, @FutureDateLimitType, @FutureDateLimitDays, @EffectiveFrom, @ExpiresOn, @PostponeCreditsForNewEmployees, @PostponeCreditValue, @PostponeCreditUnit)
-ON DUPLICATE KEY UPDATE entitlement=VALUES(entitlement), entitlement_period=VALUES(entitlement_period), pro_rate_for_new_joinees=VALUES(pro_rate_for_new_joinees), reset_enabled=VALUES(reset_enabled), reset_frequency=VALUES(reset_frequency), carry_forward_unused_leaves=VALUES(carry_forward_unused_leaves), max_carry_forward_limit=VALUES(max_carry_forward_limit), encash_unused_leaves=VALUES(encash_unused_leaves), max_encashment_limit=VALUES(max_encashment_limit), allow_negative_leave_balance=VALUES(allow_negative_leave_balance), allow_half_day=VALUES(allow_half_day), negative_balance_handling=VALUES(negative_balance_handling), allow_past_dates=VALUES(allow_past_dates), past_date_limit_type=VALUES(past_date_limit_type), past_date_limit_days=VALUES(past_date_limit_days), allow_future_dates=VALUES(allow_future_dates), future_date_limit_type=VALUES(future_date_limit_type), future_date_limit_days=VALUES(future_date_limit_days), effective_from=VALUES(effective_from), expires_on=VALUES(expires_on), postpone_credits_for_new_employees=VALUES(postpone_credits_for_new_employees), postpone_credit_value=VALUES(postpone_credit_value), postpone_credit_unit=VALUES(postpone_credit_unit);", new { LeaveTypeId = leaveTypeId, request.Entitlement, request.EntitlementPeriod, request.ProRateForNewJoinees, request.ResetEnabled, request.ResetFrequency, request.CarryForwardUnusedLeaves, request.MaxCarryForwardLimit, request.EncashUnusedLeaves, request.MaxEncashmentLimit, request.AllowNegativeLeaveBalance, request.AllowHalfDay, request.NegativeBalanceHandling, request.AllowPastDates, request.PastDateLimitType, request.PastDateLimitDays, request.AllowFutureDates, request.FutureDateLimitType, request.FutureDateLimitDays, request.EffectiveFrom, request.ExpiresOn, request.PostponeCreditsForNewEmployees, request.PostponeCreditValue, request.PostponeCreditUnit }, transaction);
+        connection.ExecuteAsync(@"INSERT INTO leave_type_policies (leave_type_id, entitlement, entitlement_period, pro_rate_for_new_joinees, reset_enabled, reset_frequency, carry_forward_unused_leaves, max_carry_forward_limit, encash_unused_leaves, max_encashment_limit, allow_negative_leave_balance, allow_half_day, negative_balance_handling, attendance_action, allow_past_dates, past_date_limit_type, past_date_limit_days, allow_future_dates, future_date_limit_type, future_date_limit_days, effective_from, expires_on, postpone_credits_for_new_employees, postpone_credit_value, postpone_credit_unit)
+VALUES (@LeaveTypeId, @Entitlement, @EntitlementPeriod, @ProRateForNewJoinees, @ResetEnabled, @ResetFrequency, @CarryForwardUnusedLeaves, @MaxCarryForwardLimit, @EncashUnusedLeaves, @MaxEncashmentLimit, @AllowNegativeLeaveBalance, @AllowHalfDay, @NegativeBalanceHandling, @AttendanceAction, @AllowPastDates, @PastDateLimitType, @PastDateLimitDays, @AllowFutureDates, @FutureDateLimitType, @FutureDateLimitDays, @EffectiveFrom, @ExpiresOn, @PostponeCreditsForNewEmployees, @PostponeCreditValue, @PostponeCreditUnit)
+ON DUPLICATE KEY UPDATE entitlement=VALUES(entitlement), entitlement_period=VALUES(entitlement_period), pro_rate_for_new_joinees=VALUES(pro_rate_for_new_joinees), reset_enabled=VALUES(reset_enabled), reset_frequency=VALUES(reset_frequency), carry_forward_unused_leaves=VALUES(carry_forward_unused_leaves), max_carry_forward_limit=VALUES(max_carry_forward_limit), encash_unused_leaves=VALUES(encash_unused_leaves), max_encashment_limit=VALUES(max_encashment_limit), allow_negative_leave_balance=VALUES(allow_negative_leave_balance), allow_half_day=VALUES(allow_half_day), negative_balance_handling=VALUES(negative_balance_handling), attendance_action=VALUES(attendance_action), allow_past_dates=VALUES(allow_past_dates), past_date_limit_type=VALUES(past_date_limit_type), past_date_limit_days=VALUES(past_date_limit_days), allow_future_dates=VALUES(allow_future_dates), future_date_limit_type=VALUES(future_date_limit_type), future_date_limit_days=VALUES(future_date_limit_days), effective_from=VALUES(effective_from), expires_on=VALUES(expires_on), postpone_credits_for_new_employees=VALUES(postpone_credits_for_new_employees), postpone_credit_value=VALUES(postpone_credit_value), postpone_credit_unit=VALUES(postpone_credit_unit);", new { LeaveTypeId = leaveTypeId, request.Entitlement, request.EntitlementPeriod, request.ProRateForNewJoinees, request.ResetEnabled, request.ResetFrequency, request.CarryForwardUnusedLeaves, request.MaxCarryForwardLimit, request.EncashUnusedLeaves, request.MaxEncashmentLimit, request.AllowNegativeLeaveBalance, request.AllowHalfDay, request.NegativeBalanceHandling, request.AttendanceAction, request.AllowPastDates, request.PastDateLimitType, request.PastDateLimitDays, request.AllowFutureDates, request.FutureDateLimitType, request.FutureDateLimitDays, request.EffectiveFrom, request.ExpiresOn, request.PostponeCreditsForNewEmployees, request.PostponeCreditValue, request.PostponeCreditUnit }, transaction);
 
     private static Task UpsertApplicabilityAsync(MySqlConnection connection, MySqlTransaction transaction, int leaveTypeId, SaveLeaveTypeRequest request) =>
         connection.ExecuteAsync(@"INSERT INTO leave_type_applicability (leave_type_id, applicability_mode, work_location, department, designation, gender)
@@ -2240,7 +2757,7 @@ VALUES (@LeaveTypeId, @ApplicabilityMode, @WorkLocation, @Department, @Designati
 ON DUPLICATE KEY UPDATE applicability_mode=VALUES(applicability_mode), work_location=VALUES(work_location), department=VALUES(department), designation=VALUES(designation), gender=VALUES(gender);", new { LeaveTypeId = leaveTypeId, request.ApplicabilityMode, request.WorkLocation, request.Department, request.Designation, request.Gender }, transaction);
 
     private const string LeaveTypeSelectSql = @"SELECT lt.id AS Id, lt.client_id AS ClientId, lt.name AS Name, lt.code AS Code, lt.type AS Type, lt.description AS Description, lt.is_active AS IsActive, lt.created_at AS CreatedAt, lt.updated_at AS UpdatedAt,
-p.entitlement AS Entitlement, p.entitlement_period AS EntitlementPeriod, p.pro_rate_for_new_joinees AS ProRateForNewJoinees, p.reset_enabled AS ResetEnabled, p.reset_frequency AS ResetFrequency, p.carry_forward_unused_leaves AS CarryForwardUnusedLeaves, p.max_carry_forward_limit AS MaxCarryForwardLimit, p.encash_unused_leaves AS EncashUnusedLeaves, p.max_encashment_limit AS MaxEncashmentLimit, p.allow_negative_leave_balance AS AllowNegativeLeaveBalance, COALESCE(p.allow_half_day, TRUE) AS AllowHalfDay, p.negative_balance_handling AS NegativeBalanceHandling, p.allow_past_dates AS AllowPastDates, p.past_date_limit_type AS PastDateLimitType, p.past_date_limit_days AS PastDateLimitDays, p.allow_future_dates AS AllowFutureDates, p.future_date_limit_type AS FutureDateLimitType, p.future_date_limit_days AS FutureDateLimitDays, p.effective_from AS EffectiveFrom, p.expires_on AS ExpiresOn, p.postpone_credits_for_new_employees AS PostponeCreditsForNewEmployees, p.postpone_credit_value AS PostponeCreditValue, p.postpone_credit_unit AS PostponeCreditUnit,
+p.entitlement AS Entitlement, p.entitlement_period AS EntitlementPeriod, p.pro_rate_for_new_joinees AS ProRateForNewJoinees, p.reset_enabled AS ResetEnabled, p.reset_frequency AS ResetFrequency, p.carry_forward_unused_leaves AS CarryForwardUnusedLeaves, p.max_carry_forward_limit AS MaxCarryForwardLimit, p.encash_unused_leaves AS EncashUnusedLeaves, p.max_encashment_limit AS MaxEncashmentLimit, p.allow_negative_leave_balance AS AllowNegativeLeaveBalance, COALESCE(p.allow_half_day, TRUE) AS AllowHalfDay, p.negative_balance_handling AS NegativeBalanceHandling, COALESCE(p.attendance_action, 'Mark as leave') AS AttendanceAction, p.allow_past_dates AS AllowPastDates, p.past_date_limit_type AS PastDateLimitType, p.past_date_limit_days AS PastDateLimitDays, p.allow_future_dates AS AllowFutureDates, p.future_date_limit_type AS FutureDateLimitType, p.future_date_limit_days AS FutureDateLimitDays, p.effective_from AS EffectiveFrom, p.expires_on AS ExpiresOn, p.postpone_credits_for_new_employees AS PostponeCreditsForNewEmployees, p.postpone_credit_value AS PostponeCreditValue, p.postpone_credit_unit AS PostponeCreditUnit,
 a.applicability_mode AS ApplicabilityMode, a.work_location AS WorkLocation, a.department AS Department, a.designation AS Designation, a.gender AS Gender
 FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id = lt.id JOIN leave_type_applicability a ON a.leave_type_id = lt.id";
 

@@ -215,6 +215,23 @@ public class SaveDailyAttendanceBatchRequest
     public int ClientId { get; set; }
     public string Month { get; set; } = string.Empty;
     public List<EmployeeDailyAttendance> Rows { get; set; } = [];
+    public List<int>? RollupEmployeeIds { get; set; }
+}
+
+public class AttendanceBatchJobStatus
+{
+    public Guid JobId { get; set; }
+    public int ClientId { get; set; }
+    public string Month { get; set; } = string.Empty;
+    public string State { get; set; } = "Queued";
+    public string Stage { get; set; } = "Queued";
+    public int TotalRows { get; set; }
+    public int CompletedRows { get; set; }
+    public int SavedRows { get; set; }
+    public List<string> Errors { get; set; } = [];
+    public DateTime CreatedAt { get; set; }
+    public DateTime? StartedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
 }
 
 public class ClientAttendanceSchedule
@@ -266,6 +283,7 @@ public class LeaveType
     public bool AllowNegativeLeaveBalance { get; set; }
     public bool AllowHalfDay { get; set; } = true;
     public string NegativeBalanceHandling { get; set; } = "Mark as LOP";
+    public string AttendanceAction { get; set; } = "Mark as leave";
     public bool AllowPastDates { get; set; }
     public string PastDateLimitType { get; set; } = "No limit";
     public int? PastDateLimitDays { get; set; }

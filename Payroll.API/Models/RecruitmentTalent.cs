@@ -18,9 +18,9 @@ public class RecruitmentCandidate
     public int TotalExperienceMonths { get; set; }
     public string CurrentLocation { get; set; } = "";
     public string PreferredLocationsJson { get; set; } = "[]";
-    public int NoticePeriodDays { get; set; }
-    public decimal CurrentCtc { get; set; }
-    public decimal ExpectedCtc { get; set; }
+    public int? NoticePeriodDays { get; set; }
+    public decimal? CurrentCtc { get; set; }
+    public decimal? ExpectedCtc { get; set; }
     public string HighestQualification { get; set; } = "";
     public string SourceType { get; set; } = "Direct";
     public long? SourceReferenceId { get; set; }
@@ -49,9 +49,9 @@ public class SaveRecruitmentCandidate
     public int TotalExperienceMonths { get; set; }
     public string CurrentLocation { get; set; } = "";
     public string PreferredLocationsJson { get; set; } = "[]";
-    public int NoticePeriodDays { get; set; }
-    public decimal CurrentCtc { get; set; }
-    public decimal ExpectedCtc { get; set; }
+    public int? NoticePeriodDays { get; set; }
+    public decimal? CurrentCtc { get; set; }
+    public decimal? ExpectedCtc { get; set; }
     public string HighestQualification { get; set; } = "";
     public string SourceType { get; set; } = "Direct";
     public long? SourceReferenceId { get; set; }
@@ -144,6 +144,7 @@ public class RecruitmentCandidateApplication
     public string CandidateEmail { get; set; } = "";
     public string CandidatePhone { get; set; } = "";
     public long PositionId { get; set; }
+    public long? JobPostingId { get; set; }
     public string PositionCode { get; set; } = "";
     public string PositionTitle { get; set; } = "";
     public int ClientId { get; set; }
@@ -171,6 +172,7 @@ public class SaveCandidateApplication
 {
     public long CandidateId { get; set; }
     public long PositionId { get; set; }
+    public long? JobPostingId { get; set; }
     public string SourceType { get; set; } = "Direct";
     public long? SourceReferenceId { get; set; }
     public long? ResumeId { get; set; }
@@ -424,6 +426,8 @@ public class RecruitmentInterview
     public int DefaultDurationMinutes { get; set; }
     public int MinimumPanelCount { get; set; }
     public decimal MinimumPassingScore { get; set; }
+    public string ScoreInputMode { get; set; } = "PercentageWeighted";
+    public string PanelAggregationMethod { get; set; } = "Average";
     public bool FeedbackRequired { get; set; }
     public bool CalendarEnabled { get; set; }
     public bool AllowReschedule { get; set; } = true;
@@ -463,12 +467,15 @@ public class RecruitmentInterviewSchedulingContext
     public int DefaultDurationMinutes { get; set; } = 60;
     public int MinimumPanelCount { get; set; } = 1;
     public decimal MinimumPassingScore { get; set; } = 60;
+    public string ScoreInputMode { get; set; } = "PercentageWeighted";
+    public string PanelAggregationMethod { get; set; } = "Average";
     public bool FeedbackRequired { get; set; }
     public bool CalendarEnabled { get; set; } = true;
     public bool AllowReschedule { get; set; } = true;
     public string TimeZoneId { get; set; } = "Asia/Kolkata";
     public int NextAttemptNumber { get; set; } = 1;
     public List<RecruitmentInterviewStageCompetency> Competencies { get; set; } = [];
+    public List<int> DefaultPanelUserIds { get; set; } = [];
 }
 
 public class RecruitmentInterviewFeedback
@@ -647,6 +654,39 @@ public class CandidateResumeUploadRequest
     public DateTime? IssueDate { get; set; }
     public DateTime? ExpiryDate { get; set; }
     public IFormFile? File { get; set; }
+}
+
+public class RecruitmentResumeIntakeRequest
+{
+    public int ClientId { get; set; }
+    public long PositionId { get; set; }
+    public long? JobPostingId { get; set; }
+    public long? FieldConfigurationId { get; set; }
+    public string SourceType { get; set; } = "Direct Sourcing";
+    public List<IFormFile> Files { get; set; } = [];
+}
+
+public class RecruitmentResumeIntakeItem
+{
+    public string FileName { get; set; } = "";
+    public bool Success { get; set; }
+    public string Error { get; set; } = "";
+    public string ParsingStatus { get; set; } = "";
+    public string DetectedName { get; set; } = "";
+    public string DetectedEmail { get; set; } = "";
+    public string DetectedPhone { get; set; } = "";
+    public string DetectedAddress { get; set; } = "";
+    public RecruitmentCandidate? Candidate { get; set; }
+    public RecruitmentCandidateResume? Resume { get; set; }
+    public RecruitmentCandidateApplication? Application { get; set; }
+}
+
+public class RecruitmentResumeIntakeResult
+{
+    public int TotalFiles { get; set; }
+    public int Imported { get; set; }
+    public int NeedsReview { get; set; }
+    public List<RecruitmentResumeIntakeItem> Items { get; set; } = [];
 }
 
 public class RecruitmentTalentDashboard

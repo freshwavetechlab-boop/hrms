@@ -12,6 +12,8 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
     private const int MaxExtractedCharacters = 2_000_000;
     private static readonly Regex EmailPattern = new(@"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex PhonePattern = new(@"(?<!\d)(?:\+?91[\s\-]?)?[6-9]\d{9}(?!\d)", RegexOptions.Compiled);
+    private static readonly Regex NameLabelPattern = new(@"(?im)^\s*(?:candidate\s+)?(?:full\s+)?name\s*[:\-]\s*(?<value>[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){1,4})\s*$", RegexOptions.Compiled);
+    private static readonly Regex AddressLabelPattern = new(@"(?im)^\s*(?:(?:current|permanent|residential|postal|mailing)\s+)?address\s*[:\-]\s*(?<value>[^\r\n]{8,300})(?:\r?\n(?<next>[^\r\n]{8,180}))?", RegexOptions.Compiled);
 
     public async Task<ResumeParseResult> ParseAsync(IFormFile file, CancellationToken cancellationToken)
     {
@@ -41,6 +43,8 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
             var status = string.IsNullOrWhiteSpace(text) ? "NeedsReview" : "Parsed";
             var email = EmailPattern.Match(text).Value;
             var phone = PhonePattern.Match(text).Value;
+            var fullName = ExtractFullName(text, fileName);
+            var residentialAddress = ExtractResidentialAddress(text);
             var sections = BuildSections(text);
             var summary = sections.FirstOrDefault(section => section.SectionCode == "SUMMARY")?.Content
                 ?? sections.FirstOrDefault()?.Content
@@ -48,6 +52,8 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
             var facts = new ResumeParsedFacts(
                 email,
                 phone,
+                fullName,
+                residentialAddress,
                 text.Length,
                 text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length,
                 "und",
@@ -131,6 +137,39 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
             .ToList();
         if (values.Count == 0) return null;
         return (int)Math.Round(values.Max() * 12m, MidpointRounding.AwayFromZero);
+    }
+
+    private static string ExtractFullName(string text, string fileName)
+    {
+        var labelled = NameLabelPattern.Match(text).Groups["value"].Value.Trim();
+        if (!string.IsNullOrWhiteSpace(labelled)) return labelled;
+        var ignored = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "resume", "curriculum vitae", "cv", "profile", "professional summary", "summary",
+            "contact", "contact details", "personal details", "career objective", "objective"
+        };
+        foreach (var rawLine in text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Take(18))
+        {
+            var line = Regex.Replace(rawLine.Trim(), @"\s+", " ").Trim(' ', '-', '|');
+            if (line.Length is < 4 or > 80 || ignored.Contains(line) || line.Contains('@') || PhonePattern.IsMatch(line)) continue;
+            if (Regex.IsMatch(line, @"https?://|www\.|linkedin|github|address|email|phone|mobile", RegexOptions.IgnoreCase)) continue;
+            if (Regex.IsMatch(line, @"^[A-Za-z][A-Za-z.'-]+(?:\s+[A-Za-z][A-Za-z.'-]+){1,4}$")) return line;
+        }
+        var fallback = Regex.Replace(Path.GetFileNameWithoutExtension(fileName), @"(?i)\b(resume|cv|profile|updated|latest|final)\b", " ");
+        fallback = Regex.Replace(fallback, @"[_\-\d]+", " ");
+        fallback = Regex.Replace(fallback, @"\s+", " ").Trim();
+        return Regex.IsMatch(fallback, @"^[A-Za-z][A-Za-z.'-]+(?:\s+[A-Za-z][A-Za-z.'-]+){0,4}$") ? fallback : "";
+    }
+
+    private static string ExtractResidentialAddress(string text)
+    {
+        var match = AddressLabelPattern.Match(text);
+        if (!match.Success) return "";
+        var value = $"{match.Groups["value"].Value} {match.Groups["next"].Value}";
+        value = Regex.Replace(value, @"\s+", " ").Trim(' ', ',', ';', '-');
+        if (EmailPattern.IsMatch(value)) value = value[..value.IndexOf(EmailPattern.Match(value).Value, StringComparison.Ordinal)].Trim(' ', ',', ';', '-');
+        if (PhonePattern.IsMatch(value)) value = value[..value.IndexOf(PhonePattern.Match(value).Value, StringComparison.Ordinal)].Trim(' ', ',', ';', '-');
+        return value.Length <= 500 ? value : value[..500];
     }
 
     private static string ReadDocx(byte[] bytes)
@@ -265,13 +304,15 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
 public sealed record ResumeParsedFacts(
     string Email,
     string Phone,
+    string FullName,
+    string ResidentialAddress,
     int CharacterCount,
     int LineCount,
     string LanguageCode,
     string SummaryText,
     int? TotalExperienceMonths)
 {
-    public static ResumeParsedFacts Empty { get; } = new("", "", 0, 0, "und", "", null);
+    public static ResumeParsedFacts Empty { get; } = new("", "", "", "", 0, 0, "und", "", null);
 }
 
 public sealed record ResumeParsedSection(

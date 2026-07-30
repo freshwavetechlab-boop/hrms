@@ -8,4 +8,76 @@
 .attachment-permission-box strong{color:#344054;font-size:12px}
 .attachment-storage-note{display:block;color:#475467;font-size:12px}
 .attachment-storage-note b{color:#5133cc}
+.attachment-active-write-target{display:flex;align-items:center;gap:11px;margin:0 0 14px;padding:12px 14px;border:1px solid #86efac;border-radius:10px;background:#f0fdf4;color:#166534}
+.attachment-active-write-target>div{display:grid;flex:1;gap:2px;min-width:0}
+.attachment-active-write-target strong{font-size:13px}
+.attachment-active-write-target span:not(.attachment-active-write-dot){overflow:hidden;color:#3f6e4d;font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.attachment-active-write-dot{width:10px;height:10px;border:2px solid #bbf7d0;border-radius:50%;background:#16a34a;box-shadow:0 0 0 3px #dcfce7}
+.attachment-storage-active-row>td{background:#f0fdf4!important}
+.attachment-storage-active-row:hover>td{background:#dcfce7!important}
+.attachment-storage-server-cell,.attachment-storage-health{display:grid;gap:3px;min-width:0}
+.attachment-storage-server-cell>span,.attachment-storage-health>span{overflow:hidden;color:#667085;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.attachment-storage-server-heading{display:grid;justify-items:start;gap:4px;min-width:0;white-space:normal}
+.attachment-storage-server-heading strong{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attachment-storage-server-heading .ant-tag{max-width:100%;margin-inline-end:0;white-space:nowrap}
+.attachment-storage-row-actions{white-space:nowrap}
+.attachment-storage-row-actions .ant-btn-sm{padding-inline:8px}
+.google-drive-connection-panel{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:15px;border:1px solid #dbeafe;border-radius:10px;background:#f8fbff}
+.google-drive-connection-panel>div{display:grid;gap:8px;min-width:0}
+.google-drive-connection-panel strong{color:#1e3a8a;font-size:13px}
+.google-drive-connection-panel p{max-width:680px;margin:0;color:#475467;font-size:12px;line-height:1.55}
+.google-drive-setup-modal{width:min(680px,calc(100vw - 24px))!important}
+.google-drive-setup-content{display:grid;gap:13px;padding-top:4px}
+.google-drive-setup-intro{margin:0;padding:11px 13px;border:1px solid #dbeafe;border-radius:9px;background:#eff6ff;color:#334155;font-size:12px;line-height:1.55}
+.google-drive-setup-step{display:grid;grid-template-columns:28px minmax(0,1fr);gap:11px;padding:12px;border:1px solid #e5e7eb;border-radius:9px}
+.google-drive-setup-step>span{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#5133cc;color:#fff;font-size:12px;font-weight:700}
+.google-drive-setup-step>div{display:grid;gap:7px;min-width:0}
+.google-drive-setup-step strong{color:#172136;font-size:13px}
+.google-drive-setup-step p{margin:0;color:#667085;font-size:12px;line-height:1.5}
+.google-drive-setup-step small{color:#667085;font-size:11px}
+.google-drive-callback-field{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px}
+.google-drive-callback-field .ant-input{font-family:Consolas,monospace;font-size:11px}
+.google-drive-file-picker{display:flex;align-items:center;gap:10px;min-height:40px;padding:7px 10px;border:1px dashed #9ca3af;border-radius:8px;background:#fafafa;cursor:pointer}
+.google-drive-file-picker:hover{border-color:#5133cc;background:#faf9ff}
+.google-drive-file-picker input{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.google-drive-file-picker span{overflow:hidden;color:#344054;font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.google-drive-security-note{padding:10px 12px;border-left:3px solid #16a34a;background:#f0fdf4;color:#3f6249;font-size:11px;line-height:1.5}
+.google-drive-guide-launch{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 14px;border:1px solid #ddd6fe;border-radius:10px;background:linear-gradient(135deg,#faf5ff 0%,#f5f3ff 58%,#eef2ff 100%)}
+.google-drive-guide-launch>div{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:5px 8px;min-width:0}
+.google-drive-guide-launch strong{color:#35227d;font-size:13px}
+.google-drive-guide-launch p{grid-column:1/-1;margin:0;color:#5b5675;font-size:11px;line-height:1.5}
+.google-drive-guide-launch>.ant-btn{flex:0 0 auto;border-color:#8b5cf6;color:#5133cc;font-weight:600}
+.google-drive-guide-modal .ant-modal-body{max-height:min(72vh,760px);overflow:auto;padding-right:8px}
+.google-drive-guide{display:grid;gap:16px;padding-top:4px;color:#344054}
+.google-drive-guide a{color:#3f2db3;font-weight:600;text-decoration:underline;text-decoration-color:#c4b5fd;text-underline-offset:2px}
+.google-drive-guide code{padding:2px 5px;border:1px solid #e5e7eb;border-radius:5px;background:#f8fafc;color:#3f2db3;font-family:Consolas,monospace;font-size:11px;overflow-wrap:anywhere}
+.google-drive-guide-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:19px;border:1px solid #ddd6fe;border-radius:14px;background:radial-gradient(circle at 100% 0%,#ddd6fe 0,transparent 38%),linear-gradient(135deg,#24145f,#5133cc);color:#fff}
+.google-drive-guide-hero>div{display:grid;gap:6px}
+.google-drive-guide-hero span{color:#ddd6fe;font-size:10px;font-weight:800;letter-spacing:.13em}
+.google-drive-guide-hero h3{margin:0;color:#fff;font-size:19px;line-height:1.3}
+.google-drive-guide-hero p{max-width:650px;margin:0;color:#ede9fe;font-size:12px;line-height:1.55}
+.google-drive-guide-hero>.ant-tag{flex:0 0 auto;margin:0;border-color:#86efac;background:#f0fdf4;color:#166534}
+.google-drive-guide-reference{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+.google-drive-guide-reference>div{display:grid;gap:4px;padding:11px 12px;border:1px solid #e5e7eb;border-radius:9px;background:#fff}
+.google-drive-guide-reference span{color:#667085;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.google-drive-guide-reference strong{overflow:hidden;color:#172136;font-size:12px;text-overflow:ellipsis}
+.google-drive-guide-reference .google-drive-guide-callback{grid-template-columns:minmax(0,1fr) auto;align-items:center;grid-column:1/-1}
+.google-drive-guide-callback>span{grid-column:1/-1}
+.google-drive-guide-callback code{min-width:0;padding:7px 9px}
+.google-drive-guide-timeline{display:grid;gap:0}
+.google-drive-guide-step{position:relative;display:grid;grid-template-columns:34px minmax(0,1fr);gap:12px;padding:0 0 16px}
+.google-drive-guide-step:not(:last-child)::before{position:absolute;top:31px;bottom:0;left:15px;width:2px;background:#e9e4ff;content:""}
+.google-drive-guide-step>span{z-index:1;display:grid;place-items:center;width:32px;height:32px;border:4px solid #f5f3ff;border-radius:50%;background:#5133cc;color:#fff;font-size:11px;font-weight:800}
+.google-drive-guide-step>div{display:grid;gap:7px;padding:11px 13px;border:1px solid #e5e7eb;border-radius:10px;background:#fff}
+.google-drive-guide-step h4{margin:0;color:#172136;font-size:13px}
+.google-drive-guide-step p,.google-drive-guide-step ul,.google-drive-guide-step ol{margin:0;color:#5e6675;font-size:11.5px;line-height:1.6}
+.google-drive-guide-step ul,.google-drive-guide-step ol{display:grid;gap:3px;padding-left:19px}
+.google-drive-guide-error{padding:8px 10px;border-left:3px solid #f59e0b;background:#fffbeb;color:#78520a;font-size:11px;line-height:1.5}
+.google-drive-production-guide{display:grid;gap:10px;padding:15px;border:1px solid #bfdbfe;border-radius:11px;background:#eff6ff}
+.google-drive-production-guide>div{display:grid;gap:3px}
+.google-drive-production-guide span{color:#1d4ed8;font-size:10px;font-weight:800;letter-spacing:.11em}
+.google-drive-production-guide h4{margin:0;color:#1e3a8a;font-size:14px}
+.google-drive-production-guide ul{display:grid;gap:5px;margin:0;padding-left:19px;color:#3f5875;font-size:11.5px;line-height:1.6}
+.google-drive-guide-security{display:grid;gap:3px;padding:11px 13px;border-left:3px solid #16a34a;background:#f0fdf4;color:#3f6249;font-size:11px;line-height:1.5}
 @media(max-width:700px){.attachment-settings-head{align-items:stretch;flex-direction:column}.attachment-settings-head .ant-btn{width:100%}}
+@media(max-width:700px){.attachment-active-write-target,.google-drive-connection-panel,.google-drive-guide-launch,.google-drive-guide-hero{align-items:stretch;flex-direction:column}.attachment-active-write-target>.ant-tag,.google-drive-guide-hero>.ant-tag{align-self:flex-start}.google-drive-connection-panel>.ant-btn,.google-drive-guide-launch>.ant-btn{width:100%}.google-drive-callback-field,.google-drive-guide-reference .google-drive-guide-callback{grid-template-columns:1fr}.google-drive-callback-field .ant-btn,.google-drive-guide-callback .ant-btn{width:100%}.google-drive-guide-reference{grid-template-columns:1fr}.google-drive-guide-modal .ant-modal-body{max-height:72vh}.google-drive-guide-hero h3{font-size:17px}}

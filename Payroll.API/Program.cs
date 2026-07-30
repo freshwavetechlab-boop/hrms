@@ -66,6 +66,7 @@ builder.Services.AddSingleton<WorkflowRepository>();
 builder.Services.AddSingleton<TaxEngineRepository>();
 builder.Services.AddSingleton<DashboardRepository>();
 builder.Services.AddSingleton<NotificationRepository>();
+builder.Services.AddSingleton<CommunicationRepository>();
 builder.Services.AddSingleton<ScheduledJobRepository>();
 builder.Services.AddSingleton<TravelExpenseRepository>();
 builder.Services.AddSingleton<RecruitmentAdminRepository>();
@@ -76,13 +77,18 @@ builder.Services.AddSingleton<RecruitmentTalentRepository>();
 builder.Services.AddSingleton<RecruitmentFormRepository>();
 builder.Services.AddSingleton<RecruitmentPipelineRepository>();
 builder.Services.AddSingleton<RecruitmentCandidateActionRepository>();
+builder.Services.AddSingleton<RecruitmentCaseRepository>();
 builder.Services.AddSingleton<RecruitmentPipelineActionService>();
+builder.Services.AddSingleton<GoogleDriveOAuthService>();
 builder.Services.AddSingleton<AttachmentStorageService>();
 builder.Services.AddSingleton<AttachmentRepository>();
+builder.Services.AddSingleton<FrevoPilotChatStorageService>();
 builder.Services.AddHostedService<PayrollRunWorker>();
 builder.Services.AddHostedService<ScheduledJobWorker>();
 builder.Services.AddHostedService<NotificationWorker>();
+builder.Services.AddHostedService<CommunicationWorker>();
 builder.Services.AddHostedService<RecruitmentPipelineAutomationWorker>();
+builder.Services.AddHostedService<AttendanceBatchJobWorker>();
 
 var app = builder.Build();
 const string AuthCookieName = "payroll_auth";
@@ -264,6 +270,257 @@ app.MapPost("/api/attachment-storage-servers/{id:long}/test", async (AttachmentR
 .WithName("TestAttachmentStorageServer")
 .WithOpenApi();
 
+app.MapGet("/api/frevopilot/chat-threads/status", async (FrevoPilotChatStorageService chats, HttpContext context) =>
+{
+    if (!CanManageFrevoPilotChats(context)) return Results.StatusCode(403);
+    context.Response.Headers.CacheControl = "private, no-store";
+    return Results.Ok(await chats.GetStatusAsync(context.RequestAborted));
+})
+.WithName("GetFrevoPilotChatStorageStatus")
+.WithOpenApi();
+
+app.MapGet("/api/frevopilot/chat-threads", async (FrevoPilotChatStorageService chats, HttpContext context) =>
+{
+    if (!CanManageFrevoPilotChats(context)) return Results.StatusCode(403);
+    context.Response.Headers.CacheControl = "private, no-store";
+    return Results.Ok(await chats.ListAsync(CurrentUser(context).Id, context.RequestAborted));
+})
+.WithName("ListFrevoPilotChatThreads")
+.WithOpenApi();
+
+app.MapGet("/api/frevopilot/chat-threads/{threadId:guid}", async (FrevoPilotChatStorageService chats, Guid threadId, HttpContext context) =>
+{
+    if (!CanManageFrevoPilotChats(context)) return Results.StatusCode(403);
+    context.Response.Headers.CacheControl = "private, no-store";
+    var thread = await chats.GetAsync(threadId, CurrentUser(context).Id, context.RequestAborted);
+    return thread is null ? Results.NotFound(new { error = "FrevoPilot chat was not found." }) : Results.Ok(thread);
+})
+.WithName("GetFrevoPilotChatThread")
+.WithOpenApi();
+
+app.MapPost("/api/frevopilot/chat-threads", async (FrevoPilotChatStorageService chats, SaveFrevoPilotChatThreadRequest request, HttpContext context) =>
+{
+    if (!CanManageFrevoPilotChats(context)) return Results.StatusCode(403);
+    try
+    {
+        return Results.Ok(await chats.SaveAsync(null, request, CurrentUser(context).Id, context.RequestAborted));
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
+})
+.WithName("CreateFrevoPilotChatThread")
+.WithOpenApi();
+
+app.MapPut("/api/frevopilot/chat-threads/{threadId:guid}", async (FrevoPilotChatStorageService chats, Guid threadId, SaveFrevoPilotChatThreadRequest request, HttpContext context) =>
+{
+    if (!CanManageFrevoPilotChats(context)) return Results.StatusCode(403);
+    try
+    {
+        return Results.Ok(await chats.SaveAsync(threadId, request, CurrentUser(context).Id, context.RequestAborted));
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
+})
+.WithName("UpdateFrevoPilotChatThread")
+.WithOpenApi();
+
+app.MapDelete("/api/frevopilot/chat-threads/{threadId:guid}", async (FrevoPilotChatStorageService chats, Guid threadId, HttpContext context) =>
+{
+    if (!CanManageFrevoPilotChats(context)) return Results.StatusCode(403);
+    try
+    {
+        return await chats.DeleteAsync(threadId, CurrentUser(context).Id, context.RequestAborted)
+            ? Results.NoContent()
+            : Results.NotFound(new { error = "FrevoPilot chat was not found." });
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
+})
+.WithName("DeleteFrevoPilotChatThread")
+.WithOpenApi();
+
+app.MapGet("/api/attachment-storage-servers/google/setup", async (
+    AttachmentRepository repository,
+    GoogleDriveOAuthService googleDrive,
+    HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var server = (await repository.GetStorageServersAsync())
+        .Where(item => item.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+        .OrderByDescending(item => item.IsDefaultWriteServer)
+        .ThenBy(item => item.Id)
+        .FirstOrDefault();
+    var apiBaseUri = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}";
+    try
+    {
+        return Results.Ok(BuildGoogleDriveOAuthSetup(googleDrive, server, apiBaseUri));
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
+})
+.WithName("GetGoogleDriveOAuthSetup")
+.WithOpenApi();
+
+app.MapPost("/api/attachment-storage-servers/google/configure", async (
+    AttachmentRepository repository,
+    GoogleDriveOAuthService googleDrive,
+    [FromForm] IFormFile? credentialFile,
+    long? storageServerId,
+    HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (credentialFile is null)
+        return Results.BadRequest(new { error = "Select the downloaded Google Web OAuth client JSON file." });
+    try
+    {
+        var apiBaseUri = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}";
+        var callbackUrl = googleDrive.ResolveRedirectUri(apiBaseUri);
+        var oauthClient = await googleDrive.ParseOAuthClientConfigurationAsync(
+            credentialFile,
+            callbackUrl,
+            context.RequestAborted);
+        var (server, ensureError) = await repository.EnsureGoogleDriveStorageServerAsync(storageServerId, CurrentUser(context));
+        if (server is null) return Results.BadRequest(new { error = ensureError });
+        var (configured, configureError) = await repository.ConfigureGoogleDriveOAuthAsync(server.Id, oauthClient, CurrentUser(context));
+        return configured is null
+            ? Results.BadRequest(new { error = configureError })
+            : Results.Ok(BuildGoogleDriveOAuthSetup(googleDrive, configured, apiBaseUri));
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
+})
+.DisableAntiforgery()
+.WithMetadata(new RequestSizeLimitAttribute(128 * 1024))
+.WithName("ConfigureGoogleDriveOAuth")
+.WithOpenApi();
+
+app.MapPost("/api/attachment-storage-servers/google/connect", async (
+    AttachmentRepository repository,
+    GoogleDriveOAuthService googleDrive,
+    long? storageServerId,
+    HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (server, error) = await repository.EnsureGoogleDriveStorageServerAsync(storageServerId, CurrentUser(context));
+    if (server is null) return Results.BadRequest(new { error });
+    try
+    {
+        var (credential, credentialError) = await repository.GetGoogleDriveCredentialAsync(server.Id);
+        if (!string.IsNullOrWhiteSpace(credentialError)) return Results.BadRequest(new { error = credentialError });
+        var portalOrigin = googleDrive.ResolvePortalOrigin(
+            context.Request.Headers.Origin.ToString(),
+            context.Request.Headers.Referer.ToString());
+        var apiBaseUri = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}";
+        var authorization = googleDrive.CreateAuthorizationRequest(
+            server.Id,
+            CurrentUser(context).Id,
+            portalOrigin,
+            apiBaseUri,
+            server.BasePath,
+            credential);
+        return Results.Ok(new GoogleDriveConnectResponse
+        {
+            StorageServerId = authorization.StorageServerId,
+            AuthorizationUrl = authorization.AuthorizationUrl
+        });
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
+})
+.WithName("ConnectGoogleDriveStorage")
+.WithOpenApi();
+
+app.MapGet("/api/attachment-storage-servers/{id:long}/google/status", async (
+    AttachmentRepository repository,
+    long id,
+    HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (status, error) = await repository.GetGoogleDriveConnectionStatusAsync(id);
+    return status is null ? Results.BadRequest(new { error }) : Results.Ok(status);
+})
+.WithName("GetGoogleDriveStorageStatus")
+.WithOpenApi();
+
+app.MapPost("/api/attachment-storage-servers/{id:long}/google/disconnect", async (
+    AttachmentRepository repository,
+    long id,
+    HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (ok, error) = await repository.DisconnectGoogleDriveAsync(id, CurrentUser(context));
+    return ok ? Results.Ok(new { disconnected = true }) : Results.BadRequest(new { error });
+})
+.WithName("DisconnectGoogleDriveStorage")
+.WithOpenApi();
+
+app.MapGet(GoogleDriveOAuthService.CallbackPath, async (
+    AttachmentRepository repository,
+    GoogleDriveOAuthService googleDrive,
+    string? code,
+    string? state,
+    string? error,
+    [FromQuery(Name = "error_description")] string? errorDescription,
+    HttpContext context) =>
+{
+    GoogleDriveOAuthState oauthState;
+    try
+    {
+        oauthState = googleDrive.ReadAndValidateState(state ?? "");
+    }
+    catch (InvalidOperationException exception)
+    {
+        return GoogleDrivePopupResult(context, "", false, exception.Message, null);
+    }
+
+    if (!string.IsNullOrWhiteSpace(error))
+    {
+        var message = string.IsNullOrWhiteSpace(errorDescription)
+            ? $"Google authorization was cancelled ({error})."
+            : errorDescription;
+        return GoogleDrivePopupResult(context, oauthState.PortalOrigin, false, message, oauthState.StorageServerId);
+    }
+
+    try
+    {
+        var (credential, credentialError) = await repository.GetGoogleDriveCredentialAsync(oauthState.StorageServerId);
+        if (!string.IsNullOrWhiteSpace(credentialError))
+            return GoogleDrivePopupResult(context, oauthState.PortalOrigin, false, credentialError, oauthState.StorageServerId);
+        var oauthClient = googleDrive.RequireOAuthClient(credential);
+        var authorization = await googleDrive.CompleteAuthorizationAsync(
+            code ?? "",
+            oauthState,
+            oauthClient,
+            context.RequestAborted);
+        var (server, connectionError) = await repository.CompleteGoogleDriveConnectionAsync(authorization);
+        return server is null
+            ? GoogleDrivePopupResult(context, oauthState.PortalOrigin, false, connectionError ?? "Google Drive could not be connected.", oauthState.StorageServerId)
+            : GoogleDrivePopupResult(context, oauthState.PortalOrigin, true, "Google Drive connected and selected as the active attachment storage.", server.Id);
+    }
+    catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException or TaskCanceledException)
+    {
+        return GoogleDrivePopupResult(context, oauthState.PortalOrigin, false, exception.Message, oauthState.StorageServerId);
+    }
+})
+.WithName("CompleteGoogleDriveStorageConnection");
+
 app.MapGet("/api/attachments", async (AttachmentRepository repository, string entityType, long entityId, HttpContext context) =>
     Results.Ok(await repository.GetAttachmentsAsync(entityType, entityId, CurrentUser(context))))
 .WithName("GetEntityAttachments")
@@ -411,7 +668,7 @@ app.MapGet("/api/workflows/tasks/actioned", async (WorkflowRepository repository
 });
 app.MapGet("/api/workflows/history", async (WorkflowRepository repository,HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetInstancesAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/{instanceId:long}/history", async (WorkflowRepository repository,long instanceId,HttpContext context) => Results.Ok(await repository.HistoryAsync(instanceId)));
-app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository, PayRunRepository payRuns, RecruitmentRepository recruitment, RecruitmentTalentRepository recruitmentTalent, RecruitmentPipelineRepository recruitmentPipeline, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, NotificationRepository notifications,long taskId,string action,WorkflowActionRequest request,HttpContext context) =>
+app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository, PayRunRepository payRuns, RecruitmentRepository recruitment, RecruitmentTalentRepository recruitmentTalent, RecruitmentPipelineRepository recruitmentPipeline, RecruitmentCaseRepository recruitmentCases, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, NotificationRepository notifications,long taskId,string action,WorkflowActionRequest request,HttpContext context) =>
 {
     if(action is not ("Approved" or "Rejected" or "Sent Back")) return Results.BadRequest();
     var user=CurrentUser(context);
@@ -424,7 +681,12 @@ app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowReposi
     if(instance?.ResourceType=="RecruitmentRequisition")await recruitment.SyncWorkflowStatusAsync(instance.ResourceId,instance.Status,user.Id);
     if(instance?.ResourceType=="RecruitmentOffer")await recruitmentTalent.SyncOfferWorkflowStatusAsync(instance.ResourceId,instance.Status,user,instance.Id);
     if(instance?.ResourceType=="RecruitmentJobDescription" && long.TryParse(instance.ResourceId,out var jobDescriptionId))await recruitmentPipeline.SyncJobDescriptionWorkflowStatusAsync(jobDescriptionId,instance.Status,user);
-    if(instance?.ResourceType=="RecruitmentPipelineTransition" && long.TryParse(instance.ResourceId,out var transitionRequestId))
+    if(instance?.ResourceType=="RecruitmentPipelineTransition" && instance.ResourceId.StartsWith("HIRING_CASE:",StringComparison.OrdinalIgnoreCase) && long.TryParse(instance.ResourceId[12..],out var hiringCaseAdvanceRequestId))
+    {
+        var (_, hiringCaseError) = await recruitmentCases.SyncHiringCaseAdvanceWorkflowStatusAsync(hiringCaseAdvanceRequestId,instance.Status,user);
+        if(hiringCaseError.Length>0)return Results.Conflict(new{error=hiringCaseError});
+    }
+    else if(instance?.ResourceType=="RecruitmentPipelineTransition" && long.TryParse(instance.ResourceId,out var transitionRequestId))
     {
         var transition = await recruitmentPipeline.SyncTransitionWorkflowStatusAsync(transitionRequestId,instance.Status,user);
         if(transition.Result?.Status=="Applied")
@@ -533,8 +795,71 @@ app.MapGet("/api/ess/dashboard/attendance", async (EssMssRepository repository, 
 app.MapGet("/api/ess/dashboard/attendance/daily", async (EssMssRepository repository, string month, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetDailyAttendanceAsync(user.EmployeeId.Value,user.ClientId,month)); });
 app.MapGet("/api/ess/attendance/history", async (EssMssRepository repository, string month, string? scope, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var result=await repository.GetAttendanceHistoryAsync(user.EmployeeId.Value,user.ClientId,month,scope??"calendar-month"); return result is null ? Results.BadRequest(new{error=new{code="ATTENDANCE_POLICY_INVALID",message="Attendance month or employee mapping is invalid."}}) : Results.Ok(result); });
 app.MapGet("/api/ess/attendance/today", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var state=await repository.GetAttendanceTodayAsync(user.EmployeeId.Value,user.ClientId); return state is null ? Results.NotFound(new{error="Active employee attendance profile was not found."}) : Results.Ok(state); });
-app.MapPost("/api/ess/attendance/punch/validate", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); return Results.Ok(await repository.ValidateAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request)); });
-app.MapPost("/api/ess/attendance/punch", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var result=await repository.RecordAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request); return result.PunchRecorded ? Results.Created($"/api/ess/attendance/punch/{result.PunchId}",result) : Results.BadRequest(result); });
+app.MapPost("/api/ess/attendance/punch/validate", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||!user.Permissions.Contains("ess.attendance.mark",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); return Results.Ok(await repository.ValidateAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request)); });
+app.MapPost("/api/ess/attendance/punch", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||!user.Permissions.Contains("ess.attendance.mark",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var result=await repository.RecordAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request); return result.PunchRecorded ? Results.Created($"/api/ess/attendance/punch/{result.PunchId}",result) : Results.BadRequest(result); });
+app.MapGet("/api/ess/mss/attendance/groups", async (LeaveAttendanceRepository repository, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    return !HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue
+        ? Results.StatusCode(StatusCodes.Status403Forbidden)
+        : Results.Ok(await repository.GetAttendanceGroupsAsync(user.ClientId.Value, user.Id));
+});
+app.MapGet("/api/ess/mss/attendance/monthly", async (LeaveAttendanceRepository repository, string month, int? workLocationId, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    return !HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue
+        ? Results.StatusCode(StatusCodes.Status403Forbidden)
+        : Results.Ok(await repository.GetMonthlyAttendanceAsync(user.ClientId.Value, month, workLocationId, user.Id));
+});
+app.MapGet("/api/ess/mss/attendance/daily-grid", async (LeaveAttendanceRepository repository, string month, int? workLocationId, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    return !HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue
+        ? Results.StatusCode(StatusCodes.Status403Forbidden)
+        : Results.Ok(await repository.GetDailyAttendanceMonthAsync(user.ClientId.Value, month, workLocationId, user.Id));
+});
+app.MapGet("/api/ess/mss/attendance/context", async (LeaveAttendanceRepository repository, string month, int? workLocationId, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    return !HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue
+        ? Results.StatusCode(StatusCodes.Status403Forbidden)
+        : Results.Ok(await repository.GetAttendanceReviewContextAsync(user.ClientId.Value, month, workLocationId, user.Id));
+});
+app.MapGet("/api/ess/mss/attendance/leave-types", async (LeaveAttendanceRepository repository, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    return !HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue
+        ? Results.StatusCode(StatusCodes.Status403Forbidden)
+        : Results.Ok(await repository.GetLeaveTypesAsync(user.ClientId.Value));
+});
+app.MapGet("/api/ess/mss/attendance/dropdowns", async (OrganizationRepository repository, HttpContext context) =>
+    !HasPermission(context, "mss.attendance.manage")
+        ? Results.StatusCode(StatusCodes.Status403Forbidden)
+        : Results.Ok(await repository.GetDropdownMastersAsync()));
+app.MapPost("/api/ess/mss/attendance/daily/batch-jobs", async (LeaveAttendanceRepository repository, SaveDailyAttendanceBatchRequest request, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue || request.ClientId != user.ClientId.Value)
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var requestedEmployeeIds = request.Rows.Select(row => row.EmployeeId)
+        .Concat(request.RollupEmployeeIds ?? [])
+        .Distinct()
+        .ToArray();
+    if (!await repository.AreActiveDirectReportsAsync(user.ClientId.Value, user.Id, requestedEmployeeIds))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (job, error) = await repository.StartDailyAttendanceBatchJobAsync(request, user.Email, user.Id);
+    if (job is null && string.Equals(error, LeaveAttendanceRepository.ManagedAttendanceScopeError, StringComparison.Ordinal))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return job is null ? Results.BadRequest(new { error }) : Results.Accepted($"/api/ess/mss/attendance/daily/batch-jobs/{job.JobId}", job);
+});
+app.MapGet("/api/ess/mss/attendance/daily/batch-jobs/{jobId:guid}", async (LeaveAttendanceRepository repository, Guid jobId, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue)
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var job = await repository.GetDailyAttendanceBatchJobAsync(jobId);
+    return job is null ? Results.NotFound(new { error = "Attendance batch job not found." }) : job.ClientId != user.ClientId.Value ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(job);
+});
 app.MapGet("/api/ess/dashboard/holidays", async (EssMssRepository repository, string month, HttpContext context) => Results.Ok(await repository.GetHolidaysAsync(CurrentUser(context).ClientId,month)));
 app.MapGet("/api/ess/dashboard/birthdays", async (EssMssRepository repository, HttpContext context) => Results.Ok(await repository.GetTodaysBirthdaysAsync(CurrentUser(context).ClientId)));
 app.MapPost("/api/ess/leave/requests", async (EssMssRepository repository, WorkflowRepository workflows, CreateEssLeaveRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(result,error)=await repository.CreateLeaveRequestAsync(user.EmployeeId.Value,user.ClientId,request); if(result is null)return Results.BadRequest(new{error}); var workflowId=await workflows.GetDefaultIdAsync("LeaveRequest",user.ClientId); if(workflowId is not null) await workflows.StartAsync(new StartWorkflowRequest{WorkflowId=workflowId.Value,ResourceType="LeaveRequest",ResourceId=result.Id.ToString(),PayloadJson=System.Text.Json.JsonSerializer.Serialize(result)},user.Id); return Results.Created($"/api/ess/leave/requests/{result.Id}",result); });
@@ -656,8 +981,115 @@ app.MapGet("/api/recruitment/requisitions", async (RecruitmentRepository reposit
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     return Results.Ok(await repository.SearchAsync(new RecruitmentSearchRequest { ClientId = clientId, Status = status ?? "", Query = query ?? "", Department = department ?? "", HiringType = hiringType ?? "", EmploymentType = employmentType ?? "", Priority = priority ?? "", BusinessUnit = businessUnit ?? "", PositionCategory = positionCategory ?? "", Experience = experience ?? "", Location = location ?? "", Project = project ?? "", ReplacementHiring = replacementHiring, BudgetMin = budgetMin, BudgetMax = budgetMax, DateFrom = dateFrom, DateTo = dateTo, RecruiterUserId = recruiterUserId }, CurrentUser(context)));
 });
+app.MapPost("/api/recruitment/requisitions", async (RecruitmentRepository repository, SaveRecruitmentRequisition request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveDraftAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/requisitions/{id:long}/submit", async (RecruitmentRepository repository, WorkflowRepository workflows, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.SubmitAsync(id, CurrentUser(context), workflows);
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+
+app.MapGet("/api/recruitment/work-orders", async (RecruitmentCaseRepository repository, int? clientId, string? query, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.work-order.view") && !HasPermission(context, "recruitment.work-order.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    return Results.Ok(await repository.ListWorkOrdersAsync(CurrentUser(context), clientId, query ?? ""));
+});
+app.MapGet("/api/recruitment/work-orders/{id:long}", async (RecruitmentCaseRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.work-order.view") && !HasPermission(context, "recruitment.work-order.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var row = await repository.GetWorkOrderAsync(id, CurrentUser(context));
+    return row is null ? Results.NotFound() : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/work-orders", async (RecruitmentCaseRepository repository, SaveRecruitmentWorkOrder request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.work-order.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveWorkOrderAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapGet("/api/recruitment/hiring-cases", async (RecruitmentCaseRepository repository, int? clientId, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.hiring-case.view") && !HasPermission(context, "recruitment.hiring-case.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    return Results.Ok(await repository.ListHiringCasesAsync(CurrentUser(context), clientId));
+});
+app.MapGet("/api/recruitment/hiring-cases/{id:long}", async (RecruitmentCaseRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.hiring-case.view") && !HasPermission(context, "recruitment.hiring-case.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var row = await repository.GetHiringCaseAsync(id, CurrentUser(context));
+    return row is null ? Results.NotFound() : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/hiring-cases/start", async (RecruitmentCaseRepository repository, StartRecruitmentHiringCaseRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.hiring-case.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.StartHiringCaseAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/hiring-cases/{id:long}/advance", async (RecruitmentCaseRepository repository, long id, MoveRecruitmentHiringCaseRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.hiring-case.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.AdvanceHiringCaseAsync(id, request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/hiring-cases/{id:long}/pause", async (RecruitmentCaseRepository repository, long id, RecruitmentStagePauseRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.sla.pause") && !HasPermission(context, "recruitment.hiring-case.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.PauseHiringCaseAsync(id, request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/hiring-cases/{id:long}/resume", async (RecruitmentCaseRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.sla.pause") && !HasPermission(context, "recruitment.hiring-case.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.ResumeHiringCaseAsync(id, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapGet("/api/recruitment/process-documents", async (RecruitmentCaseRepository repository, long? hiringCaseId, long? applicationId, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.document.view") && !HasPermission(context, "recruitment.document.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    return Results.Ok(await repository.ListProcessDocumentsAsync(CurrentUser(context), hiringCaseId, applicationId));
+});
+app.MapPost("/api/recruitment/process-documents", async (RecruitmentCaseRepository repository, SaveRecruitmentProcessDocument request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.document.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (string.Equals(request.Status, "Signed", StringComparison.OrdinalIgnoreCase) && !HasPermission(context, "recruitment.document.sign") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveProcessDocumentAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/process-documents/{id:long}/generate", async (RecruitmentCaseRepository repository, long id, HttpContext context, CancellationToken cancellationToken) =>
+{
+    if (!HasPermission(context, "recruitment.document.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.GenerateProcessDocumentAsync(id, CurrentUser(context),
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), cancellationToken);
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/profile-submission-batches", async (RecruitmentCaseRepository repository, SaveRecruitmentProfileSubmissionBatch request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.shortlist.forward") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.CreateProfileBatchAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapGet("/api/recruitment/profile-submission-batches", async (RecruitmentCaseRepository repository, long hiringCaseId, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.shortlist.approve") && !HasPermission(context, "recruitment.shortlist.forward") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    return Results.Ok(await repository.ListProfileBatchesAsync(hiringCaseId, CurrentUser(context)));
+});
+app.MapPost("/api/recruitment/profile-submission-batches/{id:long}/approve", async (RecruitmentCaseRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.shortlist.approve") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.ApproveProfileBatchAsync(id, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/profile-submission-batches/{id:long}/forward", async (RecruitmentCaseRepository repository, NotificationRepository notifications, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.shortlist.forward") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.ForwardProfileBatchAsync(id, CurrentUser(context), notifications);
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
 app.MapGet("/api/recruitment/open-positions", async (RecruitmentRepository repository, HttpContext context) =>
-    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.OpenPositionsAsync(CurrentUser(context))) : Results.StatusCode(403));
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "recruitment.position.view") || HasPermission(context, "recruitment.position.manage") || HasPermission(context, "recruitment.work-order.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.OpenPositionsAsync(CurrentUser(context))) : Results.StatusCode(403));
 app.MapGet("/api/recruitment/operations/options", async (RecruitmentRepository repository, HttpContext context) =>
     HasPermission(context, "recruitment.manage") || HasPermission(context, "recruitment.position.view") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.OperationsOptionsAsync(CurrentUser(context))) : Results.StatusCode(403));
 app.MapGet("/api/recruitment/masters/{masterType}", async (RecruitmentRepository repository, string masterType, HttpContext context) =>
@@ -721,7 +1153,7 @@ app.MapGet("/api/recruitment/candidates", async (RecruitmentTalentRepository rep
         : Results.StatusCode(403));
 app.MapGet("/api/recruitment/candidates/{id:long}", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!HasPermission(context, "recruitment.candidate.view") && !HasPermission(context, "recruitment.interview.panel") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var row = await repository.GetCandidateDetailAsync(id, CurrentUser(context));
     return row is null ? Results.NotFound() : Results.Ok(row);
 });
@@ -743,6 +1175,32 @@ app.MapPost("/api/recruitment/candidates/{candidateId:long}/resume", async (Recr
     var (attachment, resume, error) = await repository.UploadResumeAsync(candidateId, request, CurrentUser(context), context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
     return attachment is null ? Results.BadRequest(new { error }) : Results.Ok(new { attachment, resume });
 }).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(30L * 1024 * 1024));
+app.MapPost("/api/recruitment/resume-intake", async (RecruitmentTalentRepository talent, RecruitmentPipelineRepository pipelines, RecruitmentPipelineActionService actions, RecruitmentCandidateActionRepository candidateActions, [FromForm] RecruitmentResumeIntakeRequest request, HttpContext context) =>
+{
+    // Intake creates/updates talent profiles, applications, ATS scores and pipeline state.
+    // Attachment-only permission is intentionally insufficient for this business action.
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    // Complex minimal-API form binding can populate the scalar fields while leaving
+    // repeated browser file parts out of the nested list. The parsed form collection
+    // is the authoritative fallback for single and batch resume intake.
+    if ((request.Files is null || request.Files.Count == 0) && context.Request.HasFormContentType)
+        request.Files = context.Request.Form.Files.ToList();
+    var user = CurrentUser(context);
+    var result = await talent.IntakeResumesAsync(request, user, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+    foreach (var item in result.Items.Where(item => item.Success && item.Application is not null))
+    {
+        var applicationId = item.Application!.Id;
+        var (pipelineId, _) = await pipelines.EnsureApplicationPipelineAsync(applicationId, user);
+        if (pipelineId.HasValue)
+        {
+            var entry = await actions.ExecuteAsync(applicationId, "OnEntry", user);
+            if (!entry.Executions.Any(execution => execution.ActionCode == "GENERATE_ACTION_LINK"))
+                await candidateActions.EnsureForCurrentStageAsync(applicationId, user);
+        }
+        item.Application = (await talent.GetApplicationsAsync(user, item.Application.PositionId, item.Application.CandidateId, "")).FirstOrDefault(row => row.Id == applicationId) ?? item.Application;
+    }
+    return Results.Ok(result);
+}).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(550L * 1024 * 1024));
 app.MapPost("/api/ess/recruitment/referrals/{referralId:long}/resume", async (RecruitmentTalentRepository repository, long referralId, [FromForm] CandidateResumeUploadRequest request, HttpContext context) =>
 {
     var user = CurrentUser(context);
@@ -779,24 +1237,24 @@ app.MapPost("/api/recruitment/application-scores/{id:long}/override", async (Rec
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 app.MapGet("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, long? applicationId, HttpContext context) =>
-    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetInterviewsAsync(CurrentUser(context), applicationId)) : Results.StatusCode(403));
+    HasPermission(context, "recruitment.interview.panel") || HasPermission(context, "recruitment.interview.schedule") || HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetInterviewsAsync(CurrentUser(context), applicationId)) : Results.StatusCode(403));
 app.MapGet("/api/recruitment/interviews/scheduling-context/{applicationId:long}", async (RecruitmentTalentRepository repository, long applicationId, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!HasPermission(context, "recruitment.interview.schedule") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var (row, error) = await repository.GetInterviewSchedulingContextAsync(applicationId, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, SaveRecruitmentInterview request, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!HasPermission(context, "recruitment.interview.schedule") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var (row, error) = await repository.SaveInterviewAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 app.MapGet("/api/recruitment/interviews/{id:long}/feedback", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
-    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetInterviewFeedbackAsync(id, CurrentUser(context))) : Results.StatusCode(403));
+    HasPermission(context, "recruitment.interview.panel") || HasPermission(context, "recruitment.interview.schedule") || HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetInterviewFeedbackAsync(id, CurrentUser(context))) : Results.StatusCode(403));
 app.MapPost("/api/recruitment/interviews/{id:long}/feedback", async (RecruitmentTalentRepository repository, long id, SaveRecruitmentInterviewFeedback request, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!HasPermission(context, "recruitment.interview.panel") && !HasPermission(context, "recruitment.interview.schedule") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var (row, error) = await repository.SaveInterviewFeedbackAsync(id, request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
@@ -1452,6 +1910,157 @@ app.MapPost("/api/notifications/test", async (NotificationRepository repository,
     return Results.NoContent();
 });
 
+app.MapGet("/api/communication-settings/providers", async (CommunicationRepository repository, int? clientId, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (CurrentUser(context).ClientId.HasValue && clientId.HasValue && CurrentUser(context).ClientId != clientId) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Results.Ok(await repository.GetProvidersAsync(clientId, CurrentUser(context)));
+})
+.WithName("GetCommunicationProviders")
+.WithOpenApi();
+
+app.MapPost("/api/communication-settings/providers", async (CommunicationRepository repository, SaveCommunicationProviderAccountRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (item, error) = await repository.SaveProviderAsync(request, CurrentUser(context));
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("SaveCommunicationProvider")
+.WithOpenApi();
+
+app.MapPost("/api/communication-settings/providers/{id:long}/test", async (CommunicationRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var result = await repository.TestProviderAsync(id, CurrentUser(context), context.RequestAborted);
+    return Results.Ok(result);
+})
+.WithName("TestCommunicationProvider")
+.WithOpenApi();
+
+app.MapGet("/api/communication-settings/templates", async (CommunicationRepository repository, int? clientId, string? channel, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "employee.communication.view")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (CurrentUser(context).ClientId.HasValue && clientId.HasValue && CurrentUser(context).ClientId != clientId) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Results.Ok(await repository.GetTemplatesAsync(clientId, channel, CurrentUser(context), HasPermission(context, "settings.manage")));
+})
+.WithName("GetCommunicationTemplates")
+.WithOpenApi();
+
+app.MapPost("/api/communication-settings/templates", async (CommunicationRepository repository, CommunicationTemplate request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (item, error) = await repository.SaveTemplateAsync(request, CurrentUser(context));
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("SaveCommunicationTemplate")
+.WithOpenApi();
+
+app.MapPost("/api/employee-communications/drafts", async (CommunicationRepository repository, CreateEmployeeCommunicationDraftRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "employee.communication.send")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    if (!CanAccessClient(context, request.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (item, error) = await repository.CreateDraftAsync(request, CurrentUser(context));
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("CreateEmployeeCommunicationDraft")
+.WithOpenApi();
+
+app.MapGet("/api/employee-communications/recipients", async (CommunicationRepository repository, int clientId, string? search, int? workLocationId, string? department, string? designation, int? limit, HttpContext context) =>
+{
+    if (!HasPermission(context, "employee.communication.view")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    if (!CanAccessClient(context, clientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Results.Ok(await repository.SearchRecipientsAsync(CurrentUser(context), clientId, search, workLocationId, department, designation, limit ?? 250));
+})
+.WithName("GetEmployeeCommunicationRecipients")
+.WithOpenApi();
+
+app.MapPost("/api/employee-communications/preview", async (CommunicationRepository repository, CommunicationSelectionRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "employee.communication.send")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    if (!CanAccessClient(context, request.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Results.Ok(await repository.PreviewAsync(request, CurrentUser(context)));
+})
+.WithName("PreviewEmployeeCommunication")
+.WithOpenApi();
+
+app.MapPost("/api/employee-communications/send", async (CommunicationRepository repository, SendEmployeeCommunicationRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "employee.communication.send")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!CanAccessClient(context, request.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (item, error) = await repository.SendAsync(request, CurrentUser(context));
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("SendEmployeeCommunication")
+.WithOpenApi();
+
+app.MapGet("/api/employee-communications/campaigns", async (CommunicationRepository repository, int? clientId, string? channel, string? status, string? search, int? page, int? pageSize, HttpContext context) =>
+{
+    if (!HasPermission(context, "employee.communication.view")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (CurrentUser(context).ClientId.HasValue && clientId.HasValue && CurrentUser(context).ClientId != clientId) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Results.Ok(await repository.GetCampaignsAsync(CurrentUser(context), clientId, channel, status, search, page ?? 1, pageSize ?? 25));
+})
+.WithName("GetEmployeeCommunicationCampaigns")
+.WithOpenApi();
+
+app.MapGet("/api/employee-communications/campaigns/{id:long}", async (CommunicationRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "employee.communication.view")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var item = await repository.GetCampaignAsync(id, CurrentUser(context));
+    return item is null ? Results.NotFound(new { error = "Campaign not found." }) : Results.Ok(item);
+})
+.WithName("GetEmployeeCommunicationCampaign")
+.WithOpenApi();
+
+app.MapPost("/api/employee-communications/campaigns/{id:long}/retry-failed", async (CommunicationRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "employee.communication.send")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (item, error) = await repository.RetryFailedAsync(id, CurrentUser(context));
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("RetryEmployeeCommunicationCampaign")
+.WithOpenApi();
+
+app.MapGet("/api/employee-communications/conversations", async (CommunicationRepository repository, int? clientId, string? channel, string? status, string? search, HttpContext context) =>
+{
+    if (!HasPermission(context, "employee.communication.view")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (CurrentUser(context).ClientId.HasValue && clientId.HasValue && CurrentUser(context).ClientId != clientId) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var items = await repository.GetConversationsAsync(CurrentUser(context), clientId, channel, status, search);
+    return Results.Ok(new { items, total = items.Count });
+})
+.WithName("GetEmployeeCommunicationConversations")
+.WithOpenApi();
+
+app.MapGet("/api/employee-communications/conversations/{id:long}", async (CommunicationRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "employee.communication.view")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var item = await repository.GetConversationAsync(id, CurrentUser(context));
+    return item is null ? Results.NotFound(new { error = "Conversation not found." }) : Results.Ok(item);
+})
+.WithName("GetEmployeeCommunicationConversation")
+.WithOpenApi();
+
+app.MapPost("/api/employee-communications/conversations/{id:long}/reply", async (CommunicationRepository repository, long id, CommunicationConversationReplyRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "employee.communication.send")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (item, error) = await repository.ReplyAsync(id, request, CurrentUser(context));
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+})
+.WithName("ReplyEmployeeCommunicationConversation")
+.WithOpenApi();
+
+app.MapPost("/api/public/employee-communications/webhooks/{providerCode}", async (CommunicationRepository repository, string providerCode, long accountId, CommunicationWebhookRequest request, HttpContext context) =>
+{
+    var secret = context.Request.Headers["X-Communication-Webhook-Secret"].ToString();
+    var result = await repository.HandleWebhookAsync(accountId, providerCode, secret, request);
+    if (!result.Accepted && result.Message.Contains("authentication", StringComparison.OrdinalIgnoreCase)) return Results.Unauthorized();
+    return result.Accepted ? Results.Ok(result) : Results.BadRequest(result);
+})
+.WithName("ReceiveEmployeeCommunicationWebhook")
+.WithOpenApi();
+
 app.MapGet("/api/scheduled-jobs", async (ScheduledJobRepository repository, HttpContext context) =>
     HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden));
 app.MapGet("/api/scheduled-jobs/actions", async (ScheduledJobRepository repository, HttpContext context) =>
@@ -1873,8 +2482,10 @@ app.MapDelete("/api/leave-attendance/geo-fences/{id:int}", async (LeaveAttendanc
 .WithName("DeleteGeoFenceRule")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/groups", async (LeaveAttendanceRepository repository, int? clientId) =>
-    Results.Ok(await repository.GetAttendanceGroupsAsync(Math.Max(0, clientId.GetValueOrDefault()))))
+app.MapGet("/api/leave-attendance/groups", async (LeaveAttendanceRepository repository, int? clientId, HttpContext context) =>
+    !HasAttendanceManagement(context) || !CanAccessClient(context, Math.Max(0, clientId.GetValueOrDefault()))
+        ? Results.StatusCode(StatusCodes.Status403Forbidden)
+        : Results.Ok(await repository.GetAttendanceGroupsAsync(Math.Max(0, clientId.GetValueOrDefault()))))
 .WithName("GetAttendanceGroups")
 .WithOpenApi();
 
@@ -1907,19 +2518,19 @@ app.MapDelete("/api/leave-attendance/groups/{id:int}", async (LeaveAttendanceRep
 .WithName("DeleteAttendanceGroup")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRepository repository, int clientId, string month, int? workLocationId) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetMonthlyAttendanceAsync(clientId, month, workLocationId)))
+app.MapGet("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRepository repository, int clientId, string month, int? workLocationId, HttpContext context) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !HasAttendanceManagement(context) || !CanAccessClient(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetMonthlyAttendanceAsync(clientId, month, workLocationId)))
 .WithName("GetMonthlyAttendance")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/attendance/context", async (LeaveAttendanceRepository repository, int clientId, string month, int? workLocationId) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetAttendanceReviewContextAsync(clientId, month, workLocationId)))
+app.MapGet("/api/leave-attendance/attendance/context", async (LeaveAttendanceRepository repository, int clientId, string month, int? workLocationId, HttpContext context) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !HasAttendanceManagement(context) || !CanAccessClient(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetAttendanceReviewContextAsync(clientId, month, workLocationId)))
 .WithName("GetAttendanceReviewContext")
 .WithOpenApi();
 
 app.MapPost("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRepository repository, SaveMonthlyAttendanceRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasAttendanceManagement(context) || !CanAccessClient(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var (rows, error) = await repository.SaveMonthlyAttendanceAsync(request);
     return rows is null ? Results.BadRequest(new { error }) : Results.Ok(rows);
@@ -1932,14 +2543,14 @@ app.MapGet("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepos
 .WithName("GetDailyAttendance")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/attendance/daily-grid", async (LeaveAttendanceRepository repository, int clientId, string month, int? workLocationId) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetDailyAttendanceMonthAsync(clientId, month, workLocationId)))
+app.MapGet("/api/leave-attendance/attendance/daily-grid", async (LeaveAttendanceRepository repository, int clientId, string month, int? workLocationId, HttpContext context) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !HasAttendanceManagement(context) || !CanAccessClient(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetDailyAttendanceMonthAsync(clientId, month, workLocationId)))
 .WithName("GetDailyAttendanceGrid")
 .WithOpenApi();
 
 app.MapPost("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepository repository, SaveDailyAttendanceRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasAttendanceManagement(context) || !CanAccessClient(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var (rows, error) = await repository.SaveDailyAttendanceAsync(request);
     return rows is null ? Results.BadRequest(new { error }) : Results.Ok(rows);
@@ -1949,7 +2560,7 @@ app.MapPost("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepo
 
 app.MapPost("/api/leave-attendance/attendance/daily/batch", async (LeaveAttendanceRepository repository, SaveDailyAttendanceBatchRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasAttendanceManagement(context) || !CanAccessClient(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var (rows, error) = await repository.SaveDailyAttendanceBatchAsync(request);
     return rows is null ? Results.BadRequest(new { error }) : Results.Ok(rows);
@@ -1957,8 +2568,38 @@ app.MapPost("/api/leave-attendance/attendance/daily/batch", async (LeaveAttendan
 .WithName("SaveDailyAttendanceBatch")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/leave-types", async (LeaveAttendanceRepository repository, int clientId) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetLeaveTypesAsync(clientId)))
+app.MapPost("/api/leave-attendance/attendance/daily/batch-jobs", async (LeaveAttendanceRepository repository, SaveDailyAttendanceBatchRequest request, HttpContext context) =>
+{
+    if (!HasAttendanceManagement(context))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var user = CurrentUser(context);
+    if (!CanAccessClient(context, request.ClientId))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var (job, error) = await repository.StartDailyAttendanceBatchJobAsync(request, user.Email);
+    return job is null
+        ? Results.BadRequest(new { error })
+        : Results.Accepted($"/api/leave-attendance/attendance/daily/batch-jobs/{job.JobId}", job);
+})
+.WithName("StartDailyAttendanceBatchJob")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/attendance/daily/batch-jobs/{jobId:guid}", async (LeaveAttendanceRepository repository, Guid jobId, HttpContext context) =>
+{
+    if (!HasAttendanceManagement(context))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var job = await repository.GetDailyAttendanceBatchJobAsync(jobId);
+    if (job is null)
+        return Results.NotFound(new { error = "Attendance batch job not found." });
+    var user = CurrentUser(context);
+    return user.ClientId.HasValue && user.ClientId.Value != job.ClientId
+        ? Results.StatusCode(StatusCodes.Status403Forbidden)
+        : Results.Ok(job);
+})
+.WithName("GetDailyAttendanceBatchJob")
+.WithOpenApi();
+
+app.MapGet("/api/leave-attendance/leave-types", async (LeaveAttendanceRepository repository, int clientId, HttpContext context) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !HasAttendanceManagement(context) || !CanAccessClient(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetLeaveTypesAsync(clientId)))
 .WithName("GetLeaveTypes")
 .WithOpenApi();
 
@@ -2356,12 +2997,26 @@ app.MapGet("/api/employees/import-template", async (OrganizationRepository organ
 .WithName("DownloadEmployeeImportTemplate")
 .WithOpenApi();
 
+app.MapPost("/api/employees/import-preflight", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request) =>
+{
+    if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select an employee CSV or Excel file." });
+    var result = await repository.PreflightImportCsvAsync(request.ClientId, request.File, request.Mode);
+    return result.CanImport ? Results.Ok(result) : Results.UnprocessableEntity(result);
+})
+.DisableAntiforgery()
+.WithName("PreflightEmployeeImport")
+.WithOpenApi();
+
 app.MapPost("/api/employees/import", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request) =>
 {
     if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
-    if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select an employee CSV file." });
-    var result = await repository.ImportCsvAsync(request.ClientId, request.File, request.Mode);
-    return result.Errors.Count > 0 ? Results.BadRequest(result) : Results.Ok(result);
+    if (request.File is null || request.File.Length == 0)
+        return Results.BadRequest(new { error = "Select an employee CSV or Excel file." });
+    var result = await repository.ImportCsvAsync(request.ClientId, request.File, request.Mode, request.ReviewToken, request.DecisionsJson);
+    return result.RequiresConfirmation
+        ? Results.Conflict(result)
+        : result.Errors.Count > 0 ? Results.BadRequest(result) : Results.Ok(result);
 })
 .DisableAntiforgery()
 .WithName("ImportEmployees")
@@ -2370,8 +3025,9 @@ app.MapPost("/api/employees/import", async (EmployeeRepository repository, [From
 app.MapPost("/api/employees/import-jobs", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request) =>
 {
     if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
-    if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select an employee CSV file." });
-    return Results.Accepted($"/api/employees/import-jobs", await repository.StartImportCsvJobAsync(request.ClientId, request.File, request.Mode));
+    if (request.File is null || request.File.Length == 0)
+        return Results.BadRequest(new { error = "Select an employee CSV or Excel file." });
+    return Results.Accepted($"/api/employees/import-jobs", await repository.StartImportCsvJobAsync(request.ClientId, request.File, request.Mode, request.ReviewToken, request.DecisionsJson));
 })
 .DisableAntiforgery()
 .WithName("StartEmployeeImportJob")
@@ -2565,6 +3221,57 @@ app.MapGet("/api/pay-runs/{id:int}/export", async (PayRunRepository repository, 
 .WithName("ExportPayRun")
 .WithOpenApi();
 
+static GoogleDriveOAuthSetup BuildGoogleDriveOAuthSetup(
+    GoogleDriveOAuthService googleDrive,
+    AttachmentStorageServer? server,
+    string apiBaseUri)
+{
+    var oauthConfigured = server?.GoogleOAuthConfigured ?? googleDrive.HasOAuthClientConfiguration(null);
+    var connectionStatus = server?.GoogleConnectionStatus;
+    if (string.IsNullOrWhiteSpace(connectionStatus))
+        connectionStatus = googleDrive.ConnectionStatus(null);
+    return new GoogleDriveOAuthSetup
+    {
+        StorageServerId = server?.Id ?? 0,
+        GoogleOAuthConfigured = oauthConfigured,
+        ConnectionStatus = connectionStatus,
+        CallbackUrl = googleDrive.ResolveRedirectUri(apiBaseUri),
+        GoogleCloudCredentialsUrl = "https://console.cloud.google.com/apis/credentials"
+    };
+}
+
+static IResult GoogleDrivePopupResult(
+    HttpContext context,
+    string portalOrigin,
+    bool success,
+    string message,
+    long? storageServerId)
+{
+    context.Response.Headers.CacheControl = "no-store";
+    context.Response.Headers.XFrameOptions = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    context.Response.Headers.ContentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';";
+    var payload = JsonSerializer.Serialize(new
+    {
+        type = GoogleDriveOAuthService.PopupMessageType,
+        success,
+        message,
+        storageServerId
+    });
+    var postMessageScript = string.IsNullOrWhiteSpace(portalOrigin)
+        ? "setTimeout(function(){ window.close(); }, 2500);"
+        : $"if (window.opener && !window.opener.closed) window.opener.postMessage({payload}, {JsonSerializer.Serialize(portalOrigin)}); setTimeout(function(){{ window.close(); }}, 250);";
+    var safeMessage = System.Net.WebUtility.HtmlEncode(message);
+    var safeHeading = success ? "Google Drive connected" : "Google Drive connection failed";
+    var html = $@"<!doctype html>
+<html lang=""en"">
+<head><meta charset=""utf-8""><meta name=""viewport"" content=""width=device-width,initial-scale=1""><title>{safeHeading}</title>
+<style>body{{font-family:system-ui,sans-serif;margin:0;display:grid;min-height:100vh;place-items:center;background:#f7f9fc;color:#172033}}main{{max-width:560px;padding:32px;text-align:center}}h1{{font-size:22px}}p{{line-height:1.5;color:#4d5b73}}</style></head>
+<body><main><h1>{safeHeading}</h1><p>{safeMessage}</p></main><script>{postMessageScript}</script></body>
+</html>";
+    return Results.Content(html, "text/html; charset=utf-8");
+}
+
 static string Csv(object? value)
 {
     var text = Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "";
@@ -2581,6 +3288,21 @@ static bool HasPermission(HttpContext context, string permission) =>
 
 static bool HasRecruitmentManagement(HttpContext context) =>
     HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage");
+
+static bool HasAttendanceManagement(HttpContext context) =>
+    HasPermission(context, "attendance.manage") || HasPermission(context, "mss.attendance.manage") || HasPermission(context, "settings.manage");
+
+static bool CanManageFrevoPilotChats(HttpContext context)
+{
+    var user = CurrentUser(context);
+    return user.ClientId is null && user.Permissions.Contains("security.manage", StringComparer.OrdinalIgnoreCase);
+}
+
+static bool CanAccessClient(HttpContext context, int clientId)
+{
+    var user = CurrentUser(context);
+    return !user.ClientId.HasValue || user.ClientId.Value == clientId;
+}
 
 static bool IsEssAllowedApi(PathString path)
 {
@@ -2638,17 +3360,19 @@ static async Task RunDatabaseSetupAsync(IServiceProvider services, IConfiguratio
     await scopedServices.GetRequiredService<LeaveAttendanceRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<WorkflowRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<TaxEngineRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<AttachmentRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<NotificationRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<CommunicationRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<ScheduledJobRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<TravelExpenseRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<RecruitmentAdminRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<RecruitmentRepository>().InitializeAsync();
-    await scopedServices.GetRequiredService<AttachmentRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<RecruitmentTalentRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<RecruitmentPipelineRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<RecruitmentFormRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<EmployeeAttributeRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<RecruitmentCandidateActionRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<RecruitmentCaseRepository>().InitializeAsync();
 
     await using var workflowDb = new MySqlConnector.MySqlConnection(configuration.GetConnectionString("Default"));
     await workflowDb.OpenAsync();
