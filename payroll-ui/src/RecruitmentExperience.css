@@ -2,6 +2,8 @@
   width: 100%;
   min-width: 0;
   gap: 16px !important;
+  container-name: recruitment-workspace;
+  container-type: inline-size;
 }
 
 .recruitment-experience-header {
@@ -45,7 +47,7 @@
 
 .recruitment-journey-rail {
   display: grid;
-  grid-template-columns: repeat(6, minmax(115px, 1fr));
+  grid-template-columns: repeat(7, minmax(100px, 1fr));
   min-width: 0;
   overflow-x: auto;
   padding: 8px;
@@ -56,7 +58,7 @@
 }
 .recruitment-journey-rail button {
   display: flex;
-  min-width: 112px;
+  min-width: 0;
   align-items: center;
   justify-content: center;
   gap: 8px;
@@ -145,7 +147,7 @@
 @media (max-width: 900px) {
   .recruitment-experience-header { align-items: flex-start; flex-direction: column; padding: 20px; }
   .recruitment-experience-header > .ant-btn { width: 100%; }
-  .recruitment-journey-rail { grid-template-columns: repeat(6, 132px); }
+  .recruitment-journey-rail { grid-template-columns: repeat(7, 108px); }
   .recruitment-workspace-surface { padding: 14px; }
 }
 
@@ -153,4 +155,87 @@
   .recruitment-experience-header { border-radius: 16px; }
   .recruitment-workspace-surface { padding: 10px; border-radius: 14px; }
   .recruitment-experience :is(.jd-version-list, .posting-list) .ant-list-items { grid-template-columns: 1fr; }
+}
+
+/* The module has its own navigation rail, so viewport breakpoints alone do not
+   describe the usable content width. These rules respond to the real workspace. */
+@container recruitment-workspace (max-width: 840px) {
+  .recruitment-workspace-surface { padding: 14px; }
+
+  .recruitment-experience .orchestration-shell > .orchestration-toolbar {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .recruitment-experience .orchestration-shell > .orchestration-toolbar > div:last-child {
+    justify-content: flex-start !important;
+  }
+
+  .recruitment-experience .rfr-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .recruitment-experience .work-order-command-bar > .ant-space {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px !important;
+  }
+
+  .recruitment-experience .work-order-command-bar > .ant-space > .ant-space-item {
+    min-width: 0;
+  }
+
+  .recruitment-experience .work-order-command-bar > .ant-space > .ant-space-item:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .recruitment-experience .work-order-command-bar :is(.ant-select, .ant-input-search, .ant-btn) {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .recruitment-experience .talent-toolbar:not(.right) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(150px, .42fr);
+    align-items: stretch;
+  }
+
+  .recruitment-experience .talent-toolbar:not(.right) .ant-input-search {
+    width: 100%;
+    max-width: none;
+  }
+
+  .recruitment-experience .talent-toolbar-actions {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin-left: 0;
+  }
+
+  .recruitment-experience .talent-toolbar-actions .ant-btn { width: 100%; }
+}
+
+@container recruitment-workspace (max-width: 680px) {
+  .recruitment-experience-header {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 20px;
+  }
+
+  .recruitment-experience-header > .ant-btn { width: 100%; }
+  .recruitment-journey-rail { grid-template-columns: repeat(7, 108px); }
+
+  .recruitment-experience :is(.work-order-metrics, .ats-workbench-metrics) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .recruitment-experience .rfr-toolbar,
+  .recruitment-experience .work-order-command-bar > .ant-space,
+  .recruitment-experience .talent-toolbar:not(.right),
+  .recruitment-experience .talent-toolbar-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .recruitment-experience .work-order-command-bar > .ant-space > .ant-space-item:last-child,
+  .recruitment-experience .talent-toolbar-actions { grid-column: auto; }
 }

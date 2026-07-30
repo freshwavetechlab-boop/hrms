@@ -162,7 +162,7 @@ export default function RecruitmentJobDescriptionManager({ initialClientId = 0, 
     </div>
 
     {selectedRequisition && <Card size="small" className="jd-context-card">
-      <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 5 }}>
+      <Descriptions size="small" column={{ xs: 1, sm: 2, xl: 3, xxl: 5 }}>
         <Descriptions.Item label="Request">{selectedRequisition.rfrNumber}</Descriptions.Item>
         <Descriptions.Item label="Department">{selectedRequisition.department || '—'}</Descriptions.Item>
         <Descriptions.Item label="Hiring type">{selectedRequisition.hiringType || '—'}</Descriptions.Item>

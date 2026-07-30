@@ -2361,6 +2361,7 @@ body.portal-shell-mounted #root .module-shell .shell-bottom-brand{
 .recruitment-admin-workspace,
 .recruitment-admin-content{min-width:0!important;max-width:100%!important}
 .recruitment-monitor-page,.recruitment-admin{width:100%!important;display:grid!important;gap:12px!important;align-content:start!important}
+.recruitment-admin{container-name:recruitment-admin-workspace;container-type:inline-size}
 .recruitment-root-card > .ant-card-head{min-height:48px!important;border-bottom:1px solid #e8ebf2!important;background:#fff!important}
 .recruitment-root-card > .ant-card-head .ant-card-head-title{color:#172136!important;font-size:1rem!important;font-weight:850!important}
 .recruitment-root-card > .ant-card-body{height:auto!important;min-height:0!important;padding:18px!important;overflow:hidden!important}
@@ -2455,4 +2456,13 @@ body.portal-shell-mounted #root .module-shell .shell-bottom-brand{
   .recruitment-summary,.recruitment-filters,.recruitment-monitor-page .recruitment-filters{grid-template-columns:1fr!important}
   .recruitment-table-header{display:grid!important}
   .recruitment-table-header .ant-btn{width:100%!important}
+}
+
+/* Recruitment Administration shares the settings navigation rail. React to the
+   content card width so designer toolbars do not get crushed beside that rail. */
+@container recruitment-admin-workspace (max-width:840px){
+  .recruitment-admin .orchestration-shell > .orchestration-toolbar{grid-template-columns:1fr!important}
+  .recruitment-admin .orchestration-shell > .orchestration-toolbar > div:last-child{width:100%!important;justify-content:flex-start!important}
+  .recruitment-admin .orchestration-shell > .orchestration-toolbar > div:last-child > :is(.ant-select,.ant-btn){min-width:0!important}
+  .recruitment-admin :is(.form-builder-layout,.pipeline-designer-layout,.jd-workspace-layout,.posting-workspace-layout){grid-template-columns:1fr!important}
 }
