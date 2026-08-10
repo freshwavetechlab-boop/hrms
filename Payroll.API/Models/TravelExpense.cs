@@ -16,6 +16,10 @@ public class TravelExpenseClientSetting
     public int ClientId { get; set; }
     public string ClientName { get; set; } = string.Empty;
     public bool IsEnabled { get; set; }
+    public bool IsTravelDeskEnabled { get; set; }
+    public bool ShowTripDetails { get; set; }
+    public bool ShowAccommodationDetails { get; set; }
+    public bool ShowLocalTravelDetails { get; set; }
     public DateTime? EffectiveFrom { get; set; }
     public DateTime? EffectiveTo { get; set; }
     public string Remarks { get; set; } = string.Empty;

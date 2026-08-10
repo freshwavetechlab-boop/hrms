@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { ArrowDownOutlined, ArrowRightOutlined, ArrowUpOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Checkbox, Collapse, Drawer, Empty, Form, Input, InputNumber, List, Modal, Select, Space, Switch, Tag, message } from 'antd'
+import { Alert, Button, Card, Checkbox, Collapse, Drawer, Empty, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Switch, Tag, message } from 'antd'
+import { useAuthSession } from './AuthGate'
 import { getClients } from '../services/payrollService'
 import { loadSecurityData } from '../services/securityService'
 import RecruitmentMasterSelect from './RecruitmentMasterSelect'
 import {
-  getRecruitmentOrchestrationLookups, getRecruitmentPipeline, getRecruitmentPipelines, getRecruitmentPipelineVersion, getRecruitmentPipelineVersions,
+  deleteRecruitmentPipelineDefinition, getRecruitmentOrchestrationLookups, getRecruitmentPipeline, getRecruitmentPipelines, getRecruitmentPipelineVersion, getRecruitmentPipelineVersions,
   publishRecruitmentPipelineVersion, saveRecruitmentInterviewCompetency, saveRecruitmentPipelineDefinition, saveRecruitmentPipelineVersion,
 } from '../services/recruitmentOrchestrationService'
 import type { AuthRole, AuthUser, Client, Drop } from '../types/payroll'
@@ -24,6 +25,8 @@ const localId = () => -Math.floor(Date.now() + Math.random() * 100000)
 const code = (value: string) => value.toUpperCase().trim().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
 
 export default function RecruitmentPipelineDesigner({ initialClientId = 0, onSaved, dropdowns = [], onDropdownsChange = () => undefined }: Props) {
+  const session = useAuthSession()
+  const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
   const [clientId, setClientId] = useState(initialClientId)
   const [loadedClientId, setLoadedClientId] = useState(0)
@@ -172,13 +175,22 @@ export default function RecruitmentPipelineDesigner({ initialClientId = 0, onSav
     await selectPipeline(definition.id)
   }
 
+  const removeDefinition = async (row: RecruitmentPipelineDefinition) => {
+    const response = await deleteRecruitmentPipelineDefinition(row.id)
+    if (!response.ok) return
+    if (definition?.id === row.id) {
+      setDefinition(null); setVersion(null); setSelectedStageId(null); setStageDrawer(false)
+    }
+    await load(row.clientId)
+  }
+
   const transitionOptions = version?.stages.map(row => ({ value: row.id, label: `${row.displayOrder}. ${row.stageName}` })) ?? []
   const transitionWorkflowOptions = lookups.workflows
     .filter(row => row.isActive && row.resourceType === 'RecruitmentPipelineTransition' && (row.clientId == null || row.clientId === clientId))
     .map(row => ({ value: row.id, label: row.name }))
   return <section className="orchestration-shell">
     <div className="orchestration-toolbar"><div><span className="orchestration-kicker">Recruitment setup</span><h2 className="orchestration-title">Hiring Pipeline Designer</h2><p className="orchestration-subtitle">Normalized stages, approvals, forms, secure documents, interviews and SLA controls.</p></div><div><Select data-testid="pipeline-client" value={clientId || undefined} placeholder="Select client" options={clients.map(row => ({ value: row.id, label: row.name }))} onChange={value => { setLoadedClientId(0); setClientId(value) }} showSearch optionFilterProp="label" /><Button data-testid="pipeline-competencies" disabled={!clientId} onClick={() => setCompetencyOpen(true)}>Score components</Button><Button data-testid="pipeline-new" type="primary" icon={<PlusOutlined />} onClick={startNew}>New pipeline</Button></div></div>
-    <div className="pipeline-designer-layout"><Card size="small" className="form-builder-library" data-testid="pipeline-library" data-loaded-client-id={loadedClientId} title={`Pipelines (${pipelines.length})`}><List dataSource={pipelines} locale={{ emptyText: 'No pipelines for this client.' }} renderItem={row => <List.Item className={definition?.id === row.id ? 'active' : ''} onClick={() => void selectPipeline(row.id)}><List.Item.Meta title={row.pipelineName} description={<><span>{row.pipelineCode}</span><br /><Tag color={row.currentPublishedVersionId ? 'green' : 'orange'}>{row.currentPublishedVersionId ? 'Published' : 'Draft only'}</Tag></>} /></List.Item>} /></Card>
+    <div className="pipeline-designer-layout"><Card size="small" className="form-builder-library" data-testid="pipeline-library" data-loaded-client-id={loadedClientId} title={`Pipelines (${pipelines.length})`}><List dataSource={pipelines} locale={{ emptyText: 'No pipelines for this client.' }} renderItem={row => <List.Item className={definition?.id === row.id ? 'active' : ''} onClick={() => void selectPipeline(row.id)} actions={canDelete ? [<Popconfirm key="delete" title="Delete this hiring pipeline?" description="All versions are removed only when no position, application or cumulative hiring case uses them." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeDefinition(row)}><Button aria-label={`Delete ${row.pipelineName}`} size="small" danger type="text" icon={<DeleteOutlined />} onClick={event => event.stopPropagation()} /></Popconfirm>] : []}><List.Item.Meta title={row.pipelineName} description={<><span>{row.pipelineCode}</span><br /><Tag color={row.currentPublishedVersionId ? 'green' : 'orange'}>{row.currentPublishedVersionId ? 'Published' : 'Draft only'}</Tag></>} /></List.Item>} /></Card>
       {!definition || !version ? <Card><Empty description="Select a pipeline or create a new one." /></Card> : <div className="form-builder-canvas">
         <Card size="small"><div className="orchestration-toolbar"><Space wrap><Tag color={version.status === 'Published' ? 'green' : version.status === 'Retired' ? 'default' : 'gold'}>v{version.versionNumber} · {version.status}</Tag><Switch disabled={readOnly} checked={definition.isActive} onChange={isActive => patchDefinition({ isActive })} checkedChildren="Active" unCheckedChildren="Inactive" /></Space><Space>{readOnly && <Button onClick={beginRevision}>Create next version</Button>}<Button data-testid="pipeline-save" loading={saving} disabled={readOnly} onClick={() => void save()}>Save draft</Button><Button data-testid="pipeline-publish" type="primary" disabled={readOnly} onClick={publish}>Publish</Button></Space></div><div className="form-builder-meta"><Form.Item label="Pipeline name" required><Input data-testid="pipeline-name" disabled={readOnly} value={definition.pipelineName} onChange={event => patchDefinition({ pipelineName: event.target.value })} /></Form.Item><Form.Item label="Pipeline code" required><Input data-testid="pipeline-code" disabled={readOnly} value={definition.pipelineCode} onChange={event => patchDefinition({ pipelineCode: code(event.target.value) })} /></Form.Item><Form.Item label="Pipeline scope" required><Select data-testid="pipeline-scope" disabled={readOnly} value={version.scopeType ?? 'Application'} options={[{ value: 'Application', label: 'Candidate / application' }, { value: 'Position', label: 'Work-order position' }, { value: 'Hybrid', label: 'Position + candidate flow' }]} onChange={scopeType => patchVersion({ scopeType })} /></Form.Item><Form.Item label="SLA basis" required><Select data-testid="pipeline-sla-mode" disabled={readOnly} value={version.slaMode ?? 'StageEntry'} options={[{ value: 'StageEntry', label: 'From each stage entry' }, { value: 'CumulativeFromAnchor', label: 'Cumulative from work order' }]} onChange={slaMode => patchVersion({ slaMode })} /></Form.Item>{version.slaMode === 'CumulativeFromAnchor' && <Form.Item label="Overall SLA (days)" required><InputNumber data-testid="pipeline-overall-sla" disabled={readOnly} min={0.01} precision={2} value={(version.overallSlaMinutes ?? 0) / 1440 || undefined} onChange={value => patchVersion({ overallSlaMinutes: Math.round(Number(value || 0) * 1440) })} /></Form.Item>}<Form.Item className="wide" label="Description"><Input data-testid="pipeline-description" disabled={readOnly} value={definition.description} onChange={event => patchDefinition({ description: event.target.value })} /></Form.Item></div></Card>
         {publishError && <Alert type="error" showIcon closable message="Pipeline version cannot be published" description={publishError} onClose={() => setPublishError('')} />}

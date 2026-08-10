@@ -607,6 +607,50 @@ WHERE ClientId=@ClientId AND RecruitmentEnabled=TRUE AND EnableCandidatePortal=T
         return await db.ExecuteAsync("UPDATE recruitment_job_postings SET Status='Closed',UpdatedAtUtc=UTC_TIMESTAMP() WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, user.ClientId }) > 0;
     }
 
+    public async Task<(bool Ok, string Error)> DeleteJobDescriptionVersionAsync(long id, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var row = await db.QueryFirstOrDefaultAsync<RecruitmentJobDescriptionVersion>(
+            "SELECT * FROM recruitment_job_description_versions WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)",
+            new { Id = id, user.ClientId });
+        if (row is null) return (false, "Job-description version was not found in your permitted client scope.");
+        var postings = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_job_postings WHERE JobDescriptionVersionId=@Id", new { Id = id });
+        if (postings > 0) return (false, $"Delete the {postings} linked job posting(s) first.");
+        var scoreSnapshots = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_application_score_position_snapshots WHERE JobDescriptionVersionId=@Id", new { Id = id });
+        if (scoreSnapshots > 0) return (false, "This job description has ATS scoring evidence and must be retained for audit.");
+
+        await using var transaction = await db.BeginTransactionAsync();
+        await db.ExecuteAsync("UPDATE recruitment_open_positions SET ApprovedJobDescriptionVersionId=NULL WHERE ApprovedJobDescriptionVersionId=@Id", new { Id = id }, transaction);
+        await DeleteJobDescriptionChildrenAsync(db, transaction, id);
+        await db.ExecuteAsync("DELETE FROM recruitment_job_description_versions WHERE Id=@Id", new { Id = id }, transaction);
+        await transaction.CommitAsync();
+        return (true, "");
+    }
+
+    public async Task<(bool Ok, string Error)> DeleteJobPostingAsync(long id, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var row = await db.QueryFirstOrDefaultAsync<RecruitmentJobPosting>(
+            "SELECT * FROM recruitment_job_postings WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)",
+            new { Id = id, user.ClientId });
+        if (row is null) return (false, "Job posting was not found in your permitted client scope.");
+        var applications = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidate_applications WHERE JobPostingId=@Id", new { Id = id });
+        if (applications > 0) return (false, $"Delete the {applications} linked application(s) first.");
+
+        await using var transaction = await db.BeginTransactionAsync();
+        // Public application sessions are short-lived access tokens, not business records.
+        // Once a posting has no candidate applications, revoke and remove its sessions so
+        // the restrictive FK cannot turn an admin delete into an unhandled server error.
+        await db.ExecuteAsync("UPDATE form_public_sessions SET RevokedAtUtc=COALESCE(RevokedAtUtc,UTC_TIMESTAMP(6)) WHERE PostingId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM form_public_sessions WHERE PostingId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_position_pipeline_assignments WHERE JobPostingId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_job_postings WHERE Id=@Id", new { Id = id }, transaction);
+        await transaction.CommitAsync();
+        return (true, "");
+    }
+
     public async Task<RecruitmentPublicJobPosting?> GetPublicJobPostingAsync(string publicSlug)
     {
         if (!Regex.IsMatch(publicSlug ?? "", "^[a-f0-9]{32}$", RegexOptions.CultureInvariant)) return null;
@@ -707,6 +751,62 @@ JOIN recruitment_interview_competency_definitions c ON c.Id=m.CompetencyId WHERE
 JOIN recruitment_pipeline_definitions d ON d.Id=v.PipelineDefinitionId
 WHERE v.PipelineDefinitionId=@Id AND (@ClientId IS NULL OR d.ClientId=@ClientId)
 ORDER BY v.VersionNumber DESC", new { Id = pipelineDefinitionId, user.ClientId });
+    }
+
+    public async Task<(bool Ok, string Error)> DeletePipelineDefinitionAsync(long id, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var definition = await db.QueryFirstOrDefaultAsync<(long Id, int ClientId, string PipelineName)>(@"SELECT Id,ClientId,PipelineName
+FROM recruitment_pipeline_definitions WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, user.ClientId });
+        if (definition.Id <= 0) return (false, "Pipeline definition was not found in your client scope.");
+
+        var versions = (await db.QueryAsync<long>("SELECT Id FROM recruitment_pipeline_versions WHERE PipelineDefinitionId=@Id", new { Id = id })).ToArray();
+        if (versions.Length == 0)
+        {
+            await db.ExecuteAsync("DELETE FROM recruitment_pipeline_definitions WHERE Id=@Id", new { Id = id });
+            return (true, "");
+        }
+
+        var assignments = await db.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM recruitment_position_pipeline_assignments WHERE PipelineVersionId IN @Ids", new { Ids = versions });
+        if (assignments > 0)
+            return (false, $"This pipeline is assigned to {assignments} position/posting record(s). Delete those hiring records or assignments first.");
+
+        var applicationInstances = await db.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM recruitment_application_pipeline_instances WHERE PipelineVersionId IN @Ids", new { Ids = versions });
+        if (applicationInstances > 0)
+            return (false, $"This pipeline contains {applicationInstances} candidate journey instance(s). Delete their applications first.");
+
+        var positionInstances = await db.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM recruitment_position_pipeline_instances WHERE PipelineVersionId IN @Ids", new { Ids = versions });
+        if (positionInstances > 0)
+            return (false, $"This pipeline contains {positionInstances} live cumulative hiring case(s). Delete those cases first.");
+
+        await using var tx = await db.BeginTransactionAsync();
+        try
+        {
+            var stageIds = (await db.QueryAsync<long>(
+                "SELECT Id FROM recruitment_pipeline_stages WHERE PipelineVersionId IN @Ids", new { Ids = versions }, tx)).ToArray();
+            if (stageIds.Length > 0)
+            {
+                var actionIds = (await db.QueryAsync<long>(
+                    "SELECT Id FROM recruitment_pipeline_stage_actions WHERE PipelineStageId IN @Ids", new { Ids = stageIds }, tx)).ToArray();
+                if (actionIds.Length > 0)
+                    await db.ExecuteAsync("DELETE FROM recruitment_stage_action_recipients WHERE StageActionId IN @Ids", new { Ids = actionIds }, tx);
+                await db.ExecuteAsync("DELETE FROM recruitment_stage_default_panel_members WHERE PipelineStageId IN @Ids", new { Ids = stageIds }, tx);
+            }
+            await db.ExecuteAsync("UPDATE recruitment_pipeline_definitions SET CurrentPublishedVersionId=NULL WHERE Id=@Id", new { Id = id }, tx);
+            await db.ExecuteAsync("DELETE FROM recruitment_pipeline_versions WHERE PipelineDefinitionId=@Id", new { Id = id }, tx);
+            await db.ExecuteAsync("DELETE FROM recruitment_pipeline_definitions WHERE Id=@Id", new { Id = id }, tx);
+            await tx.CommitAsync();
+            return (true, "");
+        }
+        catch (MySqlException)
+        {
+            await tx.RollbackAsync();
+            return (false, "This pipeline still has linked configuration or transaction data. Remove its dependent records first, then retry.");
+        }
     }
 
     public async Task<(RecruitmentPipelineVersion? Row, string Error)> SavePipelineVersionAsync(SaveRecruitmentPipelineVersion request, AuthUser user)

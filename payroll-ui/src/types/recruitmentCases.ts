@@ -61,6 +61,11 @@ export type RecruitmentHiringCaseStage = {
   displayOrder: number
   stakeholderCode: string
   targetOffsetMinutes?: number | null
+  allowPause: boolean
+  pauseBehavior: string
+  requiresApproval: boolean
+  approvalWorkflowId?: number | null
+  isTerminal: boolean
   status: string
   enteredAtUtc?: string | null
   dueAtUtc?: string | null

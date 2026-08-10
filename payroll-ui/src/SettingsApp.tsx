@@ -48,12 +48,36 @@ const productLogo = '/assets/FrevoOneLogo.png'
 const productMark = '/favicon.svg'
 const dashboardViews: DashboardView[] = ['overview', 'workforce', 'payroll', 'attendance', 'approvals']
 const fallbackDashboardAccess = [{ code: 'overview', name: 'Overview Dashboard', description: 'Combined HR, payroll, attendance and approval summary.', route: '/dashboard', sortOrder: 10 }]
-const recruitmentNavigation: Array<{ key: string; label: string; children: RecruitmentPageView[] }> = [
-  { key: 'demand', label: 'Demand Planning', children: ['Dashboard', 'Work Orders & SLA', 'Requisitions', 'Open Positions'] },
-  { key: 'publishing', label: 'Content & Publishing', children: ['Job Descriptions', 'Job Postings'] },
-  { key: 'candidates', label: 'Candidate Lifecycle', children: ['ATS Screening', 'Hiring Pipeline', 'Talent Pool', 'Applications'] },
-  { key: 'selection', label: 'Selection & Onboarding', children: ['Interviews', 'Offers & Pre-Onboarding'] },
+const recruitmentNavigation: Array<{
+  key: string
+  label: string
+  children: Array<{ view: RecruitmentPageView; label: string }>
+}> = [
+  {
+    key: 'recruitment-workspaces',
+    label: 'Talent Acquisition',
+    children: [
+      { view: 'Dashboard', label: 'Overview' },
+      { view: 'Requisitions', label: 'Hiring Requests' },
+      { view: 'Job Descriptions', label: 'Jobs' },
+      { view: 'Talent Pool', label: 'Candidates' },
+      { view: 'Hiring Pipeline', label: 'Candidate Pipeline' },
+      { view: 'Interviews', label: 'Selection & Onboarding' },
+      { view: 'Work Orders & SLA', label: 'Client Delivery SLA' },
+    ],
+  },
 ]
+const recruitmentNavigationView = (view: RecruitmentPageView): RecruitmentPageView => {
+  if (view === 'Open Positions') return 'Requisitions'
+  if (view === 'Job Postings') return 'Job Descriptions'
+  if (['ATS Screening', 'Applications'].includes(view)) return 'Talent Pool'
+  if (view === 'Offers & Pre-Onboarding') return 'Interviews'
+  return view
+}
+const recruitmentNavigationLabel = (view: RecruitmentPageView) => {
+  const canonicalView = recruitmentNavigationView(view)
+  return recruitmentNavigation.flatMap(group => group.children).find(item => item.view === canonicalView)?.label ?? view
+}
 
 const modules: { code: ModuleCode | 'Reports'; label: string; icon: IconName; description: string; disabled?: boolean }[] = [
   { code: 'Dashboard', label: 'Dashboard', icon: 'reports', description: 'Client-wise payroll, attendance and approval overview.' },
@@ -188,7 +212,7 @@ export default function SettingsApp() {
       navigate(item.route || '/dashboard')
     }
   }
-  const pageTitle = isProfile ? 'My Profile' : showMyTasks ? 'My Tasks' : mainModule === 'Dashboard' ? activeDashboard.name : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab === 'Recruitment Administration' ? recruitmentAdminSectionLabel(recruitmentAdminSection) : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? employeeTab : mainModule === 'TalentAcquisition' ? recruitmentView : mainModule === 'Security' ? securityAppSettingsTab ?? securityTab : mainModule === 'Reports' ? reportingTab : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
+  const pageTitle = isProfile ? 'My Profile' : showMyTasks ? 'My Tasks' : mainModule === 'Dashboard' ? activeDashboard.name : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab === 'Recruitment Administration' ? recruitmentAdminSectionLabel(recruitmentAdminSection) : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? employeeTab : mainModule === 'TalentAcquisition' ? recruitmentNavigationLabel(recruitmentView) : mainModule === 'Security' ? securityAppSettingsTab ?? securityTab : mainModule === 'Reports' ? reportingTab : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
   const breadcrumbItems = mainModule === 'Settings' && settingsSection === 'General' && tab === 'Recruitment Administration'
     ? [{ title: activeModule.label }, { title: 'Recruitment Administration' }, { title: pageTitle }]
     : mainModule === 'Security' && securityAppSettingsTab
@@ -432,12 +456,12 @@ export default function SettingsApp() {
         className="recruitment-nav-menu"
         mode="inline"
         inlineIndent={14}
-        selectedKeys={[slug(recruitmentView)]}
+        selectedKeys={[slug(recruitmentNavigationView(recruitmentView))]}
         defaultOpenKeys={recruitmentNavigation.map(group => `recruitment-${group.key}`)}
         items={recruitmentNavigation.map(group => ({
           key: `recruitment-${group.key}`,
           label: group.label,
-          children: group.children.map(item => ({ key: slug(item), label: item })),
+          children: group.children.map(item => ({ key: slug(item.view), label: item.label })),
         }))}
         onClick={({ key }) => {
           const next = recruitmentViews.find(item => slug(item) === key)

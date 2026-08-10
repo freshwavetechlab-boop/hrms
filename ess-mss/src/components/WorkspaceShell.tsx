@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import type { OrganizationBrand, ProfileData, User, View } from '../types'
 import { essApi, organizationBrand } from '../services/essApi'
 import { initials } from '../utils/ui'
+import { canMaintainTravelExpense } from '../utils/access'
 
 type Props = {
   user: User
@@ -31,23 +32,25 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
   const [profile, setProfile] = useState<ProfileData | null>(null)
   const hasRecruitmentAccess = canAccessRecruitment(user)
   const canManageAttendance = user.permissions.some(permission => permission.toLowerCase() === 'mss.attendance.manage')
+  const travelExpenseAdmin = canMaintainTravelExpense(user)
   const groups = useMemo(
     () => [
       { key: 'home', icon: 'home' as IconName, label: 'Home', items: [{ icon: 'dashboard' as IconName, label: 'Dashboard', view: 'Dashboard' as View }, ...(employeeSelf ? [{ icon: 'profile' as IconName, label: 'My profile', view: 'My Profile' as View }] : [])] },
       ...(employeeSelf ? [{ key: 'time', icon: 'attendance' as IconName, label: 'Time & leave', items: [{ icon: 'attendance' as IconName, label: 'Attendance calendar', view: 'Attendance' as View }, { icon: 'plus' as IconName, label: 'Apply leave', view: 'Leave' as View, action: 'ess:leave:new' }, { icon: 'list' as IconName, label: 'Leave history', view: 'Leave' as View, action: 'ess:leave:list' }] }] : []),
       ...(employeeSelf ? [{ key: 'payroll', icon: 'pay' as IconName, label: 'Pay & tax', items: [{ icon: 'pay' as IconName, label: 'Payslips', view: 'Pay' as View }, { icon: 'tax' as IconName, label: 'Tax declarations', view: 'Tax' as View }] }] : []),
       ...(employeeSelf && travelExpenseEnabled === true ? [{ key: 'travel', icon: 'travel' as IconName, label: 'Travel & expense', items: [{ icon: 'plus' as IconName, label: 'Create travel request', view: 'Travel' as View, action: 'ess:travel:new' }, { icon: 'list' as IconName, label: 'Travel requests', view: 'Travel' as View, action: 'ess:travel:list' }, { icon: 'expense' as IconName, label: 'Other expense claim', view: 'Expense' as View, action: 'ess:expense:new' }, { icon: 'list' as IconName, label: 'Expense claims', view: 'Expense' as View, action: 'ess:expense:list' }] }] : []),
+      ...(!employeeSelf && travelExpenseAdmin ? [{ key: 'travel-admin', icon: 'travel' as IconName, label: 'Travel & expense admin', items: [{ icon: 'list' as IconName, label: 'Travel records', view: 'Travel' as View }, { icon: 'expense' as IconName, label: 'Expense records', view: 'Expense' as View }] }] : []),
       ...(employeeSelf && recruitmentEnabled === true ? [{ key: 'recruitment', icon: 'recruitment' as IconName, label: 'Recruitment', items: [{ icon: 'plus' as IconName, label: 'Create requisition', view: 'Recruitment' as View, action: 'ess:recruitment:new' }, { icon: 'list' as IconName, label: 'My requisitions', view: 'Recruitment' as View, action: 'ess:recruitment:list' }] }] : []),
       { key: 'tasks', icon: 'tasks' as IconName, label: 'Approvals', items: [{ icon: 'tasks' as IconName, label: 'My approval tasks', view: 'My Tasks' as View }] },
       ...(manager ? [{ key: 'manager', icon: 'manager' as IconName, label: 'Manager workspace', items: [{ icon: 'team' as IconName, label: 'Team overview', view: 'Team' as View }, ...(canManageAttendance ? [{ icon: 'attendance' as IconName, label: 'Attendance review', view: 'Attendance Review' as View }] : []), { icon: 'approval' as IconName, label: 'Team approvals', view: 'Approvals' as View }] }] : []),
     ],
-    [canManageAttendance, employeeSelf, manager, recruitmentEnabled, travelExpenseEnabled],
+    [canManageAttendance, employeeSelf, manager, recruitmentEnabled, travelExpenseAdmin, travelExpenseEnabled],
   )
 
   useEffect(() => {
-    if (!employeeSelf) { setTravelExpenseEnabled(false); return }
+    if (!employeeSelf) { setTravelExpenseEnabled(travelExpenseAdmin); return }
     void essApi.features().then(features => setTravelExpenseEnabled(features.travelExpenseEnabled)).catch(() => setTravelExpenseEnabled(false))
-  }, [employeeSelf, user.email])
+  }, [employeeSelf, travelExpenseAdmin, user.email])
   useEffect(() => {
     let active = true
     const request = employeeSelf ? essApi.profile() : Promise.resolve(null)
@@ -65,7 +68,7 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
   useEffect(() => { void organizationBrand().then(setOrganization).catch(() => undefined) }, [])
   useEffect(() => { if (recruitmentEnabled === false && view === 'Recruitment') onNavigate('Dashboard') }, [onNavigate, recruitmentEnabled, view])
   useEffect(() => { if (travelExpenseEnabled === false && (view === 'Travel' || view === 'Expense')) onNavigate('Dashboard') }, [onNavigate, travelExpenseEnabled, view])
-  useEffect(() => { if (!employeeSelf && isEmployeeOnlyView(view)) onNavigate('Dashboard') }, [employeeSelf, onNavigate, view])
+  useEffect(() => { if (!employeeSelf && isEmployeeOnlyView(view) && !(travelExpenseAdmin && (view === 'Travel' || view === 'Expense'))) onNavigate('Dashboard') }, [employeeSelf, onNavigate, travelExpenseAdmin, view])
 
   useEffect(() => {
     const active = groups.find(group => group.items.some(item => item.view === view))

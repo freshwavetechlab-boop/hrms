@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, DatePicker, Descriptions, Form, Input, InputNumber, Modal, Progress, Select, Space, Statistic, Table, Tag, Typography } from 'antd'
+import { Alert, Button, Card, DatePicker, Descriptions, Form, Input, InputNumber, Progress, Select, Space, Statistic, Table, Tag, Typography } from 'antd'
 import dayjs, { type Dayjs } from 'dayjs'
 import { getInterviewFeedback, getInterviewSchedulingContext, saveInterview, saveInterviewFeedback } from '../services/recruitmentTalentService'
 import type { RecruitmentCandidateApplication, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, SaveRecruitmentInterviewFeedbackCompetencyScore, WorkflowApprover } from '../types/payroll'
 import SearchSelect, { selectOptions } from './SearchSelect'
+import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
 import './RecruitmentInterviewEditor.css'
 
 type CommonProps = {
@@ -171,15 +172,17 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
     onClose()
   }
 
-  return <Modal
+  return <RecruitmentEditorDrawer
     open={open}
-    width={900}
-    title={<div><Typography.Text type="secondary">Recruitment interview</Typography.Text><Typography.Title level={4}>{interview?.id ? 'Update interview' : 'Schedule interview'}</Typography.Title></div>}
-    onCancel={onClose}
-    onOk={() => void submit()}
-    okText={interview?.id ? 'Save changes' : 'Schedule interview'}
-    confirmLoading={saving}
-    okButtonProps={{ disabled: !canSave }}
+    width="min(900px, 96vw)"
+    eyebrow="Recruitment interview"
+    title={interview?.id ? 'Update interview' : 'Schedule interview'}
+    description="Set the interview round, schedule, panel and result in one workspace."
+    onClose={onClose}
+    onSubmit={() => void submit()}
+    submitText={interview?.id ? 'Save changes' : 'Schedule interview'}
+    submitLoading={saving}
+    submitDisabled={!canSave}
     destroyOnClose
   >
     <div className="interview-editor">
@@ -215,7 +218,7 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
         {!!context.competencies.length && <div className="interview-competency-tags">{context.competencies.map(row => <Tag key={row.id}>{row.competencyName} · {row.weightPercent}%</Tag>)}</div>}
       </Card>}
     </div>
-  </Modal>
+  </RecruitmentEditorDrawer>
 }
 
 function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved }: FeedbackProps) {
@@ -285,12 +288,18 @@ function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved }: Feedb
     await onSaved()
   }
 
-  return <Modal
+  return <RecruitmentEditorDrawer
     open={open}
-    width={980}
-    title={<div><Typography.Text type="secondary">Panel feedback</Typography.Text><Typography.Title level={4}>{interview.candidateName} · {interview.roundCode}</Typography.Title></div>}
-    onCancel={onClose}
-    footer={<Space><Button onClick={onClose}>Close</Button><Button type="primary" loading={saving} disabled={!canSubmit} onClick={() => void submit()}>Save feedback</Button></Space>}
+    width="min(980px, 96vw)"
+    eyebrow="Panel feedback"
+    title={`${interview.candidateName} · ${interview.roundCode}`}
+    description="Review submitted feedback and capture this panel member's evidence and recommendation."
+    onClose={onClose}
+    onSubmit={() => void submit()}
+    submitText="Save feedback"
+    submitLoading={saving}
+    submitDisabled={!canSubmit}
+    closeText="Close"
     destroyOnClose
   >
     <div className="interview-editor feedback-editor">
@@ -338,7 +347,7 @@ function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved }: Feedb
         <Form.Item className="interview-editor-span" label="Overall comments"><Input.TextArea rows={4} value={comments} onChange={event => setComments(event.target.value)} placeholder="Capture evidence, strengths, concerns and hiring rationale." /></Form.Item>
       </Form>
     </div>
-  </Modal>
+  </RecruitmentEditorDrawer>
 }
 
 function resetFormWithPanel(

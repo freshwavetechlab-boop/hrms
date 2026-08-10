@@ -11,7 +11,7 @@
   margin-bottom: 18px;
 }
 
-.rfr-header span,
+.rfr-header > div > span,
 .rfr-dialog-kicker {
   color: #6653e8;
   font-size: 11px;
@@ -70,22 +70,20 @@
   white-space: nowrap;
 }
 
-.rfr-dialog .ant-modal-content {
+.rfr-dialog .ant-drawer-content {
   overflow: hidden;
-  padding: 0;
-  border-radius: 18px;
+  border-radius: 18px 0 0 18px;
 }
 
-.rfr-dialog .ant-modal-header {
+.rfr-dialog .ant-drawer-header {
   margin: 0;
   padding: 22px 26px 18px;
   border-bottom: 1px solid #eceef5;
 }
 
-.rfr-dialog .ant-modal-body {
-  max-height: calc(100vh - 155px);
+.rfr-dialog .ant-drawer-body {
   overflow-y: auto;
-  padding: 22px 26px 0;
+  padding: 22px 26px;
 }
 
 .rfr-essential-grid,
@@ -152,16 +150,12 @@
 }
 
 .rfr-dialog-actions {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  padding: 15px 0 18px;
+  padding: 15px 0 0;
   border-top: 1px solid #eceef5;
-  background: rgba(255, 255, 255, .97);
-  backdrop-filter: blur(8px);
+  background: transparent;
 }
 
 .rfr-form .ant-form-item {
@@ -188,5 +182,5 @@
   .rfr-essential-grid > :nth-child(3),
   .rfr-essential-grid > :nth-child(4),
   .rfr-span-2 { grid-column: auto; }
-  .rfr-dialog .ant-modal-body { padding-inline: 16px; }
+  .rfr-dialog .ant-drawer-body { padding-inline: 16px; }
 }

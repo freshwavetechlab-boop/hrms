@@ -12,91 +12,208 @@
   min-width: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
+  gap: 16px;
   overflow: hidden;
-  padding: 24px 26px;
+  padding: 15px 18px;
   border: 1px solid #e4e0ff;
-  border-radius: 20px;
+  border-radius: 15px;
   background:
     radial-gradient(circle at 88% 10%, rgba(111, 79, 231, .16), transparent 32%),
     linear-gradient(135deg, #ffffff 0%, #faf9ff 55%, #f0f7ff 100%);
-  box-shadow: 0 14px 40px rgba(42, 35, 92, .08);
+  box-shadow: 0 8px 24px rgba(42, 35, 92, .06);
 }
 
 .recruitment-experience-header::after {
-  position: absolute;
-  inset: auto -34px -52px auto;
-  width: 180px;
-  height: 180px;
-  border: 24px solid rgba(87, 72, 211, .06);
-  border-radius: 50%;
-  content: '';
-  pointer-events: none;
+  content: none;
 }
 
 .recruitment-experience-header > div { position: relative; z-index: 1; min-width: 0; }
 .recruitment-experience-header h1 {
-  margin: 7px 0 6px;
+  margin: 4px 0;
   color: #172037;
-  font-size: clamp(24px, 2.5vw, 34px);
+  font-size: clamp(22px, 2.1vw, 28px);
   line-height: 1.08;
   letter-spacing: -.035em;
 }
-.recruitment-experience-header p { max-width: 760px; margin: 0; color: #68738b; line-height: 1.55; }
-.recruitment-experience-header > .ant-btn { position: relative; z-index: 1; flex: 0 0 auto; border-radius: 11px; box-shadow: 0 9px 22px rgba(87, 64, 214, .22); }
-
-.recruitment-journey-rail {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(100px, 1fr));
-  min-width: 0;
-  overflow-x: auto;
-  padding: 8px;
-  border: 1px solid #e7e9f3;
-  border-radius: 16px;
-  background: #fff;
-  box-shadow: 0 8px 26px rgba(35, 44, 79, .05);
+.recruitment-experience-header p { max-width: 760px; margin: 0; color: #68738b; line-height: 1.4; }
+.recruitment-experience-header > .ant-btn {
+  position: relative;
+  z-index: 1;
+  width: auto;
+  height: 36px;
+  min-height: 36px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  box-shadow: 0 7px 18px rgba(87, 64, 214, .18);
 }
-.recruitment-journey-rail button {
+
+/* A single compact command language across every Talent Acquisition surface. */
+.recruitment-experience :is(.ant-btn, .ant-input, .ant-input-affix-wrapper, .ant-select-selector) {
+  border-radius: 9px;
+}
+.recruitment-experience :is(.ant-btn-primary, .recruitment-experience-header > .ant-btn) {
+  min-height: 34px;
+  padding-inline: 15px;
+  font-weight: 750;
+}
+.recruitment-experience :is(.orchestration-shell > .orchestration-toolbar, .work-order-command-bar) {
+  min-height: 48px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 0 14px;
+  border-bottom: 1px solid #edf0f6;
+  background: transparent;
+}
+.recruitment-experience .orchestration-shell > .orchestration-toolbar > div:first-child:has(.orchestration-title),
+.recruitment-experience .work-order-command-bar > div:first-child {
+  display: none;
+}
+.recruitment-experience :is(.orchestration-shell > .orchestration-toolbar, .work-order-command-bar) > :last-child {
   display: flex;
   min-width: 0;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 42px;
-  padding: 7px 10px;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+.recruitment-experience .ats-workbench-hero {
   border: 0;
-  border-radius: 11px;
-  color: #677189;
   background: transparent;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: color .18s ease, background .18s ease, transform .18s ease;
+  box-shadow: none;
 }
-.recruitment-journey-rail button:hover { color: #5140cd; background: #f7f5ff; transform: translateY(-1px); }
-.recruitment-journey-rail button.active { color: #fff; background: linear-gradient(135deg, #7451ea, #4e71dc); box-shadow: 0 7px 16px rgba(84, 67, 208, .22); }
-.recruitment-journey-rail i {
-  display: inline-grid;
-  width: 24px;
-  height: 24px;
-  place-items: center;
-  border-radius: 50%;
-  background: #eeebff;
-  color: #5a46d5;
-  font-size: 11px;
-  font-style: normal;
+.recruitment-experience .ats-workbench-hero > .ant-card-body { padding: 0 0 14px; }
+.recruitment-experience .ats-workbench-heading {
+  min-height: 48px;
+  justify-content: flex-end;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #edf0f6;
 }
-.recruitment-journey-rail button.active i { background: rgba(255, 255, 255, .2); color: #fff; }
+.recruitment-experience .ats-workbench-heading > .ats-workbench-icon,
+.recruitment-experience .ats-workbench-heading > div:nth-child(2) { display: none; }
+.recruitment-experience .ats-workbench-primary-actions { margin-left: auto; }
+
+/* Forms and record details consistently enter from the right. */
+.recruitment-editor-drawer .ant-drawer-content,
+.recruitment-detail-drawer .ant-drawer-content {
+  background: #fbfcff;
+}
+.recruitment-editor-drawer .ant-drawer-header,
+.recruitment-detail-drawer .ant-drawer-header {
+  padding: 18px 22px;
+  border-bottom-color: #e7eaf2;
+  background: #fff;
+}
+.recruitment-editor-drawer .ant-drawer-body,
+.recruitment-detail-drawer .ant-drawer-body { padding: 20px 22px; }
+.recruitment-editor-drawer .ant-drawer-footer {
+  padding: 12px 22px;
+  border-top-color: #e7eaf2;
+  background: rgba(255, 255, 255, .98);
+}
+.recruitment-editor-title { display: grid; gap: 3px; }
+.recruitment-editor-title > span {
+  color: #6546d9;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+}
+.recruitment-editor-title > strong { color: #172136; font-size: 18px; line-height: 1.2; }
+.recruitment-editor-title > small { max-width: 620px; color: #6f7890; font-size: 12px; font-weight: 500; line-height: 1.4; }
+.recruitment-editor-drawer .ant-drawer-footer .ant-space { width: 100%; justify-content: flex-end; }
+.recruitment-editor-drawer .ant-form-item-label > label { color: #46516a; font-weight: 650; }
+.recruitment-editor-drawer .ant-card { border-radius: 12px; }
 
 .recruitment-workspace-surface {
   min-width: 0;
-  padding: 20px;
+  padding: 14px;
   border: 1px solid #e6e9f2;
   border-radius: 18px;
   background: #fff;
   box-shadow: 0 12px 34px rgba(35, 44, 79, .055);
 }
+
+.recruitment-primary-tabs > .ant-tabs-nav {
+  margin: 0 0 18px !important;
+  padding: 5px !important;
+  border: 1px solid #e7e9f3;
+  border-radius: 13px;
+  background: #f8f9fd;
+}
+.recruitment-primary-tabs > .ant-tabs-nav::before { border: 0 !important; }
+.recruitment-primary-tabs > .ant-tabs-nav .ant-tabs-nav-list { gap: 3px; }
+.recruitment-primary-tabs > .ant-tabs-nav .ant-tabs-tab {
+  min-height: 38px;
+  margin: 0 !important;
+  padding: 8px 14px !important;
+  border-radius: 9px;
+  color: #657087;
+  font-size: 13px;
+  font-weight: 750;
+  transition: color .18s ease, background .18s ease, box-shadow .18s ease;
+}
+.recruitment-primary-tabs > .ant-tabs-nav .ant-tabs-tab:hover { color: #5133cc; background: #f1efff; }
+.recruitment-primary-tabs > .ant-tabs-nav .ant-tabs-tab-active { background: #fff; box-shadow: 0 4px 13px rgba(39, 31, 100, .09); }
+.recruitment-primary-tabs > .ant-tabs-nav .ant-tabs-tab-active .ant-tabs-tab-btn { color: #5133cc !important; }
+.recruitment-primary-tabs > .ant-tabs-nav .ant-tabs-ink-bar { display: none !important; }
+.recruitment-primary-tabs > .ant-tabs-content-holder,
+.recruitment-primary-tabs > .ant-tabs-content-holder > .ant-tabs-content,
+.recruitment-primary-tabs > .ant-tabs-content-holder > .ant-tabs-content > .ant-tabs-tabpane { min-width: 0; max-width: 100%; }
+.recruitment-primary-tabs > .ant-tabs-content-holder > .ant-tabs-content > .ant-tabs-tabpane-active {
+  animation: recruitment-workspace-enter .2s ease-out;
+}
+@keyframes recruitment-workspace-enter {
+  from { opacity: .45; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.recruitment-overview-metrics > button {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  padding: 13px 14px;
+  overflow: hidden;
+  border: 1px solid #e6eaf2;
+  border-radius: 11px;
+  color: inherit;
+  background: linear-gradient(180deg, #fff, #fbfcff);
+  box-shadow: 0 6px 16px rgba(23, 33, 54, .035);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+.recruitment-overview-metrics > button::after {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: 0 0 0 48px;
+  background: rgba(100, 70, 232, .055);
+  content: '';
+}
+.recruitment-overview-metrics > button:hover { border-color: #cfc5fb; box-shadow: 0 10px 22px rgba(59, 44, 139, .09); transform: translateY(-2px); }
+.recruitment-overview-metrics > button span { color: #667085; font-size: .66rem; font-weight: 850; letter-spacing: .045em; text-transform: uppercase; }
+.recruitment-overview-metrics > button b { color: #172136; font-size: 1.15rem; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.recruitment-overview-metrics > button small { color: #5b46cf; font-size: 10px; font-weight: 750; opacity: 0; transform: translateY(2px); transition: opacity .18s ease, transform .18s ease; }
+.recruitment-overview-metrics > button:hover small,
+.recruitment-overview-metrics > button:focus-visible small { opacity: 1; transform: translateY(0); }
+
+.recruitment-lifecycle-funnel {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #e5e1fb;
+  border-radius: 13px;
+  background: linear-gradient(90deg, #fbfaff, #f7f9ff);
+}
+.recruitment-lifecycle-funnel article { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 8px; align-items: center; min-width: 0; padding: 5px 14px; }
+.recruitment-lifecycle-funnel article:not(:last-child)::after { position: absolute; top: 50%; right: -5px; color: #9889dc; content: '›'; font-size: 20px; transform: translateY(-53%); }
+.recruitment-lifecycle-funnel i { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 50%; color: #fff; background: linear-gradient(135deg, #7653e9, #4f73df); font-size: 11px; font-style: normal; font-weight: 800; }
+.recruitment-lifecycle-funnel span { min-width: 0; overflow: hidden; color: #58627a; font-size: 12px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.recruitment-lifecycle-funnel b { color: #1b2440; font-size: 16px; font-variant-numeric: tabular-nums; }
 
 .recruitment-experience .orchestration-shell { gap: 14px; }
 .recruitment-experience .orchestration-toolbar {
@@ -147,7 +264,6 @@
 @media (max-width: 900px) {
   .recruitment-experience-header { align-items: flex-start; flex-direction: column; padding: 20px; }
   .recruitment-experience-header > .ant-btn { width: 100%; }
-  .recruitment-journey-rail { grid-template-columns: repeat(7, 108px); }
   .recruitment-workspace-surface { padding: 14px; }
 }
 
@@ -160,6 +276,15 @@
 /* The module has its own navigation rail, so viewport breakpoints alone do not
    describe the usable content width. These rules respond to the real workspace. */
 @container recruitment-workspace (max-width: 840px) {
+  .recruitment-experience-header {
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .recruitment-experience-header > .ant-btn { width: auto; margin-left: auto; }
+  .recruitment-lifecycle-funnel { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .recruitment-lifecycle-funnel article::after { display: none; }
   .recruitment-workspace-surface { padding: 14px; }
 
   .recruitment-experience .orchestration-shell > .orchestration-toolbar {
@@ -167,7 +292,8 @@
   }
 
   .recruitment-experience .orchestration-shell > .orchestration-toolbar > div:last-child {
-    justify-content: flex-start !important;
+    width: 100%;
+    justify-content: flex-end !important;
   }
 
   .recruitment-experience .rfr-toolbar {
@@ -223,7 +349,6 @@
   }
 
   .recruitment-experience-header > .ant-btn { width: 100%; }
-  .recruitment-journey-rail { grid-template-columns: repeat(7, 108px); }
 
   .recruitment-experience :is(.work-order-metrics, .ats-workbench-metrics) {
     grid-template-columns: repeat(2, minmax(0, 1fr));

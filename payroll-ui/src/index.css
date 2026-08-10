@@ -129,3 +129,9 @@ select {
 .smart-table-pager select { width: auto; height: 31px; border-radius: 7px; font-size: .72rem; }
 .smart-table-pager button { min-height: 31px; border: 1px solid #dfe2ea; border-radius: 7px; background: #fff; padding: 0 10px; font-weight: 800; }
 @media (max-width: 700px) { .auth-session { right: 10px; top: 8px; } .auth-session > div { display: none; } .topbar-actions .app-launcher { top: 8px !important; right: 56px !important; } }
+
+.app-toast-description { display: grid; gap: 10px; line-height: 1.45; }
+.app-toast-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.app-toast-actions a { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; padding: 5px 10px; border: 1px solid #cfc6f5; border-radius: 8px; background: #f5f2ff; color: #5133cc; font-size: .72rem; font-weight: 800; text-decoration: none; }
+.app-toast-actions a:hover { border-color: #6546e8; background: #ece7ff; color: #3f24ad; }
+.app-toast-actions a b { font-size: .9rem; }

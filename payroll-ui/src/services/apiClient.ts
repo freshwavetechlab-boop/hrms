@@ -1,4 +1,5 @@
 import { toast } from '../components/ToastProvider'
+import { recruitmentDeleteActions } from './recruitmentDeleteFeedback'
 
 export const api = import.meta.env.VITE_API_URL ?? 'http://localhost:5062'
 
@@ -121,22 +122,22 @@ export function postFormWithProgress<TResult>(path: string, body: FormData, fall
       }
       if (request.status >= 200 && request.status < 300) {
         try {
-          notifyMutation('POST', true, '')
+          notifyMutation(path, 'POST', true, '')
           resolve({ ok: true, data: request.responseText ? JSON.parse(request.responseText) as TResult : fallback, error: '', status: request.status })
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Invalid server response.'
-          notifyMutation('POST', false, message)
+          notifyMutation(path, 'POST', false, message)
           resolve({ ok: false, data: fallback, error: message, status: request.status })
         }
         return
       }
       const message = readErrorText(request.responseText, request.status)
-      notifyMutation('POST', false, message)
+      notifyMutation(path, 'POST', false, message)
       resolve({ ok: false, data: fallback, error: message, status: request.status })
     }
-    request.onerror = () => { const message = 'Network error: unable to reach the API.'; notifyMutation('POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
-    request.onabort = () => { const message = 'Upload was cancelled.'; notifyMutation('POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
-    request.ontimeout = () => { const message = 'Upload timed out.'; notifyMutation('POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
+    request.onerror = () => { const message = 'Network error: unable to reach the API.'; notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
+    request.onabort = () => { const message = 'Upload was cancelled.'; notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
+    request.ontimeout = () => { const message = 'Upload timed out.'; notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
     request.timeout = 120000
     request.send(body)
   })
@@ -174,11 +175,11 @@ async function mutateJson<TResult>(path: string, options: ApiOptions, fallback: 
   try {
     const response = await apiRequest(path, options)
     const error = response.ok ? '' : await readError(response)
-    notifyMutation(options.method, response.ok, error, options)
+    notifyMutation(path, options.method, response.ok, error, options)
     return { ok: response.ok, data: response.ok ? await readJson<TResult>(response, fallback) : fallback, error, status: response.status }
   } catch (error) {
     const message = error instanceof DOMException && error.name === 'AbortError' ? 'Request timed out. Payroll may still be processing; refresh and check diagnostics.' : error instanceof Error ? error.message : 'Request failed.'
-    notifyMutation(options.method, false, message, options)
+    notifyMutation(path, options.method, false, message, options)
     return { ok: false, data: fallback, error: message, status: 0 }
   }
 }
@@ -189,10 +190,11 @@ async function readJson<T>(response: Response, fallback: T) {
   return text ? JSON.parse(text) as T : fallback
 }
 
-function notifyMutation(method = 'POST', ok: boolean, error: string, options: ApiOptions = {}) {
+function notifyMutation(path: string, method = 'POST', ok: boolean, error: string, options: ApiOptions = {}) {
   if (options.toast === false) return
   if (!ok) {
-    toast.error(error || 'Request failed.')
+    const actions = method.toUpperCase() === 'DELETE' ? recruitmentDeleteActions(path, error) : []
+    toast.error(error || 'Request failed.', actions.length ? { actions } : undefined)
     return
   }
   if (options.toast === 'error-only' || (!options.successMessage && options.toast !== true)) return

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Checkbox, Col, Drawer, Form, Input, InputNumber, Row, Select, Space, Switch, Tabs, Tag } from 'antd'
+import { DeleteOutlined } from '@ant-design/icons'
+import { Button, Card, Checkbox, Col, Drawer, Form, Input, InputNumber, Popconfirm, Radio, Row, Select, Space, Switch, Tabs, Tag } from 'antd'
 import DataTable from './DataTable'
 import SearchSelect, { selectOptions } from './SearchSelect'
 import { getClients, getEmployees } from '../services/payrollService'
-import { getDropdowns, getTravelExpenseSetup, getWorkLocations, saveTravelExpenseCategory, saveTravelExpenseClientSetting, saveTravelPolicy, saveTravelPolicyAssignment, saveTravelPolicyRule } from '../services/settingsService'
+import { deleteTravelExpenseConfiguration, getDropdowns, getTravelExpenseSetup, getWorkLocations, saveTravelExpenseCategory, saveTravelExpenseClientSetting, saveTravelPolicy, saveTravelPolicyAssignment, saveTravelPolicyRule } from '../services/settingsService'
 import { getJson } from '../services/apiClient'
 import type { Client, Drop, Employee, TravelExpenseCategory, TravelExpenseClientSetting, TravelExpenseSetup, TravelPolicy, TravelPolicyAssignment, TravelPolicyRule, TravelPolicyRuleType, WorkLocation } from '../types/payroll'
 
@@ -24,7 +25,7 @@ const policy0: TravelPolicy = { id: 0, policyCode: '', policyName: '', companyId
 const assignment0: TravelPolicyAssignment = { id: 0, policyId: 0, policyName: '', companyId: 0, companyName: '', branchId: null, branchName: '', department: '', grade: '', designation: '', employeeCategory: '', employmentType: '', employeeId: null, employeeName: '', priority: 100, effectiveFrom: today, effectiveTo: null, isActive: true }
 const rule0: TravelPolicyRule = { id: 0, policyId: 0, policyName: '', ruleType: 'Travel Mode', ruleName: '', appliesTo: 'Flight', isAllowed: true, eligibilityJson: '{}', limitAmount: null, limitCurrency: 'INR', receiptMandatory: false, approvalRequired: false, workflowId: null, workflowName: '', exceptionHandling: 'Warning', configJson: '{}', isActive: true }
 const category0: TravelExpenseCategory = { id: 0, clientId: 0, clientName: '', parentId: null, parentName: '', expenseType: '', isClaimHeader: true, categoryCode: '', categoryName: '', receiptMandatory: false, gstApplicable: false, dailyLimit: null, maximumClaim: null, requiresFinanceApproval: false, requiresManagerApproval: false, isActive: true }
-const clientSetting0: TravelExpenseClientSetting = { id: 0, clientId: 0, clientName: '', isEnabled: false, effectiveFrom: today, effectiveTo: null, remarks: '' }
+const clientSetting0: TravelExpenseClientSetting = { id: 0, clientId: 0, clientName: '', isEnabled: false, isTravelDeskEnabled: false, showTripDetails: true, showAccommodationDetails: true, showLocalTravelDetails: true, effectiveFrom: today, effectiveTo: null, remarks: '' }
 
 export default function TravelExpensePolicySettings() {
   const [setup, setSetup] = useState<TravelExpenseSetup>({ clientSettings: [], policies: [], assignments: [], rules: [], categories: [], audit: [] })
@@ -90,18 +91,24 @@ export default function TravelExpensePolicySettings() {
   const saveAssignmentRow = async () => { const response = await saveTravelPolicyAssignment(assignment); if (response.ok) { closeDrawer(); await load() } }
   const saveRuleRow = async () => { const response = await saveTravelPolicyRule(rule); if (response.ok) { closeDrawer(); await load() } }
   const saveCategoryRow = async () => { const response = await saveTravelExpenseCategory(category); if (response.ok) { closeDrawer(); await load() } }
+  const remove = async (kind: string, id: number, clientId?: number) => {
+    const response = await deleteTravelExpenseConfiguration(kind, id, clientId)
+    if (response.ok) await load()
+  }
 
   return <section className="travel-policy-settings">
     <Card title="Travel & Expense Policy Configuration" size="small" className="settings-panel settings-table-panel">
       <Tabs items={[
-        { key: 'clientSettings', label: 'Client Enablement', children: <><Header title="Client-wise enablement" text="Enable this switch to show Travel & Expense in ESS for that client." action="Add / edit client" onClick={() => openClientSetting()} /><DataTable rows={setup.clientSettings} exportFileName="travel-expense-client-settings" actions={row => <Button size="small" type="primary" onClick={() => openClientSetting(row)}>Edit</Button>} columns={[
+        { key: 'clientSettings', label: 'Client Enablement', children: <><Header title="Client-wise enablement" text="Enable this switch to show Travel & Expense in ESS for that client." action="Add / edit client" onClick={() => openClientSetting()} /><DataTable rows={setup.clientSettings} exportFileName="travel-expense-client-settings" actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => openClientSetting(row)}>Edit</Button><Popconfirm title="Reset Travel & Expense for this client?" description="ESS access will be disabled and the enablement dates and remarks will be cleared. Policies and historical claims are preserved." okText="Reset" okButtonProps={{ danger: true }} onConfirm={() => void remove('client-setting', row.id)}><Button size="small" danger icon={<DeleteOutlined />}>Reset</Button></Popconfirm></Space>} columns={[
           { key: 'clientName', label: 'Client' },
           { key: 'isEnabled', label: 'ESS visible', render: row => <Tag color={row.isEnabled ? 'green' : 'default'}>{row.isEnabled ? 'Enabled' : 'Disabled'}</Tag> },
+          { key: 'isTravelDeskEnabled', label: 'Travel Desk', render: row => <Tag color={row.isTravelDeskEnabled ? 'green' : 'default'}>{row.isTravelDeskEnabled ? 'Enabled' : 'Not used'}</Tag> },
+          { key: 'travelDeskSections', label: 'Request sections', value: row => [row.showTripDetails && 'Trip', row.showAccommodationDetails && 'Accommodation', row.showLocalTravelDetails && 'Local travel'].filter(Boolean).join(', ') || 'None selected' },
           { key: 'effectiveFrom', label: 'From', value: row => row.effectiveFrom ? dateText(row.effectiveFrom) : 'Immediate' },
           { key: 'effectiveTo', label: 'To', value: row => row.effectiveTo ? dateText(row.effectiveTo) : 'Open' },
           { key: 'remarks', label: 'Remarks' }
         ]} /></> },
-        { key: 'policies', label: 'Policy Master', children: <><Header title="Travel policies" text="Company-wise effective-dated policy headers." action="Add policy" onClick={() => openPolicy()} /><DataTable rows={setup.policies} exportFileName="travel-policies" actions={row => <Button size="small" type="primary" onClick={() => openPolicy(row)}>Edit</Button>} columns={[
+        { key: 'policies', label: 'Policy Master', children: <><Header title="Travel policies" text="Company-wise effective-dated policy headers." action="Add policy" onClick={() => openPolicy()} /><DataTable rows={setup.policies} exportFileName="travel-policies" actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => openPolicy(row)}>Edit</Button><Popconfirm title="Delete this travel policy?" description="Its configuration-only assignment rules and policy rules will also be deleted. Policies used by travel requests are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void remove('policy', row.id)}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.policyName}`} /></Popconfirm></Space>} columns={[
           { key: 'policyCode', label: 'Code' },
           { key: 'policyName', label: 'Policy' },
           { key: 'companyName', label: 'Company' },
@@ -110,7 +117,7 @@ export default function TravelExpensePolicySettings() {
           { key: 'effectiveFrom', label: 'From', value: row => dateText(row.effectiveFrom) },
           { key: 'effectiveTo', label: 'To', value: row => row.effectiveTo ? dateText(row.effectiveTo) : 'Open' }
         ]} /></> },
-        { key: 'assignments', label: 'Assignment Rules', children: <><Header title="Policy assignment rules" text="Priority decides which policy applies when multiple rules match." action="Add assignment" onClick={() => openAssignment()} /><DataTable rows={setup.assignments} exportFileName="travel-policy-assignments" actions={row => <Button size="small" type="primary" onClick={() => openAssignment(row)}>Edit</Button>} columns={[
+        { key: 'assignments', label: 'Assignment Rules', children: <><Header title="Policy assignment rules" text="Priority decides which policy applies when multiple rules match." action="Add assignment" onClick={() => openAssignment()} /><DataTable rows={setup.assignments} exportFileName="travel-policy-assignments" actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => openAssignment(row)}>Edit</Button><Popconfirm title="Delete this policy assignment?" okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void remove('assignment', row.id)}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete assignment ${row.id}`} /></Popconfirm></Space>} columns={[
           { key: 'priority', label: 'Priority' },
           { key: 'policyName', label: 'Policy' },
           { key: 'companyName', label: 'Company' },
@@ -120,7 +127,7 @@ export default function TravelExpensePolicySettings() {
           { key: 'employeeName', label: 'Employee', value: row => row.employeeName || 'All' },
           { key: 'isActive', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive' }
         ]} /></> },
-        { key: 'rules', label: 'Policy Rules', children: <><Tabs activeKey={activeRuleType} onChange={key => setActiveRuleType(key as TravelPolicyRuleType)} items={ruleTypes.map(type => ({ key: type, label: type, children: <><Header title={`${type} rules`} text="Limits, eligibility, approval requirement and exception handling." action={`Add ${type}`} onClick={() => openRule(type)} /><DataTable rows={ruleRows} exportFileName={`travel-${type.toLowerCase().replaceAll(' ', '-')}-rules`} actions={row => <Button size="small" type="primary" onClick={() => openRule(type, row)}>Edit</Button>} columns={[
+        { key: 'rules', label: 'Policy Rules', children: <><Tabs activeKey={activeRuleType} onChange={key => setActiveRuleType(key as TravelPolicyRuleType)} items={ruleTypes.map(type => ({ key: type, label: type, children: <><Header title={`${type} rules`} text="Limits, eligibility, approval requirement and exception handling." action={`Add ${type}`} onClick={() => openRule(type)} /><DataTable rows={ruleRows} exportFileName={`travel-${type.toLowerCase().replaceAll(' ', '-')}-rules`} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => openRule(type, row)}>Edit</Button><Popconfirm title="Delete this policy rule?" okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void remove('rule', row.id)}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.ruleName}`} /></Popconfirm></Space>} columns={[
           { key: 'policyName', label: 'Policy' },
           { key: 'ruleName', label: 'Rule' },
           { key: 'appliesTo', label: 'Applies to' },
@@ -130,18 +137,18 @@ export default function TravelExpensePolicySettings() {
           { key: 'exceptionHandling', label: 'Exception' }
         ]} /></> }))} /></> },
         { key: 'categories', label: 'Expense Categories', children: <Tabs items={[
-          { key: 'globalHeaders', label: 'Global headers', children: <><Header title="Global expense headers" text="Create once, enable per client separately." action="Add header" onClick={() => openCategory('globalHeader')} /><DataTable rows={globalHeaders} exportFileName="global-expense-headers" actions={row => <Button size="small" type="primary" onClick={() => openCategory('globalHeader', row)}>Edit</Button>} columns={[
+          { key: 'globalHeaders', label: 'Global headers', children: <><Header title="Global expense headers" text="Create once, enable per client separately." action="Add header" onClick={() => openCategory('globalHeader')} /><DataTable rows={globalHeaders} exportFileName="global-expense-headers" actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => openCategory('globalHeader', row)}>Edit</Button><Popconfirm title="Delete this global expense header?" description="Delete or reassign its child categories first. Client enablements will be removed automatically." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void remove('global-header', row.id)}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.categoryName}`} /></Popconfirm></Space>} columns={[
             { key: 'categoryCode', label: 'Code' },
             { key: 'categoryName', label: 'Header' },
             { key: 'isActive', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive' }
           ]} /></> },
-          { key: 'globalCategories', label: 'Global categories', children: <><Header title="Global line categories" text="Linked to global headers." action="Add category" onClick={() => openCategory('globalCategory')} /><DataTable rows={globalCategories} exportFileName="global-expense-categories" actions={row => <Button size="small" type="primary" onClick={() => openCategory('globalCategory', row)}>Edit</Button>} columns={[
+          { key: 'globalCategories', label: 'Global categories', children: <><Header title="Global line categories" text="Linked to global headers." action="Add category" onClick={() => openCategory('globalCategory')} /><DataTable rows={globalCategories} exportFileName="global-expense-categories" actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => openCategory('globalCategory', row)}>Edit</Button><Popconfirm title="Delete this global expense category?" description="Client enablements will be removed. Categories already used by expense claims are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void remove('global-category', row.id)}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.categoryName}`} /></Popconfirm></Space>} columns={[
             { key: 'parentName', label: 'Header' },
             { key: 'categoryCode', label: 'Code' },
             { key: 'categoryName', label: 'Category' },
             { key: 'isActive', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive' }
           ]} /></> },
-          { key: 'clientEnablement', label: 'Client enablement', children: <><Header title="Client enablement and limits" text="Turn categories on/off and maintain limits per client." action="Enable / edit" onClick={() => openCategory('clientSetting')} /><DataTable rows={setup.categories} exportFileName="client-expense-enablements" actions={row => <Button size="small" type="primary" onClick={() => openCategory('clientSetting', row)}>Edit</Button>} columns={[
+          { key: 'clientEnablement', label: 'Client enablement', children: <><Header title="Client enablement and limits" text="Turn categories on/off and maintain limits per client." action="Enable / edit" onClick={() => openCategory('clientSetting')} /><DataTable rows={setup.categories} exportFileName="client-expense-enablements" actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => openCategory('clientSetting', row)}>Edit</Button><Popconfirm title="Remove this client enablement?" description="The global header/category and historical claims will remain available." okText="Remove" okButtonProps={{ danger: true }} onConfirm={() => void remove(row.isClaimHeader ? 'client-header' : 'client-category', row.id, row.clientId)}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Remove ${row.categoryName} for ${row.clientName}`} /></Popconfirm></Space>} columns={[
             { key: 'clientName', label: 'Client' },
             { key: 'expenseType', label: 'Expense type', value: row => row.expenseType || row.categoryName },
             { key: 'isClaimHeader', label: 'Level', render: row => <Tag color={row.isClaimHeader ? 'purple' : 'blue'}>{row.isClaimHeader ? 'Header' : 'Category'}</Tag> },
@@ -168,6 +175,8 @@ export default function TravelExpensePolicySettings() {
         <Col xs={24} md={6}><Form.Item label="Visible in ESS"><Switch checked={clientSetting.isEnabled} onChange={value => setClientSetting({ ...clientSetting, isEnabled: value })} /></Form.Item></Col>
         <Col xs={24} md={4}><Form.Item label="Effective from"><Input type="date" value={clientSetting.effectiveFrom || ''} onChange={event => setClientSetting({ ...clientSetting, effectiveFrom: event.target.value || null })} /></Form.Item></Col>
         <Col xs={24} md={4}><Form.Item label="Effective to"><Input type="date" value={clientSetting.effectiveTo || ''} onChange={event => setClientSetting({ ...clientSetting, effectiveTo: event.target.value || null })} /></Form.Item></Col>
+        <Col xs={24}><Form.Item label="Travel Desk action" extra="Controls only the Require Booking / Book by myself choice inside request rows. It does not hide request sections."><Radio.Group optionType="button" buttonStyle="solid" value={clientSetting.isTravelDeskEnabled} onChange={event => setClientSetting({ ...clientSetting, isTravelDeskEnabled: Boolean(event.target.value) })} options={[{ label: 'Hide booking choice', value: false }, { label: 'Show booking choice', value: true }]} /></Form.Item></Col>
+        <Col xs={24}><Form.Item label="Travel request sections" extra="Choose which detail steps employees should see, independently of the Travel Desk booking choice."><Checkbox.Group value={[clientSetting.showTripDetails && 'trip', clientSetting.showAccommodationDetails && 'accommodation', clientSetting.showLocalTravelDetails && 'local'].filter(Boolean) as string[]} onChange={values => setClientSetting({ ...clientSetting, showTripDetails: values.includes('trip'), showAccommodationDetails: values.includes('accommodation'), showLocalTravelDetails: values.includes('local') })} options={[{ label: 'Trip details', value: 'trip' }, { label: 'Accommodation details', value: 'accommodation' }, { label: 'Local travel details', value: 'local' }]} /></Form.Item></Col>
         <Col xs={24}><Form.Item label="Remarks"><Input.TextArea rows={3} value={clientSetting.remarks} onChange={event => setClientSetting({ ...clientSetting, remarks: event.target.value })} placeholder="Optional note for why this module is enabled or disabled." /></Form.Item></Col>
       </Row></Form>}
       {drawer === 'policy' && <Form layout="vertical" requiredMark={false}><Row gutter={12}>

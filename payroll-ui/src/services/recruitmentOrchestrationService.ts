@@ -1,4 +1,4 @@
-import { apiRequest, apiUrl, getJson, postFormWithProgress, postJson, putJson, readError } from './apiClient'
+import { apiRequest, apiUrl, deleteJson, getJson, postFormWithProgress, postJson, putJson, readError } from './apiClient'
 import type {
   CandidateActionDecision,
   DynamicFormDefinition,
@@ -55,6 +55,9 @@ export const getRecruitmentForm = (id: number) =>
 export const saveRecruitmentFormDefinition = (definition: SaveDynamicFormDefinition) =>
   postJson(`${internalBase}/forms`, definition, null as DynamicFormDefinition | null, { successMessage: 'Form definition saved.' })
 
+export const deleteRecruitmentFormDefinition = (id: number) =>
+  deleteJson(`${internalBase}/forms/${id}`, null, { successMessage: 'Form definition deleted.' })
+
 export const saveRecruitmentFormVersion = (definitionId: number, version: DynamicFormVersion) =>
   postJson(`${internalBase}/forms/${definitionId}/versions`, {
     id: version.id,
@@ -87,6 +90,9 @@ export const getRecruitmentPipelineVersion = (versionId: number) =>
 
 export const saveRecruitmentPipelineDefinition = (definition: SaveRecruitmentPipelineDefinition) =>
   postJson(`${internalBase}/pipelines`, definition, null as RecruitmentPipelineDefinition | null, { successMessage: 'Pipeline definition saved.' })
+
+export const deleteRecruitmentPipelineDefinition = (id: number) =>
+  deleteJson(`${internalBase}/pipelines/${id}`, null, { successMessage: 'Pipeline definition deleted.' })
 
 export const saveRecruitmentPipelineVersion = (definitionId: number, version: RecruitmentPipelineVersion) =>
   postJson(`${internalBase}/pipelines/${definitionId}/versions`, {
@@ -144,11 +150,17 @@ export const publishRecruitmentJobPosting = (id: number) =>
 export const closeRecruitmentJobPosting = (id: number) =>
   postJson(`${internalBase}/job-postings/${id}/close`, {}, null as unknown, { successMessage: 'Job posting closed.' })
 
+export const deleteRecruitmentJobPosting = (id: number) =>
+  deleteJson(`${internalBase}/job-postings/${id}`, null, { successMessage: 'Job posting deleted.' })
+
 export const getRecruitmentJobDescriptions = (requisitionId: number) =>
   getJson<RecruitmentJobDescriptionVersion[]>(`${internalBase}/job-descriptions?requisitionId=${requisitionId}`, [])
 
 export const getRecruitmentJobDescription = (id: number) =>
   getJson<RecruitmentJobDescriptionVersion | null>(`${internalBase}/job-descriptions/${id}`, null)
+
+export const deleteRecruitmentJobDescription = (id: number) =>
+  deleteJson(`${internalBase}/job-descriptions/${id}`, null, { successMessage: 'Job-description version deleted.' })
 
 export const saveRecruitmentJobDescription = (description: SaveRecruitmentJobDescriptionVersion) =>
   postJson(`${internalBase}/job-descriptions`, description, null as RecruitmentJobDescriptionVersion | null, { successMessage: 'Job-description draft saved.' })

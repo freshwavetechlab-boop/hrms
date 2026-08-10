@@ -1,4 +1,4 @@
-import type { AttachmentAccessTicket, AttachmentFieldConfiguration, AttendanceBatchJob, AttendanceGroup, AttendanceSummary, Birthday, DailyAttendance, EntityAttachment, ExpenseClaim, ExpenseDashboard, ExpenseOptions, FeatureAccess, Holiday, LeaveBalance, LeaveRequest, ManagedDailyAttendance, ManagedMonthlyAttendance, OrganizationBrand, Payslip, PayslipDocument, ProfileData, RecruitmentDashboard, RecruitmentEmployeeReferral, RecruitmentInternalOpening, RecruitmentOptions, RecruitmentRequisition, SaveEmployeeReferral, SaveExpenseClaim, SaveProfileData, SaveRecruitmentRequisition, SaveTravelRequest, Task, TaxPortal, TravelDashboard, TravelOptions, TravelRequest, User, WorkflowTrail } from '../types'
+import type { AdminMaintenanceResult, AttachmentAccessTicket, AttachmentFieldConfiguration, AttendanceBatchJob, AttendanceGroup, AttendanceSummary, Birthday, DailyAttendance, EntityAttachment, ExpenseClaim, ExpenseDashboard, ExpenseOptions, FeatureAccess, Holiday, LeaveBalance, LeaveRequest, ManagedDailyAttendance, ManagedMonthlyAttendance, OrganizationBrand, Payslip, PayslipDocument, ProfileData, RecruitmentDashboard, RecruitmentEmployeeReferral, RecruitmentInternalOpening, RecruitmentOptions, RecruitmentRequisition, SaveEmployeeReferral, SaveExpenseClaim, SaveProfileData, SaveRecruitmentRequisition, SaveTravelRequest, Task, TaxPortal, TravelDashboard, TravelOptions, TravelRequest, User, WorkflowTrail } from '../types'
 
 export const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:5062'
 const tokenKey = 'ess.auth.token'
@@ -24,7 +24,7 @@ export async function essFetch(path: string, init?: RequestInit) {
 
 async function jsonOrThrow<T>(response: Response): Promise<T> {
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.error || 'Request failed.')
+  if (!response.ok) throw new Error(data.error || data.message || 'Request failed.')
   return data as T
 }
 
@@ -134,6 +134,9 @@ export const essApi = {
   submitTravelRequest: (id: number) => essFetch(`/api/ess/travel/requests/${id}/submit`, { method: 'POST' }).then(jsonOrThrow<TravelRequest>),
   withdrawTravelRequest: (id: number) => essFetch(`/api/ess/travel/requests/${id}/withdraw`, { method: 'POST' }).then(async r => { if (!r.ok) await jsonOrThrow<unknown>(r) }),
   cancelTravelRequest: (id: number, reason: string) => essFetch(`/api/ess/travel/requests/${id}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) }).then(async r => { if (!r.ok) await jsonOrThrow<unknown>(r) }),
+  adminTravelRequests: () => essFetch('/api/ess/admin/travel/requests').then(jsonOrThrow<TravelRequest[]>),
+  adminRevertTravelRequest: (id: number, reason: string) => essFetch(`/api/ess/admin/travel/requests/${id}/revert`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) }).then(jsonOrThrow<AdminMaintenanceResult>),
+  adminDeleteTravelRequest: (id: number, reason: string) => essFetch(`/api/ess/admin/travel/requests/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) }).then(jsonOrThrow<AdminMaintenanceResult>),
   expenseOptions: () => essFetch('/api/ess/expenses/options').then(r => r.ok ? r.json() as Promise<ExpenseOptions> : Promise.reject()),
   expenseDashboard: () => essFetch('/api/ess/expenses/dashboard').then(r => r.ok ? r.json() as Promise<ExpenseDashboard> : Promise.reject()),
   expenseClaims: () => essFetch('/api/ess/expenses/claims').then(r => r.ok ? r.json() as Promise<ExpenseClaim[]> : []),
@@ -141,6 +144,9 @@ export const essApi = {
   expenseTrail: (id: number) => essFetch(`/api/ess/expenses/claims/${id}/trail`).then(r => r.ok ? r.json() as Promise<WorkflowTrail> : Promise.reject()),
   saveExpenseClaim: (claim: SaveExpenseClaim) => essFetch('/api/ess/expenses/claims', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(claim) }).then(jsonOrThrow<ExpenseClaim>),
   submitExpenseClaim: (id: number) => essFetch(`/api/ess/expenses/claims/${id}/submit`, { method: 'POST' }).then(jsonOrThrow<ExpenseClaim>),
+  adminExpenseClaims: () => essFetch('/api/ess/admin/expenses/claims').then(jsonOrThrow<ExpenseClaim[]>),
+  adminRevertExpenseClaim: (id: number, reason: string) => essFetch(`/api/ess/admin/expenses/claims/${id}/revert`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) }).then(jsonOrThrow<AdminMaintenanceResult>),
+  adminDeleteExpenseClaim: (id: number, reason: string) => essFetch(`/api/ess/admin/expenses/claims/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) }).then(jsonOrThrow<AdminMaintenanceResult>),
   recruitmentOptions: () => essFetch('/api/ess/recruitment/options').then(r => r.ok ? r.json() as Promise<RecruitmentOptions> : Promise.reject()),
   recruitmentDashboard: () => essFetch('/api/ess/recruitment/dashboard').then(r => r.ok ? r.json() as Promise<RecruitmentDashboard> : Promise.reject()),
   recruitmentRequisitions: () => essFetch('/api/ess/recruitment/requisitions').then(r => r.ok ? r.json() as Promise<RecruitmentRequisition[]> : []),

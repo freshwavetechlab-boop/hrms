@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
-  CalendarOutlined, ClockCircleOutlined, FileProtectOutlined, PauseCircleOutlined, PlayCircleOutlined,
+  CalendarOutlined, ClockCircleOutlined, DeleteOutlined, FileProtectOutlined, PauseCircleOutlined, PlayCircleOutlined,
   ReloadOutlined, SearchOutlined, UserOutlined,
 } from '@ant-design/icons'
-import { Badge, Button, Card, Drawer, Empty, Form, Input, Modal, Select, Space, Tag, message } from 'antd'
+import { Badge, Button, Card, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Tag, message } from 'antd'
+import { useAuthSession } from './AuthGate'
+import { deleteApplication } from '../services/recruitmentTalentService'
 import {
   getRecruitmentApplicationTransitions, getRecruitmentJobPostings, getRecruitmentPipelineBoard,
   pauseRecruitmentApplication, resumeRecruitmentApplication, transitionRecruitmentApplication,
@@ -42,6 +44,8 @@ const pipelineViewOptions: Array<{ value: PipelineViewMode; label: string }> = [
 const pipelineViewStorageKey = 'recruitment.pipeline.view'
 
 export default function RecruitmentPipelineBoard({ positionId: suppliedPositionId = 0, onOpenCandidate, onScheduleInterview }: Props) {
+  const session = useAuthSession()
+  const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [postings, setPostings] = useState<RecruitmentJobPosting[]>([])
   const [postingId, setPostingId] = useState(0)
   const [positionId, setPositionId] = useState(suppliedPositionId)
@@ -145,10 +149,14 @@ export default function RecruitmentPipelineBoard({ positionId: suppliedPositionI
       await loadBoard(positionId, postingId || undefined)
     }
   }
+  const removeApplication = async (card: RecruitmentPipelineBoardCard) => {
+    const response = await deleteApplication(card.applicationId)
+    if (response.ok) await loadBoard()
+  }
 
-  return <section className="orchestration-shell">
+  return <section className="orchestration-shell" data-testid="recruitment-hiring-pipeline">
     <div className="orchestration-toolbar">
-      <div><span className="orchestration-kicker">Talent operations</span><h2 className="orchestration-title">Hiring Pipeline</h2><p className="orchestration-subtitle">Controlled transitions and live SLA clocks computed from persisted stage timestamps.</p></div>
+      <div><span className="orchestration-kicker">Candidate progress</span><h2 className="orchestration-title">Pipeline board</h2><p className="orchestration-subtitle">See where every candidate is, what is due next and how long each stage has taken.</p></div>
       <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void loadBoard()}>Refresh</Button>
     </div>
     <Card size="small"><div className="orchestration-toolbar">
@@ -160,7 +168,7 @@ export default function RecruitmentPipelineBoard({ positionId: suppliedPositionI
       {viewMode !== 'table' && <div className="pipeline-board" data-testid="pipeline-board-view"><div className="pipeline-board-columns">{filtered.map(lane => <section key={lane.stageId} data-testid={`pipeline-lane-${lane.stageCode}`} className="pipeline-board-column" style={{ '--stage-color': stageColor(lane.stageType) } as CSSProperties}>
         <header><h4>{lane.stageName}</h4><Badge count={lane.applications.length} showZero color={stageColor(lane.stageType)} /></header>
         {!lane.applications.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No candidates" />}
-        {lane.applications.map(card => <CandidateCard key={card.applicationId} lane={lane} card={card} elapsedSinceLoad={elapsedSinceLoad} transitions={transitions[card.applicationId] ?? []} onLoadTransitions={() => void loadTransitions(card.applicationId)} onOpen={onOpenCandidate ? () => onOpenCandidate(card.candidateId, card.applicationId) : undefined} onSchedule={onScheduleInterview && lane.stageType === 'Interview' ? () => onScheduleInterview(card.applicationId) : undefined} onDocuments={lane.processDocumentRequirements?.length ? () => setDocumentDraft({ lane, card }) : undefined} onPause={() => setPauseDraft({ card, reason: '' })} onResume={() => void resumeApplication(card)} onTransition={transition => setTransitionDraft({ card, transition, reason: '' })} />)}
+        {lane.applications.map(card => <CandidateCard key={card.applicationId} lane={lane} card={card} elapsedSinceLoad={elapsedSinceLoad} transitions={transitions[card.applicationId] ?? []} onLoadTransitions={() => void loadTransitions(card.applicationId)} onOpen={onOpenCandidate ? () => onOpenCandidate(card.candidateId, card.applicationId) : undefined} onSchedule={onScheduleInterview && lane.stageType === 'Interview' ? () => onScheduleInterview(card.applicationId) : undefined} onDocuments={lane.processDocumentRequirements?.length ? () => setDocumentDraft({ lane, card }) : undefined} onDelete={canDelete ? () => void removeApplication(card) : undefined} onPause={() => setPauseDraft({ card, reason: '' })} onResume={() => void resumeApplication(card)} onTransition={transition => setTransitionDraft({ card, transition, reason: '' })} />)}
       </section>)}</div></div>}
       {viewMode !== 'pipeline' && <Card size="small" className="pipeline-table-view" data-testid="pipeline-table-view"><DataTable
         rows={tableRows}
@@ -183,6 +191,7 @@ export default function RecruitmentPipelineBoard({ positionId: suppliedPositionI
             <RecruitmentCandidateActionManager applicationId={row.card.applicationId} candidateName={row.card.candidateName} />
             {row.card.stageStatus === 'Paused' ? <Button size="small" icon={<PlayCircleOutlined />} onClick={() => void resumeApplication(row.card)}>Resume</Button> : <Button size="small" icon={<PauseCircleOutlined />} onClick={() => setPauseDraft({ card: row.card, reason: '' })}>Pause</Button>}
             <Select size="small" placeholder="Next action" onDropdownVisibleChange={open => open && void loadTransitions(row.card.applicationId)} notFoundContent="No allowed action" options={(transitions[row.card.applicationId] ?? []).map(item => ({ value: item.id, label: item.actionLabel }))} onChange={id => { const transition = (transitions[row.card.applicationId] ?? []).find(item => item.id === id); if (transition) setTransitionDraft({ card: row.card, transition, reason: '' }) }} />
+            {canDelete && <Popconfirm title="Delete this application?" description="Interviews, offers and joined records are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeApplication(row.card)}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}
           </Space> },
         ]}
       /></Card>}
@@ -199,7 +208,7 @@ export default function RecruitmentPipelineBoard({ positionId: suppliedPositionI
   </section>
 }
 
-function CandidateCard({ lane, card, elapsedSinceLoad, transitions, onLoadTransitions, onOpen, onSchedule, onDocuments, onPause, onResume, onTransition }: {
+function CandidateCard({ lane, card, elapsedSinceLoad, transitions, onLoadTransitions, onOpen, onSchedule, onDocuments, onDelete, onPause, onResume, onTransition }: {
   lane: RecruitmentPipelineBoardLane
   card: RecruitmentPipelineBoardCard
   elapsedSinceLoad: number
@@ -208,6 +217,7 @@ function CandidateCard({ lane, card, elapsedSinceLoad, transitions, onLoadTransi
   onOpen?: () => void
   onSchedule?: () => void
   onDocuments?: () => void
+  onDelete?: () => void
   onPause: () => void
   onResume: () => void
   onTransition: (transition: RecruitmentPipelineTransition) => void
@@ -224,6 +234,7 @@ function CandidateCard({ lane, card, elapsedSinceLoad, transitions, onLoadTransi
       <RecruitmentCandidateActionManager applicationId={card.applicationId} candidateName={card.candidateName} />
       {card.stageStatus === 'Paused' ? <Button size="small" icon={<PlayCircleOutlined />} onClick={onResume}>Resume</Button> : <Button size="small" icon={<PauseCircleOutlined />} onClick={onPause}>Pause</Button>}
       <Select size="small" placeholder="Next action" style={{ minWidth: 130 }} onDropdownVisibleChange={open => open && onLoadTransitions()} notFoundContent="No allowed action" options={transitions.map(row => ({ value: row.id, label: row.actionLabel }))} onChange={id => { const transition = transitions.find(row => row.id === id); if (transition) onTransition(transition) }} />
+      {onDelete && <Popconfirm title="Delete this application?" description="Interviews, offers and joined records are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={onDelete}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}
     </Space></div>
     <small>{lane.stageType} · entered {new Date(card.enteredAtUtc).toLocaleString('en-IN')}</small>
   </Card>

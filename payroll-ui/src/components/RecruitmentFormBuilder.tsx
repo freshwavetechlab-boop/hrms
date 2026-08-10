@@ -3,10 +3,11 @@ import dayjs from 'dayjs'
 import {
   ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, EditOutlined, FileAddOutlined, PlusOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Card, DatePicker, Drawer, Empty, Form, Input, InputNumber, List, Modal, Select, Space, Switch, Tag, Tooltip, message } from 'antd'
+import { Alert, Button, Card, DatePicker, Drawer, Empty, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Switch, Tag, Tooltip, message } from 'antd'
+import { useAuthSession } from './AuthGate'
 import { getClients } from '../services/payrollService'
 import {
-  getRecruitmentForm, getRecruitmentForms, getRecruitmentOrchestrationLookups, publishRecruitmentFormVersion,
+  deleteRecruitmentFormDefinition, getRecruitmentForm, getRecruitmentForms, getRecruitmentOrchestrationLookups, publishRecruitmentFormVersion,
   saveRecruitmentFormDefinition, saveRecruitmentFormVersion,
 } from '../services/recruitmentOrchestrationService'
 import type { Client } from '../types/payroll'
@@ -65,6 +66,8 @@ const validationRuleOptions = (fieldType: DynamicFormFieldTypeCode) => {
 }
 
 export default function RecruitmentFormBuilder({ initialClientId = 0, onSaved }: Props) {
+  const session = useAuthSession()
+  const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
   const [clientId, setClientId] = useState(initialClientId)
   const [forms, setForms] = useState<DynamicFormDefinition[]>([])
@@ -232,11 +235,20 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, onSaved }:
     setPublishing(false)
   }
 
+  const removeDefinition = async (row: DynamicFormDefinition) => {
+    const response = await deleteRecruitmentFormDefinition(row.id)
+    if (!response.ok) return
+    if (definition?.id === row.id) {
+      setDefinition(null); setVersion(null); setSelectedSectionId(null); setSelectedFieldId(null)
+    }
+    await load(row.clientId)
+  }
+
   const clientOptions = clients.map(row => ({ value: row.id, label: row.name }))
   return <section className="orchestration-shell">
     <div className="orchestration-toolbar"><div><span className="orchestration-kicker">Global configuration</span><h2 className="orchestration-title">Application Form Builder</h2><p className="orchestration-subtitle">Normalized, versioned fields with no raw JSON or application-specific columns.</p></div><div><Select data-testid="form-builder-client" value={clientId || undefined} placeholder="Select client" options={clientOptions} onChange={setClientId} showSearch optionFilterProp="label" /><Button data-testid="form-builder-new" icon={<PlusOutlined />} type="primary" onClick={startNew}>New form</Button></div></div>
     <div className="form-builder-layout">
-      <Card size="small" className="form-builder-library" title={`Forms (${forms.length})`}><List dataSource={forms} locale={{ emptyText: 'No forms for this client.' }} renderItem={row => <List.Item className={definition?.id === row.id ? 'active' : ''} onClick={() => void chooseForm(row.id)}><List.Item.Meta title={row.formName} description={<><span>{row.formCode}</span><br /><Tag color={row.currentPublishedVersionId ? 'green' : 'orange'}>{row.currentPublishedVersionId ? 'Published' : 'Draft only'}</Tag></>} /></List.Item>} /></Card>
+      <Card size="small" className="form-builder-library" title={`Forms (${forms.length})`}><List dataSource={forms} locale={{ emptyText: 'No forms for this client.' }} renderItem={row => <List.Item className={definition?.id === row.id ? 'active' : ''} onClick={() => void chooseForm(row.id)} actions={canDelete ? [<Popconfirm key="delete" title="Delete this form?" description="Published or draft versions are removed only when no posting, pipeline stage or submission uses them." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeDefinition(row)}><Button aria-label={`Delete ${row.formName}`} size="small" danger type="text" icon={<DeleteOutlined />} onClick={event => event.stopPropagation()} /></Popconfirm>] : []}><List.Item.Meta title={row.formName} description={<><span>{row.formCode}</span><br /><Tag color={row.currentPublishedVersionId ? 'green' : 'orange'}>{row.currentPublishedVersionId ? 'Published' : 'Draft only'}</Tag></>} /></List.Item>} /></Card>
       {!definition || !version ? <Card><Empty description="Select a form or start a new one." /></Card> : <div className="form-builder-canvas">
         <Card size="small"><div className="orchestration-toolbar"><Space wrap><Tag color={version.status === 'Published' ? 'green' : version.status === 'Retired' ? 'default' : 'gold'}>v{version.versionNumber} · {version.status}</Tag><Switch disabled={readOnly} checked={definition.status === 'Active'} onChange={active => patchDefinition({ status: active ? 'Active' : 'Inactive' })} checkedChildren="Active" unCheckedChildren="Inactive" /></Space><Space>{readOnly && <Button onClick={beginRevision}>Create next version</Button>}<Button data-testid="form-builder-save" loading={saving} disabled={readOnly} onClick={() => void save()}>Save draft</Button><Button data-testid="form-builder-publish" type="primary" disabled={readOnly} onClick={publish}>Publish</Button></Space></div>
           <div className="form-builder-meta"><Form.Item label="Form name" required><Input data-testid="form-builder-name" disabled={readOnly} value={definition.formName} onChange={event => patchDefinition({ formName: event.target.value })} /></Form.Item><Form.Item label="Form code" required><Input data-testid="form-builder-code" disabled={readOnly} value={definition.formCode} onChange={event => patchDefinition({ formCode: code(event.target.value) })} /></Form.Item><Form.Item label="Use this form for" extra="Employee forms appear automatically in the matching Employee infotype after publishing."><Select data-testid="form-builder-module" disabled={readOnly} value={definition.moduleCode || 'RECRUITMENT'} onChange={chooseModule} options={[{ value: 'RECRUITMENT', label: 'Recruitment / Candidate' }, { value: 'EMPLOYEE', label: 'Employee additional fields' }]} /></Form.Item>{definition.moduleCode === 'EMPLOYEE' && <Form.Item label="Employee infotype"><Select data-testid="form-builder-employee-infotype" disabled={readOnly} value={employeeInfotype} onChange={value => patchDefinition({ purposeCode: `EMPLOYEE_INFOTYPE_${value}`, entityType: 'EMPLOYEE' })} options={[{ value: '0001', label: '0001 - Organizational Assignment' }, { value: '0002', label: '0002 - Personal Data' }, { value: '0006', label: '0006 - Addresses' }, { value: '0008', label: '0008 - Basic Pay' }, { value: '0009', label: '0009 - Bank Details' }]} /></Form.Item>}<Form.Item label="Purpose code"><Input data-testid="form-builder-purpose" disabled={readOnly} value={definition.purposeCode} onChange={event => patchDefinition({ purposeCode: code(event.target.value) })} /></Form.Item><Form.Item label="Entity type"><Input data-testid="form-builder-entity" disabled={readOnly} value={definition.entityType} onChange={event => patchDefinition({ entityType: code(event.target.value) })} /></Form.Item></div>

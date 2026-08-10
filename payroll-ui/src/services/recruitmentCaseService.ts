@@ -1,4 +1,4 @@
-import { getJson, postJson } from './apiClient'
+import { deleteJson, getJson, postJson } from './apiClient'
 import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProfileSubmissionBatch, RecruitmentWorkOrder, SaveRecruitmentProcessDocument, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
 
 export const getRecruitmentWorkOrders = (clientId = 0, query = '') => {
@@ -14,11 +14,17 @@ export const getRecruitmentWorkOrder = (id: number) =>
 export const saveRecruitmentWorkOrder = (request: SaveRecruitmentWorkOrder) =>
   postJson('/api/recruitment/work-orders', request, null as RecruitmentWorkOrder | null, { successMessage: request.id ? 'Work order updated.' : 'Work order created.' })
 
+export const deleteRecruitmentWorkOrder = (id: number) =>
+  deleteJson(`/api/recruitment/work-orders/${id}`, null, { successMessage: 'Work order deleted.' })
+
 export const getRecruitmentHiringCases = (clientId = 0) =>
   getJson<RecruitmentHiringCase[]>(`/api/recruitment/hiring-cases${clientId ? `?clientId=${clientId}` : ''}`, [])
 
 export const getRecruitmentHiringCase = (id: number) =>
   getJson<RecruitmentHiringCase | null>(`/api/recruitment/hiring-cases/${id}`, null)
+
+export const deleteRecruitmentHiringCase = (id: number) =>
+  deleteJson(`/api/recruitment/hiring-cases/${id}`, null, { successMessage: 'Live cumulative pipeline case deleted.' })
 
 export const startRecruitmentHiringCase = (workOrderLineId: number, pipelineVersionId: number) =>
   postJson('/api/recruitment/hiring-cases/start', { workOrderLineId, pipelineVersionId }, null as RecruitmentHiringCase | null, { successMessage: 'Hiring case and cumulative SLA started.' })

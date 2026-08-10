@@ -727,6 +727,38 @@ WHERE Id=@ResumeId AND CandidateId=@CandidateId", link);
         return await InterviewRowsAsync(db, user, applicationId, null, IsPanelScoped(user) ? user.Id : null);
     }
 
+    public async Task<(bool Ok, string Error)> DeleteInterviewAsync(long id, AuthUser user, string ipAddress, string userAgent)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var row = await db.QueryFirstOrDefaultAsync<(long Id, long ApplicationId, int ClientId, long CandidateId, string CurrentStage)>(@"SELECT i.Id,i.ApplicationId,a.ClientId,a.CandidateId,a.CurrentStage
+FROM recruitment_interviews i JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId
+WHERE i.Id=@Id AND (@ClientId IS NULL OR a.ClientId=@ClientId)", new { Id = id, user.ClientId });
+        if (row.Id <= 0) return (false, "Interview was not found in your permitted client scope.");
+        if (row.CurrentStage.Equals("Joined", StringComparison.OrdinalIgnoreCase))
+            return (false, "An interview belonging to an employee-converted application must be retained for audit.");
+
+        var attachmentIds = (await db.QueryAsync<string>(@"SELECT CAST(AttachmentPublicId AS CHAR) FROM recruitment_process_documents
+WHERE InterviewId=@Id AND AttachmentPublicId IS NOT NULL", new { Id = id })).ToList();
+        foreach (var value in attachmentIds)
+        {
+            if (!Guid.TryParse(value, out var publicId)) continue;
+            var (deleted, error) = await attachments.DeleteAsync(publicId, user, ipAddress, userAgent);
+            if (!deleted) return (false, error ?? "An interview document could not be safely deleted.");
+        }
+
+        await using var transaction = await db.BeginTransactionAsync();
+        await db.ExecuteAsync("DELETE FROM recruitment_process_documents WHERE InterviewId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync(@"DELETE scoreRow FROM recruitment_interview_feedback_competency_scores scoreRow
+JOIN recruitment_interview_feedback feedbackRow ON feedbackRow.Id=scoreRow.InterviewFeedbackId WHERE feedbackRow.InterviewId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_interview_feedback WHERE InterviewId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_interview_panel_members WHERE InterviewId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_interviews WHERE Id=@Id", new { Id = id }, transaction);
+        await transaction.CommitAsync();
+        await WriteRecruitmentAuditAsync(db, "RecruitmentInterview", id, "Admin Delete", user.Id, new { row.ApplicationId, row.ClientId });
+        return (true, "");
+    }
+
     public async Task<(RecruitmentInterviewSchedulingContext? Row, string Error)> GetInterviewSchedulingContextAsync(long applicationId, AuthUser user)
     {
         await using var db = Db();
@@ -958,6 +990,26 @@ WHERE feedback.InterviewId=@InterviewId ORDER BY feedback.OverallScore", new { I
         await using var db = Db();
         await db.OpenAsync();
         return await OfferRowsAsync(db, user, applicationId, null);
+    }
+
+    public async Task<(bool Ok, string Error)> DeleteOfferAsync(long id, AuthUser user, string ipAddress, string userAgent)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var row = await db.QueryFirstOrDefaultAsync<(long Id, long ApplicationId, int ClientId, string OfferNumber, string CurrentStage, string? AttachmentPublicId)>(@"SELECT o.Id,o.ApplicationId,o.ClientId,o.OfferNumber,a.CurrentStage,CAST(o.OfferLetterAttachmentPublicId AS CHAR) AttachmentPublicId
+FROM recruitment_offers o JOIN recruitment_candidate_applications a ON a.Id=o.ApplicationId
+WHERE o.Id=@Id AND (@ClientId IS NULL OR o.ClientId=@ClientId)", new { Id = id, user.ClientId });
+        if (row.Id <= 0) return (false, "Offer was not found in your permitted client scope.");
+        if (row.CurrentStage.Equals("Joined", StringComparison.OrdinalIgnoreCase))
+            return (false, "An offer belonging to an employee-converted application must be retained for audit.");
+        if (Guid.TryParse(row.AttachmentPublicId, out var publicId))
+        {
+            var (deleted, error) = await attachments.DeleteAsync(publicId, user, ipAddress, userAgent);
+            if (!deleted) return (false, error ?? "The generated offer letter could not be safely deleted.");
+        }
+        await db.ExecuteAsync("DELETE FROM recruitment_offers WHERE Id=@Id", new { Id = id });
+        await WriteRecruitmentAuditAsync(db, "RecruitmentOffer", id, "Admin Delete", user.Id, new { row.OfferNumber, row.ApplicationId, row.ClientId });
+        return (true, "");
     }
 
     public async Task<(RecruitmentOffer? Row, string Error)> GenerateOfferLetterAsync(
@@ -1700,21 +1752,20 @@ WHERE entity_type='CANDIDATE' AND entity_id=@CandidateId AND is_deleted=FALSE", 
 WHERE Id IN @Ids AND (JoinedEmployeeId IS NOT NULL OR CurrentStage='Joined')", new { Ids = applicationIds });
         if (converted > 0) return "Joined or employee-converted applications cannot be deleted.";
 
-        var businessRecords = await db.ExecuteScalarAsync<int>(@"SELECT
-(SELECT COUNT(*) FROM recruitment_interviews WHERE ApplicationId IN @Ids)+
-(SELECT COUNT(*) FROM recruitment_offers WHERE ApplicationId IN @Ids)+
-(SELECT COUNT(*) FROM recruitment_process_documents WHERE ApplicationId IN @Ids)+
-(SELECT COUNT(*) FROM recruitment_profile_submission_batch_items WHERE ApplicationId IN @Ids)+
-(SELECT COUNT(*) FROM form_submissions WHERE ApplicationId IN @Ids)", new { Ids = applicationIds });
-        if (businessRecords > 0)
-            return "This application has interviews, offers, signed/process documents, submitted forms, or a profile-forwarding batch. Retain it for audit.";
+        var businessRecords = await db.QueryFirstAsync<(int Interviews, int Offers, int ProcessDocuments, int ProfileBatches)>(@"SELECT
+(SELECT COUNT(*) FROM recruitment_interviews WHERE ApplicationId IN @Ids) Interviews,
+(SELECT COUNT(*) FROM recruitment_offers WHERE ApplicationId IN @Ids) Offers,
+(SELECT COUNT(*) FROM recruitment_process_documents WHERE ApplicationId IN @Ids) ProcessDocuments,
+(SELECT COUNT(*) FROM recruitment_profile_submission_batch_items WHERE ApplicationId IN @Ids) ProfileBatches", new { Ids = applicationIds });
+        var blockers = new List<string>();
+        if (businessRecords.Interviews > 0) blockers.Add($"{businessRecords.Interviews} linked interview(s)");
+        if (businessRecords.Offers > 0) blockers.Add($"{businessRecords.Offers} linked offer/pre-onboarding record(s)");
+        if (businessRecords.ProcessDocuments > 0) blockers.Add($"{businessRecords.ProcessDocuments} linked signed/process document(s)");
+        if (businessRecords.ProfileBatches > 0) blockers.Add($"{businessRecords.ProfileBatches} linked profile-forwarding batch item(s)");
+        if (blockers.Count > 0)
+            return $"Delete blocking records first: {string.Join("; ", blockers)}.";
 
-        var approvalRecords = await db.ExecuteScalarAsync<int>(@"SELECT
-(SELECT COUNT(*) FROM recruitment_stage_action_executions WHERE ApplicationId IN @Ids AND WorkflowInstanceId IS NOT NULL)+
-(SELECT COUNT(*) FROM recruitment_pipeline_transition_requests WHERE ApplicationId IN @Ids AND WorkflowInstanceId IS NOT NULL)", new { Ids = applicationIds });
-        return approvalRecords > 0
-            ? "This application is linked to a global workflow approval and cannot be deleted."
-            : "";
+        return "";
     }
 
     private static async Task DeleteApplicationsAsync(
@@ -1734,6 +1785,12 @@ WHERE Id IN @Ids AND (JoinedEmployeeId IS NOT NULL OR CurrentStage='Joined')", n
             : (await db.QueryAsync<long>(
                 "SELECT Id FROM recruitment_stage_action_executions WHERE StageInstanceId IN @Ids",
                 new { Ids = stageIds }, transaction)).ToArray();
+        var workflowInstanceIds = (await db.QueryAsync<long>(@"SELECT WorkflowInstanceId FROM recruitment_stage_action_executions
+WHERE ApplicationId IN @Ids AND WorkflowInstanceId IS NOT NULL
+UNION
+SELECT WorkflowInstanceId FROM recruitment_pipeline_transition_requests
+WHERE ApplicationId IN @Ids AND WorkflowInstanceId IS NOT NULL",
+            new { Ids = applicationIds }, transaction)).Distinct().ToArray();
 
         if (executionIds.Length > 0)
             await db.ExecuteAsync("DELETE FROM recruitment_stage_action_notification_deliveries WHERE StageActionExecutionId IN @Ids", new { Ids = executionIds }, transaction);
@@ -1759,8 +1816,21 @@ WHERE Id IN @Ids AND (JoinedEmployeeId IS NOT NULL OR CurrentStage='Joined')", n
         await db.ExecuteAsync("DELETE FROM recruitment_application_scores WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
         await db.ExecuteAsync("DELETE FROM recruitment_candidate_checklist_items WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
         await db.ExecuteAsync("DELETE FROM recruitment_application_stage_history WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
+        // Public application-form submissions are owned by the application intake. Their child values,
+        // selected options, lookup values, events and links cascade from form_submissions. Uploaded
+        // resumes remain safe because completed intake promotes the attachment itself to CANDIDATE ownership.
+        await db.ExecuteAsync("DELETE FROM form_submissions WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
         await db.ExecuteAsync("UPDATE recruitment_employee_referrals SET ApplicationId=NULL WHERE ApplicationId IN @Ids", new { Ids = applicationIds }, transaction);
         await db.ExecuteAsync("DELETE FROM recruitment_candidate_applications WHERE Id IN @Ids", new { Ids = applicationIds }, transaction);
+        if (workflowInstanceIds.Length > 0)
+        {
+            // These instances were created exclusively for the deleted application's stage actions
+            // or transition requests. Workflow masters/stages remain untouched for future transactions.
+            await db.ExecuteAsync("DELETE FROM ResourceStates WHERE WorkflowInstanceId IN @Ids", new { Ids = workflowInstanceIds }, transaction);
+            await db.ExecuteAsync("DELETE FROM workflowhistory WHERE InstanceId IN @Ids", new { Ids = workflowInstanceIds }, transaction);
+            await db.ExecuteAsync("DELETE FROM workflowtasks WHERE InstanceId IN @Ids", new { Ids = workflowInstanceIds }, transaction);
+            await db.ExecuteAsync("DELETE FROM workflowinstances WHERE Id IN @Ids", new { Ids = workflowInstanceIds }, transaction);
+        }
     }
 
     public async Task<RecruitmentEmployeeReferral> LinkReferralAsync(RecruitmentEmployeeReferral referral, AuthUser user)

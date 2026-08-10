@@ -111,6 +111,11 @@ public class RecruitmentHiringCaseStage
     public int DisplayOrder { get; set; }
     public string StakeholderCode { get; set; } = "";
     public int? TargetOffsetMinutes { get; set; }
+    public bool AllowPause { get; set; } = true;
+    public string PauseBehavior { get; set; } = "ShiftStageAndOverall";
+    public bool RequiresApproval { get; set; }
+    public long? ApprovalWorkflowId { get; set; }
+    public bool IsTerminal { get; set; }
     public string Status { get; set; } = "Pending";
     public DateTime? EnteredAtUtc { get; set; }
     public DateTime? DueAtUtc { get; set; }

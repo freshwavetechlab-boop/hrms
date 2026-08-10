@@ -42,6 +42,15 @@ public class RecruitmentRequisition
     public decimal SalaryMax { get; set; }
     public string Currency { get; set; } = "INR";
     public string Benefits { get; set; } = "";
+    public string ExternalPositionCode { get; set; } = "";
+    public string SourceType { get; set; } = "";
+    public string SourceReference { get; set; } = "";
+    public string SourceDocumentName { get; set; } = "";
+    public DateTime? SourceDocumentDate { get; set; }
+    public string SourceAuthority { get; set; } = "";
+    public string ExternalApprovalStatus { get; set; } = "";
+    public decimal? CtcFlexibilityPercent { get; set; }
+    public string SourceNotes { get; set; } = "";
     public string Status { get; set; } = "Draft";
     public long? WorkflowInstanceId { get; set; }
     public long? OpenPositionId { get; set; }
@@ -53,6 +62,7 @@ public class RecruitmentRequisition
 public class SaveRecruitmentRequisition
 {
     public long Id { get; set; }
+    public DateTime? RequestDate { get; set; }
     public int? RequestedByEmployeeId { get; set; }
     public int BranchId { get; set; }
     public string BusinessUnit { get; set; } = "";
@@ -85,6 +95,15 @@ public class SaveRecruitmentRequisition
     public decimal SalaryMax { get; set; }
     public string Currency { get; set; } = "INR";
     public string Benefits { get; set; } = "";
+    public string ExternalPositionCode { get; set; } = "";
+    public string SourceType { get; set; } = "";
+    public string SourceReference { get; set; } = "";
+    public string SourceDocumentName { get; set; } = "";
+    public DateTime? SourceDocumentDate { get; set; }
+    public string SourceAuthority { get; set; } = "";
+    public string ExternalApprovalStatus { get; set; } = "";
+    public decimal? CtcFlexibilityPercent { get; set; }
+    public string SourceNotes { get; set; } = "";
 }
 
 public class RecruitmentOptions

@@ -222,37 +222,43 @@ LIMIT 1", new { EmployeeId = employeeId, ClientId = clientId, Code = request.Lea
         await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
         if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId))
             return new EssTravelOptions { ValidationMessages = ["Travel & Expense is not enabled for your client."] };
+        var employee = await db.QueryFirstOrDefaultAsync<EssTravelEmployee>(@"SELECT e.Id EmployeeId,e.ClientId,COALESCE(c.Name,'') ClientName
+FROM employees e LEFT JOIN clients c ON c.Id=e.ClientId
+WHERE e.Id=@EmployeeId AND e.IsActive=TRUE AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { EmployeeId = employeeId, ClientId = clientId });
+        if (employee is null) return new EssTravelOptions { ValidationMessages = ["Employee profile is unavailable."] };
+        var resolvedClientId = employee.ClientId;
+        var desk = await db.QueryFirstOrDefaultAsync<TravelExpenseClientSetting>("SELECT * FROM travel_expense_client_settings WHERE ClientId=@ClientId LIMIT 1", new { ClientId = resolvedClientId });
         var policy = await ResolveTravelPolicyAsync(db, employeeId, clientId);
         var modes = policy is null ? [] : (await db.QueryAsync<string>(@"SELECT AppliesTo FROM travel_policy_rules WHERE PolicyId=@PolicyId AND RuleType='Travel Mode' AND IsAllowed=TRUE AND IsActive=TRUE ORDER BY AppliesTo", new { PolicyId = policy.Value.Id })).ToList();
-        var hotelEnabled = policy is not null && await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM travel_policy_rules WHERE PolicyId=@PolicyId AND RuleType='Hotel' AND IsAllowed=TRUE AND IsActive=TRUE", new { PolicyId = policy.Value.Id }) > 0;
         var localModes = policy is null ? [] : (await db.QueryAsync<string>(@"SELECT AppliesTo FROM travel_policy_rules WHERE PolicyId=@PolicyId AND RuleType='Local Conveyance' AND IsAllowed=TRUE AND IsActive=TRUE ORDER BY AppliesTo", new { PolicyId = policy.Value.Id })).ToList();
-        var clientName = await db.ExecuteScalarAsync<string>(@"SELECT COALESCE(c.Name,'') FROM employees e LEFT JOIN clients c ON c.Id=e.ClientId WHERE e.Id=@EmployeeId AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { EmployeeId = employeeId, ClientId = clientId }) ?? "";
-        var travelTypes = await ActiveDropdownValuesAsync(db, "Travel Type");
-        var locations = await ActiveDropdownValuesAsync(db, "Travel Location");
+        var travelTypes = await ActiveDropdownValuesAsync(db, "Travel Type", resolvedClientId);
+        var locations = await ActiveDropdownValuesAsync(db, "Travel Location", resolvedClientId);
         if (locations.Count == 0)
         {
             var workLocations = await db.QueryAsync<string>(@"SELECT DISTINCT Name FROM worklocations WHERE IsActive=TRUE AND (@ClientId IS NULL OR ClientId=@ClientId)
 UNION
-SELECT DISTINCT City FROM worklocations WHERE IsActive=TRUE AND City<>'' AND (@ClientId IS NULL OR ClientId=@ClientId)", new { ClientId = clientId });
+SELECT DISTINCT City FROM worklocations WHERE IsActive=TRUE AND City<>'' AND (@ClientId IS NULL OR ClientId=@ClientId)", new { ClientId = resolvedClientId });
             var cityMasters = await db.QueryAsync<string>("SELECT Value FROM dropdownmasters WHERE IsActive=TRUE AND Type LIKE 'City:%' ORDER BY Value");
             locations = workLocations.Concat(cityMasters).Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(value => value).ToList();
         }
-        var classes = await ActiveDropdownValuesAsync(db, "Travel Class");
+        var classes = await ActiveDropdownValuesAsync(db, "Travel Class", resolvedClientId);
+        var messages = policy is null ? new List<string> { "No active travel policy is assigned to your profile. Contact HR." } : [];
+        if (travelTypes.Count == 0) messages.Add("No Travel Type is configured for your client in Dropdown Masters.");
         return new EssTravelOptions
         {
             PolicyId = policy?.Id,
             PolicyName = policy?.Name ?? "",
-            ClientName = clientName,
+            ClientName = employee.ClientName,
             TravelModes = modes,
             LocalTravelModes = localModes.Count == 0 ? ["Cab Aggregator", "Taxi", "Auto", "Metro", "Rental Car", "Own Vehicle"] : localModes,
-            TravelTypes = travelTypes.Count == 0 ? ["Official", "Client Visit", "Training", "Conference", "Site Visit"] : travelTypes,
-            Priorities = ["Normal", "Urgent", "Emergency"],
+            TravelTypes = travelTypes,
             Locations = locations,
             TravelClasses = classes.Count == 0 ? ["Economy", "Premium Economy", "Business", "Sleeper", "3AC", "2AC", "1AC", "Standard"] : classes,
-            ShowTripDetails = modes.Count > 0,
-            ShowAccommodationDetails = hotelEnabled,
-            ShowLocalTravelDetails = localModes.Count > 0,
-            ValidationMessages = policy is null ? ["No active travel policy is assigned to your profile. Contact HR."] : []
+            TravelDeskEnabled = desk?.IsTravelDeskEnabled == true,
+            ShowTripDetails = desk?.ShowTripDetails == true,
+            ShowAccommodationDetails = desk?.ShowAccommodationDetails == true,
+            ShowLocalTravelDetails = desk?.ShowLocalTravelDetails == true,
+            ValidationMessages = messages
         };
     }
     public async Task<IEnumerable<EssTravelRequest>> GetTravelRequestsAsync(int employeeId, int? clientId)
@@ -260,6 +266,13 @@ SELECT DISTINCT City FROM worklocations WHERE IsActive=TRUE AND City<>'' AND (@C
         await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
         if (!await IsTravelExpenseEnabledAsync(db, employeeId, clientId)) return [];
         var rows = (await db.QueryAsync<EssTravelRequest>(TravelRequestSelect("r.EmployeeId=@EmployeeId AND (@ClientId IS NULL OR r.ClientId=@ClientId)") + " ORDER BY r.UpdatedAt DESC, r.Id DESC", new { EmployeeId = employeeId, ClientId = clientId })).ToList();
+        await AttachTravelSectionsAsync(db, rows);
+        return rows;
+    }
+    public async Task<IEnumerable<EssTravelRequest>> GetTravelRequestsForAdminAsync(int? clientId)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureTravelTablesAsync(db);
+        var rows = (await db.QueryAsync<EssTravelRequest>(TravelRequestSelect("(@ClientId IS NULL OR r.ClientId=@ClientId)") + " ORDER BY r.UpdatedAt DESC, r.Id DESC LIMIT 1000", new { ClientId = clientId })).ToList();
         await AttachTravelSectionsAsync(db, rows);
         return rows;
     }
@@ -279,6 +292,10 @@ SELECT DISTINCT City FROM worklocations WHERE IsActive=TRUE AND City<>'' AND (@C
 FROM employees e LEFT JOIN clients c ON c.Id=e.ClientId LEFT JOIN authusers mu ON mu.Id=e.ReportingManagerUserId LEFT JOIN employees m ON m.Id=e.ReportingManagerId
 WHERE e.Id=@EmployeeId AND e.IsActive=TRUE AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { EmployeeId = employeeId, ClientId = clientId });
         if (employee is null) return (null, "Employee profile is unavailable.");
+        if (string.IsNullOrWhiteSpace(request.TravelType) || await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM dropdownmasters
+WHERE IsActive=TRUE AND Type='Travel Type' AND UPPER(Value)=UPPER(@TravelType) AND (ClientId=0 OR ClientId=@ClientId)", new { request.TravelType, employee.ClientId }) == 0)
+            return (null, "Select a Travel Type configured for your client in Dropdown Masters.");
+        await ApplyTravelDeskScopeAsync(db, employee.ClientId, request);
         var validation = ValidateTravelRequest(request, false);
         if (validation.Count > 0) return (null, validation[0].Message);
         var policy = await ResolveTravelPolicyAsync(db, employeeId, employee.ClientId);
@@ -322,7 +339,8 @@ VALUES (@RequestNumber,CURRENT_DATE,@EmployeeId,@ClientId,@Department,@Designati
         request.LocalTravelDetails = await GetLocalTravelAsync(db, id);
         var status = await db.ExecuteScalarAsync<string>("SELECT Status FROM ess_travel_requests WHERE Id=@Id", new { Id = id });
         if (status != "Draft" && status != "Sent Back") return (null, "Only draft or sent back travel requests can be submitted.");
-        var errors = ValidateTravelRequest(request, true);
+        var desk = await GetTravelDeskSettingAsync(db, clientId ?? await db.ExecuteScalarAsync<int>("SELECT ClientId FROM employees WHERE Id=@EmployeeId", new { EmployeeId = employeeId }));
+        var errors = ValidateTravelRequest(request, true, desk?.ShowTripDetails == true);
         if (errors.Count > 0) return (null, errors[0].Message);
         var policy = await ResolveTravelPolicyAsync(db, employeeId, clientId);
         var policyMessages = await ValidateTravelPolicyAsync(db, policy?.Id, request, true);
@@ -401,7 +419,7 @@ WHERE h.IsActive=TRUE AND c.IsActive=TRUE AND hs.IsEnabled=TRUE AND cs.IsEnabled
 ORDER BY h.HeaderName,c.CategoryName", new { ClientId = resolvedClientId })).ToList();
         var travelRequests = (await db.QueryAsync<EssExpenseTravelOption>(@"SELECT Id,RequestNumber,Purpose,Customer,Project,CostCenter,StartDateTime,EndDateTime,TravelMode,AccommodationRequired,LocalConveyanceRequired
 FROM ess_travel_requests WHERE EmployeeId=@EmployeeId AND (@ClientId IS NULL OR ClientId=@ClientId) AND Status IN ('Approved','Pending Approval') ORDER BY StartDateTime DESC LIMIT 50", new { EmployeeId = employeeId, ClientId = clientId })).ToList();
-        var locations = await ActiveDropdownValuesAsync(db, "Travel Location");
+        var locations = await ActiveDropdownValuesAsync(db, "Travel Location", resolvedClientId);
         return new EssExpenseOptions
         {
             ClientName = clientName,
@@ -424,6 +442,13 @@ FROM ess_travel_requests WHERE EmployeeId=@EmployeeId AND (@ClientId IS NULL OR 
         await AttachExpenseLinesAsync(db, rows);
         return rows;
     }
+    public async Task<IEnumerable<EssExpenseClaim>> GetExpenseClaimsForAdminAsync(int? clientId)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureExpenseClaimTablesAsync(db);
+        var rows = (await db.QueryAsync<EssExpenseClaim>(ExpenseClaimSelect("(@ClientId IS NULL OR c.ClientId=@ClientId)") + " ORDER BY c.UpdatedAt DESC,c.Id DESC LIMIT 1000", new { ClientId = clientId })).ToList();
+        await AttachExpenseLinesAsync(db, rows);
+        return rows;
+    }
     public async Task<EssExpenseClaim?> GetExpenseClaimAsync(long id, int employeeId, int? clientId)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureExpenseClaimTablesAsync(db);
@@ -431,6 +456,76 @@ FROM ess_travel_requests WHERE EmployeeId=@EmployeeId AND (@ClientId IS NULL OR 
         var row = await db.QueryFirstOrDefaultAsync<EssExpenseClaim>(ExpenseClaimSelect("c.Id=@Id AND c.EmployeeId=@EmployeeId AND (@ClientId IS NULL OR c.ClientId=@ClientId)") + " LIMIT 1", new { Id = id, EmployeeId = employeeId, ClientId = clientId });
         if (row is not null) await AttachExpenseLinesAsync(db, [row]);
         return row;
+    }
+    public async Task<EssAdminMaintenanceResult> AdminRevertExpenseClaimAsync(long id, int? clientId, int actorUserId, string reason)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureExpenseClaimTablesAsync(db);
+        await using var tx = await db.BeginTransactionAsync();
+        var claim = await db.QueryFirstOrDefaultAsync<AdminExpenseClaimRow>(@"SELECT Id,ClaimNumber,ClientId,EmployeeId,TravelRequestId,Status,PayrollStatus,PayrollRunId
+FROM ess_expense_claims WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId) FOR UPDATE", new { Id = id, ClientId = clientId }, tx);
+        if (claim is null) return MaintenanceFailure("Revert", "Expense claim was not found in your client scope.");
+        var dependencyError = await ExpenseFinancialDependencyAsync(db, tx, claim);
+        if (!string.IsNullOrWhiteSpace(dependencyError)) return MaintenanceFailure("Revert", dependencyError);
+        await RemovePendingExpensePayrollAsync(db, tx, claim);
+        await MarkWorkflowAdminRevertedAsync(db, tx, "ExpenseClaim", id, actorUserId, reason);
+        await db.ExecuteAsync(@"UPDATE ess_expense_claims SET Status='Draft',PayrollStatus='Not Ready',PayrollRunId=NULL,SubmittedAt=NULL,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id;
+UPDATE ess_expense_claim_lines SET Status='Draft',UpdatedAt=CURRENT_TIMESTAMP WHERE ClaimId=@Id;
+INSERT INTO ess_expense_claim_audit (ClaimId,Action,Comment) VALUES (@Id,'Admin Reverted',@Reason);", new { Id = id, Reason = MaintenanceReason(reason) }, tx);
+        await tx.CommitAsync();
+        return MaintenanceSuccess("Revert", $"Expense claim {claim.ClaimNumber} was reverted to Draft. Pending workflow and payroll reimbursement records were cleared.");
+    }
+    public async Task<EssAdminMaintenanceResult> AdminDeleteExpenseClaimAsync(long id, int? clientId, int actorUserId, string reason)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureExpenseClaimTablesAsync(db);
+        await using var tx = await db.BeginTransactionAsync();
+        var claim = await db.QueryFirstOrDefaultAsync<AdminExpenseClaimRow>(@"SELECT Id,ClaimNumber,ClientId,EmployeeId,TravelRequestId,Status,PayrollStatus,PayrollRunId
+FROM ess_expense_claims WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId) FOR UPDATE", new { Id = id, ClientId = clientId }, tx);
+        if (claim is null) return MaintenanceFailure("Delete", "Expense claim was not found in your client scope.");
+        var dependencyError = await ExpenseFinancialDependencyAsync(db, tx, claim);
+        if (!string.IsNullOrWhiteSpace(dependencyError)) return MaintenanceFailure("Delete", dependencyError);
+        await RemovePendingExpensePayrollAsync(db, tx, claim);
+        await db.ExecuteAsync("INSERT INTO ess_expense_claim_audit (ClaimId,Action,Comment) VALUES (@Id,'Admin Deleted',@Reason)", new { Id = id, Reason = MaintenanceReason(reason) }, tx);
+        await DeleteWorkflowAsync(db, tx, "ExpenseClaim", id);
+        await db.ExecuteAsync(@"DELETE FROM ess_expense_claim_attachments WHERE ClaimId=@Id;
+DELETE FROM ess_expense_claim_lines WHERE ClaimId=@Id;
+DELETE FROM ess_expense_claims WHERE Id=@Id;", new { Id = id }, tx);
+        await tx.CommitAsync();
+        return MaintenanceSuccess("Delete", $"Expense claim {claim.ClaimNumber} and its unconsumed dependencies were deleted.");
+    }
+    public async Task<EssAdminMaintenanceResult> AdminRevertTravelRequestAsync(long id, int? clientId, int actorUserId, string reason)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureExpenseClaimTablesAsync(db);
+        await using var tx = await db.BeginTransactionAsync();
+        var request = await db.QueryFirstOrDefaultAsync<AdminTravelRequestRow>(@"SELECT Id,RequestNumber,ClientId,EmployeeId,Status FROM ess_travel_requests
+WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId) FOR UPDATE", new { Id = id, ClientId = clientId }, tx);
+        if (request is null) return MaintenanceFailure("Revert", "Travel request was not found in your client scope.");
+        var dependencyError = await TravelFinancialDependencyAsync(db, tx, id);
+        if (!string.IsNullOrWhiteSpace(dependencyError)) return MaintenanceFailure("Revert", dependencyError);
+        await RemoveUnpaidTravelAdvanceAsync(db, tx, id);
+        await MarkWorkflowAdminRevertedAsync(db, tx, "TravelRequest", id, actorUserId, reason);
+        await db.ExecuteAsync(@"UPDATE ess_travel_requests SET Status='Draft',SubmittedAt=NULL,CancellationReason='',CancellationDate=NULL,CancellationStatus='',UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id;
+INSERT INTO ess_travel_request_audit (RequestId,Action,Comment) VALUES (@Id,'Admin Reverted',@Reason);", new { Id = id, Reason = MaintenanceReason(reason) }, tx);
+        await tx.CommitAsync();
+        return MaintenanceSuccess("Revert", $"Travel request {request.RequestNumber} was reverted to Draft. Its pending workflow and unpaid advance were cleared.");
+    }
+    public async Task<EssAdminMaintenanceResult> AdminDeleteTravelRequestAsync(long id, int? clientId, int actorUserId, string reason)
+    {
+        await using var db = Connection(); await db.OpenAsync(); await EnsureExpenseClaimTablesAsync(db);
+        await using var tx = await db.BeginTransactionAsync();
+        var request = await db.QueryFirstOrDefaultAsync<AdminTravelRequestRow>(@"SELECT Id,RequestNumber,ClientId,EmployeeId,Status FROM ess_travel_requests
+WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId) FOR UPDATE", new { Id = id, ClientId = clientId }, tx);
+        if (request is null) return MaintenanceFailure("Delete", "Travel request was not found in your client scope.");
+        var dependencyError = await TravelFinancialDependencyAsync(db, tx, id);
+        if (!string.IsNullOrWhiteSpace(dependencyError)) return MaintenanceFailure("Delete", dependencyError);
+        await RemoveUnpaidTravelAdvanceAsync(db, tx, id);
+        await db.ExecuteAsync("INSERT INTO ess_travel_request_audit (RequestId,Action,Comment) VALUES (@Id,'Admin Deleted',@Reason)", new { Id = id, Reason = MaintenanceReason(reason) }, tx);
+        await DeleteWorkflowAsync(db, tx, "TravelRequest", id);
+        await db.ExecuteAsync(@"DELETE FROM ess_travel_request_local_travel WHERE RequestId=@Id;
+DELETE FROM ess_travel_request_accommodation WHERE RequestId=@Id;
+DELETE FROM ess_travel_request_legs WHERE RequestId=@Id;
+DELETE FROM ess_travel_requests WHERE Id=@Id;", new { Id = id }, tx);
+        await tx.CommitAsync();
+        return MaintenanceSuccess("Delete", $"Travel request {request.RequestNumber} and its unconsumed dependencies were deleted.");
     }
     public async Task<(EssExpenseClaim? Claim, string? Error)> SaveExpenseDraftAsync(int employeeId, int? clientId, SaveEssExpenseClaim request)
     {
@@ -440,15 +535,22 @@ FROM ess_travel_requests WHERE EmployeeId=@EmployeeId AND (@ClientId IS NULL OR 
 FROM employees e LEFT JOIN clients c ON c.Id=e.ClientId LEFT JOIN authusers mu ON mu.Id=e.ReportingManagerUserId LEFT JOIN employees m ON m.Id=e.ReportingManagerId
 WHERE e.Id=@EmployeeId AND e.IsActive=TRUE AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { EmployeeId = employeeId, ClientId = clientId });
         if (employee is null) return (null, "Employee profile is unavailable.");
+        request.Customer = employee.ClientName;
+        request.Project = "";
+        foreach (var line in request.Lines ?? [])
+        {
+            line.Customer = employee.ClientName;
+            line.Project = "";
+        }
         var lines = NormalizeExpenseLines(request);
-        var validation = await ValidateExpenseClaimAsync(db, employeeId, employee.ClientId, request, false);
+        var validation = await ValidateExpenseClaimAsync(db, employeeId, employee.ClientId, request, false, lines);
         var claimNumber = request.Id > 0 ? await db.ExecuteScalarAsync<string>("SELECT ClaimNumber FROM ess_expense_claims WHERE Id=@Id AND EmployeeId=@EmployeeId", new { request.Id, EmployeeId = employeeId }) ?? "" : "";
         if (request.Id <= 0)
         {
             claimNumber = await NextExpenseClaimNumberAsync(db);
             await using var tx = await db.BeginTransactionAsync();
-            var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO ess_expense_claims (ClaimNumber,ClaimDate,EmployeeId,ClientId,Department,Designation,TravelRequestId,ExpenseType,Purpose,Customer,Project,CostCenter,Currency,TotalClaimAmount,TotalGstAmount,Remarks,Status,PolicyValidationJson)
-VALUES (@ClaimNumber,CURRENT_DATE,@EmployeeId,@ClientId,@Department,@Designation,@TravelRequestId,@ExpenseType,@Purpose,@Customer,@Project,@CostCenter,@Currency,@TotalClaimAmount,@TotalGstAmount,@Remarks,'Draft',@PolicyValidationJson); SELECT LAST_INSERT_ID();", ToExpenseArgs(request, employee, claimNumber, validation, lines), tx);
+            var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO ess_expense_claims (ClaimNumber,ClaimDate,EmployeeId,ClientId,Department,Designation,TravelRequestId,ExpenseType,Purpose,Customer,Project,CostCenter,Currency,TotalClaimAmount,TotalApprovedAmount,TotalGstAmount,Remarks,Status,PolicyValidationJson)
+VALUES (@ClaimNumber,CURRENT_DATE,@EmployeeId,@ClientId,@Department,@Designation,@TravelRequestId,@ExpenseType,@Purpose,@Customer,@Project,@CostCenter,@Currency,@TotalClaimAmount,@TotalApprovedAmount,@TotalGstAmount,@Remarks,'Draft',@PolicyValidationJson); SELECT LAST_INSERT_ID();", ToExpenseArgs(request, employee, claimNumber, validation, lines), tx);
             await ReplaceExpenseLinesAsync(db, tx, id, lines);
             await tx.CommitAsync();
             await AuditExpenseAsync(db, id, "Created", "Draft saved");
@@ -458,7 +560,7 @@ VALUES (@ClaimNumber,CURRENT_DATE,@EmployeeId,@ClientId,@Department,@Designation
         if (status != "Draft" && status != "Sent Back") return (null, "Only draft or sent back expense claims can be edited.");
         await using (var tx = await db.BeginTransactionAsync())
         {
-            await db.ExecuteAsync(@"UPDATE ess_expense_claims SET TravelRequestId=@TravelRequestId,ExpenseType=@ExpenseType,Purpose=@Purpose,Customer=@Customer,Project=@Project,CostCenter=@CostCenter,Currency=@Currency,TotalClaimAmount=@TotalClaimAmount,TotalGstAmount=@TotalGstAmount,Remarks=@Remarks,PolicyValidationJson=@PolicyValidationJson,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id AND EmployeeId=@EmployeeId", ToExpenseArgs(request, employee, claimNumber, validation, lines), tx);
+            await db.ExecuteAsync(@"UPDATE ess_expense_claims SET TravelRequestId=@TravelRequestId,ExpenseType=@ExpenseType,Purpose=@Purpose,Customer=@Customer,Project=@Project,CostCenter=@CostCenter,Currency=@Currency,TotalClaimAmount=@TotalClaimAmount,TotalApprovedAmount=@TotalApprovedAmount,TotalGstAmount=@TotalGstAmount,Remarks=@Remarks,PolicyValidationJson=@PolicyValidationJson,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id AND EmployeeId=@EmployeeId", ToExpenseArgs(request, employee, claimNumber, validation, lines), tx);
             await ReplaceExpenseLinesAsync(db, tx, request.Id, lines);
             await tx.CommitAsync();
         }
@@ -474,10 +576,17 @@ VALUES (@ClaimNumber,CURRENT_DATE,@EmployeeId,@ClientId,@Department,@Designation
         request.Lines = (await db.QueryAsync<EssExpenseClaimLine>(@"SELECT Id,ClaimId,ExpenseDate,CategoryId,CategoryCode,CategoryName,SubCategory,VendorName,BillNumber,InvoiceNumber,Amount,Currency,ExchangeRate,GstAmount,ApprovedAmount,CostCenter,Project,Customer,Location,PaymentMethod,ReceiptAttached,ReceiptFileName,Description,Status,ValidationJson FROM ess_expense_claim_lines WHERE ClaimId=@Id ORDER BY ExpenseDate,Id", new { Id = id })).ToList();
         var status = await db.ExecuteScalarAsync<string>("SELECT Status FROM ess_expense_claims WHERE Id=@Id", new { Id = id });
         if (status != "Draft" && status != "Sent Back") return (null, "Only draft or sent back expense claims can be submitted.");
-        var validation = await ValidateExpenseClaimAsync(db, employeeId, clientId, request, true);
+        foreach (var line in request.Lines) HydrateExpenseEntitlement(line);
+        var validation = await ValidateExpenseClaimAsync(db, employeeId, clientId, request, true, request.Lines);
         var block = validation.FirstOrDefault(item => item.Severity == "Block" || item.Behavior == "Block");
         if (block is not null) return (null, block.Message);
-        await db.ExecuteAsync("UPDATE ess_expense_claims SET Status='Pending Approval',SubmittedAt=CURRENT_TIMESTAMP,PolicyValidationJson=@PolicyValidationJson,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id", new { Id = id, PolicyValidationJson = JsonSerializer.Serialize(validation) });
+        await using (var tx = await db.BeginTransactionAsync())
+        {
+            foreach (var line in request.Lines)
+                await db.ExecuteAsync(@"UPDATE ess_expense_claim_lines SET CategoryCode=@CategoryCode,CategoryName=@CategoryName,ApprovedAmount=@ApprovedAmount,ValidationJson=@ValidationJson WHERE Id=@Id AND ClaimId=@ClaimId", new { line.Id, ClaimId = id, line.CategoryCode, line.CategoryName, line.ApprovedAmount, line.ValidationJson }, tx);
+            await db.ExecuteAsync("UPDATE ess_expense_claims SET Status='Pending Approval',TotalApprovedAmount=@TotalApprovedAmount,SubmittedAt=CURRENT_TIMESTAMP,PolicyValidationJson=@PolicyValidationJson,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id", new { Id = id, TotalApprovedAmount = request.Lines.Sum(line => line.ApprovedAmount), PolicyValidationJson = JsonSerializer.Serialize(validation) }, tx);
+            await tx.CommitAsync();
+        }
         await AuditExpenseAsync(db, id, "Submitted", "Submitted for approval");
         return (await GetExpenseClaimAsync(id, employeeId, clientId), null);
     }
@@ -801,7 +910,14 @@ ORDER BY attendance_date;", new { identity.ClientId, EmployeeId = employeeId, Fr
         await EnsureExpenseClaimTablesAsync(db);
         await using var tx = await db.BeginTransactionAsync();
         var payrollStatus = status == "Approved" ? "Pending Payroll" : status == "Rejected" ? "Not Ready" : "Not Ready";
-        await db.ExecuteAsync("UPDATE ess_expense_claims SET Status=@Status,PayrollStatus=@PayrollStatus,TotalApprovedAmount=CASE WHEN @Status='Approved' THEN TotalClaimAmount ELSE TotalApprovedAmount END,UpdatedAt=CURRENT_TIMESTAMP WHERE Id=@Id", new { Id = id, Status = status, PayrollStatus = payrollStatus }, tx);
+        await db.ExecuteAsync(@"UPDATE ess_expense_claims c
+SET c.Status=@Status,
+    c.PayrollStatus=@PayrollStatus,
+    c.TotalApprovedAmount=CASE WHEN @Status='Approved' THEN
+        (SELECT COALESCE(SUM(l.ApprovedAmount),0) FROM ess_expense_claim_lines l WHERE l.ClaimId=c.Id AND l.Status<>'Rejected')
+        ELSE c.TotalApprovedAmount END,
+    c.UpdatedAt=CURRENT_TIMESTAMP
+WHERE c.Id=@Id", new { Id = id, Status = status, PayrollStatus = payrollStatus }, tx);
         if (status == "Approved")
         {
             await QueueApprovedExpenseReimbursementAsync(db, tx, id);
@@ -942,7 +1058,12 @@ JOIN employees e ON e.Id=c.EmployeeId
 LEFT JOIN salarycomponents sc ON sc.Id=(SELECT sc2.Id FROM salarycomponents sc2 WHERE sc2.Active=TRUE AND (sc2.Code=c.ReimbursementComponentCode OR sc2.ComponentRole='Reimbursement') ORDER BY CASE WHEN sc2.Code=c.ReimbursementComponentCode THEN 0 ELSE 1 END, sc2.Priority, sc2.Id LIMIT 1)
 WHERE c.Id=@Id", new { Id = claimId }, tx);
         if (claim is null) return;
-        var lines = (await db.QueryAsync<ExpenseClaimQueueLine>(@"SELECT Id,COALESCE(NULLIF(ApprovedAmount,0),Amount) Amount FROM ess_expense_claim_lines WHERE ClaimId=@Id AND Status<>'Rejected' ORDER BY ExpenseDate,Id", new { Id = claimId }, tx)).ToList();
+        var lines = (await db.QueryAsync<ExpenseClaimQueueLine>(@"SELECT Id,
+CASE
+  WHEN JSON_VALID(ValidationJson) AND JSON_UNQUOTE(JSON_EXTRACT(ValidationJson,'$.calculated'))='true' THEN ApprovedAmount
+  ELSE COALESCE(NULLIF(ApprovedAmount,0),Amount)
+END Amount
+FROM ess_expense_claim_lines WHERE ClaimId=@Id AND Status<>'Rejected' ORDER BY ExpenseDate,Id", new { Id = claimId }, tx)).ToList();
         var advanceOffset = claim.TravelRequestId.HasValue ? await ApplyTravelAdvanceSettlementForClaimAsync(db, tx, claim.TravelRequestId.Value, lines.Sum(l => l.Amount)) : 0;
         foreach (var line in lines)
         {
@@ -958,7 +1079,7 @@ WHERE c.Id=@Id", new { Id = claimId }, tx);
 VALUES (@ClientId,@EmployeeId,@ExpenseClaimId,@ExpenseLineId,@ComponentCode,@Amount,FALSE,'Pending',CURRENT_TIMESTAMP)
 ON DUPLICATE KEY UPDATE Amount=VALUES(Amount),Status='Pending',UpdatedAt=CURRENT_TIMESTAMP", new { claim.ClientId, claim.EmployeeId, ExpenseClaimId = claim.Id, ExpenseLineId = line.Id, claim.ComponentCode, Amount = payable }, tx);
             await db.ExecuteAsync(@"INSERT INTO payrolladjustments (ClientId,EmployeeId,EmployeeName,EmployeeCode,ComponentId,ComponentCode,ComponentName,AdjustmentType,Amount,PayPeriod,PayRunType,ReasonCode,Notes,Taxable,Status)
-SELECT @ClientId,@EmployeeId,@EmployeeName,@EmployeeCode,@ComponentId,@ComponentCode,@ComponentName,'Earning',@Amount,DATE_FORMAT(CURDATE(),'%Y-%m'),'Regular','EXPENSE_CLAIM',@Notes,FALSE,'Approved'
+SELECT @ClientId,@EmployeeId,@EmployeeName,@EmployeeCode,@ComponentId,@ComponentCode,@ComponentName,'Reimbursement',@Amount,DATE_FORMAT(CURDATE(),'%Y-%m'),'Regular','EXPENSE_CLAIM',@Notes,FALSE,'Approved'
 WHERE NOT EXISTS (SELECT 1 FROM payrolladjustments a WHERE a.ClientId=@ClientId AND a.EmployeeId=@EmployeeId AND a.ReasonCode='EXPENSE_CLAIM' AND a.Notes=@Notes)",
                 new { claim.ClientId, claim.EmployeeId, claim.EmployeeName, claim.EmployeeCode, claim.ComponentId, claim.ComponentCode, claim.ComponentName, Amount = payable, Notes = $"Expense claim {claim.ClaimNumber} line {line.Id}" }, tx);
         }
@@ -1630,6 +1751,7 @@ StartDateTime DATETIME NULL,
 EndDateTime DATETIME NULL,
 TravelMode VARCHAR(80) NOT NULL DEFAULT '',
 TravelClass VARCHAR(80) NOT NULL DEFAULT '',
+BookingAction VARCHAR(40) NOT NULL DEFAULT 'Book by myself',
 Remarks VARCHAR(500) NOT NULL DEFAULT '',
 CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -1647,6 +1769,7 @@ CheckInDateTime DATETIME NULL,
 CheckOutDateTime DATETIME NULL,
 Occupancy VARCHAR(80) NOT NULL DEFAULT '',
 RoomPreference VARCHAR(120) NOT NULL DEFAULT '',
+BookingAction VARCHAR(40) NOT NULL DEFAULT 'Book by myself',
 Remarks VARCHAR(500) NOT NULL DEFAULT '',
 CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -1663,6 +1786,7 @@ TravelDateTime DATETIME NULL,
 FromLocation VARCHAR(180) NOT NULL DEFAULT '',
 ToLocation VARCHAR(180) NOT NULL DEFAULT '',
 TravelMode VARCHAR(80) NOT NULL DEFAULT '',
+BookingAction VARCHAR(40) NOT NULL DEFAULT 'Book by myself',
 Remarks VARCHAR(500) NOT NULL DEFAULT '',
 CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -1703,6 +1827,9 @@ CreatedBy INT NULL,
 CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 INDEX IX_ess_travel_advance_audit (AdvanceId, CreatedAt)
 );");
+        await EnsureColumnAsync(db, "ess_travel_request_legs", "BookingAction", "VARCHAR(40) NOT NULL DEFAULT 'Book by myself' AFTER TravelClass");
+        await EnsureColumnAsync(db, "ess_travel_request_accommodation", "BookingAction", "VARCHAR(40) NOT NULL DEFAULT 'Book by myself' AFTER RoomPreference");
+        await EnsureColumnAsync(db, "ess_travel_request_local_travel", "BookingAction", "VARCHAR(40) NOT NULL DEFAULT 'Book by myself' AFTER TravelMode");
         await MigrateLegacyTravelLegsAsync(db);
         await BackfillTravelAdvancesAsync(db);
     }
@@ -1833,7 +1960,11 @@ WHERE {where}";
 FROM ess_expense_claim_lines WHERE ClaimId IN @Ids ORDER BY ClaimId,ExpenseDate,Id", new { Ids = ids })).ToList()
             .GroupBy(item => item.ClaimId)
             .ToDictionary(group => group.Key, group => group.ToList());
-        foreach (var claim in claims) claim.Lines = rows.TryGetValue(claim.Id, out var lines) ? lines : [];
+        foreach (var claim in claims)
+        {
+            claim.Lines = rows.TryGetValue(claim.Id, out var lines) ? lines : [];
+            foreach (var line in claim.Lines) HydrateExpenseEntitlement(line);
+        }
     }
 
     private static List<EssExpenseClaimLine> NormalizeExpenseLines(SaveEssExpenseClaim claim) =>
@@ -1863,18 +1994,27 @@ FROM ess_expense_claim_lines WHERE ClaimId IN @Ids ORDER BY ClaimId,ExpenseDate,
                 ReceiptFileName = line.ReceiptFileName?.Trim() ?? "",
                 Description = line.Description?.Trim() ?? "",
                 Status = string.IsNullOrWhiteSpace(line.Status) ? "Draft" : line.Status.Trim(),
-                ValidationJson = string.IsNullOrWhiteSpace(line.ValidationJson) ? "[]" : line.ValidationJson
+                ValidationJson = string.IsNullOrWhiteSpace(line.ValidationJson) ? "[]" : line.ValidationJson,
+                CityCategory = line.CityCategory?.Trim() ?? "",
+                DistanceKm = Math.Max(0, line.DistanceKm),
+                DutyHours = Math.Max(0, line.DutyHours),
+                LodgingClaimed = line.LodgingClaimed,
+                LodgingIncludesFood = line.LodgingIncludesFood,
+                AlternativeStay = line.AlternativeStay,
+                OvernightStay = line.OvernightStay,
+                EntitlementLabel = line.EntitlementLabel?.Trim() ?? "",
+                EntitlementMessage = line.EntitlementMessage?.Trim() ?? ""
             })
             .Where(line => line.CategoryId > 0 || line.Amount > 0 || !string.IsNullOrWhiteSpace(line.Description) || !string.IsNullOrWhiteSpace(line.VendorName))
             .ToList();
 
-    private static async Task<List<EssTravelValidationResult>> ValidateExpenseClaimAsync(MySqlConnection db, int employeeId, int? clientId, SaveEssExpenseClaim claim, bool submit)
+    private static async Task<List<EssTravelValidationResult>> ValidateExpenseClaimAsync(MySqlConnection db, int employeeId, int? clientId, SaveEssExpenseClaim claim, bool submit, List<EssExpenseClaimLine>? normalizedLines = null)
     {
         var messages = new List<EssTravelValidationResult>();
         void Block(string message, string rule = "Mandatory") => messages.Add(new EssTravelValidationResult { Severity = "Block", Behavior = "Block", RuleName = rule, Message = message });
         void Warn(string message, string rule = "Policy") => messages.Add(new EssTravelValidationResult { Severity = "Warning", Behavior = "Approval Override", RuleName = rule, Message = message });
         var resolvedClientId = clientId ?? await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM employees WHERE Id=@EmployeeId", new { EmployeeId = employeeId }) ?? 0;
-        var lines = NormalizeExpenseLines(claim);
+        var lines = normalizedLines ?? NormalizeExpenseLines(claim);
         if (submit && lines.Count == 0) Block("At least one expense line is required.");
         if (submit && string.IsNullOrWhiteSpace(claim.Purpose)) Block("Purpose is required.");
         if (submit && string.IsNullOrWhiteSpace(claim.ExpenseType)) Block("Expense type is required.");
@@ -1904,6 +2044,9 @@ JOIN client_expense_category_settings cs ON cs.CategoryId=c.Id AND cs.ClientId=@
 WHERE c.Id IN @Ids AND h.IsActive=TRUE AND c.IsActive=TRUE AND hs.IsEnabled=TRUE AND cs.IsEnabled=TRUE
   AND (hs.EffectiveFrom IS NULL OR hs.EffectiveFrom<=CURRENT_DATE) AND (hs.EffectiveTo IS NULL OR hs.EffectiveTo>=CURRENT_DATE)
   AND (cs.EffectiveFrom IS NULL OR cs.EffectiveFrom<=CURRENT_DATE) AND (cs.EffectiveTo IS NULL OR cs.EffectiveTo>=CURRENT_DATE)", new { Ids = categoryIds, ClientId = resolvedClientId })).ToDictionary(item => item.Id);
+        var policyRules = policy is null
+            ? []
+            : (await db.QueryAsync<TravelPolicyRule>("SELECT * FROM travel_policy_rules WHERE PolicyId=@PolicyId AND IsActive=TRUE ORDER BY Id", new { PolicyId = policy.Value.Id })).ToList();
         foreach (var pair in lines.Select((line, index) => new { line, index }))
         {
             var line = pair.line;
@@ -1930,15 +2073,228 @@ WHERE c.Id IN @Ids AND h.IsActive=TRUE AND c.IsActive=TRUE AND hs.IsEnabled=TRUE
                 }
                 line.CategoryCode = category.CategoryCode;
                 line.CategoryName = category.CategoryName;
+                ApplyExpenseEntitlement(line, category, policyRules, pair.index, submit, Block, Warn);
             }
         }
         return messages;
     }
 
+    private static void ApplyExpenseEntitlement(
+        EssExpenseClaimLine line,
+        EssExpenseCategoryOption category,
+        List<TravelPolicyRule> rules,
+        int lineIndex,
+        bool submit,
+        Action<string, string> block,
+        Action<string, string> warn)
+    {
+        var identity = $"{category.CategoryCode} {category.CategoryName}".ToUpperInvariant();
+        var cityCategory = ResolveExpenseCityCategory(line);
+        var approved = Math.Max(0, line.Amount);
+        var label = "Actual claim amount";
+        var message = "Eligible at actual claimed amount, subject to approval.";
+
+        if (category.MaximumClaim.HasValue) approved = Math.Min(approved, category.MaximumClaim.Value);
+
+        if (IsHaltingAllowance(identity))
+        {
+            var rule = FindCityRule(rules, "Per Diem", cityCategory);
+            if (rule is null)
+            {
+                (submit ? block : warn)($"Line {lineIndex + 1}: {cityCategory} halting allowance is not configured in the applicable policy.", "Halting Allowance");
+                approved = 0;
+                label = $"{cityCategory} HA not configured";
+                message = "Configure a Per Diem rule before submitting this claim.";
+            }
+            else
+            {
+                var minimumDistance = JsonDecimal(rule.ConfigJson, "minimumDistanceKm") ?? 50m;
+                var minimumHours = JsonDecimal(rule.ConfigJson, "minimumDutyHours") ?? 8m;
+                var baseLimit = rule.LimitAmount ?? JsonDecimal(rule.ConfigJson, "fullDay") ?? 0;
+                var lodgingPercent = JsonDecimal(rule.ConfigJson, "withLodgingClaimPercent") ?? 75m;
+                var foodPercent = JsonDecimal(rule.ConfigJson, "lodgingIncludesFoodPercent") ?? 25m;
+                var alternativeStayExtra = JsonDecimal(rule.ConfigJson, "alternativeStayExtraAmount") ?? 200m;
+                var eligible = baseLimit;
+
+                if (line.DistanceKm <= minimumDistance || line.DutyHours <= minimumHours)
+                {
+                    (submit ? block : warn)($"Line {lineIndex + 1}: full-day halting allowance requires travel beyond {minimumDistance:N0} km and duty over {minimumHours:N0} hours.", rule.RuleName);
+                    eligible = 0;
+                }
+                else if (line.LodgingIncludesFood) eligible = baseLimit * foodPercent / 100m;
+                else if (line.LodgingClaimed) eligible = baseLimit * lodgingPercent / 100m;
+
+                if (line.AlternativeStay)
+                {
+                    if (line.OvernightStay) eligible += alternativeStayExtra;
+                    else warn($"Line {lineIndex + 1}: alternative-stay allowance requires an overnight stay.", rule.RuleName);
+                }
+
+                approved = Math.Min(approved, Math.Max(0, eligible));
+                label = $"{cityCategory} HA limit Rs {eligible:N2}";
+                message = line.LodgingIncludesFood
+                    ? $"25% of base HA applied because lodging includes food{(line.AlternativeStay && line.OvernightStay ? ", plus alternative-stay allowance" : "")}."
+                    : line.LodgingClaimed
+                        ? $"75% of base HA applied with lodging claim{(line.AlternativeStay && line.OvernightStay ? ", plus alternative-stay allowance" : "")}."
+                        : $"Full HA applied{(line.AlternativeStay && line.OvernightStay ? " plus alternative-stay allowance" : "")}.";
+            }
+        }
+        else if (IsLodging(identity))
+        {
+            var rule = FindCityRule(rules, "Hotel", cityCategory);
+            if (rule is null)
+            {
+                (submit ? block : warn)($"Line {lineIndex + 1}: {cityCategory} lodging limit is not configured in the applicable policy.", "Lodging");
+                approved = 0;
+                label = $"{cityCategory} lodging not configured";
+                message = "Configure a Hotel rule before submitting this claim.";
+            }
+            else
+            {
+                var limit = rule.LimitAmount ?? 0;
+                approved = Math.Min(approved, limit);
+                label = $"{cityCategory} lodging cap Rs {limit:N2}";
+                message = "Actual lodging expense excluding taxes is eligible up to the configured cap.";
+                if ((rule.ReceiptMandatory || category.ReceiptMandatory) && !line.ReceiptAttached)
+                    block($"Line {lineIndex + 1}: lodging bill/receipt is required.", rule.RuleName);
+            }
+        }
+        else if (IsLocalConveyance(identity))
+        {
+            var localRules = rules.Where(rule => rule.RuleType.Equals("Local Conveyance", StringComparison.OrdinalIgnoreCase)).ToList();
+            var rule = line.ReceiptAttached
+                ? localRules.FirstOrDefault(item => item.ReceiptMandatory || item.RuleName.Contains("actual", StringComparison.OrdinalIgnoreCase) || item.RuleName.Contains("receipt", StringComparison.OrdinalIgnoreCase))
+                : localRules.FirstOrDefault(item => !item.ReceiptMandatory && (item.RuleName.Contains("without", StringComparison.OrdinalIgnoreCase) || JsonDecimal(item.ConfigJson, "ratePerKm").HasValue || JsonDecimal(item.ConfigJson, "mileageRate").HasValue));
+            if (!line.ReceiptAttached)
+            {
+                var rate = rule is null ? null : JsonDecimal(rule.ConfigJson, "ratePerKm") ?? JsonDecimal(rule.ConfigJson, "mileageRate") ?? JsonDecimal(rule.ConfigJson, "mileageRatePerKm");
+                if (rule is null || !rate.HasValue)
+                {
+                    (submit ? block : warn)($"Line {lineIndex + 1}: local travel without receipt has no per-kilometre policy configured.", "Local Conveyance");
+                    approved = 0;
+                    label = "Mileage rate not configured";
+                    message = "Configure a Local Conveyance rate before submitting this claim.";
+                }
+                else if (line.DistanceKm <= 0)
+                {
+                    (submit ? block : warn)($"Line {lineIndex + 1}: distance is required for local travel without a receipt.", rule.RuleName);
+                    approved = 0;
+                    label = $"Rs {rate.Value:N2} per km";
+                    message = "Enter the travelled distance to calculate eligibility.";
+                }
+                else
+                {
+                    var eligible = line.DistanceKm * rate.Value;
+                    approved = Math.Min(approved, eligible);
+                    label = $"{line.DistanceKm:N2} km x Rs {rate.Value:N2}";
+                    message = $"Mileage entitlement is Rs {eligible:N2}.";
+                }
+            }
+            else
+            {
+                if (rule?.LimitAmount is > 0) approved = Math.Min(approved, rule.LimitAmount.Value);
+                label = "Actual local travel with receipt";
+                message = "Receipt-backed local travel is eligible at actual cost, subject to approval.";
+            }
+        }
+
+        approved = Math.Round(Math.Max(0, approved), 2, MidpointRounding.AwayFromZero);
+        line.ApprovedAmount = approved;
+        line.CityCategory = cityCategory;
+        line.EntitlementLabel = label;
+        line.EntitlementMessage = message;
+        line.ValidationJson = JsonSerializer.Serialize(new
+        {
+            calculated = true,
+            inputs = new
+            {
+                cityCategory,
+                line.DistanceKm,
+                line.DutyHours,
+                line.LodgingClaimed,
+                line.LodgingIncludesFood,
+                line.AlternativeStay,
+                line.OvernightStay
+            },
+            result = new { eligibleAmount = approved, label, message }
+        });
+    }
+
+    private static void HydrateExpenseEntitlement(EssExpenseClaimLine line)
+    {
+        if (string.IsNullOrWhiteSpace(line.ValidationJson)) return;
+        try
+        {
+            using var document = JsonDocument.Parse(line.ValidationJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return;
+            if (document.RootElement.TryGetProperty("inputs", out var inputs))
+            {
+                line.CityCategory = JsonString(inputs, "cityCategory") ?? line.CityCategory;
+                line.DistanceKm = JsonNumber(inputs, "DistanceKm") ?? JsonNumber(inputs, "distanceKm") ?? line.DistanceKm;
+                line.DutyHours = JsonNumber(inputs, "DutyHours") ?? JsonNumber(inputs, "dutyHours") ?? line.DutyHours;
+                line.LodgingClaimed = JsonBoolean(inputs, "LodgingClaimed") ?? JsonBoolean(inputs, "lodgingClaimed") ?? line.LodgingClaimed;
+                line.LodgingIncludesFood = JsonBoolean(inputs, "LodgingIncludesFood") ?? JsonBoolean(inputs, "lodgingIncludesFood") ?? line.LodgingIncludesFood;
+                line.AlternativeStay = JsonBoolean(inputs, "AlternativeStay") ?? JsonBoolean(inputs, "alternativeStay") ?? line.AlternativeStay;
+                line.OvernightStay = JsonBoolean(inputs, "OvernightStay") ?? JsonBoolean(inputs, "overnightStay") ?? line.OvernightStay;
+            }
+            if (document.RootElement.TryGetProperty("result", out var result))
+            {
+                line.EntitlementLabel = JsonString(result, "label") ?? line.EntitlementLabel;
+                line.EntitlementMessage = JsonString(result, "message") ?? line.EntitlementMessage;
+            }
+        }
+        catch { }
+    }
+
+    private static string ResolveExpenseCityCategory(EssExpenseClaimLine line)
+    {
+        if (line.CityCategory.Equals("Metro", StringComparison.OrdinalIgnoreCase)) return "Metro";
+        if (line.CityCategory.Replace("-", " ").Equals("Non Metro", StringComparison.OrdinalIgnoreCase)) return "Non-Metro";
+        var location = line.Location ?? "";
+        return new[] { "Delhi", "Mumbai", "Chennai", "Kolkata", "Hyderabad", "Bengaluru", "Bangalore" }
+            .Any(city => location.Contains(city, StringComparison.OrdinalIgnoreCase)) ? "Metro" : "Non-Metro";
+    }
+
+    private static TravelPolicyRule? FindCityRule(IEnumerable<TravelPolicyRule> rules, string ruleType, string cityCategory) =>
+        rules.Where(rule => rule.RuleType.Equals(ruleType, StringComparison.OrdinalIgnoreCase))
+            .FirstOrDefault(rule =>
+                rule.AppliesTo.Contains(cityCategory, StringComparison.OrdinalIgnoreCase)
+                || rule.RuleName.Contains(cityCategory, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(JsonText(rule.EligibilityJson, "cityCategory"), cityCategory, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(JsonText(rule.ConfigJson, "cityCategory"), cityCategory, StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsHaltingAllowance(string identity) => identity.Contains("HALTING") || identity.Contains("PER DIEM") || identity.Contains("PER_DIEM") || identity is "HA";
+    private static bool IsLodging(string identity) => identity.Contains("HOTEL") || identity.Contains("LODGING");
+    private static bool IsLocalConveyance(string identity) => new[] { "LOCAL", "CAB", "TAXI", "MILEAGE", "FUEL", "METRO" }.Any(token => identity.Contains(token));
+
+    private static decimal? JsonDecimal(string json, string property)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
+            return JsonNumber(document.RootElement, property);
+        }
+        catch { return null; }
+    }
+
+    private static string? JsonText(string json, string property)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
+            return JsonString(document.RootElement, property);
+        }
+        catch { return null; }
+    }
+
+    private static string? JsonString(JsonElement element, string property) => element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+    private static decimal? JsonNumber(JsonElement element, string property) => element.TryGetProperty(property, out var value) && value.TryGetDecimal(out var number) ? number : null;
+    private static bool? JsonBoolean(JsonElement element, string property) => element.TryGetProperty(property, out var value) && (value.ValueKind is JsonValueKind.True or JsonValueKind.False) ? value.GetBoolean() : null;
+
     private static async Task<HashSet<string>> AllowedTravelExpenseCodesAsync(MySqlConnection db, long travelRequestId)
     {
         var travel = await db.QueryFirstOrDefaultAsync<EssExpenseTravelOption>("SELECT Id,TravelMode,AccommodationRequired,LocalConveyanceRequired FROM ess_travel_requests WHERE Id=@TravelRequestId", new { TravelRequestId = travelRequestId });
-        var codes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "MEALS" };
+        var codes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "MEALS", "HALTING_ALLOWANCE", "PER_DIEM", "HA" };
         if (travel is null) return codes;
         var mode = (travel.TravelMode ?? "").ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(mode) || mode.Contains("air") || mode.Contains("flight")) codes.Add("AIR_FARE");
@@ -1946,8 +2302,8 @@ WHERE c.Id IN @Ids AND h.IsActive=TRUE AND c.IsActive=TRUE AND hs.IsEnabled=TRUE
         if (string.IsNullOrWhiteSpace(mode) || mode.Contains("bus")) codes.Add("BUS_FARE");
         if (mode.Contains("cab") || mode.Contains("taxi")) codes.Add("CAB_TAXI");
         if (mode.Contains("own") || mode.Contains("car")) foreach (var code in new[] { "FUEL", "PARKING", "TOLL" }) codes.Add(code);
-        if (travel.AccommodationRequired) codes.Add("HOTEL_STAY");
-        if (travel.LocalConveyanceRequired) foreach (var code in new[] { "CAB_TAXI", "FUEL", "PARKING", "TOLL", "METRO" }) codes.Add(code);
+        if (travel.AccommodationRequired) foreach (var code in new[] { "HOTEL_STAY", "LODGING" }) codes.Add(code);
+        if (travel.LocalConveyanceRequired) foreach (var code in new[] { "CAB_TAXI", "FUEL", "PARKING", "TOLL", "METRO", "LOCAL_CONVEYANCE", "MILEAGE" }) codes.Add(code);
         return codes;
     }
 
@@ -1962,11 +2318,12 @@ WHERE c.Id IN @Ids AND h.IsActive=TRUE AND c.IsActive=TRUE AND hs.IsEnabled=TRUE
         request.TravelRequestId,
         ExpenseType = request.ExpenseType.Trim(),
         Purpose = request.Purpose.Trim(),
-        Customer = CleanText(request.Customer, employee.ClientName).Trim(),
-        Project = request.Project.Trim(),
+        Customer = employee.ClientName.Trim(),
+        Project = "",
         CostCenter = request.CostCenter.Trim(),
         Currency = CleanText(request.Currency, "INR").Trim().ToUpperInvariant(),
         TotalClaimAmount = lines.Sum(line => line.Amount),
+        TotalApprovedAmount = lines.Sum(line => line.ApprovedAmount),
         TotalGstAmount = lines.Sum(line => line.GstAmount),
         Remarks = request.Remarks.Trim(),
         PolicyValidationJson = JsonSerializer.Serialize(validation)
@@ -1991,6 +2348,86 @@ VALUES (@ClaimId,@ExpenseDate,@CategoryId,@CategoryCode,@CategoryName,@SubCatego
 
     private static async Task AuditExpenseAsync(MySqlConnection db, long claimId, string action, string comment) =>
         await db.ExecuteAsync("INSERT INTO ess_expense_claim_audit (ClaimId,Action,Comment) VALUES (@ClaimId,@Action,@Comment)", new { ClaimId = claimId, Action = action, Comment = comment });
+
+    private static EssAdminMaintenanceResult MaintenanceSuccess(string action, string message) => new() { Success = true, Action = action, Message = message };
+    private static EssAdminMaintenanceResult MaintenanceFailure(string action, string message) => new() { Success = false, Action = action, Message = message };
+    private static string MaintenanceReason(string reason) => string.IsNullOrWhiteSpace(reason) ? "Administrative data maintenance" : reason.Trim();
+
+    private static async Task<string?> ExpenseFinancialDependencyAsync(MySqlConnection db, MySqlTransaction tx, AdminExpenseClaimRow claim)
+    {
+        if (claim.PayrollRunId.HasValue)
+            return $"This claim is already linked to payroll run #{claim.PayrollRunId}. Reverse or delete that pay run before cleaning this claim.";
+        var consumedQueue = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM payroll_reimbursement_queue
+WHERE ExpenseClaimId=@Id AND (PayrollRunId IS NOT NULL OR Status IN ('Applied','Paid'))", new { claim.Id }, tx);
+        var consumedAdjustment = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM payrolladjustments
+WHERE ClientId=@ClientId AND EmployeeId=@EmployeeId AND ReasonCode='EXPENSE_CLAIM'
+AND Notes LIKE CONCAT('Expense claim ',@ClaimNumber,' line %') AND PayRunId IS NOT NULL", claim, tx);
+        if (consumedQueue > 0 || consumedAdjustment > 0)
+            return "This expense has already been consumed by payroll. Reverse or delete the linked pay run before reverting or deleting the claim.";
+        if (claim.TravelRequestId.HasValue)
+        {
+            var settledAdvance = await db.ExecuteScalarAsync<decimal>(@"SELECT COALESCE(SUM(SettledAmount+RecoverableAmount),0)
+FROM ess_travel_advances WHERE TravelRequestId=@TravelRequestId", new { claim.TravelRequestId }, tx);
+            if (settledAdvance > 0)
+                return "This claim has settled a paid travel advance. Reverse the advance settlement before reverting or deleting the claim.";
+        }
+        return null;
+    }
+
+    private static async Task RemovePendingExpensePayrollAsync(MySqlConnection db, MySqlTransaction tx, AdminExpenseClaimRow claim)
+    {
+        await db.ExecuteAsync("DELETE FROM payroll_reimbursement_queue WHERE ExpenseClaimId=@Id AND PayrollRunId IS NULL", new { claim.Id }, tx);
+        await db.ExecuteAsync(@"DELETE FROM payrolladjustments
+WHERE ClientId=@ClientId AND EmployeeId=@EmployeeId AND ReasonCode='EXPENSE_CLAIM'
+AND Notes LIKE CONCAT('Expense claim ',@ClaimNumber,' line %') AND PayRunId IS NULL", claim, tx);
+    }
+
+    private static async Task<string?> TravelFinancialDependencyAsync(MySqlConnection db, MySqlTransaction tx, long requestId)
+    {
+        var linkedClaims = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM ess_expense_claims WHERE TravelRequestId=@RequestId", new { RequestId = requestId }, tx);
+        if (linkedClaims > 0)
+            return $"This travel request has {linkedClaims} linked expense claim(s). Revert or delete those claims first.";
+        var financialAdvance = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM ess_travel_advances
+WHERE TravelRequestId=@RequestId AND (PaidAmount>0 OR SettledAmount>0 OR RecoverableAmount>0)", new { RequestId = requestId }, tx);
+        return financialAdvance > 0
+            ? "This travel request has a paid, settled, or recoverable advance. Reverse the financial transaction before reverting or deleting it."
+            : null;
+    }
+
+    private static async Task RemoveUnpaidTravelAdvanceAsync(MySqlConnection db, MySqlTransaction tx, long requestId)
+    {
+        await db.ExecuteAsync(@"DELETE a FROM ess_travel_advance_audit a
+JOIN ess_travel_advances v ON v.Id=a.AdvanceId
+WHERE v.TravelRequestId=@RequestId AND v.PaidAmount=0 AND v.SettledAmount=0 AND v.RecoverableAmount=0", new { RequestId = requestId }, tx);
+        await db.ExecuteAsync(@"DELETE FROM ess_travel_advances
+WHERE TravelRequestId=@RequestId AND PaidAmount=0 AND SettledAmount=0 AND RecoverableAmount=0", new { RequestId = requestId }, tx);
+    }
+
+    private static async Task MarkWorkflowAdminRevertedAsync(MySqlConnection db, MySqlTransaction tx, string resourceType, long resourceId, int actorUserId, string reason)
+    {
+        var args = new { ResourceType = resourceType, ResourceId = resourceId.ToString(), Actor = actorUserId, Reason = MaintenanceReason(reason) };
+        await db.ExecuteAsync(@"INSERT INTO workflowhistory (InstanceId,TaskId,Action,ActorUserId,Comment)
+SELECT i.Id,NULL,'Admin Reverted',@Actor,@Reason FROM workflowinstances i
+WHERE i.ResourceType=@ResourceType AND i.ResourceId=@ResourceId;
+UPDATE workflowtasks t JOIN workflowinstances i ON i.Id=t.InstanceId
+SET t.Status='Admin Reverted',t.ActionedAt=UTC_TIMESTAMP(),t.Comment=@Reason
+WHERE i.ResourceType=@ResourceType AND i.ResourceId=@ResourceId AND t.Status='Pending';
+UPDATE workflowinstances SET Status='Admin Reverted',CompletedAt=UTC_TIMESTAMP()
+WHERE ResourceType=@ResourceType AND ResourceId=@ResourceId;
+UPDATE ResourceStates SET CurrentState='Draft',WorkflowInstanceId=NULL,ModifiedBy=@Actor,ModifiedOn=CURRENT_TIMESTAMP
+WHERE ResourceType=@ResourceType AND ResourceId=@ResourceId;", args, tx);
+    }
+
+    private static async Task DeleteWorkflowAsync(MySqlConnection db, MySqlTransaction tx, string resourceType, long resourceId)
+    {
+        var args = new { ResourceType = resourceType, ResourceId = resourceId.ToString() };
+        await db.ExecuteAsync(@"DELETE h FROM workflowhistory h JOIN workflowinstances i ON i.Id=h.InstanceId
+WHERE i.ResourceType=@ResourceType AND i.ResourceId=@ResourceId;
+DELETE t FROM workflowtasks t JOIN workflowinstances i ON i.Id=t.InstanceId
+WHERE i.ResourceType=@ResourceType AND i.ResourceId=@ResourceId;
+DELETE FROM workflowinstances WHERE ResourceType=@ResourceType AND ResourceId=@ResourceId;
+DELETE FROM ResourceStates WHERE ResourceType=@ResourceType AND ResourceId=@ResourceId;", args, tx);
+    }
 
     private static async Task<(long Id, string Name)?> ResolveTravelPolicyAsync(MySqlConnection db, int employeeId, int? clientId)
     {
@@ -2022,11 +2459,46 @@ WHERE e.Id=@EmployeeId
   AND (s.EffectiveTo IS NULL OR s.EffectiveTo>=CURRENT_DATE)", new { EmployeeId = employeeId, ClientId = clientId }) > 0;
     }
 
-    private static Task EnsureTravelExpenseClientSettingsAsync(MySqlConnection db) =>
-        db.ExecuteAsync(@"CREATE TABLE IF NOT EXISTS travel_expense_client_settings (
+    private static async Task<TravelExpenseClientSetting?> GetTravelDeskSettingAsync(MySqlConnection db, int clientId)
+    {
+        await EnsureTravelExpenseClientSettingsAsync(db);
+        return await db.QueryFirstOrDefaultAsync<TravelExpenseClientSetting>(
+            "SELECT * FROM travel_expense_client_settings WHERE ClientId=@ClientId LIMIT 1",
+            new { ClientId = clientId });
+    }
+
+    private static async Task ApplyTravelDeskScopeAsync(MySqlConnection db, int clientId, SaveEssTravelRequest request)
+    {
+        var setting = await GetTravelDeskSettingAsync(db, clientId);
+        if (setting?.ShowTripDetails != true) request.Cities = [];
+        if (setting?.ShowAccommodationDetails != true)
+        {
+            request.AccommodationDetails = [];
+            request.AccommodationRequired = false;
+        }
+        if (setting?.ShowLocalTravelDetails != true)
+        {
+            request.LocalTravelDetails = [];
+            request.LocalConveyanceRequired = false;
+        }
+        if (setting?.IsTravelDeskEnabled != true)
+        {
+            foreach (var leg in request.Cities) leg.BookingAction = "";
+            foreach (var stay in request.AccommodationDetails) stay.BookingAction = "";
+            foreach (var ride in request.LocalTravelDetails) ride.BookingAction = "";
+        }
+    }
+
+    private static async Task EnsureTravelExpenseClientSettingsAsync(MySqlConnection db)
+    {
+        await db.ExecuteAsync(@"CREATE TABLE IF NOT EXISTS travel_expense_client_settings (
 Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
 ClientId INT NOT NULL,
 IsEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+IsTravelDeskEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+ShowTripDetails BOOLEAN NOT NULL DEFAULT FALSE,
+ShowAccommodationDetails BOOLEAN NOT NULL DEFAULT FALSE,
+ShowLocalTravelDetails BOOLEAN NOT NULL DEFAULT FALSE,
 EffectiveFrom DATE NULL,
 EffectiveTo DATE NULL,
 Remarks VARCHAR(500) NOT NULL DEFAULT '',
@@ -2038,14 +2510,20 @@ KEY IX_TravelExpenseClientSettings_Enabled (ClientId, IsEnabled)
 INSERT INTO travel_expense_client_settings (ClientId,IsEnabled)
 SELECT Id,FALSE FROM clients WHERE IsActive=TRUE
 ON DUPLICATE KEY UPDATE ClientId=ClientId;");
+        await EnsureColumnAsync(db, "travel_expense_client_settings", "IsTravelDeskEnabled", "BOOLEAN NOT NULL DEFAULT FALSE AFTER IsEnabled");
+        await EnsureColumnAsync(db, "travel_expense_client_settings", "ShowTripDetails", "BOOLEAN NOT NULL DEFAULT FALSE AFTER IsTravelDeskEnabled");
+        await EnsureColumnAsync(db, "travel_expense_client_settings", "ShowAccommodationDetails", "BOOLEAN NOT NULL DEFAULT FALSE AFTER ShowTripDetails");
+        await EnsureColumnAsync(db, "travel_expense_client_settings", "ShowLocalTravelDetails", "BOOLEAN NOT NULL DEFAULT FALSE AFTER ShowAccommodationDetails");
+    }
 
-    private static List<EssTravelValidationResult> ValidateTravelRequest(SaveEssTravelRequest request, bool submit)
+    private static List<EssTravelValidationResult> ValidateTravelRequest(SaveEssTravelRequest request, bool submit, bool requireTripDetails = true)
     {
         var result = new List<EssTravelValidationResult>();
         void Block(string message) => result.Add(new EssTravelValidationResult { Severity = "Block", Behavior = "Block", Message = message, RuleName = "Mandatory" });
         var legs = NormalizeTravelCities(request);
         if (submit && string.IsNullOrWhiteSpace(request.Purpose)) Block("Purpose of travel is required.");
-        if (submit && legs.Count == 0) Block("At least one trip detail row is required.");
+        if (submit && string.IsNullOrWhiteSpace(request.TravelType)) Block("Travel type is required.");
+        if (submit && requireTripDetails && legs.Count == 0) Block("At least one trip detail row is required when Travel Desk is enabled.");
         foreach (var leg in legs.Select((value, index) => new { value, index }))
         {
             if (submit && string.IsNullOrWhiteSpace(leg.value.FromLocation)) Block($"Trip row {leg.index + 1}: From location is required.");
@@ -2071,16 +2549,29 @@ ON DUPLICATE KEY UPDATE ClientId=ClientId;");
     {
         var messages = new List<EssTravelValidationResult>();
         if (policyId is null) return messages;
-        foreach (var travelMode in NormalizeTravelCities(request).Select(item => item.TravelMode).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var leg in NormalizeTravelCities(request).Where(item => !string.IsNullOrWhiteSpace(item.TravelMode)))
         {
-            var mode = await db.QueryFirstOrDefaultAsync<(bool IsAllowed, string RuleName, string ExceptionHandling)>(@"SELECT IsAllowed,RuleName,ExceptionHandling FROM travel_policy_rules WHERE PolicyId=@PolicyId AND RuleType='Travel Mode' AND AppliesTo=@TravelMode AND IsActive=TRUE ORDER BY Id DESC LIMIT 1", new { PolicyId = policyId.Value, TravelMode = travelMode });
-            if (string.IsNullOrWhiteSpace(mode.RuleName))
+            var configured = (await db.QueryAsync<TravelPolicyRule>(@"SELECT * FROM travel_policy_rules
+WHERE PolicyId=@PolicyId AND RuleType='Travel Mode' AND UPPER(AppliesTo)=UPPER(@TravelMode) AND IsActive=TRUE
+ORDER BY ApprovalRequired,Id", new { PolicyId = policyId.Value, TravelMode = leg.TravelMode })).ToList();
+            var requestedClass = NormalizeTravelClass(leg.TravelClass);
+            var mode = configured.FirstOrDefault(rule =>
+                string.IsNullOrWhiteSpace(requestedClass)
+                    ? !rule.ApprovalRequired
+                    : NormalizeTravelClass(JsonText(rule.ConfigJson, "travelClass") ?? "") == requestedClass)
+                ?? configured.FirstOrDefault(rule => string.IsNullOrWhiteSpace(JsonText(rule.ConfigJson, "travelClass")));
+            if (mode is null)
             {
-                messages.Add(new EssTravelValidationResult { Severity = submit ? "Block" : "Warning", Behavior = "Block", RuleName = "Travel Mode", Message = $"Travel mode {travelMode} is not configured in applicable policy." });
+                var display = string.IsNullOrWhiteSpace(leg.TravelClass) ? leg.TravelMode : $"{leg.TravelMode} ({leg.TravelClass})";
+                messages.Add(new EssTravelValidationResult { Severity = submit ? "Block" : "Warning", Behavior = "Block", RuleName = "Travel Mode", Message = $"Travel mode {display} is not configured in applicable policy." });
             }
             else if (!mode.IsAllowed)
             {
-                messages.Add(new EssTravelValidationResult { Severity = mode.ExceptionHandling == "Block" ? "Block" : "Warning", Behavior = mode.ExceptionHandling, RuleName = mode.RuleName, Message = $"Travel mode {travelMode} is not allowed by policy." });
+                messages.Add(new EssTravelValidationResult { Severity = mode.ExceptionHandling == "Block" ? "Block" : "Warning", Behavior = mode.ExceptionHandling, RuleName = mode.RuleName, Message = $"Travel mode {leg.TravelMode} {leg.TravelClass} is not allowed by policy.".Trim() });
+            }
+            else if (mode.ApprovalRequired)
+            {
+                messages.Add(new EssTravelValidationResult { Severity = "Warning", Behavior = "Approval Override", RuleName = mode.RuleName, Message = $"{leg.TravelMode} {leg.TravelClass} requires prior approval under the applicable policy.".Trim() });
             }
         }
         if (request.AdvanceRequired)
@@ -2101,9 +2592,22 @@ ON DUPLICATE KEY UPDATE ClientId=ClientId;");
           return messages;
       }
 
-      private static async Task<List<string>> ActiveDropdownValuesAsync(MySqlConnection db, string type)
+      private static string NormalizeTravelClass(string value) => (value ?? "")
+          .Trim().ToUpperInvariant()
+          .Replace("THIRD", "3RD")
+          .Replace("SECOND", "2ND")
+          .Replace("3 AC", "3RD AC")
+          .Replace("3AC", "3RD AC")
+          .Replace("AC 3 TIER", "3RD AC")
+          .Replace("2 AC", "2ND AC")
+          .Replace("2AC", "2ND AC")
+          .Replace("AC 2 TIER", "2ND AC");
+
+      private static async Task<List<string>> ActiveDropdownValuesAsync(MySqlConnection db, string type, int clientId)
       {
-          var rows = await db.QueryAsync<string>("SELECT Value FROM dropdownmasters WHERE IsActive=TRUE AND Type=@Type ORDER BY Value", new { Type = type });
+          var rows = await db.QueryAsync<string>(@"SELECT Value FROM dropdownmasters
+WHERE IsActive=TRUE AND Type=@Type AND (ClientId=0 OR ClientId=@ClientId)
+ORDER BY CASE WHEN ClientId=@ClientId THEN 0 ELSE 1 END, Value", new { Type = type, ClientId = clientId });
           return rows.Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
       }
 
@@ -2111,16 +2615,20 @@ ON DUPLICATE KEY UPDATE ClientId=ClientId;");
       {
           if (requests.Count == 0) return;
           var ids = requests.Select(item => item.Id).ToArray();
-          var legs = (await db.QueryAsync<EssTravelLegRow>(@"SELECT RequestId,FromLocation,ToLocation,StartDateTime,EndDateTime,TravelMode,TravelClass,Remarks
+          var legs = (await db.QueryAsync<EssTravelLegRow>(@"SELECT RequestId,FromLocation,ToLocation,StartDateTime,EndDateTime,TravelMode,TravelClass,BookingAction,Remarks
 FROM ess_travel_request_legs WHERE RequestId IN @Ids ORDER BY RequestId,SequenceNo", new { Ids = ids })).ToList();
           var grouped = legs.GroupBy(item => item.RequestId).ToDictionary(group => group.Key, group => group.Select(ToTravelCity).ToList());
-          var accommodation = (await db.QueryAsync<EssTravelAccommodationRow>(@"SELECT RequestId,City,CheckInDateTime,CheckOutDateTime,Occupancy,RoomPreference,Remarks
+          var accommodation = (await db.QueryAsync<EssTravelAccommodationRow>(@"SELECT RequestId,City,CheckInDateTime,CheckOutDateTime,Occupancy,RoomPreference,BookingAction,Remarks
 FROM ess_travel_request_accommodation WHERE RequestId IN @Ids ORDER BY RequestId,SequenceNo", new { Ids = ids })).ToList().GroupBy(item => item.RequestId).ToDictionary(group => group.Key, group => group.Select(ToAccommodation).ToList());
-          var localTravel = (await db.QueryAsync<EssLocalTravelRow>(@"SELECT RequestId,City,TravelDateTime,FromLocation,ToLocation,TravelMode,Remarks
+          var localTravel = (await db.QueryAsync<EssLocalTravelRow>(@"SELECT RequestId,City,TravelDateTime,FromLocation,ToLocation,TravelMode,BookingAction,Remarks
 FROM ess_travel_request_local_travel WHERE RequestId IN @Ids ORDER BY RequestId,SequenceNo", new { Ids = ids })).ToList().GroupBy(item => item.RequestId).ToDictionary(group => group.Key, group => group.Select(ToLocalTravel).ToList());
           foreach (var request in requests)
           {
-              request.Legs = grouped.TryGetValue(request.Id, out var rows) ? rows : [new EssTravelCity { FromLocation = request.FromLocation, ToLocation = request.ToLocation, StartDateTime = request.StartDateTime, EndDateTime = request.EndDateTime, TravelMode = request.TravelMode }];
+              request.Legs = grouped.TryGetValue(request.Id, out var rows)
+                  ? rows
+                  : string.IsNullOrWhiteSpace(request.FromLocation) && string.IsNullOrWhiteSpace(request.ToLocation) && string.IsNullOrWhiteSpace(request.TravelMode)
+                      ? []
+                      : [new EssTravelCity { FromLocation = request.FromLocation, ToLocation = request.ToLocation, StartDateTime = request.StartDateTime, EndDateTime = request.EndDateTime, TravelMode = request.TravelMode, BookingAction = "Book by myself" }];
               request.AccommodationDetails = accommodation.TryGetValue(request.Id, out var stays) ? stays : [];
               request.LocalTravelDetails = localTravel.TryGetValue(request.Id, out var rides) ? rides : [];
           }
@@ -2128,21 +2636,21 @@ FROM ess_travel_request_local_travel WHERE RequestId IN @Ids ORDER BY RequestId,
 
       private static async Task<List<EssTravelCity>> GetTravelLegsAsync(MySqlConnection db, long requestId)
       {
-          var rows = await db.QueryAsync<EssTravelLegRow>(@"SELECT RequestId,FromLocation,ToLocation,StartDateTime,EndDateTime,TravelMode,TravelClass,Remarks
+          var rows = await db.QueryAsync<EssTravelLegRow>(@"SELECT RequestId,FromLocation,ToLocation,StartDateTime,EndDateTime,TravelMode,TravelClass,BookingAction,Remarks
 FROM ess_travel_request_legs WHERE RequestId=@RequestId ORDER BY SequenceNo", new { RequestId = requestId });
           return rows.Select(ToTravelCity).ToList();
       }
 
       private static async Task<List<EssTravelAccommodation>> GetTravelAccommodationAsync(MySqlConnection db, long requestId)
       {
-          var rows = await db.QueryAsync<EssTravelAccommodationRow>(@"SELECT RequestId,City,CheckInDateTime,CheckOutDateTime,Occupancy,RoomPreference,Remarks
+          var rows = await db.QueryAsync<EssTravelAccommodationRow>(@"SELECT RequestId,City,CheckInDateTime,CheckOutDateTime,Occupancy,RoomPreference,BookingAction,Remarks
 FROM ess_travel_request_accommodation WHERE RequestId=@RequestId ORDER BY SequenceNo", new { RequestId = requestId });
           return rows.Select(ToAccommodation).ToList();
       }
 
       private static async Task<List<EssLocalTravelDetail>> GetLocalTravelAsync(MySqlConnection db, long requestId)
       {
-          var rows = await db.QueryAsync<EssLocalTravelRow>(@"SELECT RequestId,City,TravelDateTime,FromLocation,ToLocation,TravelMode,Remarks
+          var rows = await db.QueryAsync<EssLocalTravelRow>(@"SELECT RequestId,City,TravelDateTime,FromLocation,ToLocation,TravelMode,BookingAction,Remarks
 FROM ess_travel_request_local_travel WHERE RequestId=@RequestId ORDER BY SequenceNo", new { RequestId = requestId });
           return rows.Select(ToLocalTravel).ToList();
       }
@@ -2153,8 +2661,8 @@ FROM ess_travel_request_local_travel WHERE RequestId=@RequestId ORDER BY Sequenc
           var sequence = 1;
           foreach (var leg in legs)
           {
-              await db.ExecuteAsync(@"INSERT INTO ess_travel_request_legs (RequestId,SequenceNo,FromLocation,ToLocation,StartDateTime,EndDateTime,TravelMode,TravelClass,Remarks)
-VALUES (@RequestId,@SequenceNo,@FromLocation,@ToLocation,@StartDateTime,@EndDateTime,@TravelMode,@TravelClass,@Remarks)", new { RequestId = requestId, SequenceNo = sequence++, leg.FromLocation, leg.ToLocation, leg.StartDateTime, leg.EndDateTime, leg.TravelMode, leg.TravelClass, leg.Remarks }, tx);
+              await db.ExecuteAsync(@"INSERT INTO ess_travel_request_legs (RequestId,SequenceNo,FromLocation,ToLocation,StartDateTime,EndDateTime,TravelMode,TravelClass,BookingAction,Remarks)
+VALUES (@RequestId,@SequenceNo,@FromLocation,@ToLocation,@StartDateTime,@EndDateTime,@TravelMode,@TravelClass,@BookingAction,@Remarks)", new { RequestId = requestId, SequenceNo = sequence++, leg.FromLocation, leg.ToLocation, leg.StartDateTime, leg.EndDateTime, leg.TravelMode, leg.TravelClass, leg.BookingAction, leg.Remarks }, tx);
           }
       }
 
@@ -2164,8 +2672,8 @@ VALUES (@RequestId,@SequenceNo,@FromLocation,@ToLocation,@StartDateTime,@EndDate
           var sequence = 1;
           foreach (var row in rows)
           {
-              await db.ExecuteAsync(@"INSERT INTO ess_travel_request_accommodation (RequestId,SequenceNo,City,CheckInDateTime,CheckOutDateTime,Occupancy,RoomPreference,Remarks)
-VALUES (@RequestId,@SequenceNo,@City,@CheckInDateTime,@CheckOutDateTime,@Occupancy,@RoomPreference,@Remarks)", new { RequestId = requestId, SequenceNo = sequence++, row.City, row.CheckInDateTime, row.CheckOutDateTime, row.Occupancy, row.RoomPreference, row.Remarks }, tx);
+              await db.ExecuteAsync(@"INSERT INTO ess_travel_request_accommodation (RequestId,SequenceNo,City,CheckInDateTime,CheckOutDateTime,Occupancy,RoomPreference,BookingAction,Remarks)
+VALUES (@RequestId,@SequenceNo,@City,@CheckInDateTime,@CheckOutDateTime,@Occupancy,@RoomPreference,@BookingAction,@Remarks)", new { RequestId = requestId, SequenceNo = sequence++, row.City, row.CheckInDateTime, row.CheckOutDateTime, row.Occupancy, row.RoomPreference, row.BookingAction, row.Remarks }, tx);
           }
       }
 
@@ -2175,8 +2683,8 @@ VALUES (@RequestId,@SequenceNo,@City,@CheckInDateTime,@CheckOutDateTime,@Occupan
           var sequence = 1;
           foreach (var row in rows)
           {
-              await db.ExecuteAsync(@"INSERT INTO ess_travel_request_local_travel (RequestId,SequenceNo,City,TravelDateTime,FromLocation,ToLocation,TravelMode,Remarks)
-VALUES (@RequestId,@SequenceNo,@City,@TravelDateTime,@FromLocation,@ToLocation,@TravelMode,@Remarks)", new { RequestId = requestId, SequenceNo = sequence++, row.City, row.TravelDateTime, row.FromLocation, row.ToLocation, row.TravelMode, row.Remarks }, tx);
+              await db.ExecuteAsync(@"INSERT INTO ess_travel_request_local_travel (RequestId,SequenceNo,City,TravelDateTime,FromLocation,ToLocation,TravelMode,BookingAction,Remarks)
+VALUES (@RequestId,@SequenceNo,@City,@TravelDateTime,@FromLocation,@ToLocation,@TravelMode,@BookingAction,@Remarks)", new { RequestId = requestId, SequenceNo = sequence++, row.City, row.TravelDateTime, row.FromLocation, row.ToLocation, row.TravelMode, row.BookingAction, row.Remarks }, tx);
           }
       }
 
@@ -2186,6 +2694,7 @@ VALUES (@RequestId,@SequenceNo,@City,@TravelDateTime,@FromLocation,@ToLocation,@
           ToLocation = row.ToLocation,
           TravelMode = row.TravelMode,
           TravelClass = row.TravelClass,
+          BookingAction = row.BookingAction,
           Remarks = row.Remarks,
           StartDateTime = row.StartDateTime,
           EndDateTime = row.EndDateTime
@@ -2198,6 +2707,7 @@ VALUES (@RequestId,@SequenceNo,@City,@TravelDateTime,@FromLocation,@ToLocation,@
           CheckOutDateTime = row.CheckOutDateTime,
           Occupancy = row.Occupancy,
           RoomPreference = row.RoomPreference,
+          BookingAction = row.BookingAction,
           Remarks = row.Remarks
       };
 
@@ -2208,6 +2718,7 @@ VALUES (@RequestId,@SequenceNo,@City,@TravelDateTime,@FromLocation,@ToLocation,@
           FromLocation = row.FromLocation,
           ToLocation = row.ToLocation,
           TravelMode = row.TravelMode,
+          BookingAction = row.BookingAction,
           Remarks = row.Remarks
       };
 
@@ -2246,6 +2757,7 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND COLUMN_NAME = @Colum
                   ToLocation = item.ToLocation?.Trim() ?? "",
                   TravelMode = item.TravelMode?.Trim() ?? "",
                   TravelClass = item.TravelClass?.Trim() ?? "",
+                  BookingAction = NormalizeBookingAction(item.BookingAction),
                   Remarks = item.Remarks?.Trim() ?? "",
                   StartDateTime = item.StartDateTime,
                   EndDateTime = item.EndDateTime
@@ -2275,6 +2787,7 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND COLUMN_NAME = @Colum
                   CheckOutDateTime = item.CheckOutDateTime,
                   Occupancy = item.Occupancy?.Trim() ?? "",
                   RoomPreference = item.RoomPreference?.Trim() ?? "",
+                  BookingAction = NormalizeBookingAction(item.BookingAction),
                   Remarks = item.Remarks?.Trim() ?? ""
               })
               .Where(item => !string.IsNullOrWhiteSpace(item.City) || item.CheckInDateTime.HasValue || item.CheckOutDateTime.HasValue || !string.IsNullOrWhiteSpace(item.Occupancy) || !string.IsNullOrWhiteSpace(item.RoomPreference) || !string.IsNullOrWhiteSpace(item.Remarks))
@@ -2289,10 +2802,16 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND COLUMN_NAME = @Colum
                   FromLocation = item.FromLocation?.Trim() ?? "",
                   ToLocation = item.ToLocation?.Trim() ?? "",
                   TravelMode = item.TravelMode?.Trim() ?? "",
+                  BookingAction = NormalizeBookingAction(item.BookingAction),
                   Remarks = item.Remarks?.Trim() ?? ""
               })
               .Where(item => !string.IsNullOrWhiteSpace(item.City) || item.TravelDateTime.HasValue || !string.IsNullOrWhiteSpace(item.FromLocation) || !string.IsNullOrWhiteSpace(item.ToLocation) || !string.IsNullOrWhiteSpace(item.TravelMode) || !string.IsNullOrWhiteSpace(item.Remarks))
               .ToList();
+
+      private static string NormalizeBookingAction(string? value) =>
+          string.Equals(value, "Require Booking", StringComparison.OrdinalIgnoreCase)
+              ? "Require Booking"
+              : "Book by myself";
 
       private static object ToTravelArgs(SaveEssTravelRequest request, EssTravelEmployee employee, long? policyId, string policyJson, string requestNumber)
     {
@@ -2311,12 +2830,12 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND COLUMN_NAME = @Colum
         employee.Designation,
         employee.ReportingManagerId,
         Purpose = request.Purpose.Trim(),
-          Customer = CleanText(employee.ClientName, request.Customer).Trim(),
-        Project = request.Project.Trim(),
+          Customer = employee.ClientName.Trim(),
+        Project = "",
         CostCenter = request.CostCenter.Trim(),
-        request.TravelScope,
+        TravelScope = "Domestic",
           request.TravelType,
-            request.Priority,
+            Priority = "Normal",
             FromLocation = CleanText(first?.FromLocation, request.FromLocation).Trim(),
             ToLocation = CleanText(last?.ToLocation, request.ToLocation).Trim(),
             StartDateTime = start,
@@ -2470,13 +2989,15 @@ CREATE TABLE IF NOT EXISTS ess_profile_update_audit (
     private static string AmountInWords(decimal value) => $"{Amount(value)} only";
 
       private sealed record EssPayslipLine(string Id, string Name, string Category, decimal MonthlyAmount, decimal Amount);
-      private sealed class EssTravelLegRow { public long RequestId { get; set; } public string FromLocation { get; set; } = ""; public string ToLocation { get; set; } = ""; public DateTime? StartDateTime { get; set; } public DateTime? EndDateTime { get; set; } public string TravelMode { get; set; } = ""; public string TravelClass { get; set; } = ""; public string Remarks { get; set; } = ""; }
-      private sealed class EssTravelAccommodationRow { public long RequestId { get; set; } public string City { get; set; } = ""; public DateTime? CheckInDateTime { get; set; } public DateTime? CheckOutDateTime { get; set; } public string Occupancy { get; set; } = ""; public string RoomPreference { get; set; } = ""; public string Remarks { get; set; } = ""; }
-      private sealed class EssLocalTravelRow { public long RequestId { get; set; } public string City { get; set; } = ""; public DateTime? TravelDateTime { get; set; } public string FromLocation { get; set; } = ""; public string ToLocation { get; set; } = ""; public string TravelMode { get; set; } = ""; public string Remarks { get; set; } = ""; }
+      private sealed class EssTravelLegRow { public long RequestId { get; set; } public string FromLocation { get; set; } = ""; public string ToLocation { get; set; } = ""; public DateTime? StartDateTime { get; set; } public DateTime? EndDateTime { get; set; } public string TravelMode { get; set; } = ""; public string TravelClass { get; set; } = ""; public string BookingAction { get; set; } = "Book by myself"; public string Remarks { get; set; } = ""; }
+      private sealed class EssTravelAccommodationRow { public long RequestId { get; set; } public string City { get; set; } = ""; public DateTime? CheckInDateTime { get; set; } public DateTime? CheckOutDateTime { get; set; } public string Occupancy { get; set; } = ""; public string RoomPreference { get; set; } = ""; public string BookingAction { get; set; } = "Book by myself"; public string Remarks { get; set; } = ""; }
+      private sealed class EssLocalTravelRow { public long RequestId { get; set; } public string City { get; set; } = ""; public DateTime? TravelDateTime { get; set; } public string FromLocation { get; set; } = ""; public string ToLocation { get; set; } = ""; public string TravelMode { get; set; } = ""; public string BookingAction { get; set; } = "Book by myself"; public string Remarks { get; set; } = ""; }
       private sealed class EssTravelEmployee { public int EmployeeId { get; set; } public int ClientId { get; set; } public string ClientName { get; set; } = ""; public string EmployeeName { get; set; } = ""; public string Department { get; set; } = ""; public string Designation { get; set; } = ""; public int ReportingManagerId { get; set; } public string ReportingManager { get; set; } = ""; }
     private sealed class TravelAdvanceSeed { public long TravelRequestId { get; set; } public int EmployeeId { get; set; } public int ClientId { get; set; } public decimal AdvanceAmount { get; set; } public DateTime EndDateTime { get; set; } }
-    private sealed class ExpenseClaimQueueHeader { public long Id { get; set; } public int ClientId { get; set; } public int EmployeeId { get; set; } public long? TravelRequestId { get; set; } public string ClaimNumber { get; set; } = ""; public string ReimbursementComponentCode { get; set; } = ""; public string EmployeeName { get; set; } = ""; public string EmployeeCode { get; set; } = ""; public int ComponentId { get; set; } public string ComponentCode { get; set; } = ""; public string ComponentName { get; set; } = ""; }
+    private sealed class ExpenseClaimQueueHeader { public long Id { get; set; } public int ClientId { get; set; } public int EmployeeId { get; set; } public long? TravelRequestId { get; set; } public string ClaimNumber { get; set; } = ""; public string ReimbursementComponentCode { get; set; } = ""; public string EmployeeName { get; set; } = ""; public string EmployeeCode { get; set; } = ""; public long ComponentId { get; set; } public string ComponentCode { get; set; } = ""; public string ComponentName { get; set; } = ""; }
     private sealed class ExpenseClaimQueueLine { public long Id { get; set; } public decimal Amount { get; set; } }
+    private sealed class AdminExpenseClaimRow { public long Id { get; set; } public string ClaimNumber { get; set; } = ""; public int ClientId { get; set; } public int EmployeeId { get; set; } public long? TravelRequestId { get; set; } public string Status { get; set; } = ""; public string PayrollStatus { get; set; } = ""; public int? PayrollRunId { get; set; } }
+    private sealed class AdminTravelRequestRow { public long Id { get; set; } public string RequestNumber { get; set; } = ""; public int ClientId { get; set; } public int EmployeeId { get; set; } public string Status { get; set; } = ""; }
     private sealed class EssLeaveSelection { public int Id { get; set; } public int ClientId { get; set; } public string Name { get; set; } = ""; public string Code { get; set; } = ""; public string Type { get; set; } = "Paid"; public decimal Balance { get; set; } public bool AllowNegativeLeaveBalance { get; set; } public bool AllowHalfDay { get; set; } = true; public string AttendanceAction { get; set; } = "Mark as leave"; }
     private sealed class ApprovedLeaveRequestRow { public long Id { get; set; } public int EmployeeId { get; set; } public int ClientId { get; set; } public int LeaveTypeId { get; set; } public DateTime FromDate { get; set; } public DateTime ToDate { get; set; } public string DayType { get; set; } = "Full Day"; public decimal Days { get; set; } public string Reason { get; set; } = ""; public string LeaveCode { get; set; } = ""; public string LeaveTypeKind { get; set; } = "Paid"; public string AttendanceAction { get; set; } = "Mark as leave"; }
     private sealed class LeaveWorkflowReconciliationRow { public long Id { get; set; } public string Status { get; set; } = ""; }

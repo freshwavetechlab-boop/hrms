@@ -78,8 +78,10 @@ const salaryComponentPreviewRules: ImportPreviewRules = { required: ['Code', 'Ca
 const salaryTemplatePreviewRules: ImportPreviewRules = { required: ['Client Ids', 'Template Name', 'Component Code'], unique: [['Client Ids', 'Template Name', 'Component Code']], booleans: ['Active'], numbers: ['Annual CTC'] }
 const billingPreviewRules: ImportPreviewRules = { required: ['Client Id', 'Rate Card Type', 'Rate Type', 'Value', 'Effective From'], unique: [['Client Id', 'Work Location Id', 'Rate Card Type', 'Rate Type', 'Effective From']], booleans: ['Active'], numbers: ['Value', 'GST Rate %'], dates: ['Effective From', 'Effective To'], enums: { 'Rate Card Type': [...billingRateCardTypes], 'Rate Type': [...billingRateTypes], 'Tax Basis': ['Excluding', 'Inclusive'] } }
 const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
-const dropdownSheetHeaders = (type: string) => type === 'Employee Grade' ? ['Client Id', 'Value', 'Active'] : type === 'City' ? ['State', 'Value', 'Active'] : type === 'Work Week' ? ['Value', 'Active', 'Working Days', 'Off Saturdays'] : ['Value', 'Active']
-const dropdownSheetExample = (type: string, clientId = '1') => type === 'Employee Grade' ? [clientId, 'G1', 'TRUE'] : type === 'City' ? ['Delhi', 'New Delhi', 'TRUE'] : type === 'Work Week' ? ['Monday - Saturday with 1st-4th Saturdays off', 'TRUE', 'Mon, Tue, Wed, Thu, Fri, Sat', '1st, 2nd, 3rd, 4th'] : [type === 'State' ? 'Delhi' : type === 'Business Unit' ? 'Corporate' : type === 'Department' ? 'Finance' : type === 'Designation' ? 'Manager' : type === 'Employment Type' ? 'Full Time' : type === 'Cost Center' ? 'CC-001' : 'Head Office', 'TRUE']
+const clientScopedDropdownTypes = new Set(['Employee Grade', 'Travel Type'])
+const isClientScopedDropdown = (type: string) => clientScopedDropdownTypes.has(type)
+const dropdownSheetHeaders = (type: string) => isClientScopedDropdown(type) ? ['Client Id', 'Value', 'Active'] : type === 'City' ? ['State', 'Value', 'Active'] : type === 'Work Week' ? ['Value', 'Active', 'Working Days', 'Off Saturdays'] : ['Value', 'Active']
+const dropdownSheetExample = (type: string, clientId = '1') => isClientScopedDropdown(type) ? [clientId, type === 'Travel Type' ? 'Domestic official travel' : 'G1', 'TRUE'] : type === 'City' ? ['Delhi', 'New Delhi', 'TRUE'] : type === 'Work Week' ? ['Monday - Saturday with 1st-4th Saturdays off', 'TRUE', 'Mon, Tue, Wed, Thu, Fri, Sat', '1st, 2nd, 3rd, 4th'] : [type === 'State' ? 'Delhi' : type === 'Business Unit' ? 'Corporate' : type === 'Department' ? 'Finance' : type === 'Designation' ? 'Manager' : type === 'Employment Type' ? 'Full Time' : type === 'Cost Center' ? 'CC-001' : 'Head Office', 'TRUE']
 const dropdownWorkWeekReferenceRows = [
   ['', '', '', ''],
   ['Work Week Examples', '', '', ''],
@@ -400,7 +402,7 @@ export default function SettingsPage({ tab, onMessage, recruitmentSection = 'set
       for (const row of sheet.rows) {
         const value = previewCell(sheet.headers, row, 'Value')
         const active = previewCell(sheet.headers, row, 'Active')
-        const clientId = type === 'Employee Grade' ? previewCell(sheet.headers, row, 'Client Id') : ''
+        const clientId = isClientScopedDropdown(type) ? previewCell(sheet.headers, row, 'Client Id') : ''
         const state = type === 'City' ? previewCell(sheet.headers, row, 'State') : ''
         const configJson = type === 'Work Week' ? previewCell(sheet.headers, row, 'Config Json') || buildWorkWeekConfigJson(previewCell(sheet.headers, row, 'Working Days'), previewCell(sheet.headers, row, 'Off Saturdays')) : ''
         if ([value, active, clientId, state, configJson].some(Boolean)) rows.push([sheet.name, type, value, clientId, state, active, configJson])
@@ -469,7 +471,7 @@ export default function SettingsPage({ tab, onMessage, recruitmentSection = 'set
   }
   const downloadDropTemplate = () => {
     const firstClientId = clients[0] ? String(clients[0].id) : '1'
-    const referenceRows = [['Clients', '', '', ''], ['Client Id', 'Client Name', 'Client Code', ''], ...clients.map(item => [String(item.id), item.name, item.code || '', '']), ['', '', '', ''], ['Sheet', 'Required columns', 'Example row', 'Notes'], ...dropTypes.map(type => [type, dropdownSheetHeaders(type).join(', '), dropdownSheetExample(type, firstClientId).join(' | '), type === 'Employee Grade' ? 'Client Id must match Clients sheet.' : type === 'City' ? 'State must exist or will be created as a state master.' : 'Value is the dropdown text.']), ...dropdownWorkWeekReferenceRows]
+    const referenceRows = [['Clients', '', '', ''], ['Client Id', 'Client Name', 'Client Code', ''], ...clients.map(item => [String(item.id), item.name, item.code || '', '']), ['', '', '', ''], ['Sheet', 'Required columns', 'Example row', 'Notes'], ...dropTypes.map(type => [type, dropdownSheetHeaders(type).join(', '), dropdownSheetExample(type, firstClientId).join(' | '), isClientScopedDropdown(type) ? 'Client Id must match Clients sheet.' : type === 'City' ? 'State must exist or will be created as a state master.' : 'Value is the dropdown text.']), ...dropdownWorkWeekReferenceRows]
     downloadXlsx('dropdown-master-import-template.xlsx', [
       ...dropTypes.map(type => ({ name: type, rows: [dropdownSheetHeaders(type), dropdownSheetExample(type, firstClientId)] })),
       { name: 'Reference', rows: referenceRows }
@@ -493,8 +495,8 @@ export default function SettingsPage({ tab, onMessage, recruitmentSection = 'set
           const issues: ImportPreviewIssue[] = []
           const type = row['Master Type']?.toLowerCase()
           const clientId = row['Client Id']
-          if (type === 'employee grade') {
-            if (!clientId) issues.push({ rowNumber, column: 'Client Id', message: 'Client Id is required for Employee Grade.' })
+          if (type === 'employee grade' || type === 'travel type') {
+            if (!clientId) issues.push({ rowNumber, column: 'Client Id', message: `Client Id is required for ${row['Master Type']}.` })
             else if (!clientIds.has(clientId)) issues.push({ rowNumber, column: 'Client Id', message: `Client Id ${clientId} was not found.` })
           }
           if (type === 'city' && !row.State) issues.push({ rowNumber, column: 'State', message: 'State is required for City.' })
@@ -652,7 +654,7 @@ export default function SettingsPage({ tab, onMessage, recruitmentSection = 'set
   }
   const selectedDropType = drop.type === 'City' ? 'City' : drop.type
   const visibleDrops = drops.filter(item => item.isActive && (selectedDropType === 'City' ? isCityType(item.type) && (!dropState || item.type === cityType(dropState)) : item.type === selectedDropType))
-  const changeDropType = (type: string) => { const workWeek = workWeekPayload(defaultWorkWeekConfig); setDrop(type === 'Work Week' ? { ...drop0, type, ...workWeek } : { ...drop0, type, clientId: type === 'Employee Grade' ? clients[0]?.id || 0 : 0 }); setDropState('') }
+  const changeDropType = (type: string) => { const workWeek = workWeekPayload(defaultWorkWeekConfig); setDrop(type === 'Work Week' ? { ...drop0, type, ...workWeek } : { ...drop0, type, clientId: isClientScopedDropdown(type) ? clients[0]?.id || 0 : 0 }); setDropState('') }
   const editDrop = (row: Drop) => { setDropDrawerOpen(true); if (isCityType(row.type)) { setDropState(cityState(row.type)); setDrop({ ...row, type: 'City' }); return } setDropState(''); setDrop(row.type === 'Work Week' ? { ...row, ...workWeekPayload(parseWorkWeekConfig(row)) } : row) }
   const seedWorkWeekPatterns = async () => {
     let inserted = 0, updated = 0
@@ -673,14 +675,14 @@ export default function SettingsPage({ tab, onMessage, recruitmentSection = 'set
     if (!actualType || !drop.value.trim()) return notify(drop.type === 'City' ? 'Select a state and city for the city master.' : 'Dropdown value is required.', 'error')
     const value = drop.value.trim()
     if (actualType === 'Work Week' && !parseWorkWeekConfig(drop).workingDays.length) return notify('Select at least one working day.', 'error')
-    const clientId = actualType === 'Employee Grade' ? Number(drop.clientId || 0) : drop.id ? Number(drop.clientId || 0) : 0
-    if (actualType === 'Employee Grade' && !clientId) return notify('Select a client for Employee Grade.', 'error')
+    const clientId = isClientScopedDropdown(actualType) ? Number(drop.clientId || 0) : drop.id ? Number(drop.clientId || 0) : 0
+    if (isClientScopedDropdown(actualType) && !clientId) return notify(`Select a client for ${actualType}.`, 'error')
     const duplicate = drops.find(item => item.id !== drop.id && Number(item.clientId || 0) === clientId && item.type.toLowerCase() === actualType.toLowerCase() && item.value.trim().toLowerCase() === value.toLowerCase())
     if (duplicate?.isActive) return notify(`${value} already exists in ${drop.type === 'City' ? dropState : actualType}.`, 'error')
     const payload = duplicate && !drop.id ? { ...duplicate, clientId, value, type: actualType, isActive: true } : { ...drop, clientId, type: actualType, value }
     const response = await saveDropdown(payload, { toast: false })
     notify(response.ok ? drop.id ? 'Dropdown value updated.' : 'Dropdown value added.' : response.error || 'Dropdown save failed.', response.ok ? 'success' : 'error')
-    if (response.ok) { setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? clientId : 0 }); setDropDrawerOpen(false); await load() }
+    if (response.ok) { setDrop({ ...drop0, type: drop.type, clientId: isClientScopedDropdown(drop.type) ? clientId : 0 }); setDropDrawerOpen(false); await load() }
   }
   const deleteDrop = async (row: Drop) => {
     if (blockDeleteIfLinked(row.value, dropdownDeleteLinks(row))) return
@@ -953,7 +955,7 @@ export default function SettingsPage({ tab, onMessage, recruitmentSection = 'set
               <UploadOutlined />Bulk upload
             </label>
             {selectedDropType === 'Work Week' && <Button className="settings-toolbar-secondary" onClick={() => void seedWorkWeekPatterns()}>Load common patterns</Button>}
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => { setDrop({ ...drop0, type: selectedDropType, clientId: selectedDropType === 'Employee Grade' ? clients[0]?.id || 0 : 0 }); setDropState(''); setDropDrawerOpen(true) }}>Add value</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => { setDrop({ ...drop0, type: selectedDropType, clientId: isClientScopedDropdown(selectedDropType) ? clients[0]?.id || 0 : 0 }); setDropState(''); setDropDrawerOpen(true) }}>Add value</Button>
           </Space>
         </div>
         <Form component="div" layout="vertical" className="dropdown-master-filter">
@@ -963,7 +965,7 @@ export default function SettingsPage({ tab, onMessage, recruitmentSection = 'set
         </Form>
         <DataTable rows={visibleDrops} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editDrop(row)}>Edit</Button><Button size="small" danger onClick={() => void deleteDrop(row)}>Delete</Button></Space>} columns={[{ key: 'master', label: 'Master', value: row => isCityType(row.type) ? 'City' : row.type }, { key: 'clientId', label: 'Scope', value: row => Number(row.clientId || 0) ? clientName(row.clientId) : 'Global' }, { key: 'state', label: 'State', value: row => cityState(row.type) || '-' }, { key: 'value', label: 'Value' }, { key: 'isActive', label: 'Status', render: item => item.isActive ? 'Active' : 'Inactive' }]} />
       </AntCard>
-      <Drawer className="settings-master-drawer dropdown-master-drawer" title={<div className="settings-drawer-title"><span>{selectedDropType === 'Work Week' ? 'Work week pattern' : 'Dropdown master'}</span><h3>{drop.id ? 'Edit dropdown value' : 'Add dropdown value'}</h3><p>{selectedDropType === 'Work Week' ? 'Maintain weekly off rules used by attendance policy, review, payroll attendance, and reports.' : 'Maintain reusable values for departments, designations, states, cities, grades, and work weeks.'}</p></div>} open={dropDrawerOpen} width={760} onClose={() => { setDropDrawerOpen(false); setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }} destroyOnClose><Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Master type" required><Sel v={selectedDropType} set={changeDropType} a={dropTypes} /></Form.Item>{selectedDropType === 'Employee Grade' && <Form.Item label="Client" required><Sel v={drop.clientId || ''} set={value => setDrop({ ...drop, clientId: Number(refId(value) || 0) })} a={clients.map(item => `${item.id}:${item.name}`)} /></Form.Item>}{selectedDropType === 'City' && <Form.Item label="State" required><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></Form.Item>}{selectedDropType === 'Work Week' ? <WorkWeekMasterFields drop={drop} setDrop={setDrop} /> : <Form.Item label={selectedDropType === 'City' ? 'City' : 'Value'} required><Input value={drop.value} onChange={event => setDrop({ ...drop, value: event.target.value })} placeholder={selectedDropType === 'City' ? 'e.g. Bengaluru / Pune' : selectedDropType === 'Employee Grade' ? 'e.g. G1 / Supervisor' : 'e.g. Finance / Manager'} /></Form.Item>}<Form.Item><AntCheckbox checked={drop.isActive} onChange={event => setDrop({ ...drop, isActive: event.target.checked })}>Active</AntCheckbox></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => { setDrop({ ...drop0, type: drop.type, clientId: drop.type === 'Employee Grade' ? drop.clientId : 0 }); setDropState('') }}>Reset</Button><Button type="primary" style={drop.id ? { background: '#f59e0b', borderColor: '#f59e0b' } : undefined} onClick={saveDrop}>{drop.id ? 'Update value' : 'Add value'}</Button></Space></Row></Form></Drawer>
+      <Drawer className="settings-master-drawer dropdown-master-drawer" title={<div className="settings-drawer-title"><span>{selectedDropType === 'Work Week' ? 'Work week pattern' : 'Dropdown master'}</span><h3>{drop.id ? 'Edit dropdown value' : 'Add dropdown value'}</h3><p>{selectedDropType === 'Work Week' ? 'Maintain weekly off rules used by attendance policy, review, payroll attendance, and reports.' : 'Maintain reusable values for departments, designations, states, cities, grades, travel types, and work weeks.'}</p></div>} open={dropDrawerOpen} width={760} onClose={() => { setDropDrawerOpen(false); setDrop({ ...drop0, type: drop.type, clientId: isClientScopedDropdown(drop.type) ? drop.clientId : 0 }); setDropState('') }} destroyOnClose><Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Master type" required><Sel v={selectedDropType} set={changeDropType} a={dropTypes} /></Form.Item>{isClientScopedDropdown(selectedDropType) && <Form.Item label="Client" required><Sel v={drop.clientId || ''} set={value => setDrop({ ...drop, clientId: Number(refId(value) || 0) })} a={clients.map(item => `${item.id}:${item.name}`)} /></Form.Item>}{selectedDropType === 'City' && <Form.Item label="State" required><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></Form.Item>}{selectedDropType === 'Work Week' ? <WorkWeekMasterFields drop={drop} setDrop={setDrop} /> : <Form.Item label={selectedDropType === 'City' ? 'City' : 'Value'} required><Input value={drop.value} onChange={event => setDrop({ ...drop, value: event.target.value })} placeholder={selectedDropType === 'City' ? 'e.g. Bengaluru / Pune' : selectedDropType === 'Employee Grade' ? 'e.g. G1 / Supervisor' : selectedDropType === 'Travel Type' ? 'e.g. Domestic official travel' : 'e.g. Finance / Manager'} /></Form.Item>}<Form.Item><AntCheckbox checked={drop.isActive} onChange={event => setDrop({ ...drop, isActive: event.target.checked })}>Active</AntCheckbox></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => { setDrop({ ...drop0, type: drop.type, clientId: isClientScopedDropdown(drop.type) ? drop.clientId : 0 }); setDropState('') }}>Reset</Button><Button type="primary" style={drop.id ? { background: '#f59e0b', borderColor: '#f59e0b' } : undefined} onClick={saveDrop}>{drop.id ? 'Update value' : 'Add value'}</Button></Space></Row></Form></Drawer>
     </>}
     {tab === 'Tax Engine' && <TaxEngineManager clients={clients} onMessage={notifyFromChild} mode="company" />}
     {tab === 'Statutory Setup' && <><PageTabs items={statutoryTabs} value={statutoryTab} onChange={setStatutoryTab} label="Statutory setup sections" />{statutoryTab === 'Income Tax Rules' ? <TaxEngineManager clients={clients} onMessage={notifyFromChild} mode="statutory" /> : renderProfessionalTaxSetup()}</>}

@@ -408,6 +408,73 @@ FROM recruitment_position_pipeline_instances WHERE WorkOrderLineId=@LineId LIMIT
         return (await GetWorkOrderAsync(id, user), "");
     }
 
+    public async Task<(bool Ok, string Error)> DeleteWorkOrderAsync(long id, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var row = await db.QueryFirstOrDefaultAsync<(long Id, int ClientId, string WorkOrderNumber)>(
+            "SELECT Id,ClientId,WorkOrderNumber FROM recruitment_work_orders WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)",
+            new { Id = id, user.ClientId });
+        if (row.Id <= 0) return (false, "Work order was not found in your permitted client scope.");
+
+        var activeCases = await db.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM recruitment_position_pipeline_instances WHERE WorkOrderId=@Id", new { Id = id });
+        if (activeCases > 0)
+            return (false, $"Delete the {activeCases} linked live cumulative pipeline case(s) first.");
+
+        await using var transaction = await db.BeginTransactionAsync();
+        await db.ExecuteAsync("UPDATE recruitment_requisitions SET WorkOrderId=NULL,WorkOrderLineNumber=NULL WHERE WorkOrderId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_work_order_lines WHERE WorkOrderId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_work_orders WHERE Id=@Id", new { Id = id }, transaction);
+        await transaction.CommitAsync();
+        return (true, "");
+    }
+
+    public async Task<(bool Ok, string Error)> DeleteHiringCaseAsync(
+        long id,
+        AuthUser user,
+        string ipAddress,
+        string userAgent)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var row = await db.QueryFirstOrDefaultAsync<(long Id, int ClientId, long WorkOrderLineId)>(
+            "SELECT Id,ClientId,WorkOrderLineId FROM recruitment_position_pipeline_instances WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)",
+            new { Id = id, user.ClientId });
+        if (row.Id <= 0) return (false, "Hiring pipeline case was not found in your permitted client scope.");
+
+        var attachmentIds = (await db.QueryAsync<string>(@"SELECT CAST(AttachmentPublicId AS CHAR)
+FROM recruitment_process_documents
+WHERE HiringCaseId=@Id AND AttachmentPublicId IS NOT NULL", new { Id = id })).ToList();
+        foreach (var value in attachmentIds)
+        {
+            if (!Guid.TryParse(value, out var publicId)) continue;
+            var (deleted, error) = await attachments.DeleteAsync(publicId, user, ipAddress, userAgent);
+            if (!deleted) return (false, error ?? "A generated hiring document could not be safely deleted.");
+        }
+
+        await using var transaction = await db.BeginTransactionAsync();
+        var batchIds = (await db.QueryAsync<long>("SELECT Id FROM recruitment_profile_submission_batches WHERE HiringCaseId=@Id", new { Id = id }, transaction)).ToArray();
+        if (batchIds.Length > 0)
+        {
+            await db.ExecuteAsync("DELETE FROM recruitment_profile_batch_notification_deliveries WHERE BatchId IN @Ids", new { Ids = batchIds }, transaction);
+            await db.ExecuteAsync("DELETE FROM recruitment_profile_submission_batch_items WHERE BatchId IN @Ids", new { Ids = batchIds }, transaction);
+            await db.ExecuteAsync("DELETE FROM recruitment_profile_submission_batches WHERE Id IN @Ids", new { Ids = batchIds }, transaction);
+        }
+        var stageIds = (await db.QueryAsync<long>("SELECT Id FROM recruitment_position_stage_instances WHERE PositionPipelineInstanceId=@Id", new { Id = id }, transaction)).ToArray();
+        if (stageIds.Length > 0)
+            await db.ExecuteAsync("DELETE FROM recruitment_position_stage_pause_periods WHERE PositionStageInstanceId IN @Ids", new { Ids = stageIds }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_hiring_case_advance_requests WHERE HiringCaseId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_position_stage_events WHERE PositionPipelineInstanceId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_process_documents WHERE HiringCaseId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("UPDATE recruitment_position_pipeline_instances SET CurrentStageInstanceId=NULL WHERE Id=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_position_stage_instances WHERE PositionPipelineInstanceId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("DELETE FROM recruitment_position_pipeline_instances WHERE Id=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET Status='Open' WHERE Id=@LineId", new { LineId = row.WorkOrderLineId }, transaction);
+        await transaction.CommitAsync();
+        return (true, "");
+    }
+
     public async Task<(RecruitmentHiringCase? Row, string Error)> StartHiringCaseAsync(StartRecruitmentHiringCaseRequest request, AuthUser user)
     {
         await using var db = Db();
@@ -468,6 +535,7 @@ VALUES (@CaseId,@StageId,'CaseStarted','Hiring case started','Work-order SLA clo
         var row = (await HiringCaseRowsAsync(db, user.ClientId, id)).FirstOrDefault();
         if (row is null) return null;
         row.Stages = (await db.QueryAsync<RecruitmentHiringCaseStage>(@"SELECT instance.*,stage.StageCode,stage.StageName,stage.DisplayOrder,stage.StakeholderCode,stage.TargetOffsetMinutes,
+stage.AllowPause,stage.PauseBehavior,stage.RequiresApproval,stage.ApprovalWorkflowId,stage.IsTerminal,
 EXISTS(SELECT 1 FROM recruitment_position_stage_pause_periods pauseRow WHERE pauseRow.PositionStageInstanceId=instance.Id AND pauseRow.ResumedAtUtc IS NULL) IsPaused,
 (instance.Status='Active' AND instance.DueAtUtc IS NOT NULL AND instance.DueAtUtc<UTC_TIMESTAMP(6)) IsSlaBreached
 FROM recruitment_position_stage_instances instance

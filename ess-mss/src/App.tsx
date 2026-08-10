@@ -21,6 +21,7 @@ import { ExpensePage } from './pages/ExpensePage'
 import { RecruitmentPage } from './pages/RecruitmentPage'
 import { ChangePasswordPage } from './pages/ChangePasswordPage'
 import { AttendanceReviewPage } from './pages/AttendanceReviewPage'
+import { canMaintainTravelExpense } from './utils/access'
 
 const viewStorageKey = 'ess.current.view'
 const views: View[] = ['Dashboard', 'My Profile', 'Leave', 'Travel', 'Expense', 'Recruitment', 'Attendance', 'Attendance Review', 'Pay', 'Tax', 'My Tasks', 'Team', 'Approvals']
@@ -93,7 +94,9 @@ export default function App() {
 }
 
 function Page({ view, manager, employeeSelf, user, setView }: { view: View; manager: boolean; employeeSelf: boolean; user: User; setView: (view: View) => void }) {
-  if (!employeeSelf && isEmployeeOnlyView(view)) return <PlaceholderPage view="Team" manager={manager} />
+  const travelExpenseAdmin = canMaintainTravelExpense(user)
+  const adminTravelExpenseView = travelExpenseAdmin && (view === 'Travel' || view === 'Expense')
+  if (!employeeSelf && isEmployeeOnlyView(view) && !adminTravelExpenseView) return <PlaceholderPage view="Team" manager={manager} />
   if (view === 'Dashboard') return <DashboardPage user={user} manager={manager} employeeSelf={employeeSelf} setView={setView} />
   if (view === 'My Profile') return <ProfilePage user={user} />
   if (view === 'My Tasks') return <TasksPage user={user} />

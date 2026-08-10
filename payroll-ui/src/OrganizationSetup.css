@@ -1655,6 +1655,11 @@ body.portal-shell-mounted #root .module-shell.nav-collapsed .side-head .brand.pr
 @media(max-width:760px){.travel-advances-page .travel-advance-filters,.travel-advances-page .travel-advance-summary,.travel-advance-modal{grid-template-columns:1fr!important}}
 .recruitment-admin{display:grid!important;gap:12px!important}
 .recruitment-admin .recruitment-admin-panel>.ant-card-body{height:auto!important;min-height:0!important;padding:14px 18px!important}
+.recruitment-admin .recruitment-root-card>.ant-card-body{padding:12px 16px!important}
+.recruitment-admin .recruitment-table-header{margin:0 0 10px!important;padding:0!important}
+.recruitment-admin .recruitment-table-header h3{margin:0 0 3px!important;font-size:1.05rem!important}
+.recruitment-admin .recruitment-table-header p{margin:0!important;color:#6d7487!important}
+.recruitment-admin-drawer .recruitment-form-error{grid-column:1/-1!important;margin-bottom:4px!important}
 .recruitment-admin .ant-tabs-nav{margin-bottom:28px!important}
 .recruitment-table-header{display:flex!important;align-items:flex-start!important;justify-content:space-between!important;gap:18px!important;margin:0 0 22px!important}
 .recruitment-table-header h3{margin:0 0 6px!important;color:#111827!important;font-size:1.05rem!important;font-weight:900!important;letter-spacing:0!important}
@@ -2435,7 +2440,7 @@ body.portal-shell-mounted #root .module-shell .shell-bottom-brand{
 .recruitment-admin :is(.form-builder-layout,.pipeline-designer-layout,.jd-workspace-layout,.posting-workspace-layout){grid-template-columns:minmax(220px,270px) minmax(0,1fr)!important;max-width:100%!important}
 
 @media(max-width:1200px){
-  .recruitment-summary{grid-template-columns:repeat(3,minmax(0,1fr))!important}
+  .recruitment-summary,.recruitment-monitor-page .recruitment-summary{grid-template-columns:repeat(3,minmax(0,1fr))!important}
   .recruitment-filters,.recruitment-monitor-page .recruitment-filters{grid-template-columns:repeat(2,minmax(0,1fr))!important}
   .recruitment-filters .ant-btn{width:100%!important}
   .recruitment-monitor-page :is(.form-builder-layout,.pipeline-designer-layout,.jd-workspace-layout,.posting-workspace-layout),
@@ -2453,7 +2458,7 @@ body.portal-shell-mounted #root .module-shell .shell-bottom-brand{
 }
 @media(max-width:640px){
   .recruitment-root-card > .ant-card-body{padding:12px!important}
-  .recruitment-summary,.recruitment-filters,.recruitment-monitor-page .recruitment-filters{grid-template-columns:1fr!important}
+  .recruitment-summary,.recruitment-monitor-page .recruitment-summary,.recruitment-filters,.recruitment-monitor-page .recruitment-filters{grid-template-columns:1fr!important}
   .recruitment-table-header{display:grid!important}
   .recruitment-table-header .ant-btn{width:100%!important}
 }

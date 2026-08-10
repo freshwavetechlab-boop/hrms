@@ -14,12 +14,13 @@ public class TravelExpenseRepository(IConfiguration configuration)
 
     public async Task InitializeAsync()
     {
-        await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db); await SeedSampleDataAsync(db);
+        await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
+        if (configuration.GetValue("TravelExpense:SeedSampleData", false)) await SeedSampleDataAsync(db);
     }
 
     public async Task<TravelExpenseSetup> GetAsync()
     {
-        await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db); await SeedSampleDataAsync(db);
+        await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
         return new TravelExpenseSetup
         {
             ClientSettings = await db.QueryAsync<TravelExpenseClientSetting>(@"SELECT s.*, COALESCE(c.Name,'') ClientName
@@ -61,9 +62,9 @@ ORDER BY ClientId, ExpenseType, IsClaimHeader DESC, CategoryName"),
         if (await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM clients WHERE Id=@ClientId AND IsActive=TRUE", row) == 0)
             throw new InvalidOperationException("Select an active client.");
         var old = row.Id > 0 ? await db.QueryFirstOrDefaultAsync<TravelExpenseClientSetting>("SELECT * FROM travel_expense_client_settings WHERE Id=@Id", row) : null;
-        var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO travel_expense_client_settings (Id,ClientId,IsEnabled,EffectiveFrom,EffectiveTo,Remarks)
-VALUES (@Id,@ClientId,@IsEnabled,@EffectiveFrom,@EffectiveTo,@Remarks)
-ON DUPLICATE KEY UPDATE Id=LAST_INSERT_ID(Id),IsEnabled=VALUES(IsEnabled),EffectiveFrom=VALUES(EffectiveFrom),EffectiveTo=VALUES(EffectiveTo),Remarks=VALUES(Remarks),UpdatedAt=CURRENT_TIMESTAMP;
+        var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO travel_expense_client_settings (Id,ClientId,IsEnabled,IsTravelDeskEnabled,ShowTripDetails,ShowAccommodationDetails,ShowLocalTravelDetails,EffectiveFrom,EffectiveTo,Remarks)
+VALUES (@Id,@ClientId,@IsEnabled,@IsTravelDeskEnabled,@ShowTripDetails,@ShowAccommodationDetails,@ShowLocalTravelDetails,@EffectiveFrom,@EffectiveTo,@Remarks)
+ON DUPLICATE KEY UPDATE Id=LAST_INSERT_ID(Id),IsEnabled=VALUES(IsEnabled),IsTravelDeskEnabled=VALUES(IsTravelDeskEnabled),ShowTripDetails=VALUES(ShowTripDetails),ShowAccommodationDetails=VALUES(ShowAccommodationDetails),ShowLocalTravelDetails=VALUES(ShowLocalTravelDetails),EffectiveFrom=VALUES(EffectiveFrom),EffectiveTo=VALUES(EffectiveTo),Remarks=VALUES(Remarks),UpdatedAt=CURRENT_TIMESTAMP;
 SELECT LAST_INSERT_ID();", row);
         await AuditAsync(db, "TravelExpenseClientSetting", id, old is null ? "Create" : "Update", old, row, changedBy);
         return await db.QueryFirstAsync<TravelExpenseClientSetting>(@"SELECT s.*, COALESCE(c.Name,'') ClientName
@@ -189,6 +190,106 @@ ON DUPLICATE KEY UPDATE ReceiptMandatory=VALUES(ReceiptMandatory),GstApplicable=
         return (categoryId, "");
     }
 
+    public async Task<(bool Ok, string Error)> DeleteAsync(string kind, long id, int? clientId, string changedBy)
+    {
+        if (id <= 0) return (false, "Select a valid Travel & Expense configuration record.");
+        var normalizedKind = (kind ?? string.Empty).Trim().ToLowerInvariant();
+        await using var db = Connection();
+        await db.OpenAsync();
+        await EnsureTablesAsync(db);
+
+        if (normalizedKind == "policy")
+        {
+            var old = await db.QueryFirstOrDefaultAsync<object>("SELECT * FROM travel_policies WHERE Id=@Id", new { Id = id });
+            if (old is null) return (false, "Travel policy was not found.");
+            var requestCount = await CountIfTableExistsAsync(db, "ess_travel_requests", "PolicyId=@Id", new { Id = id });
+            if (requestCount > 0)
+                return (false, $"This policy is used by {requestCount} travel request(s) and cannot be deleted. Keep it inactive for history, or remove the test travel requests first.");
+
+            await using var tx = await db.BeginTransactionAsync();
+            var assignmentCount = await db.ExecuteAsync("DELETE FROM travel_policy_assignments WHERE PolicyId=@Id", new { Id = id }, tx);
+            var ruleCount = await db.ExecuteAsync("DELETE FROM travel_policy_rules WHERE PolicyId=@Id", new { Id = id }, tx);
+            await db.ExecuteAsync("DELETE FROM travel_policies WHERE Id=@Id", new { Id = id }, tx);
+            await AuditAsync(db, "TravelPolicy", id, "Delete", old, new { Deleted = true, CascadedAssignments = assignmentCount, CascadedRules = ruleCount }, changedBy, tx);
+            await tx.CommitAsync();
+            return (true, "");
+        }
+
+        if (normalizedKind is "assignment" or "rule")
+        {
+            var table = normalizedKind == "assignment" ? "travel_policy_assignments" : "travel_policy_rules";
+            var entityType = normalizedKind == "assignment" ? "TravelPolicyAssignment" : "TravelPolicyRule";
+            var old = await db.QueryFirstOrDefaultAsync<object>($"SELECT * FROM `{table}` WHERE Id=@Id", new { Id = id });
+            if (old is null) return (false, normalizedKind == "assignment" ? "Policy assignment was not found." : "Policy rule was not found.");
+            await using var tx = await db.BeginTransactionAsync();
+            await db.ExecuteAsync($"DELETE FROM `{table}` WHERE Id=@Id", new { Id = id }, tx);
+            await AuditAsync(db, entityType, id, "Delete", old, new { Deleted = true }, changedBy, tx);
+            await tx.CommitAsync();
+            return (true, "");
+        }
+
+        if (normalizedKind == "client-setting")
+        {
+            var old = await db.QueryFirstOrDefaultAsync<object>("SELECT * FROM travel_expense_client_settings WHERE Id=@Id", new { Id = id });
+            if (old is null) return (false, "Client enablement setting was not found.");
+            await using var tx = await db.BeginTransactionAsync();
+            await db.ExecuteAsync(@"UPDATE travel_expense_client_settings
+SET IsEnabled=FALSE,EffectiveFrom=NULL,EffectiveTo=NULL,Remarks='',UpdatedAt=CURRENT_TIMESTAMP
+WHERE Id=@Id", new { Id = id }, tx);
+            await AuditAsync(db, "TravelExpenseClientSetting", id, "Reset", old, new { IsEnabled = false, EffectiveFrom = (DateTime?)null, EffectiveTo = (DateTime?)null, Remarks = "" }, changedBy, tx);
+            await tx.CommitAsync();
+            return (true, "");
+        }
+
+        if (normalizedKind is "client-header" or "client-category")
+        {
+            if (clientId is null or <= 0) return (false, "Client is required to remove this enablement.");
+            var isHeader = normalizedKind == "client-header";
+            var table = isHeader ? "client_expense_header_settings" : "client_expense_category_settings";
+            var key = isHeader ? "HeaderId" : "CategoryId";
+            var entityType = isHeader ? "ClientExpenseHeaderSetting" : "ClientExpenseCategorySetting";
+            var old = await db.QueryFirstOrDefaultAsync<object>($"SELECT * FROM `{table}` WHERE ClientId=@ClientId AND `{key}`=@Id", new { ClientId = clientId.Value, Id = id });
+            if (old is null) return (false, "Client expense enablement was not found.");
+            await using var tx = await db.BeginTransactionAsync();
+            await db.ExecuteAsync($"DELETE FROM `{table}` WHERE ClientId=@ClientId AND `{key}`=@Id", new { ClientId = clientId.Value, Id = id }, tx);
+            await AuditAsync(db, entityType, id, "Delete", old, new { Deleted = true, ClientId = clientId.Value }, changedBy, tx);
+            await tx.CommitAsync();
+            return (true, "");
+        }
+
+        if (normalizedKind == "global-category")
+        {
+            var old = await db.QueryFirstOrDefaultAsync<object>("SELECT * FROM expense_categories WHERE Id=@Id", new { Id = id });
+            if (old is null) return (false, "Global expense category was not found.");
+            var claimLineCount = await CountIfTableExistsAsync(db, "ess_expense_claim_lines", "CategoryId=@Id", new { Id = id });
+            if (claimLineCount > 0)
+                return (false, $"This category is used by {claimLineCount} expense claim line(s) and cannot be deleted. Disable its client enablement to preserve claim history.");
+            await using var tx = await db.BeginTransactionAsync();
+            var enablementCount = await db.ExecuteAsync("DELETE FROM client_expense_category_settings WHERE CategoryId=@Id", new { Id = id }, tx);
+            await db.ExecuteAsync("DELETE FROM expense_categories WHERE Id=@Id", new { Id = id }, tx);
+            await AuditAsync(db, "ExpenseCategory", id, "Delete", old, new { Deleted = true, CascadedClientEnablements = enablementCount }, changedBy, tx);
+            await tx.CommitAsync();
+            return (true, "");
+        }
+
+        if (normalizedKind == "global-header")
+        {
+            var old = await db.QueryFirstOrDefaultAsync<object>("SELECT * FROM expense_headers WHERE Id=@Id", new { Id = id });
+            if (old is null) return (false, "Global expense header was not found.");
+            var categoryCount = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM expense_categories WHERE HeaderId=@Id", new { Id = id });
+            if (categoryCount > 0)
+                return (false, $"This header contains {categoryCount} categor{(categoryCount == 1 ? "y" : "ies")}. Delete or reassign those categories first.");
+            await using var tx = await db.BeginTransactionAsync();
+            var enablementCount = await db.ExecuteAsync("DELETE FROM client_expense_header_settings WHERE HeaderId=@Id", new { Id = id }, tx);
+            await db.ExecuteAsync("DELETE FROM expense_headers WHERE Id=@Id", new { Id = id }, tx);
+            await AuditAsync(db, "ExpenseHeader", id, "Delete", old, new { Deleted = true, CascadedClientEnablements = enablementCount }, changedBy, tx);
+            await tx.CommitAsync();
+            return (true, "");
+        }
+
+        return (false, "Unsupported Travel & Expense configuration type.");
+    }
+
     private static string ValidatePolicy(TravelPolicy row)
     {
         if (string.IsNullOrWhiteSpace(row.PolicyCode) || string.IsNullOrWhiteSpace(row.PolicyName)) return "Policy code and name are required.";
@@ -223,7 +324,7 @@ ON DUPLICATE KEY UPDATE ReceiptMandatory=VALUES(ReceiptMandatory),GstApplicable=
         return value;
     }
 
-    private static async Task AuditAsync(MySqlConnection db, string entityType, long entityId, string action, object? oldValue, object newValue, string changedBy)
+    private static async Task AuditAsync(MySqlConnection db, string entityType, long entityId, string action, object? oldValue, object newValue, string changedBy, MySqlTransaction? transaction = null)
     {
         await db.ExecuteAsync(@"INSERT INTO travel_policy_audit (EntityType,EntityId,Action,OldValueJson,NewValueJson,ChangedBy)
 VALUES (@EntityType,@EntityId,@Action,@OldValueJson,@NewValueJson,@ChangedBy)", new
@@ -234,7 +335,13 @@ VALUES (@EntityType,@EntityId,@Action,@OldValueJson,@NewValueJson,@ChangedBy)", 
             OldValueJson = oldValue is null ? null : JsonSerializer.Serialize(oldValue),
             NewValueJson = JsonSerializer.Serialize(newValue),
             ChangedBy = changedBy
-        });
+        }, transaction);
+    }
+
+    private static async Task<int> CountIfTableExistsAsync(MySqlConnection db, string tableName, string whereClause, object parameters)
+    {
+        var exists = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@TableName", new { TableName = tableName });
+        return exists == 0 ? 0 : await db.ExecuteScalarAsync<int>($"SELECT COUNT(*) FROM `{tableName}` WHERE {whereClause}", parameters);
     }
 
     private static async Task EnsureTablesAsync(MySqlConnection db)
@@ -369,6 +476,10 @@ CREATE TABLE IF NOT EXISTS travel_expense_client_settings (
 Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
 ClientId INT NOT NULL,
 IsEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+IsTravelDeskEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+ShowTripDetails BOOLEAN NOT NULL DEFAULT FALSE,
+ShowAccommodationDetails BOOLEAN NOT NULL DEFAULT FALSE,
+ShowLocalTravelDetails BOOLEAN NOT NULL DEFAULT FALSE,
 EffectiveFrom DATE NULL,
 EffectiveTo DATE NULL,
 Remarks VARCHAR(500) NOT NULL DEFAULT '',
@@ -392,6 +503,10 @@ KEY IX_TravelPolicyAudit_ChangedOn (ChangedOn)
         await EnsureColumnAsync(db, "travel_expense_categories", "ClientId", "INT NOT NULL DEFAULT 0 AFTER Id");
         await EnsureColumnAsync(db, "travel_expense_categories", "ExpenseType", "VARCHAR(120) NOT NULL DEFAULT '' AFTER ParentId");
         await EnsureColumnAsync(db, "travel_expense_categories", "IsClaimHeader", "BOOLEAN NOT NULL DEFAULT FALSE AFTER ExpenseType");
+        await EnsureColumnAsync(db, "travel_expense_client_settings", "IsTravelDeskEnabled", "BOOLEAN NOT NULL DEFAULT FALSE AFTER IsEnabled");
+        await EnsureColumnAsync(db, "travel_expense_client_settings", "ShowTripDetails", "BOOLEAN NOT NULL DEFAULT FALSE AFTER IsTravelDeskEnabled");
+        await EnsureColumnAsync(db, "travel_expense_client_settings", "ShowAccommodationDetails", "BOOLEAN NOT NULL DEFAULT FALSE AFTER ShowTripDetails");
+        await EnsureColumnAsync(db, "travel_expense_client_settings", "ShowLocalTravelDetails", "BOOLEAN NOT NULL DEFAULT FALSE AFTER ShowAccommodationDetails");
         await db.ExecuteAsync(@"INSERT INTO travel_expense_client_settings (ClientId,IsEnabled)
 SELECT Id,FALSE FROM clients WHERE IsActive=TRUE
 ON DUPLICATE KEY UPDATE ClientId=ClientId");

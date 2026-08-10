@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import dayjs from 'dayjs'
 import {
-  CheckCircleOutlined, CloseCircleOutlined, CopyOutlined, EditOutlined, GlobalOutlined,
+  CheckCircleOutlined, CloseCircleOutlined, CopyOutlined, DeleteOutlined, EditOutlined, GlobalOutlined,
   LinkOutlined, PlusOutlined, RocketOutlined, SaveOutlined, SettingOutlined,
 } from '@ant-design/icons'
 import {
   Alert, Badge, Button, Card, Col, DatePicker, Descriptions, Empty, Form, Input, InputNumber,
-  List, Modal, Row, Segmented, Select, Space, Spin, Switch, Tag, Typography, message,
+  List, Modal, Popconfirm, Row, Segmented, Select, Space, Spin, Switch, Tag, Typography, message,
 } from 'antd'
+import { useAuthSession } from './AuthGate'
 import { getClients } from '../services/payrollService'
 import {
-  assignRecruitmentPipeline, closeRecruitmentJobPosting, getRecruitmentJobDescriptions,
+  assignRecruitmentPipeline, closeRecruitmentJobPosting, deleteRecruitmentJobPosting, getRecruitmentJobDescriptions,
   getRecruitmentJobPostings, getRecruitmentOrchestrationLookups, getRecruitmentPipelines,
   getRecruitmentPositionPipelineAssignment, publishRecruitmentJobPosting, saveRecruitmentJobPosting,
 } from '../services/recruitmentOrchestrationService'
@@ -33,8 +34,11 @@ const emptyLookups: RecruitmentOrchestrationLookups = {
 const editableStatuses = new Set(['Draft'])
 
 export default function RecruitmentJobPostingManager({ initialClientId = 0, initialPositionId = 0, onPublished }: Props) {
+  const session = useAuthSession()
+  const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
+  const canViewAllClients = session?.user.clientId == null
   const [clients, setClients] = useState<Client[]>([])
-  const [clientId, setClientId] = useState(initialClientId)
+  const [clientId, setClientId] = useState(initialClientId || session?.user.clientId || 0)
   const [lookups, setLookups] = useState(emptyLookups)
   const [pipelines, setPipelines] = useState<RecruitmentPipelineDefinition[]>([])
   const [postings, setPostings] = useState<RecruitmentJobPosting[]>([])
@@ -50,16 +54,21 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, init
   useEffect(() => {
     void getClients().then(rows => {
       setClients(rows)
-      if (!clientId && rows.length) setClientId(rows[0].id)
+      if (canViewAllClients) {
+        setClientId(current => current > 0 && rows.some(row => row.id === current) ? current : 0)
+      } else if (!clientId && rows.length) setClientId(session?.user.clientId || rows[0].id)
     })
   }, [])
 
   useEffect(() => {
-    if (!clientId) return
+    if (!clientId && !canViewAllClients) return
     void loadClient(clientId)
   }, [clientId])
 
-  const positions = useMemo(() => lookups.positions.filter(row => row.clientId === clientId), [lookups.positions, clientId])
+  const editorClientId = editor?.id ? editor.clientId : clientId
+  const positions = useMemo(() => editorClientId > 0
+    ? lookups.positions.filter(row => row.clientId === editorClientId)
+    : lookups.positions, [lookups.positions, editorClientId])
   const visiblePostings = useMemo(() => postings.filter(row => {
     const statusMatch = listStatus === 'All' || row.status === listStatus
     const needle = search.trim().toLowerCase()
@@ -72,7 +81,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, init
     .map(row => ({ value: Number(row.currentPublishedVersionId), label: `${row.pipelineName} · published`, definitionId: row.id })), [pipelines])
   const selectedPipeline = publishedPipelineOptions.find(row => row.value === pipelineVersionId)
   const applicationFormOptions = useMemo(() => {
-    const rows = lookups.forms.filter(row => row.status === 'Active' && (row.clientId === clientId || row.clientId === 0))
+    const rows = lookups.forms.filter(row => row.status === 'Active' && (editorClientId <= 0 || row.clientId === editorClientId || row.clientId === 0))
       .flatMap(row => {
         const versions = (row.versions || []).filter(version => ['Published', 'Retired'].includes(version.status))
         if (versions.length) return versions.map(version => ({ value: version.id, label: `${row.formName} · v${version.versionNumber}${version.status === 'Retired' ? ' (retired)' : ''}` }))
@@ -80,7 +89,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, init
       })
     if (editor?.applicationFormVersionId && !rows.some(row => row.value === editor.applicationFormVersionId)) rows.push({ value: editor.applicationFormVersionId, label: `Assigned form version #${editor.applicationFormVersionId}` })
     return rows
-  }, [lookups.forms, clientId, editor?.applicationFormVersionId])
+  }, [lookups.forms, editorClientId, editor?.applicationFormVersionId])
 
   async function loadClient(scope: number, preferredPostingId = 0) {
     setLoading(true)
@@ -207,10 +216,10 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, init
         <p className="orchestration-subtitle">Bind an approved JD, published application form and published pipeline before going live.</p>
       </div>
       <Space wrap>
-        <Select value={clientId || undefined} placeholder="Select client" showSearch optionFilterProp="label" style={{ minWidth: 230 }}
-          options={clients.map(row => ({ value: row.id, label: row.name }))}
+        <Select value={clientId} placeholder="Select client" showSearch optionFilterProp="label" style={{ minWidth: 230 }}
+          options={[...(canViewAllClients ? [{ value: 0, label: 'All clients' }] : []), ...clients.map(row => ({ value: row.id, label: row.name }))]}
           onChange={value => { setClientId(value); setEditor(null) }} />
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => void startNew()}>New posting</Button>
+        <Button type="primary" icon={<PlusOutlined />} disabled={clientId <= 0} title={clientId <= 0 ? 'Select a client before creating a posting.' : undefined} onClick={() => void startNew()}>New posting</Button>
       </Space>
     </div>
 
@@ -221,6 +230,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, init
             <Input.Search allowClear value={search} onChange={event => setSearch(event.target.value)} placeholder="Search title or position" />
             <Segmented block size="small" value={listStatus} onChange={value => setListStatus(String(value))} options={['All', 'Draft', 'Published', 'Closed']} />
             <List dataSource={visiblePostings} locale={{ emptyText: 'No matching job postings.' }} renderItem={row => <List.Item className={editor?.id === row.id ? 'active' : ''} onClick={() => void choosePosting(row)}>
+              {clientId === 0 && <Tag color={row.clientName ? 'blue' : 'orange'}>{row.clientName || `Deleted client #${row.clientId}`}</Tag>}
               <List.Item.Meta title={<Space><Typography.Text strong ellipsis>{row.publicTitle}</Typography.Text><PostingStatus status={row.status} /></Space>} description={<Space direction="vertical" size={2}><span>{row.positionCode} · {row.positionTitle}</span><span>{row.applicationCount} application{row.applicationCount === 1 ? '' : 's'}</span></Space>} />
             </List.Item>} />
           </Space>
@@ -235,6 +245,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, init
                 {editor.status === 'Published' && <Button danger icon={<CloseCircleOutlined />} onClick={closePosting}>Close</Button>}
                 {(editor.status === 'Draft' || editor.status === 'Closed') && <Button type="primary" icon={<RocketOutlined />} disabled={!editor.id} onClick={publish}>Publish</Button>}
                 <Button icon={<SaveOutlined />} loading={saving} disabled={readOnly} onClick={() => void save()}>Save draft</Button>
+                {canDelete && editor.id > 0 && <Popconfirm title="Delete this job posting?" description="Delete linked applications first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteRecruitmentJobPosting(editor.id); if (response.ok) { setEditor(null); await loadClient(clientId) } }}><Button danger icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}
               </Space>
             </div>
             {readOnly && <Alert className="jd-readonly-alert" type="info" showIcon message="Published details are locked" description="Close this posting and create a new posting if the approved JD, form or schedule must change." />}

@@ -1,27 +1,29 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SearchOutlined, SendOutlined,
+  DeleteOutlined, EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SearchOutlined, SendOutlined,
 } from '@ant-design/icons'
 import {
-  AutoComplete, Button, Collapse, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag,
+  AutoComplete, Button, Collapse, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag,
   Tooltip, message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useAuthSession } from './AuthGate'
 import { getClients, getEmployees } from '../services/payrollService'
 import {
-  getRecruitmentMasterOptions, getRecruitmentRequisitions, saveRecruitmentRequisition,
+  deleteRecruitmentRequisition, getRecruitmentMasterOptions, getRecruitmentRequisitions, saveRecruitmentRequisition,
   submitRecruitmentRequisition,
 } from '../services/recruitmentService'
 import { getDropdowns, getWorkLocations } from '../services/settingsService'
 import type {
   Client, Drop, Employee, RecruitmentRequisition, SaveRecruitmentRequisition, WorkLocation,
 } from '../types/payroll'
+import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
 import './RecruitmentRequisitionManager.css'
 
 type Props = {
   initialClientId?: number
   initialOpen?: boolean
+  embedded?: boolean
   onChanged?: (row: RecruitmentRequisition) => void
   onPrepareJobDescription?: (row: RecruitmentRequisition) => void
 }
@@ -39,8 +41,9 @@ const emptyMasters: MasterOptions = {
   hiringTypes: [], positionCategories: [], experienceRanges: [], priorities: [], budgetAmounts: [],
 }
 
-export default function RecruitmentRequisitionManager({ initialClientId = 0, initialOpen = false, onChanged, onPrepareJobDescription }: Props) {
+export default function RecruitmentRequisitionManager({ initialClientId = 0, initialOpen = false, embedded = false, onChanged, onPrepareJobDescription }: Props) {
   const session = useAuthSession()
+  const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [form] = Form.useForm<SaveRecruitmentRequisition>()
   const [clients, setClients] = useState<Client[]>([])
   const [dropdowns, setDropdowns] = useState<Drop[]>([])
@@ -66,10 +69,14 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, ini
 
   useEffect(() => {
     let active = true
+    void getRecruitmentRequisitions({}).then(requestRows => {
+      if (!active) return
+      setRows(requestRows)
+      setLoading(false)
+    })
     void fetchWorkspace().then(data => {
       if (!active) return
       setClients(data.clientRows)
-      setRows(data.requestRows)
       setDropdowns(data.dropRows)
       setLocations(data.locationRows)
       setEmployees(data.employeeRows)
@@ -172,13 +179,14 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, ini
       render: (value: string) => <span className="rfr-muted">{displayDate(value)}</span>,
     },
     {
-      title: 'Actions', key: 'actions', fixed: 'right', width: 235,
+      title: 'Actions', key: 'actions', fixed: 'right', width: 285,
       render: (_, row) => <Space size={4}>
         {editableStatuses.has(row.status)
           ? <Tooltip title="Edit draft"><Button aria-label="Edit draft" size="small" icon={<EditOutlined />} onClick={() => openRequest(row)} /></Tooltip>
           : <Tooltip title="View request"><Button aria-label="View request" size="small" icon={<EyeOutlined />} onClick={() => openRequest(row, true)} /></Tooltip>}
         {editableStatuses.has(row.status) && <Button size="small" type="link" icon={<SendOutlined />} onClick={() => confirmSubmit(row)}>Submit</Button>}
         {row.status === 'Approved' && onPrepareJobDescription && <Button size="small" type="link" onClick={() => onPrepareJobDescription(row)}>Prepare JD</Button>}
+        {canDelete && <Popconfirm placement="left" title="Delete this requisition?" description="Delete its open position and job-description versions first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteRecruitmentRequisition(row.id); if (response.ok) await refreshRows() }}><Button title="Delete requisition" danger aria-label="Delete requisition" size="small" icon={<DeleteOutlined />} /></Popconfirm>}
       </Space>,
     },
   ]
@@ -251,13 +259,22 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, ini
     <Form.Item name="benefits" label="Benefits"><Input placeholder="Benefits summary" /></Form.Item>
     <Form.Item name="businessJustification" label="Business justification" className="rfr-span-2"><Input.TextArea rows={2} placeholder="Why this position is needed" /></Form.Item>
     <Form.Item name="reasonForHiring" label="Hiring notes" className="rfr-span-2"><Input.TextArea rows={2} placeholder="Optional context for approvers" /></Form.Item>
+    <Form.Item name="externalPositionCode" label="Client position code" extra="Use the exact code stated by the client. If approved, this becomes the open-position code."><Input placeholder="For example, UIDAI_BTC_0_25" /></Form.Item>
+    <Form.Item name="sourceType" label="Source type"><Select allowClear options={asOptions(['Formal Approval Letter', 'Hiring Initiation Email', 'Job Description', 'Modified Job Description', 'Other'])} placeholder="Select document type" /></Form.Item>
+    <Form.Item name="sourceReference" label="Source reference"><Input placeholder="File number, computer number or email subject" /></Form.Item>
+    <Form.Item name="sourceDocumentDate" label="Source document date"><Input type="date" /></Form.Item>
+    <Form.Item name="sourceDocumentName" label="Source document" className="rfr-span-2"><Input placeholder="Original PDF file name(s)" /></Form.Item>
+    <Form.Item name="sourceAuthority" label="Source authority"><Input placeholder="Requesting / approving authority" /></Form.Item>
+    <Form.Item name="externalApprovalStatus" label="Client approval state"><Select allowClear options={asOptions(['Approved for Hiring', 'Hiring Initiated', 'JD Received', 'JD Awaited', 'Pending Client Confirmation', 'Not Available'])} placeholder="Separate from HRMS workflow status" /></Form.Item>
+    <Form.Item name="ctcFlexibilityPercent" label="CTC flexibility (%)"><InputNumber min={0} max={100} precision={2} style={{ width: '100%' }} /></Form.Item>
+    <Form.Item name="sourceNotes" label="Source notes" className="rfr-span-2"><Input.TextArea rows={3} placeholder="Preserve ambiguities and missing facts without inventing values" /></Form.Item>
   </div>
 
   return <section className="rfr-manager" data-testid="requisition-manager">
-    <header className="rfr-header">
+    {!embedded && <header className="rfr-header">
       <div><span>Recruitment</span><h2>Hiring Requests</h2><p>Raise, review and submit workforce demand without leaving the request register.</p></div>
-      <Button type="primary" size="large" icon={<PlusOutlined />} onClick={openNew} data-testid="new-hiring-request">New hiring request</Button>
-    </header>
+      <Button type="primary" icon={<PlusOutlined />} onClick={openNew} data-testid="new-hiring-request">New hiring request</Button>
+    </header>}
 
     <div className="rfr-toolbar">
       <Input allowClear prefix={<SearchOutlined />} value={query} onChange={event => setQuery(event.target.value)} placeholder="Search role, RFR or requester" />
@@ -271,8 +288,10 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, ini
       pagination={{ pageSize: 10, showSizeChanger: true, showTotal: total => `${total} requests` }}
       scroll={{ x: 1400 }} locale={{ emptyText: 'No hiring requests match the selected filters.' }} />
 
-    <Modal className="rfr-dialog" open={dialogOpen} width={1040} footer={null} destroyOnClose={false} forceRender
-      onCancel={() => !saving && setDialogOpen(false)} title={<div><span className="rfr-dialog-kicker">Hiring request</span><h3>{readOnly ? 'Request details' : watchedForm.id ? 'Edit draft' : 'New hiring request'}</h3></div>}>
+    <RecruitmentEditorDrawer className="rfr-dialog" open={dialogOpen} width="min(1040px, 96vw)" destroyOnClose={false} footer={false}
+      onClose={() => !saving && setDialogOpen(false)} kicker="Hiring request"
+      title={readOnly ? 'Request details' : watchedForm.id ? 'Edit draft' : 'New hiring request'}
+      description={readOnly ? 'Review the approved demand and its hiring context.' : 'Capture the essential demand first; advanced role and approval context stays optional.'}>
       <Form form={form} layout="vertical" disabled={readOnly} requiredMark="optional" className="rfr-form" onValuesChange={(_, values: SaveRecruitmentRequisition) => setWatchedForm({ id: values.id || 0, clientId: values.clientId || 0, isReplacement: Boolean(values.isReplacement), budgetAvailable: Boolean(values.budgetAvailable) })}>
         <div className="rfr-essential-grid">
           <Form.Item name="id" hidden><InputNumber /></Form.Item>
@@ -288,6 +307,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, ini
           <Form.Item name="requestedByEmployeeId" label="Requested by" rules={[{ required: true, message: 'Select the requester employee.' }]}>
             <Select showSearch optionFilterProp="label" placeholder="Select active employee" options={requesterOptions} />
           </Form.Item>
+          <Form.Item name="requestDate" label="Request date" rules={[{ required: true, message: 'Enter the hiring request date.' }]}><Input type="date" /></Form.Item>
           <Form.Item name="positionTitle" label="Role / position" rules={[{ required: true, whitespace: true, message: 'Enter the position title.' }]}>
             <Input placeholder="For example, Senior .NET Engineer" maxLength={190} />
           </Form.Item>
@@ -328,33 +348,35 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, ini
             <Button type="primary" icon={<SendOutlined />} loading={saving} onClick={() => void saveRequest(true)} data-testid="save-submit-requisition">Save & submit</Button></>}
         </div>
       </Form>
-    </Modal>
+    </RecruitmentEditorDrawer>
   </section>
 }
 
 function blankRequest(clientId: number): SaveRecruitmentRequisition {
   return {
-    id: 0, requestedByEmployeeId: null, clientId: clientId || undefined, branchId: 0, businessUnit: '', department: '', costCenter: '', positionTitle: '',
+    id: 0, requestDate: today(), requestedByEmployeeId: null, clientId: clientId || undefined, branchId: 0, businessUnit: '', department: '', costCenter: '', positionTitle: '',
     positionCategory: '', employmentType: 'Permanent', hiringType: '', numberOfOpenings: 1, isReplacement: false,
     replacementEmployeeId: null, targetJoiningDate: null, jobLocation: '', workMode: 'Office', project: '', budgetAvailable: false,
     budgetAmount: 0, hiringPriority: 'Normal', businessJustification: '', reasonForHiring: '', experienceRange: '', qualification: '',
     requiredSkills: '', preferredSkills: '', certifications: '', languages: '', salaryMin: 0, salaryMax: 0, currency: 'INR', benefits: '',
+    externalPositionCode: '', sourceType: '', sourceReference: '', sourceDocumentName: '', sourceDocumentDate: null,
+    sourceAuthority: '', externalApprovalStatus: '', ctcFlexibilityPercent: null, sourceNotes: '',
   }
 }
 
 async function fetchWorkspace() {
-  const [clientRows, requestRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, budgetAmounts] = await Promise.all([
-    getClients(), getRecruitmentRequisitions({}), getDropdowns(), getWorkLocations(), getEmployees(),
+  const [clientRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, budgetAmounts] = await Promise.all([
+    getClients(), getDropdowns(), getWorkLocations(), getEmployees(),
     getRecruitmentMasterOptions('Hiring Type'), getRecruitmentMasterOptions('Position Category'),
     getRecruitmentMasterOptions('Experience Range'), getRecruitmentMasterOptions('Assignment Priority'),
     getRecruitmentMasterOptions('Budget Amount'),
   ])
-  return { clientRows, requestRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, budgetAmounts }
+  return { clientRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, budgetAmounts }
 }
 
 function fromRow(row: RecruitmentRequisition): SaveRecruitmentRequisition {
   return {
-    id: row.id, requestedByEmployeeId: row.requestedByEmployeeId, clientId: row.clientId, branchId: row.branchId || 0, businessUnit: row.businessUnit || '', department: row.department || '',
+    id: row.id, requestDate: row.requestDate?.slice(0, 10) || today(), requestedByEmployeeId: row.requestedByEmployeeId, clientId: row.clientId, branchId: row.branchId || 0, businessUnit: row.businessUnit || '', department: row.department || '',
     costCenter: row.costCenter || '', positionTitle: row.positionTitle || '', positionCategory: row.positionCategory || '',
     employmentType: row.employmentType || '', hiringType: row.hiringType || '', numberOfOpenings: row.numberOfOpenings || 1,
     isReplacement: row.isReplacement, replacementEmployeeId: row.replacementEmployeeId ?? null,
@@ -364,6 +386,10 @@ function fromRow(row: RecruitmentRequisition): SaveRecruitmentRequisition {
     experienceRange: row.experienceRange || '', qualification: row.qualification || '', requiredSkills: row.requiredSkills || '',
     preferredSkills: row.preferredSkills || '', certifications: row.certifications || '', languages: row.languages || '',
     salaryMin: Number(row.salaryMin || 0), salaryMax: Number(row.salaryMax || 0), currency: row.currency || 'INR', benefits: row.benefits || '',
+    externalPositionCode: row.externalPositionCode || '', sourceType: row.sourceType || '', sourceReference: row.sourceReference || '',
+    sourceDocumentName: row.sourceDocumentName || '', sourceDocumentDate: row.sourceDocumentDate?.slice(0, 10) || null,
+    sourceAuthority: row.sourceAuthority || '', externalApprovalStatus: row.externalApprovalStatus || '',
+    ctcFlexibilityPercent: row.ctcFlexibilityPercent == null ? null : Number(row.ctcFlexibilityPercent), sourceNotes: row.sourceNotes || '',
   }
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Checkbox, Collapse, Drawer, Form, Input, InputNumber, Popconfirm, Select, Space, Tooltip } from 'antd'
+import { Alert, Button, Card, Checkbox, Collapse, Drawer, Form, Input, InputNumber, Popconfirm, Select, Space, Tooltip, message } from 'antd'
 import { DeleteOutlined } from '@ant-design/icons'
 import DataTable from './DataTable'
 import RecruitmentAtsAdmin from './RecruitmentAtsAdmin'
@@ -11,13 +11,11 @@ import { getClients, getEmployees } from '../services/payrollService'
 import { getJson } from '../services/apiClient'
 import { getAttachmentAttributes } from '../services/attachmentService'
 import { getAtsProfiles } from '../services/recruitmentTalentService'
-import { deleteRecruitmentAdminConfiguration, getDropdowns, getRecruitmentAdminSetup, getWorkLocations, saveRecruitmentApprovalMapping, saveRecruitmentAssignmentRule, saveRecruitmentDocumentChecklist, saveRecruitmentMaster, saveRecruitmentPartner, saveRecruitmentSetting, saveRecruitmentSlaRule, saveRecruitmentTemplate } from '../services/settingsService'
-import type { AttachmentAttribute, Client, Drop, Employee, RecruitmentAdminSetup, RecruitmentApprovalMapping, RecruitmentAssignmentRule, RecruitmentAtsScoringProfile, RecruitmentDocumentChecklist, RecruitmentMasterValue, RecruitmentPartner, RecruitmentSetting, RecruitmentSlaRule, RecruitmentTemplate, WorkLocation, WorkflowApprover } from '../types/payroll'
+import { deleteRecruitmentAdminConfiguration, getDropdowns, getRecruitmentAdminSetup, getWorkLocations, saveRecruitmentApprovalMapping, saveRecruitmentAssignmentRule, saveRecruitmentDocumentChecklist, saveRecruitmentPartner, saveRecruitmentSetting, saveRecruitmentSlaRule, saveRecruitmentTemplate } from '../services/settingsService'
+import type { AttachmentAttribute, Client, Drop, Employee, RecruitmentAdminSetup, RecruitmentApprovalMapping, RecruitmentAssignmentRule, RecruitmentAtsScoringProfile, RecruitmentDocumentChecklist, RecruitmentPartner, RecruitmentSetting, RecruitmentSlaRule, RecruitmentTemplate, WorkLocation, WorkflowApprover } from '../types/payroll'
 
 type WorkflowOption = { id: number; name: string; code: string; resourceType: string; isActive: boolean }
-const masterTypes = ['Recruitment Status', 'Position Status', 'Recruitment Checklist', 'Publishing Channel', 'Assignment Priority', 'Recruitment Source', 'Hiring Type', 'Position Category', 'Experience Range', 'Budget Amount', 'Interview Type', 'Interview Result', 'Interview Round', 'Candidate Status', 'Offer Status']
 const setting0: RecruitmentSetting = { id: 0, clientId: 0, clientName: '', recruitmentEnabled: false, allowEmployeeRfrCreation: false, allowReplacementHiring: true, allowMultipleHiringManagers: false, allowMultipleRecruiters: false, autoGeneratePositionCode: true, autoGenerateRfrNumber: true, enableVendorHiring: false, enableConsultantHiring: false, enableInternalHiring: true, enableReferralHiring: true, enableCampusHiring: false, enableWalkInHiring: false, enableOfferApproval: true, enablePreOfferProcess: true, enableBackgroundVerification: false, enableDocumentVerification: true, enableCandidatePortal: false, publicPortalBaseUrl: '', enableVendorPortal: false, enableJobPortalIntegration: false, enableTalentPool: true, enableResumeParsing: true, enableAtsScoring: true, requireResumeForApplication: true, allowManualScoreOverride: true, allowDuplicateCandidate: false, autoCreateApplicationFromReferral: true, defaultAtsScoringProfileId: null, candidateRetentionMonths: 24, isActive: true }
-const master0: RecruitmentMasterValue = { id: 0, clientId: 0, clientName: '', masterType: 'Recruitment Status', code: '', name: '', description: '', sortOrder: 100, isSystem: false, isActive: true }
 const partner0 = (type: 'Consultant' | 'Vendor'): RecruitmentPartner => ({ id: 0, partnerType: type, clientId: 0, clientName: '', code: '', name: '', company: '', contactPerson: '', email: '', phone: '', address: '', gstin: '', pan: '', agreementStartDate: '', agreementEndDate: '', commissionType: 'Percentage', commissionValue: 0, status: 'Active', performanceRating: 0, isActive: true })
 const assignment0: RecruitmentAssignmentRule = { id: 0, clientId: 0, clientName: '', ruleName: '', businessUnit: '', department: '', positionCategory: '', skillCategory: '', project: '', location: '', experienceRange: '', jobLevel: '', recruitmentSource: '', priority: '', recruiterUserId: 0, recruiterName: '', maximumOpenPositions: 0, workloadBased: false, manualOverrideAllowed: true, sortOrder: 100, isActive: true }
 const sla0: RecruitmentSlaRule = { id: 0, clientId: 0, clientName: '', processName: 'Resume Screening', durationDays: 2, reminderEnabled: true, reminderBeforeDays: 1, escalationEnabled: false, escalationAfterDays: 0, notificationRuleId: 0, isActive: true }
@@ -115,7 +113,6 @@ const channelSettingKeys = new Set<keyof RecruitmentSetting>(['enableVendorHirin
 const coreSettingOptions = settingOptions.filter(option => coreSettingKeys.has(option.key))
 const automationSettingOptions = settingOptions.filter(option => automationSettingKeys.has(option.key))
 const channelSettingOptions = settingOptions.filter(option => channelSettingKeys.has(option.key))
-const futureSettingOptions = settingOptions.filter(option => option.disabled)
 const advancedSettingOptions = settingOptions.filter(option => !option.disabled && !coreSettingKeys.has(option.key) && !automationSettingKeys.has(option.key) && !channelSettingKeys.has(option.key))
 
 export const recruitmentAdminSections = ['settings', 'consultants', 'vendors', 'assignment', 'sla', 'checklist', 'approvals', 'ats', 'forms', 'pipelines', 'templates'] as const
@@ -154,7 +151,8 @@ export default function RecruitmentAdminSettings({ section = 'settings' }: { sec
   const [attachmentAttributes, setAttachmentAttributes] = useState<AttachmentAttribute[]>([])
   const [atsProfiles, setAtsProfiles] = useState<RecruitmentAtsScoringProfile[]>([])
   const [drawer, setDrawer] = useState('')
-  const [setting, setSetting] = useState(setting0), [master, setMaster] = useState(master0), [partner, setPartner] = useState(partner0('Consultant'))
+  const [formError, setFormError] = useState('')
+  const [setting, setSetting] = useState(setting0), [partner, setPartner] = useState(partner0('Consultant'))
   const [assignment, setAssignment] = useState(assignment0), [sla, setSla] = useState(sla0), [checklist, setChecklist] = useState(checklist0), [approval, setApproval] = useState(approval0), [template, setTemplate] = useState(template0)
   const load = async () => setSetup(await getRecruitmentAdminSetup())
   useEffect(() => { void Promise.all([getRecruitmentAdminSetup(), getClients(), getJson<WorkflowApprover[]>('/api/workflows/approvers', []), getJson<WorkflowOption[]>('/api/workflows', []), getDropdowns(), getWorkLocations(), getEmployees(), getAttachmentAttributes(), getAtsProfiles()]).then(([a, b, c, d, e, f, g, h, i]) => { setSetup(a); setClients(b); setUsers(c); setWorkflows(d); setDropdowns(e); setLocations(f); setEmployees(g); setAttachmentAttributes(h); setAtsProfiles(i) }) }, [])
@@ -168,9 +166,14 @@ export default function RecruitmentAdminSettings({ section = 'settings' }: { sec
   const departmentOptions = (clientId: number) => unique([...dropdownOptions('Department', clientId), ...employees.filter(item => item.isActive && (!clientId || item.clientId === clientId)).map(item => item.department)])
   const locationOptions = unique(locations.filter(item => item.isActive && (!assignment.clientId || item.clientId === assignment.clientId)).map(item => item.name))
   const selectedClientName = (clientId: number) => clients.find(item => item.id === clientId)?.name || ''
+  useEffect(() => { setFormError('') }, [drawer])
   const save = async () => {
-    const response = drawer === 'setting' ? await saveRecruitmentSetting(setting) : drawer === 'master' ? await saveRecruitmentMaster(master) : drawer === 'partner' ? await saveRecruitmentPartner(partner) : drawer === 'assignment' ? await saveRecruitmentAssignmentRule(assignment) : drawer === 'sla' ? await saveRecruitmentSlaRule(sla) : drawer === 'checklist' ? await saveRecruitmentDocumentChecklist(checklist) : drawer === 'approval' ? await saveRecruitmentApprovalMapping(approval) : await saveRecruitmentTemplate(template)
+    const error = validateAdminForm(drawer, { setting, partner, assignment, sla, checklist, approval, template })
+    if (error) { setFormError(error); message.warning(error); return }
+    setFormError('')
+    const response = drawer === 'setting' ? await saveRecruitmentSetting(setting) : drawer === 'partner' ? await saveRecruitmentPartner(partner) : drawer === 'assignment' ? await saveRecruitmentAssignmentRule(assignment) : drawer === 'sla' ? await saveRecruitmentSlaRule(sla) : drawer === 'checklist' ? await saveRecruitmentDocumentChecklist(checklist) : drawer === 'approval' ? await saveRecruitmentApprovalMapping(approval) : await saveRecruitmentTemplate(template)
     if (response.ok) { setDrawer(''); await load() }
+    else setFormError(response.error || 'The configuration could not be saved. Review the highlighted details and try again.')
   }
   const remove = async (kind: string, id: number) => {
     const response = await deleteRecruitmentAdminConfiguration(kind, id)
@@ -191,11 +194,12 @@ export default function RecruitmentAdminSettings({ section = 'settings' }: { sec
   ]
   const activeContent = sectionItems.find(item => item.key === section)?.children
   return <section className="recruitment-admin">
-    <Card title="Recruitment Administration" extra={<span className="recruitment-workspace-group">{recruitmentAdminSectionLabel(section)}</span>} size="small" className="settings-panel settings-table-panel recruitment-admin-panel recruitment-root-card">
+    <Card size="small" className="settings-panel settings-table-panel recruitment-admin-panel recruitment-root-card">
       <div className="recruitment-admin-content">{activeContent}</div>
     </Card>
     <Drawer className="settings-master-drawer recruitment-admin-drawer" title={drawerTitle(drawer)} open={!!drawer} width={820} onClose={() => setDrawer('')} destroyOnClose>
       <Form component="div" layout="vertical" className="settings-quick-form recruitment-admin-form">
+        {formError && <Alert className="recruitment-form-error" showIcon closable type="error" message="Complete the required details" description={formError} onClose={() => setFormError('')} />}
         {drawer === 'setting' && <><Form.Item label="Client" required><SearchSelect value={setting.clientId} onChange={v => setSetting({ ...setting, clientId: Number(v) })} options={clientOptions} /></Form.Item>
           <div className="recruitment-config-heading"><b>Essential setup</b><span>These are the only switches most clients need.</span></div>
           <SettingTiles items={coreSettingOptions} value={setting} onChange={setSetting} />
@@ -205,10 +209,8 @@ export default function RecruitmentAdminSettings({ section = 'settings' }: { sec
           <Collapse className="recruitment-advanced-collapse">
             <Collapse.Panel key="channels" header="Hiring channels"><SettingTiles items={channelSettingOptions} value={setting} onChange={setSetting} /></Collapse.Panel>
             <Collapse.Panel key="advanced" header="Advanced controls"><SettingTiles items={advancedSettingOptions} value={setting} onChange={setSetting} /><Form.Item label="Default ATS scoring profile" extra="Leave blank for automatic profile selection."><SearchSelect value={setting.defaultAtsScoringProfileId || 0} onChange={value => setSetting({ ...setting, defaultAtsScoringProfileId: Number(value) || null })} options={selectOptions(atsProfiles.filter(row => row.isActive && row.clientId === setting.clientId).map(row => ({ value: row.id, label: row.profileName })), 'Automatic profile selection', 0)} /></Form.Item><Form.Item label="Candidate retention (months)"><InputNumber min={1} max={120} value={setting.candidateRetentionMonths} onChange={value => setSetting({ ...setting, candidateRetentionMonths: Number(value || 24) })} /></Form.Item></Collapse.Panel>
-            <Collapse.Panel key="future" header="Unavailable / future options"><SettingTiles items={futureSettingOptions} value={setting} onChange={setSetting} /></Collapse.Panel>
           </Collapse>
         </>}
-        {drawer === 'master' && <><Form.Item label="Master type"><Select value={master.masterType} onChange={v => setMaster({ ...master, masterType: v })} options={masterTypes.map(v => ({ value: v, label: v }))} /></Form.Item><Form.Item label="Client scope"><SearchSelect value={master.clientId} onChange={v => setMaster({ ...master, clientId: Number(v) })} options={selectOptions(clients.map(c => ({ value: c.id, label: c.name })), 'Global', 0)} /></Form.Item><Form.Item label="Code"><Input value={master.code} onChange={e => setMaster({ ...master, code: e.target.value.toUpperCase().replace(/\s+/g, '_') })} /></Form.Item><Form.Item label="Name"><Input value={master.name} onChange={e => setMaster({ ...master, name: e.target.value })} /></Form.Item><Form.Item label="Description"><Input value={master.description} onChange={e => setMaster({ ...master, description: e.target.value })} /></Form.Item><Form.Item><Checkbox checked={master.isActive} onChange={e => setMaster({ ...master, isActive: e.target.checked })}>Active</Checkbox></Form.Item></>}
         {drawer === 'partner' && <><CommonClient value={partner.clientId} set={clientId => setPartner({ ...partner, clientId })} options={clientOptions} /><Form.Item label="Code"><Input value={partner.code} onChange={e => setPartner({ ...partner, code: e.target.value.toUpperCase() })} /></Form.Item><Form.Item label="Name"><Input value={partner.name} onChange={e => setPartner({ ...partner, name: e.target.value })} /></Form.Item><Form.Item label="Company"><Input value={partner.company} onChange={e => setPartner({ ...partner, company: e.target.value })} /></Form.Item><Form.Item label="Contact person"><Input value={partner.contactPerson} onChange={e => setPartner({ ...partner, contactPerson: e.target.value })} /></Form.Item><Form.Item label="Email"><Input value={partner.email} onChange={e => setPartner({ ...partner, email: e.target.value })} /></Form.Item><Form.Item label="Phone"><Input value={partner.phone} onChange={e => setPartner({ ...partner, phone: e.target.value })} /></Form.Item><Form.Item label="GST"><Input value={partner.gstin} onChange={e => setPartner({ ...partner, gstin: e.target.value.toUpperCase() })} /></Form.Item><Form.Item label="PAN"><Input value={partner.pan} onChange={e => setPartner({ ...partner, pan: e.target.value.toUpperCase() })} /></Form.Item><Form.Item label="Commission type"><Select value={partner.commissionType} onChange={v => setPartner({ ...partner, commissionType: v })} options={['Percentage', 'Fixed'].map(v => ({ value: v, label: v }))} /></Form.Item><Form.Item label="Commission value"><InputNumber value={partner.commissionValue} onChange={v => setPartner({ ...partner, commissionValue: Number(v || 0) })} /></Form.Item><Form.Item label="Address"><Input.TextArea value={partner.address} onChange={e => setPartner({ ...partner, address: e.target.value })} /></Form.Item></>}
         {drawer === 'assignment' && <><div className="assignment-rule-help"><b>How this rule works</b><span>Blank criteria mean Any. When an RFR is approved, the system checks rules for the same client in Sort order. The first matching rule auto-assigns its recruiter to the open position.</span></div><CommonClient value={assignment.clientId} set={clientId => setAssignment({ ...assignment, clientId })} options={clientOptions} /><Form.Item label="Rule name" extra="Give this matching rule a business-friendly name."><Input value={assignment.ruleName} onChange={e => setAssignment({ ...assignment, ruleName: e.target.value })} /></Form.Item><Form.Item label="Business unit" extra="Optional. Blank means all business units."><RecruitmentMasterSelect masterType="Business Unit" clientId={assignment.clientId} clientName={selectedClientName(assignment.clientId)} value={assignment.businessUnit} values={dropdownOptions('Business Unit', assignment.clientId)} dropdowns={dropdowns} onDropdownsChange={setDropdowns} onChange={value => setAssignment({ ...assignment, businessUnit: value })} emptyLabel="Any business unit" testId="assignment-business-unit" /></Form.Item><Form.Item label="Department" extra="Optional. Blank means all departments."><RecruitmentMasterSelect masterType="Department" clientId={assignment.clientId} clientName={selectedClientName(assignment.clientId)} value={assignment.department} values={departmentOptions(assignment.clientId)} dropdowns={dropdowns} onDropdownsChange={setDropdowns} onChange={value => setAssignment({ ...assignment, department: value })} emptyLabel="Any department" testId="assignment-department" /></Form.Item><Form.Item label="Position category" extra="Optional. Matches the RFR position category."><RecruitmentMasterSelect masterType="Position Category" clientId={assignment.clientId} clientName={selectedClientName(assignment.clientId)} value={assignment.positionCategory} values={masterOptions('Position Category', assignment.clientId)} dropdowns={dropdowns} onDropdownsChange={setDropdowns} onChange={value => setAssignment({ ...assignment, positionCategory: value })} emptyLabel="Any category" testId="assignment-position-category" /></Form.Item><Form.Item label="Location" extra="Optional. Matches the RFR job location."><SearchSelect value={assignment.location} onChange={value => setAssignment({ ...assignment, location: String(value) })} options={selectOptions(locationOptions, 'Any location')} /></Form.Item><Form.Item label="Project" extra="Optional exact text match with RFR project."><Input value={assignment.project} onChange={e => setAssignment({ ...assignment, project: e.target.value })} placeholder="Blank means any project" /></Form.Item><Form.Item label="Experience range" extra="Optional. Matches the RFR experience range."><RecruitmentMasterSelect masterType="Experience Range" clientId={assignment.clientId} clientName={selectedClientName(assignment.clientId)} value={assignment.experienceRange} values={masterOptions('Experience Range', assignment.clientId)} dropdowns={dropdowns} onDropdownsChange={setDropdowns} onChange={value => setAssignment({ ...assignment, experienceRange: value })} emptyLabel="Any experience" testId="assignment-experience-range" /></Form.Item><Form.Item label="Hiring priority" extra="Optional. Matches RFR priority."><RecruitmentMasterSelect masterType="Assignment Priority" clientId={assignment.clientId} clientName={selectedClientName(assignment.clientId)} value={assignment.priority} values={masterOptions('Assignment Priority', assignment.clientId, ['Low', 'Normal', 'High', 'Critical'])} dropdowns={dropdowns} onDropdownsChange={setDropdowns} onChange={value => setAssignment({ ...assignment, priority: value })} emptyLabel="Any priority" testId="assignment-priority" /></Form.Item><Form.Item label="Recruiter" required extra="This user will be auto-assigned when the rule matches."><SearchSelect value={assignment.recruiterUserId} onChange={v => setAssignment({ ...assignment, recruiterUserId: Number(v) })} options={selectOptions(users.map(u => ({ value: u.id, label: `${u.displayName} - ${u.email}` })), 'Select recruiter', 0)} /></Form.Item><Form.Item label="Max open positions" extra="Used only when workload based is enabled. 0 means no cap."><InputNumber value={assignment.maximumOpenPositions} onChange={v => setAssignment({ ...assignment, maximumOpenPositions: Number(v || 0) })} /></Form.Item><Form.Item label="Sort order" extra="Lower number is checked first."><InputNumber value={assignment.sortOrder} onChange={v => setAssignment({ ...assignment, sortOrder: Number(v || 100) })} /></Form.Item><Form.Item><Space direction="vertical"><Checkbox checked={assignment.workloadBased} onChange={e => setAssignment({ ...assignment, workloadBased: e.target.checked })}>Skip recruiter if workload cap is reached</Checkbox><Checkbox checked={assignment.manualOverrideAllowed} onChange={e => setAssignment({ ...assignment, manualOverrideAllowed: e.target.checked })}>Allow manual override after assignment</Checkbox><Checkbox checked={assignment.isActive} onChange={e => setAssignment({ ...assignment, isActive: e.target.checked })}>Active</Checkbox></Space></Form.Item></>}
         {drawer === 'sla' && <><CommonClient value={sla.clientId} set={clientId => setSla({ ...sla, clientId })} options={clientOptions} /><Form.Item label="Process"><Input value={sla.processName} onChange={e => setSla({ ...sla, processName: e.target.value })} /></Form.Item><Form.Item label="Duration days"><InputNumber value={sla.durationDays} onChange={v => setSla({ ...sla, durationDays: Number(v || 0) })} /></Form.Item><Form.Item label="Reminder before days"><InputNumber value={sla.reminderBeforeDays} onChange={v => setSla({ ...sla, reminderBeforeDays: Number(v || 0) })} /></Form.Item><Form.Item><Space direction="vertical"><Checkbox checked={sla.reminderEnabled} onChange={e => setSla({ ...sla, reminderEnabled: e.target.checked })}>Reminder enabled</Checkbox><Checkbox checked={sla.escalationEnabled} onChange={e => setSla({ ...sla, escalationEnabled: e.target.checked })}>Escalation enabled</Checkbox></Space></Form.Item></>}
@@ -259,6 +261,53 @@ function SettingTiles({ items, value, onChange }: { items: typeof settingOptions
 }
 function CommonClient(p: { value: number; set: (value: number) => void; options: { value: string | number; label: string }[] }) {
   return <Form.Item label="Client" required><SearchSelect value={p.value} onChange={v => p.set(Number(v))} options={p.options} /></Form.Item>
+}
+function validateAdminForm(drawer: string, value: {
+  setting: RecruitmentSetting
+  partner: RecruitmentPartner
+  assignment: RecruitmentAssignmentRule
+  sla: RecruitmentSlaRule
+  checklist: RecruitmentDocumentChecklist
+  approval: RecruitmentApprovalMapping
+  template: RecruitmentTemplate
+}) {
+  if (drawer === 'setting') {
+    if (!value.setting.clientId) return 'Select the client whose recruitment settings you are configuring.'
+    if (value.setting.enableCandidatePortal) {
+      if (!value.setting.publicPortalBaseUrl.trim()) return 'Enter the public candidate portal URL because Candidate portal is enabled.'
+      try { new URL(value.setting.publicPortalBaseUrl) } catch { return 'Enter a valid public candidate portal URL, including https://.' }
+    }
+  }
+  if (drawer === 'partner') {
+    if (!value.partner.clientId) return 'Select the client for this hiring partner.'
+    if (!value.partner.code.trim() || !value.partner.name.trim()) return 'Enter both partner code and partner name.'
+    if (value.partner.email && !/^\S+@\S+\.\S+$/.test(value.partner.email)) return 'Enter a valid partner email address or leave it blank.'
+  }
+  if (drawer === 'assignment') {
+    if (!value.assignment.clientId) return 'Select the client for this assignment rule.'
+    if (!value.assignment.ruleName.trim()) return 'Enter a business-friendly rule name.'
+    if (!value.assignment.recruiterUserId) return 'Select the recruiter who should receive matching requests.'
+  }
+  if (drawer === 'sla') {
+    if (!value.sla.clientId) return 'Select the client for this SLA rule.'
+    if (!value.sla.processName.trim()) return 'Enter the recruitment process this SLA applies to.'
+    if (value.sla.durationDays <= 0) return 'SLA duration must be greater than zero days.'
+    if (value.sla.reminderEnabled && value.sla.reminderBeforeDays >= value.sla.durationDays) return 'Reminder must be scheduled before the SLA due day.'
+  }
+  if (drawer === 'checklist') {
+    if (!value.checklist.clientId) return 'Select the client for this document requirement.'
+    if (!value.checklist.documentName.trim()) return 'Enter the document name.'
+  }
+  if (drawer === 'approval') {
+    if (!value.approval.clientId) return 'Select the client for this approval mapping.'
+    if (!value.approval.workflowId) return 'Select the workflow that will handle this approval.'
+  }
+  if (drawer === 'template') {
+    if (!value.template.clientId) return 'Select the client for this template.'
+    if (!value.template.templateCode.trim() || !value.template.templateName.trim()) return 'Enter both template code and template name.'
+    if (!value.template.bodyTemplate.trim()) return 'Enter the template content.'
+  }
+  return ''
 }
 function drawerTitle(drawer: string) {
   const title = drawer === 'partner' ? 'Consultant / Vendor' : drawer ? labelize(drawer) : ''

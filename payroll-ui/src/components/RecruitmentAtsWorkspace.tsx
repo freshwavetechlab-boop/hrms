@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Badge, Button, Card, Col, Descriptions, Drawer, Empty, Input, Progress, Row, Select, Space, Spin, Statistic, Tag, Typography } from 'antd'
-import { EyeOutlined, FileAddOutlined, ReloadOutlined, RobotOutlined, UploadOutlined } from '@ant-design/icons'
+import { Badge, Button, Card, Col, Descriptions, Drawer, Empty, Input, Popconfirm, Progress, Row, Select, Space, Spin, Statistic, Tag, Typography } from 'antd'
+import { DeleteOutlined, EyeOutlined, FileAddOutlined, ReloadOutlined, RobotOutlined, UploadOutlined } from '@ant-design/icons'
+import { useAuthSession } from './AuthGate'
 import DataTable from './DataTable'
 import RecruitmentAtsScoreDetails from './RecruitmentAtsScoreDetails'
 import RecruitmentResumeIntake, { type RecruitmentResumeIntakeMode } from './RecruitmentResumeIntake'
 import { getClients } from '../services/payrollService'
 import { getRecruitmentOpenPositions } from '../services/recruitmentService'
-import { getApplications, getCandidate, scoreApplication } from '../services/recruitmentTalentService'
+import { deleteApplication, getApplications, getCandidate, scoreApplication } from '../services/recruitmentTalentService'
 import type { Client, RecruitmentCandidateApplication, RecruitmentCandidateDetail, RecruitmentOpenPosition } from '../types/payroll'
 import './RecruitmentResumeIntake.css'
 
@@ -24,6 +25,8 @@ type IntakeLaunch = {
 }
 
 export default function RecruitmentAtsWorkspace({ initialClientId = 0, initialPositionId = 0, initialUploadMode }: Props) {
+  const session = useAuthSession()
+  const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
   const [positions, setPositions] = useState<RecruitmentOpenPosition[]>([])
   const [applications, setApplications] = useState<RecruitmentCandidateApplication[]>([])
@@ -131,6 +134,7 @@ export default function RecruitmentAtsWorkspace({ initialClientId = 0, initialPo
             <Button size="small" icon={<EyeOutlined />} onClick={() => void openEvidence(row)}>Evidence</Button>
             <Button size="small" loading={scoringId === row.id} disabled={!row.resumeId} onClick={() => void recalculate(row)}>Score</Button>
             <Button size="small" type="primary" icon={<UploadOutlined />} onClick={() => launchIntake('single', row)}>Resume</Button>
+            {canDelete && <Popconfirm title="Delete this application?" description="ATS scores and safe pipeline data will be removed. Interviews, offers and joined records are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteApplication(row.id); if (response.ok) { if (detail?.applications.some(item => item.id === row.id)) setDetail(null); await load() } }}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}
           </Space>}
           columns={[
             { key: 'applicationCode', label: 'Application', width: '150px', render: row => <div className="ats-primary-cell"><b>{row.applicationCode}</b><span>{new Date(row.appliedAt).toLocaleDateString('en-IN')}</span></div> },

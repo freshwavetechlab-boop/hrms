@@ -7,6 +7,27 @@ using System.Text.Json;
 using Dapper;
 using SmartComponents.LocalEmbeddings;
 
+// Friendly local aliases:
+//   dotnet run dev  -> appsettings.json + appsettings.Development.json
+//   dotnet run prod -> appsettings.json (and appsettings.Production.json when present)
+// Set both variables before creating the builder so launchSettings.json cannot
+// force Development when the explicit "prod" alias was requested.
+var environmentAlias = args.FirstOrDefault(arg =>
+    arg.Equals("dev", StringComparison.OrdinalIgnoreCase) ||
+    arg.Equals("development", StringComparison.OrdinalIgnoreCase) ||
+    arg.Equals("prod", StringComparison.OrdinalIgnoreCase) ||
+    arg.Equals("production", StringComparison.OrdinalIgnoreCase));
+
+if (environmentAlias is not null)
+{
+    var selectedEnvironment = environmentAlias.StartsWith("prod", StringComparison.OrdinalIgnoreCase)
+        ? Environments.Production
+        : Environments.Development;
+    Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", selectedEnvironment);
+    Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", selectedEnvironment);
+    args = args.Where(arg => !arg.Equals(environmentAlias, StringComparison.OrdinalIgnoreCase)).ToArray();
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Logging.ClearProviders();
@@ -906,6 +927,39 @@ app.MapPost("/api/ess/expenses/claims/{id:long}/submit", async (EssMssRepository
 });
 app.MapGet("/api/ess/expenses/claims/{id:long}/trail", async (EssMssRepository repository,long id,HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var trail=await repository.GetExpenseClaimTrailAsync(id,user.EmployeeId.Value,user.ClientId); return trail is null ? Results.NotFound() : Results.Ok(trail); });
 
+app.MapGet("/api/ess/admin/travel/requests", async (EssMssRepository repository, HttpContext context) =>
+    HasEssAdminMaintenance(context) ? Results.Ok(await repository.GetTravelRequestsForAdminAsync(CurrentUser(context).ClientId)) : Results.StatusCode(403));
+app.MapPost("/api/ess/admin/travel/requests/{id:long}/revert", async (EssMssRepository repository, long id, EssAdminMaintenanceRequest request, HttpContext context) =>
+{
+    if (!HasEssAdminMaintenance(context)) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var result = await repository.AdminRevertTravelRequestAsync(id, user.ClientId, user.Id, request.Reason);
+    return result.Success ? Results.Ok(result) : Results.Conflict(result);
+});
+app.MapDelete("/api/ess/admin/travel/requests/{id:long}", async (EssMssRepository repository, long id, [FromBody] EssAdminMaintenanceRequest request, HttpContext context) =>
+{
+    if (!HasEssAdminMaintenance(context)) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var result = await repository.AdminDeleteTravelRequestAsync(id, user.ClientId, user.Id, request.Reason);
+    return result.Success ? Results.Ok(result) : Results.Conflict(result);
+});
+app.MapGet("/api/ess/admin/expenses/claims", async (EssMssRepository repository, HttpContext context) =>
+    HasEssAdminMaintenance(context) ? Results.Ok(await repository.GetExpenseClaimsForAdminAsync(CurrentUser(context).ClientId)) : Results.StatusCode(403));
+app.MapPost("/api/ess/admin/expenses/claims/{id:long}/revert", async (EssMssRepository repository, long id, EssAdminMaintenanceRequest request, HttpContext context) =>
+{
+    if (!HasEssAdminMaintenance(context)) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var result = await repository.AdminRevertExpenseClaimAsync(id, user.ClientId, user.Id, request.Reason);
+    return result.Success ? Results.Ok(result) : Results.Conflict(result);
+});
+app.MapDelete("/api/ess/admin/expenses/claims/{id:long}", async (EssMssRepository repository, long id, [FromBody] EssAdminMaintenanceRequest request, HttpContext context) =>
+{
+    if (!HasEssAdminMaintenance(context)) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var result = await repository.AdminDeleteExpenseClaimAsync(id, user.ClientId, user.Id, request.Reason);
+    return result.Success ? Results.Ok(result) : Results.Conflict(result);
+});
+
 app.MapGet("/api/ess/recruitment/options", async (RecruitmentRepository repository, HttpContext context) =>
 {
     var user = CurrentUser(context);
@@ -992,6 +1046,12 @@ app.MapPost("/api/recruitment/requisitions", async (RecruitmentRepository reposi
     var (row, error) = await repository.SaveDraftAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
+app.MapDelete("/api/recruitment/requisitions/{id:long}", async (RecruitmentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteRequisitionAsAdminAsync(id, CurrentUser(context));
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
 app.MapPost("/api/recruitment/requisitions/{id:long}/submit", async (RecruitmentRepository repository, WorkflowRepository workflows, long id, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
@@ -1016,6 +1076,12 @@ app.MapPost("/api/recruitment/work-orders", async (RecruitmentCaseRepository rep
     var (row, error) = await repository.SaveWorkOrderAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
+app.MapDelete("/api/recruitment/work-orders/{id:long}", async (RecruitmentCaseRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteWorkOrderAsync(id, CurrentUser(context));
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
 app.MapGet("/api/recruitment/hiring-cases", async (RecruitmentCaseRepository repository, int? clientId, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.hiring-case.view") && !HasPermission(context, "recruitment.hiring-case.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
@@ -1032,6 +1098,13 @@ app.MapPost("/api/recruitment/hiring-cases/start", async (RecruitmentCaseReposit
     if (!HasPermission(context, "recruitment.hiring-case.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var (row, error) = await repository.StartHiringCaseAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapDelete("/api/recruitment/hiring-cases/{id:long}", async (RecruitmentCaseRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteHiringCaseAsync(id, CurrentUser(context),
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
 app.MapPost("/api/recruitment/hiring-cases/{id:long}/advance", async (RecruitmentCaseRepository repository, long id, MoveRecruitmentHiringCaseRequest request, HttpContext context) =>
 {
@@ -1162,6 +1235,12 @@ app.MapGet("/api/recruitment/candidates/{id:long}", async (RecruitmentTalentRepo
     var row = await repository.GetCandidateDetailAsync(id, CurrentUser(context));
     return row is null ? Results.NotFound() : Results.Ok(row);
 });
+app.MapDelete("/api/recruitment/open-positions/{id:long}", async (RecruitmentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteOpenPositionAsync(id, CurrentUser(context));
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
 app.MapPost("/api/recruitment/candidates", async (RecruitmentTalentRepository repository, SaveRecruitmentCandidate request, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
@@ -1267,6 +1346,13 @@ app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository re
     var (row, error) = await repository.SaveInterviewAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
+app.MapDelete("/api/recruitment/interviews/{id:long}", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteInterviewAsync(id, CurrentUser(context),
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
 app.MapGet("/api/recruitment/interviews/{id:long}/feedback", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
     HasPermission(context, "recruitment.interview.panel") || HasPermission(context, "recruitment.interview.schedule") || HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetInterviewFeedbackAsync(id, CurrentUser(context))) : Results.StatusCode(403));
 app.MapPost("/api/recruitment/interviews/{id:long}/feedback", async (RecruitmentTalentRepository repository, long id, SaveRecruitmentInterviewFeedback request, HttpContext context) =>
@@ -1282,6 +1368,13 @@ app.MapPost("/api/recruitment/offers", async (RecruitmentTalentRepository reposi
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var (row, error) = await repository.SaveOfferAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapDelete("/api/recruitment/offers/{id:long}", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteOfferAsync(id, CurrentUser(context),
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
 app.MapPost("/api/recruitment/offers/{id:long}/generate-letter", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
 {
@@ -1358,6 +1451,12 @@ recruitmentOrchestration.MapPost("/forms", async (RecruitmentFormRepository repo
     var (row, error) = await repository.SaveDefinitionAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
+recruitmentOrchestration.MapDelete("/forms/{id:long}", async (RecruitmentFormRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteDefinitionAsync(id, CurrentUser(context));
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
 recruitmentOrchestration.MapPost("/forms/{id:long}/versions", async (RecruitmentFormRepository repository, long id, SaveDynamicFormVersion request, HttpContext context) =>
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
@@ -1385,6 +1484,12 @@ recruitmentOrchestration.MapPost("/job-descriptions", async (RecruitmentPipeline
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
     var (row, error) = await repository.SaveJobDescriptionVersionAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapDelete("/job-descriptions/{id:long}", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteJobDescriptionVersionAsync(id, CurrentUser(context));
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
 recruitmentOrchestration.MapPost("/job-descriptions/{id:long}/submit", async (RecruitmentPipelineRepository repository, long id, long workflowId, HttpContext context) =>
 {
@@ -1415,6 +1520,12 @@ recruitmentOrchestration.MapPost("/job-postings/{id:long}/publish", async (Recru
 });
 recruitmentOrchestration.MapPost("/job-postings/{id:long}/close", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
     !HasRecruitmentManagement(context) ? Results.StatusCode(403) : await repository.CloseJobPostingAsync(id, CurrentUser(context)) ? Results.NoContent() : Results.NotFound());
+recruitmentOrchestration.MapDelete("/job-postings/{id:long}", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteJobPostingAsync(id, CurrentUser(context));
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
 
 recruitmentOrchestration.MapGet("/pipelines", async (RecruitmentPipelineRepository repository, int? clientId, HttpContext context) =>
     !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetPipelinesAsync(clientId, CurrentUser(context))));
@@ -1430,6 +1541,12 @@ recruitmentOrchestration.MapPost("/pipelines", async (RecruitmentPipelineReposit
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
     var (row, error) = await repository.SavePipelineAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapDelete("/pipelines/{id:long}", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeletePipelineDefinitionAsync(id, CurrentUser(context));
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
 recruitmentOrchestration.MapGet("/pipelines/{id:long}/versions", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
     !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetPipelineVersionsAsync(id, CurrentUser(context))));
@@ -2340,6 +2457,15 @@ app.MapPost("/api/travel-expense/categories", async (TravelExpenseRepository rep
     return string.IsNullOrWhiteSpace(error) ? Results.Ok(new { id }) : Results.BadRequest(new { error });
 })
 .WithName("SaveTravelExpenseCategory")
+.WithOpenApi();
+
+app.MapDelete("/api/travel-expense/{kind}/{id:long}", async (TravelExpenseRepository repository, string kind, long id, int? clientId, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await repository.DeleteAsync(kind, id, clientId, CurrentUser(context).Email);
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+})
+.WithName("DeleteTravelExpenseConfiguration")
 .WithOpenApi();
 
 app.MapGet("/api/recruitment-admin", async (RecruitmentAdminRepository repository, HttpContext context) =>
@@ -3346,6 +3472,14 @@ static bool HasRecruitmentManagement(HttpContext context) =>
 
 static bool HasAttendanceManagement(HttpContext context) =>
     HasPermission(context, "attendance.manage") || HasPermission(context, "mss.attendance.manage") || HasPermission(context, "settings.manage");
+
+static bool HasEssAdminMaintenance(HttpContext context)
+{
+    var user = CurrentUser(context);
+    return user.Roles.Contains("super_admin", StringComparer.OrdinalIgnoreCase)
+        || user.Permissions.Contains("settings.manage", StringComparer.OrdinalIgnoreCase)
+        || user.Permissions.Contains("security.manage", StringComparer.OrdinalIgnoreCase);
+}
 
 static bool CanManageFrevoPilotChats(HttpContext context)
 {

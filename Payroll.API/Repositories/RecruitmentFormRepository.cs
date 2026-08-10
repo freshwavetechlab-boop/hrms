@@ -278,6 +278,64 @@ FROM form_definitions d LEFT JOIN clients c ON c.Id=d.ClientId WHERE d.Id=@Id AN
         return definition;
     }
 
+    public async Task<(bool Ok, string Error)> DeleteDefinitionAsync(long id, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var scope = EffectiveScope(user, null);
+        var definition = await db.QueryFirstOrDefaultAsync<(long Id, int ClientId, string FormName)>(
+            @"SELECT Id,ClientId,FormName FROM form_definitions
+WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, ClientId = scope });
+        if (definition.Id <= 0) return (false, "Form definition was not found in your client scope.");
+
+        var versions = (await db.QueryAsync<long>("SELECT Id FROM form_versions WHERE FormDefinitionId=@Id", new { Id = id })).ToArray();
+        if (versions.Length == 0)
+        {
+            await db.ExecuteAsync("DELETE FROM form_definitions WHERE Id=@Id", new { Id = id });
+            return (true, "");
+        }
+
+        var postingCount = await db.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM recruitment_job_postings WHERE ApplicationFormVersionId IN @Ids", new { Ids = versions });
+        if (postingCount > 0)
+            return (false, $"This form is used by {postingCount} job posting(s). Delete or change those postings first.");
+
+        var submissionCount = await db.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM form_submissions WHERE FormVersionId IN @Ids", new { Ids = versions });
+        if (submissionCount > 0)
+            return (false, $"This form has {submissionCount} candidate/employee submission(s). Delete their owning applications or records first.");
+
+        var stageCount = await db.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM recruitment_stage_external_form_configurations WHERE FormVersionId IN @Ids", new { Ids = versions });
+        if (stageCount > 0)
+            return (false, $"This form is configured in {stageCount} hiring pipeline stage(s). Remove it from those pipeline versions first.");
+
+        await using var tx = await db.BeginTransactionAsync();
+        try
+        {
+            var fieldIds = (await db.QueryAsync<long>("SELECT Id FROM form_fields WHERE FormVersionId IN @Ids", new { Ids = versions }, tx)).ToArray();
+            if (fieldIds.Length > 0)
+            {
+                await db.ExecuteAsync(@"DELETE FROM form_field_validation_rules WHERE FieldId IN @Ids;
+DELETE FROM form_field_semantic_mappings WHERE FieldId IN @Ids;
+DELETE FROM form_field_options WHERE FieldId IN @Ids;
+DELETE FROM form_fields WHERE Id IN @Ids;", new { Ids = fieldIds }, tx);
+            }
+            await db.ExecuteAsync("DELETE FROM form_sections WHERE FormVersionId IN @Ids", new { Ids = versions }, tx);
+            await db.ExecuteAsync("UPDATE form_definitions SET CurrentPublishedVersionId=NULL WHERE Id=@Id", new { Id = id }, tx);
+            await db.ExecuteAsync("DELETE FROM form_versions WHERE FormDefinitionId=@Id", new { Id = id }, tx);
+            await db.ExecuteAsync("DELETE FROM form_definitions WHERE Id=@Id", new { Id = id }, tx);
+            await tx.CommitAsync();
+            return (true, "");
+        }
+        catch (MySqlException ex)
+        {
+            await tx.RollbackAsync();
+            logger.LogWarning(ex, "Admin deletion of recruitment form {FormDefinitionId} was blocked by a dependency.", id);
+            return (false, "This form still has linked data. Remove the dependent recruitment record first, then retry.");
+        }
+    }
+
     public async Task<DynamicFormVersion?> GetPublishedVersionAsync(long versionId)
     {
         await using var db = Db();

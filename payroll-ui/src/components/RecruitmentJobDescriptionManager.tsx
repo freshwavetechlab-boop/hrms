@@ -5,12 +5,13 @@ import {
 } from '@ant-design/icons'
 import {
   Alert, Button, Card, Col, Collapse, Descriptions, Empty, Form, Input, InputNumber, List,
-  Modal, Row, Select, Space, Spin, Switch, Tag, Tooltip, Typography, message,
+  Modal, Popconfirm, Row, Select, Space, Spin, Switch, Tag, Tooltip, Typography, message,
 } from 'antd'
+import { useAuthSession } from './AuthGate'
 import { getClients } from '../services/payrollService'
 import { getRecruitmentRequisitions } from '../services/recruitmentService'
 import {
-  getRecruitmentJobDescription, getRecruitmentJobDescriptions, getRecruitmentOrchestrationLookups,
+  deleteRecruitmentJobDescription, getRecruitmentJobDescription, getRecruitmentJobDescriptions, getRecruitmentOrchestrationLookups,
   saveRecruitmentJobDescription, submitRecruitmentJobDescription,
 } from '../services/recruitmentOrchestrationService'
 import type { Client, RecruitmentRequisition } from '../types/payroll'
@@ -34,6 +35,8 @@ const localId = () => -Math.floor(Date.now() + Math.random() * 100000)
 const editableStatuses = new Set(['Draft', 'Sent Back'])
 
 export default function RecruitmentJobDescriptionManager({ initialClientId = 0, initialRequisitionId = 0, onSaved }: Props) {
+  const session = useAuthSession()
+  const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
   const [clientId, setClientId] = useState(initialClientId)
   const [requisitions, setRequisitions] = useState<RecruitmentRequisition[]>([])
@@ -174,7 +177,7 @@ export default function RecruitmentJobDescriptionManager({ initialClientId = 0, 
     <Spin spinning={loading}>
       {!selectedRequisition ? <Card><Empty description={requisitions.length ? 'Select a hiring requisition to prepare its job description.' : 'No hiring requisition exists for this client. Create and approve an RFR first; its JD draft will be prepared automatically here.'} /></Card> : <div className="jd-workspace-layout">
         <Card size="small" className="jd-version-list" title={<Space><AuditOutlined /> Versions</Space>} extra={<Button size="small" icon={<PlusOutlined />} onClick={startRevision}>New version</Button>}>
-          <List dataSource={versions} locale={{ emptyText: 'No saved versions yet.' }} renderItem={row => <List.Item className={draft?.id === row.id ? 'active' : ''} onClick={() => void chooseVersion(row.id)}>
+          <List dataSource={versions} locale={{ emptyText: 'No saved versions yet.' }} renderItem={row => <List.Item className={draft?.id === row.id ? 'active' : ''} onClick={() => void chooseVersion(row.id)} actions={canDelete ? [<Popconfirm key="delete" title="Delete this JD version?" description="Delete linked postings first. ATS-scored versions are retained for audit." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async event => { event?.stopPropagation(); const response = await deleteRecruitmentJobDescription(row.id); if (response.ok) { if (draft?.id === row.id) setDraft(null); setVersions(await getRecruitmentJobDescriptions(requisitionId)) } }}><Button aria-label="Delete job description" danger size="small" icon={<DeleteOutlined />} onClick={event => event.stopPropagation()} /></Popconfirm>] : []}>
             <List.Item.Meta title={<Space><span>Version {row.versionNumber}</span><StatusTag status={row.status} /></Space>} description={row.title || 'Untitled job description'} />
           </List.Item>} />
           {!versions.length && <Alert showIcon type="info" message="Your first draft is ready" description="Complete the role profile, save it, then submit it to the configured approval workflow." />}

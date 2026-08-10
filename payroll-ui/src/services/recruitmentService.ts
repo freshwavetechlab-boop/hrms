@@ -1,4 +1,4 @@
-import { apiRequest, getJson, postEmpty, postJson } from './apiClient'
+import { apiRequest, deleteJson, getJson, postEmpty, postJson } from './apiClient'
 import type { RecruitmentDashboard, RecruitmentOpenPosition, RecruitmentOperationsOptions, RecruitmentPositionDetail, RecruitmentRequisition, SaveRecruitmentRequisition } from '../types/payroll'
 
 const emptyDashboard: RecruitmentDashboard = { drafts: 0, pendingApproval: 0, approved: 0, rejected: 0, returned: 0, withdrawn: 0, openPositions: 0, filledPositions: 0, cancelledPositions: 0, onHoldPositions: 0, remainingPositions: 0, averageApprovalHours: 0, departmentWiseHiring: [], companyWiseHiring: [], priorityWiseHiring: [], upcomingJoiningTargets: [] }
@@ -17,7 +17,12 @@ export const saveRecruitmentRequisition = (request: SaveRecruitmentRequisition) 
 export const submitRecruitmentRequisition = (id: number) =>
   postEmpty<RecruitmentRequisition | null>(`/api/recruitment/requisitions/${id}/submit`, null)
 
+export const deleteRecruitmentRequisition = (id: number) =>
+  deleteJson(`/api/recruitment/requisitions/${id}`, null, { successMessage: 'Requisition deleted.' })
+
 export const getRecruitmentOpenPositions = () => getJson<RecruitmentOpenPosition[]>('/api/recruitment/open-positions', [])
+export const deleteRecruitmentOpenPosition = (id: number) =>
+  deleteJson(`/api/recruitment/open-positions/${id}`, null, { successMessage: 'Open position deleted.' })
 export const getRecruitmentOperationsOptions = () => getJson<RecruitmentOperationsOptions>('/api/recruitment/operations/options', { allowMultipleRecruiters: false, enableVendorHiring: false, enableConsultantHiring: false, enableInternalHiring: false, enableReferralHiring: false, enableDocumentVerification: false, recruiters: [], vendors: [], consultants: [], positionStatuses: [], publishingChannels: [], assignmentPriorities: [] })
 export const getRecruitmentMasterOptions = (masterType: string) => getJson<string[]>(`/api/recruitment/masters/${encodeURIComponent(masterType)}`, [])
 export const getRecruitmentOpenPositionDetail = (id: number) => getJson<RecruitmentPositionDetail | null>(`/api/recruitment/open-positions/${id}`, null)

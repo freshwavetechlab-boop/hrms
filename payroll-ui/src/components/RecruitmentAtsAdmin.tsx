@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Checkbox, Col, Form, Input, InputNumber, List, Modal, Popconfirm, Progress, Row, Select, Space, Switch, Tabs, Tag, Tooltip, Typography } from 'antd'
+import { Alert, Button, Card, Checkbox, Col, Form, Input, InputNumber, List, Popconfirm, Progress, Row, Select, Space, Switch, Tabs, Tag, Tooltip, Typography } from 'antd'
 import { ApiOutlined, CheckCircleOutlined, DeleteOutlined, EditOutlined, PlusOutlined, QuestionCircleOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
 import DataTable from './DataTable'
 import RecruitmentMasterSelect from './RecruitmentMasterSelect'
 import SearchSelect, { selectOptions } from './SearchSelect'
 import { deleteAtsProfile, deleteRecruitmentAiScoringSettings, deleteRecruitmentSkill, getAtsCriterionCatalog, getAtsProfiles, getRecruitmentAiScoringSettings, getRecruitmentSkills, saveAtsProfile, saveRecruitmentAiScoringSettings, saveRecruitmentSkill, testRecruitmentAiScoringSettings } from '../services/recruitmentTalentService'
 import type { Client, Drop, RecruitmentAiScoringSettings, RecruitmentAtsScoringCriterion, RecruitmentAtsScoringProfile, RecruitmentSkill } from '../types/payroll'
+import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
 
 const criterionDefinitions: RecruitmentAtsScoringCriterion[] = [
   { id: 0, scoringProfileId: 0, criterionCode: 'requiredSkills', criterionLabel: 'Required skills', evaluationType: 'SkillMatch', weight: 35, displayOrder: 10, isActive: true },
@@ -194,7 +195,11 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
       }
     ]} />
 
-    <Modal open={!!profile} title={profile?.id ? `Edit ATS profile - v${profile.versionNumber}` : 'Create ATS scoring profile'} onCancel={() => setProfile(null)} onOk={() => void saveProfile()} okText="Save profile" confirmLoading={saving} okButtonProps={{ disabled: Boolean(profileError) }} width={980} destroyOnClose>
+    <RecruitmentEditorDrawer open={!!profile} eyebrow="ATS configuration"
+      title={profile?.id ? `Edit ATS profile - v${profile.versionNumber}` : 'Create ATS scoring profile'}
+      description="Configure explainable scoring, shortlist thresholds and evidence weights for one client."
+      onClose={() => { if (!saving) setProfile(null) }} onSubmit={() => void saveProfile()} submitText="Save profile"
+      submitLoading={saving} submitDisabled={Boolean(profileError)} width="min(1040px, 96vw)" destroyOnClose>
       {profile && <Form component="div" layout="vertical">
         <Row gutter={16}>
           <Col xs={24} md={8}><Form.Item label="Client" required extra={profile.id > 0 ? 'Client ownership is fixed after creation. Create a new profile for another client.' : undefined}>{profile.id > 0 ? <Input disabled value={clients.find(row => row.id === profile.clientId)?.name || profile.clientName || `Client #${profile.clientId}`} /> : <SearchSelect value={profile.clientId} onChange={value => setProfile({ ...profile, clientId: Number(value) })} options={clientOptions} />}</Form.Item></Col>
@@ -232,9 +237,12 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
         </Space></Form.Item>
         {profileError && <Alert type="error" showIcon message={profileError} />}
       </Form>}
-    </Modal>
+    </RecruitmentEditorDrawer>
 
-    <Modal open={!!skill} title="Recruitment skill" onCancel={() => setSkill(null)} onOk={() => void saveSkill()} okButtonProps={{ disabled: !skill?.skillName.trim() }}>
+    <RecruitmentEditorDrawer open={!!skill} eyebrow="ATS skill dictionary" title={skill?.id ? 'Edit recruitment skill' : 'Add recruitment skill'}
+      description="Normalize resume terminology with a canonical skill and searchable aliases."
+      onClose={() => setSkill(null)} onSubmit={() => void saveSkill()} submitText={skill?.id ? 'Save changes' : 'Add skill'}
+      submitDisabled={!skill?.skillName.trim()} width="min(680px, 96vw)">
       {skill && <Form component="div" layout="vertical">
         <Form.Item label="Client scope"><SearchSelect disabled={skill.id > 0} value={skill.clientId} onChange={value => setSkill({ ...skill, clientId: Number(value) })} options={selectOptions(clients.map(row => ({ value: row.id, label: row.name })), 'Global', 0)} /></Form.Item>
         <Form.Item label="Skill name" required><Input value={skill.skillName} onChange={event => setSkill({ ...skill, skillName: event.target.value })} /></Form.Item>
@@ -243,6 +251,6 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
         <Form.Item label="Aliases" extra="Type an alias and press Enter. Comma-separated paste is also supported."><Select mode="tags" tokenSeparators={[',']} value={skill.aliases ?? []} onChange={(aliases: string[]) => setSkill({ ...skill, aliases: aliases.map(value => value.trim()).filter(Boolean) })} /></Form.Item>
         <Form.Item><Checkbox checked={skill.isActive} onChange={event => setSkill({ ...skill, isActive: event.target.checked })}>Active</Checkbox></Form.Item>
       </Form>}
-    </Modal>
+    </RecruitmentEditorDrawer>
   </>
 }

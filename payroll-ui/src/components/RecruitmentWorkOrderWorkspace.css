@@ -5,3 +5,26 @@
 .work-order-document > div:first-child span { margin-top: 4px; color: #777b8f; font-size: 12px; }
 @media (max-width: 900px) { .work-order-document { grid-template-columns: 1fr; } }
 .profile-batch-card{margin-top:18px;border-radius:16px}.profile-batch-compose{display:grid;grid-template-columns:1fr auto;gap:12px;margin-bottom:15px}.profile-batch-compose .ant-select{width:100%}.profile-batch-list{display:grid;gap:12px}.profile-batch-list>article{border:1px solid #e6e5ef;border-radius:14px;overflow:hidden;background:#fff}.profile-batch-list header,.profile-batch-list footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 15px;background:#fafafd}.profile-batch-list header div{display:grid;gap:3px}.profile-batch-list header span{font-size:11px;font-weight:800;letter-spacing:.06em;color:#766a9c}.profile-batch-people{display:grid;gap:8px;padding:13px 15px}.profile-batch-people>div{display:flex;justify-content:space-between;align-items:center;gap:10px}.profile-batch-people>div>span{display:flex;align-items:center;gap:8px}.profile-batch-list footer{font-size:12px;color:#716b7d;border-top:1px solid #efedf4}@media(max-width:720px){.profile-batch-compose{grid-template-columns:1fr}.profile-batch-list footer,.profile-batch-people>div{align-items:flex-start;flex-direction:column}}
+
+/* Compact, business-first presentation. The recruitment page already provides
+   journey context, so this workspace should prioritize records and actions. */
+.work-order-workspace{gap:14px}
+.work-order-command-bar{gap:18px;padding:16px 18px;border-radius:16px;box-shadow:0 8px 24px rgba(54,39,112,.06)}
+.work-order-command-bar>div:first-child{max-width:640px}
+.work-order-command-bar span{font-size:11px}
+.work-order-command-bar h2{margin:3px 0 4px;font-size:22px}
+.work-order-command-bar p{line-height:1.4}
+.work-order-command-bar .ant-input-search{width:210px}
+.work-order-command-bar .ant-select{min-width:200px}
+.work-order-metrics{gap:10px}
+.work-order-metrics .ant-card{border-radius:14px}
+.work-order-metrics .ant-card-body{padding:14px}
+.work-order-columns{gap:14px}
+.work-order-columns>.ant-card{border-radius:16px}
+.work-order-list,.hiring-case-list{gap:10px}
+.case-action-confirm{display:grid;gap:14px}
+.case-action-confirm p{margin:0;color:#676173;line-height:1.45}
+.case-action-confirm .ant-alert{margin:0}
+.ant-drawer-content .case-hero+.ant-alert{margin:-12px 0 18px}
+.work-order-command-bar>.ant-space span{color:inherit;font-size:inherit;font-weight:inherit;letter-spacing:normal;text-transform:none}
+.work-order-list article>button{align-items:flex-start}

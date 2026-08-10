@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
+import { Button, Checkbox, Select } from 'antd'
+import { AdminRecordMaintenanceModal } from '../components/AdminRecordMaintenanceModal'
+import type { AdminMaintenanceAction } from '../components/AdminRecordMaintenanceModal'
 import { essApi } from '../services/essApi'
-import type { ExpenseClaim, ExpenseDashboard, ExpenseLine, ExpenseOptions, LoadState, SaveExpenseClaim, User, WorkflowTrail } from '../types'
+import type { ExpenseCategoryOption, ExpenseClaim, ExpenseDashboard, ExpenseLine, ExpenseOptions, LoadState, SaveExpenseClaim, User, WorkflowTrail } from '../types'
 import { showToast, statusClass } from '../utils/ui'
+import { canMaintainTravelExpense } from '../utils/access'
 
 const today = new Date().toISOString().slice(0, 10)
 
@@ -25,20 +29,29 @@ const emptyLine = (options?: ExpenseOptions | null, expenseType = expenseTypeFro
   approvedAmount: 0,
   costCenter: '',
   project: '',
-  customer: options?.clientName ?? '',
+  customer: '',
   location: '',
   paymentMethod: options?.paymentMethods?.[0] ?? 'Employee Paid',
   receiptAttached: false,
   receiptFileName: '',
   description: '',
   status: 'Draft',
+  cityCategory: '',
+  distanceKm: 0,
+  dutyHours: 0,
+  lodgingClaimed: false,
+  lodgingIncludesFood: false,
+  alternativeStay: false,
+  overnightStay: false,
+  entitlementLabel: '',
+  entitlementMessage: '',
 })
 
 const draft0 = (options?: ExpenseOptions | null): SaveExpenseClaim => ({
   id: 0,
   expenseType: expenseTypeFromOptions(options),
   purpose: '',
-  customer: options?.clientName ?? '',
+  customer: '',
   project: '',
   costCenter: '',
   currency: options?.currencies?.[0] ?? 'INR',
@@ -56,8 +69,8 @@ const draftFromTravel = (options: ExpenseOptions | null | undefined, travelReque
     travelRequestId,
     expenseType: travelType,
     purpose: trip?.purpose || '',
-    customer: trip?.customer || options?.clientName || '',
-    project: trip?.project || '',
+    customer: '',
+    project: '',
     costCenter: trip?.costCenter || '',
     currency: options?.currencies?.[0] ?? 'INR',
     remarks: trip ? `Claim against ${trip.requestNumber}` : '',
@@ -66,6 +79,7 @@ const draftFromTravel = (options: ExpenseOptions | null | undefined, travelReque
 }
 
 export function ExpensePage({ user }: { user: User }) {
+  const adminMaintenance = canMaintainTravelExpense(user)
   const [state, setState] = useState<LoadState>('loading')
   const [options, setOptions] = useState<ExpenseOptions | null>(null)
   const [dashboard, setDashboard] = useState<ExpenseDashboard | null>(null)
@@ -76,8 +90,17 @@ export function ExpensePage({ user }: { user: User }) {
   const [status, setStatus] = useState('All')
   const [trailClaim, setTrailClaim] = useState<ExpenseClaim | null>(null)
   const [trail, setTrail] = useState<WorkflowTrail | null>(null)
+  const [maintenanceClaim, setMaintenanceClaim] = useState<ExpenseClaim | null>(null)
 
-  const load = () => Promise.all([essApi.expenseOptions(), essApi.expenseDashboard(), essApi.expenseClaims()])
+  const load = () => adminMaintenance
+    ? essApi.adminExpenseClaims().then(nextClaims => {
+      setOptions(null)
+      setDashboard(null)
+      setClaims(nextClaims)
+      setEditor(false)
+      setState('ready')
+    }).catch(() => setState('error'))
+    : Promise.all([essApi.expenseOptions(), essApi.expenseDashboard(), essApi.expenseClaims()])
     .then(([nextOptions, nextDashboard, nextClaims]) => {
       setOptions(nextOptions)
       setDashboard(nextDashboard)
@@ -89,11 +112,11 @@ export function ExpensePage({ user }: { user: User }) {
 
   useEffect(() => { void load() }, [user.email])
   useEffect(() => {
-    window.dispatchEvent(new CustomEvent('ess:page-title', { detail: { section: 'Travel & expense', title: editor ? (form.id ? 'Edit expense claim' : 'Other expense claim') : 'Expense claims' } }))
-  }, [editor, form.id])
+    window.dispatchEvent(new CustomEvent('ess:page-title', { detail: { section: 'Travel & expense', title: adminMaintenance ? 'Expense claim administration' : editor ? (form.id ? 'Edit expense claim' : 'Other expense claim') : 'Expense claims' } }))
+  }, [adminMaintenance, editor, form.id])
   useEffect(() => {
-    const open = () => { setForm(draft0(options)); setEditor(true) }
-    const openTravel = (event: Event) => { const id = Number((event as CustomEvent<{ travelRequestId?: number }>).detail?.travelRequestId || 0); setForm(draftFromTravel(options, id)); setEditor(true) }
+    const open = () => { if (!adminMaintenance) { setForm(draft0(options)); setEditor(true) } }
+    const openTravel = (event: Event) => { if (!adminMaintenance) { const id = Number((event as CustomEvent<{ travelRequestId?: number }>).detail?.travelRequestId || 0); setForm(draftFromTravel(options, id)); setEditor(true) } }
     const list = () => setEditor(false)
     window.addEventListener('ess:expense:new', open)
     window.addEventListener('ess:expense:from-travel', openTravel as EventListener)
@@ -103,7 +126,7 @@ export function ExpensePage({ user }: { user: User }) {
       window.removeEventListener('ess:expense:from-travel', openTravel as EventListener)
       window.removeEventListener('ess:expense:list', list)
     }
-  }, [options])
+  }, [adminMaintenance, options])
 
   const openNew = () => { setForm(draft0(options)); setEditor(true) }
   const openEdit = (claim: ExpenseClaim) => {
@@ -112,8 +135,8 @@ export function ExpensePage({ user }: { user: User }) {
       travelRequestId: claim.travelRequestId,
       expenseType: claim.expenseType || expenseTypeFromOptions(options),
       purpose: claim.purpose,
-      customer: claim.customer || options?.clientName || '',
-      project: claim.project,
+      customer: '',
+      project: '',
       costCenter: claim.costCenter,
       currency: claim.currency || 'INR',
       remarks: claim.remarks,
@@ -148,20 +171,36 @@ export function ExpensePage({ user }: { user: User }) {
     try { setTrail(await essApi.expenseTrail(claim.id)) }
     catch { showToast('Unable to load approval trail.', 'error') }
   }
+  const maintain = async (action: AdminMaintenanceAction, reason: string) => {
+    if (!maintenanceClaim) return
+    try {
+      const result = action === 'revert'
+        ? await essApi.adminRevertExpenseClaim(maintenanceClaim.id, reason)
+        : await essApi.adminDeleteExpenseClaim(maintenanceClaim.id, reason)
+      showToast(result.message, 'success')
+      setMaintenanceClaim(null)
+      await load()
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Unable to clean this expense claim.', 'error')
+      throw error
+    }
+  }
 
   const statuses = ['All', ...Array.from(new Set(claims.map(item => item.status)))]
-  const filtered = claims.filter(item => (status === 'All' || item.status === status) && (!query || `${item.claimNumber} ${item.purpose} ${item.customer} ${item.project} ${item.status}`.toLowerCase().includes(query.toLowerCase())))
+  const filtered = claims.filter(item => (status === 'All' || item.status === status) && (!query || `${item.claimNumber} ${item.purpose} ${item.expenseType} ${item.costCenter} ${item.status}`.toLowerCase().includes(query.toLowerCase())))
 
   if (state === 'loading') return <section className="travel-workspace"><div className="empty-work"><span>Loading expense workspace...</span></div></section>
   if (state === 'error') return <section className="travel-workspace"><div className="empty-work"><b>Expense workspace is unavailable.</b><span>Contact HR if this continues.</span></div></section>
-  if (editor) return <ExpenseEditor form={form} options={options} setForm={setForm} onSave={save} onBack={() => setEditor(false)} />
+  if (editor && !adminMaintenance) return <ExpenseEditor form={form} options={options} setForm={setForm} onSave={save} onBack={() => setEditor(false)} />
 
   return <section className="travel-workspace expense-workspace">
-    <div className="travel-head"><button type="button" onClick={openNew}>New expense claim</button></div>
+    <div className="travel-head">{adminMaintenance ? <div className="admin-maintenance-heading"><b>Expense claim cleanup</b><span>Revert approved test records to Draft or permanently remove records that have not been consumed by payroll.</span></div> : <button type="button" onClick={openNew}>New expense claim</button>}</div>
+    {adminMaintenance && <div className="admin-maintenance-banner"><b>Admin safety is active</b><span>Payroll-consumed claims and settled travel advances cannot be deleted. The system will identify the blocking dependency.</span></div>}
     {(options?.validationMessages ?? []).length > 0 && <div className="travel-warning">{options?.validationMessages.map(item => <span key={item}>{item}</span>)}</div>}
     <div className="travel-kpis">{dashboard && Object.entries({ Draft: dashboard.draftClaims, Pending: dashboard.pendingApproval, Approved: dashboard.approved, Rejected: dashboard.rejected, 'Pending payroll': dashboard.pendingPayroll, 'Approved value': formatMoney(dashboard.approvedAmount) }).map(([label, value]) => <article key={label}><span>{label}</span><strong>{value}</strong></article>)}</div>
-    <section className="travel-table-card"><div className="request-list-head"><h3>Claims</h3><div><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search expense claims" /><select value={status} onChange={event => setStatus(event.target.value)}>{statuses.map(item => <option key={item}>{item}</option>)}</select></div></div><div className="travel-table-scroll"><table className="travel-table"><thead><tr><th>Claim</th><th>Expense type</th><th>Purpose</th><th>Lines</th><th>Amount</th><th>Payroll</th><th>Status</th><th>Actions</th></tr></thead><tbody>{filtered.map(claim => <tr key={claim.id}><td><b>{claim.claimNumber || 'Draft'}</b><small>{dateText(claim.claimDate)}</small></td><td><b>{claim.expenseType || '-'}</b><small>{claim.travelRequestNumber ? `Travel: ${claim.travelRequestNumber}` : 'Standalone'}</small></td><td><b>{claim.purpose}</b><small>{claim.customer || '-'}</small></td><td><b>{claim.lines.length} line(s)</b><small>{claim.project || claim.costCenter || '-'}</small></td><td><b>{formatMoney(claim.totalClaimAmount)}</b><small>GST {formatMoney(claim.totalGstAmount)}</small></td><td><b>{claim.payrollStatus}</b><small>{claim.payrollRunId ? `Run #${claim.payrollRunId}` : claim.reimbursementComponentCode}</small></td><td><span className={`task-status ${statusClass(claim.status)}`}>{claim.status}</span></td><td><div className="travel-row-actions">{['Draft', 'Sent Back'].includes(claim.status) && <button type="button" onClick={() => openEdit(claim)}>Edit</button>}{['Draft', 'Sent Back'].includes(claim.status) && <button type="button" onClick={() => void submit(claim)}>Submit</button>}<button type="button" onClick={() => void openTrail(claim)}>Trail</button></div></td></tr>)}{!filtered.length && <tr><td colSpan={8}>No expense claims found.</td></tr>}</tbody></table></div></section>
+    <section className="travel-table-card"><div className="request-list-head"><h3>{adminMaintenance ? 'All accessible claims' : 'Claims'}</h3><div><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search expense claims" /><Select aria-label="Expense claim status" value={status} onChange={setStatus} options={statuses.map(item => ({ label: item, value: item }))} /></div></div><div className="travel-table-scroll"><table className="travel-table"><thead><tr><th>Claim</th><th>Expense type</th><th>Purpose</th><th>Lines</th><th>Amount</th><th>Payroll</th><th>Status</th><th>Actions</th></tr></thead><tbody>{filtered.map(claim => <tr key={claim.id}><td><b>{claim.claimNumber || 'Draft'}</b><small>{adminMaintenance ? claim.employeeName || 'Employee unavailable' : dateText(claim.claimDate)}</small>{adminMaintenance && <small>{dateText(claim.claimDate)}</small>}</td><td><b>{claim.expenseType || '-'}</b><small>{claim.travelRequestNumber ? `Travel: ${claim.travelRequestNumber}` : 'Standalone'}</small></td><td><b>{claim.purpose}</b><small>{claim.costCenter || 'Employee claim'}</small></td><td><b>{claim.lines.length} line(s)</b><small>Policy checked</small></td><td><b>{formatMoney(claim.totalClaimAmount)}</b><small>GST {formatMoney(claim.totalGstAmount)}</small></td><td><b>{claim.payrollStatus}</b><small>{claim.payrollRunId ? `Run #${claim.payrollRunId}` : claim.reimbursementComponentCode}</small></td><td><span className={`task-status ${statusClass(claim.status)}`}>{claim.status}</span></td><td><div className="travel-row-actions">{adminMaintenance ? <button type="button" className="admin-cleanup" onClick={() => setMaintenanceClaim(claim)}>{claim.status === 'Draft' ? 'Delete' : 'Revert / Delete'}</button> : <>{['Draft', 'Sent Back'].includes(claim.status) && <button type="button" onClick={() => openEdit(claim)}>Edit</button>}{['Draft', 'Sent Back'].includes(claim.status) && <button type="button" onClick={() => void submit(claim)}>Submit</button>}<button type="button" onClick={() => void openTrail(claim)}>Trail</button></>}</div></td></tr>)}{!filtered.length && <tr><td colSpan={8}>No expense claims found.</td></tr>}</tbody></table></div></section>
     {trailClaim && <ExpenseTrailModal claim={trailClaim} trail={trail} onClose={() => { setTrailClaim(null); setTrail(null) }} />}
+    {maintenanceClaim && <AdminRecordMaintenanceModal open recordType="Expense claim" recordLabel={maintenanceClaim.claimNumber || `Claim #${maintenanceClaim.id}`} status={maintenanceClaim.status} onClose={() => setMaintenanceClaim(null)} onConfirm={maintain} />}
   </section>
 }
 
@@ -181,7 +220,7 @@ function ExpenseEditor({ form, options, setForm, onSave, onBack }: { form: SaveE
   }
   const selectTravel = (id: number) => {
     const trip = options?.travelRequests.find(item => item.id === id)
-    setForm(current => ({ ...current, travelRequestId: id || undefined, purpose: trip?.purpose || current.purpose, customer: trip?.customer || current.customer, project: trip?.project || current.project, costCenter: trip?.costCenter || current.costCenter }))
+    setForm(current => ({ ...current, travelRequestId: id || undefined, purpose: trip?.purpose || current.purpose, customer: '', project: '', costCenter: trip?.costCenter || current.costCenter }))
   }
   const addLine = () => setForm(current => ({ ...current, lines: [...current.lines, { ...emptyLine(options, current.expenseType), categoryId: visibleCategories[0]?.id ?? 0, categoryCode: visibleCategories[0]?.categoryCode ?? '', categoryName: visibleCategories[0]?.categoryName ?? '', expenseDate: minExpenseDate || today }] }))
   const removeLine = (index: number) => setForm(current => ({ ...current, lines: current.lines.length <= 1 ? current.lines : current.lines.filter((_, lineIndex) => lineIndex !== index) }))
@@ -189,11 +228,58 @@ function ExpenseEditor({ form, options, setForm, onSave, onBack }: { form: SaveE
 
   return <section className="travel-editor-page expense-editor-page">
     <form className="travel-full-form" onSubmit={onSave}>
-      <section className="travel-form-section"><h4>Claim header</h4><div className="travel-form-grid"><label><span>Expense type</span><select required value={form.expenseType} onChange={event => selectExpenseType(event.target.value)}><option value="">Select expense type</option>{options?.headers.map(item => <option key={item.id} value={item.expenseType || item.categoryName}>{item.categoryName}</option>)}</select></label>{isTravelExpense && <label><span>Linked travel request</span><select required value={form.travelRequestId ?? ''} onChange={event => selectTravel(Number(event.target.value || 0))}><option value="">Select travel request</option>{options?.travelRequests.map(item => <option key={item.id} value={item.id}>{item.requestNumber} - {item.purpose}</option>)}</select></label>}<label className="wide"><span>Purpose</span><input required value={form.purpose} onChange={event => set('purpose', event.target.value)} /></label><label><span>Customer / Client</span><input value={form.customer || options?.clientName || ''} onChange={event => set('customer', event.target.value)} /></label><label><span>Project</span><input value={form.project} onChange={event => set('project', event.target.value)} /></label><label><span>Cost center</span><input value={form.costCenter} onChange={event => set('costCenter', event.target.value)} /></label><label><span>Currency</span><select value={form.currency} onChange={event => set('currency', event.target.value)}>{options?.currencies.map(item => <option key={item}>{item}</option>)}</select></label></div>{linkedTrip && <p className="travel-warning compact">Claim dates allowed from {dateText(linkedTrip.startDateTime)} to {dateText(linkedTrip.endDateTime)}.</p>}</section>
-      <section className="travel-form-section"><div className="travel-section-title compact"><div><h4>Expense lines</h4></div><button type="button" disabled={!visibleCategories.length} onClick={addLine}>Add line</button></div><div className="travel-trip-table-wrap"><table className="travel-trip-table expense-line-table"><thead><tr><th>Date</th><th>Category</th><th>Vendor</th><th>Bill / invoice</th><th>Amount</th><th>GST</th><th>Location</th><th>Receipt</th><th>Description</th><th></th></tr></thead><tbody>{form.lines.map((line, index) => { const category = visibleCategories.find(item => item.id === Number(line.categoryId)); return <tr key={index}><td><input type="date" min={minExpenseDate} max={maxExpenseDate} value={dateInput(line.expenseDate)} onChange={event => updateLine(index, { expenseDate: event.target.value })} /></td><td><select value={line.categoryId || ''} onChange={event => selectCategory(index, Number(event.target.value || 0))}><option value="">Select</option>{visibleCategories.map(item => <option key={item.id} value={item.id}>{item.categoryName}</option>)}</select><small>{category?.receiptMandatory ? 'Receipt mandatory' : 'Receipt optional'}{category?.maximumClaim ? ` / Max ${formatMoney(category.maximumClaim)}` : ''}</small></td><td><input value={line.vendorName} onChange={event => updateLine(index, { vendorName: event.target.value })} /></td><td><input value={line.billNumber} onChange={event => updateLine(index, { billNumber: event.target.value })} placeholder="Bill no." /><input value={line.invoiceNumber} onChange={event => updateLine(index, { invoiceNumber: event.target.value })} placeholder="Invoice no." /></td><td><input type="number" min={0} value={line.amount} onChange={event => updateLine(index, { amount: Number(event.target.value || 0) })} /></td><td><input type="number" min={0} value={line.gstAmount} onChange={event => updateLine(index, { gstAmount: Number(event.target.value || 0) })} disabled={!category?.gstApplicable} /></td><td><select value={line.location} onChange={event => updateLine(index, { location: event.target.value })}><option value="">Select</option>{options?.locations.map(item => <option key={item}>{item}</option>)}</select></td><td><label className="receipt-check"><input type="checkbox" checked={line.receiptAttached} onChange={event => updateLine(index, { receiptAttached: event.target.checked })} /> Attached</label><input value={line.receiptFileName} onChange={event => updateLine(index, { receiptFileName: event.target.value, receiptAttached: Boolean(event.target.value) || line.receiptAttached })} placeholder="File name" /></td><td><textarea value={line.description} onChange={event => updateLine(index, { description: event.target.value })} /></td><td><button type="button" className="trip-remove" disabled={form.lines.length <= 1} onClick={() => removeLine(index)}>Remove</button></td></tr> })}</tbody></table></div><div className="expense-total">Total claim amount <b>{formatMoney(total)}</b></div></section>
+      <section className="travel-form-section"><div className="travel-section-title"><div><h4>Claim details</h4><p>Your client is identified automatically from your employee login.</p></div></div><div className="travel-form-grid"><label><span>Expense type</span><Select aria-label="Expense type" showSearch optionFilterProp="label" placeholder="Select expense type" value={form.expenseType || undefined} onChange={selectExpenseType} options={(options?.headers ?? []).map(item => ({ label: item.categoryName, value: item.expenseType || item.categoryName }))} /></label>{isTravelExpense && <label><span>Linked travel request</span><Select aria-label="Linked travel request" showSearch optionFilterProp="label" placeholder="Select travel request" value={form.travelRequestId || undefined} onChange={value => selectTravel(Number(value || 0))} options={(options?.travelRequests ?? []).map(item => ({ label: `${item.requestNumber} - ${item.purpose}`, value: item.id }))} /></label>}<label className="wide"><span>Purpose</span><input required value={form.purpose} onChange={event => set('purpose', event.target.value)} /></label><label><span>Cost center</span><input value={form.costCenter} onChange={event => set('costCenter', event.target.value)} /></label><label><span>Currency</span><Select aria-label="Claim currency" showSearch optionFilterProp="label" value={form.currency} onChange={value => set('currency', value)} options={(options?.currencies ?? []).map(item => ({ label: item, value: item }))} /></label></div>{linkedTrip && <p className="travel-warning compact">Claim dates allowed from {dateText(linkedTrip.startDateTime)} to {dateText(linkedTrip.endDateTime)}.</p>}</section>
+      <ExpenseLinesEditor lines={form.lines} categories={visibleCategories} locations={options?.locations ?? []} minDate={minExpenseDate} maxDate={maxExpenseDate} total={total} onAdd={addLine} onRemove={removeLine} onUpdate={updateLine} onSelectCategory={selectCategory} />
       <section className="travel-form-section"><h4>Remarks</h4><textarea value={form.remarks} onChange={event => set('remarks', event.target.value)} /></section>
       <footer className="travel-editor-actions"><button type="button" className="secondary" onClick={onBack}>Cancel</button><button disabled={!visibleCategories.length}>Save draft</button></footer>
     </form>
+  </section>
+}
+
+function ExpenseLinesEditor({ lines, categories, locations, minDate, maxDate, total, onAdd, onRemove, onUpdate, onSelectCategory }: {
+  lines: ExpenseLine[]
+  categories: ExpenseCategoryOption[]
+  locations: string[]
+  minDate: string
+  maxDate: string
+  total: number
+  onAdd: () => void
+  onRemove: (index: number) => void
+  onUpdate: (index: number, patch: Partial<ExpenseLine>) => void
+  onSelectCategory: (index: number, id: number) => void
+}) {
+  return <section className="travel-form-section">
+    <div className="travel-section-title compact"><div><h4>Expense lines</h4><small>Eligible reimbursement is calculated from the assigned travel policy.</small></div><Button type="primary" disabled={!categories.length} onClick={onAdd}>Add line</Button></div>
+    <div className="expense-line-editor-list">{lines.map((line, index) => {
+      const category = categories.find(item => item.id === Number(line.categoryId))
+      const kind = expenseEntitlementKind(line.categoryCode, line.categoryName)
+      return <article className="expense-line-editor-card" data-testid={`expense-line-${index}`} key={line.id ?? index}>
+        <header className="expense-line-editor-head"><div><i>{String(index + 1).padStart(2, '0')}</i><div><b>{line.categoryName || `Expense item ${index + 1}`}</b><span>{category?.receiptMandatory ? 'Receipt required' : 'Receipt optional'}{category?.maximumClaim ? ` · Maximum ${formatMoney(category.maximumClaim)}` : ''}</span></div></div><Button danger disabled={lines.length <= 1} onClick={() => onRemove(index)}>Remove</Button></header>
+        <div className="expense-line-fields">
+          <label><span>Date</span><input type="date" min={minDate} max={maxDate} value={dateInput(line.expenseDate)} onChange={event => onUpdate(index, { expenseDate: event.target.value })} /></label>
+          <label className="wide"><span>Category</span><Select aria-label={`Expense category ${index + 1}`} showSearch optionFilterProp="label" placeholder="Select category" value={line.categoryId || undefined} onChange={value => onSelectCategory(index, Number(value || 0))} options={categories.map(item => ({ label: item.categoryName, value: item.id }))} /></label>
+          <label className="wide"><span>Vendor</span><input aria-label={`Vendor ${index + 1}`} value={line.vendorName} onChange={event => onUpdate(index, { vendorName: event.target.value })} /></label>
+          <label><span>Bill number</span><input value={line.billNumber} onChange={event => onUpdate(index, { billNumber: event.target.value })} placeholder="Bill no." /></label>
+          <label><span>Invoice number</span><input value={line.invoiceNumber} onChange={event => onUpdate(index, { invoiceNumber: event.target.value })} placeholder="Invoice no." /></label>
+          <label><span>Claim amount</span><input aria-label={`Claim amount ${index + 1}`} type="number" min={0} value={line.amount} onChange={event => onUpdate(index, { amount: Number(event.target.value || 0) })} /></label>
+          <label><span>GST amount</span><input type="number" min={0} value={line.gstAmount} onChange={event => onUpdate(index, { gstAmount: Number(event.target.value || 0) })} disabled={!category?.gstApplicable} /></label>
+          <label><span>Location</span><Select aria-label={`Expense location ${index + 1}`} showSearch allowClear optionFilterProp="label" placeholder="Select location" value={line.location || undefined} onChange={value => onUpdate(index, { location: value ?? '' })} options={locations.map(item => ({ label: item, value: item }))} /></label>
+          <div className="expense-receipt-field"><span>Receipt</span><Checkbox aria-label={`Receipt attached ${index + 1}`} checked={line.receiptAttached} onChange={event => onUpdate(index, { receiptAttached: event.target.checked })}>Attached</Checkbox><input value={line.receiptFileName} onChange={event => onUpdate(index, { receiptFileName: event.target.value, receiptAttached: Boolean(event.target.value) || line.receiptAttached })} placeholder="File name" /></div>
+          <label className="description"><span>Description</span><textarea value={line.description} onChange={event => onUpdate(index, { description: event.target.value })} /></label>
+        </div>
+        {kind !== 'actual' && <div className="expense-entitlement-card" data-testid={`expense-entitlement-${index}`}>
+          <div className="expense-entitlement-title"><b>Policy entitlement</b><span>{kind === 'halting' ? 'Halting allowance' : kind === 'lodging' ? 'Lodging limit' : 'Local conveyance'}</span></div>
+          <div className="expense-entitlement-fields">
+            {(kind === 'halting' || kind === 'lodging') && <label><span>City class</span><Select aria-label={`City class ${index + 1}`} allowClear placeholder="Auto from location" value={line.cityCategory || undefined} onChange={value => onUpdate(index, { cityCategory: value ?? '' })} options={[{ label: 'Metro', value: 'Metro' }, { label: 'Non-Metro', value: 'Non-Metro' }]} /></label>}
+            {(kind === 'halting' || (kind === 'local' && !line.receiptAttached)) && <label><span>Distance (km)</span><input aria-label={`Distance km ${index + 1}`} type="number" min={0} step="0.1" value={line.distanceKm || 0} onChange={event => onUpdate(index, { distanceKm: Number(event.target.value || 0) })} /></label>}
+            {kind === 'halting' && <label><span>Duty hours</span><input aria-label={`Duty hours ${index + 1}`} type="number" min={0} step="0.25" value={line.dutyHours || 0} onChange={event => onUpdate(index, { dutyHours: Number(event.target.value || 0) })} /></label>}
+          </div>
+          {kind === 'halting' && <div className="expense-entitlement-checks"><Checkbox checked={Boolean(line.lodgingClaimed)} onChange={event => onUpdate(index, { lodgingClaimed: event.target.checked, lodgingIncludesFood: event.target.checked ? line.lodgingIncludesFood : false })}>Lodging claimed</Checkbox><Checkbox checked={Boolean(line.lodgingIncludesFood)} onChange={event => onUpdate(index, { lodgingIncludesFood: event.target.checked, lodgingClaimed: event.target.checked || line.lodgingClaimed })}>Lodging includes food</Checkbox><Checkbox checked={Boolean(line.alternativeStay)} onChange={event => onUpdate(index, { alternativeStay: event.target.checked })}>Alternative stay</Checkbox><Checkbox checked={Boolean(line.overnightStay)} onChange={event => onUpdate(index, { overnightStay: event.target.checked })}>Overnight stay</Checkbox></div>}
+          {(line.entitlementLabel || line.approvedAmount > 0) && <div className="expense-entitlement-result"><span>{line.entitlementLabel || 'Calculated eligibility'}</span><b>{formatMoney(line.approvedAmount)}</b><small>{line.entitlementMessage}</small></div>}
+        </div>}
+      </article>
+    })}</div>
+    <div className="expense-total">Total claim amount <b>{formatMoney(total)}</b></div>
   </section>
 }
 
@@ -205,8 +291,9 @@ function normalizeClaim(form: SaveExpenseClaim, options: ExpenseOptions | null):
   return {
     ...form,
     expenseType: form.expenseType || expenseTypeFromOptions(options),
-    customer: form.customer || options?.clientName || '',
-    lines: form.lines.filter(line => line.categoryId || line.amount || line.description || line.vendorName).map(line => ({ ...line, expenseDate: dateInput(line.expenseDate), currency: line.currency || form.currency || 'INR', exchangeRate: Number(line.exchangeRate || 1), amount: Number(line.amount || 0), gstAmount: Number(line.gstAmount || 0), customer: line.customer || form.customer || options?.clientName || '', project: line.project || form.project, costCenter: line.costCenter || form.costCenter })),
+    customer: '',
+    project: '',
+    lines: form.lines.filter(line => line.categoryId || line.amount || line.description || line.vendorName).map(line => ({ ...line, expenseDate: dateInput(line.expenseDate), currency: line.currency || form.currency || 'INR', exchangeRate: Number(line.exchangeRate || 1), amount: Number(line.amount || 0), gstAmount: Number(line.gstAmount || 0), customer: '', project: '', costCenter: line.costCenter || form.costCenter })),
   }
 }
 
@@ -226,14 +313,22 @@ function dateInput(value?: string) {
 }
 
 function travelAllowedCodes(trip: { travelMode?: string; accommodationRequired?: boolean; localConveyanceRequired?: boolean }) {
-  const codes = ['MEALS']
+  const codes = ['MEALS', 'HALTING_ALLOWANCE', 'PER_DIEM', 'HA']
   const mode = (trip.travelMode || '').toLowerCase()
   if (!mode || mode.includes('air') || mode.includes('flight')) codes.push('AIR_FARE')
   if (!mode || mode.includes('train') || mode.includes('rail')) codes.push('TRAIN_FARE')
   if (!mode || mode.includes('bus')) codes.push('BUS_FARE')
   if (mode.includes('cab') || mode.includes('taxi')) codes.push('CAB_TAXI')
   if (mode.includes('own') || mode.includes('car')) codes.push('FUEL', 'PARKING', 'TOLL')
-  if (trip.accommodationRequired) codes.push('HOTEL_STAY')
-  if (trip.localConveyanceRequired) codes.push('CAB_TAXI', 'FUEL', 'PARKING', 'TOLL', 'METRO')
+  if (trip.accommodationRequired) codes.push('HOTEL_STAY', 'LODGING')
+  if (trip.localConveyanceRequired) codes.push('CAB_TAXI', 'FUEL', 'PARKING', 'TOLL', 'METRO', 'LOCAL_CONVEYANCE', 'MILEAGE')
   return Array.from(new Set(codes))
+}
+
+function expenseEntitlementKind(code = '', name = ''): 'halting' | 'lodging' | 'local' | 'actual' {
+  const identity = `${code} ${name}`.toUpperCase()
+  if (identity.includes('HALTING') || identity.includes('PER DIEM') || identity.includes('PER_DIEM') || identity.trim() === 'HA') return 'halting'
+  if (identity.includes('HOTEL') || identity.includes('LODGING')) return 'lodging'
+  if (['LOCAL', 'CAB', 'TAXI', 'MILEAGE', 'FUEL', 'METRO'].some(token => identity.includes(token))) return 'local'
+  return 'actual'
 }
