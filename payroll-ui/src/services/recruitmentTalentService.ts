@@ -1,7 +1,7 @@
 import type { ConvertCandidateToEmployeeRequest, Employee, EntityAttachment, PersonActivityEvent, RecruitmentAiScoringSettings, RecruitmentApplicationScore, RecruitmentAtsScoringCriterion, RecruitmentAtsScoringProfile, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateChecklistItem, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, RecruitmentOffer, RecruitmentOpenPosition, RecruitmentResumeIntakeResult, RecruitmentSkill, RecruitmentTalentDashboard, SaveRecruitmentCandidate, SaveRecruitmentInterviewFeedbackCompetencyScore } from '../types/payroll'
 import { deleteJson, getJson, postFormWithProgress, postJson, putJson } from './apiClient'
 
-export const getTalentDashboard = () => getJson<RecruitmentTalentDashboard>('/api/recruitment/talent/dashboard', { talentProfiles: 0, activeApplications: 0, interviewsScheduled: 0, offersPending: 0, preOnboardingPending: 0, joined: 0 })
+export const getTalentDashboard = (clientId = 0) => getJson<RecruitmentTalentDashboard>(`/api/recruitment/talent/dashboard${clientId ? `?clientId=${clientId}` : ''}`, { talentProfiles: 0, activeApplications: 0, interviewsScheduled: 0, offersPending: 0, preOnboardingPending: 0, joined: 0 })
 export const getCandidates = (query = '', status = '', clientId?: number) => {
   const search = new URLSearchParams({ query, status }); if (clientId) search.set('clientId', String(clientId))
   return getJson<RecruitmentCandidate[]>(`/api/recruitment/candidates?${search}`, [])

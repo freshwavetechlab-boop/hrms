@@ -17,21 +17,21 @@ type WorkOrderDraft = SaveRecruitmentWorkOrder & { overallSlaDays: number | null
 type PipelineOption = RecruitmentPipelineVersion & { label: string }
 
 const blankLine = (lineNumber: number) => ({ id: 0, lineNumber, positionName: '', payBandLevelCode: '', numberOfPositions: 1, location: '', division: '', requisitionId: null, positionId: null, status: 'Open' })
-const blankWorkOrder = (): WorkOrderDraft => ({ id: 0, clientId: 0, workOrderNumber: '', receivedAtUtc: '', receivedFrom: '', subject: '', remarks: '', status: 'Draft', overallSlaMinutes: 0, overallSlaDays: null, lines: [blankLine(1)] })
+const blankWorkOrder = (clientId = 0): WorkOrderDraft => ({ id: 0, clientId, workOrderNumber: '', receivedAtUtc: '', receivedFrom: '', subject: '', remarks: '', status: 'Draft', overallSlaMinutes: 0, overallSlaDays: null, lines: [blankLine(1)] })
 const dateTimeText = (value?: string | null) => value ? new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'Not set'
 const durationText = (minutes?: number | null) => minutes == null ? 'No target' : minutes === 0 ? 'Day 0' : `${(minutes / 1440).toFixed(minutes % 1440 ? 1 : 0)} days`
 const statusColor = (status: string) => status === 'Completed' ? 'green' : status === 'Active' ? 'blue' : status === 'On Hold' ? 'orange' : status === 'Cancelled' ? 'red' : 'default'
 
-export default function RecruitmentWorkOrderWorkspace() {
+export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, clientScopeManaged = false }: { initialClientId?: number; clientScopeManaged?: boolean }) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
   const [openPositions, setOpenPositions] = useState<RecruitmentOpenPosition[]>([])
-  const [clientId, setClientId] = useState(0)
+  const [clientId, setClientId] = useState(initialClientId)
   const [query, setQuery] = useState('')
   const [workOrders, setWorkOrders] = useState<RecruitmentWorkOrder[]>([])
   const [cases, setCases] = useState<RecruitmentHiringCase[]>([])
-  const [draft, setDraft] = useState<WorkOrderDraft>(blankWorkOrder)
+  const [draft, setDraft] = useState<WorkOrderDraft>(() => blankWorkOrder(initialClientId))
   const [editorOpen, setEditorOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [selectedWorkOrder, setSelectedWorkOrder] = useState<RecruitmentWorkOrder | null>(null)
@@ -57,6 +57,7 @@ export default function RecruitmentWorkOrderWorkspace() {
     setWorkOrders(orders); setCases(hiringCases)
   }
   useEffect(() => { void Promise.all([getClients(), getRecruitmentOpenPositions()]).then(([clientRows, positionRows]) => { setClients(clientRows); setOpenPositions(positionRows) }) }, [])
+  useEffect(() => { setClientId(initialClientId) }, [initialClientId])
   useEffect(() => { void load() }, [clientId])
 
   const stats = useMemo(() => ({
@@ -66,7 +67,7 @@ export default function RecruitmentWorkOrderWorkspace() {
     breached: cases.filter(row => row.status === 'Active' && row.overallDueAtUtc && new Date(row.overallDueAtUtc).getTime() < Date.now()).length,
   }), [cases, workOrders])
 
-  const openNew = () => { setDraft(blankWorkOrder()); setEditorOpen(true) }
+  const openNew = () => { setDraft(blankWorkOrder(clientId)); setEditorOpen(true) }
   const openEdit = async (row: RecruitmentWorkOrder) => {
     const detail = await getRecruitmentWorkOrder(row.id)
     if (!detail) return message.error('Unable to load this work order.')
@@ -246,7 +247,7 @@ export default function RecruitmentWorkOrderWorkspace() {
   return <section className="work-order-workspace" data-testid="recruitment-work-orders">
     <div className="work-order-command-bar">
       <div><span>Client hiring demand</span><h2>Hiring orders</h2><p>Record the approved roles received from a client, then start and track each role's hiring journey.</p></div>
-      <Space wrap><Select allowClear value={clientId || undefined} placeholder="All accessible clients" showSearch optionFilterProp="label" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={value => setClientId(value || 0)} /><Input.Search value={query} placeholder="Work order or subject" onChange={event => setQuery(event.target.value)} onSearch={() => void load()} /><Button data-testid="work-order-add" type="primary" icon={<PlusOutlined />} onClick={openNew}>Add work order</Button></Space>
+      <Space wrap>{!clientScopeManaged && <Select allowClear value={clientId || undefined} placeholder="All accessible clients" showSearch optionFilterProp="label" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={value => setClientId(value || 0)} />}<Input.Search value={query} placeholder="Work order or subject" onChange={event => setQuery(event.target.value)} onSearch={() => void load()} /><Button data-testid="work-order-add" type="primary" icon={<PlusOutlined />} onClick={openNew}>Add work order</Button></Space>
     </div>
     <div className="work-order-metrics">
       <Card><Statistic title="Active orders" value={stats.activeOrders} prefix={<FileProtectOutlined />} /></Card>
@@ -272,7 +273,7 @@ export default function RecruitmentWorkOrderWorkspace() {
     <Drawer width={860} title={draft.id ? `Edit ${draft.workOrderNumber}` : 'New client work order'} open={editorOpen} onClose={() => setEditorOpen(false)} extra={<Button data-testid="work-order-save" type="primary" loading={saving} onClick={() => void save()}>Save work order</Button>}>
       <Alert showIcon type="info" message="Manual intake only" description="Inbound email parsing is intentionally not used. Record the approved work order here and upload the original order/JD annexure after saving." />
       <Form layout="vertical" className="work-order-form">
-        <div className="work-order-form-grid"><Form.Item label="Client" required><Select data-testid="work-order-client" value={draft.clientId || undefined} showSearch optionFilterProp="label" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={clientId => patchDraft({ clientId })} /></Form.Item><Form.Item label="Work order number" required><Input data-testid="work-order-number" value={draft.workOrderNumber} onChange={event => patchDraft({ workOrderNumber: event.target.value })} /></Form.Item><Form.Item label="Received date & time" required><Input data-testid="work-order-received-at" type="datetime-local" value={draft.receivedAtUtc} onChange={event => patchDraft({ receivedAtUtc: event.target.value })} /></Form.Item><Form.Item label="Overall SLA (days)" required><InputNumber data-testid="work-order-overall-sla" min={0.01} precision={2} value={draft.overallSlaDays} onChange={overallSlaDays => patchDraft({ overallSlaDays: overallSlaDays == null ? null : Number(overallSlaDays) })} /></Form.Item><Form.Item label="Received from"><Input data-testid="work-order-received-from" value={draft.receivedFrom} placeholder="Client stakeholder / source" onChange={event => patchDraft({ receivedFrom: event.target.value })} /></Form.Item><Form.Item label="Status"><Select data-testid="work-order-status" value={draft.status} options={['Draft', 'Active', 'On Hold', 'Completed', 'Cancelled'].map(value => ({ value }))} onChange={status => patchDraft({ status })} /></Form.Item><Form.Item className="wide" label="Subject"><Input data-testid="work-order-subject" value={draft.subject} onChange={event => patchDraft({ subject: event.target.value })} /></Form.Item><Form.Item className="wide" label="Internal note"><Input.TextArea data-testid="work-order-remarks" rows={2} value={draft.remarks} onChange={event => patchDraft({ remarks: event.target.value })} /></Form.Item></div>
+        <div className="work-order-form-grid"><Form.Item label="Client" required><Select data-testid="work-order-client" value={draft.clientId || undefined} disabled={clientScopeManaged && initialClientId > 0} showSearch optionFilterProp="label" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={clientId => patchDraft({ clientId })} /></Form.Item><Form.Item label="Work order number" required><Input data-testid="work-order-number" value={draft.workOrderNumber} onChange={event => patchDraft({ workOrderNumber: event.target.value })} /></Form.Item><Form.Item label="Received date & time" required><Input data-testid="work-order-received-at" type="datetime-local" value={draft.receivedAtUtc} onChange={event => patchDraft({ receivedAtUtc: event.target.value })} /></Form.Item><Form.Item label="Overall SLA (days)" required><InputNumber data-testid="work-order-overall-sla" min={0.01} precision={2} value={draft.overallSlaDays} onChange={overallSlaDays => patchDraft({ overallSlaDays: overallSlaDays == null ? null : Number(overallSlaDays) })} /></Form.Item><Form.Item label="Received from"><Input data-testid="work-order-received-from" value={draft.receivedFrom} placeholder="Client stakeholder / source" onChange={event => patchDraft({ receivedFrom: event.target.value })} /></Form.Item><Form.Item label="Status"><Select data-testid="work-order-status" value={draft.status} options={['Draft', 'Active', 'On Hold', 'Completed', 'Cancelled'].map(value => ({ value }))} onChange={status => patchDraft({ status })} /></Form.Item><Form.Item className="wide" label="Subject"><Input data-testid="work-order-subject" value={draft.subject} onChange={event => patchDraft({ subject: event.target.value })} /></Form.Item><Form.Item className="wide" label="Internal note"><Input.TextArea data-testid="work-order-remarks" rows={2} value={draft.remarks} onChange={event => patchDraft({ remarks: event.target.value })} /></Form.Item></div>
         <div className="work-order-line-heading"><div><h3>Roles requested</h3><p>Each role starts one independently tracked hiring journey.</p></div><Button data-testid="work-order-add-position" icon={<PlusOutlined />} onClick={addLine}>Add role</Button></div>
         {draft.lines.map((line, index) => <Card size="small" key={`${line.id}-${index}`} title={`Line ${index + 1}`} extra={draft.lines.length > 1 && <Button danger size="small" onClick={() => removeLine(index)}>Remove</Button>}><div className="work-order-line-grid"><Form.Item label="Position / posting name" required><Input data-testid={`work-order-position-${index}`} value={line.positionName} onChange={event => patchLine(index, { positionName: event.target.value })} /></Form.Item><Form.Item label="Pay band / level"><Input data-testid={`work-order-pay-band-${index}`} value={line.payBandLevelCode} placeholder="A–H or client scale" onChange={event => patchLine(index, { payBandLevelCode: event.target.value })} /></Form.Item><Form.Item label="No. of positions" required><InputNumber data-testid={`work-order-count-${index}`} min={1} value={line.numberOfPositions} onChange={numberOfPositions => patchLine(index, { numberOfPositions: Number(numberOfPositions || 1) })} /></Form.Item><Form.Item label="Location"><Input data-testid={`work-order-location-${index}`} value={line.location} onChange={event => patchLine(index, { location: event.target.value })} /></Form.Item><Form.Item label="Division"><Input data-testid={`work-order-division-${index}`} value={line.division} onChange={event => patchLine(index, { division: event.target.value })} /></Form.Item><Form.Item className="wide-position-link" label="Existing open position (link when available)"><Select data-testid={`work-order-open-position-${index}`} allowClear showSearch optionFilterProp="label" value={line.positionId || undefined} options={openPositions.filter(position => !draft.clientId || position.clientId === draft.clientId).map(position => ({ value: position.id, label: `${position.positionCode} · ${position.positionTitle} · ${position.status}` }))} onChange={positionId => { const position = openPositions.find(row => row.id === positionId); patchLine(index, { positionId: position?.id ?? null, requisitionId: position?.requisitionId ?? null }) }} /></Form.Item></div></Card>)}
       </Form>

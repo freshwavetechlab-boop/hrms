@@ -24,6 +24,7 @@ import './RecruitmentOrchestration.css'
 
 type Props = {
   initialClientId?: number
+  clientScopeManaged?: boolean
   initialRequisitionId?: number
   onSaved?: (description: RecruitmentJobDescriptionVersion) => void
 }
@@ -34,7 +35,7 @@ const emptyLookups: RecruitmentOrchestrationLookups = {
 const localId = () => -Math.floor(Date.now() + Math.random() * 100000)
 const editableStatuses = new Set(['Draft', 'Sent Back'])
 
-export default function RecruitmentJobDescriptionManager({ initialClientId = 0, initialRequisitionId = 0, onSaved }: Props) {
+export default function RecruitmentJobDescriptionManager({ initialClientId = 0, clientScopeManaged = false, initialRequisitionId = 0, onSaved }: Props) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
@@ -52,7 +53,7 @@ export default function RecruitmentJobDescriptionManager({ initialClientId = 0, 
   useEffect(() => {
     void Promise.all([getClients(), getRecruitmentRequisitions({})]).then(([rows, requestRows]) => {
       setClients(rows)
-      if (clientId || !rows.length) return
+      if (clientId || !rows.length || clientScopeManaged) return
       const preferredRequest = requestRows.find(row => row.status === 'Approved') ?? requestRows[0]
       setClientId(initialClientId || preferredRequest?.clientId || rows[0].id)
     })
@@ -154,9 +155,9 @@ export default function RecruitmentJobDescriptionManager({ initialClientId = 0, 
         <p className="orchestration-subtitle">Create governed JD versions against an approved hiring request and route them through the existing workflow engine.</p>
       </div>
       <Space wrap>
-        <Select aria-label="Client" value={clientId || undefined} placeholder="Select client" showSearch optionFilterProp="label" style={{ minWidth: 230 }}
+        {!clientScopeManaged && <Select aria-label="Client" value={clientId || undefined} placeholder="Select client" showSearch optionFilterProp="label" style={{ minWidth: 230 }}
           options={clients.map(row => ({ value: row.id, label: row.name }))}
-          onChange={value => { setClientId(value); setRequisitionId(0); setDraft(null); setVersions([]) }} />
+          onChange={value => { setClientId(value); setRequisitionId(0); setDraft(null); setVersions([]) }} />}
         <Select aria-label="Requisition" value={requisitionId || undefined} placeholder="Select requisition" showSearch optionFilterProp="label" style={{ minWidth: 330 }}
           options={requisitions.map(row => ({ value: row.id, label: `${row.rfrNumber} · ${row.positionTitle} · ${row.status}` }))}
           notFoundContent="No hiring requisitions for this client"

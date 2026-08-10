@@ -243,12 +243,13 @@ ORDER BY r.UpdatedAt DESC LIMIT 500";
         if (next == "Approved") await CreateOpenPositionAsync(id, actorUserId);
     }
 
-    public async Task<RecruitmentDashboard> DashboardAsync(AuthUser user, bool own)
+    public async Task<RecruitmentDashboard> DashboardAsync(AuthUser user, bool own, int? requestedClientId = null)
     {
         await using var db = Db();
         await db.OpenAsync();
+        var scopedClientId = user.ClientId ?? (requestedClientId is > 0 ? requestedClientId : null);
         var filter = own && user.EmployeeId is not null ? "RequestedByEmployeeId=@EmployeeId" : "(@ClientId IS NULL OR ClientId=@ClientId)";
-        var rows = (await db.QueryAsync<StatusCount>($"SELECT Status,COUNT(*) Count FROM recruitment_requisitions WHERE {filter} GROUP BY Status", new { EmployeeId = user.EmployeeId, ClientId = user.ClientId })).ToDictionary(x => x.Status, x => x.Count);
+        var rows = (await db.QueryAsync<StatusCount>($"SELECT Status,COUNT(*) Count FROM recruitment_requisitions WHERE {filter} GROUP BY Status", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId })).ToDictionary(x => x.Status, x => x.Count);
         var positionFilter = own && user.EmployeeId is not null
             ? "p.RequisitionId IN (SELECT Id FROM recruitment_requisitions WHERE RequestedByEmployeeId=@EmployeeId)"
             : "(@ClientId IS NULL OR p.ClientId=@ClientId)";
@@ -260,24 +261,25 @@ ORDER BY r.UpdatedAt DESC LIMIT 500";
             Rejected = rows.GetValueOrDefault("Rejected"),
             Returned = rows.GetValueOrDefault("Sent Back"),
             Withdrawn = rows.GetValueOrDefault("Withdrawn"),
-            OpenPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(RemainingPositions),0) FROM recruitment_open_positions p WHERE {positionFilter} AND p.Status NOT IN ('Closed','Cancelled','Filled')", new { EmployeeId = user.EmployeeId, ClientId = user.ClientId }),
-            FilledPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(FilledPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { EmployeeId = user.EmployeeId, ClientId = user.ClientId }),
-            CancelledPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(CancelledPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { EmployeeId = user.EmployeeId, ClientId = user.ClientId }),
-            OnHoldPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(OnHoldPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { EmployeeId = user.EmployeeId, ClientId = user.ClientId }),
-            RemainingPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(RemainingPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { EmployeeId = user.EmployeeId, ClientId = user.ClientId }),
-            AverageApprovalHours = await db.ExecuteScalarAsync<decimal>($"SELECT COALESCE(AVG(TIMESTAMPDIFF(MINUTE,SubmittedAt,UpdatedAt))/60,0) FROM recruitment_requisitions WHERE {filter} AND Status='Approved' AND SubmittedAt IS NOT NULL", new { EmployeeId = user.EmployeeId, ClientId = user.ClientId }),
-            DepartmentWiseHiring = await db.QueryAsync<RecruitmentMetric>($"SELECT COALESCE(NULLIF(Department,''),'Not specified') Label, COALESCE(SUM(RemainingPositions),0) Value FROM recruitment_open_positions p WHERE {positionFilter} GROUP BY Department ORDER BY Value DESC LIMIT 8", new { EmployeeId = user.EmployeeId, ClientId = user.ClientId }),
-            CompanyWiseHiring = await db.QueryAsync<RecruitmentMetric>($"SELECT COALESCE(c.Name,'Not specified') Label, COALESCE(SUM(p.RemainingPositions),0) Value FROM recruitment_open_positions p LEFT JOIN clients c ON c.Id=p.ClientId WHERE {positionFilter} GROUP BY c.Name ORDER BY Value DESC LIMIT 8", new { EmployeeId = user.EmployeeId, ClientId = user.ClientId }),
-            PriorityWiseHiring = await db.QueryAsync<RecruitmentMetric>($"SELECT COALESCE(NULLIF(HiringPriority,''),'Normal') Label, COALESCE(SUM(RemainingPositions),0) Value FROM recruitment_open_positions p WHERE {positionFilter} GROUP BY HiringPriority ORDER BY Value DESC", new { EmployeeId = user.EmployeeId, ClientId = user.ClientId }),
-            UpcomingJoiningTargets = await db.QueryAsync<RecruitmentMetric>($"SELECT DATE_FORMAT(TargetJoiningDate,'%d-%m-%Y') Label, COALESCE(SUM(RemainingPositions),0) Value FROM recruitment_open_positions p WHERE {positionFilter} AND TargetJoiningDate IS NOT NULL AND TargetJoiningDate>=CURRENT_DATE GROUP BY TargetJoiningDate ORDER BY TargetJoiningDate LIMIT 8", new { EmployeeId = user.EmployeeId, ClientId = user.ClientId })
+            OpenPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(RemainingPositions),0) FROM recruitment_open_positions p WHERE {positionFilter} AND p.Status NOT IN ('Closed','Cancelled','Filled')", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            FilledPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(FilledPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            CancelledPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(CancelledPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            OnHoldPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(OnHoldPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            RemainingPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(RemainingPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            AverageApprovalHours = await db.ExecuteScalarAsync<decimal>($"SELECT COALESCE(AVG(TIMESTAMPDIFF(MINUTE,SubmittedAt,UpdatedAt))/60,0) FROM recruitment_requisitions WHERE {filter} AND Status='Approved' AND SubmittedAt IS NOT NULL", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            DepartmentWiseHiring = await db.QueryAsync<RecruitmentMetric>($"SELECT COALESCE(NULLIF(Department,''),'Not specified') Label, COALESCE(SUM(RemainingPositions),0) Value FROM recruitment_open_positions p WHERE {positionFilter} GROUP BY Department ORDER BY Value DESC LIMIT 8", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            CompanyWiseHiring = await db.QueryAsync<RecruitmentMetric>($"SELECT COALESCE(c.Name,'Not specified') Label, COALESCE(SUM(p.RemainingPositions),0) Value FROM recruitment_open_positions p LEFT JOIN clients c ON c.Id=p.ClientId WHERE {positionFilter} GROUP BY c.Name ORDER BY Value DESC LIMIT 8", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            PriorityWiseHiring = await db.QueryAsync<RecruitmentMetric>($"SELECT COALESCE(NULLIF(HiringPriority,''),'Normal') Label, COALESCE(SUM(RemainingPositions),0) Value FROM recruitment_open_positions p WHERE {positionFilter} GROUP BY HiringPriority ORDER BY Value DESC", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            UpcomingJoiningTargets = await db.QueryAsync<RecruitmentMetric>($"SELECT DATE_FORMAT(TargetJoiningDate,'%d-%m-%Y') Label, COALESCE(SUM(RemainingPositions),0) Value FROM recruitment_open_positions p WHERE {positionFilter} AND TargetJoiningDate IS NOT NULL AND TargetJoiningDate>=CURRENT_DATE GROUP BY TargetJoiningDate ORDER BY TargetJoiningDate LIMIT 8", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId })
         };
     }
 
-    public async Task<IEnumerable<RecruitmentOpenPosition>> OpenPositionsAsync(AuthUser user)
+    public async Task<IEnumerable<RecruitmentOpenPosition>> OpenPositionsAsync(AuthUser user, int? requestedClientId = null)
     {
         await using var db = Db();
         await db.OpenAsync();
-        return await db.QueryAsync<RecruitmentOpenPosition>(OpenPositionSql("WHERE (@ClientId IS NULL OR p.ClientId=@ClientId) ORDER BY p.CreatedAt DESC"), new { ClientId = user.ClientId });
+        var scopedClientId = user.ClientId ?? (requestedClientId is > 0 ? requestedClientId : null);
+        return await db.QueryAsync<RecruitmentOpenPosition>(OpenPositionSql("WHERE (@ClientId IS NULL OR p.ClientId=@ClientId) ORDER BY p.CreatedAt DESC"), new { ClientId = scopedClientId });
     }
 
     public async Task<(bool Ok, string Error)> DeleteOpenPositionAsync(long id, AuthUser user)

@@ -5,6 +5,7 @@ import {
 } from '@ant-design/icons'
 import { Badge, Button, Card, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Tag, message } from 'antd'
 import { useAuthSession } from './AuthGate'
+import { getRecruitmentOpenPositions } from '../services/recruitmentService'
 import { deleteApplication } from '../services/recruitmentTalentService'
 import {
   getRecruitmentApplicationTransitions, getRecruitmentJobPostings, getRecruitmentPipelineBoard,
@@ -14,12 +15,15 @@ import type {
   RecruitmentJobPosting, RecruitmentPipelineBoard as Board, RecruitmentPipelineBoardCard,
   RecruitmentPipelineBoardLane, RecruitmentPipelineTransition,
 } from '../types/recruitmentOrchestration'
+import type { RecruitmentOpenPosition } from '../types/payroll'
 import DataTable from './DataTable'
 import RecruitmentCandidateActionManager from './RecruitmentCandidateActionManager'
 import RecruitmentProcessDocumentPanel from './RecruitmentProcessDocumentPanel'
 import './RecruitmentOrchestration.css'
 
 type Props = {
+  initialClientId?: number
+  clientScopeManaged?: boolean
   positionId?: number
   onOpenCandidate?: (candidateId: number, applicationId: number) => void
   onScheduleInterview?: (applicationId: number) => void
@@ -28,6 +32,14 @@ type TransitionDraft = { card: RecruitmentPipelineBoardCard; transition: Recruit
 type PauseDraft = { card: RecruitmentPipelineBoardCard; reason: string }
 type DocumentDraft = { lane: RecruitmentPipelineBoardLane; card: RecruitmentPipelineBoardCard }
 type PipelineViewMode = 'pipeline' | 'table' | 'both'
+type PipelineTarget = {
+  key: string
+  clientId: number
+  clientName: string
+  positionId: number
+  postingId: number
+  label: string
+}
 type PipelineTableRow = {
   id: number
   lane: RecruitmentPipelineBoardLane
@@ -43,13 +55,14 @@ const pipelineViewOptions: Array<{ value: PipelineViewMode; label: string }> = [
 ]
 const pipelineViewStorageKey = 'recruitment.pipeline.view'
 
-export default function RecruitmentPipelineBoard({ positionId: suppliedPositionId = 0, onOpenCandidate, onScheduleInterview }: Props) {
+export default function RecruitmentPipelineBoard({ initialClientId = 0, clientScopeManaged = false, positionId: suppliedPositionId = 0, onOpenCandidate, onScheduleInterview }: Props) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [postings, setPostings] = useState<RecruitmentJobPosting[]>([])
+  const [positions, setPositions] = useState<RecruitmentOpenPosition[]>([])
   const [postingId, setPostingId] = useState(0)
   const [positionId, setPositionId] = useState(suppliedPositionId)
-  const [clientId, setClientId] = useState(0)
+  const [clientId, setClientId] = useState(initialClientId)
   const [board, setBoard] = useState<Board | null>(null)
   const [query, setQuery] = useState('')
   const [slaFilter, setSlaFilter] = useState('All')
@@ -68,14 +81,31 @@ export default function RecruitmentPipelineBoard({ positionId: suppliedPositionI
   const boardRequest = useRef(0)
 
   useEffect(() => {
-    void getRecruitmentJobPostings().then(rows => {
-      setPostings(rows)
-      if (!suppliedPositionId && rows.length) {
-        setPositionId(rows[0].positionId)
-        setPostingId(rows[0].id)
+    let active = true
+    void Promise.all([
+      getRecruitmentJobPostings(initialClientId),
+      getRecruitmentOpenPositions(initialClientId),
+    ]).then(([nextPostings, nextPositions]) => {
+      if (!active) return
+      setPostings(nextPostings)
+      setPositions(nextPositions)
+
+      if (suppliedPositionId) {
+        const matchingPosting = nextPostings.find(row => row.positionId === suppliedPositionId)
+        setPositionId(suppliedPositionId)
+        setPostingId(matchingPosting?.id ?? 0)
+        return
       }
+
+      const firstPosting = nextPostings[0]
+      const firstPosition = nextPositions[0]
+      setPositionId(firstPosting?.positionId ?? firstPosition?.id ?? 0)
+      setPostingId(firstPosting?.id ?? 0)
+      if (!firstPosting && !firstPosition) setBoard(null)
     })
-  }, [suppliedPositionId])
+    return () => { active = false }
+  }, [initialClientId, suppliedPositionId])
+  useEffect(() => { setClientId(initialClientId) }, [initialClientId])
   useEffect(() => { if (suppliedPositionId) setPositionId(suppliedPositionId) }, [suppliedPositionId])
   useEffect(() => { if (positionId) void loadBoard(positionId, postingId || undefined) }, [positionId, postingId])
   useEffect(() => {
@@ -88,16 +118,42 @@ export default function RecruitmentPipelineBoard({ positionId: suppliedPositionI
     if (!targetPositionId) return
     const requestId = ++boardRequest.current
     setLoading(true)
-    const next = await getRecruitmentPipelineBoard(targetPositionId, targetPostingId)
-    if (requestId !== boardRequest.current) return
-    setLoading(false)
-    if (next) setBoard(next)
-    setLoadedAt(Date.now())
-    setTick(Date.now())
-    setTransitions({})
+    try {
+      const next = await getRecruitmentPipelineBoard(targetPositionId, targetPostingId)
+      if (requestId !== boardRequest.current) return
+      setBoard(next ?? null)
+      setLoadedAt(Date.now())
+      setTick(Date.now())
+      setTransitions({})
+    } finally {
+      if (requestId === boardRequest.current) setLoading(false)
+    }
   }
-  const clientOptions = useMemo(() => Array.from(new Map(postings.map(row => [row.clientId, row.clientName])).entries()).map(([value, label]) => ({ value, label })), [postings])
-  const postingOptions = postings.filter(row => !clientId || row.clientId === clientId).map(row => ({ value: row.id, label: `${row.positionCode} · ${row.publicTitle || row.positionTitle}` }))
+  const pipelineTargets = useMemo<PipelineTarget[]>(() => {
+    const postingPositionIds = new Set(postings.map(row => row.positionId))
+    const postingTargets = postings.map(row => ({
+      key: `posting:${row.id}`,
+      clientId: row.clientId,
+      clientName: row.clientName,
+      positionId: row.positionId,
+      postingId: row.id,
+      label: `${row.positionCode} · ${row.publicTitle || row.positionTitle} (Job posting)`,
+    }))
+    const positionTargets = positions
+      .filter(row => !postingPositionIds.has(row.id))
+      .map(row => ({
+        key: `position:${row.id}`,
+        clientId: row.clientId,
+        clientName: row.clientName,
+        positionId: row.id,
+        postingId: 0,
+        label: `${row.positionCode} · ${row.positionTitle} (Open position)`,
+      }))
+    return [...postingTargets, ...positionTargets]
+  }, [postings, positions])
+  const clientOptions = useMemo(() => Array.from(new Map(pipelineTargets.map(row => [row.clientId, row.clientName])).entries()).map(([value, label]) => ({ value, label })), [pipelineTargets])
+  const targetOptions = pipelineTargets.filter(row => !clientId || row.clientId === clientId).map(row => ({ value: row.key, label: row.label }))
+  const selectedTargetKey = postingId ? `posting:${postingId}` : positionId ? `position:${positionId}` : undefined
   const elapsedSinceLoad = Math.max(0, Math.floor((tick - loadedAt) / 1000))
   const normalizedQuery = query.trim().toLowerCase()
   const filtered = board?.lanes.map(lane => ({
@@ -116,10 +172,11 @@ export default function RecruitmentPipelineBoard({ positionId: suppliedPositionI
     liveElapsed: card.elapsedSeconds + (card.stageStatus === 'Paused' ? 0 : elapsedSinceLoad),
   })))
 
-  const choosePosting = (id: number) => {
-    const posting = postings.find(row => row.id === id)
-    setPostingId(id)
-    if (posting) setPositionId(posting.positionId)
+  const chooseTarget = (key: string) => {
+    const target = pipelineTargets.find(row => row.key === key)
+    if (!target) return
+    setPostingId(target.postingId)
+    setPositionId(target.positionId)
   }
   const loadTransitions = async (applicationId: number) => {
     if (transitions[applicationId]) return
@@ -160,10 +217,10 @@ export default function RecruitmentPipelineBoard({ positionId: suppliedPositionI
       <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void loadBoard()}>Refresh</Button>
     </div>
     <Card size="small"><div className="orchestration-toolbar">
-      <div><Select allowClear value={clientId || undefined} placeholder="All clients" options={clientOptions} onChange={value => { const next = Number(value || 0); setClientId(next); const first = postings.find(row => !next || row.clientId === next); if (first) choosePosting(first.id) }} /><Select showSearch optionFilterProp="label" value={postingId || undefined} placeholder="Select job posting" options={postingOptions} onChange={choosePosting} /></div>
+      <div>{!clientScopeManaged && <Select allowClear value={clientId || undefined} placeholder="All clients" options={clientOptions} onChange={value => { const next = Number(value || 0); setClientId(next); const first = pipelineTargets.find(row => !next || row.clientId === next); if (first) chooseTarget(first.key); else { setPositionId(0); setPostingId(0); setBoard(null) } }} />}<Select aria-label="Pipeline position or job posting" showSearch optionFilterProp="label" value={selectedTargetKey} placeholder="Select position or job posting" options={targetOptions} onChange={chooseTarget} /></div>
       <div><Input allowClear prefix={<SearchOutlined />} value={query} onChange={event => setQuery(event.target.value)} placeholder="Candidate, email or application" /><Select value={slaFilter} onChange={setSlaFilter} options={['All', 'On track', 'Due soon', 'Overdue', 'Paused'].map(value => ({ value, label: value === 'All' ? 'All SLA states' : value }))} /><Select className="pipeline-view-select" aria-label="Hiring pipeline view" value={viewMode} onChange={setViewMode} options={pipelineViewOptions} /></div>
     </div></Card>
-    {!board ? <Card><Empty description={positionId ? 'No published pipeline is assigned to this posting.' : 'Select a job posting.'} /></Card> : <>
+    {!board ? <Card><Empty description={positionId ? 'No published pipeline is assigned to this position.' : targetOptions.length ? 'Select a position or job posting.' : 'No open positions or job postings found for this client.'} /></Card> : <>
       <Card size="small"><Space wrap><Tag color="purple">{board.positionCode}</Tag><strong>{board.positionTitle}</strong><Tag>Pipeline version #{board.pipelineVersionId}</Tag><span>{board.lanes.reduce((total, lane) => total + lane.applications.length, 0)} application(s)</span></Space></Card>
       {viewMode !== 'table' && <div className="pipeline-board" data-testid="pipeline-board-view"><div className="pipeline-board-columns">{filtered.map(lane => <section key={lane.stageId} data-testid={`pipeline-lane-${lane.stageCode}`} className="pipeline-board-column" style={{ '--stage-color': stageColor(lane.stageType) } as CSSProperties}>
         <header><h4>{lane.stageName}</h4><Badge count={lane.applications.length} showZero color={stageColor(lane.stageType)} /></header>

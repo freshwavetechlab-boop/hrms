@@ -22,6 +22,7 @@ import './RecruitmentRequisitionManager.css'
 
 type Props = {
   initialClientId?: number
+  clientScopeManaged?: boolean
   initialOpen?: boolean
   embedded?: boolean
   onChanged?: (row: RecruitmentRequisition) => void
@@ -41,7 +42,7 @@ const emptyMasters: MasterOptions = {
   hiringTypes: [], positionCategories: [], experienceRanges: [], priorities: [], budgetAmounts: [],
 }
 
-export default function RecruitmentRequisitionManager({ initialClientId = 0, initialOpen = false, embedded = false, onChanged, onPrepareJobDescription }: Props) {
+export default function RecruitmentRequisitionManager({ initialClientId = 0, clientScopeManaged = false, initialOpen = false, embedded = false, onChanged, onPrepareJobDescription }: Props) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [form] = Form.useForm<SaveRecruitmentRequisition>()
@@ -278,8 +279,8 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, ini
 
     <div className="rfr-toolbar">
       <Input allowClear prefix={<SearchOutlined />} value={query} onChange={event => setQuery(event.target.value)} placeholder="Search role, RFR or requester" />
-      <Select allowClear value={clientFilter || undefined} onChange={value => setClientFilter(value || 0)} placeholder="All clients" showSearch optionFilterProp="label"
-        options={clients.map(row => ({ value: row.id, label: row.name }))} />
+      {!clientScopeManaged && <Select allowClear value={clientFilter || undefined} onChange={value => setClientFilter(value || 0)} placeholder="All clients" showSearch optionFilterProp="label"
+        options={clients.map(row => ({ value: row.id, label: row.name }))} />}
       <Select allowClear value={statusFilter || undefined} onChange={value => setStatusFilter(value || '')} placeholder="All statuses" options={asOptions(statuses)} />
       <Tooltip title="Refresh register"><Button aria-label="Refresh register" icon={<ReloadOutlined />} onClick={() => void refreshRows()} /></Tooltip>
     </div>
@@ -297,7 +298,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, ini
           <Form.Item name="id" hidden><InputNumber /></Form.Item>
           <Form.Item name="branchId" hidden><InputNumber /></Form.Item>
           <Form.Item name="clientId" label="Client" rules={[{ required: true, message: 'Select the hiring client.' }]}>
-            <Select showSearch optionFilterProp="label" placeholder="Select client" options={clients.map(row => ({ value: row.id, label: row.name }))}
+            <Select showSearch optionFilterProp="label" placeholder="Select client" disabled={clientScopeManaged && initialClientId > 0} options={clients.map(row => ({ value: row.id, label: row.name }))}
               onChange={value => {
                 const linkedRequester = session?.user.employeeId
                 const belongs = employees.some(row => row.id === linkedRequester && row.clientId === value && row.isActive)

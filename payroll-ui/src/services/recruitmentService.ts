@@ -3,7 +3,7 @@ import type { RecruitmentDashboard, RecruitmentOpenPosition, RecruitmentOperatio
 
 const emptyDashboard: RecruitmentDashboard = { drafts: 0, pendingApproval: 0, approved: 0, rejected: 0, returned: 0, withdrawn: 0, openPositions: 0, filledPositions: 0, cancelledPositions: 0, onHoldPositions: 0, remainingPositions: 0, averageApprovalHours: 0, departmentWiseHiring: [], companyWiseHiring: [], priorityWiseHiring: [], upcomingJoiningTargets: [] }
 
-export const getRecruitmentDashboard = () => getJson<RecruitmentDashboard>('/api/recruitment/dashboard', emptyDashboard)
+export const getRecruitmentDashboard = (clientId = 0) => getJson<RecruitmentDashboard>(`/api/recruitment/dashboard${clientId ? `?clientId=${clientId}` : ''}`, emptyDashboard)
 
 export const getRecruitmentRequisitions = (filters: { clientId?: number; status?: string; query?: string; department?: string; hiringType?: string; employmentType?: string; priority?: string; businessUnit?: string; positionCategory?: string; experience?: string; location?: string; project?: string; replacementHiring?: boolean; budgetMin?: number; budgetMax?: number; dateFrom?: string; dateTo?: string; recruiterUserId?: number }) => {
   const params = new URLSearchParams()
@@ -20,7 +20,7 @@ export const submitRecruitmentRequisition = (id: number) =>
 export const deleteRecruitmentRequisition = (id: number) =>
   deleteJson(`/api/recruitment/requisitions/${id}`, null, { successMessage: 'Requisition deleted.' })
 
-export const getRecruitmentOpenPositions = () => getJson<RecruitmentOpenPosition[]>('/api/recruitment/open-positions', [])
+export const getRecruitmentOpenPositions = (clientId = 0) => getJson<RecruitmentOpenPosition[]>(`/api/recruitment/open-positions${clientId ? `?clientId=${clientId}` : ''}`, [])
 export const deleteRecruitmentOpenPosition = (id: number) =>
   deleteJson(`/api/recruitment/open-positions/${id}`, null, { successMessage: 'Open position deleted.' })
 export const getRecruitmentOperationsOptions = () => getJson<RecruitmentOperationsOptions>('/api/recruitment/operations/options', { allowMultipleRecruiters: false, enableVendorHiring: false, enableConsultantHiring: false, enableInternalHiring: false, enableReferralHiring: false, enableDocumentVerification: false, recruiters: [], vendors: [], consultants: [], positionStatuses: [], publishingChannels: [], assignmentPriorities: [] })

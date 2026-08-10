@@ -1033,8 +1033,8 @@ app.MapPost("/api/ess/recruitment/referrals", async (RecruitmentRepository repos
     return Results.Ok(await talent.LinkReferralAsync(row, user));
 });
 
-app.MapGet("/api/recruitment/dashboard", async (RecruitmentRepository repository, HttpContext context) =>
-    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.DashboardAsync(CurrentUser(context), false)) : Results.StatusCode(403));
+app.MapGet("/api/recruitment/dashboard", async (RecruitmentRepository repository, int? clientId, HttpContext context) =>
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.DashboardAsync(CurrentUser(context), false, clientId)) : Results.StatusCode(403));
 app.MapGet("/api/recruitment/requisitions", async (RecruitmentRepository repository, int? clientId, string? status, string? query, string? department, string? hiringType, string? employmentType, string? priority, string? businessUnit, string? positionCategory, string? experience, string? location, string? project, bool? replacementHiring, decimal? budgetMin, decimal? budgetMax, DateTime? dateFrom, DateTime? dateTo, int? recruiterUserId, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
@@ -1166,8 +1166,8 @@ app.MapPost("/api/recruitment/profile-submission-batches/{id:long}/forward", asy
     var (row, error) = await repository.ForwardProfileBatchAsync(id, CurrentUser(context), notifications);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
-app.MapGet("/api/recruitment/open-positions", async (RecruitmentRepository repository, HttpContext context) =>
-    HasPermission(context, "recruitment.manage") || HasPermission(context, "recruitment.position.view") || HasPermission(context, "recruitment.position.manage") || HasPermission(context, "recruitment.work-order.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.OpenPositionsAsync(CurrentUser(context))) : Results.StatusCode(403));
+app.MapGet("/api/recruitment/open-positions", async (RecruitmentRepository repository, int? clientId, HttpContext context) =>
+    HasPermission(context, "recruitment.manage") || HasPermission(context, "recruitment.position.view") || HasPermission(context, "recruitment.position.manage") || HasPermission(context, "recruitment.work-order.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.OpenPositionsAsync(CurrentUser(context), clientId)) : Results.StatusCode(403));
 app.MapGet("/api/recruitment/operations/options", async (RecruitmentRepository repository, HttpContext context) =>
     HasPermission(context, "recruitment.manage") || HasPermission(context, "recruitment.position.view") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.OperationsOptionsAsync(CurrentUser(context))) : Results.StatusCode(403));
 app.MapGet("/api/recruitment/masters/{masterType}", async (RecruitmentRepository repository, string masterType, HttpContext context) =>
@@ -1221,9 +1221,9 @@ app.MapPost("/api/recruitment/open-positions/{id:long}/referral-campaigns", asyn
     return string.IsNullOrWhiteSpace(error) ? Results.Ok(detail) : Results.BadRequest(new { message = error });
 });
 
-app.MapGet("/api/recruitment/talent/dashboard", async (RecruitmentTalentRepository repository, HttpContext context) =>
+app.MapGet("/api/recruitment/talent/dashboard", async (RecruitmentTalentRepository repository, int? clientId, HttpContext context) =>
     HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage")
-        ? Results.Ok(await repository.DashboardAsync(CurrentUser(context)))
+        ? Results.Ok(await repository.DashboardAsync(CurrentUser(context), clientId))
         : Results.StatusCode(403));
 app.MapGet("/api/recruitment/candidates", async (RecruitmentTalentRepository repository, int? clientId, string? query, string? status, HttpContext context) =>
     HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage")

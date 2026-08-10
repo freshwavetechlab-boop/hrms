@@ -29,7 +29,7 @@ const certification0: RecruitmentCandidateCertification = { id: 0, candidateId: 
 const canApplyCandidate = (row: RecruitmentCandidate) => row.profileStatus === 'Active' && row.consentStatus !== 'Revoked' && (!row.retentionUntil || new Date(row.retentionUntil).getTime() >= Date.now())
 const canMoveApplication = (row: RecruitmentCandidateApplication) => !['Rejected', 'Withdrawn', 'Joined'].includes(row.currentStage) && !row.currentStage.startsWith('Offer')
 
-export default function RecruitmentTalentWorkspace({ mode }: { mode: Mode }) {
+export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }: { mode: Mode; initialClientId?: number }) {
   const navigate = useNavigate()
   const notify = useToast()
   const session = useAuthSession()
@@ -60,13 +60,25 @@ export default function RecruitmentTalentWorkspace({ mode }: { mode: Mode }) {
   const [resumeIntakeMode, setResumeIntakeMode] = useState<RecruitmentResumeIntakeMode | null>(null)
 
   const load = useCallback(async () => {
-    const [metrics, candidateRows, applicationRows, interviewRows, offerRows] = await Promise.all([getTalentDashboard(), getCandidates(query, status), getApplications(), getInterviews(), getOffers()])
-    setDashboard(metrics); setCandidates(candidateRows); setApplications(applicationRows); setInterviews(interviewRows); setOffers(offerRows)
-  }, [query, status])
+    const [metrics, candidateRows, allApplicationRows, allInterviewRows, allOfferRows] = await Promise.all([getTalentDashboard(initialClientId), getCandidates(query, status, initialClientId || undefined), getApplications(), getInterviews(), getOffers()])
+    const applicationRows = initialClientId ? allApplicationRows.filter(row => row.clientId === initialClientId) : allApplicationRows
+    const applicationIds = new Set(applicationRows.map(row => row.id))
+    const interviewRows = initialClientId ? allInterviewRows.filter(row => applicationIds.has(row.applicationId)) : allInterviewRows
+    const offerRows = initialClientId ? allOfferRows.filter(row => row.clientId === initialClientId) : allOfferRows
+    const scopedMetrics = initialClientId ? {
+      talentProfiles: candidateRows.length,
+      activeApplications: applicationRows.filter(row => !['Rejected', 'Withdrawn', 'Joined'].includes(row.currentStage)).length,
+      interviewsScheduled: interviewRows.filter(row => ['Scheduled', 'Rescheduled'].includes(row.status)).length,
+      offersPending: offerRows.filter(row => ['Draft', 'Pending Approval', 'Approved', 'Pending Candidate', 'Released', 'Negotiation'].includes(row.status)).length,
+      preOnboardingPending: metrics.preOnboardingPending,
+      joined: applicationRows.filter(row => row.currentStage === 'Joined').length,
+    } : metrics
+    setDashboard(scopedMetrics); setCandidates(candidateRows); setApplications(applicationRows); setInterviews(interviewRows); setOffers(offerRows)
+  }, [initialClientId, query, status])
   useEffect(() => {
-    void Promise.all([getClients(), getWorkLocations(), getEmployeeManagerUsers(), getRecruitmentOpenPositions()]).then(([clientRows, locationRows, userRows, positionRows]) => { setClients(clientRows); setWorkLocations(locationRows); setPanelUsers(userRows); setPositions(positionRows) })
+    void Promise.all([getClients(), getWorkLocations(), getEmployeeManagerUsers(), getRecruitmentOpenPositions(initialClientId)]).then(([clientRows, locationRows, userRows, positionRows]) => { setClients(clientRows); setWorkLocations(locationRows); setPanelUsers(userRows); setPositions(positionRows) })
     void load()
-  }, [load])
+  }, [initialClientId, load])
 
   const openCandidate = async (id: number) => {
     const [candidateDetail, documents] = await Promise.all([getCandidate(id), getEntityAttachments('CANDIDATE', id)])
@@ -153,7 +165,7 @@ export default function RecruitmentTalentWorkspace({ mode }: { mode: Mode }) {
     ].map(([label, value]) => <Card size="small" key={String(label)}><Statistic title={label} value={value} /></Card>)}</div>}
 
     {mode === 'candidates' && <>
-      <div className="talent-toolbar"><Input.Search value={query} onChange={event => setQuery(event.target.value)} onSearch={() => void load()} placeholder="Name, email, phone, code, skill" allowClear /><Select value={status} onChange={setStatus} options={[{ value: '', label: 'All profiles' }, ...['Active', 'Inactive', 'Joined', 'Archived'].map(value => ({ value, label: value }))]} /><div className="talent-toolbar-actions"><Button onClick={() => setResumeIntakeMode('single')}>Upload resume</Button><Button onClick={() => setResumeIntakeMode('bulk')}>Bulk resumes</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => setCandidateDraft({ ...candidate0 })}>Add candidate</Button></div></div>
+      <div className="talent-toolbar"><Input.Search value={query} onChange={event => setQuery(event.target.value)} onSearch={() => void load()} placeholder="Name, email, phone, code, skill" allowClear /><Select value={status} onChange={setStatus} options={[{ value: '', label: 'All profiles' }, ...['Active', 'Inactive', 'Joined', 'Archived'].map(value => ({ value, label: value }))]} /><div className="talent-toolbar-actions"><Button onClick={() => setResumeIntakeMode('single')}>Upload resume</Button><Button onClick={() => setResumeIntakeMode('bulk')}>Bulk resumes</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => setCandidateDraft({ ...candidate0, clientId: initialClientId })}>Add candidate</Button></div></div>
       <DataTable rows={candidates} exportFileName="talent-pool" actions={row => <Space><Button size="small" onClick={() => void openCandidate(row.id)}>360° profile</Button>{canApplyCandidate(row) && <Button size="small" type="primary" onClick={() => setApplicationDraft({ candidateId: row.id, positionId: 0, sourceType: 'Direct' })}>Apply</Button>}{canDeleteRecruitmentData && <Popconfirm title="Delete candidate permanently?" description="Only safe pre-interview/test records can be deleted. Joined, workflow, interview, offer and forwarded records are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteCandidate(row.id); if (response.ok) { if (detail?.candidate.id === row.id) setDetail(null); await load() } }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.candidateName}`} /></Popconfirm>}</Space>} columns={[
         { key: 'candidateCode', label: 'Candidate', render: row => <><b>{row.candidateName}</b><small>{row.candidateCode} · {row.email || row.phone}</small></>, value: row => row.candidateName },
         { key: 'currentTitle', label: 'Current role', render: row => <><b>{row.currentTitle || '-'}</b><small>{row.currentCompany || '-'}</small></> },

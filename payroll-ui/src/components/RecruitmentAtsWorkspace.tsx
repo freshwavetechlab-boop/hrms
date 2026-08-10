@@ -13,6 +13,7 @@ import './RecruitmentResumeIntake.css'
 
 type Props = {
   initialClientId?: number
+  clientScopeManaged?: boolean
   initialPositionId?: number
   initialUploadMode?: RecruitmentResumeIntakeMode
 }
@@ -24,7 +25,7 @@ type IntakeLaunch = {
   jobPostingId?: number | null
 }
 
-export default function RecruitmentAtsWorkspace({ initialClientId = 0, initialPositionId = 0, initialUploadMode }: Props) {
+export default function RecruitmentAtsWorkspace({ initialClientId = 0, clientScopeManaged = false, initialPositionId = 0, initialUploadMode }: Props) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
@@ -118,7 +119,7 @@ export default function RecruitmentAtsWorkspace({ initialClientId = 0, initialPo
 
     <Card size="small" className="ats-workbench-table-card" title="Candidate applications" extra={<Badge count={rows.length} showZero color="#5b4ce6" />}>
       <div className="ats-workbench-filters">
-        <Select showSearch optionFilterProp="label" value={clientId || undefined} placeholder="All permitted clients" allowClear options={clients.map(row => ({ value: row.id, label: `${row.code} - ${row.name}` }))} onChange={value => { setClientId(value || 0); setPositionId(0) }} />
+        {!clientScopeManaged && <Select showSearch optionFilterProp="label" value={clientId || undefined} placeholder="All permitted clients" allowClear options={clients.map(row => ({ value: row.id, label: `${row.code} - ${row.name}` }))} onChange={value => { setClientId(value || 0); setPositionId(0) }} />}
         <Select showSearch optionFilterProp="label" value={positionId || undefined} placeholder="All positions" allowClear options={availablePositions.map(row => ({ value: row.id, label: `${row.positionCode} - ${row.positionTitle}` }))} onChange={value => setPositionId(value || 0)} />
         <Select value={stage || undefined} placeholder="All pipeline stages" allowClear options={stages.map(value => ({ value, label: value }))} onChange={value => setStage(value || '')} />
         <Input.Search value={query} allowClear placeholder="Candidate, email, application or position" onChange={event => setQuery(event.target.value)} />

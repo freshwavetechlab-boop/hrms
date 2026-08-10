@@ -57,11 +57,11 @@ public sealed class RecruitmentTalentRepository(
         await EnsureNormalizedAtsForeignKeysAsync(db);
     }
 
-    public async Task<RecruitmentTalentDashboard> DashboardAsync(AuthUser user)
+    public async Task<RecruitmentTalentDashboard> DashboardAsync(AuthUser user, int? requestedClientId = null)
     {
         await using var db = Db();
         await db.OpenAsync();
-        var clientId = user.ClientId;
+        var clientId = user.ClientId ?? (requestedClientId is > 0 ? requestedClientId : null);
         return new RecruitmentTalentDashboard
         {
             TalentProfiles = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidates c WHERE (@ClientId IS NULL OR c.ClientId=@ClientId OR EXISTS (SELECT 1 FROM recruitment_candidate_applications a WHERE a.CandidateId=c.Id AND a.ClientId=@ClientId)) AND c.ProfileStatus<>'Archived'", new { ClientId = clientId }),

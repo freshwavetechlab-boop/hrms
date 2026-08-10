@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
-import { Button, Card, Drawer, Input, InputNumber, Popconfirm, Select, Space, Tabs, message } from 'antd'
+import { Button, Card, Drawer, Empty, Input, InputNumber, Popconfirm, Select, Space, Tabs, message } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
 import DataTable from '../components/DataTable'
 import RecruitmentAtsWorkspace from '../components/RecruitmentAtsWorkspace'
@@ -11,13 +11,15 @@ import RecruitmentRequisitionManager from '../components/RecruitmentRequisitionM
 import RecruitmentTalentWorkspace from '../components/RecruitmentTalentWorkspace'
 import RecruitmentWorkOrderWorkspace from '../components/RecruitmentWorkOrderWorkspace'
 import { useAuthSession } from '../components/AuthGate'
+import { getClients } from '../services/payrollService'
 import { assignConsultant, assignRecruiter, assignVendor, createReferralCampaign, deleteRecruitmentOpenPosition, getRecruitmentDashboard, getRecruitmentMasterOptions, getRecruitmentOpenPositionDetail, getRecruitmentOpenPositions, getRecruitmentOperationsOptions, publishPosition, saveRecruitmentPositionNote, updateRecruitmentPositionStatus } from '../services/recruitmentService'
-import type { RecruitmentDashboard, RecruitmentMetric, RecruitmentOpenPosition, RecruitmentOperationsOptions, RecruitmentPositionDetail } from '../types/payroll'
+import type { Client, RecruitmentDashboard, RecruitmentMetric, RecruitmentOpenPosition, RecruitmentOperationsOptions, RecruitmentPositionDetail } from '../types/payroll'
 
 const fallbackPositionStatuses = ['Open', 'Recruiter Assigned', 'Published', 'Candidate Screening', 'Interview In Progress', 'Offer Released', 'Offer Accepted', 'Joining Pending', 'Filled', 'Partially Filled', 'Cancelled', 'Closed', 'On Hold']
 const money = (value: number, currency = 'INR') => `${currency} ${Number(value || 0).toLocaleString('en-IN')}`
 const dateText = (value?: string | null) => value ? new Date(value).toLocaleDateString('en-GB') : '-'
 const dashboard0: RecruitmentDashboard = { drafts: 0, pendingApproval: 0, approved: 0, rejected: 0, returned: 0, withdrawn: 0, openPositions: 0, filledPositions: 0, cancelledPositions: 0, onHoldPositions: 0, remainingPositions: 0, averageApprovalHours: 0, departmentWiseHiring: [], companyWiseHiring: [], priorityWiseHiring: [], upcomingJoiningTargets: [] }
+const recruitmentClientScopeKey = 'recruitment.clientScope'
 
 export const recruitmentViews = ['Dashboard', 'Work Orders & SLA', 'Requisitions', 'Open Positions', 'Job Descriptions', 'Job Postings', 'ATS Screening', 'Hiring Pipeline', 'Talent Pool', 'Applications', 'Interviews', 'Offers & Pre-Onboarding'] as const
 export type RecruitmentPageView = (typeof recruitmentViews)[number]
@@ -50,6 +52,10 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
   const navigate = useNavigate()
   const location = useLocation()
   const routeQuery = useMemo(() => new URLSearchParams(location.search), [location.search])
+  const boundClientId = Number(session?.user.clientId || 0)
+  const canChooseClient = !boundClientId && Boolean(session?.user.permissions.includes('settings.manage'))
+  const [clients, setClients] = useState<Client[]>([])
+  const [selectedClientId, setSelectedClientId] = useState(() => boundClientId || Number(routeQuery.get('clientId') || sessionStorage.getItem(recruitmentClientScopeKey) || 0))
   const [dashboard, setDashboard] = useState<RecruitmentDashboard>(dashboard0)
   const [positions, setPositions] = useState<RecruitmentOpenPosition[]>([])
   const [detail, setDetail] = useState<RecruitmentPositionDetail | null>(null)
@@ -64,23 +70,49 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
   const [publication, setPublication] = useState({ channel: '', publishingDate: new Date().toISOString().slice(0, 10), expiryDate: '', status: 'Published', remarks: '' })
   const [campaign, setCampaign] = useState({ campaignName: '', startDate: new Date().toISOString().slice(0, 10), endDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), referralReward: 0, visibilityDepartment: '', visibilityBusinessUnit: '', visibilityLocation: '', visibilityEmploymentType: '', status: 'Open' })
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const [metrics, positionRows] = await Promise.all([
-      getRecruitmentDashboard(),
-      getRecruitmentOpenPositions()
+      getRecruitmentDashboard(selectedClientId),
+      getRecruitmentOpenPositions(selectedClientId)
     ])
     setDashboard(metrics)
     setPositions(positionRows)
-  }
+  }, [selectedClientId])
 
   useEffect(() => {
+    void getClients().then(setClients)
     void getRecruitmentMasterOptions('Position Status').then(position => {
       if (position.length) setPositionStatusOptions(position)
     })
     void getRecruitmentOperationsOptions().then(setOps)
   }, [])
-  useEffect(() => { void load() }, [])
+  useEffect(() => {
+    if (!boundClientId || selectedClientId === boundClientId) return
+    setSelectedClientId(boundClientId)
+  }, [boundClientId, selectedClientId])
+  useEffect(() => { void load() }, [load])
   useEffect(() => { if (detail?.position.status) setPositionStatus(detail.position.status) }, [detail?.position.status])
+
+  const changeClientScope = (value?: number) => {
+    if (!canChooseClient) return
+    const next = Number(value || 0)
+    setSelectedClientId(next)
+    setDetail(null)
+    if (next) sessionStorage.setItem(recruitmentClientScopeKey, String(next))
+    else sessionStorage.removeItem(recruitmentClientScopeKey)
+    const params = new URLSearchParams(location.search)
+    if (next) params.set('clientId', String(next))
+    else params.delete('clientId')
+    const query = params.toString()
+    navigate(`${location.pathname}${query ? `?${query}` : ''}`, { replace: true })
+  }
+
+  const scopedPath = (path: string) => {
+    if (!selectedClientId) return path
+    const separator = path.includes('?') ? '&' : '?'
+    return `${path}${separator}clientId=${selectedClientId}`
+  }
+  const selectedClientName = selectedClientId ? clients.find(row => row.id === selectedClientId)?.name || 'Selected client' : 'All accessible clients'
 
   const summary = useMemo<Array<[string, string | number, string]>>(() => [
     ['Pending approvals', dashboard.pendingApproval, '/tasks'],
@@ -144,16 +176,16 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
   ]} />
 
   const workspaceContent = workspace === 'overview'
-    ? <Dashboard summary={summary} dashboard={dashboard} onNavigate={navigate} />
+    ? <Dashboard summary={summary} dashboard={dashboard} scopeLabel={selectedClientName} onNavigate={path => navigate(scopedPath(path))} onNew={() => navigate(scopedPath('/recruitment/requisitions?new=1'))} />
     : workspace === 'delivery'
-      ? <RecruitmentWorkOrderWorkspace />
+      ? <RecruitmentWorkOrderWorkspace key={`delivery-${selectedClientId}`} initialClientId={selectedClientId} clientScopeManaged />
       : workspace === 'requests'
         ? <Tabs
             className="recruitment-workspace-tabs recruitment-primary-tabs"
             activeKey={view === 'Open Positions' ? 'positions' : 'requests'}
-            onChange={key => navigate(key === 'positions' ? '/recruitment/open-positions' : '/recruitment/requisitions')}
+            onChange={key => navigate(scopedPath(key === 'positions' ? '/recruitment/open-positions' : '/recruitment/requisitions'))}
             items={[
-              { key: 'requests', label: 'Requests', children: <RecruitmentRequisitionManager key={routeQuery.get('new') === '1' ? 'new-request' : 'request-list'} embedded initialOpen={routeQuery.get('new') === '1'} onChanged={() => void load()} onPrepareJobDescription={row => navigate(`/recruitment/job-descriptions?requisitionId=${row.id}&clientId=${row.clientId}`)} /> },
+              { key: 'requests', label: 'Requests', children: <RecruitmentRequisitionManager key={`${routeQuery.get('new') === '1' ? 'new-request' : 'request-list'}-${selectedClientId}`} embedded initialClientId={selectedClientId} clientScopeManaged initialOpen={routeQuery.get('new') === '1'} onChanged={() => void load()} onPrepareJobDescription={row => navigate(`/recruitment/job-descriptions?requisitionId=${row.id}&clientId=${row.clientId}`)} /> },
               { key: 'positions', label: `Approved vacancies (${positions.length})`, children: openPositionsTable },
             ]}
           />
@@ -161,32 +193,32 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
           ? <Tabs
               className="recruitment-workspace-tabs recruitment-primary-tabs"
               activeKey={view === 'Job Postings' ? 'publishing' : 'profiles'}
-              onChange={key => navigate(key === 'publishing' ? '/recruitment/job-postings' : '/recruitment/job-descriptions')}
+              onChange={key => navigate(scopedPath(key === 'publishing' ? '/recruitment/job-postings' : '/recruitment/job-descriptions'))}
               items={[
-                { key: 'profiles', label: 'Role profiles & ATS', children: <RecruitmentJobDescriptionManager initialClientId={Number(routeQuery.get('clientId') || 0)} initialRequisitionId={Number(routeQuery.get('requisitionId') || 0)} /> },
-                { key: 'publishing', label: 'Publishing & public links', children: <RecruitmentJobPostingManager initialClientId={Number(routeQuery.get('clientId') || 0)} initialPositionId={Number(routeQuery.get('positionId') || 0)} /> },
+                { key: 'profiles', label: 'Role profiles & ATS', children: <RecruitmentJobDescriptionManager key={`jd-${selectedClientId}`} initialClientId={Number(routeQuery.get('clientId') || selectedClientId)} clientScopeManaged initialRequisitionId={Number(routeQuery.get('requisitionId') || 0)} /> },
+                { key: 'publishing', label: 'Publishing & public links', children: <RecruitmentJobPostingManager key={`posting-${selectedClientId}`} initialClientId={Number(routeQuery.get('clientId') || selectedClientId)} clientScopeManaged initialPositionId={Number(routeQuery.get('positionId') || 0)} /> },
               ]}
             />
           : workspace === 'candidates'
             ? <Tabs
                 className="recruitment-workspace-tabs recruitment-primary-tabs"
                 activeKey={view === 'Applications' ? 'applications' : view === 'ATS Screening' ? 'ats' : 'talent'}
-                onChange={key => navigate(key === 'applications' ? '/recruitment/applications' : key === 'ats' ? '/recruitment/ats-screening' : '/recruitment/talent-pool')}
+                onChange={key => navigate(scopedPath(key === 'applications' ? '/recruitment/applications' : key === 'ats' ? '/recruitment/ats-screening' : '/recruitment/talent-pool'))}
                 items={[
-                  { key: 'talent', label: 'Talent profiles', children: <RecruitmentTalentWorkspace mode="candidates" /> },
-                  { key: 'applications', label: 'Applications', children: <RecruitmentTalentWorkspace mode="applications" /> },
-                  { key: 'ats', label: 'ATS review & resume intake', children: <RecruitmentAtsWorkspace initialUploadMode={routeQuery.get('upload') === 'bulk' ? 'bulk' : routeQuery.get('upload') === 'single' ? 'single' : undefined} /> },
+                  { key: 'talent', label: 'Talent profiles', children: <RecruitmentTalentWorkspace key={`talent-${selectedClientId}`} mode="candidates" initialClientId={selectedClientId} /> },
+                  { key: 'applications', label: 'Applications', children: <RecruitmentTalentWorkspace key={`applications-${selectedClientId}`} mode="applications" initialClientId={selectedClientId} /> },
+                  { key: 'ats', label: 'ATS review & resume intake', children: <RecruitmentAtsWorkspace key={`ats-${selectedClientId}`} initialClientId={selectedClientId} clientScopeManaged initialUploadMode={routeQuery.get('upload') === 'bulk' ? 'bulk' : routeQuery.get('upload') === 'single' ? 'single' : undefined} /> },
                 ]}
               />
             : workspace === 'pipeline'
-              ? <RecruitmentPipelineBoard positionId={Number(routeQuery.get('positionId') || 0)} />
+              ? <RecruitmentPipelineBoard key={`pipeline-${selectedClientId}`} initialClientId={selectedClientId} clientScopeManaged positionId={Number(routeQuery.get('positionId') || 0)} />
               : <Tabs
                   className="recruitment-workspace-tabs recruitment-primary-tabs"
                   activeKey={view === 'Offers & Pre-Onboarding' ? 'offers' : 'interviews'}
-                  onChange={key => navigate(key === 'offers' ? '/recruitment/offers-and-pre-onboarding' : '/recruitment/interviews')}
+                  onChange={key => navigate(scopedPath(key === 'offers' ? '/recruitment/offers-and-pre-onboarding' : '/recruitment/interviews'))}
                   items={[
-                    { key: 'interviews', label: 'Interviews', children: <RecruitmentTalentWorkspace mode="interviews" /> },
-                    { key: 'offers', label: 'Offers & pre-onboarding', children: <RecruitmentTalentWorkspace mode="offers" /> },
+                    { key: 'interviews', label: 'Interviews', children: <RecruitmentTalentWorkspace key={`interviews-${selectedClientId}`} mode="interviews" initialClientId={selectedClientId} /> },
+                    { key: 'offers', label: 'Offers & pre-onboarding', children: <RecruitmentTalentWorkspace key={`offers-${selectedClientId}`} mode="offers" initialClientId={selectedClientId} /> },
                   ]}
                 />
 
@@ -196,7 +228,10 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
         <span className="recruitment-workspace-group">{copy.group}</span>
         <p>{copy.description}</p>
       </div>
-      {['overview', 'requests'].includes(workspace) && <Button data-testid="recruitment-new-hiring-request" type="primary" icon={<PlusOutlined />} onClick={() => navigate('/recruitment/requisitions?new=1')}>New hiring request</Button>}
+      <div className="recruitment-header-actions">
+        {canChooseClient && <Select data-testid="recruitment-client-scope" aria-label="Recruitment client scope" allowClear showSearch optionFilterProp="label" value={selectedClientId || undefined} placeholder="All accessible clients" options={clients.map(row => ({ value: row.id, label: `${row.code} · ${row.name}` }))} onChange={changeClientScope} />}
+        {['overview', 'requests'].includes(workspace) && <Button data-testid="recruitment-new-hiring-request" type="primary" icon={<PlusOutlined />} onClick={() => navigate(scopedPath('/recruitment/requisitions?new=1'))}>New hiring request</Button>}
+      </div>
     </header>
     <div className="recruitment-workspace-surface">
       <div className="recruitment-workspace-content">
@@ -239,9 +274,10 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
   </section>
 }
 
-function Dashboard({ summary, dashboard, onNavigate }: { summary: Array<[string, string | number, string]>; dashboard: RecruitmentDashboard; onNavigate: (path: string) => void }) {
+function Dashboard({ summary, dashboard, scopeLabel, onNavigate, onNew }: { summary: Array<[string, string | number, string]>; dashboard: RecruitmentDashboard; scopeLabel: string; onNavigate: (path: string) => void; onNew: () => void }) {
   const requestCount = dashboard.drafts + dashboard.pendingApproval + dashboard.approved + dashboard.rejected + dashboard.returned + dashboard.withdrawn
   return <>
+    {requestCount === 0 && dashboard.openPositions === 0 && <Card className="recruitment-empty-state"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<><b>No hiring activity for {scopeLabel}</b><span>Create the first hiring request, or choose another client to review its recruitment lifecycle.</span></>}><Button type="primary" icon={<PlusOutlined />} onClick={onNew}>Create hiring request</Button></Empty></Card>}
     <div className="travel-advance-summary recruitment-summary recruitment-overview-metrics">{summary.map(([label, value, path]) => <button type="button" key={String(label)} onClick={() => onNavigate(path)}><span>{label}</span><b>{value}</b><small>Open workspace</small></button>)}</div>
     <section className="recruitment-lifecycle-funnel" aria-label="Hiring lifecycle">
       {[

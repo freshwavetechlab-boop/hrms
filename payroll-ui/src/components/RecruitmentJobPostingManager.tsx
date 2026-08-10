@@ -24,6 +24,7 @@ import './RecruitmentOrchestration.css'
 
 type Props = {
   initialClientId?: number
+  clientScopeManaged?: boolean
   initialPositionId?: number
   onPublished?: (posting: RecruitmentJobPosting) => void
 }
@@ -33,7 +34,7 @@ const emptyLookups: RecruitmentOrchestrationLookups = {
 }
 const editableStatuses = new Set(['Draft'])
 
-export default function RecruitmentJobPostingManager({ initialClientId = 0, initialPositionId = 0, onPublished }: Props) {
+export default function RecruitmentJobPostingManager({ initialClientId = 0, clientScopeManaged = false, initialPositionId = 0, onPublished }: Props) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const canViewAllClients = session?.user.clientId == null
@@ -216,9 +217,9 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, init
         <p className="orchestration-subtitle">Bind an approved JD, published application form and published pipeline before going live.</p>
       </div>
       <Space wrap>
-        <Select value={clientId} placeholder="Select client" showSearch optionFilterProp="label" style={{ minWidth: 230 }}
+        {!clientScopeManaged && <Select value={clientId} placeholder="Select client" showSearch optionFilterProp="label" style={{ minWidth: 230 }}
           options={[...(canViewAllClients ? [{ value: 0, label: 'All clients' }] : []), ...clients.map(row => ({ value: row.id, label: row.name }))]}
-          onChange={value => { setClientId(value); setEditor(null) }} />
+          onChange={value => { setClientId(value); setEditor(null) }} />}
         <Button type="primary" icon={<PlusOutlined />} disabled={clientId <= 0} title={clientId <= 0 ? 'Select a client before creating a posting.' : undefined} onClick={() => void startNew()}>New posting</Button>
       </Space>
     </div>
