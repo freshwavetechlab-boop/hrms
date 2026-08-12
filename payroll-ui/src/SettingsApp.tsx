@@ -33,6 +33,7 @@ import { getOrganization } from './services/settingsService'
 import type { Org } from './types/payroll'
 import './OrganizationSetup.css'
 import './ModuleDrawer.css'
+import './SecurityDrawerCompact.css'
 import './RecruitmentExperience.css'
 
 type ModuleCode = 'Dashboard' | 'Settings' | 'Employees' | 'Payroll' | 'LeaveAttendance' | 'TalentAcquisition' | 'Security' | 'Reports' | 'Workflows'

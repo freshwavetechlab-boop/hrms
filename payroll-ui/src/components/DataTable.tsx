@@ -27,6 +27,9 @@ type DataTableProps<T> = {
   emptyText?: string
   title?: string
   exportFileName?: string
+  exportToolbar?: ReactNode
+  onExcelExport?: (visibleRows: T[]) => void
+  exportDisabled?: boolean
   pageSizeOptions?: number[]
   rowSelection?: TableRowSelection<T>
 }
@@ -85,6 +88,10 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
   const clear = () => { setQuery(''); setDirtyTable(false); setTableKey(value => value + 1) }
   const exportValueOf = (row: T, column: Column<T>) => column.exportValue ? column.exportValue(row) : valueOf(row, column)
   const downloadExport = () => {
+    if (exportFormat === 'excel' && props.onExcelExport) {
+      props.onExcelExport(exportRows)
+      return
+    }
     let content: string
     let mimeType: string
     let extension: string
@@ -140,7 +147,8 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
       <div className="ant-table-actions">
         <Input allowClear className="table-filter" placeholder="Search table..." value={query} onChange={event => setQuery(event.target.value)} />
         <Button onClick={clear} disabled={!query && !dirtyTable}>Clear</Button>
-        <Dropdown.Button className={`export-split-btn export-${exportFormat}`} menu={exportMenu} icon={<DownOutlined />} onClick={downloadExport} disabled={!exportRows.length}>
+        {exportFormat === 'excel' && props.exportToolbar}
+        <Dropdown.Button className={`export-split-btn export-${exportFormat}`} menu={exportMenu} icon={<DownOutlined />} onClick={downloadExport} disabled={!exportRows.length || props.exportDisabled}>
           <span className="export-button-label">{exportIcons[exportFormat]} Export {exportLabels[exportFormat]}</span>
         </Dropdown.Button>
       </div>

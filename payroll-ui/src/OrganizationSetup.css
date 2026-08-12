@@ -2426,6 +2426,28 @@ body.portal-shell-mounted #root .module-shell .shell-bottom-brand{
 .module-content .ant-table-actions .table-filter{flex:1 1 190px!important;min-width:160px!important;max-width:240px!important}
 .module-content .ant-table-actions > :not(.table-filter){flex:0 0 auto!important}
 
+/* Employee Master Report: keep report context, filters and export tools in one compact working area. */
+.employee-master-report{gap:8px!important}
+.employee-master-report .report-workspace{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(230px,320px)!important;align-items:end!important;gap:12px 20px!important;padding:12px 16px!important}
+.employee-master-report .report-workspace>header{min-width:0!important;margin:0!important;padding:0!important;border:0!important}
+.employee-master-report .report-workspace>header h3{margin:2px 0 0!important}
+.employee-master-report .report-workspace>header p{margin:3px 0 0!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
+.employee-master-report .report-filters{display:block!important;min-width:0!important;margin:0!important}
+.employee-master-report .report-filters .report-client{display:grid!important;gap:4px!important;width:100%!important;min-width:0!important;max-width:none!important;margin:0!important}
+.employee-master-report .report-filters .report-client>span{margin:0!important;line-height:1!important}
+.employee-master-report .report-filters .app-search-select,.employee-master-report .report-filters .ant-select{width:100%!important}
+.employee-master-report .report-result{padding:10px 14px 12px!important}
+.employee-master-report .report-result .ant-smart-table{margin-top:0!important;gap:8px!important}
+.employee-master-report .ant-table-toolbar{align-items:center!important}
+.employee-master-report .ant-table-actions{gap:8px!important;align-items:center!important;flex-wrap:wrap!important}
+.employee-master-report .ant-table-actions .table-filter{width:clamp(200px,22vw,280px)!important;margin:0!important}
+.employee-master-report .employee-master-export-sections{width:clamp(280px,31vw,430px)!important;min-width:280px!important}
+.employee-master-report .employee-master-export-sections .ant-select-selector{height:36px!important;min-height:36px!important;align-items:center!important;border-radius:10px!important;overflow:hidden!important}
+.employee-master-report .employee-master-export-sections .ant-select-selection-overflow{flex-wrap:nowrap!important;overflow:hidden!important}
+.employee-master-report .employee-master-export-sections .ant-select-selection-item{max-width:190px!important}
+@media(max-width:1050px){.employee-master-report .report-workspace{grid-template-columns:1fr!important;align-items:stretch!important}.employee-master-report .report-filters .report-client{max-width:360px!important}.employee-master-report .report-workspace>header p{white-space:normal!important}.employee-master-report .ant-table-actions{width:100%!important}.employee-master-report .ant-table-actions .table-filter{flex:1 1 220px!important;width:auto!important;max-width:none!important}.employee-master-report .employee-master-export-sections{flex:1 1 300px!important;width:auto!important}}
+@media(max-width:720px){.employee-master-report .report-result{padding:8px!important}.employee-master-report .employee-master-export-sections{width:100%!important;min-width:0!important}.employee-master-report .ant-table-actions .table-filter{width:100%!important}.employee-master-report .report-filters .report-client{max-width:none!important}}
+
 /* Recruitment orchestration hero and editor grids must contract inside the shell. */
 .recruitment-monitor-page .orchestration-shell,.recruitment-admin .orchestration-shell{min-height:0!important;max-width:100%!important}
 .recruitment-monitor-page .orchestration-shell > .orchestration-toolbar,

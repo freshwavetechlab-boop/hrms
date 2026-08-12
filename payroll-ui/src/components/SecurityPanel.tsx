@@ -122,6 +122,16 @@ const roleAccessFacts = (item: AuthRole, catalog: AuthPermission[]): RoleAccessF
 const RoleAccessSummary = ({ item, permissions, compact = false }: { item: AuthRole; permissions: AuthPermission[]; compact?: boolean }) => {
   const facts = roleAccessFacts(item, permissions)
   const id = testIdPart(item.code)
+  if (compact) return <div className="role-access-summary role-access-compact" data-testid={`role-access-summary-${id}`}>
+    <p className="role-compact-audience" data-testid={`role-audience-summary-${id}`} title={facts.audience}><strong>Best for</strong><span>{facts.audience}</span></p>
+    <div className="role-compact-facts">
+      <span className={facts.adminPortal ? 'admin-allowed' : 'admin-blocked'} data-testid={`role-admin-access-${id}`}><small>Admin</small><b>{facts.adminPortal ? 'Yes' : 'No'}</b></span>
+      <span data-testid={`role-workspace-access-${id}`} title={facts.workspace}><small>Workspace</small><b>{facts.workspace}</b></span>
+      <span className="scope" data-testid={`role-data-scope-${id}`} title={facts.scope}><small>Scope</small><b>{facts.scope}</b></span>
+    </div>
+    <div className="role-capability-list role-compact-capabilities" aria-label="Key capabilities">{facts.capabilities.slice(0, 2).map(capability => <em key={capability} title={capability}>{capability}</em>)}</div>
+    <p className={facts.exclusions.length ? 'role-compact-exclusion' : 'role-compact-exclusion none'} data-testid={`role-exclusions-${id}`} title={facts.exclusions.join(' · ')}><strong>Limits:</strong> {facts.exclusions.length ? facts.exclusions.join(' · ') : 'No major exclusion detected'}</p>
+  </div>
   return <div className={`role-access-summary ${compact ? 'compact' : ''}`} data-testid={`role-access-summary-${id}`}>
     <p className="role-audience" data-testid={`role-audience-summary-${id}`}><strong>Assign to:</strong> {facts.audience}</p>
     <div className="role-access-facts">
@@ -218,6 +228,15 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   const setAllAccess = (items: AuthPermission[], selected: boolean) => {
     const codes = items.map(permission => permission.code)
     setAccessPermissions(current => selected ? Array.from(new Set([...current, ...codes])) : current.filter(code => !codes.includes(code)))
+  }
+  const setRoleModulePermissions = (items: AuthPermission[], selected: boolean) => {
+    const codes = items.map(permission => permission.code)
+    setRole(current => ({
+      ...current,
+      permissions: selected
+        ? Array.from(new Set([...current.permissions, ...codes]))
+        : current.permissions.filter(code => !codes.includes(code))
+    }))
   }
 
   const openNewUser = () => { setCreatedCredentials(null); setResetMustChangePassword(true); setPasswordPolicyOverride(null); setUser({ ...user0, clientId: directoryClientId }); setUserDrawerOpen(true) }
@@ -487,7 +506,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   const activeAccessGroup = groupedPermissions.find(([module]) => module === accessModule) ?? groupedPermissions[0]
 
   const renderUserDrawer = () => userDrawerOpen ? <div className="component-drawer-backdrop security-component-backdrop" onClick={closeUserDrawer}>
-    <aside className="component-drawer security-component-drawer" role="dialog" aria-modal="true" aria-label={user.id ? 'Edit user' : 'Add user'} onClick={event => event.stopPropagation()}>
+    <aside className="component-drawer security-component-drawer security-user-component-drawer" role="dialog" aria-modal="true" aria-label={user.id ? 'Edit user' : 'Add user'} onClick={event => event.stopPropagation()}>
       <header><div><span className="eyebrow purple">User access</span><h3>{user.id ? 'Edit user' : 'Add user'}</h3><p>Create an employee-linked login or a standalone business user.</p></div><button type="button" aria-label="Close user drawer" onClick={closeUserDrawer}>x</button></header>
       <div className="component-drawer-form security-component-drawer-form">
         <InfoField label="User type" help="Choose employee-linked ESS access or a standalone business login."><SearchSelect value={user.roles.includes('employee') && user.employeeId ? 'employee' : 'business'} onChange={value => value === 'employee' ? setUser({ ...user, roles: ['employee'] }) : setUser({ ...user, employeeId: '', roles: ['mss_manager'] })} options={[{ value: 'business', label: 'Business user' }, { value: 'employee', label: 'Employee / ESS user' }]} /></InfoField>
@@ -508,7 +527,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
                 : <AntCheckbox data-testid="require-change-next-login" checked={passwordPolicyOverride === true} onChange={event => setPasswordPolicyOverride(event.target.checked ? true : null)}>Require change on next login</AntCheckbox>}
             <Tag data-testid="password-policy-current" color={user.mustChangePassword ? 'gold' : 'green'}>{user.mustChangePassword ? 'Currently: change required' : 'Currently: password active'}</Tag>
           </InfoField>}
-        <div className="security-drawer-section wide"><div className="security-mini-access"><b>Role assignment</b><span>{user.roles.length} selected</span></div><p className="role-picker-help">Select only what this user needs. Each card shows where the user can sign in, whose data they can access, and what remains blocked. Multiple selected roles combine their access.</p><div className="security-role-picker-grid">{roles.map(item => <label data-testid={`role-assignment-card-${testIdPart(item.code)}`} className={`security-role-choice ${user.roles.includes(item.code) ? 'selected' : ''}`} key={item.code}><input type="checkbox" checked={user.roles.includes(item.code)} onChange={() => setUser({ ...user, roles: toggle(user.roles, item.code) })} /><div className="security-role-choice-content"><header><strong>{item.name}</strong><code>{item.code}</code></header><p>{item.description}</p><RoleAccessSummary item={item} permissions={permissions} compact /></div></label>)}</div></div>
+        <div className="security-drawer-section wide security-role-assignment"><div className="security-mini-access"><b>Role assignment</b><span>{user.roles.length} selected</span></div><p className="role-picker-help">Choose only the access this user needs. Selected roles combine their permissions.</p><div className="security-role-picker-grid">{roles.map(item => <label data-testid={`role-assignment-card-${testIdPart(item.code)}`} className={`security-role-choice ${user.roles.includes(item.code) ? 'selected' : ''}`} key={item.code} title={item.description}><input type="checkbox" checked={user.roles.includes(item.code)} onChange={() => setUser({ ...user, roles: toggle(user.roles, item.code) })} /><div className="security-role-choice-content"><header><strong>{item.name}</strong><code>{item.code}</code></header><RoleAccessSummary item={item} permissions={permissions} compact /></div></label>)}</div></div>
       </div>
       <footer><button type="button" className="secondary" onClick={closeUserDrawer}>Cancel</button><button type="button" disabled={saving} onClick={() => void saveUser()}>{saving ? 'Saving...' : user.id ? 'Update user' : 'Create user'}</button></footer>
     </aside>
@@ -521,7 +540,20 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
         <InfoField label="Role code" help="Code is locked after creation."><Input value={role.code} disabled={role.id > 0} onChange={event => setRole({ ...role, code: event.target.value })} placeholder="payroll_viewer" /></InfoField>
         <InfoField label="Role name" help={role.isSystem ? 'System role names are maintained by the catalog.' : undefined}><Input value={role.name} disabled={role.isSystem} onChange={event => setRole({ ...role, name: event.target.value })} /></InfoField>
         <InfoField label="Description" className="wide"><Input value={role.description} disabled={role.isSystem} onChange={event => setRole({ ...role, description: event.target.value })} /></InfoField>
-        <div className="security-drawer-section wide"><div className="security-mini-access"><b>Initial permissions</b><span>{role.permissions.length} selected</span></div><div className="permission-groups compact">{groupedPermissions.map(([module, items]) => <section key={module}><h4>{module}</h4><div className="permission-matrix">{items.map(permission => <label className={role.permissions.includes(permission.code) ? 'selected' : ''} key={permission.code}><input type="checkbox" checked={role.permissions.includes(permission.code)} onChange={() => setRole({ ...role, permissions: toggle(role.permissions, permission.code) })} /><strong>{permission.name}</strong><small>{permission.code}</small></label>)}</div></section>)}</div></div>
+        <div className="security-drawer-section wide security-permission-section">
+          <div className="security-mini-access"><b>Permissions</b><span>{role.permissions.length} selected</span></div>
+          <p className="role-picker-help">Expand a module to review its permissions. Module counts show what is already selected.</p>
+          <div className="security-permission-accordion">
+            {groupedPermissions.map(([module, items]) => {
+              const selectedCount = items.filter(permission => role.permissions.includes(permission.code)).length
+              return <details key={module}>
+                <summary><span><strong>{module}</strong><small>{items.length} permissions</small></span><em>{selectedCount}/{items.length}</em></summary>
+                <div className="security-permission-module-actions"><button type="button" onClick={() => setRoleModulePermissions(items, true)}>Select all</button><button type="button" onClick={() => setRoleModulePermissions(items, false)}>Clear</button></div>
+                <div className="permission-matrix security-permission-matrix">{items.map(permission => <label className={role.permissions.includes(permission.code) ? 'selected' : ''} key={permission.code}><input type="checkbox" checked={role.permissions.includes(permission.code)} onChange={() => setRole({ ...role, permissions: toggle(role.permissions, permission.code) })} /><strong>{permission.name}</strong><small>{permission.code}</small></label>)}</div>
+              </details>
+            })}
+          </div>
+        </div>
       </div>
       <footer><button type="button" className="secondary" onClick={closeRoleDrawer}>Cancel</button><button type="button" disabled={saving} onClick={() => void saveRole()}>{saving ? 'Saving...' : role.id ? 'Update role' : 'Save role'}</button></footer>
     </aside>
@@ -568,8 +600,8 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
 
   const renderUsers = () => <section className="security-page-stack">
     {msg && <Alert className="security-message-alert" type={/unable|required|failed|cannot/i.test(msg) ? 'warning' : 'info'} showIcon message={msg} closable onClose={() => setMsg('')} />}
-    <AntCard title="Users" size="small" className="settings-panel settings-table-panel security-table-panel">
-      <div className="component-table-head security-table-head"><div><b>User directory</b><span>{directoryClientId ? clientName(Number(directoryClientId)) : 'Select a client for user upload'} / {visibleUsers.length} users shown / {unlinkedEmployees.length} employees awaiting login</span></div><Space className="settings-master-actions" size={8} wrap><label className="security-filter-field"><span>Filter by client</span><SearchSelect value={directoryClientId} onChange={value => { setDirectoryClientId(value); setUserTemplateDownloaded(false) }} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></label><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} disabled={!directoryClientId} title={directoryClientId ? 'Download client-wise template' : 'Select a client first'} onClick={downloadUserTemplate}>Template</Button><label className={`settings-upload-action ${!userTemplateDownloaded || !directoryClientId ? 'disabled' : ''}`} title={!directoryClientId ? 'Select a client first' : userTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!userTemplateDownloaded || !directoryClientId} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadUserImport(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button className="settings-toolbar-secondary" icon={<ImportOutlined />} onClick={() => void openProvisionModal()}>Import Employees</Button><Button type="primary" icon={<PlusOutlined />} onClick={openNewUser}>New user</Button></Space></div>
+    <AntCard size="small" className="settings-panel settings-table-panel security-table-panel security-user-directory-panel">
+      <div className="component-table-head security-table-head security-directory-head"><div><b>User directory</b><span>{directoryClientId ? clientName(Number(directoryClientId)) : 'All clients'} · {visibleUsers.length} users · {unlinkedEmployees.length} awaiting login</span></div><div className="settings-master-actions security-directory-actions"><label className="security-filter-field"><span>Client</span><SearchSelect value={directoryClientId} onChange={value => { setDirectoryClientId(value); setUserTemplateDownloaded(false) }} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></label><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} disabled={!directoryClientId} title={directoryClientId ? 'Download client-wise template' : 'Select a client first'} onClick={downloadUserTemplate}>Template</Button><label className={`settings-upload-action ${!userTemplateDownloaded || !directoryClientId ? 'disabled' : ''}`} title={!directoryClientId ? 'Select a client first' : userTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!userTemplateDownloaded || !directoryClientId} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadUserImport(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button className="settings-toolbar-secondary" icon={<ImportOutlined />} onClick={() => void openProvisionModal()}>Import Employees</Button><Button type="primary" icon={<PlusOutlined />} onClick={openNewUser}>New user</Button></div></div>
       {createdCredentials && <Alert className="security-message-alert" type="success" showIcon message="Login created" description={`Temporary password for ${createdCredentials.email}: ${createdCredentials.password}`} closable onClose={() => setCreatedCredentials(null)} />}
       <DataTable rows={visibleUsers} getRowId={row => row.id} exportFileName="security-users" actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editUser(row)}>Edit</Button><Button size="small" danger onClick={() => void removeUser(row)}>Delete</Button></Space>} columns={[
       { key: 'displayName', label: 'User', width: '190px' },
