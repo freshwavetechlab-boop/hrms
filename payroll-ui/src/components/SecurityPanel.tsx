@@ -10,11 +10,129 @@ import { downloadXlsx } from '../utils/xlsx'
 import DataTable from './DataTable'
 import SearchSelect from './SearchSelect'
 import '../SecurityAccess.css'
+import '../RoleAccessSummary.css'
 
 const user0 = { id: 0, email: '', displayName: '', mobile: '', password: '', clientId: '', employeeId: '', isActive: true, mustChangePassword: true, roles: ['mss_manager'] }
 const role0 = { id: 0, code: '', name: '', description: '', permissions: [] as string[], isSystem: false }
 const userImportHeaders = ['Email', 'Display Name', 'Mobile', 'Employee Code', 'Roles', 'Temporary Password', 'Active', 'Must Change Password']
 const securityTabs = ['Users', 'Roles', 'Audit'] as const
+
+const backofficePermissionCodes = new Set([
+  'security.manage', 'settings.manage', 'employees.view', 'employees.manage',
+  'employee.communication.view', 'employee.communication.send', 'payroll.run',
+  'payroll.approve', 'payroll.payments', 'leave.manage', 'attendance.manage',
+  'tax.statutory.manage', 'workflow.manage', 'reports.view', 'audit.view',
+  'recruitment.manage', 'recruitment.position.view', 'recruitment.position.manage',
+  'recruitment.assign.recruiter', 'recruitment.assign.partner', 'recruitment.publish',
+  'recruitment.referral.manage', 'recruitment.work-order.view',
+  'recruitment.work-order.manage', 'recruitment.hiring-case.view',
+  'recruitment.hiring-case.manage', 'recruitment.sla.pause',
+  'recruitment.candidate.view', 'recruitment.candidate.manage',
+  'recruitment.candidate.request-profile', 'recruitment.shortlist.approve',
+  'recruitment.shortlist.forward', 'recruitment.ats.review',
+  'recruitment.ats.override', 'recruitment.interview.schedule',
+  'recruitment.interview.panel', 'recruitment.document.view',
+  'recruitment.document.manage', 'recruitment.document.sign',
+  'recruitment.proposal.manage', 'recruitment.proposal.approve',
+  'recruitment.offer.manage', 'recruitment.offer.issue',
+  'recruitment.configuration.manage', 'attachment.config.manage',
+  'attachment.employee.view', 'attachment.employee.upload',
+  'attachment.employee.verify', 'attachment.recruitment.view',
+  'attachment.recruitment.upload', 'attachment.recruitment.verify'
+])
+
+const capabilityPriority = [
+  'security.manage', 'settings.manage', 'employees.manage', 'payroll.run',
+  'payroll.approve', 'payroll.payments', 'mss.attendance.client.manage',
+  'mss.attendance.manage', 'attendance.manage', 'leave.manage',
+  'recruitment.manage', 'workflow.manage', 'reports.view', 'ess.self'
+]
+
+const rolePermissionCodes = (item: AuthRole) => (item.permissions || '').split(',').map(value => value.trim()).filter(Boolean)
+const testIdPart = (value: string) => value.toLowerCase().replace(/[^a-z0-9_-]+/g, '-')
+
+type RoleAccessFacts = {
+  audience: string
+  adminPortal: boolean
+  workspace: string
+  scope: string
+  capabilities: string[]
+  exclusions: string[]
+}
+
+const roleAccessFacts = (item: AuthRole, catalog: AuthPermission[]): RoleAccessFacts => {
+  const codes = rolePermissionCodes(item)
+  const granted = new Set(codes.map(code => code.toLowerCase()))
+  const adminPortal = codes.some(code => backofficePermissionCodes.has(code.toLowerCase()))
+  const employeeSelf = granted.has('ess.self')
+  const directReportAttendance = granted.has('mss.attendance.manage')
+  const clientAttendance = granted.has('mss.attendance.client.manage')
+  const audience = granted.has('security.manage')
+    ? 'Trusted system administrators responsible for users, roles and full HRMS administration'
+    : granted.has('payroll.approve')
+      ? 'Authorised payroll reviewers and approvers'
+      : granted.has('payroll.run')
+        ? 'Payroll processors who prepare and run payroll'
+        : granted.has('employees.manage') || granted.has('leave.manage') || granted.has('attendance.manage')
+          ? 'HR operations users responsible for employee, leave or attendance administration'
+          : granted.has('recruitment.manage') || Array.from(granted).some(code => code.startsWith('recruitment.'))
+            ? 'Talent-acquisition users responsible for the granted recruitment activities'
+            : clientAttendance
+              ? 'Attendance operators responsible for every active employee of one assigned client'
+              : directReportAttendance
+                ? 'Reporting managers who review attendance for their own direct reports'
+                : employeeSelf
+                  ? 'Employees accessing only their own self-service information and actions'
+                  : adminPortal
+                    ? 'Back-office users whose job requires the listed capabilities'
+                    : codes.length
+                      ? 'Business users whose job requires the listed capabilities'
+                      : 'Do not assign until permissions and responsibility are defined'
+  const workspaceParts = [
+    employeeSelf ? 'Employee self-service' : '',
+    directReportAttendance ? 'Manager attendance' : '',
+    clientAttendance ? 'Client attendance' : ''
+  ].filter(Boolean)
+  const scopes = [
+    clientAttendance ? 'Assigned client: all active employees' : '',
+    directReportAttendance ? 'Direct reports only' : '',
+    employeeSelf ? 'Linked employee: own data' : '',
+    adminPortal ? 'Admin modules: client assignment and permission rules' : ''
+  ].filter(Boolean)
+  const permissionByCode = new Map(catalog.map(permission => [permission.code.toLowerCase(), permission]))
+  const orderedCodes = [...capabilityPriority.filter(code => granted.has(code)), ...codes.filter(code => !capabilityPriority.includes(code.toLowerCase()))]
+  const capabilities = Array.from(new Set(orderedCodes.map(code => permissionByCode.get(code.toLowerCase())?.name || code))).slice(0, 4)
+  const exclusions: string[] = []
+  if (!adminPortal) exclusions.push('No Admin portal access')
+  if (!employeeSelf && !directReportAttendance && !clientAttendance) exclusions.push('No ESS/MSS workspace access')
+  if (adminPortal && !granted.has('security.manage')) exclusions.push('Cannot manage users or roles')
+  if (clientAttendance && !employeeSelf) exclusions.push('No employee self-service access')
+  if (directReportAttendance && !clientAttendance) exclusions.push('No client-wide attendance scope')
+  if (!codes.length) exclusions.push('No operational permissions assigned')
+  return {
+    audience,
+    adminPortal,
+    workspace: workspaceParts.length ? workspaceParts.join(' · ') : 'No',
+    scope: scopes.length ? scopes.join(' · ') : 'No data scope',
+    capabilities: capabilities.length ? capabilities : ['No capabilities assigned'],
+    exclusions: Array.from(new Set(exclusions)).slice(0, 2)
+  }
+}
+
+const RoleAccessSummary = ({ item, permissions, compact = false }: { item: AuthRole; permissions: AuthPermission[]; compact?: boolean }) => {
+  const facts = roleAccessFacts(item, permissions)
+  const id = testIdPart(item.code)
+  return <div className={`role-access-summary ${compact ? 'compact' : ''}`} data-testid={`role-access-summary-${id}`}>
+    <p className="role-audience" data-testid={`role-audience-summary-${id}`}><strong>Assign to:</strong> {facts.audience}</p>
+    <div className="role-access-facts">
+      <span data-testid={`role-admin-access-${id}`}><small>Admin portal</small><b className={facts.adminPortal ? 'allowed' : 'blocked'}>{facts.adminPortal ? 'Yes' : 'No'}</b></span>
+      <span data-testid={`role-workspace-access-${id}`}><small>ESS / MSS</small><b>{facts.workspace}</b></span>
+      <span className="scope" data-testid={`role-data-scope-${id}`}><small>Data scope</small><b>{facts.scope}</b></span>
+    </div>
+    <div className="role-capability-list" aria-label="Key capabilities">{facts.capabilities.map(capability => <em key={capability}>{capability}</em>)}</div>
+    <p className={facts.exclusions.length ? 'role-exclusions' : 'role-exclusions none'} data-testid={`role-exclusions-${id}`}><strong>Does not include:</strong> {facts.exclusions.length ? facts.exclusions.join(' · ') : 'No major exclusion detected in current permissions'}</p>
+  </div>
+}
 
 type SecurityTab = (typeof securityTabs)[number]
 type SecurityUpload = { open: boolean; state: BulkUploadState; percent: number; summary: BulkUploadSummary }
@@ -65,7 +183,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   const employeeOptions = employees.filter(employee => (!user.clientId || employee.clientId === Number(user.clientId)) && (String(employee.id) === user.employeeId || (!usedEmployeeIds.has(employee.id) && !usedEmails.has(normalizeEmail(employee.workEmail)))))
   const unlinkedEmployees = employees.filter(employee => employee.isActive && employee.workEmail && !allUsedEmployeeIds.has(employee.id) && !allUsedEmails.has(normalizeEmail(employee.workEmail)) && (!directoryClientId || employee.clientId === Number(directoryClientId)))
   const visibleUsers = users.filter(item => (!item.clientId || activeClientIds.has(item.clientId)) && (!directoryClientId || item.clientId === Number(directoryClientId)))
-  const rolePermissions = (item: AuthRole) => (item.permissions || '').split(',').map(value => value.trim()).filter(Boolean)
+  const rolePermissions = rolePermissionCodes
   const clientName = (clientId?: number | null) => clientId ? clients.find(client => client.id === clientId)?.name || `Client #${clientId}` : 'All clients'
   const roleName = (code: string) => roles.find(item => item.code === code)?.name || code
   const parseRoleCodes = (value: string, fallback: string[] = []) => {
@@ -390,7 +508,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
                 : <AntCheckbox data-testid="require-change-next-login" checked={passwordPolicyOverride === true} onChange={event => setPasswordPolicyOverride(event.target.checked ? true : null)}>Require change on next login</AntCheckbox>}
             <Tag data-testid="password-policy-current" color={user.mustChangePassword ? 'gold' : 'green'}>{user.mustChangePassword ? 'Currently: change required' : 'Currently: password active'}</Tag>
           </InfoField>}
-        <div className="security-drawer-section wide"><div className="security-mini-access"><b>Role assignment</b><span>{user.roles.length} selected</span></div><div className="permission-matrix role-picker">{roles.map(item => <label className={user.roles.includes(item.code) ? 'selected' : ''} key={item.code}><input type="checkbox" checked={user.roles.includes(item.code)} onChange={() => setUser({ ...user, roles: toggle(user.roles, item.code) })} /><strong>{item.name}</strong><small>{item.description}</small></label>)}</div></div>
+        <div className="security-drawer-section wide"><div className="security-mini-access"><b>Role assignment</b><span>{user.roles.length} selected</span></div><p className="role-picker-help">Select only what this user needs. Each card shows where the user can sign in, whose data they can access, and what remains blocked. Multiple selected roles combine their access.</p><div className="security-role-picker-grid">{roles.map(item => <label data-testid={`role-assignment-card-${testIdPart(item.code)}`} className={`security-role-choice ${user.roles.includes(item.code) ? 'selected' : ''}`} key={item.code}><input type="checkbox" checked={user.roles.includes(item.code)} onChange={() => setUser({ ...user, roles: toggle(user.roles, item.code) })} /><div className="security-role-choice-content"><header><strong>{item.name}</strong><code>{item.code}</code></header><p>{item.description}</p><RoleAccessSummary item={item} permissions={permissions} compact /></div></label>)}</div></div>
       </div>
       <footer><button type="button" className="secondary" onClick={closeUserDrawer}>Cancel</button><button type="button" disabled={saving} onClick={() => void saveUser()}>{saving ? 'Saving...' : user.id ? 'Update user' : 'Create user'}</button></footer>
     </aside>
@@ -480,14 +598,13 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   const renderRoles = () => <section className="security-page-stack">
     {msg && <Alert className="security-message-alert" type={/unable|required|failed|cannot/i.test(msg) ? 'warning' : 'info'} showIcon message={msg} closable onClose={() => setMsg('')} />}
     <AntCard title="Roles" size="small" className="settings-panel settings-table-panel security-table-panel">
-      <div className="component-table-head security-table-head"><div><b>Access bundles</b><span>{roles.length} roles / {permissions.length} permissions. Manage access from row actions.</span></div><Button type="primary" icon={<PlusOutlined />} onClick={openNewRole}>New role</Button></div>
-      <DataTable rows={roles} getRowId={row => row.id} exportFileName="security-roles" actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editRole(row)}>Edit</Button><Button size="small" icon={<KeyOutlined />} onClick={() => openAccess(row)}>Manage Access</Button><Button size="small" danger onClick={() => void removeRole(row)}>Delete</Button></Space>} columns={[
-      { key: 'name', label: 'Role', width: '190px' },
-      { key: 'code', label: 'Code' },
-      { key: 'description', label: 'Description', width: '260px' },
-      { key: 'permissions', label: 'Permissions', value: row => `${rolePermissions(row).length}`, render: row => `${rolePermissions(row).length} permissions` },
-      { key: 'isSystem', label: 'Type', value: row => row.isSystem ? 'System' : 'Custom', render: row => <Tag color={row.isSystem ? 'blue' : 'purple'}>{row.isSystem ? 'System' : 'Custom'}</Tag> }
-    ]} />
+      <div className="component-table-head security-table-head"><div><b>Access bundles</b><span>{roles.length} roles / {permissions.length} permissions. Portal access and scope below are calculated from each role's current permissions.</span></div><Button type="primary" icon={<PlusOutlined />} onClick={openNewRole}>New role</Button></div>
+      <div className="security-role-overview-grid" data-testid="security-role-overview">{roles.map(item => <article className="security-role-overview-card" data-testid={`role-overview-card-${testIdPart(item.code)}`} key={item.id}>
+        <header><div><span>{item.name}</span><code>{item.code}</code></div><Tag color={item.isSystem ? 'blue' : 'purple'}>{item.isSystem ? 'System' : 'Custom'}</Tag></header>
+        <p>{item.description || 'No role description has been added.'}</p>
+        <RoleAccessSummary item={item} permissions={permissions} />
+        <footer><span>{rolePermissions(item).length} permissions</span><Space size={6}><Button size="small" type="primary" onClick={() => editRole(item)}>Edit</Button><Button size="small" icon={<KeyOutlined />} onClick={() => openAccess(item)}>Manage Access</Button><Button size="small" danger onClick={() => void removeRole(item)}>Delete</Button></Space></footer>
+      </article>)}</div>
     </AntCard>
   </section>
 

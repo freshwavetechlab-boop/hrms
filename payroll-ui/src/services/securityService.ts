@@ -1,14 +1,18 @@
 import type { AuditLog, AuthPermission, AuthRole, AuthUser, Client, Employee, EmployeeLoginProvisionPreview, EmployeeLoginProvisionResponse } from '../types/payroll'
 import { deleteJson, getJson, postJson } from './apiClient'
 
-export const loadSecurityData = async () => ({
-  users: await getJson<AuthUser[]>('/api/security/users', []),
-  roles: await getJson<AuthRole[]>('/api/security/roles', []),
-  permissions: await getJson<AuthPermission[]>('/api/security/permissions', []),
-  auditLogs: await getJson<AuditLog[]>('/api/audit-logs?limit=75', []),
-  clients: await getJson<Client[]>('/api/clients', []),
-  employees: await getJson<Employee[]>('/api/employees', [])
-})
+export const loadSecurityData = async () => {
+  const [users, roles, permissions, auditLogs, clients, employees] = await Promise.all([
+    getJson<AuthUser[]>('/api/security/users', []),
+    getJson<AuthRole[]>('/api/security/roles', []),
+    getJson<AuthPermission[]>('/api/security/permissions', []),
+    getJson<AuditLog[]>('/api/audit-logs?limit=75', []),
+    getJson<Client[]>('/api/clients', []),
+    getJson<Employee[]>('/api/employees', [])
+  ])
+
+  return { users, roles, permissions, auditLogs, clients, employees }
+}
 
 export async function saveSecurityUser(body: unknown) {
   const response = await postJson('/api/security/users', body, null)

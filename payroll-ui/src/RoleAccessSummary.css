@@ -1,0 +1,20 @@
+.role-audience {
+  margin: 0;
+  border-left: 3px solid #7457e8;
+  border-radius: 0 8px 8px 0;
+  background: #f7f5ff;
+  padding: 7px 9px;
+  color: #51466e;
+  font-size: .63rem;
+  line-height: 1.45;
+}
+
+.role-audience strong {
+  color: #4530a8;
+  font-weight: 900;
+}
+
+.role-access-summary.compact .role-audience {
+  padding: 6px 7px;
+  font-size: .57rem;
+}
