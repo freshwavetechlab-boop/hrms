@@ -625,17 +625,15 @@ export default function ManualAttendanceManager({ clientId, reviewMonth = '', on
   }
 
   return <div className="manual-attendance">
-    <div className="attendance-access-scope" data-testid="attendance-access-scope">
-      <span>Attendance access</span>
-      <strong>{reviewContext.clientName || `Assigned client #${reviewContext.clientId || clientId}`}</strong>
-      <em>{reviewContext.accessScope === 'Client' ? 'All active employees' : 'Direct reports only'}</em>
-    </div>
-    <div className="attendance-toolbar attendance-simple-toolbar">
-      <label className="attendance-cycle-field">Payroll month / cycle<Input disabled={saving} type="month" value={month} onChange={(event) => setMonth(event.target.value)} /><small>{cycleRangeDisplay}</small></label>
-      <Button onClick={loadMonthly} loading={loadingMonthly} disabled={saving}>Refresh review</Button>
-    </div>
     <Card className="attendance-panel" title={<div><Typography.Title level={4}>Attendance Summary</Typography.Title><Typography.Text type="secondary">{reviewPatternText} / {cleanTime(settings.checkInTime)}-{cleanTime(settings.checkOutTime)}</Typography.Text></div>} extra={
-        <span className={issueRows.length ? 'attendance-status risk' : 'attendance-status'}>{issueRows.length ? `${issueRows.length} employees need review` : 'Ready for payroll'}</span>
+        <div className="attendance-summary-controls">
+          <label className="attendance-cycle-field attendance-cycle-field-compact">
+            <span>Payroll month / cycle</span>
+            <Input disabled={saving || loadingMonthly} type="month" value={month} onChange={(event) => setMonth(event.target.value)} />
+            <small>{cycleRangeDisplay}</small>
+          </label>
+          <span className={issueRows.length ? 'attendance-status risk' : 'attendance-status'}>{issueRows.length ? `${issueRows.length} employees need review` : 'Ready for payroll'}</span>
+        </div>
       }>
       <div className="attendance-summary">
         <span>Total employees<b>{summary.total}</b></span><span>Ready<b>{summary.ready}</b></span><span>Missing<b>{summary.missing}</b></span><span>Check values<b>{summary.check}</b></span><span>Payable Days<b>{summary.payableDays.toFixed(1)}</b></span><span>LOP<b>{summary.lopDays.toFixed(1)}</b></span>
