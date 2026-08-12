@@ -164,6 +164,7 @@ public class RecruitmentCandidateApplication
     public int? JoinedEmployeeId { get; set; }
     public decimal? AtsScore { get; set; }
     public string ScoreStatus { get; set; } = "Not Scored";
+    public string PipelineWarning { get; set; } = "";
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 }

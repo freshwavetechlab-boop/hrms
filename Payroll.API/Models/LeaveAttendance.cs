@@ -256,6 +256,9 @@ public class EmployeeLeaveBalanceSummary
 
 public class AttendanceReviewContext
 {
+    public int ClientId { get; set; }
+    public string ClientName { get; set; } = string.Empty;
+    public string AccessScope { get; set; } = "DirectReports";
     public AttendanceSettings Settings { get; set; } = new();
     public ClientAttendanceSchedule Schedule { get; set; } = new();
     public LeaveAttendancePreferences Preferences { get; set; } = new();

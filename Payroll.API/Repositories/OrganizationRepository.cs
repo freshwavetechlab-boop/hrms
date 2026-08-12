@@ -785,6 +785,19 @@ ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
         return await connection.QueryAsync<DropdownMaster>("SELECT * FROM dropdownmasters ORDER BY Type, Value");
     }
 
+    public async Task<IEnumerable<DropdownMaster>> GetDropdownMastersForClientAsync(int clientId)
+    {
+        if (clientId <= 0) return [];
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await PrepareDatabaseAsync(connection);
+        return await connection.QueryAsync<DropdownMaster>(@"SELECT *
+FROM dropdownmasters
+WHERE ClientId IN (0, @ClientId)
+  AND IsActive=TRUE
+ORDER BY Type, ClientId DESC, Value;", new { ClientId = clientId });
+    }
+
     public async Task<int> SaveDropdownMasterAsync(DropdownMaster item)
     {
         await using var connection = CreateConnection();

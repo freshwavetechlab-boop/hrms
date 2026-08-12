@@ -5,6 +5,7 @@ import './Pay.css'
 import './AccountMenu.css'
 import './Responsive.css'
 import './AttendanceReview.css'
+import './AttendanceScope.css'
 import { WorkspaceShell } from './components/WorkspaceShell'
 import { clearToken, getToken, me } from './services/essApi'
 import type { User, View } from './types'
@@ -87,7 +88,8 @@ export default function App() {
   if (user.mustChangePassword || changePasswordOpen) return <ChangePasswordPage forced={user.mustChangePassword} onChanged={next => { setUser(next); setChangePasswordOpen(false) }} onCancel={() => setChangePasswordOpen(false)} />
 
   const employeeSelf = Boolean(user.employeeId && user.roles.includes('employee'))
-  const manager = !employeeSelf || user.roles.some(role => ['mss_manager', 'hr_manager', 'payroll_approver', 'super_admin'].includes(role)) || user.permissions.some(permission => permission.toLowerCase() === 'mss.attendance.manage')
+  const attendanceManager = user.permissions.some(permission => ['mss.attendance.manage', 'mss.attendance.client.manage'].includes(permission.toLowerCase()))
+  const manager = user.roles.some(role => ['mss_manager', 'hr_manager', 'payroll_approver', 'super_admin', 'client_attendance_operator'].includes(role)) || attendanceManager
   const logout = () => { clearToken(); setUser(null); setView('Dashboard'); setViewUrl('Dashboard', true) }
 
   return <WorkspaceShell user={user} view={view} manager={manager} employeeSelf={employeeSelf} onNavigate={setView} onLogout={logout} onChangePassword={() => setChangePasswordOpen(true)}><Page view={view} manager={manager} employeeSelf={employeeSelf} user={user} setView={setView} /></WorkspaceShell>
@@ -106,7 +108,7 @@ function Page({ view, manager, employeeSelf, user, setView }: { view: View; mana
   if (view === 'Recruitment') return <RecruitmentPage user={user} />
   if (view === 'Pay') return <PayPage user={user} />
   if (view === 'Tax') return <TaxPage user={user} />
-  if (view === 'Attendance Review' && user.permissions.some(permission => permission.toLowerCase() === 'mss.attendance.manage')) return <AttendanceReviewPage user={user} />
+  if (view === 'Attendance Review' && user.permissions.some(permission => ['mss.attendance.manage', 'mss.attendance.client.manage'].includes(permission.toLowerCase()))) return <AttendanceReviewPage user={user} />
   return <PlaceholderPage view={view} manager={manager} />
 }
 

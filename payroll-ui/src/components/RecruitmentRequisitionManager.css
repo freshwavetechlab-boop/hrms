@@ -162,6 +162,10 @@
   margin-bottom: 17px;
 }
 
+.rfr-source-warning {
+  margin-bottom: 16px;
+}
+
 .rfr-form .ant-form-item-label > label {
   color: #46516a;
   font-weight: 650;

@@ -151,15 +151,58 @@ ORDER BY r.UpdatedAt DESC LIMIT 500";
         var setting = await GetSettingAsync(db, clientId);
         var validation = await ValidateAsync(db, request, clientId, setting);
         if (!string.IsNullOrWhiteSpace(validation)) return (null, validation);
+        if (existing is not null && request.WorkOrderId is null && request.WorkOrderLineNumber is null)
+        {
+            request.WorkOrderId = existing.WorkOrderId;
+            request.WorkOrderLineNumber = existing.WorkOrderLineNumber;
+        }
+        if ((request.WorkOrderId is > 0) != (request.WorkOrderLineNumber is > 0))
+            return (null, "Select both the work order and its line, or leave both blank.");
+        if (request.WorkOrderId is <= 0 || request.WorkOrderLineNumber is <= 0)
+        {
+            request.WorkOrderId = null;
+            request.WorkOrderLineNumber = null;
+        }
+
+        var newRfrNumber = existing is null ? await NextRfrNumberAsync(db, clientId) : "";
+        await using var transaction = await db.BeginTransactionAsync();
+        WorkOrderLinkRow? workOrderLink = null;
+        if (request.WorkOrderId.HasValue)
+        {
+            workOrderLink = await db.QueryFirstOrDefaultAsync<WorkOrderLinkRow>(@"SELECT line.Id,workOrder.ClientId,line.RequisitionId
+FROM recruitment_work_order_lines line
+JOIN recruitment_work_orders workOrder ON workOrder.Id=line.WorkOrderId
+WHERE line.WorkOrderId=@WorkOrderId AND line.LineNumber=@WorkOrderLineNumber FOR UPDATE",
+                new { request.WorkOrderId, request.WorkOrderLineNumber }, transaction);
+            if (workOrderLink is null || workOrderLink.ClientId != clientId)
+            {
+                await transaction.RollbackAsync();
+                return (null, "The selected work-order line was not found for this client.");
+            }
+            if (workOrderLink.RequisitionId.HasValue && workOrderLink.RequisitionId.Value != request.Id)
+            {
+                await transaction.RollbackAsync();
+                return (null, "The selected work-order line is already linked to another hiring request.");
+            }
+        }
         if (existing is not null)
         {
-            await db.ExecuteAsync(UpdateSql, Payload(request, user, employee, clientId, existing.RfrNumber, existing.Id, existing.RequestDate));
-            await AuditAsync(db, request.Id, "Edit", user.Id, request);
+            await db.ExecuteAsync(UpdateSql, Payload(request, user, employee, clientId, existing.RfrNumber, existing.Id, existing.RequestDate), transaction);
+            await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET RequisitionId=NULL WHERE RequisitionId=@Id AND (@LineId IS NULL OR Id<>@LineId)",
+                new { Id = request.Id, LineId = workOrderLink?.Id }, transaction);
+            if (workOrderLink is not null)
+                await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET RequisitionId=@RequisitionId WHERE Id=@Id",
+                    new { RequisitionId = request.Id, workOrderLink.Id }, transaction);
+            await AuditAsync(db, request.Id, "Edit", user.Id, request, transaction);
+            await transaction.CommitAsync();
             return (await GetAsync(request.Id, user), "");
         }
-        var number = await NextRfrNumberAsync(db, clientId);
-        var id = await db.ExecuteScalarAsync<long>(InsertSql + " SELECT LAST_INSERT_ID();", Payload(request, user, employee, clientId, number, 0, request.RequestDate?.Date ?? DateTime.Today));
-        await AuditAsync(db, id, "Create Draft", user.Id, request);
+        var id = await db.ExecuteScalarAsync<long>(InsertSql + " SELECT LAST_INSERT_ID();", Payload(request, user, employee, clientId, newRfrNumber, 0, request.RequestDate?.Date ?? DateTime.Today), transaction);
+        if (workOrderLink is not null)
+            await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET RequisitionId=@RequisitionId WHERE Id=@Id",
+                new { RequisitionId = id, workOrderLink.Id }, transaction);
+        await AuditAsync(db, id, "Create Draft", user.Id, request, transaction);
+        await transaction.CommitAsync();
         return (await GetAsync(id, user), "");
     }
 
@@ -553,15 +596,60 @@ VALUES (@PositionId,@EmployeeId,@CandidateName,@CandidateEmail,@CandidatePhone,@
         await db.OpenAsync();
         var r = await db.QueryFirstAsync<RecruitmentRequisition>("SELECT * FROM recruitment_requisitions WHERE Id=@Id", new { Id = requisitionId });
         var existingId = await db.ExecuteScalarAsync<long?>("SELECT Id FROM recruitment_open_positions WHERE RequisitionId=@Id", new { Id = requisitionId });
-        if (existingId is not null) return existingId.Value;
+        if (existingId is not null)
+        {
+            if (r.WorkOrderId is > 0 && r.WorkOrderLineNumber is > 0)
+            {
+                await using var repairTransaction = await db.BeginTransactionAsync();
+                var linkedLine = await db.QueryFirstOrDefaultAsync<WorkOrderLinkRow>(@"SELECT line.Id,workOrder.ClientId,line.RequisitionId
+FROM recruitment_work_order_lines line
+JOIN recruitment_work_orders workOrder ON workOrder.Id=line.WorkOrderId
+WHERE line.WorkOrderId=@WorkOrderId AND line.LineNumber=@WorkOrderLineNumber FOR UPDATE",
+                    new { r.WorkOrderId, r.WorkOrderLineNumber }, repairTransaction);
+                if (linkedLine is not null && linkedLine.ClientId == r.ClientId && linkedLine.RequisitionId == r.Id)
+                {
+                    await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET PositionId=@PositionId WHERE Id=@Id",
+                        new { PositionId = existingId.Value, linkedLine.Id }, repairTransaction);
+                    await db.ExecuteAsync("UPDATE recruitment_position_pipeline_instances SET RequisitionId=@RequisitionId,PositionId=@PositionId WHERE WorkOrderLineId=@LineId",
+                        new { RequisitionId = r.Id, PositionId = existingId.Value, LineId = linkedLine.Id }, repairTransaction);
+                    await EnsurePositionPipelineAssignmentFromHiringCaseAsync(db, existingId.Value, linkedLine.Id, actorUserId, repairTransaction);
+                }
+                await repairTransaction.CommitAsync();
+            }
+            return existingId.Value;
+        }
         var code = string.IsNullOrWhiteSpace(r.ExternalPositionCode)
             ? await NextPositionNumberAsync(db, r.ClientId)
             : r.ExternalPositionCode.Trim();
         var snapshot = JsonSerializer.Serialize(r);
+        await using var transaction = await db.BeginTransactionAsync();
+        WorkOrderLinkRow? workOrderLink = null;
+        if (r.WorkOrderId is > 0 && r.WorkOrderLineNumber is > 0)
+        {
+            workOrderLink = await db.QueryFirstOrDefaultAsync<WorkOrderLinkRow>(@"SELECT line.Id,workOrder.ClientId,line.RequisitionId
+FROM recruitment_work_order_lines line
+JOIN recruitment_work_orders workOrder ON workOrder.Id=line.WorkOrderId
+WHERE line.WorkOrderId=@WorkOrderId AND line.LineNumber=@WorkOrderLineNumber FOR UPDATE",
+                new { r.WorkOrderId, r.WorkOrderLineNumber }, transaction);
+            if (workOrderLink is null || workOrderLink.ClientId != r.ClientId || workOrderLink.RequisitionId != r.Id)
+            {
+                await transaction.RollbackAsync();
+                throw new InvalidOperationException("The hiring request's linked work-order line is no longer valid for this client.");
+            }
+        }
         var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_open_positions (RequisitionId,PositionCode,ClientId,BranchId,BusinessUnit,Department,CostCenter,PositionTitle,PositionCategory,EmploymentType,HiringType,NumberOfPositions,ApprovedPositions,FilledPositions,CancelledPositions,OnHoldPositions,RemainingPositions,TargetJoiningDate,JobLocation,Project,BudgetAvailable,BudgetAmount,SalaryMin,SalaryMax,Currency,HiringPriority,RequiredSkills,PreferredSkills,ExperienceRange,Status,SnapshotJson)
 VALUES (@Id,@Code,@ClientId,@BranchId,@BusinessUnit,@Department,@CostCenter,@PositionTitle,@PositionCategory,@EmploymentType,@HiringType,@NumberOfOpenings,@NumberOfOpenings,0,0,0,@NumberOfOpenings,@TargetJoiningDate,@JobLocation,@Project,@BudgetAvailable,@BudgetAmount,@SalaryMin,@SalaryMax,@Currency,@HiringPriority,@RequiredSkills,@PreferredSkills,@ExperienceRange,'Open',@Snapshot);
-SELECT LAST_INSERT_ID();", new { r.Id, Code = code, r.ClientId, r.BranchId, r.BusinessUnit, r.Department, r.CostCenter, r.PositionTitle, r.PositionCategory, r.EmploymentType, r.HiringType, r.NumberOfOpenings, r.TargetJoiningDate, r.JobLocation, r.Project, r.BudgetAvailable, r.BudgetAmount, r.SalaryMin, r.SalaryMax, r.Currency, r.HiringPriority, r.RequiredSkills, r.PreferredSkills, r.ExperienceRange, Snapshot = snapshot });
-        await db.ExecuteAsync("UPDATE recruitment_requisitions SET OpenPositionId=@OpenPositionId WHERE Id=@Id", new { OpenPositionId = id, Id = requisitionId });
+SELECT LAST_INSERT_ID();", new { r.Id, Code = code, r.ClientId, r.BranchId, r.BusinessUnit, r.Department, r.CostCenter, r.PositionTitle, r.PositionCategory, r.EmploymentType, r.HiringType, r.NumberOfOpenings, r.TargetJoiningDate, r.JobLocation, r.Project, r.BudgetAvailable, r.BudgetAmount, r.SalaryMin, r.SalaryMax, r.Currency, r.HiringPriority, r.RequiredSkills, r.PreferredSkills, r.ExperienceRange, Snapshot = snapshot }, transaction);
+        await db.ExecuteAsync("UPDATE recruitment_requisitions SET OpenPositionId=@OpenPositionId WHERE Id=@Id", new { OpenPositionId = id, Id = requisitionId }, transaction);
+        if (workOrderLink is not null)
+        {
+            await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET RequisitionId=@RequisitionId,PositionId=@PositionId WHERE Id=@Id",
+                new { RequisitionId = r.Id, PositionId = id, workOrderLink.Id }, transaction);
+            await db.ExecuteAsync("UPDATE recruitment_position_pipeline_instances SET RequisitionId=@RequisitionId,PositionId=@PositionId WHERE WorkOrderLineId=@LineId",
+                new { RequisitionId = r.Id, PositionId = id, LineId = workOrderLink.Id }, transaction);
+            await EnsurePositionPipelineAssignmentFromHiringCaseAsync(db, id, workOrderLink.Id, actorUserId, transaction);
+        }
+        await transaction.CommitAsync();
         await AddTimelineAsync(db, id, "Created", "Open position created", $"Created from {r.RfrNumber}", actorUserId);
         await AddTimelineAsync(db, id, "Approved", "Requisition approved", r.RfrNumber, actorUserId);
         await ApplyRecruiterAssignmentRuleAsync(db, id, r, actorUserId);
@@ -570,6 +658,35 @@ SELECT LAST_INSERT_ID();", new { r.Id, Code = code, r.ClientId, r.BranchId, r.Bu
         await AuditAsync(db, requisitionId, "Open Position Creation", actorUserId, new { openPositionId = id });
         await AuditPositionAsync(db, id, "Create", actorUserId, new { requisitionId, positionCode = code });
         return id;
+    }
+
+    private static async Task EnsurePositionPipelineAssignmentFromHiringCaseAsync(
+        MySqlConnection db,
+        long positionId,
+        long workOrderLineId,
+        int fallbackUserId,
+        System.Data.IDbTransaction transaction)
+    {
+        var linkedCase = await db.QueryFirstOrDefaultAsync<LinkedHiringCasePipeline>(@"SELECT PipelineVersionId,StartedByUserId
+FROM recruitment_position_pipeline_instances
+WHERE WorkOrderLineId=@WorkOrderLineId
+ORDER BY Id DESC LIMIT 1", new { WorkOrderLineId = workOrderLineId }, transaction);
+        if (linkedCase is null) return;
+
+        await db.ExecuteAsync(@"UPDATE recruitment_position_pipeline_assignments SET IsActive=FALSE
+WHERE PositionId=@PositionId AND IsActive=TRUE AND PipelineVersionId<>@PipelineVersionId",
+            new { PositionId = positionId, linkedCase.PipelineVersionId }, transaction);
+        await db.ExecuteAsync(@"INSERT INTO recruitment_position_pipeline_assignments
+(PositionId,JobPostingId,PipelineVersionId,IsActive,AssignedByUserId)
+SELECT @PositionId,NULL,@PipelineVersionId,TRUE,@AssignedByUserId FROM DUAL
+WHERE NOT EXISTS (SELECT 1 FROM recruitment_position_pipeline_assignments
+WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActive=TRUE)",
+            new
+            {
+                PositionId = positionId,
+                linkedCase.PipelineVersionId,
+                AssignedByUserId = linkedCase.StartedByUserId > 0 ? linkedCase.StartedByUserId : fallbackUserId
+            }, transaction);
     }
 
     private static bool CanView(RecruitmentRequisition row, AuthUser user)
@@ -806,13 +923,18 @@ ORDER BY a.CreatedAt DESC,a.Id DESC", new { PositionId = positionId, PartnerType
         SourceAuthority = request.SourceAuthority.Trim(),
         ExternalApprovalStatus = request.ExternalApprovalStatus.Trim(),
         request.CtcFlexibilityPercent,
-        SourceNotes = request.SourceNotes.Trim()
+        SourceNotes = request.SourceNotes.Trim(),
+        request.WorkOrderId,
+        request.WorkOrderLineNumber
     };
 
-    private const string InsertSql = @"INSERT INTO recruitment_requisitions (RfrNumber,RequestDate,RequestedByEmployeeId,RequestedByUserId,ClientId,BranchId,BusinessUnit,Department,CostCenter,PositionTitle,PositionCategory,EmploymentType,HiringType,NumberOfOpenings,IsReplacement,ReplacementEmployeeId,TargetJoiningDate,JobLocation,WorkMode,ClientProjectId,Project,BudgetAvailable,BudgetAmount,HiringPriority,BusinessJustification,ReasonForHiring,ExperienceRange,Qualification,RequiredSkills,PreferredSkills,Certifications,Languages,SalaryMin,SalaryMax,Currency,Benefits,ExternalPositionCode,SourceType,SourceReference,SourceDocumentName,SourceDocumentDate,SourceAuthority,ExternalApprovalStatus,CtcFlexibilityPercent,SourceNotes)
-VALUES (@RfrNumber,@RequestDate,@RequestedByEmployeeId,@RequestedByUserId,@ClientId,@BranchId,@BusinessUnit,@Department,@CostCenter,@PositionTitle,@PositionCategory,@EmploymentType,@HiringType,@NumberOfOpenings,@IsReplacement,@ReplacementEmployeeId,@TargetJoiningDate,@JobLocation,@WorkMode,@ClientProjectId,@Project,@BudgetAvailable,@BudgetAmount,@HiringPriority,@BusinessJustification,@ReasonForHiring,@ExperienceRange,@Qualification,@RequiredSkills,@PreferredSkills,@Certifications,@Languages,@SalaryMin,@SalaryMax,@Currency,@Benefits,@ExternalPositionCode,@SourceType,@SourceReference,@SourceDocumentName,@SourceDocumentDate,@SourceAuthority,@ExternalApprovalStatus,@CtcFlexibilityPercent,@SourceNotes);";
-    private const string UpdateSql = @"UPDATE recruitment_requisitions SET RequestDate=@RequestDate,BranchId=@BranchId,BusinessUnit=@BusinessUnit,Department=@Department,CostCenter=@CostCenter,PositionTitle=@PositionTitle,PositionCategory=@PositionCategory,EmploymentType=@EmploymentType,HiringType=@HiringType,NumberOfOpenings=@NumberOfOpenings,IsReplacement=@IsReplacement,ReplacementEmployeeId=@ReplacementEmployeeId,TargetJoiningDate=@TargetJoiningDate,JobLocation=@JobLocation,WorkMode=@WorkMode,ClientProjectId=@ClientProjectId,Project=@Project,BudgetAvailable=@BudgetAvailable,BudgetAmount=@BudgetAmount,HiringPriority=@HiringPriority,BusinessJustification=@BusinessJustification,ReasonForHiring=@ReasonForHiring,ExperienceRange=@ExperienceRange,Qualification=@Qualification,RequiredSkills=@RequiredSkills,PreferredSkills=@PreferredSkills,Certifications=@Certifications,Languages=@Languages,SalaryMin=@SalaryMin,SalaryMax=@SalaryMax,Currency=@Currency,Benefits=@Benefits,ExternalPositionCode=@ExternalPositionCode,SourceType=@SourceType,SourceReference=@SourceReference,SourceDocumentName=@SourceDocumentName,SourceDocumentDate=@SourceDocumentDate,SourceAuthority=@SourceAuthority,ExternalApprovalStatus=@ExternalApprovalStatus,CtcFlexibilityPercent=@CtcFlexibilityPercent,SourceNotes=@SourceNotes,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id";
-    private static string ListSql(string where) => $@"SELECT r.*,c.Name ClientName,COALESCE(w.Name,'') BranchName,CONCAT(requester.FirstName,' ',COALESCE(requester.LastName,'')) RequestedByName,CONCAT(repl.FirstName,' ',COALESCE(repl.LastName,'')) ReplacementEmployeeName
+    private const string InsertSql = @"INSERT INTO recruitment_requisitions (RfrNumber,RequestDate,RequestedByEmployeeId,RequestedByUserId,ClientId,BranchId,BusinessUnit,Department,CostCenter,PositionTitle,PositionCategory,EmploymentType,HiringType,NumberOfOpenings,IsReplacement,ReplacementEmployeeId,TargetJoiningDate,JobLocation,WorkMode,ClientProjectId,Project,BudgetAvailable,BudgetAmount,HiringPriority,BusinessJustification,ReasonForHiring,ExperienceRange,Qualification,RequiredSkills,PreferredSkills,Certifications,Languages,SalaryMin,SalaryMax,Currency,Benefits,ExternalPositionCode,SourceType,SourceReference,SourceDocumentName,SourceDocumentDate,SourceAuthority,ExternalApprovalStatus,CtcFlexibilityPercent,SourceNotes,WorkOrderId,WorkOrderLineNumber)
+VALUES (@RfrNumber,@RequestDate,@RequestedByEmployeeId,@RequestedByUserId,@ClientId,@BranchId,@BusinessUnit,@Department,@CostCenter,@PositionTitle,@PositionCategory,@EmploymentType,@HiringType,@NumberOfOpenings,@IsReplacement,@ReplacementEmployeeId,@TargetJoiningDate,@JobLocation,@WorkMode,@ClientProjectId,@Project,@BudgetAvailable,@BudgetAmount,@HiringPriority,@BusinessJustification,@ReasonForHiring,@ExperienceRange,@Qualification,@RequiredSkills,@PreferredSkills,@Certifications,@Languages,@SalaryMin,@SalaryMax,@Currency,@Benefits,@ExternalPositionCode,@SourceType,@SourceReference,@SourceDocumentName,@SourceDocumentDate,@SourceAuthority,@ExternalApprovalStatus,@CtcFlexibilityPercent,@SourceNotes,@WorkOrderId,@WorkOrderLineNumber);";
+    private const string UpdateSql = @"UPDATE recruitment_requisitions SET RequestDate=@RequestDate,BranchId=@BranchId,BusinessUnit=@BusinessUnit,Department=@Department,CostCenter=@CostCenter,PositionTitle=@PositionTitle,PositionCategory=@PositionCategory,EmploymentType=@EmploymentType,HiringType=@HiringType,NumberOfOpenings=@NumberOfOpenings,IsReplacement=@IsReplacement,ReplacementEmployeeId=@ReplacementEmployeeId,TargetJoiningDate=@TargetJoiningDate,JobLocation=@JobLocation,WorkMode=@WorkMode,ClientProjectId=@ClientProjectId,Project=@Project,BudgetAvailable=@BudgetAvailable,BudgetAmount=@BudgetAmount,HiringPriority=@HiringPriority,BusinessJustification=@BusinessJustification,ReasonForHiring=@ReasonForHiring,ExperienceRange=@ExperienceRange,Qualification=@Qualification,RequiredSkills=@RequiredSkills,PreferredSkills=@PreferredSkills,Certifications=@Certifications,Languages=@Languages,SalaryMin=@SalaryMin,SalaryMax=@SalaryMax,Currency=@Currency,Benefits=@Benefits,ExternalPositionCode=@ExternalPositionCode,SourceType=@SourceType,SourceReference=@SourceReference,SourceDocumentName=@SourceDocumentName,SourceDocumentDate=@SourceDocumentDate,SourceAuthority=@SourceAuthority,ExternalApprovalStatus=@ExternalApprovalStatus,CtcFlexibilityPercent=@CtcFlexibilityPercent,SourceNotes=@SourceNotes,WorkOrderId=@WorkOrderId,WorkOrderLineNumber=@WorkOrderLineNumber,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id";
+    private static string ListSql(string where) => $@"SELECT r.*,c.Name ClientName,COALESCE(w.Name,'') BranchName,CONCAT(requester.FirstName,' ',COALESCE(requester.LastName,'')) RequestedByName,CONCAT(repl.FirstName,' ',COALESCE(repl.LastName,'')) ReplacementEmployeeName,
+(SELECT jd.Id FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=r.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1) LatestJobDescriptionVersionId,
+(SELECT jd.VersionNumber FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=r.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1) LatestJobDescriptionVersionNumber,
+COALESCE((SELECT jd.Status FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=r.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1),'Not Started') JobDescriptionStatus
 FROM recruitment_requisitions r
 LEFT JOIN clients c ON c.Id=r.ClientId
 LEFT JOIN worklocations w ON w.Id=r.BranchId
@@ -820,7 +942,10 @@ LEFT JOIN employees requester ON requester.Id=r.RequestedByEmployeeId
 LEFT JOIN employees repl ON repl.Id=r.ReplacementEmployeeId
 {where}";
 
-    private static string OpenPositionSql(string where) => $@"SELECT p.*,r.RfrNumber,c.Name ClientName,COALESCE(w.Name,'') BranchName,COALESCE(u.DisplayName,u.Email,'') RecruiterName
+    private static string OpenPositionSql(string where) => $@"SELECT p.*,r.RfrNumber,c.Name ClientName,COALESCE(w.Name,'') BranchName,COALESCE(u.DisplayName,u.Email,'') RecruiterName,
+(SELECT jd.Id FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=p.RequisitionId ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1) LatestJobDescriptionVersionId,
+(SELECT jd.VersionNumber FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=p.RequisitionId ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1) LatestJobDescriptionVersionNumber,
+COALESCE((SELECT jd.Status FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=p.RequisitionId ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1),'Not Started') JobDescriptionStatus
 FROM recruitment_open_positions p
 JOIN recruitment_requisitions r ON r.Id=p.RequisitionId
 LEFT JOIN clients c ON c.Id=p.ClientId
@@ -834,7 +959,7 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId
 LEFT JOIN employees e ON e.Id=r.ReferrerEmployeeId
 {where}";
 
-    private static Task AuditAsync(MySqlConnection db, long id, string action, int userId, object payload) => db.ExecuteAsync("INSERT INTO recruitment_audit (EntityType,EntityId,Action,NewValueJson,ChangedByUserId) VALUES ('RecruitmentRequisition',@Id,@Action,@Json,@UserId)", new { Id = id, Action = action, Json = JsonSerializer.Serialize(payload), UserId = userId });
+    private static Task AuditAsync(MySqlConnection db, long id, string action, int userId, object payload, System.Data.IDbTransaction? transaction = null) => db.ExecuteAsync("INSERT INTO recruitment_audit (EntityType,EntityId,Action,NewValueJson,ChangedByUserId) VALUES ('RecruitmentRequisition',@Id,@Action,@Json,@UserId)", new { Id = id, Action = action, Json = JsonSerializer.Serialize(payload), UserId = userId }, transaction);
 
     private static Task EnsureCatalogAsync(MySqlConnection db) => db.ExecuteAsync(@"INSERT INTO workflowactivities (ActivityCode,DisplayName,ModuleCode,ResourceType,Description,IsActive) VALUES
 ('RFR.SUBMIT','Submit recruitment requisition','Talent Acquisition','RecruitmentRequisition','Recruitment requisition approval before open position creation.',TRUE)
@@ -926,6 +1051,17 @@ WHERE table_schema = DATABASE()
         public int Id { get; set; }
         public int ClientId { get; set; }
         public string Department { get; set; } = "";
+    }
+    private sealed class WorkOrderLinkRow
+    {
+        public long Id { get; set; }
+        public int ClientId { get; set; }
+        public long? RequisitionId { get; set; }
+    }
+    private sealed class LinkedHiringCasePipeline
+    {
+        public long PipelineVersionId { get; set; }
+        public int StartedByUserId { get; set; }
     }
     private sealed class StatusCount
     {

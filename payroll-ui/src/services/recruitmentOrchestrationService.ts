@@ -1,4 +1,5 @@
 import { apiRequest, apiUrl, deleteJson, getJson, postFormWithProgress, postJson, putJson, readError } from './apiClient'
+export { normalizePublicCareerUrl } from './publicCareerUrl'
 import type {
   CandidateActionDecision,
   DynamicFormDefinition,
@@ -17,6 +18,7 @@ import type {
   RecruitmentPipelineBoard,
   RecruitmentPipelineDefinition,
   RecruitmentPipelineDetail,
+  RecruitmentPipelineWorkspace,
   RecruitmentPipelineTransition,
   RecruitmentPipelineTransitionResult,
   RecruitmentPipelineVersion,
@@ -114,6 +116,14 @@ export const getRecruitmentPipelineBoard = (positionId: number, jobPostingId?: n
   return getJson<RecruitmentPipelineBoard | null>(`${internalBase}/pipeline-board?${query}`, null)
 }
 
+export const getRecruitmentPipelineWorkspace = (clientId = 0, positionId = 0, jobPostingId = 0) => {
+  const query = new URLSearchParams()
+  if (clientId) query.set('clientId', String(clientId))
+  if (positionId) query.set('positionId', String(positionId))
+  if (jobPostingId) query.set('jobPostingId', String(jobPostingId))
+  return getJson<RecruitmentPipelineWorkspace>('/api/recruitment/pipeline-workspace' + (query.size ? `?${query}` : ''), { clientId, lanes: [], unassignedDemandCards: [] })
+}
+
 export const getRecruitmentApplicationTransitions = (applicationId: number) =>
   getJson<RecruitmentPipelineTransition[]>(`${internalBase}/applications/${applicationId}/transitions`, [])
 
@@ -145,10 +155,10 @@ export const saveRecruitmentJobPosting = (posting: SaveRecruitmentJobPosting) =>
   postJson(`${internalBase}/job-postings`, posting, null as RecruitmentJobPosting | null, { successMessage: 'Job posting saved.' })
 
 export const publishRecruitmentJobPosting = (id: number) =>
-  postJson(`${internalBase}/job-postings/${id}/publish`, {}, null as RecruitmentJobPosting | null, { successMessage: 'Job is live on the public careers page.' })
+  postJson(`${internalBase}/job-postings/${id}/publish`, {}, null as RecruitmentJobPosting | null, { toast: false })
 
 export const closeRecruitmentJobPosting = (id: number) =>
-  postJson(`${internalBase}/job-postings/${id}/close`, {}, null as unknown, { successMessage: 'Job posting closed.' })
+  postJson(`${internalBase}/job-postings/${id}/close`, {}, null as unknown, { toast: false })
 
 export const deleteRecruitmentJobPosting = (id: number) =>
   deleteJson(`${internalBase}/job-postings/${id}`, null, { successMessage: 'Job posting deleted.' })
@@ -167,6 +177,9 @@ export const saveRecruitmentJobDescription = (description: SaveRecruitmentJobDes
 
 export const submitRecruitmentJobDescription = (id: number, workflowId: number) =>
   postJson(`${internalBase}/job-descriptions/${id}/submit?workflowId=${workflowId}`, {}, null as RecruitmentJobDescriptionVersion | null, { successMessage: 'Job description sent for approval.' })
+
+export const approveRecruitmentJobDescriptionDirectly = (id: number) =>
+  postJson(`${internalBase}/job-descriptions/${id}/approve-direct`, {}, null as RecruitmentJobDescriptionVersion | null, { successMessage: 'Job description approved with an audit record.' })
 
 export const assignRecruitmentPipeline = (request: AssignRecruitmentPipelineRequest) =>
   postJson(`${internalBase}/pipeline-assignments`, request, null as RecruitmentPositionPipelineAssignment | null, { successMessage: 'Hiring pipeline assigned.' })

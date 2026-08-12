@@ -210,14 +210,34 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        var userIds = await connection.QueryAsync<int>("SELECT Id FROM authusers ORDER BY DisplayName");
-        var users = new List<AuthUser>();
-        foreach (var userId in userIds)
+        var users = (await connection.QueryAsync<AuthUser>(@"SELECT Id, Email, DisplayName, Mobile, ClientId, EmployeeId, IsActive, MustChangePassword
+FROM authusers
+ORDER BY DisplayName;")).ToList();
+        var roleRows = await connection.QueryAsync<UserSecurityCodeRow>(@"SELECT ur.UserId, r.Code
+FROM authuserroles ur
+JOIN authroles r ON r.Id = ur.RoleId
+ORDER BY ur.UserId, r.Code;");
+        var permissionRows = await connection.QueryAsync<UserSecurityCodeRow>(@"SELECT DISTINCT ur.UserId, p.Code
+FROM authuserroles ur
+JOIN authrolepermissions rp ON rp.RoleId = ur.RoleId
+JOIN authpermissions p ON p.Id = rp.PermissionId
+ORDER BY ur.UserId, p.Code;");
+        var rolesByUser = roleRows.ToLookup(row => row.UserId, row => row.Code);
+        var permissionsByUser = permissionRows.ToLookup(row => row.UserId, row => row.Code);
+        foreach (var user in users)
         {
-            var user = await BuildUserAsync(connection, userId);
-            if (user is not null) users.Add(user);
+            user.Roles = rolesByUser[user.Id].ToList();
+            user.Permissions = permissionsByUser[user.Id].ToList();
+            user.DashboardAccess = BuildDashboardAccess(user.Permissions);
+            user.DefaultDashboardCode = user.DashboardAccess.FirstOrDefault()?.Code ?? string.Empty;
         }
         return users;
+    }
+
+    private sealed class UserSecurityCodeRow
+    {
+        public int UserId { get; set; }
+        public string Code { get; set; } = string.Empty;
     }
 
     public async Task<IEnumerable<AuthRole>> GetRolesAsync()
@@ -578,13 +598,15 @@ SELECT @UserId, Id FROM authroles WHERE Code = 'employee';", new { UserId = resu
         {
             userId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO authusers (Email, DisplayName, Mobile, PasswordHash, ClientId, EmployeeId, IsActive, MustChangePassword)
 VALUES (@Email, @DisplayName, @Mobile, @PasswordHash, @ClientId, @EmployeeId, @IsActive, @MustChangePassword);
-SELECT LAST_INSERT_ID();", new { Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), PasswordHash = HashPassword(request.Password), request.ClientId, request.EmployeeId, request.IsActive, request.MustChangePassword }, transaction);
+SELECT LAST_INSERT_ID();", new { Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), PasswordHash = HashPassword(request.Password), request.ClientId, request.EmployeeId, request.IsActive, MustChangePassword = request.MustChangePassword ?? true }, transaction);
         }
         else
         {
-            await connection.ExecuteAsync(@"UPDATE authusers SET Email=@Email, DisplayName=@DisplayName, Mobile=@Mobile, ClientId=@ClientId, EmployeeId=@EmployeeId, IsActive=@IsActive, MustChangePassword=@MustChangePassword WHERE Id=@Id", new { Id = userId, Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), request.ClientId, request.EmployeeId, request.IsActive, request.MustChangePassword }, transaction);
+            await connection.ExecuteAsync(@"UPDATE authusers SET Email=@Email, DisplayName=@DisplayName, Mobile=@Mobile, ClientId=@ClientId, EmployeeId=@EmployeeId, IsActive=@IsActive WHERE Id=@Id", new { Id = userId, Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), request.ClientId, request.EmployeeId, request.IsActive }, transaction);
             if (!string.IsNullOrWhiteSpace(request.Password))
-                await connection.ExecuteAsync("UPDATE authusers SET PasswordHash=@PasswordHash, MustChangePassword=TRUE WHERE Id=@Id", new { Id = userId, PasswordHash = HashPassword(request.Password) }, transaction);
+                await connection.ExecuteAsync("UPDATE authusers SET PasswordHash=@PasswordHash, MustChangePassword=@MustChangePassword WHERE Id=@Id", new { Id = userId, PasswordHash = HashPassword(request.Password), MustChangePassword = request.MustChangePassword ?? true }, transaction);
+            else if (request.MustChangePassword.HasValue)
+                await connection.ExecuteAsync("UPDATE authusers SET MustChangePassword=@MustChangePassword WHERE Id=@Id", new { Id = userId, MustChangePassword = request.MustChangePassword.Value }, transaction);
         }
 
         await connection.ExecuteAsync("DELETE FROM authuserroles WHERE UserId=@UserId", new { UserId = userId }, transaction);
@@ -738,7 +760,8 @@ WHERE Code IN ('mss.attendance.manage', 'ess.attendance.mark');")).ToHashSet(Str
             new { Code = "payroll.payments", Name = "Record payroll payments", Module = "Payroll", Description = "Mark payroll payments and payment dates." },
             new { Code = "leave.manage", Name = "Manage leave", Module = "Leave & Attendance", Description = "Configure and process leave records." },
             new { Code = "attendance.manage", Name = "Manage attendance", Module = "Leave & Attendance", Description = "Configure attendance and review attendance data." },
-            new { Code = "mss.attendance.manage", Name = "Manage team attendance in MSS", Module = "MSS", Description = "Open the MSS attendance review and correct attendance for the user's client." },
+            new { Code = "mss.attendance.manage", Name = "Manage direct-report attendance in MSS", Module = "MSS", Description = "Review and correct attendance only for active employees who directly report to the signed-in manager." },
+            new { Code = "mss.attendance.client.manage", Name = "Manage client attendance in MSS", Module = "MSS", Description = "Review and correct attendance for all active employees of the user's assigned client." },
             new { Code = "ess.attendance.mark", Name = "Mark attendance in ESS", Module = "ESS", Description = "Show and use attendance punch actions in ESS web and mobile apps." },
             new { Code = "settings.manage", Name = "Manage settings", Module = "Settings", Description = "Configure organization, clients, masters and setup data." },
             new { Code = "attachment.config.manage", Name = "Manage attachment configuration", Module = "Attachments", Description = "Configure attachment attributes, form fields and storage servers." },
@@ -800,6 +823,7 @@ ON DUPLICATE KEY UPDATE
             new { Code = "admin", Name = "Administrator", Description = "Full HRMS administration access.", IsSystem = true },
             new { Code = "employee", Name = "Employee", Description = "Employee self-service access.", IsSystem = true },
             new { Code = "mss_manager", Name = "MSS Manager", Description = "Manager self-service access for approvals and assigned workflow tasks.", IsSystem = true },
+            new { Code = "client_attendance_operator", Name = "Client Attendance Operator", Description = "MSS attendance access for every active employee of the user's assigned client, without HRMS administration access.", IsSystem = true },
             new { Code = "payroll_maker", Name = "Payroll Maker", Description = "Payroll preparation and employee master operations.", IsSystem = true },
             new { Code = "payroll_approver", Name = "Payroll Approver", Description = "Payroll approval and review access.", IsSystem = true },
             new { Code = "hr_manager", Name = "HR Manager", Description = "HR, attendance, leave and employee operations.", IsSystem = true }
@@ -859,6 +883,7 @@ WHERE r.Code IN ('admin','hr_manager')
             ["admin"] = permissions.Select(permission => permission.Code).ToArray(),
             ["employee"] = ["ess.self", "ess.attendance.mark"],
             ["mss_manager"] = ["ess.self", "ess.attendance.mark", "mss.attendance.manage", "dashboard.approvals.view"],
+            ["client_attendance_operator"] = ["mss.attendance.client.manage"],
             ["payroll_maker"] = ["dashboard.view", "dashboard.payroll.view", "dashboard.workforce.view", "employees.view", "employees.manage", "attachment.employee.view", "attachment.employee.upload", "payroll.run", "reports.view"],
             ["payroll_approver"] = ["dashboard.view", "dashboard.payroll.view", "payroll.approve", "reports.view"],
             ["hr_manager"] = ["dashboard.view", "dashboard.workforce.view", "dashboard.attendance.view", "employees.view", "employees.manage", "employee.communication.view", "employee.communication.send", "attachment.employee.view", "attachment.employee.upload", "attachment.employee.verify", "attachment.recruitment.view", "attachment.recruitment.upload", "attachment.recruitment.verify", "leave.manage", "attendance.manage", "workflow.manage", "recruitment.manage", "recruitment.position.view", "recruitment.position.manage", "recruitment.assign.recruiter", "recruitment.assign.partner", "recruitment.publish", "recruitment.referral.manage", "recruitment.rfr.create", "recruitment.rfr.view", "reports.view"]
@@ -894,6 +919,13 @@ JOIN authroles r ON r.Id = rp.RoleId
 JOIN authpermissions p ON p.Id = rp.PermissionId
 WHERE r.Code = 'mss_manager'
   AND p.Code IN ('ess.self', 'dashboard.approvals.view');") >= 2,
+                "client_attendance_operator" => await connection.ExecuteScalarAsync<int>(@"
+SELECT COUNT(*)
+FROM authrolepermissions rp
+JOIN authroles r ON r.Id = rp.RoleId
+JOIN authpermissions p ON p.Id = rp.PermissionId
+WHERE r.Code = 'client_attendance_operator'
+  AND p.Code = 'mss.attendance.client.manage';") > 0,
                 _ => true
             };
             if (existingPermissionCount > 0 && hasRequiredPermission)

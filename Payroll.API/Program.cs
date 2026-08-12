@@ -692,6 +692,15 @@ app.MapGet("/api/workflows/tasks/actioned", async (WorkflowRepository repository
     var all = scope?.Equals("all", StringComparison.OrdinalIgnoreCase) == true && HasPermission(context, "workflow.manage");
     return Results.Ok(await repository.ActionedAsync(CurrentUser(context).Id, all));
 });
+app.MapGet("/api/workflows/tasks/{taskId:long}/recruitment-job-description", async (WorkflowRepository repository, RecruitmentPipelineRepository recruitmentPipeline, long taskId, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!await repository.CanReviewTaskAsync(taskId, user.Id) && !HasPermission(context, "workflow.manage")) return Results.StatusCode(403);
+    var instance = await repository.GetInstanceForTaskAsync(taskId);
+    if (instance is null || !instance.ResourceType.Equals("RecruitmentJobDescription", StringComparison.OrdinalIgnoreCase) || !long.TryParse(instance.ResourceId, out var jobDescriptionId)) return Results.NotFound();
+    var row = await recruitmentPipeline.GetJobDescriptionVersionAsync(jobDescriptionId, user);
+    return row is null ? Results.NotFound() : Results.Ok(row);
+});
 app.MapGet("/api/workflows/history", async (WorkflowRepository repository,HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetInstancesAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/{instanceId:long}/history", async (WorkflowRepository repository,long instanceId,HttpContext context) => Results.Ok(await repository.HistoryAsync(instanceId)));
 app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository, PayRunRepository payRuns, RecruitmentRepository recruitment, RecruitmentTalentRepository recruitmentTalent, RecruitmentPipelineRepository recruitmentPipeline, RecruitmentCaseRepository recruitmentCases, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, NotificationRepository notifications,long taskId,string action,WorkflowActionRequest request,HttpContext context) =>
@@ -826,54 +835,58 @@ app.MapPost("/api/ess/attendance/punch", async (EssMssRepository repository, Val
 app.MapGet("/api/ess/mss/attendance/groups", async (LeaveAttendanceRepository repository, HttpContext context) =>
 {
     var user = CurrentUser(context);
-    return !HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue
+    return !HasMssAttendanceAccess(context) || !user.ClientId.HasValue
         ? Results.StatusCode(StatusCodes.Status403Forbidden)
-        : Results.Ok(await repository.GetAttendanceGroupsAsync(user.ClientId.Value, user.Id));
+        : Results.Ok(await repository.GetAttendanceGroupsAsync(user.ClientId.Value, ResolveMssAttendanceReportingManagerUserId(context)));
 });
 app.MapGet("/api/ess/mss/attendance/monthly", async (LeaveAttendanceRepository repository, string month, int? workLocationId, HttpContext context) =>
 {
     var user = CurrentUser(context);
-    return !HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue
+    return !HasMssAttendanceAccess(context) || !user.ClientId.HasValue
         ? Results.StatusCode(StatusCodes.Status403Forbidden)
-        : Results.Ok(await repository.GetMonthlyAttendanceAsync(user.ClientId.Value, month, workLocationId, user.Id));
+        : Results.Ok(await repository.GetMonthlyAttendanceAsync(user.ClientId.Value, month, workLocationId, ResolveMssAttendanceReportingManagerUserId(context)));
 });
 app.MapGet("/api/ess/mss/attendance/daily-grid", async (LeaveAttendanceRepository repository, string month, int? workLocationId, HttpContext context) =>
 {
     var user = CurrentUser(context);
-    return !HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue
+    return !HasMssAttendanceAccess(context) || !user.ClientId.HasValue
         ? Results.StatusCode(StatusCodes.Status403Forbidden)
-        : Results.Ok(await repository.GetDailyAttendanceMonthAsync(user.ClientId.Value, month, workLocationId, user.Id));
+        : Results.Ok(await repository.GetDailyAttendanceMonthAsync(user.ClientId.Value, month, workLocationId, ResolveMssAttendanceReportingManagerUserId(context)));
 });
 app.MapGet("/api/ess/mss/attendance/context", async (LeaveAttendanceRepository repository, string month, int? workLocationId, HttpContext context) =>
 {
     var user = CurrentUser(context);
-    return !HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue
+    return !HasMssAttendanceAccess(context) || !user.ClientId.HasValue
         ? Results.StatusCode(StatusCodes.Status403Forbidden)
-        : Results.Ok(await repository.GetAttendanceReviewContextAsync(user.ClientId.Value, month, workLocationId, user.Id));
+        : Results.Ok(await repository.GetAttendanceReviewContextAsync(user.ClientId.Value, month, workLocationId, ResolveMssAttendanceReportingManagerUserId(context)));
 });
 app.MapGet("/api/ess/mss/attendance/leave-types", async (LeaveAttendanceRepository repository, HttpContext context) =>
 {
     var user = CurrentUser(context);
-    return !HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue
+    return !HasMssAttendanceAccess(context) || !user.ClientId.HasValue
         ? Results.StatusCode(StatusCodes.Status403Forbidden)
         : Results.Ok(await repository.GetLeaveTypesAsync(user.ClientId.Value));
 });
 app.MapGet("/api/ess/mss/attendance/dropdowns", async (OrganizationRepository repository, HttpContext context) =>
-    !HasPermission(context, "mss.attendance.manage")
+{
+    var user = CurrentUser(context);
+    return !HasMssAttendanceAccess(context) || !user.ClientId.HasValue
         ? Results.StatusCode(StatusCodes.Status403Forbidden)
-        : Results.Ok(await repository.GetDropdownMastersAsync()));
+        : Results.Ok(await repository.GetDropdownMastersForClientAsync(user.ClientId.Value));
+});
 app.MapPost("/api/ess/mss/attendance/daily/batch-jobs", async (LeaveAttendanceRepository repository, SaveDailyAttendanceBatchRequest request, HttpContext context) =>
 {
     var user = CurrentUser(context);
-    if (!HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue || request.ClientId != user.ClientId.Value)
+    if (!HasMssAttendanceAccess(context) || !user.ClientId.HasValue || request.ClientId != user.ClientId.Value)
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var reportingManagerUserId = ResolveMssAttendanceReportingManagerUserId(context);
     var requestedEmployeeIds = request.Rows.Select(row => row.EmployeeId)
         .Concat(request.RollupEmployeeIds ?? [])
         .Distinct()
         .ToArray();
-    if (!await repository.AreActiveDirectReportsAsync(user.ClientId.Value, user.Id, requestedEmployeeIds))
+    if (!await repository.AreActiveEmployeesInAttendanceScopeAsync(user.ClientId.Value, reportingManagerUserId, requestedEmployeeIds))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
-    var (job, error) = await repository.StartDailyAttendanceBatchJobAsync(request, user.Email, user.Id);
+    var (job, error) = await repository.StartDailyAttendanceBatchJobAsync(request, user.Email, reportingManagerUserId);
     if (job is null && string.Equals(error, LeaveAttendanceRepository.ManagedAttendanceScopeError, StringComparison.Ordinal))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     return job is null ? Results.BadRequest(new { error }) : Results.Accepted($"/api/ess/mss/attendance/daily/batch-jobs/{job.JobId}", job);
@@ -881,10 +894,10 @@ app.MapPost("/api/ess/mss/attendance/daily/batch-jobs", async (LeaveAttendanceRe
 app.MapGet("/api/ess/mss/attendance/daily/batch-jobs/{jobId:guid}", async (LeaveAttendanceRepository repository, Guid jobId, HttpContext context) =>
 {
     var user = CurrentUser(context);
-    if (!HasPermission(context, "mss.attendance.manage") || !user.ClientId.HasValue)
+    if (!HasMssAttendanceAccess(context) || !user.ClientId.HasValue)
         return Results.StatusCode(StatusCodes.Status403Forbidden);
-    var job = await repository.GetDailyAttendanceBatchJobAsync(jobId);
-    return job is null ? Results.NotFound(new { error = "Attendance batch job not found." }) : job.ClientId != user.ClientId.Value ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(job);
+    var job = await repository.GetDailyAttendanceBatchJobForRequesterAsync(jobId, user.ClientId.Value, user.Email);
+    return job is null ? Results.NotFound(new { error = "Attendance batch job not found." }) : Results.Ok(job);
 });
 app.MapGet("/api/ess/dashboard/holidays", async (EssMssRepository repository, string month, HttpContext context) => Results.Ok(await repository.GetHolidaysAsync(CurrentUser(context).ClientId,month)));
 app.MapGet("/api/ess/dashboard/birthdays", async (EssMssRepository repository, HttpContext context) => Results.Ok(await repository.GetTodaysBirthdaysAsync(CurrentUser(context).ClientId)));
@@ -1057,6 +1070,15 @@ app.MapPost("/api/recruitment/requisitions/{id:long}/submit", async (Recruitment
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var (row, error) = await repository.SubmitAsync(id, CurrentUser(context), workflows);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+
+app.MapGet("/api/recruitment/pipeline-workspace", async (RecruitmentPipelineRepository repository, int? clientId, long? positionId, long? jobPostingId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    if (user.ClientId.HasValue && clientId.HasValue && user.ClientId.Value != clientId.Value) return Results.StatusCode(403);
+    var workspace = await repository.GetPipelineWorkspaceAsync(clientId, positionId, jobPostingId, user);
+    return workspace is null ? Results.StatusCode(403) : Results.Ok(workspace);
 });
 
 app.MapGet("/api/recruitment/work-orders", async (RecruitmentCaseRepository repository, int? clientId, string? query, HttpContext context) =>
@@ -1302,11 +1324,45 @@ app.MapGet("/api/recruitment/applications", async (RecruitmentTalentRepository r
     HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage")
         ? Results.Ok(await repository.GetApplicationsAsync(CurrentUser(context), positionId, candidateId, stage ?? ""))
         : Results.StatusCode(403));
-app.MapPost("/api/recruitment/applications", async (RecruitmentTalentRepository repository, SaveCandidateApplication request, HttpContext context) =>
+app.MapPost("/api/recruitment/applications", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines,
+    RecruitmentPipelineActionService pipelineActions, RecruitmentCandidateActionRepository candidateActions,
+    SaveCandidateApplication request, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
-    var (row, error) = await repository.CreateApplicationAsync(request, CurrentUser(context));
-    return row is null || !string.IsNullOrWhiteSpace(error) ? Results.BadRequest(new { error }) : Results.Ok(row);
+    var user = CurrentUser(context);
+    var (row, error) = await repository.CreateApplicationAsync(request, user);
+    if (row is null || !string.IsNullOrWhiteSpace(error)) return Results.BadRequest(new { error });
+
+    // A manually captured application must participate in the same configured
+    // pipeline as public and resume-intake applications. Pipeline setup remains
+    // optional, so the application itself is still retained when no assignment exists.
+    var pipelineWarning = "";
+    try
+    {
+        var (pipelineId, warning) = await pipelines.EnsureApplicationPipelineAsync(row.Id, user);
+        pipelineWarning = warning;
+        if (pipelineId.HasValue)
+        {
+            var entry = await pipelineActions.ExecuteAsync(row.Id, "OnEntry", user);
+            if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
+                await candidateActions.EnsureForCurrentStageAsync(row.Id, user);
+            row = (await repository.GetApplicationsAsync(user, row.PositionId, row.CandidateId, ""))
+                .FirstOrDefault(item => item.Id == row.Id) ?? row;
+        }
+    }
+    catch
+    {
+        // The application is already committed. Return it successfully and make
+        // the recoverable orchestration issue explicit so a retry cannot create a duplicate.
+        pipelineWarning = "Application saved, but its hiring pipeline could not be initialized. Review the position pipeline assignment and retry pipeline initialization.";
+    }
+
+    if (!string.IsNullOrWhiteSpace(pipelineWarning))
+    {
+        row.PipelineWarning = pipelineWarning;
+        context.Response.Headers.Append("X-Recruitment-Pipeline-Warning", pipelineWarning);
+    }
+    return Results.Ok(row);
 });
 app.MapDelete("/api/recruitment/applications/{id:long}", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
 {
@@ -1495,6 +1551,12 @@ recruitmentOrchestration.MapPost("/job-descriptions/{id:long}/submit", async (Re
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
     var (row, error) = await repository.SubmitJobDescriptionForApprovalAsync(id, workflowId, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/job-descriptions/{id:long}/approve-direct", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.ApproveJobDescriptionDirectlyAsync(id, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 
@@ -3472,6 +3534,12 @@ static bool HasRecruitmentManagement(HttpContext context) =>
 
 static bool HasAttendanceManagement(HttpContext context) =>
     HasPermission(context, "attendance.manage") || HasPermission(context, "mss.attendance.manage") || HasPermission(context, "settings.manage");
+
+static bool HasMssAttendanceAccess(HttpContext context) =>
+    HasPermission(context, "mss.attendance.manage") || HasPermission(context, "mss.attendance.client.manage");
+
+static int? ResolveMssAttendanceReportingManagerUserId(HttpContext context) =>
+    HasPermission(context, "mss.attendance.client.manage") ? null : CurrentUser(context).Id;
 
 static bool HasEssAdminMaintenance(HttpContext context)
 {

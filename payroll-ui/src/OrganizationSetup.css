@@ -2471,3 +2471,16 @@ body.portal-shell-mounted #root .module-shell .shell-bottom-brand{
   .recruitment-admin .orchestration-shell > .orchestration-toolbar > div:last-child > :is(.ant-select,.ant-btn){min-width:0!important}
   .recruitment-admin :is(.form-builder-layout,.pipeline-designer-layout,.jd-workspace-layout,.posting-workspace-layout){grid-template-columns:1fr!important}
 }
+
+.workflow-jd-review{display:grid;gap:14px}
+.workflow-jd-review>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:16px;border:1px solid #ddd6fe;border-radius:12px;background:linear-gradient(135deg,#faf9ff,#fff)}
+.workflow-jd-review>header>div{min-width:0}.workflow-jd-review>header h4{margin:4px 0 5px;color:#172136;font-size:1.08rem}.workflow-jd-review>header p{max-width:900px;margin:0;color:#566176;font-size:.8rem;line-height:1.55;white-space:pre-wrap}
+.workflow-jd-link{display:inline-flex;flex:0 0 auto;align-items:center;justify-content:center;min-height:34px;border-radius:8px;padding:0 12px;text-decoration:none;font-size:.74rem;font-weight:800;white-space:nowrap}
+.workflow-jd-context{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.workflow-jd-copy-grid,.workflow-jd-requirement-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.workflow-jd-copy-grid>article,.workflow-jd-requirement-grid>article,.workflow-jd-section{padding:14px;border:1px solid #e5e8f0;border-radius:12px;background:#fff}
+.workflow-jd-review h5{margin:0 0 8px;color:#25324a;font-size:.78rem;text-transform:uppercase;letter-spacing:.04em}.workflow-jd-review p,.workflow-jd-review li{color:#475569;font-size:.78rem;line-height:1.55}.workflow-jd-review ol,.workflow-jd-review ul{margin:0;padding-left:20px}.workflow-jd-review li+li{margin-top:5px}
+.workflow-jd-section>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.workflow-jd-section>header h5{margin-bottom:3px}.workflow-jd-section>header p{margin:0;color:#64748b;font-size:.7rem}.workflow-jd-section>header>b{border-radius:999px;background:#f1edff;color:#5133cc;padding:4px 9px;font-size:.7rem;white-space:nowrap}
+.workflow-jd-table-wrap{overflow:auto;border:1px solid #e5e8f0;border-radius:9px}.workflow-jd-table-wrap table{width:100%;min-width:680px;border-collapse:collapse}.workflow-jd-table-wrap th,.workflow-jd-table-wrap td{padding:9px 11px;border-bottom:1px solid #eef1f6;text-align:left;font-size:.72rem}.workflow-jd-table-wrap th{background:#f8fafc;color:#64748b;font-size:.64rem;text-transform:uppercase;letter-spacing:.04em}.workflow-jd-table-wrap tr:last-child td{border-bottom:0}
+.workflow-jd-attachments>ul{padding:0;list-style:none}.workflow-jd-attachments li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid #eef1f6}.workflow-jd-attachments li:first-child{border-top:0}.workflow-jd-attachments li div b,.workflow-jd-attachments li div span{display:block}.workflow-jd-attachments li div span,.workflow-jd-attachments li>span{color:#64748b;font-size:.68rem}
+@media(max-width:720px){.workflow-jd-review>header{display:grid}.workflow-jd-link{width:100%}.workflow-jd-copy-grid,.workflow-jd-requirement-grid{grid-template-columns:1fr}.workflow-jd-attachments li{align-items:flex-start;flex-direction:column}}

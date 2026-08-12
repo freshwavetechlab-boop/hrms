@@ -3,8 +3,8 @@ import {
   DeleteOutlined, EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SearchOutlined, SendOutlined,
 } from '@ant-design/icons'
 import {
-  AutoComplete, Button, Collapse, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag,
-  Tooltip, message,
+  Alert, AutoComplete, Button, Collapse, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Spin, Switch,
+  Table, Tag, Tooltip, message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useAuthSession } from './AuthGate'
@@ -14,6 +14,7 @@ import {
   submitRecruitmentRequisition,
 } from '../services/recruitmentService'
 import { getDropdowns, getWorkLocations } from '../services/settingsService'
+import { getRecruitmentWorkOrder } from '../services/recruitmentCaseService'
 import type {
   Client, Drop, Employee, RecruitmentRequisition, SaveRecruitmentRequisition, WorkLocation,
 } from '../types/payroll'
@@ -24,6 +25,8 @@ type Props = {
   initialClientId?: number
   clientScopeManaged?: boolean
   initialOpen?: boolean
+  initialWorkOrderId?: number
+  initialWorkOrderLineId?: number
   embedded?: boolean
   onChanged?: (row: RecruitmentRequisition) => void
   onPrepareJobDescription?: (row: RecruitmentRequisition) => void
@@ -42,7 +45,7 @@ const emptyMasters: MasterOptions = {
   hiringTypes: [], positionCategories: [], experienceRanges: [], priorities: [], budgetAmounts: [],
 }
 
-export default function RecruitmentRequisitionManager({ initialClientId = 0, clientScopeManaged = false, initialOpen = false, embedded = false, onChanged, onPrepareJobDescription }: Props) {
+export default function RecruitmentRequisitionManager({ initialClientId = 0, clientScopeManaged = false, initialOpen = false, initialWorkOrderId = 0, initialWorkOrderLineId = 0, embedded = false, onChanged, onPrepareJobDescription }: Props) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [form] = Form.useForm<SaveRecruitmentRequisition>()
@@ -54,8 +57,10 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const [rows, setRows] = useState<RecruitmentRequisition[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [dialogOpen, setDialogOpen] = useState(false)
+  const [dialogOpen, setDialogOpen] = useState(initialOpen)
   const [readOnly, setReadOnly] = useState(false)
+  const [sourcePrefillLoading, setSourcePrefillLoading] = useState(initialOpen)
+  const [sourcePrefillWarning, setSourcePrefillWarning] = useState('')
   const [query, setQuery] = useState('')
   const [clientFilter, setClientFilter] = useState(initialClientId)
   const [statusFilter, setStatusFilter] = useState('')
@@ -70,12 +75,16 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
 
   useEffect(() => {
     let active = true
+    if (initialOpen) {
+      applyDraft(blankRequest(initialClientId))
+      setDialogOpen(true)
+    }
     void getRecruitmentRequisitions({}).then(requestRows => {
       if (!active) return
       setRows(requestRows)
       setLoading(false)
     })
-    void fetchWorkspace().then(data => {
+    void fetchWorkspace().then(async data => {
       if (!active) return
       setClients(data.clientRows)
       setDropdowns(data.dropRows)
@@ -88,12 +97,40 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       if (initialOpen) {
         const nextClientId = initialClientId || data.clientRows[0]?.id || 0
         const draft = blankRequest(nextClientId)
+        if (initialWorkOrderId && initialWorkOrderLineId) {
+          const workOrder = await getRecruitmentWorkOrder(initialWorkOrderId)
+          if (!active) return
+          const line = workOrder?.lines?.find(row => row.id === initialWorkOrderLineId)
+          if (workOrder && line) {
+            draft.clientId = workOrder.clientId
+            draft.workOrderId = workOrder.id
+            draft.workOrderLineNumber = line.lineNumber
+            draft.positionTitle = line.positionName
+            draft.numberOfOpenings = line.numberOfPositions
+            draft.jobLocation = line.location
+            draft.department = line.division
+            draft.sourceType = 'Client Work Order'
+            draft.sourceReference = workOrder.workOrderNumber
+            draft.sourceAuthority = workOrder.receivedFrom
+            draft.sourceNotes = workOrder.remarks
+          } else {
+            setSourcePrefillWarning(workOrder
+              ? 'The selected work-order line is no longer available. A new blank hiring request is open; return to Pipeline and choose an active line.'
+              : 'The linked work order could not be loaded. A new blank hiring request is open; return to Pipeline and retry from the active order.')
+          }
+        }
         draft.requestedByEmployeeId = session?.user.employeeId
-          ?? data.employeeRows.find(row => row.isActive && (!nextClientId || row.clientId === nextClientId))?.id
+          ?? data.employeeRows.find(row => row.isActive && (!draft.clientId || row.clientId === draft.clientId))?.id
           ?? null
         applyDraft(draft)
         setDialogOpen(true)
       }
+      setSourcePrefillLoading(false)
+      setLoading(false)
+    }).catch(() => {
+      if (!active) return
+      setSourcePrefillLoading(false)
+      setSourcePrefillWarning('Hiring-request setup data could not be loaded. The page is still available, but refresh before saving this request.')
       setLoading(false)
     })
     return () => { active = false }
@@ -186,7 +223,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
           ? <Tooltip title="Edit draft"><Button aria-label="Edit draft" size="small" icon={<EditOutlined />} onClick={() => openRequest(row)} /></Tooltip>
           : <Tooltip title="View request"><Button aria-label="View request" size="small" icon={<EyeOutlined />} onClick={() => openRequest(row, true)} /></Tooltip>}
         {editableStatuses.has(row.status) && <Button size="small" type="link" icon={<SendOutlined />} onClick={() => confirmSubmit(row)}>Submit</Button>}
-        {row.status === 'Approved' && onPrepareJobDescription && <Button size="small" type="link" onClick={() => onPrepareJobDescription(row)}>Prepare JD</Button>}
+        {row.status === 'Approved' && onPrepareJobDescription && <Button size="small" type="link" onClick={() => onPrepareJobDescription(row)}>{jobDescriptionActionLabel(row.jobDescriptionStatus)}</Button>}
         {canDelete && <Popconfirm placement="left" title="Delete this requisition?" description="Delete its open position and job-description versions first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteRecruitmentRequisition(row.id); if (response.ok) await refreshRows() }}><Button title="Delete requisition" danger aria-label="Delete requisition" size="small" icon={<DeleteOutlined />} /></Popconfirm>}
       </Space>,
     },
@@ -293,7 +330,9 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       onClose={() => !saving && setDialogOpen(false)} kicker="Hiring request"
       title={readOnly ? 'Request details' : watchedForm.id ? 'Edit draft' : 'New hiring request'}
       description={readOnly ? 'Review the approved demand and its hiring context.' : 'Capture the essential demand first; advanced role and approval context stays optional.'}>
-      <Form form={form} layout="vertical" disabled={readOnly} requiredMark="optional" className="rfr-form" onValuesChange={(_, values: SaveRecruitmentRequisition) => setWatchedForm({ id: values.id || 0, clientId: values.clientId || 0, isReplacement: Boolean(values.isReplacement), budgetAvailable: Boolean(values.budgetAvailable) })}>
+      {sourcePrefillWarning && <Alert className="rfr-source-warning" type="warning" showIcon message="Source record needs attention" description={sourcePrefillWarning} />}
+      <Spin spinning={sourcePrefillLoading} tip="Loading the linked work order...">
+      <Form form={form} layout="vertical" disabled={readOnly || sourcePrefillLoading} requiredMark="optional" className="rfr-form" onValuesChange={(_, values: SaveRecruitmentRequisition) => setWatchedForm({ id: values.id || 0, clientId: values.clientId || 0, isReplacement: Boolean(values.isReplacement), budgetAvailable: Boolean(values.budgetAvailable) })}>
         <div className="rfr-essential-grid">
           <Form.Item name="id" hidden><InputNumber /></Form.Item>
           <Form.Item name="branchId" hidden><InputNumber /></Form.Item>
@@ -349,13 +388,23 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
             <Button type="primary" icon={<SendOutlined />} loading={saving} onClick={() => void saveRequest(true)} data-testid="save-submit-requisition">Save & submit</Button></>}
         </div>
       </Form>
+      </Spin>
     </RecruitmentEditorDrawer>
   </section>
 }
 
+function jobDescriptionActionLabel(status?: string) {
+  const value = String(status || 'Not Started').toLowerCase()
+  if (value === 'draft' || value === 'sent back') return 'Continue JD'
+  if (value === 'pending approval') return 'View pending JD'
+  if (value === 'approved') return 'View approved JD'
+  if (value === 'published' || value === 'retired') return 'View JD'
+  return 'Create JD'
+}
+
 function blankRequest(clientId: number): SaveRecruitmentRequisition {
   return {
-    id: 0, requestDate: today(), requestedByEmployeeId: null, clientId: clientId || undefined, branchId: 0, businessUnit: '', department: '', costCenter: '', positionTitle: '',
+    id: 0, requestDate: today(), requestedByEmployeeId: null, clientId: clientId || undefined, workOrderId: null, workOrderLineNumber: null, branchId: 0, businessUnit: '', department: '', costCenter: '', positionTitle: '',
     positionCategory: '', employmentType: 'Permanent', hiringType: '', numberOfOpenings: 1, isReplacement: false,
     replacementEmployeeId: null, targetJoiningDate: null, jobLocation: '', workMode: 'Office', project: '', budgetAvailable: false,
     budgetAmount: 0, hiringPriority: 'Normal', businessJustification: '', reasonForHiring: '', experienceRange: '', qualification: '',
@@ -377,7 +426,7 @@ async function fetchWorkspace() {
 
 function fromRow(row: RecruitmentRequisition): SaveRecruitmentRequisition {
   return {
-    id: row.id, requestDate: row.requestDate?.slice(0, 10) || today(), requestedByEmployeeId: row.requestedByEmployeeId, clientId: row.clientId, branchId: row.branchId || 0, businessUnit: row.businessUnit || '', department: row.department || '',
+    id: row.id, requestDate: row.requestDate?.slice(0, 10) || today(), requestedByEmployeeId: row.requestedByEmployeeId, clientId: row.clientId, workOrderId: row.workOrderId ?? null, workOrderLineNumber: row.workOrderLineNumber ?? null, branchId: row.branchId || 0, businessUnit: row.businessUnit || '', department: row.department || '',
     costCenter: row.costCenter || '', positionTitle: row.positionTitle || '', positionCategory: row.positionCategory || '',
     employmentType: row.employmentType || '', hiringType: row.hiringType || '', numberOfOpenings: row.numberOfOpenings || 1,
     isReplacement: row.isReplacement, replacementEmployeeId: row.replacementEmployeeId ?? null,
@@ -397,7 +446,7 @@ function fromRow(row: RecruitmentRequisition): SaveRecruitmentRequisition {
 function normalize(row: SaveRecruitmentRequisition): SaveRecruitmentRequisition {
   const clean = (value?: string | null) => String(value || '').trim()
   return {
-    ...row, id: Number(row.id || 0), requestedByEmployeeId: Number(row.requestedByEmployeeId || 0) || null, clientId: Number(row.clientId || 0) || undefined, branchId: Number(row.branchId || 0),
+    ...row, id: Number(row.id || 0), requestedByEmployeeId: Number(row.requestedByEmployeeId || 0) || null, clientId: Number(row.clientId || 0) || undefined, workOrderId: Number(row.workOrderId || 0) || null, workOrderLineNumber: Number(row.workOrderLineNumber || 0) || null, branchId: Number(row.branchId || 0),
     positionTitle: clean(row.positionTitle), department: clean(row.department), businessUnit: clean(row.businessUnit), costCenter: clean(row.costCenter),
     positionCategory: clean(row.positionCategory), employmentType: clean(row.employmentType), hiringType: clean(row.hiringType),
     numberOfOpenings: Number(row.numberOfOpenings || 1), replacementEmployeeId: row.isReplacement ? Number(row.replacementEmployeeId || 0) || null : null,

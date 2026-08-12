@@ -187,6 +187,58 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, onSaved }:
     patchSection(selectedSection.id, { fields: [...selectedSection.fields, field] }); setSelectedFieldId(id); setFieldDrawer(true)
   }
 
+  const addStandardResumeField = () => {
+    if (!selectedSection || readOnly) return message.info('Select an editable section first.')
+
+    const existingResume = version!.sections
+      .flatMap(section => section.fields.map(field => ({ section, field })))
+      .find(({ field }) => field.semanticCodes.some(semantic => code(semantic) === 'RESUME') || code(field.stableFieldCode) === 'RESUME')
+    if (existingResume) {
+      setSelectedSectionId(existingResume.section.id)
+      setSelectedFieldId(existingResume.field.id)
+      setFieldDrawer(true)
+      return message.info('This form already has a Resume / CV field. Review the existing field instead of adding another.')
+    }
+
+    const resumeConfiguration = lookups.attachmentConfigurations
+      .filter(row => row.isActive && code(row.attributeCode) === 'RESUME' && (row.clientId === 0 || row.clientId === clientId))
+      .sort((left, right) => Number(right.clientId === clientId) - Number(left.clientId === clientId))[0]
+    if (!resumeConfiguration) {
+      return message.warning('No active Resume attachment field is configured for this client. Add one in Settings > Attachments, then retry.')
+    }
+
+    const id = localId()
+    const field: DynamicFormField = {
+      id,
+      formVersionId: version!.id,
+      sectionId: selectedSection.id,
+      fieldTypeCode: 'UPLOAD',
+      stableFieldCode: 'RESUME',
+      label: 'Resume / CV',
+      placeholder: '',
+      helpText: 'Upload PDF, DOCX, RTF or TXT. The file is stored privately and used for ATS matching.',
+      isRequired: true,
+      displayOrder: selectedSection.fields.length + 1,
+      widthColumns: 12,
+      minimumLength: null,
+      maximumLength: null,
+      minimumNumber: null,
+      maximumNumber: null,
+      minimumDate: null,
+      maximumDate: null,
+      attachmentFieldConfigurationId: resumeConfiguration.id,
+      lookupSourceCode: '',
+      isActive: true,
+      options: [],
+      semanticCodes: ['RESUME'],
+      validationRules: [],
+    }
+    patchSection(selectedSection.id, { fields: [...selectedSection.fields, field] })
+    setSelectedFieldId(id)
+    setFieldDrawer(true)
+    message.success('Standard Resume / CV field added. It is required and connected to the secure Resume attachment configuration.')
+  }
+
   const removeField = (fieldId: number) => {
     if (!selectedSection || readOnly) return
     patchSection(selectedSection.id, { fields: selectedSection.fields.filter(row => row.id !== fieldId).map((row, index) => ({ ...row, displayOrder: index + 1 })) })
@@ -253,7 +305,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, onSaved }:
         <Card size="small"><div className="orchestration-toolbar"><Space wrap><Tag color={version.status === 'Published' ? 'green' : version.status === 'Retired' ? 'default' : 'gold'}>v{version.versionNumber} · {version.status}</Tag><Switch disabled={readOnly} checked={definition.status === 'Active'} onChange={active => patchDefinition({ status: active ? 'Active' : 'Inactive' })} checkedChildren="Active" unCheckedChildren="Inactive" /></Space><Space>{readOnly && <Button onClick={beginRevision}>Create next version</Button>}<Button data-testid="form-builder-save" loading={saving} disabled={readOnly} onClick={() => void save()}>Save draft</Button><Button data-testid="form-builder-publish" type="primary" disabled={readOnly} onClick={publish}>Publish</Button></Space></div>
           <div className="form-builder-meta"><Form.Item label="Form name" required><Input data-testid="form-builder-name" disabled={readOnly} value={definition.formName} onChange={event => patchDefinition({ formName: event.target.value })} /></Form.Item><Form.Item label="Form code" required><Input data-testid="form-builder-code" disabled={readOnly} value={definition.formCode} onChange={event => patchDefinition({ formCode: code(event.target.value) })} /></Form.Item><Form.Item label="Use this form for" extra="Employee forms appear automatically in the matching Employee infotype after publishing."><Select data-testid="form-builder-module" disabled={readOnly} value={definition.moduleCode || 'RECRUITMENT'} onChange={chooseModule} options={[{ value: 'RECRUITMENT', label: 'Recruitment / Candidate' }, { value: 'EMPLOYEE', label: 'Employee additional fields' }]} /></Form.Item>{definition.moduleCode === 'EMPLOYEE' && <Form.Item label="Employee infotype"><Select data-testid="form-builder-employee-infotype" disabled={readOnly} value={employeeInfotype} onChange={value => patchDefinition({ purposeCode: `EMPLOYEE_INFOTYPE_${value}`, entityType: 'EMPLOYEE' })} options={[{ value: '0001', label: '0001 - Organizational Assignment' }, { value: '0002', label: '0002 - Personal Data' }, { value: '0006', label: '0006 - Addresses' }, { value: '0008', label: '0008 - Basic Pay' }, { value: '0009', label: '0009 - Bank Details' }]} /></Form.Item>}<Form.Item label="Purpose code"><Input data-testid="form-builder-purpose" disabled={readOnly} value={definition.purposeCode} onChange={event => patchDefinition({ purposeCode: code(event.target.value) })} /></Form.Item><Form.Item label="Entity type"><Input data-testid="form-builder-entity" disabled={readOnly} value={definition.entityType} onChange={event => patchDefinition({ entityType: code(event.target.value) })} /></Form.Item></div>
         </Card>
-        <Card size="small" title="Field palette" extra={<Button icon={<PlusOutlined />} disabled={readOnly} onClick={addSection}>Add section</Button>}><div className="field-palette">{fieldTypes.map(item => <Button data-testid={`form-builder-add-${item.value.toLowerCase()}`} disabled={readOnly} key={item.value} onClick={() => addField(item.value)} icon={item.value === 'UPLOAD' ? <FileAddOutlined /> : <PlusOutlined />}>{item.label}</Button>)}</div></Card>
+        <Card size="small" title="Field palette" extra={<Button icon={<PlusOutlined />} disabled={readOnly} onClick={addSection}>Add section</Button>}><div className="field-palette">{definition.moduleCode === 'RECRUITMENT' && <Button data-testid="form-builder-add-standard-resume" type="dashed" disabled={readOnly} onClick={addStandardResumeField} icon={<FileAddOutlined />}>Add standard Resume / CV</Button>}{fieldTypes.map(item => <Button data-testid={`form-builder-add-${item.value.toLowerCase()}`} disabled={readOnly} key={item.value} onClick={() => addField(item.value)} icon={item.value === 'UPLOAD' ? <FileAddOutlined /> : <PlusOutlined />}>{item.label}</Button>)}</div></Card>
         {!version.sections.length && <div className="form-builder-empty"><Empty description="Add a section to begin designing the form." /></div>}
         {version.sections.map((section, sectionIndex) => <Card key={section.id} size="small" className={`form-builder-section ${selectedSectionId === section.id ? 'active' : ''}`} onClick={() => setSelectedSectionId(section.id)}><div className="form-builder-section-head"><div><h4>{section.sectionLabel}</h4><p>{section.description || section.sectionCode}</p></div><Space onClick={event => event.stopPropagation()}><Tooltip title="Move up"><Button size="small" icon={<ArrowUpOutlined />} disabled={readOnly || !sectionIndex} onClick={() => moveSection(section.id, -1)} /></Tooltip><Tooltip title="Move down"><Button size="small" icon={<ArrowDownOutlined />} disabled={readOnly || sectionIndex === version.sections.length - 1} onClick={() => moveSection(section.id, 1)} /></Tooltip><Button size="small" icon={<EditOutlined />} disabled={readOnly} onClick={() => setSectionEditor({ ...section })}>Edit</Button><Button size="small" danger icon={<DeleteOutlined />} disabled={readOnly} onClick={() => removeSection(section.id)} /></Space></div>
           {!section.fields.length ? <div className="form-builder-empty">Select this section, then choose a field from the palette.</div> : <div className="form-builder-grid">{section.fields.map(field => <div key={field.id} style={{ gridColumn: `span ${field.widthColumns}` }} className={`form-builder-field ${selectedFieldId === field.id ? 'active' : ''}`} onClick={event => { event.stopPropagation(); setSelectedSectionId(section.id); setSelectedFieldId(field.id); setFieldDrawer(true) }}><strong>{field.label}{field.isRequired ? ' *' : ''}</strong><Tag className="field-type">{fieldTypes.find(item => item.value === field.fieldTypeCode)?.label}</Tag><small>{field.helpText || field.placeholder || field.stableFieldCode}</small></div>)}</div>}
@@ -281,13 +333,13 @@ function FieldProperties({ field, allFields, lookups, clientId, readOnly, patch 
   const selectedAttachment = lookups.attachmentConfigurations.find(row => row.id === field.attachmentFieldConfigurationId)
   return <Form layout="vertical"><div className="field-property-grid">
     <Form.Item label="Field label" required><Input data-testid="form-field-label" disabled={readOnly} value={field.label} onChange={event => patch({ label: event.target.value })} /></Form.Item><Form.Item label="Stable field code" required><Input data-testid="form-field-code" disabled={readOnly} value={field.stableFieldCode} onChange={event => patch({ stableFieldCode: code(event.target.value) })} /></Form.Item>
-    <Form.Item label="Field type"><Select disabled={readOnly} value={field.fieldTypeCode} options={fieldTypes} onChange={fieldTypeCode => patch({ fieldTypeCode, options: isChoice(fieldTypeCode) ? field.options : [], lookupSourceCode: isChoice(fieldTypeCode) ? field.lookupSourceCode : '', attachmentFieldConfigurationId: fieldTypeCode === 'UPLOAD' ? field.attachmentFieldConfigurationId : null })} /></Form.Item><Form.Item label="Width"><Select disabled={readOnly} value={field.widthColumns} onChange={widthColumns => patch({ widthColumns })} options={[{ value: 3, label: 'Quarter' }, { value: 4, label: 'One third' }, { value: 6, label: 'Half' }, { value: 12, label: 'Full' }]} /></Form.Item>
-    <Form.Item className="wide" label="Placeholder"><Input disabled={readOnly} value={field.placeholder} onChange={event => patch({ placeholder: event.target.value })} /></Form.Item><Form.Item className="wide" label="Help text"><Input disabled={readOnly} value={field.helpText} onChange={event => patch({ helpText: event.target.value })} /></Form.Item>
+    <Form.Item label="Field type"><Select data-testid="form-field-type" disabled={readOnly} value={field.fieldTypeCode} options={fieldTypes} onChange={fieldTypeCode => patch({ fieldTypeCode, options: isChoice(fieldTypeCode) ? field.options : [], lookupSourceCode: isChoice(fieldTypeCode) ? field.lookupSourceCode : '', attachmentFieldConfigurationId: fieldTypeCode === 'UPLOAD' ? field.attachmentFieldConfigurationId : null })} /></Form.Item><Form.Item label="Width"><Select data-testid="form-field-width" disabled={readOnly} value={field.widthColumns} onChange={widthColumns => patch({ widthColumns })} options={[{ value: 3, label: 'Quarter' }, { value: 4, label: 'One third' }, { value: 6, label: 'Half' }, { value: 12, label: 'Full' }]} /></Form.Item>
+    <Form.Item className="wide" label="Placeholder"><Input disabled={readOnly} value={field.placeholder} onChange={event => patch({ placeholder: event.target.value })} /></Form.Item><Form.Item className="wide" label="Help text"><Input data-testid="form-field-help" disabled={readOnly} value={field.helpText} onChange={event => patch({ helpText: event.target.value })} /></Form.Item>
     <Form.Item label="Required"><Switch data-testid="form-field-required" disabled={readOnly} checked={field.isRequired} onChange={isRequired => patch({ isRequired })} /></Form.Item><Form.Item label="Active"><Switch disabled={readOnly} checked={field.isActive} onChange={isActive => patch({ isActive })} /></Form.Item>
     {['TEXT', 'TEXTAREA', 'EMAIL', 'PHONE'].includes(field.fieldTypeCode) && <><Form.Item label="Minimum characters"><InputNumber disabled={readOnly} min={0} value={field.minimumLength} onChange={value => patch({ minimumLength: value == null ? null : Number(value) })} /></Form.Item><Form.Item label="Maximum characters"><InputNumber disabled={readOnly} min={1} value={field.maximumLength} onChange={value => patch({ maximumLength: value == null ? null : Number(value) })} /></Form.Item></>}
     {field.fieldTypeCode === 'NUMBER' && <><Form.Item label="Minimum value"><InputNumber disabled={readOnly} value={field.minimumNumber} onChange={value => patch({ minimumNumber: value == null ? null : Number(value) })} /></Form.Item><Form.Item label="Maximum value"><InputNumber disabled={readOnly} value={field.maximumNumber} onChange={value => patch({ maximumNumber: value == null ? null : Number(value) })} /></Form.Item></>}
     {isChoice(field.fieldTypeCode) && <Form.Item className="wide" label="Registered lookup source" extra="Leave blank to maintain normalized static options below."><Select disabled={readOnly} allowClear value={field.lookupSourceCode || undefined} placeholder="Static options" onChange={value => patch({ lookupSourceCode: value || '' })} options={lookups.lookupSources.filter(row => row.isActive).map(row => ({ value: row.sourceCode, label: row.sourceName }))} /></Form.Item>}
-    {field.fieldTypeCode === 'UPLOAD' && <Form.Item className="wide" label="Global attachment field configuration" required extra={selectedAttachment ? `${selectedAttachment.allowMultiple ? `Up to ${selectedAttachment.maximumFileCount} files` : 'Single file'} · ${formatBytes(selectedAttachment.maximumFileSizeBytes)} each · ${extensions(selectedAttachment.allowedExtensionsJson)}` : 'File type, size, permissions and versioning are enforced by the global attachment system.'}><Select disabled={readOnly} showSearch optionFilterProp="label" value={field.attachmentFieldConfigurationId || undefined} onChange={attachmentFieldConfigurationId => patch({ attachmentFieldConfigurationId })} options={lookups.attachmentConfigurations.filter(row => row.isActive && (row.clientId === 0 || row.clientId === clientId)).map(row => ({ value: row.id, label: `${row.fieldLabel || row.attributeName} (${row.attributeCode})` }))} /></Form.Item>}
+    {field.fieldTypeCode === 'UPLOAD' && <Form.Item className="wide" label="Global attachment field configuration" required extra={selectedAttachment ? `${selectedAttachment.allowMultiple ? `Up to ${selectedAttachment.maximumFileCount} files` : 'Single file'} · ${formatBytes(selectedAttachment.maximumFileSizeBytes)} each · ${extensions(selectedAttachment.allowedExtensionsJson)}` : 'File type, size, permissions and versioning are enforced by the global attachment system.'}><Select data-testid="form-field-attachment-configuration" disabled={readOnly} showSearch optionFilterProp="label" value={field.attachmentFieldConfigurationId || undefined} onChange={attachmentFieldConfigurationId => patch({ attachmentFieldConfigurationId })} options={lookups.attachmentConfigurations.filter(row => row.isActive && (row.clientId === 0 || row.clientId === clientId)).map(row => ({ value: row.id, label: `${row.fieldLabel || row.attributeName} (${row.attributeCode})` }))} /></Form.Item>}
     <Form.Item className="wide" label="Semantic mappings" extra="Use stable meanings such as EMAIL or RESUME so submission conversion does not depend on labels."><Select data-testid="form-field-semantics" disabled={readOnly} mode="tags" value={field.semanticCodes} onChange={values => patch({ semanticCodes: values.map(code) })} options={semanticOptions.map(value => ({ value, label: value.replaceAll('_', ' ') }))} /></Form.Item>
   </div>
     {isChoice(field.fieldTypeCode) && !field.lookupSourceCode && <Card size="small" title="Static options" extra={<Button disabled={readOnly} size="small" icon={<PlusOutlined />} onClick={addOption}>Add option</Button>}>{!field.options.length && <Alert type="info" showIcon message="Add at least one option, or select a registered lookup source." />}{field.options.map((option, index) => <div className="field-option-row" key={option.id}><Input disabled={readOnly} value={option.optionLabel} placeholder="Label" onChange={event => patchOption(option.id, { optionLabel: event.target.value })} /><Input disabled={readOnly} value={option.optionCode} placeholder="Stored code" onChange={event => patchOption(option.id, { optionCode: code(event.target.value) })} /><Button disabled={readOnly || !index} className="order-action" icon={<ArrowUpOutlined />} onClick={() => moveOption(option.id, -1)} /><Button disabled={readOnly || index === field.options.length - 1} className="order-action" icon={<ArrowDownOutlined />} onClick={() => moveOption(option.id, 1)} /><Button disabled={readOnly} danger icon={<DeleteOutlined />} onClick={() => removeOption(option.id)} /></div>)}</Card>}

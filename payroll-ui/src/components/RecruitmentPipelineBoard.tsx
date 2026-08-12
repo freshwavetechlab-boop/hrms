@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
   CalendarOutlined, ClockCircleOutlined, DeleteOutlined, FileProtectOutlined, PauseCircleOutlined, PlayCircleOutlined,
-  ReloadOutlined, SearchOutlined, UserOutlined,
+  SearchOutlined, UserOutlined,
 } from '@ant-design/icons'
 import { Badge, Button, Card, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Tag, message } from 'antd'
 import { useAuthSession } from './AuthGate'
@@ -16,6 +16,9 @@ import type {
   RecruitmentPipelineBoardLane, RecruitmentPipelineTransition,
 } from '../types/recruitmentOrchestration'
 import type { RecruitmentOpenPosition } from '../types/payroll'
+import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
+import { recruitmentPipelineDisplayOptions, recruitmentPipelineDisplayStorageKey } from '../types/recruitmentPipelineView'
+import { usePipelineScroller } from '../utils/usePipelineScroller'
 import DataTable from './DataTable'
 import RecruitmentCandidateActionManager from './RecruitmentCandidateActionManager'
 import RecruitmentProcessDocumentPanel from './RecruitmentProcessDocumentPanel'
@@ -27,11 +30,13 @@ type Props = {
   positionId?: number
   onOpenCandidate?: (candidateId: number, applicationId: number) => void
   onScheduleInterview?: (applicationId: number) => void
+  embedded?: boolean
+  displayMode?: RecruitmentPipelineDisplayMode
+  onDisplayModeChange?: (mode: RecruitmentPipelineDisplayMode) => void
 }
 type TransitionDraft = { card: RecruitmentPipelineBoardCard; transition: RecruitmentPipelineTransition; reason: string }
 type PauseDraft = { card: RecruitmentPipelineBoardCard; reason: string }
 type DocumentDraft = { lane: RecruitmentPipelineBoardLane; card: RecruitmentPipelineBoardCard }
-type PipelineViewMode = 'pipeline' | 'table' | 'both'
 type PipelineTarget = {
   key: string
   clientId: number
@@ -48,14 +53,7 @@ type PipelineTableRow = {
   liveElapsed: number
 }
 
-const pipelineViewOptions: Array<{ value: PipelineViewMode; label: string }> = [
-  { value: 'pipeline', label: 'Pipeline view' },
-  { value: 'table', label: 'Table view' },
-  { value: 'both', label: 'Both views' },
-]
-const pipelineViewStorageKey = 'recruitment.pipeline.view'
-
-export default function RecruitmentPipelineBoard({ initialClientId = 0, clientScopeManaged = false, positionId: suppliedPositionId = 0, onOpenCandidate, onScheduleInterview }: Props) {
+export default function RecruitmentPipelineBoard({ initialClientId = 0, clientScopeManaged = false, positionId: suppliedPositionId = 0, onOpenCandidate, onScheduleInterview, embedded = false, displayMode, onDisplayModeChange }: Props) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [postings, setPostings] = useState<RecruitmentJobPosting[]>([])
@@ -66,11 +64,16 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
   const [board, setBoard] = useState<Board | null>(null)
   const [query, setQuery] = useState('')
   const [slaFilter, setSlaFilter] = useState('All')
-  const [viewMode, setViewMode] = useState<PipelineViewMode>(() => {
+  const [internalViewMode, setInternalViewMode] = useState<RecruitmentPipelineDisplayMode>(() => {
     if (typeof window === 'undefined') return 'pipeline'
-    const saved = window.localStorage.getItem(pipelineViewStorageKey)
-    return saved === 'table' || saved === 'both' ? saved : 'pipeline'
+    const saved = window.localStorage.getItem(recruitmentPipelineDisplayStorageKey)
+    return saved === 'table' || saved === 'both' || saved === 'flow' ? saved : 'pipeline'
   })
+  const viewMode = displayMode ?? internalViewMode
+  const setViewMode = (mode: RecruitmentPipelineDisplayMode) => {
+    if (displayMode === undefined) setInternalViewMode(mode)
+    onDisplayModeChange?.(mode)
+  }
   const [loadedAt, setLoadedAt] = useState(Date.now())
   const [tick, setTick] = useState(Date.now())
   const [transitions, setTransitions] = useState<Record<number, RecruitmentPipelineTransition[]>>({})
@@ -79,32 +82,34 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
   const [documentDraft, setDocumentDraft] = useState<DocumentDraft | null>(null)
   const [loading, setLoading] = useState(false)
   const boardRequest = useRef(0)
+  const pipelineScroller = usePipelineScroller<HTMLDivElement>()
 
-  useEffect(() => {
-    let active = true
-    void Promise.all([
+  const loadTargets = useCallback(async (preferredPositionId = 0, preferredPostingId = 0) => {
+    const [allPostings, nextPositions] = await Promise.all([
       getRecruitmentJobPostings(initialClientId),
       getRecruitmentOpenPositions(initialClientId),
-    ]).then(([nextPostings, nextPositions]) => {
-      if (!active) return
-      setPostings(nextPostings)
-      setPositions(nextPositions)
+    ])
+    // Only a published public posting is a candidate-pipeline target. A draft or
+    // closed posting must not hide its underlying open position.
+    const nextPostings = allPostings.filter(row => row.status === 'Published')
+    setPostings(nextPostings)
+    setPositions(nextPositions)
 
-      if (suppliedPositionId) {
-        const matchingPosting = nextPostings.find(row => row.positionId === suppliedPositionId)
-        setPositionId(suppliedPositionId)
-        setPostingId(matchingPosting?.id ?? 0)
-        return
-      }
-
-      const firstPosting = nextPostings[0]
-      const firstPosition = nextPositions[0]
-      setPositionId(firstPosting?.positionId ?? firstPosition?.id ?? 0)
-      setPostingId(firstPosting?.id ?? 0)
-      if (!firstPosting && !firstPosition) setBoard(null)
-    })
-    return () => { active = false }
+    const requestedPositionId = suppliedPositionId || preferredPositionId
+    const requestedPosting = nextPostings.find(row => row.id === preferredPostingId && (!requestedPositionId || row.positionId === requestedPositionId))
+    const matchingPosting = requestedPosting ?? nextPostings.find(row => row.positionId === requestedPositionId)
+    const matchingPosition = nextPositions.find(row => row.id === requestedPositionId)
+    const firstPosting = nextPostings[0]
+    const firstPosition = nextPositions[0]
+    const nextPositionId = matchingPosting?.positionId ?? matchingPosition?.id ?? firstPosting?.positionId ?? firstPosition?.id ?? 0
+    const nextPostingId = matchingPosting?.id ?? (firstPosting && nextPositionId === firstPosting.positionId ? firstPosting.id : 0)
+    setPositionId(nextPositionId)
+    setPostingId(nextPostingId)
+    if (!nextPositionId) setBoard(null)
+    return { positionId: nextPositionId, postingId: nextPostingId }
   }, [initialClientId, suppliedPositionId])
+
+  useEffect(() => { void loadTargets(suppliedPositionId, 0) }, [loadTargets, suppliedPositionId])
   useEffect(() => { setClientId(initialClientId) }, [initialClientId])
   useEffect(() => { if (suppliedPositionId) setPositionId(suppliedPositionId) }, [suppliedPositionId])
   useEffect(() => { if (positionId) void loadBoard(positionId, postingId || undefined) }, [positionId, postingId])
@@ -112,7 +117,9 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
     const id = window.setInterval(() => setTick(Date.now()), 1000)
     return () => window.clearInterval(id)
   }, [])
-  useEffect(() => { window.localStorage.setItem(pipelineViewStorageKey, viewMode) }, [viewMode])
+  useEffect(() => {
+    if (displayMode === undefined) window.localStorage.setItem(recruitmentPipelineDisplayStorageKey, internalViewMode)
+  }, [displayMode, internalViewMode])
 
   const loadBoard = async (targetPositionId = positionId, targetPostingId?: number) => {
     if (!targetPositionId) return
@@ -210,22 +217,25 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
     const response = await deleteApplication(card.applicationId)
     if (response.ok) await loadBoard()
   }
+  const hasAssignedPipeline = Boolean(board?.pipelineVersionId && board.lanes.length)
 
   return <section className="orchestration-shell" data-testid="recruitment-hiring-pipeline">
-    <div className="orchestration-toolbar">
-      <div><span className="orchestration-kicker">Candidate progress</span><h2 className="orchestration-title">Pipeline board</h2><p className="orchestration-subtitle">See where every candidate is, what is due next and how long each stage has taken.</p></div>
-      <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void loadBoard()}>Refresh</Button>
-    </div>
+    {!embedded && <div className="orchestration-toolbar">
+      <div><span className="orchestration-kicker">Candidate progress</span><h2 className="orchestration-title">Candidate stages</h2><p className="orchestration-subtitle">See where every candidate is, what is due next and how long each stage has taken.</p></div>
+      <Select className="pipeline-view-select" aria-label="Pipeline display view" value={viewMode} onChange={setViewMode} options={recruitmentPipelineDisplayOptions} />
+    </div>}
     <Card size="small"><div className="orchestration-toolbar">
       <div>{!clientScopeManaged && <Select allowClear value={clientId || undefined} placeholder="All clients" options={clientOptions} onChange={value => { const next = Number(value || 0); setClientId(next); const first = pipelineTargets.find(row => !next || row.clientId === next); if (first) chooseTarget(first.key); else { setPositionId(0); setPostingId(0); setBoard(null) } }} />}<Select aria-label="Pipeline position or job posting" showSearch optionFilterProp="label" value={selectedTargetKey} placeholder="Select position or job posting" options={targetOptions} onChange={chooseTarget} /></div>
-      <div><Input allowClear prefix={<SearchOutlined />} value={query} onChange={event => setQuery(event.target.value)} placeholder="Candidate, email or application" /><Select value={slaFilter} onChange={setSlaFilter} options={['All', 'On track', 'Due soon', 'Overdue', 'Paused'].map(value => ({ value, label: value === 'All' ? 'All SLA states' : value }))} /><Select className="pipeline-view-select" aria-label="Hiring pipeline view" value={viewMode} onChange={setViewMode} options={pipelineViewOptions} /></div>
+      <div><Input allowClear prefix={<SearchOutlined />} value={query} onChange={event => setQuery(event.target.value)} placeholder="Candidate, email or application" /><Select value={slaFilter} onChange={setSlaFilter} options={['All', 'On track', 'Due soon', 'Overdue', 'Paused'].map(value => ({ value, label: value === 'All' ? 'All SLA states' : value }))} />{displayMode === undefined && <Select className="pipeline-view-select" aria-label="Pipeline display view" value={viewMode} onChange={setViewMode} options={recruitmentPipelineDisplayOptions} />}</div>
     </div></Card>
-    {!board ? <Card><Empty description={positionId ? 'No published pipeline is assigned to this position.' : targetOptions.length ? 'Select a position or job posting.' : 'No open positions or job postings found for this client.'} /></Card> : <>
+    {!board || !hasAssignedPipeline ? <Card><Empty description={positionId ? 'No published candidate stage flow is assigned to this position.' : targetOptions.length ? 'Select a position or published job posting.' : 'No open positions or published job postings found for this client.'}><Space wrap><Button href={`/settings/recruitment-administration/pipelines${clientId ? `?clientId=${clientId}` : ''}`}>Open Pipeline Designer</Button><Button type="primary" href={`/recruitment/ats-screening?upload=single${clientId ? `&clientId=${clientId}` : ''}`}>Add candidate resume</Button></Space></Empty></Card> : <>
       <Card size="small"><Space wrap><Tag color="purple">{board.positionCode}</Tag><strong>{board.positionTitle}</strong><Tag>Pipeline version #{board.pipelineVersionId}</Tag><span>{board.lanes.reduce((total, lane) => total + lane.applications.length, 0)} application(s)</span></Space></Card>
-      {viewMode !== 'table' && <div className="pipeline-board" data-testid="pipeline-board-view"><div className="pipeline-board-columns">{filtered.map(lane => <section key={lane.stageId} data-testid={`pipeline-lane-${lane.stageCode}`} className="pipeline-board-column" style={{ '--stage-color': stageColor(lane.stageType) } as CSSProperties}>
+      {viewMode !== 'table' && <div ref={pipelineScroller.ref} className="pipeline-board" data-testid="pipeline-board-view" tabIndex={0} onKeyDown={pipelineScroller.onKeyDown} aria-label="Scrollable candidate pipeline"><div className="pipeline-board-columns">{filtered.map(lane => <section key={lane.stageId} data-testid={`pipeline-lane-${lane.stageCode}`} className="pipeline-board-column" style={{ '--stage-color': stageColor(lane.stageType) } as CSSProperties}>
         <header><h4>{lane.stageName}</h4><Badge count={lane.applications.length} showZero color={stageColor(lane.stageType)} /></header>
-        {!lane.applications.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No candidates" />}
-        {lane.applications.map(card => <CandidateCard key={card.applicationId} lane={lane} card={card} elapsedSinceLoad={elapsedSinceLoad} transitions={transitions[card.applicationId] ?? []} onLoadTransitions={() => void loadTransitions(card.applicationId)} onOpen={onOpenCandidate ? () => onOpenCandidate(card.candidateId, card.applicationId) : undefined} onSchedule={onScheduleInterview && lane.stageType === 'Interview' ? () => onScheduleInterview(card.applicationId) : undefined} onDocuments={lane.processDocumentRequirements?.length ? () => setDocumentDraft({ lane, card }) : undefined} onDelete={canDelete ? () => void removeApplication(card) : undefined} onPause={() => setPauseDraft({ card, reason: '' })} onResume={() => void resumeApplication(card)} onTransition={transition => setTransitionDraft({ card, transition, reason: '' })} />)}
+        <div className="pipeline-board-column-body">
+          {!lane.applications.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No candidates" />}
+          {lane.applications.map(card => <CandidateCard key={card.applicationId} lane={lane} card={card} elapsedSinceLoad={elapsedSinceLoad} transitions={transitions[card.applicationId] ?? []} onLoadTransitions={() => void loadTransitions(card.applicationId)} onOpen={onOpenCandidate ? () => onOpenCandidate(card.candidateId, card.applicationId) : undefined} onSchedule={onScheduleInterview && lane.stageType === 'Interview' ? () => onScheduleInterview(card.applicationId) : undefined} onDocuments={lane.processDocumentRequirements?.length ? () => setDocumentDraft({ lane, card }) : undefined} onDelete={canDelete ? () => void removeApplication(card) : undefined} onPause={() => setPauseDraft({ card, reason: '' })} onResume={() => void resumeApplication(card)} onTransition={transition => setTransitionDraft({ card, transition, reason: '' })} />)}
+        </div>
       </section>)}</div></div>}
       {viewMode !== 'pipeline' && <Card size="small" className="pipeline-table-view" data-testid="pipeline-table-view"><DataTable
         rows={tableRows}

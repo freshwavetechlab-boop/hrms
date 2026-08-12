@@ -275,7 +275,7 @@ ALTER TABLE recruitment_candidates MODIFY COLUMN ExpectedCtc DECIMAL(18,2) NULL;
         var effectiveClientId = user.ClientId ?? clientId;
         return (await db.QueryAsync<RecruitmentWorkOrder>(@"SELECT workOrder.*,client.Name ClientName,
 (SELECT COUNT(*) FROM recruitment_work_order_lines line WHERE line.WorkOrderId=workOrder.Id) LineCount,
-(SELECT COUNT(*) FROM recruitment_position_pipeline_instances hiringCase WHERE hiringCase.WorkOrderId=workOrder.Id AND hiringCase.Status='Active') OpenCaseCount
+(SELECT COUNT(*) FROM recruitment_position_pipeline_instances hiringCase WHERE hiringCase.WorkOrderId=workOrder.Id AND hiringCase.Status IN ('Active','Candidate Flow')) OpenCaseCount
 FROM recruitment_work_orders workOrder
 JOIN clients client ON client.Id=workOrder.ClientId
 WHERE (@ClientId IS NULL OR workOrder.ClientId=@ClientId)
@@ -289,7 +289,7 @@ ORDER BY workOrder.ReceivedAtUtc DESC,workOrder.Id DESC", new { ClientId = effec
         await db.OpenAsync();
         var row = await db.QueryFirstOrDefaultAsync<RecruitmentWorkOrder>(@"SELECT workOrder.*,client.Name ClientName,
 (SELECT COUNT(*) FROM recruitment_work_order_lines line WHERE line.WorkOrderId=workOrder.Id) LineCount,
-(SELECT COUNT(*) FROM recruitment_position_pipeline_instances hiringCase WHERE hiringCase.WorkOrderId=workOrder.Id AND hiringCase.Status='Active') OpenCaseCount
+(SELECT COUNT(*) FROM recruitment_position_pipeline_instances hiringCase WHERE hiringCase.WorkOrderId=workOrder.Id AND hiringCase.Status IN ('Active','Candidate Flow')) OpenCaseCount
 FROM recruitment_work_orders workOrder JOIN clients client ON client.Id=workOrder.ClientId
 WHERE workOrder.Id=@Id AND (@ClientId IS NULL OR workOrder.ClientId=@ClientId)", new { Id = id, user.ClientId });
         if (row is null) return null;
@@ -490,10 +490,10 @@ WHERE line.Id=@WorkOrderLineId AND version.Id=@PipelineVersionId AND (@ClientId 
         if (source is null) return (null, "Work order line or pipeline version was not found for this client.");
         if (!source.PipelineStatus.Equals("Published", StringComparison.OrdinalIgnoreCase)) return (null, "Publish the pipeline version before starting a hiring case.");
         if (source.ScopeType.Equals("Application", StringComparison.OrdinalIgnoreCase)) return (null, "Select a Position or Hybrid pipeline for the work-order hiring case.");
-        var stages = (await db.QueryAsync<StageDefinition>(@"SELECT Id,StageCode,StageName,DisplayOrder,TargetOffsetMinutes,IsInitial,IsTerminal
-FROM recruitment_pipeline_stages WHERE PipelineVersionId=@Id AND IsActive=TRUE ORDER BY DisplayOrder,Id", new { Id = request.PipelineVersionId })).ToList();
+        var stages = (await db.QueryAsync<StageDefinition>(@"SELECT Id,StageCode,StageName,CardScope,DisplayOrder,TargetOffsetMinutes,IsInitial,IsTerminal
+FROM recruitment_pipeline_stages WHERE PipelineVersionId=@Id AND CardScope='Position' AND IsActive=TRUE ORDER BY DisplayOrder,Id", new { Id = request.PipelineVersionId })).ToList();
         var initial = stages.SingleOrDefault(row => row.IsInitial);
-        if (initial is null) return (null, "The pipeline needs exactly one active initial stage.");
+        if (initial is null) return (null, "The pipeline needs exactly one active initial Position stage.");
 
         await using var transaction = await db.BeginTransactionAsync();
         var overallMinutes = source.PipelineOverallSlaMinutes > 0 ? source.PipelineOverallSlaMinutes : source.OverallSlaMinutes;
@@ -703,13 +703,21 @@ FROM recruitment_position_stage_instances instance
 JOIN recruitment_pipeline_stages stage ON stage.Id=instance.PipelineStageId
 WHERE instance.PositionPipelineInstanceId=@CaseId AND instance.Status='Pending' AND stage.DisplayOrder>@DisplayOrder
 ORDER BY stage.DisplayOrder,stage.Id LIMIT 1", new { CaseId = current.HiringCaseId, current.DisplayOrder }, transaction);
-        if (next is null || current.IsTerminal)
+        var hasApplicationFlow = await db.ExecuteScalarAsync<bool>(@"SELECT COUNT(*)>0 FROM recruitment_pipeline_stages
+WHERE PipelineVersionId=@PipelineVersionId AND CardScope='Application' AND IsActive=TRUE",
+            new { current.PipelineVersionId }, transaction);
+        var candidateHandoff = (next is null || current.IsTerminal) && hasApplicationFlow;
+        if (candidateHandoff)
+            await db.ExecuteAsync(@"UPDATE recruitment_position_pipeline_instances
+SET Status='Candidate Flow',CurrentStageInstanceId=@StageInstanceId,CompletedAtUtc=NULL WHERE Id=@Id",
+                new { Id = current.HiringCaseId, StageInstanceId = current.CurrentStageInstanceId }, transaction);
+        else if (next is null || current.IsTerminal)
             await db.ExecuteAsync("UPDATE recruitment_position_pipeline_instances SET Status='Completed',CurrentStageInstanceId=NULL,CompletedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id", new { Id = current.HiringCaseId }, transaction);
         else
             await db.ExecuteAsync("UPDATE recruitment_position_stage_instances SET Status='Active',EnteredAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id;UPDATE recruitment_position_pipeline_instances SET CurrentStageInstanceId=@Id WHERE Id=@CaseId", new { Id = next.StageInstanceId, CaseId = current.HiringCaseId }, transaction);
         await db.ExecuteAsync(@"INSERT INTO recruitment_position_stage_events
 (PositionPipelineInstanceId,PositionStageInstanceId,EventType,EventTitle,EventDetails,ActorUserId)
-VALUES (@CaseId,@StageId,'StageMoved',@Title,@Details,@UserId)", new { CaseId = current.HiringCaseId, StageId = current.CurrentStageInstanceId, Title = next is null ? "Hiring case completed" : $"Moved to {next.StageName}", Details = reason, UserId = actorUserId }, transaction);
+VALUES (@CaseId,@StageId,'StageMoved',@Title,@Details,@UserId)", new { CaseId = current.HiringCaseId, StageId = current.CurrentStageInstanceId, Title = candidateHandoff ? "Candidate flow ready" : next is null ? "Hiring case completed" : $"Moved to {next.StageName}", Details = reason, UserId = actorUserId }, transaction);
     }
 
     private static void MarkAdvance(RecruitmentHiringCase row, string status, long? requestId, string message)
@@ -1387,6 +1395,7 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
         public long Id { get; set; }
         public string StageCode { get; set; } = "";
         public string StageName { get; set; } = "";
+        public string CardScope { get; set; } = "Position";
         public int DisplayOrder { get; set; }
         public int? TargetOffsetMinutes { get; set; }
         public bool IsInitial { get; set; }

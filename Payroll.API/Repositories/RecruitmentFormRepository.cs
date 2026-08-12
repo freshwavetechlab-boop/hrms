@@ -604,11 +604,19 @@ WHERE s.Id=@SubmissionId AND s.ClientId=@ClientId AND s.Status='Draft' AND f.Id=
         if (!ValidPublicSlug(slug)) return null;
         await using var db = Db();
         await db.OpenAsync();
-        var job = await db.QueryFirstOrDefaultAsync<PublicRecruitmentJob>(@"SELECT j.Id PostingId,j.PublicSlug,j.PublicTitle,p.PositionCode,p.PositionTitle,c.Name ClientName,p.Department,p.JobLocation,p.EmploymentType,'' WorkMode,j.ClosesAtUtc,d.Summary,d.RolePurpose
+        var job = await db.QueryFirstOrDefaultAsync<PublicRecruitmentJob>(@"SELECT j.Id PostingId,j.PublicSlug,j.PublicTitle,p.PositionCode,p.PositionTitle,c.Name ClientName,p.Department,p.JobLocation,p.EmploymentType,'' WorkMode,j.OpensAtUtc,j.ClosesAtUtc,d.Summary,d.RolePurpose,
+CASE WHEN (j.OpensAtUtc IS NULL OR j.OpensAtUtc<=UTC_TIMESTAMP(6))
+ AND (j.ClosesAtUtc IS NULL OR j.ClosesAtUtc>=UTC_TIMESTAMP(6))
+ AND (j.MaximumApplications IS NULL OR j.ApplicationCount<j.MaximumApplications)
+ AND j.ApplicationFormVersionId IS NOT NULL THEN TRUE ELSE FALSE END IsAcceptingApplications,
+CASE WHEN j.OpensAtUtc IS NOT NULL AND j.OpensAtUtc>UTC_TIMESTAMP(6) THEN 'Scheduled'
+ WHEN j.ClosesAtUtc IS NOT NULL AND j.ClosesAtUtc<UTC_TIMESTAMP(6) THEN 'Closed'
+ WHEN j.MaximumApplications IS NOT NULL AND j.ApplicationCount>=j.MaximumApplications THEN 'Full'
+ WHEN j.ApplicationFormVersionId IS NULL THEN 'FormUnavailable' ELSE 'Open' END AvailabilityStatus
 FROM recruitment_job_postings j JOIN recruitment_open_positions p ON p.Id=j.PositionId JOIN clients c ON c.Id=j.ClientId
 JOIN recruitment_settings settings ON settings.ClientId=j.ClientId AND settings.RecruitmentEnabled=TRUE AND settings.EnableCandidatePortal=TRUE AND settings.IsActive=TRUE
 JOIN recruitment_job_description_versions d ON d.Id=j.JobDescriptionVersionId
-WHERE j.PublicSlug=@Slug AND j.Status='Published' AND (j.OpensAtUtc IS NULL OR j.OpensAtUtc<=UTC_TIMESTAMP(6)) AND (j.ClosesAtUtc IS NULL OR j.ClosesAtUtc>=UTC_TIMESTAMP(6)) AND (j.MaximumApplications IS NULL OR j.ApplicationCount<j.MaximumApplications)", new { Slug = slug.Trim() });
+WHERE j.PublicSlug=@Slug AND j.Status='Published'", new { Slug = slug.Trim() });
         if (job is null) return null;
         var formVersionId = await db.ExecuteScalarAsync<long?>("SELECT ApplicationFormVersionId FROM recruitment_job_postings WHERE Id=@Id", new { Id = job.PostingId });
         if (formVersionId.HasValue)

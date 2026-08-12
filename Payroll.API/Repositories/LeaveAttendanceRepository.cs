@@ -12,7 +12,7 @@ namespace Payroll.API.Repositories;
 
 public class LeaveAttendanceRepository(IConfiguration configuration)
 {
-    public const string ManagedAttendanceScopeError = "One or more employees are outside the reporting manager's active team.";
+    public const string ManagedAttendanceScopeError = "One or more employees are outside the signed-in user's active attendance scope.";
     private static readonly ConcurrentDictionary<Guid, ClientImportJobStatus> LeaveTypeImportJobs = new();
     private static readonly ConcurrentDictionary<Guid, ClientImportJobStatus> HolidayImportJobs = new();
 
@@ -741,6 +741,7 @@ VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designa
         var monthEnd = monthStart.AddMonths(1).AddDays(-1);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
+        var clientName = await connection.ExecuteScalarAsync<string?>("SELECT Name FROM clients WHERE Id=@ClientId LIMIT 1", new { ClientId = clientId }) ?? string.Empty;
         var settings = await connection.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId,
 check_in_time AS CheckInTime, check_out_time AS CheckOutTime, working_hours_calculation AS WorkingHoursCalculation,
 minimum_hours_for_half_day AS MinimumHoursForHalfDay, minimum_hours_for_full_day AS MinimumHoursForFullDay, maximum_hours_allowed_for_full_day AS MaximumHoursAllowedForFullDay,
@@ -769,10 +770,14 @@ JOIN (
     GROUP BY employee_id, leave_type_id
 ) latest ON latest.employee_id=b.employee_id AND latest.leave_type_id=b.leave_type_id AND latest.balance_date=b.balance_date
 WHERE b.client_id=@ClientId
-  AND (@ReportingManagerUserId IS NULL OR EXISTS (
+  AND EXISTS (
       SELECT 1 FROM employees e
-      WHERE e.Id=b.employee_id AND e.ClientId=@ClientId AND e.IsActive=TRUE AND e.ReportingManagerUserId=@ReportingManagerUserId
-  ));", new { ClientId = clientId, MonthEnd = monthEnd, ReportingManagerUserId = reportingManagerUserId })).ToList();
+      WHERE e.Id=b.employee_id
+        AND e.ClientId=@ClientId
+        AND e.IsActive=TRUE
+        AND (@ReportingManagerUserId IS NULL OR e.ReportingManagerUserId=@ReportingManagerUserId)
+        AND (@WorkLocationId <= 0 OR e.WorkLocationId=@WorkLocationId)
+  );", new { ClientId = clientId, MonthEnd = monthEnd, WorkLocationId = workLocationId.GetValueOrDefault(), ReportingManagerUserId = reportingManagerUserId })).ToList();
         var holidayStart = monthStart.AddMonths(-1);
         var holidayRows = new List<Holiday>();
         foreach (var year in new[] { holidayStart.Year, monthStart.Year }.Distinct())
@@ -782,7 +787,17 @@ WHERE b.client_id=@ClientId
             .GroupBy(holiday => holiday.Id)
             .Select(group => group.First())
             .ToList();
-        return new AttendanceReviewContext { Settings = settings, Schedule = schedule, Preferences = preferences, Holidays = holidays, LeaveBalances = balances };
+        return new AttendanceReviewContext
+        {
+            ClientId = clientId,
+            ClientName = clientName,
+            AccessScope = reportingManagerUserId.HasValue ? "DirectReports" : "Client",
+            Settings = settings,
+            Schedule = schedule,
+            Preferences = preferences,
+            Holidays = holidays,
+            LeaveBalances = balances
+        };
     }
 
     public async Task<IEnumerable<EmployeeMonthlyAttendance>> GetMonthlyAttendanceAsync(int clientId, string month, int? workLocationId = null, int? reportingManagerUserId = null)
@@ -969,14 +984,20 @@ ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_valu
     }
 
     public async Task<bool> AreActiveDirectReportsAsync(int clientId, int reportingManagerUserId, IEnumerable<int> employeeIds)
+        => await AreActiveEmployeesInAttendanceScopeAsync(clientId, reportingManagerUserId, employeeIds);
+
+    public async Task<bool> AreActiveEmployeesInAttendanceScopeAsync(int clientId, int? reportingManagerUserId, IEnumerable<int> employeeIds)
     {
         var requestedIds = employeeIds.Distinct().ToArray();
         if (requestedIds.Length == 0) return true;
-        if (clientId <= 0 || reportingManagerUserId <= 0 || requestedIds.Any(employeeId => employeeId <= 0)) return false;
+        if (clientId <= 0 || reportingManagerUserId is <= 0 || requestedIds.Any(employeeId => employeeId <= 0)) return false;
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         var matchedIds = await connection.QueryAsync<int>(@"SELECT Id FROM employees
-WHERE ClientId=@ClientId AND IsActive=TRUE AND ReportingManagerUserId=@ReportingManagerUserId AND Id IN @EmployeeIds;",
+WHERE ClientId=@ClientId
+  AND IsActive=TRUE
+  AND (@ReportingManagerUserId IS NULL OR ReportingManagerUserId=@ReportingManagerUserId)
+  AND Id IN @EmployeeIds;",
             new { ClientId = clientId, ReportingManagerUserId = reportingManagerUserId, EmployeeIds = requestedIds });
         return matchedIds.Distinct().Count() == requestedIds.Length;
     }
@@ -1016,20 +1037,20 @@ WHERE ClientId=@ClientId AND IsActive=TRUE AND ReportingManagerUserId=@Reporting
         await using var transaction = await connection.BeginTransactionAsync();
         try
         {
-            if (reportingManagerUserId.HasValue)
+            var requestedEmployeeIds = stagedRows.Select(row => row.EmployeeId)
+                .Concat(request.RollupEmployeeIds ?? [])
+                .Distinct()
+                .ToArray();
+            var managedEmployeeIds = (await connection.QueryAsync<int>(@"SELECT Id FROM employees
+WHERE ClientId=@ClientId
+  AND IsActive=TRUE
+  AND (@ReportingManagerUserId IS NULL OR ReportingManagerUserId=@ReportingManagerUserId)
+  AND Id IN @EmployeeIds
+FOR UPDATE;", new { request.ClientId, ReportingManagerUserId = reportingManagerUserId, EmployeeIds = requestedEmployeeIds }, transaction)).ToHashSet();
+            if (managedEmployeeIds.Count != requestedEmployeeIds.Length)
             {
-                var requestedEmployeeIds = stagedRows.Select(row => row.EmployeeId)
-                    .Concat(request.RollupEmployeeIds ?? [])
-                    .Distinct()
-                    .ToArray();
-                var managedEmployeeIds = (await connection.QueryAsync<int>(@"SELECT Id FROM employees
-WHERE ClientId=@ClientId AND IsActive=TRUE AND ReportingManagerUserId=@ReportingManagerUserId AND Id IN @EmployeeIds
-FOR UPDATE;", new { request.ClientId, ReportingManagerUserId = reportingManagerUserId.Value, EmployeeIds = requestedEmployeeIds }, transaction)).ToHashSet();
-                if (managedEmployeeIds.Count != requestedEmployeeIds.Length)
-                {
-                    await transaction.RollbackAsync();
-                    return (null, ManagedAttendanceScopeError);
-                }
+                await transaction.RollbackAsync();
+                return (null, ManagedAttendanceScopeError);
             }
             await connection.ExecuteAsync(@"INSERT INTO attendance_batch_jobs
 (job_id, client_id, attendance_month, active_scope_key, state, stage, total_rows, completed_rows, saved_rows, errors_json, requested_by)
@@ -1059,6 +1080,19 @@ VALUES (@JobId, @ClientId, @Month, @ActiveScopeKey, 'Queued', 'Queued', @TotalRo
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         var row = await ReadAttendanceBatchJobAsync(connection, jobId.ToString());
+        return row is null ? null : ToAttendanceBatchJobStatus(row);
+    }
+
+    public async Task<AttendanceBatchJobStatus?> GetDailyAttendanceBatchJobForRequesterAsync(Guid jobId, int clientId, string requestedBy)
+    {
+        if (clientId <= 0 || string.IsNullOrWhiteSpace(requestedBy)) return null;
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        var row = await connection.QueryFirstOrDefaultAsync<AttendanceBatchJobDbRow>(@"SELECT job_id AS JobId, client_id AS ClientId, attendance_month AS Month,
+state AS State, stage AS Stage, total_rows AS TotalRows, completed_rows AS CompletedRows, saved_rows AS SavedRows,
+COALESCE(CAST(errors_json AS CHAR), '[]') AS ErrorsJson, claim_token AS ClaimToken, created_at AS CreatedAt, started_at AS StartedAt, completed_at AS CompletedAt
+FROM attendance_batch_jobs
+WHERE job_id=@JobId AND client_id=@ClientId AND requested_by=@RequestedBy;", new { JobId = jobId.ToString(), ClientId = clientId, RequestedBy = requestedBy.Trim() });
         return row is null ? null : ToAttendanceBatchJobStatus(row);
     }
 
@@ -1711,11 +1745,12 @@ ORDER BY w.Name, g.department, g.designation;", new { PolicyBatchId = policyBatc
     private static async Task LoadAttendanceGroupEmployeesAsync(MySqlConnection connection, List<AttendanceGroup> rows, int clientId = 0, int? reportingManagerUserId = null)
     {
         if (rows.Count == 0) return;
-        var employees = await connection.QueryAsync<(int GroupId, int EmployeeId)>(@"SELECT attendance_group_id AS GroupId, employee_id AS EmployeeId
+        var employees = await connection.QueryAsync<(int GroupId, int EmployeeId)>(@"SELECT age.attendance_group_id AS GroupId, age.employee_id AS EmployeeId
 FROM attendance_group_employees age
-LEFT JOIN employees e ON e.Id=age.employee_id
-WHERE attendance_group_id IN @Ids
-  AND (@ReportingManagerUserId IS NULL OR (e.ClientId=@ClientId AND e.IsActive=TRUE AND e.ReportingManagerUserId=@ReportingManagerUserId))", new { Ids = rows.Select(row => row.Id).ToArray(), ClientId = clientId, ReportingManagerUserId = reportingManagerUserId });
+JOIN employees e ON e.Id=age.employee_id AND e.IsActive=TRUE
+WHERE age.attendance_group_id IN @Ids
+  AND (@ClientId <= 0 OR e.ClientId=@ClientId)
+  AND (@ReportingManagerUserId IS NULL OR e.ReportingManagerUserId=@ReportingManagerUserId)", new { Ids = rows.Select(row => row.Id).ToArray(), ClientId = clientId, ReportingManagerUserId = reportingManagerUserId });
         foreach (var row in rows)
             row.EmployeeIds = employees.Where(employee => employee.GroupId == row.Id).Select(employee => employee.EmployeeId).ToList();
     }
@@ -2779,13 +2814,13 @@ g.attendance_cycle_start_day AS AttendanceCycleStartDay,
 g.attendance_cycle_end_day AS AttendanceCycleEndDay,
 g.payroll_report_generation_day AS PayrollReportGenerationDay,
 g.is_active AS IsActive, g.created_at AS CreatedAt, g.updated_at AS UpdatedAt,
-COUNT(DISTINCT age.employee_id) AS EmployeeCount,
+COUNT(DISTINCT e.Id) AS EmployeeCount,
 COALESCE(GROUP_CONCAT(DISTINCT CONCAT(e.FirstName, ' ', e.LastName, ' (', e.EmployeeCode, ')') ORDER BY e.FirstName, e.LastName SEPARATOR ', '), '') AS EmployeeNames
 FROM attendance_groups g
 LEFT JOIN clients c ON c.Id = g.client_id
 LEFT JOIN worklocations w ON w.Id = g.work_location_id
 LEFT JOIN attendance_group_employees age ON age.attendance_group_id = g.id
-LEFT JOIN employees e ON e.Id = age.employee_id";
+LEFT JOIN employees e ON e.Id = age.employee_id AND e.ClientId=g.client_id AND e.IsActive=TRUE";
 
     private async Task<bool> IsFormulaBasedSalaryComponentAsync(int componentId)
     {

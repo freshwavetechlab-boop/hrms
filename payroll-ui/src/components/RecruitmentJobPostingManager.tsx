@@ -6,14 +6,15 @@ import {
 } from '@ant-design/icons'
 import {
   Alert, Badge, Button, Card, Col, DatePicker, Descriptions, Empty, Form, Input, InputNumber,
-  List, Modal, Popconfirm, Row, Segmented, Select, Space, Spin, Switch, Tag, Typography, message,
+  List, Modal, Popconfirm, Row, Segmented, Select, Space, Spin, Switch, Tag, Typography,
 } from 'antd'
 import { useAuthSession } from './AuthGate'
+import { useToast, type ToastType } from './ToastProvider'
 import { getClients } from '../services/payrollService'
 import {
   assignRecruitmentPipeline, closeRecruitmentJobPosting, deleteRecruitmentJobPosting, getRecruitmentJobDescriptions,
-  getRecruitmentJobPostings, getRecruitmentOrchestrationLookups, getRecruitmentPipelines,
-  getRecruitmentPositionPipelineAssignment, publishRecruitmentJobPosting, saveRecruitmentJobPosting,
+  getRecruitmentJobPostings, getRecruitmentOrchestrationLookups, getRecruitmentPipelines, getPublicCareerJob,
+  getRecruitmentPositionPipelineAssignment, normalizePublicCareerUrl, publishRecruitmentJobPosting, saveRecruitmentJobPosting,
 } from '../services/recruitmentOrchestrationService'
 import type { Client } from '../types/payroll'
 import type {
@@ -33,9 +34,12 @@ const emptyLookups: RecruitmentOrchestrationLookups = {
   lookupSources: [], attachmentConfigurations: [], attachmentFieldConfigurations: [], workflows: [], forms: [], positions: [], atsProfiles: [],
 }
 const editableStatuses = new Set(['Draft'])
+type ActionFeedback = { type: ToastType; message: string; description?: string }
+type ConfirmationAction = 'publish' | 'close'
 
 export default function RecruitmentJobPostingManager({ initialClientId = 0, clientScopeManaged = false, initialPositionId = 0, onPublished }: Props) {
   const session = useAuthSession()
+  const notify = useToast()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const canViewAllClients = session?.user.clientId == null
   const [clients, setClients] = useState<Client[]>([])
@@ -51,6 +55,10 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [actionBusy, setActionBusy] = useState(false)
+  const [confirmationAction, setConfirmationAction] = useState<ConfirmationAction | null>(null)
+  const [confirmationError, setConfirmationError] = useState('')
+  const [actionFeedback, setActionFeedback] = useState<ActionFeedback | null>(null)
 
   useEffect(() => {
     void getClients().then(rows => {
@@ -81,6 +89,10 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
     .filter(row => row.isActive && row.currentPublishedVersionId)
     .map(row => ({ value: Number(row.currentPublishedVersionId), label: `${row.pipelineName} · published`, definitionId: row.id })), [pipelines])
   const selectedPipeline = publishedPipelineOptions.find(row => row.value === pipelineVersionId)
+  const publicUrl = normalizePublicCareerUrl(editor?.publicUrl, editor?.publicSlug)
+  const publishingIssues = editor
+    ? validatePublishing(editor, pipelineAssignment, pipelineVersionId, publicUrl)
+    : []
   const applicationFormOptions = useMemo(() => {
     const rows = lookups.forms.filter(row => row.status === 'Active' && (editorClientId <= 0 || row.clientId === editorClientId || row.clientId === 0))
       .flatMap(row => {
@@ -150,12 +162,18 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
 
   function patch(value: Partial<RecruitmentJobPosting>) {
     setEditor(current => current ? { ...current, ...value } : current)
+    setActionFeedback(null)
+  }
+
+  function report(type: ToastType, message: string, description = '') {
+    setActionFeedback({ type, message, description })
+    notify(description ? `${message} ${description}` : message, type)
   }
 
   async function save() {
     if (!editor || readOnly) return
     const error = validatePosting(editor, false)
-    if (error) return message.warning(error)
+    if (error) { report('warning', 'Draft not saved', error); return }
     setSaving(true)
     const response = await saveRecruitmentJobPosting({
       id: editor.id, positionId: editor.positionId, jobDescriptionVersionId: editor.jobDescriptionVersionId,
@@ -164,49 +182,115 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
       maximumApplications: editor.maximumApplications || null, searchEngineVisible: editor.searchEngineVisible,
     })
     setSaving(false)
-    if (!response.ok || !response.data) return
+    if (!response.ok || !response.data) {
+      setActionFeedback({ type: 'error', message: 'Unable to save posting', description: response.error || 'The server did not return the saved posting.' })
+      return
+    }
+    setActionFeedback({ type: 'success', message: 'Job-posting draft saved.' })
     await loadClient(clientId, response.data.id)
   }
 
   async function assignPipeline() {
-    if (!editor?.positionId || !pipelineVersionId) return message.warning('Select a position and published pipeline.')
+    if (!editor?.positionId || !pipelineVersionId) { report('warning', 'Pipeline not assigned', 'Select a position and published pipeline.'); return }
     setSaving(true)
     const response = await assignRecruitmentPipeline({ positionId: editor.positionId, jobPostingId: null, pipelineVersionId })
     setSaving(false)
-    if (response.ok && response.data) setPipelineAssignment(response.data)
+    if (response.ok && response.data) {
+      setPipelineAssignment(response.data)
+      setActionFeedback({ type: 'success', message: 'Published hiring pipeline assigned.' })
+    } else {
+      setActionFeedback({ type: 'error', message: 'Unable to assign pipeline', description: response.error || 'The server rejected the pipeline assignment.' })
+    }
   }
 
   function publish() {
-    if (!editor?.id) return message.info('Save the posting draft before publishing.')
-    const error = validatePosting(editor, true)
-    if (error) return message.warning(error)
-    if (!pipelineAssignment?.isActive) return message.warning('Assign a published hiring pipeline before publishing.')
-    Modal.confirm({
-      title: 'Publish this job?', icon: <RocketOutlined />, okText: 'Publish now',
-      content: 'The public careers link will become available immediately (subject to the opening date). The assigned form and pipeline versions remain stable for applicants.',
-      onOk: async () => {
-        setSaving(true)
-        const response = await publishRecruitmentJobPosting(editor.id)
-        setSaving(false)
-        if (response.ok && response.data) { onPublished?.(response.data); await loadClient(clientId, editor.id) }
-      },
-    })
+    if (!editor) return
+    if (publishingIssues.length) {
+      report('warning', 'Posting is not ready to publish', publishingIssues.join(' '))
+      return
+    }
+    setConfirmationError('')
+    setConfirmationAction('publish')
   }
 
   function closePosting() {
+    if (!editor?.id) { report('warning', 'Posting cannot be closed', 'Select a saved posting first.'); return }
+    setConfirmationError('')
+    setConfirmationAction('close')
+  }
+
+  async function confirmPublish() {
     if (!editor?.id) return
-    Modal.confirm({
-      title: 'Close this public job?', icon: <CloseCircleOutlined />, okText: 'Close posting', okButtonProps: { danger: true },
-      content: 'New public applications will stop. Existing candidate and pipeline records remain available.',
-      onOk: async () => { const response = await closeRecruitmentJobPosting(editor.id); if (response.ok) await loadClient(clientId) },
-    })
+    setActionBusy(true)
+    setConfirmationError('')
+    setActionFeedback({ type: 'info', message: 'Publishing job posting...', description: 'Waiting for the server to activate the public careers page.' })
+    const response = await publishRecruitmentJobPosting(editor.id)
+    if (!response.ok || !response.data) {
+      const error = response.error || 'The server did not return the published posting.'
+      setActionBusy(false)
+      setConfirmationError(error)
+      setActionFeedback({ type: 'error', message: 'Publishing failed', description: error })
+      notify(error, 'error')
+      return
+    }
+
+    const publishedUrl = normalizePublicCareerUrl(response.data.publicUrl, response.data.publicSlug)
+    const publicJob = publishedUrl ? await getPublicCareerJob(response.data.publicSlug) : null
+    setConfirmationAction(null)
+    setActionBusy(false)
+    if (!publishedUrl) {
+      const error = 'The posting was published, but the server did not return a valid public careers URL. Check the configured candidate-portal base URL.'
+      setActionFeedback({ type: 'error', message: 'Published link unavailable', description: error })
+      notify(error, 'error')
+    } else if (!publicJob) {
+      const error = 'The posting is published, but the anonymous public-job API could not load it. Check the candidate-portal deployment route and API configuration before sharing this URL.'
+      setActionFeedback({ type: 'warning', message: 'Published link needs attention', description: `${error} ${publishedUrl}` })
+      notify(error, 'warning', { actions: [{ label: 'Check public URL', href: publishedUrl }] })
+    } else {
+      const scheduled = publicJob.availabilityStatus === 'Scheduled'
+      const message = scheduled ? 'Job is published and scheduled.' : 'Job is live on the public careers page.'
+      const description = scheduled && publicJob.opensAtUtc
+        ? `${publishedUrl} Applications open ${dayjs(publicJob.opensAtUtc).format('DD MMM YYYY, hh:mm A')}.`
+        : publishedUrl
+      setActionFeedback({ type: 'success', message, description })
+      notify(message, 'success', { actions: [{ label: 'Open public job', href: publishedUrl }] })
+    }
+    onPublished?.(response.data)
+    await loadClient(clientId, response.data.id)
+  }
+
+  async function confirmClose() {
+    if (!editor?.id) return
+    const postingId = editor.id
+    setActionBusy(true)
+    setConfirmationError('')
+    setActionFeedback({ type: 'info', message: 'Closing job posting...', description: 'Waiting for the server to stop new public applications.' })
+    const response = await closeRecruitmentJobPosting(postingId)
+    if (!response.ok) {
+      const error = response.error || 'The server could not close this posting.'
+      setActionBusy(false)
+      setConfirmationError(error)
+      setActionFeedback({ type: 'error', message: 'Closing failed', description: error })
+      notify(error, 'error')
+      return
+    }
+    setConfirmationAction(null)
+    setActionBusy(false)
+    setActionFeedback({ type: 'success', message: 'Job posting closed.', description: 'New public applications are no longer accepted.' })
+    notify('Job posting closed.', 'success')
+    await loadClient(clientId, postingId)
   }
 
   async function copyLink() {
-    if (!editor?.publicSlug) return
-    const link = publicLink(editor.publicSlug)
-    try { await navigator.clipboard.writeText(link); message.success('Public careers link copied.') }
-    catch { message.info(link) }
+    if (!publicUrl) { report('warning', 'Public link unavailable', 'Configure and enable the candidate portal, then save or publish this posting.'); return }
+    try {
+      await copyText(publicUrl)
+      setActionFeedback({ type: 'success', message: 'Public careers link copied.', description: publicUrl })
+      notify('Public careers link copied.', 'success')
+    } catch {
+      setActionFeedback({ type: 'warning', message: 'Browser copy was blocked', description: 'Select and copy the public URL shown on this page.' })
+      notify('Browser copy was blocked. Select and copy the public URL shown on this page.', 'warning')
+    }
   }
 
   return <section className="orchestration-shell posting-manager">
@@ -219,7 +303,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
       <Space wrap>
         {!clientScopeManaged && <Select value={clientId} placeholder="Select client" showSearch optionFilterProp="label" style={{ minWidth: 230 }}
           options={[...(canViewAllClients ? [{ value: 0, label: 'All clients' }] : []), ...clients.map(row => ({ value: row.id, label: row.name }))]}
-          onChange={value => { setClientId(value); setEditor(null) }} />}
+          onChange={value => { setClientId(value); setEditor(null); setActionFeedback(null) }} />}
         <Button type="primary" icon={<PlusOutlined />} disabled={clientId <= 0} title={clientId <= 0 ? 'Select a client before creating a posting.' : undefined} onClick={() => void startNew()}>New posting</Button>
       </Space>
     </div>
@@ -242,15 +326,27 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
             <div className="orchestration-toolbar">
               <Space wrap><PostingStatus status={editor.status} />{editor.applicationCount > 0 && <Badge count={editor.applicationCount} overflowCount={99999} showZero color="#6b4eff" />}</Space>
               <Space wrap>
-                {editor.publicSlug && <Button icon={<CopyOutlined />} onClick={() => void copyLink()}>Copy public link</Button>}
-                {editor.status === 'Published' && <Button danger icon={<CloseCircleOutlined />} onClick={closePosting}>Close</Button>}
-                {(editor.status === 'Draft' || editor.status === 'Closed') && <Button type="primary" icon={<RocketOutlined />} disabled={!editor.id} onClick={publish}>Publish</Button>}
-                <Button icon={<SaveOutlined />} loading={saving} disabled={readOnly} onClick={() => void save()}>Save draft</Button>
+                {publicUrl && <Button icon={<CopyOutlined />} disabled={actionBusy} onClick={() => void copyLink()}>Copy public link</Button>}
+                {editor.status === 'Published' && publicUrl && <Button icon={<GlobalOutlined />} href={publicUrl} target="_blank" rel="noreferrer">Open public page</Button>}
+                {editor.status === 'Published' && <Button danger icon={<CloseCircleOutlined />} disabled={actionBusy} onClick={closePosting}>Close</Button>}
+                {(editor.status === 'Draft' || editor.status === 'Closed') && <Button data-testid="job-posting-publish-button" type="primary" icon={<RocketOutlined />} loading={actionBusy && confirmationAction === 'publish'} disabled={actionBusy} onClick={publish}>Publish</Button>}
+                <Button icon={<SaveOutlined />} loading={saving} disabled={readOnly || actionBusy} onClick={() => void save()}>Save draft</Button>
                 {canDelete && editor.id > 0 && <Popconfirm title="Delete this job posting?" description="Delete linked applications first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteRecruitmentJobPosting(editor.id); if (response.ok) { setEditor(null); await loadClient(clientId) } }}><Button danger icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}
               </Space>
             </div>
+            {actionFeedback && <Alert data-testid="job-posting-action-feedback" style={{ marginBottom: 12 }} closable showIcon type={actionFeedback.type} message={actionFeedback.message} description={actionFeedback.description} onClose={() => setActionFeedback(null)} />}
             {readOnly && <Alert className="jd-readonly-alert" type="info" showIcon message="Published details are locked" description="Close this posting and create a new posting if the approved JD, form or schedule must change." />}
-            {editor.publicSlug && <div className="public-link-banner"><GlobalOutlined /><div><Typography.Text type="secondary">Public candidate URL</Typography.Text><Typography.Link href={publicLink(editor.publicSlug)} target="_blank" rel="noreferrer">{publicLink(editor.publicSlug)} <LinkOutlined /></Typography.Link></div></div>}
+            {(editor.status === 'Draft' || editor.status === 'Closed') && <Alert
+              data-testid="job-posting-publish-readiness"
+              style={{ marginBottom: 12 }}
+              showIcon
+              type={publishingIssues.length ? 'warning' : 'success'}
+              message={publishingIssues.length ? 'Not ready to publish' : 'Ready to publish'}
+              description={publishingIssues.length
+                ? <ul style={{ margin: 0, paddingInlineStart: 20 }}>{publishingIssues.map(issue => <li key={issue}>{issue}</li>)}</ul>
+                : 'The approved JD, published form, hiring pipeline and public candidate portal are ready.'}
+            />}
+            {publicUrl && <div className="public-link-banner"><GlobalOutlined /><div><Typography.Text type="secondary">{editor.status === 'Published' ? 'Live public candidate URL' : 'Public candidate URL preview'}</Typography.Text><Typography.Link href={publicUrl} target="_blank" rel="noreferrer">{publicUrl} <LinkOutlined /></Typography.Link>{editor.status !== 'Published' && <Typography.Text type="secondary">This URL starts accepting applications only after the posting is published and open.</Typography.Text>}</div></div>}
           </Card>
 
           <Card size="small" title={<Space><EditOutlined /> Posting details</Space>}>
@@ -279,13 +375,33 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
             <Alert showIcon type="info" message="Stable position-level pipeline" description="Applications created from this posting start in the initial stage of the assigned published version. Future pipeline edits do not mutate active applications." />
             <Row gutter={12} align="bottom" className="pipeline-assignment-row">
               <Col xs={24} lg={18}><Form.Item label="Published pipeline"><Select value={pipelineVersionId} disabled={readOnly || !editor.positionId} showSearch optionFilterProp="label" placeholder="Select a published pipeline" options={publishedPipelineOptions} onChange={setPipelineVersionId} /></Form.Item></Col>
-              <Col xs={24} lg={6}><Button block type="primary" ghost icon={<SettingOutlined />} loading={saving} disabled={readOnly || !pipelineVersionId || !editor.positionId} onClick={() => void assignPipeline()}>Assign pipeline</Button></Col>
+              <Col xs={24} lg={6}><Button block type="primary" ghost icon={<SettingOutlined />} loading={saving} disabled={readOnly || actionBusy || !pipelineVersionId || !editor.positionId} onClick={() => void assignPipeline()}>Assign pipeline</Button></Col>
             </Row>
             {selectedPipeline && <Typography.Text type="secondary">Selected: {selectedPipeline.label}</Typography.Text>}
           </Card>
         </div>}
       </div>
     </Spin>
+    <Modal
+      open={confirmationAction !== null}
+      title={confirmationAction === 'publish' ? 'Publish this job?' : 'Close this public job?'}
+      okText={confirmationAction === 'publish' ? 'Publish now' : 'Close posting'}
+      okButtonProps={{ danger: confirmationAction === 'close' }}
+      confirmLoading={actionBusy}
+      cancelButtonProps={{ disabled: actionBusy }}
+      closable={!actionBusy}
+      maskClosable={!actionBusy}
+      onCancel={() => { if (!actionBusy) { setConfirmationAction(null); setConfirmationError('') } }}
+      onOk={() => void (confirmationAction === 'publish' ? confirmPublish() : confirmClose())}
+    >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Typography.Text>{confirmationAction === 'publish'
+          ? 'The configured public careers link will become available immediately, subject to the opening date. The assigned form and pipeline versions remain stable for applicants.'
+          : 'New public applications will stop. Existing candidate and pipeline records remain available.'}</Typography.Text>
+        {actionBusy && <Alert showIcon type="info" message={confirmationAction === 'publish' ? 'Publishing job posting...' : 'Closing job posting...'} description="Please wait for the server response." />}
+        {confirmationError && <Alert data-testid="job-posting-confirmation-error" showIcon type="error" message="The action could not be completed" description={confirmationError} />}
+      </Space>
+    </Modal>
   </section>
 }
 
@@ -299,7 +415,7 @@ function blankPosting(clientId: number, positionId = 0, positionTitle = ''): Rec
     id: 0, clientId, positionId, jobDescriptionVersionId: 0, applicationFormVersionId: null,
     publicSlug: '', publicTitle: positionTitle, status: 'Draft', opensAtUtc: null, closesAtUtc: null,
     maximumApplications: null, applicationCount: 0, searchEngineVisible: true, publishedAtUtc: null,
-    positionCode: '', positionTitle, clientName: '',
+    positionCode: '', positionTitle, clientName: '', candidatePortalReady: false, publicUrl: '',
   }
 }
 
@@ -313,4 +429,39 @@ function validatePosting(row: RecruitmentJobPosting, publishing: boolean) {
   return ''
 }
 
-function publicLink(slug: string) { return `${window.location.origin}/careers/${encodeURIComponent(slug)}` }
+function validatePublishing(
+  row: RecruitmentJobPosting,
+  assignment: RecruitmentPositionPipelineAssignment | null,
+  selectedPipelineVersionId: number | undefined,
+  publicUrl: string,
+) {
+  const issues: string[] = []
+  if (!row.id) issues.push('Save the posting draft before publishing.')
+  if (!['Draft', 'Closed'].includes(row.status)) issues.push('Only a draft or closed posting can be published.')
+  if (!row.positionId) issues.push('Select an open position.')
+  if (!row.jobDescriptionVersionId) issues.push('Select an approved job-description version.')
+  if (!row.publicTitle.trim()) issues.push('Enter the public job title.')
+  if (!row.applicationFormVersionId) issues.push('Select a published candidate application form.')
+  if (row.opensAtUtc && row.closesAtUtc && !dayjs(row.closesAtUtc).isAfter(dayjs(row.opensAtUtc))) issues.push('Closing date must be after the opening date.')
+  if (row.closesAtUtc && !dayjs(row.closesAtUtc).isAfter(dayjs())) issues.push('Closing date must be in the future.')
+  if (!assignment?.isActive || !selectedPipelineVersionId || assignment.pipelineVersionId !== selectedPipelineVersionId) issues.push('Assign the selected published hiring pipeline.')
+  if (!row.candidatePortalReady || !publicUrl) issues.push('Enable the candidate portal and configure a valid public HTTP or HTTPS base URL.')
+  return issues
+}
+
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+  const input = document.createElement('textarea')
+  input.value = value
+  input.setAttribute('readonly', '')
+  input.style.position = 'fixed'
+  input.style.opacity = '0'
+  document.body.appendChild(input)
+  input.select()
+  const copied = document.execCommand('copy')
+  input.remove()
+  if (!copied) throw new Error('Copy command was rejected.')
+}

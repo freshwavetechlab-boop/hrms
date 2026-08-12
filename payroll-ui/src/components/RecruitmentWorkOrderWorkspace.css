@@ -20,6 +20,8 @@
 .work-order-metrics .ant-card{border-radius:14px}
 .work-order-metrics .ant-card-body{padding:14px}
 .work-order-columns{gap:14px}
+.work-order-table-stack{display:grid;gap:14px;min-width:0}
+.work-order-table-stack>.ant-card{min-width:0;border-radius:16px;border-color:#e7e3f2}
 .work-order-columns>.ant-card{border-radius:16px}
 .work-order-list,.hiring-case-list{gap:10px}
 .case-action-confirm{display:grid;gap:14px}

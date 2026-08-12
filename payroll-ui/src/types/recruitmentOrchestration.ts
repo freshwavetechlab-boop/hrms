@@ -244,6 +244,7 @@ export type RecruitmentPipelineStage = {
   stageCode: string
   stageName: string
   stageType: string
+  cardScope?: 'Position' | 'Application'
   stageNumber: number
   displayOrder: number
   slaDurationMinutes: number
@@ -458,6 +459,58 @@ export type RecruitmentPipelineBoardCard = {
   failedActionCount: number
 }
 
+export type RecruitmentPipelineDemandCard = {
+  cardType: 'Demand'
+  clientId: number
+  hiringCaseId?: number | null
+  workOrderId: number
+  workOrderLineId: number
+  workOrderNumber: string
+  workOrderStatus: string
+  positionName: string
+  payBandLevelCode: string
+  division: string
+  requisitionId?: number | null
+  requisitionNumber?: string | null
+  requisitionStatus?: string | null
+  positionId?: number | null
+  positionCode?: string | null
+  positionStatus?: string | null
+  jobDescriptionId?: number | null
+  jobDescriptionStatus?: string | null
+  jobPostingId?: number | null
+  jobPostingStatus?: string | null
+  pipelineVersionId?: number | null
+  currentStageId?: number | null
+  currentStageName?: string | null
+  status: string
+  enteredAtUtc?: string | null
+  dueAtUtc?: string | null
+  overallDueAtUtc?: string | null
+  isSlaBreached: boolean
+  needsPipelineSelection: boolean
+}
+
+export type RecruitmentUnifiedPipelineLane = {
+  pipelineVersionId: number
+  stageId: number
+  stageCode: string
+  stageName: string
+  stageType: string
+  cardScope: 'Position' | 'Application'
+  displayOrder: number
+  slaDurationMinutes: number
+  slaWarningMinutes: number
+  demandCards: RecruitmentPipelineDemandCard[]
+  applications: RecruitmentPipelineBoardCard[]
+}
+
+export type RecruitmentPipelineWorkspace = {
+  clientId?: number | null
+  lanes: RecruitmentUnifiedPipelineLane[]
+  unassignedDemandCards: RecruitmentPipelineDemandCard[]
+}
+
 export type RecruitmentPipelineTransitionResult = {
   requestId: number
   applicationId: number
@@ -504,6 +557,8 @@ export type RecruitmentJobPosting = {
   positionCode: string
   positionTitle: string
   clientName: string
+  candidatePortalReady: boolean
+  publicUrl: string
 }
 
 export type SaveRecruitmentJobPosting = {
@@ -627,7 +682,10 @@ export type PublicRecruitmentJob = {
   workMode: string
   summary: string
   rolePurpose: string
+  opensAtUtc?: string | null
   closesAtUtc?: string | null
+  isAcceptingApplications: boolean
+  availabilityStatus: 'Open' | 'Scheduled' | 'Closed' | 'Full' | 'FormUnavailable' | string
   applicationForm?: DynamicFormVersion | null
   responsibilities: Array<{ id: number; responsibilityText: string; displayOrder: number }>
   skills: Array<{ id: number; skillName: string; isRequired: boolean; minimumYears: number; minimumProficiency: string; weightPercent: number; displayOrder: number }>

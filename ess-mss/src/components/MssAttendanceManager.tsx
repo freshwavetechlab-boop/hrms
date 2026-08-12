@@ -625,6 +625,11 @@ export default function ManualAttendanceManager({ clientId, reviewMonth = '', on
   }
 
   return <div className="manual-attendance">
+    <div className="attendance-access-scope" data-testid="attendance-access-scope">
+      <span>Attendance access</span>
+      <strong>{reviewContext.clientName || `Assigned client #${reviewContext.clientId || clientId}`}</strong>
+      <em>{reviewContext.accessScope === 'Client' ? 'All active employees' : 'Direct reports only'}</em>
+    </div>
     <div className="attendance-toolbar attendance-simple-toolbar">
       <label className="attendance-cycle-field">Payroll month / cycle<Input disabled={saving} type="month" value={month} onChange={(event) => setMonth(event.target.value)} /><small>{cycleRangeDisplay}</small></label>
       <Button onClick={loadMonthly} loading={loadingMonthly} disabled={saving}>Refresh review</Button>
@@ -669,7 +674,7 @@ export default function ManualAttendanceManager({ clientId, reviewMonth = '', on
             return <td key={date} className={`${cell.cls}${selected ? ' cell-selected' : ''}`} data-tip={selected ? `Selected - ${cell.title}` : cell.title} aria-selected={selected} aria-disabled={outsideCycle} onClick={(event) => handleCellClick(event, row.employeeId, date)}>{editing ? <div className="attendance-cell-editor" onClick={(event) => event.stopPropagation()}>
               <SearchSelect disabled={saving} value={editStatus} onChange={(value) => updateGridStatus(row.employeeId, date, value)} options={statusOptions} />
             </div> : <button type="button" className="attendance-cell-label" disabled={outsideCycle}><span>{cell.text}</span>{cell.hoursText && <small>{cell.hoursText}</small>}</button>}</td>
-          })}</tr>)}{!filteredRows.length && <tr><td colSpan={monthDays.length + 1}>{monthlyRows.length ? 'No employees match this review.' : 'No employees report to you.'}</td></tr>}</tbody>
+          })}</tr>)}{!filteredRows.length && <tr><td colSpan={monthDays.length + 1}>{monthlyRows.length ? 'No employees match this review.' : reviewContext.accessScope === 'Client' ? 'No active employees found in your assigned client.' : 'No employees report to you.'}</td></tr>}</tbody>
         </table>
       </div>
     </Card>

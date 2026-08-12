@@ -5,13 +5,13 @@ import {
 } from '@ant-design/icons'
 import {
   Alert, Button, Card, Col, Collapse, Descriptions, Empty, Form, Input, InputNumber, List,
-  Modal, Popconfirm, Row, Select, Space, Spin, Switch, Tag, Tooltip, Typography, message,
+  Modal, Popconfirm, Radio, Row, Select, Space, Spin, Switch, Tag, Tooltip, Typography, message,
 } from 'antd'
 import { useAuthSession } from './AuthGate'
 import { getClients } from '../services/payrollService'
 import { getRecruitmentRequisitions } from '../services/recruitmentService'
 import {
-  deleteRecruitmentJobDescription, getRecruitmentJobDescription, getRecruitmentJobDescriptions, getRecruitmentOrchestrationLookups,
+  approveRecruitmentJobDescriptionDirectly, deleteRecruitmentJobDescription, getRecruitmentJobDescription, getRecruitmentJobDescriptions, getRecruitmentOrchestrationLookups,
   saveRecruitmentJobDescription, submitRecruitmentJobDescription,
 } from '../services/recruitmentOrchestrationService'
 import type { Client, RecruitmentRequisition } from '../types/payroll'
@@ -38,6 +38,7 @@ const editableStatuses = new Set(['Draft', 'Sent Back'])
 export default function RecruitmentJobDescriptionManager({ initialClientId = 0, clientScopeManaged = false, initialRequisitionId = 0, onSaved }: Props) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
+  const canDirectApprove = Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
   const [clientId, setClientId] = useState(initialClientId)
   const [requisitions, setRequisitions] = useState<RecruitmentRequisition[]>([])
@@ -48,6 +49,7 @@ export default function RecruitmentJobDescriptionManager({ initialClientId = 0, 
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [approvalOpen, setApprovalOpen] = useState(false)
+  const [approvalMode, setApprovalMode] = useState<'workflow' | 'direct'>('workflow')
   const [workflowId, setWorkflowId] = useState<number>()
 
   useEffect(() => {
@@ -84,8 +86,7 @@ export default function RecruitmentJobDescriptionManager({ initialClientId = 0, 
   const readOnly = !!draft?.id && !editableStatuses.has(draft.status)
   const approvalWorkflows = useMemo(() => {
     const active = lookups.workflows.filter(row => row.isActive && (!row.clientId || row.clientId === clientId))
-    const exact = active.filter(row => !row.resourceType || row.resourceType === 'RecruitmentJobDescription')
-    return exact.length ? exact : active
+    return active.filter(row => row.resourceType === 'RecruitmentJobDescription')
   }, [lookups.workflows, clientId])
 
   async function loadVersions(requestId: number, preferredId = 0) {
@@ -136,10 +137,17 @@ export default function RecruitmentJobDescriptionManager({ initialClientId = 0, 
     await loadVersions(response.data.requisitionId, response.data.id)
   }
 
-  async function submitForApproval() {
-    if (!draft?.id || !workflowId || readOnly) return
+  function openApprovalDialog() {
+    setApprovalMode(approvalWorkflows.length ? 'workflow' : canDirectApprove ? 'direct' : 'workflow')
+    setApprovalOpen(true)
+  }
+
+  async function completeApprovalRoute() {
+    if (!draft?.id || readOnly || (approvalMode === 'workflow' && !workflowId)) return
     setSaving(true)
-    const response = await submitRecruitmentJobDescription(draft.id, workflowId)
+    const response = approvalMode === 'direct'
+      ? await approveRecruitmentJobDescriptionDirectly(draft.id)
+      : await submitRecruitmentJobDescription(draft.id, workflowId!)
     setSaving(false)
     if (!response.ok || !response.data) return
     setApprovalOpen(false)
@@ -191,7 +199,7 @@ export default function RecruitmentJobDescriptionManager({ initialClientId = 0, 
               <Space wrap>
                 {readOnly && <Button icon={<FileAddOutlined />} onClick={startRevision}>Create revision</Button>}
                 <Button icon={<SaveOutlined />} loading={saving} disabled={readOnly} onClick={() => void saveDraft()}>Save draft</Button>
-                <Button type="primary" icon={<SendOutlined />} disabled={readOnly || !draft.id} onClick={() => setApprovalOpen(true)}>Submit for approval</Button>
+                <Button type="primary" icon={<SendOutlined />} disabled={readOnly || !draft.id} onClick={openApprovalDialog}>{canDirectApprove ? 'Review approval route' : 'Submit for approval'}</Button>
               </Space>
             </div>
             {readOnly && <Alert className="jd-readonly-alert" type={draft.status === 'Approved' ? 'success' : 'info'} showIcon message={`${draft.status} versions are immutable`} description="Create a new version to make changes without altering the historical approved JD." />}
@@ -210,14 +218,14 @@ export default function RecruitmentJobDescriptionManager({ initialClientId = 0, 
             onChange={responsibilities => patch({ responsibilities })}
             render={(row, index, update) => <Input.TextArea rows={2} value={row.responsibilityText} placeholder={`Responsibility ${index + 1}`} maxLength={1000} onChange={event => update({ responsibilityText: event.target.value })} />} />
 
-          <RepeaterSection title="Skills & ATS weights" description="Required skills are normalized and become the explainable ATS scoring baseline." rows={draft.skills} readOnly={readOnly}
+          <RepeaterSection title="Skills & ATS scoring" description="Every new skill starts as Must-have. Change it to Preferred only when it should improve ranking without blocking eligibility. Relative weights are normalized inside each category." rows={draft.skills} readOnly={readOnly}
             addLabel="Add skill" onAdd={() => patch({ skills: [...draft.skills, skill()] })} onChange={skills => patch({ skills })}
             render={(row, _index, update) => <Row gutter={10}>
-              <Col xs={24} md={7}><Form.Item label="Skill" required><Input value={row.skillName} placeholder="e.g. ASP.NET Core" onChange={event => update({ skillName: event.target.value })} /></Form.Item></Col>
-              <Col xs={12} md={4}><Form.Item label="Min. years"><InputNumber min={0} max={50} step={0.5} value={row.minimumYears} onChange={value => update({ minimumYears: Number(value ?? 0) })} /></Form.Item></Col>
-              <Col xs={12} md={5}><Form.Item label="Proficiency"><Select value={row.minimumProficiency || undefined} allowClear options={['Beginner', 'Intermediate', 'Advanced', 'Expert'].map(value => ({ value, label: value }))} onChange={value => update({ minimumProficiency: value ?? '' })} /></Form.Item></Col>
-              <Col xs={12} md={4}><Form.Item label="ATS weight %"><InputNumber min={0} max={100} value={row.weightPercent} onChange={value => update({ weightPercent: Number(value ?? 0) })} /></Form.Item></Col>
-              <Col xs={12} md={4}><Form.Item label="Required"><Switch checked={row.isRequired} onChange={isRequired => update({ isRequired })} /></Form.Item></Col>
+              <Col xs={24} md={7}><Form.Item label="Skill" required validateStatus={!row.skillName.trim() ? 'error' : undefined} help={!row.skillName.trim() ? 'Enter a skill or remove this row.' : undefined}><Input value={row.skillName} placeholder="e.g. SAP MM" onChange={event => update({ skillName: event.target.value })} /></Form.Item></Col>
+              <Col xs={12} md={5}><Form.Item label="Category" required><Select value={row.isRequired ? 'MustHave' : 'Preferred'} options={[{ value: 'MustHave', label: 'Must-have' }, { value: 'Preferred', label: 'Preferred' }]} onChange={value => update({ isRequired: value === 'MustHave' })} /></Form.Item></Col>
+              <Col xs={12} md={4}><Form.Item label={<Tooltip title="Set this only when the resume must prove experience specifically in this skill. It is not the candidate's total career experience.">Skill exp. (optional)</Tooltip>}><InputNumber min={0} max={50} step={0.5} value={row.minimumYears || undefined} placeholder="Years" onChange={value => update({ minimumYears: Number(value ?? 0) })} /></Form.Item></Col>
+              <Col xs={12} md={4}><Form.Item label={<Tooltip title="Optional reviewer note only. It is shown in ATS evidence but does not automatically pass, fail, or change the score.">Reviewer level (optional)</Tooltip>}><Select value={row.minimumProficiency || undefined} placeholder="Optional" allowClear options={['Beginner', 'Intermediate', 'Advanced', 'Expert'].map(value => ({ value, label: value }))} onChange={value => update({ minimumProficiency: value ?? '' })} /></Form.Item></Col>
+              <Col xs={12} md={4}><Form.Item label={<Tooltip title="Relative importance inside the Must-have or Preferred group. Leave every skill in the group at zero for equal weighting.">Relative weight</Tooltip>}><InputNumber min={0} max={100} value={row.weightPercent || undefined} placeholder="Equal" onChange={value => update({ weightPercent: Number(value ?? 0) })} /></Form.Item></Col>
             </Row>} />
 
           <RepeaterSection title="Qualifications" description="Keep mandatory and preferred education requirements explicit." rows={draft.qualifications} readOnly={readOnly}
@@ -244,14 +252,27 @@ export default function RecruitmentJobDescriptionManager({ initialClientId = 0, 
       </div>}
     </Spin>
 
-    <Modal title="Submit job description for approval" open={approvalOpen} okText="Submit to workflow" confirmLoading={saving}
-      okButtonProps={{ disabled: !workflowId }} onOk={() => void submitForApproval()} onCancel={() => { setApprovalOpen(false); setWorkflowId(undefined) }}>
-      <Alert showIcon type="info" message="The current version becomes read-only while approval is pending." />
-      <Form layout="vertical" style={{ marginTop: 16 }}><Form.Item label="Approval workflow" required>
+    <Modal width={760} title="Review job-description approval route" open={approvalOpen} okText={approvalMode === 'direct' ? 'Approve directly' : 'Submit to workflow'} confirmLoading={saving}
+      okButtonProps={{ disabled: approvalMode === 'workflow' && !workflowId }} onOk={() => void completeApprovalRoute()} onCancel={() => { setApprovalOpen(false); setWorkflowId(undefined) }}>
+      {draft && <Descriptions bordered size="small" column={2} style={{ marginBottom: 16 }}>
+        <Descriptions.Item label="Role">{draft.title}</Descriptions.Item>
+        <Descriptions.Item label="Version">v{draft.versionNumber}</Descriptions.Item>
+        <Descriptions.Item label="Hiring request">{selectedRequisition?.rfrNumber || '—'}</Descriptions.Item>
+        <Descriptions.Item label="Openings">{selectedRequisition?.numberOfOpenings ?? '—'}</Descriptions.Item>
+        <Descriptions.Item label="Summary" span={2}>{draft.summary}</Descriptions.Item>
+        <Descriptions.Item label="Must-have skills" span={2}>{draft.skills.filter(row => row.isRequired).map(row => row.skillName).filter(Boolean).join(', ') || 'None'}</Descriptions.Item>
+        <Descriptions.Item label="Preferred skills" span={2}>{draft.skills.filter(row => !row.isRequired).map(row => row.skillName).filter(Boolean).join(', ') || 'None'}</Descriptions.Item>
+      </Descriptions>}
+      {canDirectApprove && <Form layout="vertical"><Form.Item label="Approval route" required>
+        <Radio.Group optionType="button" buttonStyle="solid" value={approvalMode} onChange={event => { setApprovalMode(event.target.value); setWorkflowId(undefined) }} options={[{ value: 'workflow', label: 'Send to approver' }, { value: 'direct', label: 'Approve directly' }]} />
+      </Form.Item></Form>}
+      {approvalMode === 'workflow' && <Alert showIcon type="info" message="The complete JD snapshot will be sent to My Tasks. This version becomes read-only while approval is pending." />}
+      {approvalMode === 'workflow' ? <><Form layout="vertical" style={{ marginTop: 16 }}><Form.Item label="Job-description approval workflow" required>
         <Select value={workflowId} showSearch optionFilterProp="label" placeholder="Select the configured approval chain" onChange={setWorkflowId}
           options={approvalWorkflows.map(row => ({ value: row.id, label: `${row.name}${row.code ? ` · ${row.code}` : ''}` }))} />
       </Form.Item></Form>
-      {!approvalWorkflows.length && <Alert type="warning" showIcon message="No active JD workflow is configured" description="Create a RecruitmentJobDescription workflow in Workflow Settings before submitting." />}
+      {!approvalWorkflows.length && <Alert type="warning" showIcon message="No JD approval workflow is configured" description="Only a workflow whose resource type is RecruitmentJobDescription is accepted. Configure one in Workflow Setup, or use direct approval if your role permits it." />}</> :
+      <Alert type="warning" showIcon message="Direct approval is restricted to system administrators" description="This immediately approves the saved version, links it to the vacancy and records the administrator, timestamp and complete JD snapshot in the recruitment audit." />}
     </Modal>
   </section>
 }
@@ -338,9 +359,14 @@ function validateDescription(row: RecruitmentJobDescriptionVersion) {
   if (!row.title.trim()) return 'Enter the job title.'
   if (!row.summary.trim()) return 'Enter a candidate-facing role summary.'
   if (!row.responsibilities.some(item => item.responsibilityText.trim())) return 'Add at least one responsibility.'
+  if (!row.skills.length) return 'Add at least one must-have or preferred skill.'
+  if (row.skills.some(item => !item.skillName.trim())) return 'Enter a name for every skill row, or remove the blank row.'
+  if (!row.skills.some(item => item.isRequired)) return 'Add at least one must-have skill.'
   if (row.skills.some(item => item.weightPercent < 0 || item.weightPercent > 100)) return 'Every ATS skill weight must be between 0 and 100.'
-  const weight = row.skills.reduce((sum, item) => sum + Number(item.weightPercent || 0), 0)
-  if (weight > 100) return 'Combined ATS skill weights cannot exceed 100%.'
+  for (const [label, skills] of [['Must-have', row.skills.filter(item => item.isRequired)], ['Preferred', row.skills.filter(item => !item.isRequired)]] as const) {
+    const hasWeighted = skills.some(item => Number(item.weightPercent || 0) > 0)
+    if (hasWeighted && skills.some(item => Number(item.weightPercent || 0) <= 0)) return `${label} skills must either all have a relative weight or all be left blank for equal weighting.`
+  }
   return ''
 }
 

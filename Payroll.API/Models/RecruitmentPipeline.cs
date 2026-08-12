@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Payroll.API.Models;
 
 public class RecruitmentJobDescriptionVersion
@@ -120,6 +122,30 @@ public class RecruitmentJobPosting
     public string PositionCode { get; set; } = "";
     public string PositionTitle { get; set; } = "";
     public string ClientName { get; set; } = "";
+    [JsonIgnore]
+    public string PublicPortalBaseUrl { get; set; } = "";
+    public bool CandidatePortalReady { get; set; }
+    public string PublicUrl => CandidatePortalReady
+        ? RecruitmentPublicUrls.BuildCareerUrl(PublicPortalBaseUrl, PublicSlug)
+        : "";
+}
+
+public static class RecruitmentPublicUrls
+{
+    public static string BuildCareerUrl(string publicPortalBaseUrl, string publicSlug)
+    {
+        if (string.IsNullOrWhiteSpace(publicPortalBaseUrl) || string.IsNullOrWhiteSpace(publicSlug)) return "";
+        if (!Uri.TryCreate(publicPortalBaseUrl.Trim(), UriKind.Absolute, out var baseUri)
+            || (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps)) return "";
+
+        var builder = new UriBuilder(baseUri) { Query = "", Fragment = "" };
+        var basePath = builder.Path.TrimEnd('/');
+        var careersPath = basePath.EndsWith("/careers", StringComparison.OrdinalIgnoreCase)
+            ? basePath
+            : $"{basePath}/careers";
+        builder.Path = $"{careersPath}/{Uri.EscapeDataString(publicSlug.Trim())}";
+        return builder.Uri.AbsoluteUri;
+    }
 }
 
 public class SaveRecruitmentJobPosting
@@ -201,6 +227,7 @@ public class RecruitmentPipelineStage
     public string StageCode { get; set; } = "";
     public string StageName { get; set; } = "";
     public string StageType { get; set; } = "Screening";
+    public string CardScope { get; set; } = "Application";
     public int StageNumber { get; set; }
     public int DisplayOrder { get; set; }
     public int SlaDurationMinutes { get; set; }
@@ -454,11 +481,68 @@ public class RecruitmentPipelineBoardLane
     public string StageCode { get; set; } = "";
     public string StageName { get; set; } = "";
     public string StageType { get; set; } = "";
+    public string CardScope { get; set; } = "Application";
     public int DisplayOrder { get; set; }
     public int SlaDurationMinutes { get; set; }
     public int SlaWarningMinutes { get; set; }
     public List<RecruitmentStageProcessDocumentRequirement> ProcessDocumentRequirements { get; set; } = [];
     public List<RecruitmentPipelineBoardCard> Applications { get; set; } = [];
+}
+
+public class RecruitmentPipelineWorkspace
+{
+    public int? ClientId { get; set; }
+    public List<RecruitmentPipelineWorkspaceLane> Lanes { get; set; } = [];
+    public List<RecruitmentPipelineDemandCard> UnassignedDemandCards { get; set; } = [];
+}
+
+public class RecruitmentPipelineWorkspaceLane
+{
+    public long PipelineVersionId { get; set; }
+    public long StageId { get; set; }
+    public string StageCode { get; set; } = "";
+    public string StageName { get; set; } = "";
+    public string StageType { get; set; } = "";
+    public string CardScope { get; set; } = "Application";
+    public int DisplayOrder { get; set; }
+    public int SlaDurationMinutes { get; set; }
+    public int SlaWarningMinutes { get; set; }
+    public List<RecruitmentPipelineDemandCard> DemandCards { get; set; } = [];
+    public List<RecruitmentPipelineBoardCard> Applications { get; set; } = [];
+}
+
+public class RecruitmentPipelineDemandCard
+{
+    public string CardType { get; set; } = "Demand";
+    public int ClientId { get; set; }
+    public long? HiringCaseId { get; set; }
+    public long WorkOrderId { get; set; }
+    public long WorkOrderLineId { get; set; }
+    public string WorkOrderNumber { get; set; } = "";
+    public string WorkOrderStatus { get; set; } = "";
+    public string PositionName { get; set; } = "";
+    public string PayBandLevelCode { get; set; } = "";
+    public string Division { get; set; } = "";
+    public long? RequisitionId { get; set; }
+    public string RequisitionNumber { get; set; } = "";
+    public string RequisitionStatus { get; set; } = "Not Started";
+    public long? PositionId { get; set; }
+    public string PositionCode { get; set; } = "";
+    public string PositionStatus { get; set; } = "Not Started";
+    public long? JobDescriptionId { get; set; }
+    public string JobDescriptionStatus { get; set; } = "Not Started";
+    public long? JobPostingId { get; set; }
+    public string JobPostingStatus { get; set; } = "Not Started";
+    public long? PipelineVersionId { get; set; }
+    public long? CurrentStageId { get; set; }
+    public long? CurrentStageInstanceId { get; set; }
+    public string CurrentStageName { get; set; } = "";
+    public string Status { get; set; } = "Not Started";
+    public DateTime? EnteredAtUtc { get; set; }
+    public DateTime? DueAtUtc { get; set; }
+    public DateTime? OverallDueAtUtc { get; set; }
+    public bool IsSlaBreached { get; set; }
+    public bool NeedsPipelineSelection { get; set; }
 }
 
 public class RecruitmentPipelineBoardCard

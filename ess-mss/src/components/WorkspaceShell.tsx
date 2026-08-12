@@ -31,7 +31,11 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
   const [organization, setOrganization] = useState<OrganizationBrand | null>(null)
   const [profile, setProfile] = useState<ProfileData | null>(null)
   const hasRecruitmentAccess = canAccessRecruitment(user)
-  const canManageAttendance = user.permissions.some(permission => permission.toLowerCase() === 'mss.attendance.manage')
+  const canManageDirectReportAttendance = user.permissions.some(permission => permission.toLowerCase() === 'mss.attendance.manage')
+  const canManageClientAttendance = user.permissions.some(permission => permission.toLowerCase() === 'mss.attendance.client.manage')
+  const canManageAttendance = canManageDirectReportAttendance || canManageClientAttendance
+  const hasTeamWorkspace = user.roles.some(role => ['mss_manager', 'hr_manager', 'payroll_approver', 'super_admin'].includes(role)) || canManageDirectReportAttendance
+  const clientAttendanceOnly = canManageClientAttendance && !employeeSelf && !hasTeamWorkspace
   const travelExpenseAdmin = canMaintainTravelExpense(user)
   const groups = useMemo(
     () => [
@@ -41,10 +45,11 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
       ...(employeeSelf && travelExpenseEnabled === true ? [{ key: 'travel', icon: 'travel' as IconName, label: 'Travel & expense', items: [{ icon: 'plus' as IconName, label: 'Create travel request', view: 'Travel' as View, action: 'ess:travel:new' }, { icon: 'list' as IconName, label: 'Travel requests', view: 'Travel' as View, action: 'ess:travel:list' }, { icon: 'expense' as IconName, label: 'Other expense claim', view: 'Expense' as View, action: 'ess:expense:new' }, { icon: 'list' as IconName, label: 'Expense claims', view: 'Expense' as View, action: 'ess:expense:list' }] }] : []),
       ...(!employeeSelf && travelExpenseAdmin ? [{ key: 'travel-admin', icon: 'travel' as IconName, label: 'Travel & expense admin', items: [{ icon: 'list' as IconName, label: 'Travel records', view: 'Travel' as View }, { icon: 'expense' as IconName, label: 'Expense records', view: 'Expense' as View }] }] : []),
       ...(employeeSelf && recruitmentEnabled === true ? [{ key: 'recruitment', icon: 'recruitment' as IconName, label: 'Recruitment', items: [{ icon: 'plus' as IconName, label: 'Create requisition', view: 'Recruitment' as View, action: 'ess:recruitment:new' }, { icon: 'list' as IconName, label: 'My requisitions', view: 'Recruitment' as View, action: 'ess:recruitment:list' }] }] : []),
-      { key: 'tasks', icon: 'tasks' as IconName, label: 'Approvals', items: [{ icon: 'tasks' as IconName, label: 'My approval tasks', view: 'My Tasks' as View }] },
-      ...(manager ? [{ key: 'manager', icon: 'manager' as IconName, label: 'Manager workspace', items: [{ icon: 'team' as IconName, label: 'Team overview', view: 'Team' as View }, ...(canManageAttendance ? [{ icon: 'attendance' as IconName, label: 'Attendance review', view: 'Attendance Review' as View }] : []), { icon: 'approval' as IconName, label: 'Team approvals', view: 'Approvals' as View }] }] : []),
+      ...((employeeSelf || hasTeamWorkspace) ? [{ key: 'tasks', icon: 'tasks' as IconName, label: 'Approvals', items: [{ icon: 'tasks' as IconName, label: 'My approval tasks', view: 'My Tasks' as View }] }] : []),
+      ...(hasTeamWorkspace ? [{ key: 'manager', icon: 'manager' as IconName, label: 'Manager workspace', items: [{ icon: 'team' as IconName, label: 'Team overview', view: 'Team' as View }, ...(canManageAttendance ? [{ icon: 'attendance' as IconName, label: 'Attendance review', view: 'Attendance Review' as View }] : []), { icon: 'approval' as IconName, label: 'Team approvals', view: 'Approvals' as View }] }] : []),
+      ...(clientAttendanceOnly ? [{ key: 'client-attendance', icon: 'attendance' as IconName, label: 'Client attendance', items: [{ icon: 'attendance' as IconName, label: 'Attendance review', view: 'Attendance Review' as View }] }] : []),
     ],
-    [canManageAttendance, employeeSelf, manager, recruitmentEnabled, travelExpenseAdmin, travelExpenseEnabled],
+    [canManageAttendance, clientAttendanceOnly, employeeSelf, hasTeamWorkspace, recruitmentEnabled, travelExpenseAdmin, travelExpenseEnabled],
   )
 
   useEffect(() => {
@@ -69,6 +74,7 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
   useEffect(() => { if (recruitmentEnabled === false && view === 'Recruitment') onNavigate('Dashboard') }, [onNavigate, recruitmentEnabled, view])
   useEffect(() => { if (travelExpenseEnabled === false && (view === 'Travel' || view === 'Expense')) onNavigate('Dashboard') }, [onNavigate, travelExpenseEnabled, view])
   useEffect(() => { if (!employeeSelf && isEmployeeOnlyView(view) && !(travelExpenseAdmin && (view === 'Travel' || view === 'Expense'))) onNavigate('Dashboard') }, [employeeSelf, onNavigate, travelExpenseAdmin, view])
+  useEffect(() => { if (clientAttendanceOnly && view !== 'Dashboard' && view !== 'Attendance Review') onNavigate('Dashboard') }, [clientAttendanceOnly, onNavigate, view])
 
   useEffect(() => {
     const active = groups.find(group => group.items.some(item => item.view === view))
@@ -130,7 +136,8 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
     ? activeGroup?.items.find(item => item.action === activeAction)
     : activeGroup?.items.find(item => isActiveItem(item)) ?? activeGroup?.items.find(item => item.view === view)
   const title = pageTitle?.title || activeItem?.label || view
-  const section = pageTitle?.section || activeGroup?.label || (manager && !employeeSelf ? 'Manager workspace' : 'Employee workspace')
+  const workspaceLabel = clientAttendanceOnly ? 'Client attendance' : manager && !employeeSelf ? 'Manager workspace' : 'Employee workspace'
+  const section = pageTitle?.section || activeGroup?.label || workspaceLabel
 
   return <div className={`ess-shell ${navCollapsed ? 'ess-nav-collapsed' : ''}`}>
     <aside className="ess-sidebar">
@@ -160,10 +167,10 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
       <header className="ess-topbar">
         <div className="ess-titlebar">
           {organization?.logoDataUrl && <img className="ess-topbar-org-logo" src={organization.logoDataUrl} alt={organization.name || 'Organization logo'} />}
-          <div><span className="eyebrow">{manager && !employeeSelf ? 'Manager workspace' : 'Employee workspace'} / {section}</span><h2>{title}</h2></div>
+          <div><span className="eyebrow">{workspaceLabel} / {section}</span><h2>{title}</h2></div>
         </div>
         <div className={`account-menu ${accountOpen ? 'open' : ''}`} ref={accountMenuRef}>
-          <button className="user-menu" type="button" title="Account menu" aria-label={`Open account menu for ${user.displayName}`} onClick={() => setAccountOpen(open => !open)} aria-haspopup="menu" aria-expanded={accountOpen}><span>{initials(user.displayName)}</span><div><b>{user.displayName}</b><small title={profile?.attendanceOffice || undefined}>{profile?.attendanceOffice || (manager ? 'Manager access' : 'Employee access')}</small></div><i>v</i></button>
+          <button className="user-menu" type="button" title="Account menu" aria-label={`Open account menu for ${user.displayName}`} onClick={() => setAccountOpen(open => !open)} aria-haspopup="menu" aria-expanded={accountOpen}><span>{initials(user.displayName)}</span><div><b>{user.displayName}</b><small title={profile?.attendanceOffice || undefined}>{profile?.attendanceOffice || (clientAttendanceOnly ? 'Client attendance access' : manager ? 'Manager access' : 'Employee access')}</small></div><i>v</i></button>
           {accountOpen && <div className="account-dropdown" role="menu">{profile?.attendanceOffice && <div className="account-office"><span>Attendance office</span><b>{profile.attendanceOffice}</b></div>}{employeeSelf && <button role="menuitem" type="button" onClick={() => { setActiveAction(null); onNavigate('My Profile'); setAccountOpen(false) }}>My profile</button>}<button role="menuitem" type="button" onClick={() => { setAccountOpen(false); onChangePassword() }}>Change password</button><button role="menuitem" type="button" onClick={onLogout}>Logout</button></div>}
         </div>
       </header>

@@ -35,7 +35,7 @@ public class SaveAuthUserRequest
     public int? ClientId { get; set; }
     public int? EmployeeId { get; set; }
     public bool IsActive { get; set; } = true;
-    public bool MustChangePassword { get; set; } = true;
+    public bool? MustChangePassword { get; set; }
     public List<string> Roles { get; set; } = [];
 }
 

@@ -2063,8 +2063,6 @@ WHERE JobDescriptionVersionId=@Id ORDER BY IsMandatory DESC,DisplayOrder,Id", ne
         var qualificationRequirement = jdQualifications.Count > 0 ? string.Join(", ", jdQualifications) : data.Qualification;
         var certificationRequirement = jdCertifications.Count > 0 ? string.Join(", ", jdCertifications) : data.Certifications;
         var experienceRange = data.ExperienceRange;
-        if (string.IsNullOrWhiteSpace(experienceRange) && requiredRequirements.Any(row => row.MinimumYears > 0))
-            experienceRange = $"{requiredRequirements.Max(row => row.MinimumYears):0.#}+ years";
         var scoringPositionTitle = string.IsNullOrWhiteSpace(data.ScoringPositionTitle) ? data.PositionTitle : data.ScoringPositionTitle;
         var resumeSearch = NormalizeSearch(string.Join(' ', data.ResumeText, data.CurrentTitle, data.HighestQualification, data.CurrentLocation));
         var skillAliases = (await db.QueryAsync<SkillAliasRow>(@"SELECT s.SkillName,COALESCE(a.AliasName,'') AliasName FROM recruitment_skills s LEFT JOIN recruitment_skill_aliases a ON a.SkillId=s.Id WHERE s.IsActive=TRUE AND s.ClientId IN (0,@ClientId)", new { data.ClientId }))
@@ -2082,6 +2080,9 @@ WHERE JobDescriptionVersionId=@Id ORDER BY IsMandatory DESC,DisplayOrder,Id", ne
             requiredMatches = ApplySemanticSkillMatches(requiredMatches, semanticDocument, profile.SemanticMinimumSimilarity);
             preferredMatches = ApplySemanticSkillMatches(preferredMatches, semanticDocument, profile.SemanticMinimumSimilarity);
         }
+        requiredMatches = requiredMatches.Select(match => EvaluateSkillRequirement(data.ResumeText, match)).ToList();
+        preferredMatches = preferredMatches.Select(match => EvaluateSkillRequirement(data.ResumeText, match)).ToList();
+        var eligibilityStatus = RecruitmentAtsDomainRules.EvaluateMustHaveGate(requiredMatches.Select(match => match.MatchStatus));
         var requiredRatio = SkillRequirementRatio(requiredMatches);
         var preferredRatio = SkillRequirementRatio(preferredMatches);
         var experienceRatio = ExperienceRatio(data.TotalExperienceMonths, experienceRange);
@@ -2141,9 +2142,14 @@ WHERE JobDescriptionVersionId=@Id ORDER BY IsMandatory DESC,DisplayOrder,Id", ne
             foreach (var (criterion, aiRatio) in aiAnalysis.Criteria)
                 if (ratios.ContainsKey(criterion))
                     ratios[criterion] = Math.Clamp((localRatios[criterion] * (1m - aiBlendRatio)) + (aiRatio * aiBlendRatio), 0m, 1m);
+        // Generative analysis cannot override deterministic must-have or skill-duration evidence.
+        // It may lower confidence, but it cannot award more skill credit than the verified bucket ratio.
+        ratios["requiredSkills"] = Math.Min(ratios.GetValueOrDefault("requiredSkills"), requiredRatio);
+        if (preferredMatches.Any(match => match.MinimumYears > 0))
+            ratios["preferredSkills"] = Math.Min(ratios.GetValueOrDefault("preferredSkills"), preferredRatio);
         var evidenceSummaries = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["requiredSkills"] = SkillEvidenceSummary(requiredMatches),
+            ["requiredSkills"] = $"{SkillEvidenceSummary(requiredMatches)}; must-have gate {eligibilityStatus}",
             ["preferredSkills"] = SkillEvidenceSummary(preferredMatches),
             ["experience"] = $"{data.TotalExperienceMonths} months against requirement '{experienceRange}'",
             ["qualification"] = $"Candidate '{data.HighestQualification}' against '{qualificationRequirement}'",
@@ -2178,17 +2184,28 @@ WHERE JobDescriptionVersionId=@Id ORDER BY IsMandatory DESC,DisplayOrder,Id", ne
             ? Math.Clamp(Round(criteria.Sum(criterion => aiAnalysis.Criteria.GetValueOrDefault(criterion.CriterionCode, localRatios.GetValueOrDefault(criterion.CriterionCode)) * criterion.Weight)), 0, 100)
             : null;
         var total = Math.Clamp(Round(components.Sum(row => row.AwardedScore)), 0, 100);
-        var recommendation = total >= profile.MinimumShortlistScore ? "Review for shortlist" : "Below shortlist threshold";
-        var humanReviewRequired = pipelineSelection?.RequireHumanConfirmation ?? true;
+        var recommendation = eligibilityStatus switch
+        {
+            RecruitmentAtsEligibilityStatus.Ineligible => "Ineligible - must-have requirements not met",
+            RecruitmentAtsEligibilityStatus.NeedsReview => "Needs review - must-have skill duration is not verified",
+            _ => total >= profile.MinimumShortlistScore ? "Review for shortlist" : "Below shortlist threshold"
+        };
+        var humanReviewRequired = (pipelineSelection?.RequireHumanConfirmation ?? true)
+            || eligibilityStatus == RecruitmentAtsEligibilityStatus.NeedsReview;
         var methodLabel = aiBlendRatio > 0
             ? $"Hybrid ATS used deterministic rules, local semantic vectors and {aiAnalysis.Model} at a bounded {aiBlendWeight:0.##}% contribution"
             : profile.EnableSemanticMatching
                 ? "Hybrid ATS used deterministic rules and local semantic vectors"
                 : "Deterministic ATS rules were used";
         var fallbackNote = profile.EnableAiScoring && !aiAnalysis.Applied ? $" External AI was not applied ({aiAnalysis.Status}); local scoring was retained." : "";
-        var explanationText = humanReviewRequired
-            ? $"{recommendation}. {methodLabel}; the current pipeline stage requires human confirmation.{fallbackNote}"
-            : $"{recommendation}. {methodLabel}; any configured pipeline automation remains audit logged.{fallbackNote}";
+        var gateSummary = MustHaveGateSummary(requiredMatches, eligibilityStatus);
+        var explanationText = Truncate(eligibilityStatus switch
+        {
+            RecruitmentAtsEligibilityStatus.Ineligible => $"{recommendation}. {gateSummary}. {methodLabel}.{fallbackNote}",
+            RecruitmentAtsEligibilityStatus.NeedsReview => $"{recommendation}. {gateSummary}; total career experience was not substituted for skill-specific duration. {methodLabel}.{fallbackNote}",
+            _ when humanReviewRequired => $"{recommendation}. {gateSummary}. {methodLabel}; the current pipeline stage requires human confirmation.{fallbackNote}",
+            _ => $"{recommendation}. {gateSummary}. {methodLabel}; any configured pipeline automation remains audit logged.{fallbackNote}"
+        }, 1000);
         var evidence = new[]
         {
             new CalculatedScoreEvidence("experience", "Experience", experienceRange, $"{data.TotalExperienceMonths} months", experienceRatio),
@@ -2204,13 +2221,30 @@ WHERE JobDescriptionVersionId=@Id ORDER BY IsMandatory DESC,DisplayOrder,Id", ne
 
         await using var transaction = await db.BeginTransactionAsync();
         await db.ExecuteAsync("UPDATE recruitment_application_scores SET IsCurrent=FALSE WHERE ApplicationId=@Id AND IsCurrent=TRUE", new { Id = applicationId }, transaction);
-        var scoreStatus = profile.EnableAiScoring && !aiAnalysis.Applied ? "CompletedWithAiFallback" : "Completed";
+        var scoreStatus = eligibilityStatus switch
+        {
+            RecruitmentAtsEligibilityStatus.Ineligible => RecruitmentAtsDomainRules.Ineligible,
+            RecruitmentAtsEligibilityStatus.NeedsReview => RecruitmentAtsDomainRules.NeedsReview,
+            _ => profile.EnableAiScoring && !aiAnalysis.Applied ? "CompletedWithAiFallback" : "Completed"
+        };
         var scoreId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_application_scores (ApplicationId,ResumeId,ScoringProfileId,PositionSnapshotJson,PositionSnapshotHash,TotalScore,LocalScore,AiScore,AiBlendWeight,AiAnalysisStatus,AiProvider,AiModel,AiConfidence,ComponentScoresJson,MatchedSkillsJson,MissingSkillsJson,ExplanationJson,ScoringMethod,ModelName,ModelVersion,ScoreStatus,IsCurrent,ShortlistThreshold,Recommendation,ExplanationText,ProfileVersionNumber,HumanReviewRequired,ScoredAt) VALUES (@ApplicationId,@ResumeId,@ProfileId,NULL,SHA2(CONCAT_WS('|',@JobDescriptionVersionId,@PositionCode,@PositionTitle,@PositionCategory,@RequiredSkills,@PreferredSkills,@ExperienceRange,@Qualification,@Certifications,@JobLocation),256),@Total,@LocalScore,@AiScore,@AiBlendWeight,@AiAnalysisStatus,@AiProvider,@AiModel,@AiConfidence,JSON_OBJECT(),JSON_ARRAY(),JSON_ARRAY(),JSON_OBJECT(),@Method,@Model,@Version,@ScoreStatus,TRUE,@Threshold,@Recommendation,@ExplanationText,@ProfileVersion,@HumanReviewRequired,UTC_TIMESTAMP());SELECT LAST_INSERT_ID();", new { ApplicationId = applicationId, ResumeId = data.EffectiveResumeId, ProfileId = profile.Id > 0 ? (long?)profile.Id : null, Total = total, LocalScore = localTotal, AiScore = aiTotal, AiBlendWeight = aiBlendWeight, AiAnalysisStatus = aiAnalysis.Status, AiProvider = aiAnalysis.Provider, AiModel = aiAnalysis.Model, AiConfidence = aiAnalysis.Confidence, Method = profile.ScoringMethod, Model = profile.ModelName, Version = profile.VersionNumber.ToString(CultureInfo.InvariantCulture), ScoreStatus = scoreStatus, Threshold = profile.MinimumShortlistScore, Recommendation = recommendation, ExplanationText = explanationText, ProfileVersion = profile.VersionNumber, HumanReviewRequired = humanReviewRequired, data.JobDescriptionVersionId, data.PositionCode, PositionTitle = scoringPositionTitle, data.PositionCategory, RequiredSkills = requiredSkillsSnapshot, PreferredSkills = preferredSkillsSnapshot, ExperienceRange = experienceRange, Qualification = qualificationRequirement, Certifications = certificationRequirement, data.JobLocation }, transaction);
         await db.ExecuteAsync(@"INSERT INTO recruitment_application_score_position_snapshots (ApplicationScoreId,PositionId,JobDescriptionVersionId,JobDescriptionVersionNumber,PositionCode,PositionTitle,PositionCategory,RequiredSkills,PreferredSkills,ExperienceRange,Qualification,Certifications,JobLocation) VALUES (@ScoreId,@PositionId,@JobDescriptionVersionId,@JobDescriptionVersionNumber,@PositionCode,@PositionTitle,@PositionCategory,@RequiredSkills,@PreferredSkills,@ExperienceRange,@Qualification,@Certifications,@JobLocation)", new { ScoreId = scoreId, data.PositionId, data.JobDescriptionVersionId, data.JobDescriptionVersionNumber, data.PositionCode, PositionTitle = scoringPositionTitle, data.PositionCategory, RequiredSkills = requiredSkillsSnapshot, PreferredSkills = preferredSkillsSnapshot, ExperienceRange = experienceRange, Qualification = qualificationRequirement, Certifications = certificationRequirement, data.JobLocation }, transaction);
         foreach (var component in components)
             await db.ExecuteAsync(@"INSERT INTO recruitment_application_score_components (ApplicationScoreId,CriterionCode,CriterionLabel,Weight,RawRatio,AwardedScore,MaximumScore,EvidenceSummary,DisplayOrder) VALUES (@ScoreId,@CriterionCode,@CriterionLabel,@Weight,@RawRatio,@AwardedScore,@Weight,@EvidenceSummary,@DisplayOrder)", new { ScoreId = scoreId, component.CriterionCode, component.CriterionLabel, component.Weight, component.RawRatio, component.AwardedScore, component.EvidenceSummary, component.DisplayOrder }, transaction);
         foreach (var skill in requiredMatches.Concat(preferredMatches))
-            await db.ExecuteAsync(@"INSERT INTO recruitment_application_score_skill_matches (ApplicationScoreId,SkillType,SkillName,MatchStatus,MatchMethod,MatchedTerm,EvidenceExcerpt,RequirementWeight,MinimumYears,MinimumProficiency,Confidence,SemanticSimilarity) VALUES (@ScoreId,@SkillType,@SkillName,@MatchStatus,@MatchMethod,@MatchedTerm,@EvidenceExcerpt,@RequirementWeight,@MinimumYears,@MinimumProficiency,@Confidence,@SemanticSimilarity)", new { ScoreId = scoreId, skill.SkillType, skill.SkillName, MatchStatus = skill.IsMatched ? "Matched" : "Missing", skill.MatchMethod, skill.MatchedTerm, skill.EvidenceExcerpt, skill.RequirementWeight, skill.MinimumYears, skill.MinimumProficiency, skill.Confidence, skill.SemanticSimilarity }, transaction);
+            await db.ExecuteAsync(@"INSERT INTO recruitment_application_score_skill_matches (ApplicationScoreId,SkillType,SkillName,MatchStatus,MatchMethod,MatchedTerm,EvidenceExcerpt,RequirementWeight,MinimumYears,MinimumProficiency,Confidence,SemanticSimilarity) VALUES (@ScoreId,@SkillType,@SkillName,@MatchStatus,@MatchMethod,@MatchedTerm,@EvidenceExcerpt,@RequirementWeight,@MinimumYears,@MinimumProficiency,@Confidence,@SemanticSimilarity)", new { ScoreId = scoreId, skill.SkillType, skill.SkillName, skill.MatchStatus, skill.MatchMethod, skill.MatchedTerm, skill.EvidenceExcerpt, skill.RequirementWeight, skill.MinimumYears, skill.MinimumProficiency, skill.Confidence, skill.SemanticSimilarity }, transaction);
+        foreach (var skill in requiredMatches.Concat(preferredMatches).Where(match => match.SkillType == "Required" || match.MinimumYears > 0))
+            await db.ExecuteAsync(@"INSERT INTO recruitment_application_score_evidence (ApplicationScoreId,CriterionCode,EvidenceType,ExpectedValue,ActualValue,MatchStatus,Confidence,ResumeSectionId) VALUES (@ScoreId,@CriterionCode,@EvidenceType,@ExpectedValue,@ActualValue,@MatchStatus,@Confidence,@ResumeSectionId)", new
+            {
+                ScoreId = scoreId,
+                CriterionCode = skill.SkillType == "Required" ? "requiredSkills" : "preferredSkills",
+                EvidenceType = skill.SkillType == "Required" ? "MustHaveSkillGate" : "PreferredSkillRequirement",
+                ExpectedValue = SkillRequirementExpected(skill),
+                ActualValue = SkillRequirementActual(skill),
+                skill.MatchStatus,
+                skill.Confidence,
+                ResumeSectionId = EvidenceSectionId("requiredSkills", resumeSectionReferences)
+            }, transaction);
         foreach (var item in evidence)
             await db.ExecuteAsync(@"INSERT INTO recruitment_application_score_evidence (ApplicationScoreId,CriterionCode,EvidenceType,ExpectedValue,ActualValue,MatchStatus,Confidence,ResumeSectionId) VALUES (@ScoreId,@CriterionCode,@EvidenceType,@ExpectedValue,@ActualValue,@MatchStatus,@Confidence,@ResumeSectionId)", new { ScoreId = scoreId, item.CriterionCode, item.EvidenceType, item.ExpectedValue, item.ActualValue, MatchStatus = item.Ratio >= 1m ? "Matched" : item.Ratio > 0 ? "Partial" : "NotMatched", Confidence = Round(item.Ratio), ResumeSectionId = EvidenceSectionId(item.CriterionCode, resumeSectionReferences) }, transaction);
         if (profile.EnableSemanticMatching)
@@ -2227,7 +2261,7 @@ WHERE JobDescriptionVersionId=@Id ORDER BY IsMandatory DESC,DisplayOrder,Id", ne
         }
         await db.ExecuteAsync("UPDATE recruitment_candidate_applications SET ResumeId=@ResumeId,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = applicationId, ResumeId = data.EffectiveResumeId }, transaction);
         await transaction.CommitAsync();
-        await WriteActivityAsync(db, data.ClientId, data.CandidateId, null, "RECRUITMENT", "ATS_SCORE_GENERATED", "ATS score generated", $"Score {total:0.##}/100 for {data.PositionTitle}", "RecruitmentApplicationScore", scoreId.ToString(), user);
+        await WriteActivityAsync(db, data.ClientId, data.CandidateId, null, "RECRUITMENT", "ATS_SCORE_GENERATED", "ATS score generated", $"Score {total:0.##}/100 for {data.PositionTitle}; status {scoreStatus}; {recommendation}", "RecruitmentApplicationScore", scoreId.ToString(), user);
         var result = await db.QueryFirstAsync<RecruitmentApplicationScore>("SELECT * FROM recruitment_application_scores WHERE Id=@Id", new { Id = scoreId });
         await HydrateScoresAsync(db, [result]);
         return (result, "");
@@ -2604,21 +2638,37 @@ AND (@UseIds=FALSE OR o.ApplicationId IN @Ids) ORDER BY o.UpdatedAt DESC", new {
         var group = aliases.FirstOrDefault(pair => NormalizeSearch(pair.Key) == normalizedTerm || pair.Value.Any(alias => NormalizeSearch(alias) == normalizedTerm));
         var candidates = string.IsNullOrWhiteSpace(group.Key) ? new[] { skillName } : group.Value.Append(group.Key).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var matched = candidates.FirstOrDefault(term => ContainsTerm(normalizedResumeText, term)) ?? "";
-        var isMatched = !string.IsNullOrWhiteSpace(matched);
-        var method = !isMatched ? "Missing" : matched.Equals(skillName, StringComparison.OrdinalIgnoreCase) ? "Exact" : "Alias";
-        return new CalculatedSkillMatch(skillType, skillName, isMatched, matched, isMatched ? ExtractEvidenceExcerpt(originalResumeText, matched) : "", requirement?.WeightPercent ?? 0, requirement?.MinimumYears ?? 0, requirement?.MinimumProficiency ?? "", method, isMatched ? .95m : 0m, 0m);
+        var hasSkillEvidence = !string.IsNullOrWhiteSpace(matched);
+        var method = !hasSkillEvidence ? "Missing" : matched.Equals(skillName, StringComparison.OrdinalIgnoreCase) ? "Exact" : "Alias";
+        return new CalculatedSkillMatch(
+            skillType,
+            skillName,
+            hasSkillEvidence,
+            false,
+            hasSkillEvidence ? RecruitmentAtsDomainRules.Matched : RecruitmentAtsDomainRules.Missing,
+            matched,
+            hasSkillEvidence ? ExtractEvidenceExcerpt(originalResumeText, matched) : "",
+            requirement?.WeightPercent ?? 0,
+            requirement?.MinimumYears ?? 0,
+            requirement?.MinimumProficiency ?? "",
+            method,
+            hasSkillEvidence ? .95m : 0m,
+            0m,
+            candidates,
+            null);
     }
 
     private List<CalculatedSkillMatch> ApplySemanticSkillMatches(IEnumerable<CalculatedSkillMatch> matches, SemanticDocument document, decimal minimumSimilarity)
     {
         return matches.Select(skill =>
         {
-            if (skill.IsMatched) return skill;
+            if (skill.HasSkillEvidence) return skill;
             var semantic = semanticScoring.FindBest(skill.SkillName, document);
             if (semantic.Similarity < minimumSimilarity) return skill with { SemanticSimilarity = semantic.Similarity };
             return skill with
             {
-                IsMatched = true,
+                HasSkillEvidence = true,
+                MatchStatus = RecruitmentAtsDomainRules.Matched,
                 MatchMethod = "Semantic",
                 MatchedTerm = Truncate(semantic.Evidence, 180),
                 EvidenceExcerpt = Truncate(semantic.Evidence, 500),
@@ -2628,13 +2678,47 @@ AND (@UseIds=FALSE OR o.ApplicationId IN @Ids) ORDER BY o.UpdatedAt DESC", new {
         }).ToList();
     }
 
+    private static CalculatedSkillMatch EvaluateSkillRequirement(string resumeText, CalculatedSkillMatch skill)
+    {
+        if (!skill.HasSkillEvidence)
+            return skill with
+            {
+                IsRequirementMet = false,
+                MatchStatus = RecruitmentAtsDomainRules.Missing,
+                EvidenceExcerpt = $"No resume evidence was found for the {skill.SkillType.ToLowerInvariant()} skill '{skill.SkillName}'."
+            };
+        if (skill.MinimumYears <= 0)
+            return skill with { IsRequirementMet = true, MatchStatus = RecruitmentAtsDomainRules.Matched };
+
+        var duration = RecruitmentAtsDomainRules.FindSkillSpecificDuration(resumeText, skill.DurationTerms);
+        if (!duration.IsEstablished)
+            return skill with
+            {
+                IsRequirementMet = false,
+                MatchStatus = RecruitmentAtsDomainRules.NeedsReview,
+                SkillSpecificYears = null,
+                Confidence = Math.Min(skill.Confidence, .5m),
+                EvidenceExcerpt = AppendSkillEvidence(skill.EvidenceExcerpt, $"Skill was found, but the resume does not establish skill-specific duration against the {skill.MinimumYears:0.##}-year requirement. Human review is required.")
+            };
+
+        var requirementMet = duration.Years >= skill.MinimumYears;
+        return skill with
+        {
+            IsRequirementMet = requirementMet,
+            MatchStatus = requirementMet ? RecruitmentAtsDomainRules.Matched : RecruitmentAtsDomainRules.InsufficientExperience,
+            SkillSpecificYears = duration.Years,
+            EvidenceExcerpt = AppendSkillEvidence(skill.EvidenceExcerpt, $"Skill-specific duration evidence: '{duration.Evidence}' ({duration.Years:0.##} years); requirement {skill.MinimumYears:0.##} years.")
+        };
+    }
+
     private static string SkillEvidenceSummary(IReadOnlyCollection<CalculatedSkillMatch> matches)
     {
-        var matched = matches.Count(row => row.IsMatched);
-        var semantic = matches.Count(row => row.IsMatched && row.MatchMethod == "Semantic");
-        return semantic > 0
-            ? $"{matched} of {matches.Count} skills matched ({semantic} semantic)"
-            : $"{matched} of {matches.Count} skills matched";
+        var matched = matches.Count(row => row.IsRequirementMet);
+        var needsReview = matches.Count(row => row.MatchStatus == RecruitmentAtsDomainRules.NeedsReview);
+        var insufficient = matches.Count(row => row.MatchStatus == RecruitmentAtsDomainRules.InsufficientExperience);
+        var missing = matches.Count(row => row.MatchStatus == RecruitmentAtsDomainRules.Missing);
+        var semantic = matches.Count(row => row.HasSkillEvidence && row.MatchMethod == "Semantic");
+        return $"{matched} of {matches.Count} requirements met; {missing} missing, {insufficient} below minimum experience, {needsReview} need review{(semantic > 0 ? $", {semantic} semantic" : "")}";
     }
 
     private static Task InsertSemanticEvidenceAsync(MySqlConnection db, MySqlTransaction transaction, long scoreId, string criterionCode, string expected, SemanticComparison comparison, long? sectionId)
@@ -2655,11 +2739,40 @@ AND (@UseIds=FALSE OR o.ApplicationId IN @Ids) ORDER BY o.UpdatedAt DESC", new {
     private static decimal SkillRequirementRatio(IReadOnlyCollection<CalculatedSkillMatch> matches)
     {
         if (matches.Count == 0) return 1m;
-        var totalWeight = matches.Sum(row => Math.Max(0, row.RequirementWeight));
-        return totalWeight > 0
-            ? Math.Clamp(matches.Where(row => row.IsMatched).Sum(row => Math.Max(0, row.RequirementWeight)) / totalWeight, 0, 1)
-            : Ratio(matches.Count(row => row.IsMatched), matches.Count);
+        var rows = matches.ToArray();
+        var normalizedWeights = RecruitmentAtsDomainRules.NormalizeBucketWeights(rows.Select(row => row.RequirementWeight));
+        return Math.Clamp(rows.Select((row, index) => row.IsRequirementMet ? normalizedWeights[index] : 0m).Sum(), 0, 1);
     }
+
+    private static string MustHaveGateSummary(IReadOnlyCollection<CalculatedSkillMatch> requiredMatches, RecruitmentAtsEligibilityStatus status)
+    {
+        if (requiredMatches.Count == 0) return "No must-have skills were configured";
+        var exceptions = requiredMatches.Where(match => !match.IsRequirementMet).Select(match => match.MatchStatus switch
+        {
+            RecruitmentAtsDomainRules.Missing => $"{match.SkillName}: missing",
+            RecruitmentAtsDomainRules.InsufficientExperience => $"{match.SkillName}: {match.SkillSpecificYears:0.##} of {match.MinimumYears:0.##} years evidenced",
+            RecruitmentAtsDomainRules.NeedsReview => $"{match.SkillName}: {match.MinimumYears:0.##}-year duration unverified",
+            _ => $"{match.SkillName}: {match.MatchStatus}"
+        }).ToArray();
+        return exceptions.Length == 0
+            ? $"Must-have gate {status}: all {requiredMatches.Count} requirements satisfied"
+            : $"Must-have gate {status}: {string.Join("; ", exceptions)}";
+    }
+
+    private static string SkillRequirementExpected(CalculatedSkillMatch skill) => skill.MinimumYears > 0
+        ? $"{skill.SkillName}; at least {skill.MinimumYears:0.##} years of skill-specific experience"
+        : $"{skill.SkillName}; resume evidence required";
+
+    private static string SkillRequirementActual(CalculatedSkillMatch skill) => skill.MatchStatus switch
+    {
+        RecruitmentAtsDomainRules.Missing => "No skill evidence found in the resume.",
+        RecruitmentAtsDomainRules.NeedsReview => "Skill evidence found; skill-specific duration could not be established from the resume.",
+        RecruitmentAtsDomainRules.InsufficientExperience => $"Resume establishes {skill.SkillSpecificYears:0.##} years of skill-specific experience.",
+        _ when skill.SkillSpecificYears.HasValue => $"Resume establishes {skill.SkillSpecificYears:0.##} years of skill-specific experience.",
+        _ => $"Skill evidence found using {skill.MatchMethod.ToLowerInvariant()} matching."
+    };
+
+    private static string AppendSkillEvidence(string existing, string detail) => Truncate(string.Join(" ", new[] { existing, detail }.Where(value => !string.IsNullOrWhiteSpace(value))), 500);
 
     private static string ExtractEvidenceExcerpt(string text, string term)
     {
@@ -3218,7 +3331,22 @@ CREATE TABLE IF NOT EXISTS person_activity_events (
     private sealed record AtsCriterionDefinition(string Code, string Label, string EvaluationType, decimal DefaultWeight, int DisplayOrder);
     private sealed record CalculatedScoreComponent(string CriterionCode, string CriterionLabel, decimal Weight, decimal RawRatio, decimal AwardedScore, string EvidenceSummary, int DisplayOrder);
     private sealed record CalculatedScoreEvidence(string CriterionCode, string EvidenceType, string ExpectedValue, string ActualValue, decimal Ratio);
-    private sealed record CalculatedSkillMatch(string SkillType, string SkillName, bool IsMatched, string MatchedTerm, string EvidenceExcerpt, decimal RequirementWeight, decimal MinimumYears, string MinimumProficiency, string MatchMethod, decimal Confidence, decimal SemanticSimilarity);
+    private sealed record CalculatedSkillMatch(
+        string SkillType,
+        string SkillName,
+        bool HasSkillEvidence,
+        bool IsRequirementMet,
+        string MatchStatus,
+        string MatchedTerm,
+        string EvidenceExcerpt,
+        decimal RequirementWeight,
+        decimal MinimumYears,
+        string MinimumProficiency,
+        string MatchMethod,
+        decimal Confidence,
+        decimal SemanticSimilarity,
+        string[] DurationTerms,
+        decimal? SkillSpecificYears);
 
     private sealed class InterviewPipelineContextRow
     {

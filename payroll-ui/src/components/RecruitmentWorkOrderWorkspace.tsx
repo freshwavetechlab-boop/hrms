@@ -11,6 +11,8 @@ import { getRecruitmentOpenPositions } from '../services/recruitmentService'
 import type { Client, RecruitmentCandidateApplication, RecruitmentOpenPosition } from '../types/payroll'
 import type { RecruitmentPipelineVersion } from '../types/recruitmentOrchestration'
 import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProfileSubmissionBatch, RecruitmentWorkOrder, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
+import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
+import DataTable from './DataTable'
 import './RecruitmentWorkOrderWorkspace.css'
 
 type WorkOrderDraft = SaveRecruitmentWorkOrder & { overallSlaDays: number | null }
@@ -22,7 +24,7 @@ const dateTimeText = (value?: string | null) => value ? new Date(value).toLocale
 const durationText = (minutes?: number | null) => minutes == null ? 'No target' : minutes === 0 ? 'Day 0' : `${(minutes / 1440).toFixed(minutes % 1440 ? 1 : 0)} days`
 const statusColor = (status: string) => status === 'Completed' ? 'green' : status === 'Active' ? 'blue' : status === 'On Hold' ? 'orange' : status === 'Cancelled' ? 'red' : 'default'
 
-export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, clientScopeManaged = false }: { initialClientId?: number; clientScopeManaged?: boolean }) {
+export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, clientScopeManaged = false, displayMode = 'pipeline' }: { initialClientId?: number; clientScopeManaged?: boolean; displayMode?: RecruitmentPipelineDisplayMode }) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
@@ -255,7 +257,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
       <Card><Statistic title="Active journeys" value={stats.activeCases} prefix={<PlayCircleOutlined />} /></Card>
       <Card className={stats.breached ? 'risk' : ''}><Statistic title="Overdue journeys" value={stats.breached} prefix={<ClockCircleOutlined />} /></Card>
     </div>
-    <div className="work-order-columns">
+    {displayMode !== 'table' && <div className="work-order-columns" data-testid="work-orders-pipeline-view">
       <Card title="Client hiring orders" extra={<Tag>{workOrders.length} records</Tag>}>
         {!workOrders.length ? <Empty description="No work order has been entered for this client." /> : <div className="work-order-list">{workOrders.map(row => <article key={row.id}>
           <button type="button" onClick={() => void viewWorkOrder(row)}><div><span>{row.clientName}</span><h3>{row.workOrderNumber}</h3><p>{row.subject || 'No subject entered'}</p></div><Tag color={statusColor(row.status)}>{row.status}</Tag></button>
@@ -268,7 +270,39 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
           return <button type="button" key={row.id} className={overdue ? 'overdue' : ''} onClick={() => void viewCase(row)}><div><Tag color={statusColor(row.status)}>{row.status}</Tag><span>{row.currentStakeholderCode || 'Unassigned stakeholder'}</span></div><h3>{row.positionName}</h3><p>{row.workOrderNumber} · {row.pipelineName}</p><footer><span>{row.currentStageName || 'Completed'}</span><b>{row.overallDueAtUtc ? `Due ${dateTimeText(row.overallDueAtUtc)}` : 'No overall due date'}</b></footer></button>
         })}</div>}
       </Card>
-    </div>
+    </div>}
+    {displayMode !== 'pipeline' && <div className="work-order-table-stack" data-testid="work-orders-table-view">
+      <Card size="small" title="Client hiring orders"><DataTable
+        rows={workOrders}
+        getRowId={row => row.id}
+        exportFileName="recruitment-work-orders"
+        emptyText="No work order has been entered for this client."
+        columns={[
+          { key: 'workOrderNumber', label: 'Work order', width: '190px', render: row => <div className="pipeline-table-candidate"><strong>{row.workOrderNumber}</strong><small>{row.subject || 'No subject entered'}</small></div> },
+          { key: 'clientName', label: 'Client', width: '180px' },
+          { key: 'receivedAtUtc', label: 'Received', width: '170px', render: row => dateTimeText(row.receivedAtUtc) },
+          { key: 'lineCount', label: 'Roles', width: '90px' },
+          { key: 'overallSlaMinutes', label: 'Overall SLA', width: '120px', render: row => durationText(row.overallSlaMinutes) },
+          { key: 'status', label: 'Status', width: '110px', render: row => <Tag color={statusColor(row.status)}>{row.status}</Tag> },
+          { key: 'actions', label: 'Actions', width: '240px', sortable: false, filterable: false, render: row => <Space size={4} wrap><Button size="small" onClick={() => void viewWorkOrder(row)}>View</Button><Button size="small" onClick={() => void openEdit(row)}>Edit</Button>{canDelete && <Popconfirm title="Delete this work order?" description="Delete its live cumulative pipeline cases first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeWorkOrder(row)}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space> },
+        ]}
+      /></Card>
+      <Card size="small" title="Active hiring journeys"><DataTable
+        rows={cases}
+        getRowId={row => row.id}
+        exportFileName="recruitment-hiring-journeys"
+        emptyText="No governed hiring journey has started for this client."
+        columns={[
+          { key: 'positionName', label: 'Position', width: '200px', render: row => <div className="pipeline-table-candidate"><strong>{row.positionName}</strong><small>{row.workOrderNumber}</small></div> },
+          { key: 'pipelineName', label: 'Pipeline', width: '190px' },
+          { key: 'currentStageName', label: 'Current stage', width: '180px', render: row => row.currentStageName || 'Completed' },
+          { key: 'currentStakeholderCode', label: 'Stakeholder', width: '160px', render: row => row.currentStakeholderCode || 'Unassigned' },
+          { key: 'overallDueAtUtc', label: 'Overall due', width: '170px', render: row => dateTimeText(row.overallDueAtUtc) },
+          { key: 'status', label: 'Status', width: '110px', render: row => <Tag color={statusColor(row.status)}>{row.status}</Tag> },
+          { key: 'actions', label: 'Actions', width: '170px', sortable: false, filterable: false, render: row => <Space size={4} wrap><Button size="small" onClick={() => void viewCase(row)}>Open</Button>{canDelete && <Popconfirm title="Delete this hiring journey?" description="Only empty test journeys can be deleted safely." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeHiringCase(row)}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space> },
+        ]}
+      /></Card>
+    </div>}
 
     <Drawer width={860} title={draft.id ? `Edit ${draft.workOrderNumber}` : 'New client work order'} open={editorOpen} onClose={() => setEditorOpen(false)} extra={<Button data-testid="work-order-save" type="primary" loading={saving} onClick={() => void save()}>Save work order</Button>}>
       <Alert showIcon type="info" message="Manual intake only" description="Inbound email parsing is intentionally not used. Record the approved work order here and upload the original order/JD annexure after saving." />

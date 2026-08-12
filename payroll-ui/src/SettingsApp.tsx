@@ -61,9 +61,8 @@ const recruitmentNavigation: Array<{
       { view: 'Requisitions', label: 'Hiring Requests' },
       { view: 'Job Descriptions', label: 'Jobs' },
       { view: 'Talent Pool', label: 'Candidates' },
-      { view: 'Hiring Pipeline', label: 'Candidate Pipeline' },
+      { view: 'Hiring Pipeline', label: 'Pipeline' },
       { view: 'Interviews', label: 'Selection & Onboarding' },
-      { view: 'Work Orders & SLA', label: 'Client Delivery SLA' },
     ],
   },
 ]
@@ -71,6 +70,7 @@ const recruitmentNavigationView = (view: RecruitmentPageView): RecruitmentPageVi
   if (view === 'Open Positions') return 'Requisitions'
   if (view === 'Job Postings') return 'Job Descriptions'
   if (['ATS Screening', 'Applications'].includes(view)) return 'Talent Pool'
+  if (view === 'Work Orders & SLA') return 'Hiring Pipeline'
   if (view === 'Offers & Pre-Onboarding') return 'Interviews'
   return view
 }

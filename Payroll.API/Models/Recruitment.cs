@@ -54,6 +54,11 @@ public class RecruitmentRequisition
     public string Status { get; set; } = "Draft";
     public long? WorkflowInstanceId { get; set; }
     public long? OpenPositionId { get; set; }
+    public long? WorkOrderId { get; set; }
+    public int? WorkOrderLineNumber { get; set; }
+    public long? LatestJobDescriptionVersionId { get; set; }
+    public int? LatestJobDescriptionVersionNumber { get; set; }
+    public string JobDescriptionStatus { get; set; } = "Not Started";
     public DateTime? SubmittedAt { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
@@ -79,6 +84,8 @@ public class SaveRecruitmentRequisition
     public string JobLocation { get; set; } = "";
     public string WorkMode { get; set; } = "Office";
     public int? ClientId { get; set; }
+    public long? WorkOrderId { get; set; }
+    public int? WorkOrderLineNumber { get; set; }
     public string Project { get; set; } = "";
     public bool BudgetAvailable { get; set; }
     public decimal BudgetAmount { get; set; }
@@ -230,6 +237,9 @@ public class RecruitmentOpenPosition
     public int InterviewCount { get; set; }
     public int OfferCount { get; set; }
     public int JoinedCount { get; set; }
+    public long? LatestJobDescriptionVersionId { get; set; }
+    public int? LatestJobDescriptionVersionNumber { get; set; }
+    public string JobDescriptionStatus { get; set; } = "Not Started";
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 }

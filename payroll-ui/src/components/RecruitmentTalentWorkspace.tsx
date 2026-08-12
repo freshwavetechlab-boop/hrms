@@ -95,6 +95,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
     const candidateId = applicationDraft.candidateId || detail?.candidate.id || 0
     const response = await createApplication({ ...applicationDraft, candidateId })
     if (!response.ok) return
+    if (response.data?.pipelineWarning) notify(response.data.pipelineWarning, 'warning')
     setApplicationDraft({ candidateId: 0, positionId: 0, sourceType: 'Direct' }); await load(); await refreshDetail()
   }
   const refreshInterviewData = async () => { await load(); await refreshDetail() }

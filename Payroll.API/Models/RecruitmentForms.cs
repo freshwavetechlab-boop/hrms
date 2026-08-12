@@ -172,7 +172,10 @@ public class PublicRecruitmentJob
     public string WorkMode { get; set; } = "";
     public string Summary { get; set; } = "";
     public string RolePurpose { get; set; } = "";
+    public DateTime? OpensAtUtc { get; set; }
     public DateTime? ClosesAtUtc { get; set; }
+    public bool IsAcceptingApplications { get; set; }
+    public string AvailabilityStatus { get; set; } = "Unavailable";
     public DynamicFormVersion? ApplicationForm { get; set; }
     public List<RecruitmentJdResponsibility> Responsibilities { get; set; } = [];
     public List<RecruitmentJdSkillRequirement> Skills { get; set; } = [];

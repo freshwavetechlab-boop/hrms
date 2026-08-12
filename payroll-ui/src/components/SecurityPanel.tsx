@@ -38,6 +38,8 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   const [clients, setClients] = useState<Client[]>([]), [employees, setEmployees] = useState<Employee[]>([])
   const [user, setUser] = useState(user0), [role, setRole] = useState(role0), [msg, setMsg] = useState(''), [directoryClientId, setDirectoryClientId] = useState('')
   const [userDrawerOpen, setUserDrawerOpen] = useState(false), [roleDrawerOpen, setRoleDrawerOpen] = useState(false), [createdCredentials, setCreatedCredentials] = useState<{ email: string; password: string } | null>(null), [saving, setSaving] = useState(false)
+  const [resetMustChangePassword, setResetMustChangePassword] = useState(true)
+  const [passwordPolicyOverride, setPasswordPolicyOverride] = useState<boolean | null>(null)
   const [accessRole, setAccessRole] = useState<AuthRole | null>(null), [accessPermissions, setAccessPermissions] = useState<string[]>([]), [savingAccess, setSavingAccess] = useState(false)
   const [accessModule, setAccessModule] = useState('')
   const [provisionOpen, setProvisionOpen] = useState(false), [provisionLoading, setProvisionLoading] = useState(false), [provisionRows, setProvisionRows] = useState<EmployeeLoginProvisionPreview[]>([])
@@ -100,9 +102,11 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     setAccessPermissions(current => selected ? Array.from(new Set([...current, ...codes])) : current.filter(code => !codes.includes(code)))
   }
 
-  const openNewUser = () => { setCreatedCredentials(null); setUser({ ...user0, clientId: directoryClientId }); setUserDrawerOpen(true) }
+  const openNewUser = () => { setCreatedCredentials(null); setResetMustChangePassword(true); setPasswordPolicyOverride(null); setUser({ ...user0, clientId: directoryClientId }); setUserDrawerOpen(true) }
   const editUser = (selected: AuthUser) => {
     setCreatedCredentials(null)
+    setResetMustChangePassword(true)
+    setPasswordPolicyOverride(null)
     setUser({ id: selected.id, email: selected.email, displayName: selected.displayName, mobile: selected.mobile || '', password: '', clientId: selected.clientId ? String(selected.clientId) : '', employeeId: selected.employeeId ? String(selected.employeeId) : '', isActive: selected.isActive, mustChangePassword: selected.mustChangePassword, roles: selected.roles })
     setUserDrawerOpen(true)
   }
@@ -119,7 +123,22 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     if (user.roles.length === 0) { setMsg('Select at least one role before saving the user.'); return }
     setSaving(true)
     try {
-      const body = { ...user, email: user.email.trim(), displayName: user.displayName.trim(), mobile: user.mobile.trim(), clientId: user.clientId ? Number(user.clientId) : null, employeeId: user.employeeId ? Number(user.employeeId) : null }
+      const body = {
+        id: user.id,
+        email: user.email.trim(),
+        displayName: user.displayName.trim(),
+        mobile: user.mobile.trim(),
+        password: user.password,
+        clientId: user.clientId ? Number(user.clientId) : null,
+        employeeId: user.employeeId ? Number(user.employeeId) : null,
+        isActive: user.isActive,
+        roles: user.roles,
+        ...(user.id === 0
+          ? { mustChangePassword: user.mustChangePassword }
+          : user.password.trim()
+            ? { mustChangePassword: resetMustChangePassword }
+            : passwordPolicyOverride === null ? {} : { mustChangePassword: passwordPolicyOverride }),
+      }
       const response = await saveSecurityUser(body)
       setMsg(response.ok ? 'User saved and role assignments updated.' : response.error || 'User save failed.')
       if (response.ok) {
@@ -345,7 +364,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     await load()
   }
 
-  const closeUserDrawer = () => { setUserDrawerOpen(false); setUser(user0); setCreatedCredentials(null) }
+  const closeUserDrawer = () => { setUserDrawerOpen(false); setUser(user0); setResetMustChangePassword(true); setPasswordPolicyOverride(null); setCreatedCredentials(null) }
   const closeRoleDrawer = () => { setRoleDrawerOpen(false); setRole(role0) }
   const activeAccessGroup = groupedPermissions.find(([module]) => module === accessModule) ?? groupedPermissions[0]
 
@@ -359,9 +378,18 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
         <InfoField label="Display name"><Input value={user.displayName} onChange={event => setUser({ ...user, displayName: event.target.value })} /></InfoField>
         <InfoField label="Email / Login ID"><Input value={user.email} onChange={event => setUser({ ...user, email: event.target.value })} /></InfoField>
         <InfoField label="Mobile number"><Input value={user.mobile} onChange={event => setUser({ ...user, mobile: event.target.value })} /></InfoField>
-        <InfoField label={user.id ? 'Reset password' : 'Temporary password'} help={user.id ? 'Leave blank to keep the current password.' : 'Required for a new login.'}><Input.Password value={user.password} onChange={event => setUser({ ...user, password: event.target.value })} placeholder={user.id ? 'Leave blank to keep existing' : 'Enter temporary password'} /></InfoField>
+        <InfoField label={user.id ? 'Reset password' : 'Temporary password'} help={user.id ? 'Leave blank to preserve both the current password and its first-login status.' : 'Required for a new login.'}><Input.Password value={user.password} onChange={event => setUser({ ...user, password: event.target.value })} placeholder={user.id ? 'Leave blank to keep existing' : 'Enter temporary password'} /></InfoField>
         <InfoField label="Status"><SearchSelect value={user.isActive ? 'active' : 'inactive'} onChange={value => setUser({ ...user, isActive: value === 'active' })} options={[{ value: 'active', label: 'Active' }, { value: 'inactive', label: 'Inactive' }]} /></InfoField>
-        <InfoField label="Password policy"><AntCheckbox checked={user.mustChangePassword} onChange={event => setUser({ ...user, mustChangePassword: event.target.checked })}>Require change on first login</AntCheckbox></InfoField>
+        {user.id === 0
+          ? <InfoField label="Password policy"><AntCheckbox checked={user.mustChangePassword} onChange={event => setUser({ ...user, mustChangePassword: event.target.checked })}>Require change on first login</AntCheckbox></InfoField>
+          : <InfoField label="Password policy" help={user.password.trim() ? 'This setting applies to the explicit password reset above.' : passwordPolicyOverride === null ? 'Role, client and status edits preserve the current password policy.' : 'This password-policy change will be applied when you update the user.'}>
+            {user.password.trim()
+              ? <AntCheckbox data-testid="require-change-after-reset" checked={resetMustChangePassword} onChange={event => setResetMustChangePassword(event.target.checked)}>Require change after reset</AntCheckbox>
+              : user.mustChangePassword
+                ? <AntCheckbox data-testid="clear-first-login-requirement" checked={passwordPolicyOverride === false} onChange={event => setPasswordPolicyOverride(event.target.checked ? false : null)}>Clear first-login requirement</AntCheckbox>
+                : <AntCheckbox data-testid="require-change-next-login" checked={passwordPolicyOverride === true} onChange={event => setPasswordPolicyOverride(event.target.checked ? true : null)}>Require change on next login</AntCheckbox>}
+            <Tag data-testid="password-policy-current" color={user.mustChangePassword ? 'gold' : 'green'}>{user.mustChangePassword ? 'Currently: change required' : 'Currently: password active'}</Tag>
+          </InfoField>}
         <div className="security-drawer-section wide"><div className="security-mini-access"><b>Role assignment</b><span>{user.roles.length} selected</span></div><div className="permission-matrix role-picker">{roles.map(item => <label className={user.roles.includes(item.code) ? 'selected' : ''} key={item.code}><input type="checkbox" checked={user.roles.includes(item.code)} onChange={() => setUser({ ...user, roles: toggle(user.roles, item.code) })} /><strong>{item.name}</strong><small>{item.description}</small></label>)}</div></div>
       </div>
       <footer><button type="button" className="secondary" onClick={closeUserDrawer}>Cancel</button><button type="button" disabled={saving} onClick={() => void saveUser()}>{saving ? 'Saving...' : user.id ? 'Update user' : 'Create user'}</button></footer>
