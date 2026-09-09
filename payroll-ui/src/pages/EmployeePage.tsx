@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { AimOutlined, ApartmentOutlined, NodeIndexOutlined, ZoomInOutlined, ZoomOutOutlined } from '@ant-design/icons'
 import { Chk, F, Sel } from '../components/FormPrimitives'
 import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewColumnMeta, type BulkUploadPreviewSheet, type BulkUploadPreviewState } from '../components/BulkUploadPreviewModal'
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from '../components/BulkUploadProgressModal'
@@ -380,18 +381,26 @@ function EmployeeOrgStructure(p: { clients: Client[]; locations: WorkLocation[];
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null)
   const clientRows = p.clients.filter(client => !p.clientFilter || client.id === p.clientFilter)
   const employeeCount = clientRows.reduce((sum, client) => sum + p.employees.filter(employee => employee.clientId === client.id).length, 0)
+  const clientSummaries = p.clients.map(client => ({ client, count: p.employees.filter(employee => employee.clientId === client.id).length }))
   const changeZoom = (delta: number) => setZoom(current => Math.min(1.6, Math.max(.55, Number((current + delta).toFixed(2)))))
   const resetZoom = () => setZoom(1)
   return <section className="card employee-org-page">
-    <header><i className="blue">O</i><div><h3>Client-wise org structure</h3><p>Visual reporting hierarchy by client. Each tile uses active employee master data.</p></div></header>
+    <header><i className="blue"><ApartmentOutlined /></i><div><h3>Organization chart</h3><p>Teams-style reporting hierarchy built from each active employee's reporting manager.</p></div></header>
     <div className="employee-org-toolbar">
       <label><span>Client</span><SearchSelect value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={selectOptions(p.clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label>
       <div><span>Total employees</span><b>{employeeCount}</b></div>
-      <div className="employee-org-view-toggle"><span>View</span><div><button type="button" className={orientation === 'vertical' ? 'active' : ''} onClick={() => setOrientation('vertical')}>Vertical</button><button type="button" className={orientation === 'horizontal' ? 'active' : ''} onClick={() => setOrientation('horizontal')}>Horizontal</button></div></div>
-      <div className="employee-org-zoom"><span>Zoom</span><div><button type="button" onClick={() => changeZoom(-.1)}>-</button><b>{Math.round(zoom * 100)}%</b><button type="button" onClick={() => changeZoom(.1)}>+</button><button type="button" onClick={resetZoom}>Reset</button></div></div>
+      <div className="employee-org-view-toggle"><span>Layout</span><div><button type="button" aria-pressed={orientation === 'vertical'} className={orientation === 'vertical' ? 'active' : ''} onClick={() => setOrientation('vertical')}><ApartmentOutlined /> Vertical</button><button type="button" aria-pressed={orientation === 'horizontal'} className={orientation === 'horizontal' ? 'active' : ''} onClick={() => setOrientation('horizontal')}><NodeIndexOutlined /> Horizontal</button></div></div>
+      <div className="employee-org-zoom"><span>Canvas</span><div><button type="button" title="Zoom out" aria-label="Zoom out" onClick={() => changeZoom(-.1)}><ZoomOutOutlined /></button><b>{Math.round(zoom * 100)}%</b><button type="button" title="Zoom in" aria-label="Zoom in" onClick={() => changeZoom(.1)}><ZoomInOutlined /></button><button type="button" title="Fit to default scale" onClick={resetZoom}><AimOutlined /> Fit</button></div></div>
     </div>
     <div className="employee-org-client-list">
-      {clientRows.map(client => <ClientOrgChart key={client.id} client={client} employees={p.employees.filter(employee => employee.clientId === client.id)} locations={p.locations} orientation={orientation} zoom={zoom} onZoom={changeZoom} onSelectEmployee={setSelectedEmployee} />)}
+      {!p.clientFilter ? <div className="employee-org-overview" aria-label="Client organization overview">
+        <div className="employee-org-overview-copy"><b>Choose a client hierarchy</b><span>All-client mode stays lightweight. Open one client at a time to explore every reporting root without a multi-thousand-card canvas.</span></div>
+        <div className="employee-org-overview-grid">
+          {clientSummaries.map(({ client, count }) => <button type="button" key={client.id} data-employee-count={count} aria-label={`Open ${client.name} hierarchy, ${count} employees`} onClick={() => p.setClientFilter(client.id)}>
+            <span>{client.code || 'Client'}</span><strong>{client.name}</strong><b>{count} employee{count === 1 ? '' : 's'}</b><small>Open hierarchy</small>
+          </button>)}
+        </div>
+      </div> : clientRows.map(client => <ClientOrgChart key={client.id} client={client} employees={p.employees.filter(employee => employee.clientId === client.id)} locations={p.locations} orientation={orientation} zoom={zoom} onZoom={changeZoom} onSelectEmployee={setSelectedEmployee} />)}
       {!clientRows.length && <p className="empty">No client found for org structure.</p>}
     </div>
     {selectedEmployee && <EmployeeOrgDetails employee={selectedEmployee} clients={p.clients} locations={p.locations} employees={p.employees} onClose={() => setSelectedEmployee(null)} />}
@@ -399,6 +408,7 @@ function EmployeeOrgStructure(p: { clients: Client[]; locations: WorkLocation[];
 }
 
 function ClientOrgChart(p: { client: Client; employees: Employee[]; locations: WorkLocation[]; orientation: 'vertical' | 'horizontal'; zoom: number; onZoom: (delta: number) => void; onSelectEmployee: (employee: Employee) => void }) {
+  const [selectedRootId, setSelectedRootId] = useState(0)
   const active = p.employees.filter(employee => employee.isActive)
   const employeeIds = new Set(active.map(employee => employee.id))
   const childrenByManager = new Map<number, Employee[]>()
@@ -408,16 +418,21 @@ function ClientOrgChart(p: { client: Client; employees: Employee[]; locations: W
   })
   childrenByManager.forEach(rows => rows.sort(employeeSort))
   const roots = active.filter(employee => !employee.reportingManagerId || !employeeIds.has(employee.reportingManagerId)).sort(employeeSort)
+  const selectedRoot = roots.find(employee => employee.id === selectedRootId) ?? roots[0]
   return <section className="employee-org-client">
     <div className="employee-org-client-title">
       <div><span>Client</span><h3>{p.client.name}</h3></div>
       <b>{active.length} employee{active.length === 1 ? '' : 's'}</b>
     </div>
-    {roots.length ? <div className="employee-org-canvas" onWheel={event => { event.preventDefault(); p.onZoom(event.deltaY > 0 ? -.05 : .05) }}>
-      <div className={`employee-org-tree ${p.orientation}`} style={{ transform: `scale(${p.zoom})` }}>
-        {roots.map(employee => <OrgNode key={employee.id} employee={employee} childrenByManager={childrenByManager} locations={p.locations} level={0} onSelectEmployee={p.onSelectEmployee} />)}
+    {roots.length > 1 && <div className="employee-org-root-control">
+      <label><span>Reporting root</span><SearchSelect value={selectedRoot?.id ?? 0} onChange={value => setSelectedRootId(Number(value))} options={roots.map(employee => ({ value: employee.id, label: `${`${employee.firstName} ${employee.lastName}`.trim() || employee.employeeCode} - ${employee.employeeCode}${employee.designation ? ` / ${employee.designation}` : ''}` }))} /></label>
+      <p><b>{roots.length}</b> independent reporting roots found. Search and switch roots instead of loading them into one oversized canvas.</p>
+    </div>}
+    {roots.length ? <><div className="employee-org-canvas-hint"><ZoomInOutlined /> Hold Ctrl and use the mouse wheel to zoom. Normal wheel movement scrolls the page.</div><div className={`employee-org-canvas${active.length <= 3 ? ' compact' : ''}`} onWheel={event => { if (!event.ctrlKey && !event.metaKey) return; event.preventDefault(); p.onZoom(event.deltaY > 0 ? -.05 : .05) }}>
+      <div className={`employee-org-tree ${p.orientation}`} style={{ zoom: p.zoom }}>
+        {selectedRoot && <OrgNode key={selectedRoot.id} employee={selectedRoot} childrenByManager={childrenByManager} locations={p.locations} level={0} onSelectEmployee={p.onSelectEmployee} />}
       </div>
-    </div> : <p className="empty">No active employees available for this client.</p>}
+    </div></> : <p className="empty">No active employees available for this client.</p>}
   </section>
 }
 
@@ -613,7 +628,7 @@ function EmployeeDirectory(p: { clients: Client[]; locations: WorkLocation[]; em
   const clientName = (id: number) => p.clients.find(client => client.id === id)?.name ?? `Client #${id || '-'}`
   const locationName = (id: number) => workLocationName(p.locations, id)
   const locationOptions = p.locations.filter(location => !p.clientFilter || location.clientId === p.clientFilter).map(location => ({ value: location.id, label: p.clientFilter ? location.name : `${location.name} - ${clientName(location.clientId)}` }))
-  return <section className="card employee-directory"><header><i className="blue">E</i><div><h3>Employee master</h3><p>Search client-wise employees. Create or edit details in a focused popup.</p></div><div className="employee-directory-actions"><button type="button" disabled={!p.clientFilter} title={p.clientFilter ? 'Download Excel template' : 'Select a client first'} onClick={p.onDownloadTemplate}>Download Excel template</button><button type="button" data-testid="employee-bulk-upload-open" className="employee-upload-action" disabled={!p.clientFilter} title={!p.clientFilter ? 'Select a client first' : 'Use a template or map any Excel/CSV file'} onClick={p.onBulkUpload}>Bulk upload</button><button type="button" onClick={p.onNew}>New employee</button></div></header>
+  return <section className="card employee-directory"><header><i className="blue">E</i><div><h3>Employee records</h3><p>Search client-wise employees. Create or edit details in a focused popup.</p></div><div className="employee-directory-actions"><button type="button" disabled={!p.clientFilter} title={p.clientFilter ? 'Download Excel template' : 'Select a client first'} onClick={p.onDownloadTemplate}>Download Excel template</button><button type="button" data-testid="employee-bulk-upload-open" className="employee-upload-action" disabled={!p.clientFilter} title={!p.clientFilter ? 'Select a client first' : 'Use a template or map any Excel/CSV file'} onClick={p.onBulkUpload}>Bulk upload</button><button type="button" onClick={p.onNew}>New employee</button></div></header>
     <div className="employee-directory-tools"><label><span>Client</span><SearchSelect testId="employee-client-filter" value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={selectOptions(p.clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label><label><span>Work Location</span><SearchSelect value={p.locationFilter} onChange={value => p.setLocationFilter(Number(value))} options={selectOptions(locationOptions, 'All locations', 0)} /></label><label><span>Search</span><input value={p.query} onChange={event => p.setQuery(event.target.value)} placeholder="Code, name, location, department, email..." /></label><div className="employee-directory-count"><span>Showing</span><b>{p.employees.length} / {p.allCount}</b></div></div>
     <DataTable rows={p.employees} emptyText="No employees found for the selected filters." exportFileName="employees" columns={[
       { key: 'employeeName', label: 'Employee', value: row => `${row.firstName} ${row.lastName}`.trim(), render: row => <strong>{row.firstName} {row.lastName}</strong> },

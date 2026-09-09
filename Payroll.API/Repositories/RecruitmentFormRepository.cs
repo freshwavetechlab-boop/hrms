@@ -9,7 +9,7 @@ using Payroll.API.Models;
 
 namespace Payroll.API.Repositories;
 
-public sealed class RecruitmentFormRepository(IConfiguration configuration, ILogger<RecruitmentFormRepository> logger)
+public sealed class RecruitmentFormRepository(IConfiguration configuration, ILogger<RecruitmentFormRepository> logger, RecruitmentPipelineRepository pipelines)
 {
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
 
@@ -614,10 +614,15 @@ CASE WHEN j.OpensAtUtc IS NOT NULL AND j.OpensAtUtc>UTC_TIMESTAMP(6) THEN 'Sched
  WHEN j.MaximumApplications IS NOT NULL AND j.ApplicationCount>=j.MaximumApplications THEN 'Full'
  WHEN j.ApplicationFormVersionId IS NULL THEN 'FormUnavailable' ELSE 'Open' END AvailabilityStatus
 FROM recruitment_job_postings j JOIN recruitment_open_positions p ON p.Id=j.PositionId JOIN clients c ON c.Id=j.ClientId
-JOIN recruitment_settings settings ON settings.ClientId=j.ClientId AND settings.RecruitmentEnabled=TRUE AND settings.EnableCandidatePortal=TRUE AND settings.IsActive=TRUE
 JOIN recruitment_job_description_versions d ON d.Id=j.JobDescriptionVersionId
 WHERE j.PublicSlug=@Slug AND j.Status='Published'", new { Slug = slug.Trim() });
         if (job is null) return null;
+        var proofConfigurationError = await pipelines.GetCandidateProofValidationErrorAsync(job.PostingId);
+        if (proofConfigurationError.Length > 0)
+        {
+            job.IsAcceptingApplications = false;
+            job.AvailabilityStatus = "ProofConfigurationUnavailable";
+        }
         var formVersionId = await db.ExecuteScalarAsync<long?>("SELECT ApplicationFormVersionId FROM recruitment_job_postings WHERE Id=@Id", new { Id = job.PostingId });
         if (formVersionId.HasValue)
         {
@@ -634,6 +639,11 @@ WHERE j.PublicSlug=@Slug AND j.Status='Published'", new { Slug = slug.Trim() });
         job.Responsibilities = (await db.QueryAsync<RecruitmentJdResponsibility>("SELECT * FROM recruitment_jd_responsibilities WHERE JobDescriptionVersionId=@Id ORDER BY DisplayOrder", new { Id = jdId })).ToList();
         job.Skills = (await db.QueryAsync<RecruitmentJdSkillRequirement>("SELECT * FROM recruitment_jd_skill_requirements WHERE JobDescriptionVersionId=@Id ORDER BY DisplayOrder", new { Id = jdId })).ToList();
         job.Qualifications = (await db.QueryAsync<RecruitmentJdQualificationRequirement>("SELECT * FROM recruitment_jd_qualification_requirements WHERE JobDescriptionVersionId=@Id ORDER BY DisplayOrder", new { Id = jdId })).ToList();
+        job.Certifications = (await db.QueryAsync<PublicRecruitmentJobCertification>(@"SELECT Id,CertificationName,IsMandatory,
+(CandidateProofAttachmentFieldConfigurationId IS NOT NULL) CandidateProofRequested,DisplayOrder
+FROM recruitment_jd_certification_requirements WHERE JobDescriptionVersionId=@Id ORDER BY DisplayOrder", new { Id = jdId })).ToList();
+        job.Languages = (await db.QueryAsync<RecruitmentJdLanguageRequirement>("SELECT * FROM recruitment_jd_language_requirements WHERE JobDescriptionVersionId=@Id ORDER BY DisplayOrder", new { Id = jdId })).ToList();
+        job.Benefits = (await db.QueryAsync<RecruitmentJdBenefit>("SELECT * FROM recruitment_jd_benefits WHERE JobDescriptionVersionId=@Id ORDER BY DisplayOrder", new { Id = jdId })).ToList();
         return job;
     }
 
@@ -652,12 +662,13 @@ WHERE j.PublicSlug=@Slug AND j.Status='Published'", new { Slug = slug.Trim() });
         await using var db = Db();
         await db.OpenAsync();
         var posting = await db.QueryFirstOrDefaultAsync<PostingSessionRow>(@"SELECT posting.Id PostingId,posting.ClientId,posting.PositionId,posting.ApplicationFormVersionId FROM recruitment_job_postings posting
-JOIN recruitment_settings settings ON settings.ClientId=posting.ClientId AND settings.RecruitmentEnabled=TRUE AND settings.EnableCandidatePortal=TRUE AND settings.IsActive=TRUE
 WHERE posting.PublicSlug=@Slug AND posting.Status='Published' AND posting.ApplicationFormVersionId IS NOT NULL
 AND EXISTS (SELECT 1 FROM form_versions v WHERE v.Id=ApplicationFormVersionId AND v.Status IN ('Published','Retired'))
 AND (posting.OpensAtUtc IS NULL OR posting.OpensAtUtc<=UTC_TIMESTAMP(6)) AND (posting.ClosesAtUtc IS NULL OR posting.ClosesAtUtc>=UTC_TIMESTAMP(6))
 AND (posting.MaximumApplications IS NULL OR posting.ApplicationCount<posting.MaximumApplications)", new { Slug = slug });
         if (posting is null) return (null, "This job is not accepting applications.");
+        if ((await pipelines.GetCandidateProofValidationErrorAsync(posting.PostingId)).Length > 0)
+            return (null, "Certification document collection is temporarily unavailable. Please contact the hiring team.");
         var normalizedEmail = NormalizeEmail(email);
         var idempotency = string.IsNullOrWhiteSpace(request.IdempotencyKey) ? Guid.NewGuid().ToString("N") : request.IdempotencyKey.Trim();
         var idempotencyHash = Hash($"{posting.PostingId}:{normalizedEmail}:{normalizedPhone}:{idempotency}");
@@ -827,10 +838,11 @@ VALUES (@SubmissionId,@FieldId,@SelectedValue,@DisplayLabel,@DisplayOrder)", new
     {
         var missing = (await db.QueryAsync<string>(@"SELECT f.Label
 FROM form_fields f JOIN form_sections sectionRow ON sectionRow.Id=f.SectionId JOIN form_field_types t ON t.Id=f.FieldTypeId
+LEFT JOIN attachment_field_configurations attachmentConfiguration ON attachmentConfiguration.id=f.AttachmentFieldConfigurationId
 WHERE f.FormVersionId=@VersionId AND f.IsActive=TRUE AND f.IsRequired=TRUE AND (
- (t.TypeCode='UPLOAD' AND NOT EXISTS (SELECT 1 FROM form_submission_attachments a
+ (t.TypeCode='UPLOAD' AND (SELECT COUNT(*) FROM form_submission_attachments a
       JOIN entity_attachments attachment ON attachment.id=a.AttachmentId AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
-      WHERE a.SubmissionId=@SubmissionId AND a.FieldId=f.Id))
+      WHERE a.SubmissionId=@SubmissionId AND a.FieldId=f.Id)<GREATEST(1,COALESCE(attachmentConfiguration.minimum_file_count,1)))
  OR (t.TypeCode IN ('RADIO','MULTI_SELECT','SEARCH_SELECT') AND (
       (f.LookupSourceId IS NULL AND NOT EXISTS (SELECT 1 FROM form_submission_selected_options o WHERE o.SubmissionId=@SubmissionId AND o.FieldId=f.Id))
       OR (f.LookupSourceId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM form_submission_lookup_values l WHERE l.SubmissionId=@SubmissionId AND l.FieldId=f.Id))
@@ -1389,7 +1401,6 @@ WHERE id=@AttachmentId AND entity_type='FORM_SUBMISSION' AND entity_id=@Submissi
             var submission = await db.QueryFirstOrDefaultAsync<SubmissionPostingRow>(@"SELECT s.Id SubmissionId,s.FormVersionId,s.ClientId,s.Status,s.CandidateId,s.ApplicationId,
 j.Id PostingId,j.PositionId,j.ApplicationCount,j.MaximumApplications,j.Status PostingStatus,j.OpensAtUtc,j.ClosesAtUtc,COALESCE(position.RecruiterUserId,0) RecruiterUserId
 FROM form_submissions s JOIN recruitment_job_postings j ON j.Id=@PostingId AND j.ClientId=s.ClientId AND j.ApplicationFormVersionId=s.FormVersionId
-JOIN recruitment_settings settings ON settings.ClientId=s.ClientId AND settings.RecruitmentEnabled=TRUE AND settings.EnableCandidatePortal=TRUE AND settings.IsActive=TRUE
 JOIN recruitment_open_positions position ON position.Id=j.PositionId
 WHERE s.Id=@SubmissionId FOR UPDATE", new { session.PostingId, session.SubmissionId }, transaction);
             if (submission is null) return (null, "Application session is invalid or expired.");
@@ -1484,15 +1495,19 @@ VALUES (@Code,@CandidateId,@PositionId,@ClientId,'Public Job',@PostingId,@Postin
     {
         version.Sections = (await db.QueryAsync<DynamicFormSection>("SELECT * FROM form_sections WHERE FormVersionId=@Id ORDER BY DisplayOrder", new { Id = version.Id })).ToList();
         var fields = (await db.QueryAsync<DynamicFormField>(@"SELECT f.Id,f.FormVersionId,f.SectionId,t.TypeCode FieldTypeCode,f.StableFieldCode,f.Label,f.Placeholder,f.HelpText,f.IsRequired,f.DisplayOrder,f.WidthColumns,f.MinimumLength,f.MaximumLength,f.MinimumNumber,f.MaximumNumber,f.MinimumDate,f.MaximumDate,f.AttachmentFieldConfigurationId,COALESCE(l.SourceCode,'') LookupSourceCode,f.IsActive,
-COALESCE(cfg.allow_multiple,FALSE) AllowMultipleFiles,COALESCE(cfg.maximum_file_count,1) MaximumFileCount,
+COALESCE(cfg.allow_multiple,FALSE) AllowMultipleFiles,COALESCE(cfg.minimum_file_count,0) MinimumFileCount,COALESCE(cfg.maximum_file_count,1) MaximumFileCount,
 COALESCE(cfg.maximum_file_size_bytes,0) MaximumFileSizeBytes,cfg.maximum_total_size_bytes MaximumTotalSizeBytes,
-COALESCE(CAST(cfg.allowed_extensions_json AS CHAR),'[]') AllowedExtensionsJson,COALESCE(CAST(cfg.allowed_mime_types_json AS CHAR),'[]') AllowedMimeTypesJson
+COALESCE(CAST(cfg.allowed_extensions_json AS CHAR),'[]') AllowedExtensionsJson,COALESCE(CAST(cfg.allowed_mime_types_json AS CHAR),'[]') AllowedMimeTypesJson,
+COALESCE(attributeRow.requires_document_number,FALSE) RequiresDocumentNumber,
+COALESCE(attributeRow.requires_issue_date,FALSE) RequiresIssueDate,
+COALESCE(attributeRow.requires_expiry_date,FALSE) RequiresExpiryDate
 FROM form_fields f JOIN form_versions v ON v.Id=f.FormVersionId JOIN form_definitions d ON d.Id=v.FormDefinitionId
 JOIN form_field_types t ON t.Id=f.FieldTypeId
 LEFT JOIN form_lookup_sources l ON l.Id=f.LookupSourceId
 LEFT JOIN attachment_field_configurations cfg ON cfg.id=f.AttachmentFieldConfigurationId AND cfg.is_active=TRUE AND cfg.client_id IN (0,d.ClientId)
  AND (cfg.effective_from_utc IS NULL OR cfg.effective_from_utc<=UTC_TIMESTAMP(6))
  AND (cfg.effective_until_utc IS NULL OR cfg.effective_until_utc>=UTC_TIMESTAMP(6))
+LEFT JOIN attachment_attributes attributeRow ON attributeRow.id=cfg.attachment_attribute_id AND attributeRow.is_active=TRUE
 WHERE f.FormVersionId=@Id ORDER BY f.DisplayOrder", new { Id = version.Id })).ToList();
         if (fields.Count > 0)
         {
@@ -1513,11 +1528,15 @@ WHERE r.FieldId IN @Ids ORDER BY r.DisplayOrder,r.Id", new { Ids = ids });
                     field.AttachmentConstraints = new PublicAttachmentConstraints
                     {
                         AllowMultiple = field.AllowMultipleFiles,
+                        MinimumFileCount = field.IsRequired ? Math.Max(1, field.MinimumFileCount) : Math.Max(0, field.MinimumFileCount),
                         MaximumFileCount = field.AllowMultipleFiles ? Math.Max(1, field.MaximumFileCount) : 1,
                         MaximumFileSizeBytes = field.MaximumFileSizeBytes,
                         MaximumTotalSizeBytes = field.MaximumTotalSizeBytes,
                         AllowedExtensions = ReadStringList(field.AllowedExtensionsJson),
-                        AllowedMimeTypes = ReadStringList(field.AllowedMimeTypesJson)
+                        AllowedMimeTypes = ReadStringList(field.AllowedMimeTypesJson),
+                        RequiresDocumentNumber = field.RequiresDocumentNumber,
+                        RequiresIssueDate = field.RequiresIssueDate,
+                        RequiresExpiryDate = field.RequiresExpiryDate
                     };
                 }
             }
@@ -1811,7 +1830,6 @@ WHERE ps.Id=@Id AND ps.RevokedAtUtc IS NULL AND ps.ExpiresAtUtc>UTC_TIMESTAMP(6)
 
     private const string SessionSql = @"SELECT ps.Id,ps.PostingId,ps.SubmissionId,ps.ExternalSubjectId,ps.Purpose,ps.MaximumUses,ps.UseCount,ps.ExpiresAtUtc,ps.RevokedAtUtc,s.Status SubmissionStatus
 FROM form_public_sessions ps JOIN form_submissions s ON s.Id=ps.SubmissionId
-JOIN recruitment_settings settings ON settings.ClientId=s.ClientId AND settings.RecruitmentEnabled=TRUE AND settings.EnableCandidatePortal=TRUE AND settings.IsActive=TRUE
 WHERE ps.TokenHash=@TokenHash";
 
     private sealed class PostingSessionRow { public long PostingId { get; set; } public int ClientId { get; set; } public long PositionId { get; set; } public long? ApplicationFormVersionId { get; set; } }

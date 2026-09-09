@@ -1,4 +1,4 @@
-export type IconName = 'apps' | 'bell' | 'check' | 'chevron' | 'close' | 'collapse' | 'expand' | 'settings' | 'employees' | 'payruns' | 'reports' | 'security' | 'calendar' | 'dashboard' | 'tasks' | 'adjustments' | 'run' | 'history' | 'tax' | 'building' | 'location' | 'dropdown' | 'holiday' | 'template' | 'component' | 'workflow' | 'notification' | 'job' | 'org' | 'attendance' | 'billing' | 'money' | 'document' | 'shield' | 'user' | 'role'
+export type IconName = 'apps' | 'bell' | 'check' | 'chevron' | 'close' | 'collapse' | 'expand' | 'settings' | 'employees' | 'payruns' | 'reports' | 'security' | 'calendar' | 'dashboard' | 'tasks' | 'adjustments' | 'run' | 'history' | 'tax' | 'building' | 'location' | 'dropdown' | 'holiday' | 'template' | 'component' | 'workflow' | 'notification' | 'job' | 'org' | 'attendance' | 'billing' | 'money' | 'document' | 'payslip' | 'server' | 'shield' | 'user' | 'role' | 'paperclip' | 'api' | 'offcycle' | 'talent' | 'request' | 'candidate' | 'application' | 'resume' | 'pipeline' | 'onboarding'
 
 export default function AppIcon({ name }: { name: IconName }) {
   const paths = {
@@ -35,9 +35,21 @@ export default function AppIcon({ name }: { name: IconName }) {
     billing: 'M5 3h14v18H5zM8 7h8M8 11h8M8 15h3m3 0h2',
     money: 'M4 7h16v10H4zM8 12h.01M16 12h.01M12 9a3 3 0 100 6 3 3 0 000-6z',
     document: 'M6 3h9l3 3v15H6zM15 3v4h4M9 12h6M9 16h6',
+    payslip: 'M6 3h12v18l-2-1.5L14 21l-2-1.5L10 21l-2-1.5L6 21zM9 8h6M9 12h6M9 16h3',
+    server: 'M4 4h16v6H4zM4 14h16v6H4zM7 7h.01M7 17h.01M11 7h6M11 17h6',
     shield: 'M12 3l7 4v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V7z',
     user: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0',
-    role: 'M8 7a4 4 0 118 0 4 4 0 01-8 0zM5 21a7 7 0 0114 0M17 14l2 2 4-4'
+    role: 'M8 7a4 4 0 118 0 4 4 0 01-8 0zM5 21a7 7 0 0114 0M17 14l2 2 4-4',
+    paperclip: 'M21 11.5l-8.7 8.7a6 6 0 01-8.5-8.5l9.2-9.2a4 4 0 015.7 5.7l-9.2 9.2a2 2 0 01-2.8-2.8l8.7-8.7',
+    api: 'M8 8l-4 4 4 4m8-8 4 4-4 4M14 4l-4 16',
+    offcycle: 'M4 4v6h6M5.5 15a8 8 0 101.9-8.3L4 10M12 8v5l3 2',
+    talent: 'M9 4h6l1 3h3a2 2 0 012 2v10H3V9a2 2 0 012-2h3l1-3zm-2 8h10m-5-3v6',
+    request: 'M8 4h8M9 3h6v3H9zM6 5H5a2 2 0 00-2 2v13h18V7a2 2 0 00-2-2h-1M7 11h10M7 15h7',
+    candidate: 'M9 11a4 4 0 100-8 4 4 0 000 8zM2 21a7 7 0 0114 0M18 8v6m-3-3h6',
+    application: 'M6 3h9l3 3v15H6zM15 3v4h4M9 11h6M9 15h4M4 8h2M4 12h2M4 16h2',
+    resume: 'M5 3h14v18H5zM8 7h8M8 11h8M8 15h4M15 14l3 3m0-3l-3 3',
+    pipeline: 'M5 5h5v5H5zm9 9h5v5h-5zM10 7h4a3 3 0 013 3v4M14 17h-4a3 3 0 01-3-3v-4',
+    onboarding: 'M8 11a4 4 0 100-8 4 4 0 000 8zM2 21a7 7 0 0112-4.9M16 17l2 2 4-5'
   }
-  return <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={paths[name]} /></svg>
+  return <svg className="ui-icon" data-icon={name} viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={paths[name]} /></svg>
 }

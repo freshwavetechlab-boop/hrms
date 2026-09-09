@@ -40,11 +40,11 @@ const dependencyRoutes: DependencyRoute[] = [
   },
   {
     matches: [/pipeline stage/i, /pipeline version/i, /pipeline is assigned/i, /pipeline contains/i],
-    action: { label: 'Open Pipeline Designer', href: '/settings/recruitment-administration/pipelines' },
+    action: { label: 'Manage hiring pipeline', href: '/recruitment/hiring-pipeline?manage=1' },
   },
   {
     matches: [/form is used/i, /form has/i, /form is configured/i, /submitted form/i],
-    action: { label: 'Open Form Designer', href: '/settings/recruitment-administration/forms' },
+    action: { label: 'Manage candidate forms', href: '/recruitment/hiring-pipeline?manage=1&tool=forms' },
   },
   {
     matches: [/employee-converted/i, /joined/i, /employee lifecycle/i],

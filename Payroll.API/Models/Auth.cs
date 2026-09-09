@@ -8,6 +8,8 @@ public class AuthUser
     public string Mobile { get; set; } = string.Empty;
     public int? ClientId { get; set; }
     public int? EmployeeId { get; set; }
+    public string RecruitmentScopeMode { get; set; } = "Client";
+    public List<int> RecruitmentLocationIds { get; set; } = [];
     public bool IsActive { get; set; }
     public bool MustChangePassword { get; set; }
     public List<string> Roles { get; set; } = [];
@@ -34,6 +36,8 @@ public class SaveAuthUserRequest
     public string Password { get; set; } = string.Empty;
     public int? ClientId { get; set; }
     public int? EmployeeId { get; set; }
+    public string RecruitmentScopeMode { get; set; } = "Client";
+    public List<int> RecruitmentLocationIds { get; set; } = [];
     public bool IsActive { get; set; } = true;
     public bool? MustChangePassword { get; set; }
     public List<string> Roles { get; set; } = [];

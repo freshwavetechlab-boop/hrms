@@ -1,0 +1,46 @@
+.recruitment-seed-pack-modal .ant-modal-body {
+  display: grid;
+  gap: 16px;
+  max-height: min(720px, calc(100vh - 180px));
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+
+.recruitment-seed-pack-modal .ant-modal-body > * {
+  min-width: 0;
+}
+
+.seed-pack-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.seed-pack-intro .ant-typography {
+  margin: 0;
+}
+
+.seed-pack-intro .ant-typography + .ant-typography {
+  margin-top: 4px;
+}
+
+.seed-pack-result-alert {
+  margin-top: 0;
+}
+
+.recruitment-seed-pack-modal .ant-upload-wrapper .ant-upload-drag {
+  background: #fafbff;
+  border-color: #cfd5e6;
+}
+
+.recruitment-seed-pack-modal .ant-upload-wrapper .ant-upload-drag:hover {
+  border-color: #5b4ce6;
+}
+
+@media (max-width: 640px) {
+  .seed-pack-intro { flex-direction: column; }
+  .seed-pack-intro .ant-btn { width: 100%; }
+}

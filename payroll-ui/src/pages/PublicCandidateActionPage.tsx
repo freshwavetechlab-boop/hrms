@@ -7,7 +7,7 @@ import {
   uploadPublicCandidateActionFile,
 } from '../services/recruitmentOrchestrationService'
 import type {
-  CandidateActionDecision, DynamicFormField, PublicCandidateActionContext, PublicFormValue, PublicUploadedFile,
+  CandidateActionDecision, DynamicFormField, PublicCandidateActionContext, PublicFormValue, PublicUploadedFile, PublicUploadMetadata,
 } from '../types/recruitmentOrchestration'
 import '../components/RecruitmentOrchestration.css'
 
@@ -35,8 +35,8 @@ export default function PublicCandidateActionPage({ token: suppliedToken }: Prop
     return () => { active = false }
   }, [token])
 
-  const upload = async (field: DynamicFormField, file: File, onProgress: (percent: number) => void) => {
-    const response = await uploadPublicCandidateActionFile(token, field.id, file, onProgress)
+  const upload = async (field: DynamicFormField, file: File, metadata: PublicUploadMetadata, onProgress: (percent: number) => void) => {
+    const response = await uploadPublicCandidateActionFile(token, field.id, file, metadata, onProgress)
     if (response.ok && response.data) setFiles(current => [...current, { ...response.data, fieldId: response.data.fieldId || field.id }])
     return { ok: response.ok, error: response.error }
   }

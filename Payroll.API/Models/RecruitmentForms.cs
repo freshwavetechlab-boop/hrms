@@ -96,21 +96,33 @@ public class DynamicFormField
     [JsonIgnore]
     public bool AllowMultipleFiles { get; set; }
     [JsonIgnore]
+    public int MinimumFileCount { get; set; }
+    [JsonIgnore]
     public int MaximumFileCount { get; set; } = 1;
     [JsonIgnore]
     public long MaximumFileSizeBytes { get; set; }
     [JsonIgnore]
     public long? MaximumTotalSizeBytes { get; set; }
+    [JsonIgnore]
+    public bool RequiresDocumentNumber { get; set; }
+    [JsonIgnore]
+    public bool RequiresIssueDate { get; set; }
+    [JsonIgnore]
+    public bool RequiresExpiryDate { get; set; }
 }
 
 public class PublicAttachmentConstraints
 {
     public bool AllowMultiple { get; set; }
+    public int MinimumFileCount { get; set; }
     public int MaximumFileCount { get; set; } = 1;
     public long MaximumFileSizeBytes { get; set; }
     public long? MaximumTotalSizeBytes { get; set; }
     public List<string> AllowedExtensions { get; set; } = [];
     public List<string> AllowedMimeTypes { get; set; } = [];
+    public bool RequiresDocumentNumber { get; set; }
+    public bool RequiresIssueDate { get; set; }
+    public bool RequiresExpiryDate { get; set; }
 }
 
 public class DynamicFormFieldOption
@@ -180,6 +192,18 @@ public class PublicRecruitmentJob
     public List<RecruitmentJdResponsibility> Responsibilities { get; set; } = [];
     public List<RecruitmentJdSkillRequirement> Skills { get; set; } = [];
     public List<RecruitmentJdQualificationRequirement> Qualifications { get; set; } = [];
+    public List<PublicRecruitmentJobCertification> Certifications { get; set; } = [];
+    public List<RecruitmentJdLanguageRequirement> Languages { get; set; } = [];
+    public List<RecruitmentJdBenefit> Benefits { get; set; } = [];
+}
+
+public class PublicRecruitmentJobCertification
+{
+    public long Id { get; set; }
+    public string CertificationName { get; set; } = "";
+    public bool IsMandatory { get; set; }
+    public bool CandidateProofRequested { get; set; }
+    public int DisplayOrder { get; set; } = 100;
 }
 
 public class StartPublicApplicationRequest

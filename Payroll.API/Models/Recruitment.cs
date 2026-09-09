@@ -51,11 +51,20 @@ public class RecruitmentRequisition
     public string ExternalApprovalStatus { get; set; } = "";
     public decimal? CtcFlexibilityPercent { get; set; }
     public string SourceNotes { get; set; } = "";
+    public string SourceParsedJson { get; set; } = "";
     public string Status { get; set; } = "Draft";
     public long? WorkflowInstanceId { get; set; }
+    public string ApprovalStageName { get; set; } = "";
+    public string PendingApproverName { get; set; } = "";
     public long? OpenPositionId { get; set; }
     public long? WorkOrderId { get; set; }
     public int? WorkOrderLineNumber { get; set; }
+    public long? HiringCaseId { get; set; }
+    public long? PipelineVersionId { get; set; }
+    public long? PipelineStageId { get; set; }
+    public string PipelineStageName { get; set; } = "";
+    public string PipelineStageType { get; set; } = "";
+    public string PipelineStatus { get; set; } = "";
     public long? LatestJobDescriptionVersionId { get; set; }
     public int? LatestJobDescriptionVersionNumber { get; set; }
     public string JobDescriptionStatus { get; set; } = "Not Started";
@@ -111,6 +120,24 @@ public class SaveRecruitmentRequisition
     public string ExternalApprovalStatus { get; set; } = "";
     public decimal? CtcFlexibilityPercent { get; set; }
     public string SourceNotes { get; set; } = "";
+    public string SourceParsedJson { get; set; } = "";
+}
+
+public class RecruitmentRequestDocumentParseRequest
+{
+    public IFormFile? File { get; set; }
+}
+
+public class RecruitmentRequestDocumentParseResult
+{
+    public string Status { get; set; } = "NeedsReview";
+    public string ParserName { get; set; } = "";
+    public string ParserVersion { get; set; } = "";
+    public string OriginalFileName { get; set; } = "";
+    public SaveRecruitmentRequisition Draft { get; set; } = new();
+    public List<string> DetectedFields { get; set; } = [];
+    public List<string> ReviewFields { get; set; } = [];
+    public List<string> Warnings { get; set; } = [];
 }
 
 public class RecruitmentOptions
@@ -237,6 +264,12 @@ public class RecruitmentOpenPosition
     public int InterviewCount { get; set; }
     public int OfferCount { get; set; }
     public int JoinedCount { get; set; }
+    public long? PipelineInstanceId { get; set; }
+    public long? PipelineVersionId { get; set; }
+    public long? PipelineStageId { get; set; }
+    public string PipelineStageName { get; set; } = "";
+    public string PipelineStageType { get; set; } = "";
+    public string PipelineStatus { get; set; } = "";
     public long? LatestJobDescriptionVersionId { get; set; }
     public int? LatestJobDescriptionVersionNumber { get; set; }
     public string JobDescriptionStatus { get; set; } = "Not Started";

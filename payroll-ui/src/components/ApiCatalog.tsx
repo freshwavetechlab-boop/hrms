@@ -13,7 +13,6 @@ export default function ApiCatalog() {
   const docs = selected ? describeApi(selected) : null
 
   return <section className="card workflow-admin">
-    <header><div><h3>API Catalog</h3><p>Use these request paths when deciding which screen action should start a workflow.</p></div></header>
     <section className="approval-stages">
       <div className="approval-stages-heading"><div><h3>Payroll approval example</h3><p>Use this rule when payroll lock should go to approval.</p></div><span>Recommended</span></div>
       <div className="request-details">

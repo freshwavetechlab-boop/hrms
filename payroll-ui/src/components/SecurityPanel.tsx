@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Input, Modal, Space, Tag } from 'antd'
+import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Input, Modal, Select, Space, Tag } from 'antd'
 import { DownloadOutlined, ImportOutlined, KeyOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
 import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from './BulkUploadPreviewModal'
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from './BulkUploadProgressModal'
 import { deleteSecurityRole, deleteSecurityUser, loadEmployeeProvisionPreview, loadSecurityData, provisionEmployeeLogins, saveSecurityRole, saveSecurityUser } from '../services/securityService'
-import type { AuditLog, AuthPermission, AuthRole, AuthUser, Client, Employee, EmployeeLoginProvisionPreview, EmployeeLoginProvisionResponse } from '../types/payroll'
+import type { AuditLog, AuthPermission, AuthRole, AuthUser, Client, Employee, EmployeeLoginProvisionPreview, EmployeeLoginProvisionResponse, WorkLocation } from '../types/payroll'
 import { parseImportPreviewFile, validateImportPreview, type ImportPreviewData, type ImportPreviewRules } from '../utils/importPreview'
 import { downloadXlsx } from '../utils/xlsx'
 import DataTable from './DataTable'
@@ -12,7 +12,7 @@ import SearchSelect from './SearchSelect'
 import '../SecurityAccess.css'
 import '../RoleAccessSummary.css'
 
-const user0 = { id: 0, email: '', displayName: '', mobile: '', password: '', clientId: '', employeeId: '', isActive: true, mustChangePassword: true, roles: ['mss_manager'] }
+const user0 = { id: 0, email: '', displayName: '', mobile: '', password: '', clientId: '', employeeId: '', recruitmentScopeMode: 'Client' as 'Client' | 'EmployeeLocation' | 'SelectedLocations', recruitmentLocationIds: [] as number[], isActive: true, mustChangePassword: true, roles: ['mss_manager'] }
 const role0 = { id: 0, code: '', name: '', description: '', permissions: [] as string[], isSystem: false }
 const userImportHeaders = ['Email', 'Display Name', 'Mobile', 'Employee Code', 'Roles', 'Temporary Password', 'Active', 'Must Change Password']
 const securityTabs = ['Users', 'Roles', 'Audit'] as const
@@ -163,7 +163,7 @@ const InfoField = ({ label, help, children, className = '' }: { label: string; h
 
 export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: SecurityTab }) {
   const [users, setUsers] = useState<AuthUser[]>([]), [roles, setRoles] = useState<AuthRole[]>([]), [permissions, setPermissions] = useState<AuthPermission[]>([]), [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
-  const [clients, setClients] = useState<Client[]>([]), [employees, setEmployees] = useState<Employee[]>([])
+  const [clients, setClients] = useState<Client[]>([]), [employees, setEmployees] = useState<Employee[]>([]), [workLocations, setWorkLocations] = useState<WorkLocation[]>([])
   const [user, setUser] = useState(user0), [role, setRole] = useState(role0), [msg, setMsg] = useState(''), [directoryClientId, setDirectoryClientId] = useState('')
   const [userDrawerOpen, setUserDrawerOpen] = useState(false), [roleDrawerOpen, setRoleDrawerOpen] = useState(false), [createdCredentials, setCreatedCredentials] = useState<{ email: string; password: string } | null>(null), [saving, setSaving] = useState(false)
   const [resetMustChangePassword, setResetMustChangePassword] = useState(true)
@@ -221,6 +221,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     setAuditLogs(data.auditLogs)
     setClients(activeClients)
     setEmployees(data.employees.filter(employee => activeIds.has(employee.clientId)))
+    setWorkLocations(data.workLocations.filter(location => location.isActive && activeIds.has(location.clientId)))
   }
 
   const toggle = (list: string[], value: string) => list.includes(value) ? list.filter(item => item !== value) : [...list, value]
@@ -244,7 +245,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     setCreatedCredentials(null)
     setResetMustChangePassword(true)
     setPasswordPolicyOverride(null)
-    setUser({ id: selected.id, email: selected.email, displayName: selected.displayName, mobile: selected.mobile || '', password: '', clientId: selected.clientId ? String(selected.clientId) : '', employeeId: selected.employeeId ? String(selected.employeeId) : '', isActive: selected.isActive, mustChangePassword: selected.mustChangePassword, roles: selected.roles })
+    setUser({ id: selected.id, email: selected.email, displayName: selected.displayName, mobile: selected.mobile || '', password: '', clientId: selected.clientId ? String(selected.clientId) : '', employeeId: selected.employeeId ? String(selected.employeeId) : '', recruitmentScopeMode: selected.recruitmentScopeMode || 'Client', recruitmentLocationIds: selected.recruitmentLocationIds || [], isActive: selected.isActive, mustChangePassword: selected.mustChangePassword, roles: selected.roles })
     setUserDrawerOpen(true)
   }
   const openNewRole = () => { setRole(role0); setRoleDrawerOpen(true) }
@@ -258,6 +259,8 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     if (!user.displayName.trim() || !user.email.trim()) { setMsg('Display name and email/login ID are required.'); return }
     if (user.id === 0 && !user.password.trim()) { setMsg('Temporary password is required for a new user.'); return }
     if (user.roles.length === 0) { setMsg('Select at least one role before saving the user.'); return }
+    if (user.recruitmentScopeMode === 'EmployeeLocation' && !user.employeeId) { setMsg('Link an employee before using employee work-location visibility.'); return }
+    if (user.recruitmentScopeMode === 'SelectedLocations' && user.recruitmentLocationIds.length === 0) { setMsg('Select at least one recruitment location.'); return }
     setSaving(true)
     try {
       const body = {
@@ -268,6 +271,8 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
         password: user.password,
         clientId: user.clientId ? Number(user.clientId) : null,
         employeeId: user.employeeId ? Number(user.employeeId) : null,
+        recruitmentScopeMode: user.recruitmentScopeMode,
+        recruitmentLocationIds: user.recruitmentScopeMode === 'SelectedLocations' ? user.recruitmentLocationIds : [],
         isActive: user.isActive,
         roles: user.roles,
         ...(user.id === 0
@@ -480,6 +485,8 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
         password: existing && !tempPassword ? '' : tempPassword,
         clientId,
         employeeId: employee?.id ?? existing?.employeeId ?? null,
+        recruitmentScopeMode: existing?.recruitmentScopeMode || 'Client',
+        recruitmentLocationIds: existing?.recruitmentLocationIds || [],
         isActive: parseFlag(cell(map, 'Active'), existing?.isActive ?? true),
         mustChangePassword: parseFlag(cell(map, 'Must Change Password'), existing?.mustChangePassword ?? true),
         roles: rolesForRow
@@ -510,8 +517,10 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
       <header><div><span className="eyebrow purple">User access</span><h3>{user.id ? 'Edit user' : 'Add user'}</h3><p>Create an employee-linked login or a standalone business user.</p></div><button type="button" aria-label="Close user drawer" onClick={closeUserDrawer}>x</button></header>
       <div className="component-drawer-form security-component-drawer-form">
         <InfoField label="User type" help="Choose employee-linked ESS access or a standalone business login."><SearchSelect value={user.roles.includes('employee') && user.employeeId ? 'employee' : 'business'} onChange={value => value === 'employee' ? setUser({ ...user, roles: ['employee'] }) : setUser({ ...user, employeeId: '', roles: ['mss_manager'] })} options={[{ value: 'business', label: 'Business user' }, { value: 'employee', label: 'Employee / ESS user' }]} /></InfoField>
-        <InfoField label="Client scope" help="Leave blank for cross-client access."><SearchSelect value={user.clientId} onChange={value => setUser({ ...user, clientId: value, employeeId: '' })} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></InfoField>
+        <InfoField label="Client scope" help="Leave blank for cross-client access."><SearchSelect value={user.clientId} onChange={value => setUser({ ...user, clientId: value, employeeId: '', recruitmentLocationIds: [] })} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></InfoField>
         <InfoField label="Employee link" help="Employee Master records not yet linked to another login." className="wide"><SearchSelect value={user.employeeId} onChange={useEmployee} options={[{ value: '', label: 'No employee link' }, ...employeeOptions.map(employee => ({ value: employee.id, label: `${employee.firstName} ${employee.lastName} / ${employee.employeeCode} / ${employee.department}` }))]} /></InfoField>
+        <InfoField label="Recruitment visibility" help="Roles control actions; this scope controls which positions and candidates are visible."><SearchSelect value={user.recruitmentScopeMode} onChange={value => setUser({ ...user, recruitmentScopeMode: value as typeof user.recruitmentScopeMode, recruitmentLocationIds: value === 'SelectedLocations' ? user.recruitmentLocationIds : [] })} options={[{ value: 'Client', label: 'All assigned-client positions' }, { value: 'EmployeeLocation', label: 'Employee work location only' }, { value: 'SelectedLocations', label: 'Selected locations' }]} /></InfoField>
+        {user.recruitmentScopeMode === 'SelectedLocations' && <InfoField label="Visible recruitment locations" help="Select one or more HO, Tech Centre or ARO locations." className="wide"><Select mode="multiple" className="app-search-select" popupClassName="app-search-select-dropdown" showSearch optionFilterProp="label" value={user.recruitmentLocationIds} onChange={values => setUser({ ...user, recruitmentLocationIds: values })} options={workLocations.filter(location => !user.clientId || location.clientId === Number(user.clientId)).map(location => ({ value: location.id, label: `${location.name}${location.city ? ` / ${location.city}` : ''}` }))} placeholder="Select visible locations" /></InfoField>}
         <InfoField label="Display name"><Input value={user.displayName} onChange={event => setUser({ ...user, displayName: event.target.value })} /></InfoField>
         <InfoField label="Email / Login ID"><Input value={user.email} onChange={event => setUser({ ...user, email: event.target.value })} /></InfoField>
         <InfoField label="Mobile number"><Input value={user.mobile} onChange={event => setUser({ ...user, mobile: event.target.value })} /></InfoField>
@@ -629,7 +638,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
 
   const renderRoles = () => <section className="security-page-stack">
     {msg && <Alert className="security-message-alert" type={/unable|required|failed|cannot/i.test(msg) ? 'warning' : 'info'} showIcon message={msg} closable onClose={() => setMsg('')} />}
-    <AntCard title="Roles" size="small" className="settings-panel settings-table-panel security-table-panel">
+    <AntCard size="small" className="settings-panel settings-table-panel security-table-panel" aria-label="Role access bundles">
       <div className="component-table-head security-table-head"><div><b>Access bundles</b><span>{roles.length} roles / {permissions.length} permissions. Portal access and scope below are calculated from each role's current permissions.</span></div><Button type="primary" icon={<PlusOutlined />} onClick={openNewRole}>New role</Button></div>
       <div className="security-role-overview-grid" data-testid="security-role-overview">{roles.map(item => <article className="security-role-overview-card" data-testid={`role-overview-card-${testIdPart(item.code)}`} key={item.id}>
         <header><div><span>{item.name}</span><code>{item.code}</code></div><Tag color={item.isSystem ? 'blue' : 'purple'}>{item.isSystem ? 'System' : 'Custom'}</Tag></header>

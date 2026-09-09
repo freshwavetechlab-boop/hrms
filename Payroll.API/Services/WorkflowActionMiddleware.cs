@@ -81,6 +81,22 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
                 RequestedAt = DateTime.UtcNow
             });
 
+            var workflowId = rule.WorkflowId ?? await workflows.GetDefaultIdForActivityAsync(rule.ActivityCode, clientId);
+            if (workflowId is not null)
+            {
+                var existingState = await workflows.GetResourceStateAsync(rule.ResourceType, resourceId);
+                if (existingState?.CurrentState != "Pending")
+                    await workflows.StartAsync(new StartWorkflowRequest
+                    {
+                        WorkflowId = workflowId.Value,
+                        ResourceType = rule.ResourceType,
+                        ResourceId = resourceId,
+                        PayloadJson = payload
+                    }, user.Id);
+            }
+
+            // Publish after workflow creation so dynamic recipients such as Current Approver
+            // can resolve against the task created by the successful business action.
             await notifications.PublishEventAsync(new NotificationEvent
             {
                 EventCode = rule.ActivityCode,
@@ -92,22 +108,6 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
                 ActorEmail = user.Email,
                 PayloadJson = payload
             });
-
-            var workflowId = rule.WorkflowId ?? await workflows.GetDefaultIdForActivityAsync(rule.ActivityCode, clientId);
-            if (workflowId is null)
-                return;
-
-            var existingState = await workflows.GetResourceStateAsync(rule.ResourceType, resourceId);
-            if (existingState?.CurrentState == "Pending")
-                return;
-
-            await workflows.StartAsync(new StartWorkflowRequest
-            {
-                WorkflowId = workflowId.Value,
-                ResourceType = rule.ResourceType,
-                ResourceId = resourceId,
-                PayloadJson = payload
-            }, user.Id);
         }
         catch (Exception exception)
         {

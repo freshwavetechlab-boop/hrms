@@ -78,6 +78,7 @@ public class RecruitmentJdCertificationRequirement
     public long JobDescriptionVersionId { get; set; }
     public string CertificationName { get; set; } = "";
     public bool IsMandatory { get; set; }
+    public long? CandidateProofAttachmentFieldConfigurationId { get; set; }
     public int DisplayOrder { get; set; } = 100;
 }
 
@@ -125,6 +126,8 @@ public class RecruitmentJobPosting
     [JsonIgnore]
     public string PublicPortalBaseUrl { get; set; } = "";
     public bool CandidatePortalReady { get; set; }
+    public bool CandidateProofReady { get; set; } = true;
+    public string CandidateProofValidationMessage { get; set; } = "";
     public string PublicUrl => CandidatePortalReady
         ? RecruitmentPublicUrls.BuildCareerUrl(PublicPortalBaseUrl, PublicSlug)
         : "";
@@ -356,6 +359,10 @@ public class RecruitmentStageOfferConfiguration
     public long? VarianceApprovalWorkflowId { get; set; }
     public int CandidateResponseValidityDays { get; set; } = 7;
     public bool RequireAcceptedOfferToAdvance { get; set; } = true;
+    public bool NegotiationSlaExtensionEnabled { get; set; }
+    public decimal NegotiationThresholdPercent { get; set; } = 30;
+    public int NegotiationSlaExtensionMinutes { get; set; }
+    public string NegotiationSlaStageCodes { get; set; } = "";
 }
 
 public class RecruitmentPipelineTransition
@@ -462,6 +469,15 @@ public class RecruitmentApplicationStageInstance
     public long ActiveDurationSeconds { get; set; }
     public long PausedDurationSeconds { get; set; }
     public bool IsSlaBreached { get; set; }
+    public bool AllowPause { get; set; } = true;
+    public string PauseBehavior { get; set; } = "ShiftStageAndOverall";
+}
+
+public class RecruitmentApplicationStageTimelineItem : RecruitmentApplicationStageInstance
+{
+    public string StageType { get; set; } = "";
+    public string Reason { get; set; } = "";
+    public string ChangedByName { get; set; } = "";
 }
 
 public class RecruitmentPipelineBoard
@@ -485,6 +501,9 @@ public class RecruitmentPipelineBoardLane
     public int DisplayOrder { get; set; }
     public int SlaDurationMinutes { get; set; }
     public int SlaWarningMinutes { get; set; }
+    public bool AllowPause { get; set; } = true;
+    public string PauseBehavior { get; set; } = "ShiftStageAndOverall";
+    public bool IsTerminal { get; set; }
     public List<RecruitmentStageProcessDocumentRequirement> ProcessDocumentRequirements { get; set; } = [];
     public List<RecruitmentPipelineBoardCard> Applications { get; set; } = [];
 }
@@ -499,14 +518,20 @@ public class RecruitmentPipelineWorkspace
 public class RecruitmentPipelineWorkspaceLane
 {
     public long PipelineVersionId { get; set; }
+    public int PipelineVersionNumber { get; set; }
+    public string PipelineName { get; set; } = "";
+    public string ClientName { get; set; } = "";
     public long StageId { get; set; }
     public string StageCode { get; set; } = "";
     public string StageName { get; set; } = "";
     public string StageType { get; set; } = "";
     public string CardScope { get; set; } = "Application";
     public int DisplayOrder { get; set; }
+    public string SlaMode { get; set; } = "StageEntry";
+    public int OverallSlaMinutes { get; set; }
     public int SlaDurationMinutes { get; set; }
     public int SlaWarningMinutes { get; set; }
+    public int? TargetOffsetMinutes { get; set; }
     public List<RecruitmentPipelineDemandCard> DemandCards { get; set; } = [];
     public List<RecruitmentPipelineBoardCard> Applications { get; set; } = [];
 }
@@ -541,6 +566,12 @@ public class RecruitmentPipelineDemandCard
     public DateTime? EnteredAtUtc { get; set; }
     public DateTime? DueAtUtc { get; set; }
     public DateTime? OverallDueAtUtc { get; set; }
+    public long ActiveDurationSeconds { get; set; }
+    public long PausedDurationSeconds { get; set; }
+    public bool IsPaused { get; set; }
+    public bool AllowPause { get; set; }
+    public bool IsTerminal { get; set; }
+    public string AdvanceStatus { get; set; } = "";
     public bool IsSlaBreached { get; set; }
     public bool NeedsPipelineSelection { get; set; }
 }
@@ -552,6 +583,8 @@ public class RecruitmentPipelineBoardCard
     public long CandidateId { get; set; }
     public string CandidateName { get; set; } = "";
     public string CandidateEmail { get; set; } = "";
+    public string RejectedFromStageName { get; set; } = "";
+    public DateTime? RejectedAtUtc { get; set; }
     public decimal? AtsScore { get; set; }
     public DateTime EnteredAtUtc { get; set; }
     public DateTime? DueAtUtc { get; set; }

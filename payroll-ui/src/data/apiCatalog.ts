@@ -36,6 +36,7 @@ export const apiCatalog: ApiCatalogRow[] = [
   row('Workflow', 'POST', '/api/workflows/department-heads', 'Save department head assignment.', 'Possible'),
   row('Workflow', 'POST', '/api/workflows/start', 'Manually start workflow.', 'No'),
   row('Workflow', 'GET', '/api/workflows/tasks/pending', 'Current user pending workflow tasks.', 'No'),
+  row('Workflow', 'GET', '/api/workflows/requests/mine', 'Workflow requests submitted by the current user, with current approval stage and assignee.', 'No'),
   row('Workflow', 'POST', '/api/workflows/tasks/{taskId}/{action}', 'Approve, reject, or send back a workflow task.', 'No'),
   row('Workflow', 'GET', '/api/workflows/history', 'Workflow instance history.', 'No'),
   row('Workflow', 'GET', '/api/workflows/{instanceId}/history', 'Approval trail for one workflow instance.', 'No'),

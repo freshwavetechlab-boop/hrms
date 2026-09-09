@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
+import { EyeOutlined } from '@ant-design/icons'
+import { Button } from 'antd'
 import DataTable from './components/DataTable'
 import { deletePayRun, getPayRun, getPayRuns, recordPayRunPayments } from './services/payrollService'
 import type { PayRun } from './types/payroll'
@@ -7,7 +9,6 @@ import './PayHistory.css'
 
 export default function PayHistory() {
   const [runs, setRuns] = useState<PayRun[]>([])
-  const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<PayRun | null>(null)
   const [selectedIds, setSelectedIds] = useState<number[]>([])
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10))
@@ -60,21 +61,6 @@ export default function PayHistory() {
     load()
   }
 
-  const searchText = query.trim().toLowerCase()
-  const matches = (run: PayRun) => [
-    run.clientName,
-    run.payPeriod,
-    run.status,
-    run.runCode,
-    run.runType,
-    run.runName,
-    run.reason,
-    run.employeeCount,
-    run.payrollCost,
-    run.netPay
-  ].join(' ').toLowerCase().includes(searchText)
-  const visibleRuns = searchText ? runs.filter(matches) : runs
-
   if (selected) return (
     <section className="pay-runs pay-history-detail-page">
       <div className="pay-history-detail-head">
@@ -106,24 +92,27 @@ export default function PayHistory() {
 
   return (
     <section className="pay-runs">
-      <div className="pay-run-intro pay-history-intro"><div><span className="eyebrow purple">Payroll</span><h3>Pay history</h3><p>Select a run to review payment status and record disbursement.</p></div><label className="pay-history-search"><span>Search pay runs</span><input placeholder="Client, period, run, status, amount..." value={query} onChange={event => setQuery(event.target.value)} /></label></div>
-      <section className="pay-history-table-wrap">
-        <div className="pay-history-table-caption"><strong>Pay run history</strong><span>{visibleRuns.length} of {runs.length} runs</span>{query && <button type="button" onClick={() => setQuery('')}>Clear</button>}</div>
-        <table className="pay-history-table">
-          <thead><tr><th>Client</th><th>Pay period</th><th>Run</th><th>Status</th><th>Employees</th><th>Payroll cost</th><th>Net pay</th></tr></thead>
-          <tbody>
-            {visibleRuns.map(run => <tr key={run.id} onClick={() => void open(run)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') void open(run) }} tabIndex={0} role="button">
-              <td><strong>{run.clientName}</strong><small>{run.runCode || `Run #${run.id}`}</small></td>
-              <td>{run.payPeriod}</td>
-              <td><span>{run.runName || run.runType || 'Payroll run'}</span><small>{run.reason || run.runType}</small></td>
-              <td><b className={`pay-history-status ${run.status.toLowerCase().replace(/\s+/g, '-')}`}>{run.status}</b></td>
-              <td>{run.employeeCount.toLocaleString('en-IN')}</td>
-              <td>{money(run.payrollCost)}</td>
-              <td><strong>{money(run.netPay)}</strong></td>
-            </tr>)}
-          </tbody>
-        </table>
-        {!visibleRuns.length && <p className="empty">No payroll runs found.</p>}
+      <div className="pay-run-intro pay-history-intro"><div><span className="eyebrow purple">Run archive</span><p>Select a run to review payment status and record disbursement.</p></div></div>
+      <section className="pay-history-table-wrap card">
+        <DataTable
+          rows={runs}
+          title="Pay run history"
+          getRowId={run => run.id}
+          emptyText="No payroll runs found."
+          exportFileName="pay-run-history"
+          hideInactiveClear
+          actionsWidth={112}
+          actions={run => <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => void open(run)}>Open</Button>}
+          columns={[
+            { key: 'clientName', label: 'Client', width: 210, render: run => <>{run.clientName}<small>{run.runCode || `Run #${run.id}`}</small></> },
+            { key: 'payPeriod', label: 'Pay period', width: 130 },
+            { key: 'runName', label: 'Run', width: 220, value: run => run.runName || run.runType || 'Payroll run', render: run => <>{run.runName || run.runType || 'Payroll run'}<small>{run.reason || run.runType}</small></> },
+            { key: 'status', label: 'Status', width: 145, render: run => <b className={`pay-history-status ${run.status.toLowerCase().replace(/\s+/g, '-')}`}>{run.status}</b> },
+            { key: 'employeeCount', label: 'Employees', width: 120, render: run => run.employeeCount.toLocaleString('en-IN') },
+            { key: 'payrollCost', label: 'Payroll cost', width: 160, value: run => Number(run.payrollCost || 0), render: run => money(run.payrollCost) },
+            { key: 'netPay', label: 'Net pay', width: 160, value: run => Number(run.netPay || 0), render: run => <strong>{money(run.netPay)}</strong> },
+          ]}
+        />
       </section>
     </section>
   )

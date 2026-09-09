@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type Key, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, type Key, type ReactNode } from 'react'
 import { DownOutlined, FileExcelOutlined, FileOutlined, FilePdfOutlined, FileTextOutlined, FileWordOutlined } from '@ant-design/icons'
 import { Button, Dropdown, Input, Table } from 'antd'
 import type { ColumnsType, TablePaginationConfig, TableRowSelection } from 'antd/es/table/interface'
@@ -14,7 +14,7 @@ export type Column<T> = {
   exportValue?: (row: T) => string | number | boolean | null | undefined
   sortable?: boolean
   filterable?: boolean
-  width?: string
+  width?: string | number
 }
 
 type DataTableProps<T> = {
@@ -28,8 +28,12 @@ type DataTableProps<T> = {
   title?: string
   exportFileName?: string
   exportToolbar?: ReactNode
+  primaryAction?: ReactNode
   onExcelExport?: (visibleRows: T[]) => void
   exportDisabled?: boolean
+  hideInactiveClear?: boolean
+  hideSearch?: boolean
+  actionsWidth?: number
   pageSizeOptions?: number[]
   rowSelection?: TableRowSelection<T>
 }
@@ -51,20 +55,43 @@ const exportIcons: Record<ExportFormat, ReactNode> = {
   word: <FileWordOutlined style={{ color: '#2563eb' }} />
 }
 
+const columnWidthInPixels = (width: string | number | undefined, fallback = 150) => {
+  if (typeof width === 'number') return Number.isFinite(width) && width > 0 ? width : fallback
+  if (!width) return fallback
+  const normalized = width.trim().toLowerCase()
+  const parsed = Number.parseFloat(normalized)
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+  if (normalized.endsWith('rem') || normalized.endsWith('em')) return parsed * 16
+  if (normalized.endsWith('px') || /^\d+(?:\.\d+)?$/.test(normalized)) return parsed
+  return fallback
+}
+
+const defaultColumnWidth = <T extends object>(column: Column<T>) => {
+  const words = `${String(column.key).replace(/([a-z])([A-Z])/g, '$1 $2')} ${column.label}`.toLowerCase()
+  if (/\b(address|description|details?|email|message|notes?|path|purpose|reason|remarks?|summary|url)\b/.test(words)) return 240
+  if (/\b(active|amount|code|commission|count|date|duration|enabled|fy|gender|gst|id|lock|month|number|order|percent|percentage|priority|proof|rate|status|time|type|year)\b/.test(words)) return 128
+  if (/\b(action|candidate|client|consultant|department|designation|employee|location|name|position|role|schedule|template|vendor|work order)\b/.test(words)) return 190
+  return 150
+}
+
+const resolvedColumnWidth = <T extends object>(column: Column<T>) => columnWidthInPixels(column.width, defaultColumnWidth(column))
+
 export default function DataTable<T extends object>(props: DataTableProps<T>) {
   const { rows, columns, onEdit, actions, rowClassName, emptyText = 'No records', title, exportFileName = 'table-export' } = props
   const [query, setQuery] = useState('')
   const [tableKey, setTableKey] = useState(0)
   const [dirtyTable, setDirtyTable] = useState(false)
-  const [exportRows, setExportRows] = useState<T[]>(rows)
+  const [visibleTableState, setVisibleTableState] = useState<{ source: T[]; rows: T[] } | null>(null)
   const [exportFormat, setExportFormat] = useState<ExportFormat>('excel')
   const pageSizeOptions = props.pageSizeOptions ?? [10, 25, 50, 100]
-  const tableScrollX = Math.max(720, columns.length * 150 + (actions || onEdit ? 170 : 0))
+  const actionsWidth = props.actionsWidth ?? 170
+  const selectionWidth = props.rowSelection ? columnWidthInPixels(props.rowSelection.columnWidth, 32) : 0
+  const tableScrollX = Math.ceil(Math.max(640, columns.reduce((total, column) => total + resolvedColumnWidth(column), selectionWidth) + (actions || onEdit ? actionsWidth : 0)))
   const valueOf = useCallback((row: T, column: Column<T>) => column.value ? column.value(row) : (row as Record<string, unknown>)[String(column.key)], [])
   const searchable = useCallback((row: T) => columns.map(column => text(valueOf(row, column))).join(' ').toLowerCase(), [columns, valueOf])
 
   const data = useMemo(() => rows.filter(row => !query || searchable(row).includes(query.toLowerCase())), [rows, query, searchable])
-  useEffect(() => setExportRows(data), [data])
+  const exportRows = visibleTableState?.source === data ? visibleTableState.rows : data
   const antColumns = useMemo<ColumnsType<T>>(() => {
     const mapped = columns.map(column => {
       const key = String(column.key)
@@ -72,7 +99,7 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
       return {
         key,
         title: column.label,
-        width: column.width ?? 150,
+        width: resolvedColumnWidth(column),
         ellipsis: true,
         sorter: column.sortable === false ? undefined : (a: T, b: T) => text(valueOf(a, column)).localeCompare(text(valueOf(b, column)), undefined, { numeric: true, sensitivity: 'base' }),
         filters,
@@ -81,11 +108,11 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
         render: (_: unknown, row: T) => column.render ? column.render(row) : text(valueOf(row, column))
       }
     })
-    return actions || onEdit ? [...mapped, { key: '__actions', title: 'Actions', fixed: 'right' as const, width: 170, render: (_: unknown, row: T) => <div className="ant-table-row-actions">{actions ? actions(row) : <Button size="small" onClick={() => onEdit?.(row)}>Edit</Button>}</div> }] : mapped
-  }, [columns, rows, actions, onEdit, valueOf])
+    return actions || onEdit ? [...mapped, { key: '__actions', title: 'Actions', fixed: 'right' as const, width: actionsWidth, render: (_: unknown, row: T) => <div className="ant-table-row-actions">{actions ? actions(row) : <Button size="small" onClick={() => onEdit?.(row)}>Edit</Button>}</div> }] : mapped
+  }, [columns, rows, actions, onEdit, valueOf, actionsWidth])
 
   const pagination: TablePaginationConfig = { defaultPageSize: pageSizeOptions[0], pageSizeOptions: pageSizeOptions.map(String), showSizeChanger: true, showTotal: (total, range) => `${range[0]}-${range[1]} of ${total}` }
-  const clear = () => { setQuery(''); setDirtyTable(false); setTableKey(value => value + 1) }
+  const clear = () => { setQuery(''); setDirtyTable(false); setVisibleTableState(null); setTableKey(value => value + 1) }
   const exportValueOf = (row: T, column: Column<T>) => column.exportValue ? column.exportValue(row) : valueOf(row, column)
   const downloadExport = () => {
     if (exportFormat === 'excel' && props.onExcelExport) {
@@ -145,12 +172,13 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
     <div className="ant-table-toolbar">
       <div className="ant-table-summary">{title && <strong>{title}</strong>}<span>{data.length} of {rows.length} rows</span></div>
       <div className="ant-table-actions">
-        <Input allowClear className="table-filter" placeholder="Search table..." value={query} onChange={event => setQuery(event.target.value)} />
-        <Button onClick={clear} disabled={!query && !dirtyTable}>Clear</Button>
+        {!props.hideSearch && <Input allowClear className="table-filter" placeholder="Search table..." value={query} onChange={event => setQuery(event.target.value)} />}
+        {(props.hideInactiveClear === false || query || dirtyTable) && <Button onClick={clear}>Reset</Button>}
         {exportFormat === 'excel' && props.exportToolbar}
         <Dropdown.Button className={`export-split-btn export-${exportFormat}`} menu={exportMenu} icon={<DownOutlined />} onClick={downloadExport} disabled={!exportRows.length || props.exportDisabled}>
           <span className="export-button-label">{exportIcons[exportFormat]} Export {exportLabels[exportFormat]}</span>
         </Dropdown.Button>
+        {props.primaryAction}
       </div>
     </div>
     <Table<T>
@@ -169,7 +197,7 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
       rowSelection={props.rowSelection}
       tableLayout="fixed"
       scroll={{ x: tableScrollX }}
-      onChange={(_, __, ___, extra) => { setDirtyTable(true); setExportRows(extra.currentDataSource as T[]) }}
+      onChange={(_, __, ___, extra) => { setDirtyTable(true); setVisibleTableState({ source: data, rows: extra.currentDataSource as T[] }) }}
     />
   </div>
 }

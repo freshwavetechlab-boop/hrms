@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS authusers (
     PasswordHash VARCHAR(500) NOT NULL,
     ClientId INT NULL,
     EmployeeId INT NULL,
+    RecruitmentScopeMode VARCHAR(40) NOT NULL DEFAULT 'Client',
     IsActive BOOLEAN NOT NULL DEFAULT TRUE,
     MustChangePassword BOOLEAN NOT NULL DEFAULT FALSE,
     LastLoginAt DATETIME NULL,
@@ -96,6 +97,11 @@ CREATE TABLE IF NOT EXISTS auditlogs (
     INDEX IX_AuditLogs_UserId (UserId),
     INDEX IX_AuditLogs_Action (Action)
 );
+CREATE TABLE IF NOT EXISTS authuser_recruitment_locations (
+    UserId INT NOT NULL,
+    WorkLocationId INT NOT NULL,
+    PRIMARY KEY (UserId, WorkLocationId)
+);
 CREATE TABLE IF NOT EXISTS schema_migrations (
     MigrationKey VARCHAR(190) PRIMARY KEY,
     AppliedAtUtc DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -107,6 +113,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
         await EnsureForeignKeyAsync(connection, "authsessions", "FK_AuthSessions_User", "FOREIGN KEY (UserId) REFERENCES authusers(Id) ON DELETE CASCADE");
         await EnsureColumnAsync(connection, "authusers", "EmployeeId", "INT NULL");
         await EnsureColumnAsync(connection, "authusers", "Mobile", "VARCHAR(40) NOT NULL DEFAULT '' AFTER DisplayName");
+        await EnsureColumnAsync(connection, "authusers", "RecruitmentScopeMode", "VARCHAR(40) NOT NULL DEFAULT 'Client' AFTER EmployeeId");
+        await EnsureForeignKeyAsync(connection, "authuser_recruitment_locations", "FK_AuthUserRecruitmentLocations_User", "FOREIGN KEY (UserId) REFERENCES authusers(Id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "authuser_recruitment_locations", "FK_AuthUserRecruitmentLocations_Location", "FOREIGN KEY (WorkLocationId) REFERENCES worklocations(Id) ON DELETE CASCADE");
         await SeedSecurityCatalogAsync(connection);
 
     }
@@ -210,7 +219,7 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        var users = (await connection.QueryAsync<AuthUser>(@"SELECT Id, Email, DisplayName, Mobile, ClientId, EmployeeId, IsActive, MustChangePassword
+        var users = (await connection.QueryAsync<AuthUser>(@"SELECT Id, Email, DisplayName, Mobile, ClientId, EmployeeId, RecruitmentScopeMode, IsActive, MustChangePassword
 FROM authusers
 ORDER BY DisplayName;")).ToList();
         var roleRows = await connection.QueryAsync<UserSecurityCodeRow>(@"SELECT ur.UserId, r.Code
@@ -224,12 +233,14 @@ JOIN authpermissions p ON p.Id = rp.PermissionId
 ORDER BY ur.UserId, p.Code;");
         var rolesByUser = roleRows.ToLookup(row => row.UserId, row => row.Code);
         var permissionsByUser = permissionRows.ToLookup(row => row.UserId, row => row.Code);
+        var recruitmentLocations = (await connection.QueryAsync<UserRecruitmentLocationRow>(@"SELECT UserId,WorkLocationId FROM authuser_recruitment_locations ORDER BY UserId,WorkLocationId")).ToLookup(row => row.UserId, row => row.WorkLocationId);
         foreach (var user in users)
         {
             user.Roles = rolesByUser[user.Id].ToList();
             user.Permissions = permissionsByUser[user.Id].ToList();
             user.DashboardAccess = BuildDashboardAccess(user.Permissions);
             user.DefaultDashboardCode = user.DashboardAccess.FirstOrDefault()?.Code ?? string.Empty;
+            user.RecruitmentLocationIds = recruitmentLocations[user.Id].ToList();
         }
         return users;
     }
@@ -238,6 +249,12 @@ ORDER BY ur.UserId, p.Code;");
     {
         public int UserId { get; set; }
         public string Code { get; set; } = string.Empty;
+    }
+
+    private sealed class UserRecruitmentLocationRow
+    {
+        public int UserId { get; set; }
+        public int WorkLocationId { get; set; }
     }
 
     public async Task<IEnumerable<AuthRole>> GetRolesAsync()
@@ -269,12 +286,13 @@ ORDER BY r.Name;");
 
     private static async Task<AuthUser?> BuildUserAsync(MySqlConnection connection, int userId)
     {
-        var user = await connection.QueryFirstOrDefaultAsync<AuthUser>("SELECT Id, Email, DisplayName, Mobile, ClientId, EmployeeId, IsActive, MustChangePassword FROM authusers WHERE Id = @UserId", new { UserId = userId });
+        var user = await connection.QueryFirstOrDefaultAsync<AuthUser>("SELECT Id, Email, DisplayName, Mobile, ClientId, EmployeeId, RecruitmentScopeMode, IsActive, MustChangePassword FROM authusers WHERE Id = @UserId", new { UserId = userId });
         if (user is null) return null;
         user.Roles = (await connection.QueryAsync<string>(@"SELECT r.Code FROM authroles r JOIN authuserroles ur ON ur.RoleId = r.Id WHERE ur.UserId = @UserId ORDER BY r.Code", new { UserId = userId })).ToList();
         user.Permissions = (await connection.QueryAsync<string>(@"SELECT DISTINCT p.Code FROM authpermissions p JOIN authrolepermissions rp ON rp.PermissionId = p.Id JOIN authuserroles ur ON ur.RoleId = rp.RoleId WHERE ur.UserId = @UserId ORDER BY p.Code", new { UserId = userId })).ToList();
         user.DashboardAccess = BuildDashboardAccess(user.Permissions);
         user.DefaultDashboardCode = user.DashboardAccess.FirstOrDefault()?.Code ?? string.Empty;
+        user.RecruitmentLocationIds = (await connection.QueryAsync<int>("SELECT WorkLocationId FROM authuser_recruitment_locations WHERE UserId=@UserId ORDER BY WorkLocationId", new { UserId = userId })).ToList();
         return user;
     }
 
@@ -593,16 +611,17 @@ SELECT @UserId, Id FROM authroles WHERE Code = 'employee';", new { UserId = resu
         await SeedSecurityCatalogAsync(connection);
         await using var transaction = await connection.BeginTransactionAsync();
         var email = NormalizeEmail(request.Email);
+        var recruitmentScopeMode = NormalizeRecruitmentScopeMode(request.RecruitmentScopeMode);
         var userId = request.Id;
         if (userId == 0)
         {
-            userId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO authusers (Email, DisplayName, Mobile, PasswordHash, ClientId, EmployeeId, IsActive, MustChangePassword)
-VALUES (@Email, @DisplayName, @Mobile, @PasswordHash, @ClientId, @EmployeeId, @IsActive, @MustChangePassword);
-SELECT LAST_INSERT_ID();", new { Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), PasswordHash = HashPassword(request.Password), request.ClientId, request.EmployeeId, request.IsActive, MustChangePassword = request.MustChangePassword ?? true }, transaction);
+            userId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO authusers (Email, DisplayName, Mobile, PasswordHash, ClientId, EmployeeId, RecruitmentScopeMode, IsActive, MustChangePassword)
+VALUES (@Email, @DisplayName, @Mobile, @PasswordHash, @ClientId, @EmployeeId, @RecruitmentScopeMode, @IsActive, @MustChangePassword);
+SELECT LAST_INSERT_ID();", new { Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), PasswordHash = HashPassword(request.Password), request.ClientId, request.EmployeeId, RecruitmentScopeMode = recruitmentScopeMode, request.IsActive, MustChangePassword = request.MustChangePassword ?? true }, transaction);
         }
         else
         {
-            await connection.ExecuteAsync(@"UPDATE authusers SET Email=@Email, DisplayName=@DisplayName, Mobile=@Mobile, ClientId=@ClientId, EmployeeId=@EmployeeId, IsActive=@IsActive WHERE Id=@Id", new { Id = userId, Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), request.ClientId, request.EmployeeId, request.IsActive }, transaction);
+            await connection.ExecuteAsync(@"UPDATE authusers SET Email=@Email, DisplayName=@DisplayName, Mobile=@Mobile, ClientId=@ClientId, EmployeeId=@EmployeeId, RecruitmentScopeMode=@RecruitmentScopeMode, IsActive=@IsActive WHERE Id=@Id", new { Id = userId, Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), request.ClientId, request.EmployeeId, RecruitmentScopeMode = recruitmentScopeMode, request.IsActive }, transaction);
             if (!string.IsNullOrWhiteSpace(request.Password))
                 await connection.ExecuteAsync("UPDATE authusers SET PasswordHash=@PasswordHash, MustChangePassword=@MustChangePassword WHERE Id=@Id", new { Id = userId, PasswordHash = HashPassword(request.Password), MustChangePassword = request.MustChangePassword ?? true }, transaction);
             else if (request.MustChangePassword.HasValue)
@@ -613,6 +632,10 @@ SELECT LAST_INSERT_ID();", new { Email = email, request.DisplayName, Mobile = re
         if (request.Roles.Count > 0)
             await connection.ExecuteAsync(@"INSERT IGNORE INTO authuserroles (UserId, RoleId)
 SELECT @UserId, Id FROM authroles WHERE Code IN @Roles;", new { UserId = userId, request.Roles }, transaction);
+        await connection.ExecuteAsync("DELETE FROM authuser_recruitment_locations WHERE UserId=@UserId", new { UserId = userId }, transaction);
+        if (recruitmentScopeMode.Equals("SelectedLocations", StringComparison.OrdinalIgnoreCase) && request.RecruitmentLocationIds.Count > 0)
+            await connection.ExecuteAsync(@"INSERT IGNORE INTO authuser_recruitment_locations (UserId,WorkLocationId)
+SELECT @UserId,Id FROM worklocations WHERE Id IN @LocationIds AND IsActive=TRUE AND (@ClientId IS NULL OR ClientId=@ClientId);", new { UserId = userId, LocationIds = request.RecruitmentLocationIds.Distinct().ToArray(), request.ClientId }, transaction);
         await transaction.CommitAsync();
         return await GetUserByIdAsync(userId);
     }
@@ -678,6 +701,7 @@ WHERE u.Id <> @Id AND u.IsActive = TRUE AND p.Code = 'security.manage';", new { 
         }
 
         await connection.ExecuteAsync("DELETE FROM authsessions WHERE UserId=@Id", new { Id = id }, transaction);
+        await connection.ExecuteAsync("DELETE FROM authuser_recruitment_locations WHERE UserId=@Id", new { Id = id }, transaction);
         await connection.ExecuteAsync("DELETE FROM authuserroles WHERE UserId=@Id", new { Id = id }, transaction);
         var affected = await connection.ExecuteAsync("DELETE FROM authusers WHERE Id=@Id", new { Id = id }, transaction);
         await transaction.CommitAsync();
@@ -735,6 +759,14 @@ LIMIT 5;", new { Id = id }, transaction)).ToList();
         var exists = await connection.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @TableName AND COLUMN_NAME = @ColumnName", new { TableName = tableName, ColumnName = columnName });
         if (exists == 0) await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition}");
     }
+
+    private static string NormalizeRecruitmentScopeMode(string? mode) =>
+        mode?.Trim() switch
+        {
+            "EmployeeLocation" => "EmployeeLocation",
+            "SelectedLocations" => "SelectedLocations",
+            _ => "Client"
+        };
 
     private static async Task SeedSecurityCatalogAsync(MySqlConnection connection)
     {

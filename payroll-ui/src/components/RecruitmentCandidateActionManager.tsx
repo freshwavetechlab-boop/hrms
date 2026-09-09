@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { CopyOutlined, LinkOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons'
-import { Alert, Button, Drawer, Empty, List, Popconfirm, Space, Tag, Typography, message } from 'antd'
+import { Alert, Button, Drawer, Empty, List, Popconfirm, Space, Tag, Tooltip, Typography, message } from 'antd'
 import {
   createCurrentStageCandidateAction, getRecruitmentCandidateActions, revokeRecruitmentCandidateAction,
 } from '../services/recruitmentOrchestrationService'
@@ -9,14 +9,17 @@ import type { RecruitmentCandidateActionSession } from '../types/recruitmentOrch
 type Props = {
   applicationId: number
   candidateName: string
+  stageName: string
+  stageType: string
   compact?: boolean
 }
 
-export default function RecruitmentCandidateActionManager({ applicationId, candidateName, compact = true }: Props) {
+export default function RecruitmentCandidateActionManager({ applicationId, candidateName, stageName, stageType, compact = true }: Props) {
   const [open, setOpen] = useState(false)
   const [rows, setRows] = useState<RecruitmentCandidateActionSession[]>([])
   const [loading, setLoading] = useState(false)
   const [creating, setCreating] = useState(false)
+  const stageAction = candidateActionStage(stageName, stageType)
 
   const load = async () => {
     setLoading(true)
@@ -45,10 +48,10 @@ export default function RecruitmentCandidateActionManager({ applicationId, candi
 
   return <>
     <Button size={compact ? 'small' : 'middle'} icon={<LinkOutlined />} onClick={show}>Candidate link</Button>
-    <Drawer title={`Candidate actions · ${candidateName}`} width={680} open={open} destroyOnClose onClose={() => setOpen(false)}
-      extra={<Space><Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>Refresh</Button><Button type="primary" icon={<LinkOutlined />} loading={creating} onClick={() => void create()}>Generate for current stage</Button></Space>}>
-      <Alert showIcon type="info" message="Secure external candidate actions"
-        description="The current pipeline stage decides whether this is a document request, profile form or offer response. Tokens are stored encrypted, expire automatically and can be revoked here. Email delivery can remain controlled by the existing workflow/notification rules." />
+    <Drawer rootClassName="candidate-action-drawer" title={`Candidate actions · ${candidateName}`} width="min(680px, calc(100vw - 16px))" open={open} destroyOnClose onClose={() => setOpen(false)}
+      extra={<Space><Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>Refresh</Button><Tooltip title={stageAction.enabled ? undefined : stageAction.description}><span><Button type="primary" icon={<LinkOutlined />} disabled={!stageAction.enabled} loading={creating} onClick={() => void create()}>{stageAction.buttonLabel}</Button></span></Tooltip></Space>}>
+      <Alert showIcon type={stageAction.enabled ? 'info' : 'warning'} message={stageAction.message}
+        description={stageAction.description} />
       <List className="candidate-action-list" loading={loading} dataSource={rows}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No candidate action links yet." /> }}
         renderItem={row => {
@@ -67,4 +70,32 @@ export default function RecruitmentCandidateActionManager({ applicationId, candi
 
 function purposeLabel(code: string) {
   return code === 'OFFER_RESPONSE' ? 'Offer response' : code === 'DOCUMENT_REQUEST' ? 'Document request' : 'Profile update'
+}
+
+function candidateActionStage(stageName: string, stageType: string) {
+  const normalized = stageType.trim().toLowerCase()
+  if (normalized === 'offer') return {
+    enabled: true,
+    buttonLabel: 'Generate offer link',
+    message: `Offer response · ${stageName}`,
+    description: 'Generate a secure response link after the offer has been released. The link expires automatically and can be revoked here.',
+  }
+  if (normalized === 'externalform') return {
+    enabled: true,
+    buttonLabel: 'Generate profile link',
+    message: `Candidate profile form · ${stageName}`,
+    description: 'Generate a secure link for the published form configured on this stage. Completed values are saved against this application.',
+  }
+  if (normalized === 'documents' || normalized === 'preonboarding') return {
+    enabled: true,
+    buttonLabel: 'Generate document link',
+    message: `Candidate document request · ${stageName}`,
+    description: 'Generate a secure link for the published upload form configured on this stage. The candidate can submit the requested documents there.',
+  }
+  return {
+    enabled: false,
+    buttonLabel: 'No link required',
+    message: `${stageName} is an internal stage`,
+    description: 'Candidate links are only used for External form, Documents, Pre-onboarding and Offer stages. Move the candidate to one of those stages, or use Pipeline > Manage pipeline to configure the intended candidate-facing stage.',
+  }
 }

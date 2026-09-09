@@ -84,11 +84,21 @@ export type DynamicFormField = {
 
 export type PublicAttachmentConstraints = {
   allowMultiple: boolean
+  minimumFileCount: number
   maximumFileCount: number
   maximumFileSizeBytes: number
   maximumTotalSizeBytes?: number | null
   allowedExtensions: string[]
   allowedMimeTypes: string[]
+  requiresDocumentNumber: boolean
+  requiresIssueDate: boolean
+  requiresExpiryDate: boolean
+}
+
+export type PublicUploadMetadata = {
+  documentNumber: string
+  issueDate?: string | null
+  expiryDate?: string | null
 }
 
 export type DynamicFormFieldOption = {
@@ -158,6 +168,15 @@ export type RecruitmentAttachmentFieldConfigurationOption = {
   allowedExtensionsJson: string
   allowedMimeTypesJson: string
   maximumFileSizeBytes: number
+  maximumTotalSizeBytes?: number | null
+  moduleCode: string
+  formCode: string
+  requiresDocumentNumber: boolean
+  requiresIssueDate: boolean
+  requiresExpiryDate: boolean
+  requiresVerification: boolean
+  effectiveFromUtc?: string | null
+  effectiveUntilUtc?: string | null
   isActive: boolean
 }
 
@@ -360,6 +379,10 @@ export type RecruitmentStageOfferConfiguration = {
   varianceApprovalWorkflowId?: number | null
   candidateResponseValidityDays: number
   requireAcceptedOfferToAdvance: boolean
+  negotiationSlaExtensionEnabled: boolean
+  negotiationThresholdPercent: number
+  negotiationSlaExtensionMinutes: number
+  negotiationSlaStageCodes: string
 }
 
 export type RecruitmentInterviewStageConfiguration = {
@@ -436,6 +459,9 @@ export type RecruitmentPipelineBoardLane = {
   displayOrder: number
   slaDurationMinutes: number
   slaWarningMinutes: number
+  allowPause: boolean
+  pauseBehavior: 'ShiftStageAndOverall' | 'ShiftStageOnly' | 'NoShift'
+  isTerminal: boolean
   processDocumentRequirements: RecruitmentStageProcessDocumentRequirement[]
   applications: RecruitmentPipelineBoardCard[]
 }
@@ -446,6 +472,8 @@ export type RecruitmentPipelineBoardCard = {
   candidateId: number
   candidateName: string
   candidateEmail: string
+  rejectedFromStageName?: string
+  rejectedAtUtc?: string | null
   atsScore?: number | null
   enteredAtUtc: string
   dueAtUtc?: string | null
@@ -487,20 +515,32 @@ export type RecruitmentPipelineDemandCard = {
   enteredAtUtc?: string | null
   dueAtUtc?: string | null
   overallDueAtUtc?: string | null
+  activeDurationSeconds: number
+  pausedDurationSeconds: number
+  isPaused: boolean
+  allowPause: boolean
+  isTerminal: boolean
+  advanceStatus: string
   isSlaBreached: boolean
   needsPipelineSelection: boolean
 }
 
 export type RecruitmentUnifiedPipelineLane = {
   pipelineVersionId: number
+  pipelineVersionNumber: number
+  pipelineName: string
+  clientName: string
   stageId: number
   stageCode: string
   stageName: string
   stageType: string
   cardScope: 'Position' | 'Application'
   displayOrder: number
+  slaMode: 'StageEntry' | 'CumulativeFromAnchor'
+  overallSlaMinutes: number
   slaDurationMinutes: number
   slaWarningMinutes: number
+  targetOffsetMinutes?: number | null
   demandCards: RecruitmentPipelineDemandCard[]
   applications: RecruitmentPipelineBoardCard[]
 }
@@ -535,6 +575,14 @@ export type RecruitmentApplicationStageInstance = {
   activeDurationSeconds: number
   pausedDurationSeconds: number
   isSlaBreached: boolean
+  allowPause?: boolean
+  pauseBehavior?: 'ShiftStageAndOverall' | 'ShiftStageOnly' | 'NoShift'
+}
+
+export type RecruitmentApplicationStageTimelineItem = RecruitmentApplicationStageInstance & {
+  stageType: string
+  reason: string
+  changedByName: string
 }
 
 export type RecruitmentJobPosting = {
@@ -558,6 +606,8 @@ export type RecruitmentJobPosting = {
   positionTitle: string
   clientName: string
   candidatePortalReady: boolean
+  candidateProofReady?: boolean
+  candidateProofValidationMessage?: string
   publicUrl: string
 }
 
@@ -633,6 +683,7 @@ export type RecruitmentJdCertificationRequirement = {
   jobDescriptionVersionId: number
   certificationName: string
   isMandatory: boolean
+  candidateProofAttachmentFieldConfigurationId?: number | null
   displayOrder: number
 }
 
@@ -690,6 +741,9 @@ export type PublicRecruitmentJob = {
   responsibilities: Array<{ id: number; responsibilityText: string; displayOrder: number }>
   skills: Array<{ id: number; skillName: string; isRequired: boolean; minimumYears: number; minimumProficiency: string; weightPercent: number; displayOrder: number }>
   qualifications: Array<{ id: number; qualificationName: string; specialization: string; isMandatory: boolean; displayOrder: number }>
+  certifications: Array<{ id: number; certificationName: string; isMandatory: boolean; candidateProofRequested: boolean; displayOrder: number }>
+  languages: RecruitmentJdLanguageRequirement[]
+  benefits: RecruitmentJdBenefit[]
 }
 
 export type StartPublicApplicationRequest = {

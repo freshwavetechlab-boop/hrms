@@ -10,7 +10,9 @@ import type {
   PublicFormValue,
   PublicRecruitmentJob,
   PublicUploadedFile,
+  PublicUploadMetadata,
   RecruitmentApplicationStageInstance,
+  RecruitmentApplicationStageTimelineItem,
   RecruitmentCandidateActionSession,
   RecruitmentJobDescriptionVersion,
   RecruitmentJobPosting,
@@ -127,6 +129,9 @@ export const getRecruitmentPipelineWorkspace = (clientId = 0, positionId = 0, jo
 export const getRecruitmentApplicationTransitions = (applicationId: number) =>
   getJson<RecruitmentPipelineTransition[]>(`${internalBase}/applications/${applicationId}/transitions`, [])
 
+export const getRecruitmentApplicationStageHistory = (applicationId: number) =>
+  getJson<RecruitmentApplicationStageTimelineItem[]>(`${internalBase}/applications/${applicationId}/stage-history`, [])
+
 export const transitionRecruitmentApplication = (applicationId: number, transitionId: number, reason: string) =>
   postJson(`${internalBase}/applications/${applicationId}/transitions/${transitionId}`, { transitionId, reason }, null as RecruitmentPipelineTransitionResult | null, { successMessage: 'Candidate moved to the next stage.' })
 
@@ -196,9 +201,10 @@ export const createPublicApplicationSession = (slug: string, request: StartPubli
 export const savePublicApplicationValues = (token: string, values: PublicFormValue[]) =>
   putJson(`${publicBase}/sessions/${encodeURIComponent(token)}/values`, { values }, null as unknown)
 
-export const uploadPublicApplicationFile = (token: string, fieldId: number, file: File, onProgress: (percent: number) => void) => {
+export const uploadPublicApplicationFile = (token: string, fieldId: number, file: File, metadata: PublicUploadMetadata, onProgress: (percent: number) => void) => {
   const body = new FormData()
   body.append('file', file)
+  appendUploadMetadata(body, metadata)
   return postFormWithProgress<PublicUploadedFile>(`${publicBase}/sessions/${encodeURIComponent(token)}/files/${fieldId}`, body, null as unknown as PublicUploadedFile, onProgress)
 }
 
@@ -216,10 +222,17 @@ export const getPublicCandidateAction = async (token: string) => {
 export const savePublicCandidateActionValues = (token: string, values: PublicFormValue[]) =>
   putJson(`${publicBase}/actions/${encodeURIComponent(token)}/values`, { values }, null as unknown)
 
-export const uploadPublicCandidateActionFile = (token: string, fieldId: number, file: File, onProgress: (percent: number) => void) => {
+export const uploadPublicCandidateActionFile = (token: string, fieldId: number, file: File, metadata: PublicUploadMetadata, onProgress: (percent: number) => void) => {
   const body = new FormData()
   body.append('file', file)
+  appendUploadMetadata(body, metadata)
   return postFormWithProgress<PublicUploadedFile>(`${publicBase}/actions/${encodeURIComponent(token)}/files/${fieldId}`, body, null as unknown as PublicUploadedFile, onProgress)
+}
+
+function appendUploadMetadata(body: FormData, metadata: PublicUploadMetadata) {
+  if (metadata.documentNumber.trim()) body.append('documentNumber', metadata.documentNumber.trim())
+  if (metadata.issueDate) body.append('issueDate', metadata.issueDate)
+  if (metadata.expiryDate) body.append('expiryDate', metadata.expiryDate)
 }
 
 export const completePublicCandidateAction = (token: string, values: PublicFormValue[], decision?: CandidateActionDecision, remarks = '') =>

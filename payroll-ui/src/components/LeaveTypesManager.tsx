@@ -208,7 +208,19 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
   }), [rows])
 
   return <section className="leave-types">
-    <AntCard className="settings-panel settings-table-panel leave-types-panel" size="small" title="Leave Types" extra={<Space className="leave-type-toolbar" size={8} wrap><Button type="primary" icon={<DownloadOutlined />} onClick={downloadTemplate}>Template</Button><label className={`settings-upload-action ${!templateDownloaded ? 'disabled' : ''}`} title={templateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!templateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadTemplate(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" onClick={add}>Add Leave Type</Button></Space>}>
+    <AntCard className="settings-panel settings-table-panel leave-types-panel" size="small" aria-label="Leave policy master">
+      <div className="component-table-head">
+        <div><b>Leave policy master</b><span>Maintain leave categories, eligibility, accrual rules, and opening configuration.</span></div>
+        <Space className="settings-master-actions leave-type-toolbar" size={8} wrap>
+          <Button type="primary" icon={<DownloadOutlined />} onClick={downloadTemplate}>Template</Button>
+          <label className={`settings-upload-action ${!templateDownloaded ? 'disabled' : ''}`} title={templateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}>
+            <input type="file" disabled={!templateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadTemplate(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} />
+            <UploadOutlined />
+            Bulk upload
+          </label>
+          <Button type="primary" onClick={add}>Add Leave Type</Button>
+        </Space>
+      </div>
       <div className="leave-type-summary">
         <span><b>{metrics.total}</b><small>Total policies</small></span>
         <span><b>{metrics.active}</b><small>Active</small></span>

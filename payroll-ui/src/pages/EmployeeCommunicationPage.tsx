@@ -89,6 +89,8 @@ type MailFolder = 'all' | 'Email' | 'Sms' | 'WhatsApp' | 'unread'
 
 const emptyBuckets = (): RecipientBuckets => ({ to: [], cc: [], bcc: [] })
 const channelLabel = (channel: CommunicationChannel) => channel === 'Sms' ? 'SMS' : channel
+const composeChannelForFolder = (folder: MailFolder): CommunicationChannel =>
+  folder === 'Email' || folder === 'Sms' || folder === 'WhatsApp' ? folder : 'Email'
 const channelIcon = (channel: CommunicationChannel) => channel === 'Email' ? <MailOutlined /> : channel === 'Sms' ? <MessageOutlined /> : <WhatsAppOutlined />
 const channelColor = (channel: CommunicationChannel) => channel === 'Email' ? '#2563eb' : channel === 'Sms' ? '#7557d6' : '#128c7e'
 const idempotencyKey = () => globalThis.crypto?.randomUUID?.() ?? String(Date.now()) + Math.random().toString(16).slice(2)
@@ -477,11 +479,7 @@ export default function EmployeeCommunicationPage() {
   ]
 
   return <section className="employee-communication-page" data-testid="employee-communication-page">
-    <header className="communication-commandbar">
-      <div>
-        <span className="communication-kicker">Employee engagement desk</span>
-        <h2>Employee Communication</h2>
-      </div>
+    <header className="communication-toolbar" aria-label="Communication controls">
       <Space wrap>
         <Select
           data-testid="communication-client-selector"
@@ -493,17 +491,17 @@ export default function EmployeeCommunicationPage() {
           placeholder="Select client"
         />
         <Button data-testid="communication-history-tab" icon={<HistoryOutlined />} onClick={() => { setHistoryOpen(true); void loadCampaigns() }}>Campaigns</Button>
-        <Button data-testid="communication-compose-button" type="primary" size="large" icon={<PlusOutlined />} disabled={!canSend || !clientId} onClick={() => void openNewMessage()}>New message</Button>
+        <Button data-testid="communication-compose-button" type="primary" icon={<PlusOutlined />} disabled={!canSend || !clientId} onClick={() => void openNewMessage(composeChannelForFolder(folder))}>New message</Button>
       </Space>
     </header>
 
     <div className="communication-mail-shell" data-testid="communication-inbox">
       <aside className="communication-folder-pane">
-        <Button type="primary" block icon={<PlusOutlined />} disabled={!canSend} onClick={() => void openNewMessage()}>Compose</Button>
+        <Button type="primary" block icon={<PlusOutlined />} disabled={!canSend} onClick={() => void openNewMessage(composeChannelForFolder(folder))}>Compose</Button>
         <nav>
           {folderRows.map(item => <button
             type="button"
-            data-testid={item.key === 'all' ? 'communication-conversations-tab' : undefined}
+            data-testid={item.key === 'all' ? 'communication-conversations-tab' : `communication-folder-${item.key.toLowerCase()}`}
             key={item.key}
             className={folder === item.key ? 'active' : ''}
             onClick={() => setFolder(item.key)}

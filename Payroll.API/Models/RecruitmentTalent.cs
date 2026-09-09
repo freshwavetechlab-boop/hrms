@@ -147,8 +147,10 @@ public class RecruitmentCandidateApplication
     public long? JobPostingId { get; set; }
     public string PositionCode { get; set; } = "";
     public string PositionTitle { get; set; } = "";
+    public string JobLocation { get; set; } = "";
     public int ClientId { get; set; }
     public string ClientName { get; set; } = "";
+    public string ApplicationType { get; set; } = "Application";
     public string SourceType { get; set; } = "Direct";
     public long? SourceReferenceId { get; set; }
     public long? ResumeId { get; set; }
@@ -675,8 +677,36 @@ public class RecruitmentResumeIntakeRequest
     public long PositionId { get; set; }
     public long? JobPostingId { get; set; }
     public long? FieldConfigurationId { get; set; }
+    public bool TalentPoolOnly { get; set; }
     public string SourceType { get; set; } = "Direct Sourcing";
     public List<IFormFile> Files { get; set; } = [];
+}
+
+public class RecruitmentTalentPoolMatchRequest
+{
+    public long PositionId { get; set; }
+    public List<long> CandidateIds { get; set; } = [];
+}
+
+public class RecruitmentTalentPoolMatchRunResult
+{
+    public int TotalCandidates { get; set; }
+    public int Scored { get; set; }
+    public int Queued { get; set; }
+    public int Skipped { get; set; }
+    public List<string> Warnings { get; set; } = [];
+    public List<RecruitmentCandidateApplication> Matches { get; set; } = [];
+}
+
+public class RecruitmentTalentPoolSelectionRequest
+{
+    public bool Selected { get; set; }
+}
+
+public class RecruitmentTalentPoolDirectSelectionRequest
+{
+    public long CandidateId { get; set; }
+    public long PositionId { get; set; }
 }
 
 public class RecruitmentResumeIntakeItem

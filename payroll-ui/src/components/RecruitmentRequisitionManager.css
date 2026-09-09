@@ -36,12 +36,71 @@
 .rfr-toolbar {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) minmax(210px, 300px) minmax(160px, 210px) auto;
-  gap: 10px;
-  padding: 12px;
-  margin-bottom: 12px;
+  align-items: center;
+  gap: 9px;
+  padding: 10px;
+  margin-bottom: 11px;
   border: 1px solid #e5e8f2;
-  border-radius: 14px;
+  border-radius: 12px;
   background: #fbfcff;
+}
+
+.rfr-toolbar.is-client-scoped {
+  grid-template-columns: minmax(300px, 1fr) minmax(180px, 240px) auto;
+}
+
+.rfr-toolbar.is-status-scoped {
+  grid-template-columns: minmax(280px, 1fr) auto;
+}
+
+.rfr-toolbar-actions {
+  flex-wrap: nowrap !important;
+  justify-content: flex-end;
+}
+
+.rfr-toolbar-actions .ant-space-item,
+.rfr-row-actions .ant-space-item {
+  flex: 0 0 auto;
+}
+
+.rfr-register-table-shell {
+  margin-top: 0 !important;
+  overflow: hidden;
+  border: 1px solid #e6eaf2;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.rfr-register-table-shell .ant-table-wrapper,
+.rfr-register-table-shell .ant-table-container {
+  border-radius: 0 !important;
+}
+
+.rfr-register-table .ant-table-thead > tr > th {
+  height: 42px;
+  padding-block: 9px;
+  color: #536079;
+  background: #f6f8fc !important;
+}
+
+.rfr-register-table .ant-table-tbody > tr > td {
+  height: 56px;
+  padding-block: 8px;
+  vertical-align: middle;
+}
+
+.rfr-register-table .ant-table-cell-fix-left,
+.rfr-register-table .ant-table-cell-fix-right {
+  background: inherit;
+}
+
+.rfr-register-table .ant-table-cell-fix-right-first::after {
+  box-shadow: inset -8px 0 10px -10px rgba(41, 52, 82, .3);
+}
+
+.rfr-row-actions {
+  width: 100%;
+  white-space: nowrap;
 }
 
 .rfr-primary-cell,
@@ -98,9 +157,37 @@
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.rfr-essential-grid > :nth-child(3),
-.rfr-essential-grid > :nth-child(4) {
-  grid-column: span 2;
+.rfr-form-section {
+  padding: 16px 17px 1px;
+  border: 1px solid #e4e8f1;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(31, 42, 72, .035);
+}
+
+.rfr-form-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 13px;
+  margin-bottom: 15px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.rfr-form-section-head > div {
+  display: grid;
+  gap: 2px;
+}
+
+.rfr-form-section-head b {
+  color: #1d273e;
+  font-size: 15px;
+}
+
+.rfr-form-section-head span {
+  color: #7a8498;
+  font-size: 11px;
 }
 
 .rfr-switch-row {
@@ -111,7 +198,7 @@
   margin: 1px 0 14px;
   border: 1px solid #e7e9f2;
   border-radius: 12px;
-  background: #fafaff;
+  background: #f8f9fd;
 }
 
 .rfr-switch-row .ant-form-item {
@@ -131,18 +218,25 @@
 }
 
 .rfr-advanced {
-  margin: 2px -4px 0;
-  border-top: 1px solid #eceef5;
+  margin: 14px 0 0;
+  overflow: hidden;
+  border: 1px solid #e4e8f1;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(31, 42, 72, .03);
 }
 
 .rfr-advanced .ant-collapse-header {
-  padding-inline: 4px !important;
+  min-height: 52px;
+  align-items: center !important;
+  padding: 13px 16px !important;
   color: #5040c8 !important;
   font-weight: 700;
 }
 
 .rfr-advanced .ant-collapse-content-box {
-  padding-inline: 4px !important;
+  padding: 4px 16px 0 !important;
+  border-top: 1px solid #edf0f5;
 }
 
 .rfr-span-2 {
@@ -153,8 +247,8 @@
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  padding: 15px 0 0;
-  border-top: 1px solid #eceef5;
+  padding: 0;
+  border: 0;
   background: transparent;
 }
 
@@ -162,8 +256,102 @@
   margin-bottom: 17px;
 }
 
-.rfr-source-warning {
+.rfr-source-warning,
+.rfr-approval-banner {
   margin-bottom: 16px;
+}
+
+.rfr-source-parser {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px 18px;
+  margin: 2px 0 18px;
+  padding: 14px 16px;
+  border: 1px solid #d9e3f2;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #f8fbff 0%, #f7f5ff 100%);
+}
+
+.rfr-source-parser-copy {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.rfr-source-parser-copy > .anticon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  border-radius: 12px;
+  color: #563bea;
+  background: #ebe8ff;
+  font-size: 20px;
+}
+
+.rfr-source-parser-copy div,
+.rfr-source-result {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.rfr-source-parser-copy span,
+.rfr-source-result span,
+.rfr-source-result small,
+.rfr-source-parser > small {
+  color: #6c7890;
+  line-height: 1.4;
+}
+
+.rfr-source-picker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 218px;
+  min-height: 42px;
+  padding: 8px 14px;
+  border: 1px solid #b8c7dc;
+  border-radius: 10px;
+  color: #27344d;
+  background: #fff;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.rfr-source-picker:hover {
+  border-color: #6b4eff;
+  color: #563bea;
+}
+
+.rfr-source-picker.is-busy {
+  cursor: wait;
+  opacity: .75;
+}
+
+.rfr-source-picker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+}
+
+.rfr-source-result {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  padding-top: 10px;
+  border-top: 1px solid #e2e8f3;
+}
+
+.rfr-source-result small {
+  flex-basis: 100%;
 }
 
 .rfr-form .ant-form-item-label > label {
@@ -171,9 +359,19 @@
   font-weight: 650;
 }
 
+.rfr-form :is(.ant-input, .ant-input-affix-wrapper, .ant-input-number, .ant-select-selector) {
+  min-height: 40px;
+}
+
+.rfr-form .ant-select-single .ant-select-selector {
+  align-items: center;
+}
+
 @media (max-width: 900px) {
   .rfr-essential-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .rfr-toolbar { grid-template-columns: 1fr 1fr; }
+  .rfr-toolbar.is-client-scoped { grid-template-columns: 1fr 1fr; }
+  .rfr-toolbar-actions { grid-column: 1 / -1; justify-content: flex-end; }
 }
 
 @media (max-width: 640px) {
@@ -183,8 +381,11 @@
   .rfr-essential-grid,
   .rfr-advanced-grid,
   .rfr-context-grid { grid-template-columns: 1fr; }
-  .rfr-essential-grid > :nth-child(3),
-  .rfr-essential-grid > :nth-child(4),
   .rfr-span-2 { grid-column: auto; }
   .rfr-dialog .ant-drawer-body { padding-inline: 16px; }
+  .rfr-source-parser { grid-template-columns: 1fr; }
+  .rfr-source-picker { width: 100%; }
+}
+.rfr-form .ant-form-item-label > label.ant-form-item-required::before {
+  color: #e11d48 !important;
 }

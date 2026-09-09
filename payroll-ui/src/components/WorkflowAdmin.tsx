@@ -31,11 +31,11 @@ const safeEndpointActivity: Record<string, string> = { 'POST /api/pay-runs/{id}/
 const workflowEndpoints = apiCatalog.filter(row => safeGenericEndpointKeys.has(`${row.method.toUpperCase()} ${row.path}`))
 const directWorkflowResources = new Set(['RecruitmentRequisition', 'RecruitmentJobDescription', 'RecruitmentOffer', 'RecruitmentPipelineTransition', 'RecruitmentPipelineStageAction'])
 const directConfigurationLocation: Record<string, string> = {
-  RecruitmentRequisition: 'Recruitment Administration > Approvals > RFR approval',
+  RecruitmentRequisition: 'Workflow Setup > client-specific Hiring requisition workflow',
   RecruitmentJobDescription: 'Job Description submission > Approval workflow',
-  RecruitmentOffer: 'Pipeline Designer > Offer stage approval, or Recruitment Administration > Approvals > Offer approval',
-  RecruitmentPipelineTransition: 'Pipeline Designer > Transition approval workflow',
-  RecruitmentPipelineStageAction: 'Pipeline Designer > Stage actions > Start workflow',
+  RecruitmentOffer: 'Workflow Setup > Candidate offer workflow, or Pipeline > Manage pipeline > Offer stage',
+  RecruitmentPipelineTransition: 'Pipeline > Manage pipeline > Transition approval workflow',
+  RecruitmentPipelineStageAction: 'Pipeline > Manage pipeline > Stage actions > Start workflow',
 }
 const approverLabel = (type: string) => type === 'Specific User' ? 'Specific user approval' : `${type} approval`
 const codeToken = (value: string) => value.trim().toUpperCase().replace(/&/g, ' AND ').replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
@@ -264,7 +264,7 @@ export default function WorkflowAdmin() {
     }
     const response = await postJson('/api/workflows', { ...flow, stages: flow.stages.map((stage, index) => ({ ...stage, stageOrder: index + 1 })) }, null)
     if (!response.ok) {
-      setMessage('Unable to save workflow. Check the details and try again.')
+      setMessage(response.error || 'Unable to save workflow. Check the details and try again.')
       return
     }
     setMessage(flow.id ? 'Workflow updated.' : 'Workflow created.')
@@ -334,7 +334,6 @@ export default function WorkflowAdmin() {
 
   return (
     <section className="card workflow-admin" data-testid="workflow-setup">
-      <header><div><h3>Workflow Setup</h3><p>Tell the system what needs approval, who approves it, and only when required, which screen action starts it.</p></div></header>
       <div className="workflow-setup-guide" aria-label="Workflow setup steps">
         <article className={section === 'activities' ? 'active' : ''}><b>1</b><div><strong>What needs approval?</strong><span>Create or select a business activity.</span></div></article>
         <article className={section === 'designer' ? 'active' : ''}><b>2</b><div><strong>Who approves it?</strong><span>Choose client and approval chain.</span></div></article>

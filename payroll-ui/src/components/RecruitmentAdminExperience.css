@@ -1,0 +1,412 @@
+/* Recruitment Administration owns a compact, Ant Design-native visual system.
+   Everything is scoped so legacy Settings overrides cannot stretch its controls. */
+.recruitment-admin {
+  --ra-primary: #6546e8;
+  --ra-primary-soft: #f4f1ff;
+  --ra-border: #e5e9f2;
+  --ra-text: #172136;
+  --ra-muted: #68758c;
+  width: 100%;
+  min-width: 0;
+}
+
+.recruitment-admin .recruitment-root-card {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.recruitment-admin .recruitment-root-card > .ant-card-body {
+  min-width: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+
+.recruitment-admin .recruitment-admin-content {
+  min-width: 0 !important;
+  gap: 8px !important;
+}
+
+/* The application shell already owns the page title. Recruitment editors only
+   need a compact command row here; repeating a second hero wastes space. */
+.recruitment-admin .orchestration-shell > .orchestration-toolbar {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 10px !important;
+  min-width: 0 !important;
+  min-height: 36px !important;
+  margin: 0 0 10px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.recruitment-admin .orchestration-shell > .orchestration-toolbar > div:first-child {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+}
+
+.recruitment-admin .recruitment-designer-command .recruitment-designer-actions {
+  width: auto !important;
+  max-width: 100% !important;
+  justify-content: flex-end !important;
+}
+
+.recruitment-admin .recruitment-designer-command .recruitment-designer-actions .ant-select {
+  width: min(340px, 40vw) !important;
+  min-width: 240px !important;
+}
+
+.recruitment-command-label {
+  color: #556178 !important;
+  font-size: .72rem !important;
+  font-weight: 800 !important;
+  white-space: nowrap !important;
+}
+
+.recruitment-admin .orchestration-toolbar .ant-btn-primary {
+  width: auto !important;
+  min-width: 0 !important;
+  height: 36px !important;
+  padding-inline: 13px !important;
+  border-radius: 8px !important;
+  background: var(--ra-primary) !important;
+  border-color: var(--ra-primary) !important;
+  box-shadow: none !important;
+  font-size: .78rem !important;
+  font-weight: 800 !important;
+  white-space: nowrap !important;
+}
+
+.recruitment-admin :is(.ant-card, .ant-tabs-content-holder) {
+  min-width: 0 !important;
+}
+
+.recruitment-admin .recruitment-admin-content > :not(.orchestration-shell):not(.ant-tabs),
+.recruitment-admin .ant-tabs-tabpane > .ant-card {
+  border-color: var(--ra-border) !important;
+  border-radius: 10px !important;
+  box-shadow: none !important;
+}
+
+.recruitment-admin .ant-card-head {
+  min-height: 48px !important;
+  padding-inline: 16px !important;
+  border-bottom-color: #edf0f5 !important;
+}
+
+.recruitment-admin .ant-card-head-title {
+  min-width: 0 !important;
+  color: var(--ra-text) !important;
+  font-size: .9rem !important;
+  font-weight: 850 !important;
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+}
+
+.recruitment-admin .ant-card-body { min-width: 0 !important; padding: 16px !important; }
+.recruitment-admin .ant-tabs-nav { margin: 0 0 12px !important; }
+.recruitment-admin .ant-tabs-tab { padding: 9px 13px !important; font-size: .78rem !important; font-weight: 750 !important; }
+.recruitment-admin .ant-tabs-tab-btn { white-space: nowrap !important; }
+
+.recruitment-admin :is(.ant-btn, .ant-input, .ant-input-affix-wrapper, .ant-input-number, .ant-select-selector) {
+  border-radius: 9px !important;
+}
+
+.recruitment-admin .ant-btn { min-height: 36px !important; font-size: .76rem !important; font-weight: 750 !important; }
+.recruitment-admin .ant-btn-primary:not(:disabled):not(.ant-btn-dangerous) {
+  border-color: var(--ra-primary) !important;
+  background: var(--ra-primary) !important;
+  box-shadow: none !important;
+}
+.recruitment-admin .ant-btn-primary:not(:disabled):not(.ant-btn-dangerous):hover {
+  border-color: #5637d4 !important;
+  background: #5637d4 !important;
+}
+.recruitment-admin .ant-input,
+.recruitment-admin .ant-input-affix-wrapper,
+.recruitment-admin .ant-input-number,
+.recruitment-admin .ant-select-single .ant-select-selector,
+.recruitment-admin .app-search-select .ant-select-selector { min-height: 36px !important; }
+.recruitment-admin :is(.ant-select, .ant-input-number, .app-search-select) { width: 100% !important; min-width: 0 !important; }
+.recruitment-admin .ant-select-selection-item,
+.recruitment-admin .ant-select-selection-placeholder {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+.recruitment-admin .ant-select-multiple .ant-select-selector { min-height: 36px !important; height: auto !important; padding-block: 3px !important; }
+.recruitment-admin .ant-typography,
+.recruitment-admin .ant-alert-description,
+.recruitment-admin .ant-list-item-meta-description { overflow-wrap: anywhere !important; }
+
+.recruitment-admin .ant-smart-table { min-width: 0 !important; overflow: hidden !important; }
+.recruitment-admin .ant-table-actions .table-filter { margin-bottom: 0 !important; }
+.recruitment-list-workspace .ant-smart-table {
+  gap: 10px !important;
+  margin-top: 0 !important;
+  padding: 12px !important;
+  border: 1px solid var(--ra-border) !important;
+  border-radius: 10px !important;
+  background: #fff !important;
+}
+.recruitment-list-workspace .ant-table-toolbar {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  min-height: 36px !important;
+}
+.recruitment-list-workspace .ant-table-summary {
+  display: flex !important;
+  align-items: center !important;
+  min-width: max-content !important;
+}
+.recruitment-list-workspace .ant-table-summary span { font-size: .72rem !important; }
+.recruitment-list-workspace .ant-table-actions { gap: 7px !important; flex-wrap: nowrap !important; }
+.recruitment-list-workspace .ant-table-actions .table-filter {
+  width: clamp(210px, 22vw, 280px) !important;
+  height: 34px !important;
+}
+.recruitment-list-workspace .ant-table-actions .ant-btn { height: 34px !important; border-radius: 8px !important; }
+.recruitment-list-workspace .recruitment-list-primary-action {
+  min-width: max-content !important;
+  padding-inline: 12px !important;
+  box-shadow: none !important;
+}
+.recruitment-list-workspace .zoho-ant-table .ant-table-body { min-height: 0 !important; }
+.recruitment-list-workspace .zoho-ant-table .ant-table-thead > tr > th { height: 42px !important; }
+.recruitment-list-workspace .zoho-ant-table .ant-table-tbody > tr > td { height: 44px !important; }
+.recruitment-list-workspace .ant-table-row-actions .ant-btn {
+  width: 30px !important;
+  min-width: 30px !important;
+  height: 30px !important;
+  padding: 0 !important;
+  border-radius: 7px !important;
+  box-shadow: none !important;
+}
+.recruitment-ats-admin .recruitment-ats-table-card > .ant-card-body { padding: 12px !important; }
+.recruitment-ats-admin .recruitment-ats-table-card .ant-alert {
+  align-items: flex-start !important;
+  margin-bottom: 10px !important;
+  padding: 10px 12px !important;
+  border-radius: 8px !important;
+}
+.recruitment-ats-admin .recruitment-ats-table-card .ant-alert-icon {
+  margin-top: 2px !important;
+  margin-inline-end: 10px !important;
+  font-size: 16px !important;
+}
+.recruitment-ats-admin .recruitment-ats-table-card .ant-alert-message {
+  margin-bottom: 2px !important;
+  font-size: .78rem !important;
+  font-weight: 800 !important;
+}
+.recruitment-ats-admin .recruitment-ats-table-card .ant-alert-description {
+  font-size: .72rem !important;
+  line-height: 1.42 !important;
+}
+.recruitment-ats-admin .recruitment-ats-table-card .ant-smart-table { margin-top: 0 !important; gap: 10px !important; }
+.recruitment-ats-admin .recruitment-ats-table-card .ant-table-row-actions .ant-btn {
+  width: 30px !important;
+  min-width: 30px !important;
+  height: 30px !important;
+  padding: 0 !important;
+  border-radius: 7px !important;
+  box-shadow: none !important;
+}
+.recruitment-admin .ant-table-wrapper,
+.recruitment-admin .ant-table-container,
+.recruitment-admin .ant-table-content { min-width: 0 !important; }
+.recruitment-admin .ant-table-content { overflow-x: auto !important; scrollbar-width: thin !important; }
+.recruitment-admin .ant-table-content::-webkit-scrollbar { width: 8px !important; height: 8px !important; }
+.recruitment-admin .ant-table-content::-webkit-scrollbar-track { background: #f2f0fa !important; border-radius: 999px !important; }
+.recruitment-admin .ant-table-content::-webkit-scrollbar-thumb { background: #aa9de6 !important; border-radius: 999px !important; }
+.recruitment-admin .ant-table-cell { max-width: 310px !important; overflow-wrap: anywhere !important; }
+.recruitment-admin .ant-table-cell .ant-space { flex-wrap: nowrap !important; }
+
+.recruitment-admin .pipeline-stage-flow {
+  min-width: 0 !important;
+  padding: 4px 2px 12px !important;
+  overflow-x: auto !important;
+  overscroll-behavior-x: contain !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: #aa9de6 #f2f0fb !important;
+}
+.recruitment-admin .pipeline-stage-card {
+  flex: 0 0 clamp(250px, 24vw, 290px) !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  border-radius: 13px !important;
+  box-shadow: 0 5px 16px rgba(32, 40, 66, .05) !important;
+}
+.recruitment-admin .pipeline-stage-card :is(h3, h4, p, span, small, strong) { overflow-wrap: anywhere !important; }
+.recruitment-admin .pipeline-stage-card .stage-facts { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+.recruitment-admin :is(.pipeline-transition-card, .stage-action-block) {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow-x: auto !important;
+  scrollbar-width: thin !important;
+}
+.recruitment-admin .pipeline-transition-row { min-width: 1040px !important; }
+.recruitment-admin .stage-action-row { min-width: 780px !important; }
+.recruitment-admin .pipeline-designer-layout,
+.recruitment-admin .form-builder-layout { min-width: 0 !important; align-items: start !important; }
+.recruitment-admin .form-builder-canvas { min-width: 0 !important; }
+.recruitment-admin .form-builder-meta > .ant-form-item { min-width: 0 !important; margin-bottom: 2px !important; }
+.recruitment-admin .form-builder-section { min-width: 0 !important; overflow: hidden !important; }
+.recruitment-admin .form-builder-section-head > div { min-width: 0 !important; }
+.recruitment-admin .form-builder-section-head :is(h4, p) { overflow-wrap: anywhere !important; }
+
+.recruitment-admin .recruitment-check-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)) !important;
+  gap: 9px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+.recruitment-admin .recruitment-setting-tile {
+  min-width: 0 !important;
+  min-height: 0 !important;
+  padding: 11px 12px !important;
+  border-radius: 11px !important;
+  box-shadow: none !important;
+}
+.recruitment-setting-tile.ant-checkbox-wrapper {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr) !important;
+  align-items: start !important;
+  gap: 9px !important;
+  width: 100% !important;
+}
+.recruitment-setting-tile.ant-checkbox-wrapper > .ant-checkbox { margin-top: 2px !important; }
+.recruitment-setting-tile.ant-checkbox-wrapper > span:last-child { min-width: 0 !important; padding-inline-start: 0 !important; }
+.recruitment-setting-tile-copy { display: grid !important; gap: 7px !important; min-width: 0 !important; }
+.recruitment-setting-tile-copy b { color: #172136 !important; font-size: .82rem !important; line-height: 1.25 !important; }
+.recruitment-setting-tile-copy small,
+.recruitment-setting-tile-copy em { margin-top: 0 !important; }
+.recruitment-admin .recruitment-setting-tile-copy b,
+.recruitment-admin .recruitment-setting-tile small,
+.recruitment-admin .recruitment-setting-tile em { overflow-wrap: anywhere !important; }
+
+.recruitment-admin-drawer .ant-drawer-content {
+  display: grid !important;
+  grid-template-rows: auto minmax(0, 1fr) auto !important;
+  height: 100dvh !important;
+  overflow: hidden !important;
+}
+.recruitment-admin-drawer.ant-drawer-content-wrapper,
+.recruitment-admin-drawer .ant-drawer-content-wrapper {
+  width: min(840px, 94vw) !important;
+  max-width: 94vw !important;
+}
+.recruitment-admin-drawer .ant-drawer-content,
+.recruitment-admin-drawer .ant-drawer-body,
+.recruitment-admin-drawer .ant-drawer-footer,
+.recruitment-admin-drawer-footer {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+.recruitment-admin-drawer .ant-drawer-header { padding: 16px 20px !important; border-bottom: 1px solid #e9edf4 !important; }
+.recruitment-admin-drawer .ant-drawer-body { min-height: 0 !important; padding: 18px 20px !important; overflow-x: hidden !important; overflow-y: auto !important; scrollbar-gutter: stable !important; }
+.recruitment-admin-drawer .ant-drawer-footer { padding: 12px 20px !important; border-top: 1px solid #e9edf4 !important; background: rgba(255,255,255,.97) !important; }
+.recruitment-admin-drawer-footer { display: flex !important; align-items: center !important; justify-content: flex-end !important; gap: 9px !important; }
+.recruitment-admin-drawer-footer .ant-btn { min-width: 96px !important; height: 38px !important; border-radius: 9px !important; font-weight: 800 !important; }
+
+.recruitment-admin-drawer .recruitment-admin-form {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 2px 16px !important;
+  align-content: start !important;
+}
+.recruitment-admin-drawer .recruitment-admin-form > .ant-form-item { min-width: 0 !important; margin-bottom: 14px !important; }
+.recruitment-admin-drawer .recruitment-admin-form > :is(.recruitment-form-error, .recruitment-config-heading, .recruitment-check-grid, .recruitment-advanced-collapse, .ant-alert, .ant-divider),
+.recruitment-admin-drawer .recruitment-admin-form > .ant-form-item:has(textarea),
+.recruitment-admin-drawer .recruitment-admin-form > .ant-form-item:has(.ant-checkbox-wrapper) { grid-column: 1 / -1 !important; }
+.recruitment-admin-drawer .recruitment-check-grid {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+.recruitment-admin-drawer .recruitment-check-grid > * { min-width: 0 !important; max-width: 100% !important; }
+.recruitment-admin-drawer .ant-form-item-label { padding-bottom: 5px !important; }
+.recruitment-admin-drawer .ant-form-item-label > label { color: #47546b !important; font-size: .74rem !important; font-weight: 800 !important; }
+.recruitment-admin-drawer .ant-form-item-extra { margin-top: 4px !important; color: #778297 !important; font-size: .69rem !important; line-height: 1.42 !important; overflow-wrap: anywhere !important; }
+.recruitment-admin-drawer :is(.ant-select, .app-search-select, .ant-input-number) { width: 100% !important; min-width: 0 !important; }
+.recruitment-admin-drawer .ant-select-selector { min-width: 0 !important; min-height: 40px !important; border-radius: 9px !important; }
+.recruitment-admin-drawer .ant-select-selection-item { overflow: hidden !important; text-overflow: ellipsis !important; white-space: nowrap !important; }
+.recruitment-admin-drawer .ant-checkbox-wrapper { align-items: flex-start !important; font-size: .76rem !important; line-height: 1.4 !important; }
+
+/* Recruitment editors must shrink inside a wide Drawer. Global form/grid
+   overrides otherwise force Ant rows beyond the right viewport edge. */
+.recruitment-editor-drawer .ant-drawer-body,
+.recruitment-editor-drawer form,
+.recruitment-editor-drawer .ant-row,
+.recruitment-editor-drawer .ant-col {
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+.recruitment-editor-drawer .ant-drawer-body { overflow-x: hidden !important; }
+.recruitment-editor-drawer form { width: 100% !important; }
+.recruitment-editor-drawer .ant-row { display: flex !important; width: 100% !important; }
+
+.recruitment-form-field-drawer .ant-drawer-content-wrapper,
+.recruitment-pipeline-stage-drawer .ant-drawer-content-wrapper {
+  max-width: 96vw !important;
+}
+.recruitment-form-field-drawer .ant-drawer-content-wrapper { width: min(720px, 96vw) !important; }
+.recruitment-pipeline-stage-drawer .ant-drawer-content-wrapper { width: min(760px, 96vw) !important; }
+.recruitment-form-field-drawer .ant-drawer-body,
+.recruitment-pipeline-stage-drawer .ant-drawer-body { min-width: 0 !important; overflow-x: hidden !important; }
+
+/* The profile editor lives in a responsive drawer, so its layout must follow
+   the drawer width rather than the desktop viewport width. */
+.recruitment-editor-drawer .recruitment-ats-profile-grid > .ant-col-md-8 {
+  flex: 0 0 50% !important;
+  max-width: 50% !important;
+}
+
+@media (max-width: 1100px) {
+  .recruitment-admin .recruitment-designer-command .recruitment-designer-actions .ant-select {
+    width: 280px !important;
+    min-width: 220px !important;
+  }
+  .recruitment-editor-drawer .ant-row > .ant-col-md-8,
+  .recruitment-editor-drawer .ant-row > .ant-col-md-6 { flex: 0 0 50% !important; max-width: 50% !important; }
+}
+
+@media (max-width: 900px) {
+  .recruitment-list-workspace .ant-table-toolbar { align-items: stretch !important; flex-direction: column !important; }
+  .recruitment-list-workspace .ant-table-actions { width: 100% !important; justify-content: flex-start !important; flex-wrap: wrap !important; }
+  .recruitment-list-workspace .ant-table-actions .table-filter { flex: 1 1 220px !important; width: auto !important; max-width: none !important; }
+}
+
+@media (max-width: 680px) {
+  .recruitment-admin .orchestration-shell > .orchestration-toolbar,
+  .recruitment-admin .orchestration-shell > .orchestration-toolbar > div:first-child { align-items: stretch !important; flex-direction: column !important; }
+  .recruitment-admin .orchestration-shell > .orchestration-toolbar :is(.ant-select, .ant-btn) { width: 100% !important; }
+  .recruitment-admin .recruitment-designer-command .recruitment-designer-actions,
+  .recruitment-admin .recruitment-designer-command .recruitment-designer-actions .ant-select { width: 100% !important; min-width: 0 !important; }
+  .recruitment-list-workspace .ant-table-actions > * { width: 100% !important; }
+  .recruitment-admin-drawer .recruitment-admin-form { grid-template-columns: 1fr !important; }
+  .recruitment-admin-drawer .recruitment-admin-form > * { grid-column: 1 !important; }
+  .recruitment-admin-drawer .recruitment-check-grid { grid-template-columns: 1fr !important; }
+  .recruitment-admin-drawer .ant-drawer-header,
+  .recruitment-admin-drawer .ant-drawer-body,
+  .recruitment-admin-drawer .ant-drawer-footer { padding-inline: 14px !important; }
+  .recruitment-editor-drawer .recruitment-ats-profile-grid > .ant-col-md-8 {
+    flex: 0 0 100% !important;
+    max-width: 100% !important;
+  }
+}

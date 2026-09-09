@@ -34,7 +34,6 @@ export default function WorkflowHistory() {
 
   return (
     <section className="card workflow-history">
-      <header><div><h3>Workflow History</h3><p>All workflow requests, their current outcome, and the approval trail.</p></div></header>
       <DataTable
         rows={rows}
         emptyText="No workflow requests have been started yet."

@@ -87,6 +87,7 @@ builder.Services.AddSingleton<EssMssRepository>();
 builder.Services.AddSingleton<WorkflowRepository>();
 builder.Services.AddSingleton<TaxEngineRepository>();
 builder.Services.AddSingleton<DashboardRepository>();
+builder.Services.AddSingleton<NotificationAutomationRepository>();
 builder.Services.AddSingleton<NotificationRepository>();
 builder.Services.AddSingleton<CommunicationRepository>();
 builder.Services.AddSingleton<ScheduledJobRepository>();
@@ -94,6 +95,7 @@ builder.Services.AddSingleton<TravelExpenseRepository>();
 builder.Services.AddSingleton<RecruitmentAdminRepository>();
 builder.Services.AddSingleton<RecruitmentRepository>();
 builder.Services.AddSingleton<ResumeParsingService>();
+builder.Services.AddSingleton<RecruitmentRequestDocumentParsingService>();
 builder.Services.AddSingleton<LocalEmbedder>();
 builder.Services.AddSingleton<RecruitmentSemanticScoringService>();
 builder.Services.AddSingleton<RecruitmentAiScoringService>();
@@ -103,7 +105,10 @@ builder.Services.AddSingleton<RecruitmentFormRepository>();
 builder.Services.AddSingleton<RecruitmentPipelineRepository>();
 builder.Services.AddSingleton<RecruitmentCandidateActionRepository>();
 builder.Services.AddSingleton<RecruitmentCaseRepository>();
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<PublicPortalUrlResolver>();
 builder.Services.AddSingleton<RecruitmentPipelineActionService>();
+builder.Services.AddSingleton<RecruitmentSeedPackService>();
 builder.Services.AddSingleton<GoogleDriveOAuthService>();
 builder.Services.AddSingleton<AttachmentStorageService>();
 builder.Services.AddSingleton<AttachmentRepository>();
@@ -682,11 +687,12 @@ app.MapGet("/api/workflows/approver-preview", async (WorkflowRepository reposito
 app.MapGet("/api/workflows/departments", async (WorkflowRepository repository, int clientId, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetDepartmentsAsync(clientId)) : Results.StatusCode(403));
 app.MapGet("/api/workflows/department-heads", async (WorkflowRepository repository, int clientId, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetDepartmentHeadsAsync(clientId)) : Results.StatusCode(403));
 app.MapPost("/api/workflows/department-heads", async (WorkflowRepository repository, SaveDepartmentHeadAssignmentRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); if(request.ClientId<=0||string.IsNullOrWhiteSpace(request.Department)||request.UserId<=0)return Results.BadRequest(new{error="Client, department, and assigned user are required."}); return Results.Ok(await repository.SaveDepartmentHeadAsync(request)); });
-app.MapPost("/api/workflows", async (WorkflowRepository repository, SaveWorkflowRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); return Results.Ok(await repository.SaveAsync(request)); });
+app.MapPost("/api/workflows", async (WorkflowRepository repository, SaveWorkflowRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); var(row,error)=await repository.SaveAsync(request); return row is null ? Results.Conflict(new{error}) : Results.Ok(row); });
 app.MapPost("/api/workflows/activities", async (WorkflowRepository repository, SaveWorkflowActivityRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); if(string.IsNullOrWhiteSpace(request.ActivityCode)||string.IsNullOrWhiteSpace(request.DisplayName)||string.IsNullOrWhiteSpace(request.ModuleCode)||string.IsNullOrWhiteSpace(request.ResourceType)) return Results.BadRequest(new{error="Activity code, activity name, module, and record type are required."}); return Results.Ok(await repository.SaveActivityAsync(request)); });
 app.MapPost("/api/workflows/action-rules", async (WorkflowRepository repository, SaveWorkflowActionRuleRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); if(string.IsNullOrWhiteSpace(request.ActivityCode)||string.IsNullOrWhiteSpace(request.HttpMethod)||string.IsNullOrWhiteSpace(request.PathPattern)||string.IsNullOrWhiteSpace(request.ResourceType)||string.IsNullOrWhiteSpace(request.ResourceIdSource)) return Results.BadRequest(new{error="Activity, method, path, resource type, and resource id source are required."}); if(!request.ResourceIdSource.Contains('.')) return Results.BadRequest(new{error="Resource id source must use scope.field format, for example route.id or body.employeeId."}); return Results.Ok(await repository.SaveActionRuleAsync(request)); });
 app.MapPost("/api/workflows/start", async (WorkflowRepository repository, StartWorkflowRequest request, HttpContext context) => { var item=await repository.StartAsync(request,CurrentUser(context).Id); return item is null ? Results.BadRequest(new {error="Workflow cannot start. Check stages and approver setup."}) : Results.Ok(item); });
 app.MapGet("/api/workflows/tasks/pending", async (WorkflowRepository repository,HttpContext context) => Results.Ok(await repository.PendingAsync(CurrentUser(context).Id)));
+app.MapGet("/api/workflows/requests/mine", async (WorkflowRepository repository,long? instanceId,HttpContext context) => Results.Ok(await repository.RequesterProgressAsync(CurrentUser(context).Id,instanceId)));
 app.MapGet("/api/workflows/tasks/actioned", async (WorkflowRepository repository,string? scope,HttpContext context) =>
 {
     var all = scope?.Equals("all", StringComparison.OrdinalIgnoreCase) == true && HasPermission(context, "workflow.manage");
@@ -703,7 +709,7 @@ app.MapGet("/api/workflows/tasks/{taskId:long}/recruitment-job-description", asy
 });
 app.MapGet("/api/workflows/history", async (WorkflowRepository repository,HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetInstancesAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/{instanceId:long}/history", async (WorkflowRepository repository,long instanceId,HttpContext context) => Results.Ok(await repository.HistoryAsync(instanceId)));
-app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository, PayRunRepository payRuns, RecruitmentRepository recruitment, RecruitmentTalentRepository recruitmentTalent, RecruitmentPipelineRepository recruitmentPipeline, RecruitmentCaseRepository recruitmentCases, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, NotificationRepository notifications,long taskId,string action,WorkflowActionRequest request,HttpContext context) =>
+app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowRepository repository, EssMssRepository essRepository, PayRunRepository payRuns, RecruitmentRepository recruitment, RecruitmentTalentRepository recruitmentTalent, RecruitmentPipelineRepository recruitmentPipeline, RecruitmentCaseRepository recruitmentCases, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, NotificationRepository notifications, NotificationAutomationRepository notificationAutomation,long taskId,string action,WorkflowActionRequest request,HttpContext context) =>
 {
     if(action is not ("Approved" or "Rejected" or "Sent Back")) return Results.BadRequest();
     var user=CurrentUser(context);
@@ -744,9 +750,12 @@ app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowReposi
         if(instance.Status=="Approved") await payRuns.ApproveAsync(payRunId);
         if(instance.Status is "Rejected" or "Sent Back") await payRuns.RecallAsync(payRunId);
     }
-    if(instance?.ResourceType=="ExpenseClaim")
+    if(instance is not null && !string.IsNullOrWhiteSpace(instance.ActivityCode))
     {
-        await notifications.PublishEventAsync(new NotificationEvent{EventCode=$"EXPENSE_CLAIM.{action.ToUpperInvariant().Replace(" ","_")}",ResourceType="ExpenseClaim",ResourceId=instance.ResourceId,ClientId=user.ClientId,ActorUserId=user.Id,ActorName=user.DisplayName,ActorEmail=user.Email,PayloadJson=System.Text.Json.JsonSerializer.Serialize(new{Action=action,Status=instance.Status,Comment=request.Comment,TaskId=taskId})});
+        var eventRoot=instance.ActivityCode.EndsWith(".SUBMIT",StringComparison.OrdinalIgnoreCase)?instance.ActivityCode[..^7]:instance.ActivityCode;
+        var outcome=action=="Approved"&&instance.Status=="Pending"?"APPROVAL_ASSIGNED":action.ToUpperInvariant().Replace(" ","_");
+        var clientId=await notificationAutomation.ResolveClientIdAsync(instance.ResourceType,instance.ResourceId)??instance.ClientId??user.ClientId;
+        await notifications.PublishEventAsync(new NotificationEvent{EventCode=$"{eventRoot}.{outcome}",ResourceType=instance.ResourceType,ResourceId=instance.ResourceId,ClientId=clientId,ActorUserId=user.Id,ActorName=user.DisplayName,ActorEmail=user.Email,PayloadJson=System.Text.Json.JsonSerializer.Serialize(new{Action=action,Status=instance.Status,Comment=request.Comment,TaskId=taskId,WorkflowInstanceId=instance.Id})});
     }
     return Results.NoContent();
 });
@@ -994,12 +1003,14 @@ app.MapGet("/api/ess/recruitment/requisitions/{id:long}", async (RecruitmentRepo
     if (!RecruitmentRepository.HasRecruitmentAccess(user)) return Results.StatusCode(403);
     return await repository.GetAsync(id, user) is { } row ? Results.Ok(row) : Results.NotFound();
 });
-app.MapPost("/api/ess/recruitment/requisitions", async (RecruitmentRepository repository, SaveRecruitmentRequisition request, HttpContext context) =>
+app.MapPost("/api/ess/recruitment/requisitions", async (RecruitmentRepository repository, RecruitmentCaseRepository hiringCases, SaveRecruitmentRequisition request, HttpContext context) =>
 {
     var user = CurrentUser(context);
     if (user.EmployeeId is null || !RecruitmentRepository.HasRecruitmentCreateAccess(user)) return Results.StatusCode(403);
     var (row, error) = await repository.SaveDraftAsync(request, user);
-    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+    if (row is null) return Results.BadRequest(new { error });
+    await hiringCases.EnsureHiringCaseForRequisitionAsync(row.Id, user);
+    return Results.Ok(row);
 });
 app.MapDelete("/api/ess/recruitment/requisitions/{id:long}", async (RecruitmentRepository repository, long id, HttpContext context) =>
 {
@@ -1048,16 +1059,33 @@ app.MapPost("/api/ess/recruitment/referrals", async (RecruitmentRepository repos
 
 app.MapGet("/api/recruitment/dashboard", async (RecruitmentRepository repository, int? clientId, HttpContext context) =>
     HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.DashboardAsync(CurrentUser(context), false, clientId)) : Results.StatusCode(403));
+app.MapGet("/api/recruitment/requisitions/approval-mode", async (RecruitmentRepository repository, WorkflowRepository workflows, int? clientId, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    return Results.Ok(new { WorkflowEnabled = await repository.IsApprovalWorkflowEnabledAsync(clientId, CurrentUser(context), workflows) });
+});
+app.MapPost("/api/recruitment/requisitions/parse-source", async (RecruitmentRequestDocumentParsingService parser, [FromForm] RecruitmentRequestDocumentParseRequest request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    if (request.File is null) return Results.BadRequest(new { error = "Select a PDF, DOCX or text hiring document." });
+    return Results.Ok(await parser.ParseAsync(request.File, context.RequestAborted));
+})
+.DisableAntiforgery()
+.WithMetadata(new RequestSizeLimitAttribute(12L * 1024 * 1024))
+.WithName("ParseRecruitmentRequestSource");
 app.MapGet("/api/recruitment/requisitions", async (RecruitmentRepository repository, int? clientId, string? status, string? query, string? department, string? hiringType, string? employmentType, string? priority, string? businessUnit, string? positionCategory, string? experience, string? location, string? project, bool? replacementHiring, decimal? budgetMin, decimal? budgetMax, DateTime? dateFrom, DateTime? dateTo, int? recruiterUserId, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     return Results.Ok(await repository.SearchAsync(new RecruitmentSearchRequest { ClientId = clientId, Status = status ?? "", Query = query ?? "", Department = department ?? "", HiringType = hiringType ?? "", EmploymentType = employmentType ?? "", Priority = priority ?? "", BusinessUnit = businessUnit ?? "", PositionCategory = positionCategory ?? "", Experience = experience ?? "", Location = location ?? "", Project = project ?? "", ReplacementHiring = replacementHiring, BudgetMin = budgetMin, BudgetMax = budgetMax, DateFrom = dateFrom, DateTo = dateTo, RecruiterUserId = recruiterUserId }, CurrentUser(context)));
 });
-app.MapPost("/api/recruitment/requisitions", async (RecruitmentRepository repository, SaveRecruitmentRequisition request, HttpContext context) =>
+app.MapPost("/api/recruitment/requisitions", async (RecruitmentRepository repository, RecruitmentCaseRepository hiringCases, SaveRecruitmentRequisition request, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
-    var (row, error) = await repository.SaveDraftAsync(request, CurrentUser(context));
-    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+    var user = CurrentUser(context);
+    var (row, error) = await repository.SaveDraftAsync(request, user);
+    if (row is null) return Results.BadRequest(new { error });
+    await hiringCases.EnsureHiringCaseForRequisitionAsync(row.Id, user);
+    return Results.Ok(row);
 });
 app.MapDelete("/api/recruitment/requisitions/{id:long}", async (RecruitmentRepository repository, long id, HttpContext context) =>
 {
@@ -1072,6 +1100,19 @@ app.MapPost("/api/recruitment/requisitions/{id:long}/submit", async (Recruitment
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 
+app.MapPost("/api/recruitment/seed-pack/import", async (RecruitmentSeedPackService importer, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!context.Request.HasFormContentType) return Results.BadRequest(new { error = "Upload the recruitment workbook and any referenced resumes as form data." });
+    var form = await context.Request.ReadFormAsync(context.RequestAborted);
+    var workbook = form.Files.GetFile("workbook");
+    if (workbook is null) return Results.BadRequest(new { error = "Select the filled recruitment seed workbook." });
+    var resumeFiles = form.Files.Where(file => file.Name.Equals("resumes", StringComparison.OrdinalIgnoreCase)).ToList();
+    var (result, error) = await importer.ImportAsync(workbook, resumeFiles, CurrentUser(context),
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+    return result is null ? Results.BadRequest(new { error }) : Results.Ok(result);
+}).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(550L * 1024 * 1024));
+
 app.MapGet("/api/recruitment/pipeline-workspace", async (RecruitmentPipelineRepository repository, int? clientId, long? positionId, long? jobPostingId, HttpContext context) =>
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
@@ -1079,6 +1120,18 @@ app.MapGet("/api/recruitment/pipeline-workspace", async (RecruitmentPipelineRepo
     if (user.ClientId.HasValue && clientId.HasValue && user.ClientId.Value != clientId.Value) return Results.StatusCode(403);
     var workspace = await repository.GetPipelineWorkspaceAsync(clientId, positionId, jobPostingId, user);
     return workspace is null ? Results.StatusCode(403) : Results.Ok(workspace);
+});
+
+app.MapGet("/api/recruitment/pipeline-schema-readiness", async (RecruitmentPipelineRepository repository, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var ready = await repository.IsCardScopeSchemaReadyAsync();
+    return Results.Ok(new
+    {
+        ready,
+        missing = ready ? Array.Empty<string>() : new[] { "recruitment_pipeline_stages.CardScope" },
+        action = ready ? "None" : "Run the project migrator, then restart the API."
+    });
 });
 
 app.MapGet("/api/recruitment/work-orders", async (RecruitmentCaseRepository repository, int? clientId, string? query, HttpContext context) =>
@@ -1114,6 +1167,11 @@ app.MapGet("/api/recruitment/hiring-cases/{id:long}", async (RecruitmentCaseRepo
     if (!HasPermission(context, "recruitment.hiring-case.view") && !HasPermission(context, "recruitment.hiring-case.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var row = await repository.GetHiringCaseAsync(id, CurrentUser(context));
     return row is null ? Results.NotFound() : Results.Ok(row);
+});
+app.MapGet("/api/recruitment/hiring-cases/{id:long}/transitions", async (RecruitmentCaseRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.hiring-case.view") && !HasPermission(context, "recruitment.hiring-case.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    return Results.Ok(await repository.GetAvailableHiringCaseTransitionsAsync(id, CurrentUser(context)));
 });
 app.MapPost("/api/recruitment/hiring-cases/start", async (RecruitmentCaseRepository repository, StartRecruitmentHiringCaseRequest request, HttpContext context) =>
 {
@@ -1251,6 +1309,49 @@ app.MapGet("/api/recruitment/candidates", async (RecruitmentTalentRepository rep
     HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage")
         ? Results.Ok(await repository.SearchCandidatesAsync(CurrentUser(context), clientId, query ?? "", status ?? ""))
         : Results.StatusCode(403));
+app.MapGet("/api/recruitment/talent-pool/candidates", async (RecruitmentTalentRepository repository, string? query, string? status, HttpContext context) =>
+{
+    if ((!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) || CurrentUser(context).ClientId is not null) return Results.StatusCode(403);
+    return Results.Ok(await repository.SearchGlobalTalentPoolAsync(CurrentUser(context), query ?? "", status ?? ""));
+});
+app.MapGet("/api/recruitment/talent-pool/matches", async (RecruitmentTalentRepository repository, long? positionId, string? status, HttpContext context) =>
+{
+    if ((!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) || CurrentUser(context).ClientId is not null) return Results.StatusCode(403);
+    return Results.Ok(await repository.GetTalentPoolMatchesAsync(CurrentUser(context), positionId, status ?? ""));
+});
+app.MapPost("/api/recruitment/talent-pool/match", async (RecruitmentTalentRepository repository, RecruitmentTalentPoolMatchRequest request, HttpContext context) =>
+{
+    if ((!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) || CurrentUser(context).ClientId is not null) return Results.StatusCode(403);
+    var (result, error) = await repository.RunTalentPoolMatchAsync(request, CurrentUser(context), context.RequestAborted);
+    return result is null ? Results.BadRequest(new { error }) : Results.Ok(result);
+});
+app.MapPost("/api/recruitment/talent-pool/matches/{id:long}/selection", async (RecruitmentTalentRepository repository, long id, RecruitmentTalentPoolSelectionRequest request, HttpContext context) =>
+{
+    if ((!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) || CurrentUser(context).ClientId is not null) return Results.StatusCode(403);
+    var (row, error) = await repository.SetTalentPoolMatchSelectionAsync(id, request.Selected, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/talent-pool/select-direct", async (RecruitmentTalentRepository repository, RecruitmentTalentPoolDirectSelectionRequest request, HttpContext context) =>
+{
+    if ((!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) || CurrentUser(context).ClientId is not null) return Results.StatusCode(403);
+    var (row, error) = await repository.DirectSelectTalentPoolCandidateAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/talent-pool/matches/{id:long}/promote", async (RecruitmentTalentRepository talent, RecruitmentPipelineRepository pipelines, RecruitmentPipelineActionService actions, RecruitmentCandidateActionRepository candidateActions, long id, HttpContext context) =>
+{
+    if ((!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) || CurrentUser(context).ClientId is not null) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var (match, validationError) = await talent.GetTalentPoolMatchForPromotionAsync(id, user);
+    if (match is null) return Results.BadRequest(new { error = validationError });
+    var (pipelineId, pipelineError) = await pipelines.EnsureApplicationPipelineAsync(id, user);
+    if (!pipelineId.HasValue) return Results.BadRequest(new { error = pipelineError });
+    var (row, promotionError) = await talent.FinalizeTalentPoolMatchPromotionAsync(id, user);
+    if (row is null) return Results.BadRequest(new { error = promotionError });
+    var entry = await actions.ExecuteAsync(id, "OnEntry", user);
+    if (!entry.Executions.Any(execution => execution.ActionCode == "GENERATE_ACTION_LINK"))
+        await candidateActions.EnsureForCurrentStageAsync(id, user);
+    return Results.Ok(row);
+});
 app.MapGet("/api/recruitment/candidates/{id:long}", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.candidate.view") && !HasPermission(context, "recruitment.interview.panel") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
@@ -1396,10 +1497,17 @@ app.MapGet("/api/recruitment/interviews/scheduling-context/{applicationId:long}"
     var (row, error) = await repository.GetInterviewSchedulingContextAsync(applicationId, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
-app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, SaveRecruitmentInterview request, HttpContext context) =>
+app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, RecruitmentPipelineActionService pipelineActions, SaveRecruitmentInterview request, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.interview.schedule") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
-    var (row, error) = await repository.SaveInterviewAsync(request, CurrentUser(context));
+    var user = CurrentUser(context);
+    var isNew = request.Id <= 0;
+    var (row, error) = await repository.SaveInterviewAsync(request, user);
+    if (row?.PipelineStageInstanceId is > 0 && row.Status is "Scheduled" or "Rescheduled")
+    {
+        var trigger = isNew || row.RescheduleCount == 0 ? "OnInterviewScheduled" : "OnInterviewRescheduled";
+        await pipelineActions.ExecuteAsync(row.ApplicationId, trigger, user, row.PipelineStageInstanceId, $"INTERVIEW{row.Id}R{row.RescheduleCount}");
+    }
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 app.MapDelete("/api/recruitment/interviews/{id:long}", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
@@ -1560,24 +1668,32 @@ recruitmentOrchestration.MapPost("/job-descriptions/{id:long}/approve-direct", a
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 
-recruitmentOrchestration.MapGet("/job-postings", async (RecruitmentPipelineRepository repository, int? clientId, HttpContext context) =>
-    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetJobPostingsAsync(clientId, CurrentUser(context))));
-recruitmentOrchestration.MapGet("/job-postings/{id:long}", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
+recruitmentOrchestration.MapGet("/job-postings", async (RecruitmentPipelineRepository repository, PublicPortalUrlResolver publicPortalUrls, int? clientId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var rows = (await repository.GetJobPostingsAsync(clientId, CurrentUser(context))).ToList();
+    foreach (var row in rows) row.PublicPortalBaseUrl = publicPortalUrls.ResolveBaseUrl(row.PublicPortalBaseUrl);
+    return Results.Ok(rows);
+});
+recruitmentOrchestration.MapGet("/job-postings/{id:long}", async (RecruitmentPipelineRepository repository, PublicPortalUrlResolver publicPortalUrls, long id, HttpContext context) =>
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
     var row = await repository.GetJobPostingAsync(id, CurrentUser(context));
+    if (row is not null) row.PublicPortalBaseUrl = publicPortalUrls.ResolveBaseUrl(row.PublicPortalBaseUrl);
     return row is null ? Results.NotFound() : Results.Ok(row);
 });
-recruitmentOrchestration.MapPost("/job-postings", async (RecruitmentPipelineRepository repository, SaveRecruitmentJobPosting request, HttpContext context) =>
+recruitmentOrchestration.MapPost("/job-postings", async (RecruitmentPipelineRepository repository, PublicPortalUrlResolver publicPortalUrls, SaveRecruitmentJobPosting request, HttpContext context) =>
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
     var (row, error) = await repository.SaveJobPostingAsync(request, CurrentUser(context));
+    if (row is not null) row.PublicPortalBaseUrl = publicPortalUrls.ResolveBaseUrl(row.PublicPortalBaseUrl);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
-recruitmentOrchestration.MapPost("/job-postings/{id:long}/publish", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
+recruitmentOrchestration.MapPost("/job-postings/{id:long}/publish", async (RecruitmentPipelineRepository repository, PublicPortalUrlResolver publicPortalUrls, long id, HttpContext context) =>
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
     var (row, error) = await repository.PublishJobPostingAsync(id, CurrentUser(context));
+    if (row is not null) row.PublicPortalBaseUrl = publicPortalUrls.ResolveBaseUrl(row.PublicPortalBaseUrl);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 recruitmentOrchestration.MapPost("/job-postings/{id:long}/close", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
@@ -1673,6 +1789,8 @@ recruitmentOrchestration.MapGet("/pipeline-board", async (RecruitmentPipelineRep
 });
 recruitmentOrchestration.MapGet("/applications/{applicationId:long}/transitions", async (RecruitmentPipelineRepository repository, long applicationId, HttpContext context) =>
     !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetAvailableTransitionsAsync(applicationId, CurrentUser(context))));
+recruitmentOrchestration.MapGet("/applications/{applicationId:long}/stage-history", async (RecruitmentPipelineRepository repository, long applicationId, HttpContext context) =>
+    !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetApplicationStageHistoryAsync(applicationId, CurrentUser(context))));
 recruitmentOrchestration.MapGet("/pipeline-stages/{stageId:long}/actions", async (RecruitmentPipelineRepository repository, long stageId, string? triggerEvent, HttpContext context) =>
     !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetStageActionsAsync(stageId, triggerEvent ?? "OnEntry", CurrentUser(context))));
 recruitmentOrchestration.MapGet("/applications/{applicationId:long}/stage-action-executions", async (RecruitmentPipelineActionService actions, long applicationId, HttpContext context) =>
@@ -2104,6 +2222,15 @@ app.MapPost("/api/notifications/test", async (NotificationRepository repository,
     if (request.RuleId <= 0 || string.IsNullOrWhiteSpace(request.ToEmail)) return Results.BadRequest(new { error = "Rule and test email are required." });
     await repository.QueueTestAsync(request, CurrentUser(context).Id);
     return Results.NoContent();
+});
+app.MapGet("/api/notifications/automation/catalog", async (NotificationAutomationRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetCatalogAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden));
+app.MapPost("/api/notifications/automation/stakeholders", async (NotificationAutomationRepository repository, NotificationStakeholderPreviewRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var user=CurrentUser(context);
+    var preview=await repository.PreviewAsync(new NotificationEvent{EventCode=request.EventCode,ResourceType=request.ResourceType,ResourceId=request.ResourceId,ClientId=request.ClientId,ActorUserId=user.Id,ActorName=user.DisplayName,ActorEmail=user.Email,PayloadJson="{}"});
+    return Results.Ok(preview);
 });
 
 app.MapGet("/api/communication-settings/providers", async (CommunicationRepository repository, int? clientId, HttpContext context) =>
@@ -3064,8 +3191,9 @@ app.MapGet("/api/dropdowns", async (OrganizationRepository repository) =>
 .WithName("GetDropdownMasters")
 .WithOpenApi();
 
-app.MapPost("/api/dropdowns", async (OrganizationRepository repository, DropdownMaster item) =>
+app.MapPost("/api/dropdowns", async (OrganizationRepository repository, DropdownMaster item, HttpContext context) =>
 {
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     if (string.IsNullOrWhiteSpace(item.Type) || string.IsNullOrWhiteSpace(item.Value))
         return Results.BadRequest(new { error = "Dropdown type and value are required." });
     item.Type = item.Type.Trim();

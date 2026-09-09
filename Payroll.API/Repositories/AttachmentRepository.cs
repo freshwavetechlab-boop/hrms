@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -19,6 +20,7 @@ public class AttachmentRepository(
 {
     private const long DefaultGlobalMaximumBytes = 25L * 1024 * 1024;
     private readonly IDataProtector credentialProtector = dataProtectionProvider.CreateProtector("Payroll.API.AttachmentStorageCredentials.v1");
+    private readonly ConcurrentDictionary<long, StorageWriteReadiness> storageWriteReadiness = new();
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
 
     public async Task InitializeAsync()
@@ -238,6 +240,12 @@ INSERT INTO attachment_attributes
 SELECT 0,'RECRUITMENT_PROCESS_DOCUMENT','Recruitment process document','Generated and final signed MoM, score annexure, proposal and joining documents.','Restricted',TRUE
 WHERE NOT EXISTS (
     SELECT 1 FROM attachment_attributes WHERE client_id=0 AND attribute_code='RECRUITMENT_PROCESS_DOCUMENT'
+);
+INSERT INTO attachment_attributes
+(client_id,attribute_code,attribute_name,description,data_classification,is_active)
+SELECT 0,'RECRUITMENT_REQUEST_SOURCE','Hiring request source','Original hiring request, role requirement or job-description source received from the client.','Confidential',TRUE
+WHERE NOT EXISTS (
+    SELECT 1 FROM attachment_attributes WHERE client_id=0 AND attribute_code='RECRUITMENT_REQUEST_SOURCE'
 );");
         var workOrderAttributeId = await db.ExecuteScalarAsync<long>(@"
 SELECT id FROM attachment_attributes
@@ -246,6 +254,10 @@ ORDER BY id LIMIT 1;");
         var processDocumentAttributeId = await db.ExecuteScalarAsync<long>(@"
 SELECT id FROM attachment_attributes
 WHERE client_id=0 AND attribute_code='RECRUITMENT_PROCESS_DOCUMENT'
+ORDER BY id LIMIT 1;");
+        var requestSourceAttributeId = await db.ExecuteScalarAsync<long>(@"
+SELECT id FROM attachment_attributes
+WHERE client_id=0 AND attribute_code='RECRUITMENT_REQUEST_SOURCE'
 ORDER BY id LIMIT 1;");
         await db.ExecuteAsync(@"
 INSERT INTO attachment_field_configurations
@@ -271,7 +283,20 @@ SELECT 0,@ProcessDocumentAttributeId,'RECRUITMENT','PROCESS_DOCUMENT','DOCUMENTS
 WHERE NOT EXISTS (
     SELECT 1 FROM attachment_field_configurations
     WHERE client_id=0 AND module_code='RECRUITMENT' AND form_code='PROCESS_DOCUMENT' AND field_key='FINAL_PROCESS_DOCUMENT'
-);", new { WorkOrderAttributeId = workOrderAttributeId, ProcessDocumentAttributeId = processDocumentAttributeId });
+);
+INSERT INTO attachment_field_configurations
+(client_id,attachment_attribute_id,module_code,form_code,section_code,field_key,field_label,help_text,is_required,allow_multiple,minimum_file_count,maximum_file_count,
+ allowed_extensions_json,allowed_mime_types_json,maximum_file_size_bytes,maximum_total_size_bytes,owner_can_view,owner_can_upload,owner_can_replace,owner_can_delete,
+ requires_verification,versioning_enabled,requirement_scope,display_order,is_active)
+SELECT 0,@RequestSourceAttributeId,'RECRUITMENT','HIRING_REQUEST','SOURCE','HIRING_REQUEST_SOURCE','Original hiring request / JD',
+       'The source PDF is stored privately, remains previewable and can prefill the hiring request and JD draft.',FALSE,TRUE,0,10,
+       '[""pdf"",""docx"",""txt""]',
+       '[""application/pdf"",""application/vnd.openxmlformats-officedocument.wordprocessingml.document"",""text/plain""]',
+       10485760,52428800,TRUE,FALSE,FALSE,FALSE,FALSE,TRUE,'AllEntities',10,TRUE
+WHERE NOT EXISTS (
+    SELECT 1 FROM attachment_field_configurations
+    WHERE client_id=0 AND module_code='RECRUITMENT' AND form_code='HIRING_REQUEST' AND field_key='HIRING_REQUEST_SOURCE'
+);", new { WorkOrderAttributeId = workOrderAttributeId, ProcessDocumentAttributeId = processDocumentAttributeId, RequestSourceAttributeId = requestSourceAttributeId });
     }
 
     public static IReadOnlyList<AttachmentTargetOption> Targets { get; } =
@@ -284,6 +309,7 @@ WHERE NOT EXISTS (
         new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "PUBLIC_CANDIDATE_APPLICATION", FormName = "Public Candidate Application", EntityType = "FORM_SUBMISSION" },
         new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "PRE_ONBOARDING", FormName = "Pre-Onboarding", EntityType = "CANDIDATE" },
         new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "WORK_ORDER", FormName = "Client Work Order and JD Annexure", EntityType = "RECRUITMENT_WORK_ORDER" },
+        new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "HIRING_REQUEST", FormName = "Hiring Request Source", EntityType = "RECRUITMENT_REQUISITION" },
         new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "PROCESS_DOCUMENT", FormName = "MoM, Score Annexure and HR Proposal", EntityType = "RECRUITMENT_PROCESS_DOCUMENT" }
     ];
 
@@ -926,7 +952,28 @@ ORDER BY f.display_order,a.uploaded_at_utc DESC;", new { ClientId = clientId.Val
         if (allowedMimeTypes.Count > 0 && !allowedMimeTypes.Contains(inspection.DetectedMimeType, StringComparer.OrdinalIgnoreCase))
             return (null, $"Detected file type {inspection.DetectedMimeType} is not allowed.");
 
-        var server = await GetDefaultWriteServerAsync();
+        // A repeated upload of the exact same document to the same field is idempotent.
+        // This is especially important for rerunnable bulk resume intake: candidate
+        // identity and the current resume both remain single records.
+        await using (var duplicateDb = Connection())
+        {
+            await duplicateDb.OpenAsync(cancellationToken);
+            var duplicateId = await duplicateDb.ExecuteScalarAsync<long?>(@"SELECT id FROM entity_attachments
+WHERE client_id=@ClientId AND entity_type=@EntityType AND entity_id=@EntityId
+  AND field_configuration_id=@FieldId AND sha256_hash=@Sha256Hash
+  AND is_current=TRUE AND is_deleted=FALSE
+ORDER BY id DESC LIMIT 1", new
+            {
+                ClientId = clientId.Value,
+                metadata.EntityType,
+                metadata.EntityId,
+                FieldId = configurationRow.Id,
+                inspection.Sha256Hash
+            });
+            if (duplicateId.HasValue) return (await GetAttachmentByIdAsync(duplicateId.Value), null);
+        }
+
+        var server = await GetDefaultWriteServerAsync(cancellationToken);
         if (server is null) return (null, "No active default write storage server is configured.");
         if (server.MaximumCapacityBytes.HasValue)
         {
@@ -1131,16 +1178,68 @@ rejection_reason=@Reason WHERE id=@Id", new { row.Id, Status = approve ? "Verifi
         return null;
     }
 
-    private async Task<AttachmentStorageServer?> GetDefaultWriteServerAsync()
+    private async Task<AttachmentStorageServer?> GetDefaultWriteServerAsync(CancellationToken cancellationToken)
     {
         var servers = await GetStorageServersAsync(true);
-        return servers.FirstOrDefault(server => server.IsDefaultWriteServer && server.IsActive && server.IsWriteEnabled);
+        foreach (var server in servers
+                     .Where(server => server.IsActive && server.IsWriteEnabled)
+                     .OrderByDescending(server => server.IsDefaultWriteServer)
+                     .ThenBy(server => server.Priority)
+                     .ThenBy(server => server.ServerName))
+        {
+            if (await IsReadyForWriteAsync(server, cancellationToken)) return server;
+        }
+        return null;
+    }
+
+    private async Task<bool> IsReadyForWriteAsync(AttachmentStorageServer server, CancellationToken cancellationToken)
+    {
+        if (!server.IsActive || !server.IsWriteEnabled) return false;
+        if (server.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!server.GoogleConnectionStatus.Equals("Connected", StringComparison.OrdinalIgnoreCase)) return false;
+            return await IsRemoteWriteReadyAsync(server, cancellationToken);
+        }
+        if (server.StorageType.Equals("HttpFileServer", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!Uri.TryCreate(server.ServiceUrl, UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)) return false;
+            return await IsRemoteWriteReadyAsync(server, cancellationToken);
+        }
+        if (server.StorageType.Equals("LocalFileSystem", StringComparison.OrdinalIgnoreCase)
+            || server.StorageType.Equals("MountedFileSystem", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                _ = storageService.ResolveRoot(server);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private async Task<bool> IsRemoteWriteReadyAsync(AttachmentStorageServer server, CancellationToken cancellationToken)
+    {
+        if (storageWriteReadiness.TryGetValue(server.Id, out var cached) && cached.ValidUntilUtc > DateTime.UtcNow)
+            return cached.Ready;
+        var health = await storageService.TestAsync(server, cancellationToken);
+        var ready = health.Healthy;
+        storageWriteReadiness[server.Id] = new StorageWriteReadiness(
+            ready,
+            DateTime.UtcNow.Add(ready ? TimeSpan.FromMinutes(5) : TimeSpan.FromMinutes(1)));
+        return ready;
     }
 
     private async Task<AttachmentStorageServer?> GetStorageServerAsync(long id, bool includeCredential)
     {
         return (await GetStorageServersAsync(includeCredential)).FirstOrDefault(row => row.Id == id);
     }
+
+    private sealed record StorageWriteReadiness(bool Ready, DateTime ValidUntilUtc);
 
     private async Task<EntityAttachment?> GetAttachmentByIdAsync(long id)
     {
@@ -1184,6 +1283,8 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
             return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM form_submissions WHERE Id=@Id", new { Id = entityId });
         if (entityType == "RECRUITMENT_WORK_ORDER")
             return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM recruitment_work_orders WHERE Id=@Id", new { Id = entityId });
+        if (entityType == "RECRUITMENT_REQUISITION")
+            return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM recruitment_requisitions WHERE Id=@Id", new { Id = entityId });
         if (entityType == "RECRUITMENT_PROCESS_DOCUMENT")
             return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM recruitment_process_documents WHERE Id=@Id", new { Id = entityId });
         if (entityType == "EMPLOYEE_COMMUNICATION_DRAFT")
@@ -1246,7 +1347,8 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
         await using var db = Connection();
         await db.OpenAsync();
         return await db.ExecuteScalarAsync<int>(@"SELECT CASE WHEN EXISTS (
-    SELECT 1 FROM recruitment_candidate_applications a WHERE a.CandidateId=@EntityId AND a.ClientId=@ClientId
+    SELECT 1 FROM recruitment_candidate_applications a
+    WHERE a.CandidateId=@EntityId AND a.ClientId=@ClientId AND a.ApplicationType='Application'
 ) OR EXISTS (
     SELECT 1 FROM recruitment_employee_referrals r JOIN recruitment_open_positions p ON p.Id=r.PositionId
     WHERE r.CandidateId=@EntityId AND p.ClientId=@ClientId
@@ -1301,7 +1403,7 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
     {
         var extension = Path.GetExtension(file.FileName).TrimStart('.').ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(extension) || extension.Length > 10) return FileInspection.Fail("File extension is invalid.");
-        var header = new byte[Math.Min(16, (int)Math.Min(file.Length, 16))];
+        var header = new byte[Math.Min(4096, (int)Math.Min(file.Length, 4096))];
         await using (var headerStream = file.OpenReadStream())
             _ = await headerStream.ReadAsync(header, cancellationToken);
         await using var hashStream = file.OpenReadStream();
@@ -1309,7 +1411,7 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
         var mime = DetectMimeType(header, extension);
         if (mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" && !await IsDocxAsync(file, cancellationToken))
             return FileInspection.Fail("The uploaded ZIP content is not a valid DOCX document.");
-        return mime is null ? FileInspection.Fail("File content does not match an approved PDF, image or DOCX format.") : FileInspection.Success(mime, hash);
+        return mime is null ? FileInspection.Fail("File content does not match an approved PDF, image, DOCX, RTF or TXT format.") : FileInspection.Success(mime, hash);
     }
 
     private static async Task<bool> IsDocxAsync(IFormFile file, CancellationToken cancellationToken)
@@ -1346,7 +1448,23 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
         if (header.Length >= 8 && header.Take(8).SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }) && extension == "png") return "image/png";
         if (header.Length >= 4 && header[0] == 0x50 && header[1] == 0x4B && header[2] is 0x03 or 0x05 or 0x07 && header[3] is 0x04 or 0x06 or 0x08 && extension == "docx")
             return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        if (extension == "rtf" && Encoding.ASCII.GetString(header).TrimStart('\uFEFF').StartsWith(@"{\rtf", StringComparison.OrdinalIgnoreCase))
+            return "application/rtf";
+        if (extension == "txt" && LooksLikePlainText(header)) return "text/plain";
         return null;
+    }
+
+    private static bool LooksLikePlainText(byte[] sample)
+    {
+        try
+        {
+            var text = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true).GetString(sample);
+            return text.All(character => character is '\t' or '\r' or '\n' or '\f' || !char.IsControl(character));
+        }
+        catch (DecoderFallbackException)
+        {
+            return false;
+        }
     }
 
     private long GlobalMaximumBytes() => Math.Max(1024, configuration.GetValue("AttachmentStorage:GlobalMaximumFileSizeBytes", DefaultGlobalMaximumBytes));

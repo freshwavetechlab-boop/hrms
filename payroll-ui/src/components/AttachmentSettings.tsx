@@ -354,7 +354,7 @@ export default function AttachmentSettings({ mode = 'attachments' }: { mode?: 'a
   const googleDriveServer = useMemo(() => servers.find(item => item.storageType === 'GoogleDrive'), [servers])
 
   return <section className="attachment-settings">
-    <Card size="small" className="settings-panel settings-table-panel" title={mode === 'storage' ? 'Storage Servers' : 'Global Attachment Configuration'}>
+    <Card size="small" className="settings-panel settings-table-panel" title={mode === 'storage' ? undefined : 'Global Attachment Configuration'} aria-label={mode === 'storage' ? 'Storage server configuration' : 'Global Attachment Configuration'}>
       <Tabs items={[
         {
           key: 'attributes', label: 'Attachment Attributes', children: <>

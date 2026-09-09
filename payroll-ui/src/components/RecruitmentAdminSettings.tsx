@@ -1,26 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Checkbox, Collapse, Drawer, Form, Input, InputNumber, Popconfirm, Select, Space, Tooltip, message } from 'antd'
-import { DeleteOutlined } from '@ant-design/icons'
+import { useEffect, useState } from 'react'
+import { Alert, Button, Drawer, Form, Input, Popconfirm, Select, Space, Tooltip, message } from 'antd'
+import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import DataTable from './DataTable'
-import RecruitmentAtsAdmin from './RecruitmentAtsAdmin'
-import RecruitmentFormBuilder from './RecruitmentFormBuilder'
-import RecruitmentMasterSelect from './RecruitmentMasterSelect'
-import RecruitmentPipelineDesigner from './RecruitmentPipelineDesigner'
 import SearchSelect, { selectOptions } from './SearchSelect'
-import { getClients, getEmployees } from '../services/payrollService'
-import { getJson } from '../services/apiClient'
-import { getAttachmentAttributes } from '../services/attachmentService'
-import { getAtsProfiles } from '../services/recruitmentTalentService'
-import { deleteRecruitmentAdminConfiguration, getDropdowns, getRecruitmentAdminSetup, getWorkLocations, saveRecruitmentApprovalMapping, saveRecruitmentAssignmentRule, saveRecruitmentDocumentChecklist, saveRecruitmentPartner, saveRecruitmentSetting, saveRecruitmentSlaRule, saveRecruitmentTemplate } from '../services/settingsService'
-import type { AttachmentAttribute, Client, Drop, Employee, RecruitmentAdminSetup, RecruitmentApprovalMapping, RecruitmentAssignmentRule, RecruitmentAtsScoringProfile, RecruitmentDocumentChecklist, RecruitmentPartner, RecruitmentSetting, RecruitmentSlaRule, RecruitmentTemplate, WorkLocation, WorkflowApprover } from '../types/payroll'
+import { getClients } from '../services/payrollService'
+import { deleteRecruitmentAdminConfiguration, getRecruitmentAdminSetup, saveRecruitmentTemplate } from '../services/settingsService'
+import type { Client, RecruitmentAdminSetup, RecruitmentTemplate } from '../types/payroll'
+import './RecruitmentAdminExperience.css'
 
-type WorkflowOption = { id: number; name: string; code: string; resourceType: string; isActive: boolean }
-const setting0: RecruitmentSetting = { id: 0, clientId: 0, clientName: '', recruitmentEnabled: false, allowEmployeeRfrCreation: false, allowReplacementHiring: true, allowMultipleHiringManagers: false, allowMultipleRecruiters: false, autoGeneratePositionCode: true, autoGenerateRfrNumber: true, enableVendorHiring: false, enableConsultantHiring: false, enableInternalHiring: true, enableReferralHiring: true, enableCampusHiring: false, enableWalkInHiring: false, enableOfferApproval: true, enablePreOfferProcess: true, enableBackgroundVerification: false, enableDocumentVerification: true, enableCandidatePortal: false, publicPortalBaseUrl: '', enableVendorPortal: false, enableJobPortalIntegration: false, enableTalentPool: true, enableResumeParsing: true, enableAtsScoring: true, requireResumeForApplication: true, allowManualScoreOverride: true, allowDuplicateCandidate: false, autoCreateApplicationFromReferral: true, defaultAtsScoringProfileId: null, candidateRetentionMonths: 24, isActive: true }
-const partner0 = (type: 'Consultant' | 'Vendor'): RecruitmentPartner => ({ id: 0, partnerType: type, clientId: 0, clientName: '', code: '', name: '', company: '', contactPerson: '', email: '', phone: '', address: '', gstin: '', pan: '', agreementStartDate: '', agreementEndDate: '', commissionType: 'Percentage', commissionValue: 0, status: 'Active', performanceRating: 0, isActive: true })
-const assignment0: RecruitmentAssignmentRule = { id: 0, clientId: 0, clientName: '', ruleName: '', businessUnit: '', department: '', positionCategory: '', skillCategory: '', project: '', location: '', experienceRange: '', jobLevel: '', recruitmentSource: '', priority: '', recruiterUserId: 0, recruiterName: '', maximumOpenPositions: 0, workloadBased: false, manualOverrideAllowed: true, sortOrder: 100, isActive: true }
-const sla0: RecruitmentSlaRule = { id: 0, clientId: 0, clientName: '', processName: 'Resume Screening', durationDays: 2, reminderEnabled: true, reminderBeforeDays: 1, escalationEnabled: false, escalationAfterDays: 0, notificationRuleId: 0, isActive: true }
-const checklist0: RecruitmentDocumentChecklist = { id: 0, clientId: 0, clientName: '', hiringType: 'Permanent', documentName: '', mandatory: true, stage: 'Pre-Onboarding', attachmentAttributeId: null, requiresVerification: false, dueOffsetDays: 0, displayOrder: 100, isActive: true }
-const approval0: RecruitmentApprovalMapping = { id: 0, clientId: 0, clientName: '', processCode: 'RFR_APPROVAL', workflowId: 0, workflowName: '', isActive: true }
 const template0: RecruitmentTemplate = { id: 0, clientId: 0, clientName: '', templateType: 'Job Description', templateCode: '', templateName: '', subjectTemplate: '', bodyTemplate: '', isHtml: true, isActive: true }
 const selectionCommitteeMomTemplate = `MINUTES OF MEETING OF THE SELECTION COMMITTEE
 FOR HIRING FOR THE POSITION OF #POSITION_NAME#
@@ -78,243 +65,72 @@ Submitted.
 ANNEXURE A
 
 #SCOREANNEXURETABLE#`
-const settingOptions: Array<{ key: keyof RecruitmentSetting; label: string; description: string; impact: string; disabled?: boolean }> = [
-  { key: 'recruitmentEnabled', label: 'Recruitment enabled', description: 'Use recruitment for this client.', impact: 'ON: ESS Recruitment can appear only for users with recruitment permission. OFF: Recruitment is hidden/blocked for this client.' },
-  { key: 'allowEmployeeRfrCreation', label: 'Employee RFR creation', description: 'Let permitted employees raise hiring requests from ESS.', impact: 'ON: users with recruitment.rfr.create or recruitment.manage can create RFRs. OFF: create/save/submit is blocked even if the user has permission.' },
-  { key: 'allowReplacementHiring', label: 'Replacement hiring', description: 'Allow requisitions for replacing an existing employee.', impact: 'ON: ESS shows Replacement hiring and replacement employee fields. OFF: fields are hidden and API blocks replacement RFR save.' },
-  { key: 'allowMultipleHiringManagers', label: 'Multiple hiring managers', description: 'Allow more than one hiring manager for a requisition.', impact: 'Future use. No hiring-manager field is hidden or shown from this switch yet.', disabled: true },
-  { key: 'allowMultipleRecruiters', label: 'Multiple recruiters', description: 'Allow more than one recruiter to work on a position.', impact: 'ON: Admin position detail shows Secondary recruiter. OFF: secondary recruiter is hidden and ignored by API.' },
-  { key: 'autoGeneratePositionCode', label: 'Auto position code', description: 'Let the system create open-position codes.', impact: 'Locked for now. Current flow always auto-generates position codes; manual mode is not implemented yet.', disabled: true },
-  { key: 'autoGenerateRfrNumber', label: 'Auto RFR number', description: 'Let the system create RFR numbers.', impact: 'Locked for now. Current flow always auto-generates RFR numbers; manual mode is not implemented yet.', disabled: true },
-  { key: 'enableVendorHiring', label: 'Vendor hiring', description: 'Allow external vendors for hiring support.', impact: 'ON: Admin position detail shows vendor assignment and history. OFF: vendor tab/form is hidden and API blocks vendor assignment.' },
-  { key: 'enableConsultantHiring', label: 'Consultant hiring', description: 'Allow recruitment consultants for specialist hiring.', impact: 'ON: Admin position detail shows consultant assignment and history. OFF: consultant form is hidden and API blocks consultant assignment.' },
-  { key: 'enableInternalHiring', label: 'Internal hiring', description: 'Allow openings to be shared internally.', impact: 'ON: Admin publishing allows Internal channels and ESS can show internal openings. OFF: internal publishing/referral visibility is blocked.' },
-  { key: 'enableReferralHiring', label: 'Referral hiring', description: 'Allow employees to refer candidates.', impact: 'ON: Admin Referral Campaign and ESS referral sections are visible. OFF: referral campaign/submission is hidden and API blocks it.' },
-  { key: 'enableCampusHiring', label: 'Campus hiring', description: 'Allow campus recruitment scenarios.', impact: 'Future use. No Campus Hiring menu, field, or workflow is shown/hidden by this switch yet.', disabled: true },
-  { key: 'enableWalkInHiring', label: 'Walk-in hiring', description: 'Allow walk-in hiring events.', impact: 'Future use. No Walk-in Hiring menu, field, or workflow is shown/hidden by this switch yet.', disabled: true },
-  { key: 'enableOfferApproval', label: 'Offer approval', description: 'Route offers through approval before release.', impact: 'Controls whether offer release requires the configured OFFER_APPROVAL workflow.' },
-  { key: 'enablePreOfferProcess', label: 'Pre-offer process', description: 'Enable candidate checks before joining.', impact: 'Creates the configured candidate document checklist snapshot for pre-onboarding.' },
-  { key: 'enableBackgroundVerification', label: 'Background verification', description: 'Track background verification before joining.', impact: 'Future use. No BGV tab, field, or status is shown/hidden by this switch yet.', disabled: true },
-  { key: 'enableDocumentVerification', label: 'Document verification', description: 'Track candidate document verification.', impact: 'ON: approved RFR snapshots document checklist into position detail. OFF: checklist card is hidden and no checklist snapshot is created.' },
-  { key: 'enableCandidatePortal', label: 'Candidate portal', description: 'Enable secure public application, document and offer links.', impact: 'ON: published career forms and expiring candidate action links can be used. Configure the public portal URL below.' },
-  { key: 'enableVendorPortal', label: 'Vendor portal', description: 'Allow vendor self-service in future.', impact: 'Future use. No vendor portal route or login is enabled/disabled by this switch yet.', disabled: true },
-  { key: 'enableJobPortalIntegration', label: 'Job portal integration', description: 'Allow external job-board integration in future.', impact: 'Future external adapter switch; internal publishing remains available.', disabled: true },
-  { key: 'enableTalentPool', label: 'Global talent pool', description: 'Maintain reusable candidate profiles across positions.', impact: 'Enables candidate 360 profiles and multiple applications per candidate.' },
-  { key: 'enableResumeParsing', label: 'Resume parsing', description: 'Extract searchable text and skills from uploaded resumes.', impact: 'Uses the global document upload and the configured parsing provider.' },
-  { key: 'enableAtsScoring', label: 'ATS scoring', description: 'Score candidate-position fit with an explainable profile.', impact: 'Creates versioned score snapshots; it does not auto-reject candidates.' },
-  { key: 'requireResumeForApplication', label: 'Resume required', description: 'Require a resume before application processing.', impact: 'Configured resume is stored only through the global document system.' },
-  { key: 'allowManualScoreOverride', label: 'Score override', description: 'Allow recruiters to override ATS score with a reason.', impact: 'Override remains audit logged alongside the original score.' },
-  { key: 'allowDuplicateCandidate', label: 'Allow duplicates', description: 'Permit same email or phone in multiple talent profiles.', impact: 'OFF prevents duplicate active profiles; recommended for data quality.' },
-  { key: 'autoCreateApplicationFromReferral', label: 'Referral auto-application', description: 'Create candidate and application when referral is submitted.', impact: 'Links referral resume and activity to the central talent profile.' }
-]
-const coreSettingKeys = new Set<keyof RecruitmentSetting>(['recruitmentEnabled', 'allowEmployeeRfrCreation', 'allowReplacementHiring', 'enableCandidatePortal', 'requireResumeForApplication'])
-const automationSettingKeys = new Set<keyof RecruitmentSetting>(['enableResumeParsing', 'enableAtsScoring', 'enableTalentPool', 'enableDocumentVerification'])
-const channelSettingKeys = new Set<keyof RecruitmentSetting>(['enableVendorHiring', 'enableConsultantHiring', 'enableInternalHiring', 'enableReferralHiring', 'autoCreateApplicationFromReferral'])
-const coreSettingOptions = settingOptions.filter(option => coreSettingKeys.has(option.key))
-const automationSettingOptions = settingOptions.filter(option => automationSettingKeys.has(option.key))
-const channelSettingOptions = settingOptions.filter(option => channelSettingKeys.has(option.key))
-const advancedSettingOptions = settingOptions.filter(option => !option.disabled && !coreSettingKeys.has(option.key) && !automationSettingKeys.has(option.key) && !channelSettingKeys.has(option.key))
-
-export const recruitmentAdminSections = ['settings', 'consultants', 'vendors', 'assignment', 'sla', 'checklist', 'approvals', 'ats', 'forms', 'pipelines', 'templates'] as const
-export type RecruitmentAdminSection = (typeof recruitmentAdminSections)[number]
-export const recruitmentAdminNavigation: Array<{ key: string; label: string; children: Array<{ key: RecruitmentAdminSection; label: string }> }> = [
-  { key: 'foundation', label: 'Foundation', children: [
-    { key: 'settings', label: 'Client Settings' },
-    { key: 'consultants', label: 'Consultants' },
-    { key: 'vendors', label: 'Vendors' },
-  ] },
-  { key: 'governance', label: 'Routing & Governance', children: [
-    { key: 'assignment', label: 'Assignment Rules' },
-    { key: 'sla', label: 'SLA' },
-    { key: 'checklist', label: 'Document Checklist' },
-    { key: 'approvals', label: 'Approvals' },
-  ] },
-  { key: 'experience', label: 'Hiring Experience', children: [
-    { key: 'ats', label: 'ATS & Skills' },
-    { key: 'forms', label: 'Form Designer' },
-    { key: 'pipelines', label: 'Pipeline Designer' },
-    { key: 'templates', label: 'Templates' },
-  ] },
-]
-
-export const recruitmentAdminSectionLabel = (section: RecruitmentAdminSection) =>
-  recruitmentAdminNavigation.flatMap(group => group.children).find(item => item.key === section)?.label ?? 'Client Settings'
-
-export default function RecruitmentAdminSettings({ section = 'settings' }: { section?: RecruitmentAdminSection }) {
+export default function RecruitmentHiringTemplateManager({ initialClientId = 0, onSaved }: { initialClientId?: number; onSaved?: () => void }) {
   const [setup, setSetup] = useState<RecruitmentAdminSetup>({ settings: [], masters: [], consultants: [], vendors: [], assignmentRules: [], slaRules: [], documentChecklist: [], approvalMappings: [], templates: [] })
   const [clients, setClients] = useState<Client[]>([])
-  const [dropdowns, setDropdowns] = useState<Drop[]>([])
-  const [locations, setLocations] = useState<WorkLocation[]>([])
-  const [employees, setEmployees] = useState<Employee[]>([])
-  const [users, setUsers] = useState<WorkflowApprover[]>([])
-  const [workflows, setWorkflows] = useState<WorkflowOption[]>([])
-  const [attachmentAttributes, setAttachmentAttributes] = useState<AttachmentAttribute[]>([])
-  const [atsProfiles, setAtsProfiles] = useState<RecruitmentAtsScoringProfile[]>([])
   const [drawer, setDrawer] = useState('')
   const [formError, setFormError] = useState('')
-  const [setting, setSetting] = useState(setting0), [partner, setPartner] = useState(partner0('Consultant'))
-  const [assignment, setAssignment] = useState(assignment0), [sla, setSla] = useState(sla0), [checklist, setChecklist] = useState(checklist0), [approval, setApproval] = useState(approval0), [template, setTemplate] = useState(template0)
+  const [savingConfiguration, setSavingConfiguration] = useState(false)
+  const [template, setTemplate] = useState(template0)
   const load = async () => setSetup(await getRecruitmentAdminSetup())
-  useEffect(() => { void Promise.all([getRecruitmentAdminSetup(), getClients(), getJson<WorkflowApprover[]>('/api/workflows/approvers', []), getJson<WorkflowOption[]>('/api/workflows', []), getDropdowns(), getWorkLocations(), getEmployees(), getAttachmentAttributes(), getAtsProfiles()]).then(([a, b, c, d, e, f, g, h, i]) => { setSetup(a); setClients(b); setUsers(c); setWorkflows(d); setDropdowns(e); setLocations(f); setEmployees(g); setAttachmentAttributes(h); setAtsProfiles(i) }) }, [])
-  const clientOptions = selectOptions(clients.map(c => ({ value: c.id, label: c.name })), 'Select client', 0)
-  const dropdownOptions = (type: string, clientId: number) => unique(dropdowns.filter(item => item.isActive && item.type === type && (item.clientId === 0 || item.clientId === clientId)).map(item => item.value))
-  const hiringTypes = useMemo(() => dropdownOptions('Hiring Type', checklist.clientId), [dropdowns, checklist.clientId])
-  const masterOptions = (type: string, clientId: number, fallback: string[] = []) => {
-    const values = dropdownOptions(type, clientId)
-    return unique(values.length ? values : fallback)
-  }
-  const departmentOptions = (clientId: number) => unique([...dropdownOptions('Department', clientId), ...employees.filter(item => item.isActive && (!clientId || item.clientId === clientId)).map(item => item.department)])
-  const locationOptions = unique(locations.filter(item => item.isActive && (!assignment.clientId || item.clientId === assignment.clientId)).map(item => item.name))
-  const selectedClientName = (clientId: number) => clients.find(item => item.id === clientId)?.name || ''
+  useEffect(() => { void Promise.all([getRecruitmentAdminSetup(), getClients()]).then(([a, b]) => { setSetup(a); setClients(b) }) }, [])
+  const scopedClients = initialClientId ? clients.filter(client => client.id === initialClientId) : clients
+  const clientOptions = selectOptions(scopedClients.map(c => ({ value: c.id, label: c.name })), 'Select client', 0)
+  const visibleTemplates = initialClientId ? setup.templates.filter(row => row.clientId === initialClientId) : setup.templates
   useEffect(() => { setFormError('') }, [drawer])
   const save = async () => {
-    const error = validateAdminForm(drawer, { setting, partner, assignment, sla, checklist, approval, template })
+    const error = validateTemplate(template)
     if (error) { setFormError(error); message.warning(error); return }
     setFormError('')
-    const response = drawer === 'setting' ? await saveRecruitmentSetting(setting) : drawer === 'partner' ? await saveRecruitmentPartner(partner) : drawer === 'assignment' ? await saveRecruitmentAssignmentRule(assignment) : drawer === 'sla' ? await saveRecruitmentSlaRule(sla) : drawer === 'checklist' ? await saveRecruitmentDocumentChecklist(checklist) : drawer === 'approval' ? await saveRecruitmentApprovalMapping(approval) : await saveRecruitmentTemplate(template)
-    if (response.ok) { setDrawer(''); await load() }
-    else setFormError(response.error || 'The configuration could not be saved. Review the highlighted details and try again.')
+    setSavingConfiguration(true)
+    try {
+      const response = await saveRecruitmentTemplate(template)
+      if (response.ok) { setDrawer(''); await load(); onSaved?.() }
+      else setFormError(response.error || 'The configuration could not be saved. Review the highlighted details and try again.')
+    } finally { setSavingConfiguration(false) }
   }
   const remove = async (kind: string, id: number) => {
     const response = await deleteRecruitmentAdminConfiguration(kind, id)
-    if (response.ok) await load()
+    if (response.ok) { await load(); onSaved?.() }
   }
-  const sectionItems = [
-        { key: 'settings', label: 'Settings', children: <GridTable kind="settings" remove={remove} title="Recruitment settings" text="Client-wise feature switches for the recruitment module." action="Add setting" rows={setup.settings} add={() => { setSetting(setting0); setDrawer('setting') }} edit={row => { setSetting(row); setDrawer('setting') }} columns={[{ key: 'clientName', label: 'Client' }, { key: 'recruitmentEnabled', label: 'Enabled', render: (r: any) => r.recruitmentEnabled ? 'Yes' : 'No' }, { key: 'enableOfferApproval', label: 'Offer Approval', render: (r: any) => r.enableOfferApproval ? 'Yes' : 'No' }, { key: 'enableVendorHiring', label: 'Vendor', render: (r: any) => r.enableVendorHiring ? 'Yes' : 'No' }, { key: 'enableConsultantHiring', label: 'Consultant', render: (r: any) => r.enableConsultantHiring ? 'Yes' : 'No' }]} /> },
-        { key: 'consultants', label: 'Consultants', children: <PartnerTable rows={setup.consultants} type="Consultant" remove={remove} open={row => { setPartner(row ?? partner0('Consultant')); setDrawer('partner') }} /> },
-        { key: 'vendors', label: 'Vendors', children: <PartnerTable rows={setup.vendors} type="Vendor" remove={remove} open={row => { setPartner(row ?? partner0('Vendor')); setDrawer('partner') }} /> },
-        { key: 'assignment', label: 'Assignment Rules', children: <GridTable kind="assignment-rules" remove={remove} title="Recruiter assignment rules" text="Rules to decide recruiter ownership for future requisitions." action="Add rule" rows={setup.assignmentRules} add={() => { setAssignment(assignment0); setDrawer('assignment') }} edit={row => { setAssignment(row); setDrawer('assignment') }} columns={[{ key: 'clientName', label: 'Client' }, { key: 'ruleName', label: 'Rule' }, { key: 'department', label: 'Department' }, { key: 'positionCategory', label: 'Category' }, { key: 'recruiterName', label: 'Recruiter' }, { key: 'sortOrder', label: 'Priority' }]} /> },
-        { key: 'sla', label: 'SLA', children: <GridTable kind="sla-rules" remove={remove} title="Recruitment SLA rules" text="Reminder and escalation timelines by recruitment process." action="Add SLA" rows={setup.slaRules} add={() => { setSla(sla0); setDrawer('sla') }} edit={row => { setSla(row); setDrawer('sla') }} columns={[{ key: 'clientName', label: 'Client' }, { key: 'processName', label: 'Process' }, { key: 'durationDays', label: 'SLA Days' }, { key: 'reminderEnabled', label: 'Reminder', render: (r: any) => r.reminderEnabled ? 'Yes' : 'No' }, { key: 'escalationEnabled', label: 'Escalation', render: (r: any) => r.escalationEnabled ? 'Yes' : 'No' }]} /> },
-        { key: 'checklist', label: 'Checklist', children: <GridTable kind="document-checklist" remove={remove} title="Document checklist" text="Hiring-type-wise document requirements." action="Add document" rows={setup.documentChecklist} add={() => { setChecklist(checklist0); setDrawer('checklist') }} edit={row => { setChecklist(row); setDrawer('checklist') }} columns={[{ key: 'clientName', label: 'Client' }, { key: 'hiringType', label: 'Hiring Type' }, { key: 'documentName', label: 'Document' }, { key: 'stage', label: 'Stage' }, { key: 'mandatory', label: 'Mandatory', render: (r: any) => r.mandatory ? 'Yes' : 'No' }]} /> },
-        { key: 'ats', label: 'ATS & Skills', children: <RecruitmentAtsAdmin clients={clients} dropdowns={dropdowns} onDropdownsChange={setDropdowns} /> },
-        { key: 'forms', label: 'Form Designer', children: <RecruitmentFormBuilder /> },
-        { key: 'pipelines', label: 'Pipeline Designer', children: <RecruitmentPipelineDesigner dropdowns={dropdowns} onDropdownsChange={setDropdowns} /> },
-        { key: 'approvals', label: 'Approvals', children: <GridTable kind="approval-mappings" remove={remove} title="Approval mapping" text="Map recruitment processes to existing workflow definitions." action="Add approval" rows={setup.approvalMappings} add={() => { setApproval(approval0); setDrawer('approval') }} edit={row => { setApproval(row); setDrawer('approval') }} columns={[{ key: 'clientName', label: 'Client' }, { key: 'processCode', label: 'Process' }, { key: 'workflowName', label: 'Workflow' }, { key: 'isActive', label: 'Status', render: (r: any) => r.isActive ? 'Active' : 'Inactive' }]} /> },
-        { key: 'templates', label: 'Templates', children: <GridTable kind="templates" remove={remove} title="Recruitment templates" text="Reusable JD, offer, interview and communication templates." action="Add template" rows={setup.templates} add={() => { setTemplate(template0); setDrawer('template') }} edit={row => { setTemplate(row); setDrawer('template') }} columns={[{ key: 'clientName', label: 'Client' }, { key: 'templateType', label: 'Type' }, { key: 'templateCode', label: 'Code' }, { key: 'templateName', label: 'Template' }, { key: 'isActive', label: 'Status', render: (r: any) => r.isActive ? 'Active' : 'Inactive' }]} /> }
-  ]
-  const activeContent = sectionItems.find(item => item.key === section)?.children
-  return <section className="recruitment-admin">
-    <Card size="small" className="settings-panel settings-table-panel recruitment-admin-panel recruitment-root-card">
-      <div className="recruitment-admin-content">{activeContent}</div>
-    </Card>
-    <Drawer className="settings-master-drawer recruitment-admin-drawer" title={drawerTitle(drawer)} open={!!drawer} width={820} onClose={() => setDrawer('')} destroyOnClose>
+  return <section className="recruitment-admin" data-testid="hiring-template-manager">
+    <div className="recruitment-admin-content"><GridTable kind="templates" remove={remove} title="Hiring templates" text="Reusable stage automation, offer, interview and process-document templates for this client." action="Add template" rows={visibleTemplates} add={() => { setTemplate({ ...template0, clientId: initialClientId }); setDrawer('template') }} edit={row => { setTemplate(row); setDrawer('template') }} columns={[{ key: 'clientName', label: 'Client' }, { key: 'templateType', label: 'Type' }, { key: 'templateCode', label: 'Code' }, { key: 'templateName', label: 'Template' }, { key: 'isActive', label: 'Status', render: (r: any) => r.isActive ? 'Active' : 'Inactive' }]} /></div>
+    <Drawer className="settings-master-drawer recruitment-admin-drawer" title={drawerTitle(drawer)} open={!!drawer} width={840} onClose={() => !savingConfiguration && setDrawer('')} destroyOnClose
+      footer={<div className="recruitment-admin-drawer-footer"><Button disabled={savingConfiguration} onClick={() => setDrawer('')}>Cancel</Button><Button type="primary" loading={savingConfiguration} onClick={() => void save()}>{drawerSubmitText(drawer)}</Button></div>}>
       <Form component="div" layout="vertical" className="settings-quick-form recruitment-admin-form">
         {formError && <Alert className="recruitment-form-error" showIcon closable type="error" message="Complete the required details" description={formError} onClose={() => setFormError('')} />}
-        {drawer === 'setting' && <><Form.Item label="Client" required><SearchSelect value={setting.clientId} onChange={v => setSetting({ ...setting, clientId: Number(v) })} options={clientOptions} /></Form.Item>
-          <div className="recruitment-config-heading"><b>Essential setup</b><span>These are the only switches most clients need.</span></div>
-          <SettingTiles items={coreSettingOptions} value={setting} onChange={setSetting} />
-          {setting.enableCandidatePortal && <Form.Item label="Public candidate portal base URL" required extra="Absolute browser URL of this HRMS web application, for example https://hrms.example.com. Secure candidate links are appended automatically."><Input placeholder="https://hrms.example.com" value={setting.publicPortalBaseUrl} onChange={event => setSetting({ ...setting, publicPortalBaseUrl: event.target.value })} /></Form.Item>}
-          <div className="recruitment-config-heading"><b>Recommended automation</b><span>Safe defaults for resumes, ATS and secured documents.</span></div>
-          <SettingTiles items={automationSettingOptions} value={setting} onChange={setSetting} />
-          <Collapse className="recruitment-advanced-collapse">
-            <Collapse.Panel key="channels" header="Hiring channels"><SettingTiles items={channelSettingOptions} value={setting} onChange={setSetting} /></Collapse.Panel>
-            <Collapse.Panel key="advanced" header="Advanced controls"><SettingTiles items={advancedSettingOptions} value={setting} onChange={setSetting} /><Form.Item label="Default ATS scoring profile" extra="Leave blank for automatic profile selection."><SearchSelect value={setting.defaultAtsScoringProfileId || 0} onChange={value => setSetting({ ...setting, defaultAtsScoringProfileId: Number(value) || null })} options={selectOptions(atsProfiles.filter(row => row.isActive && row.clientId === setting.clientId).map(row => ({ value: row.id, label: row.profileName })), 'Automatic profile selection', 0)} /></Form.Item><Form.Item label="Candidate retention (months)"><InputNumber min={1} max={120} value={setting.candidateRetentionMonths} onChange={value => setSetting({ ...setting, candidateRetentionMonths: Number(value || 24) })} /></Form.Item></Collapse.Panel>
-          </Collapse>
-        </>}
-        {drawer === 'partner' && <><CommonClient value={partner.clientId} set={clientId => setPartner({ ...partner, clientId })} options={clientOptions} /><Form.Item label="Code"><Input value={partner.code} onChange={e => setPartner({ ...partner, code: e.target.value.toUpperCase() })} /></Form.Item><Form.Item label="Name"><Input value={partner.name} onChange={e => setPartner({ ...partner, name: e.target.value })} /></Form.Item><Form.Item label="Company"><Input value={partner.company} onChange={e => setPartner({ ...partner, company: e.target.value })} /></Form.Item><Form.Item label="Contact person"><Input value={partner.contactPerson} onChange={e => setPartner({ ...partner, contactPerson: e.target.value })} /></Form.Item><Form.Item label="Email"><Input value={partner.email} onChange={e => setPartner({ ...partner, email: e.target.value })} /></Form.Item><Form.Item label="Phone"><Input value={partner.phone} onChange={e => setPartner({ ...partner, phone: e.target.value })} /></Form.Item><Form.Item label="GST"><Input value={partner.gstin} onChange={e => setPartner({ ...partner, gstin: e.target.value.toUpperCase() })} /></Form.Item><Form.Item label="PAN"><Input value={partner.pan} onChange={e => setPartner({ ...partner, pan: e.target.value.toUpperCase() })} /></Form.Item><Form.Item label="Commission type"><Select value={partner.commissionType} onChange={v => setPartner({ ...partner, commissionType: v })} options={['Percentage', 'Fixed'].map(v => ({ value: v, label: v }))} /></Form.Item><Form.Item label="Commission value"><InputNumber value={partner.commissionValue} onChange={v => setPartner({ ...partner, commissionValue: Number(v || 0) })} /></Form.Item><Form.Item label="Address"><Input.TextArea value={partner.address} onChange={e => setPartner({ ...partner, address: e.target.value })} /></Form.Item></>}
-        {drawer === 'assignment' && <><div className="assignment-rule-help"><b>How this rule works</b><span>Blank criteria mean Any. When an RFR is approved, the system checks rules for the same client in Sort order. The first matching rule auto-assigns its recruiter to the open position.</span></div><CommonClient value={assignment.clientId} set={clientId => setAssignment({ ...assignment, clientId })} options={clientOptions} /><Form.Item label="Rule name" extra="Give this matching rule a business-friendly name."><Input value={assignment.ruleName} onChange={e => setAssignment({ ...assignment, ruleName: e.target.value })} /></Form.Item><Form.Item label="Business unit" extra="Optional. Blank means all business units."><RecruitmentMasterSelect masterType="Business Unit" clientId={assignment.clientId} clientName={selectedClientName(assignment.clientId)} value={assignment.businessUnit} values={dropdownOptions('Business Unit', assignment.clientId)} dropdowns={dropdowns} onDropdownsChange={setDropdowns} onChange={value => setAssignment({ ...assignment, businessUnit: value })} emptyLabel="Any business unit" testId="assignment-business-unit" /></Form.Item><Form.Item label="Department" extra="Optional. Blank means all departments."><RecruitmentMasterSelect masterType="Department" clientId={assignment.clientId} clientName={selectedClientName(assignment.clientId)} value={assignment.department} values={departmentOptions(assignment.clientId)} dropdowns={dropdowns} onDropdownsChange={setDropdowns} onChange={value => setAssignment({ ...assignment, department: value })} emptyLabel="Any department" testId="assignment-department" /></Form.Item><Form.Item label="Position category" extra="Optional. Matches the RFR position category."><RecruitmentMasterSelect masterType="Position Category" clientId={assignment.clientId} clientName={selectedClientName(assignment.clientId)} value={assignment.positionCategory} values={masterOptions('Position Category', assignment.clientId)} dropdowns={dropdowns} onDropdownsChange={setDropdowns} onChange={value => setAssignment({ ...assignment, positionCategory: value })} emptyLabel="Any category" testId="assignment-position-category" /></Form.Item><Form.Item label="Location" extra="Optional. Matches the RFR job location."><SearchSelect value={assignment.location} onChange={value => setAssignment({ ...assignment, location: String(value) })} options={selectOptions(locationOptions, 'Any location')} /></Form.Item><Form.Item label="Project" extra="Optional exact text match with RFR project."><Input value={assignment.project} onChange={e => setAssignment({ ...assignment, project: e.target.value })} placeholder="Blank means any project" /></Form.Item><Form.Item label="Experience range" extra="Optional. Matches the RFR experience range."><RecruitmentMasterSelect masterType="Experience Range" clientId={assignment.clientId} clientName={selectedClientName(assignment.clientId)} value={assignment.experienceRange} values={masterOptions('Experience Range', assignment.clientId)} dropdowns={dropdowns} onDropdownsChange={setDropdowns} onChange={value => setAssignment({ ...assignment, experienceRange: value })} emptyLabel="Any experience" testId="assignment-experience-range" /></Form.Item><Form.Item label="Hiring priority" extra="Optional. Matches RFR priority."><RecruitmentMasterSelect masterType="Assignment Priority" clientId={assignment.clientId} clientName={selectedClientName(assignment.clientId)} value={assignment.priority} values={masterOptions('Assignment Priority', assignment.clientId, ['Low', 'Normal', 'High', 'Critical'])} dropdowns={dropdowns} onDropdownsChange={setDropdowns} onChange={value => setAssignment({ ...assignment, priority: value })} emptyLabel="Any priority" testId="assignment-priority" /></Form.Item><Form.Item label="Recruiter" required extra="This user will be auto-assigned when the rule matches."><SearchSelect value={assignment.recruiterUserId} onChange={v => setAssignment({ ...assignment, recruiterUserId: Number(v) })} options={selectOptions(users.map(u => ({ value: u.id, label: `${u.displayName} - ${u.email}` })), 'Select recruiter', 0)} /></Form.Item><Form.Item label="Max open positions" extra="Used only when workload based is enabled. 0 means no cap."><InputNumber value={assignment.maximumOpenPositions} onChange={v => setAssignment({ ...assignment, maximumOpenPositions: Number(v || 0) })} /></Form.Item><Form.Item label="Sort order" extra="Lower number is checked first."><InputNumber value={assignment.sortOrder} onChange={v => setAssignment({ ...assignment, sortOrder: Number(v || 100) })} /></Form.Item><Form.Item><Space direction="vertical"><Checkbox checked={assignment.workloadBased} onChange={e => setAssignment({ ...assignment, workloadBased: e.target.checked })}>Skip recruiter if workload cap is reached</Checkbox><Checkbox checked={assignment.manualOverrideAllowed} onChange={e => setAssignment({ ...assignment, manualOverrideAllowed: e.target.checked })}>Allow manual override after assignment</Checkbox><Checkbox checked={assignment.isActive} onChange={e => setAssignment({ ...assignment, isActive: e.target.checked })}>Active</Checkbox></Space></Form.Item></>}
-        {drawer === 'sla' && <><CommonClient value={sla.clientId} set={clientId => setSla({ ...sla, clientId })} options={clientOptions} /><Form.Item label="Process"><Input value={sla.processName} onChange={e => setSla({ ...sla, processName: e.target.value })} /></Form.Item><Form.Item label="Duration days"><InputNumber value={sla.durationDays} onChange={v => setSla({ ...sla, durationDays: Number(v || 0) })} /></Form.Item><Form.Item label="Reminder before days"><InputNumber value={sla.reminderBeforeDays} onChange={v => setSla({ ...sla, reminderBeforeDays: Number(v || 0) })} /></Form.Item><Form.Item><Space direction="vertical"><Checkbox checked={sla.reminderEnabled} onChange={e => setSla({ ...sla, reminderEnabled: e.target.checked })}>Reminder enabled</Checkbox><Checkbox checked={sla.escalationEnabled} onChange={e => setSla({ ...sla, escalationEnabled: e.target.checked })}>Escalation enabled</Checkbox></Space></Form.Item></>}
-        {drawer === 'checklist' && <><CommonClient value={checklist.clientId} set={clientId => setChecklist({ ...checklist, clientId })} options={clientOptions} /><Form.Item label="Hiring type"><RecruitmentMasterSelect masterType="Hiring Type" clientId={checklist.clientId} clientName={selectedClientName(checklist.clientId)} value={checklist.hiringType} values={hiringTypes.length ? hiringTypes : ['Permanent', 'Contract', 'Intern']} dropdowns={dropdowns} onDropdownsChange={setDropdowns} onChange={hiringType => setChecklist({ ...checklist, hiringType })} testId="checklist-hiring-type" /></Form.Item><Form.Item label="Document"><Input value={checklist.documentName} onChange={e => setChecklist({ ...checklist, documentName: e.target.value })} /></Form.Item><Form.Item label="Global attachment attribute" extra="The actual file is uploaded, versioned and secured by the global attachment system."><SearchSelect value={checklist.attachmentAttributeId || 0} onChange={value => setChecklist({ ...checklist, attachmentAttributeId: Number(value) || null })} options={selectOptions(attachmentAttributes.filter(row => row.isActive && (row.clientId === 0 || row.clientId === checklist.clientId)).map(row => ({ value: row.id, label: `${row.attributeName} (${row.attributeCode})` })), 'No file required', 0)} /></Form.Item><Form.Item label="Stage"><Input value={checklist.stage} onChange={e => setChecklist({ ...checklist, stage: e.target.value })} /></Form.Item><Form.Item label="Due offset days"><InputNumber value={checklist.dueOffsetDays} onChange={value => setChecklist({ ...checklist, dueOffsetDays: Number(value || 0) })} /></Form.Item><Form.Item label="Display order"><InputNumber value={checklist.displayOrder} onChange={value => setChecklist({ ...checklist, displayOrder: Number(value || 100) })} /></Form.Item><Form.Item><Space direction="vertical"><Checkbox checked={checklist.mandatory} onChange={e => setChecklist({ ...checklist, mandatory: e.target.checked })}>Mandatory</Checkbox><Checkbox checked={checklist.requiresVerification} onChange={e => setChecklist({ ...checklist, requiresVerification: e.target.checked })}>Global document must be verified</Checkbox><Checkbox checked={checklist.isActive} onChange={e => setChecklist({ ...checklist, isActive: e.target.checked })}>Active</Checkbox></Space></Form.Item></>}
-        {drawer === 'approval' && <><CommonClient value={approval.clientId} set={clientId => setApproval({ ...approval, clientId })} options={clientOptions} /><Form.Item label="Process"><Select value={approval.processCode} onChange={v => setApproval({ ...approval, processCode: v })} options={['RFR_APPROVAL', 'OFFER_APPROVAL', 'EXCEPTION_APPROVAL'].map(v => ({ value: v, label: v.replace(/_/g, ' ') }))} /></Form.Item><Form.Item label="Workflow"><SearchSelect value={approval.workflowId} onChange={v => setApproval({ ...approval, workflowId: Number(v) })} options={selectOptions(workflows.filter(w => w.isActive !== false).map(w => ({ value: w.id, label: `${w.name} - ${w.resourceType}` })), 'Select workflow', 0)} /></Form.Item></>}
-        {drawer === 'template' && <><CommonClient value={template.clientId} set={clientId => setTemplate({ ...template, clientId })} options={clientOptions} /><Form.Item label="Template type"><Select value={template.templateType} onChange={v => setTemplate({ ...template, templateType: v })} options={['Job Description', 'Interview Feedback', 'Offer Letter', 'Process Document', 'MoM', 'Score Annexure', 'HR Proposal', 'Joining Intimation', 'Candidate Pack', 'Rejection Letter', 'Consultant Email', 'Interview Invitation', 'Reminder', 'Offer Approval', 'Joining Instructions'].map(v => ({ value: v, label: v }))} /></Form.Item><Form.Item label="Code"><Input value={template.templateCode} onChange={e => setTemplate({ ...template, templateCode: e.target.value.toUpperCase().replace(/\s+/g, '_') })} /></Form.Item><Form.Item label="Name"><Input value={template.templateName} onChange={e => setTemplate({ ...template, templateName: e.target.value })} /></Form.Item><Form.Item label="Subject"><Input value={template.subjectTemplate} onChange={e => setTemplate({ ...template, subjectTemplate: e.target.value })} /></Form.Item><Form.Item label="Body" extra={template.templateType === 'Offer Letter' ? 'Supported placeholders: {{candidateName}}, {{candidateFirstName}}, {{positionTitle}}, {{clientName}}, {{currency}}, {{formattedCtc}}, {{joiningDate}}, {{expiryDate}}, {{offerDate}}, {{offerNumber}}, {{remarks}}.' : ['Process Document', 'MoM', 'Score Annexure', 'HR Proposal', 'Joining Intimation', 'Candidate Pack'].includes(template.templateType) ? 'Use {{name}} or #NAME#. Selection MoM also supports: approvalDate, shortlistedCount, presentCount, panelMembersList, candidateAttendanceTable, candidateResultTable, scoreAnnexureTable and panelSignatureBlock.' : undefined}><Input.TextArea rows={8} value={template.bodyTemplate} onChange={e => setTemplate({ ...template, bodyTemplate: e.target.value })} /></Form.Item></>}
+        {drawer === 'template' && <><CommonClient value={template.clientId} set={clientId => setTemplate({ ...template, clientId })} options={clientOptions} disabled={initialClientId > 0} /><Form.Item label="Template type"><Select value={template.templateType} onChange={v => setTemplate({ ...template, templateType: v })} options={['Job Description', 'Interview Feedback', 'Offer Letter', 'Process Document', 'MoM', 'Score Annexure', 'HR Proposal', 'Joining Intimation', 'Candidate Pack', 'Rejection Letter', 'Consultant Email', 'Interview Invitation', 'Reminder', 'Offer Approval', 'Joining Instructions'].map(v => ({ value: v, label: v }))} /></Form.Item><Form.Item label="Code"><Input value={template.templateCode} onChange={e => setTemplate({ ...template, templateCode: e.target.value.toUpperCase().replace(/\s+/g, '_') })} /></Form.Item><Form.Item label="Name"><Input value={template.templateName} onChange={e => setTemplate({ ...template, templateName: e.target.value })} /></Form.Item><Form.Item label="Subject"><Input value={template.subjectTemplate} onChange={e => setTemplate({ ...template, subjectTemplate: e.target.value })} /></Form.Item><Form.Item label="Body" extra={template.templateType === 'Offer Letter' ? 'Supported placeholders: {{candidateName}}, {{candidateFirstName}}, {{positionTitle}}, {{clientName}}, {{currency}}, {{formattedCtc}}, {{joiningDate}}, {{expiryDate}}, {{offerDate}}, {{offerNumber}}, {{remarks}}.' : ['Process Document', 'MoM', 'Score Annexure', 'HR Proposal', 'Joining Intimation', 'Candidate Pack'].includes(template.templateType) ? 'Use {{name}} or #NAME#. Selection MoM also supports: approvalDate, shortlistedCount, presentCount, panelMembersList, candidateAttendanceTable, candidateResultTable, scoreAnnexureTable and panelSignatureBlock.' : undefined}><Input.TextArea rows={8} value={template.bodyTemplate} onChange={e => setTemplate({ ...template, bodyTemplate: e.target.value })} /></Form.Item></>}
         {drawer === 'template' && template.templateType === 'MoM' && <Alert showIcon type="info" message="Selection committee MoM" description="Use the normalized shortlist, panel roles, interview result and score data; candidate rows are never stored in the template." action={<Space><Button size="small" onClick={() => setTemplate({ ...template, bodyTemplate: selectionCommitteeMomTemplate })}>Insert generic layout</Button><Button size="small" type="primary" onClick={() => setTemplate({ ...template, bodyTemplate: uidaiSelectionCommitteeMomTemplate })}>Insert UIDAI layout</Button></Space>} />}
-        <Space className="settings-drawer-actions"><Button onClick={() => setDrawer('')}>Cancel</Button><Button type="primary" onClick={() => void save()}>Save</Button></Space>
       </Form>
     </Drawer>
   </section>
 }
 
 function GridTable<T extends { id: number }>(p: { kind: string; title: string; text: string; action: string; rows: T[]; columns: any[]; add: () => void; edit: (row: T) => void; remove: (kind: string, id: number) => Promise<void> }) {
-  return <>
-    <Header title={p.title} text={p.text} action={p.action} onClick={p.add} />
-    <DataTable rows={p.rows} columns={p.columns} actions={row => <Space size={6}>
-      <Button size="small" type="primary" onClick={() => p.edit(row)}>Edit</Button>
+  return <div className="hrms-list-surface" aria-label={p.title} data-surface-description={p.text}>
+    <DataTable rows={p.rows} columns={p.columns} actionsWidth={96} hideInactiveClear
+      primaryAction={<Button className="recruitment-list-primary-action" type="primary" icon={<PlusOutlined />} onClick={p.add}>{p.action}</Button>}
+      actions={row => <Space size={2}>
+      <Tooltip title="Edit"><Button size="small" type="text" aria-label={`Edit ${p.title}`} icon={<EditOutlined />} onClick={() => p.edit(row)} /></Tooltip>
       <Popconfirm title="Delete this configuration?" description="Referenced or transactional setup is protected by the server." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => p.remove(p.kind, row.id)}>
-        <Button size="small" danger aria-label={`Delete ${p.title}`} icon={<DeleteOutlined />} />
+        <Tooltip title="Delete"><Button size="small" type="text" danger aria-label={`Delete ${p.title}`} icon={<DeleteOutlined />} /></Tooltip>
       </Popconfirm>
     </Space>} />
-  </>
-}
-function PartnerTable(p: { rows: RecruitmentPartner[]; type: 'Consultant' | 'Vendor'; open: (row?: RecruitmentPartner) => void; remove: (kind: string, id: number) => Promise<void> }) {
-  return <GridTable kind="partners" remove={p.remove} title={`${p.type} management`} text={`Client-wise ${p.type.toLowerCase()} setup and commission details.`} action={`Add ${p.type.toLowerCase()}`} rows={p.rows} add={() => p.open()} edit={p.open} columns={[{ key: 'clientName', label: 'Client' }, { key: 'code', label: 'Code' }, { key: 'name', label: p.type }, { key: 'contactPerson', label: 'Contact' }, { key: 'commissionValue', label: 'Commission' }, { key: 'status', label: 'Status' }]} />
-}
-function Header(p: { title: string; text: string; action: string; onClick: () => void }) {
-  return <div className="recruitment-table-header">
-    <div><h3>{p.title}</h3><p>{p.text}</p></div>
-    <Button type="primary" onClick={p.onClick}>{p.action}</Button>
   </div>
 }
-function SettingTiles({ items, value, onChange }: { items: typeof settingOptions; value: RecruitmentSetting; onChange: (next: RecruitmentSetting) => void }) {
-  return <div className="recruitment-check-grid">{items.map(option => {
-    const checked = Boolean(value[option.key])
-    const lockedByModule = option.key !== 'recruitmentEnabled' && !value.recruitmentEnabled
-    const disabled = Boolean(option.disabled || lockedByModule)
-    const help = lockedByModule ? 'Enable Recruitment first. This option has no effect while the recruitment module is disabled.' : option.impact
-    return <Tooltip key={option.key} title={<span>{help}</span>} placement="top" mouseEnterDelay={0.25}>
-      <button type="button" disabled={disabled} className={`recruitment-setting-tile ${checked && !lockedByModule ? 'active' : ''} ${disabled ? 'disabled' : ''} ${lockedByModule ? 'parent-locked' : ''}`} onClick={() => !disabled && onChange({ ...value, [option.key]: !checked })}>
-        <span className="recruitment-setting-tile-top"><Checkbox disabled={disabled} checked={checked} onChange={event => onChange({ ...value, [option.key]: event.target.checked })} onClick={event => event.stopPropagation()} /><b>{option.label}</b></span>
-        <small>{option.description}</small>
-        {lockedByModule && <em>Enable Recruitment to use this setting.</em>}
-      </button>
-    </Tooltip>
-  })}</div>
+function CommonClient(p: { value: number; set: (value: number) => void; options: { value: string | number; label: string }[]; disabled?: boolean }) {
+  return <Form.Item label="Client" required><SearchSelect disabled={p.disabled} value={p.value} onChange={v => p.set(Number(v))} options={p.options} /></Form.Item>
 }
-function CommonClient(p: { value: number; set: (value: number) => void; options: { value: string | number; label: string }[] }) {
-  return <Form.Item label="Client" required><SearchSelect value={p.value} onChange={v => p.set(Number(v))} options={p.options} /></Form.Item>
-}
-function validateAdminForm(drawer: string, value: {
-  setting: RecruitmentSetting
-  partner: RecruitmentPartner
-  assignment: RecruitmentAssignmentRule
-  sla: RecruitmentSlaRule
-  checklist: RecruitmentDocumentChecklist
-  approval: RecruitmentApprovalMapping
-  template: RecruitmentTemplate
-}) {
-  if (drawer === 'setting') {
-    if (!value.setting.clientId) return 'Select the client whose recruitment settings you are configuring.'
-    if (value.setting.enableCandidatePortal) {
-      if (!value.setting.publicPortalBaseUrl.trim()) return 'Enter the public candidate portal URL because Candidate portal is enabled.'
-      try { new URL(value.setting.publicPortalBaseUrl) } catch { return 'Enter a valid public candidate portal URL, including https://.' }
-    }
-  }
-  if (drawer === 'partner') {
-    if (!value.partner.clientId) return 'Select the client for this hiring partner.'
-    if (!value.partner.code.trim() || !value.partner.name.trim()) return 'Enter both partner code and partner name.'
-    if (value.partner.email && !/^\S+@\S+\.\S+$/.test(value.partner.email)) return 'Enter a valid partner email address or leave it blank.'
-  }
-  if (drawer === 'assignment') {
-    if (!value.assignment.clientId) return 'Select the client for this assignment rule.'
-    if (!value.assignment.ruleName.trim()) return 'Enter a business-friendly rule name.'
-    if (!value.assignment.recruiterUserId) return 'Select the recruiter who should receive matching requests.'
-  }
-  if (drawer === 'sla') {
-    if (!value.sla.clientId) return 'Select the client for this SLA rule.'
-    if (!value.sla.processName.trim()) return 'Enter the recruitment process this SLA applies to.'
-    if (value.sla.durationDays <= 0) return 'SLA duration must be greater than zero days.'
-    if (value.sla.reminderEnabled && value.sla.reminderBeforeDays >= value.sla.durationDays) return 'Reminder must be scheduled before the SLA due day.'
-  }
-  if (drawer === 'checklist') {
-    if (!value.checklist.clientId) return 'Select the client for this document requirement.'
-    if (!value.checklist.documentName.trim()) return 'Enter the document name.'
-  }
-  if (drawer === 'approval') {
-    if (!value.approval.clientId) return 'Select the client for this approval mapping.'
-    if (!value.approval.workflowId) return 'Select the workflow that will handle this approval.'
-  }
-  if (drawer === 'template') {
-    if (!value.template.clientId) return 'Select the client for this template.'
-    if (!value.template.templateCode.trim() || !value.template.templateName.trim()) return 'Enter both template code and template name.'
-    if (!value.template.bodyTemplate.trim()) return 'Enter the template content.'
-  }
+function validateTemplate(template: RecruitmentTemplate) {
+  if (!template.clientId) return 'Select the client for this template.'
+  if (!template.templateCode.trim() || !template.templateName.trim()) return 'Enter both template code and template name.'
+  if (!template.bodyTemplate.trim()) return 'Enter the template content.'
   return ''
 }
 function drawerTitle(drawer: string) {
-  const title = drawer === 'partner' ? 'Consultant / Vendor' : drawer ? labelize(drawer) : ''
-  return <div className="settings-drawer-title"><span>Recruitment Administration</span><h3>{title}</h3><p>Configuration-only setup reused by future recruitment transactions.</p></div>
+  return <div className="settings-drawer-title"><span>Pipeline automation</span><h3>{drawer === 'template' ? 'Hiring template' : ''}</h3><p>Reusable hiring communication and document content.</p></div>
 }
-const labelize = (value: string) => value.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase())
-const unique = (values: string[]) => Array.from(new Set(values.filter(Boolean)))
+function drawerSubmitText(drawer: string) { return drawer === 'template' ? 'Save template' : 'Save configuration' }
 
 
 

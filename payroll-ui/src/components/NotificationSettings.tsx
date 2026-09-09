@@ -407,14 +407,13 @@ export default function NotificationSettings() {
   ]
 
   return <section className="notification-settings communication-settings" data-testid="communication-settings-root">
-    <div className="communication-settings-hero">
-      <div className="communication-hero-copy">
-        <span className="communication-eyebrow"><ThunderboltOutlined /> Employee engagement hub</span>
-        <h2>Communication Settings</h2>
-        <p>Configure reliable employee outreach across email, SMS and WhatsApp—with secure credentials, reusable templates and delivery visibility in one workspace.</p>
+    <div className="communication-settings-summary">
+      <div>
+        <span><ThunderboltOutlined /> Delivery controls</span>
+        <p>Configure reliable employee outreach across email, SMS and WhatsApp—with secure credentials, reusable templates and delivery visibility.</p>
         <Space wrap><Tag icon={<SafetyCertificateOutlined />} color="green">Encrypted provider secrets</Tag><Tag icon={<CheckCircleFilled />} color="blue">Employee-level delivery audit</Tag></Space>
       </div>
-      <div className="communication-hero-visual" aria-hidden="true"><SendOutlined /><span>Send</span><small>Email · SMS · WhatsApp</small></div>
+      <div aria-hidden="true"><SendOutlined /><strong>Email · SMS · WhatsApp</strong></div>
     </div>
 
     <Row gutter={[14, 14]} className="communication-health-grid">
@@ -541,8 +540,8 @@ export default function NotificationSettings() {
           {rule.recipients.map((recipient, index) => <Card size="small" key={`${recipient.id}-${index}`} className="notification-line-card">
             <div className={`notification-recipient-grid ${recipient.sourceType === 'Lookup' ? 'lookup' : ''}`}>
               <label><span>Send as</span><Select value={recipient.recipientType} onChange={value => updateRecipient(index, { recipientType: value })} options={['To', 'Cc', 'Bcc'].map(value => ({ value, label: value }))} /></label>
-              <label><span>Recipient source</span><Select value={recipient.sourceType} onChange={value => updateRecipient(index, { sourceType: value })} options={['StaticEmail', 'UserRole', 'RequestorEmail', 'ReportingManager', 'PayloadEmail', 'Lookup'].map(value => ({ value, label: value }))} /></label>
-              {recipient.sourceType !== 'Lookup' && recipient.sourceType !== 'RequestorEmail' && recipient.sourceType !== 'ReportingManager' && <label className="wide"><span>{recipient.sourceType === 'UserRole' ? 'Role code/name' : recipient.sourceType === 'PayloadEmail' ? 'Payload email field' : 'Email address'}</span><Input value={recipient.sourceValue} onChange={event => updateRecipient(index, { sourceValue: event.target.value })} placeholder={recipient.sourceType === 'UserRole' ? 'payroll_approver' : recipient.sourceType === 'PayloadEmail' ? 'requestedByEmail' : 'email@company.com'} /></label>}
+              <label><span>Recipient source</span><Select value={recipient.sourceType} onChange={value => updateRecipient(index, { sourceType: value })} options={['StaticEmail', 'Stakeholder', 'UserRole', 'RequestorEmail', 'ReportingManager', 'PayloadEmail', 'Lookup'].map(value => ({ value, label: value }))} /></label>
+              {recipient.sourceType !== 'Lookup' && recipient.sourceType !== 'RequestorEmail' && recipient.sourceType !== 'ReportingManager' && <label className="wide"><span>{recipient.sourceType === 'Stakeholder' ? 'Process stakeholder code' : recipient.sourceType === 'UserRole' ? 'Role code/name' : recipient.sourceType === 'PayloadEmail' ? 'Payload email field' : 'Email address'}</span><Input value={recipient.sourceValue} onChange={event => updateRecipient(index, { sourceValue: event.target.value })} placeholder={recipient.sourceType === 'Stakeholder' ? 'CURRENT_APPROVER' : recipient.sourceType === 'UserRole' ? 'payroll_approver' : recipient.sourceType === 'PayloadEmail' ? 'requestedByEmail' : 'email@company.com'} /></label>}
               {recipient.sourceType === 'Lookup' && <><label><span>Table</span><Input value={recipient.tableName} onChange={event => updateRecipient(index, { tableName: event.target.value })} placeholder="employees" /></label><label><span>Match column</span><Input value={recipient.matchColumn} onChange={event => updateRecipient(index, { matchColumn: event.target.value })} placeholder="Id" /></label><label><span>Match value</span><Input value={recipient.matchValueSource} onChange={event => updateRecipient(index, { matchValueSource: event.target.value })} placeholder="resourceId" /></label><label><span>Email column</span><Input value={recipient.emailColumn} onChange={event => updateRecipient(index, { emailColumn: event.target.value })} placeholder="WorkEmail" /></label></>}
               <Button danger onClick={() => setRule({ ...rule, recipients: rule.recipients.filter((_, position) => position !== index) })}>Remove</Button>
             </div>

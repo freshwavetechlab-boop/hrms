@@ -8,14 +8,6 @@ export type DashboardView = 'overview' | 'workforce' | 'payroll' | 'attendance' 
 
 const money = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0, style: 'currency', currency: 'INR' })
 const count = new Intl.NumberFormat('en-IN')
-const dashboardTitles: Record<DashboardView, string> = {
-  overview: 'HRMS Dashboard',
-  workforce: 'Workforce Dashboard',
-  payroll: 'Payroll Dashboard',
-  attendance: 'Attendance Dashboard',
-  approvals: 'Approvals Dashboard'
-}
-
 function formatMonth(value: string) {
   if (!value) return 'Current month'
   const [year, month] = value.split('-').map(Number)
@@ -140,11 +132,11 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
   const recentTotals = ['Approved', 'Processing', 'Pending Approval'].map(status => dashboard?.payRunStatuses.find(item => item.status === status) ?? { status, count: 0, netPay: 0 })
 
   return <section className={`dashboard-page dashboard-view-${view}`}>
-    <header className="dashboard-header">
+    <header className="dashboard-scopebar">
       <div>
-        <span className="eyebrow purple">{dashboardTitles[view]}</span>
-        <h3>{clientName}</h3>
-        <p>{formatMonth(dashboard?.month ?? '')} role-based workspace summary.</p>
+        <span>Dashboard scope</span>
+        <strong>{clientName}</strong>
+        <small>{formatMonth(dashboard?.month ?? '')} reporting period</small>
       </div>
       <label>
         <span>Client</span>

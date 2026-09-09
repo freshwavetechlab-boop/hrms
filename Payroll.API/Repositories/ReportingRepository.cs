@@ -237,7 +237,21 @@ GROUP BY r.PayPeriod,p.EmployeeCode,p.EmployeeName,p.Department,t.regime,t.taxab
 HAVING TDS <> 0 OR `Annual Tax` <> 0
 ORDER BY p.EmployeeCode",
             "statutory-summary" => statutorySummarySql,
-            "employee-master" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, e.Department, e.Designation, w.Name AS Location, e.DateOfJoining AS `Joining Date`, e.IsActive AS Active FROM employees e LEFT JOIN worklocations w ON w.Id=e.WorkLocationId WHERE e.ClientId=@ClientId AND (@Department IS NULL OR e.Department=@Department) AND (@WorkLocationId IS NULL OR e.WorkLocationId=@WorkLocationId) ORDER BY e.FirstName,e.LastName",
+            "employee-master" => @"SELECT c.Name AS Client,
+e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee,
+e.WorkEmail AS `Work Email`, e.Department, e.Designation, w.Name AS Location,
+e.DateOfJoining AS `Joining Date`,
+CASE WHEN e.IsActive=TRUE THEN 'Working' ELSE 'Inactive' END AS `Resource Status`,
+CASE WHEN EXISTS (SELECT 1 FROM payrunemployees pre WHERE pre.EmployeeId=e.Id AND pre.IsSkipped=FALSE) THEN 'On payroll'
+     WHEN e.IsActive=TRUE AND (e.AnnualCtc>0 OR NULLIF(TRIM(e.SalaryStructureId),'') IS NOT NULL) THEN 'Payroll configured'
+     ELSE 'Payroll setup pending' END AS `Payroll Status`,
+e.AnnualCtc AS `Annual CTC`,
+COALESCE((SELECT pr.PayPeriod FROM payrunemployees pre JOIN payruns pr ON pr.Id=pre.PayRunId WHERE pre.EmployeeId=e.Id AND pre.IsSkipped=FALSE ORDER BY pr.Id DESC LIMIT 1),'') AS `Latest Payroll Period`
+FROM employees e
+JOIN clients c ON c.Id=e.ClientId
+LEFT JOIN worklocations w ON w.Id=e.WorkLocationId
+WHERE e.ClientId=@ClientId AND (@Department IS NULL OR e.Department=@Department) AND (@WorkLocationId IS NULL OR e.WorkLocationId=@WorkLocationId)
+ORDER BY e.FirstName,e.LastName",
             "new-joiners" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, e.DateOfJoining AS `Joining Date`, e.Designation, w.Name AS Location FROM employees e LEFT JOIN worklocations w ON w.Id=e.WorkLocationId WHERE e.ClientId=@ClientId AND e.DateOfJoining >= DATE_SUB(CURDATE(), INTERVAL 90 DAY) ORDER BY e.DateOfJoining DESC",
             "tenure" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, e.DateOfJoining AS `Joining Date`, ROUND(DATEDIFF(CURDATE(), STR_TO_DATE(e.DateOfJoining,'%Y-%m-%d')) / 365.25, 1) AS `Tenure Years`, e.Designation FROM employees e WHERE e.ClientId=@ClientId AND e.IsActive=TRUE ORDER BY `Tenure Years` DESC",
             "headcount" => @"SELECT e.Department, COUNT(*) AS Headcount, SUM(e.AnnualCtc) AS `Annual CTC` FROM employees e WHERE e.ClientId=@ClientId AND e.IsActive=TRUE AND (@Department IS NULL OR e.Department=@Department) GROUP BY e.Department ORDER BY Headcount DESC",

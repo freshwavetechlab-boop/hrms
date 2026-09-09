@@ -3,26 +3,31 @@ import { Form, Input, Modal, Typography, message } from 'antd'
 import SearchSelect, { selectOptions } from './SearchSelect'
 import { getDropdowns, saveDropdown } from '../services/settingsService'
 import type { Drop } from '../types/payroll'
+import { useAuthSession } from './AuthGate'
 
 type Props = {
   masterType: string
   clientId: number
   clientName?: string
-  value: string
+  value?: string
   values: string[]
   dropdowns: Drop[]
-  onChange: (value: string) => void
+  onChange?: (value: string) => void
   onDropdownsChange: (rows: Drop[]) => void
   emptyLabel?: string
   disabled?: boolean
+  allowClear?: boolean
+  canAdd?: boolean
   testId?: string
 }
 
-export default function RecruitmentMasterSelect({ masterType, clientId, clientName, value, values, dropdowns, onChange, onDropdownsChange, emptyLabel, disabled = false, testId }: Props) {
+export default function RecruitmentMasterSelect({ masterType, clientId, clientName, value = '', values, dropdowns, onChange = () => undefined, onDropdownsChange, emptyLabel, disabled = false, allowClear = false, canAdd, testId }: Props) {
+  const session = useAuthSession()
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState('')
   const [saving, setSaving] = useState(false)
   const inputId = `recruitment-master-${masterType.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+  const addAllowed = canAdd ?? Boolean(session?.user.permissions.includes('settings.manage'))
   const addDisabled = disabled || clientId <= 0
   const close = () => { setOpen(false); setDraft('') }
   const startAdd = () => {
@@ -66,14 +71,15 @@ export default function RecruitmentMasterSelect({ masterType, clientId, clientNa
       onChange={onChange}
       options={selectOptions(values, emptyLabel)}
       disabled={disabled}
+      allowClear={allowClear}
       testId={testId}
-      addAction={{
+      addAction={addAllowed ? {
         label: `Add ${masterType}`,
         onClick: startAdd,
         disabled: addDisabled,
         disabledReason: clientId <= 0 ? 'Select a client first.' : undefined,
         testId: testId ? `${testId}-add` : undefined,
-      }}
+      } : undefined}
     />
     <Modal
       title={`Add ${masterType}`}

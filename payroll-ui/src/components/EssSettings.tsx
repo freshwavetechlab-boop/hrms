@@ -47,7 +47,7 @@ export default function EssSettings() {
   }
 
   return <section className="ess-settings-page">
-    <Card title="ESS Settings" size="small" className="settings-panel settings-table-panel ess-settings-panel">
+    <Card size="small" className="settings-panel settings-table-panel ess-settings-panel" aria-label="Client self-service policy">
       <div className="component-table-head">
         <div><b>Client self-service policy</b><span>Configure ESS behavior client-wise. Open a client, change controls, then save once.</span></div>
       </div>

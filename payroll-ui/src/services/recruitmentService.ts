@@ -1,9 +1,11 @@
-import { apiRequest, deleteJson, getJson, postEmpty, postJson } from './apiClient'
-import type { RecruitmentDashboard, RecruitmentOpenPosition, RecruitmentOperationsOptions, RecruitmentPositionDetail, RecruitmentRequisition, SaveRecruitmentRequisition } from '../types/payroll'
+import { apiRequest, deleteJson, getJson, postEmpty, postForm, postJson } from './apiClient'
+import type { RecruitmentDashboard, RecruitmentOpenPosition, RecruitmentOperationsOptions, RecruitmentPositionDetail, RecruitmentRequisition, RecruitmentRequestDocumentParseResult, SaveRecruitmentRequisition } from '../types/payroll'
 
 const emptyDashboard: RecruitmentDashboard = { drafts: 0, pendingApproval: 0, approved: 0, rejected: 0, returned: 0, withdrawn: 0, openPositions: 0, filledPositions: 0, cancelledPositions: 0, onHoldPositions: 0, remainingPositions: 0, averageApprovalHours: 0, departmentWiseHiring: [], companyWiseHiring: [], priorityWiseHiring: [], upcomingJoiningTargets: [] }
 
 export const getRecruitmentDashboard = (clientId = 0) => getJson<RecruitmentDashboard>(`/api/recruitment/dashboard${clientId ? `?clientId=${clientId}` : ''}`, emptyDashboard)
+export const getRecruitmentRequisitionApprovalMode = (clientId = 0) =>
+  getJson<{ workflowEnabled: boolean }>(`/api/recruitment/requisitions/approval-mode${clientId ? `?clientId=${clientId}` : ''}`, { workflowEnabled: false })
 
 export const getRecruitmentRequisitions = (filters: { clientId?: number; status?: string; query?: string; department?: string; hiringType?: string; employmentType?: string; priority?: string; businessUnit?: string; positionCategory?: string; experience?: string; location?: string; project?: string; replacementHiring?: boolean; budgetMin?: number; budgetMax?: number; dateFrom?: string; dateTo?: string; recruiterUserId?: number }) => {
   const params = new URLSearchParams()
@@ -13,6 +15,16 @@ export const getRecruitmentRequisitions = (filters: { clientId?: number; status?
 
 export const saveRecruitmentRequisition = (request: SaveRecruitmentRequisition) =>
   postJson<SaveRecruitmentRequisition, RecruitmentRequisition | null>('/api/recruitment/requisitions', request, null)
+
+export const parseRecruitmentRequestDocument = (file: File) => {
+  const body = new FormData()
+  body.append('file', file)
+  return postForm<RecruitmentRequestDocumentParseResult>('/api/recruitment/requisitions/parse-source', body, { status: 'NeedsReview', parserName: '', parserVersion: '', originalFileName: file.name, draft: {} as SaveRecruitmentRequisition, detectedFields: [], reviewFields: [], warnings: [] }, {
+    timeoutMs: 90_000,
+    timeoutMessage: 'Document reading took too long. The file is still selected; continue manually or retry.',
+    toast: false,
+  })
+}
 
 export const submitRecruitmentRequisition = (id: number) =>
   postEmpty<RecruitmentRequisition | null>(`/api/recruitment/requisitions/${id}/submit`, null)

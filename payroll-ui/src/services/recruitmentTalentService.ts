@@ -1,4 +1,4 @@
-import type { ConvertCandidateToEmployeeRequest, Employee, EntityAttachment, PersonActivityEvent, RecruitmentAiScoringSettings, RecruitmentApplicationScore, RecruitmentAtsScoringCriterion, RecruitmentAtsScoringProfile, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateChecklistItem, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, RecruitmentOffer, RecruitmentOpenPosition, RecruitmentResumeIntakeResult, RecruitmentSkill, RecruitmentTalentDashboard, SaveRecruitmentCandidate, SaveRecruitmentInterviewFeedbackCompetencyScore } from '../types/payroll'
+import type { ConvertCandidateToEmployeeRequest, Employee, EntityAttachment, PersonActivityEvent, RecruitmentAiScoringSettings, RecruitmentApplicationScore, RecruitmentAtsScoringCriterion, RecruitmentAtsScoringProfile, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateChecklistItem, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, RecruitmentOffer, RecruitmentOpenPosition, RecruitmentResumeIntakeResult, RecruitmentSkill, RecruitmentTalentDashboard, RecruitmentTalentPoolMatchRunResult, SaveRecruitmentCandidate, SaveRecruitmentInterviewFeedbackCompetencyScore } from '../types/payroll'
 import { deleteJson, getJson, postFormWithProgress, postJson, putJson } from './apiClient'
 
 export const getTalentDashboard = (clientId = 0) => getJson<RecruitmentTalentDashboard>(`/api/recruitment/talent/dashboard${clientId ? `?clientId=${clientId}` : ''}`, { talentProfiles: 0, activeApplications: 0, interviewsScheduled: 0, offersPending: 0, preOnboardingPending: 0, joined: 0 })
@@ -37,15 +37,25 @@ export const uploadCandidateResume = (candidateId: number, fieldConfigurationId:
   if (metadata.documentNumber) body.append('documentNumber', metadata.documentNumber); if (metadata.issueDate) body.append('issueDate', metadata.issueDate); if (metadata.expiryDate) body.append('expiryDate', metadata.expiryDate)
   return postFormWithProgress<{ attachment: EntityAttachment }>(`/api/recruitment/candidates/${candidateId}/resume`, body, {} as { attachment: EntityAttachment }, onProgress)
 }
-export const intakeRecruitmentResumes = (request: { clientId: number; positionId: number; jobPostingId?: number | null; sourceType: string; files: File[] }, onProgress: (value: number) => void) => {
+export const intakeRecruitmentResumes = (request: { clientId?: number; positionId?: number; jobPostingId?: number | null; talentPoolOnly?: boolean; sourceType: string; files: File[] }, onProgress: (value: number) => void) => {
   const body = new FormData()
-  body.append('clientId', String(request.clientId))
-  body.append('positionId', String(request.positionId))
+  if (request.clientId) body.append('clientId', String(request.clientId))
+  if (request.positionId) body.append('positionId', String(request.positionId))
   if (request.jobPostingId) body.append('jobPostingId', String(request.jobPostingId))
+  if (request.talentPoolOnly) body.append('talentPoolOnly', 'true')
   body.append('sourceType', request.sourceType)
   request.files.forEach(file => body.append('files', file, file.name))
   return postFormWithProgress<RecruitmentResumeIntakeResult>('/api/recruitment/resume-intake', body, { totalFiles: 0, imported: 0, needsReview: 0, items: [] }, onProgress)
 }
+export const getGlobalTalentPoolCandidates = (query = '', status = '') => getJson<RecruitmentCandidate[]>(`/api/recruitment/talent-pool/candidates?${new URLSearchParams({ query, status })}`, [])
+export const getTalentPoolMatches = (positionId?: number, status = '') => {
+  const search = new URLSearchParams({ status }); if (positionId) search.set('positionId', String(positionId))
+  return getJson<RecruitmentCandidateApplication[]>(`/api/recruitment/talent-pool/matches?${search}`, [])
+}
+export const runTalentPoolMatch = (positionId: number, candidateIds: number[] = []) => postJson('/api/recruitment/talent-pool/match', { positionId, candidateIds }, null as RecruitmentTalentPoolMatchRunResult | null, { successMessage: 'Talent Pool ATS matching completed.', timeoutMs: 180000 })
+export const directSelectTalentPoolCandidate = (candidateId: number, positionId: number) => postJson('/api/recruitment/talent-pool/select-direct', { candidateId, positionId }, null as RecruitmentCandidateApplication | null, { successMessage: 'Resume selected for the role without ATS scoring.' })
+export const setTalentPoolMatchSelection = (id: number, selected: boolean) => postJson(`/api/recruitment/talent-pool/matches/${id}/selection`, { selected }, null as RecruitmentCandidateApplication | null, { successMessage: selected ? 'Candidate added to Selected.' : 'Candidate returned to ATS Matches.' })
+export const promoteTalentPoolMatch = (id: number) => postJson(`/api/recruitment/talent-pool/matches/${id}/promote`, {}, null as RecruitmentCandidateApplication | null, { successMessage: 'Selected candidate moved to the hiring pipeline.' })
 export const getAtsProfiles = (clientId?: number) => getJson<RecruitmentAtsScoringProfile[]>(`/api/recruitment-admin/ats-profiles${clientId ? `?clientId=${clientId}` : ''}`, [])
 export const getAtsCriterionCatalog = () => getJson<RecruitmentAtsScoringCriterion[]>('/api/recruitment-admin/ats-criteria', [])
 export const saveAtsProfile = (row: RecruitmentAtsScoringProfile) => postJson('/api/recruitment-admin/ats-profiles', row, null as RecruitmentAtsScoringProfile | null, { successMessage: 'ATS profile saved.' })

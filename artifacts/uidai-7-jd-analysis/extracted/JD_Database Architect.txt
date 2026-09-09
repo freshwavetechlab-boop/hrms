@@ -1,0 +1,94 @@
+Job Profile Helping to manage dependencies, risks, and requirements
+between stakeholders in the delivery of change.
+Good all-round understanding of architecture frameworks,
+architecture artefacts and governance. Knowledge of project
+costing, estimating and commercial awareness would be an
+advantage.
+Architectural appreciation of operability, reliability, security,
+performance, and sustainability (in the context of infrastructure
+and cloud platform architectures).
+Experience in architecting on-premises, cloud and hybrid
+storage architectures.
+Experience in managing Backup products and VTLs
+Private Public & Hybrid Cloud – architecting, designing,
+building and testing new storage and backup solutions. Often
+large and complex projects, with inputs from multiple
+technology domains (network, compute, monitoring, security).
+Data migration & transformation programmes – architecting
+solutions to move data to new storage platforms, including
+those that are cloud based
+Storage & Backup platform architectures for greenfield, refresh
+and upgrade projects, across EMC, HP, NetApp, Azure, AWS
+and CEPH ( SDS) technologies
+Working knowledge in Linux is mandatory
+v. Data base Architect
+Position Database Architect
+Band/ Salary Band Band F (20-30LPA) TSU
+Location Tech Centre – Bangalore
+i. BE/ B.Tech/ M.Tech/ MCA qualification or equivalent;
+ii. Post-graduation in technology is preferred;
+iii. Should have strong oral and written communication skills
+and should be well-versed with program management tools;
+Experience, Educational Qualification 10+ years of database experience in MySQL, Postgres SQL,
+MS-SQL, Hbase, Casandra, MongoDB etc.
+Knowledge on CEPH is mandatory
+Experience as a software developer or data architect or in a data
+management role
+Experience working with at least two, and expert-level
+knowledge of at least two database technologies like MySQL,
+Postgres, MS SQL Server, Vertica, Snowflake, DynamoDB,
+MongoDB, DocumentDB, Map-R, Cassandra etc.
+Understanding of various relational and non-relational database
+technologies along with their benefits, downsides, and best use-
+case
+Willingness and commitment to learn other database,
+automation, and Cloud technologies
+Proficiency in automation
+Experience working with the databases in public Clouds,
+
+-- 1 of 2 --
+
+preferably AWS
+Strong analytical skills
+Ability to perform system monitoring and address various
+issues in the system
+Ability to do performance tuning and database development
+Job Profile Creating and maintaining high performance, scalable, and
+stable data architectures for the Onto Innovation product suite
+Research new database methods and technologies to fully
+utilize platform features
+Working with customer, development squads, and product
+management to identify and document use case scenarios
+Lead on all data solution aspects including setting data
+standards and providing your deep technical expertise to
+development teams for best practices, systems, and
+architectures
+Design data architectures and solutions that are highly available
+and meet disaster recovery requirements
+Design effective data store solutions that account for effective
+capacity planning, data tiering, and data life-cycle management
+Design automated deployment procedures for on-premises and
+cloud
+Work with QA to create detailed test plans and needed tooling
+to account targeted performance for production volume data
+Recommend solutions to improve new and existing database
+systems
+Participate in code reviews and create documentation for
+engineering and cross-functional practices
+Work with cross-functional teams to ensure end-to-end
+technical and business viability
+Work as the member of cross-platform Database Services team
+Lead data tier architecture and design processes, participate in
+system and application architecture
+Help with performance tuning and help with database
+development of performance-critical code
+Architect and implement HA/DR/Backup/Maintenance
+strategies
+Collaborate with development and business teams
+Be responsible for meeting various SLAs for multiple database
+platforms used
+Troubleshoot and address various issues in the systems
+Learn other database platforms and technologies
+
+-- 2 of 2 --
+

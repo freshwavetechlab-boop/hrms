@@ -213,6 +213,21 @@
   margin-top: 14px;
 }
 
+.resume-review-summary {
+  display: grid;
+  gap: 6px;
+}
+
+.resume-review-summary strong {
+  color: #7a2e0e;
+  font-weight: 650;
+}
+
+.resume-review-summary ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
 .ats-screening-workspace {
   display: flex;
   flex-direction: column;
@@ -264,7 +279,7 @@
 .ats-workbench-primary-actions .ant-btn {
   border-radius: 9px;
   font-weight: 700;
-  min-height: 38px;
+  min-height: 36px;
 }
 
 .ats-workbench-primary-actions .ant-btn-primary {

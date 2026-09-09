@@ -49,7 +49,7 @@ const evaluationDescriptions: Record<string, string> = {
   NoticePeriod: 'Scores availability using the candidate notice period.'
 }
 
-export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsChange }: { clients: Client[]; dropdowns: Drop[]; onDropdownsChange: (rows: Drop[]) => void }) {
+export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsChange, initialClientId = 0 }: { clients: Client[]; dropdowns: Drop[]; onDropdownsChange: (rows: Drop[]) => void; initialClientId?: number }) {
   const [profiles, setProfiles] = useState<RecruitmentAtsScoringProfile[]>([])
   const [skills, setSkills] = useState<RecruitmentSkill[]>([])
   const [criterionCatalog, setCriterionCatalog] = useState<RecruitmentAtsScoringCriterion[]>(criterionDefinitions)
@@ -69,11 +69,14 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
   useEffect(() => { void load() }, [])
   useEffect(() => {
     if (aiClientId || !clients.length) return
-    const firstClientId = clients[0].id
+    const firstClientId = initialClientId || clients[0].id
     setAiClientId(firstClientId)
     void getRecruitmentAiScoringSettings(firstClientId).then(setAiSettings)
   }, [clients, aiClientId])
-  const clientOptions = selectOptions(clients.map(row => ({ value: row.id, label: row.name })), 'Select client', 0)
+  const scopedClients = initialClientId ? clients.filter(row => row.id === initialClientId) : clients
+  const visibleProfiles = initialClientId ? profiles.filter(row => row.clientId === initialClientId) : profiles
+  const visibleSkills = initialClientId ? skills.filter(row => row.clientId === initialClientId) : skills
+  const clientOptions = selectOptions(scopedClients.map(row => ({ value: row.id, label: row.name })), 'Select client', 0)
   const positionCategories = (clientId: number) => Array.from(new Set(dropdowns.filter(row => row.isActive && row.type === 'Position Category' && (row.clientId === 0 || row.clientId === clientId)).map(row => row.value).filter(Boolean)))
   const activeWeight = useMemo(() => profile?.criteria.filter(row => row.isActive).reduce((sum, row) => sum + Number(row.weight || 0), 0) ?? 0, [profile])
   const profileError = !profile
@@ -138,13 +141,15 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
     const response = await deleteRecruitmentSkill(id)
     if (response.ok) await load()
   }
-  return <>
+  return <section className="orchestration-shell recruitment-ats-admin">
     <Tabs items={[
       {
         key: 'profiles', label: 'Scoring profiles', children:
-          <Card size="small" title="Explainable ATS scoring" extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setProfile(editProfile({ ...profile0, criteria: criterionCatalog.map(row => ({ ...row })) }, criterionCatalog))}>Add profile</Button>}>
-            <Alert type="info" showIcon message="Explainable decision support" description="Every score keeps a versioned position snapshot, criterion breakdown and evidence. Human confirmation can be enforced separately on each ATS pipeline stage before progression or rejection." style={{ marginBottom: 16 }} />
-            <DataTable rows={profiles} actions={row => <Space size={4}><Button size="small" icon={<EditOutlined />} onClick={() => setProfile(editProfile(row, criterionCatalog))}>Edit</Button><Popconfirm title="Delete ATS profile?" description="Historical scores stay intact. Active pipeline references must be removed first." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeProfile(row.id)}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.profileName}`} /></Popconfirm></Space>} columns={[
+          <Card size="small" className="recruitment-ats-table-card">
+            <Alert type="info" showIcon message="Explainable decision support" description="Every score keeps a versioned position snapshot, criterion breakdown and evidence. Human confirmation can be enforced separately on each ATS pipeline stage before progression or rejection." />
+            <DataTable rows={visibleProfiles} hideInactiveClear actionsWidth={96}
+              primaryAction={<Button type="primary" icon={<PlusOutlined />} onClick={() => setProfile(editProfile({ ...profile0, clientId: initialClientId, criteria: criterionCatalog.map(row => ({ ...row })) }, criterionCatalog))}>Add profile</Button>}
+              actions={row => <Space size={2}><Tooltip title="Edit"><Button type="text" size="small" aria-label={`Edit ${row.profileName}`} icon={<EditOutlined />} onClick={() => setProfile(editProfile(row, criterionCatalog))} /></Tooltip><Popconfirm title="Delete ATS profile?" description="Historical scores stay intact. Active pipeline references must be removed first." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeProfile(row.id)}><Tooltip title="Delete"><Button type="text" size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.profileName}`} /></Tooltip></Popconfirm></Space>} columns={[
               { key: 'clientName', label: 'Client' },
               { key: 'profileName', label: 'Profile' },
               { key: 'positionCategory', label: 'Position category', render: row => row.positionCategory || 'All categories' },
@@ -161,9 +166,11 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
       },
       {
         key: 'skills', label: 'Skill dictionary', children:
-          <Card size="small" title="Skill dictionary and aliases" extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setSkill({ ...skill0 })}>Add skill</Button>}>
+          <Card size="small" className="recruitment-ats-table-card">
             <Typography.Paragraph type="secondary">Aliases normalize different resume terms to one skill without duplicating candidate data.</Typography.Paragraph>
-            <DataTable rows={skills} actions={row => <Space size={4}><Button size="small" icon={<EditOutlined />} onClick={() => setSkill(row)}>Edit</Button><Popconfirm title="Delete skill?" description="Aliases are deleted; historical resume/JD evidence retains the skill name." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeSkill(row.id)}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.skillName}`} /></Popconfirm></Space>} columns={[
+            <DataTable rows={visibleSkills} hideInactiveClear actionsWidth={96}
+              primaryAction={<Button type="primary" icon={<PlusOutlined />} onClick={() => setSkill({ ...skill0, clientId: initialClientId })}>Add skill</Button>}
+              actions={row => <Space size={2}><Tooltip title="Edit"><Button type="text" size="small" aria-label={`Edit ${row.skillName}`} icon={<EditOutlined />} onClick={() => setSkill(row)} /></Tooltip><Popconfirm title="Delete skill?" description="Aliases are deleted; historical resume/JD evidence retains the skill name." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeSkill(row.id)}><Tooltip title="Delete"><Button type="text" size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.skillName}`} /></Tooltip></Popconfirm></Space>} columns={[
               { key: 'clientName', label: 'Scope' }, { key: 'skillCode', label: 'Code' }, { key: 'skillName', label: 'Skill' },
               { key: 'category', label: 'Category' }, { key: 'aliases', label: 'Aliases', render: row => row.aliases?.join(', ') || '-' },
               { key: 'isActive', label: 'Status', render: row => <Tag color={row.isActive ? 'green' : 'default'}>{row.isActive ? 'Active' : 'Inactive'}</Tag> }
@@ -172,14 +179,14 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
       },
       {
         key: 'ai', label: 'AI scoring setup', children:
-          <Card size="small" title={<Space><ApiOutlined />Optional Gemini analysis</Space>} extra={<Tag color={aiSettings.healthStatus === 'Healthy' ? 'green' : aiSettings.healthStatus === 'Unhealthy' ? 'red' : 'default'}>{aiSettings.healthStatus || 'Not tested'}</Tag>}>
-            <Alert type="info" showIcon icon={<SafetyCertificateOutlined />} message="Bounded, encrypted and optional" description="Local semantic vector scoring works without an API key. When enabled, Gemini validates only job-relevant evidence and can contribute at most 30% of the final score. Provider failure never removes the local ATS result." style={{ marginBottom: 16 }} />
+          <Card size="small" title={<Space><ApiOutlined />Optional FrevoPilot analysis</Space>} extra={<Tag color={aiSettings.healthStatus === 'Healthy' ? 'green' : aiSettings.healthStatus === 'Unhealthy' ? 'red' : 'default'}>{aiSettings.healthStatus || 'Not tested'}</Tag>}>
+            <Alert type="info" showIcon icon={<SafetyCertificateOutlined />} message="Bounded, encrypted and optional" description="Local semantic vector scoring works without an API key. When enabled, FrevoPilot validates only job-relevant evidence and can contribute at most 30% of the final score. Provider failure never removes the local ATS result." style={{ marginBottom: 16 }} />
             <Form component="div" layout="vertical">
               <Row gutter={16}>
                 <Col xs={24} md={8}><Form.Item label="Client" required><SearchSelect value={aiClientId} onChange={value => void selectAiClient(Number(value))} options={clientOptions} /></Form.Item></Col>
-                <Col xs={24} md={8}><Form.Item label="Provider"><Input value="Gemini" disabled /></Form.Item></Col>
+                <Col xs={24} md={8}><Form.Item label="Provider"><Input value="FrevoPilot AI" disabled /></Form.Item></Col>
                 <Col xs={24} md={8}><Form.Item label="Model"><Input data-testid="ai-scoring-model" value={aiSettings.modelName} onChange={event => setAiSettings({ ...aiSettings, modelName: event.target.value })} /></Form.Item></Col>
-                <Col xs={24} md={12}><Form.Item label="API key" extra={aiSettings.hasApiKey ? 'An encrypted key is already saved. Leave blank to keep it.' : 'Saved with ASP.NET Data Protection; the key is never returned to the browser.'}><Input.Password data-testid="ai-scoring-api-key" autoComplete="new-password" value={aiSettings.apiKey || ''} placeholder={aiSettings.hasApiKey ? 'Configured securely' : 'Paste Gemini API key'} onChange={event => setAiSettings({ ...aiSettings, apiKey: event.target.value })} /></Form.Item></Col>
+                <Col xs={24} md={12}><Form.Item label="API key" extra={aiSettings.hasApiKey ? 'An encrypted key is already saved. Leave blank to keep it.' : 'Saved with ASP.NET Data Protection; the key is never returned to the browser.'}><Input.Password data-testid="ai-scoring-api-key" autoComplete="new-password" value={aiSettings.apiKey || ''} placeholder={aiSettings.hasApiKey ? 'Configured securely' : 'Paste AI provider key'} onChange={event => setAiSettings({ ...aiSettings, apiKey: event.target.value })} /></Form.Item></Col>
                 <Col xs={24} md={4}><Form.Item label="AI contribution"><InputNumber style={{ width: '100%' }} min={0} max={30} precision={0} addonAfter="%" value={aiSettings.aiBlendWeight} onChange={value => setAiSettings({ ...aiSettings, aiBlendWeight: Number(value ?? 0) })} /></Form.Item></Col>
                 <Col xs={24} md={4}><Form.Item label="Min confidence"><InputNumber style={{ width: '100%' }} min={0} max={1} step={.05} precision={2} value={aiSettings.minimumConfidence} onChange={value => setAiSettings({ ...aiSettings, minimumConfidence: Number(value ?? 0) })} /></Form.Item></Col>
                 <Col xs={24} md={4}><Form.Item label="Timeout"><InputNumber style={{ width: '100%' }} min={10} max={120} addonAfter="sec" value={aiSettings.requestTimeoutSeconds} onChange={value => setAiSettings({ ...aiSettings, requestTimeoutSeconds: Number(value ?? 45) })} /></Form.Item></Col>
@@ -201,14 +208,14 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
       onClose={() => { if (!saving) setProfile(null) }} onSubmit={() => void saveProfile()} submitText="Save profile"
       submitLoading={saving} submitDisabled={Boolean(profileError)} width="min(1040px, 96vw)" destroyOnClose>
       {profile && <Form component="div" layout="vertical">
-        <Row gutter={16}>
+        <Row gutter={16} className="recruitment-ats-profile-grid">
           <Col xs={24} md={8}><Form.Item label="Client" required extra={profile.id > 0 ? 'Client ownership is fixed after creation. Create a new profile for another client.' : undefined}>{profile.id > 0 ? <Input disabled value={clients.find(row => row.id === profile.clientId)?.name || profile.clientName || `Client #${profile.clientId}`} /> : <SearchSelect value={profile.clientId} onChange={value => setProfile({ ...profile, clientId: Number(value) })} options={clientOptions} />}</Form.Item></Col>
           <Col xs={24} md={8}><Form.Item label="Profile name" required><Input value={profile.profileName} onChange={event => setProfile({ ...profile, profileName: event.target.value })} /></Form.Item></Col>
           <Col xs={24} md={8}><Form.Item label="Position category"><RecruitmentMasterSelect masterType="Position Category" clientId={profile.clientId} clientName={clients.find(row => row.id === profile.clientId)?.name} value={profile.positionCategory} values={positionCategories(profile.clientId)} dropdowns={dropdowns} onDropdownsChange={onDropdownsChange} onChange={positionCategory => setProfile({ ...profile, positionCategory })} emptyLabel="All categories" testId="ats-position-category" /></Form.Item></Col>
           <Col xs={24} md={8}><Form.Item label="Minimum shortlist score"><InputNumber style={{ width: '100%' }} min={0} max={100} precision={2} addonAfter="%" value={profile.minimumShortlistScore} onChange={value => setProfile({ ...profile, minimumShortlistScore: Number(value ?? 0) })} /></Form.Item></Col>
           <Col xs={24} md={8}><Form.Item label="Model name"><Input value={profile.modelName} onChange={event => setProfile({ ...profile, modelName: event.target.value })} /></Form.Item></Col>
           <Col xs={24} md={8}><Form.Item label="Semantic match threshold" extra="Higher is stricter. 0.72 is the calibrated default."><InputNumber disabled={!profile.enableSemanticMatching} style={{ width: '100%' }} min={.5} max={.95} step={.01} precision={2} value={profile.semanticMinimumSimilarity} onChange={value => setProfile({ ...profile, semanticMinimumSimilarity: Number(value ?? .72) })} /></Form.Item></Col>
-          <Col xs={24}><Alert type="info" showIcon message="Explainable hybrid ATS engine" description="Exact and alias evidence remains authoritative. The local BGE vector model can recover meaning-equivalent terms; optional Gemini analysis is bounded by the client configuration." /></Col>
+          <Col xs={24}><Alert type="info" showIcon message="Explainable hybrid ATS engine" description="Exact and alias evidence remains authoritative. The local BGE vector model can recover meaning-equivalent terms; optional FrevoPilot analysis is bounded by the client configuration." /></Col>
         </Row>
 
         <Card size="small" title="Scoring criteria" extra={<Space><Typography.Text strong>{activeWeight.toFixed(2)}%</Typography.Text><Progress type="circle" size={38} percent={Math.min(100, Math.max(0, activeWeight))} status={Math.abs(activeWeight - 100) <= 0.001 ? 'success' : 'exception'} format={() => ''} /></Space>}>
@@ -230,7 +237,7 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
         <Form.Item style={{ marginTop: 16 }}><Space direction="vertical">
           <Checkbox checked={profile.autoScoreOnResumeUpload} onChange={event => setProfile({ ...profile, autoScoreOnResumeUpload: event.target.checked })}>Parse and re-score active applications when the selected resume changes</Checkbox>
           <Checkbox checked={profile.enableSemanticMatching} onChange={event => setProfile({ ...profile, enableSemanticMatching: event.target.checked })}>Enable private local semantic vector matching (no external API)</Checkbox>
-          <Checkbox checked={profile.enableAiScoring} onChange={event => setProfile({ ...profile, enableAiScoring: event.target.checked })}>Enable optional Gemini analysis for this profile</Checkbox>
+          <Checkbox checked={profile.enableAiScoring} onChange={event => setProfile({ ...profile, enableAiScoring: event.target.checked })}>Enable optional FrevoPilot analysis for this profile</Checkbox>
           <Checkbox checked={profile.allowManualOverride} onChange={event => setProfile({ ...profile, allowManualOverride: event.target.checked })}>Allow reason-based manual score override</Checkbox>
           <Checkbox checked={profile.isDefault} onChange={event => setProfile({ ...profile, isDefault: event.target.checked })}>Default profile for this client</Checkbox>
           <Checkbox checked={profile.isActive} onChange={event => setProfile({ ...profile, isActive: event.target.checked })}>Active</Checkbox>
@@ -252,5 +259,5 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
         <Form.Item><Checkbox checked={skill.isActive} onChange={event => setSkill({ ...skill, isActive: event.target.checked })}>Active</Checkbox></Form.Item>
       </Form>}
     </RecruitmentEditorDrawer>
-  </>
+  </section>
 }

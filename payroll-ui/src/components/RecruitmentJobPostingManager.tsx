@@ -13,7 +13,7 @@ import { useToast, type ToastType } from './ToastProvider'
 import { getClients } from '../services/payrollService'
 import {
   assignRecruitmentPipeline, closeRecruitmentJobPosting, deleteRecruitmentJobPosting, getRecruitmentJobDescriptions,
-  getRecruitmentJobPostings, getRecruitmentOrchestrationLookups, getRecruitmentPipelines, getPublicCareerJob,
+  getRecruitmentJobPosting, getRecruitmentJobPostings, getRecruitmentOrchestrationLookups, getRecruitmentPipelines, getPublicCareerJob,
   getRecruitmentPositionPipelineAssignment, normalizePublicCareerUrl, publishRecruitmentJobPosting, saveRecruitmentJobPosting,
 } from '../services/recruitmentOrchestrationService'
 import type { Client } from '../types/payroll'
@@ -133,8 +133,15 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
 
   async function choosePosting(row: RecruitmentJobPosting, allPositions = positions) {
     setLoading(true)
-    setEditor({ ...row })
-    await loadPositionContext(row.positionId, allPositions)
+    const [detailed] = await Promise.all([
+      getRecruitmentJobPosting(row.id),
+      loadPositionContext(row.positionId, allPositions),
+    ])
+    setEditor(detailed ? { ...detailed } : {
+      ...row,
+      candidateProofReady: row.candidateProofReady ?? true,
+      candidateProofValidationMessage: row.candidateProofValidationMessage ?? '',
+    })
     setLoading(false)
   }
 
@@ -161,7 +168,15 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
   }
 
   function patch(value: Partial<RecruitmentJobPosting>) {
-    setEditor(current => current ? { ...current, ...value } : current)
+    const proofInputsChanged = 'jobDescriptionVersionId' in value || 'applicationFormVersionId' in value
+    setEditor(current => current ? {
+      ...current,
+      ...value,
+      ...(proofInputsChanged ? {
+        candidateProofReady: false,
+        candidateProofValidationMessage: 'Save the posting draft to verify certification-proof upload coverage for the selected JD, form and pipeline.',
+      } : {}),
+    } : current)
     setActionFeedback(null)
   }
 
@@ -198,6 +213,10 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
     if (response.ok && response.data) {
       setPipelineAssignment(response.data)
       setActionFeedback({ type: 'success', message: 'Published hiring pipeline assigned.' })
+      if (editor.id) {
+        const refreshed = await getRecruitmentJobPosting(editor.id)
+        if (refreshed) setEditor(refreshed)
+      }
     } else {
       setActionFeedback({ type: 'error', message: 'Unable to assign pipeline', description: response.error || 'The server rejected the pipeline assignment.' })
     }
@@ -336,6 +355,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
             </div>
             {actionFeedback && <Alert data-testid="job-posting-action-feedback" style={{ marginBottom: 12 }} closable showIcon type={actionFeedback.type} message={actionFeedback.message} description={actionFeedback.description} onClose={() => setActionFeedback(null)} />}
             {readOnly && <Alert className="jd-readonly-alert" type="info" showIcon message="Published details are locked" description="Close this posting and create a new posting if the approved JD, form or schedule must change." />}
+            {editor.candidateProofReady === false && <Alert data-testid="job-posting-candidate-proof-readiness" style={{ marginBottom: 12 }} type="warning" showIcon message="Certification proof upload needs attention" description={editor.candidateProofValidationMessage || 'Add the configured secure upload field to exactly one published candidate form.'} />}
             {(editor.status === 'Draft' || editor.status === 'Closed') && <Alert
               data-testid="job-posting-publish-readiness"
               style={{ marginBottom: 12 }}
@@ -415,7 +435,7 @@ function blankPosting(clientId: number, positionId = 0, positionTitle = ''): Rec
     id: 0, clientId, positionId, jobDescriptionVersionId: 0, applicationFormVersionId: null,
     publicSlug: '', publicTitle: positionTitle, status: 'Draft', opensAtUtc: null, closesAtUtc: null,
     maximumApplications: null, applicationCount: 0, searchEngineVisible: true, publishedAtUtc: null,
-    positionCode: '', positionTitle, clientName: '', candidatePortalReady: false, publicUrl: '',
+    positionCode: '', positionTitle, clientName: '', candidatePortalReady: false, candidateProofReady: true, candidateProofValidationMessage: '', publicUrl: '',
   }
 }
 
@@ -446,6 +466,7 @@ function validatePublishing(
   if (row.closesAtUtc && !dayjs(row.closesAtUtc).isAfter(dayjs())) issues.push('Closing date must be in the future.')
   if (!assignment?.isActive || !selectedPipelineVersionId || assignment.pipelineVersionId !== selectedPipelineVersionId) issues.push('Assign the selected published hiring pipeline.')
   if (!row.candidatePortalReady || !publicUrl) issues.push('Enable the candidate portal and configure a valid public HTTP or HTTPS base URL.')
+  if (row.candidateProofReady === false) issues.push(row.candidateProofValidationMessage || 'Add each configured certification proof upload to exactly one published candidate form.')
   return issues
 }
 

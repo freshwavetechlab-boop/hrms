@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
 import { FileDoneOutlined, InboxOutlined } from '@ant-design/icons'
-import { Checkbox, Form, Input, InputNumber, Radio, Select, Tag, Upload } from 'antd'
+import { Checkbox, Form, Input, InputNumber, Radio, Select, Tag, Typography, Upload } from 'antd'
 import type { UploadRequestOption } from 'rc-upload/lib/interface'
 import type {
-  DynamicFormField, DynamicFormVersion, DynamicLookupOption, PublicFormValue, PublicUploadedFile,
+  DynamicFormField, DynamicFormVersion, DynamicLookupOption, PublicFormValue, PublicUploadedFile, PublicUploadMetadata,
 } from '../types/recruitmentOrchestration'
 import './RecruitmentOrchestration.css'
 
@@ -13,13 +13,15 @@ type Props = {
   files: PublicUploadedFile[]
   disabled?: boolean
   onChange: (values: PublicFormValue[]) => void
-  onUpload: (field: DynamicFormField, file: File, onProgress: (percent: number) => void) => Promise<{ ok: boolean; error?: string }>
+  onUpload: (field: DynamicFormField, file: File, metadata: PublicUploadMetadata, onProgress: (percent: number) => void) => Promise<{ ok: boolean; error?: string }>
   onLoadOptions?: (field: DynamicFormField, search: string) => Promise<DynamicLookupOption[]>
 }
 
 export default function RecruitmentDynamicForm({ form, values, files, disabled = false, onChange, onUpload, onLoadOptions }: Props) {
   const [remoteOptions, setRemoteOptions] = useState<Record<number, DynamicLookupOption[]>>({})
   const [searching, setSearching] = useState<Record<number, boolean>>({})
+  const [uploadMetadata, setUploadMetadata] = useState<Record<number, PublicUploadMetadata>>({})
+  const [uploadErrors, setUploadErrors] = useState<Record<number, string>>({})
   const valueMap = useMemo(() => new Map(values.map(row => [row.fieldId, row])), [values])
 
   const patch = (fieldId: number, value: Partial<PublicFormValue>) => {
@@ -36,19 +38,35 @@ export default function RecruitmentDynamicForm({ form, values, files, disabled =
       setSearching(current => ({ ...current, [field.id]: false }))
     }
   }
-  const uploader = (field: DynamicFormField) => async ({ file, onProgress, onSuccess, onError }: UploadRequestOption) => {
+  const patchUploadMetadata = (fieldId: number, value: Partial<PublicUploadMetadata>) => {
+    setUploadMetadata(current => ({ ...current, [fieldId]: { ...(current[fieldId] ?? { documentNumber: '' }), ...value } }))
+    setUploadErrors(current => ({ ...current, [fieldId]: '' }))
+  }
+  const uploader = (field: DynamicFormField, metadata: PublicUploadMetadata) => async ({ file, onProgress, onSuccess, onError }: UploadRequestOption) => {
     if (typeof file === 'string' || !(file instanceof Blob)) return onError?.(new Error('The selected file is invalid.'))
     const selected = file instanceof File ? file : new File([file], 'upload')
-    const validationError = validateUpload(field, selected, files.filter(row => row.fieldId === field.id))
-    if (validationError) return onError?.(new Error(validationError))
-    const result = await onUpload(field, selected, percent => onProgress?.({ percent }))
-    if (result.ok) onSuccess?.({}); else onError?.(new Error(result.error || 'Upload failed.'))
+    const validationError = validateUploadMetadata(field, metadata) || validateUpload(field, selected, files.filter(row => row.fieldId === field.id))
+    if (validationError) {
+      setUploadErrors(current => ({ ...current, [field.id]: validationError }))
+      return onError?.(new Error(validationError))
+    }
+    const result = await onUpload(field, selected, metadata, percent => onProgress?.({ percent }))
+    if (result.ok) {
+      setUploadErrors(current => ({ ...current, [field.id]: '' }))
+      setUploadMetadata(current => ({ ...current, [field.id]: { documentNumber: '' } }))
+      onSuccess?.({})
+    } else {
+      const error = result.error || 'Upload failed.'
+      setUploadErrors(current => ({ ...current, [field.id]: error }))
+      onError?.(new Error(error))
+    }
   }
 
   return <div>{[...form.sections].sort((a, b) => a.displayOrder - b.displayOrder).map(section => <section className="public-form-section" key={section.id}>
     <h3>{section.sectionLabel}</h3>{section.description && <p>{section.description}</p>}
     <div className="public-form-grid">{[...section.fields].filter(field => field.isActive).sort((a, b) => a.displayOrder - b.displayOrder).map(field => {
       const answer = valueMap.get(field.id); const uploaded = files.filter(row => row.fieldId === field.id)
+      const metadata = uploadMetadata[field.id] ?? { documentNumber: '' }
       const usesLookup = Boolean(field.lookupSourceCode)
       const staticOptions = [...field.options].filter(row => row.isActive).sort((a, b) => a.displayOrder - b.displayOrder).map(row => ({ value: row.id, label: row.optionLabel }))
       return <Form.Item key={field.id} data-testid={`dynamic-field-${field.stableFieldCode}`} style={{ gridColumn: `span ${Math.max(1, Math.min(12, field.widthColumns))}` }} label={field.label} required={field.isRequired} extra={field.helpText}>
@@ -86,7 +104,13 @@ export default function RecruitmentDynamicForm({ form, values, files, disabled =
         {field.fieldTypeCode === 'CHECKBOX' && <Checkbox disabled={disabled} checked={Boolean(answer?.booleanValue)} onChange={event => patch(field.id, { booleanValue: event.target.checked })}>{field.placeholder || field.label}</Checkbox>}
         {field.fieldTypeCode === 'UPLOAD' && <div className="public-upload-box">
           {!!uploaded.length && <div>{uploaded.map(file => <Tag icon={<FileDoneOutlined />} color="green" key={file.attachmentPublicId || file.publicId || `${field.id}-${file.originalFileName}`}>{file.originalFileName}</Tag>)}</div>}
-          <Upload.Dragger disabled={disabled} multiple={Boolean(field.attachmentConstraints?.allowMultiple)} maxCount={field.attachmentConstraints?.maximumFileCount || 1} accept={uploadAccept(field)} showUploadList={false} customRequest={uploader(field)}><p className="ant-upload-drag-icon"><InboxOutlined /></p><p>{uploaded.length ? 'Add another file if permitted' : 'Choose or drop file here'}</p><small>{uploadRuleSummary(field)}</small></Upload.Dragger>
+          {requiresUploadMetadata(field) && <div className="public-upload-metadata" data-testid={`upload-metadata-${field.stableFieldCode}`}>
+            {field.attachmentConstraints?.requiresDocumentNumber && <label><span>Credential / document number <b aria-hidden="true">*</b></span><Input disabled={disabled} value={metadata.documentNumber} onChange={event => patchUploadMetadata(field.id, { documentNumber: event.target.value })} placeholder="Enter the number shown on the certificate" /></label>}
+            {field.attachmentConstraints?.requiresIssueDate && <label><span>Issue date <b aria-hidden="true">*</b></span><Input disabled={disabled} type="date" max={metadata.expiryDate || undefined} value={metadata.issueDate ?? ''} onChange={event => patchUploadMetadata(field.id, { issueDate: event.target.value || null })} /></label>}
+            {field.attachmentConstraints?.requiresExpiryDate && <label><span>Expiry date <b aria-hidden="true">*</b></span><Input disabled={disabled} type="date" min={metadata.issueDate || undefined} value={metadata.expiryDate ?? ''} onChange={event => patchUploadMetadata(field.id, { expiryDate: event.target.value || null })} /></label>}
+          </div>}
+          {uploadErrors[field.id] && <Typography.Text className="public-upload-error" type="danger" role="alert">{uploadErrors[field.id]}</Typography.Text>}
+          <Upload.Dragger disabled={disabled} multiple={Boolean(field.attachmentConstraints?.allowMultiple)} maxCount={field.attachmentConstraints?.maximumFileCount || 1} accept={uploadAccept(field)} showUploadList={false} customRequest={uploader(field, metadata)}><p className="ant-upload-drag-icon"><InboxOutlined /></p><p>{uploaded.length ? 'Add another file if permitted' : 'Choose or drop file here'}</p><small>{uploadRuleSummary(field)}</small></Upload.Dragger>
         </div>}
       </Form.Item>
     })}</div>
@@ -97,7 +121,10 @@ export function validateDynamicForm(form: DynamicFormVersion, values: PublicForm
   const valueMap = new Map(values.map(row => [row.fieldId, row]))
   for (const field of form.sections.flatMap(section => section.fields).filter(field => field.isActive)) {
     const answer = valueMap.get(field.id); const uploaded = files.filter(row => row.fieldId === field.id)
-    if (field.isRequired && isEmpty(field, answer, uploaded)) return `${field.label} is required.`
+    if (field.isRequired && field.fieldTypeCode === 'UPLOAD') {
+      const minimum = Math.max(1, field.attachmentConstraints?.minimumFileCount ?? 1)
+      if (uploaded.length < minimum) return `${field.label} requires ${minimum} file(s).`
+    } else if (field.isRequired && isEmpty(field, answer, uploaded)) return `${field.label} is required.`
     const text = answer?.textValue?.trim() ?? ''
     if (field.minimumLength && text && text.length < field.minimumLength) return `${field.label} must contain at least ${field.minimumLength} characters.`
     if (field.maximumLength && text.length > field.maximumLength) return `${field.label} cannot exceed ${field.maximumLength} characters.`
@@ -126,6 +153,21 @@ function validateUpload(field: DynamicFormField, file: File, existing: PublicUpl
   return ''
 }
 
+function requiresUploadMetadata(field: DynamicFormField) {
+  const rules = field.attachmentConstraints
+  return Boolean(rules?.requiresDocumentNumber || rules?.requiresIssueDate || rules?.requiresExpiryDate)
+}
+
+function validateUploadMetadata(field: DynamicFormField, metadata: PublicUploadMetadata) {
+  const rules = field.attachmentConstraints
+  if (!rules) return ''
+  if (rules.requiresDocumentNumber && !metadata.documentNumber.trim()) return 'Credential / document number is required before uploading.'
+  if (rules.requiresIssueDate && !metadata.issueDate) return 'Issue date is required before uploading.'
+  if (rules.requiresExpiryDate && !metadata.expiryDate) return 'Expiry date is required before uploading.'
+  if (metadata.issueDate && metadata.expiryDate && metadata.expiryDate < metadata.issueDate) return 'Expiry date cannot be before issue date.'
+  return ''
+}
+
 function uploadAccept(field: DynamicFormField) {
   const rules = field.attachmentConstraints
   if (!rules) return undefined
@@ -137,7 +179,8 @@ function uploadRuleSummary(field: DynamicFormField) {
   if (!rules) return 'Allowed types, size and file count are enforced by the configured secure attachment field.'
   const types = rules.allowedExtensions.length ? rules.allowedExtensions.join(', ') : 'configured file types'
   const size = rules.maximumFileSizeBytes > 0 ? `, up to ${formatBytes(rules.maximumFileSizeBytes)} each` : ''
-  return `${types}${size}; maximum ${Math.max(1, rules.maximumFileCount)} file(s).`
+  const minimum = rules.minimumFileCount > 0 ? `; minimum ${rules.minimumFileCount}` : ''
+  return `${types}${size}${minimum}; maximum ${Math.max(1, rules.maximumFileCount)} file(s).`
 }
 
 function formatBytes(bytes: number) {

@@ -1757,7 +1757,13 @@ LIMIT 1;", new { request.ClientId, GroupIds = groupIds }, transaction) ?? string
         return hash.ToString("X8");
     }
 
-    private sealed record PayRunAttendance(int EmployeeId, decimal WorkingDays, decimal PresentDays, decimal PayableDays);
+    private sealed class PayRunAttendance
+    {
+        public int EmployeeId { get; set; }
+        public decimal WorkingDays { get; set; }
+        public decimal PresentDays { get; set; }
+        public decimal PayableDays { get; set; }
+    }
     private sealed record EmployeeCycleRow(int EmployeeId, long StartDay, long EndDay);
     private sealed record AttendanceCycleRange(DateTime Start, DateTime End);
     private sealed record LeaveDailyBreakdownRow(int EmployeeId, DateTime AttendanceDate, string Code, string Name, string Type, decimal PayableValue);

@@ -59,12 +59,6 @@ export default function DepartmentHeadAssignments() {
 
   return (
     <section className="card department-heads">
-      <header>
-        <div>
-          <h3>Department Head Assignments</h3>
-          <p>Map each department to its approval user. The employee designation is not used.</p>
-        </div>
-      </header>
       {message && <p className="form-warning">{message}</p>}
       <div className="department-heads-form">
         <label><span>Client</span><SearchSelect value={clientId} onChange={value => selectClient(Number(value))} options={selectOptions(clients.filter(client => client.isActive).map(client => ({ value: client.id, label: client.name })), 'Select client', 0)} /></label>

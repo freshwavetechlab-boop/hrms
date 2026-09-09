@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -10,6 +11,7 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
     private const int MaxInputBytes = 10 * 1024 * 1024;
     private const int MaxExtractedBytes = 20 * 1024 * 1024;
     private const int MaxExtractedCharacters = 2_000_000;
+    private const int MaxBuiltInPdfBytes = 512 * 1024;
     private static readonly Regex EmailPattern = new(@"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex PhonePattern = new(@"(?<!\d)(?:\+?91[\s\-]?)?[6-9]\d{9}(?!\d)", RegexOptions.Compiled);
     private static readonly Regex NameLabelPattern = new(@"(?im)^\s*(?:candidate\s+)?(?:full\s+)?name\s*[:\-]\s*(?<value>[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){1,4})\s*$", RegexOptions.Compiled);
@@ -31,18 +33,36 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
             await CopyToLimitedAsync(source, memory, MaxInputBytes, cancellationToken);
             var bytes = memory.ToArray();
             var extension = Path.GetExtension(fileName).ToLowerInvariant();
-            var text = extension switch
+            var parserName = "BuiltIn";
+            var parserVersion = "2.1";
+            string text;
+            if (extension == ".pdf")
             {
-                ".txt" or ".csv" => DecodeText(bytes),
-                ".rtf" => StripRtf(DecodeText(bytes)),
-                ".docx" => ReadDocx(bytes),
-                ".pdf" => ReadPdf(bytes),
-                _ => ""
-            };
+                var pdf = await ReadPdfAsync(bytes, cancellationToken);
+                text = pdf.Text;
+                parserName = pdf.ParserName;
+            }
+            else
+            {
+                text = extension switch
+                {
+                    ".txt" or ".csv" => DecodeText(bytes),
+                    ".rtf" => StripRtf(DecodeText(bytes)),
+                    ".docx" => ReadDocx(bytes),
+                    _ => ""
+                };
+            }
             text = NormalizeText(text);
-            var status = string.IsNullOrWhiteSpace(text) ? "NeedsReview" : "Parsed";
+            var status = LooksLikeUsefulResumeText(text) ? "Parsed" : "NeedsReview";
+            // Contact identity is intentionally more tolerant than the full parser. Some
+            // text PDFs expose the email/phone in the raw PDF payload even when their font
+            // encoding prevents reliable page-text extraction. Global Talent Pool intake
+            // can still store and preview those resumes for a recruiter.
+            var binaryText = Encoding.Latin1.GetString(bytes);
             var email = EmailPattern.Match(text).Value;
+            if (string.IsNullOrWhiteSpace(email)) email = EmailPattern.Match(binaryText).Value;
             var phone = PhonePattern.Match(text).Value;
+            if (string.IsNullOrWhiteSpace(phone)) phone = PhonePattern.Match(binaryText).Value;
             var fullName = ExtractFullName(text, fileName);
             var residentialAddress = ExtractResidentialAddress(text);
             var sections = BuildSections(text);
@@ -59,7 +79,7 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
                 "und",
                 summary.Length <= 1000 ? summary : summary[..1000],
                 ExtractTotalExperienceMonths(text));
-            return new ResumeParseResult(status, text, facts, sections, "BuiltIn", "2.0", status == "Parsed" ? "" : "Text could not be extracted reliably. The resume remains available for manual review.");
+            return new ResumeParseResult(status, text, facts, sections, parserName, parserVersion, status == "Parsed" ? "" : "Text could not be extracted reliably. The resume remains available for manual review.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -185,12 +205,28 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
         return string.Join("\n", xml.Descendants(word + "p").Select(paragraph => string.Concat(paragraph.Descendants(word + "t").Select(node => node.Value))));
     }
 
-    private static string ReadPdf(byte[] bytes)
+    private static async Task<(string Text, string ParserName)> ReadPdfAsync(byte[] bytes, CancellationToken cancellationToken)
+    {
+        // pdftotext understands embedded ToUnicode/CMap font encodings that the
+        // lightweight parser cannot decode. Prefer it before inspecting PDF binary
+        // operators: image-heavy client documents can otherwise spend tens of
+        // seconds in regex/decompression work and exceed the HTTP request timeout.
+        var decoded = await TryReadPdfWithPdftotextAsync(bytes, cancellationToken);
+        if (decoded.Succeeded) return (decoded.Text, "PdfToText");
+
+        // Keep the dependency-free fallback bounded. A large PDF without an
+        // external decoder remains available for manual review instead of tying up
+        // a request thread for an unbounded amount of time.
+        if (bytes.Length > MaxBuiltInPdfBytes) return ("", "BuiltIn");
+        return (ReadPdfOperators(bytes), "BuiltIn");
+    }
+
+    private static string ReadPdfOperators(byte[] bytes)
     {
         var raw = Encoding.Latin1.GetString(bytes);
         var pieces = new List<string>();
         ExtractPdfTextOperators(raw, pieces);
-        foreach (Match match in Regex.Matches(raw, @"stream\r?\n(?<data>[\s\S]*?)\r?\nendstream", RegexOptions.CultureInvariant))
+        foreach (Match match in Regex.Matches(raw, @"stream\r?\n(?<data>[\s\S]*?)\r?\nendstream", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking))
         {
             if (pieces.Sum(piece => piece.Length) >= MaxExtractedCharacters) break;
             try
@@ -211,14 +247,104 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
         return string.Join("\n", pieces);
     }
 
+    private static async Task<(bool Succeeded, string Text)> TryReadPdfWithPdftotextAsync(byte[] bytes, CancellationToken cancellationToken)
+    {
+        var configured = Environment.GetEnvironmentVariable("PDFTOTEXT_PATH")?.Trim();
+        var executables = new List<string>();
+        if (!string.IsNullOrWhiteSpace(configured)) executables.Add(configured);
+        executables.Add("pdftotext");
+        if (OperatingSystem.IsWindows())
+        {
+            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            if (!string.IsNullOrWhiteSpace(programFiles)) executables.Add(Path.Combine(programFiles, "Git", "mingw64", "bin", "pdftotext.exe"));
+        }
+
+        var parserDirectory = Path.Combine(Path.GetTempPath(), "frevo-resume-parser");
+        Directory.CreateDirectory(parserDirectory);
+        var inputPath = Path.Combine(parserDirectory, $"{Guid.NewGuid():N}.pdf");
+        await File.WriteAllBytesAsync(inputPath, bytes, cancellationToken);
+        try
+        {
+            foreach (var executable in executables.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                Process? process = null;
+                var started = false;
+                try
+                {
+                    if (Path.IsPathRooted(executable) && !File.Exists(executable)) continue;
+                    process = new Process
+                    {
+                        StartInfo = new ProcessStartInfo
+                        {
+                            FileName = executable,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        }
+                    };
+                    process.StartInfo.ArgumentList.Add("-layout");
+                    process.StartInfo.ArgumentList.Add("-enc");
+                    process.StartInfo.ArgumentList.Add("UTF-8");
+                    process.StartInfo.ArgumentList.Add(inputPath);
+                    process.StartInfo.ArgumentList.Add("-");
+                    if (!process.Start()) continue;
+                    started = true;
+
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    timeout.CancelAfter(TimeSpan.FromSeconds(12));
+                    var outputTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                    var errorTask = process.StandardError.ReadToEndAsync(timeout.Token);
+                    await process.WaitForExitAsync(timeout.Token);
+                    var output = await outputTask;
+                    _ = await errorTask;
+                    if (process.ExitCode == 0)
+                        return (true, output.Length <= MaxExtractedCharacters ? output : output[..MaxExtractedCharacters]);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    // The external decoder timed out. The safe in-process result remains the fallback.
+                }
+                catch when (!cancellationToken.IsCancellationRequested)
+                {
+                    // Decoder is optional and may not exist on every deployment host.
+                }
+                finally
+                {
+                    if (started)
+                    {
+                        try { if (process is { HasExited: false }) process.Kill(true); }
+                        catch { /* The process is already exiting or inaccessible. */ }
+                    }
+                    process?.Dispose();
+                }
+            }
+        }
+        finally
+        {
+            try { File.Delete(inputPath); }
+            catch { /* The OS will eventually clean this isolated temp file. */ }
+        }
+        return (false, "");
+    }
+
+    private static bool LooksLikeUsefulResumeText(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var sample = value.Length <= 20000 ? value : value[..20000];
+        var letters = sample.Count(char.IsLetter);
+        var words = Regex.Matches(sample, @"\p{L}[\p{L}\p{M}.'+#-]{2,}").Count;
+        return letters >= 40 && words >= 8 && letters >= sample.Length / 12;
+    }
+
     private static void ExtractPdfTextOperators(string value, List<string> pieces)
     {
-        foreach (Match match in Regex.Matches(value, @"\((?<text>(?:\\.|[^\\)])*)\)\s*(?:Tj|'|"")", RegexOptions.CultureInvariant))
+        foreach (Match match in Regex.Matches(value, @"\((?<text>(?:\\.|[^\\)])*)\)\s*(?:Tj|'|"")", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking))
         {
             var decoded = DecodePdfLiteral(match.Groups["text"].Value);
             AddPdfPiece(pieces, decoded);
         }
-        foreach (Match array in Regex.Matches(value, @"\[(?<items>[\s\S]*?)\]\s*TJ", RegexOptions.CultureInvariant))
+        foreach (Match array in Regex.Matches(value, @"\[(?<items>[\s\S]*?)\]\s*TJ", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking))
         {
             var line = string.Concat(Regex.Matches(array.Groups["items"].Value, @"\((?<text>(?:\\.|[^\\)])*)\)")
                 .Select(item => DecodePdfLiteral(item.Groups["text"].Value)));

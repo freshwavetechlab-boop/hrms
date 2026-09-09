@@ -264,7 +264,7 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
   }
 
   return <section className="attendance-groups">
-        <AntCard className="settings-panel settings-table-panel attendance-group-panel attendance-group-table" title="Attendance Policies" size="small">
+        <AntCard className="settings-panel settings-table-panel attendance-group-panel attendance-group-table" size="small" aria-label="Attendance policy master">
           <div className="component-table-head"><div><b>Attendance policy master</b><span>Define client, location, employee scope, work-week, attendance cycle, and payroll report day.</span></div><Button type="primary" onClick={openNew}>Add policy</Button></div>
           <DataTable rows={policyRows} getRowId={row => row.policyBatchId || row.id} emptyText="No attendance policies configured." exportFileName="attendance-policies" columns={[
             { key: 'name', label: 'Policy' },

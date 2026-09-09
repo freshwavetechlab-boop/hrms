@@ -183,8 +183,7 @@ export default function PayslipRegister() {
 
   return (
     <section className="payslip-register">
-      <section className="card report-workspace">
-        <header><div><span className="eyebrow purple">Payroll reports</span><h3>Payslip Register</h3><p>Published payroll results by employee. Preview or download an individual payslip record.</p></div></header>
+      <section className="card report-workspace" aria-label="Payslip filters">
         <div className="payslip-filters">
           <label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label>
           <label><span>Pay period</span><SearchSelect value={runId} onChange={value => setRunId(Number(value))} options={selectOptions(clientRuns.map(item => ({ value: item.id, label: `${item.payPeriod} - ${item.status}` })), 'Select approved pay run', 0)} /></label>

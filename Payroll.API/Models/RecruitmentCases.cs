@@ -79,6 +79,7 @@ public class RecruitmentHiringCase
     public string PositionName { get; set; } = "";
     public string PayBandLevelCode { get; set; } = "";
     public string Division { get; set; } = "";
+    public string Location { get; set; } = "";
     public long PipelineVersionId { get; set; }
     public string PipelineName { get; set; } = "";
     public DateTime SlaAnchorAtUtc { get; set; }
@@ -117,10 +118,12 @@ public class RecruitmentHiringCaseStage
     public long? ApprovalWorkflowId { get; set; }
     public bool IsTerminal { get; set; }
     public string Status { get; set; } = "Pending";
+    public string OutcomeCode { get; set; } = "";
     public DateTime? EnteredAtUtc { get; set; }
     public DateTime? DueAtUtc { get; set; }
     public DateTime? CompletedAtUtc { get; set; }
     public long PausedDurationSeconds { get; set; }
+    public long ActiveDurationSeconds { get; set; }
     public bool IsPaused { get; set; }
     public bool IsSlaBreached { get; set; }
     public List<RecruitmentHiringCasePausePeriod> PauseHistory { get; set; } = [];

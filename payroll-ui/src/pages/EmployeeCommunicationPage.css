@@ -32,12 +32,12 @@
 .communication-mail-shell {
   display: grid;
   grid-template-columns: 205px 350px minmax(420px, 1fr);
-  height: calc(100vh - 198px);
-  min-height: 620px;
-  max-height: 860px;
+  height: clamp(420px, calc(100dvh - 330px), 760px);
+  min-height: 0;
+  max-height: none;
   overflow: hidden;
   border: 1px solid var(--comm-line);
-  border-radius: 0 0 16px 16px;
+  border-radius: 12px;
   background: #fff;
   box-shadow: 0 10px 32px rgb(16 24 40 / 6%);
 }
@@ -287,7 +287,7 @@
   .communication-commandbar h2 { white-space: normal; }
   .communication-commandbar .ant-space { width: 100%; }
   .communication-client-select { width: 100%; }
-  .communication-mail-shell { height: calc(100vh - 240px); min-height: 560px; grid-template-columns: 54px 270px minmax(330px, 1fr); }
+  .communication-mail-shell { height: clamp(380px, calc(100dvh - 350px), 680px); min-height: 0; grid-template-columns: 54px 270px minmax(330px, 1fr); }
   .compose-mail-surface { width: calc(100% - 18px); }
   .mail-recipient-row { grid-template-columns: 40px minmax(0, 1fr) auto; padding-left: 9px; }
   .mail-from-row { grid-template-columns: 40px 28px minmax(0, 1fr); }

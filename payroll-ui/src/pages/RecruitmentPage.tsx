@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
-import { Button, Card, Drawer, Empty, Input, InputNumber, Popconfirm, Select, Space, Tabs, message } from 'antd'
+import { BranchesOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons'
+import { Button, Card, Drawer, Input, InputNumber, Modal, Popconfirm, Select, Space, Tabs, Tag, message } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
 import DataTable from '../components/DataTable'
 import RecruitmentAtsWorkspace from '../components/RecruitmentAtsWorkspace'
+import RecruitmentDashboardOverview from '../components/RecruitmentDashboardOverview'
 import RecruitmentJobDescriptionManager from '../components/RecruitmentJobDescriptionManager'
 import RecruitmentJobPostingManager from '../components/RecruitmentJobPostingManager'
 import RecruitmentPipelineWorkspace from '../components/RecruitmentPipelineWorkspace'
@@ -11,15 +12,17 @@ import RecruitmentRequisitionManager from '../components/RecruitmentRequisitionM
 import RecruitmentTalentWorkspace from '../components/RecruitmentTalentWorkspace'
 import { useAuthSession } from '../components/AuthGate'
 import { getClients } from '../services/payrollService'
-import { assignConsultant, assignRecruiter, assignVendor, createReferralCampaign, deleteRecruitmentOpenPosition, getRecruitmentDashboard, getRecruitmentMasterOptions, getRecruitmentOpenPositionDetail, getRecruitmentOpenPositions, getRecruitmentOperationsOptions, publishPosition, saveRecruitmentPositionNote, updateRecruitmentPositionStatus } from '../services/recruitmentService'
-import type { Client, RecruitmentDashboard, RecruitmentMetric, RecruitmentOpenPosition, RecruitmentOperationsOptions, RecruitmentPositionDetail } from '../types/payroll'
+import { assignRecruiter, createReferralCampaign, deleteRecruitmentOpenPosition, getRecruitmentDashboard, getRecruitmentMasterOptions, getRecruitmentOpenPositionDetail, getRecruitmentOpenPositions, getRecruitmentOperationsOptions, getRecruitmentRequisitionApprovalMode, publishPosition, saveRecruitmentPositionNote, updateRecruitmentPositionStatus } from '../services/recruitmentService'
+import type { Client, RecruitmentDashboard, RecruitmentOpenPosition, RecruitmentOperationsOptions, RecruitmentPositionDetail } from '../types/payroll'
+import { recruitmentStageColor } from '../utils/recruitmentStage'
 
 const fallbackPositionStatuses = ['Open', 'Recruiter Assigned', 'Published', 'Candidate Screening', 'Interview In Progress', 'Offer Released', 'Offer Accepted', 'Joining Pending', 'Filled', 'Partially Filled', 'Cancelled', 'Closed', 'On Hold']
 const money = (value: number, currency = 'INR') => `${currency} ${Number(value || 0).toLocaleString('en-IN')}`
 const dateText = (value?: string | null) => value ? new Date(value).toLocaleDateString('en-GB') : '-'
 const dashboard0: RecruitmentDashboard = { drafts: 0, pendingApproval: 0, approved: 0, rejected: 0, returned: 0, withdrawn: 0, openPositions: 0, filledPositions: 0, cancelledPositions: 0, onHoldPositions: 0, remainingPositions: 0, averageApprovalHours: 0, departmentWiseHiring: [], companyWiseHiring: [], priorityWiseHiring: [], upcomingJoiningTargets: [] }
 const recruitmentClientScopeKey = 'recruitment.clientScope'
-
+const draftRequisitionStatuses = ['Draft', 'Sent Back']
+const pendingRequisitionStatuses = ['Pending Approval']
 export const recruitmentViews = ['Dashboard', 'Work Orders & SLA', 'Requisitions', 'Open Positions', 'Job Descriptions', 'Job Postings', 'ATS Screening', 'Hiring Pipeline', 'Talent Pool', 'Applications', 'Interviews', 'Offers & Pre-Onboarding'] as const
 export type RecruitmentPageView = (typeof recruitmentViews)[number]
 
@@ -50,59 +53,94 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
   const navigate = useNavigate()
   const location = useLocation()
   const routeQuery = useMemo(() => new URLSearchParams(location.search), [location.search])
+  const workspace = recruitmentWorkspace(view)
+  const isRequestWorkspace = workspace === 'requests'
   const boundClientId = Number(session?.user.clientId || 0)
   const canChooseClient = !boundClientId && Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
+  const [workspacePending, setWorkspacePending] = useState({ dirty: false, busy: false })
   const [selectedClientId, setSelectedClientId] = useState(() => boundClientId || Number(routeQuery.get('clientId') || sessionStorage.getItem(recruitmentClientScopeKey) || 0))
   const [dashboard, setDashboard] = useState<RecruitmentDashboard>(dashboard0)
+  const [requisitionWorkflowEnabled, setRequisitionWorkflowEnabled] = useState(true)
   const [positions, setPositions] = useState<RecruitmentOpenPosition[]>([])
   const [detail, setDetail] = useState<RecruitmentPositionDetail | null>(null)
   const [positionStatus, setPositionStatus] = useState('Open')
   const [positionStatusOptions, setPositionStatusOptions] = useState<string[]>(fallbackPositionStatuses)
   const [statusComment, setStatusComment] = useState('')
   const [noteText, setNoteText] = useState('')
-  const [ops, setOps] = useState<RecruitmentOperationsOptions>({ allowMultipleRecruiters: false, enableVendorHiring: false, enableConsultantHiring: false, enableInternalHiring: false, enableReferralHiring: false, enableDocumentVerification: false, recruiters: [], vendors: [], consultants: [], positionStatuses: [], publishingChannels: [], assignmentPriorities: [] })
+  const [ops, setOps] = useState<RecruitmentOperationsOptions>({ allowMultipleRecruiters: true, enableVendorHiring: false, enableConsultantHiring: false, enableInternalHiring: true, enableReferralHiring: true, enableDocumentVerification: true, recruiters: [], vendors: [], consultants: [], positionStatuses: [], publishingChannels: [], assignmentPriorities: [] })
   const [recruiter, setRecruiter] = useState({ primaryRecruiterUserId: 0, secondaryRecruiterUserId: 0, assignmentReason: '' })
-  const [vendor, setVendor] = useState({ partnerId: 0, priority: 'Normal', dueDate: '', expectedProfiles: 0, remarks: '' })
-  const [consultant, setConsultant] = useState({ partnerId: 0, priority: 'Normal', dueDate: '', expectedProfiles: 0, remarks: '' })
   const [publication, setPublication] = useState({ channel: '', publishingDate: new Date().toISOString().slice(0, 10), expiryDate: '', status: 'Published', remarks: '' })
   const [campaign, setCampaign] = useState({ campaignName: '', startDate: new Date().toISOString().slice(0, 10), endDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), referralReward: 0, visibilityDepartment: '', visibilityBusinessUnit: '', visibilityLocation: '', visibilityEmploymentType: '', status: 'Open' })
 
   const load = useCallback(async () => {
-    const [metrics, positionRows] = await Promise.all([
+    // JD and ATS own their scoped queries; request-table data is not needed there.
+    if (!isRequestWorkspace) return
+    const [metrics, positionRows, approvalMode] = await Promise.all([
       getRecruitmentDashboard(selectedClientId),
-      getRecruitmentOpenPositions(selectedClientId)
+      getRecruitmentOpenPositions(selectedClientId),
+      getRecruitmentRequisitionApprovalMode(selectedClientId),
     ])
     setDashboard(metrics)
     setPositions(positionRows)
-  }, [selectedClientId])
+    setRequisitionWorkflowEnabled(approvalMode.workflowEnabled)
+  }, [selectedClientId, isRequestWorkspace])
 
   useEffect(() => {
     void getClients().then(setClients)
+  }, [])
+  useEffect(() => {
+    if (!isRequestWorkspace) return
     void getRecruitmentMasterOptions('Position Status').then(position => {
       if (position.length) setPositionStatusOptions(position)
     })
     void getRecruitmentOperationsOptions().then(setOps)
-  }, [])
+  }, [isRequestWorkspace])
   useEffect(() => {
     if (!boundClientId || selectedClientId === boundClientId) return
     setSelectedClientId(boundClientId)
   }, [boundClientId, selectedClientId])
+  useEffect(() => {
+    if (boundClientId || !routeQuery.has('clientId')) return
+    const routeClientId = Number(routeQuery.get('clientId'))
+    if (Number.isSafeInteger(routeClientId) && routeClientId >= 0) setSelectedClientId(routeClientId)
+  }, [boundClientId, routeQuery])
   useEffect(() => { void load() }, [load])
   useEffect(() => { if (detail?.position.status) setPositionStatus(detail.position.status) }, [detail?.position.status])
+
+  const confirmWorkspaceNavigation = (action: () => void) => {
+    if (workspacePending.busy) {
+      message.info('Please wait for the current save or upload to finish.')
+      return
+    }
+    if (workspacePending.dirty) {
+      Modal.confirm({
+        title: 'Leave this workspace?',
+        content: 'Unsaved edits or selected files will be discarded. Saved records will not change.',
+        okText: 'Discard and continue', cancelText: 'Keep editing',
+        onOk: () => { setWorkspacePending({ dirty: false, busy: false }); action() },
+      })
+      return
+    }
+    action()
+  }
 
   const changeClientScope = (value?: number) => {
     if (!canChooseClient) return
     const next = Number(value || 0)
-    setSelectedClientId(next)
-    setDetail(null)
-    if (next) sessionStorage.setItem(recruitmentClientScopeKey, String(next))
-    else sessionStorage.removeItem(recruitmentClientScopeKey)
-    const params = new URLSearchParams(location.search)
-    if (next) params.set('clientId', String(next))
-    else params.delete('clientId')
-    const query = params.toString()
-    navigate(`${location.pathname}${query ? `?${query}` : ''}`, { replace: true })
+    if (next === selectedClientId) return
+    confirmWorkspaceNavigation(() => {
+      setSelectedClientId(next)
+      setDetail(null)
+      if (next) sessionStorage.setItem(recruitmentClientScopeKey, String(next))
+      else sessionStorage.removeItem(recruitmentClientScopeKey)
+      const params = new URLSearchParams(location.search)
+      for (const key of ['positionId', 'requisitionId', 'jobDescriptionVersionId', 'jobPostingId', 'workOrderId', 'workOrderLineId', 'upload']) params.delete(key)
+      if (next) params.set('clientId', String(next))
+      else params.delete('clientId')
+      const query = params.toString()
+      navigate(`${location.pathname}${query ? `?${query}` : ''}`, { replace: true })
+    })
   }
 
   const scopedPath = (path: string) => {
@@ -111,15 +149,6 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
     return `${path}${separator}clientId=${selectedClientId}`
   }
   const selectedClientName = selectedClientId ? clients.find(row => row.id === selectedClientId)?.name || 'Selected client' : 'All accessible clients'
-
-  const summary = useMemo<Array<[string, string | number, string]>>(() => [
-    ['Pending approvals', dashboard.pendingApproval, '/tasks'],
-    ['Open vacancies', dashboard.openPositions, '/recruitment/open-positions'],
-    ['Filled', dashboard.filledPositions, '/recruitment/open-positions'],
-    ['On hold', dashboard.onHoldPositions, '/recruitment/open-positions'],
-    ['Cancelled', dashboard.cancelledPositions, '/recruitment/open-positions'],
-    ['Avg approval hrs', Number(dashboard.averageApprovalHours || 0).toFixed(1), '/recruitment/requisitions'],
-  ], [dashboard])
 
   const openDetail = async (row: RecruitmentOpenPosition) => {
     const next = await getRecruitmentOpenPositionDetail(row.id)
@@ -156,10 +185,10 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
     message.success(ok)
   }
 
-  const workspace = recruitmentWorkspace(view)
   const copy = workspaceCopy[workspace]
   const openPositionsTable = <DataTable rows={positions} exportFileName="recruitment-open-positions" actions={row => <Space size={6} wrap>
     <Button size="small" onClick={() => void openDetail(row)}>View</Button>
+    {canDelete && <Button size="small" onClick={() => navigate(`/recruitment/requisitions?clientId=${row.clientId}&requisitionId=${row.requisitionId}`)}>Edit request</Button>}
     <Button size="small" type="primary" onClick={() => navigate(`/recruitment/job-descriptions?requisitionId=${row.requisitionId}&clientId=${row.clientId}`)}>{jobDescriptionActionLabel(row.jobDescriptionStatus)}</Button>
     {canDelete && <Popconfirm title="Delete this open position?" description="Delete linked applications, postings and hiring cases first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteRecruitmentOpenPosition(row.id); if (response.ok) { if (detail?.position.id === row.id) setDetail(null); await load() } }}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}
   </Space>} columns={[
@@ -171,6 +200,20 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
     { key: 'targetJoiningDate', label: 'Target', render: row => dateText(row.targetJoiningDate), value: row => row.targetJoiningDate || '' },
     { key: 'salary', label: 'Salary range', value: row => `${row.salaryMin}-${row.salaryMax}`, render: row => `${money(row.salaryMin, row.currency)} - ${money(row.salaryMax, row.currency)}` },
     { key: 'jobDescriptionStatus', label: 'JD status', render: row => row.jobDescriptionStatus || 'Not Started' },
+    { key: 'pipelineStageName', label: 'Current stage', width: '190px', value: row => row.pipelineStageName || 'Pipeline not started', render: row => {
+      const stageName = row.pipelineStageName || 'Pipeline not started'
+      return <Tag
+        data-testid={`open-position-stage-${row.id}`}
+        color={recruitmentStageColor(row.pipelineStageType || '', stageName)}
+        icon={<BranchesOutlined />}
+        role="link"
+        tabIndex={0}
+        title={`Open ${stageName} in pipeline`}
+        style={{ cursor: 'pointer', marginInlineEnd: 0 }}
+        onClick={() => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&positionId=${row.id}&flow=hiring`)}
+        onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&positionId=${row.id}&flow=hiring`) } }}
+      >{stageName}</Tag>
+    } },
     { key: 'status', label: 'Status' }
   ]} />
 
@@ -179,39 +222,46 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
     : routeQuery.get('flow') === 'candidates' || routeQuery.get('flow') === 'orders'
       ? routeQuery.get('flow') as 'candidates' | 'orders'
       : 'hiring'
+  const requestTab = !requisitionWorkflowEnabled
+    ? 'requests'
+    : view === 'Open Positions'
+    ? 'approved'
+    : routeQuery.get('status') === 'pending'
+      ? 'pending'
+      : 'requests'
   const workspaceContent = workspace === 'overview'
-    ? <Dashboard summary={summary} dashboard={dashboard} scopeLabel={selectedClientName} onNavigate={path => navigate(scopedPath(path))} onNew={() => navigate(scopedPath('/recruitment/requisitions?new=1'))} />
+    ? <RecruitmentDashboardOverview clients={clients} selectedClientId={selectedClientId} canChooseClient={canChooseClient} onClientChange={changeClientScope} onNavigate={path => navigate(scopedPath(path))} />
     : workspace === 'requests'
         ? <Tabs
             className="recruitment-workspace-tabs recruitment-primary-tabs"
-            activeKey={view === 'Open Positions' ? 'positions' : 'requests'}
-            onChange={key => navigate(scopedPath(key === 'positions' ? '/recruitment/open-positions' : '/recruitment/requisitions'))}
+            activeKey={requestTab}
+            destroyInactiveTabPane
+            onChange={key => navigate(scopedPath(key === 'approved' ? '/recruitment/open-positions' : key === 'pending' ? '/recruitment/requisitions?status=pending' : '/recruitment/requisitions'))}
             items={[
-              { key: 'requests', label: 'Requests', children: <RecruitmentRequisitionManager key={`${routeQuery.get('new') === '1' ? 'new-request' : 'request-list'}-${selectedClientId}-${routeQuery.get('workOrderId') || 0}-${routeQuery.get('workOrderLineId') || 0}`} embedded initialClientId={selectedClientId} clientScopeManaged initialOpen={routeQuery.get('new') === '1'} initialWorkOrderId={Number(routeQuery.get('workOrderId') || 0)} initialWorkOrderLineId={Number(routeQuery.get('workOrderLineId') || 0)} onChanged={() => void load()} onPrepareJobDescription={row => navigate(`/recruitment/job-descriptions?requisitionId=${row.id}&clientId=${row.clientId}`)} /> },
-              { key: 'positions', label: `Approved vacancies (${positions.length})`, children: openPositionsTable },
+              { key: 'requests', label: 'Requests', children: <RecruitmentRequisitionManager key={`${routeQuery.get('new') === '1' ? 'new-request' : 'request-list'}-${selectedClientId}-${routeQuery.get('requisitionId') || 0}-${routeQuery.get('workOrderId') || 0}-${routeQuery.get('workOrderLineId') || 0}`} embedded initialClientId={selectedClientId} clientScopeManaged initialOpen={routeQuery.get('new') === '1'} initialRequisitionId={Number(routeQuery.get('requisitionId') || 0)} initialWorkOrderId={Number(routeQuery.get('workOrderId') || 0)} initialWorkOrderLineId={Number(routeQuery.get('workOrderLineId') || 0)} statusScope={requisitionWorkflowEnabled ? draftRequisitionStatuses : []} showStatusFilter={!requisitionWorkflowEnabled} pipelinePositions={positions} onOpenPipeline={position => navigate(`/recruitment/hiring-pipeline?clientId=${position.clientId}&positionId=${position.id}&flow=hiring`)} onOpenRequestPipeline={row => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&flow=hiring${row.openPositionId ? `&positionId=${row.openPositionId}` : ''}`)} onChanged={() => void load()} onPrepareJobDescription={row => navigate(`/recruitment/job-descriptions?clientId=${row.clientId}&requisitionId=${row.id}`)} /> },
+              ...(requisitionWorkflowEnabled ? [
+                { key: 'pending', label: `Pending for approval (${dashboard.pendingApproval})`, children: <RecruitmentRequisitionManager key={`pending-requests-${selectedClientId}`} embedded initialClientId={selectedClientId} clientScopeManaged statusScope={pendingRequisitionStatuses} showStatusFilter={false} pipelinePositions={positions} onOpenPipeline={position => navigate(`/recruitment/hiring-pipeline?clientId=${position.clientId}&positionId=${position.id}&flow=hiring`)} onOpenRequestPipeline={row => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&flow=hiring${row.openPositionId ? `&positionId=${row.openPositionId}` : ''}`)} onChanged={() => void load()} /> },
+                { key: 'approved', label: `Approved (${positions.length})`, children: openPositionsTable },
+              ] : []),
             ]}
           />
         : workspace === 'jobs'
           ? <Tabs
               className="recruitment-workspace-tabs recruitment-primary-tabs"
               activeKey={view === 'Job Postings' ? 'publishing' : 'profiles'}
-              onChange={key => navigate(scopedPath(key === 'publishing' ? '/recruitment/job-postings' : '/recruitment/job-descriptions'))}
+              destroyInactiveTabPane
+              onChange={key => confirmWorkspaceNavigation(() => navigate(scopedPath(key === 'publishing' ? '/recruitment/job-postings' : '/recruitment/job-descriptions')))}
               items={[
-                { key: 'profiles', label: 'Role profiles & ATS', children: <RecruitmentJobDescriptionManager key={`jd-${selectedClientId}`} initialClientId={Number(routeQuery.get('clientId') || selectedClientId)} clientScopeManaged initialRequisitionId={Number(routeQuery.get('requisitionId') || 0)} /> },
-                { key: 'publishing', label: 'Publishing & public links', children: <RecruitmentJobPostingManager key={`posting-${selectedClientId}`} initialClientId={Number(routeQuery.get('clientId') || selectedClientId)} clientScopeManaged initialPositionId={Number(routeQuery.get('positionId') || 0)} /> },
+                { key: 'profiles', label: 'Role profiles & ATS', children: <RecruitmentJobDescriptionManager key={`jd-${selectedClientId}-${routeQuery.get('requisitionId') || 0}`} initialClientId={selectedClientId} clientScopeManaged initialRequisitionId={Number(routeQuery.get('requisitionId') || 0)} onNavigationStateChange={setWorkspacePending} /> },
+                { key: 'publishing', label: 'Publishing & public links', children: <RecruitmentJobPostingManager key={`posting-${selectedClientId}-${routeQuery.get('positionId') || 0}`} initialClientId={selectedClientId} clientScopeManaged initialPositionId={Number(routeQuery.get('positionId') || 0)} /> },
               ]}
             />
           : workspace === 'candidates'
-            ? <Tabs
-                className="recruitment-workspace-tabs recruitment-primary-tabs"
-                activeKey={view === 'Applications' ? 'applications' : view === 'ATS Screening' ? 'ats' : 'talent'}
-                onChange={key => navigate(scopedPath(key === 'applications' ? '/recruitment/applications' : key === 'ats' ? '/recruitment/ats-screening' : '/recruitment/talent-pool'))}
-                items={[
-                  { key: 'talent', label: 'Talent profiles', children: <RecruitmentTalentWorkspace key={`talent-${selectedClientId}`} mode="candidates" initialClientId={selectedClientId} /> },
-                  { key: 'applications', label: 'Applications', children: <RecruitmentTalentWorkspace key={`applications-${selectedClientId}`} mode="applications" initialClientId={selectedClientId} /> },
-                  { key: 'ats', label: 'ATS review & resume intake', children: <RecruitmentAtsWorkspace key={`ats-${selectedClientId}`} initialClientId={selectedClientId} clientScopeManaged initialUploadMode={routeQuery.get('upload') === 'bulk' ? 'bulk' : routeQuery.get('upload') === 'single' ? 'single' : undefined} /> },
-                ]}
-              />
+            ? view === 'Applications'
+              ? <RecruitmentTalentWorkspace key={`applications-${selectedClientId}`} mode="applications" initialClientId={selectedClientId} />
+              : view === 'ATS Screening'
+                ? <RecruitmentAtsWorkspace key={`ats-${selectedClientId}-${routeQuery.get('positionId') || 0}`} initialClientId={selectedClientId} initialPositionId={Number(routeQuery.get('positionId') || 0)} initialJobPostingId={Number(routeQuery.get('jobPostingId') || 0) || null} clientScopeManaged initialUploadMode={routeQuery.get('upload') === 'bulk' ? 'bulk' : routeQuery.get('upload') === 'single' ? 'single' : undefined} onNavigationStateChange={setWorkspacePending} />
+                : <RecruitmentTalentWorkspace key={`talent-${selectedClientId}`} mode="candidates" initialClientId={selectedClientId} />
             : workspace === 'pipeline'
               ? <RecruitmentPipelineWorkspace
                   key={`pipeline-${selectedClientId}-${pipelineView}`}
@@ -234,14 +284,15 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
                 />
 
   return <section className="recruitment-monitor-page recruitment-experience" aria-label={copy.title}>
-    {workspace !== 'pipeline' && <header className="recruitment-experience-header">
+    {!['pipeline', 'overview'].includes(workspace) && <header className="recruitment-scopebar">
       <div>
-        <span className="recruitment-workspace-group">{copy.group}</span>
-        <p>{copy.description}</p>
+        <span>Client scope</span>
+        <strong>{selectedClientName}</strong>
+        <small>{copy.group}</small>
       </div>
       <div className="recruitment-header-actions">
         {canChooseClient && <Select data-testid="recruitment-client-scope" aria-label="Recruitment client scope" allowClear showSearch optionFilterProp="label" value={selectedClientId || undefined} placeholder="All accessible clients" options={clients.map(row => ({ value: row.id, label: `${row.code} · ${row.name}` }))} onChange={changeClientScope} />}
-        {['overview', 'requests'].includes(workspace) && <Button data-testid="recruitment-new-hiring-request" type="primary" icon={<PlusOutlined />} onClick={() => navigate(scopedPath('/recruitment/requisitions?new=1'))}>New hiring request</Button>}
+        {workspace === 'requests' && <Button data-testid="recruitment-new-hiring-request" type="primary" icon={<PlusOutlined />} onClick={() => navigate(scopedPath('/recruitment/requisitions?new=1'))}>New hiring request</Button>}
       </div>
     </header>}
     <div className="recruitment-workspace-surface">
@@ -273,11 +324,11 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
           <Button type="primary" onClick={() => void saveStatus()}>Update status</Button>
         </div>
         <Tabs className="recruitment-workspace-tabs" items={[
-          { key: 'timeline', label: 'Timeline', children: <div className="position-detail-grid"><Card size="small" title="Timeline"><div className="recruitment-timeline">{detail.timeline.map(item => <article key={item.id}><i /> <div><b>{item.eventTitle}</b><span>{item.eventDetails || item.eventType}</span><small>{dateText(item.createdAt)} / {item.actorName || 'System'}</small></div></article>)}{!detail.timeline.length && <p>No timeline yet.</p>}</div></Card>{detail.enableDocumentVerification && <Card size="small" title="Checklist"><div className="recruitment-checklist">{detail.checklist.map(item => <article key={item.id}><b>{item.checklistName}</b><span>{item.stage || '-'} / {item.mandatory ? 'Mandatory' : 'Optional'}</span><small>{item.isCompleted ? 'Completed' : 'Pending'}</small></article>)}{!detail.checklist.length && <p>No checklist configured.</p>}</div></Card>}</div> },
-          { key: 'ownership', label: 'Recruiter Assignment', children: <div className="recruitment-operation-grid"><Card size="small" title="Assign recruiter"><label><span>Primary recruiter</span><Select value={recruiter.primaryRecruiterUserId} onChange={value => setRecruiter({ ...recruiter, primaryRecruiterUserId: value })} options={[{ value: 0, label: 'Select recruiter' }, ...ops.recruiters.map(user => ({ value: user.id, label: `${user.displayName} - ${user.email}` }))]} /></label>{detail.allowMultipleRecruiters && <label><span>Secondary recruiter</span><Select value={recruiter.secondaryRecruiterUserId} onChange={value => setRecruiter({ ...recruiter, secondaryRecruiterUserId: value })} options={[{ value: 0, label: 'None' }, ...ops.recruiters.map(user => ({ value: user.id, label: `${user.displayName} - ${user.email}` }))]} /></label>}<label className="wide"><span>Reason</span><Input value={recruiter.assignmentReason} onChange={event => setRecruiter({ ...recruiter, assignmentReason: event.target.value })} /></label><Button type="primary" onClick={() => void runAction(assignRecruiter(detail.position.id, recruiter), 'Recruiter assigned.')}>Assign</Button></Card><Card size="small" title="Assignment history"><MiniRows rows={detail.recruiterAssignments} getTitle={row => row.primaryRecruiterName} getText={row => `${row.assignmentStatus} / ${dateText(row.assignmentDate)} / ${row.assignedByName}`} /></Card></div> },
-          (detail.enableVendorHiring || detail.enableConsultantHiring) && { key: 'partners', label: 'Partners', children: <div className="recruitment-operation-grid">{detail.enableVendorHiring && <PartnerForm title="Assign vendor" partners={ops.vendors} priorities={ops.assignmentPriorities} value={vendor} setValue={setVendor} onSave={() => void runAction(assignVendor(detail.position.id, vendor), 'Vendor assigned.')} />}{detail.enableConsultantHiring && <PartnerForm title="Assign consultant" partners={ops.consultants} priorities={ops.assignmentPriorities} value={consultant} setValue={setConsultant} onSave={() => void runAction(assignConsultant(detail.position.id, consultant), 'Consultant assigned.')} />}{detail.enableVendorHiring && <Card size="small" title="Vendor assignments"><MiniRows rows={detail.vendorAssignments} getTitle={row => row.partnerName} getText={row => `${row.priority} / ${row.status} / due ${dateText(row.dueDate)}`} /></Card>}{detail.enableConsultantHiring && <Card size="small" title="Consultant assignments"><MiniRows rows={detail.consultantAssignments} getTitle={row => row.partnerName} getText={row => `${row.priority} / ${row.status} / due ${dateText(row.dueDate)}`} /></Card>}</div> },
-          (detail.enableInternalHiring || detail.enableReferralHiring) && { key: 'publishing', label: 'Publishing', children: <div className="recruitment-operation-grid"><Card size="small" title="Publish position"><label><span>Channel</span><Select value={publication.channel} onChange={value => setPublication({ ...publication, channel: value })} options={(ops.publishingChannels.length ? ops.publishingChannels : ['Internal Job Portal', 'Employee Referral']).filter(value => (detail.enableInternalHiring || !value.toLowerCase().includes('internal')) && (detail.enableReferralHiring || !value.toLowerCase().includes('referral'))).map(value => ({ value, label: value }))} /></label><label><span>Publishing date</span><Input type="date" value={publication.publishingDate} onChange={event => setPublication({ ...publication, publishingDate: event.target.value })} /></label><label><span>Expiry date</span><Input type="date" value={publication.expiryDate} onChange={event => setPublication({ ...publication, expiryDate: event.target.value })} /></label><label><span>Status</span><Select value={publication.status} onChange={value => setPublication({ ...publication, status: value })} options={['Draft', 'Published', 'Expired', 'Closed'].map(value => ({ value, label: value }))} /></label><label className="wide"><span>Remarks</span><Input value={publication.remarks} onChange={event => setPublication({ ...publication, remarks: event.target.value })} /></label><Button type="primary" onClick={() => void runAction(publishPosition(detail.position.id, publication), 'Position published.')}>Publish</Button></Card><Card size="small" title="Publishing history"><MiniRows rows={detail.publications} getTitle={row => row.channel} getText={row => `${row.status} / ${dateText(row.publishingDate)} - ${dateText(row.expiryDate)}`} /></Card></div> },
-          detail.enableReferralHiring && { key: 'referrals', label: 'Referral Campaign', children: <div className="recruitment-operation-grid"><Card size="small" title="Create referral campaign"><label><span>Campaign name</span><Input value={campaign.campaignName} onChange={event => setCampaign({ ...campaign, campaignName: event.target.value })} /></label><label><span>Start date</span><Input type="date" value={campaign.startDate} onChange={event => setCampaign({ ...campaign, startDate: event.target.value })} /></label><label><span>End date</span><Input type="date" value={campaign.endDate} onChange={event => setCampaign({ ...campaign, endDate: event.target.value })} /></label><label><span>Reward</span><InputNumber value={campaign.referralReward} onChange={value => setCampaign({ ...campaign, referralReward: Number(value || 0) })} /></label><label><span>Department visibility</span><Input value={campaign.visibilityDepartment} onChange={event => setCampaign({ ...campaign, visibilityDepartment: event.target.value })} placeholder="Blank means all" /></label><label><span>Location visibility</span><Input value={campaign.visibilityLocation} onChange={event => setCampaign({ ...campaign, visibilityLocation: event.target.value })} placeholder="Blank means all" /></label><Button type="primary" onClick={() => void runAction(createReferralCampaign(detail.position.id, campaign), 'Referral campaign created.')}>Create campaign</Button></Card><Card size="small" title="Campaigns"><MiniRows rows={detail.referralCampaigns} getTitle={row => row.campaignName} getText={row => `${row.status} / reward ${money(row.referralReward)} / ends ${dateText(row.endDate)}`} /></Card></div> },
+          { key: 'timeline', label: 'Timeline', children: <Card size="small" title="Timeline"><div className="recruitment-timeline">{detail.timeline.map(item => <article key={item.id}><i /> <div><b>{item.eventTitle}</b><span>{item.eventDetails || item.eventType}</span><small>{dateText(item.createdAt)} / {item.actorName || 'System'}</small></div></article>)}{!detail.timeline.length && <p>No timeline yet.</p>}</div></Card> },
+          { key: 'documents', label: 'Document Requirements', children: <Card size="small" title="Position document requirements" extra={canDelete ? <Button onClick={() => { setDetail(null); navigate(`/recruitment/hiring-pipeline?clientId=${detail.position.clientId}&positionId=${detail.position.id}&manage=1`) }}>Manage pipeline documents</Button> : null}><div className="recruitment-checklist">{detail.checklist.map(item => <article key={item.id}><b>{item.checklistName}</b><span>{item.stage || '-'} / {item.mandatory ? 'Mandatory' : 'Optional'}</span><small>{item.isCompleted ? 'Completed' : 'Pending'}</small></article>)}{!detail.checklist.length && <p>No position checklist is configured. Candidate-facing document requirements are managed on the assigned pipeline's Documents or Pre-onboarding stage.</p>}</div></Card> },
+          { key: 'ownership', label: 'Recruiter Assignment', children: <div className="recruitment-operation-grid"><Card size="small" title="Assign recruiter"><label><span>Primary recruiter</span><Select value={recruiter.primaryRecruiterUserId} onChange={value => setRecruiter({ ...recruiter, primaryRecruiterUserId: value })} options={[{ value: 0, label: 'Select recruiter' }, ...ops.recruiters.map(user => ({ value: user.id, label: `${user.displayName} - ${user.email}` }))]} /></label><label><span>Secondary recruiter</span><Select value={recruiter.secondaryRecruiterUserId} onChange={value => setRecruiter({ ...recruiter, secondaryRecruiterUserId: value })} options={[{ value: 0, label: 'None' }, ...ops.recruiters.map(user => ({ value: user.id, label: `${user.displayName} - ${user.email}` }))]} /></label><label className="wide"><span>Reason</span><Input value={recruiter.assignmentReason} onChange={event => setRecruiter({ ...recruiter, assignmentReason: event.target.value })} /></label><Button type="primary" onClick={() => void runAction(assignRecruiter(detail.position.id, recruiter), 'Recruiter assigned.')}>Assign</Button></Card><Card size="small" title="Assignment history"><MiniRows rows={detail.recruiterAssignments} getTitle={row => row.primaryRecruiterName} getText={row => `${row.assignmentStatus} / ${dateText(row.assignmentDate)} / ${row.assignedByName}`} /></Card></div> },
+          { key: 'publishing', label: 'Publishing', children: <div className="recruitment-operation-grid"><Card size="small" title="Publish position"><label><span>Channel</span><Select value={publication.channel} onChange={value => setPublication({ ...publication, channel: value })} options={publishingOptions(detail.position.hiringType, ops.publishingChannels).map(value => ({ value, label: value }))} /></label><label><span>Publishing date</span><Input type="date" value={publication.publishingDate} onChange={event => setPublication({ ...publication, publishingDate: event.target.value })} /></label><label><span>Expiry date</span><Input type="date" value={publication.expiryDate} onChange={event => setPublication({ ...publication, expiryDate: event.target.value })} /></label><label><span>Status</span><Select value={publication.status} onChange={value => setPublication({ ...publication, status: value })} options={['Draft', 'Published', 'Expired', 'Closed'].map(value => ({ value, label: value }))} /></label><label className="wide"><span>Remarks</span><Input value={publication.remarks} onChange={event => setPublication({ ...publication, remarks: event.target.value })} /></label><Button type="primary" onClick={() => void runAction(publishPosition(detail.position.id, publication), 'Position published.')}>Publish</Button></Card><Card size="small" title="Publishing history"><MiniRows rows={detail.publications} getTitle={row => row.channel} getText={row => `${row.status} / ${dateText(row.publishingDate)} - ${dateText(row.expiryDate)}`} /></Card></div> },
+          String(detail.position.hiringType || '').toLowerCase().includes('referral') && { key: 'referrals', label: 'Referral Campaign', children: <div className="recruitment-operation-grid"><Card size="small" title="Create referral campaign"><label><span>Campaign name</span><Input value={campaign.campaignName} onChange={event => setCampaign({ ...campaign, campaignName: event.target.value })} /></label><label><span>Start date</span><Input type="date" value={campaign.startDate} onChange={event => setCampaign({ ...campaign, startDate: event.target.value })} /></label><label><span>End date</span><Input type="date" value={campaign.endDate} onChange={event => setCampaign({ ...campaign, endDate: event.target.value })} /></label><label><span>Reward</span><InputNumber value={campaign.referralReward} onChange={value => setCampaign({ ...campaign, referralReward: Number(value || 0) })} /></label><label><span>Department visibility</span><Input value={campaign.visibilityDepartment} onChange={event => setCampaign({ ...campaign, visibilityDepartment: event.target.value })} placeholder="Blank means all" /></label><label><span>Location visibility</span><Input value={campaign.visibilityLocation} onChange={event => setCampaign({ ...campaign, visibilityLocation: event.target.value })} placeholder="Blank means all" /></label><Button type="primary" onClick={() => void runAction(createReferralCampaign(detail.position.id, campaign), 'Referral campaign created.')}>Create campaign</Button></Card><Card size="small" title="Campaigns"><MiniRows rows={detail.referralCampaigns} getTitle={row => row.campaignName} getText={row => `${row.status} / reward ${money(row.referralReward)} / ends ${dateText(row.endDate)}`} /></Card></div> },
           { key: 'notes', label: 'Internal Notes', children: <Card size="small" title="Internal notes" className="position-notes-card"><Space.Compact style={{ width: '100%' }}><Input value={noteText} onChange={event => setNoteText(event.target.value)} placeholder="Add HR/recruiter internal note" /><Button type="primary" onClick={() => void saveNote()}>Add</Button></Space.Compact><div className="recruitment-notes">{detail.notes.map(item => <article key={item.id}><b>{item.noteType}</b><p>{item.noteText}</p><small>{item.createdByName} / {dateText(item.createdAt)}</small></article>)}{!detail.notes.length && <p>No internal notes.</p>}</div></Card> }
         ].filter(Boolean) as any} />
       </section>}
@@ -294,43 +345,19 @@ function jobDescriptionActionLabel(status?: string) {
   return 'Create JD'
 }
 
-function Dashboard({ summary, dashboard, scopeLabel, onNavigate, onNew }: { summary: Array<[string, string | number, string]>; dashboard: RecruitmentDashboard; scopeLabel: string; onNavigate: (path: string) => void; onNew: () => void }) {
-  const requestCount = dashboard.drafts + dashboard.pendingApproval + dashboard.approved + dashboard.rejected + dashboard.returned + dashboard.withdrawn
-  return <>
-    {requestCount === 0 && dashboard.openPositions === 0 && <Card className="recruitment-empty-state"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<><b>No hiring activity for {scopeLabel}</b><span>Create the first hiring request, or choose another client to review its recruitment lifecycle.</span></>}><Button type="primary" icon={<PlusOutlined />} onClick={onNew}>Create hiring request</Button></Empty></Card>}
-    <div className="travel-advance-summary recruitment-summary recruitment-overview-metrics">{summary.map(([label, value, path]) => <button type="button" key={String(label)} onClick={() => onNavigate(path)}><span>{label}</span><b>{value}</b><small>Open workspace</small></button>)}</div>
-    <section className="recruitment-lifecycle-funnel" aria-label="Hiring lifecycle">
-      {[
-        ['Requests', requestCount],
-        ['Approved', dashboard.approved],
-        ['Open vacancies', dashboard.openPositions],
-        ['Filled', dashboard.filledPositions],
-      ].map(([label, value], index) => <article key={String(label)}><i>{index + 1}</i><span>{label}</span><b>{value}</b></article>)}
-    </section>
-    <div className="recruitment-dashboard-grid">
-      <MetricList title="Department-wise hiring" rows={dashboard.departmentWiseHiring} />
-      <MetricList title="Company-wise hiring" rows={dashboard.companyWiseHiring} />
-      <MetricList title="Priority-wise hiring" rows={dashboard.priorityWiseHiring} />
-      <MetricList title="Upcoming joining targets" rows={dashboard.upcomingJoiningTargets} />
-    </div>
-  </>
-}
-
-function MetricList({ title, rows }: { title: string; rows: RecruitmentMetric[] }) {
-  return <Card size="small" title={title}><div className="recruitment-metric-list">{rows.map(row => <article key={row.label}><span>{row.label}</span><b>{row.value}</b></article>)}{!rows.length && <p className="muted">No data.</p>}</div></Card>
-}
-
 function MiniRows<T>({ rows, getTitle, getText }: { rows: T[]; getTitle: (row: T) => string; getText: (row: T) => string }) {
   return <div className="recruitment-mini-rows">{rows.map((row, index) => <article key={index}><b>{getTitle(row)}</b><span>{getText(row)}</span></article>)}{!rows.length && <p className="muted">No records.</p>}</div>
 }
 
-function PartnerForm({ title, partners, priorities, value, setValue, onSave }: { title: string; partners: { id: number; name: string }[]; priorities: string[]; value: { partnerId: number; priority: string; dueDate: string; expectedProfiles: number; remarks: string }; setValue: (value: { partnerId: number; priority: string; dueDate: string; expectedProfiles: number; remarks: string }) => void; onSave: () => void }) {
-  return <Card size="small" title={title}>
-    <label><span>Partner</span><Select value={value.partnerId} onChange={partnerId => setValue({ ...value, partnerId })} options={[{ value: 0, label: 'Select' }, ...partners.map(item => ({ value: item.id, label: item.name }))]} /></label>
-    <label><span>Priority</span><Select value={value.priority} onChange={priority => setValue({ ...value, priority })} options={(priorities.length ? priorities : ['Normal']).map(item => ({ value: item, label: item }))} /></label>
-    <label><span>Due date</span><Input type="date" value={value.dueDate} onChange={event => setValue({ ...value, dueDate: event.target.value })} /></label>
-    <label><span>Expected profiles</span><InputNumber value={value.expectedProfiles} onChange={expectedProfiles => setValue({ ...value, expectedProfiles: Number(expectedProfiles || 0) })} /></label>
-    <label className="wide"><span>Remarks</span><Input value={value.remarks} onChange={event => setValue({ ...value, remarks: event.target.value })} /></label>
-    <Button type="primary" onClick={onSave}>Assign</Button>
-  </Card>
+function publishingOptions(hiringType: string, configured: string[]) {
+  const channels = configured.length ? configured : ['Career Site', 'Internal Job Portal', 'Employee Referral', 'Campus', 'Walk-in']
+  const type = String(hiringType || '').toLowerCase()
+  const keyword = type.includes('referral') ? 'referral'
+    : type.includes('internal') ? 'internal'
+      : type.includes('campus') ? 'campus'
+        : type.includes('walk') ? 'walk'
+          : ''
+  if (!keyword) return channels
+  const matched = channels.filter(channel => channel.toLowerCase().includes(keyword))
+  return matched.length ? matched : [keyword === 'referral' ? 'Employee Referral' : keyword === 'internal' ? 'Internal Job Portal' : keyword === 'walk' ? 'Walk-in' : 'Campus']
 }

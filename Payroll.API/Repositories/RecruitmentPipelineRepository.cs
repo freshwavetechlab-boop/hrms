@@ -10,8 +10,21 @@ namespace Payroll.API.Repositories;
 public class RecruitmentPipelineRepository(IConfiguration configuration, WorkflowRepository workflows)
 {
     private static readonly HashSet<string> StageTypes = new(StringComparer.OrdinalIgnoreCase) { "Screening", "ATS", "ExternalForm", "Documents", "Interview", "HR", "Approval", "PreOnboarding", "Offer", "Joining", "Rejected", "Withdrawn", "Completed" };
+    private static readonly HashSet<string> CandidateUploadFormCodes = new(StringComparer.OrdinalIgnoreCase) { "CANDIDATE_APPLICATION", "PUBLIC_CANDIDATE_APPLICATION", "PRE_ONBOARDING" };
     private static readonly JsonSerializerOptions ApprovalSnapshotJson = new(JsonSerializerDefaults.Web);
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
+
+    public async Task<bool> IsCardScopeSchemaReadyAsync()
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        return await db.ExecuteScalarAsync<int>(@"
+SELECT COUNT(*)
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'recruitment_pipeline_stages'
+  AND COLUMN_NAME = 'CardScope';") == 1;
+    }
 
     public async Task InitializeAsync()
     {
@@ -72,6 +85,7 @@ CREATE TABLE IF NOT EXISTS recruitment_jd_certification_requirements (
     JobDescriptionVersionId BIGINT NOT NULL,
     CertificationName VARCHAR(180) NOT NULL,
     IsMandatory BOOLEAN NOT NULL DEFAULT FALSE,
+    CandidateProofAttachmentFieldConfigurationId BIGINT NULL,
     DisplayOrder INT NOT NULL DEFAULT 100,
     INDEX IX_recruitment_jd_certification (JobDescriptionVersionId,DisplayOrder),
     CONSTRAINT FK_recruitment_jd_certification_version FOREIGN KEY (JobDescriptionVersionId) REFERENCES recruitment_job_description_versions(Id) ON DELETE CASCADE
@@ -233,6 +247,10 @@ CREATE TABLE IF NOT EXISTS recruitment_stage_offer_configurations (
     VarianceApprovalWorkflowId BIGINT NULL,
     CandidateResponseValidityDays INT NOT NULL DEFAULT 7,
     RequireAcceptedOfferToAdvance BOOLEAN NOT NULL DEFAULT TRUE,
+    NegotiationSlaExtensionEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+    NegotiationThresholdPercent DECIMAL(7,2) NOT NULL DEFAULT 30,
+    NegotiationSlaExtensionMinutes INT NOT NULL DEFAULT 0,
+    NegotiationSlaStageCodes VARCHAR(1000) NOT NULL DEFAULT '',
     UNIQUE KEY UX_recruitment_stage_offer_config (PipelineStageId),
     CONSTRAINT FK_recruitment_stage_offer_stage FOREIGN KEY (PipelineStageId) REFERENCES recruitment_pipeline_stages(Id) ON DELETE CASCADE
 );
@@ -252,6 +270,26 @@ CREATE TABLE IF NOT EXISTS recruitment_pipeline_transitions (
     CONSTRAINT FK_recruitment_pipeline_transition_version FOREIGN KEY (PipelineVersionId) REFERENCES recruitment_pipeline_versions(Id) ON DELETE CASCADE,
     CONSTRAINT FK_recruitment_pipeline_transition_from FOREIGN KEY (FromStageId) REFERENCES recruitment_pipeline_stages(Id) ON DELETE CASCADE,
     CONSTRAINT FK_recruitment_pipeline_transition_to FOREIGN KEY (ToStageId) REFERENCES recruitment_pipeline_stages(Id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS recruitment_sla_adjustments (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NOT NULL,
+    OfferId BIGINT NOT NULL,
+    ApplicationId BIGINT NOT NULL,
+    PositionId BIGINT NOT NULL,
+    PositionPipelineInstanceId BIGINT NULL,
+    StageOfferConfigurationId BIGINT NOT NULL,
+    RuleCode VARCHAR(100) NOT NULL,
+    ThresholdPercent DECIMAL(7,2) NOT NULL,
+    ActualPercent DECIMAL(7,2) NOT NULL,
+    ExtensionMinutes INT NOT NULL,
+    ExtendedStageCodes VARCHAR(1000) NOT NULL DEFAULT '',
+    Reason VARCHAR(1000) NOT NULL DEFAULT '',
+    AppliedByUserId INT NOT NULL,
+    AppliedAtUtc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    UNIQUE KEY UX_recruitment_sla_adjustment_offer_rule (OfferId,RuleCode),
+    INDEX IX_recruitment_sla_adjustment_application (ApplicationId,AppliedAtUtc),
+    INDEX IX_recruitment_sla_adjustment_position (PositionId,AppliedAtUtc)
 );
 CREATE TABLE IF NOT EXISTS recruitment_pipeline_transition_rules (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -424,6 +462,7 @@ CREATE TABLE IF NOT EXISTS recruitment_pipeline_transition_requests (
         await db.ExecuteAsync("UPDATE recruitment_pipeline_stages SET CardScope='Application' WHERE CardScope IS NULL OR CardScope NOT IN ('Position','Application')");
 
         await EnsureColumnAsync(db, "recruitment_open_positions", "ApprovedJobDescriptionVersionId", "BIGINT NULL");
+        await EnsureColumnAsync(db, "recruitment_jd_certification_requirements", "CandidateProofAttachmentFieldConfigurationId", "BIGINT NULL AFTER IsMandatory");
         await EnsureColumnAsync(db, "recruitment_candidate_applications", "PipelineInstanceId", "BIGINT NULL");
         await EnsureColumnAsync(db, "recruitment_candidate_applications", "CurrentPipelineStageInstanceId", "BIGINT NULL");
         await EnsureColumnAsync(db, "recruitment_candidate_applications", "JobPostingId", "BIGINT NULL");
@@ -437,6 +476,10 @@ CREATE TABLE IF NOT EXISTS recruitment_pipeline_transition_requests (
         await EnsureColumnAsync(db, "recruitment_stage_action_executions", "NotificationQueueId", "BIGINT NULL AFTER WorkflowInstanceId");
         await EnsureColumnAsync(db, "recruitment_stage_action_executions", "CandidateActionSessionId", "BIGINT NULL AFTER NotificationQueueId");
         await EnsureColumnAsync(db, "recruitment_stage_action_executions", "ApplicationScoreId", "BIGINT NULL AFTER CandidateActionSessionId");
+        await EnsureColumnAsync(db, "recruitment_stage_offer_configurations", "NegotiationSlaExtensionEnabled", "BOOLEAN NOT NULL DEFAULT FALSE");
+        await EnsureColumnAsync(db, "recruitment_stage_offer_configurations", "NegotiationThresholdPercent", "DECIMAL(7,2) NOT NULL DEFAULT 30");
+        await EnsureColumnAsync(db, "recruitment_stage_offer_configurations", "NegotiationSlaExtensionMinutes", "INT NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "recruitment_stage_offer_configurations", "NegotiationSlaStageCodes", "VARCHAR(1000) NOT NULL DEFAULT ''");
         await DropColumnIfExistsAsync(db, "recruitment_stage_external_form_configurations", "RequireEmailVerification");
         await DropColumnIfExistsAsync(db, "recruitment_pipeline_stage_actions", "TargetOutcomeCode");
     }
@@ -481,6 +524,8 @@ ORDER BY j.VersionNumber DESC", new { RequisitionId = requisitionId, user.Client
         await db.OpenAsync();
         var clientId = await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM recruitment_requisitions WHERE Id=@Id", new { Id = request.RequisitionId });
         if (clientId is null || (user.ClientId is not null && user.ClientId != clientId)) return (null, "Recruitment requisition was not found.");
+        var proofConfigurationError = await ValidateJobDescriptionCandidateProofConfigurationsAsync(db, request, clientId.Value);
+        if (proofConfigurationError.Length > 0) return (null, proofConfigurationError);
 
         await using var tx = await db.BeginTransactionAsync();
         long id = request.Id;
@@ -515,6 +560,8 @@ Status='Draft',WorkflowInstanceId=NULL,ApprovedByUserId=NULL,ApprovedAtUtc=NULL,
         var row = await LoadJobDescriptionAsync(db, id, user.ClientId);
         if (row is null || (user.ClientId is not null && user.ClientId != row.ClientId)) return (null, "Job description was not found.");
         if (!row.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase) && !row.Status.Equals("Sent Back", StringComparison.OrdinalIgnoreCase)) return (null, "Only a draft or sent-back job description can be submitted.");
+        var requisitionStatus = await db.ExecuteScalarAsync<string>("SELECT Status FROM recruitment_requisitions WHERE Id=@Id", new { Id = row.RequisitionId });
+        if (!string.Equals(requisitionStatus, "Approved", StringComparison.OrdinalIgnoreCase)) return (null, "Approve the hiring request before submitting its job description.");
         var completenessError = ValidateJobDescriptionCompleteness(row);
         if (completenessError.Length > 0) return (null, completenessError);
         var workflow = await db.QueryFirstOrDefaultAsync<WorkflowMaster>(@"SELECT * FROM workflowmasters
@@ -537,6 +584,8 @@ WHERE Id=@WorkflowId AND IsActive=TRUE AND (ClientId=@ClientId OR ClientId IS NU
         if (row is null) return (null, "Job description was not found in your permitted client scope.");
         if (!row.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase) && !row.Status.Equals("Sent Back", StringComparison.OrdinalIgnoreCase))
             return (null, "Only a draft or sent-back job description can be approved directly.");
+        var requisitionStatus = await db.ExecuteScalarAsync<string>("SELECT Status FROM recruitment_requisitions WHERE Id=@Id", new { Id = row.RequisitionId });
+        if (!string.Equals(requisitionStatus, "Approved", StringComparison.OrdinalIgnoreCase)) return (null, "Approve the hiring request before approving its job description.");
         var completenessError = ValidateJobDescriptionCompleteness(row);
         if (completenessError.Length > 0) return (null, completenessError);
 
@@ -583,6 +632,14 @@ ApprovedAtUtc=CASE WHEN @Status='Approved' THEN UTC_TIMESTAMP() ELSE NULL END,Up
         await using var db = Db();
         await db.OpenAsync();
         return await GetJobPostingAsync(db, id, user.ClientId);
+    }
+
+    public async Task<string> GetCandidateProofValidationErrorAsync(long postingId)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var posting = await db.QueryFirstOrDefaultAsync<RecruitmentJobPosting>(JobPostingSelect + " WHERE p.Id=@Id", new { Id = postingId });
+        return posting is null ? "Job posting was not found." : await ValidateCandidateProofBindingsAsync(db, posting);
     }
 
     public async Task<(RecruitmentJobPosting? Row, string Error)> SaveJobPostingAsync(SaveRecruitmentJobPosting request, AuthUser user)
@@ -642,10 +699,8 @@ WHERE v.Id=@Id AND v.Status IN ('Published','Retired') AND d.ClientId IN (0,@Cli
         var pipeline = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_position_pipeline_assignments
 WHERE PositionId=@PositionId AND (JobPostingId IS NULL OR JobPostingId=@Id) AND IsActive=TRUE", new { posting.PositionId, Id = id });
         if (pipeline == 0) return (null, "Assign a published hiring pipeline before publishing this job.");
-        var publicPortalBaseUrl = await db.ExecuteScalarAsync<string?>(@"SELECT PublicPortalBaseUrl FROM recruitment_settings
-WHERE ClientId=@ClientId AND RecruitmentEnabled=TRUE AND EnableCandidatePortal=TRUE AND IsActive=TRUE LIMIT 1", new { ClientId = posting.ClientId });
-        if (RecruitmentPublicUrls.BuildCareerUrl(publicPortalBaseUrl ?? "", posting.PublicSlug).Length == 0)
-            return (null, "Enable the candidate portal and configure a valid public HTTP or HTTPS base URL before publishing this job.");
+        var proofValidationError = await ValidateCandidateProofBindingsAsync(db, posting);
+        if (proofValidationError.Length > 0) return (null, proofValidationError);
         await db.ExecuteAsync("UPDATE recruitment_job_postings SET Status='Published',PublishedAtUtc=UTC_TIMESTAMP(),UpdatedAtUtc=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id });
         await db.ExecuteAsync("UPDATE recruitment_open_positions SET Status='Published',PublishedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@PositionId", posting);
         return (await GetJobPostingAsync(db, id, user.ClientId), "");
@@ -707,7 +762,7 @@ WHERE ClientId=@ClientId AND RecruitmentEnabled=TRUE AND EnableCandidatePortal=T
         if (!Regex.IsMatch(publicSlug ?? "", "^[a-f0-9]{32}$", RegexOptions.CultureInvariant)) return null;
         await using var db = Db();
         await db.OpenAsync();
-        var posting = await db.QueryFirstOrDefaultAsync<RecruitmentJobPosting>(JobPostingSelect + @" JOIN recruitment_settings settings ON settings.ClientId=p.ClientId AND settings.RecruitmentEnabled=TRUE AND settings.EnableCandidatePortal=TRUE AND settings.IsActive=TRUE WHERE p.PublicSlug=@PublicSlug AND p.Status='Published'
+        var posting = await db.QueryFirstOrDefaultAsync<RecruitmentJobPosting>(JobPostingSelect + @" WHERE p.PublicSlug=@PublicSlug AND p.Status='Published'
 AND (p.OpensAtUtc IS NULL OR p.OpensAtUtc<=UTC_TIMESTAMP()) AND (p.ClosesAtUtc IS NULL OR p.ClosesAtUtc>UTC_TIMESTAMP())
 AND (p.MaximumApplications IS NULL OR p.ApplicationCount<p.MaximumApplications)", new { PublicSlug = publicSlug });
         if (posting is null) return null;
@@ -1159,7 +1214,7 @@ AND ((@JobPostingId IS NULL AND JobPostingId IS NULL)
 ORDER BY CASE WHEN JobPostingId=@JobPostingId THEN 0 ELSE 1 END,AssignedAtUtc DESC,Id DESC LIMIT 1", new { Id = positionId, JobPostingId = jobPostingId });
         if (assignment is null) return new RecruitmentPipelineBoard { ClientId = position.ClientId, PositionId = positionId, JobPostingId = jobPostingId, PositionCode = position.PositionCode, PositionTitle = position.PositionTitle };
         var board = new RecruitmentPipelineBoard { ClientId = position.ClientId, PositionId = positionId, JobPostingId = jobPostingId, PositionCode = position.PositionCode, PositionTitle = position.PositionTitle, PipelineVersionId = assignment.PipelineVersionId };
-        board.Lanes = (await db.QueryAsync<RecruitmentPipelineBoardLane>(@"SELECT Id StageId,StageCode,StageName,StageType,CardScope,DisplayOrder,SlaDurationMinutes,SlaWarningMinutes
+        board.Lanes = (await db.QueryAsync<RecruitmentPipelineBoardLane>(@"SELECT Id StageId,StageCode,StageName,StageType,CardScope,DisplayOrder,SlaDurationMinutes,SlaWarningMinutes,AllowPause,PauseBehavior,IsTerminal
 FROM recruitment_pipeline_stages WHERE PipelineVersionId=@PipelineVersionId AND CardScope='Application' AND IsActive=TRUE ORDER BY DisplayOrder,Id", assignment)).ToList();
         if (board.Lanes.Count > 0)
         {
@@ -1169,14 +1224,18 @@ WHERE PipelineStageId IN @Ids ORDER BY DisplayOrder,Id", new { Ids = board.Lanes
         }
         var cards = (await db.QueryAsync<BoardCardRow>(@"SELECT s.PipelineStageId StageId,a.Id ApplicationId,a.ApplicationCode,a.CandidateId,
 CONCAT(c.FirstName,' ',c.LastName) CandidateName,c.Email CandidateEmail,
+CASE WHEN ps.StageType='Rejected' THEN COALESCE((SELECT previousStage.StageName FROM recruitment_application_stage_instances previousInstance
+ JOIN recruitment_pipeline_stages previousStage ON previousStage.Id=previousInstance.PipelineStageId
+ WHERE previousInstance.ApplicationId=a.Id AND previousInstance.Id<s.Id AND previousInstance.Status='Completed'
+ ORDER BY previousInstance.Id DESC LIMIT 1),'') ELSE '' END RejectedFromStageName,a.RejectedAt RejectedAtUtc,
 (SELECT COALESCE(sc.OverrideScore,sc.TotalScore) FROM recruitment_application_scores sc WHERE sc.ApplicationId=a.Id AND sc.IsCurrent=TRUE ORDER BY sc.ScoredAt DESC LIMIT 1) AtsScore,
 s.EnteredAtUtc,
-CASE WHEN s.DueAtUtc IS NULL THEN NULL ELSE TIMESTAMPADD(SECOND,COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0),s.DueAtUtc) END DueAtUtc,
+CASE WHEN s.DueAtUtc IS NULL THEN NULL ELSE TIMESTAMPADD(SECOND,CASE WHEN ps.PauseBehavior='NoShift' THEN 0 ELSE COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0) END,s.DueAtUtc) END DueAtUtc,
 GREATEST(0,TIMESTAMPDIFF(SECOND,s.EnteredAtUtc,UTC_TIMESTAMP())-s.PausedDurationSeconds-COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0)) ElapsedSeconds,
-CASE WHEN s.DueAtUtc IS NULL THEN 0 ELSE GREATEST(0,TIMESTAMPDIFF(SECOND,UTC_TIMESTAMP(),TIMESTAMPADD(SECOND,COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0),s.DueAtUtc))) END RemainingSeconds,
+CASE WHEN s.DueAtUtc IS NULL THEN 0 ELSE GREATEST(0,TIMESTAMPDIFF(SECOND,UTC_TIMESTAMP(),TIMESTAMPADD(SECOND,CASE WHEN ps.PauseBehavior='NoShift' THEN 0 ELSE COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0) END,s.DueAtUtc))) END RemainingSeconds,
 s.PausedDurationSeconds+COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0) PausedDurationSeconds,
-CASE WHEN ps.SlaWarningMinutes>0 AND s.DueAtUtc IS NOT NULL AND TIMESTAMPDIFF(SECOND,UTC_TIMESTAMP(),TIMESTAMPADD(SECOND,COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0),s.DueAtUtc)) BETWEEN 0 AND ps.SlaWarningMinutes*60 THEN TRUE ELSE FALSE END IsSlaWarning,
-CASE WHEN s.DueAtUtc IS NOT NULL AND TIMESTAMPADD(SECOND,COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0),s.DueAtUtc)<UTC_TIMESTAMP() THEN TRUE ELSE FALSE END IsSlaBreached,s.Status StageStatus,
+CASE WHEN ps.SlaWarningMinutes>0 AND s.DueAtUtc IS NOT NULL AND TIMESTAMPDIFF(SECOND,UTC_TIMESTAMP(),TIMESTAMPADD(SECOND,CASE WHEN ps.PauseBehavior='NoShift' THEN 0 ELSE COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0) END,s.DueAtUtc)) BETWEEN 0 AND ps.SlaWarningMinutes*60 THEN TRUE ELSE FALSE END IsSlaWarning,
+CASE WHEN s.DueAtUtc IS NOT NULL AND TIMESTAMPADD(SECOND,CASE WHEN ps.PauseBehavior='NoShift' THEN 0 ELSE COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0) END,s.DueAtUtc)<UTC_TIMESTAMP() THEN TRUE ELSE FALSE END IsSlaBreached,s.Status StageStatus,
 (SELECT COUNT(*) FROM recruitment_pipeline_stage_actions stageAction
  WHERE stageAction.PipelineStageId=s.PipelineStageId AND stageAction.IsActive=TRUE AND stageAction.IsBlocking=TRUE
  AND stageAction.TriggerEvent IN ('OnEntry','OnSubmission')
@@ -1206,11 +1265,21 @@ ORDER BY s.EnteredAtUtc", new { PositionId = positionId, assignment.PipelineVers
         await db.OpenAsync();
 
         var demandCards = (await db.QueryAsync<WorkspaceDemandRow>(@"SELECT
-workOrder.ClientId,line.Id WorkOrderLineId,line.WorkOrderId,workOrder.WorkOrderNumber,workOrder.Status WorkOrderStatus,
+workOrder.ClientId,line.Id WorkOrderLineId,line.WorkOrderId,workOrder.WorkOrderNumber,
+CASE WHEN hiringCase.Id IS NOT NULL AND workOrder.Status='Draft' THEN 'Active' ELSE workOrder.Status END WorkOrderStatus,
 line.PositionName,line.PayBandLevelCode,line.Division,
 hiringCase.Id HiringCaseId,hiringCase.PipelineVersionId,hiringCase.CurrentStageInstanceId,
 COALESCE(hiringCase.Status,line.Status,'Not Started') Status,stage.Id CurrentStageId,stage.StageName CurrentStageName,
-stageInstance.EnteredAtUtc,stageInstance.DueAtUtc,hiringCase.OverallDueAtUtc,
+COALESCE(stageInstance.EnteredAtUtc,workOrder.ReceivedAtUtc) EnteredAtUtc,stageInstance.DueAtUtc,COALESCE(hiringCase.OverallDueAtUtc,workOrder.DueAtUtc) OverallDueAtUtc,
+CASE WHEN stageInstance.Id IS NULL THEN GREATEST(0,TIMESTAMPDIFF(SECOND,workOrder.ReceivedAtUtc,UTC_TIMESTAMP(6)))
+ ELSE GREATEST(0,TIMESTAMPDIFF(SECOND,stageInstance.EnteredAtUtc,UTC_TIMESTAMP(6))-stageInstance.PausedDurationSeconds-
+      COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pauseRow.PausedAtUtc,UTC_TIMESTAMP(6))) FROM recruitment_position_stage_pause_periods pauseRow WHERE pauseRow.PositionStageInstanceId=stageInstance.Id AND pauseRow.ResumedAtUtc IS NULL),0)) END ActiveDurationSeconds,
+COALESCE(stageInstance.PausedDurationSeconds,0)+COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pauseRow.PausedAtUtc,UTC_TIMESTAMP(6))) FROM recruitment_position_stage_pause_periods pauseRow WHERE pauseRow.PositionStageInstanceId=stageInstance.Id AND pauseRow.ResumedAtUtc IS NULL),0) PausedDurationSeconds,
+EXISTS(SELECT 1 FROM recruitment_position_stage_pause_periods pauseRow WHERE pauseRow.PositionStageInstanceId=stageInstance.Id AND pauseRow.ResumedAtUtc IS NULL) IsPaused,
+COALESCE(stage.AllowPause,FALSE) AllowPause,COALESCE(stage.IsTerminal,FALSE) IsTerminal,
+COALESCE((SELECT advanceRequest.Status FROM recruitment_hiring_case_advance_requests advanceRequest
+ WHERE advanceRequest.HiringCaseId=hiringCase.Id AND advanceRequest.PositionStageInstanceId=stageInstance.Id
+   AND advanceRequest.Status='Pending Approval' ORDER BY advanceRequest.Id DESC LIMIT 1),'') AdvanceStatus,
 CASE WHEN hiringCase.Status IN ('Active','Candidate Flow') AND (stageInstance.DueAtUtc<UTC_TIMESTAMP(6) OR hiringCase.OverallDueAtUtc<UTC_TIMESTAMP(6)) THEN TRUE ELSE FALSE END IsSlaBreached,
 requisition.Id RequisitionId,COALESCE(requisition.RfrNumber,'') RequisitionNumber,
 COALESCE(requisition.Status,'Not Started') RequisitionStatus,
@@ -1274,8 +1343,9 @@ WHERE versionRow.Status='Published' AND versionRow.ScopeType IN ('Position','Hyb
             }
             else
             {
-                card.PipelineVersionId = uniquePublishedByClient.TryGetValue(card.ClientId, out var onlyVersion) ? onlyVersion : null;
-                card.NeedsPipelineSelection = true;
+                var hasSinglePublishedPipeline = uniquePublishedByClient.TryGetValue(card.ClientId, out var onlyVersion);
+                card.PipelineVersionId = hasSinglePublishedPipeline ? onlyVersion : null;
+                card.NeedsPipelineSelection = !hasSinglePublishedPipeline;
             }
         }
 
@@ -1290,11 +1360,16 @@ WHERE versionRow.Status='Published' AND versionRow.ScopeType IN ('Position','Hyb
             return workspace;
         }
 
-        workspace.Lanes = (await db.QueryAsync<RecruitmentPipelineWorkspaceLane>(@"SELECT PipelineVersionId,Id StageId,StageCode,StageName,StageType,CardScope,
-DisplayOrder,SlaDurationMinutes,SlaWarningMinutes
-FROM recruitment_pipeline_stages
-WHERE PipelineVersionId IN @VersionIds AND IsActive=TRUE
-ORDER BY PipelineVersionId,DisplayOrder,Id", new { VersionIds = versionIds })).ToList();
+        workspace.Lanes = (await db.QueryAsync<RecruitmentPipelineWorkspaceLane>(@"SELECT stageRow.PipelineVersionId,versionRow.VersionNumber PipelineVersionNumber,
+definition.PipelineName,COALESCE(clientRow.Name,'') ClientName,stageRow.Id StageId,stageRow.StageCode,stageRow.StageName,stageRow.StageType,stageRow.CardScope,
+stageRow.DisplayOrder,versionRow.SlaMode,versionRow.OverallSlaMinutes,
+stageRow.SlaDurationMinutes,stageRow.SlaWarningMinutes,stageRow.TargetOffsetMinutes
+FROM recruitment_pipeline_stages stageRow
+JOIN recruitment_pipeline_versions versionRow ON versionRow.Id=stageRow.PipelineVersionId
+JOIN recruitment_pipeline_definitions definition ON definition.Id=versionRow.PipelineDefinitionId
+LEFT JOIN clients clientRow ON clientRow.Id=definition.ClientId
+WHERE stageRow.PipelineVersionId IN @VersionIds AND stageRow.IsActive=TRUE
+ORDER BY stageRow.PipelineVersionId,stageRow.DisplayOrder,stageRow.Id", new { VersionIds = versionIds })).ToList();
 
         foreach (var card in demandCards)
         {
@@ -1322,6 +1397,10 @@ ORDER BY PipelineVersionId,DisplayOrder,Id", new { VersionIds = versionIds })).T
         var candidateCards = (await db.QueryAsync<WorkspaceBoardCardRow>(@"SELECT pipelineInstance.PipelineVersionId,stageInstance.PipelineStageId StageId,
 applicationRow.Id ApplicationId,applicationRow.ApplicationCode,applicationRow.CandidateId,
 CONCAT(candidate.FirstName,' ',candidate.LastName) CandidateName,candidate.Email CandidateEmail,
+CASE WHEN stageDefinition.StageType='Rejected' THEN COALESCE((SELECT previousStage.StageName FROM recruitment_application_stage_instances previousInstance
+ JOIN recruitment_pipeline_stages previousStage ON previousStage.Id=previousInstance.PipelineStageId
+ WHERE previousInstance.ApplicationId=applicationRow.Id AND previousInstance.Id<stageInstance.Id AND previousInstance.Status='Completed'
+ ORDER BY previousInstance.Id DESC LIMIT 1),'') ELSE '' END RejectedFromStageName,applicationRow.RejectedAt RejectedAtUtc,
 (SELECT COALESCE(score.OverrideScore,score.TotalScore) FROM recruitment_application_scores score WHERE score.ApplicationId=applicationRow.Id AND score.IsCurrent=TRUE ORDER BY score.ScoredAt DESC LIMIT 1) AtsScore,
 stageInstance.EnteredAtUtc,stageInstance.DueAtUtc,
 GREATEST(0,TIMESTAMPDIFF(SECOND,stageInstance.EnteredAtUtc,UTC_TIMESTAMP())-stageInstance.PausedDurationSeconds) ElapsedSeconds,
@@ -1427,6 +1506,29 @@ WHERE a.Id=@ApplicationId AND (@ClientId IS NULL OR a.ClientId=@ClientId) ORDER 
         return rows;
     }
 
+    public async Task<IEnumerable<RecruitmentApplicationStageTimelineItem>> GetApplicationStageHistoryAsync(long applicationId, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        return await db.QueryAsync<RecruitmentApplicationStageTimelineItem>(@"SELECT instance.Id,instance.ApplicationPipelineInstanceId,
+instance.ApplicationId,instance.PipelineStageId,stageRow.StageCode,stageRow.StageName,stageRow.StageType,
+instance.Status,instance.OutcomeCode,instance.EnteredAtUtc,instance.DueAtUtc,instance.ExitedAtUtc,
+CASE WHEN instance.ExitedAtUtc IS NULL
+  THEN GREATEST(0,TIMESTAMPDIFF(SECOND,instance.EnteredAtUtc,UTC_TIMESTAMP())-instance.PausedDurationSeconds-
+    COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pauseRow.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pauseRow WHERE pauseRow.StageInstanceId=instance.Id AND pauseRow.ResumedAtUtc IS NULL),0))
+  ELSE instance.ActiveDurationSeconds END ActiveDurationSeconds,
+instance.PausedDurationSeconds+COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pauseRow.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pauseRow WHERE pauseRow.StageInstanceId=instance.Id AND pauseRow.ResumedAtUtc IS NULL),0) PausedDurationSeconds,
+CASE WHEN instance.DueAtUtc IS NOT NULL AND COALESCE(instance.ExitedAtUtc,UTC_TIMESTAMP())>instance.DueAtUtc THEN TRUE ELSE FALSE END IsSlaBreached,
+COALESCE((SELECT eventRow.EventDetails FROM recruitment_stage_events eventRow WHERE eventRow.StageInstanceId=instance.Id AND eventRow.EventType='Entered' ORDER BY eventRow.Id DESC LIMIT 1),'') Reason,
+COALESCE(actor.DisplayName,actor.Email,'System') ChangedByName
+FROM recruitment_application_stage_instances instance
+JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=instance.ApplicationId
+JOIN recruitment_pipeline_stages stageRow ON stageRow.Id=instance.PipelineStageId
+LEFT JOIN authusers actor ON actor.Id=instance.EnteredByUserId
+WHERE instance.ApplicationId=@ApplicationId AND (@ClientId IS NULL OR applicationRow.ClientId=@ClientId)
+ORDER BY instance.EnteredAtUtc,instance.Id", new { ApplicationId = applicationId, user.ClientId });
+    }
+
     public async Task<(RecruitmentPipelineTransitionResult? Result, string Error)> EvaluateAtsStageAutomationAsync(long applicationId, AuthUser user)
     {
         await using var db = Db();
@@ -1496,6 +1598,7 @@ JOIN recruitment_candidate_applications a ON a.Id=r.ApplicationId WHERE r.Id=@Id
         var stage = await CurrentStageAsync(db, applicationId, user.ClientId);
         if (stage is null) return (null, "Active application stage was not found.");
         if (stage.Status.Equals("Paused", StringComparison.OrdinalIgnoreCase)) return (null, "Application stage is already paused.");
+        if (!stage.AllowPause) return (null, "SLA pause is disabled for this stage.");
         await using var tx = await db.BeginTransactionAsync();
         await db.ExecuteAsync("INSERT INTO recruitment_stage_pause_periods (StageInstanceId,Reason,PausedByUserId) VALUES (@Id,@Reason,@UserId)", new { stage.Id, Reason = request.Reason.Trim(), UserId = user.Id }, tx);
         await db.ExecuteAsync("UPDATE recruitment_application_stage_instances SET Status='Paused' WHERE Id=@Id", stage, tx);
@@ -1516,7 +1619,7 @@ JOIN recruitment_candidate_applications a ON a.Id=r.ApplicationId WHERE r.Id=@Id
         if (pause is null) return (null, "Open pause period was not found.");
         await db.ExecuteAsync("UPDATE recruitment_stage_pause_periods SET ResumedByUserId=@UserId,ResumedAtUtc=UTC_TIMESTAMP(),DurationSeconds=@Seconds WHERE Id=@Id", new { Id = pause.Id, UserId = user.Id, Seconds = pause.DurationSeconds }, tx);
         await db.ExecuteAsync(@"UPDATE recruitment_application_stage_instances SET Status='Active',PausedDurationSeconds=PausedDurationSeconds+@Seconds,
-DueAtUtc=CASE WHEN DueAtUtc IS NULL THEN NULL ELSE TIMESTAMPADD(SECOND,@Seconds,DueAtUtc) END WHERE Id=@Id", new { Id = stage.Id, Seconds = pause.DurationSeconds }, tx);
+DueAtUtc=CASE WHEN @ShiftDue=TRUE AND DueAtUtc IS NOT NULL THEN TIMESTAMPADD(SECOND,@Seconds,DueAtUtc) ELSE DueAtUtc END WHERE Id=@Id", new { Id = stage.Id, Seconds = pause.DurationSeconds, ShiftDue = !stage.PauseBehavior.Equals("NoShift", StringComparison.OrdinalIgnoreCase) }, tx);
         await AddStageEventAsync(db, tx, stage.Id, "Resumed", "Stage timer resumed", $"Paused for {pause.DurationSeconds} seconds", user.Id);
         await tx.CommitAsync();
         return (await CurrentStageAsync(db, applicationId, user.ClientId), "");
@@ -1528,7 +1631,7 @@ DueAtUtc=CASE WHEN DueAtUtc IS NULL THEN NULL ELSE TIMESTAMPADD(SECOND,@Seconds,
         await db.OpenAsync();
         await using var tx = await db.BeginTransactionAsync();
         var request = await db.QueryFirstOrDefaultAsync<ApplyTransitionRow>(@"SELECT r.*,t.FromStageId,t.ToStageId,t.OutcomeCode,
-f.StageName FromStageName,n.StageName ToStageName,n.SlaDurationMinutes,n.IsTerminal,n.StageType ToStageType
+f.StageName FromStageName,f.StageType FromStageType,n.StageName ToStageName,n.SlaDurationMinutes,n.IsTerminal,n.StageType ToStageType
 FROM recruitment_pipeline_transition_requests r
 JOIN recruitment_pipeline_transitions t ON t.Id=r.TransitionId AND t.IsActive=TRUE
 JOIN recruitment_pipeline_stages f ON f.Id=t.FromStageId AND f.CardScope='Application' AND f.IsActive=TRUE
@@ -1538,8 +1641,9 @@ WHERE r.Id=@Id FOR UPDATE", new { Id = requestId }, tx);
         if (request.AppliedAtUtc is not null)
             return (new RecruitmentPipelineTransitionResult { RequestId = request.Id, ApplicationId = request.ApplicationId, Status = "Applied", CurrentStageInstanceId = request.StageInstanceId, Message = "Transition was already applied." }, "");
         if (request.Status is not ("Approved" or "Pending Approval")) return (null, "Transition request is not approved.");
-        var current = await db.QueryFirstOrDefaultAsync<StageLockRow>(@"SELECT s.*,p.CurrentStageInstanceId,p.Id PipelineInstanceId
+        var current = await db.QueryFirstOrDefaultAsync<StageLockRow>(@"SELECT s.*,stageDefinition.PauseBehavior,p.CurrentStageInstanceId,p.Id PipelineInstanceId
 FROM recruitment_application_stage_instances s JOIN recruitment_application_pipeline_instances p ON p.Id=s.ApplicationPipelineInstanceId
+JOIN recruitment_pipeline_stages stageDefinition ON stageDefinition.Id=s.PipelineStageId
 WHERE s.Id=@Id AND p.CurrentStageInstanceId=s.Id AND s.Status IN ('Active','Paused') FOR UPDATE", new { Id = request.StageInstanceId }, tx);
         if (current is null || current.PipelineStageId != request.FromStageId) return (null, "Application has already left the requested stage.");
 
@@ -1550,6 +1654,8 @@ WHERE s.Id=@Id AND p.CurrentStageInstanceId=s.Id AND s.Status IN ('Active','Paus
             {
                 await db.ExecuteAsync("UPDATE recruitment_stage_pause_periods SET ResumedByUserId=@UserId,ResumedAtUtc=UTC_TIMESTAMP(),DurationSeconds=@Seconds WHERE Id=@Id", new { Id = pause.Id, UserId = actorUserId, Seconds = pause.DurationSeconds }, tx);
                 current.PausedDurationSeconds += pause.DurationSeconds;
+                if (!current.PauseBehavior.Equals("NoShift", StringComparison.OrdinalIgnoreCase))
+                    await db.ExecuteAsync("UPDATE recruitment_application_stage_instances SET DueAtUtc=CASE WHEN DueAtUtc IS NULL THEN NULL ELSE TIMESTAMPADD(SECOND,@Seconds,DueAtUtc) END WHERE Id=@Id", new { Id = current.Id, Seconds = pause.DurationSeconds }, tx);
             }
         }
 
@@ -1567,9 +1673,20 @@ VALUES (@PipelineInstanceId,@ApplicationId,@ToStageId,'Active',UTC_TIMESTAMP(),C
         await db.ExecuteAsync(@"UPDATE recruitment_application_pipeline_instances SET CurrentStageInstanceId=@StageId,
 Status=CASE WHEN @Terminal THEN 'Completed' ELSE 'Active' END,CompletedAtUtc=CASE WHEN @Terminal THEN UTC_TIMESTAMP() ELSE NULL END WHERE Id=@Id",
             new { StageId = nextStageId, Terminal = request.IsTerminal, Id = current.PipelineInstanceId }, tx);
+        var terminalDisposition = request.ToStageType.Equals("Rejected", StringComparison.OrdinalIgnoreCase)
+            ? "Rejected"
+            : request.ToStageType.Equals("Withdrawn", StringComparison.OrdinalIgnoreCase)
+                ? "Withdrawn"
+                : request.IsTerminal ? request.ToStageName : "";
+        var recovering = !request.IsTerminal && (request.FromStageType.Equals("Rejected", StringComparison.OrdinalIgnoreCase)
+            || request.FromStageType.Equals("Withdrawn", StringComparison.OrdinalIgnoreCase));
         await db.ExecuteAsync(@"UPDATE recruitment_candidate_applications SET CurrentPipelineStageInstanceId=@StageId,CurrentStage=@StageName,
-CurrentStatus=CASE WHEN @Terminal THEN @StageName ELSE CurrentStatus END,LastStageChangedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@ApplicationId",
-            new { StageId = nextStageId, StageName = request.ToStageName, Terminal = request.IsTerminal, request.ApplicationId }, tx);
+CurrentStatus=CASE WHEN @Terminal OR @Recovering THEN @StageName ELSE CurrentStatus END,
+DispositionReason=CASE WHEN @Recovering THEN '' WHEN @Rejected OR @Withdrawn THEN @Reason ELSE DispositionReason END,
+RejectedAt=CASE WHEN @Recovering AND @FromRejected THEN NULL WHEN @Rejected THEN UTC_TIMESTAMP() ELSE RejectedAt END,
+WithdrawnAt=CASE WHEN @Recovering AND @FromWithdrawn THEN NULL WHEN @Withdrawn THEN UTC_TIMESTAMP() ELSE WithdrawnAt END,
+LastStageChangedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@ApplicationId",
+            new { StageId = nextStageId, StageName = request.ToStageName, Terminal = request.IsTerminal, Recovering = recovering, FromRejected = request.FromStageType.Equals("Rejected", StringComparison.OrdinalIgnoreCase), FromWithdrawn = request.FromStageType.Equals("Withdrawn", StringComparison.OrdinalIgnoreCase), Rejected = terminalDisposition == "Rejected", Withdrawn = terminalDisposition == "Withdrawn", request.Reason, request.ApplicationId }, tx);
         await db.ExecuteAsync(@"INSERT INTO recruitment_application_stage_history (ApplicationId,FromStage,ToStage,Reason,ChangedByUserId,ChangedAt)
 VALUES (@ApplicationId,@FromStage,@ToStage,@Reason,@UserId,UTC_TIMESTAMP())",
             new { request.ApplicationId, FromStage = request.FromStageName, ToStage = request.ToStageName, request.Reason, UserId = actorUserId }, tx);
@@ -1818,7 +1935,11 @@ WHERE Id IN @Ids AND (ClientId=@ClientId OR ClientId IS NULL) AND IsActive=TRUE"
         }
         foreach (var stage in request.Stages)
         {
-            var validTriggers = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "OnEntry", "OnExit", "OnSlaWarning", "OnSlaBreach", "OnApproval", "OnSubmission", "OnProfileBatchForward" };
+            var validTriggers = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "OnEntry", "OnExit", "OnSlaWarning", "OnSlaBreach", "OnApproval", "OnSubmission", "OnProfileBatchForward",
+                "OnInterviewScheduled", "OnInterviewRescheduled"
+            };
             var validActions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "SEND_NOTIFICATION", "START_WORKFLOW", "GENERATE_ACTION_LINK", "RUN_ATS_SCORE" };
             if (stage.Actions.Any(x => string.IsNullOrWhiteSpace(x.ActionCode) || x.ExecutionOrder < 0 || !validTriggers.Contains(x.TriggerEvent) || !validActions.Contains(x.ActionCode))) return $"Stage actions for {stage.StageName} are invalid.";
             if (stage.Actions.Any(x => x.IsBlocking && !x.TriggerEvent.Equals("OnEntry", StringComparison.OrdinalIgnoreCase) && !x.TriggerEvent.Equals("OnSubmission", StringComparison.OrdinalIgnoreCase))) return $"Blocking actions in {stage.StageName} must run on entry or candidate submission.";
@@ -1876,6 +1997,7 @@ WHERE Id IN @Ids AND (ClientId=@ClientId OR ClientId IS NULL) AND IsActive=TRUE"
             if (stage.StageType.Equals("Offer", StringComparison.OrdinalIgnoreCase) && offer is null) return $"Offer configuration for {stage.StageName} is required.";
             var validBudgetBases = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "ApprovedMaximum", "ApprovedTotal", "SalaryRangeMaximum" };
             if (offer is not null && (offer.MaximumVariancePercent < 0 || offer.CandidateResponseValidityDays is < 1 or > 365 || !validBudgetBases.Contains(offer.BudgetBasis) || (offer.RequireApprovalWhenVarianceExceeded && (offer.VarianceApprovalWorkflowId is null or <= 0)))) return $"Offer behavior for {stage.StageName} is invalid.";
+            if (offer is not null && (offer.NegotiationThresholdPercent is < 0 or > 100 || offer.NegotiationSlaExtensionMinutes < 0 || (offer.NegotiationSlaExtensionEnabled && offer.NegotiationSlaExtensionMinutes <= 0))) return $"Negotiation SLA extension for {stage.StageName} is invalid.";
             if (stage.RequiresApproval && (stage.ApprovalWorkflowId is null or <= 0)) return $"Approval workflow for {stage.StageName} is required.";
         }
         var stageById = request.Stages.Where(x => x.Id != 0).ToDictionary(x => x.Id);
@@ -1905,7 +2027,15 @@ WHERE Id IN @Ids AND (ClientId=@ClientId OR ClientId IS NULL) AND IsActive=TRUE"
         }
         var activeTransitions = request.Transitions.Where(x => x.IsActive).ToList();
         if (activeTransitions.Any(x => ResolveStage(x.FromStageId, x.FromStageCode)?.IsActive != true || ResolveStage(x.ToStageId, x.ToStageCode)?.IsActive != true)) return "Active transitions can reference only active stages.";
-        if (activeTransitions.Any(x => ResolveStage(x.FromStageId, x.FromStageCode)?.IsTerminal == true)) return "A terminal stage cannot have an outgoing active transition.";
+        foreach (var transition in activeTransitions.Where(x => ResolveStage(x.FromStageId, x.FromStageCode)?.IsTerminal == true))
+        {
+            var from = ResolveStage(transition.FromStageId, transition.FromStageCode)!;
+            var to = ResolveStage(transition.ToStageId, transition.ToStageCode)!;
+            if (!new[] { "Rejected", "Withdrawn" }.Contains(from.StageType, StringComparer.OrdinalIgnoreCase))
+                return $"Only a Rejected or Withdrawn terminal stage can have a recovery transition; {from.StageName} must remain final.";
+            if (to.IsTerminal || !from.CardScope.Equals(to.CardScope, StringComparison.OrdinalIgnoreCase))
+                return $"Recovery from {from.StageName} must return to a non-terminal {from.CardScope} stage.";
+        }
         if (request.Stages.Any(x => (x.IsInitial || x.IsTerminal) && !x.IsActive)) return "Initial and terminal stages must remain active.";
         foreach (var transition in activeTransitions)
         {
@@ -2020,9 +2150,9 @@ VALUES (@StageId,@DocumentType,@TemplateId,@IsRequired,@RequiresSignature,@Displ
         {
             var row = stage.OfferConfiguration;
             await db.ExecuteAsync(@"INSERT INTO recruitment_stage_offer_configurations
-(PipelineStageId,OfferTemplateId,ApprovalWorkflowId,BudgetBasis,MaximumVariancePercent,RequireApprovalWhenVarianceExceeded,VarianceApprovalWorkflowId,CandidateResponseValidityDays,RequireAcceptedOfferToAdvance)
-VALUES (@StageId,@OfferTemplateId,@ApprovalWorkflowId,@BudgetBasis,@MaximumVariancePercent,@RequireApprovalWhenVarianceExceeded,@VarianceApprovalWorkflowId,@CandidateResponseValidityDays,@RequireAcceptedOfferToAdvance)",
-                new { StageId = stageId, row.OfferTemplateId, row.ApprovalWorkflowId, BudgetBasis = NormalizeBudgetBasis(row.BudgetBasis), row.MaximumVariancePercent, row.RequireApprovalWhenVarianceExceeded, row.VarianceApprovalWorkflowId, row.CandidateResponseValidityDays, row.RequireAcceptedOfferToAdvance }, tx);
+(PipelineStageId,OfferTemplateId,ApprovalWorkflowId,BudgetBasis,MaximumVariancePercent,RequireApprovalWhenVarianceExceeded,VarianceApprovalWorkflowId,CandidateResponseValidityDays,RequireAcceptedOfferToAdvance,NegotiationSlaExtensionEnabled,NegotiationThresholdPercent,NegotiationSlaExtensionMinutes,NegotiationSlaStageCodes)
+VALUES (@StageId,@OfferTemplateId,@ApprovalWorkflowId,@BudgetBasis,@MaximumVariancePercent,@RequireApprovalWhenVarianceExceeded,@VarianceApprovalWorkflowId,@CandidateResponseValidityDays,@RequireAcceptedOfferToAdvance,@NegotiationSlaExtensionEnabled,@NegotiationThresholdPercent,@NegotiationSlaExtensionMinutes,@NegotiationSlaStageCodes)",
+                new { StageId = stageId, row.OfferTemplateId, row.ApprovalWorkflowId, BudgetBasis = NormalizeBudgetBasis(row.BudgetBasis), row.MaximumVariancePercent, row.RequireApprovalWhenVarianceExceeded, row.VarianceApprovalWorkflowId, row.CandidateResponseValidityDays, row.RequireAcceptedOfferToAdvance, row.NegotiationSlaExtensionEnabled, row.NegotiationThresholdPercent, row.NegotiationSlaExtensionMinutes, NegotiationSlaStageCodes = string.Join(',', (row.NegotiationSlaStageCodes ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase)) }, tx);
         }
     }
 
@@ -2138,7 +2268,7 @@ ORDER BY a.uploaded_at_utc,a.id", new { description.ClientId, JobDescriptionId =
                 Responsibilities = description.Responsibilities.Select(item => new { Text = item.ResponsibilityText, item.DisplayOrder }),
                 Skills = description.Skills.Select(item => new { Name = item.SkillName, Required = item.IsRequired, item.MinimumYears, item.MinimumProficiency, item.WeightPercent, item.DisplayOrder }),
                 Qualifications = description.Qualifications.Select(item => new { Name = item.QualificationName, item.Specialization, Mandatory = item.IsMandatory, item.DisplayOrder }),
-                Certifications = description.Certifications.Select(item => new { Name = item.CertificationName, Mandatory = item.IsMandatory, item.DisplayOrder }),
+                Certifications = description.Certifications.Select(item => new { Name = item.CertificationName, Mandatory = item.IsMandatory, item.CandidateProofAttachmentFieldConfigurationId, item.DisplayOrder }),
                 Languages = description.Languages.Select(item => new { Name = item.LanguageName, item.Proficiency, Mandatory = item.IsMandatory, item.DisplayOrder }),
                 Benefits = description.Benefits.Select(item => new { Name = item.BenefitName, item.Description, item.DisplayOrder }),
                 MustHaveRelativeWeightTotal = description.Skills.Where(item => item.IsRequired).Sum(item => item.WeightPercent),
@@ -2153,6 +2283,48 @@ ORDER BY a.uploaded_at_utc,a.id", new { description.ClientId, JobDescriptionId =
     private static Task BindApprovedJobDescriptionAsync(MySqlConnection db, long id, MySqlTransaction? transaction = null) =>
         db.ExecuteAsync(@"UPDATE recruitment_open_positions p JOIN recruitment_job_description_versions j ON j.RequisitionId=p.RequisitionId
 SET p.ApprovedJobDescriptionVersionId=j.Id,p.JobDescriptionText=j.Summary,p.JobDescriptionVersion=j.VersionNumber WHERE j.Id=@Id", new { Id = id }, transaction);
+
+    private static async Task<string> ValidateJobDescriptionCandidateProofConfigurationsAsync(MySqlConnection db, SaveRecruitmentJobDescriptionVersion request, int clientId)
+    {
+        var configured = request.Certifications.Where(row => row.CandidateProofAttachmentFieldConfigurationId.HasValue).ToList();
+        var unnamed = configured.FirstOrDefault(row => string.IsNullOrWhiteSpace(row.CertificationName));
+        if (unnamed is not null) return "Enter the certification name before requesting candidate proof.";
+        var invalidId = configured.FirstOrDefault(row => row.CandidateProofAttachmentFieldConfigurationId is <= 0);
+        if (invalidId is not null) return $"Select a valid candidate proof upload for '{invalidId.CertificationName.Trim()}'.";
+        var duplicate = configured.GroupBy(row => row.CandidateProofAttachmentFieldConfigurationId!.Value).FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+            return $"Use a different candidate proof upload for every certification. Configuration #{duplicate.Key} is selected more than once.";
+        var ids = configured.Select(row => row.CandidateProofAttachmentFieldConfigurationId!.Value).Distinct().ToArray();
+        if (ids.Length == 0) return "";
+        var configurations = (await db.QueryAsync<CandidateProofConfigurationRow>(@"SELECT cfg.id Id,cfg.client_id ClientId,cfg.module_code ModuleCode,cfg.form_code FormCode,cfg.field_key FieldKey,
+cfg.field_label FieldLabel,cfg.allow_multiple AllowMultiple,cfg.minimum_file_count MinimumFileCount,cfg.maximum_file_count MaximumFileCount,
+cfg.is_active IsActive,cfg.effective_from_utc EffectiveFromUtc,cfg.effective_until_utc EffectiveUntilUtc,
+attributeRow.is_active AttributeIsActive
+FROM attachment_field_configurations cfg
+JOIN attachment_attributes attributeRow ON attributeRow.id=cfg.attachment_attribute_id
+WHERE cfg.id IN @Ids", new { Ids = ids })).ToDictionary(row => row.Id);
+        foreach (var certification in configured)
+        {
+            var id = certification.CandidateProofAttachmentFieldConfigurationId!.Value;
+            if (!configurations.TryGetValue(id, out var configuration))
+                return $"The candidate proof upload selected for '{certification.CertificationName.Trim()}' no longer exists.";
+            if (!configuration.IsActive || !configuration.AttributeIsActive
+                || configuration.EffectiveFromUtc.HasValue && configuration.EffectiveFromUtc.Value > DateTime.UtcNow
+                || configuration.EffectiveUntilUtc.HasValue && configuration.EffectiveUntilUtc.Value < DateTime.UtcNow)
+                return $"The candidate proof upload '{configuration.FieldLabel}' selected for '{certification.CertificationName.Trim()}' is inactive or outside its effective dates.";
+            if (configuration.ClientId != 0 && configuration.ClientId != clientId)
+                return $"The candidate proof upload selected for '{certification.CertificationName.Trim()}' belongs to another client.";
+            if (!configuration.ModuleCode.Equals("RECRUITMENT", StringComparison.OrdinalIgnoreCase)
+                || !CandidateUploadFormCodes.Contains(configuration.FormCode))
+                return $"Select a Recruitment candidate-facing upload field for '{certification.CertificationName.Trim()}'.";
+            var effectiveMaximum = configuration.AllowMultiple ? Math.Max(1, configuration.MaximumFileCount) : 1;
+            if (configuration.MinimumFileCount > effectiveMaximum)
+                return $"The candidate proof upload '{configuration.FieldLabel}' requires {configuration.MinimumFileCount} files but permits only {effectiveMaximum}. Correct it in Settings > Attachments.";
+            if (configuration.ClientId == 0 && await CandidateProofConfigurationIsShadowedAsync(db, configuration, clientId) > 0)
+                return $"Select the client-specific '{configuration.FieldLabel}' upload for '{certification.CertificationName.Trim()}'; it overrides this global configuration.";
+        }
+        return "";
+    }
 
     private static async Task DeleteJobDescriptionChildrenAsync(MySqlConnection db, MySqlTransaction tx, long id)
     {
@@ -2170,23 +2342,137 @@ VALUES (@Id,@SkillId,@Name,@Required,@Years,@Proficiency,@Weight,@Order)", new {
         foreach (var row in request.Qualifications.Where(x => !string.IsNullOrWhiteSpace(x.QualificationName)).OrderBy(x => x.DisplayOrder))
             await db.ExecuteAsync("INSERT INTO recruitment_jd_qualification_requirements (JobDescriptionVersionId,QualificationName,Specialization,IsMandatory,DisplayOrder) VALUES (@Id,@Name,@Specialization,@Mandatory,@Order)", new { Id = id, Name = row.QualificationName.Trim(), Specialization = row.Specialization.Trim(), Mandatory = row.IsMandatory, Order = row.DisplayOrder }, tx);
         foreach (var row in request.Certifications.Where(x => !string.IsNullOrWhiteSpace(x.CertificationName)).OrderBy(x => x.DisplayOrder))
-            await db.ExecuteAsync("INSERT INTO recruitment_jd_certification_requirements (JobDescriptionVersionId,CertificationName,IsMandatory,DisplayOrder) VALUES (@Id,@Name,@Mandatory,@Order)", new { Id = id, Name = row.CertificationName.Trim(), Mandatory = row.IsMandatory, Order = row.DisplayOrder }, tx);
+            await db.ExecuteAsync(@"INSERT INTO recruitment_jd_certification_requirements
+(JobDescriptionVersionId,CertificationName,IsMandatory,CandidateProofAttachmentFieldConfigurationId,DisplayOrder)
+VALUES (@Id,@Name,@Mandatory,@ProofConfigurationId,@Order)", new { Id = id, Name = row.CertificationName.Trim(), Mandatory = row.IsMandatory, ProofConfigurationId = row.CandidateProofAttachmentFieldConfigurationId, Order = row.DisplayOrder }, tx);
         foreach (var row in request.Languages.Where(x => !string.IsNullOrWhiteSpace(x.LanguageName)).OrderBy(x => x.DisplayOrder))
             await db.ExecuteAsync("INSERT INTO recruitment_jd_language_requirements (JobDescriptionVersionId,LanguageName,Proficiency,IsMandatory,DisplayOrder) VALUES (@Id,@Name,@Proficiency,@Mandatory,@Order)", new { Id = id, Name = row.LanguageName.Trim(), Proficiency = row.Proficiency.Trim(), Mandatory = row.IsMandatory, Order = row.DisplayOrder }, tx);
         foreach (var row in request.Benefits.Where(x => !string.IsNullOrWhiteSpace(x.BenefitName)).OrderBy(x => x.DisplayOrder))
             await db.ExecuteAsync("INSERT INTO recruitment_jd_benefits (JobDescriptionVersionId,BenefitName,Description,DisplayOrder) VALUES (@Id,@Name,@Description,@Order)", new { Id = id, Name = row.BenefitName.Trim(), Description = row.Description.Trim(), Order = row.DisplayOrder }, tx);
     }
 
-    private static async Task<RecruitmentJobPosting?> GetJobPostingAsync(MySqlConnection db, long id, int? clientId) =>
-        await db.QueryFirstOrDefaultAsync<RecruitmentJobPosting>(JobPostingSelect + " WHERE p.Id=@Id AND (@ClientId IS NULL OR p.ClientId=@ClientId)", new { Id = id, ClientId = clientId });
+    private static async Task<RecruitmentJobPosting?> GetJobPostingAsync(MySqlConnection db, long id, int? clientId)
+    {
+        var posting = await db.QueryFirstOrDefaultAsync<RecruitmentJobPosting>(JobPostingSelect + " WHERE p.Id=@Id AND (@ClientId IS NULL OR p.ClientId=@ClientId)", new { Id = id, ClientId = clientId });
+        if (posting is null) return null;
+        posting.CandidateProofValidationMessage = await ValidateCandidateProofBindingsAsync(db, posting);
+        posting.CandidateProofReady = posting.CandidateProofValidationMessage.Length == 0;
+        return posting;
+    }
+
+    private static async Task<string> ValidateCandidateProofBindingsAsync(MySqlConnection db, RecruitmentJobPosting posting)
+    {
+        var requirements = (await db.QueryAsync<CandidateProofRequirementRow>(@"SELECT Id,CertificationName,IsMandatory,CandidateProofAttachmentFieldConfigurationId
+FROM recruitment_jd_certification_requirements
+WHERE JobDescriptionVersionId=@JobDescriptionVersionId AND CandidateProofAttachmentFieldConfigurationId IS NOT NULL
+ORDER BY DisplayOrder,Id", posting)).ToList();
+        if (requirements.Count == 0) return "";
+
+        var duplicate = requirements.GroupBy(row => row.CandidateProofAttachmentFieldConfigurationId).FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+            return $"Use a different candidate proof upload for every certification. Configuration #{duplicate.Key} is linked more than once in the approved JD.";
+
+        var configurationIds = requirements.Select(row => row.CandidateProofAttachmentFieldConfigurationId).Distinct().ToArray();
+        var configurations = (await db.QueryAsync<CandidateProofConfigurationRow>(@"SELECT cfg.id Id,cfg.client_id ClientId,cfg.module_code ModuleCode,cfg.form_code FormCode,cfg.field_key FieldKey,
+cfg.field_label FieldLabel,cfg.allow_multiple AllowMultiple,cfg.minimum_file_count MinimumFileCount,cfg.maximum_file_count MaximumFileCount,
+cfg.is_active IsActive,cfg.effective_from_utc EffectiveFromUtc,cfg.effective_until_utc EffectiveUntilUtc,
+attributeRow.is_active AttributeIsActive
+FROM attachment_field_configurations cfg
+JOIN attachment_attributes attributeRow ON attributeRow.id=cfg.attachment_attribute_id
+WHERE cfg.id IN @Ids", new { Ids = configurationIds })).ToDictionary(row => row.Id);
+        foreach (var requirement in requirements)
+        {
+            if (!configurations.TryGetValue(requirement.CandidateProofAttachmentFieldConfigurationId, out var configuration))
+                return $"Candidate certification proof is not ready: the upload configuration for '{requirement.CertificationName}' no longer exists.";
+            if (!configuration.IsActive || !configuration.AttributeIsActive
+                || configuration.EffectiveFromUtc.HasValue && configuration.EffectiveFromUtc.Value > DateTime.UtcNow
+                || configuration.EffectiveUntilUtc.HasValue && configuration.EffectiveUntilUtc.Value < DateTime.UtcNow)
+                return $"Candidate certification proof is not ready: upload field '{configuration.FieldLabel}' for '{requirement.CertificationName}' is inactive or outside its effective dates.";
+            if (configuration.ClientId != 0 && configuration.ClientId != posting.ClientId)
+                return $"Candidate certification proof is not ready: upload field '{configuration.FieldLabel}' belongs to another client.";
+            if (!configuration.ModuleCode.Equals("RECRUITMENT", StringComparison.OrdinalIgnoreCase)
+                || !CandidateUploadFormCodes.Contains(configuration.FormCode))
+                return $"Candidate certification proof is not ready: '{configuration.FieldLabel}' is not a Recruitment candidate-facing upload field.";
+            var effectiveMaximum = configuration.AllowMultiple ? Math.Max(1, configuration.MaximumFileCount) : 1;
+            if (configuration.MinimumFileCount > effectiveMaximum)
+                return $"Candidate certification proof is not ready: '{configuration.FieldLabel}' requires {configuration.MinimumFileCount} files but permits only {effectiveMaximum}. Correct it in Settings > Attachments.";
+            if (configuration.ClientId == 0 && await CandidateProofConfigurationIsShadowedAsync(db, configuration, posting.ClientId) > 0)
+                return $"Candidate certification proof is not ready: the client-specific '{configuration.FieldLabel}' upload overrides the global configuration linked to '{requirement.CertificationName}'. Update the JD and published form to use the client configuration.";
+        }
+
+        var routes = new List<CandidateProofFormRoute>();
+        if (posting.ApplicationFormVersionId is > 0)
+            routes.Add(new CandidateProofFormRoute { RouteKey = "APPLICATION", FormVersionId = posting.ApplicationFormVersionId.Value, RouteLabel = "candidate application form", SubmissionRequired = true });
+        var assignedPipelineVersionId = await db.ExecuteScalarAsync<long?>(@"SELECT PipelineVersionId
+FROM recruitment_position_pipeline_assignments
+WHERE PositionId=@PositionId AND IsActive=TRUE AND (JobPostingId=@Id OR JobPostingId IS NULL)
+ORDER BY (JobPostingId=@Id) DESC,AssignedAtUtc DESC,Id DESC LIMIT 1", posting);
+        if (assignedPipelineVersionId.HasValue)
+        {
+            routes.AddRange(await db.QueryAsync<CandidateProofFormRoute>(@"SELECT CONCAT('STAGE:',stageRow.Id) RouteKey,externalForm.FormVersionId,
+CONCAT('pipeline stage ', stageRow.StageName) RouteLabel,externalForm.SubmissionRequired
+FROM recruitment_pipeline_stages stageRow
+JOIN recruitment_stage_external_form_configurations externalForm ON externalForm.PipelineStageId=stageRow.Id
+JOIN form_versions formVersion ON formVersion.Id=externalForm.FormVersionId AND formVersion.Status IN ('Published','Retired')
+JOIN form_definitions formDefinition ON formDefinition.Id=formVersion.FormDefinitionId AND formDefinition.Status='Active'
+WHERE stageRow.PipelineVersionId=@PipelineVersionId AND stageRow.IsActive=TRUE AND stageRow.CardScope='Application'
+  AND stageRow.StageType IN ('ExternalForm','Documents','PreOnboarding')
+  AND formDefinition.ClientId IN (0,@ClientId)", new { PipelineVersionId = assignedPipelineVersionId.Value, ClientId = posting.ClientId }));
+        }
+
+        var formVersionIds = routes.Select(row => row.FormVersionId).Distinct().ToArray();
+        var bindings = formVersionIds.Length == 0
+            ? new List<CandidateProofFormBinding>()
+            : (await db.QueryAsync<CandidateProofFormBinding>(@"SELECT fieldRow.FormVersionId,fieldRow.AttachmentFieldConfigurationId ConfigurationId,
+MAX(fieldRow.IsRequired) IsRequired,COUNT(*) FieldCount
+FROM form_fields fieldRow
+JOIN form_field_types fieldType ON fieldType.Id=fieldRow.FieldTypeId AND fieldType.TypeCode='UPLOAD'
+WHERE fieldRow.FormVersionId IN @FormVersionIds AND fieldRow.IsActive=TRUE
+  AND fieldRow.AttachmentFieldConfigurationId IN @ConfigurationIds
+GROUP BY fieldRow.FormVersionId,fieldRow.AttachmentFieldConfigurationId", new { FormVersionIds = formVersionIds, ConfigurationIds = configurationIds })).ToList();
+        foreach (var binding in bindings.Where(row => row.FieldCount > 1))
+        {
+            var configuration = configurations[binding.ConfigurationId];
+            return $"Candidate certification proof is not ready: published form version #{binding.FormVersionId} contains '{configuration.FieldLabel}' more than once. Keep exactly one upload field for this configuration.";
+        }
+
+        foreach (var requirement in requirements)
+        {
+            var matching = (from binding in bindings
+                            join route in routes on binding.FormVersionId equals route.FormVersionId
+                            where binding.ConfigurationId == requirement.CandidateProofAttachmentFieldConfigurationId
+                            select new { binding.IsRequired, route.SubmissionRequired, route.RouteLabel, route.RouteKey }).ToList();
+            if (matching.Select(row => row.RouteKey).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+            {
+                var configuration = configurations[requirement.CandidateProofAttachmentFieldConfigurationId];
+                return $"Candidate certification proof is not ready for '{requirement.CertificationName}': '{configuration.FieldLabel}' is requested in more than one candidate step ({string.Join(", ", matching.Select(row => row.RouteLabel).Distinct())}). Keep it in exactly one published application or pipeline-stage form.";
+            }
+            var covered = requirement.IsMandatory
+                ? matching.Any(row => row.IsRequired && row.SubmissionRequired)
+                : matching.Any();
+            if (!covered)
+            {
+                var configuration = configurations[requirement.CandidateProofAttachmentFieldConfigurationId];
+                var requirementHint = requirement.IsMandatory ? " as a required field (and require stage submission)" : "";
+                return $"Candidate certification proof is not ready for '{requirement.CertificationName}'. Add exactly one active Secure upload field using '{configuration.FieldLabel}'{requirementHint} to the selected published application form or to a published candidate form in an External Form, Documents, or Pre-Onboarding pipeline stage.";
+            }
+        }
+        return "";
+    }
+
+    private static Task<int> CandidateProofConfigurationIsShadowedAsync(MySqlConnection db, CandidateProofConfigurationRow configuration, int clientId) =>
+        db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM attachment_field_configurations cfg
+WHERE cfg.client_id=@ClientId AND cfg.module_code=@ModuleCode AND cfg.form_code=@FormCode AND cfg.field_key=@FieldKey
+  AND cfg.is_active=TRUE AND (cfg.effective_from_utc IS NULL OR cfg.effective_from_utc<=UTC_TIMESTAMP(6))
+  AND (cfg.effective_until_utc IS NULL OR cfg.effective_until_utc>=UTC_TIMESTAMP(6))", new { ClientId = clientId, configuration.ModuleCode, configuration.FormCode, configuration.FieldKey });
 
     private static async Task<RecruitmentApplicationStageInstance?> CurrentStageAsync(MySqlConnection db, long applicationId, int? clientId) =>
         await db.QueryFirstOrDefaultAsync<RecruitmentApplicationStageInstance>(@"SELECT s.Id,s.ApplicationPipelineInstanceId,s.ApplicationId,s.PipelineStageId,
-d.StageCode,d.StageName,s.Status,s.OutcomeCode,s.EnteredAtUtc,
-CASE WHEN s.DueAtUtc IS NULL THEN NULL ELSE TIMESTAMPADD(SECOND,COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0),s.DueAtUtc) END DueAtUtc,s.ExitedAtUtc,
+d.StageCode,d.StageName,d.AllowPause,d.PauseBehavior,s.Status,s.OutcomeCode,s.EnteredAtUtc,
+CASE WHEN s.DueAtUtc IS NULL THEN NULL ELSE TIMESTAMPADD(SECOND,CASE WHEN d.PauseBehavior='NoShift' THEN 0 ELSE COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0) END,s.DueAtUtc) END DueAtUtc,s.ExitedAtUtc,
 GREATEST(0,TIMESTAMPDIFF(SECOND,s.EnteredAtUtc,UTC_TIMESTAMP())-s.PausedDurationSeconds-COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0)) ActiveDurationSeconds,
 s.PausedDurationSeconds+COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0) PausedDurationSeconds,
-CASE WHEN s.DueAtUtc IS NOT NULL AND TIMESTAMPADD(SECOND,COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0),s.DueAtUtc)<UTC_TIMESTAMP() THEN TRUE ELSE FALSE END IsSlaBreached
+CASE WHEN s.DueAtUtc IS NOT NULL AND TIMESTAMPADD(SECOND,CASE WHEN d.PauseBehavior='NoShift' THEN 0 ELSE COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pp.PausedAtUtc,UTC_TIMESTAMP())) FROM recruitment_stage_pause_periods pp WHERE pp.StageInstanceId=s.Id AND pp.ResumedAtUtc IS NULL),0) END,s.DueAtUtc)<UTC_TIMESTAMP() THEN TRUE ELSE FALSE END IsSlaBreached
 FROM recruitment_application_stage_instances s JOIN recruitment_pipeline_stages d ON d.Id=s.PipelineStageId
 JOIN recruitment_candidate_applications a ON a.Id=s.ApplicationId
 JOIN recruitment_application_pipeline_instances p ON p.Id=s.ApplicationPipelineInstanceId AND p.CurrentStageInstanceId=s.Id
@@ -2223,6 +2509,8 @@ WHERE applicationRow.Id=@ApplicationId LIMIT 1", new { ApplicationId = applicati
         "ONAPPROVAL" => "OnApproval",
         "ONSUBMISSION" => "OnSubmission",
         "ONPROFILEBATCHFORWARD" => "OnProfileBatchForward",
+        "ONINTERVIEWSCHEDULED" => "OnInterviewScheduled",
+        "ONINTERVIEWRESCHEDULED" => "OnInterviewRescheduled",
         _ => (value ?? "").Trim()
     };
 
@@ -2310,15 +2598,18 @@ ORDER BY stageRow.PipelineVersionId,stageRow.DisplayOrder,stageRow.Id")).ToList(
     }
 
     private const string JobPostingSelect = @"SELECT p.*,o.PositionCode,o.PositionTitle,COALESCE(c.Name,'') ClientName,
-COALESCE(rs.PublicPortalBaseUrl,'') PublicPortalBaseUrl,
-CASE WHEN rs.RecruitmentEnabled=TRUE AND rs.EnableCandidatePortal=TRUE AND rs.IsActive=TRUE AND TRIM(rs.PublicPortalBaseUrl)<>'' THEN TRUE ELSE FALSE END CandidatePortalReady
+'' PublicPortalBaseUrl,
+TRUE CandidatePortalReady
 FROM recruitment_job_postings p
 JOIN recruitment_open_positions o ON o.Id=p.PositionId
-LEFT JOIN clients c ON c.Id=p.ClientId
-LEFT JOIN recruitment_settings rs ON rs.ClientId=p.ClientId";
+LEFT JOIN clients c ON c.Id=p.ClientId";
 
     private sealed class JobDescriptionApprovalContext { public string ClientName { get; set; } = ""; public string RfrNumber { get; set; } = ""; public string PositionTitle { get; set; } = ""; public string Department { get; set; } = ""; public string BusinessUnit { get; set; } = ""; public string EmploymentType { get; set; } = ""; public string HiringType { get; set; } = ""; public int NumberOfOpenings { get; set; } public string JobLocation { get; set; } = ""; public string WorkMode { get; set; } = ""; public string ExperienceRange { get; set; } = ""; public string Qualification { get; set; } = ""; public string SourceType { get; set; } = ""; public string SourceReference { get; set; } = ""; public string SourceDocumentName { get; set; } = ""; public long? PositionId { get; set; } public string PositionCode { get; set; } = ""; }
     private sealed class JobDescriptionApprovalAttachment { public string PublicId { get; set; } = ""; public string AttachmentType { get; set; } = ""; public string FieldLabel { get; set; } = ""; public string FileName { get; set; } = ""; public long FileSizeBytes { get; set; } public int VersionNumber { get; set; } public string VerificationStatus { get; set; } = ""; public DateTime UploadedAtUtc { get; set; } }
+    private sealed class CandidateProofConfigurationRow { public long Id { get; set; } public int ClientId { get; set; } public string ModuleCode { get; set; } = ""; public string FormCode { get; set; } = ""; public string FieldKey { get; set; } = ""; public string FieldLabel { get; set; } = ""; public bool AllowMultiple { get; set; } public int MinimumFileCount { get; set; } public int MaximumFileCount { get; set; } public bool IsActive { get; set; } public bool AttributeIsActive { get; set; } public DateTime? EffectiveFromUtc { get; set; } public DateTime? EffectiveUntilUtc { get; set; } }
+    private sealed class CandidateProofRequirementRow { public long Id { get; set; } public string CertificationName { get; set; } = ""; public bool IsMandatory { get; set; } public long CandidateProofAttachmentFieldConfigurationId { get; set; } }
+    private sealed class CandidateProofFormRoute { public string RouteKey { get; set; } = ""; public long FormVersionId { get; set; } public string RouteLabel { get; set; } = ""; public bool SubmissionRequired { get; set; } }
+    private sealed class CandidateProofFormBinding { public long FormVersionId { get; set; } public long ConfigurationId { get; set; } public bool IsRequired { get; set; } public int FieldCount { get; set; } }
     private sealed class PostingSourceRow { public int ClientId { get; set; } public long RequisitionId { get; set; } public string PositionTitle { get; set; } = ""; public string JobDescriptionStatus { get; set; } = ""; public long JobDescriptionRequisitionId { get; set; } }
     private sealed class AssignmentSourceRow { public int ClientId { get; set; } public string Status { get; set; } = ""; public int PipelineClientId { get; set; } }
     private sealed class ApplicationSourceRow { public long Id { get; set; } public long PositionId { get; set; } public int ClientId { get; set; } public long? JobPostingId { get; set; } }
@@ -2332,8 +2623,8 @@ LEFT JOIN recruitment_settings rs ON rs.ClientId=p.ClientId";
     private sealed class TransitionContextRow { public int ClientId { get; set; } public long PipelineInstanceId { get; set; } public long CurrentStageInstanceId { get; set; } public long CurrentStageId { get; set; } public long TransitionId { get; set; } public long ToStageId { get; set; } public bool RequiresReason { get; set; } public long? ApprovalWorkflowId { get; set; } }
     private sealed class AtsAutomationRow { public int ClientId { get; set; } public long PipelineStageId { get; set; } public decimal MinimumAdvanceScore { get; set; } public decimal MaximumRejectScore { get; set; } public bool AutoAdvance { get; set; } public bool AutoReject { get; set; } public bool RequireHumanConfirmation { get; set; } public string AdvanceOutcomeCode { get; set; } = ""; public string RejectOutcomeCode { get; set; } = ""; public decimal? CurrentScore { get; set; } public string CurrentScoreStatus { get; set; } = ""; public bool CurrentScoreRequiresReview { get; set; } }
     private class TransitionRequestRow { public long Id { get; set; } public long ApplicationId { get; set; } public long StageInstanceId { get; set; } public long TransitionId { get; set; } public string Reason { get; set; } = ""; public string Status { get; set; } = ""; public long? WorkflowInstanceId { get; set; } public DateTime? AppliedAtUtc { get; set; } public int ClientId { get; set; } }
-    private sealed class ApplyTransitionRow : TransitionRequestRow { public long FromStageId { get; set; } public long ToStageId { get; set; } public string OutcomeCode { get; set; } = ""; public string FromStageName { get; set; } = ""; public string ToStageName { get; set; } = ""; public int SlaDurationMinutes { get; set; } public bool IsTerminal { get; set; } public string ToStageType { get; set; } = ""; }
-    private sealed class StageLockRow { public long Id { get; set; } public long ApplicationPipelineInstanceId { get; set; } public long ApplicationId { get; set; } public long PipelineStageId { get; set; } public string Status { get; set; } = ""; public DateTime EnteredAtUtc { get; set; } public long PausedDurationSeconds { get; set; } public long CurrentStageInstanceId { get; set; } public long PipelineInstanceId { get; set; } }
+    private sealed class ApplyTransitionRow : TransitionRequestRow { public long FromStageId { get; set; } public long ToStageId { get; set; } public string OutcomeCode { get; set; } = ""; public string FromStageName { get; set; } = ""; public string FromStageType { get; set; } = ""; public string ToStageName { get; set; } = ""; public int SlaDurationMinutes { get; set; } public bool IsTerminal { get; set; } public string ToStageType { get; set; } = ""; }
+    private sealed class StageLockRow { public long Id { get; set; } public long ApplicationPipelineInstanceId { get; set; } public long ApplicationId { get; set; } public long PipelineStageId { get; set; } public string Status { get; set; } = ""; public DateTime EnteredAtUtc { get; set; } public long PausedDurationSeconds { get; set; } public string PauseBehavior { get; set; } = "ShiftStageAndOverall"; public long CurrentStageInstanceId { get; set; } public long PipelineInstanceId { get; set; } }
     private sealed class PauseRow { public long Id { get; set; } public long DurationSeconds { get; set; } }
     private sealed class WorkflowBindingRow { public long Id { get; set; } public string ResourceType { get; set; } = ""; }
 }

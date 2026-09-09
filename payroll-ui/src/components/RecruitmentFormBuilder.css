@@ -1,0 +1,565 @@
+.recruitment-form-builder {
+  width: 100%;
+  min-width: 0;
+}
+
+.recruitment-form-builder .form-builder-page-toolbar {
+  min-width: 0;
+  padding: 2px 0 4px;
+}
+
+.recruitment-form-builder .form-builder-heading {
+  display: block;
+  min-width: 240px;
+}
+
+.recruitment-form-builder .form-builder-top-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.recruitment-form-builder .form-builder-top-actions .ant-select {
+  width: min(340px, 40vw);
+  min-width: 240px;
+}
+
+.recruitment-form-builder .form-builder-top-actions .ant-btn,
+.recruitment-form-builder .form-builder-surface-head .ant-btn {
+  height: 36px;
+}
+
+.recruitment-form-builder .form-builder-layout {
+  min-width: 0;
+  grid-template-columns: minmax(220px, 270px) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.recruitment-form-builder .form-builder-side-rail {
+  position: sticky;
+  top: 12px;
+  z-index: 2;
+  display: grid;
+  min-width: 0;
+  max-height: calc(100vh - 158px);
+  align-content: start;
+  gap: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.recruitment-form-builder .form-builder-library {
+  position: static;
+  max-height: 270px;
+  min-width: 0;
+  overflow-y: auto;
+  border-color: #e3e7f0;
+  box-shadow: 0 5px 18px rgba(31, 42, 68, .045);
+}
+
+.recruitment-form-builder .form-builder-library .ant-list-item {
+  min-width: 0;
+  margin-bottom: 4px;
+  padding: 9px 8px;
+  border: 1px solid transparent;
+  transition: background-color .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+
+.recruitment-form-builder .form-builder-library .ant-list-item:hover {
+  border-color: #e2dcff;
+  background: #faf9ff;
+}
+
+.recruitment-form-builder .form-builder-library .ant-list-item.active {
+  border-color: #d9d0ff;
+  background: #f3f0ff;
+  box-shadow: inset 3px 0 #6747e8;
+}
+
+.recruitment-form-builder .form-builder-library .ant-list-item-meta,
+.recruitment-form-builder .form-builder-library .ant-list-item-meta-content,
+.recruitment-form-builder .form-builder-library .ant-list-item-meta-title {
+  min-width: 0;
+}
+
+.recruitment-form-builder .form-builder-library .ant-list-item-meta-title {
+  margin-bottom: 3px;
+  overflow: hidden;
+  color: #202b43;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recruitment-form-builder .form-builder-library .ant-list-item-meta-title > span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recruitment-form-builder .form-builder-list-meta {
+  display: grid;
+  min-width: 0;
+  justify-items: start;
+  gap: 5px;
+}
+
+.recruitment-form-builder .form-builder-list-meta > span {
+  width: 100%;
+  overflow: hidden;
+  color: #78839a;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recruitment-form-builder .form-builder-list-meta .ant-tag {
+  margin: 0;
+}
+
+.recruitment-form-builder .form-builder-palette-card {
+  min-width: 0;
+  overflow: hidden;
+  border-color: #ddd7fb;
+  box-shadow: 0 8px 22px rgba(84, 61, 190, .07);
+}
+
+.recruitment-form-builder .form-builder-palette-card > .ant-card-head {
+  min-height: 44px;
+  padding-inline: 12px;
+  border-bottom-color: #ebe7fb;
+  background: linear-gradient(135deg, #f8f6ff 0%, #fff 88%);
+}
+
+.recruitment-form-builder .form-builder-palette-card > .ant-card-body {
+  padding: 10px;
+}
+
+.recruitment-form-builder .form-builder-palette-help {
+  margin: 0 0 9px;
+  color: #737e94;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.recruitment-form-builder .form-builder-palette-card .ant-btn-block {
+  min-width: 0;
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recruitment-form-builder .field-palette {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 5px;
+  max-height: min(390px, calc(100vh - 520px));
+  min-height: 118px;
+  overflow-y: auto;
+  padding-right: 3px;
+  scrollbar-gutter: stable;
+}
+
+.recruitment-form-builder .field-palette .ant-btn {
+  display: flex;
+  width: 100%;
+  height: 34px;
+  min-height: 34px;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 9px;
+  overflow: hidden;
+  border-color: #e4e7ef;
+  color: #344058;
+  background: #fff;
+  text-align: left;
+  white-space: nowrap;
+  cursor: grab;
+}
+
+.recruitment-form-builder .field-palette .ant-btn:hover:not(:disabled) {
+  border-color: #8067eb;
+  color: #5638d7;
+  background: #faf9ff;
+}
+
+.recruitment-form-builder .field-palette .ant-btn:active:not(:disabled) {
+  cursor: grabbing;
+}
+
+.recruitment-form-builder .field-palette .ant-btn > span:not(.anticon) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recruitment-form-builder .form-builder-start-card {
+  display: grid;
+  min-height: 430px;
+  place-items: center;
+  border-color: #e4e7ef;
+}
+
+.recruitment-form-builder .form-builder-canvas {
+  min-width: 0;
+  gap: 14px;
+}
+
+.recruitment-form-builder .form-builder-settings-card {
+  min-width: 0;
+  overflow: hidden;
+  border-color: #e2e6ef;
+  box-shadow: 0 6px 20px rgba(31, 42, 68, .04);
+}
+
+.recruitment-form-builder .form-builder-version-toolbar {
+  padding-bottom: 14px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.recruitment-form-builder .form-builder-meta {
+  min-width: 0;
+  gap: 0 14px;
+  padding-top: 14px;
+}
+
+.recruitment-form-builder .form-builder-meta .ant-form-item {
+  min-width: 0;
+  margin-bottom: 14px;
+}
+
+.recruitment-form-builder .form-builder-meta :is(.ant-input, .ant-select, .ant-input-number) {
+  width: 100%;
+  min-width: 0;
+}
+
+.recruitment-form-builder .form-builder-design-surface {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #e1e5ee;
+  border-radius: 14px;
+  background: #f7f8fc;
+}
+
+.recruitment-form-builder .form-builder-surface-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.recruitment-form-builder .form-builder-surface-head > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.recruitment-form-builder .form-builder-surface-head span {
+  color: #202b43;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.recruitment-form-builder .form-builder-surface-head small {
+  color: #7a8498;
+  font-size: 11px;
+}
+
+.recruitment-form-builder .form-builder-section-list {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+.recruitment-form-builder .form-builder-section {
+  min-width: 0;
+  overflow: hidden;
+  border-color: #dfe4ed;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(31, 42, 68, .035);
+  transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+
+.recruitment-form-builder .form-builder-section.active {
+  border-color: #8065ec;
+  box-shadow: 0 0 0 2px rgba(112, 80, 232, .1), 0 6px 18px rgba(63, 42, 148, .06);
+}
+
+.recruitment-form-builder .form-builder-section.drop-target {
+  border-color: #5e3edf;
+  box-shadow: 0 0 0 3px rgba(94, 62, 223, .14);
+  transform: translateY(-1px);
+}
+
+.recruitment-form-builder .form-builder-section > .ant-card-body {
+  min-width: 0;
+  padding: 13px;
+}
+
+.recruitment-form-builder .form-builder-section-head {
+  min-width: 0;
+  align-items: center;
+}
+
+.recruitment-form-builder .form-builder-section-title {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.recruitment-form-builder .form-builder-section-title > div {
+  min-width: 0;
+}
+
+.recruitment-form-builder .form-builder-section-title h4,
+.recruitment-form-builder .form-builder-section-title p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recruitment-form-builder .form-builder-drag-handle {
+  display: inline-grid;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid #e2e5ed;
+  border-radius: 7px;
+  color: #7b8497;
+  background: #fafbfe;
+  cursor: grab;
+}
+
+.recruitment-form-builder .form-builder-drag-handle:active {
+  cursor: grabbing;
+}
+
+.recruitment-form-builder .form-builder-drag-handle.disabled {
+  color: #b9bec9;
+  cursor: not-allowed;
+}
+
+.recruitment-form-builder .form-builder-section-head > .ant-space {
+  flex: 0 0 auto;
+}
+
+.recruitment-form-builder .form-builder-section-head > .ant-space .ant-btn {
+  display: inline-grid;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+  place-items: center;
+}
+
+.recruitment-form-builder .form-builder-grid {
+  min-width: 0;
+  gap: 9px;
+}
+
+.recruitment-form-builder .form-builder-field {
+  min-width: 0;
+  min-height: 74px;
+  overflow: hidden;
+  padding: 10px;
+  border-color: #cdd4e1;
+  border-radius: 9px;
+  background: #fbfcff;
+  cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease, opacity .15s ease;
+}
+
+.recruitment-form-builder .form-builder-field:hover {
+  border-color: #8873e8;
+  background: #faf9ff;
+}
+
+.recruitment-form-builder .form-builder-field.active {
+  border-color: #6747e8;
+  background: #f7f4ff;
+  box-shadow: inset 0 0 0 1px rgba(103, 71, 232, .15);
+}
+
+.recruitment-form-builder .form-builder-field.dragging {
+  opacity: .45;
+}
+
+.recruitment-form-builder .form-builder-field-head {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.recruitment-form-builder .form-builder-field-grip {
+  color: #9aa2b1;
+  cursor: grab;
+}
+
+.recruitment-form-builder .form-builder-field strong {
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  color: #26324a;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recruitment-form-builder .form-builder-field .ant-tag {
+  max-width: 120px;
+  margin: 0;
+  overflow: hidden;
+  color: #5a4a9f;
+  background: #f0edff;
+  border-color: #ded7fb;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recruitment-form-builder .form-builder-field > small {
+  display: block;
+  width: 100%;
+  margin-top: 7px;
+  overflow: hidden;
+  color: #818b9f;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recruitment-form-builder .form-builder-empty {
+  min-width: 0;
+  min-height: 112px;
+  padding: 18px;
+  border-color: #d4d9e4;
+  background: rgba(255, 255, 255, .7);
+}
+
+.recruitment-form-builder .form-builder-empty-canvas {
+  min-height: 220px;
+}
+
+.recruitment-form-builder .form-builder-section-dropzone {
+  display: flex;
+  min-height: 96px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.recruitment-form-builder .form-builder-section-dropzone .anticon {
+  color: #7659e6;
+  font-size: 18px;
+}
+
+.recruitment-form-field-drawer .ant-drawer-header {
+  padding: 15px 18px;
+  border-bottom-color: #e8ebf2;
+}
+
+.recruitment-form-field-drawer .ant-drawer-body {
+  padding: 18px;
+  background: #fbfcff;
+}
+
+.recruitment-form-field-drawer .field-property-grid {
+  min-width: 0;
+  gap: 0 14px;
+}
+
+.recruitment-form-field-drawer .ant-form-item {
+  min-width: 0;
+  margin-bottom: 14px;
+}
+
+.recruitment-form-field-drawer :is(.ant-input, .ant-input-number, .ant-select) {
+  width: 100%;
+  min-width: 0;
+}
+
+.recruitment-form-field-drawer .ant-card {
+  min-width: 0;
+  margin-top: 12px;
+  overflow: hidden;
+  border-color: #e2e6ef;
+}
+
+.recruitment-form-field-drawer .ant-card-head {
+  min-width: 0;
+}
+
+.recruitment-form-field-drawer .ant-card-head-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1120px) {
+  .recruitment-form-builder .form-builder-layout {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .recruitment-form-builder .form-builder-field {
+    grid-column: span 12 !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .recruitment-form-builder .form-builder-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .recruitment-form-builder .form-builder-side-rail {
+    position: static;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: none;
+    overflow: visible;
+  }
+
+  .recruitment-form-builder .form-builder-library,
+  .recruitment-form-builder .field-palette {
+    max-height: 310px;
+  }
+}
+
+@media (max-width: 680px) {
+  .recruitment-form-builder .form-builder-page-toolbar,
+  .recruitment-form-builder .form-builder-surface-head,
+  .recruitment-form-builder .form-builder-section-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .recruitment-form-builder .form-builder-top-actions,
+  .recruitment-form-builder .form-builder-top-actions .ant-select,
+  .recruitment-form-builder .form-builder-top-actions .ant-btn {
+    width: 100%;
+  }
+
+  .recruitment-form-builder .form-builder-side-rail {
+    grid-template-columns: 1fr;
+  }
+
+  .recruitment-form-builder .form-builder-section-head > .ant-space {
+    justify-content: flex-end;
+  }
+
+  .recruitment-form-field-drawer .field-property-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .recruitment-form-field-drawer .field-property-grid .wide {
+    grid-column: auto;
+  }
+}

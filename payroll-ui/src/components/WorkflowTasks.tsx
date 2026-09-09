@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getJson, postJson } from '../services/apiClient'
+import { getMyWorkflowRequestsResult } from '../services/workflowService'
 import { getPayRun, getPayRunDiagnostics } from '../services/payrollService'
-import type { PayRun, PayRunDiagnostics } from '../types/payroll'
+import type { PayRun, PayRunDiagnostics, WorkflowRequestProgress } from '../types/payroll'
 import type { RecruitmentJobDescriptionVersion } from '../types/recruitmentOrchestration'
 import { PayRunReview } from './PayRunsPanel'
 
@@ -9,6 +10,8 @@ type Task = {
   id: number
   instanceId: number
   stageName: string
+  activityCode: string
+  clientId?: number | null
   resourceType: string
   resourceId: string
   payloadJson: string
@@ -20,7 +23,7 @@ type Task = {
   actionedAt?: string
 }
 
-type TaskView = 'pending' | 'actioned'
+type TaskView = 'pending' | 'actioned' | 'requests'
 
 type JobDescriptionApprovalSnapshot = {
   snapshotType?: string
@@ -71,7 +74,7 @@ const formatTaskDate = (value?: string) => {
   return `${day}-${month}-${year} ${String(hour).padStart(2, '0')}:${minute}:${second} ${suffix}`
 }
 
-const referenceText = (row: Task) => {
+const referenceText = (row: Pick<Task, 'resourceType' | 'resourceId'>) => {
   if (row.resourceType === 'PayRun') return `PayRun #${row.resourceId}`
   if (row.resourceType === 'LeaveRequest') return `Leave request #${row.resourceId}`
   return `${row.resourceType} #${row.resourceId}`
@@ -110,6 +113,9 @@ const jobDescriptionSnapshot = (payload: string): JobDescriptionApprovalSnapshot
 
 export default function WorkflowTasks() {
   const [rows, setRows] = useState<Task[]>([])
+  const [requestRows, setRequestRows] = useState<WorkflowRequestProgress[]>([])
+  const [requestRowsLoading, setRequestRowsLoading] = useState(false)
+  const [requestRowsError, setRequestRowsError] = useState('')
   const [view, setView] = useState<TaskView>('pending')
   const [selected, setSelected] = useState<Task | null>(null)
   const [payRun, setPayRun] = useState<PayRun | null>(null)
@@ -121,8 +127,22 @@ export default function WorkflowTasks() {
   const [message, setMessage] = useState('')
   const materialVarianceCount = useMemo(() => payRun?.employees.filter(employee => !employee.isSkipped && (Math.abs(employee.variancePercent || 0) >= 10 || Math.abs(employee.netPayVariance || 0) >= 5000)).length ?? 0, [payRun])
 
-  const load = useCallback((nextView: TaskView = view) =>
-    getJson<Task[]>(nextView === 'actioned' ? '/api/workflows/tasks/actioned?scope=all' : '/api/workflows/tasks/pending', []).then(setRows), [view])
+  const load = useCallback(async (nextView: TaskView = view) => {
+    if (nextView === 'requests') {
+      setRequestRowsLoading(true)
+      setRequestRowsError('')
+      try {
+        const result = await getMyWorkflowRequestsResult()
+        if (result.ok) setRequestRows(result.data)
+        else setRequestRowsError(result.error || 'Unable to load your submitted approval requests.')
+      } finally {
+        setRequestRowsLoading(false)
+      }
+      return
+    }
+    const taskRows = await getJson<Task[]>(nextView === 'actioned' ? '/api/workflows/tasks/actioned?scope=all' : '/api/workflows/tasks/pending', [])
+    setRows(taskRows)
+  }, [view])
 
   useEffect(() => { void load(view) }, [load, view])
 
@@ -206,12 +226,12 @@ export default function WorkflowTasks() {
         {loadingPayRun && <p className="form-warning">Loading payroll review...</p>}
         {payRun ? <PayRunReview selected={payRun} diagnostics={diagnostics} busy={false} materialVarianceCount={materialVarianceCount} actions={false} /> : !loadingPayRun && <p className="empty">Payroll run data is not available.</p>}
         {selected.comment && <section className="workflow-task-remarks"><span>Remarks</span><p>{selected.comment}</p></section>}
-        {view === 'pending' && <ApprovalControls remark={remark} setRemark={setRemark} action={action} />}
+        {view === 'pending' && <ApprovalControls task={selected} remark={remark} setRemark={setRemark} action={action} />}
       </> : selected.resourceType === 'RecruitmentJobDescription' ? <>
         {loadingJobDescription && <p className="form-warning">Loading the job description submitted for review...</p>}
         {jobDescription ? <JobDescriptionReview description={jobDescription} snapshot={approvalSnapshot} /> : !loadingJobDescription && <p className="empty">The submitted job-description details are not available.</p>}
         {selected.comment && <section className="workflow-task-remarks"><span>Remarks</span><p>{selected.comment}</p></section>}
-        {view === 'pending' && <ApprovalControls remark={remark} setRemark={setRemark} action={action} />}
+        {view === 'pending' && <ApprovalControls task={selected} remark={remark} setRemark={setRemark} action={action} />}
       </> : <>
         <section className="workflow-task-detail-table">
           {payloadDetails.map(([key, value]) => <div key={key}><span>{key}</span><b>{value}</b></div>)}
@@ -219,16 +239,40 @@ export default function WorkflowTasks() {
           {selected.comment && <div><span>Remarks</span><b>{selected.comment}</b></div>}
           {!payloadDetails.length && !selected.comment && <p className="empty">No additional request details were recorded.</p>}
         </section>
-        {view === 'pending' && <ApprovalControls remark={remark} setRemark={setRemark} action={action} />}
+        {view === 'pending' && <ApprovalControls task={selected} remark={remark} setRemark={setRemark} action={action} />}
       </>}
     </section>
   }
 
+  if (view === 'requests') return <section className="card workflow-admin" data-testid="workflow-my-requests">
+    <nav className="workflow-task-tabs" aria-label="Task status tabs">
+      <button type="button" onClick={() => { setView('pending'); setSelected(null); setMessage('') }}>Pending</button>
+      <button type="button" onClick={() => { setView('actioned'); setSelected(null); setMessage('') }}>Actioned</button>
+      <button type="button" className="active" onClick={() => undefined}>My requests <b>{requestRows.length}</b></button>
+    </nav>
+    <div className="workflow-task-table-card">
+      <table className="workflow-task-table">
+        <thead><tr><th>Workflow</th><th>Request</th><th>Status</th><th>Current stage</th><th>Pending with</th><th>Submitted</th></tr></thead>
+        <tbody>{requestRows.map(row => <tr key={row.instanceId} data-testid={`workflow-request-${row.instanceId}`}>
+          <td><b>{row.workflowName || 'Workflow'}</b></td>
+          <td><b>{referenceText(row)}</b></td>
+          <td><em className={`workflow-task-status ${statusClass(row.status)}`}>{row.status || '-'}</em></td>
+          <td>{row.currentStageName || (row.status === 'Pending' ? 'Approval' : '-')}</td>
+          <td>{row.pendingApproverName ? <><b>{row.pendingApproverName}</b><small>{row.currentApproverType || 'Assigned approver'}</small></> : '-'}</td>
+          <td>{formatTaskDate(row.createdAt)}</td>
+        </tr>)}</tbody>
+      </table>
+      {requestRowsLoading && <div className="workflow-task-empty"><b>Loading your requests...</b><span>Checking the latest approval stage and assigned approver.</span></div>}
+      {!requestRowsLoading && requestRowsError && <div className="workflow-task-empty" role="alert"><b>Approval requests could not be refreshed.</b><span>{requestRowsError}</span><button type="button" className="secondary" onClick={() => void load('requests')}>Try again</button></div>}
+      {!requestRowsLoading && !requestRowsError && !requestRows.length && <div className="workflow-task-empty"><b>No submitted workflow requests.</b><span>Requests you submit for approval will appear here with their current stage and assigned approver.</span></div>}
+    </div>
+  </section>
+
   return <section className="card workflow-admin">
-    <header className="workflow-task-head"><div><h3>My Tasks</h3><p>Review pending approvals and revisit completed workflow actions.</p></div></header>
     <nav className="workflow-task-tabs" aria-label="Task status tabs">
       <button type="button" className={view === 'pending' ? 'active' : ''} onClick={() => { setView('pending'); setSelected(null); setMessage('') }}>Pending <b>{view === 'pending' ? rows.length : ''}</b></button>
       <button type="button" className={view === 'actioned' ? 'active' : ''} onClick={() => { setView('actioned'); setSelected(null); setMessage('') }}>Actioned <b>{view === 'actioned' ? rows.length : ''}</b></button>
+      <button type="button" onClick={() => { setView('requests'); setSelected(null); setMessage('') }}>My requests</button>
     </nav>
     {message && <p className="form-warning">{message}</p>}
     <div className="workflow-task-table-card">
@@ -320,13 +364,21 @@ function formatFileSize(value?: number) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function ApprovalControls({ remark, setRemark, action }: { remark: string; setRemark: (value: string) => void; action: (actionName: string) => Promise<void> }) {
+function ApprovalControls({ task, remark, setRemark, action }: { task: Task; remark: string; setRemark: (value: string) => void; action: (actionName: string) => Promise<void> }) {
+  const eventRoot = task.activityCode?.replace(/\.SUBMIT$/i, '') || task.resourceType.toUpperCase()
+  const mailProps = (outcome: string, label: string) => ({
+    'data-mail-event': `${eventRoot}.${outcome}`,
+    'data-mail-resource-type': task.resourceType,
+    'data-mail-resource-id': task.resourceId,
+    'data-mail-client-id': task.clientId ?? undefined,
+    'data-mail-action-label': label,
+  })
   return <>
     <label className="workflow-task-approval-remarks"><span>Remarks</span><textarea value={remark} onChange={event => setRemark(event.target.value)} placeholder="Add approval, rejection, or send-back remarks..." /></label>
     <div className="workflow-review-actions">
-      <button type="button" onClick={() => void action('Approved')}>Approve</button>
-      <button type="button" className="secondary" onClick={() => void action('Sent Back')}>Send back</button>
-      <button type="button" className="danger" onClick={() => void action('Rejected')}>Reject</button>
+      <button type="button" onClick={() => void action('Approved')} {...mailProps('APPROVED', `Approve ${task.resourceType}`)}>Approve</button>
+      <button type="button" className="secondary" onClick={() => void action('Sent Back')} {...mailProps('SENT_BACK', `Send back ${task.resourceType}`)}>Send back</button>
+      <button type="button" className="danger" onClick={() => void action('Rejected')} {...mailProps('REJECTED', `Reject ${task.resourceType}`)}>Reject</button>
     </div>
   </>
 }

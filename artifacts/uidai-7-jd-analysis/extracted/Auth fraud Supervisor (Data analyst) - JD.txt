@@ -1,0 +1,61 @@
+1 | P a g e
+1. Job Description: Auth Fraud Supervisor- Data Analyst
+Job Summary:
+The Auth fraud Supervisor – Identity Fraud & Data Analytics leads the organization’s identity fraud
+prevention and detection strategy using advanced data analytics and intelligence-driven insights. This
+role is responsible for leveraging data, statistical models, and fraud technology to identify, prevent,
+and investigate identity fraud across digital onboarding, authentication, and account lifecycle
+activities, while optimizing customer experience and regulatory compliance.
+Particulars Job Description
+Position name Auth Fraud Supervisor- Data Analyst
+Location UIDAI TC, Bangalore
+Educational
+qualification,
+experience
+Education
+• B. Tech /MCA /Engineering or
+• Bachelor’s degree in Data Analytics, Computer Science,
+Statistics, Finance, Information Systems, or related field or
+• Master’s degree in Data Science, Analytics, or Risk Management
+preferred.
+Experience
+• 6+ years of experience in fraud risk management with a strong
+focus on identity fraud analytics.
+• 1 years or more experience in a Data Analyst or Business
+Analyst role
+• Hands-on experience working with large datasets, real-time fraud
+systems, and analytics platforms.
+Technical & Analytics Skills
+• Advanced SQL and data querying skills
+• Experience with Python, R, or similar analytics languages
+• Familiarity with machine learning models (e.g., logistic
+regression, random forest, gradient boosting)
+
+-- 1 of 2 --
+
+2 | P a g e
+• Experience with fraud rule engines and decision platforms
+• Dashboarding and visualization tools (e.g., Tableau, Power BI,
+Looker)
+• Knowledge of model monitoring, bias detection, and
+explainability (e.g., SHAP, model governance)
+Job Profile Key Responsibilities
+• Collect, clean, and analyse structured and unstructured data from
+multiple sources
+• Write and optimize SQL queries for data extraction and analysis
+• Build and maintain dashboards and reports for business and
+leadership teams
+• Identify trends, patterns, and anomalies to support data-driven
+decisions
+• Collaborate with business, product, and engineering teams to
+understand data needs
+• Ensure data accuracy, integrity, and documentation
+• Support ad-hoc analysis and recurring reporting requirements
+Preferred Certifications (any one):
+• Google Data Analytics Professional Certificate
+• Microsoft Certified: Data Analyst Associate (Power BI)
+• Tableau Desktop Specialist / Certified Data Analyst
+• IBM Data Analyst Professional Certificate
+
+-- 2 of 2 --
+

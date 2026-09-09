@@ -30,3 +30,13 @@
 .ant-drawer-content .case-hero+.ant-alert{margin:-12px 0 18px}
 .work-order-command-bar>.ant-space span{color:inherit;font-size:inherit;font-weight:inherit;letter-spacing:normal;text-transform:none}
 .work-order-list article>button{align-items:flex-start}
+.case-live-timers{display:grid;grid-template-columns:repeat(2,minmax(0,1fr)) auto;align-items:center;gap:12px;margin:-10px 0 22px;padding:14px 16px;border:1px solid #e5e0f6;border-radius:15px;background:#faf9ff}
+.case-live-timers>div{display:grid;gap:3px;min-width:0}
+.case-live-timers span,.case-live-timers small{color:#777184;font-size:12px}
+.case-live-timers b{color:#312463;font-size:16px;font-variant-numeric:tabular-nums}
+.stage-time-log-help{margin:0 0 18px;color:#6f687c}
+.stage-time-log b{font-variant-numeric:tabular-nums}
+.stage-time-log-modal .ant-modal-content{background:#fff!important;backdrop-filter:none!important}
+.stage-time-log-modal .ant-modal-body{max-height:min(72vh,760px);overflow:auto;scrollbar-gutter:stable}
+.hiring-case-list footer b{display:inline-flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums}
+@media(max-width:720px){.case-live-timers{grid-template-columns:1fr}.case-live-timers>.ant-btn{width:100%}}

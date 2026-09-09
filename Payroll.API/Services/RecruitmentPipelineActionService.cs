@@ -13,6 +13,7 @@ public sealed class RecruitmentPipelineActionService(
     RecruitmentCandidateActionRepository candidateActions,
     WorkflowRepository workflows,
     NotificationRepository notifications,
+    PublicPortalUrlResolver publicPortalUrls,
     ILogger<RecruitmentPipelineActionService> logger)
 {
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
@@ -21,7 +22,8 @@ public sealed class RecruitmentPipelineActionService(
         long applicationId,
         string triggerEvent,
         AuthUser user,
-        long? stageInstanceId = null)
+        long? stageInstanceId = null,
+        string executionKey = "")
     {
         var trigger = NormalizeTrigger(triggerEvent);
         var result = new RecruitmentStageActionExecutionResult
@@ -30,6 +32,9 @@ public sealed class RecruitmentPipelineActionService(
             TriggerEvent = trigger
         };
         if (applicationId <= 0 || trigger.Length == 0) return result;
+        var executionSuffix = new string((executionKey ?? "").Where(char.IsLetterOrDigit).ToArray());
+        var executionTrigger = string.IsNullOrWhiteSpace(executionSuffix) ? trigger : $"{trigger}#{executionSuffix}";
+        if (executionTrigger.Length > 40) executionTrigger = executionTrigger[..40];
 
         await using var db = Db();
         await db.OpenAsync();
@@ -52,7 +57,7 @@ SELECT LAST_INSERT_ID();", new
                 ApplicationId = applicationId,
                 context.StageInstanceId,
                 StageActionId = action.Id,
-                TriggerEvent = trigger,
+                TriggerEvent = executionTrigger,
                 action.ActionCode,
                 action.IsBlocking
             });
@@ -236,9 +241,10 @@ WHERE PipelineStageId=@PipelineStageId AND TriggerEvent=@TriggerEvent AND IsActi
                 }) > 0;
                 if (candidateLinkRequired && openSession is null)
                     throw new InvalidOperationException("Generate the current candidate action link before sending this notification.");
-                var portalBaseUrl = (await db.ExecuteScalarAsync<string?>(@"SELECT PublicPortalBaseUrl
+                var configuredPortalBaseUrl = await db.ExecuteScalarAsync<string?>(@"SELECT PublicPortalBaseUrl
 FROM recruitment_settings WHERE ClientId=@ClientId AND RecruitmentEnabled=TRUE AND EnableCandidatePortal=TRUE AND IsActive=TRUE LIMIT 1",
-                    new { context.ClientId }) ?? "").Trim().TrimEnd('/');
+                    new { context.ClientId });
+                var portalBaseUrl = publicPortalUrls.ResolveBaseUrl(configuredPortalBaseUrl);
                 if (openSession is not null && portalBaseUrl.Length == 0)
                     throw new InvalidOperationException("Configure and enable the public candidate portal URL before sending a candidate action notification.");
                 var candidateActionUrl = openSession is null || string.IsNullOrWhiteSpace(openSession.ActionToken) || portalBaseUrl.Length == 0
@@ -266,6 +272,11 @@ FROM recruitment_settings WHERE ClientId=@ClientId AND RecruitmentEnabled=TRUE A
                             stageName = context.StageName,
                             stageType = context.StageType,
                             triggerEvent = action.TriggerEvent,
+                            interviewStart = context.InterviewStart?.ToString("O") ?? "",
+                            interviewEnd = context.InterviewEnd?.ToString("O") ?? "",
+                            interviewMode = context.InterviewMode,
+                            interviewLocationOrLink = context.InterviewLocationOrLink,
+                            interviewTimeZone = context.InterviewTimeZone,
                             candidateActionUrl,
                             candidateActionExpiresAt = openSession?.ExpiresAtUtc.ToString("O") ?? ""
                         })
@@ -297,6 +308,11 @@ ON DUPLICATE KEY UPDATE NotificationQueueId=VALUES(NotificationQueueId)", new { 
         return await db.QueryFirstOrDefaultAsync<ActionContext>(@"SELECT applicationRow.Id ApplicationId,applicationRow.ClientId,
 applicationRow.CandidateId,CONCAT(candidate.FirstName,' ',candidate.LastName) CandidateName,candidate.Email CandidateEmail,
 positionRow.PositionTitle,stageInstance.Id StageInstanceId,stageInstance.PipelineStageId,stageRow.StageName,stageRow.StageType,
+(SELECT interviewRow.ScheduledStart FROM recruitment_interviews interviewRow WHERE interviewRow.ApplicationId=applicationRow.Id AND (interviewRow.PipelineStageInstanceId=stageInstance.Id OR interviewRow.PipelineStageInstanceId IS NULL) ORDER BY interviewRow.UpdatedAt DESC,interviewRow.Id DESC LIMIT 1) InterviewStart,
+(SELECT interviewRow.ScheduledEnd FROM recruitment_interviews interviewRow WHERE interviewRow.ApplicationId=applicationRow.Id AND (interviewRow.PipelineStageInstanceId=stageInstance.Id OR interviewRow.PipelineStageInstanceId IS NULL) ORDER BY interviewRow.UpdatedAt DESC,interviewRow.Id DESC LIMIT 1) InterviewEnd,
+COALESCE((SELECT interviewRow.Mode FROM recruitment_interviews interviewRow WHERE interviewRow.ApplicationId=applicationRow.Id AND (interviewRow.PipelineStageInstanceId=stageInstance.Id OR interviewRow.PipelineStageInstanceId IS NULL) ORDER BY interviewRow.UpdatedAt DESC,interviewRow.Id DESC LIMIT 1),'') InterviewMode,
+COALESCE((SELECT interviewRow.LocationOrLink FROM recruitment_interviews interviewRow WHERE interviewRow.ApplicationId=applicationRow.Id AND (interviewRow.PipelineStageInstanceId=stageInstance.Id OR interviewRow.PipelineStageInstanceId IS NULL) ORDER BY interviewRow.UpdatedAt DESC,interviewRow.Id DESC LIMIT 1),'') InterviewLocationOrLink,
+COALESCE((SELECT interviewRow.TimeZoneId FROM recruitment_interviews interviewRow WHERE interviewRow.ApplicationId=applicationRow.Id AND (interviewRow.PipelineStageInstanceId=stageInstance.Id OR interviewRow.PipelineStageInstanceId IS NULL) ORDER BY interviewRow.UpdatedAt DESC,interviewRow.Id DESC LIMIT 1),'') InterviewTimeZone,
 COALESCE(requesterUser.Id,applicationRecruiter.Id,positionRecruiter.Id,triggeringUser.Id,0) WorkflowRequestorUserId
 FROM recruitment_candidate_applications applicationRow
 JOIN recruitment_candidates candidate ON candidate.Id=applicationRow.CandidateId
@@ -396,6 +412,8 @@ WHERE applicationRow.Id=@ApplicationId", new { context.ApplicationId }));
         "ONSLABREACH" => "OnSlaBreach",
         "ONAPPROVAL" => "OnApproval",
         "ONSUBMISSION" => "OnSubmission",
+        "ONINTERVIEWSCHEDULED" => "OnInterviewScheduled",
+        "ONINTERVIEWRESCHEDULED" => "OnInterviewRescheduled",
         _ => ""
     };
 
@@ -420,6 +438,11 @@ WHERE applicationRow.Id=@ApplicationId", new { context.ApplicationId }));
         public string StageName { get; set; } = "";
         public string StageType { get; set; } = "";
         public int WorkflowRequestorUserId { get; set; }
+        public DateTime? InterviewStart { get; set; }
+        public DateTime? InterviewEnd { get; set; }
+        public string InterviewMode { get; set; } = "";
+        public string InterviewLocationOrLink { get; set; } = "";
+        public string InterviewTimeZone { get; set; } = "";
     }
 
     private sealed class SlaActionSource

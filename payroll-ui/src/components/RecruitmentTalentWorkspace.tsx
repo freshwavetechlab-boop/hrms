@@ -1,26 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Button, Card, Checkbox, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Tag } from 'antd'
+import { Button, Card, Checkbox, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Tag } from 'antd'
 import { CalendarOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import DataTable from './DataTable'
 import EntityAttachmentPanel, { type EntityAttachmentDraft } from './EntityAttachmentPanel'
 import RecruitmentAtsScoreDetails from './RecruitmentAtsScoreDetails'
 import RecruitmentInterviewEditor from './RecruitmentInterviewEditor'
 import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
+import RecruitmentGlobalTalentPool from './RecruitmentGlobalTalentPool'
 import RecruitmentResumeIntake, { type RecruitmentResumeIntakeMode } from './RecruitmentResumeIntake'
 import SearchSelect, { selectOptions } from './SearchSelect'
 import { getEntityAttachments, openAttachmentWithTicket, uploadEntityAttachment } from '../services/attachmentService'
 import { getClients } from '../services/payrollService'
 import { getRecruitmentOpenPositions } from '../services/recruitmentService'
 import { getEmployeeManagerUsers, getWorkLocations } from '../services/settingsService'
-import { completeCandidateChecklistItem, convertCandidateToEmployee, createApplication, deleteApplication, deleteCandidate, deleteInterview, deleteOffer, generateOfferLetter, getApplications, getCandidate, getCandidates, getInterviews, getOffers, getTalentDashboard, overrideApplicationScore, saveCandidate, saveCandidateProfileSections, saveOffer, scoreApplication, updateOfferStatus, uploadCandidateResume } from '../services/recruitmentTalentService'
+import { completeCandidateChecklistItem, convertCandidateToEmployee, createApplication, deleteApplication, deleteCandidate, deleteInterview, deleteOffer, generateOfferLetter, getApplications, getCandidate, getCandidates, getInterviews, getOffers, overrideApplicationScore, saveCandidate, saveCandidateProfileSections, saveOffer, scoreApplication, updateOfferStatus, uploadCandidateResume } from '../services/recruitmentTalentService'
 import { useAuthSession } from './AuthGate'
-import type { AttachmentFieldConfiguration, Client, ConvertCandidateToEmployeeRequest, EntityAttachment, RecruitmentApplicationScore, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentCandidateChecklistItem, RecruitmentInterview, RecruitmentOffer, RecruitmentOpenPosition, RecruitmentTalentDashboard, SaveRecruitmentCandidate, WorkLocation, WorkflowApprover } from '../types/payroll'
+import type { AttachmentFieldConfiguration, Client, ConvertCandidateToEmployeeRequest, EntityAttachment, RecruitmentApplicationScore, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentCandidateChecklistItem, RecruitmentInterview, RecruitmentOffer, RecruitmentOpenPosition, SaveRecruitmentCandidate, WorkLocation, WorkflowApprover } from '../types/payroll'
 import { useToast } from './ToastProvider'
 import './RecruitmentTalentWorkspace.css'
 
 type Mode = 'candidates' | 'applications' | 'interviews' | 'offers'
-const dashboard0: RecruitmentTalentDashboard = { talentProfiles: 0, activeApplications: 0, interviewsScheduled: 0, offersPending: 0, preOnboardingPending: 0, joined: 0 }
 const candidate0: SaveRecruitmentCandidate = { id: 0, clientId: 0, firstName: '', lastName: '', email: '', phone: '', currentCompany: '', currentTitle: '', totalExperienceMonths: 0, currentLocation: '', preferredLocationsJson: '[]', noticePeriodDays: 0, currentCtc: 0, expectedCtc: 0, highestQualification: '', sourceType: 'Direct', sourceReferenceId: null, profileStatus: 'Active', consentStatus: 'Pending', consentCapturedAt: null, retentionUntil: null }
 const conversion0: ConvertCandidateToEmployeeRequest = { employeeCode: '', dateOfJoining: '', workEmail: '', gender: '', department: '', designation: '', grade: '', workLocationId: 0, reportingManagerId: 0, reportingManagerUserId: null, portalAccess: true, salaryStructureId: '', annualCtc: 0 }
 const experience0: RecruitmentCandidateExperience = { id: 0, candidateId: 0, employer: '', jobTitle: '', startDate: null, endDate: null, isCurrent: false, description: '', displayOrder: 100 }
@@ -34,7 +34,6 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   const notify = useToast()
   const session = useAuthSession()
   const canDeleteRecruitmentData = Boolean(session?.user.permissions.includes('settings.manage'))
-  const [dashboard, setDashboard] = useState(dashboard0)
   const [clients, setClients] = useState<Client[]>([])
   const [workLocations, setWorkLocations] = useState<WorkLocation[]>([])
   const [panelUsers, setPanelUsers] = useState<WorkflowApprover[]>([])
@@ -43,8 +42,6 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   const [applications, setApplications] = useState<RecruitmentCandidateApplication[]>([])
   const [interviews, setInterviews] = useState<RecruitmentInterview[]>([])
   const [offers, setOffers] = useState<RecruitmentOffer[]>([])
-  const [query, setQuery] = useState('')
-  const [status, setStatus] = useState('')
   const [candidateDraft, setCandidateDraft] = useState<SaveRecruitmentCandidate | null>(null)
   const [detail, setDetail] = useState<RecruitmentCandidateDetail | null>(null)
   const [candidateAttachments, setCandidateAttachments] = useState<EntityAttachment[]>([])
@@ -60,21 +57,13 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   const [resumeIntakeMode, setResumeIntakeMode] = useState<RecruitmentResumeIntakeMode | null>(null)
 
   const load = useCallback(async () => {
-    const [metrics, candidateRows, allApplicationRows, allInterviewRows, allOfferRows] = await Promise.all([getTalentDashboard(initialClientId), getCandidates(query, status, initialClientId || undefined), getApplications(), getInterviews(), getOffers()])
+    const [candidateRows, allApplicationRows, allInterviewRows, allOfferRows] = await Promise.all([getCandidates('', '', initialClientId || undefined), getApplications(), getInterviews(), getOffers()])
     const applicationRows = initialClientId ? allApplicationRows.filter(row => row.clientId === initialClientId) : allApplicationRows
     const applicationIds = new Set(applicationRows.map(row => row.id))
     const interviewRows = initialClientId ? allInterviewRows.filter(row => applicationIds.has(row.applicationId)) : allInterviewRows
     const offerRows = initialClientId ? allOfferRows.filter(row => row.clientId === initialClientId) : allOfferRows
-    const scopedMetrics = initialClientId ? {
-      talentProfiles: candidateRows.length,
-      activeApplications: applicationRows.filter(row => !['Rejected', 'Withdrawn', 'Joined'].includes(row.currentStage)).length,
-      interviewsScheduled: interviewRows.filter(row => ['Scheduled', 'Rescheduled'].includes(row.status)).length,
-      offersPending: offerRows.filter(row => ['Draft', 'Pending Approval', 'Approved', 'Pending Candidate', 'Released', 'Negotiation'].includes(row.status)).length,
-      preOnboardingPending: metrics.preOnboardingPending,
-      joined: applicationRows.filter(row => row.currentStage === 'Joined').length,
-    } : metrics
-    setDashboard(scopedMetrics); setCandidates(candidateRows); setApplications(applicationRows); setInterviews(interviewRows); setOffers(offerRows)
-  }, [initialClientId, query, status])
+    setCandidates(candidateRows); setApplications(applicationRows); setInterviews(interviewRows); setOffers(offerRows)
+  }, [initialClientId])
   useEffect(() => {
     void Promise.all([getClients(), getWorkLocations(), getEmployeeManagerUsers(), getRecruitmentOpenPositions(initialClientId)]).then(([clientRows, locationRows, userRows, positionRows]) => { setClients(clientRows); setWorkLocations(locationRows); setPanelUsers(userRows); setPositions(positionRows) })
     void load()
@@ -151,6 +140,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   }
   const currentScoreFor = (applicationId: number) => detail?.scores.find(row => row.applicationId === applicationId && row.isCurrent)
   const candidateFromDetail = detail?.candidate
+  const intakeApplications = useMemo(() => applications.filter(row => row.applicationType === 'Application'), [applications])
   const candidateOptions = selectOptions(candidates.map(row => ({ value: row.id, label: `${row.candidateCode} - ${row.candidateName}` })), 'Select candidate', 0)
   const applicationOptions = selectOptions(applications.map(row => ({ value: row.id, label: `${row.applicationCode} - ${row.candidateName} / ${row.positionTitle}` })), 'Select application', 0)
   const positionOptions = selectOptions(positions.filter(row => !['Closed', 'Cancelled', 'Filled'].includes(row.status)).map(row => ({ value: row.id, label: `${row.positionCode} - ${row.positionTitle}` })), 'Select position', 0)
@@ -161,22 +151,9 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   const offerDocumentOptions = candidateAttachments.filter(file => file.attributeCode === 'OFFER_LETTER').map(file => ({ value: file.publicId, label: `${file.originalFileName} · v${file.versionNumber}` }))
 
   return <div className="talent-workspace">
-    {mode === 'candidates' && <div className="talent-metrics">{[
-      ['Talent profiles', dashboard.talentProfiles], ['Active applications', dashboard.activeApplications], ['Interviews', dashboard.interviewsScheduled], ['Offers pending', dashboard.offersPending], ['Pre-onboarding', dashboard.preOnboardingPending], ['Joined', dashboard.joined]
-    ].map(([label, value]) => <Card size="small" key={String(label)}><Statistic title={label} value={value} /></Card>)}</div>}
-
-    {mode === 'candidates' && <>
-      <div className="talent-toolbar"><Input.Search value={query} onChange={event => setQuery(event.target.value)} onSearch={() => void load()} placeholder="Name, email, phone, code, skill" allowClear /><Select value={status} onChange={setStatus} options={[{ value: '', label: 'All profiles' }, ...['Active', 'Inactive', 'Joined', 'Archived'].map(value => ({ value, label: value }))]} /><div className="talent-toolbar-actions"><Button onClick={() => setResumeIntakeMode('single')}>Upload resume</Button><Button onClick={() => setResumeIntakeMode('bulk')}>Bulk resumes</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => setCandidateDraft({ ...candidate0, clientId: initialClientId })}>Add candidate</Button></div></div>
-      <DataTable rows={candidates} exportFileName="talent-pool" actions={row => <Space><Button size="small" onClick={() => void openCandidate(row.id)}>360° profile</Button>{canApplyCandidate(row) && <Button size="small" type="primary" onClick={() => setApplicationDraft({ candidateId: row.id, positionId: 0, sourceType: 'Direct' })}>Apply</Button>}{canDeleteRecruitmentData && <Popconfirm title="Delete candidate permanently?" description="Only safe pre-interview/test records can be deleted. Joined, workflow, interview, offer and forwarded records are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteCandidate(row.id); if (response.ok) { if (detail?.candidate.id === row.id) setDetail(null); await load() } }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.candidateName}`} /></Popconfirm>}</Space>} columns={[
-        { key: 'candidateCode', label: 'Candidate', render: row => <><b>{row.candidateName}</b><small>{row.candidateCode} · {row.email || row.phone}</small></>, value: row => row.candidateName },
-        { key: 'currentTitle', label: 'Current role', render: row => <><b>{row.currentTitle || '-'}</b><small>{row.currentCompany || '-'}</small></> },
-        { key: 'experience', label: 'Experience', value: row => row.totalExperienceMonths, render: row => `${Math.floor(row.totalExperienceMonths / 12)}y ${row.totalExperienceMonths % 12}m` },
-        { key: 'currentLocation', label: 'Location' }, { key: 'sourceType', label: 'Source' }, { key: 'applicationCount', label: 'Applications' },
-        { key: 'latestScore', label: 'ATS', render: row => row.latestScore == null ? '-' : <Tag color={row.latestScore >= 60 ? 'green' : 'orange'}>{row.latestScore.toFixed(1)}</Tag> }, { key: 'profileStatus', label: 'Status' }
-      ]} />
-    </>}
-    {mode === 'applications' && <><div className="talent-toolbar right"><Button onClick={() => setResumeIntakeMode('single')}>Upload resume</Button><Button type="primary" onClick={() => setResumeIntakeMode('bulk')}>Bulk resumes</Button></div><DataTable rows={applications} exportFileName="candidate-applications" actions={row => <Space><Button size="small" onClick={() => void openCandidate(row.candidateId)}>Profile</Button>{canMoveApplication(row) && <Button size="small" onClick={() => void scoreApplication(row.id).then(load)}>Score</Button>}<Button size="small" type="primary" onClick={() => navigate(`/recruitment/hiring-pipeline?positionId=${row.positionId}`)}>Open pipeline</Button>{canDeleteRecruitmentData && <Popconfirm title="Delete application permanently?" description="ATS scores and safe pipeline test data are removed. Interview, offer, workflow and joined records are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteApplication(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.applicationCode}`} /></Popconfirm>}</Space>} columns={[
-      { key: 'applicationCode', label: 'Application' }, { key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Position', render: row => <><b>{row.positionTitle}</b><small>{row.positionCode}</small></> }, { key: 'clientName', label: 'Client' }, { key: 'currentStage', label: 'Stage' }, { key: 'recruiterName', label: 'Recruiter' }, { key: 'atsScore', label: 'ATS score', render: row => row.atsScore == null ? '-' : <Tag color={row.atsScore >= 60 ? 'green' : 'orange'}>{row.atsScore.toFixed(1)}</Tag> }, { key: 'appliedAt', label: 'Applied', render: row => new Date(row.appliedAt).toLocaleDateString('en-IN') }
+    {mode === 'candidates' && <RecruitmentGlobalTalentPool onViewCandidate={openCandidate} onChanged={load} />}
+    {mode === 'applications' && <><div className="talent-toolbar right"><Button onClick={() => setResumeIntakeMode('single')}>Upload resume</Button><Button type="primary" onClick={() => setResumeIntakeMode('bulk')}>Bulk resumes</Button></div><DataTable rows={intakeApplications} emptyText="No applications have arrived through a published job link or manual upload for this client." exportFileName="candidate-applications" actions={row => <Space><Button size="small" onClick={() => void openCandidate(row.candidateId)}>Profile</Button>{canMoveApplication(row) && <Button size="small" onClick={() => void scoreApplication(row.id).then(load)}>Score</Button>}<Button size="small" type="primary" onClick={() => navigate(`/recruitment/hiring-pipeline?positionId=${row.positionId}`)}>Open pipeline</Button>{canDeleteRecruitmentData && <Popconfirm title="Delete application permanently?" description="ATS scores and safe pipeline test data are removed. Interview, offer, workflow and joined records are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteApplication(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.applicationCode}`} /></Popconfirm>}</Space>} columns={[
+      { key: 'applicationCode', label: 'Application' }, { key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Position', render: row => <><b>{row.positionTitle}</b><small>{row.positionCode}</small></> }, { key: 'clientName', label: 'Client' }, { key: 'sourceType', label: 'Application source', render: row => <Tag color={row.jobPostingId ? 'blue' : 'default'}>{row.jobPostingId ? 'Published job link' : `Manual · ${row.sourceType || 'Direct'}`}</Tag> }, { key: 'currentStage', label: 'Stage' }, { key: 'recruiterName', label: 'Recruiter' }, { key: 'atsScore', label: 'ATS score', render: row => row.atsScore == null ? '-' : <Tag color={row.atsScore >= 60 ? 'green' : 'orange'}>{row.atsScore.toFixed(1)}</Tag> }, { key: 'appliedAt', label: 'Applied', render: row => new Date(row.appliedAt).toLocaleDateString('en-IN') }
     ]} /></>}
     {mode === 'interviews' && <><div className="talent-toolbar right"><Button type="primary" icon={<CalendarOutlined />} onClick={() => setInterviewDraft({ applicationId: 0 })}>Schedule interview</Button></div><DataTable rows={interviews} exportFileName="recruitment-interviews" actions={row => <Space><Button size="small" onClick={() => setInterviewDraft({ applicationId: row.applicationId, interview: row })}>Update</Button><Button size="small" type="primary" onClick={() => setFeedbackInterview(row)}>Panel feedback</Button>{canDeleteRecruitmentData && <Popconfirm title="Delete this interview?" description="Panel feedback and safe interview documents will also be removed. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteInterview(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete interview ${row.roundCode}`} /></Popconfirm>}</Space>} columns={[
       { key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Position' }, { key: 'roundCode', label: 'Round' }, { key: 'interviewType', label: 'Type' }, { key: 'scheduledStart', label: 'Schedule', render: row => new Date(row.scheduledStart).toLocaleString('en-IN') }, { key: 'mode', label: 'Mode' }, { key: 'status', label: 'Status' }, { key: 'result', label: 'Result' }, { key: 'overallScore', label: 'Score' }
@@ -225,7 +202,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
       <Form.Item label="Portal access"><Checkbox checked={conversionDraft.data.portalAccess} onChange={event => patchConversion({ portalAccess: event.target.checked })}>Enable the employee portal-access flag for onboarding</Checkbox></Form.Item>
     </Form>}</RecruitmentEditorDrawer>
 
-    <Drawer open={!!detail} onClose={() => { setDetail(null); setCandidateAttachments([]) }} width="min(1040px, 96vw)" title={candidateFromDetail ? `${candidateFromDetail.candidateCode} - ${candidateFromDetail.candidateName}` : 'Talent profile'}>{candidateFromDetail && <div className="candidate-360">
+    <Drawer className="candidate-profile-drawer" open={!!detail} onClose={() => { setDetail(null); setCandidateAttachments([]) }} width="min(1180px, 96vw)" title={candidateFromDetail ? `${candidateFromDetail.candidateCode} - ${candidateFromDetail.candidateName}` : 'Talent profile'}>{candidateFromDetail && <div className="candidate-360">
       <div className="candidate-hero"><div><h2>{candidateFromDetail.candidateName}</h2><p>{candidateFromDetail.currentTitle || 'Candidate'} · {candidateFromDetail.currentCompany || 'Independent'}</p></div><Space wrap><Tag>{candidateFromDetail.profileStatus}</Tag><Tag color={candidateFromDetail.consentStatus === 'Granted' ? 'green' : candidateFromDetail.consentStatus === 'Revoked' ? 'red' : 'orange'}>{candidateFromDetail.consentStatus} consent</Tag>{candidateFromDetail.employeeCode && <Tag color="green">Employee {candidateFromDetail.employeeCode}</Tag>}<Button onClick={() => setCandidateDraft({ ...candidateFromDetail })}>Edit summary</Button><Button onClick={() => setProfileDraft({ experience: detail.experience.map(row => ({ ...row })), education: detail.education.map(row => ({ ...row })), certifications: detail.certifications.map(row => ({ ...row })) })}>Profile details</Button>{canApplyCandidate(candidateFromDetail) && <Button type="primary" onClick={() => setApplicationDraft({ candidateId: candidateFromDetail.id, positionId: 0, sourceType: 'Direct' })}>Add application</Button>}{canDeleteRecruitmentData && <Popconfirm title="Delete this candidate permanently?" description="Joined, workflow-linked and business-history records are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteCandidate(candidateFromDetail.id); if (response.ok) { setDetail(null); await load() } }}><Button danger icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space></div>
       <div className="candidate-facts">{[['Email', candidateFromDetail.email || '-'], ['Phone', candidateFromDetail.phone || '-'], ['Location', candidateFromDetail.currentLocation || '-'], ['Experience', `${Math.floor(candidateFromDetail.totalExperienceMonths / 12)}y ${candidateFromDetail.totalExperienceMonths % 12}m`], ['Notice', `${candidateFromDetail.noticePeriodDays} days`], ['Qualification', candidateFromDetail.highestQualification || '-']].map(([label, value]) => <article key={label}><span>{label}</span><b>{value}</b></article>)}</div>
       <div className="candidate-profile-grid"><Card size="small" title="Experience">{detail.experience.map(row => <article key={row.id}><b>{row.jobTitle || '-'}</b><span>{row.employer || '-'} · {row.startDate?.slice(0, 7) || '-'} to {row.isCurrent ? 'Present' : row.endDate?.slice(0, 7) || '-'}</span></article>)}{!detail.experience.length && <p>No experience details.</p>}</Card><Card size="small" title="Education">{detail.education.map(row => <article key={row.id}><b>{row.qualification || '-'}</b><span>{row.institution || '-'} · {row.completionYear || '-'}</span></article>)}{!detail.education.length && <p>No education details.</p>}</Card><Card size="small" title="Certifications">{detail.certifications.map(row => <article key={row.id}><b>{row.certificationName}</b><span>{row.issuer || '-'} · {row.credentialId || 'No credential ID'}</span></article>)}{!detail.certifications.length && <p>No certifications.</p>}</Card></div>

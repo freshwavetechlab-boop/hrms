@@ -1,31 +1,38 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Button, Card, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Tag, Timeline, Tooltip, message } from 'antd'
-import { ClockCircleOutlined, DeleteOutlined, FileProtectOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, TeamOutlined } from '@ant-design/icons'
+import { ClockCircleOutlined, DeleteOutlined, FileProtectOutlined, HistoryOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, TeamOutlined } from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
 import { useAuthSession } from './AuthGate'
 import EntityAttachmentPanel from './EntityAttachmentPanel'
 import { getClients } from '../services/payrollService'
 import { getRecruitmentPipelineVersions, getRecruitmentPipelines } from '../services/recruitmentOrchestrationService'
-import { advanceRecruitmentHiringCase, approveRecruitmentProfileBatch, createRecruitmentProfileBatch, deleteRecruitmentHiringCase, deleteRecruitmentWorkOrder, forwardRecruitmentProfileBatch, generateRecruitmentProcessDocument, getRecruitmentHiringCase, getRecruitmentHiringCases, getRecruitmentProcessDocuments, getRecruitmentProfileBatches, getRecruitmentWorkOrder, getRecruitmentWorkOrders, pauseRecruitmentHiringCase, resumeRecruitmentHiringCase, saveRecruitmentProcessDocument, saveRecruitmentWorkOrder, startRecruitmentHiringCase } from '../services/recruitmentCaseService'
+import { advanceRecruitmentHiringCase, approveRecruitmentProfileBatch, createRecruitmentProfileBatch, deleteRecruitmentHiringCase, deleteRecruitmentWorkOrder, forwardRecruitmentProfileBatch, generateRecruitmentProcessDocument, getRecruitmentHiringCase, getRecruitmentHiringCases, getRecruitmentHiringCaseTransitions, getRecruitmentProcessDocuments, getRecruitmentProfileBatches, getRecruitmentWorkOrder, getRecruitmentWorkOrders, pauseRecruitmentHiringCase, resumeRecruitmentHiringCase, saveRecruitmentProcessDocument, saveRecruitmentWorkOrder, startRecruitmentHiringCase } from '../services/recruitmentCaseService'
 import { getApplications } from '../services/recruitmentTalentService'
 import { getRecruitmentOpenPositions } from '../services/recruitmentService'
 import type { Client, RecruitmentCandidateApplication, RecruitmentOpenPosition } from '../types/payroll'
-import type { RecruitmentPipelineVersion } from '../types/recruitmentOrchestration'
+import type { RecruitmentPipelineTransition } from '../types/recruitmentOrchestration'
 import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProfileSubmissionBatch, RecruitmentWorkOrder, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
 import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
 import DataTable from './DataTable'
 import './RecruitmentWorkOrderWorkspace.css'
 
 type WorkOrderDraft = SaveRecruitmentWorkOrder & { overallSlaDays: number | null }
-type PipelineOption = RecruitmentPipelineVersion & { label: string }
 
 const blankLine = (lineNumber: number) => ({ id: 0, lineNumber, positionName: '', payBandLevelCode: '', numberOfPositions: 1, location: '', division: '', requisitionId: null, positionId: null, status: 'Open' })
 const blankWorkOrder = (clientId = 0): WorkOrderDraft => ({ id: 0, clientId, workOrderNumber: '', receivedAtUtc: '', receivedFrom: '', subject: '', remarks: '', status: 'Draft', overallSlaMinutes: 0, overallSlaDays: null, lines: [blankLine(1)] })
 const dateTimeText = (value?: string | null) => value ? new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'Not set'
 const durationText = (minutes?: number | null) => minutes == null ? 'No target' : minutes === 0 ? 'Day 0' : `${(minutes / 1440).toFixed(minutes % 1440 ? 1 : 0)} days`
+const formatStageDuration = (seconds = 0) => { const total = Math.max(0, Math.floor(seconds)); const days = Math.floor(total / 86400); const hours = Math.floor((total % 86400) / 3600); const minutes = Math.floor((total % 3600) / 60); const remainingSeconds = total % 60; return `${days ? `${days}d ` : ''}${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}` }
+const remainingDuration = (dueAt: string | null | undefined, now: number) => {
+  if (!dueAt) return 'No overall due date'
+  const seconds = Math.round((new Date(dueAt).getTime() - now) / 1000)
+  return seconds < 0 ? `${formatStageDuration(Math.abs(seconds))} overdue` : `${formatStageDuration(seconds)} left`
+}
 const statusColor = (status: string) => status === 'Completed' ? 'green' : status === 'Active' ? 'blue' : status === 'On Hold' ? 'orange' : status === 'Cancelled' ? 'red' : 'default'
 
 export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, clientScopeManaged = false, displayMode = 'pipeline' }: { initialClientId?: number; clientScopeManaged?: boolean; displayMode?: RecruitmentPipelineDisplayMode }) {
   const session = useAuthSession()
+  const navigate = useNavigate()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
   const [openPositions, setOpenPositions] = useState<RecruitmentOpenPosition[]>([])
@@ -38,10 +45,9 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   const [saving, setSaving] = useState(false)
   const [selectedWorkOrder, setSelectedWorkOrder] = useState<RecruitmentWorkOrder | null>(null)
   const [selectedCase, setSelectedCase] = useState<RecruitmentHiringCase | null>(null)
-  const [pipelineOptions, setPipelineOptions] = useState<PipelineOption[]>([])
-  const [startLineId, setStartLineId] = useState(0)
-  const [startPipelineId, setStartPipelineId] = useState(0)
-  const [startOpen, setStartOpen] = useState(false)
+  const [caseSyncedAt, setCaseSyncedAt] = useState(Date.now())
+  const [clockNow, setClockNow] = useState(Date.now())
+  const [stageLogOpen, setStageLogOpen] = useState(false)
   const [processDocuments, setProcessDocuments] = useState<RecruitmentProcessDocument[]>([])
   const [documentSaving, setDocumentSaving] = useState(false)
   const [candidateApplications, setCandidateApplications] = useState<RecruitmentCandidateApplication[]>([])
@@ -53,6 +59,13 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   const [caseActionDialog, setCaseActionDialog] = useState<'pause' | 'advance' | null>(null)
   const [caseActionReason, setCaseActionReason] = useState('')
   const [caseDialogError, setCaseDialogError] = useState('')
+  const [caseTransitions, setCaseTransitions] = useState<RecruitmentPipelineTransition[]>([])
+  const [selectedCaseOutcome, setSelectedCaseOutcome] = useState('ADVANCE')
+  const deepLinkOpened = useRef('')
+  const queryParams = new URLSearchParams(typeof window === 'undefined' ? '' : window.location.search)
+  const requestedWorkOrderId = Number(queryParams.get('workOrderId') || 0)
+  const requestedHiringCaseId = Number(queryParams.get('hiringCaseId') || 0)
+  const requestedStageLog = queryParams.get('stageLog') === '1'
 
   const load = async () => {
     const [orders, hiringCases] = await Promise.all([getRecruitmentWorkOrders(clientId, query), getRecruitmentHiringCases(clientId)])
@@ -61,6 +74,10 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   useEffect(() => { void Promise.all([getClients(), getRecruitmentOpenPositions()]).then(([clientRows, positionRows]) => { setClients(clientRows); setOpenPositions(positionRows) }) }, [])
   useEffect(() => { setClientId(initialClientId) }, [initialClientId])
   useEffect(() => { void load() }, [clientId])
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const stats = useMemo(() => ({
     activeOrders: workOrders.filter(row => row.status === 'Active').length,
@@ -102,11 +119,27 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   }
   const viewCase = async (row: RecruitmentHiringCase) => {
     setCaseActionError('')
-    const [detail, documents, batches] = await Promise.all([getRecruitmentHiringCase(row.id), getRecruitmentProcessDocuments(row.id), getRecruitmentProfileBatches(row.id)])
+    const [detail, documents, batches, transitions] = await Promise.all([getRecruitmentHiringCase(row.id), getRecruitmentProcessDocuments(row.id), getRecruitmentProfileBatches(row.id), getRecruitmentHiringCaseTransitions(row.id)])
     const applications = detail?.positionId ? await getApplications({ positionId: detail.positionId }) : []
     if (!detail) setCaseActionError('This hiring journey could not be loaded. Refresh the page and try again.')
-    setSelectedCase(detail); setProcessDocuments(documents); setProfileBatches(batches); setCandidateApplications(applications); setSelectedApplicationIds([])
+    setSelectedCase(detail); setCaseSyncedAt(Date.now()); setProcessDocuments(documents); setProfileBatches(batches); setCandidateApplications(applications); setSelectedApplicationIds([]); setCaseTransitions(transitions); setSelectedCaseOutcome(transitions[0]?.outcomeCode ?? 'ADVANCE')
   }
+  useEffect(() => {
+    const key = requestedHiringCaseId ? `case-${requestedHiringCaseId}-${requestedStageLog}` : requestedWorkOrderId ? `order-${requestedWorkOrderId}` : ''
+    if (!key || deepLinkOpened.current === key) return
+    if (requestedHiringCaseId) {
+      const row = cases.find(item => item.id === requestedHiringCaseId)
+      if (!row) return
+      deepLinkOpened.current = key
+      setStageLogOpen(requestedStageLog)
+      void viewCase(row)
+      return
+    }
+    const row = workOrders.find(item => item.id === requestedWorkOrderId)
+    if (!row) return
+    deepLinkOpened.current = key
+    void viewWorkOrder(row)
+  }, [cases, requestedHiringCaseId, requestedStageLog, requestedWorkOrderId, workOrders])
   const removeHiringCase = async (row: RecruitmentHiringCase) => {
     const response = await deleteRecruitmentHiringCase(row.id)
     if (!response.ok) return
@@ -114,20 +147,21 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     await load()
   }
 
-  const prepareStart = async (workOrder: RecruitmentWorkOrder, lineId: number) => {
+  const prepareStart = async (workOrder: RecruitmentWorkOrder, line: RecruitmentWorkOrder['lines'][number]) => {
+    if (!line.requisitionId) {
+      navigate(`/recruitment/requisitions?new=1&clientId=${workOrder.clientId}&workOrderId=${workOrder.id}&workOrderLineId=${line.id}`)
+      return
+    }
     const definitions = await getRecruitmentPipelines(workOrder.clientId)
     const versionGroups = await Promise.all(definitions.map(async definition => ({ definition, versions: await getRecruitmentPipelineVersions(definition.id) })))
     const options = versionGroups.flatMap(group => group.versions
-      .filter(version => version.status === 'Published' && ['Position', 'Hybrid'].includes(version.scopeType ?? 'Application'))
+      .filter(version => version.status === 'Published' && ['Position', 'Hybrid'].includes(version.scopeType ?? 'Application') && (!group.definition.currentPublishedVersionId || group.definition.currentPublishedVersionId === version.id))
       .map(version => ({ ...version, label: `${group.definition.pipelineName} · v${version.versionNumber} · ${version.slaMode === 'CumulativeFromAnchor' ? 'Cumulative SLA' : 'Stage SLA'}` })))
     if (!options.length) return message.warning('Publish a Position or Hybrid pipeline for this client first.')
-    setPipelineOptions(options); setStartLineId(lineId); setStartPipelineId(0); setStartOpen(true)
-  }
-  const startCase = async () => {
-    if (!startPipelineId) return message.warning('Select the published pipeline version.')
-    const response = await startRecruitmentHiringCase(startLineId, startPipelineId)
+    if (options.length > 1) return message.warning('Keep one current Position or Hybrid pipeline for automatic SLA start.')
+    const response = await startRecruitmentHiringCase(line.id, options[0].id)
     if (!response.ok || !response.data) return
-    setStartOpen(false); setSelectedCase(response.data); setProcessDocuments([]); setSelectedWorkOrder(null); await load()
+    setSelectedCase(response.data); setCaseSyncedAt(Date.now()); setProcessDocuments([]); setSelectedWorkOrder(null); await load()
   }
 
   const prepareProcessDocument = async (documentType: string, templateId?: number | null) => {
@@ -167,7 +201,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
       const error = response.error || 'The SLA could not be paused.'
       setCaseDialogError(error); setCaseActionError(error); return
     }
-    setCaseActionDialog(null); setSelectedCase(response.data); await load()
+    setCaseActionDialog(null); setSelectedCase(response.data); setCaseSyncedAt(Date.now()); await load()
   }
   const resume = async () => {
     if (!selectedCase || !activeStage?.isPaused) return setCaseActionError('This stage SLA is not paused.')
@@ -175,25 +209,27 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     const response = await resumeRecruitmentHiringCase(selectedCase.id)
     setCaseActionBusy(false)
     if (!response.ok || !response.data) return setCaseActionError(response.error || 'The SLA could not be resumed.')
-    setSelectedCase(response.data); await load()
+    setSelectedCase(response.data); setCaseSyncedAt(Date.now()); await load()
   }
   const advance = () => {
     if (!selectedCase || moveBlockedReason) return setCaseActionError(moveBlockedReason || 'This hiring journey cannot move right now.')
     setCaseActionError('')
     setCaseActionReason('')
     setCaseDialogError('')
+    setSelectedCaseOutcome(caseTransitions[0]?.outcomeCode ?? 'ADVANCE')
     setCaseActionDialog('advance')
   }
   const submitAdvance = async () => {
     if (!selectedCase) return
+    if (caseTransitions.find(row => row.outcomeCode === selectedCaseOutcome)?.requiresReason && caseActionReason.trim().length < 3) return setCaseDialogError('Enter a clear reason using at least 3 characters.')
     setCaseDialogError(''); setCaseActionBusy(true)
-    const response = await advanceRecruitmentHiringCase(selectedCase.id, caseActionReason.trim())
+    const response = await advanceRecruitmentHiringCase(selectedCase.id, caseActionReason.trim(), selectedCaseOutcome)
     setCaseActionBusy(false)
     if (!response.ok || !response.data) {
       const error = response.error || 'The stage could not be moved.'
       setCaseDialogError(error); setCaseActionError(error); return
     }
-    setCaseActionDialog(null); setSelectedCase(response.data); await load()
+    setCaseActionDialog(null); setSelectedCase(response.data); setCaseSyncedAt(Date.now()); await load()
     if (response.data.advanceStatus === 'Pending Approval') message.info(response.data.advanceMessage || 'Stage movement is pending in My Tasks.')
     else message.success(response.data.advanceMessage || 'Hiring case moved to the next stage.')
   }
@@ -222,6 +258,12 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   }
 
   const activeStage = selectedCase?.stages.find(stage => stage.status === 'Active')
+  const liveStageSeconds = (stage: RecruitmentHiringCase['stages'][number]) => stage.activeDurationSeconds + (stage.status === 'Active' && !stage.isPaused ? Math.max(0, Math.floor((clockNow - caseSyncedAt) / 1000)) : 0)
+  const activeStageSeconds = activeStage ? liveStageSeconds(activeStage) : 0
+  const stageTimelineItems = selectedCase?.stages.map(stage => ({
+    color: stage.isSlaBreached ? 'red' : ['REJECT', 'REJECTED'].includes(stage.outcomeCode) ? 'red' : stage.status === 'Completed' ? 'green' : stage.status === 'Active' ? 'blue' : 'gray',
+    children: <article className={stage.status === 'Active' ? 'active' : ''} data-testid={`hiring-stage-log-${stage.id}`}><div><Tag>{stage.stakeholderCode || 'No stakeholder'}</Tag><b>{stage.stageName}</b><span>{durationText(stage.targetOffsetMinutes)} target</span></div><p>{stage.status}{stage.outcomeCode ? ` · ${stage.outcomeCode}` : ''} · <b>{formatStageDuration(liveStageSeconds(stage))}</b> active time · due {dateTimeText(stage.dueAtUtc)}{stage.isPaused ? ' · SLA paused' : ''}</p>{stage.pauseHistory.map(pauseRow => <small key={pauseRow.id}>Paused by {pauseRow.pausedByName} on {dateTimeText(pauseRow.pausedAtUtc)} — {pauseRow.reason}{pauseRow.resumedAtUtc ? ` · resumed ${dateTimeText(pauseRow.resumedAtUtc)}` : ' · still paused'}</small>)}</article>,
+  })) ?? []
   const missingRequiredDocuments = activeStage?.processDocumentRequirements.filter(requirement => {
     if (!requirement.isRequired) return false
     const document = processDocuments.find(row => row.pipelineStageId === activeStage.pipelineStageId && row.documentType === requirement.documentType)
@@ -248,7 +290,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
             : ''
   return <section className="work-order-workspace" data-testid="recruitment-work-orders">
     <div className="work-order-command-bar">
-      <div><span>Client hiring demand</span><h2>Hiring orders</h2><p>Record the approved roles received from a client, then start and track each role's hiring journey.</p></div>
+      <div><span>Client hiring demand</span><h2>Work orders &amp; SLA</h2><p>Record approved roles, set the overall delivery SLA, and track every role against its live stage targets.</p></div>
       <Space wrap>{!clientScopeManaged && <Select allowClear value={clientId || undefined} placeholder="All accessible clients" showSearch optionFilterProp="label" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={value => setClientId(value || 0)} />}<Input.Search value={query} placeholder="Work order or subject" onChange={event => setQuery(event.target.value)} onSearch={() => void load()} /><Button data-testid="work-order-add" type="primary" icon={<PlusOutlined />} onClick={openNew}>Add work order</Button></Space>
     </div>
     <div className="work-order-metrics">
@@ -267,7 +309,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
       <Card title="Active hiring journeys" extra={<Tag color="purple">Role-wise SLA</Tag>}>
         {!cases.length ? <Empty description="Open an order and start a published hiring pipeline for one role." /> : <div className="hiring-case-list">{cases.map(row => {
           const overdue = row.status === 'Active' && row.overallDueAtUtc && new Date(row.overallDueAtUtc).getTime() < Date.now()
-          return <button type="button" key={row.id} className={overdue ? 'overdue' : ''} onClick={() => void viewCase(row)}><div><Tag color={statusColor(row.status)}>{row.status}</Tag><span>{row.currentStakeholderCode || 'Unassigned stakeholder'}</span></div><h3>{row.positionName}</h3><p>{row.workOrderNumber} · {row.pipelineName}</p><footer><span>{row.currentStageName || 'Completed'}</span><b>{row.overallDueAtUtc ? `Due ${dateTimeText(row.overallDueAtUtc)}` : 'No overall due date'}</b></footer></button>
+          return <button type="button" key={row.id} className={overdue ? 'overdue' : ''} onClick={() => void viewCase(row)}><div><Tag color={statusColor(row.status)}>{row.status}</Tag><span>{row.currentStakeholderCode || 'Unassigned stakeholder'}</span></div><h3>{row.positionName}</h3><p>{row.workOrderNumber} · {row.pipelineName}</p><footer><span>{row.currentStageName || 'Completed'}</span><b><ClockCircleOutlined /> {remainingDuration(row.overallDueAtUtc, clockNow)}</b></footer></button>
         })}</div>}
       </Card>
     </div>}
@@ -315,19 +357,17 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
 
     <Drawer width={980} title={selectedWorkOrder ? `${selectedWorkOrder.workOrderNumber} · ${selectedWorkOrder.clientName}` : 'Work order'} open={!!selectedWorkOrder} onClose={() => setSelectedWorkOrder(null)}>
       {selectedWorkOrder && <><div className="work-order-detail-strip"><div><span>Received</span><b>{dateTimeText(selectedWorkOrder.receivedAtUtc)}</b></div><div><span>Overall due</span><b>{dateTimeText(selectedWorkOrder.dueAtUtc)}</b></div><div><span>Source</span><b>{selectedWorkOrder.receivedFrom || 'Manual entry'}</b></div><Tag color={statusColor(selectedWorkOrder.status)}>{selectedWorkOrder.status}</Tag></div>
-        <div className="work-order-detail-lines">{selectedWorkOrder.lines.map(line => <article key={line.id}><div><span>Role {line.lineNumber}</span><h3>{line.positionName}</h3><p>{[line.payBandLevelCode, line.division, line.location].filter(Boolean).join(' · ') || 'Role details not entered'}</p></div><div><Tag>{line.numberOfPositions} opening{line.numberOfPositions === 1 ? '' : 's'}</Tag><Button type="primary" disabled={cases.some(row => row.workOrderLineId === line.id)} onClick={() => void prepareStart(selectedWorkOrder, line.id)}>{cases.some(row => row.workOrderLineId === line.id) ? 'Journey started' : 'Start hiring journey'}</Button></div></article>)}</div>
+        <div className="work-order-detail-lines">{selectedWorkOrder.lines.map(line => { const hiringCase = cases.find(row => row.workOrderLineId === line.id); return <article key={line.id}><div><span>Role {line.lineNumber}</span><h3>{line.positionName}</h3><p>{[line.payBandLevelCode, line.division, line.location].filter(Boolean).join(' · ') || 'Role details not entered'}</p></div><div><Tag>{line.numberOfPositions} opening{line.numberOfPositions === 1 ? '' : 's'}</Tag><Button type="primary" onClick={() => hiringCase ? void viewCase(hiringCase) : void prepareStart(selectedWorkOrder, line)}>{hiringCase ? 'Open journey' : line.requisitionId ? 'Continue journey' : 'Complete intake'}</Button></div></article> })}</div>
         <EntityAttachmentPanel entityType="RECRUITMENT_WORK_ORDER" entityId={selectedWorkOrder.id} clientId={selectedWorkOrder.clientId} moduleCode="RECRUITMENT" formCodes={['WORK_ORDER']} title="Original work order & JD annexure" description="Stored through the existing secured attachment service and storage policy." />
       </>}
     </Drawer>
 
-    <Modal open={startOpen} title="Start position hiring case" okText="Start SLA clock" onOk={() => void startCase()} onCancel={() => setStartOpen(false)}><Alert showIcon type="warning" message="The SLA anchor is the work order received timestamp." /><Form.Item label="Published Position / Hybrid pipeline" required style={{ marginTop: 18 }}><Select data-testid="hiring-case-pipeline" value={startPipelineId || undefined} options={pipelineOptions.map(row => ({ value: row.id, label: row.label }))} onChange={setStartPipelineId} /></Form.Item></Modal>
-
-    <Drawer width={1040} title={selectedCase ? `${selectedCase.positionName} · ${selectedCase.workOrderNumber}` : 'Hiring journey'} open={!!selectedCase} onClose={() => { setSelectedCase(null); setProcessDocuments([]); setProfileBatches([]); setCandidateApplications([]); setSelectedApplicationIds([]); setCaseActionError(''); setCaseActionDialog(null); setCaseDialogError('') }} extra={selectedCase && <Space>{selectedCase.status === 'Active' && <>{activeStage?.isPaused ? <Button data-testid="hiring-case-resume" loading={caseActionBusy} icon={<PlayCircleOutlined />} onClick={() => void resume()}>Resume SLA</Button> : <Tooltip title={pauseBlockedReason}><span><Button data-testid="hiring-case-pause" loading={caseActionBusy} disabled={Boolean(pauseBlockedReason)} icon={<PauseCircleOutlined />} onClick={pause}>Pause SLA</Button></span></Tooltip>}<Tooltip title={moveBlockedReason}><span><Button data-testid="hiring-case-move" type="primary" loading={caseActionBusy} disabled={Boolean(moveBlockedReason)} onClick={advance}>{selectedCase.advanceStatus === 'Pending Approval' ? 'Approval pending' : activeStage?.isTerminal ? 'Complete journey' : 'Move to next stage'}</Button></span></Tooltip></>}{canDelete && <Popconfirm title="Delete this hiring case?" description="Its SLA history and generated process records will be removed. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeHiringCase(selectedCase)}><Button danger icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space>}>
+    <Drawer width={1040} title={selectedCase ? `${selectedCase.positionName} · ${selectedCase.workOrderNumber}` : 'Hiring journey'} open={!!selectedCase} onClose={() => { setSelectedCase(null); setStageLogOpen(false); setProcessDocuments([]); setProfileBatches([]); setCandidateApplications([]); setSelectedApplicationIds([]); setCaseActionError(''); setCaseActionDialog(null); setCaseDialogError('') }} extra={selectedCase && <Space><Button data-testid="hiring-case-time-log" icon={<HistoryOutlined />} onClick={() => setStageLogOpen(true)}>Stage time log</Button>{selectedCase.status === 'Active' && <>{activeStage?.isPaused ? <Button data-testid="hiring-case-resume" loading={caseActionBusy} icon={<PlayCircleOutlined />} onClick={() => void resume()}>Resume SLA</Button> : <Tooltip title={pauseBlockedReason}><span><Button data-testid="hiring-case-pause" loading={caseActionBusy} disabled={Boolean(pauseBlockedReason)} icon={<PauseCircleOutlined />} onClick={pause}>Pause SLA</Button></span></Tooltip>}<Tooltip title={moveBlockedReason}><span><Button data-testid="hiring-case-move" type="primary" loading={caseActionBusy} disabled={Boolean(moveBlockedReason)} onClick={advance}>{selectedCase.advanceStatus === 'Pending Approval' ? 'Approval pending' : activeStage?.isTerminal ? 'Complete journey' : 'Move to next stage'}</Button></span></Tooltip></>}{canDelete && <Popconfirm title="Delete this hiring case?" description="Its SLA history and generated process records will be removed. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeHiringCase(selectedCase)}><Button danger icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space>}>
       {selectedCase && <><div className="case-hero"><div><span>{selectedCase.pipelineName}</span><h2>{selectedCase.currentStageName || 'Pipeline complete'}</h2><p>SLA anchored at {dateTimeText(selectedCase.slaAnchorAtUtc)} · overall due {dateTimeText(selectedCase.overallDueAtUtc)}</p></div><Tag color={statusColor(selectedCase.status)}>{selectedCase.status}</Tag></div>
         {caseActionError && <Alert data-testid="hiring-case-action-error" showIcon closable type="error" message="Action could not be completed" description={caseActionError} onClose={() => setCaseActionError('')} />}
         {moveBlockedReason && selectedCase.advanceStatus !== 'Pending Approval' && <Alert data-testid="hiring-case-action-guidance" showIcon type="warning" message="Next action needed" description={moveBlockedReason} />}
         {selectedCase.advanceStatus === 'Pending Approval' && <Alert data-testid="hiring-case-approval-pending" showIcon type="info" message="Stage movement awaiting approval" description={selectedCase.advanceMessage || 'The configured approver can action this request from global My Tasks.'} />}
-        <Timeline className="case-timeline" items={selectedCase.stages.map(stage => ({ color: stage.isSlaBreached ? 'red' : stage.status === 'Completed' ? 'green' : stage.status === 'Active' ? 'blue' : 'gray', children: <article className={stage.status === 'Active' ? 'active' : ''}><div><Tag>{stage.stakeholderCode || 'No stakeholder'}</Tag><b>{stage.stageName}</b><span>{durationText(stage.targetOffsetMinutes)} target</span></div><p>{stage.status} · due {dateTimeText(stage.dueAtUtc)}{stage.isPaused ? ' · SLA paused' : ''}</p>{stage.pauseHistory.map(pauseRow => <small key={pauseRow.id}>Paused by {pauseRow.pausedByName} on {dateTimeText(pauseRow.pausedAtUtc)} — {pauseRow.reason}{pauseRow.resumedAtUtc ? ` · resumed ${dateTimeText(pauseRow.resumedAtUtc)}` : ''}</small>)}</article> } ))} />
+        <div className="case-live-timers" data-testid="hiring-case-live-timers"><div><span>Current stage active time</span><b><ClockCircleOutlined /> {formatStageDuration(activeStageSeconds)}</b><small>{activeStage?.isPaused ? 'Paused — inactive time is excluded' : activeStage ? 'Live timer' : 'Journey completed'}</small></div><div><span>Overall SLA</span><b>{remainingDuration(selectedCase.overallDueAtUtc, clockNow)}</b><small>Anchored at {dateTimeText(selectedCase.slaAnchorAtUtc)}</small></div><Button icon={<HistoryOutlined />} onClick={() => setStageLogOpen(true)}>View stage history</Button></div>
         <Card title="Stage documents & signatures" extra={<Tag color="purple">Normalized requirements</Tag>}>
           {!activeStage?.processDocumentRequirements?.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="This stage has no process-document requirement." />}
           {activeStage?.processDocumentRequirements?.map(requirement => {
@@ -358,6 +398,11 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
         </Card>
       </>}
     </Drawer>
+
+    <Modal className="stage-time-log-modal" width={820} open={stageLogOpen && !!selectedCase} title={selectedCase ? `Stage time log · ${selectedCase.positionName}` : 'Stage time log'} footer={null} onCancel={() => setStageLogOpen(false)} destroyOnClose>
+      <p className="stage-time-log-help">Active time excludes every recorded pause. Completed stages stay fixed; the current stage updates live.</p>
+      <Timeline className="case-timeline stage-time-log" items={stageTimelineItems} />
+    </Modal>
 
     <Modal
       className="hiring-case-action-modal"
@@ -398,7 +443,8 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
           description={activeStage?.requiresApproval ? 'The configured approver will receive this action in My Tasks. The stage moves only after approval.' : undefined}
         />
         {caseDialogError && <Alert data-testid="hiring-case-dialog-error" showIcon type="error" message={caseDialogError} />}
-        <Form.Item label="Movement note (optional)">
+        {!!caseTransitions.length && <Form.Item label="Stage action" required><Select data-testid="hiring-case-transition" value={selectedCaseOutcome} options={caseTransitions.map(row => ({ value: row.outcomeCode, label: row.actionLabel }))} onChange={setSelectedCaseOutcome} /></Form.Item>}
+        <Form.Item label={caseTransitions.find(row => row.outcomeCode === selectedCaseOutcome)?.requiresReason ? 'Reason' : 'Movement note (optional)'} required={caseTransitions.find(row => row.outcomeCode === selectedCaseOutcome)?.requiresReason}>
           <Input.TextArea data-testid="hiring-case-move-note" rows={3} value={caseActionReason} placeholder="Add a short note for the audit history" onChange={event => { setCaseActionReason(event.target.value); setCaseDialogError('') }} />
         </Form.Item>
       </div>

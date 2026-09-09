@@ -67,10 +67,12 @@ export type RecruitmentHiringCaseStage = {
   approvalWorkflowId?: number | null
   isTerminal: boolean
   status: string
+  outcomeCode: string
   enteredAtUtc?: string | null
   dueAtUtc?: string | null
   completedAtUtc?: string | null
   pausedDurationSeconds: number
+  activeDurationSeconds: number
   isPaused: boolean
   isSlaBreached: boolean
   pauseHistory: RecruitmentHiringCasePause[]

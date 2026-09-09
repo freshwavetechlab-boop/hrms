@@ -631,7 +631,7 @@ export default function ManualAttendanceManager({ clientId, group = null, review
       <div className="attendance-summary">
         <span>Total employees<b>{summary.total}</b></span><span>Ready<b>{summary.ready}</b></span><span>Missing<b>{summary.missing}</b></span><span>Check values<b>{summary.check}</b></span><span>Payable Days<b>{summary.payableDays.toFixed(1)}</b></span><span>LOP<b>{summary.lopDays.toFixed(1)}</b></span>
       </div>
-      <Space className="attendance-next-actions" wrap size={8}>
+      <div className="attendance-next-actions">
         <label className="attendance-action-field"><span>Attendance status</span><SearchSelect disabled={saving} value={bulkStatus} onChange={(value) => setBulkStatus(String(value))} options={statusChoices} /></label>
         <label className="attendance-action-field"><span>Date scope</span><SearchSelect disabled={saving} value={bulkScope} onChange={(value) => setBulkScope(value as BulkScope)} options={bulkScopeOptions} /></label>
         {bulkScope === 'date' && <Input disabled={saving} className="attendance-bulk-date" type="date" min={monthDays[0]} max={monthDays[monthDays.length - 1]} value={selectedBulkDate} onChange={(event) => setBulkDate(event.target.value)} />}
@@ -640,7 +640,7 @@ export default function ManualAttendanceManager({ clientId, group = null, review
         {selectedCellKeys.size > 0 && <Button disabled={saving} className="apply-selected-action" onClick={applySelectedCells}>Apply selected ({selectedCellKeys.size})</Button>}
         {selectedCellKeys.size > 0 && <Button disabled={saving} onClick={() => { setSelectedCellKeys(new Set()); setCellSelectionAnchor(null) }}>Clear selection</Button>}
         <Button type="primary" onClick={() => void saveGridChanges()} loading={saving} disabled={saving || !dirtyCellKeys.size}>Save {dirtyCellKeys.size ? `(${dirtyCellKeys.size} cells)` : ''}</Button>
-      </Space>
+      </div>
       <div className="attendance-filterbar">
         <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search employee" allowClear />
         <SearchSelect value={departmentFilter} onChange={setDepartmentFilter} options={[{ value: '', label: 'All departments' }, ...departments.map((department) => ({ value: department, label: department }))]} />

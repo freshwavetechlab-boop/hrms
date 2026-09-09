@@ -10,7 +10,7 @@ using Payroll.API.Models;
 
 namespace Payroll.API.Repositories;
 
-public class NotificationRepository(IConfiguration configuration, AttachmentRepository attachmentRepository, ILogger<NotificationRepository> logger)
+public class NotificationRepository(IConfiguration configuration, AttachmentRepository attachmentRepository, NotificationAutomationRepository automation, ILogger<NotificationRepository> logger)
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
@@ -410,6 +410,11 @@ WHERE u.IsActive=TRUE AND (r.Code=@Role OR r.Name=@Role) AND (@ClientId IS NULL 
             {
                 var email = await ResolveReportingManagerEmailAsync(db, evt);
                 AddEmails(emails, email ?? "");
+            }
+            else if (row.SourceType.Equals("Stakeholder", StringComparison.OrdinalIgnoreCase))
+            {
+                var stakeholderEmails = await automation.ResolveEmailsAsync(row.SourceValue, evt);
+                foreach (var email in stakeholderEmails) AddEmails(emails, email);
             }
             else if (row.SourceType.Equals("Lookup", StringComparison.OrdinalIgnoreCase) && Safe(row.TableName) && Safe(row.MatchColumn) && Safe(row.EmailColumn))
             {

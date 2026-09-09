@@ -1,5 +1,6 @@
 import { deleteJson, getJson, postJson } from './apiClient'
 import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProfileSubmissionBatch, RecruitmentWorkOrder, SaveRecruitmentProcessDocument, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
+import type { RecruitmentPipelineTransition } from '../types/recruitmentOrchestration'
 
 export const getRecruitmentWorkOrders = (clientId = 0, query = '') => {
   const params = new URLSearchParams()
@@ -26,11 +27,14 @@ export const getRecruitmentHiringCase = (id: number) =>
 export const deleteRecruitmentHiringCase = (id: number) =>
   deleteJson(`/api/recruitment/hiring-cases/${id}`, null, { successMessage: 'Live cumulative pipeline case deleted.' })
 
-export const startRecruitmentHiringCase = (workOrderLineId: number, pipelineVersionId: number) =>
-  postJson('/api/recruitment/hiring-cases/start', { workOrderLineId, pipelineVersionId }, null as RecruitmentHiringCase | null, { successMessage: 'Hiring case and cumulative SLA started.' })
+export const startRecruitmentHiringCase = (workOrderLineId: number, pipelineVersionId: number, silent = false) =>
+  postJson('/api/recruitment/hiring-cases/start', { workOrderLineId, pipelineVersionId }, null as RecruitmentHiringCase | null, silent ? { toast: false } : { successMessage: 'Hiring case and cumulative SLA started.' })
 
-export const advanceRecruitmentHiringCase = (id: number, reason: string) =>
-  postJson(`/api/recruitment/hiring-cases/${id}/advance`, { outcomeCode: 'ADVANCE', reason }, null as RecruitmentHiringCase | null)
+export const getRecruitmentHiringCaseTransitions = (id: number) =>
+  getJson<RecruitmentPipelineTransition[]>(`/api/recruitment/hiring-cases/${id}/transitions`, [])
+
+export const advanceRecruitmentHiringCase = (id: number, reason: string, outcomeCode = 'ADVANCE') =>
+  postJson(`/api/recruitment/hiring-cases/${id}/advance`, { outcomeCode, reason }, null as RecruitmentHiringCase | null)
 
 export const pauseRecruitmentHiringCase = (id: number, reason: string) =>
   postJson(`/api/recruitment/hiring-cases/${id}/pause`, { reason }, null as RecruitmentHiringCase | null, { successMessage: 'Hiring SLA paused with an audit reason.' })

@@ -1,10 +1,15 @@
 import { toast } from '../components/ToastProvider'
+import { resolveRuntimeApiBase } from './apiBaseUrl'
 import { recruitmentDeleteActions } from './recruitmentDeleteFeedback'
 
-export const api = import.meta.env.VITE_API_URL ?? 'http://localhost:5062'
+export const api = resolveRuntimeApiBase(
+  import.meta.env.VITE_API_URL,
+  typeof window === 'undefined' ? undefined : window.location.origin,
+  import.meta.env.DEV,
+)
 
 type ToastMode = boolean | 'error-only'
-export type ApiOptions = RequestInit & { timeoutMs?: number; toast?: ToastMode; successMessage?: string; loader?: boolean }
+export type ApiOptions = RequestInit & { timeoutMs?: number; timeoutMessage?: string; toast?: ToastMode; successMessage?: string; loader?: boolean }
 export type ApiResult<TResult> = { ok: boolean; data: TResult; error: string; status: number }
 type LoadingListener = (activeRequests: number) => void
 
@@ -78,7 +83,7 @@ export async function getJsonResult<T>(path: string, fallback: T, options: ApiOp
     return { ok: true, data: await readJson<T>(response, fallback), error: '', status: response.status }
   } catch (error) {
     const message = error instanceof DOMException && error.name === 'AbortError'
-      ? 'Request timed out.'
+      ? options.timeoutMessage || 'Request timed out.'
       : error instanceof Error ? error.message : 'Request failed.'
     return { ok: false, data: fallback, error: message, status: 0 }
   }
@@ -178,7 +183,7 @@ async function mutateJson<TResult>(path: string, options: ApiOptions, fallback: 
     notifyMutation(path, options.method, response.ok, error, options)
     return { ok: response.ok, data: response.ok ? await readJson<TResult>(response, fallback) : fallback, error, status: response.status }
   } catch (error) {
-    const message = error instanceof DOMException && error.name === 'AbortError' ? 'Request timed out. Payroll may still be processing; refresh and check diagnostics.' : error instanceof Error ? error.message : 'Request failed.'
+    const message = error instanceof DOMException && error.name === 'AbortError' ? options.timeoutMessage || 'Request timed out. Payroll may still be processing; refresh and check diagnostics.' : error instanceof Error ? error.message : 'Request failed.'
     notifyMutation(path, options.method, false, message, options)
     return { ok: false, data: fallback, error: message, status: 0 }
   }

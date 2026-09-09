@@ -71,6 +71,13 @@ CREATE TABLE IF NOT EXISTS recruitment_candidate_action_decisions (
     INDEX IX_recruitment_candidate_decision_application (ApplicationId,DecidedAtUtc),
     CONSTRAINT FK_recruitment_candidate_decision_session FOREIGN KEY (CandidateActionSessionId) REFERENCES recruitment_candidate_action_sessions(Id) ON DELETE CASCADE
 );");
+        await db.ExecuteAsync(@"UPDATE recruitment_candidate_action_sessions action
+JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=action.ApplicationId
+LEFT JOIN recruitment_application_pipeline_instances pipeline ON pipeline.ApplicationId=applicationRow.Id
+SET action.Status='Revoked',action.RevokedAtUtc=COALESCE(action.RevokedAtUtc,UTC_TIMESTAMP(6))
+WHERE action.Status='Open' AND action.RevokedAtUtc IS NULL
+  AND (action.PipelineStageInstanceId IS NULL OR pipeline.CurrentStageInstanceId IS NULL
+       OR action.PipelineStageInstanceId<>pipeline.CurrentStageInstanceId)");
     }
 
     public async Task<IEnumerable<RecruitmentCandidateActionSession>> ListAsync(long applicationId, AuthUser user)
@@ -103,19 +110,10 @@ LEFT JOIN recruitment_application_pipeline_instances pi ON pi.ApplicationId=a.Id
 LEFT JOIN recruitment_application_stage_instances si ON si.Id=pi.CurrentStageInstanceId
 WHERE a.Id=@Id", new { Id = request.ApplicationId });
         if (source is null || (user.ClientId is not null && user.ClientId != source.ClientId)) return (null, "Candidate application was not found.");
-        var portalEnabled = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_settings
-WHERE ClientId=@ClientId AND RecruitmentEnabled=TRUE AND EnableCandidatePortal=TRUE AND IsActive=TRUE", new { source.ClientId });
-        if (portalEnabled == 0) return (null, "Enable the candidate portal in Recruitment Settings before creating an external candidate link.");
-        if (request.PipelineStageInstanceId.HasValue)
-        {
-            var stageBelongs = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_application_stage_instances WHERE Id=@Id AND ApplicationId=@ApplicationId", new { Id = request.PipelineStageInstanceId.Value, request.ApplicationId });
-            if (stageBelongs == 0) return (null, "Pipeline stage does not belong to this application.");
-        }
-        else if (source.CurrentStageInstanceId > 0)
-        {
-            request.PipelineStageInstanceId = source.CurrentStageInstanceId;
-        }
-
+        if (source.CurrentStageInstanceId <= 0) return (null, "The candidate application does not have an active pipeline stage.");
+        if (request.PipelineStageInstanceId.HasValue && request.PipelineStageInstanceId.Value != source.CurrentStageInstanceId)
+            return (null, "Candidate action must target the application's current pipeline stage.");
+        request.PipelineStageInstanceId = source.CurrentStageInstanceId;
         if (!request.FormVersionId.HasValue && source.PipelineStageId > 0)
             request.FormVersionId = await db.ExecuteScalarAsync<long?>("SELECT FormVersionId FROM recruitment_stage_external_form_configurations WHERE PipelineStageId=@Id", new { Id = source.PipelineStageId });
         if (request.FormVersionId.HasValue)
@@ -137,6 +135,13 @@ WHERE v.Id=@Id AND v.Status IN ('Published','Retired') AND d.ClientId IN (0,@Cli
         await using var transaction = await db.BeginTransactionAsync();
         try
         {
+            var lockedCurrentStageId = await LockCurrentStageAsync(db, transaction, request.ApplicationId);
+            if (!lockedCurrentStageId.HasValue || lockedCurrentStageId.Value != request.PipelineStageInstanceId.Value)
+            {
+                await transaction.RollbackAsync();
+                return (null, "The candidate has moved to another pipeline stage. Generate a new candidate action link.");
+            }
+            await RevokeSupersededSessionsAsync(db, request.ApplicationId, user.ClientId, transaction);
             var externalSubjectId = await FindOrCreateSubjectAsync(db, transaction, source);
             long? submissionId = null;
             if (request.FormVersionId.HasValue)
@@ -220,11 +225,11 @@ WHERE a.Id=@Id AND (@ClientId IS NULL OR a.ClientId=@ClientId)", new { Id = appl
     {
         await using var db = Db();
         await db.OpenAsync();
+        await RevokeSupersededSessionsAsync(db, applicationId, user.ClientId);
         var existingId = await db.ExecuteScalarAsync<long?>(@"SELECT s.Id
 FROM recruitment_candidate_action_sessions s
 JOIN recruitment_candidate_applications a ON a.Id=s.ApplicationId
 JOIN recruitment_application_pipeline_instances pipeline ON pipeline.ApplicationId=a.Id
-JOIN recruitment_settings settings ON settings.ClientId=s.ClientId AND settings.RecruitmentEnabled=TRUE AND settings.EnableCandidatePortal=TRUE AND settings.IsActive=TRUE
 WHERE s.ApplicationId=@ApplicationId AND s.PipelineStageInstanceId=pipeline.CurrentStageInstanceId
   AND s.Status='Open' AND s.RevokedAtUtc IS NULL AND s.ExpiresAtUtc>UTC_TIMESTAMP(6)
   AND s.UseCount<s.MaximumUses AND (@ClientId IS NULL OR s.ClientId=@ClientId)
@@ -289,14 +294,42 @@ FROM recruitment_offers WHERE Id=@Id AND ApplicationId=@ApplicationId", new { Id
     {
         await using var db = Db();
         await db.OpenAsync();
-        var session = await ValidateAsync(db, token, true);
+        var session = await ValidateAsync(db, token, false);
         if (session?.FormSubmissionId is null) return (false, "This candidate action does not contain a form.");
-        var allowSave = await db.ExecuteScalarAsync<bool>(@"SELECT COALESCE(configuration.AllowSaveDraft,FALSE)
+        await using var transaction = await db.BeginTransactionAsync();
+        try
+        {
+            await LockCurrentStageAsync(db, transaction, session.ApplicationId);
+            var locked = await db.QueryFirstOrDefaultAsync<ActionSessionRow>(SessionSql + " FOR UPDATE", new { TokenHash = Hash(token) }, transaction);
+            if (!IsValid(locked) || locked!.FormSubmissionId is null)
+            {
+                await transaction.RollbackAsync();
+                return (false, "Candidate action is invalid or expired.");
+            }
+            var allowSave = await db.ExecuteScalarAsync<bool>(@"SELECT COALESCE(configuration.AllowSaveDraft,FALSE)
 FROM recruitment_application_stage_instances stageInstance
 LEFT JOIN recruitment_stage_external_form_configurations configuration ON configuration.PipelineStageId=stageInstance.PipelineStageId
-WHERE stageInstance.Id=@Id", new { Id = session.PipelineStageInstanceId });
-        if (!allowSave) return (false, "Saving a draft is not enabled for this candidate action.");
-        return await forms.SaveSubmissionValuesAsync(session.FormSubmissionId.Value, session.ClientId, request);
+WHERE stageInstance.Id=@Id", new { Id = locked.PipelineStageInstanceId }, transaction);
+            if (!allowSave)
+            {
+                await transaction.RollbackAsync();
+                return (false, "Saving a draft is not enabled for this candidate action.");
+            }
+            var saved = await forms.SaveSubmissionValuesAsync(locked.FormSubmissionId.Value, locked.ClientId, request);
+            if (!saved.Ok)
+            {
+                await transaction.RollbackAsync();
+                return saved;
+            }
+            await db.ExecuteAsync("UPDATE recruitment_candidate_action_sessions SET LastUsedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id", new { locked.Id }, transaction);
+            await transaction.CommitAsync();
+            return saved;
+        }
+        catch (Exception exception)
+        {
+            await transaction.RollbackAsync();
+            return (false, exception.Message);
+        }
     }
 
     public async Task<(PublicUploadAuthorization? Authorization, string Error)> AuthorizeUploadAsync(string token, long fieldId)
@@ -325,13 +358,27 @@ WHERE s.Id=@SubmissionId AND f.Id=@FieldId AND f.IsActive=TRUE AND t.TypeCode='U
     {
         await using var db = Db();
         await db.OpenAsync();
-        var session = await ValidateAsync(db, token, true) ?? throw new InvalidOperationException("Candidate action is invalid or expired.");
-        if (!session.FormSubmissionId.HasValue) throw new InvalidOperationException("Candidate action does not contain an upload form.");
-        await db.ExecuteAsync(@"INSERT IGNORE INTO form_submission_attachments (SubmissionId,FieldId,AttachmentId,AttachmentPublicId)
+        var session = await ValidateAsync(db, token, false) ?? throw new InvalidOperationException("Candidate action is invalid or expired.");
+        await using var transaction = await db.BeginTransactionAsync();
+        try
+        {
+            await LockCurrentStageAsync(db, transaction, session.ApplicationId);
+            var locked = await db.QueryFirstOrDefaultAsync<ActionSessionRow>(SessionSql + " FOR UPDATE", new { TokenHash = Hash(token) }, transaction);
+            if (!IsValid(locked)) throw new InvalidOperationException("Candidate action is invalid or expired.");
+            if (!locked!.FormSubmissionId.HasValue) throw new InvalidOperationException("Candidate action does not contain an upload form.");
+            await db.ExecuteAsync(@"INSERT IGNORE INTO form_submission_attachments (SubmissionId,FieldId,AttachmentId,AttachmentPublicId)
 VALUES (@SubmissionId,@FieldId,@AttachmentId,@PublicId);
 UPDATE entity_attachments a JOIN form_submissions s ON s.Id=@SubmissionId
 SET a.uploaded_by_external_subject_id=s.ExternalSubjectId WHERE a.id=@AttachmentId;",
-            new { SubmissionId = session.FormSubmissionId.Value, FieldId = fieldId, AttachmentId = attachmentId, PublicId = publicId.ToString() });
+                new { SubmissionId = locked.FormSubmissionId.Value, FieldId = fieldId, AttachmentId = attachmentId, PublicId = publicId.ToString() }, transaction);
+            await db.ExecuteAsync("UPDATE recruitment_candidate_action_sessions SET LastUsedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id", new { locked.Id }, transaction);
+            await transaction.CommitAsync();
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            throw;
+        }
     }
 
     public async Task<(PublicCandidateActionResult? Result, string Error)> CompleteAsync(string token, CompletePublicCandidateActionRequest request, string ipAddress, string userAgent)
@@ -340,23 +387,35 @@ SET a.uploaded_by_external_subject_id=s.ExternalSubjectId WHERE a.id=@Attachment
         await db.OpenAsync();
         var session = await ValidateAsync(db, token, false);
         if (session is null) return (null, "Candidate action is invalid or expired.");
-        if (session.FormSubmissionId.HasValue)
-        {
-            var saved = await forms.SaveSubmissionValuesAsync(session.FormSubmissionId.Value, session.ClientId, new SavePublicFormValuesRequest { Values = request.Values });
-            if (!saved.Ok) return (null, saved.Error);
-            var required = await forms.ValidateRequiredSubmissionAsync(session.FormSubmissionId.Value);
-            if (!required.Ok) return (null, required.Error);
-        }
-
         var decision = NormalizeDecision(request.Decision);
         if (session.PurposeCode == "OFFER_RESPONSE" && decision.Length == 0)
             return (null, "Select Accept, Reject or Request negotiation.");
         await using var transaction = await db.BeginTransactionAsync();
         try
         {
+            await LockCurrentStageAsync(db, transaction, session.ApplicationId);
             var locked = await db.QueryFirstOrDefaultAsync<ActionSessionRow>(SessionSql + " FOR UPDATE", new { TokenHash = Hash(token) }, transaction);
-            if (!IsValid(locked)) return (null, "Candidate action is invalid or expired.");
-            if (locked!.PurposeCode == "OFFER_RESPONSE" && locked.OfferId.HasValue)
+            if (!IsValid(locked))
+            {
+                await transaction.RollbackAsync();
+                return (null, "Candidate action is invalid or expired.");
+            }
+            if (locked!.FormSubmissionId.HasValue)
+            {
+                var saved = await forms.SaveSubmissionValuesAsync(locked.FormSubmissionId.Value, locked.ClientId, new SavePublicFormValuesRequest { Values = request.Values });
+                if (!saved.Ok)
+                {
+                    await transaction.RollbackAsync();
+                    return (null, saved.Error);
+                }
+                var required = await forms.ValidateRequiredSubmissionAsync(locked.FormSubmissionId.Value);
+                if (!required.Ok)
+                {
+                    await transaction.RollbackAsync();
+                    return (null, required.Error);
+                }
+            }
+            if (locked.PurposeCode == "OFFER_RESPONSE" && locked.OfferId.HasValue)
             {
                 var offer = await db.QueryFirstOrDefaultAsync<OfferResponseRow>(@"SELECT offer.Id,offer.Status,offer.ExpiryDate,
 applicationRow.ClientId,applicationRow.CandidateId,applicationRow.PositionId,applicationRow.CurrentStage
@@ -378,7 +437,16 @@ WHERE Id=@Id AND ApplicationId=@ApplicationId", new { Id = offer.Id, locked.Appl
 
                 var applicationStage = offerStatus == "Accepted" ? "Offer Accepted"
                     : offerStatus == "Rejected" ? "Rejected" : "Offer Negotiation";
-                if (!offer.CurrentStage.Equals(applicationStage, StringComparison.OrdinalIgnoreCase))
+                if (IsBoundToCurrentStage(locked))
+                {
+                    // A published pipeline owns CurrentStage. Offer response is a
+                    // business status used by the stage-exit rule; overwriting the
+                    // configured stage here strands the card outside its pipeline.
+                    await db.ExecuteAsync(@"UPDATE recruitment_candidate_applications
+SET CurrentStatus=@Stage,UpdatedAt=UTC_TIMESTAMP()
+WHERE Id=@ApplicationId;", new { locked.ApplicationId, Stage = applicationStage }, transaction);
+                }
+                else if (!offer.CurrentStage.Equals(applicationStage, StringComparison.OrdinalIgnoreCase))
                 {
                     await db.ExecuteAsync(@"UPDATE recruitment_candidate_applications
 SET CurrentStage=@Stage,CurrentStatus=@Stage,LastStageChangedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP()
@@ -630,13 +698,32 @@ FROM form_submission_values WHERE SubmissionId=@Id ORDER BY FieldId", new { Id =
     {
         if (string.IsNullOrWhiteSpace(token)) return null;
         var row = await db.QueryFirstOrDefaultAsync<ActionSessionRow>(SessionSql, new { TokenHash = Hash(token) });
+        if (IsSuperseded(row))
+        {
+            await db.ExecuteAsync("UPDATE recruitment_candidate_action_sessions SET Status='Revoked',RevokedAtUtc=COALESCE(RevokedAtUtc,UTC_TIMESTAMP(6)) WHERE Id=@Id AND Status='Open'", new { row!.Id });
+            return null;
+        }
         if (!IsValid(row)) return null;
         if (touch)
             await db.ExecuteAsync("UPDATE recruitment_candidate_action_sessions SET LastUsedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id", new { row!.Id });
         return row;
     }
 
-    private static bool IsValid(ActionSessionRow? row) => row is not null && row.Status == "Open" && row.RevokedAtUtc is null && row.ExpiresAtUtc > DateTime.UtcNow && row.UseCount < row.MaximumUses;
+    private static bool IsBoundToCurrentStage(ActionSessionRow? row) => row?.PipelineStageInstanceId is not null
+        && row.CurrentStageInstanceId == row.PipelineStageInstanceId;
+    private static bool IsSuperseded(ActionSessionRow? row) => row is not null && !IsBoundToCurrentStage(row);
+    private static bool IsValid(ActionSessionRow? row) => IsBoundToCurrentStage(row) && row!.Status == "Open" && row.RevokedAtUtc is null && row.ExpiresAtUtc > DateTime.UtcNow && row.UseCount < row.MaximumUses;
+    private static Task<long?> LockCurrentStageAsync(MySqlConnection db, MySqlTransaction transaction, long applicationId) =>
+        db.ExecuteScalarAsync<long?>("SELECT CurrentStageInstanceId FROM recruitment_application_pipeline_instances WHERE ApplicationId=@ApplicationId FOR UPDATE", new { ApplicationId = applicationId }, transaction);
+    private static Task<int> RevokeSupersededSessionsAsync(MySqlConnection db, long applicationId, int? clientId, MySqlTransaction? transaction = null) =>
+        db.ExecuteAsync(@"UPDATE recruitment_candidate_action_sessions action
+JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=action.ApplicationId
+LEFT JOIN recruitment_application_pipeline_instances pipeline ON pipeline.ApplicationId=applicationRow.Id
+SET action.Status='Revoked',action.RevokedAtUtc=COALESCE(action.RevokedAtUtc,UTC_TIMESTAMP(6))
+WHERE action.ApplicationId=@ApplicationId AND action.Status='Open' AND action.RevokedAtUtc IS NULL
+  AND (@ClientId IS NULL OR applicationRow.ClientId=@ClientId)
+  AND (action.PipelineStageInstanceId IS NULL OR pipeline.CurrentStageInstanceId IS NULL
+       OR action.PipelineStageInstanceId<>pipeline.CurrentStageInstanceId)", new { ApplicationId = applicationId, ClientId = clientId }, transaction);
     private static string NormalizeCode(string value) => string.Join("_", (value ?? "").Trim().ToUpperInvariant().Split([' ', '-', '/'], StringSplitOptions.RemoveEmptyEntries));
     private static string NormalizeDecision(string value) => (value ?? "").Trim().ToUpperInvariant() switch { "ACCEPT" or "ACCEPTED" => "ACCEPTED", "REJECT" or "REJECTED" => "REJECTED", "NEGOTIATION" or "NEGOTIATION_REQUESTED" or "REQUEST_NEGOTIATION" => "NEGOTIATION_REQUESTED", _ => "" };
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
@@ -648,9 +735,9 @@ FROM recruitment_candidate_action_sessions s
 JOIN recruitment_candidates c ON c.Id=s.CandidateId
 JOIN recruitment_candidate_applications a ON a.Id=s.ApplicationId
 JOIN recruitment_open_positions p ON p.Id=a.PositionId ";
-    private const string SessionSql = @"SELECT action.Id,action.ClientId,action.ApplicationId,action.CandidateId,action.PipelineStageInstanceId,action.FormVersionId,action.FormSubmissionId,action.OfferId,action.PurposeCode,action.Status,action.MaximumUses,action.UseCount,action.ExpiresAtUtc,action.RevokedAtUtc
+    private const string SessionSql = @"SELECT action.Id,action.ClientId,action.ApplicationId,action.CandidateId,action.PipelineStageInstanceId,action.FormVersionId,action.FormSubmissionId,action.OfferId,action.PurposeCode,action.Status,action.MaximumUses,action.UseCount,action.ExpiresAtUtc,action.RevokedAtUtc,pipeline.CurrentStageInstanceId
 FROM recruitment_candidate_action_sessions action
-JOIN recruitment_settings settings ON settings.ClientId=action.ClientId AND settings.RecruitmentEnabled=TRUE AND settings.EnableCandidatePortal=TRUE AND settings.IsActive=TRUE
+LEFT JOIN recruitment_application_pipeline_instances pipeline ON pipeline.ApplicationId=action.ApplicationId
 WHERE action.TokenHash=@TokenHash";
 
     private sealed class ActionSourceRow
@@ -707,6 +794,7 @@ WHERE action.TokenHash=@TokenHash";
         public long ApplicationId { get; set; }
         public long CandidateId { get; set; }
         public long? PipelineStageInstanceId { get; set; }
+        public long? CurrentStageInstanceId { get; set; }
         public long? FormVersionId { get; set; }
         public long? FormSubmissionId { get; set; }
         public long? OfferId { get; set; }

@@ -80,7 +80,7 @@ export default function ScheduledJobsManager() {
   const configForType = (type: ScheduledJobAction['actionType']) => stringify(type === 'Stored Procedure' ? procedure0 : type === 'Internal API Call' ? api0 : type === 'Report Email' ? reportEmail0 : type === 'Workflow Trigger' ? workflowTrigger0 : notification0)
 
   return <section className="scheduled-jobs-settings">
-    <Card title="Scheduled Jobs" size="small" className="settings-panel settings-table-panel">
+    <Card size="small" className="settings-panel settings-table-panel" aria-label="Scheduled job configuration">
       <Tabs items={[
         { key: 'actions', label: 'Job Actions', children: <>
           <div className="component-table-head"><div><b>Reusable job actions</b><span>Create what the scheduler can do. Schedules will reuse these actions.</span></div><Space className="settings-master-actions" size={8} wrap><Button onClick={() => void load()}>Refresh</Button><Button type="primary" onClick={() => openAction()}>Add action</Button></Space></div>

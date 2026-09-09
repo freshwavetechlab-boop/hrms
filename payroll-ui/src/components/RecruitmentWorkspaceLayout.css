@@ -1,0 +1,95 @@
+.recruitment-guided-workspace {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
+  height: clamp(480px, calc(100dvh - 290px), 900px);
+  border: 1px solid var(--workspace-border);
+  border-radius: 14px;
+  background: var(--workspace-background);
+  overflow: hidden;
+}
+.recruitment-guided-workspace-body {
+  display: grid;
+  grid-template-columns: minmax(190px, 230px) minmax(0, 1fr);
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.recruitment-guided-workspace-sidebar,
+.recruitment-guided-workspace-content {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.recruitment-guided-workspace-sidebar {
+  padding: 12px;
+  border-right: 1px solid #e8edf5;
+  background: var(--workspace-sidebar-background);
+}
+.recruitment-guided-workspace-content { padding: 18px; }
+.recruitment-guided-workspace-navigation { display: grid; gap: 6px; }
+.recruitment-guided-workspace-navigation > button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 12px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--workspace-text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.recruitment-guided-workspace-navigation > button:hover:not(:disabled) { background: var(--workspace-active-background); }
+.recruitment-guided-workspace-navigation > button.is-active {
+  border-color: var(--workspace-border);
+  background: var(--workspace-background);
+  color: var(--workspace-accent);
+  box-shadow: 0 2px 6px #273f6b08;
+}
+.recruitment-guided-workspace-navigation > button:focus-visible { outline: 2px solid var(--workspace-accent); outline-offset: -2px; }
+.recruitment-guided-workspace-navigation > button:disabled { opacity: .55; cursor: not-allowed; }
+.recruitment-guided-workspace-nav-icon { display: flex; flex: 0 0 20px; justify-content: center; font-size: 18px; }
+.recruitment-guided-workspace-nav-copy { display: grid; flex: 1; min-width: 0; gap: 3px; }
+.recruitment-guided-workspace-nav-copy strong { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.recruitment-guided-workspace-nav-copy small { font-size: 11px; color: #78869d; line-height: 1.45; }
+.recruitment-guided-workspace-nav-badge { font-size: 12px; font-variant-numeric: tabular-nums; }
+.recruitment-guided-workspace-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border-top: 1px solid #e8edf5;
+  background: var(--workspace-background);
+}
+.recruitment-guided-workspace-footer .ant-space { flex-wrap: wrap; }
+.recruitment-guided-workspace-footer .ant-btn { min-height: 36px; }
+@media (max-width: 1000px) {
+  .recruitment-guided-workspace-content { padding: 12px; }
+}
+@media (max-width: 1100px) {
+  .recruitment-guided-workspace-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .recruitment-guided-workspace-sidebar { max-height: 180px; border-right: 0; border-bottom: 1px solid var(--workspace-border); }
+  .recruitment-guided-workspace-navigation { display: flex; overflow-x: auto; }
+  .recruitment-guided-workspace-navigation > button { flex: 0 0 auto; width: auto; }
+  .recruitment-guided-workspace-nav-copy small { display: none; }
+}
+@media (max-width: 700px) {
+  .recruitment-guided-workspace { height: auto; min-height: 420px; overflow: visible; }
+  .recruitment-guided-workspace-body { grid-template-columns: minmax(0, 1fr); }
+  .recruitment-guided-workspace-sidebar { max-height: 210px; border-right: 0; border-bottom: 1px solid #e8edf5; }
+  .recruitment-guided-workspace-navigation { display: flex; overflow-x: auto; }
+  .recruitment-guided-workspace-navigation > button { flex: 0 0 auto; width: auto; }
+  .recruitment-guided-workspace-nav-copy small { display: none; }
+  .recruitment-guided-workspace-content { overflow: visible; }
+  .recruitment-guided-workspace-footer { border-radius: 0 0 14px 14px; padding: 10px; }
+}

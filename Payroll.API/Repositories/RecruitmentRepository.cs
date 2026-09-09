@@ -1,6 +1,7 @@
 using Dapper;
 using MySqlConnector;
 using Payroll.API.Models;
+using Payroll.API.Services;
 using System.Text.Json;
 
 namespace Payroll.API.Repositories;
@@ -41,16 +42,15 @@ public class RecruitmentRepository(IConfiguration configuration)
         await EnsureTablesAsync(db);
         var employee = await db.QueryFirstOrDefaultAsync<RequesterRow>("SELECT Id,ClientId,Department FROM employees WHERE Id=@EmployeeId", new { EmployeeId = employeeId });
         var scopeClientId = clientId ?? user.ClientId ?? employee?.ClientId ?? 0;
-        var setting = await GetSettingAsync(db, scopeClientId);
-        var moduleEnabled = setting is not null && setting.RecruitmentEnabled && HasRecruitmentAccess(user);
-        var enabled = moduleEnabled && setting is not null && setting.AllowEmployeeRfrCreation && HasRecruitmentCreateAccess(user);
+        var moduleEnabled = HasRecruitmentAccess(user);
+        var enabled = HasRecruitmentCreateAccess(user);
         var options = new RecruitmentOptions
         {
             ModuleEnabled = moduleEnabled,
             Enabled = enabled,
-            AllowReplacementHiring = setting?.AllowReplacementHiring ?? false,
-            EnableInternalHiring = setting?.EnableInternalHiring ?? false,
-            EnableReferralHiring = setting?.EnableReferralHiring ?? false,
+            AllowReplacementHiring = true,
+            EnableInternalHiring = true,
+            EnableReferralHiring = true,
             ClientName = await db.ExecuteScalarAsync<string>("SELECT COALESCE(Name,'') FROM clients WHERE Id=@ClientId", new { ClientId = scopeClientId }) ?? ""
         };
         options.PositionCategories = (await MasterValuesAsync(db, scopeClientId, "Position Category")).ToList();
@@ -65,9 +65,8 @@ public class RecruitmentRepository(IConfiguration configuration)
         options.CostCenters = await DropdownValuesAsync(db, scopeClientId, "Cost Center");
         options.WorkLocations = (await db.QueryAsync<string>("SELECT Name FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY Name", new { ClientId = scopeClientId })).ToList();
         options.Employees = (await db.QueryAsync<EmployeeLookup>(@"SELECT Id,EmployeeCode,CONCAT(FirstName,' ',COALESCE(LastName,'')) EmployeeName,Department,Designation FROM employees WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY FirstName,LastName", new { ClientId = scopeClientId })).ToList();
-        if (setting is null || !setting.RecruitmentEnabled) options.ValidationMessages.Add("Recruitment is not enabled for this client.");
-        else if (!HasRecruitmentAccess(user)) options.ValidationMessages.Add("Your user does not have recruitment access permission.");
-        else if (!enabled) options.ValidationMessages.Add("Recruitment requisition creation requires Employee RFR creation and recruitment.rfr.create permission.");
+        if (!HasRecruitmentAccess(user)) options.ValidationMessages.Add("Your role does not have recruitment access permission.");
+        else if (!enabled) options.ValidationMessages.Add("Your role requires the recruitment.rfr.create permission to create hiring requests.");
         if (options.PositionCategories.Count == 0) options.ValidationMessages.Add("No active Position Category is configured in Dropdown Masters.");
         if (options.ExperienceRanges.Count == 0) options.ValidationMessages.Add("No active Experience Range is configured in Dropdown Masters.");
         if (options.BudgetAmounts.Count == 0) options.ValidationMessages.Add("No active Budget Amount is configured in Dropdown Masters.");
@@ -105,7 +104,8 @@ AND (@DateFrom IS NULL OR r.RequestDate>=@DateFrom)
 AND (@DateTo IS NULL OR r.RequestDate<=@DateTo)
 AND (@Query='' OR CONCAT(r.RfrNumber,' ',r.PositionTitle,' ',r.Department,' ',r.Project,' ',COALESCE(c.Name,''),' ',COALESCE(requester.FirstName,''),' ',COALESCE(requester.LastName,'')) LIKE CONCAT('%',@Query,'%'))
 ORDER BY r.UpdatedAt DESC LIMIT 500";
-        return await db.QueryAsync<RecruitmentRequisition>(ListSql(where), new { ClientId = clientId, request.Status, request.Department, request.HiringType, request.EmploymentType, request.Priority, request.BusinessUnit, request.PositionCategory, request.Experience, request.Location, request.Project, request.ReplacementHiring, request.BudgetMin, request.BudgetMax, request.DateFrom, request.DateTo, request.Query });
+        var rows = await db.QueryAsync<RecruitmentRequisition>(ListSql(where), new { ClientId = clientId, request.Status, request.Department, request.HiringType, request.EmploymentType, request.Priority, request.BusinessUnit, request.PositionCategory, request.Experience, request.Location, request.Project, request.ReplacementHiring, request.BudgetMin, request.BudgetMax, request.DateFrom, request.DateTo, request.Query });
+        return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
     }
 
     public async Task<RecruitmentRequisition?> GetAsync(long id, AuthUser user)
@@ -114,7 +114,7 @@ ORDER BY r.UpdatedAt DESC LIMIT 500";
         await db.OpenAsync();
         var row = await db.QueryFirstOrDefaultAsync<RecruitmentRequisition>(ListSql("WHERE r.Id=@Id"), new { Id = id });
         if (row is null) return null;
-        if (CanView(row, user)) return row;
+        if (CanView(row, user) && await RecruitmentAccessScope.CanAccessLocationAsync(db, user, row.ClientId, row.JobLocation)) return row;
         return null;
     }
 
@@ -130,11 +130,19 @@ ORDER BY r.UpdatedAt DESC LIMIT 500";
         {
             existing = await db.QueryFirstOrDefaultAsync<RecruitmentRequisition>("SELECT * FROM recruitment_requisitions WHERE Id=@Id", new { request.Id });
             if (existing is null || !CanModify(existing, user, canManage)) return (null, "Draft not found.");
-            if (existing.Status is not ("Draft" or "Sent Back")) return (null, "Only draft or sent back requisitions can be edited.");
+            var canEditApproved = existing.Status == "Approved" && user.Permissions.Contains("settings.manage", StringComparer.OrdinalIgnoreCase);
+            if (existing.Status is not ("Draft" or "Sent Back") && !canEditApproved) return (null, "Only draft or sent back requisitions can be edited. Administrators can also edit approved requests.");
             if (request.ClientId is > 0 && request.ClientId.Value != existing.ClientId)
                 return (null, "A requisition's client cannot be changed after creation.");
             if (request.RequestedByEmployeeId is > 0 && request.RequestedByEmployeeId.Value != existing.RequestedByEmployeeId)
                 return (null, "A requisition's requester cannot be changed after creation.");
+            if (canEditApproved)
+            {
+                var consumedPositions = await db.ExecuteScalarAsync<int?>(@"SELECT FilledPositions+CancelledPositions+OnHoldPositions
+FROM recruitment_open_positions WHERE RequisitionId=@Id", new { request.Id });
+                if (consumedPositions.HasValue && request.NumberOfOpenings < consumedPositions.Value)
+                    return (null, $"Openings cannot be less than {consumedPositions.Value}; that many positions are already filled, cancelled, or on hold.");
+            }
         }
         var requesterEmployeeId = existing?.RequestedByEmployeeId
             ?? (canManage && request.RequestedByEmployeeId is > 0 ? request.RequestedByEmployeeId : user.EmployeeId);
@@ -144,12 +152,10 @@ ORDER BY r.UpdatedAt DESC LIMIT 500";
         if (employee is null) return (null, "Requester employee profile was not found.");
         var clientId = existing?.ClientId ?? user.ClientId ?? request.ClientId ?? employee.ClientId;
         if (employee.ClientId != clientId) return (null, "Requester employee must belong to the selected client.");
-        var enabled = canManage
-            ? await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_settings WHERE ClientId=@ClientId AND RecruitmentEnabled=TRUE AND IsActive=TRUE", new { ClientId = clientId }) > 0
-            : await IsRequesterAllowedAsync(db, clientId, user);
-        if (!enabled) return (null, "Recruitment requisition creation is not enabled for your client.");
-        var setting = await GetSettingAsync(db, clientId);
-        var validation = await ValidateAsync(db, request, clientId, setting);
+        if (!await RecruitmentAccessScope.CanAccessLocationAsync(db, user, clientId, request.JobLocation)) return (null, "The selected job location is outside your recruitment visibility scope.");
+        var enabled = canManage || await IsRequesterAllowedAsync(user);
+        if (!enabled) return (null, "Your role does not allow hiring request creation.");
+        var validation = await ValidateAsync(db, request, clientId);
         if (!string.IsNullOrWhiteSpace(validation)) return (null, validation);
         if (existing is not null && request.WorkOrderId is null && request.WorkOrderLineNumber is null)
         {
@@ -188,12 +194,53 @@ WHERE line.WorkOrderId=@WorkOrderId AND line.LineNumber=@WorkOrderLineNumber FOR
         if (existing is not null)
         {
             await db.ExecuteAsync(UpdateSql, Payload(request, user, employee, clientId, existing.RfrNumber, existing.Id, existing.RequestDate), transaction);
+            if (existing.Status == "Approved")
+            {
+                var snapshot = JsonSerializer.Serialize(request);
+                await db.ExecuteAsync(@"UPDATE recruitment_open_positions SET
+PositionCode=CASE WHEN @ExternalPositionCode<>'' THEN @ExternalPositionCode ELSE PositionCode END,
+BranchId=@BranchId,BusinessUnit=@BusinessUnit,Department=@Department,CostCenter=@CostCenter,
+PositionTitle=@PositionTitle,PositionCategory=@PositionCategory,EmploymentType=@EmploymentType,HiringType=@HiringType,
+NumberOfPositions=@NumberOfOpenings,ApprovedPositions=@NumberOfOpenings,
+RemainingPositions=GREATEST(0,@NumberOfOpenings-FilledPositions-CancelledPositions-OnHoldPositions),
+TargetJoiningDate=@TargetJoiningDate,JobLocation=@JobLocation,Project=@Project,
+BudgetAvailable=@BudgetAvailable,BudgetAmount=@BudgetAmount,SalaryMin=@SalaryMin,SalaryMax=@SalaryMax,
+Currency=@Currency,HiringPriority=@HiringPriority,RequiredSkills=@RequiredSkills,PreferredSkills=@PreferredSkills,
+ExperienceRange=@ExperienceRange,SnapshotJson=@Snapshot,UpdatedAt=UTC_TIMESTAMP()
+WHERE RequisitionId=@Id", new
+                {
+                    Id = existing.Id,
+                    ExternalPositionCode = request.ExternalPositionCode.Trim(),
+                    request.BranchId,
+                    request.BusinessUnit,
+                    Department = string.IsNullOrWhiteSpace(request.Department) ? employee.Department : request.Department,
+                    request.CostCenter,
+                    request.PositionTitle,
+                    request.PositionCategory,
+                    request.EmploymentType,
+                    request.HiringType,
+                    request.NumberOfOpenings,
+                    request.TargetJoiningDate,
+                    request.JobLocation,
+                    request.Project,
+                    request.BudgetAvailable,
+                    request.BudgetAmount,
+                    request.SalaryMin,
+                    request.SalaryMax,
+                    request.Currency,
+                    request.HiringPriority,
+                    request.RequiredSkills,
+                    request.PreferredSkills,
+                    request.ExperienceRange,
+                    Snapshot = snapshot,
+                }, transaction);
+            }
             await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET RequisitionId=NULL WHERE RequisitionId=@Id AND (@LineId IS NULL OR Id<>@LineId)",
                 new { Id = request.Id, LineId = workOrderLink?.Id }, transaction);
             if (workOrderLink is not null)
                 await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET RequisitionId=@RequisitionId WHERE Id=@Id",
                     new { RequisitionId = request.Id, workOrderLink.Id }, transaction);
-            await AuditAsync(db, request.Id, "Edit", user.Id, request, transaction);
+            await AuditAsync(db, request.Id, existing.Status == "Approved" ? "Edit Approved" : "Edit", user.Id, request, transaction);
             await transaction.CommitAsync();
             return (await GetAsync(request.Id, user), "");
         }
@@ -213,22 +260,43 @@ WHERE line.WorkOrderId=@WorkOrderId AND line.LineNumber=@WorkOrderLineNumber FOR
         var row = await db.QueryFirstOrDefaultAsync<RecruitmentRequisition>("SELECT * FROM recruitment_requisitions WHERE Id=@Id", new { Id = id });
         var canManage = user.Permissions.Contains("recruitment.manage", StringComparer.OrdinalIgnoreCase)
             || user.Permissions.Contains("settings.manage", StringComparer.OrdinalIgnoreCase);
-        if (row is null || !CanModify(row, user, canManage)) return (null, "Requisition not found.");
+        if (row is null || !CanModify(row, user, canManage) || !await RecruitmentAccessScope.CanAccessLocationAsync(db, user, row.ClientId, row.JobLocation)) return (null, "Requisition not found.");
         if (row.Status is not ("Draft" or "Sent Back")) return (null, "Only draft or sent back requisitions can be submitted.");
-        await db.ExecuteAsync("UPDATE recruitment_requisitions SET Status='Pending Approval',SubmittedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id });
-        await AuditAsync(db, id, "Submit", user.Id, row);
-        var workflowId = await GetApprovalWorkflowIdAsync(db, row.ClientId, workflows);
+        // The action hook is the administrator's switch for this approval route.
+        // A configured workflow must not keep intercepting submissions after every
+        // matching action rule has deliberately been disabled.
+        var actionRuleEnabled = await workflows.IsActionRuleActiveAsync("RFR.SUBMIT");
+        var workflowId = actionRuleEnabled ? await GetApprovalWorkflowIdAsync(db, row.ClientId, workflows) : null;
+        var approvalEnabled = workflowId is not null;
         if (workflowId is not null)
         {
             var instance = await workflows.StartAsync(new StartWorkflowRequest { WorkflowId = workflowId.Value, ResourceType = "RecruitmentRequisition", ResourceId = id.ToString(), PayloadJson = JsonSerializer.Serialize(row) }, user.Id);
-            if (instance is not null) await db.ExecuteAsync("UPDATE recruitment_requisitions SET WorkflowInstanceId=@InstanceId WHERE Id=@Id", new { InstanceId = instance.Id, Id = id });
+            if (instance is null) return (null, "The approval workflow could not resolve its first approver. Check the workflow stage and approver assignment, then submit again.");
+            await db.ExecuteAsync("UPDATE recruitment_requisitions SET Status='Pending Approval',WorkflowInstanceId=@InstanceId,SubmittedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { InstanceId = instance.Id, Id = id });
         }
         else
         {
-            await db.ExecuteAsync("UPDATE recruitment_requisitions SET Status='Approved',UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id });
+            await db.ExecuteAsync("UPDATE recruitment_requisitions SET Status='Approved',SubmittedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id });
             await CreateOpenPositionAsync(id, user.Id);
         }
+        await AuditAsync(db, id, "Submit", user.Id, new { row.RfrNumber, ApprovalEnabled = approvalEnabled, WorkflowId = workflowId });
         return (await GetAsync(id, user), "");
+    }
+
+    public async Task<bool> IsApprovalWorkflowEnabledAsync(int? requestedClientId, AuthUser user, WorkflowRepository workflows)
+    {
+        if (!await workflows.IsActionRuleActiveAsync("RFR.SUBMIT")) return false;
+        var clientId = user.ClientId ?? requestedClientId;
+        await using var db = Db();
+        await db.OpenAsync();
+        if (clientId.GetValueOrDefault() > 0)
+            return await GetApprovalWorkflowIdAsync(db, clientId!.Value, workflows) is not null;
+
+        return await db.ExecuteScalarAsync<int>(@"SELECT
+(SELECT COUNT(*) FROM workflowmasters WHERE IsActive=TRUE AND (Code='RFR.SUBMIT' OR ResourceType='RecruitmentRequisition'))+
+(SELECT COUNT(*) FROM recruitment_approval_mappings mapping
+ JOIN workflowmasters workflow ON workflow.Id=mapping.WorkflowId AND workflow.IsActive=TRUE
+ WHERE mapping.ProcessCode='RFR_APPROVAL' AND mapping.IsActive=TRUE AND mapping.WorkflowId>0)") > 0;
     }
 
     public async Task<(bool Ok, string Error)> WithdrawAsync(long id, AuthUser user)
@@ -259,6 +327,7 @@ WHERE line.WorkOrderId=@WorkOrderId AND line.LineNumber=@WorkOrderLineNumber FOR
             "SELECT * FROM recruitment_requisitions WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)",
             new { Id = id, user.ClientId });
         if (row is null) return (false, "Requisition was not found in your permitted client scope.");
+        if (!await RecruitmentAccessScope.CanAccessLocationAsync(db, user, row.ClientId, row.JobLocation)) return (false, "Requisition was not found in your permitted location scope.");
 
         var openPositions = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_open_positions WHERE RequisitionId=@Id", new { Id = id });
         if (openPositions > 0) return (false, $"Delete the {openPositions} linked open position(s) first.");
@@ -291,6 +360,20 @@ WHERE line.WorkOrderId=@WorkOrderId AND line.LineNumber=@WorkOrderLineNumber FOR
         await using var db = Db();
         await db.OpenAsync();
         var scopedClientId = user.ClientId ?? (requestedClientId is > 0 ? requestedClientId : null);
+        if (RecruitmentAccessScope.IsRestricted(user))
+        {
+            var scopedRequests = await db.QueryAsync<RecruitmentRequisition>(ListSql("WHERE (@ClientId IS NULL OR r.ClientId=@ClientId) ORDER BY r.UpdatedAt DESC"), new { ClientId = scopedClientId });
+            var visibleRequests = await RecruitmentAccessScope.FilterAsync(db, user, scopedRequests, row => row.ClientId, row => row.JobLocation);
+            if (own && user.EmployeeId is > 0) visibleRequests = visibleRequests.Where(row => row.RequestedByEmployeeId == user.EmployeeId.Value).ToList();
+            var scopedPositions = await db.QueryAsync<RecruitmentOpenPosition>(OpenPositionSql("WHERE (@ClientId IS NULL OR p.ClientId=@ClientId) ORDER BY p.CreatedAt DESC"), new { ClientId = scopedClientId });
+            var visiblePositions = await RecruitmentAccessScope.FilterAsync(db, user, scopedPositions, row => row.ClientId, row => row.JobLocation);
+            if (own && user.EmployeeId is > 0)
+            {
+                var ownedRequestIds = visibleRequests.Select(row => row.Id).ToHashSet();
+                visiblePositions = visiblePositions.Where(row => ownedRequestIds.Contains(row.RequisitionId)).ToList();
+            }
+            return BuildScopedDashboard(visibleRequests, visiblePositions);
+        }
         var filter = own && user.EmployeeId is not null ? "RequestedByEmployeeId=@EmployeeId" : "(@ClientId IS NULL OR ClientId=@ClientId)";
         var rows = (await db.QueryAsync<StatusCount>($"SELECT Status,COUNT(*) Count FROM recruitment_requisitions WHERE {filter} GROUP BY Status", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId })).ToDictionary(x => x.Status, x => x.Count);
         var positionFilter = own && user.EmployeeId is not null
@@ -317,12 +400,37 @@ WHERE line.WorkOrderId=@WorkOrderId AND line.LineNumber=@WorkOrderLineNumber FOR
         };
     }
 
+    private static RecruitmentDashboard BuildScopedDashboard(IReadOnlyList<RecruitmentRequisition> requests, IReadOnlyList<RecruitmentOpenPosition> positions)
+    {
+        var approvedWithTimings = requests.Where(row => row.Status.Equals("Approved", StringComparison.OrdinalIgnoreCase) && row.SubmittedAt.HasValue).ToList();
+        return new RecruitmentDashboard
+        {
+            Drafts = requests.Count(row => row.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase)),
+            PendingApproval = requests.Count(row => row.Status.Equals("Pending Approval", StringComparison.OrdinalIgnoreCase)),
+            Approved = requests.Count(row => row.Status.Equals("Approved", StringComparison.OrdinalIgnoreCase)),
+            Rejected = requests.Count(row => row.Status.Equals("Rejected", StringComparison.OrdinalIgnoreCase)),
+            Returned = requests.Count(row => row.Status.Equals("Sent Back", StringComparison.OrdinalIgnoreCase)),
+            Withdrawn = requests.Count(row => row.Status.Equals("Withdrawn", StringComparison.OrdinalIgnoreCase)),
+            OpenPositions = positions.Where(row => row.Status is not ("Closed" or "Cancelled" or "Filled")).Sum(row => row.RemainingPositions),
+            FilledPositions = positions.Sum(row => row.FilledPositions),
+            CancelledPositions = positions.Sum(row => row.CancelledPositions),
+            OnHoldPositions = positions.Sum(row => row.OnHoldPositions),
+            RemainingPositions = positions.Sum(row => row.RemainingPositions),
+            AverageApprovalHours = approvedWithTimings.Count == 0 ? 0 : Math.Round((decimal)approvedWithTimings.Average(row => (row.UpdatedAt - row.SubmittedAt!.Value).TotalHours), 2),
+            DepartmentWiseHiring = positions.GroupBy(row => string.IsNullOrWhiteSpace(row.Department) ? "Not specified" : row.Department).Select(group => new RecruitmentMetric { Label = group.Key, Value = group.Sum(row => row.RemainingPositions) }).OrderByDescending(row => row.Value).Take(8),
+            CompanyWiseHiring = positions.GroupBy(row => string.IsNullOrWhiteSpace(row.ClientName) ? "Not specified" : row.ClientName).Select(group => new RecruitmentMetric { Label = group.Key, Value = group.Sum(row => row.RemainingPositions) }).OrderByDescending(row => row.Value).Take(8),
+            PriorityWiseHiring = positions.GroupBy(row => string.IsNullOrWhiteSpace(row.HiringPriority) ? "Normal" : row.HiringPriority).Select(group => new RecruitmentMetric { Label = group.Key, Value = group.Sum(row => row.RemainingPositions) }).OrderByDescending(row => row.Value),
+            UpcomingJoiningTargets = positions.Where(row => row.TargetJoiningDate.HasValue && row.TargetJoiningDate.Value.Date >= DateTime.Today).GroupBy(row => row.TargetJoiningDate!.Value.Date).OrderBy(group => group.Key).Take(8).Select(group => new RecruitmentMetric { Label = group.Key.ToString("dd-MM-yyyy"), Value = group.Sum(row => row.RemainingPositions) })
+        };
+    }
+
     public async Task<IEnumerable<RecruitmentOpenPosition>> OpenPositionsAsync(AuthUser user, int? requestedClientId = null)
     {
         await using var db = Db();
         await db.OpenAsync();
         var scopedClientId = user.ClientId ?? (requestedClientId is > 0 ? requestedClientId : null);
-        return await db.QueryAsync<RecruitmentOpenPosition>(OpenPositionSql("WHERE (@ClientId IS NULL OR p.ClientId=@ClientId) ORDER BY p.CreatedAt DESC"), new { ClientId = scopedClientId });
+        var rows = await db.QueryAsync<RecruitmentOpenPosition>(OpenPositionSql("WHERE (@ClientId IS NULL OR p.ClientId=@ClientId) ORDER BY p.CreatedAt DESC"), new { ClientId = scopedClientId });
+        return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
     }
 
     public async Task<(bool Ok, string Error)> DeleteOpenPositionAsync(long id, AuthUser user)
@@ -333,6 +441,7 @@ WHERE line.WorkOrderId=@WorkOrderId AND line.LineNumber=@WorkOrderLineNumber FOR
             "SELECT * FROM recruitment_open_positions WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)",
             new { Id = id, user.ClientId });
         if (row is null) return (false, "Open position was not found in your permitted client scope.");
+        if (!await RecruitmentAccessScope.CanAccessLocationAsync(db, user, row.ClientId, row.JobLocation)) return (false, "Open position was not found in your permitted location scope.");
 
         var applications = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidate_applications WHERE PositionId=@Id", new { Id = id });
         if (applications > 0) return (false, $"Delete the {applications} linked application(s) first.");
@@ -373,15 +482,14 @@ WHERE line.WorkOrderId=@WorkOrderId AND line.LineNumber=@WorkOrderLineNumber FOR
         await using var db = Db();
         await db.OpenAsync();
         var clientId = user.ClientId ?? 0;
-        var setting = await GetSettingAsync(db, clientId);
         return new RecruitmentOperationsOptions
         {
-            AllowMultipleRecruiters = setting?.AllowMultipleRecruiters ?? false,
-            EnableVendorHiring = setting?.EnableVendorHiring ?? false,
-            EnableConsultantHiring = setting?.EnableConsultantHiring ?? false,
-            EnableInternalHiring = setting?.EnableInternalHiring ?? false,
-            EnableReferralHiring = setting?.EnableReferralHiring ?? false,
-            EnableDocumentVerification = setting?.EnableDocumentVerification ?? false,
+            AllowMultipleRecruiters = true,
+            EnableVendorHiring = false,
+            EnableConsultantHiring = false,
+            EnableInternalHiring = true,
+            EnableReferralHiring = true,
+            EnableDocumentVerification = true,
             Recruiters = await db.QueryAsync<AuthUser>(@"SELECT DISTINCT u.Id,u.Email,u.DisplayName,u.ClientId,u.EmployeeId,u.IsActive,u.MustChangePassword
 FROM authusers u
 LEFT JOIN authuserroles ur ON ur.UserId=u.Id
@@ -390,8 +498,8 @@ LEFT JOIN authrolepermissions rp ON rp.RoleId=r.Id
 LEFT JOIN authpermissions p ON p.Id=rp.PermissionId
 WHERE u.IsActive=TRUE AND (@ClientId=0 OR u.ClientId IS NULL OR u.ClientId=@ClientId) AND (p.Code IN ('recruitment.manage','recruitment.position.manage') OR r.Code IN ('admin','hr_manager'))
 ORDER BY u.DisplayName,u.Email", new { ClientId = clientId }),
-            Vendors = await db.QueryAsync<RecruitmentPartner>("SELECT *,'' ClientName FROM recruitment_partners WHERE PartnerType='Vendor' AND IsActive=TRUE AND (@ClientId=0 OR ClientId=@ClientId) ORDER BY Name", new { ClientId = clientId }),
-            Consultants = await db.QueryAsync<RecruitmentPartner>("SELECT *,'' ClientName FROM recruitment_partners WHERE PartnerType='Consultant' AND IsActive=TRUE AND (@ClientId=0 OR ClientId=@ClientId) ORDER BY Name", new { ClientId = clientId }),
+            Vendors = [],
+            Consultants = [],
             PositionStatuses = await MasterValuesAsync(db, clientId, "Position Status"),
             PublishingChannels = await MasterValuesAsync(db, clientId, "Publishing Channel"),
             AssignmentPriorities = await MasterValuesAsync(db, clientId, "Assignment Priority")
@@ -403,20 +511,19 @@ ORDER BY u.DisplayName,u.Email", new { ClientId = clientId }),
         await using var db = Db();
         await db.OpenAsync();
         var position = await db.QueryFirstOrDefaultAsync<RecruitmentOpenPosition>(OpenPositionSql("WHERE p.Id=@Id AND (@ClientId IS NULL OR p.ClientId=@ClientId)"), new { Id = id, ClientId = user.ClientId });
-        if (position is null) return null;
-        var setting = await GetSettingAsync(db, position.ClientId);
+        if (position is null || !await RecruitmentAccessScope.CanAccessLocationAsync(db, user, position.ClientId, position.JobLocation)) return null;
         return new RecruitmentPositionDetail
         {
             Position = position,
-            AllowMultipleRecruiters = setting?.AllowMultipleRecruiters ?? false,
-            EnableVendorHiring = setting?.EnableVendorHiring ?? false,
-            EnableConsultantHiring = setting?.EnableConsultantHiring ?? false,
-            EnableInternalHiring = setting?.EnableInternalHiring ?? false,
-            EnableReferralHiring = setting?.EnableReferralHiring ?? false,
-            EnableDocumentVerification = setting?.EnableDocumentVerification ?? false,
+            AllowMultipleRecruiters = true,
+            EnableVendorHiring = false,
+            EnableConsultantHiring = false,
+            EnableInternalHiring = true,
+            EnableReferralHiring = true,
+            EnableDocumentVerification = true,
             Timeline = await db.QueryAsync<RecruitmentPositionTimeline>(@"SELECT t.*,COALESCE(u.DisplayName,u.Email,'System') ActorName FROM recruitment_position_timeline t LEFT JOIN authusers u ON u.Id=t.ActorUserId WHERE t.PositionId=@Id ORDER BY t.CreatedAt,t.Id", new { Id = id }),
             Notes = await db.QueryAsync<RecruitmentPositionNote>(@"SELECT n.*,COALESCE(u.DisplayName,u.Email,'') CreatedByName FROM recruitment_position_notes n LEFT JOIN authusers u ON u.Id=n.CreatedByUserId WHERE n.PositionId=@Id ORDER BY n.CreatedAt DESC,n.Id DESC", new { Id = id }),
-            Checklist = setting?.EnableDocumentVerification == true ? await db.QueryAsync<RecruitmentPositionChecklistItem>("SELECT * FROM recruitment_position_checklist WHERE PositionId=@Id ORDER BY Mandatory DESC,Stage,ChecklistName", new { Id = id }) : [],
+            Checklist = await db.QueryAsync<RecruitmentPositionChecklistItem>("SELECT * FROM recruitment_position_checklist WHERE PositionId=@Id ORDER BY Mandatory DESC,Stage,ChecklistName", new { Id = id }),
             RecruiterAssignments = await db.QueryAsync<RecruitmentRecruiterAssignment>(@"SELECT a.*,COALESCE(pr.DisplayName,pr.Email,'') PrimaryRecruiterName,COALESCE(sr.DisplayName,sr.Email,'') SecondaryRecruiterName,COALESCE(byu.DisplayName,byu.Email,'') AssignedByName FROM recruitment_recruiter_assignments a LEFT JOIN authusers pr ON pr.Id=a.PrimaryRecruiterUserId LEFT JOIN authusers sr ON sr.Id=a.SecondaryRecruiterUserId LEFT JOIN authusers byu ON byu.Id=a.AssignedByUserId WHERE a.PositionId=@Id ORDER BY a.CreatedAt DESC,a.Id DESC", new { Id = id }),
             VendorAssignments = await PartnerAssignmentsAsync(db, id, "Vendor"),
             ConsultantAssignments = await PartnerAssignmentsAsync(db, id, "Consultant"),
@@ -432,8 +539,6 @@ ORDER BY u.DisplayName,u.Email", new { ClientId = clientId }),
         await db.OpenAsync();
         var position = await PositionForActionAsync(db, id, user);
         if (position is null) return (null, "Open position not found.");
-        var setting = await GetSettingAsync(db, position.ClientId);
-        if (setting?.AllowMultipleRecruiters != true) request.SecondaryRecruiterUserId = 0;
         await db.ExecuteAsync("UPDATE recruitment_recruiter_assignments SET AssignmentStatus='Reassigned' WHERE PositionId=@Id AND AssignmentStatus='Active'", new { Id = id });
         await db.ExecuteAsync(@"INSERT INTO recruitment_recruiter_assignments (PositionId,PrimaryRecruiterUserId,SecondaryRecruiterUserId,AssignmentDate,AssignmentReason,AssignmentStatus,AssignedByUserId)
 VALUES (@Id,@PrimaryRecruiterUserId,@SecondaryRecruiterUserId,UTC_TIMESTAMP(),@AssignmentReason,'Active',@UserId)", new { Id = id, request.PrimaryRecruiterUserId, request.SecondaryRecruiterUserId, request.AssignmentReason, UserId = user.Id });
@@ -471,9 +576,6 @@ VALUES (@Id,@PartnerType,@PartnerId,UTC_TIMESTAMP(),@Priority,@DueDate,@Expected
         await db.OpenAsync();
         var position = await PositionForActionAsync(db, id, user);
         if (position is null) return (null, "Open position not found.");
-        var setting = await GetSettingAsync(db, position.ClientId);
-        if (request.Channel.Contains("Internal", StringComparison.OrdinalIgnoreCase) && setting?.EnableInternalHiring != true) return (null, "Internal hiring is disabled for this client.");
-        if (request.Channel.Contains("Referral", StringComparison.OrdinalIgnoreCase) && setting?.EnableReferralHiring != true) return (null, "Referral hiring is disabled for this client.");
         await db.ExecuteAsync(@"INSERT INTO recruitment_job_publications (PositionId,Channel,PublishingDate,ExpiryDate,Status,Remarks,PublishedByUserId)
 VALUES (@Id,@Channel,@PublishingDate,@ExpiryDate,@Status,@Remarks,@UserId)", new { Id = id, request.Channel, PublishingDate = request.PublishingDate ?? DateTime.Today, request.ExpiryDate, request.Status, request.Remarks, UserId = user.Id });
         await db.ExecuteAsync("UPDATE recruitment_open_positions SET Status=CASE WHEN Status='Open' THEN 'Published' ELSE Status END,PublishedAt=COALESCE(PublishedAt,UTC_TIMESTAMP()),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id });
@@ -491,8 +593,6 @@ VALUES (@Id,@Channel,@PublishingDate,@ExpiryDate,@Status,@Remarks,@UserId)", new
         await db.OpenAsync();
         var position = await PositionForActionAsync(db, id, user);
         if (position is null) return (null, "Open position not found.");
-        var setting = await GetSettingAsync(db, position.ClientId);
-        if (setting?.EnableReferralHiring != true) return (null, "Referral hiring is disabled for this client.");
         await db.ExecuteAsync(@"INSERT INTO recruitment_referral_campaigns (PositionId,CampaignName,StartDate,EndDate,ReferralReward,VisibilityCompany,VisibilityDepartment,VisibilityBusinessUnit,VisibilityLocation,VisibilityEmploymentType,Status,CreatedByUserId)
 VALUES (@Id,@CampaignName,@StartDate,@EndDate,@ReferralReward,'',@VisibilityDepartment,@VisibilityBusinessUnit,@VisibilityLocation,@VisibilityEmploymentType,@Status,@UserId)", new { Id = id, request.CampaignName, request.StartDate, request.EndDate, request.ReferralReward, request.VisibilityDepartment, request.VisibilityBusinessUnit, request.VisibilityLocation, request.VisibilityEmploymentType, request.Status, UserId = user.Id });
         await AddTimelineAsync(db, id, "Referral Opened", "Referral campaign started", request.CampaignName, user.Id);
@@ -511,8 +611,6 @@ COALESCE(w.Name,'') WorkLocation,'' EmploymentType
 FROM employees e LEFT JOIN worklocations w ON w.Id=e.WorkLocationId
 WHERE e.Id=@Id", new { Id = user.EmployeeId });
         if (employee is null) return [];
-        var setting = await GetSettingAsync(db, employee.ClientId);
-        if (setting?.EnableInternalHiring != true || setting?.EnableReferralHiring != true) return [];
         return await db.QueryAsync<RecruitmentInternalOpening>(@"SELECT p.Id PositionId,p.PositionCode,p.PositionTitle,p.Department,p.JobLocation,p.EmploymentType,p.HiringType,p.ExperienceRange,p.RequiredSkills,p.TargetJoiningDate,c.CampaignName,c.ReferralReward,c.EndDate
 FROM recruitment_open_positions p
 JOIN recruitment_referral_campaigns c ON c.PositionId=p.Id AND c.Status='Open' AND CURRENT_DATE BETWEEN c.StartDate AND c.EndDate
@@ -652,9 +750,8 @@ SELECT LAST_INSERT_ID();", new { r.Id, Code = code, r.ClientId, r.BranchId, r.Bu
         await transaction.CommitAsync();
         await AddTimelineAsync(db, id, "Created", "Open position created", $"Created from {r.RfrNumber}", actorUserId);
         await AddTimelineAsync(db, id, "Approved", "Requisition approved", r.RfrNumber, actorUserId);
-        await ApplyRecruiterAssignmentRuleAsync(db, id, r, actorUserId);
-        var setting = await GetSettingAsync(db, r.ClientId);
-        if (setting?.EnableDocumentVerification == true) await CreateChecklistSnapshotAsync(db, id, r);
+        await ApplyRecruiterWorkloadAssignmentAsync(db, id, r.ClientId, actorUserId);
+        await CreateChecklistSnapshotAsync(db, id, r);
         await AuditAsync(db, requisitionId, "Open Position Creation", actorUserId, new { openPositionId = id });
         await AuditPositionAsync(db, id, "Create", actorUserId, new { requisitionId, positionCode = code });
         return id;
@@ -702,11 +799,7 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
         if (user.ClientId is not null && user.ClientId != row.ClientId) return false;
         return canManage || row.RequestedByUserId == user.Id || (user.EmployeeId.HasValue && row.RequestedByEmployeeId == user.EmployeeId.Value);
     }
-    private static async Task<bool> IsRequesterAllowedAsync(MySqlConnection db, int clientId, AuthUser user)
-    {
-        if (!HasRecruitmentCreateAccess(user)) return false;
-        return await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_settings WHERE ClientId=@ClientId AND RecruitmentEnabled=TRUE AND AllowEmployeeRfrCreation=TRUE AND IsActive=TRUE", new { ClientId = clientId }) > 0;
-    }
+    private static Task<bool> IsRequesterAllowedAsync(AuthUser user) => Task.FromResult(HasRecruitmentCreateAccess(user));
 
     public static bool HasRecruitmentAccess(AuthUser user) =>
         user.Permissions.Contains("recruitment.manage", StringComparer.OrdinalIgnoreCase) ||
@@ -722,16 +815,17 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
 
     private static async Task<int?> GetApprovalWorkflowIdAsync(MySqlConnection db, int clientId, WorkflowRepository workflows)
     {
-        var mapped = await db.ExecuteScalarAsync<int?>("SELECT WorkflowId FROM recruitment_approval_mappings WHERE ClientId=@ClientId AND ProcessCode='RFR_APPROVAL' AND IsActive=TRUE AND WorkflowId>0 LIMIT 1", new { ClientId = clientId });
-        return mapped ?? await workflows.GetDefaultIdForActivityAsync("RFR.SUBMIT", clientId) ?? await workflows.GetDefaultIdAsync("RecruitmentRequisition", clientId);
+        var configured = await workflows.GetDefaultIdForActivityAsync("RFR.SUBMIT", clientId)
+            ?? await workflows.GetDefaultIdAsync("RecruitmentRequisition", clientId);
+        return configured
+            ?? await db.ExecuteScalarAsync<int?>("SELECT WorkflowId FROM recruitment_approval_mappings WHERE ClientId=@ClientId AND ProcessCode='RFR_APPROVAL' AND IsActive=TRUE AND WorkflowId>0 LIMIT 1", new { ClientId = clientId });
     }
 
-    private static async Task<string> ValidateAsync(MySqlConnection db, SaveRecruitmentRequisition request, int clientId, RecruitmentSettingRow? setting)
+    private static async Task<string> ValidateAsync(MySqlConnection db, SaveRecruitmentRequisition request, int clientId)
     {
         if (string.IsNullOrWhiteSpace(request.PositionTitle)) return "Position title is required.";
         if (string.IsNullOrWhiteSpace(request.Department)) return "Department is required.";
         if (request.NumberOfOpenings <= 0) return "Number of openings must be greater than zero.";
-        if (request.IsReplacement && setting?.AllowReplacementHiring != true) return "Replacement hiring is disabled for this client.";
         if (request.IsReplacement && (request.ReplacementEmployeeId ?? 0) <= 0) return "Replacement employee is required for replacement hiring.";
         if (request.BranchId > 0 && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM worklocations WHERE Id=@Id AND ClientId=@ClientId AND IsActive=TRUE", new { Id = request.BranchId, ClientId = clientId }) == 0)
             return "Selected work location is not active for this client.";
@@ -810,40 +904,34 @@ SELECT LAST_INSERT_ID();", new { ClientId = clientId });
 ON DUPLICATE KEY UPDATE Mandatory=VALUES(Mandatory),Stage=VALUES(Stage)", new { PositionId = positionId, ChecklistName = row.DocumentName, row.Stage, row.Mandatory });
     }
 
-    private static async Task ApplyRecruiterAssignmentRuleAsync(MySqlConnection db, long positionId, RecruitmentRequisition r, int actorUserId)
+    private static async Task ApplyRecruiterWorkloadAssignmentAsync(MySqlConnection db, long positionId, int clientId, int actorUserId)
     {
-        var rules = (await db.QueryAsync<RecruitmentAssignmentRule>(@"SELECT *
-FROM recruitment_assignment_rules
-WHERE ClientId=@ClientId
-  AND IsActive=TRUE
-  AND RecruiterUserId>0
-  AND (BusinessUnit='' OR BusinessUnit=@BusinessUnit)
-  AND (Department='' OR Department=@Department)
-  AND (PositionCategory='' OR PositionCategory=@PositionCategory)
-  AND (Project='' OR Project=@Project)
-  AND (Location='' OR Location=@JobLocation)
-  AND (ExperienceRange='' OR ExperienceRange=@ExperienceRange)
-  AND (Priority='' OR Priority=@HiringPriority)
-ORDER BY SortOrder, Id", r)).ToList();
+        var recruiter = await db.QueryFirstOrDefaultAsync<RecruiterWorkloadRow>(@"SELECT
+    u.Id RecruiterUserId,
+    COALESCE(NULLIF(u.DisplayName,''),u.Email) RecruiterName,
+    COUNT(DISTINCT openPosition.Id) ActiveOpenPositions
+FROM authusers u
+LEFT JOIN authuserroles userRole ON userRole.UserId=u.Id
+LEFT JOIN authroles roleRow ON roleRow.Id=userRole.RoleId
+LEFT JOIN authrolepermissions rolePermission ON rolePermission.RoleId=roleRow.Id
+LEFT JOIN authpermissions permissionRow ON permissionRow.Id=rolePermission.PermissionId
+LEFT JOIN recruitment_open_positions openPosition
+  ON openPosition.RecruiterUserId=u.Id
+ AND openPosition.Status NOT IN ('Filled','Cancelled','Closed')
+WHERE u.IsActive=TRUE
+  AND (u.ClientId=@ClientId OR u.ClientId IS NULL)
+  AND (permissionRow.Code IN ('recruitment.manage','recruitment.position.manage','recruitment.assign.recruiter') OR roleRow.Code IN ('admin','hr_manager'))
+GROUP BY u.Id,u.DisplayName,u.Email,u.ClientId
+ORDER BY CASE WHEN u.ClientId=@ClientId THEN 0 ELSE 1 END,ActiveOpenPositions,u.Id
+LIMIT 1", new { ClientId = clientId });
+        if (recruiter is null) return;
 
-        foreach (var rule in rules)
-        {
-            if (rule.WorkloadBased && rule.MaximumOpenPositions > 0)
-            {
-                var activeCount = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*)
-FROM recruitment_open_positions
-WHERE RecruiterUserId=@RecruiterUserId
-  AND Status NOT IN ('Filled','Cancelled','Closed')", new { rule.RecruiterUserId });
-                if (activeCount >= rule.MaximumOpenPositions) continue;
-            }
-
-            await db.ExecuteAsync(@"INSERT INTO recruitment_recruiter_assignments (PositionId,PrimaryRecruiterUserId,SecondaryRecruiterUserId,AssignmentDate,AssignmentReason,AssignmentStatus,AssignedByUserId)
-VALUES (@PositionId,@RecruiterUserId,0,UTC_TIMESTAMP(),@Reason,'Active',@ActorUserId)", new { PositionId = positionId, rule.RecruiterUserId, Reason = $"Auto-assigned by rule: {rule.RuleName}", ActorUserId = actorUserId });
-            await db.ExecuteAsync("UPDATE recruitment_open_positions SET RecruiterUserId=@RecruiterUserId,Status='Recruiter Assigned',UpdatedAt=UTC_TIMESTAMP() WHERE Id=@PositionId", new { PositionId = positionId, rule.RecruiterUserId });
-            await AddTimelineAsync(db, positionId, "Recruiter Assigned", "Recruiter auto-assigned", rule.RuleName, actorUserId);
-            await AuditPositionAsync(db, positionId, "Auto Recruiter Assignment", actorUserId, rule);
-            return;
-        }
+        const string reason = "Automatically assigned by active recruiter workload.";
+        await db.ExecuteAsync(@"INSERT INTO recruitment_recruiter_assignments (PositionId,PrimaryRecruiterUserId,SecondaryRecruiterUserId,AssignmentDate,AssignmentReason,AssignmentStatus,AssignedByUserId)
+VALUES (@PositionId,@RecruiterUserId,0,UTC_TIMESTAMP(),@Reason,'Active',@ActorUserId)", new { PositionId = positionId, recruiter.RecruiterUserId, Reason = reason, ActorUserId = actorUserId });
+        await db.ExecuteAsync("UPDATE recruitment_open_positions SET RecruiterUserId=@RecruiterUserId,Status='Recruiter Assigned',UpdatedAt=UTC_TIMESTAMP() WHERE Id=@PositionId", new { PositionId = positionId, recruiter.RecruiterUserId });
+        await AddTimelineAsync(db, positionId, "Recruiter Assigned", "Recruiter auto-assigned", $"{recruiter.RecruiterName} · {recruiter.ActiveOpenPositions} active position(s) before assignment", actorUserId);
+        await AuditPositionAsync(db, positionId, "Auto Recruiter Assignment", actorUserId, new { strategy = "Least active positions", recruiter.RecruiterUserId, recruiter.ActiveOpenPositions, clientId });
     }
 
     private static Task AddTimelineAsync(MySqlConnection db, long positionId, string eventType, string title, string details, int? actorUserId) =>
@@ -852,8 +940,11 @@ VALUES (@PositionId,@RecruiterUserId,0,UTC_TIMESTAMP(),@Reason,'Active',@ActorUs
     private static Task AuditPositionAsync(MySqlConnection db, long id, string action, int userId, object payload) =>
         db.ExecuteAsync("INSERT INTO recruitment_audit (EntityType,EntityId,Action,NewValueJson,ChangedByUserId) VALUES ('RecruitmentOpenPosition',@Id,@Action,@Json,@UserId)", new { Id = id, Action = action, Json = JsonSerializer.Serialize(payload), UserId = userId });
 
-    private static async Task<RecruitmentOpenPosition?> PositionForActionAsync(MySqlConnection db, long id, AuthUser user) =>
-        await db.QueryFirstOrDefaultAsync<RecruitmentOpenPosition>("SELECT * FROM recruitment_open_positions WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, ClientId = user.ClientId });
+    private static async Task<RecruitmentOpenPosition?> PositionForActionAsync(MySqlConnection db, long id, AuthUser user)
+    {
+        var position = await db.QueryFirstOrDefaultAsync<RecruitmentOpenPosition>("SELECT * FROM recruitment_open_positions WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, ClientId = user.ClientId });
+        return position is not null && await RecruitmentAccessScope.CanAccessLocationAsync(db, user, position.ClientId, position.JobLocation) ? position : null;
+    }
 
     private static async Task<IEnumerable<RecruitmentPartnerAssignment>> PartnerAssignmentsAsync(MySqlConnection db, long positionId, string partnerType) =>
         await db.QueryAsync<RecruitmentPartnerAssignment>(@"SELECT a.*,COALESCE(p.Name,'') PartnerName,COALESCE(u.DisplayName,u.Email,'') AssignedByName
@@ -924,17 +1015,63 @@ ORDER BY a.CreatedAt DESC,a.Id DESC", new { PositionId = positionId, PartnerType
         ExternalApprovalStatus = request.ExternalApprovalStatus.Trim(),
         request.CtcFlexibilityPercent,
         SourceNotes = request.SourceNotes.Trim(),
+        SourceParsedJson = ValidJsonOrEmpty(request.SourceParsedJson),
         request.WorkOrderId,
         request.WorkOrderLineNumber
     };
 
-    private const string InsertSql = @"INSERT INTO recruitment_requisitions (RfrNumber,RequestDate,RequestedByEmployeeId,RequestedByUserId,ClientId,BranchId,BusinessUnit,Department,CostCenter,PositionTitle,PositionCategory,EmploymentType,HiringType,NumberOfOpenings,IsReplacement,ReplacementEmployeeId,TargetJoiningDate,JobLocation,WorkMode,ClientProjectId,Project,BudgetAvailable,BudgetAmount,HiringPriority,BusinessJustification,ReasonForHiring,ExperienceRange,Qualification,RequiredSkills,PreferredSkills,Certifications,Languages,SalaryMin,SalaryMax,Currency,Benefits,ExternalPositionCode,SourceType,SourceReference,SourceDocumentName,SourceDocumentDate,SourceAuthority,ExternalApprovalStatus,CtcFlexibilityPercent,SourceNotes,WorkOrderId,WorkOrderLineNumber)
-VALUES (@RfrNumber,@RequestDate,@RequestedByEmployeeId,@RequestedByUserId,@ClientId,@BranchId,@BusinessUnit,@Department,@CostCenter,@PositionTitle,@PositionCategory,@EmploymentType,@HiringType,@NumberOfOpenings,@IsReplacement,@ReplacementEmployeeId,@TargetJoiningDate,@JobLocation,@WorkMode,@ClientProjectId,@Project,@BudgetAvailable,@BudgetAmount,@HiringPriority,@BusinessJustification,@ReasonForHiring,@ExperienceRange,@Qualification,@RequiredSkills,@PreferredSkills,@Certifications,@Languages,@SalaryMin,@SalaryMax,@Currency,@Benefits,@ExternalPositionCode,@SourceType,@SourceReference,@SourceDocumentName,@SourceDocumentDate,@SourceAuthority,@ExternalApprovalStatus,@CtcFlexibilityPercent,@SourceNotes,@WorkOrderId,@WorkOrderLineNumber);";
-    private const string UpdateSql = @"UPDATE recruitment_requisitions SET RequestDate=@RequestDate,BranchId=@BranchId,BusinessUnit=@BusinessUnit,Department=@Department,CostCenter=@CostCenter,PositionTitle=@PositionTitle,PositionCategory=@PositionCategory,EmploymentType=@EmploymentType,HiringType=@HiringType,NumberOfOpenings=@NumberOfOpenings,IsReplacement=@IsReplacement,ReplacementEmployeeId=@ReplacementEmployeeId,TargetJoiningDate=@TargetJoiningDate,JobLocation=@JobLocation,WorkMode=@WorkMode,ClientProjectId=@ClientProjectId,Project=@Project,BudgetAvailable=@BudgetAvailable,BudgetAmount=@BudgetAmount,HiringPriority=@HiringPriority,BusinessJustification=@BusinessJustification,ReasonForHiring=@ReasonForHiring,ExperienceRange=@ExperienceRange,Qualification=@Qualification,RequiredSkills=@RequiredSkills,PreferredSkills=@PreferredSkills,Certifications=@Certifications,Languages=@Languages,SalaryMin=@SalaryMin,SalaryMax=@SalaryMax,Currency=@Currency,Benefits=@Benefits,ExternalPositionCode=@ExternalPositionCode,SourceType=@SourceType,SourceReference=@SourceReference,SourceDocumentName=@SourceDocumentName,SourceDocumentDate=@SourceDocumentDate,SourceAuthority=@SourceAuthority,ExternalApprovalStatus=@ExternalApprovalStatus,CtcFlexibilityPercent=@CtcFlexibilityPercent,SourceNotes=@SourceNotes,WorkOrderId=@WorkOrderId,WorkOrderLineNumber=@WorkOrderLineNumber,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id";
+    private const string InsertSql = @"INSERT INTO recruitment_requisitions (RfrNumber,RequestDate,RequestedByEmployeeId,RequestedByUserId,ClientId,BranchId,BusinessUnit,Department,CostCenter,PositionTitle,PositionCategory,EmploymentType,HiringType,NumberOfOpenings,IsReplacement,ReplacementEmployeeId,TargetJoiningDate,JobLocation,WorkMode,ClientProjectId,Project,BudgetAvailable,BudgetAmount,HiringPriority,BusinessJustification,ReasonForHiring,ExperienceRange,Qualification,RequiredSkills,PreferredSkills,Certifications,Languages,SalaryMin,SalaryMax,Currency,Benefits,ExternalPositionCode,SourceType,SourceReference,SourceDocumentName,SourceDocumentDate,SourceAuthority,ExternalApprovalStatus,CtcFlexibilityPercent,SourceNotes,SourceParsedJson,WorkOrderId,WorkOrderLineNumber)
+VALUES (@RfrNumber,@RequestDate,@RequestedByEmployeeId,@RequestedByUserId,@ClientId,@BranchId,@BusinessUnit,@Department,@CostCenter,@PositionTitle,@PositionCategory,@EmploymentType,@HiringType,@NumberOfOpenings,@IsReplacement,@ReplacementEmployeeId,@TargetJoiningDate,@JobLocation,@WorkMode,@ClientProjectId,@Project,@BudgetAvailable,@BudgetAmount,@HiringPriority,@BusinessJustification,@ReasonForHiring,@ExperienceRange,@Qualification,@RequiredSkills,@PreferredSkills,@Certifications,@Languages,@SalaryMin,@SalaryMax,@Currency,@Benefits,@ExternalPositionCode,@SourceType,@SourceReference,@SourceDocumentName,@SourceDocumentDate,@SourceAuthority,@ExternalApprovalStatus,@CtcFlexibilityPercent,@SourceNotes,@SourceParsedJson,@WorkOrderId,@WorkOrderLineNumber);";
+    private const string UpdateSql = @"UPDATE recruitment_requisitions SET RequestDate=@RequestDate,BranchId=@BranchId,BusinessUnit=@BusinessUnit,Department=@Department,CostCenter=@CostCenter,PositionTitle=@PositionTitle,PositionCategory=@PositionCategory,EmploymentType=@EmploymentType,HiringType=@HiringType,NumberOfOpenings=@NumberOfOpenings,IsReplacement=@IsReplacement,ReplacementEmployeeId=@ReplacementEmployeeId,TargetJoiningDate=@TargetJoiningDate,JobLocation=@JobLocation,WorkMode=@WorkMode,ClientProjectId=@ClientProjectId,Project=@Project,BudgetAvailable=@BudgetAvailable,BudgetAmount=@BudgetAmount,HiringPriority=@HiringPriority,BusinessJustification=@BusinessJustification,ReasonForHiring=@ReasonForHiring,ExperienceRange=@ExperienceRange,Qualification=@Qualification,RequiredSkills=@RequiredSkills,PreferredSkills=@PreferredSkills,Certifications=@Certifications,Languages=@Languages,SalaryMin=@SalaryMin,SalaryMax=@SalaryMax,Currency=@Currency,Benefits=@Benefits,ExternalPositionCode=@ExternalPositionCode,SourceType=@SourceType,SourceReference=@SourceReference,SourceDocumentName=@SourceDocumentName,SourceDocumentDate=@SourceDocumentDate,SourceAuthority=@SourceAuthority,ExternalApprovalStatus=@ExternalApprovalStatus,CtcFlexibilityPercent=@CtcFlexibilityPercent,SourceNotes=@SourceNotes,SourceParsedJson=@SourceParsedJson,WorkOrderId=@WorkOrderId,WorkOrderLineNumber=@WorkOrderLineNumber,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id";
+
+    private static string ValidJsonOrEmpty(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "{}";
+        try { using var _ = JsonDocument.Parse(value); return value; }
+        catch { return "{}"; }
+    }
     private static string ListSql(string where) => $@"SELECT r.*,c.Name ClientName,COALESCE(w.Name,'') BranchName,CONCAT(requester.FirstName,' ',COALESCE(requester.LastName,'')) RequestedByName,CONCAT(repl.FirstName,' ',COALESCE(repl.LastName,'')) ReplacementEmployeeName,
 (SELECT jd.Id FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=r.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1) LatestJobDescriptionVersionId,
 (SELECT jd.VersionNumber FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=r.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1) LatestJobDescriptionVersionNumber,
-COALESCE((SELECT jd.Status FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=r.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1),'Not Started') JobDescriptionStatus
+COALESCE((SELECT jd.Status FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=r.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1),'Not Started') JobDescriptionStatus,
+COALESCE((SELECT stageRow.Name FROM workflowtasks taskRow JOIN workflowstages stageRow ON stageRow.Id=taskRow.StageId WHERE taskRow.InstanceId=r.WorkflowInstanceId AND taskRow.Status='Pending' ORDER BY taskRow.Id DESC LIMIT 1),'') ApprovalStageName,
+COALESCE((SELECT COALESCE(NULLIF(userRow.DisplayName,''),userRow.Email) FROM workflowtasks taskRow LEFT JOIN authusers userRow ON userRow.Id=taskRow.ApproverUserId WHERE taskRow.InstanceId=r.WorkflowInstanceId AND taskRow.Status='Pending' ORDER BY taskRow.Id DESC LIMIT 1),'') PendingApproverName,
+(SELECT hiringCase.Id FROM recruitment_position_pipeline_instances hiringCase WHERE hiringCase.RequisitionId=r.Id ORDER BY hiringCase.Id DESC LIMIT 1) HiringCaseId,
+COALESCE(
+ (SELECT hiringCase.PipelineVersionId FROM recruitment_position_pipeline_instances hiringCase WHERE hiringCase.RequisitionId=r.Id ORDER BY hiringCase.Id DESC LIMIT 1),
+ (SELECT versionRow.Id FROM recruitment_pipeline_versions versionRow JOIN recruitment_pipeline_definitions definition ON definition.Id=versionRow.PipelineDefinitionId
+  WHERE definition.ClientId=r.ClientId AND versionRow.Status='Published' AND versionRow.ScopeType IN ('Position','Hybrid')
+    AND EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=r.Id)
+    AND (SELECT COUNT(*) FROM recruitment_pipeline_versions publishedVersion JOIN recruitment_pipeline_definitions publishedDefinition ON publishedDefinition.Id=publishedVersion.PipelineDefinitionId
+         WHERE publishedDefinition.ClientId=r.ClientId AND publishedVersion.Status='Published' AND publishedVersion.ScopeType IN ('Position','Hybrid'))=1
+  LIMIT 1)
+) PipelineVersionId,
+COALESCE(
+ (SELECT currentStage.PipelineStageId FROM recruitment_position_pipeline_instances hiringCase JOIN recruitment_position_stage_instances currentStage ON currentStage.Id=hiringCase.CurrentStageInstanceId WHERE hiringCase.RequisitionId=r.Id ORDER BY hiringCase.Id DESC LIMIT 1),
+ (SELECT initialStage.Id FROM recruitment_pipeline_stages initialStage JOIN recruitment_pipeline_versions versionRow ON versionRow.Id=initialStage.PipelineVersionId JOIN recruitment_pipeline_definitions definition ON definition.Id=versionRow.PipelineDefinitionId
+  WHERE definition.ClientId=r.ClientId AND versionRow.Status='Published' AND versionRow.ScopeType IN ('Position','Hybrid') AND initialStage.CardScope='Position' AND initialStage.IsInitial=TRUE AND initialStage.IsActive=TRUE
+    AND EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=r.Id)
+    AND (SELECT COUNT(*) FROM recruitment_pipeline_versions publishedVersion JOIN recruitment_pipeline_definitions publishedDefinition ON publishedDefinition.Id=publishedVersion.PipelineDefinitionId
+         WHERE publishedDefinition.ClientId=r.ClientId AND publishedVersion.Status='Published' AND publishedVersion.ScopeType IN ('Position','Hybrid'))=1
+  LIMIT 1)
+) PipelineStageId,
+CASE
+ WHEN EXISTS(SELECT 1 FROM recruitment_position_pipeline_instances hiringCase WHERE hiringCase.RequisitionId=r.Id) THEN COALESCE((SELECT stageDefinition.StageName FROM recruitment_position_pipeline_instances hiringCase JOIN recruitment_position_stage_instances currentStage ON currentStage.Id=hiringCase.CurrentStageInstanceId JOIN recruitment_pipeline_stages stageDefinition ON stageDefinition.Id=currentStage.PipelineStageId WHERE hiringCase.RequisitionId=r.Id ORDER BY hiringCase.Id DESC LIMIT 1),'Pipeline complete')
+ WHEN EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=r.Id) AND
+      (SELECT COUNT(*) FROM recruitment_pipeline_versions publishedVersion JOIN recruitment_pipeline_definitions publishedDefinition ON publishedDefinition.Id=publishedVersion.PipelineDefinitionId WHERE publishedDefinition.ClientId=r.ClientId AND publishedVersion.Status='Published' AND publishedVersion.ScopeType IN ('Position','Hybrid'))=1
+ THEN COALESCE((SELECT initialStage.StageName FROM recruitment_pipeline_stages initialStage JOIN recruitment_pipeline_versions versionRow ON versionRow.Id=initialStage.PipelineVersionId JOIN recruitment_pipeline_definitions definition ON definition.Id=versionRow.PipelineDefinitionId WHERE definition.ClientId=r.ClientId AND versionRow.Status='Published' AND versionRow.ScopeType IN ('Position','Hybrid') AND initialStage.CardScope='Position' AND initialStage.IsInitial=TRUE AND initialStage.IsActive=TRUE LIMIT 1),'Work order intake')
+ WHEN EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=r.Id) THEN 'Awaiting pipeline selection'
+ ELSE '' END PipelineStageName,
+COALESCE(
+ (SELECT stageDefinition.StageType FROM recruitment_position_pipeline_instances hiringCase JOIN recruitment_position_stage_instances currentStage ON currentStage.Id=hiringCase.CurrentStageInstanceId JOIN recruitment_pipeline_stages stageDefinition ON stageDefinition.Id=currentStage.PipelineStageId WHERE hiringCase.RequisitionId=r.Id ORDER BY hiringCase.Id DESC LIMIT 1),
+ CASE WHEN EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=r.Id) THEN 'Position' ELSE '' END
+) PipelineStageType,
+CASE
+ WHEN EXISTS(SELECT 1 FROM recruitment_position_pipeline_instances hiringCase WHERE hiringCase.RequisitionId=r.Id) THEN COALESCE((SELECT hiringCase.Status FROM recruitment_position_pipeline_instances hiringCase WHERE hiringCase.RequisitionId=r.Id ORDER BY hiringCase.Id DESC LIMIT 1),'')
+ WHEN EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=r.Id) AND
+      (SELECT COUNT(*) FROM recruitment_pipeline_versions publishedVersion JOIN recruitment_pipeline_definitions publishedDefinition ON publishedDefinition.Id=publishedVersion.PipelineDefinitionId WHERE publishedDefinition.ClientId=r.ClientId AND publishedVersion.Status='Published' AND publishedVersion.ScopeType IN ('Position','Hybrid'))=1 THEN 'Ready to start'
+ WHEN EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=r.Id) THEN 'Pipeline selection required'
+ ELSE '' END PipelineStatus
 FROM recruitment_requisitions r
 LEFT JOIN clients c ON c.Id=r.ClientId
 LEFT JOIN worklocations w ON w.Id=r.BranchId
@@ -943,6 +1080,33 @@ LEFT JOIN employees repl ON repl.Id=r.ReplacementEmployeeId
 {where}";
 
     private static string OpenPositionSql(string where) => $@"SELECT p.*,r.RfrNumber,c.Name ClientName,COALESCE(w.Name,'') BranchName,COALESCE(u.DisplayName,u.Email,'') RecruiterName,
+pipelineInstance.Id PipelineInstanceId,
+COALESCE(pipelineInstance.PipelineVersionId,
+ (SELECT versionRow.Id FROM recruitment_pipeline_versions versionRow JOIN recruitment_pipeline_definitions definition ON definition.Id=versionRow.PipelineDefinitionId
+  WHERE definition.ClientId=p.ClientId AND versionRow.Status='Published' AND versionRow.ScopeType IN ('Position','Hybrid')
+    AND EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=p.RequisitionId)
+    AND (SELECT COUNT(*) FROM recruitment_pipeline_versions publishedVersion JOIN recruitment_pipeline_definitions publishedDefinition ON publishedDefinition.Id=publishedVersion.PipelineDefinitionId WHERE publishedDefinition.ClientId=p.ClientId AND publishedVersion.Status='Published' AND publishedVersion.ScopeType IN ('Position','Hybrid'))=1 LIMIT 1)
+) PipelineVersionId,
+COALESCE(pipelineStage.Id,
+ (SELECT initialStage.Id FROM recruitment_pipeline_stages initialStage JOIN recruitment_pipeline_versions versionRow ON versionRow.Id=initialStage.PipelineVersionId JOIN recruitment_pipeline_definitions definition ON definition.Id=versionRow.PipelineDefinitionId
+  WHERE definition.ClientId=p.ClientId AND versionRow.Status='Published' AND versionRow.ScopeType IN ('Position','Hybrid') AND initialStage.CardScope='Position' AND initialStage.IsInitial=TRUE AND initialStage.IsActive=TRUE
+    AND EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=p.RequisitionId)
+    AND (SELECT COUNT(*) FROM recruitment_pipeline_versions publishedVersion JOIN recruitment_pipeline_definitions publishedDefinition ON publishedDefinition.Id=publishedVersion.PipelineDefinitionId WHERE publishedDefinition.ClientId=p.ClientId AND publishedVersion.Status='Published' AND publishedVersion.ScopeType IN ('Position','Hybrid'))=1 LIMIT 1)
+) PipelineStageId,
+CASE
+ WHEN pipelineStage.Id IS NOT NULL THEN pipelineStage.StageName
+ WHEN EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=p.RequisitionId) AND
+      (SELECT COUNT(*) FROM recruitment_pipeline_versions publishedVersion JOIN recruitment_pipeline_definitions publishedDefinition ON publishedDefinition.Id=publishedVersion.PipelineDefinitionId WHERE publishedDefinition.ClientId=p.ClientId AND publishedVersion.Status='Published' AND publishedVersion.ScopeType IN ('Position','Hybrid'))=1
+ THEN COALESCE((SELECT initialStage.StageName FROM recruitment_pipeline_stages initialStage JOIN recruitment_pipeline_versions versionRow ON versionRow.Id=initialStage.PipelineVersionId JOIN recruitment_pipeline_definitions definition ON definition.Id=versionRow.PipelineDefinitionId WHERE definition.ClientId=p.ClientId AND versionRow.Status='Published' AND versionRow.ScopeType IN ('Position','Hybrid') AND initialStage.CardScope='Position' AND initialStage.IsInitial=TRUE AND initialStage.IsActive=TRUE LIMIT 1),'Work order intake')
+ WHEN EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=p.RequisitionId) THEN 'Awaiting pipeline selection'
+ ELSE '' END PipelineStageName,
+COALESCE(pipelineStage.StageType,CASE WHEN EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=p.RequisitionId) THEN 'Position' ELSE '' END) PipelineStageType,
+CASE
+ WHEN pipelineInstance.Id IS NOT NULL THEN COALESCE(pipelineInstance.Status,'')
+ WHEN EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=p.RequisitionId) AND
+      (SELECT COUNT(*) FROM recruitment_pipeline_versions publishedVersion JOIN recruitment_pipeline_definitions publishedDefinition ON publishedDefinition.Id=publishedVersion.PipelineDefinitionId WHERE publishedDefinition.ClientId=p.ClientId AND publishedVersion.Status='Published' AND publishedVersion.ScopeType IN ('Position','Hybrid'))=1 THEN 'Ready to start'
+ WHEN EXISTS(SELECT 1 FROM recruitment_work_order_lines linkedLine WHERE linkedLine.RequisitionId=p.RequisitionId) THEN 'Pipeline selection required'
+ ELSE '' END PipelineStatus,
 (SELECT jd.Id FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=p.RequisitionId ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1) LatestJobDescriptionVersionId,
 (SELECT jd.VersionNumber FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=p.RequisitionId ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1) LatestJobDescriptionVersionNumber,
 COALESCE((SELECT jd.Status FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=p.RequisitionId ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1),'Not Started') JobDescriptionStatus
@@ -951,6 +1115,11 @@ JOIN recruitment_requisitions r ON r.Id=p.RequisitionId
 LEFT JOIN clients c ON c.Id=p.ClientId
 LEFT JOIN worklocations w ON w.Id=p.BranchId
 LEFT JOIN authusers u ON u.Id=p.RecruiterUserId
+LEFT JOIN recruitment_position_pipeline_instances pipelineInstance ON pipelineInstance.Id=(
+ SELECT latestPipeline.Id FROM recruitment_position_pipeline_instances latestPipeline
+ WHERE latestPipeline.PositionId=p.Id ORDER BY latestPipeline.Id DESC LIMIT 1)
+LEFT JOIN recruitment_position_stage_instances pipelineStageInstance ON pipelineStageInstance.Id=pipelineInstance.CurrentStageInstanceId
+LEFT JOIN recruitment_pipeline_stages pipelineStage ON pipelineStage.Id=pipelineStageInstance.PipelineStageId
 {where}";
 
     private static string ReferralSql(string where) => $@"SELECT r.*,p.PositionCode,p.PositionTitle,CONCAT(e.FirstName,' ',COALESCE(e.LastName,'')) ReferrerName
@@ -965,8 +1134,9 @@ LEFT JOIN employees e ON e.Id=r.ReferrerEmployeeId
 ('RFR.SUBMIT','Submit recruitment requisition','Talent Acquisition','RecruitmentRequisition','Recruitment requisition approval before open position creation.',TRUE)
 ON DUPLICATE KEY UPDATE DisplayName=VALUES(DisplayName),ModuleCode=VALUES(ModuleCode),ResourceType=VALUES(ResourceType),Description=VALUES(Description),IsActive=VALUES(IsActive);
 INSERT INTO workflow_action_rules (ActivityCode,HttpMethod,PathPattern,ResourceType,ResourceIdSource,ResourceIdRouteKey,ClientIdSource,ClientIdSql,ClientLookupTable,ClientLookupKeyColumn,ClientLookupClientColumn,TriggerMode,IsActive) VALUES
-('RFR.SUBMIT','POST','/api/ess/recruitment/requisitions/{id}/submit','RecruitmentRequisition','route.id','id','','','recruitment_requisitions','Id','ClientId','AfterSuccess',TRUE)
-ON DUPLICATE KEY UPDATE ResourceType=VALUES(ResourceType),ResourceIdSource=VALUES(ResourceIdSource),ResourceIdRouteKey=VALUES(ResourceIdRouteKey),ClientLookupTable=VALUES(ClientLookupTable),ClientLookupKeyColumn=VALUES(ClientLookupKeyColumn),ClientLookupClientColumn=VALUES(ClientLookupClientColumn),TriggerMode=VALUES(TriggerMode),IsActive=VALUES(IsActive);");
+('RFR.SUBMIT','POST','/api/ess/recruitment/requisitions/{id}/submit','RecruitmentRequisition','route.id','id','','','recruitment_requisitions','Id','ClientId','AfterSuccess',TRUE),
+('RFR.SUBMIT','POST','/api/recruitment/requisitions/{id}/submit','RecruitmentRequisition','route.id','id','','','recruitment_requisitions','Id','ClientId','AfterSuccess',TRUE)
+ON DUPLICATE KEY UPDATE ResourceType=VALUES(ResourceType),ResourceIdSource=VALUES(ResourceIdSource),ResourceIdRouteKey=VALUES(ResourceIdRouteKey),ClientLookupTable=VALUES(ClientLookupTable),ClientLookupKeyColumn=VALUES(ClientLookupKeyColumn),ClientLookupClientColumn=VALUES(ClientLookupClientColumn),TriggerMode=VALUES(TriggerMode);");
 
     private static async Task EnsureTablesAsync(MySqlConnection db)
     {
@@ -1024,6 +1194,7 @@ Id BIGINT PRIMARY KEY AUTO_INCREMENT,EntityType VARCHAR(80) NOT NULL,EntityId BI
         await EnsureColumnAsync(db, "recruitment_requisitions", "externalapprovalstatus", "VARCHAR(80) NOT NULL DEFAULT ''");
         await EnsureColumnAsync(db, "recruitment_requisitions", "ctcflexibilitypercent", "DECIMAL(6,2) NULL");
         await EnsureColumnAsync(db, "recruitment_requisitions", "sourcenotes", "TEXT NULL");
+        await EnsureColumnAsync(db, "recruitment_requisitions", "sourceparsedjson", "JSON NULL");
         await EnsureColumnAsync(db, "recruitment_requisition_documents", "documentcategory", "VARCHAR(120) NOT NULL DEFAULT 'Other'");
 
         await db.ExecuteAsync(@"UPDATE recruitment_open_positions SET approvedpositions=NumberOfPositions WHERE approvedpositions=1 AND NumberOfPositions<>1;
@@ -1062,6 +1233,12 @@ WHERE table_schema = DATABASE()
     {
         public long PipelineVersionId { get; set; }
         public int StartedByUserId { get; set; }
+    }
+    private sealed class RecruiterWorkloadRow
+    {
+        public int RecruiterUserId { get; set; }
+        public string RecruiterName { get; set; } = "";
+        public int ActiveOpenPositions { get; set; }
     }
     private sealed class StatusCount
     {
