@@ -23,6 +23,7 @@ export type DynamicFormDefinition = {
   purposeCode: string
   entityType: string
   status: 'Active' | 'Inactive' | string
+  requiresEmailVerification: boolean
   currentPublishedVersionId?: number | null
   createdByUserId?: number
   createdAtUtc?: string
@@ -31,7 +32,7 @@ export type DynamicFormDefinition = {
 }
 
 export type SaveDynamicFormDefinition = Pick<DynamicFormDefinition,
-  'id' | 'clientId' | 'moduleCode' | 'formCode' | 'formName' | 'purposeCode' | 'entityType' | 'status'>
+  'id' | 'clientId' | 'moduleCode' | 'formCode' | 'formName' | 'purposeCode' | 'entityType' | 'status' | 'requiresEmailVerification'>
 
 export type DynamicFormVersion = {
   id: number
@@ -200,7 +201,20 @@ export type RecruitmentPositionOption = {
   department: string
   status: string
   jobLocation?: string
+  workMode?: string
+  requisitionJobLocation?: string
+  requisitionWorkMode?: string
   employmentType?: string
+  experienceRange?: string
+  requisitionExperienceRange?: string
+  salaryMin?: number
+  salaryMax?: number
+  currency?: string
+  requisitionSalaryMin?: number
+  requisitionSalaryMax?: number
+  requisitionCurrency?: string
+  numberOfPositions?: number
+  requisitionNumberOfOpenings?: number
   remainingPositions?: number
   approvedJobDescriptionVersionId?: number | null
 }
@@ -493,6 +507,7 @@ export type RecruitmentPipelineDemandCard = {
   hiringCaseId?: number | null
   workOrderId: number
   workOrderLineId: number
+  hasWorkOrder: boolean
   workOrderNumber: string
   workOrderStatus: string
   positionName: string
@@ -737,6 +752,7 @@ export type PublicRecruitmentJob = {
   closesAtUtc?: string | null
   isAcceptingApplications: boolean
   availabilityStatus: 'Open' | 'Scheduled' | 'Closed' | 'Full' | 'FormUnavailable' | string
+  requiresEmailVerification: boolean
   applicationForm?: DynamicFormVersion | null
   responsibilities: Array<{ id: number; responsibilityText: string; displayOrder: number }>
   skills: Array<{ id: number; skillName: string; isRequired: boolean; minimumYears: number; minimumProficiency: string; weightPercent: number; displayOrder: number }>
@@ -749,8 +765,23 @@ export type PublicRecruitmentJob = {
 export type StartPublicApplicationRequest = {
   email: string
   phone: string
+  verificationToken: string
+  verificationCode: string
   idempotencyKey: string
   consentAccepted: boolean
+}
+
+export type RequestPublicApplicationVerification = {
+  email: string
+  phone: string
+  consentAccepted: boolean
+}
+
+export type PublicApplicationVerification = {
+  verificationToken: string
+  maskedEmail: string
+  expiresAtUtc: string
+  resendAfterSeconds: number
 }
 
 export type PublicApplicationSession = {
@@ -758,6 +789,7 @@ export type PublicApplicationSession = {
   submissionId: number
   expiresAtUtc: string
   status: string
+  initialValues: PublicFormValue[]
 }
 
 export type PublicFormValue = {

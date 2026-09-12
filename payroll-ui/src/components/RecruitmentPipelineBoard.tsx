@@ -33,6 +33,8 @@ type Props = {
   embedded?: boolean
   displayMode?: RecruitmentPipelineDisplayMode
   onDisplayModeChange?: (mode: RecruitmentPipelineDisplayMode) => void
+  clientPipelineCandidateCount?: number
+  onCandidateCountChange?: (count: number | null) => void
 }
 type TransitionDraft = { card: RecruitmentPipelineBoardCard; transition: RecruitmentPipelineTransition; reason: string }
 type PauseDraft = { card: RecruitmentPipelineBoardCard; reason: string }
@@ -54,7 +56,7 @@ type PipelineTableRow = {
   liveElapsed: number
 }
 
-export default function RecruitmentPipelineBoard({ initialClientId = 0, clientScopeManaged = false, positionId: suppliedPositionId = 0, onOpenCandidate, onScheduleInterview, embedded = false, displayMode, onDisplayModeChange }: Props) {
+export default function RecruitmentPipelineBoard({ initialClientId = 0, clientScopeManaged = false, positionId: suppliedPositionId = 0, onOpenCandidate, onScheduleInterview, embedded = false, displayMode, onDisplayModeChange, clientPipelineCandidateCount, onCandidateCountChange }: Props) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [postings, setPostings] = useState<RecruitmentJobPosting[]>([])
@@ -89,13 +91,19 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
   const [historyLoading, setHistoryLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const boardRequest = useRef(0)
+  const targetsRequest = useRef(0)
   const pipelineScroller = usePipelineScroller<HTMLDivElement>()
 
   const loadTargets = useCallback(async (preferredPositionId = 0, preferredPostingId = 0) => {
+    const requestId = ++targetsRequest.current
+    ++boardRequest.current
+    setLoading(true)
+    setBoard(null)
     const [allPostings, nextPositions] = await Promise.all([
       getRecruitmentJobPostings(initialClientId),
       getRecruitmentOpenPositions(initialClientId),
     ])
+    if (requestId !== targetsRequest.current) return
     // Only a published public posting is a candidate-pipeline target. A draft or
     // closed posting must not hide its underlying open position.
     const nextPostings = allPostings.filter(row => row.status === 'Published')
@@ -110,16 +118,17 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
     // candidates without a public PostingId stay visible on the position view.
     const matchingPosting = requestedPosting ?? (!matchingPosition ? nextPostings.find(row => row.positionId === requestedPositionId) : undefined)
     const firstPosting = nextPostings[0]
-    const firstPosition = nextPositions[0]
-    const nextPositionId = matchingPosting?.positionId ?? matchingPosition?.id ?? firstPosting?.positionId ?? firstPosition?.id ?? 0
-    const nextPostingId = matchingPosting?.id ?? (!matchingPosition && firstPosting && nextPositionId === firstPosting.positionId ? firstPosting.id : 0)
+    const candidatePosition = nextPositions.find(row => row.candidateCount > 0)
+    const firstPosition = candidatePosition ?? nextPositions[0]
+    const nextPositionId = matchingPosting?.positionId ?? matchingPosition?.id ?? candidatePosition?.id ?? firstPosting?.positionId ?? firstPosition?.id ?? 0
+    const nextPostingId = matchingPosting?.id ?? (!matchingPosition && !candidatePosition && firstPosting && nextPositionId === firstPosting.positionId ? firstPosting.id : 0)
     setPositionId(nextPositionId)
     setPostingId(nextPostingId)
-    if (!nextPositionId) setBoard(null)
+    if (!nextPositionId) { setBoard(null); setLoading(false) }
     return { positionId: nextPositionId, postingId: nextPostingId }
   }, [initialClientId, suppliedPositionId])
 
-  useEffect(() => { void loadTargets(suppliedPositionId, 0) }, [loadTargets, suppliedPositionId])
+  useEffect(() => { void loadTargets(suppliedPositionId, 0); return () => { ++targetsRequest.current; ++boardRequest.current } }, [loadTargets, suppliedPositionId])
   useEffect(() => { setClientId(initialClientId) }, [initialClientId])
   useEffect(() => { if (suppliedPositionId) setPositionId(suppliedPositionId) }, [suppliedPositionId])
   useEffect(() => { if (positionId) void loadBoard(positionId, postingId || undefined) }, [positionId, postingId])
@@ -164,7 +173,7 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
         clientName: row.clientName,
         positionId: row.id,
         postingId: 0,
-        label: `${row.positionCode} · ${row.positionTitle} (${postingPositionIds.has(row.id) ? 'All sources' : 'Open position'})`,
+        label: `${row.positionCode} · ${row.positionTitle} (${postingPositionIds.has(row.id) ? 'All sources' : 'Open position'}) · ${row.candidateCount || 0} applications`,
       }))
     return [...postingTargets, ...positionTargets]
   }, [postings, positions])
@@ -173,6 +182,8 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
   const selectedTargetKey = postingId ? `posting:${postingId}` : positionId ? `position:${positionId}` : undefined
   const elapsedSinceLoad = Math.max(0, Math.floor((tick - loadedAt) / 1000))
   const normalizedQuery = query.trim().toLowerCase()
+  const selectedCandidateCount = board?.lanes.reduce((count, lane) => count + lane.applications.length, 0) ?? 0
+  useEffect(() => { onCandidateCountChange?.(loading ? null : selectedCandidateCount) }, [loading, selectedCandidateCount, onCandidateCountChange])
   const filtered = board?.lanes.map(lane => ({
     ...lane,
     applications: lane.applications.filter(card => {
@@ -192,6 +203,12 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
   const chooseTarget = (key: string) => {
     const target = pipelineTargets.find(row => row.key === key)
     if (!target) return
+    if (target.positionId === positionId && target.postingId === postingId) return
+    ++boardRequest.current
+    setBoard(null)
+    setLoading(true)
+    setQuery('')
+    setSlaFilter('All')
     setPostingId(target.postingId)
     setPositionId(target.positionId)
   }
@@ -272,11 +289,14 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
       <div><span className="orchestration-kicker">Candidate progress</span><h2 className="orchestration-title">Candidate stages</h2><p className="orchestration-subtitle">See where every candidate is, what is due next and how long each stage has taken.</p></div>
       <Select className="pipeline-view-select" aria-label="Pipeline display view" value={viewMode} onChange={setViewMode} options={recruitmentPipelineDisplayOptions} />
     </div>}
-    <Card size="small"><div className="orchestration-toolbar">
-      <div>{!clientScopeManaged && <Select allowClear value={clientId || undefined} placeholder="All clients" options={clientOptions} onChange={value => { const next = Number(value || 0); setClientId(next); const first = pipelineTargets.find(row => !next || row.clientId === next); if (first) chooseTarget(first.key); else { setPositionId(0); setPostingId(0); setBoard(null) } }} />}<Select aria-label="Pipeline position or job posting" showSearch optionFilterProp="label" value={selectedTargetKey} placeholder="Select position or job posting" options={targetOptions} onChange={chooseTarget} /></div>
-      <div><Input allowClear prefix={<SearchOutlined />} value={query} onChange={event => setQuery(event.target.value)} placeholder="Candidate, email or application" /><Select value={slaFilter} onChange={setSlaFilter} options={['All', 'On track', 'Due soon', 'Overdue', 'Paused'].map(value => ({ value, label: value === 'All' ? 'All SLA states' : value }))} />{displayMode === undefined && <Select className="pipeline-view-select" aria-label="Pipeline display view" value={viewMode} onChange={setViewMode} options={recruitmentPipelineDisplayOptions} />}</div>
-    </div></Card>
-    {!board || !hasAssignedPipeline ? <Card><Empty description={positionId ? 'No published candidate stage flow is assigned to this position.' : targetOptions.length ? 'Select a position or published job posting.' : 'No open positions or published job postings found for this client.'}><Space wrap><Button href={`/recruitment/hiring-pipeline?manage=1${clientId ? `&clientId=${clientId}` : ''}`}>Manage pipeline</Button><Button type="primary" href={`/recruitment/ats-screening?upload=single${clientId ? `&clientId=${clientId}` : ''}`}>Add candidate resume</Button></Space></Empty></Card> : <>
+    <Card size="small" className="candidate-pipeline-filters"><div className="candidate-pipeline-filter-grid">
+      {!clientScopeManaged && <div className="candidate-pipeline-filter-field"><span>Client</span><Select aria-label="Pipeline client" allowClear value={clientId || undefined} placeholder="All clients" options={clientOptions} onChange={value => { const next = Number(value || 0); setClientId(next); const first = pipelineTargets.find(row => !next || row.clientId === next); if (first) chooseTarget(first.key); else { ++boardRequest.current; setPositionId(0); setPostingId(0); setBoard(null); setLoading(false) } }} /></div>}
+      <div className="candidate-pipeline-filter-field"><span>Position / job posting</span><Select aria-label="Pipeline position or job posting" showSearch optionFilterProp="label" value={selectedTargetKey} placeholder="Select position or job posting" options={targetOptions} onChange={chooseTarget} /></div>
+      <div className="candidate-pipeline-filter-field"><span>Search candidates</span><Input aria-label="Search pipeline candidates" allowClear prefix={<SearchOutlined />} value={query} onChange={event => setQuery(event.target.value)} placeholder="Candidate, email or application" /></div>
+      <div className="candidate-pipeline-filter-field"><span>SLA status</span><Select aria-label="Candidate SLA status" value={slaFilter} onChange={setSlaFilter} options={['All', 'On track', 'Due soon', 'Overdue', 'Paused'].map(value => ({ value, label: value === 'All' ? 'All SLA states' : value }))} /></div>
+      {displayMode === undefined && <Select className="pipeline-view-select" aria-label="Pipeline display view" value={viewMode} onChange={setViewMode} options={recruitmentPipelineDisplayOptions} />}
+    </div><div className="candidate-pipeline-scope" data-testid="candidate-pipeline-scope"><strong>{loading ? 'Loading selected pipeline…' : `${selectedCandidateCount} candidates in selected pipeline`}</strong>{clientPipelineCandidateCount != null && <span>{clientPipelineCandidateCount} across client pipeline</span>}</div></Card>
+    {loading ? <Card loading data-testid="candidate-pipeline-loading" /> : !board || !hasAssignedPipeline ? <Card className="candidate-pipeline-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<div><strong>{positionId ? `Candidate pipeline not assigned${board?.positionTitle ? ` — ${board.positionTitle}` : ''}` : 'Select a position'}</strong><p>{positionId ? 'This position needs its own published pipeline assignment. The client-wide candidate total includes other positions.' : targetOptions.length ? 'Choose a position or published job posting above.' : 'No open positions or published job postings found for this client.'}</p></div>}><Space wrap>{positions.filter(row => row.id !== positionId && row.candidateCount > 0 && (!clientId || row.clientId === clientId)).slice(0, 3).map(row => <Button key={row.id} onClick={() => chooseTarget(`position:${row.id}`)}>View {row.positionTitle} ({row.candidateCount})</Button>)}<Button href={`/recruitment/hiring-pipeline?manage=1${clientId ? `&clientId=${clientId}` : ''}`}>Manage pipeline</Button><Button type="primary" href={`/recruitment/ats-screening?upload=single${clientId ? `&clientId=${clientId}` : ''}${positionId ? `&positionId=${positionId}` : ''}`}>Add candidate resume</Button></Space></Empty></Card> : <>
       <Card size="small"><Space wrap><Tag color="purple">{board.positionCode}</Tag><strong>{board.positionTitle}</strong><Tag>Pipeline version #{board.pipelineVersionId}</Tag><span>{board.lanes.reduce((total, lane) => total + lane.applications.length, 0)} application(s)</span></Space></Card>
       {viewMode !== 'table' && <div ref={pipelineScroller.ref} className="pipeline-board" data-testid="pipeline-board-view" tabIndex={0} onKeyDown={pipelineScroller.onKeyDown} aria-label="Scrollable candidate pipeline"><div className="pipeline-board-columns">{filtered.map(lane => <section key={lane.stageId} data-testid={`pipeline-lane-${lane.stageCode}`} className="pipeline-board-column" style={{ '--stage-color': stageColor(lane.stageType) } as CSSProperties}>
         <header><h4>{lane.stageName}</h4><Badge count={lane.applications.length} showZero color={stageColor(lane.stageType)} /></header>

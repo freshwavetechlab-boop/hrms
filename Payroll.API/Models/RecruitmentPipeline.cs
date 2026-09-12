@@ -543,6 +543,7 @@ public class RecruitmentPipelineDemandCard
     public long? HiringCaseId { get; set; }
     public long WorkOrderId { get; set; }
     public long WorkOrderLineId { get; set; }
+    public bool HasWorkOrder { get; set; } = true;
     public string WorkOrderNumber { get; set; } = "";
     public string WorkOrderStatus { get; set; } = "";
     public string PositionName { get; set; } = "";

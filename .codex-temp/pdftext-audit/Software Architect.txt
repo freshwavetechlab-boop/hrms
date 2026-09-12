@@ -1,0 +1,92 @@
+Software Architect
+
+Position      Software Architect
+Location      Tech Centre - Bangalore
+
+ Experience,        • BE/ B Tech/M Tech /MCA
+Educational
+Qualificatio  Minimum Competency Requirement
+n
+                    a. Must have at least 5 years of hands-on ex p er i e n c e in
+Job Profile
+                         software
+
+                                                                                                                                                                                                      •
+
+                         architecture design and i mpl e. .tat'·i.on, in global projects or in software
+
+                         product company.
+
+                    b. Experience in software development using Java or J2EE, Spring, Sprin
+
+                    Boot, Hibernate, Mule, RMQ, equiyalent open source technol gies;
+
+              c. Must have comprehensive knowledge of overall software architecture
+
+                    and software engineering methodologies, principles and practices;
+
+              d. Has strong experience in web or mobile application development, dat
+
+                    structures and algorithms, threads and session management, etc.;
+
+              e. Should have successfully architected at least one.large mission-critical,
+
+                    large transaction volume, high perfonnance computing projects usint
+
+                    open source technologies;                 • •• • • •
+
+              f. Good working knowledge of high availability databases, micro-services,
+
+              g. middleware;
+
+              h. Experience in lT infrastructure assessment and gap analysis of large
+
+                    mission critical and complex enterprise techno.logy suites, involvin!
+
+                    digital transformation and automation of exist.fr bu.siness processes;
+
+              i. Has strong understanding of Agile development methodology
+                   Responsible for recommending suitable technology solutions fot
+
+                    individual application modules and components.
+
+                    Working with Managed Service Provider & Business for requirement,5
+
+                    analysis & design (TRDs,BRDs, FSDs, HLD , lADs, RCAs)
+
+                    Reviewing LLDs, Test• Cases & Rep rt .s.L s and.Reiease/Buil(
+
+                    Documents.                                                                 ·
+
+                    Prepare,· Review arid Approve •• Design documents• for application
+
+                    development and enhancements to individual modules, in adherence to
+
+                    all architecture principles. • •• • • • • • '• • • ••                   •
+
+                    Working with project manager, test .Manager, Leads, Staging team and
+
+                    UAT team for projec.t pl._a ning & de. )ivery :process com. pliance ..a·-n. c·-.
+                                               •• •
+
+                    SLA adherence                                                              .,
+
+                    Working with Tech support/Ops/Apps teams to ,troubleshoot/resolv
+
+                    incidents
+
+                                                     -.. '.:
+Working with Ops/Apps/Release teams for production deployment
+Coordinating with Security team for CISONA and secure code review
+Coordinating with Infra team for servers, storage and access needs
+Coordinate with Business/HQ for requirements, issue resolution, release
+rollouts,trainings, demos, reports/updates/presentations.
+Responsible for providing maintenance support to enrolment clients
+which includesdevelopment, testing, deployment and release
+Responsible for supporting UIDAI in the design, build and deployment
+of high-availability open source middleware and database systems;
+Monitoring & analyzing the hold packets, analyzing aged packet and
+clearing them on priority basis with the help of CIDR Ops &
+Maintenance teams.
+Responsibilities assigned by UIDAI from time to time.
+

@@ -286,6 +286,11 @@ ORDER BY workOrder.ReceivedAtUtc DESC,workOrder.Id DESC", new { ClientId = effec
         foreach (var row in rows)
         {
             var locations = await db.QueryAsync<string>("SELECT Location FROM recruitment_work_order_lines WHERE WorkOrderId=@Id", new { row.Id });
+            if (!locations.Any())
+            {
+                if (user.ClientId == row.ClientId) visible.Add(row);
+                continue;
+            }
             if ((await RecruitmentAccessScope.FilterAsync(db, user, locations, _ => row.ClientId, location => location)).Count > 0) visible.Add(row);
         }
         return visible;
@@ -303,7 +308,7 @@ WHERE workOrder.Id=@Id AND (@ClientId IS NULL OR workOrder.ClientId=@ClientId)",
         if (row is null) return null;
         row.Lines = (await db.QueryAsync<RecruitmentWorkOrderLine>("SELECT * FROM recruitment_work_order_lines WHERE WorkOrderId=@Id ORDER BY LineNumber,Id", new { Id = id })).ToList();
         row.Lines = await RecruitmentAccessScope.FilterAsync(db, user, row.Lines, _ => row.ClientId, line => line.Location);
-        if (RecruitmentAccessScope.IsRestricted(user) && row.Lines.Count == 0) return null;
+        if (RecruitmentAccessScope.IsRestricted(user) && row.Lines.Count == 0 && user.ClientId != row.ClientId) return null;
         row.LineCount = row.Lines.Count;
         return row;
     }
@@ -320,8 +325,9 @@ WHERE workOrder.Id=@Id AND (@ClientId IS NULL OR workOrder.ClientId=@ClientId)",
         if (user.ClientId.HasValue && user.ClientId.Value != request.ClientId) return (null, "The selected client is outside your access.");
         if (request.WorkOrderNumber.Length == 0) return (null, "Work order number is required.");
         if (request.ReceivedAtUtc == default) return (null, "Work order received date is required.");
-        if (request.OverallSlaMinutes < 0) return (null, "Overall SLA cannot be negative.");
-        if (request.Lines.Count == 0) return (null, "Add at least one work order position.");
+        // Work orders capture demand and the anchor date only. Published pipeline
+        // versions are the single source of truth for every SLA target.
+        request.OverallSlaMinutes = 0;
         var duplicateLine = request.Lines.GroupBy(row => row.LineNumber).FirstOrDefault(group => group.Key <= 0 || group.Count() > 1);
         if (duplicateLine is not null) return (null, "Every work order line needs a unique positive line number.");
         if (request.Lines.Any(row => string.IsNullOrWhiteSpace(row.PositionName) || row.NumberOfPositions <= 0))
@@ -360,7 +366,7 @@ WHERE positionRow.Id IN @Ids AND positionRow.ClientId=@ClientId", new { Ids = li
 
         await using var transaction = await db.BeginTransactionAsync();
         long id;
-        var dueAt = request.OverallSlaMinutes > 0 ? request.ReceivedAtUtc.AddMinutes(request.OverallSlaMinutes) : (DateTime?)null;
+        DateTime? dueAt = null;
         if (request.Id <= 0)
         {
             id = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_work_orders
@@ -503,7 +509,7 @@ WHERE WorkOrderLineId=@WorkOrderLineId AND (@ClientId IS NULL OR ClientId=@Clien
         if (existingCaseId is > 0) return (await GetHiringCaseAsync(existingCaseId.Value, user), "");
         var source = await db.QueryFirstOrDefaultAsync<StartCaseSource>(@"SELECT line.Id WorkOrderLineId,line.WorkOrderId,line.RequisitionId,line.PositionId,
 workOrder.ClientId,workOrder.ReceivedAtUtc,COALESCE(requisition.RequestDate,workOrder.ReceivedAtUtc) SlaAnchorAtUtc,
-workOrder.OverallSlaMinutes,line.Location,version.Id PipelineVersionId,version.Status PipelineStatus,
+line.Location,version.Id PipelineVersionId,version.Status PipelineStatus,
 version.ScopeType,version.SlaMode,version.OverallSlaMinutes PipelineOverallSlaMinutes
 FROM recruitment_work_order_lines line
 JOIN recruitment_work_orders workOrder ON workOrder.Id=line.WorkOrderId
@@ -521,7 +527,7 @@ FROM recruitment_pipeline_stages WHERE PipelineVersionId=@Id AND CardScope='Posi
         if (initial is null) return (null, "The pipeline needs exactly one active initial Position stage.");
 
         await using var transaction = await db.BeginTransactionAsync();
-        var overallMinutes = source.PipelineOverallSlaMinutes > 0 ? source.PipelineOverallSlaMinutes : source.OverallSlaMinutes;
+        var overallMinutes = source.PipelineOverallSlaMinutes;
         var overallDue = overallMinutes > 0 ? source.SlaAnchorAtUtc.AddMinutes(overallMinutes) : (DateTime?)null;
         var inserted = await db.ExecuteAsync(@"INSERT IGNORE INTO recruitment_position_pipeline_instances
 (ClientId,WorkOrderId,WorkOrderLineId,RequisitionId,PositionId,PipelineVersionId,SlaAnchorAtUtc,OverallDueAtUtc,Status,StartedByUserId)
@@ -1518,7 +1524,6 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
         public int ClientId { get; set; }
         public DateTime ReceivedAtUtc { get; set; }
         public DateTime SlaAnchorAtUtc { get; set; }
-        public int OverallSlaMinutes { get; set; }
         public string Location { get; set; } = "";
         public long PipelineVersionId { get; set; }
         public string PipelineStatus { get; set; } = "";

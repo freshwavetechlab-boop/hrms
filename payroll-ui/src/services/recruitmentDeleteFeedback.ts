@@ -12,7 +12,7 @@ const dependencyRoutes: DependencyRoute[] = [
   },
   {
     matches: [/job[- ]description/i, /ATS scoring evidence/i],
-    action: { label: 'Open job descriptions', href: '/recruitment/job-descriptions' },
+    action: { label: 'Open hiring requests', href: '/recruitment/requisitions' },
   },
   {
     matches: [/job posting/i, /posting\(s\)/i, /posting record/i],
@@ -20,7 +20,7 @@ const dependencyRoutes: DependencyRoute[] = [
   },
   {
     matches: [/live cumulative/i, /hiring case/i, /cumulative hiring/i, /signed\/process document/i, /profile-forwarding batch/i],
-    action: { label: 'Open Work Orders & SLA', href: '/recruitment/work-orders-and-sla' },
+    action: { label: 'Open Work Orders', href: '/recruitment/work-orders-and-sla' },
   },
   {
     matches: [/interview/i, /panel feedback/i],
@@ -44,7 +44,7 @@ const dependencyRoutes: DependencyRoute[] = [
   },
   {
     matches: [/form is used/i, /form has/i, /form is configured/i, /submitted form/i],
-    action: { label: 'Manage candidate forms', href: '/recruitment/hiring-pipeline?manage=1&tool=forms' },
+    action: { label: 'Manage candidate forms', href: '/recruitment/job-postings?tool=forms' },
   },
   {
     matches: [/employee-converted/i, /joined/i, /employee lifecycle/i],

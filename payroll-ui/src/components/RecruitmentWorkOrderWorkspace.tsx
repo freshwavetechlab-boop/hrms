@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Button, Card, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Tag, Timeline, Tooltip, message } from 'antd'
+import { Alert, Button, Card, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Statistic, Tag, Timeline, Tooltip, message } from 'antd'
 import { ClockCircleOutlined, DeleteOutlined, FileProtectOutlined, HistoryOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, TeamOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useAuthSession } from './AuthGate'
@@ -8,18 +8,17 @@ import { getClients } from '../services/payrollService'
 import { getRecruitmentPipelineVersions, getRecruitmentPipelines } from '../services/recruitmentOrchestrationService'
 import { advanceRecruitmentHiringCase, approveRecruitmentProfileBatch, createRecruitmentProfileBatch, deleteRecruitmentHiringCase, deleteRecruitmentWorkOrder, forwardRecruitmentProfileBatch, generateRecruitmentProcessDocument, getRecruitmentHiringCase, getRecruitmentHiringCases, getRecruitmentHiringCaseTransitions, getRecruitmentProcessDocuments, getRecruitmentProfileBatches, getRecruitmentWorkOrder, getRecruitmentWorkOrders, pauseRecruitmentHiringCase, resumeRecruitmentHiringCase, saveRecruitmentProcessDocument, saveRecruitmentWorkOrder, startRecruitmentHiringCase } from '../services/recruitmentCaseService'
 import { getApplications } from '../services/recruitmentTalentService'
-import { getRecruitmentOpenPositions } from '../services/recruitmentService'
-import type { Client, RecruitmentCandidateApplication, RecruitmentOpenPosition } from '../types/payroll'
+import type { Client, RecruitmentCandidateApplication } from '../types/payroll'
 import type { RecruitmentPipelineTransition } from '../types/recruitmentOrchestration'
 import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProfileSubmissionBatch, RecruitmentWorkOrder, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
 import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
 import DataTable from './DataTable'
 import './RecruitmentWorkOrderWorkspace.css'
 
-type WorkOrderDraft = SaveRecruitmentWorkOrder & { overallSlaDays: number | null }
+type WorkOrderDraft = SaveRecruitmentWorkOrder
+type PublishedPipelineSla = { id: number; pipelineName: string; versionNumber: number; slaMode: string; overallSlaMinutes: number }
 
-const blankLine = (lineNumber: number) => ({ id: 0, lineNumber, positionName: '', payBandLevelCode: '', numberOfPositions: 1, location: '', division: '', requisitionId: null, positionId: null, status: 'Open' })
-const blankWorkOrder = (clientId = 0): WorkOrderDraft => ({ id: 0, clientId, workOrderNumber: '', receivedAtUtc: '', receivedFrom: '', subject: '', remarks: '', status: 'Draft', overallSlaMinutes: 0, overallSlaDays: null, lines: [blankLine(1)] })
+const blankWorkOrder = (clientId = 0): WorkOrderDraft => ({ id: 0, clientId, workOrderNumber: '', receivedAtUtc: '', receivedFrom: '', subject: '', remarks: '', status: 'Draft', overallSlaMinutes: 0, lines: [] })
 const dateTimeText = (value?: string | null) => value ? new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'Not set'
 const durationText = (minutes?: number | null) => minutes == null ? 'No target' : minutes === 0 ? 'Day 0' : `${(minutes / 1440).toFixed(minutes % 1440 ? 1 : 0)} days`
 const formatStageDuration = (seconds = 0) => { const total = Math.max(0, Math.floor(seconds)); const days = Math.floor(total / 86400); const hours = Math.floor((total % 86400) / 3600); const minutes = Math.floor((total % 3600) / 60); const remainingSeconds = total % 60; return `${days ? `${days}d ` : ''}${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}` }
@@ -35,7 +34,6 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   const navigate = useNavigate()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
-  const [openPositions, setOpenPositions] = useState<RecruitmentOpenPosition[]>([])
   const [clientId, setClientId] = useState(initialClientId)
   const [query, setQuery] = useState('')
   const [workOrders, setWorkOrders] = useState<RecruitmentWorkOrder[]>([])
@@ -43,6 +41,8 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   const [draft, setDraft] = useState<WorkOrderDraft>(() => blankWorkOrder(initialClientId))
   const [editorOpen, setEditorOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [pipelineSlaLoading, setPipelineSlaLoading] = useState(false)
+  const [publishedPipelineSlas, setPublishedPipelineSlas] = useState<PublishedPipelineSla[]>([])
   const [selectedWorkOrder, setSelectedWorkOrder] = useState<RecruitmentWorkOrder | null>(null)
   const [selectedCase, setSelectedCase] = useState<RecruitmentHiringCase | null>(null)
   const [caseSyncedAt, setCaseSyncedAt] = useState(Date.now())
@@ -71,9 +71,35 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     const [orders, hiringCases] = await Promise.all([getRecruitmentWorkOrders(clientId, query), getRecruitmentHiringCases(clientId)])
     setWorkOrders(orders); setCases(hiringCases)
   }
-  useEffect(() => { void Promise.all([getClients(), getRecruitmentOpenPositions()]).then(([clientRows, positionRows]) => { setClients(clientRows); setOpenPositions(positionRows) }) }, [])
+  useEffect(() => { void getClients().then(setClients) }, [])
   useEffect(() => { setClientId(initialClientId) }, [initialClientId])
   useEffect(() => { void load() }, [clientId])
+  useEffect(() => {
+    if (!editorOpen || !draft.clientId) {
+      setPipelineSlaLoading(false)
+      setPublishedPipelineSlas([])
+      return
+    }
+    let cancelled = false
+    setPipelineSlaLoading(true)
+    void (async () => {
+      try {
+        const definitions = (await getRecruitmentPipelines(draft.clientId)).filter(definition => definition.isActive)
+        const groups = await Promise.all(definitions.map(async definition => ({ definition, versions: await getRecruitmentPipelineVersions(definition.id) })))
+        const rows = groups.flatMap(({ definition, versions }) => versions
+          .filter(version => version.status === 'Published'
+            && ['Position', 'Hybrid'].includes(version.scopeType ?? 'Application')
+            && (!definition.currentPublishedVersionId || definition.currentPublishedVersionId === version.id))
+          .map(version => ({ id: version.id, pipelineName: definition.pipelineName, versionNumber: version.versionNumber, slaMode: version.slaMode ?? 'StageEntry', overallSlaMinutes: version.overallSlaMinutes ?? 0 })))
+        if (!cancelled) setPublishedPipelineSlas(rows)
+      } catch {
+        if (!cancelled) setPublishedPipelineSlas([])
+      } finally {
+        if (!cancelled) setPipelineSlaLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [draft.clientId, editorOpen])
   useEffect(() => {
     const timer = window.setInterval(() => setClockNow(Date.now()), 1_000)
     return () => window.clearInterval(timer)
@@ -90,27 +116,26 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   const openEdit = async (row: RecruitmentWorkOrder) => {
     const detail = await getRecruitmentWorkOrder(row.id)
     if (!detail) return message.error('Unable to load this work order.')
-    setDraft({ ...detail, receivedAtUtc: new Date(detail.receivedAtUtc).toISOString().slice(0, 16), overallSlaDays: detail.overallSlaMinutes ? detail.overallSlaMinutes / 1440 : null, lines: detail.lines.map(line => ({ ...line })) })
+    setDraft({ ...detail, receivedAtUtc: new Date(detail.receivedAtUtc).toISOString().slice(0, 16), overallSlaMinutes: 0, lines: detail.lines.map(line => ({ ...line })) })
     setEditorOpen(true)
   }
   const patchDraft = (patch: Partial<WorkOrderDraft>) => setDraft(current => ({ ...current, ...patch }))
-  const patchLine = (index: number, patch: Partial<WorkOrderDraft['lines'][number]>) => patchDraft({ lines: draft.lines.map((line, rowIndex) => rowIndex === index ? { ...line, ...patch } : line) })
-  const addLine = () => patchDraft({ lines: [...draft.lines, blankLine(draft.lines.length + 1)] })
-  const removeLine = (index: number) => patchDraft({ lines: draft.lines.filter((_, rowIndex) => rowIndex !== index).map((line, rowIndex) => ({ ...line, lineNumber: rowIndex + 1 })) })
 
   const save = async () => {
     if (!draft.clientId) return message.warning('Select the client that issued this work order.')
     if (!draft.workOrderNumber.trim() || !draft.receivedAtUtc) return message.warning('Work order number and received time are required.')
-    if (!draft.overallSlaDays || draft.overallSlaDays <= 0) return message.warning('Enter the agreed overall pipeline SLA in days.')
-    if (!draft.lines.length || draft.lines.some(line => !line.positionName.trim() || line.numberOfPositions <= 0)) return message.warning('Complete every position line.')
     setSaving(true)
-    const response = await saveRecruitmentWorkOrder({ ...draft, receivedAtUtc: new Date(draft.receivedAtUtc).toISOString(), overallSlaMinutes: Math.round(draft.overallSlaDays * 1440) })
+    const response = await saveRecruitmentWorkOrder({ ...draft, receivedAtUtc: new Date(draft.receivedAtUtc).toISOString(), overallSlaMinutes: 0 })
     setSaving(false)
     if (!response.ok || !response.data) return
     setEditorOpen(false); await load(); setSelectedWorkOrder(response.data)
   }
 
   const viewWorkOrder = async (row: RecruitmentWorkOrder) => setSelectedWorkOrder(await getRecruitmentWorkOrder(row.id))
+  const addHiringRequest = (workOrder: RecruitmentWorkOrder) => {
+    setSelectedWorkOrder(null)
+    navigate(`/recruitment/requisitions?new=1&clientId=${workOrder.clientId}&workOrderId=${workOrder.id}`)
+  }
   const removeWorkOrder = async (row: RecruitmentWorkOrder) => {
     const response = await deleteRecruitmentWorkOrder(row.id)
     if (!response.ok) return
@@ -290,23 +315,23 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
             : ''
   return <section className="work-order-workspace" data-testid="recruitment-work-orders">
     <div className="work-order-command-bar">
-      <div><span>Client hiring demand</span><h2>Work orders &amp; SLA</h2><p>Record approved roles, set the overall delivery SLA, and track every role against its live stage targets.</p></div>
+      <div><span>Client hiring demand</span><h2>Work orders</h2><p>Record the client order once, then create its role-wise Hiring Requests. SLA targets come automatically from the published pipeline.</p></div>
       <Space wrap>{!clientScopeManaged && <Select allowClear value={clientId || undefined} placeholder="All accessible clients" showSearch optionFilterProp="label" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={value => setClientId(value || 0)} />}<Input.Search value={query} placeholder="Work order or subject" onChange={event => setQuery(event.target.value)} onSearch={() => void load()} /><Button data-testid="work-order-add" type="primary" icon={<PlusOutlined />} onClick={openNew}>Add work order</Button></Space>
     </div>
     <div className="work-order-metrics">
       <Card><Statistic title="Active orders" value={stats.activeOrders} prefix={<FileProtectOutlined />} /></Card>
-      <Card><Statistic title="Roles requested" value={stats.positions} prefix={<TeamOutlined />} /></Card>
+      <Card><Statistic title="Linked hiring requests" value={stats.positions} prefix={<TeamOutlined />} /></Card>
       <Card><Statistic title="Active journeys" value={stats.activeCases} prefix={<PlayCircleOutlined />} /></Card>
       <Card className={stats.breached ? 'risk' : ''}><Statistic title="Overdue journeys" value={stats.breached} prefix={<ClockCircleOutlined />} /></Card>
     </div>
     {displayMode !== 'table' && <div className="work-order-columns" data-testid="work-orders-pipeline-view">
-      <Card title="Client hiring orders" extra={<Tag>{workOrders.length} records</Tag>}>
+      <Card title="Work orders" extra={<Tag>{workOrders.length} records</Tag>}>
         {!workOrders.length ? <Empty description="No work order has been entered for this client." /> : <div className="work-order-list">{workOrders.map(row => <article key={row.id}>
           <button type="button" onClick={() => void viewWorkOrder(row)}><div><span>{row.clientName}</span><h3>{row.workOrderNumber}</h3><p>{row.subject || 'No subject entered'}</p></div><Tag color={statusColor(row.status)}>{row.status}</Tag></button>
-          <footer><span>{dateTimeText(row.receivedAtUtc)}</span><b>{row.lineCount} position line{row.lineCount === 1 ? '' : 's'}</b><span>{durationText(row.overallSlaMinutes)} overall</span><Button size="small" onClick={() => void openEdit(row)}>Edit</Button>{canDelete && <Popconfirm title="Delete this work order?" description="Delete its live cumulative pipeline cases first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeWorkOrder(row)}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</footer>
+          <footer><span>{dateTimeText(row.receivedAtUtc)}</span><b>{row.lineCount} hiring request{row.lineCount === 1 ? '' : 's'}</b><span>Pipeline SLA applies on journey start</span><Button size="small" onClick={() => void openEdit(row)}>Edit</Button>{canDelete && <Popconfirm title="Delete this work order?" description="Delete its live cumulative pipeline cases first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeWorkOrder(row)}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</footer>
         </article>)}</div>}
       </Card>
-      <Card title="Active hiring journeys" extra={<Tag color="purple">Role-wise SLA</Tag>}>
+      <Card title="Position-wise hiring progress" extra={<Tag color="purple">Stages & SLA</Tag>}>
         {!cases.length ? <Empty description="Open an order and start a published hiring pipeline for one role." /> : <div className="hiring-case-list">{cases.map(row => {
           const overdue = row.status === 'Active' && row.overallDueAtUtc && new Date(row.overallDueAtUtc).getTime() < Date.now()
           return <button type="button" key={row.id} className={overdue ? 'overdue' : ''} onClick={() => void viewCase(row)}><div><Tag color={statusColor(row.status)}>{row.status}</Tag><span>{row.currentStakeholderCode || 'Unassigned stakeholder'}</span></div><h3>{row.positionName}</h3><p>{row.workOrderNumber} · {row.pipelineName}</p><footer><span>{row.currentStageName || 'Completed'}</span><b><ClockCircleOutlined /> {remainingDuration(row.overallDueAtUtc, clockNow)}</b></footer></button>
@@ -314,7 +339,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
       </Card>
     </div>}
     {displayMode !== 'pipeline' && <div className="work-order-table-stack" data-testid="work-orders-table-view">
-      <Card size="small" title="Client hiring orders"><DataTable
+      <Card size="small" title="Work orders"><DataTable
         rows={workOrders}
         getRowId={row => row.id}
         exportFileName="recruitment-work-orders"
@@ -323,13 +348,12 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
           { key: 'workOrderNumber', label: 'Work order', width: '190px', render: row => <div className="pipeline-table-candidate"><strong>{row.workOrderNumber}</strong><small>{row.subject || 'No subject entered'}</small></div> },
           { key: 'clientName', label: 'Client', width: '180px' },
           { key: 'receivedAtUtc', label: 'Received', width: '170px', render: row => dateTimeText(row.receivedAtUtc) },
-          { key: 'lineCount', label: 'Roles', width: '90px' },
-          { key: 'overallSlaMinutes', label: 'Overall SLA', width: '120px', render: row => durationText(row.overallSlaMinutes) },
+          { key: 'lineCount', label: 'Hiring requests', width: '130px' },
           { key: 'status', label: 'Status', width: '110px', render: row => <Tag color={statusColor(row.status)}>{row.status}</Tag> },
           { key: 'actions', label: 'Actions', width: '240px', sortable: false, filterable: false, render: row => <Space size={4} wrap><Button size="small" onClick={() => void viewWorkOrder(row)}>View</Button><Button size="small" onClick={() => void openEdit(row)}>Edit</Button>{canDelete && <Popconfirm title="Delete this work order?" description="Delete its live cumulative pipeline cases first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeWorkOrder(row)}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space> },
         ]}
       /></Card>
-      <Card size="small" title="Active hiring journeys"><DataTable
+      <Card size="small" title="Position-wise hiring progress"><DataTable
         rows={cases}
         getRowId={row => row.id}
         exportFileName="recruitment-hiring-journeys"
@@ -347,38 +371,51 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     </div>}
 
     <Drawer width={860} title={draft.id ? `Edit ${draft.workOrderNumber}` : 'New client work order'} open={editorOpen} onClose={() => setEditorOpen(false)} extra={<Button data-testid="work-order-save" type="primary" loading={saving} onClick={() => void save()}>Save work order</Button>}>
-      <Alert showIcon type="info" message="Manual intake only" description="Inbound email parsing is intentionally not used. Record the approved work order here and upload the original order/JD annexure after saving." />
+      <Alert showIcon type="info" message="Pipeline-driven SLA" description="Record the approved work order here. When a role journey starts, its cumulative SLA and stage targets are applied automatically from the published client pipeline." />
+      <div className="work-order-derived-sla" data-testid="work-order-derived-sla">
+        <div><span>Overall SLA</span><small>Read-only · from published client pipeline</small></div>
+        <Space size={[6, 6]} wrap>
+          {!draft.clientId
+            ? <Tag>Select client</Tag>
+            : pipelineSlaLoading
+              ? <Tag color="processing">Loading pipeline…</Tag>
+              : publishedPipelineSlas.length
+                ? publishedPipelineSlas.map(row => <Tag key={row.id} color={row.slaMode === 'CumulativeFromAnchor' ? 'purple' : 'blue'}>{row.pipelineName} · v{row.versionNumber} · {row.overallSlaMinutes > 0 ? durationText(row.overallSlaMinutes) : 'Stage-based SLA'}</Tag>)
+                : <Tag color="warning">No published Position/Hybrid pipeline</Tag>}
+        </Space>
+      </div>
       <Form layout="vertical" className="work-order-form">
-        <div className="work-order-form-grid"><Form.Item label="Client" required><Select data-testid="work-order-client" value={draft.clientId || undefined} disabled={clientScopeManaged && initialClientId > 0} showSearch optionFilterProp="label" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={clientId => patchDraft({ clientId })} /></Form.Item><Form.Item label="Work order number" required><Input data-testid="work-order-number" value={draft.workOrderNumber} onChange={event => patchDraft({ workOrderNumber: event.target.value })} /></Form.Item><Form.Item label="Received date & time" required><Input data-testid="work-order-received-at" type="datetime-local" value={draft.receivedAtUtc} onChange={event => patchDraft({ receivedAtUtc: event.target.value })} /></Form.Item><Form.Item label="Overall SLA (days)" required><InputNumber data-testid="work-order-overall-sla" min={0.01} precision={2} value={draft.overallSlaDays} onChange={overallSlaDays => patchDraft({ overallSlaDays: overallSlaDays == null ? null : Number(overallSlaDays) })} /></Form.Item><Form.Item label="Received from"><Input data-testid="work-order-received-from" value={draft.receivedFrom} placeholder="Client stakeholder / source" onChange={event => patchDraft({ receivedFrom: event.target.value })} /></Form.Item><Form.Item label="Status"><Select data-testid="work-order-status" value={draft.status} options={['Draft', 'Active', 'On Hold', 'Completed', 'Cancelled'].map(value => ({ value }))} onChange={status => patchDraft({ status })} /></Form.Item><Form.Item className="wide" label="Subject"><Input data-testid="work-order-subject" value={draft.subject} onChange={event => patchDraft({ subject: event.target.value })} /></Form.Item><Form.Item className="wide" label="Internal note"><Input.TextArea data-testid="work-order-remarks" rows={2} value={draft.remarks} onChange={event => patchDraft({ remarks: event.target.value })} /></Form.Item></div>
-        <div className="work-order-line-heading"><div><h3>Roles requested</h3><p>Each role starts one independently tracked hiring journey.</p></div><Button data-testid="work-order-add-position" icon={<PlusOutlined />} onClick={addLine}>Add role</Button></div>
-        {draft.lines.map((line, index) => <Card size="small" key={`${line.id}-${index}`} title={`Line ${index + 1}`} extra={draft.lines.length > 1 && <Button danger size="small" onClick={() => removeLine(index)}>Remove</Button>}><div className="work-order-line-grid"><Form.Item label="Position / posting name" required><Input data-testid={`work-order-position-${index}`} value={line.positionName} onChange={event => patchLine(index, { positionName: event.target.value })} /></Form.Item><Form.Item label="Pay band / level"><Input data-testid={`work-order-pay-band-${index}`} value={line.payBandLevelCode} placeholder="A–H or client scale" onChange={event => patchLine(index, { payBandLevelCode: event.target.value })} /></Form.Item><Form.Item label="No. of positions" required><InputNumber data-testid={`work-order-count-${index}`} min={1} value={line.numberOfPositions} onChange={numberOfPositions => patchLine(index, { numberOfPositions: Number(numberOfPositions || 1) })} /></Form.Item><Form.Item label="Location"><Input data-testid={`work-order-location-${index}`} value={line.location} onChange={event => patchLine(index, { location: event.target.value })} /></Form.Item><Form.Item label="Division"><Input data-testid={`work-order-division-${index}`} value={line.division} onChange={event => patchLine(index, { division: event.target.value })} /></Form.Item><Form.Item className="wide-position-link" label="Existing open position (link when available)"><Select data-testid={`work-order-open-position-${index}`} allowClear showSearch optionFilterProp="label" value={line.positionId || undefined} options={openPositions.filter(position => !draft.clientId || position.clientId === draft.clientId).map(position => ({ value: position.id, label: `${position.positionCode} · ${position.positionTitle} · ${position.status}` }))} onChange={positionId => { const position = openPositions.find(row => row.id === positionId); patchLine(index, { positionId: position?.id ?? null, requisitionId: position?.requisitionId ?? null }) }} /></Form.Item></div></Card>)}
+        <div className="work-order-form-grid"><Form.Item label="Client" required><Select data-testid="work-order-client" value={draft.clientId || undefined} disabled={clientScopeManaged && initialClientId > 0} showSearch optionFilterProp="label" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={clientId => patchDraft({ clientId })} /></Form.Item><Form.Item label="Work order number" required><Input data-testid="work-order-number" value={draft.workOrderNumber} onChange={event => patchDraft({ workOrderNumber: event.target.value })} /></Form.Item><Form.Item label="Received date & time" required><Input data-testid="work-order-received-at" type="datetime-local" value={draft.receivedAtUtc} onChange={event => patchDraft({ receivedAtUtc: event.target.value })} /></Form.Item><Form.Item label="Received from"><Input data-testid="work-order-received-from" value={draft.receivedFrom} placeholder="Client stakeholder / source" onChange={event => patchDraft({ receivedFrom: event.target.value })} /></Form.Item><Form.Item label="Status"><Select data-testid="work-order-status" value={draft.status} options={['Draft', 'Active', 'On Hold', 'Completed', 'Cancelled'].map(value => ({ value }))} onChange={status => patchDraft({ status })} /></Form.Item><Form.Item className="wide" label="Subject"><Input data-testid="work-order-subject" value={draft.subject} onChange={event => patchDraft({ subject: event.target.value })} /></Form.Item><Form.Item className="wide" label="Internal note"><Input.TextArea data-testid="work-order-remarks" rows={2} value={draft.remarks} onChange={event => patchDraft({ remarks: event.target.value })} /></Form.Item></div>
       </Form>
     </Drawer>
 
-    <Drawer width={980} title={selectedWorkOrder ? `${selectedWorkOrder.workOrderNumber} · ${selectedWorkOrder.clientName}` : 'Work order'} open={!!selectedWorkOrder} onClose={() => setSelectedWorkOrder(null)}>
-      {selectedWorkOrder && <><div className="work-order-detail-strip"><div><span>Received</span><b>{dateTimeText(selectedWorkOrder.receivedAtUtc)}</b></div><div><span>Overall due</span><b>{dateTimeText(selectedWorkOrder.dueAtUtc)}</b></div><div><span>Source</span><b>{selectedWorkOrder.receivedFrom || 'Manual entry'}</b></div><Tag color={statusColor(selectedWorkOrder.status)}>{selectedWorkOrder.status}</Tag></div>
+    <Drawer width={980} title={selectedWorkOrder ? `${selectedWorkOrder.workOrderNumber} · ${selectedWorkOrder.clientName}` : 'Work order'} open={!!selectedWorkOrder} onClose={() => setSelectedWorkOrder(null)} extra={selectedWorkOrder && <Button data-testid="work-order-add-hiring-request" type="primary" icon={<PlusOutlined />} onClick={() => addHiringRequest(selectedWorkOrder)}>Add hiring request</Button>}>
+      {selectedWorkOrder && <><div className="work-order-detail-strip"><div><span>Received</span><b>{dateTimeText(selectedWorkOrder.receivedAtUtc)}</b></div><div><span>Hiring requests</span><b>{selectedWorkOrder.lineCount}</b></div><div><span>Source</span><b>{selectedWorkOrder.receivedFrom || 'Manual entry'}</b></div><Tag color={statusColor(selectedWorkOrder.status)}>{selectedWorkOrder.status}</Tag></div>
+        {!selectedWorkOrder.lines.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No hiring request has been added against this work order yet." />}
         <div className="work-order-detail-lines">{selectedWorkOrder.lines.map(line => { const hiringCase = cases.find(row => row.workOrderLineId === line.id); return <article key={line.id}><div><span>Role {line.lineNumber}</span><h3>{line.positionName}</h3><p>{[line.payBandLevelCode, line.division, line.location].filter(Boolean).join(' · ') || 'Role details not entered'}</p></div><div><Tag>{line.numberOfPositions} opening{line.numberOfPositions === 1 ? '' : 's'}</Tag><Button type="primary" onClick={() => hiringCase ? void viewCase(hiringCase) : void prepareStart(selectedWorkOrder, line)}>{hiringCase ? 'Open journey' : line.requisitionId ? 'Continue journey' : 'Complete intake'}</Button></div></article> })}</div>
         <EntityAttachmentPanel entityType="RECRUITMENT_WORK_ORDER" entityId={selectedWorkOrder.id} clientId={selectedWorkOrder.clientId} moduleCode="RECRUITMENT" formCodes={['WORK_ORDER']} title="Original work order & JD annexure" description="Stored through the existing secured attachment service and storage policy." />
       </>}
     </Drawer>
 
-    <Drawer width={1040} title={selectedCase ? `${selectedCase.positionName} · ${selectedCase.workOrderNumber}` : 'Hiring journey'} open={!!selectedCase} onClose={() => { setSelectedCase(null); setStageLogOpen(false); setProcessDocuments([]); setProfileBatches([]); setCandidateApplications([]); setSelectedApplicationIds([]); setCaseActionError(''); setCaseActionDialog(null); setCaseDialogError('') }} extra={selectedCase && <Space><Button data-testid="hiring-case-time-log" icon={<HistoryOutlined />} onClick={() => setStageLogOpen(true)}>Stage time log</Button>{selectedCase.status === 'Active' && <>{activeStage?.isPaused ? <Button data-testid="hiring-case-resume" loading={caseActionBusy} icon={<PlayCircleOutlined />} onClick={() => void resume()}>Resume SLA</Button> : <Tooltip title={pauseBlockedReason}><span><Button data-testid="hiring-case-pause" loading={caseActionBusy} disabled={Boolean(pauseBlockedReason)} icon={<PauseCircleOutlined />} onClick={pause}>Pause SLA</Button></span></Tooltip>}<Tooltip title={moveBlockedReason}><span><Button data-testid="hiring-case-move" type="primary" loading={caseActionBusy} disabled={Boolean(moveBlockedReason)} onClick={advance}>{selectedCase.advanceStatus === 'Pending Approval' ? 'Approval pending' : activeStage?.isTerminal ? 'Complete journey' : 'Move to next stage'}</Button></span></Tooltip></>}{canDelete && <Popconfirm title="Delete this hiring case?" description="Its SLA history and generated process records will be removed. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeHiringCase(selectedCase)}><Button danger icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space>}>
+    <Drawer rootClassName="hiring-journey-drawer" width="min(1180px, 96vw)" title={selectedCase ? `${selectedCase.positionName} · ${selectedCase.workOrderNumber}` : 'Hiring journey'} open={!!selectedCase} onClose={() => { setSelectedCase(null); setStageLogOpen(false); setProcessDocuments([]); setProfileBatches([]); setCandidateApplications([]); setSelectedApplicationIds([]); setCaseActionError(''); setCaseActionDialog(null); setCaseDialogError('') }} extra={selectedCase && <Space wrap><Button data-testid="hiring-case-time-log" icon={<HistoryOutlined />} onClick={() => setStageLogOpen(true)}>Stage time log</Button>{selectedCase.status === 'Active' && <>{activeStage?.isPaused ? <Button data-testid="hiring-case-resume" loading={caseActionBusy} icon={<PlayCircleOutlined />} onClick={() => void resume()}>Resume SLA</Button> : <Tooltip title={pauseBlockedReason}><span><Button data-testid="hiring-case-pause" loading={caseActionBusy} disabled={Boolean(pauseBlockedReason)} icon={<PauseCircleOutlined />} onClick={pause}>Pause SLA</Button></span></Tooltip>}<Tooltip title={moveBlockedReason}><span><Button data-testid="hiring-case-move" type="primary" loading={caseActionBusy} disabled={Boolean(moveBlockedReason)} onClick={advance}>{selectedCase.advanceStatus === 'Pending Approval' ? 'Approval pending' : activeStage?.isTerminal ? 'Complete journey' : 'Move to next stage'}</Button></span></Tooltip></>}{canDelete && <Popconfirm title="Delete this hiring case?" description="Its SLA history and generated process records will be removed. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeHiringCase(selectedCase)}><Button danger icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space>}>
       {selectedCase && <><div className="case-hero"><div><span>{selectedCase.pipelineName}</span><h2>{selectedCase.currentStageName || 'Pipeline complete'}</h2><p>SLA anchored at {dateTimeText(selectedCase.slaAnchorAtUtc)} · overall due {dateTimeText(selectedCase.overallDueAtUtc)}</p></div><Tag color={statusColor(selectedCase.status)}>{selectedCase.status}</Tag></div>
         {caseActionError && <Alert data-testid="hiring-case-action-error" showIcon closable type="error" message="Action could not be completed" description={caseActionError} onClose={() => setCaseActionError('')} />}
         {moveBlockedReason && selectedCase.advanceStatus !== 'Pending Approval' && <Alert data-testid="hiring-case-action-guidance" showIcon type="warning" message="Next action needed" description={moveBlockedReason} />}
         {selectedCase.advanceStatus === 'Pending Approval' && <Alert data-testid="hiring-case-approval-pending" showIcon type="info" message="Stage movement awaiting approval" description={selectedCase.advanceMessage || 'The configured approver can action this request from global My Tasks.'} />}
         <div className="case-live-timers" data-testid="hiring-case-live-timers"><div><span>Current stage active time</span><b><ClockCircleOutlined /> {formatStageDuration(activeStageSeconds)}</b><small>{activeStage?.isPaused ? 'Paused — inactive time is excluded' : activeStage ? 'Live timer' : 'Journey completed'}</small></div><div><span>Overall SLA</span><b>{remainingDuration(selectedCase.overallDueAtUtc, clockNow)}</b><small>Anchored at {dateTimeText(selectedCase.slaAnchorAtUtc)}</small></div><Button icon={<HistoryOutlined />} onClick={() => setStageLogOpen(true)}>View stage history</Button></div>
-        <Card title="Stage documents & signatures" extra={<Tag color="purple">Normalized requirements</Tag>}>
+        <Card title="Documents for this stage" extra={<Tag color="purple">Stage requirements</Tag>}>
+          <p className="work-order-document-guidance">Prepare creates a draft record, not a file. Upload the relevant document below, or use Generate PDF when a template is configured. Signatures are needed only where marked.</p>
           {!activeStage?.processDocumentRequirements?.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="This stage has no process-document requirement." />}
           {activeStage?.processDocumentRequirements?.map(requirement => {
             const document = processDocuments.find(row => row.pipelineStageId === activeStage.pipelineStageId && row.documentType === requirement.documentType)
             return <div className="work-order-document" key={requirement.id} data-testid={`hiring-document-${requirement.documentType}`}>
-              <div><b>{requirement.documentType.replaceAll('_', ' ')}</b><span>{requirement.isRequired ? 'Required' : 'Optional'}{requirement.requiresSignature ? ' · signature required' : ''}</span></div>
+              <header className="work-order-document-header"><div><b><FileProtectOutlined /> {requirement.documentType.replaceAll('_', ' ')}</b><span>{requirement.isRequired ? 'Required' : 'Optional'}{requirement.requiresSignature ? ' · signature required' : ''}</span></div><Space wrap className="work-order-document-actions">
               {!document ? <Button data-testid={`hiring-document-create-${requirement.documentType}`} loading={documentSaving} onClick={() => void prepareProcessDocument(requirement.documentType, requirement.templateId)}>Prepare</Button> : <Tag color={document.status === 'Signed' ? 'green' : 'blue'}>v{document.versionNumber} · {document.status}</Tag>}
               {document && requirement.templateId && document.status !== 'Signed' && <Button loading={documentSaving} onClick={() => void generateProcessDocument(document)}>{document.attachmentPublicId ? 'Regenerate PDF' : 'Generate PDF'}</Button>}
               {document && requirement.requiresSignature && document.status !== 'Signed' && document.hasFinalSignedAttachment && <Button onClick={() => void markProcessDocumentSigned(document)}>Mark signed</Button>}
               {document && requirement.requiresSignature && document.status !== 'Signed' && !document.hasFinalSignedAttachment && <Tag color="orange">Upload signed final</Tag>}
-              {document && <EntityAttachmentPanel entityType="RECRUITMENT_PROCESS_DOCUMENT" entityId={document.id} clientId={selectedCase.clientId} moduleCode="RECRUITMENT" formCodes={['PROCESS_DOCUMENT']} title={`${requirement.documentType.replaceAll('_', ' ')} attachment`} description="Generate the draft, obtain committee signatures, then upload the signed final through the secured attachment service." onChanged={() => void viewCase(selectedCase)} />}
+              </Space></header>
+              {document && <EntityAttachmentPanel entityType="RECRUITMENT_PROCESS_DOCUMENT" entityId={document.id} clientId={selectedCase.clientId} moduleCode="RECRUITMENT" formCodes={['PROCESS_DOCUMENT']} title="Document file" description="Private, versioned storage with secure preview and download." singleFieldLabel={requirement.documentType.replaceAll('_', ' ')} singleFieldHelp={requirement.requiresSignature ? 'Upload the final signed copy. Mark signed becomes available after a separately uploaded final file is linked.' : 'Upload the source document for this requirement. Use Generate PDF only when a template is configured.'} onChanged={() => void viewCase(selectedCase)} />}
             </div>
           })}
         </Card>

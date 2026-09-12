@@ -16,9 +16,10 @@ export const getRecruitmentRequisitions = (filters: { clientId?: number; status?
 export const saveRecruitmentRequisition = (request: SaveRecruitmentRequisition) =>
   postJson<SaveRecruitmentRequisition, RecruitmentRequisition | null>('/api/recruitment/requisitions', request, null)
 
-export const parseRecruitmentRequestDocument = (file: File) => {
+export const parseRecruitmentRequestDocument = (file: File, clientId = 0) => {
   const body = new FormData()
   body.append('file', file)
+  body.append('clientId', String(clientId || 0))
   return postForm<RecruitmentRequestDocumentParseResult>('/api/recruitment/requisitions/parse-source', body, { status: 'NeedsReview', parserName: '', parserVersion: '', originalFileName: file.name, draft: {} as SaveRecruitmentRequisition, detectedFields: [], reviewFields: [], warnings: [] }, {
     timeoutMs: 90_000,
     timeoutMessage: 'Document reading took too long. The file is still selected; continue manually or retry.',

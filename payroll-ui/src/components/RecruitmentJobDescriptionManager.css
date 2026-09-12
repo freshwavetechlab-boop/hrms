@@ -78,6 +78,26 @@
 .jd-manager .jd-skill-advanced .ant-collapse-header-text > span { display: flex; flex-wrap: wrap; gap: 8px; }
 .jd-manager .jd-skill-advanced .ant-collapse-header-text .ant-typography { font-size: 12px; }
 .jd-manager .jd-skill-advanced .ant-collapse-content-box { padding: 8px 0 0; }
+.jd-manager .jd-weight-overview { display: grid; grid-template-columns: minmax(190px, 1fr) minmax(160px, 2fr) 68px; align-items: center; gap: 14px; padding: 12px 14px; margin-bottom: 12px; border: 1px solid #e1e6f0; border-radius: 11px; background: #f8faff; }
+.jd-manager .jd-weight-overview > div { display: grid; gap: 2px; }
+.jd-manager .jd-weight-overview .ant-typography-secondary { font-size: 11px; }
+.jd-manager .jd-weight-overview output { justify-self: end; min-width: 64px; padding: 5px 9px; border-radius: 8px; background: #eef2ff; color: #4338ca; text-align: center; font-variant-numeric: tabular-nums; font-weight: 750; }
+.jd-manager .jd-weight-overview.is-balanced output { background: #eaf8ef; color: #168447; }
+.jd-manager .jd-weight-slider { display: grid; grid-template-columns: minmax(120px, 1fr) 58px; gap: 12px; align-items: center; min-height: 32px; }
+.jd-manager .jd-weight-slider .ant-slider { margin-inline: 6px; }
+.jd-manager .jd-weight-slider output { display: inline-flex; align-items: center; justify-content: center; min-width: 58px; height: 30px; padding: 0 8px; border: 1px solid #d8dff0; border-radius: 9px; background: #f7f9ff; color: #312e81; font-variant-numeric: tabular-nums; font-weight: 700; }
+.jd-manager .jd-additional-requirements > .ant-card-body { padding: 0 16px 16px; }
+.jd-manager .jd-additional-tabs > .ant-tabs-nav { margin-bottom: 12px; }
+.jd-manager .jd-additional-tabs .jd-repeater.is-compact { width: 100%; }
+.jd-manager .jd-additional-tabs .jd-repeater-row { width: 100%; margin-inline: 0; }
+.jd-manager .jd-additional-tabs .jd-repeater-content { padding-top: 34px; }
+.jd-manager .jd-additional-tabs { overflow: hidden; }
+.jd-manager .jd-additional-row { width: 100%; align-items: flex-start; }
+.jd-manager .jd-additional-row .ant-form-item { width: 100%; margin-bottom: 0; }
+.jd-manager .jd-proof-guidance { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 1px solid #dbe8f5; border-radius: 10px; background: #f4f9ff; color: #176b9b; }
+.jd-manager .jd-proof-guidance > .anticon { flex: 0 0 auto; font-size: 18px; }
+.jd-manager .jd-proof-guidance > div { display: grid; min-width: 0; gap: 2px; }
+.jd-manager .jd-proof-guidance .ant-typography-secondary { font-size: 12px; white-space: normal; }
 .jd-manager .jd-skills-repeater .jd-repeater-content > .ant-form > .ant-row > .ant-col:last-child { flex: 0 0 100%; max-width: 100%; }
 .jd-history-modal .ant-list-item { gap: 12px; padding: 12px; border-radius: 8px; cursor: pointer; }
 .jd-history-modal .ant-list-item.active { background: #f4f5ff; }
@@ -96,4 +116,6 @@
   .jd-manager .jd-section-workspace .ant-card-head-wrapper { align-items: flex-start; gap: 8px; flex-wrap: wrap; }
   .jd-manager .jd-editor-footer > .ant-space { width: 100%; }
   .jd-manager .jd-editor-steps .ant-tabs-tab { padding-inline: 0; }
+  .jd-manager .jd-weight-overview { grid-template-columns: 1fr 64px; }
+  .jd-manager .jd-weight-overview > div { grid-column: 1 / -1; }
 }

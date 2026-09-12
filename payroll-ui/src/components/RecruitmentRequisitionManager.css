@@ -140,6 +140,12 @@
   border-bottom: 1px solid #eceef5;
 }
 
+.rfr-dialog .ant-drawer-extra { margin-inline-start: 18px; }
+.rfr-ats-weight-indicator { display: flex; align-items: center; gap: 9px; min-width: 142px; padding: 5px 9px; border: 1px solid #e0e5f0; border-radius: 12px; background: #f8faff; }
+.rfr-ats-weight-indicator .ant-progress { flex: 0 0 auto; }
+.rfr-ats-weight-indicator .ant-progress-text { color: #312e81 !important; font-size: 12px !important; font-weight: 800; font-variant-numeric: tabular-nums; }
+.rfr-ats-weight-indicator > span { color: #536079; font-size: 11px; font-weight: 700; line-height: 1.25; }
+
 .rfr-dialog .ant-drawer-body {
   overflow-y: auto;
   padding: 22px 26px;
@@ -238,6 +244,11 @@
   padding: 4px 16px 0 !important;
   border-top: 1px solid #edf0f5;
 }
+
+.rfr-jd-workspace { margin-top: 14px; }
+.rfr-jd-workspace > .ant-collapse-item > .ant-collapse-content > .ant-collapse-content-box { padding: 14px !important; }
+.jd-manager.is-embedded { padding: 0; }
+.jd-manager.is-embedded .jd-simple-workspace { margin-top: 0; }
 
 .rfr-span-2 {
   grid-column: span 2;
@@ -354,6 +365,45 @@
   flex-basis: 100%;
 }
 
+.rfr-jd-workspace {
+  margin-top: 12px;
+}
+
+.rfr-jd-workspace > .ant-collapse-item > .ant-collapse-content > .ant-collapse-content-box {
+  padding: 12px !important;
+}
+
+.jd-manager.is-embedded {
+  padding: 0;
+  background: transparent;
+}
+
+.jd-manager.is-embedded .jd-simple-workspace,
+.jd-manager.is-embedded .jd-editor {
+  gap: 10px;
+}
+
+.jd-skill-workspace {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+}
+
+.jd-skill-entry .ant-card-body {
+  padding-bottom: 6px;
+}
+
+.jd-skill-entry .ant-select-selector {
+  min-height: 42px !important;
+  align-items: center;
+}
+
+.jd-skill-details {
+  border: 1px solid #e4e8f1;
+  border-radius: 12px;
+  background: #fff;
+}
+
 .rfr-form .ant-form-item-label > label {
   color: #46516a;
   font-weight: 650;
@@ -385,6 +435,9 @@
   .rfr-dialog .ant-drawer-body { padding-inline: 16px; }
   .rfr-source-parser { grid-template-columns: 1fr; }
   .rfr-source-picker { width: 100%; }
+  .rfr-dialog .ant-drawer-extra { margin-inline-start: 8px; }
+  .rfr-ats-weight-indicator { min-width: 62px; justify-content: center; padding-inline: 5px; }
+  .rfr-ats-weight-indicator > span { display: none; }
 }
 .rfr-form .ant-form-item-label > label.ant-form-item-required::before {
   color: #e11d48 !important;

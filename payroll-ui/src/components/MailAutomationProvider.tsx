@@ -188,7 +188,7 @@ export default function MailAutomationProvider({ enabled }: { enabled: boolean }
         <Field label="Client scope" hint="Keep global only when the same rule must apply to every client.">
           <Select value={clientId ?? 0} onChange={value => setClientId(value === 0 ? null : value)} options={[{ value: 0, label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} />
         </Field>
-        <Field label="Email template" required hint="Templates are managed in Settings > Notifications.">
+        <Field label="Email template" required hint="Templates are managed in Settings > Integrations > Notifications.">
           <Select showSearch optionFilterProp="label" value={templateId} placeholder="Select template" onChange={setTemplateId} options={activeTemplates.map(template => ({ value: template.id, label: template.name }))} />
         </Field>
       </div>

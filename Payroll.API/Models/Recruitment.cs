@@ -17,8 +17,8 @@ public class RecruitmentRequisition
     public string CostCenter { get; set; } = "";
     public string PositionTitle { get; set; } = "";
     public string PositionCategory { get; set; } = "";
-    public string EmploymentType { get; set; } = "";
-    public string HiringType { get; set; } = "";
+    public string EmploymentType { get; set; } = "Contractual";
+    public string HiringType { get; set; } = "Contractual";
     public int NumberOfOpenings { get; set; } = 1;
     public bool IsReplacement { get; set; }
     public int? ReplacementEmployeeId { get; set; }
@@ -29,7 +29,7 @@ public class RecruitmentRequisition
     public string Project { get; set; } = "";
     public bool BudgetAvailable { get; set; }
     public decimal BudgetAmount { get; set; }
-    public string HiringPriority { get; set; } = "Normal";
+    public string HiringPriority { get; set; } = "High";
     public string BusinessJustification { get; set; } = "";
     public string ReasonForHiring { get; set; } = "";
     public string ExperienceRange { get; set; } = "";
@@ -37,11 +37,11 @@ public class RecruitmentRequisition
     public string RequiredSkills { get; set; } = "";
     public string PreferredSkills { get; set; } = "";
     public string Certifications { get; set; } = "";
-    public string Languages { get; set; } = "";
+    public string Languages { get; set; } = "English";
     public decimal SalaryMin { get; set; }
     public decimal SalaryMax { get; set; }
     public string Currency { get; set; } = "INR";
-    public string Benefits { get; set; } = "";
+    public string Benefits { get; set; } = "As per company norms";
     public string ExternalPositionCode { get; set; } = "";
     public string SourceType { get; set; } = "";
     public string SourceReference { get; set; } = "";
@@ -84,8 +84,8 @@ public class SaveRecruitmentRequisition
     public string CostCenter { get; set; } = "";
     public string PositionTitle { get; set; } = "";
     public string PositionCategory { get; set; } = "";
-    public string EmploymentType { get; set; } = "";
-    public string HiringType { get; set; } = "";
+    public string EmploymentType { get; set; } = "Contractual";
+    public string HiringType { get; set; } = "Contractual";
     public int NumberOfOpenings { get; set; } = 1;
     public bool IsReplacement { get; set; }
     public int? ReplacementEmployeeId { get; set; }
@@ -98,7 +98,7 @@ public class SaveRecruitmentRequisition
     public string Project { get; set; } = "";
     public bool BudgetAvailable { get; set; }
     public decimal BudgetAmount { get; set; }
-    public string HiringPriority { get; set; } = "Normal";
+    public string HiringPriority { get; set; } = "High";
     public string BusinessJustification { get; set; } = "";
     public string ReasonForHiring { get; set; } = "";
     public string ExperienceRange { get; set; } = "";
@@ -106,11 +106,11 @@ public class SaveRecruitmentRequisition
     public string RequiredSkills { get; set; } = "";
     public string PreferredSkills { get; set; } = "";
     public string Certifications { get; set; } = "";
-    public string Languages { get; set; } = "";
+    public string Languages { get; set; } = "English";
     public decimal SalaryMin { get; set; }
     public decimal SalaryMax { get; set; }
     public string Currency { get; set; } = "INR";
-    public string Benefits { get; set; } = "";
+    public string Benefits { get; set; } = "As per company norms";
     public string ExternalPositionCode { get; set; } = "";
     public string SourceType { get; set; } = "";
     public string SourceReference { get; set; } = "";
@@ -126,6 +126,7 @@ public class SaveRecruitmentRequisition
 public class RecruitmentRequestDocumentParseRequest
 {
     public IFormFile? File { get; set; }
+    public int ClientId { get; set; }
 }
 
 public class RecruitmentRequestDocumentParseResult
@@ -246,6 +247,14 @@ public class RecruitmentOpenPosition
     public string Status { get; set; } = "Open";
     public DateTime? TargetJoiningDate { get; set; }
     public string JobLocation { get; set; } = "";
+    public string WorkMode { get; set; } = "";
+    public string RequisitionJobLocation { get; set; } = "";
+    public string RequisitionWorkMode { get; set; } = "";
+    public string RequisitionExperienceRange { get; set; } = "";
+    public decimal RequisitionSalaryMin { get; set; }
+    public decimal RequisitionSalaryMax { get; set; }
+    public string RequisitionCurrency { get; set; } = "";
+    public int RequisitionNumberOfOpenings { get; set; }
     public string BusinessUnit { get; set; } = "";
     public string CostCenter { get; set; } = "";
     public string Project { get; set; } = "";

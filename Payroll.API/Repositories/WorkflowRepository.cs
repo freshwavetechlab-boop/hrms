@@ -266,6 +266,21 @@ ORDER BY u.Id
 LIMIT 1",new{Requestor=requestor},tx);if(s.ApproverType=="Department Head")return await db.ExecuteScalarAsync<int?>("SELECT u.Id FROM departmentheadassignments a JOIN authusers u ON u.Id=a.UserId AND u.IsActive=TRUE JOIN authusers requester ON requester.Id=@Requestor JOIN employees employee ON employee.Id=requester.EmployeeId WHERE a.ClientId=employee.ClientId AND a.Department=employee.Department",new{Requestor=requestor},tx);return null;}
     private static async Task AdvanceAsync(MySqlConnection db,long instanceId,int stageId,int actor){var next=await db.QueryFirstOrDefaultAsync<WorkflowStage>("SELECT s.* FROM workflowstages s JOIN workflowtasks t ON t.StageId=s.Id WHERE t.InstanceId=@InstanceId AND s.StageOrder>(SELECT StageOrder FROM workflowstages WHERE Id=@StageId) ORDER BY s.StageOrder LIMIT 1",new{InstanceId=instanceId,StageId=stageId});var instance=await db.QueryFirstOrDefaultAsync<WorkflowInstance>("SELECT * FROM workflowinstances WHERE Id=@Id",new{Id=instanceId});if(next is null){await db.ExecuteAsync("UPDATE workflowinstances SET Status='Approved',CompletedAt=UTC_TIMESTAMP() WHERE Id=@Id",new{Id=instanceId});if(instance is not null)await SetResourceStateAsync(db,instance.ResourceType,instance.ResourceId,"Approved",instanceId,actor);return;}var approver=await ResolveAsync(db,next,instance?.RequestorUserId??actor);if(approver is null){await db.ExecuteAsync("UPDATE workflowinstances SET Status='Failed',CompletedAt=UTC_TIMESTAMP() WHERE Id=@Id",new{Id=instanceId});if(instance is not null)await SetResourceStateAsync(db,instance.ResourceType,instance.ResourceId,"Failed",instanceId,actor);return;}await db.ExecuteAsync("INSERT INTO workflowtasks (InstanceId,StageId,ApproverUserId) VALUES (@InstanceId,@StageId,@Approver)",new{InstanceId=instanceId,StageId=next.Id,Approver=approver});if(instance is not null)await SetResourceStateAsync(db,instance.ResourceType,instance.ResourceId,"Pending",instanceId,actor);}
     private static string RouteKeyFromSource(string source){const string prefix="route.";return !string.IsNullOrWhiteSpace(source)&&source.StartsWith(prefix,StringComparison.OrdinalIgnoreCase)?source[prefix.Length..]:"id";}
+    // Only for a parent record whose deletion has already passed its domain
+    // authorization/dependency checks. Never delete workflow configuration here.
+    internal static async Task DeleteResourceTransactionsAsync(MySqlConnection db, MySqlTransaction tx, string resourceType, long resourceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(resourceType);
+        if (resourceId <= 0) throw new ArgumentOutOfRangeException(nameof(resourceId));
+        var args = new { ResourceType = resourceType, ResourceId = resourceId.ToString(System.Globalization.CultureInfo.InvariantCulture) };
+        await db.ExecuteAsync(@"DELETE FROM ResourceStates WHERE ResourceType=@ResourceType AND ResourceId=@ResourceId;
+DELETE h FROM workflowhistory h JOIN workflowinstances i ON i.Id=h.InstanceId
+WHERE i.ResourceType=@ResourceType AND i.ResourceId=@ResourceId;
+DELETE t FROM workflowtasks t JOIN workflowinstances i ON i.Id=t.InstanceId
+WHERE i.ResourceType=@ResourceType AND i.ResourceId=@ResourceId;
+DELETE FROM workflowinstances WHERE ResourceType=@ResourceType AND ResourceId=@ResourceId;", args, tx);
+    }
+
     private static bool IsSafeIdentifier(string value)=>Regex.IsMatch(value,@"^[A-Za-z_][A-Za-z0-9_]*$");
     private static Task SetResourceStateAsync(MySqlConnection db,string resourceType,string resourceId,string state,long? workflowInstanceId,int actor,MySqlTransaction? tx=null)=>db.ExecuteAsync(@"INSERT INTO ResourceStates (ResourceType,ResourceId,CurrentState,WorkflowInstanceId,CreatedBy,ModifiedBy)
 VALUES (@ResourceType,@ResourceId,@State,@WorkflowInstanceId,@Actor,@Actor)

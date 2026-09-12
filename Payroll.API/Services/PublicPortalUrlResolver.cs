@@ -4,14 +4,19 @@ namespace Payroll.API.Services;
 
 public sealed class PublicPortalUrlResolver(
     IHttpContextAccessor httpContextAccessor,
-    IWebHostEnvironment environment)
+    IWebHostEnvironment environment,
+    IConfiguration configuration)
 {
     public string ResolveBaseUrl(string? configuredBaseUrl)
     {
-        var configured = ParseOrigin(configuredBaseUrl);
         var runtime = RuntimeOrigin();
-        if (runtime is not null && (configured is null || configured.IsLoopback))
+        // The browser origin is authoritative for interactive links: localhost stays
+        // local during testing, while the deployed UI automatically emits its HTTPS domain.
+        if (runtime is not null)
             return runtime.GetLeftPart(UriPartial.Authority).TrimEnd('/');
+        var configured = ParseOrigin(configuredBaseUrl);
+        if (configured is null || (!environment.IsDevelopment() && configured.IsLoopback))
+            configured = ParseOrigin(configuration["PublicPortal:BaseUrl"]);
         if (configured is null || (!environment.IsDevelopment() && configured.IsLoopback))
             return "";
         var configuredBuilder = new UriBuilder(configured) { Query = "", Fragment = "" };
@@ -29,7 +34,7 @@ public sealed class PublicPortalUrlResolver(
             runtime = ParseOrigin(referer.GetLeftPart(UriPartial.Authority));
         if (runtime is null && request.Host.HasValue)
             runtime = ParseOrigin($"{request.Scheme}://{request.Host.Value}");
-        if (runtime is null || (!environment.IsDevelopment() && (runtime.IsLoopback || runtime.Scheme != Uri.UriSchemeHttps)))
+        if (runtime is null || (!environment.IsDevelopment() && !runtime.IsLoopback && runtime.Scheme != Uri.UriSchemeHttps))
             return null;
         return runtime;
     }

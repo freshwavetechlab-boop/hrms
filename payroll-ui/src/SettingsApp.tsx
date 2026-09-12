@@ -46,6 +46,7 @@ type PayrollTab = 'Regular Run' | 'Off-cycle Run' | 'Adjustments' | 'Employee Ta
 type EmployeeTab = 'Employee Master' | 'Employee Communication' | 'Org Structure'
 type SettingsSection = 'General' | 'LeaveAttendance'
 const allPayrollSetupMenus: SettingsTab[] = ['Tax Engine', 'Statutory Setup', 'Salary Components', 'Salary Templates', 'Payslip Templates']
+const integrationMenus: SettingsTab[] = ['Notifications', 'AI Integration']
 const compactSidebarQuery = '(max-width: 640px)'
 const productLogo = '/assets/FrevoOneLogo.png'
 const productMark = '/favicon.svg'
@@ -65,9 +66,10 @@ const recruitmentNavigation: Array<{
     icon: 'talent',
     children: [
       { view: 'Dashboard', label: 'Overview', icon: 'dashboard' },
+      { view: 'Work Orders & SLA', label: 'Work Orders', icon: 'document' },
       { view: 'Hiring Pipeline', label: 'Pipeline', icon: 'pipeline' },
       { view: 'Requisitions', label: 'Hiring Requests', icon: 'request' },
-      { view: 'Job Descriptions', label: 'Jobs', icon: 'job' },
+      { view: 'Job Postings', label: 'Jobs', icon: 'job' },
       { view: 'ATS Screening', label: 'ATS & resume intake', icon: 'resume' },
       {
         key: 'candidates', label: 'Candidates', icon: 'candidate', children: [
@@ -82,8 +84,6 @@ const recruitmentNavigation: Array<{
 const recruitmentNavigationLeaves = recruitmentNavigation.flatMap(group => group.children.flatMap(item => 'view' in item ? [item] : item.children))
 const recruitmentNavigationView = (view: RecruitmentPageView): RecruitmentPageView => {
   if (view === 'Open Positions') return 'Requisitions'
-  if (view === 'Job Postings') return 'Job Descriptions'
-  if (view === 'Work Orders & SLA') return 'Hiring Pipeline'
   if (view === 'Offers & Pre-Onboarding') return 'Interviews'
   return view
 }
@@ -100,6 +100,7 @@ const recruitmentDescriptions: Record<string, string> = {
   Applications: 'Review applications received through published job links and position-linked manual resume uploads.',
   'Talent profiles': 'Maintain reusable candidate profiles, resumes, experience and consent details.',
   'ATS & resume intake': 'Upload resumes and review explainable ATS screening results.',
+  'Work Orders': 'Register each client hiring order once, then create role-wise Hiring Requests from it.',
   Pipeline: 'Follow client demand and candidates through each stage of the hiring journey.',
   'Selection & Onboarding': 'Coordinate interviews, offers, documents and joining readiness in one workspace.',
 }
@@ -118,6 +119,7 @@ const surfaceDescriptions: Record<string, string> = {
   'Salary Templates': 'Build reusable salary structures from approved payroll components.',
   'Payslip Templates': 'Configure the presentation and sections used in employee payslips.',
   Notifications: 'Manage delivery channels, templates, rules and message audit visibility.',
+  'AI Integration': 'Configure encrypted, client-scoped AI providers and verify their connection health.',
   'Scheduled Jobs': 'Review recurring background jobs, schedules and recent execution status.',
   'Attendance Policies': 'Define attendance rules, shifts and payability behavior by client.',
   'Leave Types': 'Maintain leave categories, eligibility and accrual rules.',
@@ -186,6 +188,7 @@ const menuIcon = (label: string): IconName => {
   if (value.includes('component')) return 'component'
   if (value.includes('workflow')) return 'workflow'
   if (value.includes('notification')) return 'notification'
+  if (value.includes('integration') || value === 'ai') return 'api'
   if (value.includes('scheduled') || value.includes('job')) return 'job'
   if (value.includes('billing')) return 'billing'
   if (value.includes('advance')) return 'money'
@@ -228,6 +231,7 @@ const generalSettingsIcons: Partial<Record<SettingsTab, IconName>> = {
   'Client Billing Configuration': 'billing',
   'Travel & Expense Policies': 'money',
   Notifications: 'notification',
+  'AI Integration': 'api',
   'Scheduled Jobs': 'history',
 }
 const employeeMenuIcons: Record<EmployeeTab, IconName> = {
@@ -299,6 +303,7 @@ export default function SettingsApp() {
   const [appDrawerOpen, setAppDrawerOpen] = useState(false), [showMyTasks, setShowMyTasks] = useState(false)
   const [collapsedFlyout, setCollapsedFlyout] = useState<string | null>(null)
   const [payrollSetupOpen, setPayrollSetupOpen] = useState(() => allPayrollSetupMenus.includes(savedTab ?? 'Organization'))
+  const [integrationsOpen, setIntegrationsOpen] = useState(() => integrationMenus.includes(savedTab ?? 'Organization') || integrationMenus.some(item => slug(item) === routeParts[1]))
   const [leaveAttendanceOpen, setLeaveAttendanceOpen] = useState(false)
   const [securityAppSettingsOpen, setSecurityAppSettingsOpen] = useState(() => securityAppSettingsTab !== null)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('General')
@@ -333,6 +338,8 @@ export default function SettingsApp() {
       ? [{ title: activeModule.label }, { title: reportingTab }, { title: pageTitle }]
       : mainModule === 'Security' && securityAppSettingsTab
       ? [{ title: activeModule.label }, { title: 'App Settings' }, { title: pageTitle }]
+      : mainModule === 'Settings' && integrationMenus.includes(tab)
+      ? [{ title: activeModule.label }, { title: 'Integrations' }, { title: pageTitle }]
     : [{ title: activeModule.label }, { title: pageTitle }]
   const pageDescription = isProfile
     ? surfaceDescriptions['My Profile']
@@ -469,6 +476,10 @@ export default function SettingsApp() {
       setMainModule('Workflows')
       return
     }
+    if (parts[0] === 'recruitment' && parts[1] === 'job-descriptions') {
+      navigate(`/recruitment/requisitions${routeLocation.search}`, { replace: true })
+      return
+    }
     if (parts[0] === 'settings') {
       if (parts[1] === 'recruitment-administration') {
         const legacySection = parts[2] || ''
@@ -479,7 +490,13 @@ export default function SettingsApp() {
           navigate(`/recruitment/ats-screening?${legacyParams.toString()}`, { replace: true })
           return
         }
-        if (legacySection === 'forms' || legacySection === 'templates') {
+        if (legacySection === 'forms') {
+          legacyParams.delete('manage')
+          legacyParams.set('tool', 'forms')
+          navigate(`/recruitment/job-postings?${legacyParams.toString()}`, { replace: true })
+          return
+        }
+        if (legacySection === 'templates') {
           legacyParams.set('manage', '1')
           legacyParams.set('tool', legacySection)
           navigate(`/recruitment/hiring-pipeline?${legacyParams.toString()}`, { replace: true })
@@ -526,6 +543,7 @@ export default function SettingsApp() {
         setActiveTab(allowedTab)
         setLeaveAttendanceOpen(false)
         setPayrollSetupOpen(allPayrollSetupMenus.includes(allowedTab))
+        setIntegrationsOpen(integrationMenus.includes(allowedTab))
         localStorage.setItem('payroll.tab', allowedTab)
       }
       setMainModule('Settings')
@@ -589,17 +607,22 @@ export default function SettingsApp() {
       {tasks}
     </>
     if (mainModule === 'Settings') {
-      const generalSettings = settingsMenus.filter(item => !payrollSetupMenus.includes(item))
+      const generalSettings = settingsMenus.filter(item => !payrollSetupMenus.includes(item) && !integrationMenus.includes(item))
       const payrollSetupActive = payrollSetupMenus.includes(tab)
+      const integrationsActive = integrationMenus.includes(tab)
       return <>
         {tasks}
         {generalSettings.map(item => <Fragment key={item}>{menuLink(`/settings/${slug(item)}`, item, settingsSection === 'General' && tab === item, () => setTab(item), undefined, generalSettingsIcons[item])}</Fragment>)}
+        <div className={`settings-nav-group flyout-align-end ${integrationsOpen ? 'expanded' : ''} ${collapsedFlyout === 'settings-integrations' ? 'flyout-open' : ''}`}>
+          <button {...navAttrs('Integrations')} className={settingsSection === 'General' && integrationsActive ? 'active' : ''} type="button" aria-expanded={integrationsOpen} onClick={() => toggleNavGroup('settings-integrations', () => { setLeaveAttendanceOpen(false); setPayrollSetupOpen(false); setIntegrationsOpen(open => navOpen ? !open : true) })}>{menuLabel('Integrations', 'api')}<small>{integrationsOpen ? '-' : '+'}</small></button>
+          {integrationsOpen && <div className="settings-nav-submenu">{integrationMenus.map(item => <Fragment key={item}>{menuLink(`/settings/${slug(item)}`, item, settingsSection === 'General' && tab === item, () => setTab(item), undefined, generalSettingsIcons[item])}</Fragment>)}</div>}
+        </div>
         <div className={`settings-nav-group flyout-align-end ${payrollSetupOpen ? 'expanded' : ''} ${collapsedFlyout === 'settings-payroll' ? 'flyout-open' : ''}`}>
-          <button {...navAttrs('Payroll Setup')} className={settingsSection === 'General' && payrollSetupActive ? 'active' : ''} type="button" aria-expanded={payrollSetupOpen} onClick={() => toggleNavGroup('settings-payroll', () => { setLeaveAttendanceOpen(false); setPayrollSetupOpen(open => navOpen ? !open : true) })}>{menuLabel('Payroll Setup', null)}<small>{payrollSetupOpen ? '-' : '+'}</small></button>
+          <button {...navAttrs('Payroll Setup')} className={settingsSection === 'General' && payrollSetupActive ? 'active' : ''} type="button" aria-expanded={payrollSetupOpen} onClick={() => toggleNavGroup('settings-payroll', () => { setLeaveAttendanceOpen(false); setIntegrationsOpen(false); setPayrollSetupOpen(open => navOpen ? !open : true) })}>{menuLabel('Payroll Setup', null)}<small>{payrollSetupOpen ? '-' : '+'}</small></button>
           {payrollSetupOpen && <div className="settings-nav-submenu">{payrollSetupMenus.map(item => <Fragment key={item}>{menuLink(`/settings/${slug(item)}`, item, settingsSection === 'General' && tab === item, () => setTab(item), item === 'Salary Templates' ? 'Client-wise' : undefined, payrollSetupIcons[item])}</Fragment>)}</div>}
         </div>
         <div className={`settings-nav-group flyout-align-end ${leaveAttendanceOpen ? 'expanded' : ''} ${collapsedFlyout === 'settings-leave-attendance' ? 'flyout-open' : ''}`}>
-          <button {...navAttrs('Leave & Attendance')} className={settingsSection === 'LeaveAttendance' ? 'active' : ''} type="button" aria-expanded={leaveAttendanceOpen} onClick={() => toggleNavGroup('settings-leave-attendance', () => { setPayrollSetupOpen(false); setLeaveAttendanceOpen(open => navOpen ? !open : true) })}>{menuLabel('Leave & Attendance', null)}<small>{leaveAttendanceOpen ? '-' : '+'}</small></button>
+          <button {...navAttrs('Leave & Attendance')} className={settingsSection === 'LeaveAttendance' ? 'active' : ''} type="button" aria-expanded={leaveAttendanceOpen} onClick={() => toggleNavGroup('settings-leave-attendance', () => { setPayrollSetupOpen(false); setIntegrationsOpen(false); setLeaveAttendanceOpen(open => navOpen ? !open : true) })}>{menuLabel('Leave & Attendance', null)}<small>{leaveAttendanceOpen ? '-' : '+'}</small></button>
           {leaveAttendanceOpen && <div className="settings-nav-submenu">{leaveAttendanceMenus.map(item => <Fragment key={item}>{menuLink(`/settings/leave-attendance/${slug(item)}`, item, settingsSection === 'LeaveAttendance' && leaveAttendanceTab === item, () => setLeaveAttendanceSettingsTab(item), undefined, leaveAttendanceIcons[item])}</Fragment>)}</div>}
         </div>
       </>

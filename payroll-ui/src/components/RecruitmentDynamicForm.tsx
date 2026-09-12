@@ -12,12 +12,13 @@ type Props = {
   values: PublicFormValue[]
   files: PublicUploadedFile[]
   disabled?: boolean
+  lockedSemanticCodes?: string[]
   onChange: (values: PublicFormValue[]) => void
   onUpload: (field: DynamicFormField, file: File, metadata: PublicUploadMetadata, onProgress: (percent: number) => void) => Promise<{ ok: boolean; error?: string }>
   onLoadOptions?: (field: DynamicFormField, search: string) => Promise<DynamicLookupOption[]>
 }
 
-export default function RecruitmentDynamicForm({ form, values, files, disabled = false, onChange, onUpload, onLoadOptions }: Props) {
+export default function RecruitmentDynamicForm({ form, values, files, disabled = false, lockedSemanticCodes = [], onChange, onUpload, onLoadOptions }: Props) {
   const [remoteOptions, setRemoteOptions] = useState<Record<number, DynamicLookupOption[]>>({})
   const [searching, setSearching] = useState<Record<number, boolean>>({})
   const [uploadMetadata, setUploadMetadata] = useState<Record<number, PublicUploadMetadata>>({})
@@ -66,14 +67,15 @@ export default function RecruitmentDynamicForm({ form, values, files, disabled =
     <h3>{section.sectionLabel}</h3>{section.description && <p>{section.description}</p>}
     <div className="public-form-grid">{[...section.fields].filter(field => field.isActive).sort((a, b) => a.displayOrder - b.displayOrder).map(field => {
       const answer = valueMap.get(field.id); const uploaded = files.filter(row => row.fieldId === field.id)
+      const fieldDisabled = disabled || field.semanticCodes.some(code => lockedSemanticCodes.includes(code))
       const metadata = uploadMetadata[field.id] ?? { documentNumber: '' }
       const usesLookup = Boolean(field.lookupSourceCode)
       const staticOptions = [...field.options].filter(row => row.isActive).sort((a, b) => a.displayOrder - b.displayOrder).map(row => ({ value: row.id, label: row.optionLabel }))
       return <Form.Item key={field.id} data-testid={`dynamic-field-${field.stableFieldCode}`} style={{ gridColumn: `span ${Math.max(1, Math.min(12, field.widthColumns))}` }} label={field.label} required={field.isRequired} extra={field.helpText}>
-        {field.fieldTypeCode === 'TEXT' && <Input disabled={disabled} value={answer?.textValue ?? ''} placeholder={field.placeholder} minLength={field.minimumLength ?? undefined} maxLength={field.maximumLength ?? undefined} onChange={event => patch(field.id, { textValue: event.target.value })} />}
-        {field.fieldTypeCode === 'TEXTAREA' && <Input.TextArea disabled={disabled} rows={4} value={answer?.textValue ?? ''} placeholder={field.placeholder} minLength={field.minimumLength ?? undefined} maxLength={field.maximumLength ?? undefined} onChange={event => patch(field.id, { textValue: event.target.value })} />}
-        {field.fieldTypeCode === 'EMAIL' && <Input disabled={disabled} type="email" value={answer?.textValue ?? ''} placeholder={field.placeholder || 'name@example.com'} onChange={event => patch(field.id, { textValue: event.target.value })} />}
-        {field.fieldTypeCode === 'PHONE' && <Input disabled={disabled} type="tel" value={answer?.textValue ?? ''} placeholder={field.placeholder || 'Mobile number'} onChange={event => patch(field.id, { textValue: event.target.value })} />}
+        {field.fieldTypeCode === 'TEXT' && <Input disabled={fieldDisabled} value={answer?.textValue ?? ''} placeholder={field.placeholder} minLength={field.minimumLength ?? undefined} maxLength={field.maximumLength ?? undefined} onChange={event => patch(field.id, { textValue: event.target.value })} />}
+        {field.fieldTypeCode === 'TEXTAREA' && <Input.TextArea disabled={fieldDisabled} rows={4} value={answer?.textValue ?? ''} placeholder={field.placeholder} minLength={field.minimumLength ?? undefined} maxLength={field.maximumLength ?? undefined} onChange={event => patch(field.id, { textValue: event.target.value })} />}
+        {field.fieldTypeCode === 'EMAIL' && <Input disabled={fieldDisabled} type="email" value={answer?.textValue ?? ''} placeholder={field.placeholder || 'name@example.com'} onChange={event => patch(field.id, { textValue: event.target.value })} />}
+        {field.fieldTypeCode === 'PHONE' && <Input disabled={fieldDisabled} type="tel" value={answer?.textValue ?? ''} placeholder={field.placeholder || 'Mobile number'} onChange={event => patch(field.id, { textValue: event.target.value })} />}
         {field.fieldTypeCode === 'NUMBER' && <InputNumber disabled={disabled} style={{ width: '100%' }} min={field.minimumNumber ?? undefined} max={field.maximumNumber ?? undefined} value={answer?.decimalValue ?? undefined} placeholder={field.placeholder} onChange={decimalValue => patch(field.id, { decimalValue: decimalValue == null ? null : Number(decimalValue) })} />}
         {field.fieldTypeCode === 'DATE' && <Input disabled={disabled} type="date" min={field.minimumDate?.slice(0, 10)} max={field.maximumDate?.slice(0, 10)} value={answer?.dateValue?.slice(0, 10) ?? ''} onChange={event => patch(field.id, { dateValue: event.target.value })} />}
         {field.fieldTypeCode === 'DATETIME' && <Input disabled={disabled} type="datetime-local" min={field.minimumDate?.slice(0, 16)} max={field.maximumDate?.slice(0, 16)} value={answer?.dateTimeValue?.slice(0, 16) ?? ''} onChange={event => patch(field.id, { dateTimeValue: event.target.value })} />}

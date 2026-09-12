@@ -32,6 +32,10 @@ type Props = {
   onChangeJob?: () => void
   onPendingChange?: (pending: boolean) => void
   onBusyChange?: (busy: boolean) => void
+  title?: string
+  description?: string
+  allowBulk?: boolean
+  submitLabel?: string
 }
 
 const acceptedResumeTypes = '.pdf,.docx,.rtf,.txt'
@@ -52,6 +56,10 @@ export default function RecruitmentResumeIntake({
   onChangeJob,
   onPendingChange,
   onBusyChange,
+  title,
+  description,
+  allowBulk = true,
+  submitLabel,
 }: Props) {
   const notify = useToast()
   const [mode, setMode] = useState<RecruitmentResumeIntakeMode>(initialMode)
@@ -247,10 +255,10 @@ export default function RecruitmentResumeIntake({
   }
 
   const content = <div className="resume-intake-shell">
-      <Radio.Group className="resume-intake-mode" value={mode} onChange={event => changeMode(event.target.value)} buttonStyle="solid" disabled={uploading}>
+      {allowBulk && <Radio.Group className="resume-intake-mode" value={mode} onChange={event => changeMode(event.target.value)} buttonStyle="solid" disabled={uploading}>
         <Radio.Button data-testid="resume-intake-single" value="single">Single resume</Radio.Button>
         <Radio.Button data-testid="resume-intake-bulk" value="bulk">Bulk resumes</Radio.Button>
-      </Radio.Group>
+      </Radio.Group>}
 
       <Card size="small" className="resume-intake-context" title={talentPoolOnly ? 'Resume source' : 'Job context'} extra={!talentPoolOnly && selectedPosition && !contextExpanded ? <Button size="small" onClick={() => onChangeJob ? onChangeJob() : setContextExpanded(true)} disabled={uploading}>Change job</Button> : null}>
         <Form layout="vertical">
@@ -281,7 +289,7 @@ export default function RecruitmentResumeIntake({
         </div>
         <div className="resume-intake-submit-row">
           <Typography.Text type="secondary">{selectedFiles.length ? `${selectedFiles.length} file(s) ready` : 'No files selected'}</Typography.Text>
-          <Button data-testid="resume-intake-submit" type="primary" size="large" icon={<FileSearchOutlined />} loading={uploading} disabled={loadingContext || resolvingPostings || resolvingDescription || (!talentPoolOnly && (!selectedPosition || selectedPosition.clientId !== clientId)) || !selectedFiles.length} onClick={() => void submit()}>{talentPoolOnly ? 'Add to Talent Pool' : 'Upload & screen'}</Button>
+          <Button data-testid="resume-intake-submit" type="primary" size="large" icon={<FileSearchOutlined />} loading={uploading} disabled={loadingContext || resolvingPostings || resolvingDescription || (!talentPoolOnly && (!selectedPosition || selectedPosition.clientId !== clientId)) || !selectedFiles.length} onClick={() => void submit()}>{submitLabel || (talentPoolOnly ? 'Add to Talent Pool' : 'Upload & screen')}</Button>
         </div>
         {uploading && <div className="resume-intake-progress"><Progress percent={progress} status="active" /><Typography.Text type="secondary">Uploading securely and screening each resume. Keep this window open.</Typography.Text></div>}
       </Card>
@@ -300,7 +308,7 @@ export default function RecruitmentResumeIntake({
     width="min(1040px, 96vw)"
     destroyOnClose
     className="resume-intake-drawer"
-    title={<div className="resume-intake-title"><FileSearchOutlined /><div><strong>{talentPoolOnly ? 'Global Talent Pool intake' : 'Resume intake & ATS screening'}</strong><span>{talentPoolOnly ? 'Store and parse resumes now; match them against an approved job description whenever the role is ready.' : 'Upload once to create or match the candidate, attach the secure resume, create the application and calculate its ATS score.'}</span></div></div>}
+    title={<div className="resume-intake-title"><FileSearchOutlined /><div><strong>{title || (talentPoolOnly ? 'Global Talent Pool intake' : 'Resume intake & ATS screening')}</strong><span>{description || (talentPoolOnly ? 'Store and parse resumes now; match them against an approved job description whenever the role is ready.' : 'Upload once to create or match the candidate, attach the secure resume, create the application and calculate its ATS score.')}</span></div></div>}
     extra={<Button onClick={onClose} disabled={uploading}>Close</Button>}
   >
     {content}

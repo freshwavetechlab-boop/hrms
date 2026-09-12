@@ -6,6 +6,7 @@ import type {
   DynamicFormVersion,
   DynamicLookupOption,
   PublicApplicationSession,
+  PublicApplicationVerification,
   PublicCandidateActionContext,
   PublicFormValue,
   PublicRecruitmentJob,
@@ -194,6 +195,9 @@ export const getRecruitmentPositionPipelineAssignment = (positionId: number) =>
 
 export const getPublicCareerJob = (slug: string) =>
   getJson<PublicRecruitmentJob | null>(`${publicBase}/jobs/${encodeURIComponent(slug)}`, null)
+
+export const requestPublicApplicationVerification = (slug: string, email: string, phone: string) =>
+  postJson(`${publicBase}/jobs/${encodeURIComponent(slug)}/verification`, { email, phone, consentAccepted: true }, null as PublicApplicationVerification | null, { toast: false, loader: false })
 
 export const createPublicApplicationSession = (slug: string, request: StartPublicApplicationRequest) =>
   postJson(`${publicBase}/jobs/${encodeURIComponent(slug)}/sessions`, request, null as PublicApplicationSession | null, { toast: false, loader: false })

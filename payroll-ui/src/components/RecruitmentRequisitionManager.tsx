@@ -3,7 +3,7 @@ import {
   BranchesOutlined, CheckCircleOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, EyeOutlined, FilePdfOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SearchOutlined, SendOutlined, UploadOutlined,
 } from '@ant-design/icons'
 import {
-  Alert, AutoComplete, Button, Collapse, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Spin, Switch,
+  Alert, AutoComplete, Button, Collapse, Form, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Spin, Switch,
   Table, Tag, Tooltip, message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -16,6 +16,7 @@ import {
 import { getEffectiveAttachmentConfigurations, uploadEntityAttachment } from '../services/attachmentService'
 import { getDropdowns, getWorkLocations } from '../services/settingsService'
 import { getRecruitmentWorkOrder } from '../services/recruitmentCaseService'
+import { getRecruitmentPipelineVersions, getRecruitmentPipelines } from '../services/recruitmentOrchestrationService'
 import type {
   Client, Drop, Employee, RecruitmentOpenPosition, RecruitmentRequisition, RecruitmentRequestDocumentParseResult, SaveRecruitmentRequisition, WorkLocation,
 } from '../types/payroll'
@@ -23,6 +24,7 @@ import { recruitmentStageColor } from '../utils/recruitmentStage'
 import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
 import RecruitmentMasterSelect from './RecruitmentMasterSelect'
 import RecruitmentSeedPackModal from './RecruitmentSeedPackModal'
+import RecruitmentJobDescriptionManager, { type RecruitmentJobDescriptionManagerHandle } from './RecruitmentJobDescriptionManager'
 import EntityAttachmentPanel from './EntityAttachmentPanel'
 import { downloadHiringSeedTemplate } from '../services/recruitmentSeedPackService'
 import './RecruitmentRequisitionManager.css'
@@ -87,7 +89,13 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const [sourceParsing, setSourceParsing] = useState(false)
   const [sourceUploadProgress, setSourceUploadProgress] = useState(0)
   const [watchedForm, setWatchedForm] = useState({ id: 0, clientId: 0, isReplacement: false, budgetAvailable: false })
+  const [embeddedJdRefreshKey, setEmbeddedJdRefreshKey] = useState(0)
+  const [atsSkillWeight, setAtsSkillWeight] = useState(0)
+  const [targetSlaDays, setTargetSlaDays] = useState<number | null>(null)
   const openedInitialRequisitionId = useRef(0)
+  const targetJoiningManual = useRef(false)
+  const targetSlaLoad = useRef(0)
+  const embeddedJdRef = useRef<RecruitmentJobDescriptionManagerHandle>(null)
   const selectedClientId = watchedForm.clientId
   const canSeedHiring = statusScope.length === 0 || statusScope.some(status => editableStatuses.has(status))
   const replacementHiring = watchedForm.isReplacement
@@ -122,32 +130,36 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       if (initialOpen) {
         const nextClientId = initialClientId || data.clientRows[0]?.id || 0
         const draft = blankRequest(nextClientId)
-        if (initialWorkOrderId && initialWorkOrderLineId) {
+        if (initialWorkOrderId) {
           const workOrder = await getRecruitmentWorkOrder(initialWorkOrderId)
           if (!active) return
-          const line = workOrder?.lines?.find(row => row.id === initialWorkOrderLineId)
-          if (workOrder && line) {
+          const line = initialWorkOrderLineId ? workOrder?.lines?.find(row => row.id === initialWorkOrderLineId) : undefined
+          if (workOrder && (!initialWorkOrderLineId || line)) {
             draft.clientId = workOrder.clientId
             draft.workOrderId = workOrder.id
-            draft.workOrderLineNumber = line.lineNumber
-            draft.positionTitle = line.positionName
-            draft.numberOfOpenings = line.numberOfPositions
-            draft.jobLocation = line.location
-            draft.department = line.division
+            draft.workOrderLineNumber = line?.lineNumber ?? null
+            if (line) {
+              draft.positionTitle = line.positionName
+              draft.numberOfOpenings = line.numberOfPositions
+              draft.jobLocation = line.location
+              draft.businessUnit = line.division
+            }
             draft.sourceType = 'Client Work Order'
             draft.sourceReference = workOrder.workOrderNumber
             draft.sourceAuthority = workOrder.receivedFrom
             draft.sourceNotes = workOrder.remarks
           } else {
             setSourcePrefillWarning(workOrder
-              ? 'The selected work-order line is no longer available. A new blank hiring request is open; return to Pipeline and choose an active line.'
-              : 'The linked work order could not be loaded. A new blank hiring request is open; return to Pipeline and retry from the active order.')
+              ? 'The selected work-order role is no longer available. A new blank hiring request is open; return to Work Orders and choose an active request.'
+              : 'The linked work order could not be loaded. A new blank hiring request is open; return to Work Orders and retry from the active order.')
           }
         }
         draft.requestedByEmployeeId = session?.user.employeeId
           ?? data.employeeRows.find(row => row.isActive && (!draft.clientId || row.clientId === draft.clientId))?.id
           ?? null
+        targetJoiningManual.current = false
         applyDraft(draft)
+        void applyPipelineTarget(Number(draft.clientId || 0), draft.requestDate, true)
         setDialogOpen(true)
       }
       setSourcePrefillLoading(false)
@@ -196,10 +208,10 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const businessUnitOptions = useMemo(() => asOptions(dropValues(dropdowns, 'Business Unit', selectedClientId)), [dropdowns, selectedClientId])
   const costCenterOptions = useMemo(() => asOptions(dropValues(dropdowns, 'Cost Center', selectedClientId)), [dropdowns, selectedClientId])
   const employmentOptions = useMemo(() => asOptions(unique([
-    ...dropValues(dropdowns, 'Employment Type', selectedClientId), 'Permanent', 'Contract', 'Intern',
+    ...dropValues(dropdowns, 'Employment Type', selectedClientId), 'Contractual', 'Permanent', 'Contract', 'Intern',
   ])), [dropdowns, selectedClientId])
   const hiringOptions = useMemo(() => asOptions(unique([
-    ...dropValues(dropdowns, 'Hiring Type', selectedClientId), ...masters.hiringTypes,
+    ...dropValues(dropdowns, 'Hiring Type', selectedClientId), ...masters.hiringTypes, 'Contractual',
   ])), [dropdowns, masters.hiringTypes, selectedClientId])
   const categoryOptions = useMemo(() => asOptions(unique([
     ...dropValues(dropdowns, 'Position Category', selectedClientId), ...masters.positionCategories,
@@ -293,15 +305,30 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     },
   ]
 
+  async function applyPipelineTarget(clientId: number, requestDate?: string | null, replaceExisting = false) {
+    const sequence = ++targetSlaLoad.current
+    if (!clientId || !requestDate) { setTargetSlaDays(null); return }
+    const days = await publishedCumulativeSlaDays(clientId)
+    if (sequence !== targetSlaLoad.current) return
+    setTargetSlaDays(days)
+    if (!days || targetJoiningManual.current) return
+    const current = form.getFieldsValue(true) as SaveRecruitmentRequisition
+    if (current.clientId !== clientId || current.requestDate !== requestDate || (!replaceExisting && current.targetJoiningDate)) return
+    form.setFieldValue('targetJoiningDate', addDays(requestDate, days))
+  }
+
   function openNew() {
     setReadOnly(false)
     setActiveRequest(null)
+    setAtsSkillWeight(0)
     const nextClientId = initialClientId || clientFilter || clients[0]?.id || 0
     const draft = blankRequest(nextClientId)
     draft.requestedByEmployeeId = session?.user.employeeId
       ?? employees.find(row => row.isActive && (!nextClientId || row.clientId === nextClientId))?.id
       ?? null
+    targetJoiningManual.current = false
     applyDraft(draft)
+    void applyPipelineTarget(nextClientId, draft.requestDate, true)
     setSourceFile(null)
     setSourceParse(null)
     setSourceUploadProgress(0)
@@ -309,8 +336,11 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   }
 
   function openRequest(row: RecruitmentRequisition, forceReadOnly = false) {
+    setAtsSkillWeight(0)
     setReadOnly(forceReadOnly || (!editableStatuses.has(row.status) && !(canDelete && row.status === 'Approved')))
     setActiveRequest(row)
+    targetJoiningManual.current = true
+    setTargetSlaDays(null)
     applyDraft(fromRow(row))
     setSourceFile(null)
     setSourceParse(null)
@@ -334,7 +364,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     setSourceParsing(true)
     setSourceUploadProgress(0)
     try {
-      const response = await parseRecruitmentRequestDocument(file)
+      const response = await parseRecruitmentRequestDocument(file, Number(current.clientId || selectedClientId || 0))
       if (!response.ok || !response.data) {
         setSourceParse(manualSourceReview(file, { ...current, ...sourceDefaults } as SaveRecruitmentRequisition, response.error))
         return void message.warning('Automatic prefill was unavailable. The document is retained; complete the visible fields and save normally.')
@@ -350,9 +380,12 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         const value = suggested[key]
         if (value !== undefined && value !== null && value !== '') Object.assign(patch, { [key]: value })
       }
-      if (detected.has('experienceRange')) patch.experienceRange = matchExperienceMaster(suggested.experienceRange, experienceOptions.map(row => String(row.value))) || suggested.experienceRange
-      if (detected.has('positionCategory')) patch.positionCategory = matchMaster(suggested.positionCategory, categoryOptions.map(row => String(row.value))) || suggested.positionCategory
-      if (detected.has('hiringType')) patch.hiringType = matchMaster(suggested.hiringType, hiringOptions.map(row => String(row.value))) || suggested.hiringType
+      if (detected.has('experienceRange')) patch.experienceRange = matchExperienceMaster(suggested.experienceRange, experienceOptions.map(row => String(row.value))) || undefined
+      if (detected.has('positionCategory')) patch.positionCategory = matchMaster(suggested.positionCategory, categoryOptions.map(row => String(row.value))) || undefined
+      if (detected.has('hiringType')) patch.hiringType = matchMaster(suggested.hiringType, hiringOptions.map(row => String(row.value))) || currentWithSource.hiringType
+      if (detected.has('employmentType')) patch.employmentType = matchMaster(suggested.employmentType, employmentOptions.map(row => String(row.value))) || currentWithSource.employmentType
+      if (detected.has('hiringPriority')) patch.hiringPriority = matchMaster(suggested.hiringPriority, priorityOptions.map(row => String(row.value))) || currentWithSource.hiringPriority
+      if (detected.has('targetJoiningDate')) targetJoiningManual.current = true
       const next = { ...currentWithSource, ...patch, sourceDocumentName: file.name, sourceParsedJson: suggested.sourceParsedJson }
       form.setFieldsValue(next)
       setWatchedForm({ id: next.id || 0, clientId: next.clientId || 0, isReplacement: Boolean(next.isReplacement), budgetAvailable: Boolean(next.budgetAvailable) })
@@ -400,6 +433,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       if (firstField?.length) form.scrollToField(firstField, { block: 'center' })
       return
     }
+    if (watchedForm.id > 0 && embeddedJdRef.current && !await embeddedJdRef.current.saveDraftIfNeeded()) return
     setSaving(true)
     try {
       const saved = await saveRecruitmentRequisition(normalize(values))
@@ -408,6 +442,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       if (!await storeSourceDocument(saved.data)) {
         setActiveRequest(saved.data)
         applyDraft(fromRow(saved.data))
+        setEmbeddedJdRefreshKey(value => value + 1)
         await refreshRows()
         return
       }
@@ -416,8 +451,13 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         if (!submitted.ok || !submitted.data) return void message.error(submitted.error || 'Hiring request could not be submitted.')
         completed = submitted.data
         message.success(submissionSuccess(completed))
-      } else message.success(activeRequest?.status === 'Approved' ? 'Approved hiring request and linked vacancy updated.' : 'Hiring request saved as draft.')
-      setDialogOpen(false)
+      } else message.success(activeRequest?.status === 'Approved' ? 'Approved hiring request, linked vacancy and JD updated.' : 'Hiring request and JD draft saved.')
+      if (submitAfterSave) setDialogOpen(false)
+      else {
+        setActiveRequest(completed)
+        applyDraft(fromRow(completed))
+        setEmbeddedJdRefreshKey(value => value + 1)
+      }
       onChanged?.(completed)
       await refreshRows()
     } finally {
@@ -509,6 +549,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       onClose={() => !saving && setDialogOpen(false)} kicker="Hiring request"
       title={readOnly ? 'Request details' : approvedEdit ? 'Edit approved request' : watchedForm.id ? 'Edit draft' : 'New hiring request'}
       description={readOnly ? activeRequest?.status === 'Pending Approval' ? 'Review the submitted demand and its current approval ownership.' : 'Review the approved demand and its hiring context.' : 'Capture the essential demand first; advanced role and approval context is available below.'}
+      extra={!readOnly && watchedForm.id > 0 ? <Tooltip title="Weights are automatically redistributed so the cumulative ATS skill weight never exceeds 100%."><div className="rfr-ats-weight-indicator"><Progress type="circle" size={52} percent={Math.min(100, Math.max(0, atsSkillWeight))} status={Math.abs(atsSkillWeight - 100) < 0.01 ? 'success' : 'normal'} format={() => `${Math.round(atsSkillWeight)}%`} /><span>Cumulative<br />skill weight</span></div></Tooltip> : undefined}
       footer={<div className="rfr-dialog-actions">
         <Button onClick={() => setDialogOpen(false)}>{readOnly ? 'Close' : 'Cancel'}</Button>
         {!readOnly && (approvedEdit
@@ -540,7 +581,15 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         </div>}
         {sourceUploadProgress > 0 && <small>Securing source document: {sourceUploadProgress}%</small>}
       </section>}
-      <Form form={form} layout="vertical" disabled={readOnly || sourcePrefillLoading} requiredMark className="rfr-form" onValuesChange={(_, values: SaveRecruitmentRequisition) => setWatchedForm({ id: values.id || 0, clientId: values.clientId || 0, isReplacement: Boolean(values.isReplacement), budgetAvailable: Boolean(values.budgetAvailable) })}>
+      <Form form={form} layout="vertical" disabled={readOnly || sourcePrefillLoading} requiredMark className="rfr-form" onValuesChange={(changed: Partial<SaveRecruitmentRequisition>, values: SaveRecruitmentRequisition) => {
+        setWatchedForm({ id: values.id || 0, clientId: values.clientId || 0, isReplacement: Boolean(values.isReplacement), budgetAvailable: Boolean(values.budgetAvailable) })
+        if (Object.prototype.hasOwnProperty.call(changed, 'targetJoiningDate')) targetJoiningManual.current = true
+        if (Object.prototype.hasOwnProperty.call(changed, 'clientId') || Object.prototype.hasOwnProperty.call(changed, 'requestDate')) {
+          targetJoiningManual.current = false
+          form.setFieldValue('targetJoiningDate', null)
+          void applyPipelineTarget(Number(values.clientId || 0), values.requestDate, true)
+        }
+      }}>
         <section className="rfr-form-section">
           <header className="rfr-form-section-head"><div><b>Request essentials</b><span>Hiring ownership, demand and target details</span></div><Tag color={watchedForm.id ? 'blue' : 'purple'}>{watchedForm.id ? 'Existing request' : 'New request'}</Tag></header>
           <div className="rfr-essential-grid">
@@ -572,7 +621,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
           <Form.Item name="positionCategory" label="Position category"><RecruitmentMasterSelect masterType="Position Category" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={categoryOptions.map(row => String(row.value))} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-position-category" /></Form.Item>
           <Form.Item name="hiringPriority" label="Priority"><RecruitmentMasterSelect masterType="Assignment Priority" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={priorityOptions.map(row => String(row.value))} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} testId="rfr-priority" /></Form.Item>
           <Form.Item name="jobLocation" label="Work location"><AutoComplete options={locationOptions} placeholder="Office, city or remote" /></Form.Item>
-          <Form.Item name="targetJoiningDate" label="Target joining"><Input type="date" min={today()} /></Form.Item>
+          <Form.Item name="targetJoiningDate" label="Target joining" extra={targetSlaDays ? `Auto-calculated from request date using the published ${targetSlaDays}-day cumulative pipeline SLA.` : undefined}><Input type="date" min={today()} /></Form.Item>
         </div>
 
         <div className="rfr-switch-row">
@@ -589,11 +638,27 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         </div>}
         </section>
 
+        <Form.Item name="sourceParsedJson" hidden><Input /></Form.Item>
         <Collapse ghost className="rfr-advanced">
-          <Collapse.Panel key="advanced" header="Advanced role, skills and approval context">{advancedFields}</Collapse.Panel>
+          <Collapse.Panel key="advanced" forceRender header="Advanced role, skills and approval context">{advancedFields}</Collapse.Panel>
         </Collapse>
 
       </Form>
+      {!readOnly && <Collapse ghost className="rfr-advanced rfr-jd-workspace">
+        <Collapse.Panel key="job-description" forceRender header="Job description & ATS screening">
+          {watchedForm.id > 0
+            ? <RecruitmentJobDescriptionManager
+                ref={embeddedJdRef}
+                key={`embedded-jd-${watchedForm.id}-${embeddedJdRefreshKey}`}
+                embedded
+                initialClientId={watchedForm.clientId}
+                clientScopeManaged
+                initialRequisitionId={watchedForm.id}
+                onWeightChange={setAtsSkillWeight}
+              />
+            : <Alert type="info" showIcon message="Save the hiring request once to prepare its JD" description="The parsed role, skills and ATS suggestions will carry forward automatically. Saving does not submit the request." />}
+        </Collapse.Panel>
+      </Collapse>}
       {watchedForm.id > 0 && <EntityAttachmentPanel entityType="RECRUITMENT_REQUISITION" entityId={watchedForm.id} clientId={watchedForm.clientId} moduleCode="RECRUITMENT" formCodes={['HIRING_REQUEST']} title="Original hiring request / JD" description="Secured in the global attachment service. Authorized users can preview or download the original source." readOnly={readOnly} />}
       </Spin>
     </RecruitmentEditorDrawer>
@@ -637,13 +702,36 @@ function submissionSuccess(row: RecruitmentRequisition) {
 function blankRequest(clientId: number): SaveRecruitmentRequisition {
   return {
     id: 0, requestDate: today(), requestedByEmployeeId: null, clientId: clientId || undefined, workOrderId: null, workOrderLineNumber: null, branchId: 0, businessUnit: '', department: '', costCenter: '', positionTitle: '',
-    positionCategory: '', employmentType: 'Permanent', hiringType: '', numberOfOpenings: 1, isReplacement: false,
+    positionCategory: '', employmentType: 'Contractual', hiringType: 'Contractual', numberOfOpenings: 1, isReplacement: false,
     replacementEmployeeId: null, targetJoiningDate: null, jobLocation: '', workMode: 'Office', project: '', budgetAvailable: false,
-    budgetAmount: 0, hiringPriority: 'Normal', businessJustification: '', reasonForHiring: '', experienceRange: '', qualification: '',
-    requiredSkills: '', preferredSkills: '', certifications: '', languages: '', salaryMin: 0, salaryMax: 0, currency: 'INR', benefits: '',
+    budgetAmount: null, hiringPriority: 'High', businessJustification: '', reasonForHiring: '', experienceRange: '', qualification: '',
+    requiredSkills: '', preferredSkills: '', certifications: '', languages: 'English', salaryMin: 0, salaryMax: 0, currency: 'INR', benefits: 'As per company norms',
     externalPositionCode: '', sourceType: '', sourceReference: '', sourceDocumentName: '', sourceDocumentDate: null,
     sourceAuthority: '', externalApprovalStatus: '', ctcFlexibilityPercent: null, sourceNotes: '', sourceParsedJson: '',
   }
+}
+
+async function publishedCumulativeSlaDays(clientId: number) {
+  try {
+    const definitions = (await getRecruitmentPipelines(clientId)).filter(row => row.isActive)
+    const groups = await Promise.all(definitions.map(async definition => ({ definition, versions: await getRecruitmentPipelineVersions(definition.id) })))
+    const minutes = groups.flatMap(({ definition, versions }) => versions
+      .filter(version => version.status === 'Published'
+        && version.slaMode === 'CumulativeFromAnchor'
+        && ['Position', 'Hybrid'].includes(version.scopeType ?? 'Application')
+        && (!definition.currentPublishedVersionId || definition.currentPublishedVersionId === version.id))
+      .map(version => Number(version.overallSlaMinutes || 0)))
+      .filter(value => value > 0)
+    return minutes.length ? Math.ceil(Math.max(...minutes) / 1440) : null
+  } catch { return null }
+}
+
+function addDays(value: string, days: number) {
+  const [year, month, day] = value.slice(0, 10).split('-').map(Number)
+  if (!year || !month || !day) return null
+  const date = new Date(Date.UTC(year, month - 1, day))
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
 }
 
 async function fetchWorkspace() {
@@ -683,7 +771,7 @@ function normalize(row: SaveRecruitmentRequisition): SaveRecruitmentRequisition 
     positionCategory: clean(row.positionCategory), employmentType: clean(row.employmentType), hiringType: clean(row.hiringType),
     numberOfOpenings: Number(row.numberOfOpenings || 1), replacementEmployeeId: row.isReplacement ? Number(row.replacementEmployeeId || 0) || null : null,
     targetJoiningDate: row.targetJoiningDate || null, jobLocation: clean(row.jobLocation), workMode: clean(row.workMode) || 'Office', project: clean(row.project),
-    budgetAmount: row.budgetAvailable ? Number(row.budgetAmount || 0) : 0, hiringPriority: clean(row.hiringPriority) || 'Normal',
+    budgetAmount: row.budgetAvailable ? Number(row.budgetAmount || 0) : 0, hiringPriority: clean(row.hiringPriority) || 'High',
     businessJustification: clean(row.businessJustification), reasonForHiring: clean(row.reasonForHiring), experienceRange: clean(row.experienceRange),
     qualification: clean(row.qualification), requiredSkills: clean(row.requiredSkills), preferredSkills: clean(row.preferredSkills),
     certifications: clean(row.certifications), languages: clean(row.languages), salaryMin: Number(row.salaryMin || 0), salaryMax: Number(row.salaryMax || 0),

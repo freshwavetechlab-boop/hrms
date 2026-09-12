@@ -88,6 +88,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
   const [fieldDrawer, setFieldDrawer] = useState(false)
   const [sectionEditor, setSectionEditor] = useState<DynamicFormSection | null>(null)
   const [saving, setSaving] = useState(false)
+  const [savingVerification, setSavingVerification] = useState(false)
   const [publishOpen, setPublishOpen] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [dragging, setDragging] = useState<BuilderDragPayload | null>(null)
@@ -369,12 +370,38 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     const definitionResponse = await saveRecruitmentFormDefinition({
       id: definition.id, clientId: definition.clientId, moduleCode: code(definition.moduleCode), formCode: code(definition.formCode || definition.formName),
       formName: definition.formName.trim(), purposeCode: code(definition.purposeCode), entityType: code(definition.entityType), status: definition.status,
+      requiresEmailVerification: definition.requiresEmailVerification,
     })
     if (!definitionResponse.ok || !definitionResponse.data) { setSaving(false); return }
     const versionResponse = await saveRecruitmentFormVersion(definitionResponse.data.id, { ...preparedVersion, formDefinitionId: definitionResponse.data.id })
     setSaving(false)
     if (!versionResponse.ok || !versionResponse.data) return
     onSaved?.(definitionResponse.data); await load(definition.clientId); await chooseForm(definitionResponse.data.id)
+  }
+
+  const changeEmailVerification = async (requiresEmailVerification: boolean) => {
+    if (!definition) return
+    if (!readOnly || !definition.id) {
+      patchDefinition({ requiresEmailVerification })
+      return
+    }
+    setSavingVerification(true)
+    const response = await saveRecruitmentFormDefinition({
+      id: definition.id,
+      clientId: definition.clientId,
+      moduleCode: code(definition.moduleCode),
+      formCode: code(definition.formCode || definition.formName),
+      formName: definition.formName.trim(),
+      purposeCode: code(definition.purposeCode),
+      entityType: code(definition.entityType),
+      status: definition.status,
+      requiresEmailVerification,
+    })
+    setSavingVerification(false)
+    if (!response.ok || !response.data) return
+    setDefinition(current => current ? { ...current, requiresEmailVerification } : current)
+    message.success(requiresEmailVerification ? 'Email OTP enabled.' : 'Email OTP disabled.')
+    await load(definition.clientId)
   }
 
   const publish = () => {
@@ -424,7 +451,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
       </aside>
       {selectingFormId !== null ? <Card data-testid="form-builder-selection-loading" className="form-builder-start-card" loading aria-busy="true" aria-label="Loading selected form" /> : !definition || !version ? <Card className="form-builder-start-card"><Empty description="Select a form from the left or create a new one." /></Card> : <div className="form-builder-canvas">
         <Card size="small" className="form-builder-settings-card"><div className="orchestration-toolbar form-builder-version-toolbar"><Space wrap><Tag color={version.status === 'Published' ? 'green' : version.status === 'Retired' ? 'default' : 'gold'}>v{version.versionNumber} · {version.status}</Tag><Switch disabled={readOnly} checked={definition.status === 'Active'} onChange={active => patchDefinition({ status: active ? 'Active' : 'Inactive' })} checkedChildren="Active" unCheckedChildren="Inactive" /></Space><Space wrap>{readOnly && <Button onClick={beginRevision}>Create next version</Button>}<Button data-testid="form-builder-save" loading={saving} disabled={readOnly} onClick={() => void save()}>Save draft</Button><Button data-testid="form-builder-publish" type="primary" disabled={readOnly} onClick={publish}>Publish</Button></Space></div>
-          <div className="form-builder-meta"><Form.Item label="Form name" required><Input data-testid="form-builder-name" disabled={readOnly} value={definition.formName} onChange={event => patchDefinition({ formName: event.target.value })} /></Form.Item><Form.Item label="Form code" required><Input data-testid="form-builder-code" disabled={readOnly} value={definition.formCode} onChange={event => patchDefinition({ formCode: code(event.target.value) })} /></Form.Item><Form.Item label="Use this form for" extra="Employee forms appear automatically in the matching Employee infotype after publishing."><Select data-testid="form-builder-module" disabled={readOnly} value={definition.moduleCode || 'RECRUITMENT'} onChange={chooseModule} options={[{ value: 'RECRUITMENT', label: 'Recruitment / Candidate' }, { value: 'EMPLOYEE', label: 'Employee additional fields' }]} /></Form.Item>{definition.moduleCode === 'EMPLOYEE' && <Form.Item label="Employee infotype"><Select data-testid="form-builder-employee-infotype" disabled={readOnly} value={employeeInfotype} onChange={value => patchDefinition({ purposeCode: `EMPLOYEE_INFOTYPE_${value}`, entityType: 'EMPLOYEE' })} options={[{ value: '0001', label: '0001 - Organizational Assignment' }, { value: '0002', label: '0002 - Personal Data' }, { value: '0006', label: '0006 - Addresses' }, { value: '0008', label: '0008 - Basic Pay' }, { value: '0009', label: '0009 - Bank Details' }]} /></Form.Item>}<Form.Item label="Purpose code"><Input data-testid="form-builder-purpose" disabled={readOnly} value={definition.purposeCode} onChange={event => patchDefinition({ purposeCode: code(event.target.value) })} /></Form.Item><Form.Item label="Entity type"><Input data-testid="form-builder-entity" disabled={readOnly} value={definition.entityType} onChange={event => patchDefinition({ entityType: code(event.target.value) })} /></Form.Item></div>
+          <div className="form-builder-meta"><Form.Item label="Form name" required><Input data-testid="form-builder-name" disabled={readOnly} value={definition.formName} onChange={event => patchDefinition({ formName: event.target.value })} /></Form.Item><Form.Item label="Form code" required><Input data-testid="form-builder-code" disabled={readOnly} value={definition.formCode} onChange={event => patchDefinition({ formCode: code(event.target.value) })} /></Form.Item><Form.Item label="Use this form for" extra="Employee forms appear automatically in the matching Employee infotype after publishing."><Select data-testid="form-builder-module" disabled={readOnly} value={definition.moduleCode || 'RECRUITMENT'} onChange={chooseModule} options={[{ value: 'RECRUITMENT', label: 'Recruitment / Candidate' }, { value: 'EMPLOYEE', label: 'Employee additional fields' }]} /></Form.Item>{definition.moduleCode === 'EMPLOYEE' && <Form.Item label="Employee infotype"><Select data-testid="form-builder-employee-infotype" disabled={readOnly} value={employeeInfotype} onChange={value => patchDefinition({ purposeCode: `EMPLOYEE_INFOTYPE_${value}`, entityType: 'EMPLOYEE' })} options={[{ value: '0001', label: '0001 - Organizational Assignment' }, { value: '0002', label: '0002 - Personal Data' }, { value: '0006', label: '0006 - Addresses' }, { value: '0008', label: '0008 - Basic Pay' }, { value: '0009', label: '0009 - Bank Details' }]} /></Form.Item>}<Form.Item label="Purpose code"><Input data-testid="form-builder-purpose" disabled={readOnly} value={definition.purposeCode} onChange={event => patchDefinition({ purposeCode: code(event.target.value) })} /></Form.Item><Form.Item label="Entity type"><Input data-testid="form-builder-entity" disabled={readOnly} value={definition.entityType} onChange={event => patchDefinition({ entityType: code(event.target.value) })} /></Form.Item>{definition.moduleCode === 'RECRUITMENT' && <Form.Item label="Email OTP verification" extra="ON sends an email OTP before the form opens. OFF keeps contact matching and duplicate protection, but skips the OTP step."><Switch loading={savingVerification} data-testid="form-builder-email-otp" checked={definition.requiresEmailVerification !== false} onChange={requiresEmailVerification => void changeEmailVerification(requiresEmailVerification)} checkedChildren="Required" unCheckedChildren="Not required" /></Form.Item>}</div>
         </Card>
         <div className="form-builder-design-surface">
           <div className="form-builder-surface-head"><div><span>Form canvas</span><small>{version.sections.length} section{version.sections.length === 1 ? '' : 's'} · {version.sections.reduce((total, section) => total + section.fields.length, 0)} fields</small></div><Button icon={<PlusOutlined />} disabled={readOnly} onClick={addSection}>Add section</Button></div>
@@ -669,7 +696,7 @@ function withStableValidationReferences(version: DynamicFormVersion) {
 }
 
 function blankDefinition(clientId: number, clientName: string): DynamicFormDefinition {
-  return { id: 0, clientId, clientName, moduleCode: 'RECRUITMENT', formCode: '', formName: '', purposeCode: 'CANDIDATE_APPLICATION', entityType: 'CANDIDATE', status: 'Active', currentPublishedVersionId: null, versions: [] }
+  return { id: 0, clientId, clientName, moduleCode: 'RECRUITMENT', formCode: '', formName: '', purposeCode: 'CANDIDATE_APPLICATION', entityType: 'CANDIDATE', status: 'Active', requiresEmailVerification: true, currentPublishedVersionId: null, versions: [] }
 }
 function blankVersion(formDefinitionId: number): DynamicFormVersion {
   const sectionId = localId()

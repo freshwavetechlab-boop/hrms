@@ -41,7 +41,7 @@ export default function RecruitmentProcessDocumentPanel({ clientId, pipelineStag
 
   if (!requirements.length) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="This stage has no process-document requirement." />
   return <section className="recruitment-process-documents">
-    <Alert showIcon type="info" message={title} description="Generate the draft, obtain the committee signatures, then replace it with the final signed file. Only that separately uploaded file can be marked signed." />
+    <Alert showIcon type="info" message={title} description="Prepare creates a draft record, not a file. Upload the relevant document, or generate a PDF when a template is configured. A separately uploaded signed copy is needed only where signatures are required." />
     {requirements.map(requirement => {
       const document = documents.find(row => row.pipelineStageId === pipelineStageId && row.documentType === requirement.documentType)
       return <article key={requirement.id} data-testid={`process-document-${applicationId || hiringCaseId}-${requirement.documentType}`}>
@@ -51,7 +51,7 @@ export default function RecruitmentProcessDocumentPanel({ clientId, pipelineStag
           {document && requirement.requiresSignature && document.status !== 'Signed' && document.hasFinalSignedAttachment && <Button loading={busy} onClick={() => void sign(document)}>Mark signed</Button>}
           {document && requirement.requiresSignature && document.status !== 'Signed' && !document.hasFinalSignedAttachment && <Tag color="orange">Upload signed final</Tag>}
         </Space></header>
-        {document && <EntityAttachmentPanel entityType="RECRUITMENT_PROCESS_DOCUMENT" entityId={document.id} clientId={clientId} moduleCode="RECRUITMENT" formCodes={['PROCESS_DOCUMENT']} title={`${requirement.documentType.replaceAll('_', ' ')} attachment`} description="Versioned, access-controlled and stored through the active attachment mount." onChanged={() => void load()} />}
+        {document && <EntityAttachmentPanel entityType="RECRUITMENT_PROCESS_DOCUMENT" entityId={document.id} clientId={clientId} moduleCode="RECRUITMENT" formCodes={['PROCESS_DOCUMENT']} title="Document file" description="Private, versioned storage with secure preview and download." singleFieldLabel={requirement.documentType.replaceAll('_', ' ')} singleFieldHelp={requirement.requiresSignature ? 'Upload the final signed copy. Mark signed becomes available after a separately uploaded final file is linked.' : 'Upload the source document for this requirement. Use Generate PDF only when a template is configured.'} onChanged={() => void load()} />}
       </article>
     })}
   </section>

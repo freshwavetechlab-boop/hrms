@@ -300,7 +300,7 @@ function JobDescriptionReview({ description, snapshot }: { description: Recruitm
   const attachments = snapshot?.attachments ?? []
   const mustHaveWeight = description.skills.filter(skill => skill.isRequired).reduce((total, skill) => total + Number(skill.weightPercent || 0), 0)
   const preferredWeight = description.skills.filter(skill => !skill.isRequired).reduce((total, skill) => total + Number(skill.weightPercent || 0), 0)
-  const workspaceUrl = `/recruitment/job-descriptions?clientId=${description.clientId}&requisitionId=${description.requisitionId}&jobDescriptionId=${description.id}`
+  const workspaceUrl = `/recruitment/requisitions?clientId=${description.clientId}&requisitionId=${description.requisitionId}&jobDescriptionId=${description.id}`
   return <section className="workflow-jd-review" data-testid="workflow-jd-review">
     <header>
       <div>

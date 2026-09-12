@@ -13,6 +13,7 @@ public class DynamicFormDefinition
     public string PurposeCode { get; set; } = "CANDIDATE_APPLICATION";
     public string EntityType { get; set; } = "CANDIDATE";
     public string Status { get; set; } = "Active";
+    public bool RequiresEmailVerification { get; set; } = true;
     public long? CurrentPublishedVersionId { get; set; }
     public int CreatedByUserId { get; set; }
     public DateTime CreatedAtUtc { get; set; }
@@ -30,6 +31,7 @@ public class SaveDynamicFormDefinition
     public string PurposeCode { get; set; } = "CANDIDATE_APPLICATION";
     public string EntityType { get; set; } = "CANDIDATE";
     public string Status { get; set; } = "Active";
+    public bool RequiresEmailVerification { get; set; } = true;
 }
 
 public class DynamicFormVersion
@@ -188,6 +190,7 @@ public class PublicRecruitmentJob
     public DateTime? ClosesAtUtc { get; set; }
     public bool IsAcceptingApplications { get; set; }
     public string AvailabilityStatus { get; set; } = "Unavailable";
+    public bool RequiresEmailVerification { get; set; } = true;
     public DynamicFormVersion? ApplicationForm { get; set; }
     public List<RecruitmentJdResponsibility> Responsibilities { get; set; } = [];
     public List<RecruitmentJdSkillRequirement> Skills { get; set; } = [];
@@ -210,8 +213,25 @@ public class StartPublicApplicationRequest
 {
     public string Email { get; set; } = "";
     public string Phone { get; set; } = "";
+    public string VerificationToken { get; set; } = "";
+    public string VerificationCode { get; set; } = "";
     public string IdempotencyKey { get; set; } = "";
     public bool ConsentAccepted { get; set; }
+}
+
+public class RequestPublicApplicationVerification
+{
+    public string Email { get; set; } = "";
+    public string Phone { get; set; } = "";
+    public bool ConsentAccepted { get; set; }
+}
+
+public class PublicApplicationVerification
+{
+    public string VerificationToken { get; set; } = "";
+    public string MaskedEmail { get; set; } = "";
+    public DateTime ExpiresAtUtc { get; set; }
+    public int ResendAfterSeconds { get; set; } = 45;
 }
 
 public class PublicApplicationSession
@@ -220,6 +240,7 @@ public class PublicApplicationSession
     public long SubmissionId { get; set; }
     public DateTime ExpiresAtUtc { get; set; }
     public string Status { get; set; } = "Draft";
+    public List<PublicFormValue> InitialValues { get; set; } = [];
 }
 
 public class SavePublicFormValuesRequest

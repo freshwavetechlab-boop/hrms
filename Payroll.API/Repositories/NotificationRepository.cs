@@ -248,6 +248,55 @@ ORDER BY r.ClientId IS NULL, r.Id", new { EventCode = CleanCode(notificationEven
         }
     }
 
+    public async Task<(bool Sent, string Error)> SendDirectAsync(
+        string recipientEmail,
+        string subject,
+        string bodyHtml,
+        NotificationEvent notificationEvent,
+        CancellationToken cancellationToken = default)
+    {
+        if (!MailboxAddress.TryParse((recipientEmail ?? "").Trim(), out var mailbox))
+            return (false, "The recipient email address is invalid.");
+        if (string.IsNullOrWhiteSpace(subject) || string.IsNullOrWhiteSpace(bodyHtml))
+            return (false, "The email subject and content are required.");
+
+        await using var db = Db();
+        await db.OpenAsync(cancellationToken);
+        var smtp = await db.QueryFirstOrDefaultAsync<NotificationSmtpSetting>("SELECT * FROM notification_smtp_settings WHERE Id=1") ?? new NotificationSmtpSetting();
+        if (!smtp.IsEnabled || smtp.DeliveryPaused || string.IsNullOrWhiteSpace(smtp.Host) || string.IsNullOrWhiteSpace(smtp.FromEmail))
+            return (false, "Email delivery is not configured or is currently paused.");
+
+        var eventCode = CleanCode(string.IsNullOrWhiteSpace(notificationEvent.EventCode) ? "SYSTEM_EMAIL" : notificationEvent.EventCode);
+        var queueId = await db.ExecuteScalarAsync<long>(@"INSERT INTO notification_queue
+(RuleId,EventCode,ResourceType,ResourceId,ClientId,ToJson,CcJson,BccJson,Subject,BodyHtml,Status)
+VALUES (NULL,@EventCode,@ResourceType,@ResourceId,@ClientId,@ToJson,'[]','[]',@Subject,@BodyHtml,'Processing');
+SELECT LAST_INSERT_ID();", new
+        {
+            EventCode = eventCode,
+            ResourceType = string.IsNullOrWhiteSpace(notificationEvent.ResourceType) ? "System" : notificationEvent.ResourceType,
+            ResourceId = string.IsNullOrWhiteSpace(notificationEvent.ResourceId) ? "DIRECT" : notificationEvent.ResourceId,
+            notificationEvent.ClientId,
+            ToJson = JsonSerializer.Serialize(new[] { mailbox.Address }),
+            Subject = subject.Trim(),
+            BodyHtml = bodyHtml
+        });
+        var row = await db.QueryFirstAsync<NotificationQueueItem>("SELECT * FROM notification_queue WHERE Id=@Id", new { Id = queueId });
+        try
+        {
+            await SendAsync(db, smtp, row, cancellationToken);
+            await db.ExecuteAsync("UPDATE notification_queue SET Status='Sent',SentAt=UTC_TIMESTAMP(),ErrorMessage='' WHERE Id=@Id", new { Id = queueId });
+            await WriteLogsAsync(db, row, "Sent", "");
+            return (true, "");
+        }
+        catch (Exception exception)
+        {
+            await db.ExecuteAsync("UPDATE notification_queue SET Status='Failed',RetryCount=RetryCount+1,ErrorMessage=@Error WHERE Id=@Id", new { Id = queueId, Error = exception.Message });
+            await WriteLogsAsync(db, row, "Failed", exception.Message);
+            logger.LogWarning(exception, "Direct notification {QueueId} failed.", queueId);
+            return (false, "The verification email could not be delivered. Please retry shortly.");
+        }
+    }
+
     public async Task<long?> QueueTemplateAsync(long templateId, string recipientEmail, NotificationEvent notificationEvent)
     {
         if (templateId <= 0 || string.IsNullOrWhiteSpace(recipientEmail)

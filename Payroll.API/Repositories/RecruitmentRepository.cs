@@ -162,11 +162,15 @@ FROM recruitment_open_positions WHERE RequisitionId=@Id", new { request.Id });
             request.WorkOrderId = existing.WorkOrderId;
             request.WorkOrderLineNumber = existing.WorkOrderLineNumber;
         }
-        if ((request.WorkOrderId is > 0) != (request.WorkOrderLineNumber is > 0))
-            return (null, "Select both the work order and its line, or leave both blank.");
-        if (request.WorkOrderId is <= 0 || request.WorkOrderLineNumber is <= 0)
+        if (request.WorkOrderLineNumber is > 0 && request.WorkOrderId is not > 0)
+            return (null, "A work-order line cannot be selected without its work order.");
+        if (request.WorkOrderId is <= 0)
         {
             request.WorkOrderId = null;
+            request.WorkOrderLineNumber = null;
+        }
+        else if (request.WorkOrderLineNumber is <= 0)
+        {
             request.WorkOrderLineNumber = null;
         }
 
@@ -175,15 +179,33 @@ FROM recruitment_open_positions WHERE RequisitionId=@Id", new { request.Id });
         WorkOrderLinkRow? workOrderLink = null;
         if (request.WorkOrderId.HasValue)
         {
-            workOrderLink = await db.QueryFirstOrDefaultAsync<WorkOrderLinkRow>(@"SELECT line.Id,workOrder.ClientId,line.RequisitionId
+            if (request.WorkOrderLineNumber is > 0)
+            {
+                workOrderLink = await db.QueryFirstOrDefaultAsync<WorkOrderLinkRow>(@"SELECT line.Id,workOrder.ClientId,line.RequisitionId
 FROM recruitment_work_order_lines line
 JOIN recruitment_work_orders workOrder ON workOrder.Id=line.WorkOrderId
 WHERE line.WorkOrderId=@WorkOrderId AND line.LineNumber=@WorkOrderLineNumber FOR UPDATE",
-                new { request.WorkOrderId, request.WorkOrderLineNumber }, transaction);
+                    new { request.WorkOrderId, request.WorkOrderLineNumber }, transaction);
+            }
+            else
+            {
+                var workOrder = await db.QueryFirstOrDefaultAsync<WorkOrderLinkRow>(@"SELECT Id,ClientId,NULL RequisitionId
+FROM recruitment_work_orders WHERE Id=@WorkOrderId FOR UPDATE", new { request.WorkOrderId }, transaction);
+                if (workOrder is not null && workOrder.ClientId == clientId)
+                {
+                    var lineNumber = await db.ExecuteScalarAsync<int>("SELECT COALESCE(MAX(LineNumber),0)+1 FROM recruitment_work_order_lines WHERE WorkOrderId=@WorkOrderId", new { request.WorkOrderId }, transaction);
+                    var lineId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_work_order_lines
+(WorkOrderId,LineNumber,PositionName,PayBandLevelCode,NumberOfPositions,Location,Division,RequisitionId,PositionId,Status)
+VALUES (@WorkOrderId,@LineNumber,@PositionName,'',@NumberOfPositions,@Location,@Division,NULL,NULL,'Open');
+SELECT LAST_INSERT_ID();", new { request.WorkOrderId, LineNumber = lineNumber, PositionName = request.PositionTitle, NumberOfPositions = request.NumberOfOpenings, Location = request.JobLocation, Division = request.BusinessUnit }, transaction);
+                    request.WorkOrderLineNumber = lineNumber;
+                    workOrderLink = new WorkOrderLinkRow { Id = lineId, ClientId = clientId };
+                }
+            }
             if (workOrderLink is null || workOrderLink.ClientId != clientId)
             {
                 await transaction.RollbackAsync();
-                return (null, "The selected work-order line was not found for this client.");
+                return (null, "The selected work order was not found for this client.");
             }
             if (workOrderLink.RequisitionId.HasValue && workOrderLink.RequisitionId.Value != request.Id)
             {
@@ -238,16 +260,18 @@ WHERE RequisitionId=@Id", new
             await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET RequisitionId=NULL WHERE RequisitionId=@Id AND (@LineId IS NULL OR Id<>@LineId)",
                 new { Id = request.Id, LineId = workOrderLink?.Id }, transaction);
             if (workOrderLink is not null)
-                await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET RequisitionId=@RequisitionId WHERE Id=@Id",
-                    new { RequisitionId = request.Id, workOrderLink.Id }, transaction);
+                await db.ExecuteAsync(@"UPDATE recruitment_work_order_lines SET RequisitionId=@RequisitionId,
+PositionName=@PositionName,NumberOfPositions=@NumberOfPositions,Location=@Location,Division=@Division WHERE Id=@Id",
+                    new { RequisitionId = request.Id, PositionName = request.PositionTitle, NumberOfPositions = request.NumberOfOpenings, Location = request.JobLocation, Division = request.BusinessUnit, workOrderLink.Id }, transaction);
             await AuditAsync(db, request.Id, existing.Status == "Approved" ? "Edit Approved" : "Edit", user.Id, request, transaction);
             await transaction.CommitAsync();
             return (await GetAsync(request.Id, user), "");
         }
         var id = await db.ExecuteScalarAsync<long>(InsertSql + " SELECT LAST_INSERT_ID();", Payload(request, user, employee, clientId, newRfrNumber, 0, request.RequestDate?.Date ?? DateTime.Today), transaction);
         if (workOrderLink is not null)
-            await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET RequisitionId=@RequisitionId WHERE Id=@Id",
-                new { RequisitionId = id, workOrderLink.Id }, transaction);
+            await db.ExecuteAsync(@"UPDATE recruitment_work_order_lines SET RequisitionId=@RequisitionId,
+PositionName=@PositionName,NumberOfPositions=@NumberOfPositions,Location=@Location,Division=@Division WHERE Id=@Id",
+                new { RequisitionId = id, PositionName = request.PositionTitle, NumberOfPositions = request.NumberOfOpenings, Location = request.JobLocation, Division = request.BusinessUnit, workOrderLink.Id }, transaction);
         await AuditAsync(db, id, "Create Draft", user.Id, request, transaction);
         await transaction.CommitAsync();
         return (await GetAsync(id, user), "");
@@ -335,6 +359,7 @@ WHERE RequisitionId=@Id", new
         if (jobDescriptions > 0) return (false, $"Delete the {jobDescriptions} linked job-description version(s) first.");
 
         await using var transaction = await db.BeginTransactionAsync();
+        await WorkflowRepository.DeleteResourceTransactionsAsync(db, transaction, "RecruitmentRequisition", id);
         await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET RequisitionId=NULL WHERE RequisitionId=@Id", new { Id = id }, transaction);
         await db.ExecuteAsync("DELETE FROM recruitment_requisition_documents WHERE RequisitionId=@Id", new { Id = id }, transaction);
         await db.ExecuteAsync("DELETE FROM recruitment_requisitions WHERE Id=@Id", new { Id = id }, transaction);
@@ -1079,7 +1104,12 @@ LEFT JOIN employees requester ON requester.Id=r.RequestedByEmployeeId
 LEFT JOIN employees repl ON repl.Id=r.ReplacementEmployeeId
 {where}";
 
-    private static string OpenPositionSql(string where) => $@"SELECT p.*,r.RfrNumber,c.Name ClientName,COALESCE(w.Name,'') BranchName,COALESCE(u.DisplayName,u.Email,'') RecruiterName,
+    private static string OpenPositionSql(string where) => $@"SELECT p.*,r.RfrNumber,COALESCE(r.WorkMode,'') WorkMode,
+COALESCE(r.JobLocation,'') RequisitionJobLocation,COALESCE(r.WorkMode,'') RequisitionWorkMode,
+COALESCE(r.ExperienceRange,'') RequisitionExperienceRange,COALESCE(r.SalaryMin,0) RequisitionSalaryMin,
+COALESCE(r.SalaryMax,0) RequisitionSalaryMax,COALESCE(r.Currency,'') RequisitionCurrency,
+COALESCE(r.NumberOfOpenings,0) RequisitionNumberOfOpenings,
+c.Name ClientName,COALESCE(w.Name,'') BranchName,COALESCE(u.DisplayName,u.Email,'') RecruiterName,
 pipelineInstance.Id PipelineInstanceId,
 COALESCE(pipelineInstance.PipelineVersionId,
  (SELECT versionRow.Id FROM recruitment_pipeline_versions versionRow JOIN recruitment_pipeline_definitions definition ON definition.Id=versionRow.PipelineDefinitionId

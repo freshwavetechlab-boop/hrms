@@ -595,7 +595,7 @@ WHERE Id=@WorkflowId AND IsActive=TRUE AND (ClientId=@ClientId OR ClientId IS NU
 ApprovedByUserId=@UserId,ApprovedAtUtc=UTC_TIMESTAMP(),UpdatedAtUtc=UTC_TIMESTAMP()
 WHERE Id=@Id AND Status IN ('Draft','Sent Back')", new { Id = id, UserId = user.Id }, transaction);
         if (updated == 0) return (null, "The job description changed before it could be approved. Refresh and try again.");
-        await BindApprovedJobDescriptionAsync(db, id, transaction);
+        await BindApprovedJobDescriptionAsync(db, id, user.Id, transaction);
         await db.ExecuteAsync(@"INSERT INTO recruitment_audit (EntityType,EntityId,Action,NewValueJson,ChangedByUserId)
 VALUES ('RecruitmentJobDescription',@Id,'Direct Approval',@Json,@UserId)", new { Id = id, Json = snapshotJson, UserId = user.Id }, transaction);
         await transaction.CommitAsync();
@@ -615,7 +615,7 @@ ApprovedByUserId=CASE WHEN @Status='Approved' THEN @UserId ELSE NULL END,
 ApprovedAtUtc=CASE WHEN @Status='Approved' THEN UTC_TIMESTAMP() ELSE NULL END,UpdatedAtUtc=UTC_TIMESTAMP() WHERE Id=@Id",
             new { Id = id, Status = status, UserId = user.Id });
         if (status == "Approved")
-            await BindApprovedJobDescriptionAsync(db, id);
+            await BindApprovedJobDescriptionAsync(db, id, user.Id);
         return (await LoadJobDescriptionAsync(db, id, user.ClientId), "");
     }
 
@@ -654,6 +654,8 @@ FROM recruitment_open_positions p JOIN recruitment_job_description_versions j ON
             new { request.PositionId, request.JobDescriptionVersionId });
         if (source is null || source.RequisitionId != source.JobDescriptionRequisitionId || !source.JobDescriptionStatus.Equals("Approved", StringComparison.OrdinalIgnoreCase)) return (null, "Select an approved job-description version for this position.");
         if (user.ClientId is not null && user.ClientId != source.ClientId) return (null, "Open position was not found.");
+        if (request.ApplicationFormVersionId is null)
+            request.ApplicationFormVersionId = await ResolveUniquePublishedApplicationFormVersionAsync(db, source.ClientId);
         if (request.ApplicationFormVersionId is > 0)
         {
             var validForm = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM form_versions v
@@ -690,7 +692,12 @@ WHERE Id=@Id AND ClientId=@ClientId AND PositionId=@PositionId AND Status='Draft
         if (posting is null) return (null, "Job posting was not found.");
         if (posting.Status is not ("Draft" or "Closed")) return (null, "Only a draft or closed job posting can be published.");
         if (posting.ClosesAtUtc is not null && posting.ClosesAtUtc <= DateTime.UtcNow) return (null, "Posting close time must be in the future.");
-        if (posting.ApplicationFormVersionId is null) return (null, "Select a published application form before publishing this job.");
+        if (posting.ApplicationFormVersionId is null)
+        {
+            posting.ApplicationFormVersionId = await ResolveUniquePublishedApplicationFormVersionAsync(db, posting.ClientId);
+            if (posting.ApplicationFormVersionId is null)
+                return (null, "Select a published application form before publishing this job.");
+        }
         var validForm = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM form_versions v
 JOIN form_definitions d ON d.Id=v.FormDefinitionId
 WHERE v.Id=@Id AND v.Status IN ('Published','Retired') AND d.ClientId IN (0,@ClientId)",
@@ -701,7 +708,8 @@ WHERE PositionId=@PositionId AND (JobPostingId IS NULL OR JobPostingId=@Id) AND 
         if (pipeline == 0) return (null, "Assign a published hiring pipeline before publishing this job.");
         var proofValidationError = await ValidateCandidateProofBindingsAsync(db, posting);
         if (proofValidationError.Length > 0) return (null, proofValidationError);
-        await db.ExecuteAsync("UPDATE recruitment_job_postings SET Status='Published',PublishedAtUtc=UTC_TIMESTAMP(),UpdatedAtUtc=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id });
+        await db.ExecuteAsync("UPDATE recruitment_job_postings SET ApplicationFormVersionId=@ApplicationFormVersionId,Status='Published',PublishedAtUtc=UTC_TIMESTAMP(),UpdatedAtUtc=UTC_TIMESTAMP() WHERE Id=@Id",
+            new { posting.ApplicationFormVersionId, Id = id });
         await db.ExecuteAsync("UPDATE recruitment_open_positions SET Status='Published',PublishedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@PositionId", posting);
         return (await GetJobPostingAsync(db, id, user.ClientId), "");
     }
@@ -711,6 +719,16 @@ WHERE PositionId=@PositionId AND (JobPostingId IS NULL OR JobPostingId=@Id) AND 
         await using var db = Db();
         await db.OpenAsync();
         return await db.ExecuteAsync("UPDATE recruitment_job_postings SET Status='Closed',UpdatedAtUtc=UTC_TIMESTAMP() WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, user.ClientId }) > 0;
+    }
+
+    private static async Task<long?> ResolveUniquePublishedApplicationFormVersionAsync(MySqlConnection db, int clientId)
+    {
+        var candidates = (await db.QueryAsync<long>(@"SELECT DISTINCT d.CurrentPublishedVersionId
+FROM form_definitions d
+JOIN form_versions v ON v.Id=d.CurrentPublishedVersionId AND v.Status='Published'
+WHERE d.Status='Active' AND d.CurrentPublishedVersionId IS NOT NULL AND d.ClientId IN (0,@ClientId)",
+            new { ClientId = clientId })).ToList();
+        return candidates.Count == 1 ? candidates[0] : null;
     }
 
     public async Task<(bool Ok, string Error)> DeleteJobDescriptionVersionAsync(long id, AuthUser user)
@@ -1266,6 +1284,7 @@ ORDER BY s.EnteredAtUtc", new { PositionId = positionId, assignment.PipelineVers
 
         var demandCards = (await db.QueryAsync<WorkspaceDemandRow>(@"SELECT
 workOrder.ClientId,line.Id WorkOrderLineId,line.WorkOrderId,workOrder.WorkOrderNumber,
+TRUE HasWorkOrder,
 CASE WHEN hiringCase.Id IS NOT NULL AND workOrder.Status='Draft' THEN 'Active' ELSE workOrder.Status END WorkOrderStatus,
 line.PositionName,line.PayBandLevelCode,line.Division,
 hiringCase.Id HiringCaseId,hiringCase.PipelineVersionId,hiringCase.CurrentStageInstanceId,
@@ -1308,6 +1327,47 @@ WHERE (@ClientId IS NULL OR workOrder.ClientId=@ClientId)
   AND (@JobPostingId IS NULL OR posting.Id=@JobPostingId)
 ORDER BY workOrder.ReceivedAtUtc DESC,workOrder.Id DESC,line.LineNumber,line.Id",
             new { ClientId = effectiveClientId, PositionId = positionId is > 0 ? positionId : null, JobPostingId = jobPostingId is > 0 ? jobPostingId : null })).ToList();
+
+        var directRequestCards = (await db.QueryAsync<WorkspaceDemandRow>(@"SELECT
+positionRow.ClientId,-positionRow.Id WorkOrderLineId,0 WorkOrderId,'Direct hiring request' WorkOrderNumber,
+FALSE HasWorkOrder,'Not linked' WorkOrderStatus,
+positionRow.PositionTitle PositionName,'' PayBandLevelCode,
+COALESCE(NULLIF(positionRow.BusinessUnit,''),NULLIF(positionRow.Department,''),'') Division,
+NULL HiringCaseId,assignment.PipelineVersionId,NULL CurrentStageInstanceId,
+'Ready' Status,NULL CurrentStageId,'' CurrentStageName,
+requisition.RequestDate EnteredAtUtc,NULL DueAtUtc,positionRow.TargetJoiningDate OverallDueAtUtc,
+GREATEST(0,TIMESTAMPDIFF(SECOND,requisition.RequestDate,UTC_TIMESTAMP(6))) ActiveDurationSeconds,
+0 PausedDurationSeconds,FALSE IsPaused,FALSE AllowPause,FALSE IsTerminal,'' AdvanceStatus,FALSE IsSlaBreached,
+requisition.Id RequisitionId,requisition.RfrNumber RequisitionNumber,requisition.Status RequisitionStatus,
+positionRow.Id PositionId,positionRow.PositionCode,positionRow.Status PositionStatus,
+jobDescription.Id JobDescriptionId,COALESCE(jobDescription.Status,'Not Started') JobDescriptionStatus,
+posting.Id JobPostingId,COALESCE(posting.Status,'Not Started') JobPostingStatus,
+FALSE NeedsPipelineSelection,assignment.PipelineVersionId AssignedPipelineVersionId
+FROM recruitment_open_positions positionRow
+JOIN recruitment_requisitions requisition ON requisition.Id=positionRow.RequisitionId
+JOIN recruitment_position_pipeline_assignments assignment ON assignment.Id=(
+    SELECT selectedAssignment.Id FROM recruitment_position_pipeline_assignments selectedAssignment
+    WHERE selectedAssignment.PositionId=positionRow.Id AND selectedAssignment.IsActive=TRUE
+      AND selectedAssignment.JobPostingId IS NULL
+    ORDER BY selectedAssignment.AssignedAtUtc DESC,selectedAssignment.Id DESC LIMIT 1)
+LEFT JOIN recruitment_job_description_versions jobDescription ON jobDescription.Id=(
+    SELECT jd.Id FROM recruitment_job_description_versions jd
+    WHERE jd.RequisitionId=requisition.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1)
+LEFT JOIN recruitment_job_postings posting ON posting.Id=(
+    SELECT jp.Id FROM recruitment_job_postings jp WHERE jp.PositionId=positionRow.Id
+      AND (@JobPostingId IS NULL OR jp.Id=@JobPostingId) ORDER BY jp.Id DESC LIMIT 1)
+WHERE (@ClientId IS NULL OR positionRow.ClientId=@ClientId)
+  AND (@PositionId IS NULL OR positionRow.Id=@PositionId)
+  AND (@JobPostingId IS NULL OR posting.Id=@JobPostingId)
+  AND requisition.Status='Approved'
+  AND positionRow.Status NOT IN ('Closed','Cancelled','Filled')
+  AND NOT EXISTS (
+      SELECT 1 FROM recruitment_work_order_lines line
+      WHERE line.PositionId=positionRow.Id OR line.RequisitionId=requisition.Id
+  )
+ORDER BY requisition.RequestDate DESC,positionRow.Id DESC",
+            new { ClientId = effectiveClientId, PositionId = positionId is > 0 ? positionId : null, JobPostingId = jobPostingId is > 0 ? jobPostingId : null })).ToList();
+        demandCards.AddRange(directRequestCards);
 
         var assignedTargets = (await db.QueryAsync<WorkspaceAssignmentRow>(@"SELECT DISTINCT positionRow.Id PositionId,positionRow.ClientId,assignment.PipelineVersionId
 FROM recruitment_open_positions positionRow
@@ -2280,9 +2340,50 @@ ORDER BY a.uploaded_at_utc,a.id", new { description.ClientId, JobDescriptionId =
         return JsonSerializer.Serialize(snapshot, ApprovalSnapshotJson);
     }
 
-    private static Task BindApprovedJobDescriptionAsync(MySqlConnection db, long id, MySqlTransaction? transaction = null) =>
-        db.ExecuteAsync(@"UPDATE recruitment_open_positions p JOIN recruitment_job_description_versions j ON j.RequisitionId=p.RequisitionId
+    private static async Task BindApprovedJobDescriptionAsync(MySqlConnection db, long id, int actorUserId, MySqlTransaction? transaction = null)
+    {
+        await db.ExecuteAsync(@"UPDATE recruitment_open_positions p JOIN recruitment_job_description_versions j ON j.RequisitionId=p.RequisitionId
 SET p.ApprovedJobDescriptionVersionId=j.Id,p.JobDescriptionText=j.Summary,p.JobDescriptionVersion=j.VersionNumber WHERE j.Id=@Id", new { Id = id }, transaction);
+
+        var source = await db.QueryFirstOrDefaultAsync<ApprovedJobLaunchRow>(@"SELECT p.Id PositionId,p.ClientId,j.Title
+FROM recruitment_open_positions p
+JOIN recruitment_job_description_versions j ON j.RequisitionId=p.RequisitionId
+WHERE j.Id=@Id LIMIT 1", new { Id = id }, transaction);
+        if (source is null) return;
+
+        await db.ExecuteAsync(@"INSERT INTO recruitment_job_postings
+(ClientId,PositionId,JobDescriptionVersionId,ApplicationFormVersionId,PublicSlug,PublicTitle,Status,SearchEngineVisible,CreatedByUserId)
+SELECT @ClientId,@PositionId,@JobDescriptionVersionId,NULL,@PublicSlug,@PublicTitle,'Draft',FALSE,@ActorUserId FROM DUAL
+WHERE NOT EXISTS (
+    SELECT 1 FROM recruitment_job_postings
+    WHERE PositionId=@PositionId AND Status IN ('Draft','Published')
+)", new
+        {
+            source.ClientId,
+            source.PositionId,
+            JobDescriptionVersionId = id,
+            PublicSlug = Guid.NewGuid().ToString("N"),
+            PublicTitle = source.Title,
+            ActorUserId = actorUserId
+        }, transaction);
+
+        var publishedVersions = (await db.QueryAsync<long>(@"SELECT DISTINCT versionRow.Id
+FROM recruitment_pipeline_versions versionRow
+JOIN recruitment_pipeline_definitions definition ON definition.Id=versionRow.PipelineDefinitionId
+WHERE definition.ClientId=@ClientId AND definition.IsActive=TRUE
+  AND definition.CurrentPublishedVersionId=versionRow.Id
+  AND versionRow.Status='Published' AND versionRow.ScopeType IN ('Position','Hybrid')",
+            new { source.ClientId }, transaction)).ToList();
+        if (publishedVersions.Count != 1) return;
+
+        await db.ExecuteAsync(@"INSERT INTO recruitment_position_pipeline_assignments
+(PositionId,JobPostingId,PipelineVersionId,IsActive,AssignedByUserId)
+SELECT @PositionId,NULL,@PipelineVersionId,TRUE,@ActorUserId FROM DUAL
+WHERE NOT EXISTS (
+    SELECT 1 FROM recruitment_position_pipeline_assignments
+    WHERE PositionId=@PositionId AND IsActive=TRUE
+)", new { source.PositionId, PipelineVersionId = publishedVersions[0], ActorUserId = actorUserId }, transaction);
+    }
 
     private static async Task<string> ValidateJobDescriptionCandidateProofConfigurationsAsync(MySqlConnection db, SaveRecruitmentJobDescriptionVersion request, int clientId)
     {
@@ -2605,7 +2706,8 @@ JOIN recruitment_open_positions o ON o.Id=p.PositionId
 LEFT JOIN clients c ON c.Id=p.ClientId";
 
     private sealed class JobDescriptionApprovalContext { public string ClientName { get; set; } = ""; public string RfrNumber { get; set; } = ""; public string PositionTitle { get; set; } = ""; public string Department { get; set; } = ""; public string BusinessUnit { get; set; } = ""; public string EmploymentType { get; set; } = ""; public string HiringType { get; set; } = ""; public int NumberOfOpenings { get; set; } public string JobLocation { get; set; } = ""; public string WorkMode { get; set; } = ""; public string ExperienceRange { get; set; } = ""; public string Qualification { get; set; } = ""; public string SourceType { get; set; } = ""; public string SourceReference { get; set; } = ""; public string SourceDocumentName { get; set; } = ""; public long? PositionId { get; set; } public string PositionCode { get; set; } = ""; }
-    private sealed class JobDescriptionApprovalAttachment { public string PublicId { get; set; } = ""; public string AttachmentType { get; set; } = ""; public string FieldLabel { get; set; } = ""; public string FileName { get; set; } = ""; public long FileSizeBytes { get; set; } public int VersionNumber { get; set; } public string VerificationStatus { get; set; } = ""; public DateTime UploadedAtUtc { get; set; } }
+    private sealed class ApprovedJobLaunchRow { public long PositionId { get; set; } public int ClientId { get; set; } public string Title { get; set; } = ""; }
+    private sealed class JobDescriptionApprovalAttachment { public Guid PublicId { get; set; } public string AttachmentType { get; set; } = ""; public string FieldLabel { get; set; } = ""; public string FileName { get; set; } = ""; public long FileSizeBytes { get; set; } public int VersionNumber { get; set; } public string VerificationStatus { get; set; } = ""; public DateTime UploadedAtUtc { get; set; } }
     private sealed class CandidateProofConfigurationRow { public long Id { get; set; } public int ClientId { get; set; } public string ModuleCode { get; set; } = ""; public string FormCode { get; set; } = ""; public string FieldKey { get; set; } = ""; public string FieldLabel { get; set; } = ""; public bool AllowMultiple { get; set; } public int MinimumFileCount { get; set; } public int MaximumFileCount { get; set; } public bool IsActive { get; set; } public bool AttributeIsActive { get; set; } public DateTime? EffectiveFromUtc { get; set; } public DateTime? EffectiveUntilUtc { get; set; } }
     private sealed class CandidateProofRequirementRow { public long Id { get; set; } public string CertificationName { get; set; } = ""; public bool IsMandatory { get; set; } public long CandidateProofAttachmentFieldConfigurationId { get; set; } }
     private sealed class CandidateProofFormRoute { public string RouteKey { get; set; } = ""; public long FormVersionId { get; set; } public string RouteLabel { get; set; } = ""; public bool SubmissionRequired { get; set; } }

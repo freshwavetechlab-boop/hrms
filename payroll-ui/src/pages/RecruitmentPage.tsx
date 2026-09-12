@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { BranchesOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons'
+import { BranchesOutlined, DeleteOutlined, FormOutlined, PlusOutlined, RocketOutlined } from '@ant-design/icons'
 import { Button, Card, Drawer, Input, InputNumber, Modal, Popconfirm, Select, Space, Tabs, Tag, message } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
 import DataTable from '../components/DataTable'
 import RecruitmentAtsWorkspace from '../components/RecruitmentAtsWorkspace'
 import RecruitmentDashboardOverview from '../components/RecruitmentDashboardOverview'
-import RecruitmentJobDescriptionManager from '../components/RecruitmentJobDescriptionManager'
+import RecruitmentFormBuilder from '../components/RecruitmentFormBuilder'
 import RecruitmentJobPostingManager from '../components/RecruitmentJobPostingManager'
 import RecruitmentPipelineWorkspace from '../components/RecruitmentPipelineWorkspace'
 import RecruitmentRequisitionManager from '../components/RecruitmentRequisitionManager'
 import RecruitmentTalentWorkspace from '../components/RecruitmentTalentWorkspace'
+import RecruitmentWorkOrderWorkspace from '../components/RecruitmentWorkOrderWorkspace'
 import { useAuthSession } from '../components/AuthGate'
 import { getClients } from '../services/payrollService'
 import { assignRecruiter, createReferralCampaign, deleteRecruitmentOpenPosition, getRecruitmentDashboard, getRecruitmentMasterOptions, getRecruitmentOpenPositionDetail, getRecruitmentOpenPositions, getRecruitmentOperationsOptions, getRecruitmentRequisitionApprovalMode, publishPosition, saveRecruitmentPositionNote, updateRecruitmentPositionStatus } from '../services/recruitmentService'
@@ -26,20 +27,22 @@ const pendingRequisitionStatuses = ['Pending Approval']
 export const recruitmentViews = ['Dashboard', 'Work Orders & SLA', 'Requisitions', 'Open Positions', 'Job Descriptions', 'Job Postings', 'ATS Screening', 'Hiring Pipeline', 'Talent Pool', 'Applications', 'Interviews', 'Offers & Pre-Onboarding'] as const
 export type RecruitmentPageView = (typeof recruitmentViews)[number]
 
-type RecruitmentWorkspace = 'overview' | 'requests' | 'jobs' | 'candidates' | 'pipeline' | 'selection'
+type RecruitmentWorkspace = 'overview' | 'orders' | 'requests' | 'jobs' | 'candidates' | 'pipeline' | 'selection'
 
 const recruitmentWorkspace = (view: RecruitmentPageView): RecruitmentWorkspace => {
   if (view === 'Dashboard') return 'overview'
+  if (view === 'Work Orders & SLA') return 'orders'
   if (['Requisitions', 'Open Positions'].includes(view)) return 'requests'
   if (['Job Descriptions', 'Job Postings'].includes(view)) return 'jobs'
   if (['Talent Pool', 'Applications', 'ATS Screening'].includes(view)) return 'candidates'
-  if (view === 'Hiring Pipeline' || view === 'Work Orders & SLA') return 'pipeline'
+  if (view === 'Hiring Pipeline') return 'pipeline'
   if (['Interviews', 'Offers & Pre-Onboarding'].includes(view)) return 'selection'
   return 'selection'
 }
 
 const workspaceCopy: Record<RecruitmentWorkspace, { group: string; title: string; description: string }> = {
   overview: { group: 'Talent acquisition', title: 'Overview', description: 'Hiring demand, approvals, open roles and joining targets in one concise view.' },
+  orders: { group: 'Client hiring intake', title: 'Work Orders', description: 'Register the client order once, then create role-wise Hiring Requests. SLA is applied automatically from the published pipeline.' },
   requests: { group: 'Plan hiring', title: 'Hiring Requests', description: 'Raise a request and follow the same demand through approval into an approved vacancy.' },
   jobs: { group: 'Attract talent', title: 'Jobs', description: 'Prepare the governed role profile, then publish its approved job and public application link.' },
   candidates: { group: 'Find talent', title: 'Candidates', description: 'Manage reusable talent profiles, job applications and ATS screening from one workspace.' },
@@ -63,6 +66,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
   const [dashboard, setDashboard] = useState<RecruitmentDashboard>(dashboard0)
   const [requisitionWorkflowEnabled, setRequisitionWorkflowEnabled] = useState(true)
   const [positions, setPositions] = useState<RecruitmentOpenPosition[]>([])
+  const [manageVacanciesOpen, setManageVacanciesOpen] = useState(false)
   const [detail, setDetail] = useState<RecruitmentPositionDetail | null>(null)
   const [positionStatus, setPositionStatus] = useState('Open')
   const [positionStatusOptions, setPositionStatusOptions] = useState<string[]>(fallbackPositionStatuses)
@@ -189,7 +193,8 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
   const openPositionsTable = <DataTable rows={positions} exportFileName="recruitment-open-positions" actions={row => <Space size={6} wrap>
     <Button size="small" onClick={() => void openDetail(row)}>View</Button>
     {canDelete && <Button size="small" onClick={() => navigate(`/recruitment/requisitions?clientId=${row.clientId}&requisitionId=${row.requisitionId}`)}>Edit request</Button>}
-    <Button size="small" type="primary" onClick={() => navigate(`/recruitment/job-descriptions?requisitionId=${row.requisitionId}&clientId=${row.clientId}`)}>{jobDescriptionActionLabel(row.jobDescriptionStatus)}</Button>
+    <Button size="small" type="primary" onClick={() => navigate(`/recruitment/requisitions?requisitionId=${row.requisitionId}&clientId=${row.clientId}`)}>{jobDescriptionActionLabel(row.jobDescriptionStatus)}</Button>
+    {row.jobDescriptionStatus === 'Approved' && row.remainingPositions > 0 && <Button size="small" icon={<RocketOutlined />} onClick={() => navigate(`/recruitment/job-postings?clientId=${row.clientId}&positionId=${row.id}`)}>Publish job</Button>}
     {canDelete && <Popconfirm title="Delete this open position?" description="Delete linked applications, postings and hiring cases first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteRecruitmentOpenPosition(row.id); if (response.ok) { if (detail?.position.id === row.id) setDetail(null); await load() } }}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}
   </Space>} columns={[
     { key: 'positionCode', label: 'Position', render: row => <><b>{row.positionCode}</b><small>{row.rfrNumber}</small></>, value: row => row.positionCode },
@@ -217,11 +222,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
     { key: 'status', label: 'Status' }
   ]} />
 
-  const pipelineView = view === 'Work Orders & SLA'
-    ? 'orders'
-    : routeQuery.get('flow') === 'candidates' || routeQuery.get('flow') === 'orders'
-      ? routeQuery.get('flow') as 'candidates' | 'orders'
-      : 'hiring'
+  const pipelineView = routeQuery.get('flow') === 'candidates' ? 'candidates' : 'hiring'
   const requestTab = !requisitionWorkflowEnabled
     ? 'requests'
     : view === 'Open Positions'
@@ -231,6 +232,8 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
       : 'requests'
   const workspaceContent = workspace === 'overview'
     ? <RecruitmentDashboardOverview clients={clients} selectedClientId={selectedClientId} canChooseClient={canChooseClient} onClientChange={changeClientScope} onNavigate={path => navigate(scopedPath(path))} />
+    : workspace === 'orders'
+      ? <RecruitmentWorkOrderWorkspace key={`work-orders-${selectedClientId}`} initialClientId={selectedClientId} clientScopeManaged displayMode="pipeline" />
     : workspace === 'requests'
         ? <Tabs
             className="recruitment-workspace-tabs recruitment-primary-tabs"
@@ -238,7 +241,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
             destroyInactiveTabPane
             onChange={key => navigate(scopedPath(key === 'approved' ? '/recruitment/open-positions' : key === 'pending' ? '/recruitment/requisitions?status=pending' : '/recruitment/requisitions'))}
             items={[
-              { key: 'requests', label: 'Requests', children: <RecruitmentRequisitionManager key={`${routeQuery.get('new') === '1' ? 'new-request' : 'request-list'}-${selectedClientId}-${routeQuery.get('requisitionId') || 0}-${routeQuery.get('workOrderId') || 0}-${routeQuery.get('workOrderLineId') || 0}`} embedded initialClientId={selectedClientId} clientScopeManaged initialOpen={routeQuery.get('new') === '1'} initialRequisitionId={Number(routeQuery.get('requisitionId') || 0)} initialWorkOrderId={Number(routeQuery.get('workOrderId') || 0)} initialWorkOrderLineId={Number(routeQuery.get('workOrderLineId') || 0)} statusScope={requisitionWorkflowEnabled ? draftRequisitionStatuses : []} showStatusFilter={!requisitionWorkflowEnabled} pipelinePositions={positions} onOpenPipeline={position => navigate(`/recruitment/hiring-pipeline?clientId=${position.clientId}&positionId=${position.id}&flow=hiring`)} onOpenRequestPipeline={row => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&flow=hiring${row.openPositionId ? `&positionId=${row.openPositionId}` : ''}`)} onChanged={() => void load()} onPrepareJobDescription={row => navigate(`/recruitment/job-descriptions?clientId=${row.clientId}&requisitionId=${row.id}`)} /> },
+              { key: 'requests', label: 'Requests', children: <RecruitmentRequisitionManager key={`${routeQuery.get('new') === '1' ? 'new-request' : 'request-list'}-${selectedClientId}-${routeQuery.get('requisitionId') || 0}-${routeQuery.get('workOrderId') || 0}-${routeQuery.get('workOrderLineId') || 0}`} embedded initialClientId={selectedClientId} clientScopeManaged initialOpen={routeQuery.get('new') === '1'} initialRequisitionId={Number(routeQuery.get('requisitionId') || 0)} initialWorkOrderId={Number(routeQuery.get('workOrderId') || 0)} initialWorkOrderLineId={Number(routeQuery.get('workOrderLineId') || 0)} statusScope={requisitionWorkflowEnabled ? draftRequisitionStatuses : []} showStatusFilter={!requisitionWorkflowEnabled} pipelinePositions={positions} onOpenPipeline={position => navigate(`/recruitment/hiring-pipeline?clientId=${position.clientId}&positionId=${position.id}&flow=hiring`)} onOpenRequestPipeline={row => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&flow=hiring${row.openPositionId ? `&positionId=${row.openPositionId}` : ''}`)} onChanged={() => void load()} onPrepareJobDescription={row => navigate(`/recruitment/requisitions?clientId=${row.clientId}&requisitionId=${row.id}`)} /> },
               ...(requisitionWorkflowEnabled ? [
                 { key: 'pending', label: `Pending for approval (${dashboard.pendingApproval})`, children: <RecruitmentRequisitionManager key={`pending-requests-${selectedClientId}`} embedded initialClientId={selectedClientId} clientScopeManaged statusScope={pendingRequisitionStatuses} showStatusFilter={false} pipelinePositions={positions} onOpenPipeline={position => navigate(`/recruitment/hiring-pipeline?clientId=${position.clientId}&positionId=${position.id}&flow=hiring`)} onOpenRequestPipeline={row => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&flow=hiring${row.openPositionId ? `&positionId=${row.openPositionId}` : ''}`)} onChanged={() => void load()} /> },
                 { key: 'approved', label: `Approved (${positions.length})`, children: openPositionsTable },
@@ -248,12 +251,12 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
         : workspace === 'jobs'
           ? <Tabs
               className="recruitment-workspace-tabs recruitment-primary-tabs"
-              activeKey={view === 'Job Postings' ? 'publishing' : 'profiles'}
+              activeKey={routeQuery.get('tool') === 'forms' ? 'forms' : 'jobs'}
               destroyInactiveTabPane
-              onChange={key => confirmWorkspaceNavigation(() => navigate(scopedPath(key === 'publishing' ? '/recruitment/job-postings' : '/recruitment/job-descriptions')))}
+              onChange={key => navigate(scopedPath(key === 'forms' ? '/recruitment/job-postings?tool=forms' : '/recruitment/job-postings'))}
               items={[
-                { key: 'profiles', label: 'Role profiles & ATS', children: <RecruitmentJobDescriptionManager key={`jd-${selectedClientId}-${routeQuery.get('requisitionId') || 0}`} initialClientId={selectedClientId} clientScopeManaged initialRequisitionId={Number(routeQuery.get('requisitionId') || 0)} onNavigationStateChange={setWorkspacePending} /> },
-                { key: 'publishing', label: 'Publishing & public links', children: <RecruitmentJobPostingManager key={`posting-${selectedClientId}-${routeQuery.get('positionId') || 0}`} initialClientId={selectedClientId} clientScopeManaged initialPositionId={Number(routeQuery.get('positionId') || 0)} /> },
+                { key: 'jobs', label: <span><RocketOutlined /> Jobs & publishing</span>, children: <RecruitmentJobPostingManager key={`posting-${selectedClientId}-${routeQuery.get('positionId') || 0}`} initialClientId={selectedClientId} clientScopeManaged initialPositionId={Number(routeQuery.get('positionId') || 0)} onManageCandidateForms={() => navigate(scopedPath('/recruitment/job-postings?tool=forms'))} /> },
+                { key: 'forms', label: <span><FormOutlined /> Candidate forms</span>, children: <RecruitmentFormBuilder key={`candidate-forms-${selectedClientId}`} initialClientId={selectedClientId} clientScopeManaged /> },
               ]}
             />
           : workspace === 'candidates'
@@ -292,6 +295,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
       </div>
       <div className="recruitment-header-actions">
         {canChooseClient && <Select data-testid="recruitment-client-scope" aria-label="Recruitment client scope" allowClear showSearch optionFilterProp="label" value={selectedClientId || undefined} placeholder="All accessible clients" options={clients.map(row => ({ value: row.id, label: `${row.code} · ${row.name}` }))} onChange={changeClientScope} />}
+        {workspace === 'requests' && canDelete && !requisitionWorkflowEnabled && <Button onClick={() => setManageVacanciesOpen(true)}>Manage vacancies</Button>}
         {workspace === 'requests' && <Button data-testid="recruitment-new-hiring-request" type="primary" icon={<PlusOutlined />} onClick={() => navigate(scopedPath('/recruitment/requisitions?new=1'))}>New hiring request</Button>}
       </div>
     </header>}
@@ -300,6 +304,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
         {workspaceContent}
       </div>
     </div>
+    <Drawer title="Manage vacancies" open={canDelete && manageVacanciesOpen} width="min(1400px, 96vw)" onClose={() => setManageVacanciesOpen(false)} destroyOnClose>{openPositionsTable}</Drawer>
     <Drawer className="recruitment-detail-drawer" open={!!detail} width="min(1120px, 96vw)" onClose={() => setDetail(null)} destroyOnClose title={detail?.position?.positionCode ? `${detail.position.positionCode} - ${detail.position.positionTitle}` : 'Open position'}>
       {detail?.position && <section className="recruitment-position-detail">
         <div className="position-summary-panel">

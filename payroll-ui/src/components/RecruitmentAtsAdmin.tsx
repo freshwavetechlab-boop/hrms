@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Card, Checkbox, Col, Form, Input, InputNumber, List, Popconfirm, Progress, Row, Select, Space, Switch, Tabs, Tag, Tooltip, Typography } from 'antd'
-import { ApiOutlined, CheckCircleOutlined, DeleteOutlined, EditOutlined, PlusOutlined, QuestionCircleOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, DeleteOutlined, EditOutlined, PlusOutlined, QuestionCircleOutlined } from '@ant-design/icons'
 import DataTable from './DataTable'
 import RecruitmentMasterSelect from './RecruitmentMasterSelect'
 import SearchSelect, { selectOptions } from './SearchSelect'
-import { deleteAtsProfile, deleteRecruitmentAiScoringSettings, deleteRecruitmentSkill, getAtsCriterionCatalog, getAtsProfiles, getRecruitmentAiScoringSettings, getRecruitmentSkills, saveAtsProfile, saveRecruitmentAiScoringSettings, saveRecruitmentSkill, testRecruitmentAiScoringSettings } from '../services/recruitmentTalentService'
-import type { Client, Drop, RecruitmentAiScoringSettings, RecruitmentAtsScoringCriterion, RecruitmentAtsScoringProfile, RecruitmentSkill } from '../types/payroll'
+import { deleteAtsProfile, deleteRecruitmentSkill, getAtsCriterionCatalog, getAtsProfiles, getRecruitmentSkills, saveAtsProfile, saveRecruitmentSkill } from '../services/recruitmentTalentService'
+import type { Client, Drop, RecruitmentAtsScoringCriterion, RecruitmentAtsScoringProfile, RecruitmentSkill } from '../types/payroll'
 import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
 
 const criterionDefinitions: RecruitmentAtsScoringCriterion[] = [
@@ -27,8 +27,6 @@ const profile0: RecruitmentAtsScoringProfile = {
   versionNumber: 1, isDefault: true, isActive: true, criteria: criterionDefinitions.map(row => ({ ...row }))
 }
 const skill0: RecruitmentSkill = { id: 0, clientId: 0, clientName: '', skillCode: '', skillName: '', category: '', aliases: [], isActive: true }
-const ai0 = (clientId = 0): RecruitmentAiScoringSettings => ({ id: 0, clientId, clientName: '', enableAiScoring: false, providerCode: 'Gemini', modelName: 'gemini-3.5-flash', aiBlendWeight: 20, minimumConfidence: .65, maximumResumeCharacters: 40000, requestTimeoutSeconds: 45, hasApiKey: false, apiKey: '', healthStatus: 'NotTested', lastHealthMessage: '', lastTestedAt: null, isActive: true })
-
 const editProfile = (profile: RecruitmentAtsScoringProfile, catalog: RecruitmentAtsScoringCriterion[] = criterionDefinitions): RecruitmentAtsScoringProfile => {
   const existing = profile.criteria ?? []
   return {
@@ -55,10 +53,6 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
   const [criterionCatalog, setCriterionCatalog] = useState<RecruitmentAtsScoringCriterion[]>(criterionDefinitions)
   const [profile, setProfile] = useState<RecruitmentAtsScoringProfile | null>(null)
   const [skill, setSkill] = useState<RecruitmentSkill | null>(null)
-  const [aiClientId, setAiClientId] = useState(0)
-  const [aiSettings, setAiSettings] = useState<RecruitmentAiScoringSettings>(ai0())
-  const [aiSaving, setAiSaving] = useState(false)
-  const [aiTesting, setAiTesting] = useState(false)
   const [saving, setSaving] = useState(false)
   const load = async () => {
     const [profileRows, skillRows, catalogRows] = await Promise.all([getAtsProfiles(), getRecruitmentSkills(), getAtsCriterionCatalog()])
@@ -67,12 +61,6 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
     if (catalogRows.length) setCriterionCatalog(catalogRows)
   }
   useEffect(() => { void load() }, [])
-  useEffect(() => {
-    if (aiClientId || !clients.length) return
-    const firstClientId = initialClientId || clients[0].id
-    setAiClientId(firstClientId)
-    void getRecruitmentAiScoringSettings(firstClientId).then(setAiSettings)
-  }, [clients, aiClientId])
   const scopedClients = initialClientId ? clients.filter(row => row.id === initialClientId) : clients
   const visibleProfiles = initialClientId ? profiles.filter(row => row.clientId === initialClientId) : profiles
   const visibleSkills = initialClientId ? skills.filter(row => row.clientId === initialClientId) : skills
@@ -107,31 +95,6 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
     if (!skill) return
     const response = await saveRecruitmentSkill(skill)
     if (response.ok) { setSkill(null); await load() }
-  }
-  const selectAiClient = async (clientId: number) => {
-    setAiClientId(clientId)
-    setAiSettings(await getRecruitmentAiScoringSettings(clientId))
-  }
-  const saveAi = async () => {
-    if (!aiSettings.clientId) return
-    setAiSaving(true)
-    try {
-      const response = await saveRecruitmentAiScoringSettings(aiSettings)
-      if (response.ok && response.data) setAiSettings({ ...response.data, apiKey: '' })
-    } finally { setAiSaving(false) }
-  }
-  const testAi = async () => {
-    if (!aiSettings.clientId) return
-    setAiTesting(true)
-    try {
-      const response = await testRecruitmentAiScoringSettings(aiSettings.clientId)
-      if (response.ok && response.data) setAiSettings({ ...response.data, apiKey: '' })
-    } finally { setAiTesting(false) }
-  }
-  const removeAi = async () => {
-    if (!aiSettings.clientId) return
-    const response = await deleteRecruitmentAiScoringSettings(aiSettings.clientId)
-    if (response.ok) setAiSettings(ai0(aiSettings.clientId))
   }
   const removeProfile = async (id: number) => {
     const response = await deleteAtsProfile(id)
@@ -175,29 +138,6 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
               { key: 'category', label: 'Category' }, { key: 'aliases', label: 'Aliases', render: row => row.aliases?.join(', ') || '-' },
               { key: 'isActive', label: 'Status', render: row => <Tag color={row.isActive ? 'green' : 'default'}>{row.isActive ? 'Active' : 'Inactive'}</Tag> }
             ]} />
-          </Card>
-      },
-      {
-        key: 'ai', label: 'AI scoring setup', children:
-          <Card size="small" title={<Space><ApiOutlined />Optional FrevoPilot analysis</Space>} extra={<Tag color={aiSettings.healthStatus === 'Healthy' ? 'green' : aiSettings.healthStatus === 'Unhealthy' ? 'red' : 'default'}>{aiSettings.healthStatus || 'Not tested'}</Tag>}>
-            <Alert type="info" showIcon icon={<SafetyCertificateOutlined />} message="Bounded, encrypted and optional" description="Local semantic vector scoring works without an API key. When enabled, FrevoPilot validates only job-relevant evidence and can contribute at most 30% of the final score. Provider failure never removes the local ATS result." style={{ marginBottom: 16 }} />
-            <Form component="div" layout="vertical">
-              <Row gutter={16}>
-                <Col xs={24} md={8}><Form.Item label="Client" required><SearchSelect value={aiClientId} onChange={value => void selectAiClient(Number(value))} options={clientOptions} /></Form.Item></Col>
-                <Col xs={24} md={8}><Form.Item label="Provider"><Input value="FrevoPilot AI" disabled /></Form.Item></Col>
-                <Col xs={24} md={8}><Form.Item label="Model"><Input data-testid="ai-scoring-model" value={aiSettings.modelName} onChange={event => setAiSettings({ ...aiSettings, modelName: event.target.value })} /></Form.Item></Col>
-                <Col xs={24} md={12}><Form.Item label="API key" extra={aiSettings.hasApiKey ? 'An encrypted key is already saved. Leave blank to keep it.' : 'Saved with ASP.NET Data Protection; the key is never returned to the browser.'}><Input.Password data-testid="ai-scoring-api-key" autoComplete="new-password" value={aiSettings.apiKey || ''} placeholder={aiSettings.hasApiKey ? 'Configured securely' : 'Paste AI provider key'} onChange={event => setAiSettings({ ...aiSettings, apiKey: event.target.value })} /></Form.Item></Col>
-                <Col xs={24} md={4}><Form.Item label="AI contribution"><InputNumber style={{ width: '100%' }} min={0} max={30} precision={0} addonAfter="%" value={aiSettings.aiBlendWeight} onChange={value => setAiSettings({ ...aiSettings, aiBlendWeight: Number(value ?? 0) })} /></Form.Item></Col>
-                <Col xs={24} md={4}><Form.Item label="Min confidence"><InputNumber style={{ width: '100%' }} min={0} max={1} step={.05} precision={2} value={aiSettings.minimumConfidence} onChange={value => setAiSettings({ ...aiSettings, minimumConfidence: Number(value ?? 0) })} /></Form.Item></Col>
-                <Col xs={24} md={4}><Form.Item label="Timeout"><InputNumber style={{ width: '100%' }} min={10} max={120} addonAfter="sec" value={aiSettings.requestTimeoutSeconds} onChange={value => setAiSettings({ ...aiSettings, requestTimeoutSeconds: Number(value ?? 45) })} /></Form.Item></Col>
-                <Col xs={24}><Space direction="vertical">
-                  <Switch data-testid="enable-ai-scoring" checked={aiSettings.enableAiScoring} checkedChildren="AI scoring enabled" unCheckedChildren="AI scoring disabled" onChange={enableAiScoring => setAiSettings({ ...aiSettings, enableAiScoring })} />
-                  <Typography.Text type="secondary">Each ATS profile must also opt in. This client switch is the master kill switch.</Typography.Text>
-                </Space></Col>
-              </Row>
-              {aiSettings.lastHealthMessage && <Alert style={{ marginTop: 16 }} type={aiSettings.healthStatus === 'Healthy' ? 'success' : 'warning'} showIcon message={aiSettings.lastHealthMessage} />}
-              <Space style={{ marginTop: 16 }}><Button type="primary" loading={aiSaving} disabled={!aiSettings.clientId || (aiSettings.enableAiScoring && !aiSettings.hasApiKey && !aiSettings.apiKey?.trim())} onClick={() => void saveAi()}>Save AI setup</Button><Button loading={aiTesting} disabled={!aiSettings.hasApiKey || Boolean(aiSettings.apiKey?.trim())} onClick={() => void testAi()}>Test saved connection</Button>{aiSettings.id > 0 && <Popconfirm title="Remove AI scoring setup?" description="The encrypted API key and client AI settings will be deleted. Local semantic scoring remains available." okText="Remove" okButtonProps={{ danger: true }} onConfirm={() => void removeAi()}><Button danger icon={<DeleteOutlined />}>Remove setup</Button></Popconfirm>}</Space>
-            </Form>
           </Card>
       }
     ]} />

@@ -1,0 +1,107 @@
+                                                             Annexure I
+
+                     Job Description: Senior Data Scientist
+
+Position             Senior Data Scientist
+Number of Positions
+CTC                  4 positions
+Location
+Educational          Upto 20lakh per annum
+
+Qualification, Work  Tech Centre. Bengaluru
+Experience & Skills
+                     o [,. Tech / B.E. from a Tier-L Institution (IITs, IISc, IIITs,
+Requirements
+                         BITS, NITs or similar institutions), preferably in Computer
+Job Profile               Science, IT, Electronics Engineering, Electrical Engineering,
+
+                           Mathematics or any other related field.
+
+                     r Minimum 2* years of hands-on experience in machine
+
+                          Iearning, deep learning, or computer vision roles.
+
+                     o StronB expertise in deep learning frameworks such as
+
+                           PyTorch, TensorFlow, and Keras.
+
+                     o In-depth knowledge of CNNs, Transformers, Siamese
+
+                           networks, contrastive learning, and embedding space analysis.
+
+                     o Proficient in Python and experienced with largescale data
+
+                          processing tools like Spark, Dask, or Hadoop.
+
+                     o Prior experience working with biometric, or image datasets
+
+                          (face, iris, fingerprint) is desirable.
+
+                     o Strong understanding of data cleaning, clustering (e.g.,
+
+                          DBSCAN, K-Means), anomaly detection, and unsupervised
+
+                           Iearning.
+
+                     . Knowledge of privacy-preserving techniques such as
+                         federated learning, differential privacy & homomorphic
+
+                          encryption is a plus.
+
+                     o Design and develop state-of-the-art deep learning models
+
+                          for biometic recognition (facial, fingerprint, iris) and fraud
+                          detection using convolutional neural networks (CNNs),
+
+                           transformers, and hybrid architectures.
+
+                     o Lead the design of end-to-end AI pipelines: data ingestion,
+
+                          pre-processing, model training, evaluation, and deployment in
+                           production environments.
+
+                     o Conduct thorough error analysis A/B testing, and
+
+                          performance evaluations to identify weaknesses and improve
+                           recognition accuracy and system efficiency.
+
+                     o Architect scalable data pipelines for image and biometric
+
+                         signal cleaning, feature extraction, clustering, and
+
+                           deduplication at the national scale.
+
+                     . Collaborate with domain experts, biometric vendors, and
+                         legaVpolicy teams to ensure technological solutions are
+
+                          interpretable, robust, and policy compliant.
+
+                     o Monitor system drift, adversarial threats, and fraud patterns in
+
+                          biometric usage across the Aadhaar ecosystem.
+
+                     . Publish internal technical reports and participate in peer-
+
+                           reviewed research where appropriate.
+
+                     o Mentor and guide junior data scientists and ML engineers in
+
+                           best practices.
+What We Offer  | . Unique opportunity to work on the largest biometric identity
+
+                      system in the world.
+
+                e Access to UIDAI's unparalleled scale of identity data and
+
+                       secure research environments.
+
+                . Competitive compensation and benefits tailored for top-tier AI
+
+                      talent in the pr-rblic sector.
+
+                o I mission-driven organization with direct impact on national-
+
+                      scale governance. securitv. and inclusion.
+
+               a
+

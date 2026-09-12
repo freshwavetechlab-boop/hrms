@@ -98,6 +98,7 @@ builder.Services.AddSingleton<ResumeParsingService>();
 builder.Services.AddSingleton<RecruitmentRequestDocumentParsingService>();
 builder.Services.AddSingleton<LocalEmbedder>();
 builder.Services.AddSingleton<RecruitmentSemanticScoringService>();
+builder.Services.AddSingleton<RecruitmentDocumentRagService>();
 builder.Services.AddSingleton<RecruitmentAiScoringService>();
 builder.Services.AddSingleton<TemplatePdfService>();
 builder.Services.AddSingleton<RecruitmentTalentRepository>();
@@ -1068,7 +1069,9 @@ app.MapPost("/api/recruitment/requisitions/parse-source", async (RecruitmentRequ
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
     if (request.File is null) return Results.BadRequest(new { error = "Select a PDF, DOCX or text hiring document." });
-    return Results.Ok(await parser.ParseAsync(request.File, context.RequestAborted));
+    var user = CurrentUser(context);
+    var clientId = user.ClientId ?? request.ClientId;
+    return Results.Ok(await parser.ParseAsync(request.File, clientId, context.RequestAborted));
 })
 .DisableAntiforgery()
 .WithMetadata(new RequestSizeLimitAttribute(12L * 1024 * 1024))
@@ -1891,6 +1894,11 @@ app.MapGet("/api/public/recruitment/jobs/{slug}", async (RecruitmentFormReposito
 {
     var row = await repository.GetPublicJobAsync(slug);
     return row is null ? Results.NotFound(new { error = "This vacancy is unavailable or closed." }) : Results.Ok(row);
+});
+app.MapPost("/api/public/recruitment/jobs/{slug}/verification", async (RecruitmentFormRepository repository, string slug, RequestPublicApplicationVerification request, HttpContext context) =>
+{
+    var (row, error) = await repository.RequestPublicVerificationAsync(slug, request, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 app.MapPost("/api/public/recruitment/jobs/{slug}/sessions", async (RecruitmentFormRepository repository, string slug, StartPublicApplicationRequest request, HttpContext context) =>
 {
@@ -2735,6 +2743,39 @@ app.MapDelete("/api/recruitment-admin/ai-scoring/{clientId:int}", async (Recruit
 {
     if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var (ok, error) = await service.DeleteAsync(clientId, CurrentUser(context));
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+});
+
+app.MapGet("/api/integrations/ai", async (RecruitmentAiScoringService service, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await service.GetGlobalPoolAsync(CurrentUser(context))) : Results.StatusCode(403));
+app.MapPost("/api/integrations/ai", async (RecruitmentAiScoringService service, SaveRecruitmentAiScoringSettings request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await service.SaveGlobalAsync(request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/integrations/ai/{id:long}/test", async (RecruitmentAiScoringService service, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await service.TestGlobalModelAsync(id, CurrentUser(context), context.RequestAborted);
+    return row is null || !string.IsNullOrWhiteSpace(error) ? Results.BadRequest(new { error, row }) : Results.Ok(row);
+});
+app.MapPost("/api/integrations/ai/{id:long}/activate", async (RecruitmentAiScoringService service, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await service.ActivateGlobalModelAsync(id, CurrentUser(context));
+    return ok ? Results.Ok(await service.GetGlobalPoolAsync(CurrentUser(context))) : Results.BadRequest(new { error });
+});
+app.MapPut("/api/integrations/ai/auto-switch", async (RecruitmentAiScoringService service, SaveRecruitmentAiRuntimeSettings request, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (pool, error) = await service.SaveGlobalAutoSwitchAsync(request.AutoSwitchEnabled, CurrentUser(context));
+    return pool is null ? Results.BadRequest(new { error }) : Results.Ok(pool);
+});
+app.MapDelete("/api/integrations/ai/{id:long}", async (RecruitmentAiScoringService service, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (ok, error) = await service.DeleteGlobalModelAsync(id, CurrentUser(context));
     return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
 

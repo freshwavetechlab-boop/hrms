@@ -11,7 +11,7 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
     private const int MaxInputBytes = 10 * 1024 * 1024;
     private const int MaxExtractedBytes = 20 * 1024 * 1024;
     private const int MaxExtractedCharacters = 2_000_000;
-    private const int MaxBuiltInPdfBytes = 512 * 1024;
+    private const int MaxBuiltInPdfBytes = 2 * 1024 * 1024;
     private static readonly Regex EmailPattern = new(@"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex PhonePattern = new(@"(?<!\d)(?:\+?91[\s\-]?)?[6-9]\d{9}(?!\d)", RegexOptions.Compiled);
     private static readonly Regex NameLabelPattern = new(@"(?im)^\s*(?:candidate\s+)?(?:full\s+)?name\s*[:\-]\s*(?<value>[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){1,4})\s*$", RegexOptions.Compiled);
@@ -298,7 +298,7 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
                     await process.WaitForExitAsync(timeout.Token);
                     var output = await outputTask;
                     _ = await errorTask;
-                    if (process.ExitCode == 0)
+                    if (process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output))
                         return (true, output.Length <= MaxExtractedCharacters ? output : output[..MaxExtractedCharacters]);
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
