@@ -365,7 +365,7 @@ function DemandActions({ card, clientId, compact = false, onChanged }: { card: R
     : `/recruitment/requisitions?new=1&${params}`
   const jdPath = card.requisitionId ? `/recruitment/requisitions?clientId=${scopedClientId}&requisitionId=${card.requisitionId}` : ''
   const postingPath = card.positionId ? `/recruitment/job-postings?clientId=${scopedClientId}&positionId=${card.positionId}` : ''
-  const resumePath = card.positionId ? `/recruitment/ats-screening?upload=single&clientId=${scopedClientId}&positionId=${card.positionId}` : ''
+  const resumePath = card.positionId ? `/recruitment/applications?upload=single&clientId=${scopedClientId}&positionId=${card.positionId}` : ''
   const selectedMove = moveOptions.find(row => row.outcomeCode === moveOutcome)
   const activeJourney = Boolean(card.hiringCaseId && card.status === 'Active')
   const canAutoStart = Boolean(card.hasWorkOrder && !card.hiringCaseId && card.requisitionId && card.pipelineVersionId && !card.needsPipelineSelection)

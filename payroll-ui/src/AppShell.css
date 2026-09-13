@@ -955,7 +955,7 @@ body.portal-shell-mounted .ant-select-dropdown {
 .recruitment-scopebar,
 .communication-toolbar {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 14px;
   margin: 0 0 16px;
@@ -966,14 +966,35 @@ body.portal-shell-mounted .ant-select-dropdown {
   box-shadow: 0 4px 16px rgba(25, 47, 76, .03);
 }
 
+.recruitment-scopebar-meta {
+  display: flex;
+  align-items: flex-end;
+  gap: 32px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.recruitment-scope-cell {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.recruitment-scope-workspace {
+  padding-left: 18px;
+  border-left: 1px solid rgba(148, 163, 184, .35);
+}
+
 .dashboard-scopebar > div,
-.recruitment-scopebar > div {
+.recruitment-scopebar > div,
+.recruitment-scopebar-meta > div {
   display: grid;
   gap: 2px;
 }
 
 .dashboard-scopebar > div > span,
-.recruitment-scopebar > div > span {
+.recruitment-scopebar > div > span,
+.recruitment-scope-cell > span {
   color: #7d899b;
   font-size: 10px;
   font-weight: 750;
@@ -982,7 +1003,8 @@ body.portal-shell-mounted .ant-select-dropdown {
 }
 
 .dashboard-scopebar > div > strong,
-.recruitment-scopebar > div > strong {
+.recruitment-scopebar > div > strong,
+.recruitment-scope-cell > strong {
   color: #344054;
   font-size: 13px;
 }

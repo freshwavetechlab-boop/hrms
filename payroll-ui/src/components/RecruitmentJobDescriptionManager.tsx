@@ -317,7 +317,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
       clientId: String(clientId), positionId: String(selectedRequisition.openPositionId),
       requisitionId: String(requisitionId),
     })
-    navigate(`/recruitment/ats-screening?${query}`)
+    navigate(`/recruitment/applications?${query}`)
   }
 
   function openSourceDocument() {

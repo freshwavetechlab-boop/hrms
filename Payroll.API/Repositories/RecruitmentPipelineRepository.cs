@@ -678,8 +678,8 @@ VALUES (@ClientId,@PositionId,@JobDescriptionVersionId,@ApplicationFormVersionId
             var updated = await db.ExecuteAsync(@"UPDATE recruitment_job_postings SET JobDescriptionVersionId=@JobDescriptionVersionId,
 ApplicationFormVersionId=@ApplicationFormVersionId,PublicTitle=@PublicTitle,OpensAtUtc=@OpensAtUtc,ClosesAtUtc=@ClosesAtUtc,
 MaximumApplications=@MaximumApplications,SearchEngineVisible=@SearchEngineVisible,UpdatedAtUtc=UTC_TIMESTAMP()
-WHERE Id=@Id AND ClientId=@ClientId AND PositionId=@PositionId AND Status='Draft'", new { Id = id, source.ClientId, request.PositionId, request.JobDescriptionVersionId, request.ApplicationFormVersionId, PublicTitle = string.IsNullOrWhiteSpace(request.PublicTitle) ? source.PositionTitle : request.PublicTitle.Trim(), request.OpensAtUtc, request.ClosesAtUtc, request.MaximumApplications, request.SearchEngineVisible });
-            if (updated == 0) return (null, "Only a draft job posting can be edited.");
+WHERE Id=@Id AND ClientId=@ClientId AND PositionId=@PositionId AND Status IN ('Draft','Closed')", new { Id = id, source.ClientId, request.PositionId, request.JobDescriptionVersionId, request.ApplicationFormVersionId, PublicTitle = string.IsNullOrWhiteSpace(request.PublicTitle) ? source.PositionTitle : request.PublicTitle.Trim(), request.OpensAtUtc, request.ClosesAtUtc, request.MaximumApplications, request.SearchEngineVisible });
+            if (updated == 0) return (null, "Only a draft or archived job posting can be prepared for publishing.");
         }
         return (await GetJobPostingAsync(db, id, user.ClientId), "");
     }

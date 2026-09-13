@@ -70,11 +70,10 @@ const recruitmentNavigation: Array<{
       { view: 'Hiring Pipeline', label: 'Pipeline', icon: 'pipeline' },
       { view: 'Requisitions', label: 'Hiring Requests', icon: 'request' },
       { view: 'Job Postings', label: 'Jobs', icon: 'job' },
-      { view: 'ATS Screening', label: 'ATS & resume intake', icon: 'resume' },
       {
         key: 'candidates', label: 'Candidates', icon: 'candidate', children: [
           { view: 'Applications', label: 'Applications', icon: 'application' },
-          { view: 'Talent Pool', label: 'Talent profiles', icon: 'user' },
+          { view: 'Talent Pool', label: 'Global Talent Pool', icon: 'user' },
         ],
       },
       { view: 'Interviews', label: 'Selection & Onboarding', icon: 'onboarding' },
@@ -85,6 +84,7 @@ const recruitmentNavigationLeaves = recruitmentNavigation.flatMap(group => group
 const recruitmentNavigationView = (view: RecruitmentPageView): RecruitmentPageView => {
   if (view === 'Open Positions') return 'Requisitions'
   if (view === 'Offers & Pre-Onboarding') return 'Interviews'
+  if (view === 'ATS Screening') return 'Applications'
   return view
 }
 const recruitmentNavigationLabel = (view: RecruitmentPageView) => {
@@ -98,8 +98,7 @@ const recruitmentDescriptions: Record<string, string> = {
   Jobs: 'Prepare governed role profiles and publish approved openings through the right channels.',
   Candidates: 'Manage reusable talent profiles, applications and explainable ATS screening.',
   Applications: 'Review applications received through published job links and position-linked manual resume uploads.',
-  'Talent profiles': 'Maintain reusable candidate profiles, resumes, experience and consent details.',
-  'ATS & resume intake': 'Upload resumes and review explainable ATS screening results.',
+  'Global Talent Pool': 'Maintain reusable candidate profiles, resumes, experience and consent details.',
   'Work Orders': 'Register each client hiring order once, then create role-wise Hiring Requests from it.',
   Pipeline: 'Follow client demand and candidates through each stage of the hiring journey.',
   'Selection & Onboarding': 'Coordinate interviews, offers, documents and joining readiness in one workspace.',
@@ -487,7 +486,7 @@ export default function SettingsApp() {
         if (!legacySection || legacySection === 'ats') {
           legacyParams.set('manage', '1')
           legacyParams.delete('tool')
-          navigate(`/recruitment/ats-screening?${legacyParams.toString()}`, { replace: true })
+          navigate(`/recruitment/applications?${legacyParams.toString()}`, { replace: true })
           return
         }
         if (legacySection === 'forms') {

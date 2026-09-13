@@ -1685,6 +1685,12 @@ recruitmentOrchestration.MapGet("/job-postings/{id:long}", async (RecruitmentPip
     if (row is not null) row.PublicPortalBaseUrl = publicPortalUrls.ResolveBaseUrl(row.PublicPortalBaseUrl);
     return row is null ? Results.NotFound() : Results.Ok(row);
 });
+recruitmentOrchestration.MapPost("/job-postings/{id:long}/application-sessions", async (RecruitmentFormRepository repository, long id, StartPublicApplicationRequest request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var (row, error) = await repository.StartInternalApplicationSessionAsync(id, request, CurrentUser(context), context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
 recruitmentOrchestration.MapPost("/job-postings", async (RecruitmentPipelineRepository repository, PublicPortalUrlResolver publicPortalUrls, SaveRecruitmentJobPosting request, HttpContext context) =>
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);

@@ -30,31 +30,47 @@
 
 .recruitment-form-builder .form-builder-layout {
   min-width: 0;
+  height: calc(100dvh - 210px);
+  min-height: 520px;
   grid-template-columns: minmax(220px, 270px) minmax(0, 1fr);
   gap: 16px;
+  align-items: stretch;
+  overflow: hidden;
 }
 
 .recruitment-form-builder .form-builder-side-rail {
-  position: sticky;
-  top: 12px;
+  position: relative;
+  top: auto;
   z-index: 2;
-  display: grid;
+  display: flex;
+  height: 100%;
   min-width: 0;
-  max-height: calc(100vh - 158px);
-  align-content: start;
+  min-height: 0;
+  max-height: none;
+  flex-direction: column;
   gap: 12px;
-  overflow-y: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
 }
 
 .recruitment-form-builder .form-builder-library {
+  display: flex;
+  height: auto;
   position: static;
-  max-height: 270px;
+  max-height: min(250px, 36%);
   min-width: 0;
-  overflow-y: auto;
+  min-height: 0;
+  flex: 0 1 auto;
+  flex-direction: column;
+  overflow: hidden;
   border-color: #e3e7f0;
   box-shadow: 0 5px 18px rgba(31, 42, 68, .045);
+}
+
+.recruitment-form-builder .form-builder-library > .ant-card-body {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .recruitment-form-builder .form-builder-library .ant-list-item {
@@ -119,7 +135,12 @@
 }
 
 .recruitment-form-builder .form-builder-palette-card {
+  display: flex;
+  height: auto;
   min-width: 0;
+  min-height: 0;
+  flex: 1 1 0;
+  flex-direction: column;
   overflow: hidden;
   border-color: #ddd7fb;
   box-shadow: 0 8px 22px rgba(84, 61, 190, .07);
@@ -133,6 +154,10 @@
 }
 
 .recruitment-form-builder .form-builder-palette-card > .ant-card-body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
   padding: 10px;
 }
 
@@ -143,6 +168,31 @@
   line-height: 1.45;
 }
 
+.recruitment-form-builder .form-builder-readonly-action {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.recruitment-form-builder .form-builder-readonly-action .ant-alert,
+.recruitment-form-builder .form-builder-readonly-action .ant-alert-content,
+.recruitment-form-builder .form-builder-readonly-action .ant-alert-message,
+.recruitment-form-builder .form-builder-readonly-action .ant-alert-description {
+  min-width: 0;
+}
+
+.recruitment-form-builder .form-builder-readonly-action .ant-alert-description {
+  overflow-wrap: normal;
+  word-break: normal;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.recruitment-form-builder .form-builder-readonly-action .ant-btn {
+  width: 100%;
+}
+
 .recruitment-form-builder .form-builder-palette-card .ant-btn-block {
   min-width: 0;
   margin-bottom: 8px;
@@ -150,12 +200,18 @@
   text-overflow: ellipsis;
 }
 
+.recruitment-form-builder .form-builder-section-picker {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
 .recruitment-form-builder .field-palette {
   display: grid;
   grid-template-columns: 1fr;
   gap: 5px;
-  max-height: min(390px, calc(100vh - 520px));
-  min-height: 118px;
+  max-height: none;
+  min-height: 84px;
+  flex: 1;
   overflow-y: auto;
   padding-right: 3px;
   scrollbar-gutter: stable;
@@ -197,14 +253,23 @@
 
 .recruitment-form-builder .form-builder-start-card {
   display: grid;
-  min-height: 430px;
+  height: 100%;
+  min-height: 0;
   place-items: center;
   border-color: #e4e7ef;
 }
 
 .recruitment-form-builder .form-builder-canvas {
   min-width: 0;
+  min-height: 0;
+  height: 100%;
   gap: 14px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 6px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scroll-behavior: smooth;
 }
 
 .recruitment-form-builder .form-builder-settings-card {
@@ -246,17 +311,53 @@
 }
 
 .recruitment-form-builder .form-builder-surface-head {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  margin: -5px -5px 0;
+  padding: 9px 8px;
+  border-bottom: 1px solid #e5e8f1;
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 5px 14px rgba(31, 42, 68, .045);
+  backdrop-filter: blur(8px);
 }
 
 .recruitment-form-builder .form-builder-surface-head > div {
   display: grid;
   min-width: 0;
   gap: 2px;
+}
+
+.recruitment-form-builder .form-builder-surface-head > .ant-space {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  margin-left: auto;
+}
+
+.recruitment-form-builder .form-builder-surface-head > .ant-space .ant-btn {
+  white-space: nowrap;
+}
+
+.recruitment-form-builder .form-builder-surface-head > .form-builder-canvas-actions {
+  display: grid !important;
+  min-width: max-content;
+  grid-auto-flow: column !important;
+  grid-auto-columns: max-content;
+  align-items: center;
+  justify-content: end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.recruitment-form-builder .form-builder-canvas-actions .ant-btn {
+  width: auto !important;
+  min-width: max-content;
+  white-space: nowrap;
 }
 
 .recruitment-form-builder .form-builder-surface-head span {
@@ -436,6 +537,28 @@
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding-right: 28px;
+}
+
+.recruitment-form-builder .form-builder-field-remove {
+  position: absolute;
+  right: 5px;
+  bottom: 4px;
+  z-index: 2;
+  display: inline-grid;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .9);
+  opacity: .72;
+}
+
+.recruitment-form-builder .form-builder-field:hover .form-builder-field-remove,
+.recruitment-form-builder .form-builder-field:focus-within .form-builder-field-remove {
+  opacity: 1;
 }
 
 .recruitment-form-builder .form-builder-empty {
@@ -461,6 +584,27 @@
 .recruitment-form-builder .form-builder-section-dropzone .anticon {
   color: #7659e6;
   font-size: 18px;
+}
+
+.recruitment-form-builder .form-builder-append-dropzone {
+  display: flex;
+  min-height: 36px;
+  margin-top: 9px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px dashed #d3d9e5;
+  border-radius: 8px;
+  color: #7c8699;
+  background: #fafbfe;
+  font-size: 11px;
+  transition: border-color .15s ease, color .15s ease, background-color .15s ease;
+}
+
+.recruitment-form-builder .form-builder-section.drop-target .form-builder-append-dropzone {
+  border-color: #7659e6;
+  color: #5638d7;
+  background: #f5f2ff;
 }
 
 .recruitment-form-field-drawer .ant-drawer-header {
@@ -517,19 +661,36 @@
 
 @media (max-width: 900px) {
   .recruitment-form-builder .form-builder-layout {
+    height: auto;
+    min-height: 0;
     grid-template-columns: 1fr;
+    overflow: visible;
   }
 
   .recruitment-form-builder .form-builder-side-rail {
+    display: grid;
     position: static;
+    height: auto;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: auto;
     max-height: none;
     overflow: visible;
   }
 
   .recruitment-form-builder .form-builder-library,
+  .recruitment-form-builder .form-builder-palette-card {
+    height: auto;
+    max-height: none;
+  }
+
   .recruitment-form-builder .field-palette {
     max-height: 310px;
+  }
+
+  .recruitment-form-builder .form-builder-canvas {
+    height: auto;
+    overflow: visible;
+    padding-right: 0;
   }
 }
 
@@ -545,6 +706,13 @@
   .recruitment-form-builder .form-builder-top-actions .ant-select,
   .recruitment-form-builder .form-builder-top-actions .ant-btn {
     width: 100%;
+  }
+
+  .recruitment-form-builder .form-builder-surface-head > .form-builder-canvas-actions {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    justify-content: start;
   }
 
   .recruitment-form-builder .form-builder-side-rail {

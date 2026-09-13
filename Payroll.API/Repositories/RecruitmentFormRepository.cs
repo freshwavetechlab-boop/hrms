@@ -842,6 +842,24 @@ ON DUPLICATE KEY UPDATE TextValue=VALUES(TextValue),UpdatedAtUtc=UTC_TIMESTAMP(6
         }
     }
 
+    public async Task<(PublicApplicationSession? Session, string Error)> StartInternalApplicationSessionAsync(long postingId, StartPublicApplicationRequest request, AuthUser user, string ipAddress, string userAgent)
+    {
+        request ??= new StartPublicApplicationRequest();
+        request.ConsentAccepted = true;
+        await using var db = Db();
+        await db.OpenAsync();
+        var posting = await db.QueryFirstOrDefaultAsync<PostingSessionRow>(@"SELECT posting.Id PostingId,posting.ClientId,posting.PositionId,posting.ApplicationFormVersionId,position.PositionTitle
+FROM recruitment_job_postings posting JOIN recruitment_open_positions position ON position.Id=posting.PositionId
+WHERE posting.Id=@PostingId AND posting.Status='Published' AND posting.ApplicationFormVersionId IS NOT NULL
+AND (@ClientId IS NULL OR posting.ClientId=@ClientId)
+AND EXISTS (SELECT 1 FROM form_versions version WHERE version.Id=posting.ApplicationFormVersionId AND version.Status IN ('Published','Retired'))",
+            new { PostingId = postingId, ClientId = user.ClientId });
+        if (posting is null) return (null, "Select a published job with a configured candidate application form.");
+        if ((await pipelines.GetCandidateProofValidationErrorAsync(posting.PostingId)).Length > 0)
+            return (null, "Complete the configured certification proof fields before adding a candidate.");
+        return await StartPublicSessionWithoutOtpAsync(db, posting, request, ipAddress, userAgent);
+    }
+
     private async Task<(PublicApplicationSession? Session, string Error)> StartPublicSessionWithoutOtpAsync(MySqlConnection db, PostingSessionRow posting, StartPublicApplicationRequest request, string ipAddress, string userAgent)
     {
         var email = (request.Email ?? "").Trim();

@@ -202,6 +202,9 @@ export const requestPublicApplicationVerification = (slug: string, email: string
 export const createPublicApplicationSession = (slug: string, request: StartPublicApplicationRequest) =>
   postJson(`${publicBase}/jobs/${encodeURIComponent(slug)}/sessions`, request, null as PublicApplicationSession | null, { toast: false, loader: false })
 
+export const createInternalApplicationSession = (postingId: number, request: StartPublicApplicationRequest) =>
+  postJson(`${internalBase}/job-postings/${postingId}/application-sessions`, request, null as PublicApplicationSession | null, { toast: 'error-only' })
+
 export const savePublicApplicationValues = (token: string, values: PublicFormValue[]) =>
   putJson(`${publicBase}/sessions/${encodeURIComponent(token)}/values`, { values }, null as unknown)
 

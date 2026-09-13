@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
 import dayjs from 'dayjs'
 import {
   CloseCircleOutlined, CopyOutlined, DeleteOutlined, DollarOutlined, EditOutlined, EnvironmentOutlined, FieldTimeOutlined, FormOutlined, GlobalOutlined,
@@ -9,7 +10,6 @@ import {
   List, Modal, Popconfirm, Row, Segmented, Select, Space, Spin, Tag, Tooltip, Typography,
 } from 'antd'
 import { useAuthSession } from './AuthGate'
-import RecruitmentResumeIntake from './RecruitmentResumeIntake'
 import { useToast, type ToastType } from './ToastProvider'
 import { getClients } from '../services/payrollService'
 import {
@@ -40,6 +40,7 @@ type ActionFeedback = { type: ToastType; message: string; description?: string }
 type ConfirmationAction = 'publish' | 'close'
 
 export default function RecruitmentJobPostingManager({ initialClientId = 0, clientScopeManaged = false, initialPositionId = 0, onPublished, onManageCandidateForms }: Props) {
+  const navigate = useNavigate()
   const session = useAuthSession()
   const notify = useToast()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
@@ -60,7 +61,6 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
   const [confirmationAction, setConfirmationAction] = useState<ConfirmationAction | null>(null)
   const [confirmationError, setConfirmationError] = useState('')
   const [actionFeedback, setActionFeedback] = useState<ActionFeedback | null>(null)
-  const [candidatePosting, setCandidatePosting] = useState<RecruitmentJobPosting | null>(null)
   const [quickPublishTarget, setQuickPublishTarget] = useState<RecruitmentJobPosting | null>(null)
   const [quickPublishingId, setQuickPublishingId] = useState(0)
 
@@ -256,6 +256,16 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
       maximumApplications: null, searchEngineVisible: true,
     })
     if (!saved.ok || !saved.data) {
+      const current = target.id ? await getRecruitmentJobPosting(target.id) : null
+      if (current?.status === 'Published') {
+        setConfirmationAction(null)
+        setQuickPublishTarget(null)
+        setActionBusy(false)
+        setActionFeedback({ type: 'success', message: 'Job is already live.', description: normalizePublicCareerUrl(current.publicUrl, current.publicSlug) })
+        notify('Job is already published.', 'success')
+        await loadClient(clientId, editor ? current.id : 0)
+        return
+      }
       const error = saved.error || 'The server could not prepare this job posting.'
       setActionBusy(false)
       setConfirmationError(error)
@@ -388,7 +398,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
                 <div className="job-card-footer"><Typography.Text type="secondary">Updated {row.updatedAtUtc ? dayjs(row.updatedAtUtc).format('DD MMM YYYY') : '—'}</Typography.Text><Space wrap>
                   <Button icon={<EditOutlined />} onClick={event => { event.stopPropagation(); void choosePosting(row) }}>{row.status === 'Draft' ? 'Edit' : 'View'}</Button>
                   {row.status === 'Draft' && <Button type="primary" icon={<RocketOutlined />} loading={quickPublishingId === row.id} onClick={event => { event.stopPropagation(); void publishFromCard(row) }}>Publish</Button>}
-                  {row.status === 'Published' && <Button type="primary" icon={<UserAddOutlined />} onClick={event => { event.stopPropagation(); setCandidatePosting(row) }}>Add candidate</Button>}
+                  {row.status === 'Published' && <Button type="primary" icon={<UserAddOutlined />} onClick={event => { event.stopPropagation(); navigate(`/recruitment/applications?clientId=${row.clientId}&add=1&jobPostingId=${row.id}`) }}>Add candidate</Button>}
                 </Space></div>
               </Card></List.Item>
             }} />
@@ -457,19 +467,6 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
         {confirmationError && <Alert data-testid="job-posting-confirmation-error" showIcon type="error" message="The action could not be completed" description={confirmationError} />}
       </Space>
     </Modal>
-    <RecruitmentResumeIntake
-      open={!!candidatePosting}
-      onClose={() => setCandidatePosting(null)}
-      initialMode="single"
-      initialClientId={candidatePosting?.clientId || 0}
-      initialPositionId={candidatePosting?.positionId || 0}
-      initialJobPostingId={candidatePosting?.id || null}
-      title="Add candidate"
-      description="Upload one resume. Frevo will extract the profile, prevent duplicates, create the application, score it and place it in this job's pipeline."
-      allowBulk={false}
-      submitLabel="Add candidate & screen"
-      onCompleted={async () => { if (candidatePosting) await loadClient(clientId, 0) }}
-    />
   </section>
 }
 

@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
+import { useEffect, useRef, useState, type DragEvent as ReactDragEvent, type WheelEvent as ReactWheelEvent } from 'react'
 import dayjs from 'dayjs'
 import {
   AppstoreAddOutlined, ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, EditOutlined, FileAddOutlined, HolderOutlined, PlusOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Card, DatePicker, Drawer, Empty, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Switch, Tag, Tooltip, message } from 'antd'
+import { Alert, Button, Card, DatePicker, Drawer, Dropdown, Empty, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Switch, Tag, Tooltip, message } from 'antd'
 import { useAuthSession } from './AuthGate'
 import { getClients } from '../services/payrollService'
 import {
@@ -94,6 +94,8 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
   const [dragging, setDragging] = useState<BuilderDragPayload | null>(null)
   const [dropSectionId, setDropSectionId] = useState<number | null>(null)
   const selectionRequestRef = useRef(0)
+  const canvasScrollRef = useRef<HTMLDivElement | null>(null)
+  const paletteScrollRef = useRef<HTMLDivElement | null>(null)
 
   const load = async (scope: number) => {
     if (!scope) return
@@ -162,6 +164,35 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     setVersion(copy); setSelectedSectionId(copy.sections[0]?.id ?? null); setSelectedFieldId(null)
   }
 
+  const cancelRevision = () => {
+    if (!definition?.id || version?.id !== 0 || !definition.currentPublishedVersionId) return
+    const definitionId = definition.id
+    const publishedVersionId = definition.currentPublishedVersionId
+    Modal.confirm({
+      title: 'Cancel this new version?',
+      content: 'Unsaved field and section changes will be discarded. The published version will remain unchanged.',
+      okText: 'Discard changes',
+      okButtonProps: { danger: true },
+      cancelText: 'Keep editing',
+      onOk: async () => {
+        setSelectingFormId(definitionId)
+        try {
+          const row = await getRecruitmentForm(definitionId)
+          const published = row?.versions.find(item => item.id === publishedVersionId)
+          if (!row || !published) return message.error('Published version could not be restored.')
+          const normalized = normalizeVersionValidationRules(published)
+          setDefinition(row)
+          setVersion(normalized)
+          setSelectedSectionId(normalized.sections[0]?.id ?? null)
+          setSelectedFieldId(null)
+          setFieldDrawer(false)
+        } finally {
+          setSelectingFormId(null)
+        }
+      },
+    })
+  }
+
   const patchDefinition = (patch: Partial<DynamicFormDefinition>) => setDefinition(current => current ? { ...current, ...patch } : current)
   const chooseModule = (moduleCode: string) => patchDefinition(moduleCode === 'EMPLOYEE'
     ? { moduleCode, purposeCode: 'EMPLOYEE_INFOTYPE_0002', entityType: 'EMPLOYEE' }
@@ -208,7 +239,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     patchVersion({ sections: rows.map((row, rowIndex) => ({ ...row, displayOrder: rowIndex + 1 })) })
   }
 
-  const addField = (fieldTypeCode: DynamicFormFieldTypeCode, targetSectionId = selectedSection?.id, targetIndex?: number) => {
+  const addField = (fieldTypeCode: DynamicFormFieldTypeCode, targetSectionId = selectedSection?.id, targetIndex?: number, openProperties = true) => {
     if (!targetSectionId || readOnly) return message.info('Select an editable section first.')
     const targetSection = version?.sections.find(row => row.id === targetSectionId)
     if (!targetSection) return message.info('Select an editable section first.')
@@ -223,7 +254,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     const fields = [...targetSection.fields]
     fields.splice(targetIndex == null ? fields.length : Math.max(0, Math.min(targetIndex, fields.length)), 0, field)
     patchSection(targetSection.id, { fields: fields.map((row, index) => ({ ...row, sectionId: targetSection.id, displayOrder: index + 1 })) })
-    setSelectedSectionId(targetSection.id); setSelectedFieldId(id); setFieldDrawer(true)
+    setSelectedSectionId(targetSection.id); setSelectedFieldId(id); setFieldDrawer(openProperties)
   }
 
   const addStandardResumeField = () => {
@@ -279,10 +310,20 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
   }
 
   const removeField = (fieldId: number) => {
-    if (!selectedSection || readOnly) return
-    patchSection(selectedSection.id, { fields: selectedSection.fields.filter(row => row.id !== fieldId).map((row, index) => ({ ...row, displayOrder: index + 1 })) })
+    if (!version || readOnly) return
+    const owner = version.sections.find(section => section.fields.some(field => field.id === fieldId))
+    if (!owner) return
+    patchSection(owner.id, { fields: owner.fields.filter(row => row.id !== fieldId).map((row, index) => ({ ...row, displayOrder: index + 1 })) })
     setSelectedFieldId(null); setFieldDrawer(false)
   }
+
+  const confirmRemoveField = (field: DynamicFormField) => Modal.confirm({
+    title: `Remove ${field.label}?`,
+    content: 'This removes the field from the current draft form.',
+    okText: 'Remove field',
+    okButtonProps: { danger: true },
+    onOk: () => removeField(field.id),
+  })
 
   const moveField = (fieldId: number, delta: number) => {
     if (!selectedSection || readOnly) return
@@ -342,11 +383,28 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     setDropSectionId(null)
   }
 
+  const autoScrollCanvas = (event: ReactDragEvent) => {
+    const canvas = canvasScrollRef.current
+    if (!canvas || !dragging) return
+    const bounds = canvas.getBoundingClientRect()
+    const edgeSize = Math.min(96, Math.max(56, bounds.height * .14))
+    if (event.clientY < bounds.top + edgeSize) canvas.scrollBy({ top: -22 })
+    else if (event.clientY > bounds.bottom - edgeSize) canvas.scrollBy({ top: 22 })
+  }
+
+  const scrollWithMouse = (event: ReactWheelEvent<HTMLDivElement>) => {
+    const region = event.currentTarget
+    if (region.scrollHeight <= region.clientHeight || event.deltaY === 0) return
+    region.scrollTop += event.deltaY
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
   const dropOnSection = (event: ReactDragEvent, targetSectionId: number, targetSectionIndex: number) => {
     event.preventDefault()
     event.stopPropagation()
     const payload = dragPayload(event)
-    if (payload?.kind === 'palette') addField(payload.fieldTypeCode, targetSectionId)
+    if (payload?.kind === 'palette') addField(payload.fieldTypeCode, targetSectionId, undefined, false)
     if (payload?.kind === 'field') moveFieldTo(payload.fieldId, payload.sourceSectionId, targetSectionId)
     if (payload?.kind === 'section') moveSectionTo(payload.sectionId, targetSectionIndex)
     finishDrag()
@@ -356,7 +414,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     event.preventDefault()
     event.stopPropagation()
     const payload = dragPayload(event)
-    if (payload?.kind === 'palette') addField(payload.fieldTypeCode, targetSectionId, targetFieldIndex)
+    if (payload?.kind === 'palette') addField(payload.fieldTypeCode, targetSectionId, targetFieldIndex, false)
     if (payload?.kind === 'field') moveFieldTo(payload.fieldId, payload.sourceSectionId, targetSectionId, targetFieldIndex)
     if (payload?.kind === 'section') moveSectionTo(payload.sectionId, targetSectionIndex)
     finishDrag()
@@ -436,6 +494,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
   }
 
   const clientOptions = clients.map(row => ({ value: row.id, label: row.name }))
+  const isUnsavedRevision = Boolean(definition?.id && definition.currentPublishedVersionId && version?.id === 0)
   return <section className="orchestration-shell recruitment-form-builder">
     <div className="orchestration-toolbar form-builder-page-toolbar">
       <Space wrap className="form-builder-top-actions"><span className="recruitment-command-label">Client</span><Select data-testid="form-builder-client" disabled={clientScopeManaged} value={clientId || undefined} placeholder="Select client" options={clientOptions} onChange={setClientId} showSearch optionFilterProp="label" /><Button data-testid="form-builder-new" icon={<PlusOutlined />} type="primary" onClick={startNew}>New form</Button></Space>
@@ -444,17 +503,26 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
       <aside className="form-builder-side-rail" aria-label="Form designer tools">
         <Card size="small" className="form-builder-library" title={`Forms (${forms.length})`}><List dataSource={forms} locale={{ emptyText: 'No forms for this client.' }} renderItem={row => <List.Item className={selectingFormId === row.id || definition?.id === row.id ? 'active' : ''} aria-busy={selectingFormId === row.id} onClick={() => void chooseForm(row.id)} actions={canDelete ? [<Popconfirm key="delete" title="Delete this form?" description="Published or draft versions are removed only when no posting, pipeline stage or submission uses them." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeDefinition(row)}><Button aria-label={`Delete ${row.formName}`} size="small" danger type="text" icon={<DeleteOutlined />} onClick={event => event.stopPropagation()} /></Popconfirm>] : []}><List.Item.Meta title={<span title={row.formName}>{row.formName}</span>} description={<div className="form-builder-list-meta"><span title={row.formCode}>{row.formCode}</span><Tag color={row.currentPublishedVersionId ? 'green' : 'orange'}>{row.currentPublishedVersionId ? 'Published' : 'Draft only'}</Tag></div>} /></List.Item>} /></Card>
         {definition && version && <Card size="small" className="form-builder-palette-card" title={<Space size={7}><AppstoreAddOutlined /><span>Field palette</span></Space>} extra={<Tooltip title="Add a new section"><Button aria-label="Add section" size="small" icon={<PlusOutlined />} disabled={readOnly} onClick={addSection}>Section</Button></Tooltip>}>
-          <p className="form-builder-palette-help">Click a field or drag it into any section.</p>
+          {!readOnly && <p className="form-builder-palette-help">Choose a section, then click a field. You can also drag it to an exact position.</p>}
+          <Select
+            className="form-builder-section-picker"
+            aria-label="Section receiving new fields"
+            disabled={readOnly || !version.sections.length}
+            value={selectedSectionId ?? undefined}
+            placeholder="Add fields to section"
+            onChange={value => { setSelectedSectionId(value); setSelectedFieldId(null) }}
+            options={version.sections.map(section => ({ value: section.id, label: section.sectionLabel }))}
+          />
           {definition.moduleCode === 'RECRUITMENT' && <Button block data-testid="form-builder-add-standard-resume" type="dashed" disabled={readOnly || !selectedSection} onClick={addStandardResumeField} icon={<FileAddOutlined />}>Standard Resume / CV</Button>}
-          <div className="field-palette">{fieldTypes.map(item => <Button data-testid={`form-builder-add-${item.value.toLowerCase()}`} disabled={readOnly || !selectedSection} draggable={!readOnly && Boolean(version.sections.length)} key={item.value} onClick={() => addField(item.value)} onDragStart={event => startDrag(event, { kind: 'palette', fieldTypeCode: item.value })} onDragEnd={finishDrag} icon={item.value === 'UPLOAD' ? <FileAddOutlined /> : <HolderOutlined />}>{item.label}</Button>)}</div>
+          <div ref={paletteScrollRef} className="field-palette" onWheel={scrollWithMouse}>{fieldTypes.map(item => <Button data-testid={`form-builder-add-${item.value.toLowerCase()}`} disabled={readOnly || !selectedSection} draggable={!readOnly && Boolean(version.sections.length)} key={item.value} onClick={() => addField(item.value)} onDragStart={event => startDrag(event, { kind: 'palette', fieldTypeCode: item.value })} onDragEnd={finishDrag} icon={item.value === 'UPLOAD' ? <FileAddOutlined /> : <HolderOutlined />}>{item.label}</Button>)}</div>
         </Card>}
       </aside>
-      {selectingFormId !== null ? <Card data-testid="form-builder-selection-loading" className="form-builder-start-card" loading aria-busy="true" aria-label="Loading selected form" /> : !definition || !version ? <Card className="form-builder-start-card"><Empty description="Select a form from the left or create a new one." /></Card> : <div className="form-builder-canvas">
-        <Card size="small" className="form-builder-settings-card"><div className="orchestration-toolbar form-builder-version-toolbar"><Space wrap><Tag color={version.status === 'Published' ? 'green' : version.status === 'Retired' ? 'default' : 'gold'}>v{version.versionNumber} · {version.status}</Tag><Switch disabled={readOnly} checked={definition.status === 'Active'} onChange={active => patchDefinition({ status: active ? 'Active' : 'Inactive' })} checkedChildren="Active" unCheckedChildren="Inactive" /></Space><Space wrap>{readOnly && <Button onClick={beginRevision}>Create next version</Button>}<Button data-testid="form-builder-save" loading={saving} disabled={readOnly} onClick={() => void save()}>Save draft</Button><Button data-testid="form-builder-publish" type="primary" disabled={readOnly} onClick={publish}>Publish</Button></Space></div>
+      {selectingFormId !== null ? <Card data-testid="form-builder-selection-loading" className="form-builder-start-card" loading aria-busy="true" aria-label="Loading selected form" /> : !definition || !version ? <Card className="form-builder-start-card"><Empty description="Select a form from the left or create a new one." /></Card> : <div ref={canvasScrollRef} className="form-builder-canvas" onDragOver={autoScrollCanvas} onWheel={scrollWithMouse}>
+        <Card size="small" className="form-builder-settings-card"><div className="orchestration-toolbar form-builder-version-toolbar"><Space wrap><Tag color={version.status === 'Published' ? 'green' : version.status === 'Retired' ? 'default' : 'gold'}>v{version.versionNumber} · {version.status}</Tag><Switch disabled={readOnly} checked={definition.status === 'Active'} onChange={active => patchDefinition({ status: active ? 'Active' : 'Inactive' })} checkedChildren="Active" unCheckedChildren="Inactive" /></Space></div>
           <div className="form-builder-meta"><Form.Item label="Form name" required><Input data-testid="form-builder-name" disabled={readOnly} value={definition.formName} onChange={event => patchDefinition({ formName: event.target.value })} /></Form.Item><Form.Item label="Form code" required><Input data-testid="form-builder-code" disabled={readOnly} value={definition.formCode} onChange={event => patchDefinition({ formCode: code(event.target.value) })} /></Form.Item><Form.Item label="Use this form for" extra="Employee forms appear automatically in the matching Employee infotype after publishing."><Select data-testid="form-builder-module" disabled={readOnly} value={definition.moduleCode || 'RECRUITMENT'} onChange={chooseModule} options={[{ value: 'RECRUITMENT', label: 'Recruitment / Candidate' }, { value: 'EMPLOYEE', label: 'Employee additional fields' }]} /></Form.Item>{definition.moduleCode === 'EMPLOYEE' && <Form.Item label="Employee infotype"><Select data-testid="form-builder-employee-infotype" disabled={readOnly} value={employeeInfotype} onChange={value => patchDefinition({ purposeCode: `EMPLOYEE_INFOTYPE_${value}`, entityType: 'EMPLOYEE' })} options={[{ value: '0001', label: '0001 - Organizational Assignment' }, { value: '0002', label: '0002 - Personal Data' }, { value: '0006', label: '0006 - Addresses' }, { value: '0008', label: '0008 - Basic Pay' }, { value: '0009', label: '0009 - Bank Details' }]} /></Form.Item>}<Form.Item label="Purpose code"><Input data-testid="form-builder-purpose" disabled={readOnly} value={definition.purposeCode} onChange={event => patchDefinition({ purposeCode: code(event.target.value) })} /></Form.Item><Form.Item label="Entity type"><Input data-testid="form-builder-entity" disabled={readOnly} value={definition.entityType} onChange={event => patchDefinition({ entityType: code(event.target.value) })} /></Form.Item>{definition.moduleCode === 'RECRUITMENT' && <Form.Item label="Email OTP verification" extra="ON sends an email OTP before the form opens. OFF keeps contact matching and duplicate protection, but skips the OTP step."><Switch loading={savingVerification} data-testid="form-builder-email-otp" checked={definition.requiresEmailVerification !== false} onChange={requiresEmailVerification => void changeEmailVerification(requiresEmailVerification)} checkedChildren="Required" unCheckedChildren="Not required" /></Form.Item>}</div>
         </Card>
         <div className="form-builder-design-surface">
-          <div className="form-builder-surface-head"><div><span>Form canvas</span><small>{version.sections.length} section{version.sections.length === 1 ? '' : 's'} · {version.sections.reduce((total, section) => total + section.fields.length, 0)} fields</small></div><Button icon={<PlusOutlined />} disabled={readOnly} onClick={addSection}>Add section</Button></div>
+          <div className="form-builder-surface-head"><div><span>Form canvas</span><small>{version.sections.length} section{version.sections.length === 1 ? '' : 's'} · {version.sections.reduce((total, section) => total + section.fields.length, 0)} fields</small></div><div className="form-builder-canvas-actions">{readOnly ? <Button type="primary" icon={<EditOutlined />} onClick={beginRevision}>Create next version</Button> : <>{isUnsavedRevision && <Button danger onClick={cancelRevision}>Cancel revision</Button>}<Button data-testid="form-builder-save" loading={saving} onClick={() => void save()}>Save draft</Button><Button data-testid="form-builder-publish" type="primary" onClick={publish}>Publish</Button></>}<Button icon={<PlusOutlined />} disabled={readOnly} onClick={addSection}>Add section</Button></div></div>
           {readOnly && <Alert showIcon type="info" message="Published versions are read-only" description="Create the next version to change sections or fields without affecting existing applications." />}
         {!version.sections.length && <div className="form-builder-empty form-builder-empty-canvas"><Empty description="Add a section, then drag fields from the palette." /></div>}
         {version.sections.map((section, sectionIndex) => <Card
@@ -469,6 +537,16 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
           <div className="form-builder-section-head">
             <div className="form-builder-section-title"><Tooltip title="Drag to reorder section"><span className={`form-builder-drag-handle ${readOnly ? 'disabled' : ''}`} draggable={!readOnly} onDragStart={event => startDrag(event, { kind: 'section', sectionId: section.id })} onDragEnd={finishDrag}><HolderOutlined /></span></Tooltip><div><h4>{section.sectionLabel}</h4><p>{section.description || section.sectionCode}</p></div></div>
             <Space size={4} onClick={event => event.stopPropagation()}>
+              <Dropdown
+                disabled={readOnly}
+                trigger={['click']}
+                menu={{
+                  items: fieldTypes.map(item => ({ key: item.value, label: item.label, icon: item.value === 'UPLOAD' ? <FileAddOutlined /> : <PlusOutlined /> })),
+                  onClick: ({ key, domEvent }) => { domEvent.stopPropagation(); addField(key as DynamicFormFieldTypeCode, section.id) },
+                }}
+              >
+                <Tooltip title="Add field to this section"><Button aria-label={`Add field to ${section.sectionLabel}`} size="small" type="primary" icon={<PlusOutlined />} /></Tooltip>
+              </Dropdown>
               <Tooltip title="Move section up"><Button aria-label="Move section up" size="small" icon={<ArrowUpOutlined />} disabled={readOnly || !sectionIndex} onClick={() => moveSection(section.id, -1)} /></Tooltip>
               <Tooltip title="Move section down"><Button aria-label="Move section down" size="small" icon={<ArrowDownOutlined />} disabled={readOnly || sectionIndex === version.sections.length - 1} onClick={() => moveSection(section.id, 1)} /></Tooltip>
               <Tooltip title="Edit section"><Button aria-label="Edit section" size="small" icon={<EditOutlined />} disabled={readOnly} onClick={() => setSectionEditor({ ...section })} /></Tooltip>
@@ -482,13 +560,20 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
             className={`form-builder-field ${selectedFieldId === field.id ? 'active' : ''} ${dragging?.kind === 'field' && dragging.fieldId === field.id ? 'dragging' : ''}`}
             onDragStart={event => { event.stopPropagation(); startDrag(event, { kind: 'field', fieldId: field.id, sourceSectionId: section.id }) }}
             onDragEnd={finishDrag}
-            onDragOver={event => { if (!readOnly) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = dragging?.kind === 'palette' ? 'copy' : 'move'; setDropSectionId(section.id) } }}
+            onDragOver={event => { if (!readOnly) { event.preventDefault(); autoScrollCanvas(event); event.stopPropagation(); event.dataTransfer.dropEffect = dragging?.kind === 'palette' ? 'copy' : 'move'; setDropSectionId(section.id) } }}
             onDrop={event => dropOnField(event, section.id, sectionIndex, fieldIndex)}
             onClick={event => { event.stopPropagation(); setSelectedSectionId(section.id); setSelectedFieldId(field.id); setFieldDrawer(true) }}
           >
             <div className="form-builder-field-head"><HolderOutlined className="form-builder-field-grip" /><strong title={field.label}>{field.label}{field.isRequired ? ' *' : ''}</strong><Tag>{fieldTypes.find(item => item.value === field.fieldTypeCode)?.label}</Tag></div>
             <small title={field.helpText || field.placeholder || field.stableFieldCode}>{field.helpText || field.placeholder || field.stableFieldCode}</small>
+            {!readOnly && <Tooltip title="Remove field"><Button aria-label={`Remove ${field.label}`} className="form-builder-field-remove" size="small" type="text" danger icon={<DeleteOutlined />} onDragStart={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); confirmRemoveField(field) }} /></Tooltip>}
           </div>)}</div>}
+          {!!section.fields.length && !readOnly && <div
+            className="form-builder-append-dropzone"
+            onClick={event => { event.stopPropagation(); setSelectedSectionId(section.id) }}
+            onDragOver={event => { event.preventDefault(); event.stopPropagation(); autoScrollCanvas(event); event.dataTransfer.dropEffect = dragging?.kind === 'palette' ? 'copy' : 'move'; setDropSectionId(section.id) }}
+            onDrop={event => dropOnSection(event, section.id, sectionIndex)}
+          ><AppstoreAddOutlined /><span>Drop here to append a field</span></div>}
         </Card>)}
         </div>
       </div>}
@@ -497,7 +582,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
       Published versions are immutable. Existing application links keep their assigned version.
     </Modal>
     <Modal title="Section properties" open={!!sectionEditor} onCancel={() => setSectionEditor(null)} onOk={saveSectionEditor}>{sectionEditor && <Form layout="vertical"><Form.Item label="Section label" required><Input value={sectionEditor.sectionLabel} onChange={event => setSectionEditor({ ...sectionEditor, sectionLabel: event.target.value })} /></Form.Item><Form.Item label="Section code"><Input value={sectionEditor.sectionCode} onChange={event => setSectionEditor({ ...sectionEditor, sectionCode: code(event.target.value) })} /></Form.Item><Form.Item label="Description"><Input.TextArea value={sectionEditor.description} onChange={event => setSectionEditor({ ...sectionEditor, description: event.target.value })} /></Form.Item></Form>}</Modal>
-    <Drawer rootClassName="recruitment-form-field-drawer" width={720} title="Field properties" open={fieldDrawer && !!selectedField} onClose={() => setFieldDrawer(false)} extra={selectedField && <Space><Tooltip title="Move field up"><Button aria-label="Move field up" icon={<ArrowUpOutlined />} disabled={readOnly} onClick={() => moveField(selectedField.id, -1)} /></Tooltip><Tooltip title="Move field down"><Button aria-label="Move field down" icon={<ArrowDownOutlined />} disabled={readOnly} onClick={() => moveField(selectedField.id, 1)} /></Tooltip><Button danger icon={<DeleteOutlined />} disabled={readOnly} onClick={() => removeField(selectedField.id)}>Delete</Button></Space>}>{selectedField && <FieldProperties field={selectedField} allFields={version?.sections.flatMap(section => section.fields) ?? []} lookups={lookups} clientId={definition?.clientId ?? 0} readOnly={readOnly} patch={value => patchField(selectedField.id, value)} />}</Drawer>
+    <Drawer rootClassName="recruitment-form-field-drawer" width={720} title="Field properties" open={fieldDrawer && !!selectedField} onClose={() => setFieldDrawer(false)} extra={selectedField && <Space><Tooltip title="Move field up"><Button aria-label="Move field up" icon={<ArrowUpOutlined />} disabled={readOnly} onClick={() => moveField(selectedField.id, -1)} /></Tooltip><Tooltip title="Move field down"><Button aria-label="Move field down" icon={<ArrowDownOutlined />} disabled={readOnly} onClick={() => moveField(selectedField.id, 1)} /></Tooltip><Button danger icon={<DeleteOutlined />} disabled={readOnly} onClick={() => confirmRemoveField(selectedField)}>Delete</Button></Space>}>{selectedField && <FieldProperties field={selectedField} allFields={version?.sections.flatMap(section => section.fields) ?? []} lookups={lookups} clientId={definition?.clientId ?? 0} readOnly={readOnly} patch={value => patchField(selectedField.id, value)} />}</Drawer>
   </section>
 }
 

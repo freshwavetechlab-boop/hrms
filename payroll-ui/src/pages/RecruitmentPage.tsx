@@ -3,7 +3,6 @@ import { BranchesOutlined, DeleteOutlined, FormOutlined, PlusOutlined, RocketOut
 import { Button, Card, Drawer, Input, InputNumber, Modal, Popconfirm, Select, Space, Tabs, Tag, message } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
 import DataTable from '../components/DataTable'
-import RecruitmentAtsWorkspace from '../components/RecruitmentAtsWorkspace'
 import RecruitmentDashboardOverview from '../components/RecruitmentDashboardOverview'
 import RecruitmentFormBuilder from '../components/RecruitmentFormBuilder'
 import RecruitmentJobPostingManager from '../components/RecruitmentJobPostingManager'
@@ -260,11 +259,9 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
               ]}
             />
           : workspace === 'candidates'
-            ? view === 'Applications'
+            ? ['Applications', 'ATS Screening'].includes(view)
               ? <RecruitmentTalentWorkspace key={`applications-${selectedClientId}`} mode="applications" initialClientId={selectedClientId} />
-              : view === 'ATS Screening'
-                ? <RecruitmentAtsWorkspace key={`ats-${selectedClientId}-${routeQuery.get('positionId') || 0}`} initialClientId={selectedClientId} initialPositionId={Number(routeQuery.get('positionId') || 0)} initialJobPostingId={Number(routeQuery.get('jobPostingId') || 0) || null} clientScopeManaged initialUploadMode={routeQuery.get('upload') === 'bulk' ? 'bulk' : routeQuery.get('upload') === 'single' ? 'single' : undefined} onNavigationStateChange={setWorkspacePending} />
-                : <RecruitmentTalentWorkspace key={`talent-${selectedClientId}`} mode="candidates" initialClientId={selectedClientId} />
+              : <RecruitmentTalentWorkspace key={`talent-${selectedClientId}`} mode="candidates" initialClientId={selectedClientId} />
             : workspace === 'pipeline'
               ? <RecruitmentPipelineWorkspace
                   key={`pipeline-${selectedClientId}-${pipelineView}`}
@@ -288,10 +285,14 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
 
   return <section className="recruitment-monitor-page recruitment-experience" aria-label={copy.title}>
     {!['pipeline', 'overview'].includes(workspace) && <header className="recruitment-scopebar">
-      <div>
-        <span>Client scope</span>
-        <strong>{selectedClientName}</strong>
-        <small>{copy.group}</small>
+      <div className="recruitment-scopebar-meta">
+        <div className="recruitment-scope-cell">
+          <span>Client scope</span>
+          <strong>{selectedClientName}</strong>
+        </div>
+        <div className="recruitment-scope-cell recruitment-scope-workspace">
+          <strong>{copy.group}</strong>
+        </div>
       </div>
       <div className="recruitment-header-actions">
         {canChooseClient && <Select data-testid="recruitment-client-scope" aria-label="Recruitment client scope" allowClear showSearch optionFilterProp="label" value={selectedClientId || undefined} placeholder="All accessible clients" options={clients.map(row => ({ value: row.id, label: `${row.code} · ${row.name}` }))} onChange={changeClientScope} />}

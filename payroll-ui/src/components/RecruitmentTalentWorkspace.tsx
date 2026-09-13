@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Button, Card, Checkbox, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Tag } from 'antd'
-import { CalendarOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { Avatar, Badge, Button, Card, Checkbox, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Tag, Tooltip } from 'antd'
+import { BranchesOutlined, CalendarOutlined, DeleteOutlined, FileSearchOutlined, MailOutlined, PhoneOutlined, PlusOutlined, RobotOutlined, SearchOutlined, UploadOutlined, UserAddOutlined } from '@ant-design/icons'
 import DataTable from './DataTable'
 import EntityAttachmentPanel, { type EntityAttachmentDraft } from './EntityAttachmentPanel'
 import RecruitmentAtsScoreDetails from './RecruitmentAtsScoreDetails'
 import RecruitmentInterviewEditor from './RecruitmentInterviewEditor'
 import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
 import RecruitmentGlobalTalentPool from './RecruitmentGlobalTalentPool'
+import RecruitmentInternalCandidateForm from './RecruitmentInternalCandidateForm'
 import RecruitmentResumeIntake, { type RecruitmentResumeIntakeMode } from './RecruitmentResumeIntake'
 import SearchSelect, { selectOptions } from './SearchSelect'
 import { getEntityAttachments, openAttachmentWithTicket, uploadEntityAttachment } from '../services/attachmentService'
@@ -28,9 +29,15 @@ const education0: RecruitmentCandidateEducation = { id: 0, candidateId: 0, quali
 const certification0: RecruitmentCandidateCertification = { id: 0, candidateId: 0, certificationName: '', issuer: '', issueDate: null, expiryDate: null, credentialId: '' }
 const canApplyCandidate = (row: RecruitmentCandidate) => row.profileStatus === 'Active' && row.consentStatus !== 'Revoked' && (!row.retentionUntil || new Date(row.retentionUntil).getTime() >= Date.now())
 const canMoveApplication = (row: RecruitmentCandidateApplication) => !['Rejected', 'Withdrawn', 'Joined'].includes(row.currentStage) && !row.currentStage.startsWith('Offer')
+type ApplicationQuickFilter = 'all' | 'new' | 'needs-score' | 'scored' | 'pipeline' | 'rejected'
+const rejectedApplication = (row: RecruitmentCandidateApplication) => /reject|withdraw/i.test(`${row.currentStage} ${row.currentStatus}`)
+const newApplication = (row: RecruitmentCandidateApplication) => /new|application|intake/i.test(row.currentStage || '')
+const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join('') || 'C'
+const experienceLabel = (months: number) => months > 0 ? `${Math.floor(months / 12)}y ${months % 12}m` : 'Not specified'
 
 export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }: { mode: Mode; initialClientId?: number }) {
   const navigate = useNavigate()
+  const location = useLocation()
   const notify = useToast()
   const session = useAuthSession()
   const canDeleteRecruitmentData = Boolean(session?.user.permissions.includes('settings.manage'))
@@ -55,6 +62,23 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   const [profileDraft, setProfileDraft] = useState<{ experience: RecruitmentCandidateExperience[]; education: RecruitmentCandidateEducation[]; certifications: RecruitmentCandidateCertification[] } | null>(null)
   const [scoreOverrideDraft, setScoreOverrideDraft] = useState<{ row: RecruitmentApplicationScore; score: number; reason: string } | null>(null)
   const [resumeIntakeMode, setResumeIntakeMode] = useState<RecruitmentResumeIntakeMode | null>(null)
+  const [candidateFormOpen, setCandidateFormOpen] = useState(() => new URLSearchParams(location.search).get('add') === '1')
+  const [applicationQuickFilter, setApplicationQuickFilter] = useState<ApplicationQuickFilter>('all')
+  const [applicationSearch, setApplicationSearch] = useState('')
+  const [applicationPositionId, setApplicationPositionId] = useState(0)
+  const [applicationSource, setApplicationSource] = useState('')
+  const [applicationStage, setApplicationStage] = useState('')
+  const [applicationScoreBand, setApplicationScoreBand] = useState('')
+  const [applicationSort, setApplicationSort] = useState('recent')
+  const requestedPostingId = Number(new URLSearchParams(location.search).get('jobPostingId') || 0)
+  const closeCandidateForm = () => {
+    setCandidateFormOpen(false)
+    const params = new URLSearchParams(location.search)
+    params.delete('add')
+    params.delete('jobPostingId')
+    const query = params.toString()
+    navigate(`${location.pathname}${query ? `?${query}` : ''}`, { replace: true })
+  }
 
   const load = useCallback(async () => {
     const [candidateRows, allApplicationRows, allInterviewRows, allOfferRows] = await Promise.all([getCandidates('', '', initialClientId || undefined), getApplications(), getInterviews(), getOffers()])
@@ -141,6 +165,41 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   const currentScoreFor = (applicationId: number) => detail?.scores.find(row => row.applicationId === applicationId && row.isCurrent)
   const candidateFromDetail = detail?.candidate
   const intakeApplications = useMemo(() => applications.filter(row => row.applicationType === 'Application'), [applications])
+  const candidateById = useMemo(() => new Map(candidates.map(row => [row.id, row])), [candidates])
+  const applicationStages = useMemo(() => [...new Set(intakeApplications.map(row => row.currentStage).filter(Boolean))].sort(), [intakeApplications])
+  const visibleApplications = useMemo(() => {
+    const term = applicationSearch.trim().toLowerCase()
+    const rows = intakeApplications.filter(row => {
+      if (term && !`${row.candidateName} ${row.candidateEmail} ${row.candidatePhone} ${row.applicationCode} ${row.positionCode} ${row.positionTitle}`.toLowerCase().includes(term)) return false
+      if (applicationPositionId && row.positionId !== applicationPositionId) return false
+      if (applicationSource === 'published' && !row.jobPostingId) return false
+      if (applicationSource === 'manual' && row.jobPostingId) return false
+      if (applicationStage && row.currentStage !== applicationStage) return false
+      if (applicationScoreBand === 'needs-score' && row.atsScore != null) return false
+      if (applicationScoreBand === 'below-60' && !(row.atsScore != null && row.atsScore < 60)) return false
+      if (applicationScoreBand === '60-79' && !(row.atsScore != null && row.atsScore >= 60 && row.atsScore < 80)) return false
+      if (applicationScoreBand === '80-plus' && !(row.atsScore != null && row.atsScore >= 80)) return false
+      if (applicationQuickFilter === 'new' && !newApplication(row)) return false
+      if (applicationQuickFilter === 'needs-score' && row.atsScore != null) return false
+      if (applicationQuickFilter === 'scored' && row.atsScore == null) return false
+      if (applicationQuickFilter === 'pipeline' && (newApplication(row) || rejectedApplication(row))) return false
+      if (applicationQuickFilter === 'rejected' && !rejectedApplication(row)) return false
+      return true
+    })
+    return rows.sort((left, right) => applicationSort === 'oldest'
+      ? new Date(left.appliedAt).getTime() - new Date(right.appliedAt).getTime()
+      : applicationSort === 'score'
+        ? (right.atsScore ?? -1) - (left.atsScore ?? -1)
+        : new Date(right.appliedAt).getTime() - new Date(left.appliedAt).getTime())
+  }, [applicationPositionId, applicationQuickFilter, applicationScoreBand, applicationSearch, applicationSort, applicationSource, applicationStage, intakeApplications])
+  const applicationMetrics: Array<{ key: ApplicationQuickFilter; label: string; count: number; tone: string }> = [
+    { key: 'all', label: 'All', count: intakeApplications.length, tone: 'blue' },
+    { key: 'new', label: 'New applications', count: intakeApplications.filter(newApplication).length, tone: 'green' },
+    { key: 'needs-score', label: 'Needs ATS', count: intakeApplications.filter(row => row.atsScore == null).length, tone: 'orange' },
+    { key: 'scored', label: 'ATS scored', count: intakeApplications.filter(row => row.atsScore != null).length, tone: 'purple' },
+    { key: 'pipeline', label: 'In pipeline', count: intakeApplications.filter(row => !newApplication(row) && !rejectedApplication(row)).length, tone: 'cyan' },
+    { key: 'rejected', label: 'Rejected', count: intakeApplications.filter(rejectedApplication).length, tone: 'red' },
+  ]
   const candidateOptions = selectOptions(candidates.map(row => ({ value: row.id, label: `${row.candidateCode} - ${row.candidateName}` })), 'Select candidate', 0)
   const applicationOptions = selectOptions(applications.map(row => ({ value: row.id, label: `${row.applicationCode} - ${row.candidateName} / ${row.positionTitle}` })), 'Select application', 0)
   const positionOptions = selectOptions(positions.filter(row => !['Closed', 'Cancelled', 'Filled'].includes(row.status)).map(row => ({ value: row.id, label: `${row.positionCode} - ${row.positionTitle}` })), 'Select position', 0)
@@ -149,6 +208,38 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
     .filter(file => !checklistDraft.item.requiresVerification || file.verificationStatus === 'Verified')
     .map(file => ({ value: file.publicId, label: `${file.originalFileName} · ${file.verificationStatus}` })) : []
   const offerDocumentOptions = candidateAttachments.filter(file => file.attributeCode === 'OFFER_LETTER').map(file => ({ value: file.publicId, label: `${file.originalFileName} · v${file.versionNumber}` }))
+
+  if (String(mode) === 'applications') return <div className="talent-workspace">
+    <section className="candidate-applications-workspace" data-testid="candidate-applications-workspace">
+      <header className="candidate-applications-heading"><div><span>CANDIDATE OPERATIONS</span><h2>Candidates</h2><p>Published-link and manual applications with ATS readiness in one queue.</p></div><Space wrap><Button icon={<UserAddOutlined />} onClick={() => setCandidateFormOpen(true)}>Add candidate</Button><Button type="primary" icon={<UploadOutlined />} onClick={() => setResumeIntakeMode('bulk')}>Bulk candidate upload</Button></Space></header>
+      <div className="candidate-status-strip" role="tablist" aria-label="Application status filters">{applicationMetrics.map(metric => <button key={metric.key} type="button" role="tab" aria-selected={applicationQuickFilter === metric.key} className={applicationQuickFilter === metric.key ? 'is-active' : ''} onClick={() => setApplicationQuickFilter(metric.key)}><b className={`tone-${metric.tone}`}>{metric.count}</b><span>{metric.label}</span></button>)}</div>
+      <div className="candidate-applications-layout">
+        <div className="candidate-applications-main">
+          <div className="candidate-list-toolbar"><Input allowClear prefix={<SearchOutlined />} value={applicationSearch} onChange={event => setApplicationSearch(event.target.value)} placeholder="Search candidates by name, ID, email, phone or job" /><span>Showing <b>{visibleApplications.length}</b> candidates</span><Select value={applicationSort} onChange={setApplicationSort} options={[{ value: 'recent', label: 'Created date: Recent first' }, { value: 'oldest', label: 'Created date: Oldest first' }, { value: 'score', label: 'ATS score: Highest first' }]} /></div>
+          <div className="candidate-application-list">{visibleApplications.map(row => {
+            const candidate = candidateById.get(row.candidateId)
+            const source = row.jobPostingId ? 'Published job link' : `Manual · ${row.sourceType || 'Direct'}`
+            return <article key={row.id} className="candidate-application-card" tabIndex={0} role="button" onClick={() => void openCandidate(row.candidateId)} onKeyDown={event => { if (event.key === 'Enter') void openCandidate(row.candidateId) }}>
+              <Avatar size={46}>{initials(row.candidateName)}</Avatar>
+              <div className="candidate-application-copy"><div className="candidate-card-title"><h3>{row.candidateName}</h3><Tag>{row.applicationCode}</Tag>{row.atsScore != null && <Tag color={row.atsScore >= 60 ? 'green' : 'orange'} icon={<RobotOutlined />}>{row.atsScore.toFixed(1)} / 100</Tag>}</div><p>{row.positionTitle} <span>({row.positionCode})</span></p><div className="candidate-card-contact"><span><FileSearchOutlined /> {experienceLabel(candidate?.totalExperienceMonths || 0)}</span><span><MailOutlined /> {row.candidateEmail || 'No email'}</span><span><PhoneOutlined /> {row.candidatePhone || 'No phone'}</span><Tag color={row.jobPostingId ? 'blue' : 'default'}>{source}</Tag></div><small>Applied {new Date(row.appliedAt).toLocaleString('en-IN')} · {row.recruiterName || 'Recruiter not assigned'}</small></div>
+              <div className="candidate-card-actions" onClick={event => event.stopPropagation()}><Tag color={rejectedApplication(row) ? 'red' : 'green'}>{row.currentStage || row.currentStatus}</Tag><Space wrap>{canMoveApplication(row) && <Tooltip title={row.resumeId ? 'Calculate or refresh ATS evidence' : 'Add a resume before ATS scoring'}><Button size="small" disabled={!row.resumeId} icon={<RobotOutlined />} onClick={() => void scoreApplication(row.id).then(load)}>Run ATS</Button></Tooltip>}<Button size="small" type="primary" icon={<BranchesOutlined />} onClick={() => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&positionId=${row.positionId}&flow=candidates`)}>Pipeline</Button>{canDeleteRecruitmentData && <Popconfirm title="Delete application permanently?" description="ATS scores and safe pipeline test data are removed. Interview, offer, workflow and joined records are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteApplication(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.applicationCode}`} /></Popconfirm>}</Space></div>
+            </article>
+          })}{!visibleApplications.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No applications match these filters." />}</div>
+        </div>
+        <aside className="candidate-filter-panel"><header><strong>Filters</strong><Badge count={[applicationPositionId, applicationSource, applicationStage, applicationScoreBand].filter(Boolean).length} showZero color="#5b4ce6" /></header><label><span>Job role</span><Select allowClear showSearch optionFilterProp="label" value={applicationPositionId || undefined} onChange={value => setApplicationPositionId(Number(value || 0))} placeholder="All job roles" options={positions.map(row => ({ value: row.id, label: `${row.positionTitle} (${row.positionCode})` }))} /></label><label><span>Application source</span><Select allowClear value={applicationSource || undefined} onChange={value => setApplicationSource(value || '')} placeholder="All sources" options={[{ value: 'published', label: 'Published job link' }, { value: 'manual', label: 'Manual upload' }]} /></label><label><span>Pipeline stage</span><Select allowClear showSearch optionFilterProp="label" value={applicationStage || undefined} onChange={value => setApplicationStage(value || '')} placeholder="All stages" options={applicationStages.map(value => ({ value, label: value }))} /></label><label><span>ATS score</span><Select allowClear value={applicationScoreBand || undefined} onChange={value => setApplicationScoreBand(value || '')} placeholder="All ATS states" options={[{ value: 'needs-score', label: 'Needs scoring' }, { value: 'below-60', label: 'Below 60' }, { value: '60-79', label: '60–79' }, { value: '80-plus', label: '80 and above' }]} /></label><Button onClick={() => { setApplicationPositionId(0); setApplicationSource(''); setApplicationStage(''); setApplicationScoreBand(''); setApplicationSearch(''); setApplicationQuickFilter('all') }}>Reset filters</Button></aside>
+      </div>
+    </section>
+    <Drawer className="candidate-profile-drawer candidate-application-detail" open={!!detail} onClose={() => { setDetail(null); setCandidateAttachments([]) }} width="min(1040px, 96vw)" title={candidateFromDetail ? `${candidateFromDetail.candidateName} · Candidate profile` : 'Candidate profile'}>{candidateFromDetail && <div className="candidate-360">
+      <div className="candidate-detail-hero"><Avatar size={58}>{initials(candidateFromDetail.candidateName)}</Avatar><div><h2>{candidateFromDetail.candidateName}</h2><p>{candidateFromDetail.currentTitle || detail.applications[0]?.positionTitle || 'Candidate'}</p></div><Space wrap><Tag>{candidateFromDetail.candidateCode}</Tag><Tag color={candidateFromDetail.consentStatus === 'Granted' ? 'green' : 'orange'}>{candidateFromDetail.consentStatus} consent</Tag></Space></div>
+      <Card size="small" title="Personal details"><div className="candidate-facts">{[['Email', candidateFromDetail.email || '-'], ['Phone', candidateFromDetail.phone || '-'], ['Location', candidateFromDetail.currentLocation || '-'], ['Experience', experienceLabel(candidateFromDetail.totalExperienceMonths)], ['Qualification', candidateFromDetail.highestQualification || '-'], ['Current company', candidateFromDetail.currentCompany || '-']].map(([label, value]) => <article key={label}><span>{label}</span><b>{value}</b></article>)}</div></Card>
+      <Card size="small" title="Hiring pipeline"><div className="candidate-hiring-timeline">{detail.applications.map(row => <article key={row.id}><i /><div><strong>{row.positionTitle}</strong><span>{row.applicationCode} · {row.currentStage}</span><small>Applied {new Date(row.appliedAt).toLocaleString('en-IN')}</small></div><Space><Tag color={row.atsScore == null ? 'orange' : row.atsScore >= 60 ? 'green' : 'red'}>{row.atsScore == null ? 'ATS pending' : `ATS ${row.atsScore.toFixed(1)}`}</Tag><Button size="small" type="primary" onClick={() => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&positionId=${row.positionId}&flow=candidates`)}>Open pipeline</Button></Space></article>)}</div></Card>
+      <RecruitmentAtsScoreDetails scores={detail.scores} applications={detail.applications} />
+      <EntityAttachmentPanel entityType="CANDIDATE" entityId={candidateFromDetail.id} clientId={candidateFromDetail.clientId} moduleCode="RECRUITMENT" formCodes={['CANDIDATE_APPLICATION', 'EMPLOYEE_REFERRAL', 'PRE_ONBOARDING']} title="Candidate documents" uploadOverride={(configuration: AttachmentFieldConfiguration, draft: EntityAttachmentDraft, onProgress) => !draft.file ? Promise.resolve({ ok: false, error: 'Select a file.' }) : configuration.attributeCode === 'RESUME' ? uploadCandidateResume(candidateFromDetail.id, configuration.id, draft.file, draft, onProgress) : uploadEntityAttachment(configuration.id, 'CANDIDATE', candidateFromDetail.id, draft.file, draft, onProgress)} onChanged={() => void refreshDetail()} />
+      <Card size="small" title="Activity timeline"><div className="candidate-activity">{detail.activity.map(item => <article key={`${item.moduleCode}-${item.id}`}><i /><div><b>{item.eventTitle}</b><p>{item.eventSummary}</p><small>{new Date(item.occurredAt).toLocaleString('en-IN')} · {item.actorName || 'System'}</small></div></article>)}{!detail.activity.length && <p>No activity recorded.</p>}</div></Card>
+    </div>}</Drawer>
+    {candidateFormOpen && <RecruitmentInternalCandidateForm open clientId={initialClientId} initialPostingId={requestedPostingId} onClose={closeCandidateForm} onCompleted={load} />}
+    <RecruitmentResumeIntake open={resumeIntakeMode !== null} initialMode={resumeIntakeMode || 'single'} onClose={() => setResumeIntakeMode(null)} onCompleted={async () => { await load() }} title={resumeIntakeMode === 'bulk' ? 'Bulk candidate upload' : 'Add candidate application'} description="Choose the job and upload the candidate resume. The configured intake, secure document and ATS services create the same candidate record used by the published application link." />
+  </div>
 
   return <div className="talent-workspace">
     {mode === 'candidates' && initialClientId > 0 && candidates.some(row => row.clientId === initialClientId) && <Card title="Client candidate profiles" size="small" data-testid="client-candidate-profiles">
