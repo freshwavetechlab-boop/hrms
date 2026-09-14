@@ -610,6 +610,8 @@ VALUES (@CaseId,@StageId,'CaseStarted','Hiring case started','Work-order SLA clo
     {
         await using var db = Db();
         await db.OpenAsync();
+        var workOrderError = await EnsureAutomaticWorkOrderLinkAsync(db, requisitionId, user);
+        if (workOrderError.Length > 0) return (null, workOrderError);
         var link = await db.QueryFirstOrDefaultAsync<AutomaticCaseSource>(@"SELECT line.Id WorkOrderLineId,workOrder.ClientId,
 hiringCase.Id HiringCaseId,
 (SELECT assignment.PipelineVersionId FROM recruitment_position_pipeline_assignments assignment
@@ -650,6 +652,110 @@ WHERE definition.ClientId=@ClientId AND definition.IsActive=TRUE AND versionRow.
             WorkOrderLineId = link.WorkOrderLineId,
             PipelineVersionId = pipelineVersionId.Value
         }, user);
+    }
+
+    public async Task<(RecruitmentHiringCase? Row, string Error)> EnsureHiringCaseForJobPostingAsync(long jobPostingId, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var requisitionId = await db.ExecuteScalarAsync<long?>(@"SELECT positionRow.RequisitionId
+FROM recruitment_job_postings posting
+JOIN recruitment_open_positions positionRow ON positionRow.Id=posting.PositionId
+WHERE posting.Id=@JobPostingId AND (@ClientId IS NULL OR posting.ClientId=@ClientId)", new { JobPostingId = jobPostingId, user.ClientId });
+        return requisitionId is > 0
+            ? await EnsureHiringCaseForRequisitionAsync(requisitionId.Value, user)
+            : (null, "The job posting's hiring request was not found.");
+    }
+
+    private static async Task<string> EnsureAutomaticWorkOrderLinkAsync(MySqlConnection db, long requisitionId, AuthUser user)
+    {
+        await using var transaction = await db.BeginTransactionAsync();
+        var source = await db.QueryFirstOrDefaultAsync<AutomaticWorkOrderSource>(@"SELECT requisition.Id,requisition.RfrNumber,requisition.RequestDate,requisition.ClientId,
+requisition.PositionTitle,requisition.NumberOfOpenings,requisition.JobLocation,requisition.BusinessUnit,requisition.Department,
+requisition.OpenPositionId,requisition.WorkOrderId,requisition.WorkOrderLineNumber,client.Name ClientName
+FROM recruitment_requisitions requisition
+JOIN clients client ON client.Id=requisition.ClientId
+WHERE requisition.Id=@RequisitionId AND (@ClientId IS NULL OR requisition.ClientId=@ClientId)
+FOR UPDATE", new { RequisitionId = requisitionId, user.ClientId }, transaction);
+        if (source is null)
+        {
+            await transaction.RollbackAsync();
+            return "Hiring request was not found in your permitted client scope.";
+        }
+
+        var existingLine = await db.QueryFirstOrDefaultAsync<(long Id, long WorkOrderId, int LineNumber)>(@"SELECT Id,WorkOrderId,LineNumber
+FROM recruitment_work_order_lines WHERE RequisitionId=@RequisitionId LIMIT 1 FOR UPDATE",
+            new { RequisitionId = requisitionId }, transaction);
+        if (existingLine.Id > 0)
+        {
+            await db.ExecuteAsync(@"UPDATE recruitment_requisitions SET WorkOrderId=@WorkOrderId,WorkOrderLineNumber=@LineNumber WHERE Id=@Id",
+                new { existingLine.WorkOrderId, existingLine.LineNumber, Id = requisitionId }, transaction);
+            await transaction.CommitAsync();
+            return "";
+        }
+
+        long workOrderId;
+        if (source.WorkOrderId is > 0)
+        {
+            workOrderId = source.WorkOrderId.Value;
+            var valid = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_work_orders WHERE Id=@Id AND ClientId=@ClientId",
+                new { Id = workOrderId, source.ClientId }, transaction);
+            if (valid == 0)
+            {
+                await transaction.RollbackAsync();
+                return "The hiring request's work order is outside its client scope.";
+            }
+        }
+        else
+        {
+            var workOrderNumber = $"AUTO-WO-{source.RfrNumber}";
+            workOrderId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_work_orders
+(ClientId,WorkOrderNumber,ReceivedAtUtc,ReceivedFrom,Subject,Remarks,Status,OverallSlaMinutes,DueAtUtc,CreatedByUserId)
+VALUES (@ClientId,@WorkOrderNumber,@ReceivedAtUtc,@ReceivedFrom,'',@Remarks,'Active',0,NULL,@UserId)
+ON DUPLICATE KEY UPDATE Id=LAST_INSERT_ID(Id),ReceivedAtUtc=VALUES(ReceivedAtUtc),ReceivedFrom=VALUES(ReceivedFrom),
+Status=CASE WHEN Status IN ('Completed','Cancelled') THEN Status ELSE 'Active' END;
+SELECT LAST_INSERT_ID();", new
+            {
+                source.ClientId,
+                WorkOrderNumber = workOrderNumber,
+                ReceivedAtUtc = source.RequestDate.Date,
+                ReceivedFrom = source.ClientName,
+                Remarks = $"System-generated from direct hiring request {source.RfrNumber}.",
+                UserId = user.Id
+            }, transaction);
+        }
+
+        var lineNumber = source.WorkOrderLineNumber is > 0
+            ? source.WorkOrderLineNumber.Value
+            : await db.ExecuteScalarAsync<int>("SELECT COALESCE(MAX(LineNumber),0)+1 FROM recruitment_work_order_lines WHERE WorkOrderId=@WorkOrderId",
+                new { WorkOrderId = workOrderId }, transaction);
+        var occupied = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_work_order_lines
+WHERE WorkOrderId=@WorkOrderId AND LineNumber=@LineNumber AND RequisitionId IS NOT NULL AND RequisitionId<>@RequisitionId",
+            new { WorkOrderId = workOrderId, LineNumber = lineNumber, RequisitionId = requisitionId }, transaction);
+        if (occupied > 0)
+            lineNumber = await db.ExecuteScalarAsync<int>("SELECT COALESCE(MAX(LineNumber),0)+1 FROM recruitment_work_order_lines WHERE WorkOrderId=@WorkOrderId",
+                new { WorkOrderId = workOrderId }, transaction);
+
+        var lineId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_work_order_lines
+(WorkOrderId,LineNumber,PositionName,PayBandLevelCode,NumberOfPositions,Location,Division,RequisitionId,PositionId,Status)
+VALUES (@WorkOrderId,@LineNumber,@PositionName,'',@NumberOfPositions,@Location,@Division,@RequisitionId,@PositionId,'Open');
+SELECT LAST_INSERT_ID();", new
+        {
+            WorkOrderId = workOrderId,
+            LineNumber = lineNumber,
+            PositionName = source.PositionTitle,
+            NumberOfPositions = Math.Max(1, source.NumberOfOpenings),
+            Location = source.JobLocation ?? "",
+            Division = string.IsNullOrWhiteSpace(source.BusinessUnit) ? source.Department ?? "" : source.BusinessUnit,
+            RequisitionId = requisitionId,
+            PositionId = source.OpenPositionId
+        }, transaction);
+        await db.ExecuteAsync(@"UPDATE recruitment_requisitions SET WorkOrderId=@WorkOrderId,WorkOrderLineNumber=@LineNumber WHERE Id=@Id;
+UPDATE recruitment_position_pipeline_instances SET WorkOrderId=@WorkOrderId,WorkOrderLineId=@LineId,RequisitionId=@Id,
+PositionId=COALESCE(@PositionId,PositionId) WHERE RequisitionId=@Id;",
+            new { WorkOrderId = workOrderId, LineId = lineId, Id = requisitionId, LineNumber = lineNumber, PositionId = source.OpenPositionId }, transaction);
+        await transaction.CommitAsync();
+        return "";
     }
 
     public async Task<IReadOnlyList<RecruitmentHiringCase>> ListHiringCasesAsync(AuthUser user, int? clientId = null)
@@ -1636,6 +1742,23 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
         public long Id { get; set; }
         public string Status { get; set; } = "";
         public long? WorkflowInstanceId { get; set; }
+    }
+
+    private sealed class AutomaticWorkOrderSource
+    {
+        public long Id { get; set; }
+        public string RfrNumber { get; set; } = "";
+        public DateTime RequestDate { get; set; }
+        public int ClientId { get; set; }
+        public string ClientName { get; set; } = "";
+        public string PositionTitle { get; set; } = "";
+        public int NumberOfOpenings { get; set; }
+        public string JobLocation { get; set; } = "";
+        public string BusinessUnit { get; set; } = "";
+        public string Department { get; set; } = "";
+        public long? OpenPositionId { get; set; }
+        public long? WorkOrderId { get; set; }
+        public int? WorkOrderLineNumber { get; set; }
     }
 
     private sealed class NextStageSource

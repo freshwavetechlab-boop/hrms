@@ -1802,10 +1802,13 @@ recruitmentOrchestration.MapPost("/job-postings", async (RecruitmentPipelineRepo
     if (row is not null) row.PublicPortalBaseUrl = publicPortalUrls.ResolveBaseUrl(row.PublicPortalBaseUrl);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
-recruitmentOrchestration.MapPost("/job-postings/{id:long}/publish", async (RecruitmentPipelineRepository repository, PublicPortalUrlResolver publicPortalUrls, long id, HttpContext context) =>
+recruitmentOrchestration.MapPost("/job-postings/{id:long}/publish", async (RecruitmentPipelineRepository repository, RecruitmentCaseRepository hiringCases, PublicPortalUrlResolver publicPortalUrls, long id, HttpContext context) =>
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
-    var (row, error) = await repository.PublishJobPostingAsync(id, CurrentUser(context));
+    var user = CurrentUser(context);
+    var (_, launchError) = await hiringCases.EnsureHiringCaseForJobPostingAsync(id, user);
+    if (launchError.Length > 0) return Results.Conflict(new { error = launchError });
+    var (row, error) = await repository.PublishJobPostingAsync(id, user);
     if (row is not null) row.PublicPortalBaseUrl = publicPortalUrls.ResolveBaseUrl(row.PublicPortalBaseUrl);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });

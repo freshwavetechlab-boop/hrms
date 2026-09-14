@@ -86,6 +86,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   const scopeLoad = useRef(0)
   const versionLoad = useRef(0)
   const sourceLoad = useRef(0)
+  const embeddedAutoSaveTimer = useRef<number | null>(null)
 
   useEffect(() => {
     if (clientScopeManaged) return
@@ -174,6 +175,17 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
     window.addEventListener('beforeunload', confirmLeave)
     return () => window.removeEventListener('beforeunload', confirmLeave)
   }, [hasUnsavedChanges, saving, sourceParsing])
+  useEffect(() => {
+    if (embeddedAutoSaveTimer.current) window.clearTimeout(embeddedAutoSaveTimer.current)
+    if (!embedded || !draft || readOnly || saving || sourceParsing || !hasUnsavedChanges || validateDescription(draft)) return
+    embeddedAutoSaveTimer.current = window.setTimeout(() => {
+      embeddedAutoSaveTimer.current = null
+      void saveDraft(true)
+    }, 1200)
+    return () => {
+      if (embeddedAutoSaveTimer.current) window.clearTimeout(embeddedAutoSaveTimer.current)
+    }
+  }, [embedded, draft, readOnly, saving, sourceParsing, hasUnsavedChanges])
   const approvalWorkflows = useMemo(() => {
     const active = lookups.workflows.filter(row => row.isActive && (!row.clientId || row.clientId === clientId))
     return active.filter(row => row.resourceType === 'RecruitmentJobDescription')
@@ -381,10 +393,11 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
     try { await storeSourceDocument() } finally { setSaving(false) }
   }
 
-  async function saveDraft(): Promise<boolean> {
+  async function saveDraft(silent = false): Promise<boolean> {
     if (!draft || editingDisabled) return false
     const error = validateDescription(draft)
     if (error) {
+      if (silent) return false
       selectSection(!draft.title.trim() || !draft.summary.trim() ? 'role'
         : !draft.responsibilities.some(row => row.responsibilityText.trim()) ? 'responsibilities' : 'skills')
       message.warning(error)
@@ -398,7 +411,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
       setDraftSnapshot(response.data)
       onSaved?.(response.data)
       await storeSourceDocument()
-      await loadVersions(response.data.requisitionId, response.data.id)
+      if (!silent) await loadVersions(response.data.requisitionId, response.data.id)
       return true
     } finally { setSaving(false) }
   }
@@ -487,7 +500,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
               { key: 'additional', label: 'Additional requirements', description: 'Certifications, languages, benefits', icon: <GiftOutlined />, badge: draft.certifications.length + draft.languages.length + draft.benefits.length },
             ]}
             footer={<div className="jd-editor-footer">
-              <Typography.Text type="secondary">{readOnly ? `${draft.status} · v${draft.versionNumber}` : embedded ? 'JD changes save with the hiring request' : draft.id ? 'Editing saved draft' : 'New draft · review prefilled details'}</Typography.Text>
+              <Typography.Text type="secondary">{readOnly ? `${draft.status} · v${draft.versionNumber}` : embedded ? saving ? 'Saving JD draft…' : hasUnsavedChanges ? 'JD changes will save automatically' : 'JD draft saved automatically' : draft.id ? 'Editing saved draft' : 'New draft · review prefilled details'}</Typography.Text>
               <Space wrap>
                 {editorStep === 'role' && <Button icon={<ArrowRightOutlined />} onClick={() => selectStep('screening')}>Skills & screening</Button>}
                 {!readOnly && !embedded && <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={sourceParsing} onClick={() => void saveDraft()}>{draft.id ? 'Update draft' : 'Save draft'}</Button>}

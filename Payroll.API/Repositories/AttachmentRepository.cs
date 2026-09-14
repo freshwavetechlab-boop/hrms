@@ -16,7 +16,8 @@ public class AttachmentRepository(
     IWebHostEnvironment environment,
     IDataProtectionProvider dataProtectionProvider,
     AttachmentStorageService storageService,
-    GoogleDriveOAuthService googleDrive)
+    GoogleDriveOAuthService googleDrive,
+    ILogger<AttachmentRepository> logger)
 {
     private const long DefaultGlobalMaximumBytes = 25L * 1024 * 1024;
     private readonly IDataProtector credentialProtector = dataProtectionProvider.CreateProtector("Payroll.API.AttachmentStorageCredentials.v1");
@@ -199,7 +200,7 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='entity_attachments' AND COLUMN_NAM
 VALUES ('API_LOCAL','API local attachment storage','LocalFileSystem',@RootPath,TRUE,TRUE,FALSE,100,TRUE)
 ON DUPLICATE KEY UPDATE
 storage_type='LocalFileSystem',
-base_path=CASE WHEN TRIM(base_path)='' THEN VALUES(base_path) ELSE base_path END,
+base_path=VALUES(base_path),
 is_read_enabled=TRUE,is_write_enabled=TRUE,is_active=TRUE;", new { RootPath = rootPath });
         var activeDefaultCount = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM attachment_storage_servers
 WHERE is_default_write_server=TRUE AND is_active=TRUE AND is_write_enabled=TRUE");
@@ -1241,15 +1242,67 @@ rejection_reason=@Reason WHERE id=@Id", new { row.Id, Status = approve ? "Verifi
             {
                 throw;
             }
-            catch
+            catch (Exception exception)
             {
+                logger.LogWarning(exception, "Attachment write failed for storage server {ServerCode}.", server.ServerCode);
                 storageWriteReadiness[server.Id] = new StorageWriteReadiness(false, DateTime.UtcNow.AddMinutes(1));
+            }
+        }
+
+        // API_LOCAL is a system-owned safety net. Repair a stale cross-environment
+        // path (for example a Windows path restored into Linux production) and retry
+        // it after any configured remote/default server fails.
+        AttachmentStorageServer? localFallback = null;
+        try
+        {
+            localFallback = await RepairLocalFallbackAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "The API_LOCAL attachment fallback could not be repaired.");
+        }
+        if (localFallback is not null)
+        {
+            try
+            {
+                await using var source = file.OpenReadStream();
+                var storageKey = await storageService.WriteAsync(localFallback, requestedStorageKey, source, cancellationToken);
+                return (localFallback, storageKey, null);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "The API_LOCAL attachment fallback is not writable.");
             }
         }
 
         return capacityBlocked
             ? (null, "", "All available attachment storage servers have reached their capacity limit.")
             : (null, "", "Attachment storage is temporarily unavailable. The local fallback could not be reached.");
+    }
+
+    private async Task<AttachmentStorageServer?> RepairLocalFallbackAsync(CancellationToken cancellationToken)
+    {
+        var rootPath = configuration["AttachmentStorage:RootPath"];
+        if (string.IsNullOrWhiteSpace(rootPath)) rootPath = Path.Combine("App_Data", "attachments");
+
+        await using var db = Connection();
+        await db.OpenAsync(cancellationToken);
+        await db.ExecuteAsync(new CommandDefinition(@"INSERT INTO attachment_storage_servers
+(server_code,server_name,storage_type,base_path,is_read_enabled,is_write_enabled,is_default_write_server,priority,is_active)
+VALUES ('API_LOCAL','API local attachment storage','LocalFileSystem',@RootPath,TRUE,TRUE,FALSE,100,TRUE)
+ON DUPLICATE KEY UPDATE storage_type='LocalFileSystem',base_path=VALUES(base_path),
+is_read_enabled=TRUE,is_write_enabled=TRUE,is_active=TRUE;", new { RootPath = rootPath }, cancellationToken: cancellationToken));
+
+        return (await GetStorageServersAsync(true)).FirstOrDefault(server =>
+            server.ServerCode.Equals("API_LOCAL", StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<bool> IsReadyForWriteAsync(AttachmentStorageServer server, CancellationToken cancellationToken)

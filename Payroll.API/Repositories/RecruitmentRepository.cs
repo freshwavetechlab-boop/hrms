@@ -1133,7 +1133,7 @@ LEFT JOIN employees requester ON requester.Id=r.RequestedByEmployeeId
 LEFT JOIN employees repl ON repl.Id=r.ReplacementEmployeeId
 {where}";
 
-    private static string OpenPositionSql(string where) => $@"SELECT p.*,r.RfrNumber,COALESCE(r.WorkMode,'') WorkMode,
+    private static string OpenPositionSql(string where) => $@"SELECT p.*,r.RfrNumber,r.RequestDate,COALESCE(r.WorkMode,'') WorkMode,
 COALESCE(r.JobLocation,'') RequisitionJobLocation,COALESCE(r.WorkMode,'') RequisitionWorkMode,
 COALESCE(r.ExperienceRange,'') RequisitionExperienceRange,COALESCE(r.SalaryMin,0) RequisitionSalaryMin,
 COALESCE(r.SalaryMax,0) RequisitionSalaryMax,COALESCE(r.Currency,'') RequisitionCurrency,

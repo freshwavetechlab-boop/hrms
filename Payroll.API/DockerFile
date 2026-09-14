@@ -11,6 +11,7 @@ RUN dotnet publish "Payroll.API.csproj" -c Release -o /app/publish
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
 COPY --from=build /app/publish .
+RUN mkdir -p /app/App_Data/attachments
 
 ENV ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080

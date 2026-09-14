@@ -63,6 +63,7 @@ export type EmployeeImportDecision = {
 }
 
 export const getOrganization = (fallback: Org) => getJson<Org>('/api/organization', fallback)
+export const getPublicOrganizationBrand = () => getJson<{ name: string; logoDataUrl: string } | null>('/api/public/organization-brand', null, { loader: false, toast: false })
 export const saveOrganization = (organization: Org) => postJson('/api/organization', organization, organization)
 export const getSetup = (fallback: Setup) => getJson<Setup>('/api/setup', fallback)
 export const saveSetup = (setup: Setup, options: ApiOptions = {}) => postJson('/api/setup', setup, setup, options)

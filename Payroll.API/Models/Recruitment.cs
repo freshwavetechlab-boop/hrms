@@ -228,6 +228,7 @@ public class RecruitmentOpenPosition
     public long Id { get; set; }
     public long RequisitionId { get; set; }
     public string RfrNumber { get; set; } = "";
+    public DateTime RequestDate { get; set; }
     public string PositionCode { get; set; } = "";
     public int ClientId { get; set; }
     public string ClientName { get; set; } = "";

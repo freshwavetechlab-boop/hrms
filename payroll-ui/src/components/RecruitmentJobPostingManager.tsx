@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import dayjs from 'dayjs'
 import {
-  CloseCircleOutlined, CopyOutlined, DeleteOutlined, DollarOutlined, EditOutlined, EnvironmentOutlined, FieldTimeOutlined, FormOutlined, GlobalOutlined,
+  BranchesOutlined, CloseCircleOutlined, CopyOutlined, DeleteOutlined, DollarOutlined, EditOutlined, EnvironmentOutlined, FieldTimeOutlined, FormOutlined, GlobalOutlined,
   LaptopOutlined, LinkOutlined, RocketOutlined, TeamOutlined, UserAddOutlined,
 } from '@ant-design/icons'
 import {
@@ -22,6 +22,7 @@ import type {
   DynamicFormDefinition, RecruitmentJobDescriptionVersion, RecruitmentJobPosting, RecruitmentOrchestrationLookups,
   RecruitmentPositionOption, RecruitmentPositionPipelineAssignment,
 } from '../types/recruitmentOrchestration'
+import { recruitmentStageColor } from '../utils/recruitmentStage'
 import './RecruitmentOrchestration.css'
 
 type Props = {
@@ -197,7 +198,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
     if (!editor) return
     const error = validatePosting(editor, false)
     if (error) { report('warning', 'Select an approved role', error); return }
-    setQuickPublishTarget({ ...editor, applicationFormVersionId: effectiveApplicationFormVersionId })
+    setQuickPublishTarget(withPublishDates({ ...editor, applicationFormVersionId: effectiveApplicationFormVersionId }, positions))
     setConfirmationError('')
     setConfirmationAction('publish')
   }
@@ -219,7 +220,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
       : { ...detailed, applicationFormVersionId: defaultFormVersionId }
     setPipelineAssignment(assignment)
     setPipelineVersionId(assignment?.pipelineVersionId || undefined)
-    setQuickPublishTarget(publishable)
+    setQuickPublishTarget(withPublishDates(publishable, lookups.positions))
     setConfirmationError('')
     setConfirmationAction('publish')
   }
@@ -386,7 +387,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
                   {row.status === 'Published' && <Tooltip title="Copy public link"><Button aria-label="Copy public link" size="small" shape="circle" icon={<CopyOutlined />} onClick={event => { event.stopPropagation(); void copyPostingLink(row) }} /></Tooltip>}
                   <PostingStatus status={row.status} />
                 </Space></div>
-                <div className="job-card-facts"><Tag>{position?.employmentType || 'Employment type not set'}</Tag><Tag color="cyan"><UserAddOutlined /> {row.applicationCount} candidate{row.applicationCount === 1 ? '' : 's'}</Tag></div>
+                <div className="job-card-facts"><Tag>{position?.employmentType || 'Employment type not set'}</Tag><Tag color="cyan"><UserAddOutlined /> {row.applicationCount} candidate{row.applicationCount === 1 ? '' : 's'}</Tag>{position?.pipelineStageName && <Tooltip title={position.pipelineStatus || 'Current vacancy pipeline stage'}><Tag color={recruitmentStageColor(position.pipelineStageType || '', position.pipelineStageName)}><BranchesOutlined /> {position.pipelineStageName}</Tag></Tooltip>}</div>
                 <div className="job-card-metrics">
                   <JobFact icon={<FieldTimeOutlined />} label="Experience" value={position?.requisitionExperienceRange || position?.experienceRange || 'Not specified'} />
                   <JobFact icon={<DollarOutlined />} label="CTC" value={formatCtc(position)} />
@@ -507,6 +508,15 @@ function blankPosting(clientId: number, positionId = 0, positionTitle = ''): Rec
     publicSlug: '', publicTitle: positionTitle, status: 'Draft', opensAtUtc: null, closesAtUtc: null,
     maximumApplications: null, applicationCount: 0, searchEngineVisible: true, publishedAtUtc: null,
     positionCode: '', positionTitle, clientName: '', candidatePortalReady: false, candidateProofReady: true, candidateProofValidationMessage: '', publicUrl: '',
+  }
+}
+
+function withPublishDates(posting: RecruitmentJobPosting, positions: RecruitmentPositionOption[]) {
+  const position = positions.find(row => row.id === posting.positionId)
+  return {
+    ...posting,
+    opensAtUtc: posting.opensAtUtc || (position?.requestDate ? dayjs(position.requestDate).startOf('day').toISOString() : null),
+    closesAtUtc: posting.closesAtUtc || (position?.targetJoiningDate ? dayjs(position.targetJoiningDate).endOf('day').toISOString() : null),
   }
 }
 

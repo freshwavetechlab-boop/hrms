@@ -91,7 +91,29 @@
 
 .rfr-register-table .ant-table-cell-fix-left,
 .rfr-register-table .ant-table-cell-fix-right {
-  background: inherit;
+  background: #fff !important;
+}
+
+.rfr-register-table .ant-table-tbody > tr:hover > .ant-table-cell-fix-left,
+.rfr-register-table .ant-table-tbody > tr:hover > .ant-table-cell-fix-right {
+  background: #faf7ff !important;
+}
+
+.rfr-register-table .ant-table-thead > tr > .ant-table-cell-fix-left,
+.rfr-register-table .ant-table-thead > tr > .ant-table-cell-fix-right {
+  background: #f6f8fc !important;
+}
+
+.rfr-register-table .ant-table-tbody > tr > td {
+  overflow: hidden;
+}
+
+.rfr-register-table .ant-table-tbody .ant-tag {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .rfr-register-table .ant-table-cell-fix-right-first::after {
@@ -256,12 +278,28 @@
 
 .rfr-dialog-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
   padding: 0;
   border: 0;
   background: transparent;
 }
+
+.rfr-dialog-action-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.rfr-autosave-status {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.rfr-autosave-status.is-saved { color: #15803d; }
+.rfr-autosave-status.is-error { color: #b45309; }
 
 .rfr-form .ant-form-item {
   margin-bottom: 17px;

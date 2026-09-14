@@ -196,6 +196,7 @@ export type RecruitmentPositionOption = {
   clientName?: string
   requisitionId?: number
   rfrNumber?: string
+  requestDate?: string
   positionCode: string
   positionTitle: string
   department: string
@@ -216,6 +217,13 @@ export type RecruitmentPositionOption = {
   numberOfPositions?: number
   requisitionNumberOfOpenings?: number
   remainingPositions?: number
+  targetJoiningDate?: string | null
+  pipelineInstanceId?: number | null
+  pipelineVersionId?: number | null
+  pipelineStageId?: number | null
+  pipelineStageName?: string
+  pipelineStageType?: string
+  pipelineStatus?: string
   approvedJobDescriptionVersionId?: number | null
 }
 
