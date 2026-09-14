@@ -39,17 +39,31 @@
 .recruitment-header-actions {
   position: relative;
   z-index: 1;
-  display: flex;
+  display: grid;
   min-width: 0;
+  width: auto;
   flex: 0 0 auto;
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
 }
 
+.recruitment-header-actions.has-client-select {
+  width: min(760px, 100%);
+  flex: 0 1 760px;
+  grid-template-columns: minmax(180px, 1fr) repeat(2, max-content);
+}
+
 .recruitment-header-actions .ant-select {
   width: min(360px, 32vw);
   min-width: 250px;
+}
+
+.recruitment-header-actions.has-client-select .ant-select {
+  width: 100%;
+  min-width: 180px;
 }
 
 .recruitment-header-actions > .ant-btn {
@@ -455,9 +469,11 @@
     padding: 20px;
   }
 
-  .recruitment-header-actions { display: grid; width: 100%; flex-basis: auto; grid-template-columns: minmax(0, 1fr); margin-left: 0; }
+  .recruitment-header-actions { display: grid; width: 100%; flex-basis: auto; grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: max-content; margin-left: 0; overflow-x: auto; }
+  .recruitment-header-actions.has-client-select { grid-template-columns: minmax(170px, 1fr) repeat(2, max-content); }
   .recruitment-header-actions .ant-select,
-  .recruitment-header-actions > .ant-btn { width: 100%; min-width: 0; }
+  .recruitment-header-actions > .ant-btn { width: auto; min-width: max-content; }
+  .recruitment-header-actions .ant-select { width: 100%; min-width: 170px; }
   .recruitment-candidate-dashboard > header { align-items: flex-start; flex-direction: column; }
   .recruitment-candidate-metrics { grid-template-columns: minmax(0, 1fr); }
 

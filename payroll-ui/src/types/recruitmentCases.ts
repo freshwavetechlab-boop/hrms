@@ -28,6 +28,7 @@ export type RecruitmentWorkOrder = {
   dueAtUtc?: string | null
   lineCount: number
   openCaseCount: number
+  slaLaunchMessage?: string
   createdByUserId?: number
   createdAtUtc?: string
   updatedAtUtc?: string

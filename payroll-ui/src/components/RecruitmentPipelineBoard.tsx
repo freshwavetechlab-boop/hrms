@@ -13,7 +13,7 @@ import {
 } from '../services/recruitmentOrchestrationService'
 import type {
   RecruitmentJobPosting, RecruitmentPipelineBoard as Board, RecruitmentPipelineBoardCard,
-  RecruitmentApplicationStageTimelineItem, RecruitmentPipelineBoardLane, RecruitmentPipelineTransition,
+  RecruitmentApplicationStageTimelineItem, RecruitmentPipelineBoardLane, RecruitmentPipelineTransition, RecruitmentUnifiedPipelineLane,
 } from '../types/recruitmentOrchestration'
 import type { RecruitmentOpenPosition } from '../types/payroll'
 import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
@@ -35,6 +35,7 @@ type Props = {
   onDisplayModeChange?: (mode: RecruitmentPipelineDisplayMode) => void
   clientPipelineCandidateCount?: number
   onCandidateCountChange?: (count: number | null) => void
+  clientPipelineLanes?: RecruitmentUnifiedPipelineLane[]
 }
 type TransitionDraft = { card: RecruitmentPipelineBoardCard; transition: RecruitmentPipelineTransition; reason: string }
 type PauseDraft = { card: RecruitmentPipelineBoardCard; reason: string }
@@ -56,7 +57,7 @@ type PipelineTableRow = {
   liveElapsed: number
 }
 
-export default function RecruitmentPipelineBoard({ initialClientId = 0, clientScopeManaged = false, positionId: suppliedPositionId = 0, onOpenCandidate, onScheduleInterview, embedded = false, displayMode, onDisplayModeChange, clientPipelineCandidateCount, onCandidateCountChange }: Props) {
+export default function RecruitmentPipelineBoard({ initialClientId = 0, clientScopeManaged = false, positionId: suppliedPositionId = 0, onOpenCandidate, onScheduleInterview, embedded = false, displayMode, onDisplayModeChange, clientPipelineCandidateCount, onCandidateCountChange, clientPipelineLanes = [] }: Props) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [postings, setPostings] = useState<RecruitmentJobPosting[]>([])
@@ -182,16 +183,33 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
   const selectedTargetKey = postingId ? `posting:${postingId}` : positionId ? `position:${positionId}` : undefined
   const elapsedSinceLoad = Math.max(0, Math.floor((tick - loadedAt) / 1000))
   const normalizedQuery = query.trim().toLowerCase()
-  const selectedCandidateCount = board?.lanes.reduce((count, lane) => count + lane.applications.length, 0) ?? 0
+  const templateLanes = useMemo<RecruitmentPipelineBoardLane[]>(() => clientPipelineLanes
+    .filter(lane => lane.cardScope === 'Application')
+    .map(lane => ({
+      stageId: lane.stageId,
+      stageCode: lane.stageCode,
+      stageName: lane.stageName,
+      stageType: lane.stageType,
+      displayOrder: lane.displayOrder,
+      slaDurationMinutes: lane.slaDurationMinutes,
+      slaWarningMinutes: lane.slaWarningMinutes,
+      allowPause: true,
+      pauseBehavior: 'ShiftStageAndOverall',
+      isTerminal: ['Completed', 'Rejected', 'Withdrawn'].includes(lane.stageType),
+      processDocumentRequirements: [],
+      applications: lane.applications,
+    })), [clientPipelineLanes])
+  const activeLanes = board?.lanes ?? (!positionId && !postingId ? templateLanes : [])
+  const selectedCandidateCount = activeLanes.reduce((count, lane) => count + lane.applications.length, 0)
   useEffect(() => { onCandidateCountChange?.(loading ? null : selectedCandidateCount) }, [loading, selectedCandidateCount, onCandidateCountChange])
-  const filtered = board?.lanes.map(lane => ({
+  const filtered = activeLanes.map(lane => ({
     ...lane,
     applications: lane.applications.filter(card => {
       const searchMatch = !normalizedQuery || `${card.candidateName} ${card.applicationCode} ${card.candidateEmail}`.toLowerCase().includes(normalizedQuery)
       const sla = slaState(lane, card, elapsedSinceLoad)
       return searchMatch && (slaFilter === 'All' || slaFilter === sla.label)
     }),
-  })) ?? []
+  }))
   const tableRows: PipelineTableRow[] = filtered.flatMap(lane => lane.applications.map(card => ({
     id: card.applicationId,
     lane,
@@ -282,7 +300,8 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
     try { setHistoryRows(await getRecruitmentApplicationStageHistory(card.applicationId)) }
     finally { setHistoryLoading(false) }
   }
-  const hasAssignedPipeline = Boolean(board?.pipelineVersionId && board.lanes.length)
+  const hasAssignedPipeline = Boolean(board?.pipelineVersionId && board.lanes.length) || (!positionId && !postingId && templateLanes.length > 0)
+  const templatePipeline = clientPipelineLanes.find(lane => lane.cardScope === 'Application')
 
   return <section className="orchestration-shell" data-testid="recruitment-hiring-pipeline">
     {!embedded && <div className="orchestration-toolbar">
@@ -296,8 +315,8 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
       <div className="candidate-pipeline-filter-field"><span>SLA status</span><Select aria-label="Candidate SLA status" value={slaFilter} onChange={setSlaFilter} options={['All', 'On track', 'Due soon', 'Overdue', 'Paused'].map(value => ({ value, label: value === 'All' ? 'All SLA states' : value }))} /></div>
       {displayMode === undefined && <Select className="pipeline-view-select" aria-label="Pipeline display view" value={viewMode} onChange={setViewMode} options={recruitmentPipelineDisplayOptions} />}
     </div><div className="candidate-pipeline-scope" data-testid="candidate-pipeline-scope"><strong>{loading ? 'Loading selected pipeline…' : `${selectedCandidateCount} candidates in selected pipeline`}</strong>{clientPipelineCandidateCount != null && <span>{clientPipelineCandidateCount} across client pipeline</span>}</div></Card>
-    {loading ? <Card loading data-testid="candidate-pipeline-loading" /> : !board || !hasAssignedPipeline ? <Card className="candidate-pipeline-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<div><strong>{positionId ? `Candidate pipeline not assigned${board?.positionTitle ? ` — ${board.positionTitle}` : ''}` : 'Select a position'}</strong><p>{positionId ? 'This position needs its own published pipeline assignment. The client-wide candidate total includes other positions.' : targetOptions.length ? 'Choose a position or published job posting above.' : 'No open positions or published job postings found for this client.'}</p></div>}><Space wrap>{positions.filter(row => row.id !== positionId && row.candidateCount > 0 && (!clientId || row.clientId === clientId)).slice(0, 3).map(row => <Button key={row.id} onClick={() => chooseTarget(`position:${row.id}`)}>View {row.positionTitle} ({row.candidateCount})</Button>)}<Button href={`/recruitment/hiring-pipeline?manage=1${clientId ? `&clientId=${clientId}` : ''}`}>Manage pipeline</Button><Button type="primary" href={`/recruitment/applications?upload=single${clientId ? `&clientId=${clientId}` : ''}${positionId ? `&positionId=${positionId}` : ''}`}>Add candidate resume</Button></Space></Empty></Card> : <>
-      <Card size="small"><Space wrap><Tag color="purple">{board.positionCode}</Tag><strong>{board.positionTitle}</strong><Tag>Pipeline version #{board.pipelineVersionId}</Tag><span>{board.lanes.reduce((total, lane) => total + lane.applications.length, 0)} application(s)</span></Space></Card>
+    {loading ? <Card loading data-testid="candidate-pipeline-loading" /> : !hasAssignedPipeline ? <Card className="candidate-pipeline-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<div><strong>{positionId ? `Candidate pipeline not assigned${board?.positionTitle ? ` — ${board.positionTitle}` : ''}` : 'Select a position'}</strong><p>{positionId ? 'This position needs its own published pipeline assignment. The client-wide candidate total includes other positions.' : targetOptions.length ? 'Choose a position or published job posting above.' : 'No open positions or published job postings found for this client.'}</p></div>}><Space wrap>{positions.filter(row => row.id !== positionId && row.candidateCount > 0 && (!clientId || row.clientId === clientId)).slice(0, 3).map(row => <Button key={row.id} onClick={() => chooseTarget(`position:${row.id}`)}>View {row.positionTitle} ({row.candidateCount})</Button>)}<Button href={`/recruitment/hiring-pipeline?manage=1${clientId ? `&clientId=${clientId}` : ''}`}>Manage pipeline</Button><Button type="primary" href={`/recruitment/applications?upload=single${clientId ? `&clientId=${clientId}` : ''}${positionId ? `&positionId=${positionId}` : ''}`}>Add candidate resume</Button></Space></Empty></Card> : <>
+      <Card size="small"><Space wrap>{board ? <><Tag color="purple">{board.positionCode}</Tag><strong>{board.positionTitle}</strong><Tag>Pipeline version #{board.pipelineVersionId}</Tag></> : <><Tag color="blue">Published template</Tag><strong>{templatePipeline?.pipelineName || 'Candidate pipeline'}</strong><Tag>Pipeline version #{templatePipeline?.pipelineVersionNumber || '-'}</Tag></>}<span>{activeLanes.reduce((total, lane) => total + lane.applications.length, 0)} application(s)</span></Space></Card>
       {viewMode !== 'table' && <div ref={pipelineScroller.ref} className="pipeline-board" data-testid="pipeline-board-view" tabIndex={0} onKeyDown={pipelineScroller.onKeyDown} aria-label="Scrollable candidate pipeline"><div className="pipeline-board-columns">{filtered.map(lane => <section key={lane.stageId} data-testid={`pipeline-lane-${lane.stageCode}`} className="pipeline-board-column" style={{ '--stage-color': stageColor(lane.stageType) } as CSSProperties}>
         <header><h4>{lane.stageName}</h4><Badge count={lane.applications.length} showZero color={stageColor(lane.stageType)} /></header>
         <div className="pipeline-board-column-body">

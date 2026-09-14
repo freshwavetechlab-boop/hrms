@@ -46,7 +46,7 @@ const workspaceCopy: Record<RecruitmentWorkspace, { group: string; title: string
   jobs: { group: 'Attract talent', title: 'Jobs', description: 'Prepare the governed role profile, then publish its approved job and public application link.' },
   candidates: { group: 'Find talent', title: 'Candidates', description: 'Manage reusable talent profiles, job applications and ATS screening from one workspace.' },
   pipeline: { group: 'One hiring journey', title: 'Pipeline', description: 'Follow each client demand through hiring and candidate selection.' },
-  selection: { group: 'Close hiring', title: 'Selection & Onboarding', description: 'Coordinate interviews, offers, documents and joining readiness in one operational queue.' },
+  selection: { group: 'Close hiring', title: 'Interviews & Offers', description: 'Schedule interviews, email candidates and panel members, then manage offers and joining readiness.' },
 }
 
 export default function RecruitmentPage({ view = 'Dashboard' }: { view?: RecruitmentPageView }) {
@@ -294,7 +294,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
           <strong>{copy.group}</strong>
         </div>
       </div>
-      <div className="recruitment-header-actions">
+      <div className={`recruitment-header-actions${canChooseClient ? ' has-client-select' : ''}`}>
         {canChooseClient && <Select data-testid="recruitment-client-scope" aria-label="Recruitment client scope" allowClear showSearch optionFilterProp="label" value={selectedClientId || undefined} placeholder="All accessible clients" options={clients.map(row => ({ value: row.id, label: `${row.code} · ${row.name}` }))} onChange={changeClientScope} />}
         {workspace === 'requests' && canDelete && !requisitionWorkflowEnabled && <Button onClick={() => setManageVacanciesOpen(true)}>Manage vacancies</Button>}
         {workspace === 'requests' && <Button data-testid="recruitment-new-hiring-request" type="primary" icon={<PlusOutlined />} onClick={() => navigate(scopedPath('/recruitment/requisitions?new=1'))}>New hiring request</Button>}

@@ -1,0 +1,199 @@
+import { createHotContext as __vite__createHotContext } from "/@vite/client";import.meta.hot = __vite__createHotContext("/src/components/RecruitmentProcessDocumentPanel.tsx");const useEffect = __vite__cjsImport0_react["useEffect"]; const useState = __vite__cjsImport0_react["useState"];const _jsxDEV = __vite__cjsImport4_react_jsxDevRuntime["jsxDEV"];import __vite__cjsImport0_react from "/node_modules/.vite/deps/react.js?v=c236414f";
+import { Alert, Button, Empty, Space, Tag } from "/node_modules/.vite/deps/antd.js?v=2143e1d5";
+import EntityAttachmentPanel from "/src/components/EntityAttachmentPanel.tsx";
+import { generateRecruitmentProcessDocument, getRecruitmentProcessDocuments, saveRecruitmentProcessDocument } from "/src/services/recruitmentCaseService.ts";
+var _jsxFileName = "D:/NewHrms/hrms/payroll-ui/src/components/RecruitmentProcessDocumentPanel.tsx";
+import __vite__cjsImport4_react_jsxDevRuntime from "/node_modules/.vite/deps/react_jsx-dev-runtime.js?v=c236414f";
+var _s = $RefreshSig$();
+export default function RecruitmentProcessDocumentPanel({ clientId, pipelineStageId, requirements, hiringCaseId = null, applicationId = null, title = "Stage process documents" }) {
+	_s();
+	const [documents, setDocuments] = useState([]);
+	const [busy, setBusy] = useState(false);
+	const load = async () => setDocuments(await getRecruitmentProcessDocuments(hiringCaseId, applicationId));
+	useEffect(() => {
+		void load();
+	}, [
+		hiringCaseId,
+		applicationId,
+		pipelineStageId
+	]);
+	const prepare = async (requirement) => {
+		setBusy(true);
+		const response = await saveRecruitmentProcessDocument({
+			id: 0,
+			clientId,
+			hiringCaseId,
+			applicationId,
+			interviewId: null,
+			pipelineStageId,
+			documentType: requirement.documentType,
+			templateId: requirement.templateId || null,
+			attachmentPublicId: null,
+			status: "Draft",
+			workflowInstanceId: null
+		});
+		setBusy(false);
+		if (response.ok) await load();
+	};
+	const sign = async (document) => {
+		setBusy(true);
+		const response = await saveRecruitmentProcessDocument({
+			...document,
+			status: "Signed"
+		});
+		setBusy(false);
+		if (response.ok) await load();
+	};
+	const generate = async (document) => {
+		setBusy(true);
+		const response = await generateRecruitmentProcessDocument(document.id);
+		setBusy(false);
+		if (response.ok) await load();
+	};
+	if (!requirements.length) return /* @__PURE__ */ _jsxDEV(Empty, {
+		image: Empty.PRESENTED_IMAGE_SIMPLE,
+		description: "This stage has no process-document requirement."
+	}, void 0, false, {
+		fileName: _jsxFileName,
+		lineNumber: 42,
+		columnNumber: 36
+	}, this);
+	return /* @__PURE__ */ _jsxDEV("section", {
+		className: "recruitment-process-documents",
+		children: [/* @__PURE__ */ _jsxDEV(Alert, {
+			showIcon: true,
+			type: "info",
+			message: title,
+			description: "Prepare creates a draft record, not a file. Upload the relevant document, or generate a PDF when a template is configured. A separately uploaded signed copy is needed only where signatures are required."
+		}, void 0, false, {
+			fileName: _jsxFileName,
+			lineNumber: 44,
+			columnNumber: 5
+		}, this), requirements.map((requirement) => {
+			const document = documents.find((row) => row.pipelineStageId === pipelineStageId && row.documentType === requirement.documentType);
+			return /* @__PURE__ */ _jsxDEV("article", {
+				"data-testid": `process-document-${applicationId || hiringCaseId}-${requirement.documentType}`,
+				children: [/* @__PURE__ */ _jsxDEV("header", { children: [/* @__PURE__ */ _jsxDEV("div", { children: [/* @__PURE__ */ _jsxDEV("b", { children: requirement.documentType.replaceAll("_", " ") }, void 0, false, {
+					fileName: _jsxFileName,
+					lineNumber: 48,
+					columnNumber: 22
+				}, this), /* @__PURE__ */ _jsxDEV("span", { children: [requirement.isRequired ? "Required" : "Optional", requirement.requiresSignature ? " · final signature required" : ""] }, void 0, true, {
+					fileName: _jsxFileName,
+					lineNumber: 48,
+					columnNumber: 76
+				}, this)] }, void 0, true, {
+					fileName: _jsxFileName,
+					lineNumber: 48,
+					columnNumber: 17
+				}, this), /* @__PURE__ */ _jsxDEV(Space, { children: [
+					document ? /* @__PURE__ */ _jsxDEV(Tag, {
+						color: document.status === "Signed" ? "green" : "blue",
+						children: [
+							"v",
+							document.versionNumber,
+							" · ",
+							document.status
+						]
+					}, void 0, true, {
+						fileName: _jsxFileName,
+						lineNumber: 49,
+						columnNumber: 23
+					}, this) : /* @__PURE__ */ _jsxDEV(Button, {
+						loading: busy,
+						onClick: () => void prepare(requirement),
+						children: "Prepare"
+					}, void 0, false, {
+						fileName: _jsxFileName,
+						lineNumber: 49,
+						columnNumber: 138
+					}, this),
+					document && requirement.templateId && document.status !== "Signed" && /* @__PURE__ */ _jsxDEV(Button, {
+						loading: busy,
+						onClick: () => void generate(document),
+						children: document.attachmentPublicId ? "Regenerate PDF" : "Generate PDF"
+					}, void 0, false, {
+						fileName: _jsxFileName,
+						lineNumber: 50,
+						columnNumber: 82
+					}, this),
+					document && requirement.requiresSignature && document.status !== "Signed" && document.hasFinalSignedAttachment && /* @__PURE__ */ _jsxDEV(Button, {
+						loading: busy,
+						onClick: () => void sign(document),
+						children: "Mark signed"
+					}, void 0, false, {
+						fileName: _jsxFileName,
+						lineNumber: 51,
+						columnNumber: 126
+					}, this),
+					document && requirement.requiresSignature && document.status !== "Signed" && !document.hasFinalSignedAttachment && /* @__PURE__ */ _jsxDEV(Tag, {
+						color: "orange",
+						children: "Upload signed final"
+					}, void 0, false, {
+						fileName: _jsxFileName,
+						lineNumber: 52,
+						columnNumber: 127
+					}, this)
+				] }, void 0, true, {
+					fileName: _jsxFileName,
+					lineNumber: 48,
+					columnNumber: 213
+				}, this)] }, void 0, true, {
+					fileName: _jsxFileName,
+					lineNumber: 48,
+					columnNumber: 9
+				}, this), document && /* @__PURE__ */ _jsxDEV(EntityAttachmentPanel, {
+					entityType: "RECRUITMENT_PROCESS_DOCUMENT",
+					entityId: document.id,
+					clientId,
+					moduleCode: "RECRUITMENT",
+					formCodes: ["PROCESS_DOCUMENT"],
+					title: "Document file",
+					description: "Private, versioned storage with secure preview and download.",
+					singleFieldLabel: requirement.documentType.replaceAll("_", " "),
+					singleFieldHelp: requirement.requiresSignature ? "Upload the final signed copy. Mark signed becomes available after a separately uploaded final file is linked." : "Upload the source document for this requirement. Use Generate PDF only when a template is configured.",
+					onChanged: () => void load()
+				}, void 0, false, {
+					fileName: _jsxFileName,
+					lineNumber: 54,
+					columnNumber: 22
+				}, this)]
+			}, requirement.id, true, {
+				fileName: _jsxFileName,
+				lineNumber: 47,
+				columnNumber: 14
+			}, this);
+		})]
+	}, void 0, true, {
+		fileName: _jsxFileName,
+		lineNumber: 43,
+		columnNumber: 10
+	}, this);
+}
+_s(RecruitmentProcessDocumentPanel, "CzJbzbnQGpJmG5/YknDh4ZsBSJI=");
+_c = RecruitmentProcessDocumentPanel;
+var _c;
+$RefreshReg$(_c, "RecruitmentProcessDocumentPanel");
+import * as RefreshRuntime from "/@react-refresh";
+const inWebWorker = typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope;
+import * as __vite_react_currentExports from "/src/components/RecruitmentProcessDocumentPanel.tsx";
+if (import.meta.hot && !inWebWorker) {
+  if (!window.$RefreshReg$) {
+    throw new Error(
+      "@vitejs/plugin-react can't detect preamble. Something is wrong."
+    );
+  }
+
+  const currentExports = __vite_react_currentExports;
+  queueMicrotask(() => {
+    RefreshRuntime.registerExportsForReactRefresh("D:/NewHrms/hrms/payroll-ui/src/components/RecruitmentProcessDocumentPanel.tsx", currentExports);
+    import.meta.hot.accept((nextExports) => {
+      if (!nextExports) return;
+      const invalidateMessage = RefreshRuntime.validateRefreshBoundaryAndEnqueueUpdate("D:/NewHrms/hrms/payroll-ui/src/components/RecruitmentProcessDocumentPanel.tsx", currentExports, nextExports);
+      if (invalidateMessage) import.meta.hot.invalidate(invalidateMessage);
+    });
+  });
+}
+function $RefreshReg$(type, id) { return RefreshRuntime.register(type, "D:/NewHrms/hrms/payroll-ui/src/components/RecruitmentProcessDocumentPanel.tsx" + ' ' + id); }
+function $RefreshSig$() { return RefreshRuntime.createSignatureFunctionForTransform(); }
+
+//# sourceMappingURL=data:application/json;base64,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QUFlLEtBQUssS0FBSyxRQUFRO2dCQUFHO0tBQW1COzs7OztLQUNoTSxZQUFZLFlBQVkscUJBQXFCLFNBQVMsV0FBVyxZQUFZLENBQUMsU0FBUyw0QkFBNEIsd0JBQUMsS0FBRDtNQUFLLE9BQU07Z0JBQVM7S0FBd0I7Ozs7O0lBQzNKOzs7O1lBQVM7Ozs7Y0FDZixZQUFZLHdCQUFDLHVCQUFEO0tBQXVCLFlBQVc7S0FBK0IsVUFBVSxTQUFTO0tBQWM7S0FBVSxZQUFXO0tBQWMsV0FBVyxDQUFDLGtCQUFrQjtLQUFHLE9BQU07S0FBZ0IsYUFBWTtLQUErRCxrQkFBa0IsWUFBWSxhQUFhLFdBQVcsS0FBSyxHQUFHO0tBQUcsaUJBQWlCLFlBQVksb0JBQW9CLGtIQUFrSDtLQUF5RyxpQkFBaUIsS0FBSyxLQUFLO0lBQUk7Ozs7WUFDem5CO01BUlksWUFBWTs7OztVQVF4QjtFQUNYLENBQUMsQ0FDTTs7Ozs7O0FBQ1giLCJuYW1lcyI6W10sInNvdXJjZXMiOlsiUmVjcnVpdG1lbnRQcm9jZXNzRG9jdW1lbnRQYW5lbC50c3giXSwidmVyc2lvbiI6Mywic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IHsgdXNlRWZmZWN0LCB1c2VTdGF0ZSB9IGZyb20gJ3JlYWN0J1xuaW1wb3J0IHsgQWxlcnQsIEJ1dHRvbiwgRW1wdHksIFNwYWNlLCBUYWcgfSBmcm9tICdhbnRkJ1xuaW1wb3J0IEVudGl0eUF0dGFjaG1lbnRQYW5lbCBmcm9tICcuL0VudGl0eUF0dGFjaG1lbnRQYW5lbCdcbmltcG9ydCB7IGdlbmVyYXRlUmVjcnVpdG1lbnRQcm9jZXNzRG9jdW1lbnQsIGdldFJlY3J1aXRtZW50UHJvY2Vzc0RvY3VtZW50cywgc2F2ZVJlY3J1aXRtZW50UHJvY2Vzc0RvY3VtZW50IH0gZnJvbSAnLi4vc2VydmljZXMvcmVjcnVpdG1lbnRDYXNlU2VydmljZSdcbmltcG9ydCB0eXBlIHsgUmVjcnVpdG1lbnRQcm9jZXNzRG9jdW1lbnQgfSBmcm9tICcuLi90eXBlcy9yZWNydWl0bWVudENhc2VzJ1xuaW1wb3J0IHR5cGUgeyBSZWNydWl0bWVudFN0YWdlUHJvY2Vzc0RvY3VtZW50UmVxdWlyZW1lbnQgfSBmcm9tICcuLi90eXBlcy9yZWNydWl0bWVudE9yY2hlc3RyYXRpb24nXG5cbnR5cGUgUHJvcHMgPSB7XG4gIGNsaWVudElkOiBudW1iZXJcbiAgcGlwZWxpbmVTdGFnZUlkOiBudW1iZXJcbiAgcmVxdWlyZW1lbnRzOiBSZWNydWl0bWVudFN0YWdlUHJvY2Vzc0RvY3VtZW50UmVxdWlyZW1lbnRbXVxuICBoaXJpbmdDYXNlSWQ/OiBudW1iZXIgfCBudWxsXG4gIGFwcGxpY2F0aW9uSWQ/OiBudW1iZXIgfCBudWxsXG4gIHRpdGxlPzogc3RyaW5nXG59XG5cbmV4cG9ydCBkZWZhdWx0IGZ1bmN0aW9uIFJlY3J1aXRtZW50UHJvY2Vzc0RvY3VtZW50UGFuZWwoeyBjbGllbnRJZCwgcGlwZWxpbmVTdGFnZUlkLCByZXF1aXJlbWVudHMsIGhpcmluZ0Nhc2VJZCA9IG51bGwsIGFwcGxpY2F0aW9uSWQgPSBudWxsLCB0aXRsZSA9ICdTdGFnZSBwcm9jZXNzIGRvY3VtZW50cycgfTogUHJvcHMpIHtcbiAgY29uc3QgW2RvY3VtZW50cywgc2V0RG9jdW1lbnRzXSA9IHVzZVN0YXRlPFJlY3J1aXRtZW50UHJvY2Vzc0RvY3VtZW50W10+KFtdKVxuICBjb25zdCBbYnVzeSwgc2V0QnVzeV0gPSB1c2VTdGF0ZShmYWxzZSlcbiAgY29uc3QgbG9hZCA9IGFzeW5jICgpID0+IHNldERvY3VtZW50cyhhd2FpdCBnZXRSZWNydWl0bWVudFByb2Nlc3NEb2N1bWVudHMoaGlyaW5nQ2FzZUlkLCBhcHBsaWNhdGlvbklkKSlcbiAgdXNlRWZmZWN0KCgpID0+IHsgdm9pZCBsb2FkKCkgfSwgW2hpcmluZ0Nhc2VJZCwgYXBwbGljYXRpb25JZCwgcGlwZWxpbmVTdGFnZUlkXSlcblxuICBjb25zdCBwcmVwYXJlID0gYXN5bmMgKHJlcXVpcmVtZW50OiBSZWNydWl0bWVudFN0YWdlUHJvY2Vzc0RvY3VtZW50UmVxdWlyZW1lbnQpID0+IHtcbiAgICBzZXRCdXN5KHRydWUpXG4gICAgY29uc3QgcmVzcG9uc2UgPSBhd2FpdCBzYXZlUmVjcnVpdG1lbnRQcm9jZXNzRG9jdW1lbnQoeyBpZDogMCwgY2xpZW50SWQsIGhpcmluZ0Nhc2VJZCwgYXBwbGljYXRpb25JZCwgaW50ZXJ2aWV3SWQ6IG51bGwsIHBpcGVsaW5lU3RhZ2VJZCwgZG9jdW1lbnRUeXBlOiByZXF1aXJlbWVudC5kb2N1bWVudFR5cGUsIHRlbXBsYXRlSWQ6IHJlcXVpcmVtZW50LnRlbXBsYXRlSWQgfHwgbnVsbCwgYXR0YWNobWVudFB1YmxpY0lkOiBudWxsLCBzdGF0dXM6ICdEcmFmdCcsIHdvcmtmbG93SW5zdGFuY2VJZDogbnVsbCB9KVxuICAgIHNldEJ1c3koZmFsc2UpXG4gICAgaWYgKHJlc3BvbnNlLm9rKSBhd2FpdCBsb2FkKClcbiAgfVxuICBjb25zdCBzaWduID0gYXN5bmMgKGRvY3VtZW50OiBSZWNydWl0bWVudFByb2Nlc3NEb2N1bWVudCkgPT4ge1xuICAgIHNldEJ1c3kodHJ1ZSlcbiAgICBjb25zdCByZXNwb25zZSA9IGF3YWl0IHNhdmVSZWNydWl0bWVudFByb2Nlc3NEb2N1bWVudCh7IC4uLmRvY3VtZW50LCBzdGF0dXM6ICdTaWduZWQnIH0pXG4gICAgc2V0QnVzeShmYWxzZSlcbiAgICBpZiAocmVzcG9uc2Uub2spIGF3YWl0IGxvYWQoKVxuICB9XG4gIGNvbnN0IGdlbmVyYXRlID0gYXN5bmMgKGRvY3VtZW50OiBSZWNydWl0bWVudFByb2Nlc3NEb2N1bWVudCkgPT4ge1xuICAgIHNldEJ1c3kodHJ1ZSlcbiAgICBjb25zdCByZXNwb25zZSA9IGF3YWl0IGdlbmVyYXRlUmVjcnVpdG1lbnRQcm9jZXNzRG9jdW1lbnQoZG9jdW1lbnQuaWQpXG4gICAgc2V0QnVzeShmYWxzZSlcbiAgICBpZiAocmVzcG9uc2Uub2spIGF3YWl0IGxvYWQoKVxuICB9XG5cbiAgaWYgKCFyZXF1aXJlbWVudHMubGVuZ3RoKSByZXR1cm4gPEVtcHR5IGltYWdlPXtFbXB0eS5QUkVTRU5URURfSU1BR0VfU0lNUExFfSBkZXNjcmlwdGlvbj1cIlRoaXMgc3RhZ2UgaGFzIG5vIHByb2Nlc3MtZG9jdW1lbnQgcmVxdWlyZW1lbnQuXCIgLz5cbiAgcmV0dXJuIDxzZWN0aW9uIGNsYXNzTmFtZT1cInJlY3J1aXRtZW50LXByb2Nlc3MtZG9jdW1lbnRzXCI+XG4gICAgPEFsZXJ0IHNob3dJY29uIHR5cGU9XCJpbmZvXCIgbWVzc2FnZT17dGl0bGV9IGRlc2NyaXB0aW9uPVwiUHJlcGFyZSBjcmVhdGVzIGEgZHJhZnQgcmVjb3JkLCBub3QgYSBmaWxlLiBVcGxvYWQgdGhlIHJlbGV2YW50IGRvY3VtZW50LCBvciBnZW5lcmF0ZSBhIFBERiB3aGVuIGEgdGVtcGxhdGUgaXMgY29uZmlndXJlZC4gQSBzZXBhcmF0ZWx5IHVwbG9hZGVkIHNpZ25lZCBjb3B5IGlzIG5lZWRlZCBvbmx5IHdoZXJlIHNpZ25hdHVyZXMgYXJlIHJlcXVpcmVkLlwiIC8+XG4gICAge3JlcXVpcmVtZW50cy5tYXAocmVxdWlyZW1lbnQgPT4ge1xuICAgICAgY29uc3QgZG9jdW1lbnQgPSBkb2N1bWVudHMuZmluZChyb3cgPT4gcm93LnBpcGVsaW5lU3RhZ2VJZCA9PT0gcGlwZWxpbmVTdGFnZUlkICYmIHJvdy5kb2N1bWVudFR5cGUgPT09IHJlcXVpcmVtZW50LmRvY3VtZW50VHlwZSlcbiAgICAgIHJldHVybiA8YXJ0aWNsZSBrZXk9e3JlcXVpcmVtZW50LmlkfSBkYXRhLXRlc3RpZD17YHByb2Nlc3MtZG9jdW1lbnQtJHthcHBsaWNhdGlvbklkIHx8IGhpcmluZ0Nhc2VJZH0tJHtyZXF1aXJlbWVudC5kb2N1bWVudFR5cGV9YH0+XG4gICAgICAgIDxoZWFkZXI+PGRpdj48Yj57cmVxdWlyZW1lbnQuZG9jdW1lbnRUeXBlLnJlcGxhY2VBbGwoJ18nLCAnICcpfTwvYj48c3Bhbj57cmVxdWlyZW1lbnQuaXNSZXF1aXJlZCA/ICdSZXF1aXJlZCcgOiAnT3B0aW9uYWwnfXtyZXF1aXJlbWVudC5yZXF1aXJlc1NpZ25hdHVyZSA/ICcgwrcgZmluYWwgc2lnbmF0dXJlIHJlcXVpcmVkJyA6ICcnfTwvc3Bhbj48L2Rpdj48U3BhY2U+XG4gICAgICAgICAge2RvY3VtZW50ID8gPFRhZyBjb2xvcj17ZG9jdW1lbnQuc3RhdHVzID09PSAnU2lnbmVkJyA/ICdncmVlbicgOiAnYmx1ZSd9PnZ7ZG9jdW1lbnQudmVyc2lvbk51bWJlcn0gwrcge2RvY3VtZW50LnN0YXR1c308L1RhZz4gOiA8QnV0dG9uIGxvYWRpbmc9e2J1c3l9IG9uQ2xpY2s9eygpID0+IHZvaWQgcHJlcGFyZShyZXF1aXJlbWVudCl9PlByZXBhcmU8L0J1dHRvbj59XG4gICAgICAgICAge2RvY3VtZW50ICYmIHJlcXVpcmVtZW50LnRlbXBsYXRlSWQgJiYgZG9jdW1lbnQuc3RhdHVzICE9PSAnU2lnbmVkJyAmJiA8QnV0dG9uIGxvYWRpbmc9e2J1c3l9IG9uQ2xpY2s9eygpID0+IHZvaWQgZ2VuZXJhdGUoZG9jdW1lbnQpfT57ZG9jdW1lbnQuYXR0YWNobWVudFB1YmxpY0lkID8gJ1JlZ2VuZXJhdGUgUERGJyA6ICdHZW5lcmF0ZSBQREYnfTwvQnV0dG9uPn1cbiAgICAgICAgICB7ZG9jdW1lbnQgJiYgcmVxdWlyZW1lbnQucmVxdWlyZXNTaWduYXR1cmUgJiYgZG9jdW1lbnQuc3RhdHVzICE9PSAnU2lnbmVkJyAmJiBkb2N1bWVudC5oYXNGaW5hbFNpZ25lZEF0dGFjaG1lbnQgJiYgPEJ1dHRvbiBsb2FkaW5nPXtidXN5fSBvbkNsaWNrPXsoKSA9PiB2b2lkIHNpZ24oZG9jdW1lbnQpfT5NYXJrIHNpZ25lZDwvQnV0dG9uPn1cbiAgICAgICAgICB7ZG9jdW1lbnQgJiYgcmVxdWlyZW1lbnQucmVxdWlyZXNTaWduYXR1cmUgJiYgZG9jdW1lbnQuc3RhdHVzICE9PSAnU2lnbmVkJyAmJiAhZG9jdW1lbnQuaGFzRmluYWxTaWduZWRBdHRhY2htZW50ICYmIDxUYWcgY29sb3I9XCJvcmFuZ2VcIj5VcGxvYWQgc2lnbmVkIGZpbmFsPC9UYWc+fVxuICAgICAgICA8L1NwYWNlPjwvaGVhZGVyPlxuICAgICAgICB7ZG9jdW1lbnQgJiYgPEVudGl0eUF0dGFjaG1lbnRQYW5lbCBlbnRpdHlUeXBlPVwiUkVDUlVJVE1FTlRfUFJPQ0VTU19ET0NVTUVOVFwiIGVudGl0eUlkPXtkb2N1bWVudC5pZH0gY2xpZW50SWQ9e2NsaWVudElkfSBtb2R1bGVDb2RlPVwiUkVDUlVJVE1FTlRcIiBmb3JtQ29kZXM9e1snUFJPQ0VTU19ET0NVTUVOVCddfSB0aXRsZT1cIkRvY3VtZW50IGZpbGVcIiBkZXNjcmlwdGlvbj1cIlByaXZhdGUsIHZlcnNpb25lZCBzdG9yYWdlIHdpdGggc2VjdXJlIHByZXZpZXcgYW5kIGRvd25sb2FkLlwiIHNpbmdsZUZpZWxkTGFiZWw9e3JlcXVpcmVtZW50LmRvY3VtZW50VHlwZS5yZXBsYWNlQWxsKCdfJywgJyAnKX0gc2luZ2xlRmllbGRIZWxwPXtyZXF1aXJlbWVudC5yZXF1aXJlc1NpZ25hdHVyZSA/ICdVcGxvYWQgdGhlIGZpbmFsIHNpZ25lZCBjb3B5LiBNYXJrIHNpZ25lZCBiZWNvbWVzIGF2YWlsYWJsZSBhZnRlciBhIHNlcGFyYXRlbHkgdXBsb2FkZWQgZmluYWwgZmlsZSBpcyBsaW5rZWQuJyA6ICdVcGxvYWQgdGhlIHNvdXJjZSBkb2N1bWVudCBmb3IgdGhpcyByZXF1aXJlbWVudC4gVXNlIEdlbmVyYXRlIFBERiBvbmx5IHdoZW4gYSB0ZW1wbGF0ZSBpcyBjb25maWd1cmVkLid9IG9uQ2hhbmdlZD17KCkgPT4gdm9pZCBsb2FkKCl9IC8+fVxuICAgICAgPC9hcnRpY2xlPlxuICAgIH0pfVxuICA8L3NlY3Rpb24+XG59XG4iXX0=

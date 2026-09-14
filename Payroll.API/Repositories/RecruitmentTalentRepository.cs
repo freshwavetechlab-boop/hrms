@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Dapper;
@@ -171,7 +172,7 @@ WHERE panel.PanelUserId=@UserId AND interviewRow.ApplicationId IN @Ids", new { U
         var globalTalentProfile = request.ClientId == GlobalTalentPoolClientId && user.ClientId is null;
         if (request.ClientId <= 0 && !globalTalentProfile) return (null, "Client is required.");
         if (string.IsNullOrWhiteSpace(request.FirstName)) return (null, "Candidate first name is required.");
-        if (string.IsNullOrWhiteSpace(request.Email) && string.IsNullOrWhiteSpace(request.Phone)) return (null, "Candidate email or phone is required.");
+        if (!request.AllowIncompleteIdentity && string.IsNullOrWhiteSpace(request.Email) && string.IsNullOrWhiteSpace(request.Phone)) return (null, "Candidate email or phone is required.");
         if (!CanAccessClient(user, request.ClientId)) return (null, "Candidate client is outside your permitted scope.");
         if (!CandidateProfileStatuses.Contains(request.ProfileStatus, StringComparer.OrdinalIgnoreCase)) return (null, "Select a valid talent profile status.");
         if (!CandidateConsentStatuses.Contains(request.ConsentStatus, StringComparer.OrdinalIgnoreCase)) return (null, "Select a valid candidate consent status.");
@@ -302,7 +303,10 @@ VALUES (@CandidateCode,@ClientId,@FirstName,@LastName,@Email,@NormalizedEmail,@P
         return (await GetCandidateDetailAsync(candidateId, user), "");
     }
 
-    public async Task<(RecruitmentCandidateApplication? Row, string Error)> CreateApplicationAsync(SaveCandidateApplication request, AuthUser user)
+    public async Task<(RecruitmentCandidateApplication? Row, string Error)> CreateApplicationAsync(
+        SaveCandidateApplication request,
+        AuthUser user,
+        bool suppressAutoScoring = false)
     {
         if (request.CandidateId <= 0 || request.PositionId <= 0) return (null, "Candidate and open position are required.");
         await using var db = Db();
@@ -342,7 +346,7 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
         await AddPositionTimelineAsync(db, position.Id, "Candidate Added", "Candidate added", $"{candidate.FirstName} {candidate.LastName} / {code}", user.Id);
         await WriteActivityAsync(db, position.ClientId, candidate.Id, candidate.EmployeeId, "RECRUITMENT", "APPLICATION_CREATED", "Application created", $"Applied for {position.PositionTitle} ({position.PositionCode})", "RecruitmentApplication", id.ToString(), user);
         await RefreshPositionCountersAsync(db, position.Id);
-        if (resumeId.HasValue) await QueueApplicationScoreAsync(db, id, user, false);
+        if (resumeId.HasValue && !suppressAutoScoring) await QueueApplicationScoreAsync(db, id, user, false);
         return (await ApplicationByIdAsync(db, id, user), "");
     }
 
@@ -376,7 +380,16 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
         return (await ApplicationByIdAsync(db, applicationId, user), "");
     }
 
-    public async Task<(EntityAttachment? Attachment, RecruitmentCandidateResume? Resume, string Error)> UploadResumeAsync(long candidateId, CandidateResumeUploadRequest request, AuthUser user, string ipAddress, string userAgent, CancellationToken cancellationToken)
+    public async Task<(EntityAttachment? Attachment, RecruitmentCandidateResume? Resume, string Error)> UploadResumeAsync(
+        long candidateId,
+        CandidateResumeUploadRequest request,
+        AuthUser user,
+        string ipAddress,
+        string userAgent,
+        CancellationToken cancellationToken,
+        ResumeParseResult? parsedResume = null,
+        bool suppressAutoScoring = false,
+        IReadOnlyList<string>? parsingJobContext = null)
     {
         if (request.File is null) return (null, null, "Select a resume file.");
         await using var db = Db();
@@ -389,9 +402,8 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
         if (!maximumFileSize.HasValue) return (null, null, "Select an active global Resume attachment field.");
         if (request.File.Length > maximumFileSize.Value) return (null, null, $"Resume exceeds the configured {Math.Ceiling(maximumFileSize.Value / 1048576m):0.#} MB limit.");
         var features = await FeatureSettingsAsync(db, candidate.ClientId);
-        var parse = features.EnableResumeParsing
-            ? await resumeParser.ParseAsync(request.File, cancellationToken)
-            : ResumeParseResult.WithoutContent("Disabled", "Disabled", "", "Resume parsing is disabled in Recruitment Administration.");
+        var jobContext = parsingJobContext
+            ?? await ResumeJobContextForCandidateAsync(db, candidate.Id, candidate.ClientId);
         var (attachment, error) = await attachments.UploadAsync(new AttachmentUploadMetadata
         {
             FieldConfigurationId = request.FieldConfigurationId,
@@ -402,7 +414,20 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
             ExpiryDate = request.ExpiryDate
         }, request.File, user, ipAddress, userAgent, cancellationToken);
         if (attachment is null) return (null, null, error ?? "Resume upload failed.");
-        var resume = await RegisterResumeAsync(db, candidate, attachment, parse, user);
+        var parse = ResumeParseResult.WithoutContent("Disabled", "Disabled", "", "Resume parsing is disabled in Recruitment Administration.");
+        if (features.EnableResumeParsing)
+        {
+            var local = parsedResume ?? await resumeParser.ParseAsync(request.File, cancellationToken);
+            parse = await resumeParser.EnhanceAsync(request.File, local, candidate.ClientId, jobContext, cancellationToken);
+        }
+        if (suppressAutoScoring)
+        {
+            var manualReviewError = parsedResume?.Error;
+            if (string.IsNullOrWhiteSpace(manualReviewError))
+                manualReviewError = "Resume requires manual review before ATS scoring.";
+            parse = parse with { Status = "NeedsReview", Error = manualReviewError };
+        }
+        var resume = await RegisterResumeAsync(db, candidate, attachment, parse, user, suppressAutoScoring);
         return (attachment, resume, "");
     }
 
@@ -415,6 +440,15 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
     {
         var files = (request.Files ?? []).Where(file => file is not null && file.Length > 0).ToList();
         var result = new RecruitmentResumeIntakeResult { TotalFiles = files.Count };
+        void CompleteImportedItem(RecruitmentResumeIntakeItem item, IEnumerable<string> notes)
+        {
+            item.Success = true;
+            result.Imported++;
+            var reviewNotes = notes.Where(note => !string.IsNullOrWhiteSpace(note)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (reviewNotes.Count == 0) return;
+            item.Error = string.Join(" ", reviewNotes);
+            result.NeedsReview++;
+        }
         var talentPoolOnly = request.TalentPoolOnly;
         if (talentPoolOnly && user.ClientId is not null)
         {
@@ -444,21 +478,23 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
 
         await using var lookupDb = Db();
         await lookupDb.OpenAsync(cancellationToken);
+        IReadOnlyList<string> jobContext = [];
         if (!talentPoolOnly)
         {
-            var positionStatus = await lookupDb.ExecuteScalarAsync<string?>("SELECT Status FROM recruitment_open_positions WHERE Id=@PositionId AND ClientId=@ClientId", new { request.PositionId, ClientId = clientId });
-            if (string.IsNullOrWhiteSpace(positionStatus))
+            var positionContext = await ResumeJobContextAsync(lookupDb, request.PositionId, clientId);
+            if (positionContext is null)
             {
                 result.Items.Add(new RecruitmentResumeIntakeItem { Error = "Selected job/JD was not found for this client." });
                 result.NeedsReview = 1;
                 return result;
             }
-            if (positionStatus is "Closed" or "Cancelled" or "Filled")
+            if (positionContext.Status is "Closed" or "Cancelled" or "Filled")
             {
-                result.Items.Add(new RecruitmentResumeIntakeItem { Error = $"Resumes cannot be added to a {positionStatus} position." });
+                result.Items.Add(new RecruitmentResumeIntakeItem { Error = $"Resumes cannot be added to a {positionContext.Status} position." });
                 result.NeedsReview = 1;
                 return result;
             }
+            jobContext = ResumeJobContextParts(positionContext);
             if (request.JobPostingId is > 0)
             {
                 var validPosting = await lookupDb.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_job_postings
@@ -471,6 +507,7 @@ WHERE Id=@JobPostingId AND PositionId=@PositionId AND ClientId=@ClientId", new {
                 }
             }
         }
+        var features = await FeatureSettingsAsync(lookupDb, clientId);
         var fieldConfigurationId = request.FieldConfigurationId is > 0 ? request.FieldConfigurationId.Value : await lookupDb.ExecuteScalarAsync<long?>(@"SELECT field.id
 FROM attachment_field_configurations field
 JOIN attachment_attributes attribute ON attribute.id=field.attachment_attribute_id
@@ -492,18 +529,36 @@ ORDER BY (field.client_id=@ClientId) DESC,(field.form_code='CANDIDATE_APPLICATIO
             result.Items.Add(item);
             try
             {
-                var parse = await resumeParser.ParseAsync(file, cancellationToken);
+                // Candidate identity is established with the deterministic parser.
+                // External AI runs only after AttachmentRepository has validated and
+                // accepted the file for the candidate below.
+                var parse = features.EnableResumeParsing
+                    ? await resumeParser.ParseAsync(file, cancellationToken)
+                    : ResumeParseResult.WithoutContent("Disabled", "Disabled", "", "Resume parsing is disabled in Recruitment Administration.");
+                var reviewNotes = new List<string>();
+                var identityMissing = string.IsNullOrWhiteSpace(parse.Facts.Email) && string.IsNullOrWhiteSpace(parse.Facts.Phone);
+                if (identityMissing && !request.ForceUpload)
+                {
+                    item.Error = "Email or mobile could not be extracted. Enable Force upload to retain this resume for manual review.";
+                    result.NeedsReview++;
+                    continue;
+                }
+                if (!parse.Status.Equals("Parsed", StringComparison.OrdinalIgnoreCase))
+                    reviewNotes.Add(string.IsNullOrWhiteSpace(parse.Error) ? $"Resume parsing status is {parse.Status}." : parse.Error);
+                if (identityMissing)
+                {
+                    item.ForceUploaded = true;
+                    const string manualReviewMessage = "Force uploaded without extracted email or mobile. Complete the candidate identity manually before ATS scoring.";
+                    parse = parse with { Status = "NeedsReview", Error = manualReviewMessage };
+                    reviewNotes.Add(manualReviewMessage);
+                }
                 item.ParsingStatus = parse.Status;
                 item.DetectedName = parse.Facts.FullName;
                 item.DetectedEmail = parse.Facts.Email;
                 item.DetectedPhone = parse.Facts.Phone;
                 item.DetectedAddress = parse.Facts.ResidentialAddress;
-                if (string.IsNullOrWhiteSpace(parse.Facts.Email) && string.IsNullOrWhiteSpace(parse.Facts.Phone))
-                {
-                    item.Error = "Email or mobile could not be extracted. Review this resume manually before creating a candidate.";
-                    result.NeedsReview++;
-                    continue;
-                }
+                var suppressAutoScoring = item.ForceUploaded
+                    || !parse.Status.Equals("Parsed", StringComparison.OrdinalIgnoreCase);
 
                 var normalizedEmail = NormalizeEmail(parse.Facts.Email);
                 var normalizedPhone = NormalizePhone(parse.Facts.Phone);
@@ -511,7 +566,9 @@ ORDER BY (field.client_id=@ClientId) DESC,(field.form_code='CANDIDATE_APPLICATIO
                 await using (var candidateDb = Db())
                 {
                     await candidateDb.OpenAsync(cancellationToken);
-                    var matches = (await candidateDb.QueryAsync<IntakeCandidateMatchRow>(@"SELECT Id,
+                    var matches = identityMissing
+                        ? new List<IntakeCandidateMatchRow>()
+                        : (await candidateDb.QueryAsync<IntakeCandidateMatchRow>(@"SELECT Id,
 (@Email<>'' AND NormalizedEmail=@Email) EmailMatch,
 (@Phone<>'' AND NormalizedPhone=@Phone) PhoneMatch
 FROM recruitment_candidates
@@ -525,10 +582,22 @@ ORDER BY Id", new { ClientId = clientId, Email = normalizedEmail, Phone = normal
                         continue;
                     }
                     candidateId = matches.SingleOrDefault()?.Id;
+                    if (!candidateId.HasValue && identityMissing)
+                    {
+                        var fileHash = await ComputeFileSha256Async(file, cancellationToken);
+                        candidateId = await candidateDb.ExecuteScalarAsync<long?>(@"SELECT candidate.Id
+FROM recruitment_candidates candidate
+JOIN entity_attachments attachment ON attachment.entity_type='CANDIDATE' AND attachment.entity_id=candidate.Id
+JOIN attachment_attributes attribute ON attribute.id=attachment.attachment_attribute_id AND attribute.attribute_code='RESUME'
+WHERE candidate.ClientId=@ClientId AND candidate.ProfileStatus<>'Archived'
+  AND attachment.sha256_hash=@FileHash AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
+ORDER BY attachment.id DESC LIMIT 1", new { ClientId = clientId, FileHash = fileHash });
+                    }
                 }
                 if (!candidateId.HasValue)
                 {
-                    var names = SplitName(parse.Facts.FullName);
+                    var fallbackName = Regex.Replace(Path.GetFileNameWithoutExtension(file.FileName), @"[_\-]+", " ").Trim();
+                    var names = SplitName(string.IsNullOrWhiteSpace(parse.Facts.FullName) ? fallbackName : parse.Facts.FullName);
                     var saved = await SaveCandidateAsync(new SaveRecruitmentCandidate
                     {
                         ClientId = clientId,
@@ -536,11 +605,12 @@ ORDER BY Id", new { ClientId = clientId, Email = normalizedEmail, Phone = normal
                         LastName = names.LastName,
                         Email = parse.Facts.Email,
                         Phone = parse.Facts.Phone,
-                        CurrentLocation = parse.Facts.ResidentialAddress,
+                        CurrentLocation = Truncate(parse.Facts.ResidentialAddress, 180),
                         TotalExperienceMonths = parse.Facts.TotalExperienceMonths ?? 0,
                         SourceType = string.IsNullOrWhiteSpace(request.SourceType) ? "Direct Sourcing" : request.SourceType.Trim(),
                         ProfileStatus = "Active",
-                        ConsentStatus = "Pending"
+                        ConsentStatus = "Pending",
+                        AllowIncompleteIdentity = identityMissing && request.ForceUpload
                     }, user);
                     if (saved.Row is null)
                     {
@@ -555,7 +625,10 @@ ORDER BY Id", new { ClientId = clientId, Email = normalizedEmail, Phone = normal
                 {
                     FieldConfigurationId = fieldConfigurationId.Value,
                     File = file
-                }, user, ipAddress, userAgent, cancellationToken);
+                }, user, ipAddress, userAgent, cancellationToken,
+                    parsedResume: parse,
+                    suppressAutoScoring: suppressAutoScoring,
+                    parsingJobContext: jobContext);
                 if (resume is null)
                 {
                     item.Error = uploadError;
@@ -563,11 +636,16 @@ ORDER BY Id", new { ClientId = clientId, Email = normalizedEmail, Phone = normal
                     continue;
                 }
                 item.Resume = resume;
+                item.ParsingStatus = resume.ParsingStatus;
+                if (resume.ParseFacts is not null)
+                {
+                    item.DetectedEmail = resume.ParseFacts.ExtractedEmail;
+                    item.DetectedPhone = resume.ParseFacts.ExtractedPhone;
+                }
                 if (talentPoolOnly)
                 {
                     item.Candidate = (await GetCandidateDetailAsync(candidateId.Value, user))?.Candidate;
-                    item.Success = true;
-                    result.Imported++;
+                    CompleteImportedItem(item, reviewNotes);
                     continue;
                 }
                 var (application, applicationError) = await CreateApplicationAsync(new SaveCandidateApplication
@@ -578,7 +656,7 @@ ORDER BY Id", new { ClientId = clientId, Email = normalizedEmail, Phone = normal
                     SourceType = string.IsNullOrWhiteSpace(request.SourceType) ? "Direct Sourcing" : request.SourceType.Trim(),
                     SourceReferenceId = request.JobPostingId,
                     ResumeId = resume.Id
-                }, user);
+                }, user, suppressAutoScoring);
                 if (application is null)
                 {
                     item.Error = applicationError;
@@ -592,7 +670,7 @@ ORDER BY Id", new { ClientId = clientId, Email = normalizedEmail, Phone = normal
                     await applicationDb.OpenAsync(cancellationToken);
                     await applicationDb.ExecuteAsync("UPDATE recruitment_candidate_applications SET ResumeId=@ResumeId,JobPostingId=COALESCE(@JobPostingId,JobPostingId),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { ResumeId = resume.Id, request.JobPostingId, application.Id });
                 }
-                if (needsScoring)
+                if (needsScoring && !suppressAutoScoring)
                 {
                     if (files.Count > 20)
                     {
@@ -604,17 +682,13 @@ ORDER BY Id", new { ClientId = clientId, Email = normalizedEmail, Phone = normal
                     {
                         var (_, scoringError) = await ScoreApplicationAsync(application.Id, user);
                         if (!string.IsNullOrWhiteSpace(scoringError))
-                        {
-                            item.Error = $"Resume imported; ATS score needs review: {scoringError}";
-                            result.NeedsReview++;
-                        }
+                            reviewNotes.Add($"Resume imported; ATS score needs review: {scoringError}");
                     }
                 }
                 application = (await GetApplicationsAsync(user, application.PositionId, candidateId.Value, "")).FirstOrDefault(row => row.Id == application.Id) ?? application;
                 item.Application = application;
                 item.Candidate = (await GetCandidateDetailAsync(candidateId.Value, user))?.Candidate;
-                item.Success = true;
-                result.Imported++;
+                CompleteImportedItem(item, reviewNotes);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -628,6 +702,12 @@ ORDER BY Id", new { ClientId = clientId, Email = normalizedEmail, Phone = normal
             }
         }
         return result;
+    }
+
+    private static async Task<string> ComputeFileSha256Async(IFormFile file, CancellationToken cancellationToken)
+    {
+        await using var stream = file.OpenReadStream();
+        return Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken)).ToLowerInvariant();
     }
 
     public async Task<IEnumerable<RecruitmentCandidateApplication>> GetTalentPoolMatchesAsync(AuthUser user, long? positionId = null, string status = "")
@@ -834,7 +914,7 @@ FROM recruitment_candidate_applications WHERE Id=@Id AND ApplicationType='Talent
     }
 
     private static Task<IEnumerable<RecruitmentCandidateApplication>> TalentPoolMatchesAsync(MySqlConnection db, long? positionId, string status) =>
-        db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT a.*,c.CandidateCode,CONCAT(c.FirstName,' ',c.LastName) CandidateName,
+        db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT a.*,c.CandidateCode,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,
 c.Email CandidateEmail,c.Phone CandidatePhone,p.PositionCode,p.PositionTitle,cl.Name ClientName,
 COALESCE(u.DisplayName,u.Email,'') RecruiterName,COALESCE(s.OverrideScore,s.TotalScore) AtsScore,
 COALESCE(s.ScoreStatus,'Not Scored') ScoreStatus
@@ -916,7 +996,7 @@ WHERE Id=@ReferralId AND ReferrerEmployeeId=@EmployeeId", new { ReferralId = ref
     {
         await using var db = Db();
         await db.OpenAsync(cancellationToken);
-        var link = await db.QueryFirstOrDefaultAsync<PublicApplicationResumeRow>(@"SELECT a.Id ApplicationId,a.CandidateId,a.ClientId,a.ResumeId RequestedResumeId,
+        var link = await db.QueryFirstOrDefaultAsync<PublicApplicationResumeRow>(@"SELECT a.Id ApplicationId,a.CandidateId,a.PositionId,a.ClientId,a.ResumeId RequestedResumeId,
 r.Id ResumeId,r.AttachmentPublicId,r.ParsingStatus
 FROM recruitment_candidate_applications a
 LEFT JOIN recruitment_candidate_resumes r ON r.Id=a.ResumeId AND r.CandidateId=a.CandidateId
@@ -948,7 +1028,9 @@ WHERE Id=@ResumeId AND CandidateId=@CandidateId AND ParsingStatus<>'Parsed'", li
                 if (attachment is null || server is null)
                     return (null, string.IsNullOrWhiteSpace(accessError) ? "The uploaded resume could not be opened for parsing." : accessError!);
                 await using var handle = await attachmentStorage.OpenReadAsync(server, attachment.StorageKey, cancellationToken);
-                var parse = await resumeParser.ParseAsync(handle.Stream, attachment.OriginalFileName, attachment.FileSizeBytes, cancellationToken);
+                var jobContext = ResumeJobContextParts(await ResumeJobContextAsync(db, link.PositionId, link.ClientId));
+                var parse = await resumeParser.ParseAsync(handle.Stream, attachment.OriginalFileName, attachment.FileSizeBytes,
+                    link.ClientId, jobContext, cancellationToken);
                 var candidate = await CandidateByIdAsync(db, link.CandidateId);
                 if (candidate is null) return (null, "The candidate profile could not be prepared for ATS review.");
 
@@ -1034,6 +1116,30 @@ WHERE Id=@ResumeId AND CandidateId=@CandidateId", link);
         await using var db = Db();
         await db.OpenAsync();
         return await InterviewRowsAsync(db, user, applicationId, null, IsPanelScoped(user) ? user.Id : null);
+    }
+
+    public async Task<(RecruitmentInterviewInvitation? Row, string Error)> GetInterviewInvitationAsync(long interviewId, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var row = await db.QueryFirstOrDefaultAsync<RecruitmentInterviewInvitation>(@"SELECT i.Id InterviewId,a.ClientId,
+TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,COALESCE(c.Email,'') CandidateEmail,
+p.PositionTitle,i.RoundCode,i.InterviewType,i.ScheduledStart,i.ScheduledEnd,COALESCE(i.TimeZoneId,'Asia/Kolkata') TimeZoneId,
+i.Mode,COALESCE(i.LocationOrLink,'') LocationOrLink,i.Status
+FROM recruitment_interviews i
+JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId
+JOIN recruitment_candidates c ON c.Id=a.CandidateId
+JOIN recruitment_open_positions p ON p.Id=a.PositionId
+WHERE i.Id=@InterviewId AND (@ClientId IS NULL OR a.ClientId=@ClientId)", new { InterviewId = interviewId, user.ClientId });
+        if (row is null) return (null, "Interview was not found in your permitted client scope.");
+        if (row.Status is not ("Scheduled" or "Rescheduled"))
+            return (null, $"An invite cannot be sent for an interview marked {row.Status}.");
+        row.PanelEmails = (await db.QueryAsync<string>(@"SELECT DISTINCT u.Email
+FROM recruitment_interview_panel_members pm
+JOIN authusers u ON u.Id=pm.PanelUserId
+WHERE pm.InterviewId=@InterviewId AND u.IsActive=TRUE AND COALESCE(u.Email,'')<>''
+ORDER BY u.Email", new { InterviewId = interviewId })).ToList();
+        return (row, "");
     }
 
     public async Task<(bool Ok, string Error)> DeleteInterviewAsync(long id, AuthUser user, string ipAddress, string userAgent)
@@ -1331,7 +1437,7 @@ WHERE o.Id=@Id AND (@ClientId IS NULL OR o.ClientId=@ClientId)", new { Id = id, 
         await using var db = Db();
         await db.OpenAsync(cancellationToken);
         var context = await db.QueryFirstOrDefaultAsync<OfferLetterContext>(@"SELECT o.*,a.CandidateId,
-c.FirstName CandidateFirstName,c.LastName CandidateLastName,CONCAT(c.FirstName,' ',c.LastName) CandidateName,
+c.FirstName CandidateFirstName,c.LastName CandidateLastName,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,
 p.PositionTitle,COALESCE(client.Name,'') ClientName,
 t.Id TemplateId,t.ClientId TemplateClientId,t.TemplateType,t.SubjectTemplate,t.BodyTemplate,t.IsActive TemplateIsActive
 FROM recruitment_offers o
@@ -2000,11 +2106,35 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         return (true, "");
     }
 
+    public async Task<(bool Ok, string Error)> DeleteApplicationCompletelyAsync(
+        long applicationId,
+        AuthUser user,
+        string ipAddress,
+        string userAgent,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = Db();
+        await db.OpenAsync(cancellationToken);
+        var application = await db.QueryFirstOrDefaultAsync<RecruitmentCandidateApplication>(
+            "SELECT * FROM recruitment_candidate_applications WHERE Id=@Id", new { Id = applicationId });
+        if (application is null || !CanAccessClient(user, application.ClientId))
+            return (false, "Application was not found in your permitted scope.");
+
+        var candidateApplicationCount = await db.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM recruitment_candidate_applications WHERE CandidateId=@CandidateId",
+            new { application.CandidateId });
+        if (candidateApplicationCount == 1)
+            return await DeleteCandidateAsync(application.CandidateId, user, ipAddress, userAgent, cancellationToken);
+
+        return await DeleteApplicationAsync(applicationId, user);
+    }
+
     public async Task<(bool Ok, string Error)> DeleteCandidateAsync(
         long candidateId,
         AuthUser user,
         string ipAddress,
-        string userAgent)
+        string userAgent,
+        CancellationToken cancellationToken = default)
     {
         await using var db = Db();
         await db.OpenAsync();
@@ -2022,22 +2152,22 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         if (guardError.Length > 0) return (false, guardError);
 
         var candidateReferences = await db.ExecuteScalarAsync<int>(@"SELECT
-(SELECT COUNT(*) FROM form_submissions WHERE CandidateId=@CandidateId)+
 (SELECT COUNT(*) FROM recruitment_profile_submission_batch_items WHERE CandidateId=@CandidateId)", new { CandidateId = candidateId });
         if (candidateReferences > 0)
-            return (false, "This candidate is part of a submitted form or profile-forwarding batch and must be retained for audit.");
+            return (false, "This candidate is part of a profile-forwarding batch and must be retained for audit.");
 
         var attachmentIds = (await db.QueryAsync<string>(@"SELECT CAST(public_id AS CHAR) FROM entity_attachments
 WHERE entity_type='CANDIDATE' AND entity_id=@CandidateId AND is_deleted=FALSE", new { CandidateId = candidateId })).ToList();
         foreach (var value in attachmentIds)
         {
             if (!Guid.TryParse(value, out var publicId)) continue;
-            var (deleted, attachmentError) = await attachments.DeleteAsync(publicId, user, ipAddress, userAgent);
+            var (deleted, attachmentError) = await attachments.PurgeAsync(publicId, user, ipAddress, userAgent, cancellationToken);
             if (!deleted) return (false, attachmentError ?? "A candidate document could not be safely deleted.");
         }
 
         await using var transaction = await db.BeginTransactionAsync();
         if (applicationIds.Length > 0) await DeleteApplicationsAsync(db, transaction, applicationIds);
+        await db.ExecuteAsync("DELETE FROM form_submissions WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction);
         await db.ExecuteAsync("UPDATE recruitment_employee_referrals SET CandidateId=NULL,ApplicationId=NULL WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction);
         await db.ExecuteAsync("UPDATE external_portal_subjects SET CandidateId=NULL WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction);
         await db.ExecuteAsync("DELETE FROM recruitment_resume_skills WHERE ResumeId IN (SELECT Id FROM recruitment_candidate_resumes WHERE CandidateId=@CandidateId)", new { CandidateId = candidateId }, transaction);
@@ -2060,7 +2190,7 @@ WHERE entity_type='CANDIDATE' AND entity_id=@CandidateId AND is_deleted=FALSE", 
             candidate.CandidateCode,
             candidate.ClientId,
             ApplicationsDeleted = applications.Count,
-            DocumentsSoftDeleted = attachmentIds.Count
+            DocumentsPurged = attachmentIds.Count
         });
         return (true, "");
     }
@@ -2189,7 +2319,13 @@ WHERE ApplicationId IN @Ids AND WorkflowInstanceId IS NOT NULL",
         return referral;
     }
 
-    private async Task<RecruitmentCandidateResume> RegisterResumeAsync(MySqlConnection db, RecruitmentCandidate candidate, EntityAttachment attachment, ResumeParseResult parse, AuthUser user)
+    private async Task<RecruitmentCandidateResume> RegisterResumeAsync(
+        MySqlConnection db,
+        RecruitmentCandidate candidate,
+        EntityAttachment attachment,
+        ResumeParseResult parse,
+        AuthUser user,
+        bool suppressAutoScoring = false)
     {
         await using var transaction = await db.BeginTransactionAsync();
         var conflictingOwner = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidate_resumes WHERE AttachmentPublicId=@PublicId AND CandidateId<>@CandidateId", new { PublicId = attachment.PublicId.ToString(), CandidateId = candidate.Id }, transaction);
@@ -2209,7 +2345,7 @@ WHERE ApplicationId IN @Ids AND WorkflowInstanceId IS NOT NULL",
         }
         await transaction.CommitAsync();
         await WriteActivityAsync(db, candidate.ClientId, candidate.Id, candidate.EmployeeId, "RECRUITMENT", "RESUME_UPLOADED", parse.Status == "Disabled" ? "Resume uploaded" : "Resume uploaded and parsed", $"{attachment.OriginalFileName} / {parse.Status}", "CandidateResume", id.ToString(), user);
-        if (parse.Status == "Parsed")
+        if (parse.Status == "Parsed" && !suppressAutoScoring)
         {
             var applications = await db.QueryAsync<long>("SELECT Id FROM recruitment_candidate_applications WHERE CandidateId=@CandidateId AND CurrentStage NOT IN ('Rejected','Withdrawn','Joined')", new { CandidateId = candidate.Id });
             foreach (var applicationId in applications) await QueueApplicationScoreAsync(db, applicationId, user, false);
@@ -2603,7 +2739,7 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
 
     private static async Task<IEnumerable<RecruitmentCandidateApplication>> ApplicationsAsync(MySqlConnection db, AuthUser user, long? positionId = null, long? candidateId = null, string stage = "")
     {
-        var rows = await db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT a.*,c.CandidateCode,CONCAT(c.FirstName,' ',c.LastName) CandidateName,c.Email CandidateEmail,c.Phone CandidatePhone,p.PositionCode,p.PositionTitle,p.JobLocation,cl.Name ClientName,COALESCE(u.DisplayName,u.Email,'') RecruiterName,COALESCE(s.OverrideScore,s.TotalScore) AtsScore,COALESCE(s.ScoreStatus,'Not Scored') ScoreStatus
+        var rows = await db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT a.*,c.CandidateCode,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,c.Email CandidateEmail,c.Phone CandidatePhone,p.PositionCode,p.PositionTitle,p.JobLocation,cl.Name ClientName,COALESCE(u.DisplayName,u.Email,'') RecruiterName,COALESCE(s.OverrideScore,s.TotalScore) AtsScore,COALESCE(s.ScoreStatus,'Not Scored') ScoreStatus
 FROM recruitment_candidate_applications a JOIN recruitment_candidates c ON c.Id=a.CandidateId JOIN recruitment_open_positions p ON p.Id=a.PositionId LEFT JOIN clients cl ON cl.Id=a.ClientId LEFT JOIN authusers u ON u.Id=a.RecruiterUserId LEFT JOIN recruitment_application_scores s ON s.ApplicationId=a.Id AND s.IsCurrent=TRUE
 WHERE a.ApplicationType='Application' AND (@ClientId IS NULL OR a.ClientId=@ClientId) AND (@PositionId IS NULL OR a.PositionId=@PositionId) AND (@CandidateId IS NULL OR a.CandidateId=@CandidateId) AND (@Stage='' OR a.CurrentStage=@Stage) ORDER BY a.UpdatedAt DESC", new { ClientId = user.ClientId, PositionId = positionId, CandidateId = candidateId, Stage = stage ?? "" });
         return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
@@ -2614,7 +2750,7 @@ WHERE a.ApplicationType='Application' AND (@ClientId IS NULL OR a.ClientId=@Clie
 
     private static async Task<IEnumerable<RecruitmentInterview>> InterviewRowsAsync(MySqlConnection db, AuthUser user, long? applicationId, long[]? applicationIds, int? panelUserId = null)
     {
-        var rows = (await db.QueryAsync<RecruitmentInterview>(@"SELECT i.*,CONCAT(c.FirstName,' ',c.LastName) CandidateName,p.PositionTitle,
+        var rows = (await db.QueryAsync<RecruitmentInterview>(@"SELECT i.*,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,p.PositionTitle,
 COALESCE(ps.StageName,'') PipelineStageName,(i.PipelineStageInstanceId IS NOT NULL) IsPipelineManaged,
 COALESCE(rc.DefaultDurationMinutes,0) DefaultDurationMinutes,COALESCE(rc.MinimumPanelCount,0) MinimumPanelCount,
 COALESCE(rc.MinimumPassingScore,0) MinimumPassingScore,COALESCE(rc.FeedbackRequired,FALSE) FeedbackRequired,
@@ -2861,7 +2997,7 @@ WHERE applicationRow.Id=@ApplicationId LIMIT 1", new { ApplicationId = applicati
     };
 
     private static async Task<IEnumerable<RecruitmentOffer>> OfferRowsAsync(MySqlConnection db, AuthUser user, long? applicationId, long[]? applicationIds) =>
-        await db.QueryAsync<RecruitmentOffer>(@"SELECT o.*,CONCAT(c.FirstName,' ',c.LastName) CandidateName,p.PositionTitle,
+        await db.QueryAsync<RecruitmentOffer>(@"SELECT o.*,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,p.PositionTitle,
 COALESCE(t.TemplateName,'') OfferTemplateName FROM recruitment_offers o
 JOIN recruitment_candidate_applications a ON a.Id=o.ApplicationId
 JOIN recruitment_candidates c ON c.Id=a.CandidateId
@@ -2870,11 +3006,54 @@ LEFT JOIN recruitment_templates t ON t.Id=o.OfferTemplateId
 WHERE (@ClientId IS NULL OR o.ClientId=@ClientId) AND (@ApplicationId IS NULL OR o.ApplicationId=@ApplicationId)
 AND (@UseIds=FALSE OR o.ApplicationId IN @Ids) ORDER BY o.UpdatedAt DESC", new { ClientId = user.ClientId, ApplicationId = applicationId, UseIds = applicationIds is { Length: > 0 }, Ids = applicationIds ?? [0L] });
 
+    private static async Task<IReadOnlyList<string>> ResumeJobContextForCandidateAsync(MySqlConnection db, long candidateId, int clientId)
+    {
+        var positionId = await db.ExecuteScalarAsync<long?>(@"SELECT PositionId
+FROM recruitment_candidate_applications
+WHERE CandidateId=@CandidateId AND ClientId=@ClientId
+  AND CurrentStage NOT IN ('Rejected','Withdrawn','Joined')
+ORDER BY (ApplicationType='Application') DESC,UpdatedAt DESC,Id DESC LIMIT 1", new { CandidateId = candidateId, ClientId = clientId });
+        return positionId.HasValue
+            ? ResumeJobContextParts(await ResumeJobContextAsync(db, positionId.Value, clientId))
+            : [];
+    }
+
+    private static Task<ResumeJobContextRow?> ResumeJobContextAsync(MySqlConnection db, long positionId, int clientId) =>
+        db.QueryFirstOrDefaultAsync<ResumeJobContextRow>(@"SELECT p.Id PositionId,p.Status,p.PositionTitle,p.PositionCategory,p.Department,
+COALESCE(p.RequiredSkills,'') RequiredSkills,COALESCE(p.PreferredSkills,'') PreferredSkills,
+COALESCE(p.ExperienceRange,'') ExperienceRange,COALESCE(p.JobLocation,'') JobLocation,
+COALESCE(r.Qualification,'') Qualification,COALESCE(r.Certifications,'') Certifications,
+COALESCE(jd.Title,'') JobDescriptionTitle,COALESCE(jd.Summary,'') JobDescriptionSummary,
+COALESCE(jd.RolePurpose,'') JobDescriptionRolePurpose
+FROM recruitment_open_positions p
+LEFT JOIN recruitment_requisitions r ON r.Id=p.RequisitionId AND r.ClientId=p.ClientId
+LEFT JOIN recruitment_job_description_versions jd ON jd.Id=p.ApprovedJobDescriptionVersionId AND jd.ClientId=p.ClientId
+WHERE p.Id=@PositionId AND p.ClientId=@ClientId LIMIT 1", new { PositionId = positionId, ClientId = clientId });
+
+    private static IReadOnlyList<string> ResumeJobContextParts(ResumeJobContextRow? row) => row is null
+        ? []
+        : new[]
+        {
+            row.JobDescriptionTitle, row.PositionTitle, row.PositionCategory, row.Department,
+            row.RequiredSkills, row.PreferredSkills, row.ExperienceRange, row.Qualification,
+            row.Certifications, row.JobLocation, row.JobDescriptionSummary, row.JobDescriptionRolePurpose
+        }.Where(value => !string.IsNullOrWhiteSpace(value)).ToArray();
+
     private static async Task<RecruitmentCandidate?> CandidateByIdAsync(MySqlConnection db, long id) => await db.QueryFirstOrDefaultAsync<RecruitmentCandidate>($"{CandidateSelect} WHERE c.Id=@Id", new { Id = id, ScopeClientId = (int?)null });
 
     private static async Task<IEnumerable<PersonActivityEvent>> ActivityForCandidateAsync(MySqlConnection db, long candidateId, AuthUser user)
     {
         var events = (await db.QueryAsync<PersonActivityEvent>(@"SELECT p.*,COALESCE(u.DisplayName,u.Email,'System') ActorName FROM person_activity_events p LEFT JOIN authusers u ON u.Id=p.ActorUserId WHERE p.CandidateId=@CandidateId AND (@ClientId IS NULL OR p.ClientId=@ClientId)", new { CandidateId = candidateId, ClientId = user.ClientId })).ToList();
+        events.AddRange(await db.QueryAsync<PersonActivityEvent>(@"SELECT history.Id,applicationRow.ClientId,@CandidateId CandidateId,NULL EmployeeId,'PIPELINE' ModuleCode,
+'APPLICATION_STAGE_CHANGED' EventType,CONCAT('Moved to ',history.ToStage) EventTitle,
+CONCAT(history.FromStage,' to ',history.ToStage,CASE WHEN history.Reason='' THEN '' ELSE CONCAT(' / ',history.Reason) END) EventSummary,
+'RecruitmentApplication' ResourceType,CAST(history.ApplicationId AS CHAR) ResourceId,history.ChangedByUserId ActorUserId,
+COALESCE(actor.DisplayName,actor.Email,'System') ActorName,'HR' Visibility,FALSE IsSensitive,'{}' MetadataJson,
+history.ChangedAt OccurredAt,history.ChangedAt CreatedAt
+FROM recruitment_application_stage_history history
+JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=history.ApplicationId
+LEFT JOIN authusers actor ON actor.Id=history.ChangedByUserId
+WHERE applicationRow.CandidateId=@CandidateId AND (@ClientId IS NULL OR applicationRow.ClientId=@ClientId)", new { CandidateId = candidateId, ClientId = user.ClientId }));
         events.AddRange(await db.QueryAsync<PersonActivityEvent>(@"SELECT l.id Id,l.client_id ClientId,@CandidateId CandidateId,NULL EmployeeId,'DOCUMENTS' ModuleCode,CONCAT('DOCUMENT_',l.action) EventType,CONCAT('Candidate document ',LOWER(l.action)) EventTitle,COALESCE(JSON_UNQUOTE(JSON_EXTRACT(l.metadata_json,'$.publicId')),'') EventSummary,'Attachment' ResourceType,COALESCE(CAST(l.attachment_id AS CHAR),'') ResourceId,l.actor_user_id ActorUserId,COALESCE(u.DisplayName,u.Email,'System') ActorName,'HR' Visibility,TRUE IsSensitive,l.metadata_json MetadataJson,l.created_at_utc OccurredAt,l.created_at_utc CreatedAt FROM attachment_audit_logs l LEFT JOIN authusers u ON u.Id=l.actor_user_id WHERE l.entity_type='CANDIDATE' AND l.entity_id=@CandidateId AND l.success=TRUE", new { CandidateId = candidateId }));
         return events.OrderByDescending(row => row.OccurredAt).ThenByDescending(row => row.Id).Take(1000);
     }
@@ -3167,7 +3346,7 @@ Phone=CASE WHEN Phone='' THEN @Phone ELSE Phone END,
 NormalizedPhone=CASE WHEN NormalizedPhone='' THEN @NormalizedPhone ELSE NormalizedPhone END,
 CurrentLocation=CASE WHEN CurrentLocation='' THEN @ResidentialAddress ELSE CurrentLocation END,
 TotalExperienceMonths=CASE WHEN TotalExperienceMonths=0 AND @TotalExperienceMonths IS NOT NULL THEN @TotalExperienceMonths ELSE TotalExperienceMonths END,
-UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { candidate.Id, names.FirstName, names.LastName, Email = facts.Email, NormalizedEmail = NormalizeEmail(facts.Email), Phone = facts.Phone, NormalizedPhone = NormalizePhone(facts.Phone), ResidentialAddress = facts.ResidentialAddress, facts.TotalExperienceMonths }, transaction);
+UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { candidate.Id, names.FirstName, names.LastName, Email = facts.Email, NormalizedEmail = NormalizeEmail(facts.Email), Phone = facts.Phone, NormalizedPhone = NormalizePhone(facts.Phone), ResidentialAddress = Truncate(facts.ResidentialAddress, 180), facts.TotalExperienceMonths }, transaction);
     }
 
     private static async Task CreateCandidateChecklistSnapshotAsync(MySqlConnection db, RecruitmentCandidateApplication application)
@@ -3196,8 +3375,20 @@ JOIN entity_attachments attachment ON attachment.public_id=resume.AttachmentPubl
  AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
 WHERE resume.CandidateId=@CandidateId AND (@ResumeId IS NULL OR resume.Id=@ResumeId)", new { CandidateId = candidateId, ResumeId = applicationResumeId }) > 0;
 
-    private static Task<RecruitmentFeatureSettings> FeatureSettingsAsync(MySqlConnection _, int __) =>
-        Task.FromResult(new RecruitmentFeatureSettings());
+    private static async Task<RecruitmentFeatureSettings> FeatureSettingsAsync(MySqlConnection db, int clientId) =>
+        await db.QueryFirstOrDefaultAsync<RecruitmentFeatureSettings>(@"SELECT
+CASE WHEN RecruitmentEnabled AND IsActive THEN EnableTalentPool ELSE FALSE END EnableTalentPool,
+CASE WHEN RecruitmentEnabled AND IsActive THEN EnableResumeParsing ELSE FALSE END EnableResumeParsing,
+CASE WHEN RecruitmentEnabled AND IsActive THEN EnableAtsScoring ELSE FALSE END EnableAtsScoring,
+CASE WHEN RecruitmentEnabled AND IsActive THEN EnableOfferApproval ELSE FALSE END EnableOfferApproval,
+CASE WHEN RecruitmentEnabled AND IsActive THEN RequireResumeForApplication ELSE FALSE END RequireResumeForApplication,
+CASE WHEN RecruitmentEnabled AND IsActive THEN AllowManualScoreOverride ELSE FALSE END AllowManualScoreOverride,
+CASE WHEN RecruitmentEnabled AND IsActive THEN AutoCreateApplicationFromReferral ELSE FALSE END AutoCreateApplicationFromReferral,
+DefaultAtsScoringProfileId
+FROM recruitment_settings
+WHERE ClientId IN (0,@ClientId)
+ORDER BY (ClientId=@ClientId) DESC,Id DESC LIMIT 1", new { ClientId = clientId })
+        ?? new RecruitmentFeatureSettings();
 
     private static Task AddPositionTimelineAsync(MySqlConnection db, long positionId, string eventType, string title, string details, int? userId) =>
         db.ExecuteAsync("INSERT INTO recruitment_position_timeline (PositionId,EventType,EventTitle,EventDetails,ActorUserId) VALUES (@PositionId,@EventType,@Title,@Details,@UserId)", new { PositionId = positionId, EventType = eventType, Title = title, Details = details ?? "", UserId = userId });
@@ -3785,7 +3976,7 @@ CREATE TABLE IF NOT EXISTS person_activity_events (
  Id BIGINT PRIMARY KEY AUTO_INCREMENT,ClientId INT NOT NULL,CandidateId BIGINT NULL,EmployeeId INT NULL,ModuleCode VARCHAR(80) NOT NULL,EventType VARCHAR(100) NOT NULL,EventTitle VARCHAR(200) NOT NULL,EventSummary VARCHAR(1000) NOT NULL DEFAULT '',ResourceType VARCHAR(80) NOT NULL DEFAULT '',ResourceId VARCHAR(100) NOT NULL DEFAULT '',ActorUserId INT NULL,Visibility VARCHAR(40) NOT NULL DEFAULT 'HR',IsSensitive BOOLEAN NOT NULL DEFAULT FALSE,MetadataJson JSON NOT NULL,OccurredAt DATETIME NOT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,INDEX IX_person_activity_employee (EmployeeId,OccurredAt),INDEX IX_person_activity_candidate (CandidateId,OccurredAt),INDEX IX_person_activity_client (ClientId,OccurredAt));
 ");
 
-    private const string CandidateSelect = @"SELECT c.*,CONCAT(c.FirstName,' ',c.LastName) CandidateName,COALESCE(cl.Name,CASE WHEN c.ClientId=0 THEN 'Global Talent Pool' ELSE '' END) ClientName,COALESCE(e.EmployeeCode,'') EmployeeCode,(SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.CandidateId=c.Id AND a.ApplicationType='Application' AND (@ScopeClientId IS NULL OR a.ClientId=@ScopeClientId)) ApplicationCount,(SELECT COALESCE(s.OverrideScore,s.TotalScore) FROM recruitment_application_scores s JOIN recruitment_candidate_applications a ON a.Id=s.ApplicationId WHERE a.CandidateId=c.Id AND a.ApplicationType='Application' AND s.IsCurrent=TRUE AND (@ScopeClientId IS NULL OR a.ClientId=@ScopeClientId) ORDER BY s.ScoredAt DESC LIMIT 1) LatestScore FROM recruitment_candidates c LEFT JOIN clients cl ON cl.Id=c.ClientId LEFT JOIN employees e ON e.Id=c.EmployeeId";
+    private const string CandidateSelect = @"SELECT c.*,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,COALESCE(cl.Name,CASE WHEN c.ClientId=0 THEN 'Global Talent Pool' ELSE '' END) ClientName,COALESCE(e.EmployeeCode,'') EmployeeCode,(SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.CandidateId=c.Id AND a.ApplicationType='Application' AND (@ScopeClientId IS NULL OR a.ClientId=@ScopeClientId)) ApplicationCount,(SELECT COALESCE(s.OverrideScore,s.TotalScore) FROM recruitment_application_scores s JOIN recruitment_candidate_applications a ON a.Id=s.ApplicationId WHERE a.CandidateId=c.Id AND a.ApplicationType='Application' AND s.IsCurrent=TRUE AND (@ScopeClientId IS NULL OR a.ClientId=@ScopeClientId) ORDER BY s.ScoredAt DESC LIMIT 1) LatestScore FROM recruitment_candidates c LEFT JOIN clients cl ON cl.Id=c.ClientId LEFT JOIN employees e ON e.Id=c.EmployeeId";
     private const string ResumeSummarySelect = @"SELECT r.Id,r.CandidateId,r.AttachmentPublicId,r.VersionNumber,r.IsPrimary,r.ParsingStatus,r.ParsedText,r.ParsedJson,r.ParserName,r.ParserVersion,r.ParsedAt,r.ParsingError,r.CreatedAt,COALESCE(a.original_file_name,'') OriginalFileName FROM recruitment_candidate_resumes r LEFT JOIN entity_attachments a ON a.public_id=CAST(r.AttachmentPublicId AS CHAR(36))";
     private const string InterviewCompetencySelect = @"SELECT sc.*,d.CompetencyCode,d.CompetencyName FROM recruitment_interview_stage_competencies sc JOIN recruitment_interview_competency_definitions d ON d.Id=sc.CompetencyId";
 
@@ -3976,6 +4167,24 @@ CREATE TABLE IF NOT EXISTS person_activity_events (
         public string SectionCode { get; set; } = "";
     }
 
+    private sealed class ResumeJobContextRow
+    {
+        public long PositionId { get; set; }
+        public string Status { get; set; } = "";
+        public string PositionTitle { get; set; } = "";
+        public string PositionCategory { get; set; } = "";
+        public string Department { get; set; } = "";
+        public string RequiredSkills { get; set; } = "";
+        public string PreferredSkills { get; set; } = "";
+        public string ExperienceRange { get; set; } = "";
+        public string JobLocation { get; set; } = "";
+        public string Qualification { get; set; } = "";
+        public string Certifications { get; set; } = "";
+        public string JobDescriptionTitle { get; set; } = "";
+        public string JobDescriptionSummary { get; set; } = "";
+        public string JobDescriptionRolePurpose { get; set; } = "";
+    }
+
     private sealed class ScoringRow
     {
         public long ApplicationId { get; set; }
@@ -4019,6 +4228,7 @@ CREATE TABLE IF NOT EXISTS person_activity_events (
     {
         public long ApplicationId { get; set; }
         public long CandidateId { get; set; }
+        public long PositionId { get; set; }
         public int ClientId { get; set; }
         public long? RequestedResumeId { get; set; }
         public long ResumeId { get; set; }

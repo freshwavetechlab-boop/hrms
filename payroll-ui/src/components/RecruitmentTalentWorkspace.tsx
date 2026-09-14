@@ -15,9 +15,11 @@ import { getEntityAttachments, openAttachmentWithTicket, uploadEntityAttachment 
 import { getClients } from '../services/payrollService'
 import { getRecruitmentOpenPositions } from '../services/recruitmentService'
 import { getEmployeeManagerUsers, getWorkLocations } from '../services/settingsService'
-import { completeCandidateChecklistItem, convertCandidateToEmployee, createApplication, deleteApplication, deleteCandidate, deleteInterview, deleteOffer, generateOfferLetter, getApplications, getCandidate, getCandidates, getInterviews, getOffers, overrideApplicationScore, saveCandidate, saveCandidateProfileSections, saveOffer, scoreApplication, updateOfferStatus, uploadCandidateResume } from '../services/recruitmentTalentService'
+import { completeCandidateChecklistItem, convertCandidateToEmployee, createApplication, deleteApplication, deleteCandidate, deleteInterview, deleteOffer, generateOfferLetter, getApplications, getCandidate, getCandidates, getInterviews, getOffers, overrideApplicationScore, saveCandidate, saveCandidateProfileSections, saveOffer, scoreApplication, sendInterviewInvite, updateOfferStatus, uploadCandidateResume } from '../services/recruitmentTalentService'
+import { getRecruitmentApplicationTransitions, transitionRecruitmentApplication } from '../services/recruitmentOrchestrationService'
 import { useAuthSession } from './AuthGate'
 import type { AttachmentFieldConfiguration, Client, ConvertCandidateToEmployeeRequest, EntityAttachment, RecruitmentApplicationScore, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentCandidateChecklistItem, RecruitmentInterview, RecruitmentOffer, RecruitmentOpenPosition, SaveRecruitmentCandidate, WorkLocation, WorkflowApprover } from '../types/payroll'
+import type { RecruitmentPipelineTransition } from '../types/recruitmentOrchestration'
 import { useToast } from './ToastProvider'
 import './RecruitmentTalentWorkspace.css'
 
@@ -30,6 +32,7 @@ const certification0: RecruitmentCandidateCertification = { id: 0, candidateId: 
 const canApplyCandidate = (row: RecruitmentCandidate) => row.profileStatus === 'Active' && row.consentStatus !== 'Revoked' && (!row.retentionUntil || new Date(row.retentionUntil).getTime() >= Date.now())
 const canMoveApplication = (row: RecruitmentCandidateApplication) => !['Rejected', 'Withdrawn', 'Joined'].includes(row.currentStage) && !row.currentStage.startsWith('Offer')
 type ApplicationQuickFilter = 'all' | 'new' | 'needs-score' | 'scored' | 'pipeline' | 'rejected'
+type InterviewQuickFilter = 'all' | 'scheduled' | 'completed' | 'attention'
 const rejectedApplication = (row: RecruitmentCandidateApplication) => /reject|withdraw/i.test(`${row.currentStage} ${row.currentStatus}`)
 const newApplication = (row: RecruitmentCandidateApplication) => /new|application|intake/i.test(row.currentStage || '')
 const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join('') || 'C'
@@ -70,12 +73,26 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   const [applicationStage, setApplicationStage] = useState('')
   const [applicationScoreBand, setApplicationScoreBand] = useState('')
   const [applicationSort, setApplicationSort] = useState('recent')
-  const requestedPostingId = Number(new URLSearchParams(location.search).get('jobPostingId') || 0)
+  const [interviewQuickFilter, setInterviewQuickFilter] = useState<InterviewQuickFilter>('all')
+  const [applicationTransitions, setApplicationTransitions] = useState<Record<number, RecruitmentPipelineTransition[]>>({})
+  const [transitionDraft, setTransitionDraft] = useState<{ application: RecruitmentCandidateApplication; transition: RecruitmentPipelineTransition; reason: string } | null>(null)
+  const routeQuery = new URLSearchParams(location.search)
+  const requestedPostingId = Number(routeQuery.get('jobPostingId') || 0)
+  const requestedPositionId = Number(routeQuery.get('positionId') || 0)
+  const requestedUploadMode = routeQuery.get('upload')
   const closeCandidateForm = () => {
     setCandidateFormOpen(false)
     const params = new URLSearchParams(location.search)
     params.delete('add')
     params.delete('jobPostingId')
+    const query = params.toString()
+    navigate(`${location.pathname}${query ? `?${query}` : ''}`, { replace: true })
+  }
+  const closeResumeIntake = () => {
+    setResumeIntakeMode(null)
+    const params = new URLSearchParams(location.search)
+    if (!params.has('upload')) return
+    params.delete('upload')
     const query = params.toString()
     navigate(`${location.pathname}${query ? `?${query}` : ''}`, { replace: true })
   }
@@ -92,6 +109,10 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
     void Promise.all([getClients(), getWorkLocations(), getEmployeeManagerUsers(), getRecruitmentOpenPositions(initialClientId)]).then(([clientRows, locationRows, userRows, positionRows]) => { setClients(clientRows); setWorkLocations(locationRows); setPanelUsers(userRows); setPositions(positionRows) })
     void load()
   }, [initialClientId, load])
+  useEffect(() => {
+    if (String(mode) !== 'applications' || !['single', 'bulk'].includes(requestedUploadMode || '')) return
+    setResumeIntakeMode(requestedUploadMode as RecruitmentResumeIntakeMode)
+  }, [mode, requestedUploadMode])
 
   const openCandidate = async (id: number) => {
     const [candidateDetail, documents] = await Promise.all([getCandidate(id), getEntityAttachments('CANDIDATE', id)])
@@ -112,6 +133,20 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
     setApplicationDraft({ candidateId: 0, positionId: 0, sourceType: 'Direct' }); await load(); await refreshDetail()
   }
   const refreshInterviewData = async () => { await load(); await refreshDetail() }
+  const loadApplicationTransitions = async (applicationId: number) => {
+    if (applicationTransitions[applicationId]) return
+    const rows = await getRecruitmentApplicationTransitions(applicationId)
+    setApplicationTransitions(current => ({ ...current, [applicationId]: rows }))
+  }
+  const moveApplication = async () => {
+    if (!transitionDraft || (transitionDraft.transition.requiresReason && !transitionDraft.reason.trim())) return
+    const response = await transitionRecruitmentApplication(transitionDraft.application.id, transitionDraft.transition.id, transitionDraft.reason.trim())
+    if (!response.ok) return
+    setTransitionDraft(null)
+    setApplicationTransitions({})
+    await load()
+    await refreshDetail()
+  }
   const saveOfferDraft = async () => {
     if (!offerDraft) return
     const response = await saveOffer(offerDraft)
@@ -200,6 +235,18 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
     { key: 'pipeline', label: 'In pipeline', count: intakeApplications.filter(row => !newApplication(row) && !rejectedApplication(row)).length, tone: 'cyan' },
     { key: 'rejected', label: 'Rejected', count: intakeApplications.filter(rejectedApplication).length, tone: 'red' },
   ]
+  const visibleInterviews = useMemo(() => interviews.filter(row => {
+    if (interviewQuickFilter === 'scheduled') return ['Scheduled', 'Rescheduled'].includes(row.status)
+    if (interviewQuickFilter === 'completed') return row.status === 'Completed'
+    if (interviewQuickFilter === 'attention') return ['Cancelled', 'No Show'].includes(row.status)
+    return true
+  }), [interviewQuickFilter, interviews])
+  const interviewMetrics: Array<{ key: InterviewQuickFilter; label: string; count: number; tone: string }> = [
+    { key: 'all', label: 'All interviews', count: interviews.length, tone: 'blue' },
+    { key: 'scheduled', label: 'Scheduled', count: interviews.filter(row => ['Scheduled', 'Rescheduled'].includes(row.status)).length, tone: 'green' },
+    { key: 'completed', label: 'Completed', count: interviews.filter(row => row.status === 'Completed').length, tone: 'purple' },
+    { key: 'attention', label: 'Cancelled / no show', count: interviews.filter(row => ['Cancelled', 'No Show'].includes(row.status)).length, tone: 'red' },
+  ]
   const candidateOptions = selectOptions(candidates.map(row => ({ value: row.id, label: `${row.candidateCode} - ${row.candidateName}` })), 'Select candidate', 0)
   const applicationOptions = selectOptions(applications.map(row => ({ value: row.id, label: `${row.applicationCode} - ${row.candidateName} / ${row.positionTitle}` })), 'Select application', 0)
   const positionOptions = selectOptions(positions.filter(row => !['Closed', 'Cancelled', 'Filled'].includes(row.status)).map(row => ({ value: row.id, label: `${row.positionCode} - ${row.positionTitle}` })), 'Select position', 0)
@@ -222,7 +269,20 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
             return <article key={row.id} className="candidate-application-card" tabIndex={0} role="button" onClick={() => void openCandidate(row.candidateId)} onKeyDown={event => { if (event.key === 'Enter') void openCandidate(row.candidateId) }}>
               <Avatar size={46}>{initials(row.candidateName)}</Avatar>
               <div className="candidate-application-copy"><div className="candidate-card-title"><h3>{row.candidateName}</h3><Tag>{row.applicationCode}</Tag>{row.atsScore != null && <Tag color={row.atsScore >= 60 ? 'green' : 'orange'} icon={<RobotOutlined />}>{row.atsScore.toFixed(1)} / 100</Tag>}</div><p>{row.positionTitle} <span>({row.positionCode})</span></p><div className="candidate-card-contact"><span><FileSearchOutlined /> {experienceLabel(candidate?.totalExperienceMonths || 0)}</span><span><MailOutlined /> {row.candidateEmail || 'No email'}</span><span><PhoneOutlined /> {row.candidatePhone || 'No phone'}</span><Tag color={row.jobPostingId ? 'blue' : 'default'}>{source}</Tag></div><small>Applied {new Date(row.appliedAt).toLocaleString('en-IN')} · {row.recruiterName || 'Recruiter not assigned'}</small></div>
-              <div className="candidate-card-actions" onClick={event => event.stopPropagation()}><Tag color={rejectedApplication(row) ? 'red' : 'green'}>{row.currentStage || row.currentStatus}</Tag><Space wrap>{canMoveApplication(row) && <Tooltip title={row.resumeId ? 'Calculate or refresh ATS evidence' : 'Add a resume before ATS scoring'}><Button size="small" disabled={!row.resumeId} icon={<RobotOutlined />} onClick={() => void scoreApplication(row.id).then(load)}>Run ATS</Button></Tooltip>}<Button size="small" type="primary" icon={<BranchesOutlined />} onClick={() => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&positionId=${row.positionId}&flow=candidates`)}>Pipeline</Button>{canDeleteRecruitmentData && <Popconfirm title="Delete application permanently?" description="ATS scores and safe pipeline test data are removed. Interview, offer, workflow and joined records are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteApplication(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.applicationCode}`} /></Popconfirm>}</Space></div>
+              <div className="candidate-card-actions" onClick={event => event.stopPropagation()}>
+                <Tag color={rejectedApplication(row) ? 'red' : 'green'}>{row.currentStage || row.currentStatus}</Tag>
+                {canMoveApplication(row) && <Select
+                  className="candidate-next-action"
+                  size="small"
+                  placeholder="Next action"
+                  value={undefined}
+                  onDropdownVisibleChange={open => open && void loadApplicationTransitions(row.id)}
+                  notFoundContent="No allowed action"
+                  options={(applicationTransitions[row.id] || []).map(item => ({ value: item.id, label: item.actionLabel }))}
+                  onChange={id => { const transition = (applicationTransitions[row.id] || []).find(item => item.id === id); if (transition) setTransitionDraft({ application: row, transition, reason: '' }) }}
+                />}
+                <Space wrap>{canMoveApplication(row) && <Tooltip title={row.resumeId ? 'Calculate or refresh ATS evidence' : 'Add a resume before ATS scoring'}><Button size="small" disabled={!row.resumeId} icon={<RobotOutlined />} onClick={() => void scoreApplication(row.id).then(load)}>Run ATS</Button></Tooltip>}<Button size="small" type="primary" icon={<BranchesOutlined />} onClick={() => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&positionId=${row.positionId}&flow=candidates`)}>Pipeline</Button>{canDeleteRecruitmentData && <Popconfirm title="Delete application permanently?" description="This removes its ATS and pipeline data. If it is the candidate's only application, the candidate profile and stored resume file are also permanently deleted." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteApplication(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.applicationCode}`} /></Popconfirm>}</Space>
+              </div>
             </article>
           })}{!visibleApplications.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No applications match these filters." />}</div>
         </div>
@@ -234,11 +294,18 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
       <Card size="small" title="Personal details"><div className="candidate-facts">{[['Email', candidateFromDetail.email || '-'], ['Phone', candidateFromDetail.phone || '-'], ['Location', candidateFromDetail.currentLocation || '-'], ['Experience', experienceLabel(candidateFromDetail.totalExperienceMonths)], ['Qualification', candidateFromDetail.highestQualification || '-'], ['Current company', candidateFromDetail.currentCompany || '-']].map(([label, value]) => <article key={label}><span>{label}</span><b>{value}</b></article>)}</div></Card>
       <Card size="small" title="Hiring pipeline"><div className="candidate-hiring-timeline">{detail.applications.map(row => <article key={row.id}><i /><div><strong>{row.positionTitle}</strong><span>{row.applicationCode} · {row.currentStage}</span><small>Applied {new Date(row.appliedAt).toLocaleString('en-IN')}</small></div><Space><Tag color={row.atsScore == null ? 'orange' : row.atsScore >= 60 ? 'green' : 'red'}>{row.atsScore == null ? 'ATS pending' : `ATS ${row.atsScore.toFixed(1)}`}</Tag><Button size="small" type="primary" onClick={() => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&positionId=${row.positionId}&flow=candidates`)}>Open pipeline</Button></Space></article>)}</div></Card>
       <RecruitmentAtsScoreDetails scores={detail.scores} applications={detail.applications} />
+      <Card size="small" title="Interview feedback & decisions"><DataTable rows={detail.interviews} emptyText="No interviews recorded." actions={row => <Space wrap><Button size="small" onClick={() => setInterviewDraft({ applicationId: row.applicationId, interview: row })}>Update</Button><Button size="small" type="primary" onClick={() => setFeedbackInterview(row)}>View feedback</Button></Space>} columns={[{ key: 'roundCode', label: 'Round' }, { key: 'scheduledStart', label: 'Schedule', render: row => new Date(row.scheduledStart).toLocaleString('en-IN') }, { key: 'status', label: 'Status', render: row => <Tag color={row.status === 'Completed' ? 'green' : 'blue'}>{row.status}</Tag> }, { key: 'result', label: 'Decision' }, { key: 'overallScore', label: 'Score', render: row => `${Number(row.overallScore || 0).toFixed(1)} / 100` }]} /></Card>
+      <Card size="small" title="Offers"><DataTable rows={detail.offers} emptyText="No offer recorded." actions={row => row.offerLetterAttachmentPublicId ? <Button size="small" onClick={() => void openAttachmentWithTicket(row.offerLetterAttachmentPublicId!, 'Preview')}>View offer</Button> : null} columns={[{ key: 'offerNumber', label: 'Offer' }, { key: 'positionTitle', label: 'Position' }, { key: 'offeredCtc', label: 'CTC', render: row => `${row.currency} ${Number(row.offeredCtc).toLocaleString('en-IN')}` }, { key: 'proposedJoiningDate', label: 'Joining', render: row => new Date(row.proposedJoiningDate).toLocaleDateString('en-IN') }, { key: 'status', label: 'Status', render: row => <Tag color={row.status === 'Accepted' ? 'green' : row.status === 'Rejected' ? 'red' : 'blue'}>{row.status}</Tag> }]} /></Card>
       <EntityAttachmentPanel entityType="CANDIDATE" entityId={candidateFromDetail.id} clientId={candidateFromDetail.clientId} moduleCode="RECRUITMENT" formCodes={['CANDIDATE_APPLICATION', 'EMPLOYEE_REFERRAL', 'PRE_ONBOARDING']} title="Candidate documents" uploadOverride={(configuration: AttachmentFieldConfiguration, draft: EntityAttachmentDraft, onProgress) => !draft.file ? Promise.resolve({ ok: false, error: 'Select a file.' }) : configuration.attributeCode === 'RESUME' ? uploadCandidateResume(candidateFromDetail.id, configuration.id, draft.file, draft, onProgress) : uploadEntityAttachment(configuration.id, 'CANDIDATE', candidateFromDetail.id, draft.file, draft, onProgress)} onChanged={() => void refreshDetail()} />
       <Card size="small" title="Activity timeline"><div className="candidate-activity">{detail.activity.map(item => <article key={`${item.moduleCode}-${item.id}`}><i /><div><b>{item.eventTitle}</b><p>{item.eventSummary}</p><small>{new Date(item.occurredAt).toLocaleString('en-IN')} · {item.actorName || 'System'}</small></div></article>)}{!detail.activity.length && <p>No activity recorded.</p>}</div></Card>
     </div>}</Drawer>
+    <Modal open={!!transitionDraft} title={transitionDraft?.transition.actionLabel || 'Move candidate'} onCancel={() => setTransitionDraft(null)} onOk={() => void moveApplication()} okText="Confirm action" okButtonProps={{ disabled: Boolean(transitionDraft?.transition.requiresReason && !transitionDraft.reason.trim()) }}>
+      {transitionDraft && <Form layout="vertical"><p><b>{transitionDraft.application.candidateName}</b> will move from {transitionDraft.application.currentStage}.</p><Form.Item label="Decision note" required={transitionDraft.transition.requiresReason}><Input.TextArea rows={3} value={transitionDraft.reason} onChange={event => setTransitionDraft({ ...transitionDraft, reason: event.target.value })} placeholder="Add a clear decision note." /></Form.Item></Form>}
+    </Modal>
     {candidateFormOpen && <RecruitmentInternalCandidateForm open clientId={initialClientId} initialPostingId={requestedPostingId} onClose={closeCandidateForm} onCompleted={load} />}
-    <RecruitmentResumeIntake open={resumeIntakeMode !== null} initialMode={resumeIntakeMode || 'single'} onClose={() => setResumeIntakeMode(null)} onCompleted={async () => { await load() }} title={resumeIntakeMode === 'bulk' ? 'Bulk candidate upload' : 'Add candidate application'} description="Choose the job and upload the candidate resume. The configured intake, secure document and ATS services create the same candidate record used by the published application link." />
+    <RecruitmentResumeIntake open={resumeIntakeMode !== null} initialMode={resumeIntakeMode || 'single'} initialClientId={initialClientId} initialPositionId={requestedPositionId} initialJobPostingId={requestedPostingId || null} onClose={closeResumeIntake} onCompleted={async () => { await load() }} title={resumeIntakeMode === 'bulk' ? 'Bulk candidate upload' : 'Add candidate application'} description="Choose the job and upload the candidate resume. The configured intake, secure document and ATS services create the same candidate record used by the published application link." />
+    {interviewDraft && <RecruitmentInterviewEditor mode="schedule" open applications={applications} panelUsers={panelUsers} interview={interviewDraft.interview} initialApplicationId={interviewDraft.applicationId} onClose={() => setInterviewDraft(null)} onSaved={refreshInterviewData} />}
+    {feedbackInterview && <RecruitmentInterviewEditor mode="feedback" open applications={applications} panelUsers={panelUsers} interview={feedbackInterview} onClose={() => setFeedbackInterview(null)} onSaved={refreshInterviewData} />}
   </div>
 
   return <div className="talent-workspace">
@@ -248,12 +315,30 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
       ]} />
     </Card>}
     {mode === 'candidates' && <RecruitmentGlobalTalentPool onViewCandidate={openCandidate} onChanged={load} />}
-    {mode === 'applications' && <><div className="talent-toolbar right"><Button onClick={() => setResumeIntakeMode('single')}>Upload resume</Button><Button type="primary" onClick={() => setResumeIntakeMode('bulk')}>Bulk resumes</Button></div><DataTable rows={intakeApplications} emptyText="No applications have arrived through a published job link or manual upload for this client." exportFileName="candidate-applications" actions={row => <Space><Button size="small" onClick={() => void openCandidate(row.candidateId)}>Profile</Button>{canMoveApplication(row) && <Button size="small" onClick={() => void scoreApplication(row.id).then(load)}>Score</Button>}<Button size="small" type="primary" onClick={() => navigate(`/recruitment/hiring-pipeline?positionId=${row.positionId}`)}>Open pipeline</Button>{canDeleteRecruitmentData && <Popconfirm title="Delete application permanently?" description="ATS scores and safe pipeline test data are removed. Interview, offer, workflow and joined records are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteApplication(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.applicationCode}`} /></Popconfirm>}</Space>} columns={[
+    {mode === 'applications' && <><div className="talent-toolbar right"><Button onClick={() => setResumeIntakeMode('single')}>Upload resume</Button><Button type="primary" onClick={() => setResumeIntakeMode('bulk')}>Bulk resumes</Button></div><DataTable rows={intakeApplications} emptyText="No applications have arrived through a published job link or manual upload for this client." exportFileName="candidate-applications" actions={row => <Space><Button size="small" onClick={() => void openCandidate(row.candidateId)}>Profile</Button>{canMoveApplication(row) && <Button size="small" onClick={() => void scoreApplication(row.id).then(load)}>Score</Button>}<Button size="small" type="primary" onClick={() => navigate(`/recruitment/hiring-pipeline?positionId=${row.positionId}`)}>Open pipeline</Button>{canDeleteRecruitmentData && <Popconfirm title="Delete application permanently?" description="This removes its ATS and pipeline data. If it is the candidate's only application, the candidate profile and stored resume file are also permanently deleted." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteApplication(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.applicationCode}`} /></Popconfirm>}</Space>} columns={[
       { key: 'applicationCode', label: 'Application' }, { key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Position', render: row => <><b>{row.positionTitle}</b><small>{row.positionCode}</small></> }, { key: 'clientName', label: 'Client' }, { key: 'sourceType', label: 'Application source', render: row => <Tag color={row.jobPostingId ? 'blue' : 'default'}>{row.jobPostingId ? 'Published job link' : `Manual · ${row.sourceType || 'Direct'}`}</Tag> }, { key: 'currentStage', label: 'Stage' }, { key: 'recruiterName', label: 'Recruiter' }, { key: 'atsScore', label: 'ATS score', render: row => row.atsScore == null ? '-' : <Tag color={row.atsScore >= 60 ? 'green' : 'orange'}>{row.atsScore.toFixed(1)}</Tag> }, { key: 'appliedAt', label: 'Applied', render: row => new Date(row.appliedAt).toLocaleDateString('en-IN') }
     ]} /></>}
-    {mode === 'interviews' && <><div className="talent-toolbar right"><Button type="primary" icon={<CalendarOutlined />} onClick={() => setInterviewDraft({ applicationId: 0 })}>Schedule interview</Button></div><DataTable rows={interviews} exportFileName="recruitment-interviews" actions={row => <Space><Button size="small" onClick={() => setInterviewDraft({ applicationId: row.applicationId, interview: row })}>Update</Button><Button size="small" type="primary" onClick={() => setFeedbackInterview(row)}>Panel feedback</Button>{canDeleteRecruitmentData && <Popconfirm title="Delete this interview?" description="Panel feedback and safe interview documents will also be removed. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteInterview(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete interview ${row.roundCode}`} /></Popconfirm>}</Space>} columns={[
-      { key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Position' }, { key: 'roundCode', label: 'Round' }, { key: 'interviewType', label: 'Type' }, { key: 'scheduledStart', label: 'Schedule', render: row => new Date(row.scheduledStart).toLocaleString('en-IN') }, { key: 'mode', label: 'Mode' }, { key: 'status', label: 'Status' }, { key: 'result', label: 'Result' }, { key: 'overallScore', label: 'Score' }
-    ]} /></>}
+    {mode === 'interviews' && <section className="interview-operations-workspace">
+      <header className="candidate-applications-heading"><div><span>INTERVIEW OPERATIONS</span><h2>Interviews</h2><p>Schedule rounds, send email invites and capture panel feedback from one queue.</p></div><Button type="primary" icon={<CalendarOutlined />} onClick={() => setInterviewDraft({ applicationId: 0 })}>Schedule interview</Button></header>
+      <div className="candidate-status-strip interview-status-strip" role="tablist" aria-label="Interview status filters">{interviewMetrics.map(metric => <button key={metric.key} type="button" role="tab" aria-selected={interviewQuickFilter === metric.key} className={interviewQuickFilter === metric.key ? 'is-active' : ''} onClick={() => setInterviewQuickFilter(metric.key)}><b className={`tone-${metric.tone}`}>{metric.count}</b><span>{metric.label}</span></button>)}</div>
+      <DataTable rows={visibleInterviews} emptyText="No interviews match this status." exportFileName="recruitment-interviews" actions={row => <Space wrap>
+        <Button size="small" onClick={() => setInterviewDraft({ applicationId: row.applicationId, interview: row })}>Update</Button>
+        {['Scheduled', 'Rescheduled'].includes(row.status) && <Tooltip title={row.locationOrLink ? 'Email the candidate and selected panel' : 'Add a meeting link or location first'}><Button size="small" icon={<MailOutlined />} disabled={!row.locationOrLink} onClick={() => void sendInterviewInvite(row.id)}>Send invite</Button></Tooltip>}
+        <Button size="small" type="primary" onClick={() => setFeedbackInterview(row)}>Panel feedback</Button>
+        {!['Completed', 'Cancelled', 'No Show'].includes(row.status) && <Button size="small" type="primary" onClick={() => setInterviewDraft({ applicationId: row.applicationId, interview: { ...row, status: 'Completed', result: 'Selected' } })}>Select</Button>}
+        {!['Completed', 'Cancelled', 'No Show'].includes(row.status) && <Button size="small" danger onClick={() => setInterviewDraft({ applicationId: row.applicationId, interview: { ...row, status: 'Completed', result: 'Rejected' } })}>Reject</Button>}
+        {canDeleteRecruitmentData && <Popconfirm title="Delete this interview?" description="Panel feedback and safe interview documents will also be removed. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteInterview(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete interview ${row.roundCode}`} /></Popconfirm>}
+      </Space>} columns={[
+        { key: 'candidateName', label: 'Candidate' },
+        { key: 'positionTitle', label: 'Position' },
+        { key: 'roundCode', label: 'Round' },
+        { key: 'scheduledStart', label: 'Schedule', render: row => <><b>{new Date(row.scheduledStart).toLocaleDateString('en-IN')}</b><small>{new Date(row.scheduledStart).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} - {new Date(row.scheduledEnd).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</small></> },
+        { key: 'mode', label: 'Mode' },
+        { key: 'locationOrLink', label: 'Link / location', render: row => /^https?:\/\//i.test(row.locationOrLink || '') ? <Button size="small" type="link" href={row.locationOrLink} target="_blank" rel="noreferrer">Open link</Button> : row.locationOrLink || '-' },
+        { key: 'status', label: 'Status', render: row => <Tag color={['Scheduled', 'Rescheduled'].includes(row.status) ? 'blue' : row.status === 'Completed' ? 'green' : 'red'}>{row.status}</Tag> },
+        { key: 'result', label: 'Result' },
+      ]} />
+    </section>}
     {mode === 'offers' && <><div className="talent-toolbar right"><Button type="primary" icon={<PlusOutlined />} onClick={() => { setCandidateAttachments([]); setOfferDraft({ applicationId: 0, offeredCtc: 0, currency: 'INR', proposedJoiningDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), status: 'Draft' }) }}>Create offer</Button></div><DataTable rows={offers} exportFileName="recruitment-offers" actions={row => <Space wrap>{row.status === 'Draft' && <Button size="small" onClick={() => { setOfferDraft({ ...row }); void loadOfferDocuments(row.applicationId) }}>Edit</Button>}{row.status === 'Draft' && <Button size="small" onClick={() => void generateOfferLetter(row.id).then(load)}>{row.offerLetterAttachmentPublicId ? 'Regenerate letter' : 'Generate letter'}</Button>}{row.offerLetterAttachmentPublicId && <Button size="small" onClick={() => void openAttachmentWithTicket(row.offerLetterAttachmentPublicId!, 'Preview')}>View letter</Button>}{['Draft', 'Approved'].includes(row.status) && <Button size="small" type="primary" disabled={!row.offerLetterAttachmentPublicId} title={!row.offerLetterAttachmentPublicId ? 'Generate or link the offer letter first.' : undefined} onClick={() => void updateOfferStatus(row.id, 'Pending Candidate').then(load)}>{row.status === 'Approved' ? 'Release' : 'Submit / release'}</Button>}{['Pending Candidate', 'Released', 'Negotiation'].includes(row.status) && <><Button size="small" type="primary" onClick={() => void updateOfferStatus(row.id, 'Accepted').then(load)}>Accept</Button><Button size="small" danger onClick={() => setOfferStatusDraft({ row, status: 'Rejected', reason: '' })}>Reject</Button></>}{['Pending Candidate', 'Released'].includes(row.status) && <Button size="small" onClick={() => setOfferStatusDraft({ row, status: 'Negotiation', reason: '' })}>Negotiate</Button>}{['Draft', 'Approved', 'Pending Candidate', 'Released', 'Negotiation'].includes(row.status) && <Button size="small" danger onClick={() => setOfferStatusDraft({ row, status: 'Withdrawn', reason: '' })}>Withdraw</Button>}{canDeleteRecruitmentData && <Popconfirm title="Delete this offer?" description="The generated offer letter will also be removed. Joined applications are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteOffer(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete offer ${row.offerNumber}`} /></Popconfirm>}</Space>} columns={[
       { key: 'offerNumber', label: 'Offer' }, { key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Position' }, { key: 'offerTemplateName', label: 'Template', render: row => row.offerTemplateName || '-' }, { key: 'offerLetter', label: 'Letter', render: row => <Tag color={row.offerLetterAttachmentPublicId ? 'green' : 'orange'}>{row.offerLetterAttachmentPublicId ? 'Secured' : 'Missing'}</Tag> }, { key: 'offeredCtc', label: 'CTC', render: row => `${row.currency} ${Number(row.offeredCtc).toLocaleString('en-IN')}` }, { key: 'approvedBudgetAmount', label: 'Approved budget', render: row => row.approvedBudgetAmount > 0 ? `${row.currency} ${Number(row.approvedBudgetAmount).toLocaleString('en-IN')}` : '-' }, { key: 'variancePercent', label: 'Variance', render: row => row.stageOfferConfigurationId ? <Tag color={row.varianceExceeded ? 'red' : 'green'}>{Number(row.variancePercent).toFixed(2)}%</Tag> : '-' }, { key: 'approvalPolicy', label: 'Approval policy', render: row => row.approvalPolicy || (row.stageOfferConfigurationId ? 'Pipeline direct' : 'Global') }, { key: 'proposedJoiningDate', label: 'Joining', render: row => new Date(row.proposedJoiningDate).toLocaleDateString('en-IN') }, { key: 'status', label: 'Status' }
     ]} /></>}

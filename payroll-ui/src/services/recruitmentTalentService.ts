@@ -15,13 +15,14 @@ export const getApplications = (filters: { positionId?: number; candidateId?: nu
   return getJson<RecruitmentCandidateApplication[]>(`/api/recruitment/applications?${search}`, [])
 }
 export const createApplication = (row: { candidateId: number; positionId: number; sourceType: string; resumeId?: number | null; recruiterUserId?: number | null }) => postJson('/api/recruitment/applications', row, null as RecruitmentCandidateApplication | null, { successMessage: 'Application created.' })
-export const deleteApplication = (id: number) => deleteJson(`/api/recruitment/applications/${id}`, null, { successMessage: 'Application and ATS screening data deleted.' })
+export const deleteApplication = (id: number) => deleteJson(`/api/recruitment/applications/${id}`, null, { successMessage: 'Application deleted. An orphaned candidate profile and stored resume were also purged.' })
 export const changeApplicationStage = (id: number, stage: string, reason: string) => postJson(`/api/recruitment/applications/${id}/stage`, { stage, status: stage, reason }, null as RecruitmentCandidateApplication | null, { successMessage: 'Candidate stage updated.' })
 export const scoreApplication = (id: number) => postJson(`/api/recruitment/applications/${id}/score`, {}, null, { successMessage: 'ATS score recalculated.' })
 export const overrideApplicationScore = (scoreId: number, score: number, reason: string) => postJson(`/api/recruitment/application-scores/${scoreId}/override`, { score, reason }, null as RecruitmentApplicationScore | null, { successMessage: 'ATS score override saved.' })
 export const getInterviews = () => getJson<RecruitmentInterview[]>('/api/recruitment/interviews', [])
 export const getInterviewSchedulingContext = (applicationId: number) => getJson<RecruitmentInterviewSchedulingContext | null>(`/api/recruitment/interviews/scheduling-context/${applicationId}`, null)
 export const saveInterview = (row: Partial<RecruitmentInterview> & { applicationId: number; panelUserIds?: number[] }) => postJson('/api/recruitment/interviews', row, null as RecruitmentInterview | null, { successMessage: 'Interview saved.' })
+export const sendInterviewInvite = (id: number) => postJson(`/api/recruitment/interviews/${id}/invite`, {}, { recipientCount: 0 }, { successMessage: 'Interview invite emailed to the candidate and panel.' })
 export const deleteInterview = (id: number) => deleteJson(`/api/recruitment/interviews/${id}`, null, { successMessage: 'Interview deleted.' })
 export const getInterviewFeedback = (interviewId: number) => getJson<RecruitmentInterviewFeedback[]>(`/api/recruitment/interviews/${interviewId}/feedback`, [])
 export const saveInterviewFeedback = (interviewId: number, row: { panelUserId: number; overallScore: number; recommendation: string; competencyScoresJson?: string; comments: string; competencyScores: SaveRecruitmentInterviewFeedbackCompetencyScore[] }) => postJson(`/api/recruitment/interviews/${interviewId}/feedback`, row, null as RecruitmentInterviewFeedback | null, { successMessage: 'Interview feedback saved.' })
@@ -37,12 +38,13 @@ export const uploadCandidateResume = (candidateId: number, fieldConfigurationId:
   if (metadata.documentNumber) body.append('documentNumber', metadata.documentNumber); if (metadata.issueDate) body.append('issueDate', metadata.issueDate); if (metadata.expiryDate) body.append('expiryDate', metadata.expiryDate)
   return postFormWithProgress<{ attachment: EntityAttachment }>(`/api/recruitment/candidates/${candidateId}/resume`, body, {} as { attachment: EntityAttachment }, onProgress)
 }
-export const intakeRecruitmentResumes = (request: { clientId?: number; positionId?: number; jobPostingId?: number | null; talentPoolOnly?: boolean; sourceType: string; files: File[] }, onProgress: (value: number) => void) => {
+export const intakeRecruitmentResumes = (request: { clientId?: number; positionId?: number; jobPostingId?: number | null; talentPoolOnly?: boolean; forceUpload?: boolean; sourceType: string; files: File[] }, onProgress: (value: number) => void) => {
   const body = new FormData()
   if (request.clientId) body.append('clientId', String(request.clientId))
   if (request.positionId) body.append('positionId', String(request.positionId))
   if (request.jobPostingId) body.append('jobPostingId', String(request.jobPostingId))
   if (request.talentPoolOnly) body.append('talentPoolOnly', 'true')
+  if (request.forceUpload) body.append('forceUpload', 'true')
   body.append('sourceType', request.sourceType)
   request.files.forEach(file => body.append('files', file, file.name))
   return postFormWithProgress<RecruitmentResumeIntakeResult>('/api/recruitment/resume-intake', body, { totalFiles: 0, imported: 0, needsReview: 0, items: [] }, onProgress)

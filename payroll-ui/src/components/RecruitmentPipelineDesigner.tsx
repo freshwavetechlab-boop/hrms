@@ -415,10 +415,15 @@ function blankVersion(pipelineDefinitionId: number): RecruitmentPipelineVersion 
 function standardHiringFlow(pipelineVersionId: number, scopeType: NonNullable<RecruitmentPipelineVersion['scopeType']>): Pick<RecruitmentPipelineVersion, 'stages' | 'transitions'> {
   const specs = scopeType === 'Position'
     ? [
-        { name: 'Work Order Intake', type: 'Screening', hours: 24, cardScope: 'Position' as const },
-        { name: 'Hiring Request and Approval', type: 'Approval', hours: 48, cardScope: 'Position' as const },
-        { name: 'JD and Publishing', type: 'Screening', hours: 48, cardScope: 'Position' as const },
-        { name: 'Demand Fulfilled', type: 'Completed', hours: 0, cardScope: 'Position' as const },
+        { name: 'Order for Hiring (Work Order issued)', stageCode: 'ORDER_FOR_HIRING', type: 'Screening', hours: 0, targetDays: 0, cardScope: 'Position' as const },
+        { name: 'Sharing of Profiles for Interview', stageCode: 'SHARING_PROFILES', type: 'Screening', hours: 25 * 24, targetDays: 25, cardScope: 'Position' as const },
+        { name: 'Interview / Panel Assessment', stageCode: 'PANEL_ASSESSMENT', type: 'Interview', hours: 5 * 24, targetDays: 30, cardScope: 'Position' as const },
+        { name: 'Signing of MOM', stageCode: 'SIGNING_MOM', type: 'Approval', hours: 3 * 24, targetDays: 33, cardScope: 'Position' as const },
+        { name: 'Negotiation with Selected Candidate(s) & Sharing of MOM with HR Division', stageCode: 'NEGOTIATION_AND_MOM_TO_HR', type: 'HR', hours: 5 * 24, targetDays: 38, cardScope: 'Position' as const },
+        { name: 'Conveying of Approval by HR Division', stageCode: 'HR_DIVISION_APPROVAL', type: 'Approval', hours: 7 * 24, targetDays: 45, cardScope: 'Position' as const },
+        { name: 'Issuance of Offer to Selected Candidate', stageCode: 'OFFER_ISSUANCE', type: 'Offer', hours: 3 * 24, targetDays: 48, cardScope: 'Position' as const },
+        { name: 'Conveying of Joining Date', stageCode: 'JOINING_DATE', type: 'Completed', hours: 2 * 24, targetDays: 50, cardScope: 'Position' as const },
+        { name: 'Rejected', stageCode: 'REJECTED', type: 'Rejected', hours: 0, targetDays: 50, cardScope: 'Position' as const },
       ]
     : scopeType === 'Hybrid'
       ? [
@@ -446,18 +451,18 @@ function standardHiringFlow(pipelineVersionId: number, scopeType: NonNullable<Re
   const stages = specs.map((spec, index) => {
     const source = newStage(index + 1, index === 0, spec.cardScope)
     const terminal = ['Rejected', 'Withdrawn', 'Completed'].includes(spec.type)
-    const base = { ...source, cardScope: spec.cardScope, stageName: spec.name, stageCode: code(spec.name), slaDurationMinutes: spec.hours * 60, slaWarningMinutes: spec.hours > 4 ? 4 * 60 : spec.hours ? 60 : 0, isInitial: index === 0, isTerminal: terminal }
+    const base = { ...source, cardScope: spec.cardScope, stageName: spec.name, stageCode: 'stageCode' in spec ? spec.stageCode : code(spec.name), slaDurationMinutes: spec.hours * 60, slaWarningMinutes: spec.hours > 4 ? 4 * 60 : spec.hours ? 60 : 0, targetOffsetMinutes: 'targetDays' in spec ? spec.targetDays * 1440 : null, isInitial: index === 0, isTerminal: terminal }
     return { ...base, ...stageTypePatch(base, spec.type), isInitial: index === 0, isTerminal: terminal }
   })
   const rejected = stages.find(stage => stage.stageType === 'Rejected')
   const progressStages = stages.filter(stage => stage.stageType !== 'Rejected')
   const transitions = progressStages.slice(0, -1).map((stage, index) => ({ ...newTransition(pipelineVersionId, stage, progressStages[index + 1], index + 1), actionLabel: `Move to ${progressStages[index + 1].stageName}` }))
   if (rejected) {
-    for (const stage of progressStages.filter(stage => stage.cardScope === 'Application' && !stage.isTerminal)) {
-      transitions.push({ ...newTransition(pipelineVersionId, stage, rejected, transitions.length + 1), outcomeCode: 'REJECT', actionLabel: 'Reject candidate', requiresReason: true })
+    for (const stage of progressStages.filter(stage => stage.cardScope === rejected.cardScope && !stage.isTerminal)) {
+      transitions.push({ ...newTransition(pipelineVersionId, stage, rejected, transitions.length + 1), outcomeCode: 'REJECT', actionLabel: rejected.cardScope === 'Position' ? 'Close hiring demand as rejected' : 'Reject candidate', requiresReason: true })
     }
-    const recoveryTarget = progressStages.find(stage => stage.cardScope === 'Application' && !stage.isTerminal)
-    if (recoveryTarget) transitions.push({ ...newTransition(pipelineVersionId, rejected, recoveryTarget, transitions.length + 1), outcomeCode: 'RETURN_TO_INTAKE', actionLabel: 'Return to candidate intake', requiresReason: true })
+    const recoveryTarget = progressStages.find(stage => stage.cardScope === rejected.cardScope && !stage.isTerminal)
+    if (recoveryTarget) transitions.push({ ...newTransition(pipelineVersionId, rejected, recoveryTarget, transitions.length + 1), outcomeCode: 'RETURN_TO_INTAKE', actionLabel: rejected.cardScope === 'Position' ? 'Reopen hiring demand' : 'Return to candidate intake', requiresReason: true })
   }
   return { stages, transitions }
 }

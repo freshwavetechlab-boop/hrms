@@ -114,7 +114,7 @@ WHERE execution.ApplicationId=@ApplicationId AND (@ClientId IS NULL OR applicati
 ORDER BY execution.StartedAtUtc DESC,execution.Id DESC", new { ApplicationId = applicationId, user.ClientId })).ToList();
     }
 
-    public async Task<(long ApplicationId, long StageInstanceId, bool Approved)> CompleteWorkflowAsync(long workflowInstanceId, string workflowStatus)
+    public async Task<(long ApplicationId, long StageInstanceId, bool Approved, bool ResumeSubmission)> CompleteWorkflowAsync(long workflowInstanceId, string workflowStatus)
     {
         var status = (workflowStatus ?? "").Trim();
         var terminal = status.Equals("Approved", StringComparison.OrdinalIgnoreCase)
@@ -123,13 +123,13 @@ ORDER BY execution.StartedAtUtc DESC,execution.Id DESC", new { ApplicationId = a
             || status.Equals("Failed", StringComparison.OrdinalIgnoreCase)
             || status.Equals("Cancelled", StringComparison.OrdinalIgnoreCase);
         if (!terminal)
-            return (0, 0, false);
+            return (0, 0, false, false);
         var approved = status.Equals("Approved", StringComparison.OrdinalIgnoreCase);
         await using var db = Db();
         await db.OpenAsync();
         var execution = await db.QueryFirstOrDefaultAsync<RecruitmentStageActionExecution>(
             "SELECT * FROM recruitment_stage_action_executions WHERE WorkflowInstanceId=@Id", new { Id = workflowInstanceId });
-        if (execution is null) return (0, 0, false);
+        if (execution is null) return (0, 0, false, false);
         await db.ExecuteAsync(@"UPDATE recruitment_stage_action_executions
 SET Status=@Status,ErrorMessage=@Error,CompletedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id",
             new
@@ -138,7 +138,11 @@ SET Status=@Status,ErrorMessage=@Error,CompletedAtUtc=UTC_TIMESTAMP(6) WHERE Id=
                 Status = approved ? "Completed" : "Failed",
                 Error = approved ? "" : $"Workflow completed as {status}."
             });
-        return (execution.ApplicationId, execution.StageInstanceId, approved);
+        var resumeSubmission = approved
+            && execution.IsBlocking
+            && execution.ActionCode.Equals("START_WORKFLOW", StringComparison.OrdinalIgnoreCase)
+            && execution.TriggerEvent.StartsWith("OnSubmission", StringComparison.OrdinalIgnoreCase);
+        return (execution.ApplicationId, execution.StageInstanceId, approved, resumeSubmission);
     }
 
     public async Task<int> ProcessSlaActionsAsync(CancellationToken cancellationToken)

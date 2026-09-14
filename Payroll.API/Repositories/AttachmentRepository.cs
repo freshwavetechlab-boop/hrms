@@ -191,16 +191,21 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='entity_attachments' AND COLUMN_NAM
         if (externalSubjectColumnExists == 0)
             await db.ExecuteAsync("ALTER TABLE entity_attachments ADD COLUMN uploaded_by_external_subject_id BIGINT NULL AFTER uploaded_by_user_id");
 
-        var count = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM attachment_storage_servers");
-        if (count == 0)
-        {
-            var rootPath = configuration["AttachmentStorage:RootPath"];
-            if (string.IsNullOrWhiteSpace(rootPath))
-                rootPath = Path.Combine("App_Data", "attachments");
-            await db.ExecuteAsync(@"INSERT INTO attachment_storage_servers
+        var rootPath = configuration["AttachmentStorage:RootPath"];
+        if (string.IsNullOrWhiteSpace(rootPath))
+            rootPath = Path.Combine("App_Data", "attachments");
+        await db.ExecuteAsync(@"INSERT INTO attachment_storage_servers
 (server_code,server_name,storage_type,base_path,is_read_enabled,is_write_enabled,is_default_write_server,priority,is_active)
-VALUES ('API_LOCAL','API local attachment storage','LocalFileSystem',@RootPath,TRUE,TRUE,TRUE,100,TRUE);", new { RootPath = rootPath });
-        }
+VALUES ('API_LOCAL','API local attachment storage','LocalFileSystem',@RootPath,TRUE,TRUE,FALSE,100,TRUE)
+ON DUPLICATE KEY UPDATE
+storage_type='LocalFileSystem',
+base_path=CASE WHEN TRIM(base_path)='' THEN VALUES(base_path) ELSE base_path END,
+is_read_enabled=TRUE,is_write_enabled=TRUE,is_active=TRUE;", new { RootPath = rootPath });
+        var activeDefaultCount = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM attachment_storage_servers
+WHERE is_default_write_server=TRUE AND is_active=TRUE AND is_write_enabled=TRUE");
+        if (activeDefaultCount == 0)
+            await db.ExecuteAsync(@"UPDATE attachment_storage_servers
+SET is_default_write_server=TRUE WHERE server_code='API_LOCAL'");
 
         await db.ExecuteAsync(@"
 INSERT INTO attachment_attributes
@@ -973,24 +978,13 @@ ORDER BY id DESC LIMIT 1", new
             if (duplicateId.HasValue) return (await GetAttachmentByIdAsync(duplicateId.Value), null);
         }
 
-        var server = await GetDefaultWriteServerAsync(cancellationToken);
-        if (server is null) return (null, "No active default write storage server is configured.");
-        if (server.MaximumCapacityBytes.HasValue)
-        {
-            await using var capacityDb = Connection();
-            await capacityDb.OpenAsync(cancellationToken);
-            var storedBytes = await capacityDb.ExecuteScalarAsync<long>(
-                "SELECT COALESCE(SUM(file_size_bytes),0) FROM entity_attachments WHERE storage_server_id=@StorageServerId",
-                new { StorageServerId = server.Id });
-            if (storedBytes + file.Length > server.MaximumCapacityBytes.Value)
-                return (null, "The configured write storage server has reached its capacity limit. Select another default write server.");
-        }
         var publicId = Guid.NewGuid();
         var storedFileName = $"{Guid.NewGuid():N}.{extension}";
-        var storageKey = BuildStorageKey(clientId.Value, metadata.EntityType, metadata.EntityId, configurationRow.AttributeCode, storedFileName);
-
-        await using (var source = file.OpenReadStream())
-            storageKey = await storageService.WriteAsync(server, storageKey, source, cancellationToken);
+        var requestedStorageKey = BuildStorageKey(clientId.Value, metadata.EntityType, metadata.EntityId, configurationRow.AttributeCode, storedFileName);
+        var writeResult = await WriteWithFailoverAsync(file, requestedStorageKey, cancellationToken);
+        if (writeResult.Server is null) return (null, writeResult.Error);
+        var server = writeResult.Server;
+        var storageKey = writeResult.StorageKey;
 
         try
         {
@@ -1138,17 +1132,47 @@ WHERE token_hash=@TokenHash AND revoked_at_utc IS NULL AND expires_at_utc>UTC_TI
     }
 
     public async Task<(bool Ok, string? Error)> DeleteAsync(Guid publicId, AuthUser user, string ipAddress, string userAgent)
+        => await DeleteCoreAsync(publicId, user, ipAddress, userAgent, false, CancellationToken.None);
+
+    public async Task<(bool Ok, string? Error)> PurgeAsync(
+        Guid publicId,
+        AuthUser user,
+        string ipAddress,
+        string userAgent,
+        CancellationToken cancellationToken = default)
+        => await DeleteCoreAsync(publicId, user, ipAddress, userAgent, true, cancellationToken);
+
+    private async Task<(bool Ok, string? Error)> DeleteCoreAsync(
+        Guid publicId,
+        AuthUser user,
+        string ipAddress,
+        string userAgent,
+        bool purgeStoredFile,
+        CancellationToken cancellationToken)
     {
         var row = await GetAccessRowAsync(publicId);
         if (row is null || row.IsDeleted) return (false, "Attachment was not found.");
         var allowed = await CanManageEntityAsync(user, row.EntityType, row.EntityId, row.ClientId) || (await IsEntityOwnerAsync(user, row.EntityType, row.EntityId) && row.OwnerCanDelete);
         if (!allowed) return (false, "You are not allowed to delete this attachment.");
+        if (purgeStoredFile)
+        {
+            var server = await GetStorageServerAsync(row.StorageServerId, true);
+            if (server is null) return (false, "The attachment storage server was not found; the file was not deleted.");
+            try
+            {
+                await storageService.DeleteAsync(server, row.StorageKey, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                return (false, $"The stored file could not be deleted: {exception.Message}");
+            }
+        }
         await using var db = Connection();
         await db.OpenAsync();
         await using var transaction = await db.BeginTransactionAsync();
         await db.ExecuteAsync(@"UPDATE entity_attachments SET is_deleted=TRUE,is_current=FALSE,deleted_by_user_id=@UserId,deleted_at_utc=UTC_TIMESTAMP(6)
 WHERE id=@Id AND is_deleted=FALSE", new { row.Id, UserId = user.Id }, transaction);
-        await WriteAuditAsync(db, transaction, row.Id, row.ClientId, row.EntityType, row.EntityId, "DELETE", user.Id, true, "", ipAddress, userAgent, new { publicId });
+        await WriteAuditAsync(db, transaction, row.Id, row.ClientId, row.EntityType, row.EntityId, purgeStoredFile ? "PURGE" : "DELETE", user.Id, true, "", ipAddress, userAgent, new { publicId, storedFilePurged = purgeStoredFile });
         await transaction.CommitAsync();
         return (true, null);
     }
@@ -1178,18 +1202,54 @@ rejection_reason=@Reason WHERE id=@Id", new { row.Id, Status = approve ? "Verifi
         return null;
     }
 
-    private async Task<AttachmentStorageServer?> GetDefaultWriteServerAsync(CancellationToken cancellationToken)
+    private async Task<(AttachmentStorageServer? Server, string StorageKey, string? Error)> WriteWithFailoverAsync(
+        IFormFile file,
+        string requestedStorageKey,
+        CancellationToken cancellationToken)
     {
-        var servers = await GetStorageServersAsync(true);
-        foreach (var server in servers
-                     .Where(server => server.IsActive && server.IsWriteEnabled)
-                     .OrderByDescending(server => server.IsDefaultWriteServer)
-                     .ThenBy(server => server.Priority)
-                     .ThenBy(server => server.ServerName))
+        var servers = (await GetStorageServersAsync(true))
+            .Where(server => server.IsActive && server.IsWriteEnabled)
+            .OrderByDescending(server => server.IsDefaultWriteServer)
+            .ThenBy(server => server.Priority)
+            .ThenBy(server => server.ServerName)
+            .ToList();
+        var capacityBlocked = false;
+        foreach (var server in servers)
         {
-            if (await IsReadyForWriteAsync(server, cancellationToken)) return server;
+            if (!await IsReadyForWriteAsync(server, cancellationToken)) continue;
+            if (server.MaximumCapacityBytes.HasValue)
+            {
+                await using var capacityDb = Connection();
+                await capacityDb.OpenAsync(cancellationToken);
+                var storedBytes = await capacityDb.ExecuteScalarAsync<long>(
+                    "SELECT COALESCE(SUM(file_size_bytes),0) FROM entity_attachments WHERE storage_server_id=@StorageServerId",
+                    new { StorageServerId = server.Id });
+                if (storedBytes + file.Length > server.MaximumCapacityBytes.Value)
+                {
+                    capacityBlocked = true;
+                    continue;
+                }
+            }
+
+            try
+            {
+                await using var source = file.OpenReadStream();
+                var storageKey = await storageService.WriteAsync(server, requestedStorageKey, source, cancellationToken);
+                return (server, storageKey, null);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+                storageWriteReadiness[server.Id] = new StorageWriteReadiness(false, DateTime.UtcNow.AddMinutes(1));
+            }
         }
-        return null;
+
+        return capacityBlocked
+            ? (null, "", "All available attachment storage servers have reached their capacity limit.")
+            : (null, "", "Attachment storage is temporarily unavailable. The local fallback could not be reached.");
     }
 
     private async Task<bool> IsReadyForWriteAsync(AttachmentStorageServer server, CancellationToken cancellationToken)

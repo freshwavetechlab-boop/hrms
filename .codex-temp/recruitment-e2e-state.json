@@ -1,0 +1,28 @@
+{
+  "runCode": "PW-E2E-1789391198849",
+  "queueBefore": {
+    "maxId": 71,
+    "pending": 59
+  },
+  "workOrder": {
+    "id": 9,
+    "clientId": 5,
+    "workOrderNumber": "PW-E2E-1789391198849"
+  },
+  "jdParseSummary": "Parsed\n25 fields suggested\nEditable general defaults were added for experience range, work location, required skills, preferred skills, qualification, certification, responsibilities because those facts were not readable from the source. Replace them when client-confirmed details are available.\nComplete the remaining business fields before saving; parser suggestions never auto-submit the request.",
+  "prefill": {
+    "Role / position": "Platform Engineer Band D",
+    "Department": "Technology Centre",
+    "Openings": "1"
+  },
+  "failure": "locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Save draft', exact: true })\u001b[22m\n\n    at D:\\NewHrms\\hrms\\.codex-temp\\recruitment-e2e.cjs:118:145\n    at waitJson (D:\\NewHrms\\hrms\\.codex-temp\\recruitment-e2e.cjs:71:9)\n    at phaseIntake (D:\\NewHrms\\hrms\\.codex-temp\\recruitment-e2e.cjs:118:29)\n    at async main (D:\\NewHrms\\hrms\\.codex-temp\\recruitment-e2e.cjs:153:7)",
+  "browserErrors": [
+    "console: Warning: Instance created by `useForm` is not connected to any Form element. Forget to pass `form` prop?",
+    "console: Warning: [antd: Select] `dropdownMatchSelectWidth` is deprecated. Please use `popupMatchSelectWidth` instead.",
+    "console: Warning: [antd: message] Static function can not consume context like dynamic theme. Please use 'App' component instead."
+  ],
+  "queueAfter": {
+    "maxId": 71,
+    "pending": 59
+  }
+}

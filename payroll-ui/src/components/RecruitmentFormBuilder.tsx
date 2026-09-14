@@ -164,33 +164,25 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     setVersion(copy); setSelectedSectionId(copy.sections[0]?.id ?? null); setSelectedFieldId(null)
   }
 
-  const cancelRevision = () => {
+  const cancelRevision = async () => {
     if (!definition?.id || version?.id !== 0 || !definition.currentPublishedVersionId) return
     const definitionId = definition.id
     const publishedVersionId = definition.currentPublishedVersionId
-    Modal.confirm({
-      title: 'Cancel this new version?',
-      content: 'Unsaved field and section changes will be discarded. The published version will remain unchanged.',
-      okText: 'Discard changes',
-      okButtonProps: { danger: true },
-      cancelText: 'Keep editing',
-      onOk: async () => {
-        setSelectingFormId(definitionId)
-        try {
-          const row = await getRecruitmentForm(definitionId)
-          const published = row?.versions.find(item => item.id === publishedVersionId)
-          if (!row || !published) return message.error('Published version could not be restored.')
-          const normalized = normalizeVersionValidationRules(published)
-          setDefinition(row)
-          setVersion(normalized)
-          setSelectedSectionId(normalized.sections[0]?.id ?? null)
-          setSelectedFieldId(null)
-          setFieldDrawer(false)
-        } finally {
-          setSelectingFormId(null)
-        }
-      },
-    })
+    setSelectingFormId(definitionId)
+    try {
+      const row = await getRecruitmentForm(definitionId)
+      const published = row?.versions.find(item => item.id === publishedVersionId)
+      if (!row || !published) return message.error('Published version could not be restored.')
+      const normalized = normalizeVersionValidationRules(published)
+      setDefinition(row)
+      setVersion(normalized)
+      setSelectedSectionId(normalized.sections[0]?.id ?? null)
+      setSelectedFieldId(null)
+      setFieldDrawer(false)
+      message.success('Revision cancelled. Published version restored.')
+    } finally {
+      setSelectingFormId(null)
+    }
   }
 
   const patchDefinition = (patch: Partial<DynamicFormDefinition>) => setDefinition(current => current ? { ...current, ...patch } : current)

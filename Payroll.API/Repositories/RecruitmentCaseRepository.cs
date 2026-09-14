@@ -274,7 +274,7 @@ ALTER TABLE recruitment_candidates MODIFY COLUMN ExpectedCtc DECIMAL(18,2) NULL;
         await db.OpenAsync();
         var effectiveClientId = user.ClientId ?? clientId;
         var rows = (await db.QueryAsync<RecruitmentWorkOrder>(@"SELECT workOrder.*,client.Name ClientName,
-(SELECT COUNT(*) FROM recruitment_work_order_lines line WHERE line.WorkOrderId=workOrder.Id) LineCount,
+(SELECT COUNT(*) FROM recruitment_work_order_lines line WHERE line.WorkOrderId=workOrder.Id AND line.RequisitionId IS NOT NULL) LineCount,
 (SELECT COUNT(*) FROM recruitment_position_pipeline_instances hiringCase WHERE hiringCase.WorkOrderId=workOrder.Id AND hiringCase.Status IN ('Active','Candidate Flow')) OpenCaseCount
 FROM recruitment_work_orders workOrder
 JOIN clients client ON client.Id=workOrder.ClientId
@@ -301,7 +301,7 @@ ORDER BY workOrder.ReceivedAtUtc DESC,workOrder.Id DESC", new { ClientId = effec
         await using var db = Db();
         await db.OpenAsync();
         var row = await db.QueryFirstOrDefaultAsync<RecruitmentWorkOrder>(@"SELECT workOrder.*,client.Name ClientName,
-(SELECT COUNT(*) FROM recruitment_work_order_lines line WHERE line.WorkOrderId=workOrder.Id) LineCount,
+(SELECT COUNT(*) FROM recruitment_work_order_lines line WHERE line.WorkOrderId=workOrder.Id AND line.RequisitionId IS NOT NULL) LineCount,
 (SELECT COUNT(*) FROM recruitment_position_pipeline_instances hiringCase WHERE hiringCase.WorkOrderId=workOrder.Id AND hiringCase.Status IN ('Active','Candidate Flow')) OpenCaseCount
 FROM recruitment_work_orders workOrder JOIN clients client ON client.Id=workOrder.ClientId
 WHERE workOrder.Id=@Id AND (@ClientId IS NULL OR workOrder.ClientId=@ClientId)", new { Id = id, user.ClientId });
@@ -309,7 +309,7 @@ WHERE workOrder.Id=@Id AND (@ClientId IS NULL OR workOrder.ClientId=@ClientId)",
         row.Lines = (await db.QueryAsync<RecruitmentWorkOrderLine>("SELECT * FROM recruitment_work_order_lines WHERE WorkOrderId=@Id ORDER BY LineNumber,Id", new { Id = id })).ToList();
         row.Lines = await RecruitmentAccessScope.FilterAsync(db, user, row.Lines, _ => row.ClientId, line => line.Location);
         if (RecruitmentAccessScope.IsRestricted(user) && row.Lines.Count == 0 && user.ClientId != row.ClientId) return null;
-        row.LineCount = row.Lines.Count;
+        row.LineCount = row.Lines.Count(line => line.RequisitionId is > 0);
         return row;
     }
 
@@ -431,6 +431,50 @@ FROM recruitment_position_pipeline_instances WHERE WorkOrderLineId=@LineId LIMIT
         }
         await transaction.CommitAsync();
         return (await GetWorkOrderAsync(id, user), "");
+    }
+
+    public async Task<(IReadOnlyList<RecruitmentHiringCase> Rows, string Error)> EnsureHiringCasesForWorkOrderAsync(long workOrderId, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var workOrder = await db.QueryFirstOrDefaultAsync<WorkOrderSlaSource>(@"SELECT Id,ClientId,WorkOrderNumber,Subject,Status
+FROM recruitment_work_orders WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = workOrderId, user.ClientId });
+        if (workOrder is null) return ([], "Work order was not found in your permitted client scope.");
+        if (workOrder.Status is "Completed" or "Cancelled" or "On Hold") return ([], "");
+
+        var pipelineVersions = (await db.QueryAsync<long>(@"SELECT DISTINCT versionRow.Id
+FROM recruitment_pipeline_definitions definition
+JOIN recruitment_pipeline_versions versionRow ON versionRow.Id=definition.CurrentPublishedVersionId
+WHERE definition.ClientId=@ClientId AND definition.IsActive=TRUE AND versionRow.Status='Published'
+  AND versionRow.ScopeType IN ('Position','Hybrid')", new { workOrder.ClientId })).ToList();
+        if (pipelineVersions.Count != 1) return ([], pipelineVersions.Count == 0
+            ? "Publish one Position or Hybrid pipeline to start the work-order SLA automatically."
+            : "Keep one current Position or Hybrid pipeline for this client so the work-order SLA can start automatically.");
+
+        var lineIds = (await db.QueryAsync<long>(
+            "SELECT Id FROM recruitment_work_order_lines WHERE WorkOrderId=@Id ORDER BY LineNumber,Id", new { Id = workOrderId })).ToList();
+        if (lineIds.Count == 0)
+        {
+            var positionName = FirstValue(workOrder.Subject, workOrder.WorkOrderNumber, "Hiring request pending");
+            var lineId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_work_order_lines
+(WorkOrderId,LineNumber,PositionName,PayBandLevelCode,NumberOfPositions,Location,Division,RequisitionId,PositionId,Status)
+VALUES (@WorkOrderId,1,@PositionName,'',1,'','',NULL,NULL,'Open');SELECT LAST_INSERT_ID();",
+                new { WorkOrderId = workOrderId, PositionName = positionName });
+            lineIds.Add(lineId);
+        }
+
+        var rows = new List<RecruitmentHiringCase>();
+        foreach (var lineId in lineIds)
+        {
+            var (row, error) = await StartHiringCaseAsync(new StartRecruitmentHiringCaseRequest
+            {
+                WorkOrderLineId = lineId,
+                PipelineVersionId = pipelineVersions[0]
+            }, user);
+            if (row is null && error.Length > 0) return (rows, error);
+            if (row is not null) rows.Add(row);
+        }
+        return (rows, "");
     }
 
     public async Task<(bool Ok, string Error)> DeleteWorkOrderAsync(long id, AuthUser user)
@@ -1531,6 +1575,18 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
         public string SlaMode { get; set; } = "StageEntry";
         public int PipelineOverallSlaMinutes { get; set; }
     }
+
+    private sealed class WorkOrderSlaSource
+    {
+        public long Id { get; set; }
+        public int ClientId { get; set; }
+        public string WorkOrderNumber { get; set; } = "";
+        public string Subject { get; set; } = "";
+        public string Status { get; set; } = "Draft";
+    }
+
+    private static string FirstValue(params string?[] values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? "";
 
     private sealed class AutomaticCaseSource
     {

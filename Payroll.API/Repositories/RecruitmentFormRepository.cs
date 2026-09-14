@@ -1041,9 +1041,19 @@ VALUES (@SubmissionId,@FieldId,@SelectedValue,@DisplayLabel,@DisplayOrder)", new
 FROM form_fields f JOIN form_sections sectionRow ON sectionRow.Id=f.SectionId JOIN form_field_types t ON t.Id=f.FieldTypeId
 LEFT JOIN attachment_field_configurations attachmentConfiguration ON attachmentConfiguration.id=f.AttachmentFieldConfigurationId
 WHERE f.FormVersionId=@VersionId AND f.IsActive=TRUE AND f.IsRequired=TRUE AND (
- (t.TypeCode='UPLOAD' AND (SELECT COUNT(*) FROM form_submission_attachments a
-      JOIN entity_attachments attachment ON attachment.id=a.AttachmentId AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
-      WHERE a.SubmissionId=@SubmissionId AND a.FieldId=f.Id)<GREATEST(1,COALESCE(attachmentConfiguration.minimum_file_count,1)))
+ (t.TypeCode='UPLOAD' AND ((SELECT COUNT(*) FROM form_submission_attachments a
+       JOIN entity_attachments attachment ON attachment.id=a.AttachmentId AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
+       WHERE a.SubmissionId=@SubmissionId AND a.FieldId=f.Id)
+      +(SELECT COUNT(*) FROM form_submissions candidateSubmission
+       JOIN recruitment_candidate_resumes candidateResume ON candidateResume.CandidateId=candidateSubmission.CandidateId AND candidateResume.IsPrimary=TRUE
+       JOIN entity_attachments candidateAttachment ON candidateAttachment.public_id=candidateResume.AttachmentPublicId
+        AND candidateAttachment.field_configuration_id=f.AttachmentFieldConfigurationId
+        AND candidateAttachment.is_current=TRUE AND candidateAttachment.is_deleted=FALSE
+       WHERE candidateSubmission.Id=@SubmissionId AND NOT EXISTS (
+        SELECT 1 FROM form_submission_attachments linkedAttachment
+        WHERE linkedAttachment.SubmissionId=@SubmissionId AND linkedAttachment.FieldId=f.Id
+          AND linkedAttachment.AttachmentPublicId=candidateAttachment.public_id)))
+      <GREATEST(1,COALESCE(attachmentConfiguration.minimum_file_count,1)))
  OR (t.TypeCode IN ('RADIO','MULTI_SELECT','SEARCH_SELECT') AND (
       (f.LookupSourceId IS NULL AND NOT EXISTS (SELECT 1 FROM form_submission_selected_options o WHERE o.SubmissionId=@SubmissionId AND o.FieldId=f.Id))
       OR (f.LookupSourceId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM form_submission_lookup_values l WHERE l.SubmissionId=@SubmissionId AND l.FieldId=f.Id))
@@ -1091,9 +1101,18 @@ ORDER BY sectionRow.DisplayOrder,sectionRow.Id,f.DisplayOrder,f.Id,r.DisplayOrde
 v.TextValue,v.IntegerValue,v.DecimalValue,v.DateValue,v.DateTimeValue,v.BooleanValue,
 (SELECT COUNT(*) FROM form_submission_selected_options selectedOption WHERE selectedOption.SubmissionId=@SubmissionId AND selectedOption.FieldId=f.Id) SelectedOptionCount,
 (SELECT COUNT(*) FROM form_submission_lookup_values lookupValue WHERE lookupValue.SubmissionId=@SubmissionId AND lookupValue.FieldId=f.Id) LookupValueCount,
-(SELECT COUNT(*) FROM form_submission_attachments linkedAttachment
- JOIN entity_attachments attachment ON attachment.id=linkedAttachment.AttachmentId AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
- WHERE linkedAttachment.SubmissionId=@SubmissionId AND linkedAttachment.FieldId=f.Id) AttachmentCount
+ ((SELECT COUNT(*) FROM form_submission_attachments linkedAttachment
+  JOIN entity_attachments attachment ON attachment.id=linkedAttachment.AttachmentId AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
+  WHERE linkedAttachment.SubmissionId=@SubmissionId AND linkedAttachment.FieldId=f.Id)
+ +(SELECT COUNT(*) FROM form_submissions candidateSubmission
+   JOIN recruitment_candidate_resumes candidateResume ON candidateResume.CandidateId=candidateSubmission.CandidateId AND candidateResume.IsPrimary=TRUE
+   JOIN entity_attachments candidateAttachment ON candidateAttachment.public_id=candidateResume.AttachmentPublicId
+    AND candidateAttachment.field_configuration_id=f.AttachmentFieldConfigurationId
+    AND candidateAttachment.is_current=TRUE AND candidateAttachment.is_deleted=FALSE
+   WHERE candidateSubmission.Id=@SubmissionId AND NOT EXISTS (
+    SELECT 1 FROM form_submission_attachments alreadyLinked
+    WHERE alreadyLinked.SubmissionId=@SubmissionId AND alreadyLinked.FieldId=f.Id
+      AND alreadyLinked.AttachmentPublicId=candidateAttachment.public_id))) AttachmentCount
 FROM form_fields f
 JOIN form_field_types t ON t.Id=f.FieldTypeId
 LEFT JOIN form_submission_values v ON v.SubmissionId=@SubmissionId AND v.FieldId=f.Id

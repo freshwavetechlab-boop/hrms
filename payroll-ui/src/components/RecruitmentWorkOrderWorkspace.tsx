@@ -128,6 +128,10 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     const response = await saveRecruitmentWorkOrder({ ...draft, receivedAtUtc: new Date(draft.receivedAtUtc).toISOString(), overallSlaMinutes: 0 })
     setSaving(false)
     if (!response.ok || !response.data) return
+    if (response.data.slaLaunchMessage) {
+      if (/started/i.test(response.data.slaLaunchMessage)) message.success(response.data.slaLaunchMessage)
+      else message.warning(response.data.slaLaunchMessage)
+    }
     setEditorOpen(false); await load(); setSelectedWorkOrder(response.data)
   }
 
@@ -392,7 +396,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     <Drawer width={980} title={selectedWorkOrder ? `${selectedWorkOrder.workOrderNumber} · ${selectedWorkOrder.clientName}` : 'Work order'} open={!!selectedWorkOrder} onClose={() => setSelectedWorkOrder(null)} extra={selectedWorkOrder && <Button data-testid="work-order-add-hiring-request" type="primary" icon={<PlusOutlined />} onClick={() => addHiringRequest(selectedWorkOrder)}>Add hiring request</Button>}>
       {selectedWorkOrder && <><div className="work-order-detail-strip"><div><span>Received</span><b>{dateTimeText(selectedWorkOrder.receivedAtUtc)}</b></div><div><span>Hiring requests</span><b>{selectedWorkOrder.lineCount}</b></div><div><span>Source</span><b>{selectedWorkOrder.receivedFrom || 'Manual entry'}</b></div><Tag color={statusColor(selectedWorkOrder.status)}>{selectedWorkOrder.status}</Tag></div>
         {!selectedWorkOrder.lines.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No hiring request has been added against this work order yet." />}
-        <div className="work-order-detail-lines">{selectedWorkOrder.lines.map(line => { const hiringCase = cases.find(row => row.workOrderLineId === line.id); return <article key={line.id}><div><span>Role {line.lineNumber}</span><h3>{line.positionName}</h3><p>{[line.payBandLevelCode, line.division, line.location].filter(Boolean).join(' · ') || 'Role details not entered'}</p></div><div><Tag>{line.numberOfPositions} opening{line.numberOfPositions === 1 ? '' : 's'}</Tag><Button type="primary" onClick={() => hiringCase ? void viewCase(hiringCase) : void prepareStart(selectedWorkOrder, line)}>{hiringCase ? 'Open journey' : line.requisitionId ? 'Continue journey' : 'Complete intake'}</Button></div></article> })}</div>
+        <div className="work-order-detail-lines">{selectedWorkOrder.lines.map(line => { const hiringCase = cases.find(row => row.workOrderLineId === line.id); return <article key={line.id}><div><span>{line.requisitionId ? `Role ${line.lineNumber}` : 'Work order intake'}</span><h3>{line.requisitionId ? line.positionName : 'Hiring request pending'}</h3><p>{line.requisitionId ? [line.payBandLevelCode, line.division, line.location].filter(Boolean).join(' · ') || 'Role details not entered' : 'SLA is already running from the work-order received time.'}</p></div><div>{line.requisitionId && <Tag>{line.numberOfPositions} opening{line.numberOfPositions === 1 ? '' : 's'}</Tag>}<Button type="primary" onClick={() => hiringCase && line.requisitionId ? void viewCase(hiringCase) : void prepareStart(selectedWorkOrder, line)}>{hiringCase && line.requisitionId ? 'Open journey' : 'Add hiring request'}</Button></div></article> })}</div>
         <EntityAttachmentPanel entityType="RECRUITMENT_WORK_ORDER" entityId={selectedWorkOrder.id} clientId={selectedWorkOrder.clientId} moduleCode="RECRUITMENT" formCodes={['WORK_ORDER']} title="Original work order & JD annexure" description="Stored through the existing secured attachment service and storage policy." />
       </>}
     </Drawer>

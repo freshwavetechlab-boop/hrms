@@ -1,0 +1,1687 @@
+import { createHotContext as __vite__createHotContext } from "/@vite/client";import.meta.hot = __vite__createHotContext("/src/components/ScheduledJobsManager.tsx");const useEffect = __vite__cjsImport0_react["useEffect"]; const useMemo = __vite__cjsImport0_react["useMemo"]; const useState = __vite__cjsImport0_react["useState"];const _jsxDEV = __vite__cjsImport4_react_jsxDevRuntime["jsxDEV"]; const _Fragment = __vite__cjsImport4_react_jsxDevRuntime["Fragment"];import __vite__cjsImport0_react from "/node_modules/.vite/deps/react.js?v=c236414f";
+import { Alert, Button, Card, Drawer, Form, Input, InputNumber, Select, Space, Switch, Tabs, Tag } from "/node_modules/.vite/deps/antd.js?v=2143e1d5";
+import DataTable from "/src/components/DataTable.tsx";
+import { getScheduledJobActions, getScheduledJobHandlers, getScheduledJobRuns, getScheduledJobs, runScheduledJobNow, saveScheduledJob, saveScheduledJobAction, setScheduledJobEnabled } from "/src/services/settingsService.ts";
+var _jsxFileName = "D:/NewHrms/hrms/payroll-ui/src/components/ScheduledJobsManager.tsx";
+import __vite__cjsImport4_react_jsxDevRuntime from "/node_modules/.vite/deps/react_jsx-dev-runtime.js?v=c236414f";
+var _s = $RefreshSig$();
+const configuredActionKey = "CONFIGURED_JOB_ACTION";
+const job0 = {
+	id: 0,
+	jobCode: "",
+	jobName: "",
+	description: "",
+	handlerKey: configuredActionKey,
+	isEnabled: true,
+	scheduleType: "Interval",
+	intervalMinutes: 60,
+	dailyRunTime: "01:00",
+	monthlyRunDay: 1,
+	configJson: "{}",
+	lastStatus: "Never Run",
+	lastMessage: "",
+	isRunning: false
+};
+const action0 = {
+	id: 0,
+	actionCode: "",
+	actionName: "",
+	actionType: "Notification Event",
+	description: "",
+	configJson: "{}",
+	isActive: true
+};
+const scheduleOptions = [
+	"Interval",
+	"Daily",
+	"Monthly"
+];
+const statusColor = (status) => status === "Completed" ? "green" : status === "Failed" ? "red" : status === "Running" ? "blue" : "default";
+const dt = (value) => value ? new Date(value).toLocaleString("en-IN") : "-";
+const parseJson = (json, fallback) => {
+	try {
+		return {
+			...fallback,
+			...JSON.parse(json || "{}")
+		};
+	} catch {
+		return fallback;
+	}
+};
+const stringify = (value) => JSON.stringify(value, null, 2);
+const notification0 = {
+	eventCode: "",
+	resourceType: "ScheduledJob",
+	resourceId: "",
+	clientId: null,
+	payloadJson: "{}"
+};
+const procedure0 = {
+	procedureName: "",
+	parameters: {}
+};
+const api0 = {
+	method: "POST",
+	url: "",
+	bodyJson: "{}",
+	headers: {},
+	timeoutSeconds: 60
+};
+const reportEmail0 = {
+	reportCode: "",
+	eventCode: "",
+	filter: {
+		clientId: 0,
+		month: new Date().toISOString().slice(0, 7),
+		payRunId: null,
+		employeeId: null
+	},
+	previewRows: 10
+};
+const workflowTrigger0 = {
+	workflowId: 0,
+	resourceType: "",
+	resourceIds: "",
+	requestorUserId: 1,
+	skipIfPending: true,
+	payloadJson: "{}"
+};
+const actionTypes = [
+	"Notification Event",
+	"Internal API Call",
+	"Stored Procedure",
+	"Report Email",
+	"Workflow Trigger"
+];
+export default function ScheduledJobsManager() {
+	_s();
+	const [jobs, setJobs] = useState([]);
+	const [actions, setActions] = useState([]);
+	const [handlers, setHandlers] = useState([]);
+	const [runs, setRuns] = useState([]);
+	const [selectedJobId, setSelectedJobId] = useState();
+	const [job, setJob] = useState(job0);
+	const [action, setAction] = useState(action0);
+	const [jobOpen, setJobOpen] = useState(false);
+	const [actionOpen, setActionOpen] = useState(false);
+	const [saving, setSaving] = useState(false);
+	const load = async (focusJobId = selectedJobId) => {
+		const [jobRows, actionRows, handlerRows] = await Promise.all([
+			getScheduledJobs(),
+			getScheduledJobActions(),
+			getScheduledJobHandlers()
+		]);
+		setJobs(jobRows);
+		setActions(actionRows);
+		setHandlers(handlerRows);
+		const nextJobId = focusJobId || jobRows[0]?.id;
+		setSelectedJobId(nextJobId);
+		setRuns(nextJobId ? await getScheduledJobRuns(nextJobId) : []);
+	};
+	useEffect(() => {
+		void load();
+	}, []);
+	const selectedJob = useMemo(() => jobs.find((item) => item.id === selectedJobId), [jobs, selectedJobId]);
+	const selectedActionId = parseJson(job.configJson, { actionId: 0 }).actionId;
+	const selectedAction = actions.find((item) => item.id === selectedActionId);
+	const notificationConfig = parseJson(action.configJson, notification0);
+	const procedureConfig = parseJson(action.configJson, procedure0);
+	const apiConfig = parseJson(action.configJson, api0);
+	const reportEmailConfig = parseJson(action.configJson, reportEmail0);
+	const workflowTriggerConfig = parseJson(action.configJson, workflowTrigger0);
+	const handlerName = (key) => handlers.find((item) => item.handlerKey === key)?.name || key;
+	const scheduleLabel = (row) => row.scheduleType === "Interval" ? `Every ${row.intervalMinutes} min` : row.scheduleType === "Monthly" ? `Day ${row.monthlyRunDay} at ${row.dailyRunTime}` : `Daily at ${row.dailyRunTime}`;
+	const actionNameForJob = (row) => {
+		if (row.handlerKey !== configuredActionKey) return handlerName(row.handlerKey);
+		const actionId = parseJson(row.configJson, { actionId: 0 }).actionId;
+		return actions.find((item) => item.id === actionId)?.actionName || "Configured action";
+	};
+	const openJob = (row) => {
+		setJob(row ? { ...row } : job0);
+		setJobOpen(true);
+	};
+	const openAction = (row) => {
+		setAction(row ? { ...row } : {
+			...action0,
+			configJson: stringify(notification0)
+		});
+		setActionOpen(true);
+	};
+	const selectJob = async (id) => {
+		setSelectedJobId(id);
+		setRuns(await getScheduledJobRuns(id));
+	};
+	const saveJob = async () => {
+		setSaving(true);
+		const response = await saveScheduledJob(job);
+		setSaving(false);
+		if (response.ok) {
+			setJobOpen(false);
+			void load(response.data?.id || selectedJobId);
+		}
+	};
+	const saveAction = async () => {
+		setSaving(true);
+		const response = await saveScheduledJobAction(action);
+		setSaving(false);
+		if (response.ok) {
+			setActionOpen(false);
+			void load(selectedJobId);
+		}
+	};
+	const toggle = async (row) => {
+		const response = await setScheduledJobEnabled(row.id, !row.isEnabled);
+		if (response.ok) void load(row.id);
+	};
+	const runNow = async (row) => {
+		const response = await runScheduledJobNow(row.id);
+		if (response.ok) void load(row.id);
+	};
+	const setJobAction = (actionId) => setJob((current) => ({
+		...current,
+		handlerKey: configuredActionKey,
+		configJson: stringify({ actionId })
+	}));
+	const setNotificationConfig = (changes) => setAction((current) => ({
+		...current,
+		configJson: stringify({
+			...parseJson(current.configJson, notification0),
+			...changes
+		})
+	}));
+	const setProcedureConfig = (changes) => setAction((current) => ({
+		...current,
+		configJson: stringify({
+			...parseJson(current.configJson, procedure0),
+			...changes
+		})
+	}));
+	const setApiConfig = (changes) => setAction((current) => ({
+		...current,
+		configJson: stringify({
+			...parseJson(current.configJson, api0),
+			...changes
+		})
+	}));
+	const setReportEmailConfig = (changes) => setAction((current) => ({
+		...current,
+		configJson: stringify({
+			...parseJson(current.configJson, reportEmail0),
+			...changes
+		})
+	}));
+	const setWorkflowTriggerConfig = (changes) => setAction((current) => ({
+		...current,
+		configJson: stringify({
+			...parseJson(current.configJson, workflowTrigger0),
+			...changes
+		})
+	}));
+	const configForType = (type) => stringify(type === "Stored Procedure" ? procedure0 : type === "Internal API Call" ? api0 : type === "Report Email" ? reportEmail0 : type === "Workflow Trigger" ? workflowTrigger0 : notification0);
+	return /* @__PURE__ */ _jsxDEV("section", {
+		className: "scheduled-jobs-settings",
+		children: [
+			/* @__PURE__ */ _jsxDEV(Card, {
+				size: "small",
+				className: "settings-panel settings-table-panel",
+				"aria-label": "Scheduled job configuration",
+				children: /* @__PURE__ */ _jsxDEV(Tabs, { items: [
+					{
+						key: "actions",
+						label: "Job Actions",
+						children: /* @__PURE__ */ _jsxDEV(_Fragment, { children: [/* @__PURE__ */ _jsxDEV("div", {
+							className: "component-table-head",
+							children: [/* @__PURE__ */ _jsxDEV("div", { children: [/* @__PURE__ */ _jsxDEV("b", { children: "Reusable job actions" }, void 0, false, {
+								fileName: _jsxFileName,
+								lineNumber: 86,
+								columnNumber: 54
+							}, this), /* @__PURE__ */ _jsxDEV("span", { children: "Create what the scheduler can do. Schedules will reuse these actions." }, void 0, false, {
+								fileName: _jsxFileName,
+								lineNumber: 86,
+								columnNumber: 81
+							}, this)] }, void 0, true, {
+								fileName: _jsxFileName,
+								lineNumber: 86,
+								columnNumber: 49
+							}, this), /* @__PURE__ */ _jsxDEV(Space, {
+								className: "settings-master-actions",
+								size: 8,
+								wrap: true,
+								children: [/* @__PURE__ */ _jsxDEV(Button, {
+									onClick: () => void load(),
+									children: "Refresh"
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 86,
+									columnNumber: 226
+								}, this), /* @__PURE__ */ _jsxDEV(Button, {
+									type: "primary",
+									onClick: () => openAction(),
+									children: "Add action"
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 86,
+									columnNumber: 278
+								}, this)]
+							}, void 0, true, {
+								fileName: _jsxFileName,
+								lineNumber: 86,
+								columnNumber: 169
+							}, this)]
+						}, void 0, true, {
+							fileName: _jsxFileName,
+							lineNumber: 86,
+							columnNumber: 11
+						}, this), /* @__PURE__ */ _jsxDEV(DataTable, {
+							rows: actions,
+							getRowId: (row) => row.id,
+							exportFileName: "scheduled-job-actions",
+							columns: [
+								{
+									key: "actionName",
+									label: "Action",
+									render: (row) => /* @__PURE__ */ _jsxDEV(_Fragment, { children: [row.actionName, /* @__PURE__ */ _jsxDEV("small", { children: row.actionCode }, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 88,
+										columnNumber: 84
+									}, this)] }, void 0, true, {
+										fileName: _jsxFileName,
+										lineNumber: 88,
+										columnNumber: 66
+									}, this),
+									width: "240px"
+								},
+								{
+									key: "actionType",
+									label: "Type"
+								},
+								{
+									key: "description",
+									label: "Description",
+									width: "320px"
+								},
+								{
+									key: "isActive",
+									label: "Status",
+									render: (row) => row.isActive ? "Active" : "Inactive"
+								}
+							],
+							actions: (row) => /* @__PURE__ */ _jsxDEV(Button, {
+								size: "small",
+								type: "primary",
+								onClick: () => openAction(row),
+								children: "Edit"
+							}, void 0, false, {
+								fileName: _jsxFileName,
+								lineNumber: 92,
+								columnNumber: 30
+							}, this)
+						}, void 0, false, {
+							fileName: _jsxFileName,
+							lineNumber: 87,
+							columnNumber: 11
+						}, this)] }, void 0, true, {
+							fileName: _jsxFileName,
+							lineNumber: 85,
+							columnNumber: 59
+						}, this)
+					},
+					{
+						key: "jobs",
+						label: "Schedules",
+						children: /* @__PURE__ */ _jsxDEV(_Fragment, { children: [/* @__PURE__ */ _jsxDEV("div", {
+							className: "component-table-head",
+							children: [/* @__PURE__ */ _jsxDEV("div", { children: [/* @__PURE__ */ _jsxDEV("b", { children: "Schedule control" }, void 0, false, {
+								fileName: _jsxFileName,
+								lineNumber: 95,
+								columnNumber: 54
+							}, this), /* @__PURE__ */ _jsxDEV("span", { children: "Decide when a built-in process or configured action should run." }, void 0, false, {
+								fileName: _jsxFileName,
+								lineNumber: 95,
+								columnNumber: 77
+							}, this)] }, void 0, true, {
+								fileName: _jsxFileName,
+								lineNumber: 95,
+								columnNumber: 49
+							}, this), /* @__PURE__ */ _jsxDEV(Space, {
+								className: "settings-master-actions",
+								size: 8,
+								wrap: true,
+								children: [/* @__PURE__ */ _jsxDEV(Button, {
+									onClick: () => void load(),
+									children: "Refresh"
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 95,
+									columnNumber: 216
+								}, this), /* @__PURE__ */ _jsxDEV(Button, {
+									type: "primary",
+									onClick: () => openJob(),
+									children: "Add schedule"
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 95,
+									columnNumber: 268
+								}, this)]
+							}, void 0, true, {
+								fileName: _jsxFileName,
+								lineNumber: 95,
+								columnNumber: 159
+							}, this)]
+						}, void 0, true, {
+							fileName: _jsxFileName,
+							lineNumber: 95,
+							columnNumber: 11
+						}, this), /* @__PURE__ */ _jsxDEV(DataTable, {
+							rows: jobs,
+							getRowId: (row) => row.id,
+							exportFileName: "scheduled-jobs",
+							columns: [
+								{
+									key: "jobName",
+									label: "Schedule",
+									render: (row) => /* @__PURE__ */ _jsxDEV(_Fragment, { children: [row.jobName, /* @__PURE__ */ _jsxDEV("small", { children: row.jobCode }, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 97,
+										columnNumber: 80
+									}, this)] }, void 0, true, {
+										fileName: _jsxFileName,
+										lineNumber: 97,
+										columnNumber: 65
+									}, this),
+									width: "220px"
+								},
+								{
+									key: "handlerKey",
+									label: "Job Action",
+									render: (row) => /* @__PURE__ */ _jsxDEV(_Fragment, { children: [actionNameForJob(row), /* @__PURE__ */ _jsxDEV("small", { children: row.handlerKey === configuredActionKey ? "Configured action" : row.handlerKey }, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 98,
+										columnNumber: 95
+									}, this)] }, void 0, true, {
+										fileName: _jsxFileName,
+										lineNumber: 98,
+										columnNumber: 70
+									}, this),
+									width: "240px"
+								},
+								{
+									key: "scheduleType",
+									label: "When",
+									value: scheduleLabel
+								},
+								{
+									key: "lastStatus",
+									label: "Last status",
+									render: (row) => /* @__PURE__ */ _jsxDEV(Tag, {
+										color: statusColor(row.lastStatus),
+										children: row.lastStatus
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 100,
+										columnNumber: 71
+									}, this)
+								},
+								{
+									key: "lastRunAt",
+									label: "Last run",
+									value: (row) => dt(row.lastRunAt)
+								},
+								{
+									key: "nextRunAt",
+									label: "Next run",
+									value: (row) => dt(row.nextRunAt)
+								},
+								{
+									key: "isEnabled",
+									label: "Enabled",
+									render: (row) => row.isEnabled ? "Yes" : "No"
+								}
+							],
+							actions: (row) => /* @__PURE__ */ _jsxDEV(Space, {
+								size: 6,
+								wrap: true,
+								children: [
+									/* @__PURE__ */ _jsxDEV(Button, {
+										size: "small",
+										onClick: () => void selectJob(row.id),
+										children: "Logs"
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 104,
+										columnNumber: 51
+									}, this),
+									/* @__PURE__ */ _jsxDEV(Button, {
+										size: "small",
+										type: "primary",
+										disabled: row.isRunning,
+										onClick: () => void runNow(row),
+										children: "Run now"
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 104,
+										columnNumber: 124
+									}, this),
+									/* @__PURE__ */ _jsxDEV(Button, {
+										size: "small",
+										onClick: () => openJob(row),
+										children: "Edit"
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 104,
+										columnNumber: 234
+									}, this),
+									/* @__PURE__ */ _jsxDEV(Button, {
+										size: "small",
+										danger: row.isEnabled,
+										onClick: () => void toggle(row),
+										children: row.isEnabled ? "Pause" : "Enable"
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 104,
+										columnNumber: 297
+									}, this)
+								]
+							}, void 0, true, {
+								fileName: _jsxFileName,
+								lineNumber: 104,
+								columnNumber: 30
+							}, this)
+						}, void 0, false, {
+							fileName: _jsxFileName,
+							lineNumber: 96,
+							columnNumber: 11
+						}, this)] }, void 0, true, {
+							fileName: _jsxFileName,
+							lineNumber: 94,
+							columnNumber: 54
+						}, this)
+					},
+					{
+						key: "logs",
+						label: "Run Logs",
+						children: /* @__PURE__ */ _jsxDEV(DataTable, {
+							rows: runs,
+							getRowId: (row) => row.id,
+							exportFileName: "scheduled-job-runs",
+							title: selectedJob ? `Run logs - ${selectedJob.jobName}` : "Run logs",
+							columns: [
+								{
+									key: "startedAt",
+									label: "Started",
+									value: (row) => dt(row.startedAt)
+								},
+								{
+									key: "completedAt",
+									label: "Completed",
+									value: (row) => dt(row.completedAt)
+								},
+								{
+									key: "status",
+									label: "Status",
+									render: (row) => /* @__PURE__ */ _jsxDEV(Tag, {
+										color: statusColor(row.status),
+										children: row.status
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 109,
+										columnNumber: 60
+									}, this)
+								},
+								{
+									key: "successCount",
+									label: "Success"
+								},
+								{
+									key: "failureCount",
+									label: "Failed"
+								},
+								{
+									key: "message",
+									label: "Message",
+									width: "320px"
+								},
+								{
+									key: "triggeredBy",
+									label: "Triggered by"
+								},
+								{
+									key: "durationMs",
+									label: "Duration ms"
+								}
+							]
+						}, void 0, false, {
+							fileName: _jsxFileName,
+							lineNumber: 106,
+							columnNumber: 53
+						}, this)
+					}
+				] }, void 0, false, {
+					fileName: _jsxFileName,
+					lineNumber: 84,
+					columnNumber: 7
+				}, this)
+			}, void 0, false, {
+				fileName: _jsxFileName,
+				lineNumber: 83,
+				columnNumber: 5
+			}, this),
+			/* @__PURE__ */ _jsxDEV(Drawer, {
+				className: "settings-master-drawer scheduled-job-drawer",
+				title: /* @__PURE__ */ _jsxDEV("div", {
+					className: "settings-drawer-title",
+					children: [
+						/* @__PURE__ */ _jsxDEV("span", { children: "Job action" }, void 0, false, {
+							fileName: _jsxFileName,
+							lineNumber: 119,
+							columnNumber: 115
+						}, this),
+						/* @__PURE__ */ _jsxDEV("h3", { children: action.id ? "Edit job action" : "Add job action" }, void 0, false, {
+							fileName: _jsxFileName,
+							lineNumber: 119,
+							columnNumber: 138
+						}, this),
+						/* @__PURE__ */ _jsxDEV("p", { children: "Create reusable work that can be scheduled later." }, void 0, false, {
+							fileName: _jsxFileName,
+							lineNumber: 119,
+							columnNumber: 197
+						}, this)
+					]
+				}, void 0, true, {
+					fileName: _jsxFileName,
+					lineNumber: 119,
+					columnNumber: 76
+				}, this),
+				open: actionOpen,
+				width: 760,
+				onClose: () => setActionOpen(false),
+				destroyOnClose: true,
+				footer: /* @__PURE__ */ _jsxDEV(Space, { children: [/* @__PURE__ */ _jsxDEV(Button, {
+					onClick: () => setActionOpen(false),
+					children: "Cancel"
+				}, void 0, false, {
+					fileName: _jsxFileName,
+					lineNumber: 119,
+					columnNumber: 358
+				}, this), /* @__PURE__ */ _jsxDEV(Button, {
+					type: "primary",
+					loading: saving,
+					onClick: () => void saveAction(),
+					children: action.id ? "Update action" : "Save action"
+				}, void 0, false, {
+					fileName: _jsxFileName,
+					lineNumber: 119,
+					columnNumber: 418
+				}, this)] }, void 0, true, {
+					fileName: _jsxFileName,
+					lineNumber: 119,
+					columnNumber: 351
+				}, this),
+				children: /* @__PURE__ */ _jsxDEV(Form, {
+					component: "div",
+					layout: "vertical",
+					className: "settings-quick-form scheduled-job-form",
+					requiredMark: false,
+					children: [
+						/* @__PURE__ */ _jsxDEV(Alert, {
+							className: "scheduled-job-help",
+							type: "info",
+							showIcon: true,
+							message: "Create action first, schedule later",
+							description: "Notification Event is fully configurable from UI. Stored Procedure is for approved database procedures whose name starts with job_."
+						}, void 0, false, {
+							fileName: _jsxFileName,
+							lineNumber: 121,
+							columnNumber: 9
+						}, this),
+						/* @__PURE__ */ _jsxDEV("div", {
+							className: "scheduled-form-section",
+							children: [
+								/* @__PURE__ */ _jsxDEV("h4", { children: "Basic details" }, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 123,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV("div", {
+									className: "scheduled-form-grid two",
+									children: [/* @__PURE__ */ _jsxDEV(Form.Item, {
+										label: "Action code",
+										required: true,
+										children: /* @__PURE__ */ _jsxDEV(Input, {
+											value: action.actionCode,
+											onChange: (event) => setAction({
+												...action,
+												actionCode: event.target.value.toUpperCase().replace(/\s+/g, "_")
+											}),
+											placeholder: "MONTHLY_LEAVE_REMINDER"
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 124,
+											columnNumber: 92
+										}, this)
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 124,
+										columnNumber: 52
+									}, this), /* @__PURE__ */ _jsxDEV(Form.Item, {
+										label: "Action name",
+										required: true,
+										children: /* @__PURE__ */ _jsxDEV(Input, {
+											value: action.actionName,
+											onChange: (event) => setAction({
+												...action,
+												actionName: event.target.value
+											}),
+											placeholder: "Monthly leave reminder"
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 124,
+											columnNumber: 328
+										}, this)
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 124,
+										columnNumber: 288
+									}, this)]
+								}, void 0, true, {
+									fileName: _jsxFileName,
+									lineNumber: 124,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV(Form.Item, {
+									label: "Description",
+									children: /* @__PURE__ */ _jsxDEV(Input.TextArea, {
+										rows: 2,
+										value: action.description,
+										onChange: (event) => setAction({
+											...action,
+											description: event.target.value
+										})
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 125,
+										columnNumber: 42
+									}, this)
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 125,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV("div", {
+									className: "scheduled-form-grid two",
+									children: [/* @__PURE__ */ _jsxDEV(Form.Item, {
+										label: "Action type",
+										children: /* @__PURE__ */ _jsxDEV(Select, {
+											value: action.actionType,
+											onChange: (value) => setAction({
+												...action,
+												actionType: value,
+												configJson: configForType(value)
+											}),
+											options: actionTypes.map((value) => ({
+												value,
+												label: value
+											}))
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 126,
+											columnNumber: 83
+										}, this)
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 126,
+										columnNumber: 52
+									}, this), /* @__PURE__ */ _jsxDEV(Form.Item, {
+										label: "Active",
+										children: /* @__PURE__ */ _jsxDEV(Switch, {
+											checked: action.isActive,
+											onChange: (value) => setAction({
+												...action,
+												isActive: value
+											})
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 126,
+											columnNumber: 317
+										}, this)
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 126,
+										columnNumber: 291
+									}, this)]
+								}, void 0, true, {
+									fileName: _jsxFileName,
+									lineNumber: 126,
+									columnNumber: 11
+								}, this)
+							]
+						}, void 0, true, {
+							fileName: _jsxFileName,
+							lineNumber: 122,
+							columnNumber: 9
+						}, this),
+						action.actionType === "Notification Event" && /* @__PURE__ */ _jsxDEV("div", {
+							className: "scheduled-form-section",
+							children: [
+								/* @__PURE__ */ _jsxDEV("h4", { children: "Notification event" }, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 129,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV("div", {
+									className: "scheduled-form-grid two",
+									children: [
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Event code",
+											required: true,
+											children: /* @__PURE__ */ _jsxDEV(Input, {
+												value: notificationConfig.eventCode,
+												onChange: (event) => setNotificationConfig({ eventCode: event.target.value.toUpperCase().replace(/\s+/g, "_") }),
+												placeholder: "MONTHLY_LEAVE_REMINDER"
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 130,
+												columnNumber: 91
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 130,
+											columnNumber: 52
+										}, this),
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Record type",
+											children: /* @__PURE__ */ _jsxDEV(Input, {
+												value: notificationConfig.resourceType,
+												onChange: (event) => setNotificationConfig({ resourceType: event.target.value }),
+												placeholder: "ScheduledJob"
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 130,
+												columnNumber: 329
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 130,
+											columnNumber: 298
+										}, this),
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Record reference",
+											children: /* @__PURE__ */ _jsxDEV(Input, {
+												value: notificationConfig.resourceId,
+												onChange: (event) => setNotificationConfig({ resourceId: event.target.value }),
+												placeholder: "Optional"
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 130,
+												columnNumber: 533
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 130,
+											columnNumber: 497
+										}, this),
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Client ID",
+											children: /* @__PURE__ */ _jsxDEV(InputNumber, {
+												min: 1,
+												value: notificationConfig.clientId ?? undefined,
+												onChange: (value) => setNotificationConfig({ clientId: value ? Number(value) : null }),
+												placeholder: "Optional"
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 130,
+												columnNumber: 722
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 130,
+											columnNumber: 693
+										}, this)
+									]
+								}, void 0, true, {
+									fileName: _jsxFileName,
+									lineNumber: 130,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV(Form.Item, {
+									label: "Payload JSON",
+									children: /* @__PURE__ */ _jsxDEV(Input.TextArea, {
+										rows: 3,
+										value: notificationConfig.payloadJson,
+										onChange: (event) => setNotificationConfig({ payloadJson: event.target.value || "{}" })
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 131,
+										columnNumber: 43
+									}, this)
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 131,
+									columnNumber: 11
+								}, this)
+							]
+						}, void 0, true, {
+							fileName: _jsxFileName,
+							lineNumber: 128,
+							columnNumber: 56
+						}, this),
+						action.actionType === "Stored Procedure" && /* @__PURE__ */ _jsxDEV("div", {
+							className: "scheduled-form-section",
+							children: [
+								/* @__PURE__ */ _jsxDEV("h4", { children: "Stored procedure" }, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 134,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV(Form.Item, {
+									label: "Procedure name",
+									required: true,
+									children: /* @__PURE__ */ _jsxDEV(Input, {
+										value: procedureConfig.procedureName,
+										onChange: (event) => setProcedureConfig({ procedureName: event.target.value }),
+										placeholder: "job_month_end_reconcile"
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 135,
+										columnNumber: 54
+									}, this)
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 135,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV(Form.Item, {
+									label: "Parameters JSON",
+									children: /* @__PURE__ */ _jsxDEV(Input.TextArea, {
+										rows: 4,
+										value: stringify(procedureConfig.parameters),
+										onChange: (event) => {
+											try {
+												setProcedureConfig({ parameters: JSON.parse(event.target.value || "{}") });
+											} catch {
+												setProcedureConfig({ parameters: procedureConfig.parameters });
+											}
+										}
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 136,
+										columnNumber: 46
+									}, this)
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 136,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV("small", {
+									className: "scheduled-config-hint",
+									children: "For safety, only stored procedures starting with job_ can run."
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 137,
+									columnNumber: 11
+								}, this)
+							]
+						}, void 0, true, {
+							fileName: _jsxFileName,
+							lineNumber: 133,
+							columnNumber: 54
+						}, this),
+						action.actionType === "Internal API Call" && /* @__PURE__ */ _jsxDEV("div", {
+							className: "scheduled-form-section",
+							children: [
+								/* @__PURE__ */ _jsxDEV("h4", { children: "Internal API call" }, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 140,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV("div", {
+									className: "scheduled-form-grid three",
+									children: [
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Method",
+											children: /* @__PURE__ */ _jsxDEV(Select, {
+												value: apiConfig.method,
+												onChange: (value) => setApiConfig({ method: value }),
+												options: [
+													"GET",
+													"POST",
+													"PUT",
+													"DELETE"
+												].map((value) => ({
+													value,
+													label: value
+												}))
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 141,
+												columnNumber: 80
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 141,
+											columnNumber: 54
+										}, this),
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "API URL",
+											required: true,
+											children: /* @__PURE__ */ _jsxDEV(Input, {
+												value: apiConfig.url,
+												onChange: (event) => setApiConfig({ url: event.target.value }),
+												placeholder: "/api/..."
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 141,
+												columnNumber: 298
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 141,
+											columnNumber: 262
+										}, this),
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Timeout seconds",
+											children: /* @__PURE__ */ _jsxDEV(InputNumber, {
+												min: 5,
+												max: 600,
+												value: apiConfig.timeoutSeconds,
+												onChange: (value) => setApiConfig({ timeoutSeconds: Number(value || 60) })
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 141,
+												columnNumber: 461
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 141,
+											columnNumber: 426
+										}, this)
+									]
+								}, void 0, true, {
+									fileName: _jsxFileName,
+									lineNumber: 141,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV(Form.Item, {
+									label: "Body JSON",
+									children: /* @__PURE__ */ _jsxDEV(Input.TextArea, {
+										rows: 4,
+										value: apiConfig.bodyJson,
+										onChange: (event) => setApiConfig({ bodyJson: event.target.value || "{}" })
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 142,
+										columnNumber: 40
+									}, this)
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 142,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV(Form.Item, {
+									label: "Headers JSON",
+									children: /* @__PURE__ */ _jsxDEV(Input.TextArea, {
+										rows: 3,
+										value: stringify(apiConfig.headers),
+										onChange: (event) => {
+											try {
+												setApiConfig({ headers: JSON.parse(event.target.value || "{}") });
+											} catch {
+												setApiConfig({ headers: apiConfig.headers });
+											}
+										}
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 143,
+										columnNumber: 43
+									}, this)
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 143,
+									columnNumber: 11
+								}, this)
+							]
+						}, void 0, true, {
+							fileName: _jsxFileName,
+							lineNumber: 139,
+							columnNumber: 55
+						}, this),
+						action.actionType === "Report Email" && /* @__PURE__ */ _jsxDEV("div", {
+							className: "scheduled-form-section",
+							children: [
+								/* @__PURE__ */ _jsxDEV("h4", { children: "Report email" }, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 146,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV("div", {
+									className: "scheduled-form-grid three",
+									children: [
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Report code",
+											required: true,
+											children: /* @__PURE__ */ _jsxDEV(Input, {
+												value: reportEmailConfig.reportCode,
+												onChange: (event) => setReportEmailConfig({ reportCode: event.target.value }),
+												placeholder: "pf-report"
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 147,
+												columnNumber: 94
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 147,
+											columnNumber: 54
+										}, this),
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Notification event",
+											required: true,
+											children: /* @__PURE__ */ _jsxDEV(Input, {
+												value: reportEmailConfig.eventCode,
+												onChange: (event) => setReportEmailConfig({ eventCode: event.target.value.toUpperCase().replace(/\s+/g, "_") }),
+												placeholder: "REPORT_READY"
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 147,
+												columnNumber: 300
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 147,
+											columnNumber: 253
+										}, this),
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Preview rows",
+											children: /* @__PURE__ */ _jsxDEV(InputNumber, {
+												min: 1,
+												max: 50,
+												value: reportEmailConfig.previewRows,
+												onChange: (value) => setReportEmailConfig({ previewRows: Number(value || 10) })
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 147,
+												columnNumber: 527
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 147,
+											columnNumber: 495
+										}, this)
+									]
+								}, void 0, true, {
+									fileName: _jsxFileName,
+									lineNumber: 147,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV("div", {
+									className: "scheduled-form-grid three",
+									children: [
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Client ID",
+											children: /* @__PURE__ */ _jsxDEV(InputNumber, {
+												min: 0,
+												value: reportEmailConfig.filter.clientId,
+												onChange: (value) => setReportEmailConfig({ filter: {
+													...reportEmailConfig.filter,
+													clientId: Number(value || 0)
+												} })
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 148,
+												columnNumber: 83
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 148,
+											columnNumber: 54
+										}, this),
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Month",
+											children: /* @__PURE__ */ _jsxDEV(Input, {
+												value: reportEmailConfig.filter.month,
+												onChange: (event) => setReportEmailConfig({ filter: {
+													...reportEmailConfig.filter,
+													month: event.target.value
+												} }),
+												placeholder: "2026-07"
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 148,
+												columnNumber: 301
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 148,
+											columnNumber: 276
+										}, this),
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Pay run ID",
+											children: /* @__PURE__ */ _jsxDEV(InputNumber, {
+												min: 1,
+												value: reportEmailConfig.filter.payRunId ?? undefined,
+												onChange: (value) => setReportEmailConfig({ filter: {
+													...reportEmailConfig.filter,
+													payRunId: value ? Number(value) : null
+												} })
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 148,
+												columnNumber: 526
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 148,
+											columnNumber: 496
+										}, this)
+									]
+								}, void 0, true, {
+									fileName: _jsxFileName,
+									lineNumber: 148,
+									columnNumber: 11
+								}, this)
+							]
+						}, void 0, true, {
+							fileName: _jsxFileName,
+							lineNumber: 145,
+							columnNumber: 50
+						}, this),
+						action.actionType === "Workflow Trigger" && /* @__PURE__ */ _jsxDEV("div", {
+							className: "scheduled-form-section",
+							children: [
+								/* @__PURE__ */ _jsxDEV("h4", { children: "Workflow trigger" }, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 151,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV("div", {
+									className: "scheduled-form-grid three",
+									children: [
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Workflow ID",
+											required: true,
+											children: /* @__PURE__ */ _jsxDEV(InputNumber, {
+												min: 1,
+												value: workflowTriggerConfig.workflowId || undefined,
+												onChange: (value) => setWorkflowTriggerConfig({ workflowId: Number(value || 0) })
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 152,
+												columnNumber: 94
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 152,
+											columnNumber: 54
+										}, this),
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Resource type",
+											required: true,
+											children: /* @__PURE__ */ _jsxDEV(Input, {
+												value: workflowTriggerConfig.resourceType,
+												onChange: (event) => setWorkflowTriggerConfig({ resourceType: event.target.value }),
+												placeholder: "PayRun"
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 152,
+												columnNumber: 306
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 152,
+											columnNumber: 264
+										}, this),
+										/* @__PURE__ */ _jsxDEV(Form.Item, {
+											label: "Requestor user ID",
+											children: /* @__PURE__ */ _jsxDEV(InputNumber, {
+												min: 1,
+												value: workflowTriggerConfig.requestorUserId,
+												onChange: (value) => setWorkflowTriggerConfig({ requestorUserId: Number(value || 1) })
+											}, void 0, false, {
+												fileName: _jsxFileName,
+												lineNumber: 152,
+												columnNumber: 511
+											}, this)
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 152,
+											columnNumber: 474
+										}, this)
+									]
+								}, void 0, true, {
+									fileName: _jsxFileName,
+									lineNumber: 152,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV(Form.Item, {
+									label: "Resource IDs",
+									children: /* @__PURE__ */ _jsxDEV(Input, {
+										value: workflowTriggerConfig.resourceIds,
+										onChange: (event) => setWorkflowTriggerConfig({ resourceIds: event.target.value }),
+										placeholder: "26,27,28"
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 153,
+										columnNumber: 43
+									}, this)
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 153,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV(Form.Item, {
+									label: "Payload JSON",
+									children: /* @__PURE__ */ _jsxDEV(Input.TextArea, {
+										rows: 3,
+										value: workflowTriggerConfig.payloadJson,
+										onChange: (event) => setWorkflowTriggerConfig({ payloadJson: event.target.value || "{}" })
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 154,
+										columnNumber: 43
+									}, this)
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 154,
+									columnNumber: 11
+								}, this),
+								/* @__PURE__ */ _jsxDEV(Form.Item, {
+									label: "Skip if pending",
+									children: /* @__PURE__ */ _jsxDEV(Switch, {
+										checked: workflowTriggerConfig.skipIfPending,
+										onChange: (value) => setWorkflowTriggerConfig({ skipIfPending: value })
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 155,
+										columnNumber: 46
+									}, this)
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 155,
+									columnNumber: 11
+								}, this)
+							]
+						}, void 0, true, {
+							fileName: _jsxFileName,
+							lineNumber: 150,
+							columnNumber: 54
+						}, this)
+					]
+				}, void 0, true, {
+					fileName: _jsxFileName,
+					lineNumber: 120,
+					columnNumber: 7
+				}, this)
+			}, void 0, false, {
+				fileName: _jsxFileName,
+				lineNumber: 119,
+				columnNumber: 5
+			}, this),
+			/* @__PURE__ */ _jsxDEV(Drawer, {
+				className: "settings-master-drawer scheduled-job-drawer",
+				title: /* @__PURE__ */ _jsxDEV("div", {
+					className: "settings-drawer-title",
+					children: [
+						/* @__PURE__ */ _jsxDEV("span", { children: "Schedule" }, void 0, false, {
+							fileName: _jsxFileName,
+							lineNumber: 160,
+							columnNumber: 115
+						}, this),
+						/* @__PURE__ */ _jsxDEV("h3", { children: job.id ? "Edit schedule" : "Add schedule" }, void 0, false, {
+							fileName: _jsxFileName,
+							lineNumber: 160,
+							columnNumber: 136
+						}, this),
+						/* @__PURE__ */ _jsxDEV("p", { children: "Select a job action and decide when it should run." }, void 0, false, {
+							fileName: _jsxFileName,
+							lineNumber: 160,
+							columnNumber: 188
+						}, this)
+					]
+				}, void 0, true, {
+					fileName: _jsxFileName,
+					lineNumber: 160,
+					columnNumber: 76
+				}, this),
+				open: jobOpen,
+				width: 760,
+				onClose: () => setJobOpen(false),
+				destroyOnClose: true,
+				footer: /* @__PURE__ */ _jsxDEV(Space, { children: [/* @__PURE__ */ _jsxDEV(Button, {
+					onClick: () => setJobOpen(false),
+					children: "Cancel"
+				}, void 0, false, {
+					fileName: _jsxFileName,
+					lineNumber: 160,
+					columnNumber: 344
+				}, this), /* @__PURE__ */ _jsxDEV(Button, {
+					type: "primary",
+					loading: saving,
+					onClick: () => void saveJob(),
+					children: job.id ? "Update schedule" : "Save schedule"
+				}, void 0, false, {
+					fileName: _jsxFileName,
+					lineNumber: 160,
+					columnNumber: 401
+				}, this)] }, void 0, true, {
+					fileName: _jsxFileName,
+					lineNumber: 160,
+					columnNumber: 337
+				}, this),
+				children: /* @__PURE__ */ _jsxDEV(Form, {
+					component: "div",
+					layout: "vertical",
+					className: "settings-quick-form scheduled-job-form",
+					requiredMark: false,
+					children: [
+						/* @__PURE__ */ _jsxDEV("div", {
+							className: "scheduled-form-section",
+							children: [
+								/* @__PURE__ */ _jsxDEV("h4", { children: "Basic details" }, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 162,
+									columnNumber: 49
+								}, this),
+								/* @__PURE__ */ _jsxDEV("div", {
+									className: "scheduled-form-grid two",
+									children: [/* @__PURE__ */ _jsxDEV(Form.Item, {
+										label: "Schedule code",
+										required: true,
+										children: /* @__PURE__ */ _jsxDEV(Input, {
+											value: job.jobCode,
+											onChange: (event) => setJob({
+												...job,
+												jobCode: event.target.value.toUpperCase().replace(/\s+/g, "_")
+											}),
+											placeholder: "DAILY_LEAVE_REMINDER"
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 162,
+											columnNumber: 154
+										}, this)
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 162,
+										columnNumber: 112
+									}, this), /* @__PURE__ */ _jsxDEV(Form.Item, {
+										label: "Schedule name",
+										required: true,
+										children: /* @__PURE__ */ _jsxDEV(Input, {
+											value: job.jobName,
+											onChange: (event) => setJob({
+												...job,
+												jobName: event.target.value
+											})
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 162,
+											columnNumber: 375
+										}, this)
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 162,
+										columnNumber: 333
+									}, this)]
+								}, void 0, true, {
+									fileName: _jsxFileName,
+									lineNumber: 162,
+									columnNumber: 71
+								}, this),
+								/* @__PURE__ */ _jsxDEV(Form.Item, {
+									label: "Description",
+									children: /* @__PURE__ */ _jsxDEV(Input.TextArea, {
+										rows: 2,
+										value: job.description,
+										onChange: (event) => setJob({
+											...job,
+											description: event.target.value
+										})
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 162,
+										columnNumber: 521
+									}, this)
+								}, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 162,
+									columnNumber: 490
+								}, this)
+							]
+						}, void 0, true, {
+							fileName: _jsxFileName,
+							lineNumber: 162,
+							columnNumber: 9
+						}, this),
+						/* @__PURE__ */ _jsxDEV("div", {
+							className: "scheduled-form-section",
+							children: [
+								/* @__PURE__ */ _jsxDEV("h4", { children: "What should run?" }, void 0, false, {
+									fileName: _jsxFileName,
+									lineNumber: 163,
+									columnNumber: 49
+								}, this),
+								/* @__PURE__ */ _jsxDEV("div", {
+									className: "scheduled-form-grid action",
+									children: [/* @__PURE__ */ _jsxDEV(Form.Item, {
+										label: "Job Action",
+										required: true,
+										children: /* @__PURE__ */ _jsxDEV(Select, {
+											showSearch: true,
+											value: selectedActionId || undefined,
+											placeholder: "Select configured action",
+											optionFilterProp: "searchText",
+											onChange: setJobAction,
+											options: actions.filter((item) => item.isActive).map((item) => ({
+												value: item.id,
+												label: `${item.actionName} - ${item.actionType}`,
+												searchText: `${item.actionName} ${item.actionCode} ${item.actionType}`
+											}))
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 163,
+											columnNumber: 157
+										}, this)
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 163,
+										columnNumber: 118
+									}, this), /* @__PURE__ */ _jsxDEV(Form.Item, {
+										label: "Enabled",
+										children: /* @__PURE__ */ _jsxDEV(Switch, {
+											checked: job.isEnabled,
+											onChange: (value) => setJob({
+												...job,
+												isEnabled: value
+											})
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 163,
+											columnNumber: 552
+										}, this)
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 163,
+										columnNumber: 525
+									}, this)]
+								}, void 0, true, {
+									fileName: _jsxFileName,
+									lineNumber: 163,
+									columnNumber: 74
+								}, this),
+								selectedAction && /* @__PURE__ */ _jsxDEV("div", {
+									className: "scheduled-action-note",
+									children: [
+										/* @__PURE__ */ _jsxDEV("b", { children: selectedAction.actionName }, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 163,
+											columnNumber: 719
+										}, this),
+										/* @__PURE__ */ _jsxDEV("span", { children: selectedAction.description || selectedAction.actionType }, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 163,
+											columnNumber: 753
+										}, this),
+										/* @__PURE__ */ _jsxDEV("code", { children: selectedAction.actionCode }, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 163,
+											columnNumber: 823
+										}, this)
+									]
+								}, void 0, true, {
+									fileName: _jsxFileName,
+									lineNumber: 163,
+									columnNumber: 680
+								}, this)
+							]
+						}, void 0, true, {
+							fileName: _jsxFileName,
+							lineNumber: 163,
+							columnNumber: 9
+						}, this),
+						/* @__PURE__ */ _jsxDEV("div", {
+							className: "scheduled-form-section",
+							children: [/* @__PURE__ */ _jsxDEV("h4", { children: "When should it run?" }, void 0, false, {
+								fileName: _jsxFileName,
+								lineNumber: 164,
+								columnNumber: 49
+							}, this), /* @__PURE__ */ _jsxDEV("div", {
+								className: "scheduled-form-grid three",
+								children: [
+									/* @__PURE__ */ _jsxDEV(Form.Item, {
+										label: "Run frequency",
+										children: /* @__PURE__ */ _jsxDEV(Select, {
+											value: job.scheduleType,
+											onChange: (value) => setJob({
+												...job,
+												scheduleType: value
+											}),
+											options: scheduleOptions.map((value) => ({
+												value,
+												label: value === "Interval" ? "Repeated interval" : value
+											}))
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 164,
+											columnNumber: 153
+										}, this)
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 164,
+										columnNumber: 120
+									}, this),
+									job.scheduleType === "Interval" && /* @__PURE__ */ _jsxDEV(Form.Item, {
+										label: "Repeat every",
+										children: /* @__PURE__ */ _jsxDEV(InputNumber, {
+											addonAfter: "minutes",
+											min: 1,
+											max: 1440,
+											value: job.intervalMinutes,
+											onChange: (value) => setJob({
+												...job,
+												intervalMinutes: Number(value || 1)
+											})
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 164,
+											columnNumber: 439
+										}, this)
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 164,
+										columnNumber: 407
+									}, this),
+									job.scheduleType !== "Interval" && /* @__PURE__ */ _jsxDEV(Form.Item, {
+										label: "Run time",
+										children: /* @__PURE__ */ _jsxDEV(Input, {
+											value: job.dailyRunTime,
+											onChange: (event) => setJob({
+												...job,
+												dailyRunTime: event.target.value
+											}),
+											placeholder: "01:00"
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 164,
+											columnNumber: 675
+										}, this)
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 164,
+										columnNumber: 647
+									}, this),
+									job.scheduleType === "Monthly" && /* @__PURE__ */ _jsxDEV(Form.Item, {
+										label: "Day of month",
+										children: /* @__PURE__ */ _jsxDEV(InputNumber, {
+											min: 1,
+											max: 31,
+											value: job.monthlyRunDay,
+											onChange: (value) => setJob({
+												...job,
+												monthlyRunDay: Number(value || 1)
+											})
+										}, void 0, false, {
+											fileName: _jsxFileName,
+											lineNumber: 164,
+											columnNumber: 882
+										}, this)
+									}, void 0, false, {
+										fileName: _jsxFileName,
+										lineNumber: 164,
+										columnNumber: 850
+									}, this)
+								]
+							}, void 0, true, {
+								fileName: _jsxFileName,
+								lineNumber: 164,
+								columnNumber: 77
+							}, this)]
+						}, void 0, true, {
+							fileName: _jsxFileName,
+							lineNumber: 164,
+							columnNumber: 9
+						}, this)
+					]
+				}, void 0, true, {
+					fileName: _jsxFileName,
+					lineNumber: 161,
+					columnNumber: 7
+				}, this)
+			}, void 0, false, {
+				fileName: _jsxFileName,
+				lineNumber: 160,
+				columnNumber: 5
+			}, this)
+		]
+	}, void 0, true, {
+		fileName: _jsxFileName,
+		lineNumber: 82,
+		columnNumber: 10
+	}, this);
+}
+_s(ScheduledJobsManager, "uo3vD5xz8ZnfQCzUimIEwUeU9Lo=");
+_c = ScheduledJobsManager;
+var _c;
+$RefreshReg$(_c, "ScheduledJobsManager");
+import * as RefreshRuntime from "/@react-refresh";
+const inWebWorker = typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope;
+import * as __vite_react_currentExports from "/src/components/ScheduledJobsManager.tsx";
+if (import.meta.hot && !inWebWorker) {
+  if (!window.$RefreshReg$) {
+    throw new Error(
+      "@vitejs/plugin-react can't detect preamble. Something is wrong."
+    );
+  }
+
+  const currentExports = __vite_react_currentExports;
+  queueMicrotask(() => {
+    RefreshRuntime.registerExportsForReactRefresh("D:/NewHrms/hrms/payroll-ui/src/components/ScheduledJobsManager.tsx", currentExports);
+    import.meta.hot.accept((nextExports) => {
+      if (!nextExports) return;
+      const invalidateMessage = RefreshRuntime.validateRefreshBoundaryAndEnqueueUpdate("D:/NewHrms/hrms/payroll-ui/src/components/ScheduledJobsManager.tsx", currentExports, nextExports);
+      if (invalidateMessage) import.meta.hot.invalidate(invalidateMessage);
+    });
+  });
+}
+function $RefreshReg$(type, id) { return RefreshRuntime.register(type, "D:/NewHrms/hrms/payroll-ui/src/components/ScheduledJobsManager.tsx" + ' ' + id); }
+function $RefreshSig$() { return RefreshRuntime.createSignatureFunctionForTransform(); }
+
+//# sourceMappingURL=data:application/json;base64,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Ozs7Ozs7S0FDamdDOzs7Ozs7R0FDQTs7Ozs7RUFDRDs7Ozs7O0FBQ1giLCJuYW1lcyI6W10sInNvdXJjZXMiOlsiU2NoZWR1bGVkSm9ic01hbmFnZXIudHN4Il0sInZlcnNpb24iOjMsInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IHVzZUVmZmVjdCwgdXNlTWVtbywgdXNlU3RhdGUgfSBmcm9tICdyZWFjdCdcclxuaW1wb3J0IHsgQWxlcnQsIEJ1dHRvbiwgQ2FyZCwgRHJhd2VyLCBGb3JtLCBJbnB1dCwgSW5wdXROdW1iZXIsIFNlbGVjdCwgU3BhY2UsIFN3aXRjaCwgVGFicywgVGFnIH0gZnJvbSAnYW50ZCdcclxuaW1wb3J0IERhdGFUYWJsZSBmcm9tICcuL0RhdGFUYWJsZSdcclxuaW1wb3J0IHsgZ2V0U2NoZWR1bGVkSm9iQWN0aW9ucywgZ2V0U2NoZWR1bGVkSm9iSGFuZGxlcnMsIGdldFNjaGVkdWxlZEpvYlJ1bnMsIGdldFNjaGVkdWxlZEpvYnMsIHJ1blNjaGVkdWxlZEpvYk5vdywgc2F2ZVNjaGVkdWxlZEpvYiwgc2F2ZVNjaGVkdWxlZEpvYkFjdGlvbiwgc2V0U2NoZWR1bGVkSm9iRW5hYmxlZCB9IGZyb20gJy4uL3NlcnZpY2VzL3NldHRpbmdzU2VydmljZSdcclxuaW1wb3J0IHR5cGUgeyBTY2hlZHVsZWRKb2IsIFNjaGVkdWxlZEpvYkFjdGlvbiwgU2NoZWR1bGVkSm9iSGFuZGxlck9wdGlvbiwgU2NoZWR1bGVkSm9iUnVuIH0gZnJvbSAnLi4vdHlwZXMvcGF5cm9sbCdcclxuXHJcbmNvbnN0IGNvbmZpZ3VyZWRBY3Rpb25LZXkgPSAnQ09ORklHVVJFRF9KT0JfQUNUSU9OJ1xyXG5jb25zdCBqb2IwOiBTY2hlZHVsZWRKb2IgPSB7IGlkOiAwLCBqb2JDb2RlOiAnJywgam9iTmFtZTogJycsIGRlc2NyaXB0aW9uOiAnJywgaGFuZGxlcktleTogY29uZmlndXJlZEFjdGlvbktleSwgaXNFbmFibGVkOiB0cnVlLCBzY2hlZHVsZVR5cGU6ICdJbnRlcnZhbCcsIGludGVydmFsTWludXRlczogNjAsIGRhaWx5UnVuVGltZTogJzAxOjAwJywgbW9udGhseVJ1bkRheTogMSwgY29uZmlnSnNvbjogJ3t9JywgbGFzdFN0YXR1czogJ05ldmVyIFJ1bicsIGxhc3RNZXNzYWdlOiAnJywgaXNSdW5uaW5nOiBmYWxzZSB9XHJcbmNvbnN0IGFjdGlvbjA6IFNjaGVkdWxlZEpvYkFjdGlvbiA9IHsgaWQ6IDAsIGFjdGlvbkNvZGU6ICcnLCBhY3Rpb25OYW1lOiAnJywgYWN0aW9uVHlwZTogJ05vdGlmaWNhdGlvbiBFdmVudCcsIGRlc2NyaXB0aW9uOiAnJywgY29uZmlnSnNvbjogJ3t9JywgaXNBY3RpdmU6IHRydWUgfVxyXG5jb25zdCBzY2hlZHVsZU9wdGlvbnMgPSBbJ0ludGVydmFsJywgJ0RhaWx5JywgJ01vbnRobHknXSBhcyBjb25zdFxyXG5jb25zdCBzdGF0dXNDb2xvciA9IChzdGF0dXM6IHN0cmluZykgPT4gc3RhdHVzID09PSAnQ29tcGxldGVkJyA/ICdncmVlbicgOiBzdGF0dXMgPT09ICdGYWlsZWQnID8gJ3JlZCcgOiBzdGF0dXMgPT09ICdSdW5uaW5nJyA/ICdibHVlJyA6ICdkZWZhdWx0J1xyXG5jb25zdCBkdCA9ICh2YWx1ZT86IHN0cmluZyB8IG51bGwpID0+IHZhbHVlID8gbmV3IERhdGUodmFsdWUpLnRvTG9jYWxlU3RyaW5nKCdlbi1JTicpIDogJy0nXHJcbmNvbnN0IHBhcnNlSnNvbiA9IDxULD4oanNvbjogc3RyaW5nLCBmYWxsYmFjazogVCk6IFQgPT4geyB0cnkgeyByZXR1cm4geyAuLi5mYWxsYmFjaywgLi4uSlNPTi5wYXJzZShqc29uIHx8ICd7fScpIH0gfSBjYXRjaCB7IHJldHVybiBmYWxsYmFjayB9IH1cclxuY29uc3Qgc3RyaW5naWZ5ID0gKHZhbHVlOiBvYmplY3QpID0+IEpTT04uc3RyaW5naWZ5KHZhbHVlLCBudWxsLCAyKVxyXG50eXBlIE5vdGlmaWNhdGlvbkNvbmZpZyA9IHsgZXZlbnRDb2RlOiBzdHJpbmc7IHJlc291cmNlVHlwZTogc3RyaW5nOyByZXNvdXJjZUlkOiBzdHJpbmc7IGNsaWVudElkPzogbnVtYmVyIHwgbnVsbDsgcGF5bG9hZEpzb246IHN0cmluZyB9XHJcbnR5cGUgUHJvY2VkdXJlQ29uZmlnID0geyBwcm9jZWR1cmVOYW1lOiBzdHJpbmc7IHBhcmFtZXRlcnM6IFJlY29yZDxzdHJpbmcsIHN0cmluZz4gfVxyXG50eXBlIEFwaUNvbmZpZyA9IHsgbWV0aG9kOiBzdHJpbmc7IHVybDogc3RyaW5nOyBib2R5SnNvbjogc3RyaW5nOyBoZWFkZXJzOiBSZWNvcmQ8c3RyaW5nLCBzdHJpbmc+OyB0aW1lb3V0U2Vjb25kczogbnVtYmVyIH1cclxudHlwZSBSZXBvcnRFbWFpbENvbmZpZyA9IHsgcmVwb3J0Q29kZTogc3RyaW5nOyBldmVudENvZGU6IHN0cmluZzsgZmlsdGVyOiB7IGNsaWVudElkOiBudW1iZXI7IG1vbnRoOiBzdHJpbmc7IHBheVJ1bklkPzogbnVtYmVyIHwgbnVsbDsgZW1wbG95ZWVJZD86IG51bWJlciB8IG51bGw7IGZyb21EYXRlPzogc3RyaW5nOyB0b0RhdGU/OiBzdHJpbmcgfTsgcHJldmlld1Jvd3M6IG51bWJlciB9XHJcbnR5cGUgV29ya2Zsb3dUcmlnZ2VyQ29uZmlnID0geyB3b3JrZmxvd0lkOiBudW1iZXI7IHJlc291cmNlVHlwZTogc3RyaW5nOyByZXNvdXJjZUlkczogc3RyaW5nOyByZXF1ZXN0b3JVc2VySWQ6IG51bWJlcjsgc2tpcElmUGVuZGluZzogYm9vbGVhbjsgcGF5bG9hZEpzb246IHN0cmluZyB9XHJcbmNvbnN0IG5vdGlmaWNhdGlvbjA6IE5vdGlmaWNhdGlvbkNvbmZpZyA9IHsgZXZlbnRDb2RlOiAnJywgcmVzb3VyY2VUeXBlOiAnU2NoZWR1bGVkSm9iJywgcmVzb3VyY2VJZDogJycsIGNsaWVudElkOiBudWxsLCBwYXlsb2FkSnNvbjogJ3t9JyB9XHJcbmNvbnN0IHByb2NlZHVyZTA6IFByb2NlZHVyZUNvbmZpZyA9IHsgcHJvY2VkdXJlTmFtZTogJycsIHBhcmFtZXRlcnM6IHt9IH1cclxuY29uc3QgYXBpMDogQXBpQ29uZmlnID0geyBtZXRob2Q6ICdQT1NUJywgdXJsOiAnJywgYm9keUpzb246ICd7fScsIGhlYWRlcnM6IHt9LCB0aW1lb3V0U2Vjb25kczogNjAgfVxyXG5jb25zdCByZXBvcnRFbWFpbDA6IFJlcG9ydEVtYWlsQ29uZmlnID0geyByZXBvcnRDb2RlOiAnJywgZXZlbnRDb2RlOiAnJywgZmlsdGVyOiB7IGNsaWVudElkOiAwLCBtb250aDogbmV3IERhdGUoKS50b0lTT1N0cmluZygpLnNsaWNlKDAsIDcpLCBwYXlSdW5JZDogbnVsbCwgZW1wbG95ZWVJZDogbnVsbCB9LCBwcmV2aWV3Um93czogMTAgfVxyXG5jb25zdCB3b3JrZmxvd1RyaWdnZXIwOiBXb3JrZmxvd1RyaWdnZXJDb25maWcgPSB7IHdvcmtmbG93SWQ6IDAsIHJlc291cmNlVHlwZTogJycsIHJlc291cmNlSWRzOiAnJywgcmVxdWVzdG9yVXNlcklkOiAxLCBza2lwSWZQZW5kaW5nOiB0cnVlLCBwYXlsb2FkSnNvbjogJ3t9JyB9XHJcbmNvbnN0IGFjdGlvblR5cGVzOiBTY2hlZHVsZWRKb2JBY3Rpb25bJ2FjdGlvblR5cGUnXVtdID0gWydOb3RpZmljYXRpb24gRXZlbnQnLCAnSW50ZXJuYWwgQVBJIENhbGwnLCAnU3RvcmVkIFByb2NlZHVyZScsICdSZXBvcnQgRW1haWwnLCAnV29ya2Zsb3cgVHJpZ2dlciddXHJcblxyXG5leHBvcnQgZGVmYXVsdCBmdW5jdGlvbiBTY2hlZHVsZWRKb2JzTWFuYWdlcigpIHtcclxuICBjb25zdCBbam9icywgc2V0Sm9ic10gPSB1c2VTdGF0ZTxTY2hlZHVsZWRKb2JbXT4oW10pXHJcbiAgY29uc3QgW2FjdGlvbnMsIHNldEFjdGlvbnNdID0gdXNlU3RhdGU8U2NoZWR1bGVkSm9iQWN0aW9uW10+KFtdKVxyXG4gIGNvbnN0IFtoYW5kbGVycywgc2V0SGFuZGxlcnNdID0gdXNlU3RhdGU8U2NoZWR1bGVkSm9iSGFuZGxlck9wdGlvbltdPihbXSlcclxuICBjb25zdCBbcnVucywgc2V0UnVuc10gPSB1c2VTdGF0ZTxTY2hlZHVsZWRKb2JSdW5bXT4oW10pXHJcbiAgY29uc3QgW3NlbGVjdGVkSm9iSWQsIHNldFNlbGVjdGVkSm9iSWRdID0gdXNlU3RhdGU8bnVtYmVyIHwgdW5kZWZpbmVkPigpXHJcbiAgY29uc3QgW2pvYiwgc2V0Sm9iXSA9IHVzZVN0YXRlPFNjaGVkdWxlZEpvYj4oam9iMClcclxuICBjb25zdCBbYWN0aW9uLCBzZXRBY3Rpb25dID0gdXNlU3RhdGU8U2NoZWR1bGVkSm9iQWN0aW9uPihhY3Rpb24wKVxyXG4gIGNvbnN0IFtqb2JPcGVuLCBzZXRKb2JPcGVuXSA9IHVzZVN0YXRlKGZhbHNlKVxyXG4gIGNvbnN0IFthY3Rpb25PcGVuLCBzZXRBY3Rpb25PcGVuXSA9IHVzZVN0YXRlKGZhbHNlKVxyXG4gIGNvbnN0IFtzYXZpbmcsIHNldFNhdmluZ10gPSB1c2VTdGF0ZShmYWxzZSlcclxuXHJcbiAgY29uc3QgbG9hZCA9IGFzeW5jIChmb2N1c0pvYklkID0gc2VsZWN0ZWRKb2JJZCkgPT4ge1xyXG4gICAgY29uc3QgW2pvYlJvd3MsIGFjdGlvblJvd3MsIGhhbmRsZXJSb3dzXSA9IGF3YWl0IFByb21pc2UuYWxsKFtnZXRTY2hlZHVsZWRKb2JzKCksIGdldFNjaGVkdWxlZEpvYkFjdGlvbnMoKSwgZ2V0U2NoZWR1bGVkSm9iSGFuZGxlcnMoKV0pXHJcbiAgICBzZXRKb2JzKGpvYlJvd3MpXHJcbiAgICBzZXRBY3Rpb25zKGFjdGlvblJvd3MpXHJcbiAgICBzZXRIYW5kbGVycyhoYW5kbGVyUm93cylcclxuICAgIGNvbnN0IG5leHRKb2JJZCA9IGZvY3VzSm9iSWQgfHwgam9iUm93c1swXT8uaWRcclxuICAgIHNldFNlbGVjdGVkSm9iSWQobmV4dEpvYklkKVxyXG4gICAgc2V0UnVucyhuZXh0Sm9iSWQgPyBhd2FpdCBnZXRTY2hlZHVsZWRKb2JSdW5zKG5leHRKb2JJZCkgOiBbXSlcclxuICB9XHJcblxyXG4gIHVzZUVmZmVjdCgoKSA9PiB7IHZvaWQgbG9hZCgpIH0sIFtdKVxyXG5cclxuICBjb25zdCBzZWxlY3RlZEpvYiA9IHVzZU1lbW8oKCkgPT4gam9icy5maW5kKGl0ZW0gPT4gaXRlbS5pZCA9PT0gc2VsZWN0ZWRKb2JJZCksIFtqb2JzLCBzZWxlY3RlZEpvYklkXSlcclxuICBjb25zdCBzZWxlY3RlZEFjdGlvbklkID0gcGFyc2VKc29uKGpvYi5jb25maWdKc29uLCB7IGFjdGlvbklkOiAwIH0pLmFjdGlvbklkXHJcbiAgY29uc3Qgc2VsZWN0ZWRBY3Rpb24gPSBhY3Rpb25zLmZpbmQoaXRlbSA9PiBpdGVtLmlkID09PSBzZWxlY3RlZEFjdGlvbklkKVxyXG4gIGNvbnN0IG5vdGlmaWNhdGlvbkNvbmZpZyA9IHBhcnNlSnNvbihhY3Rpb24uY29uZmlnSnNvbiwgbm90aWZpY2F0aW9uMClcclxuICBjb25zdCBwcm9jZWR1cmVDb25maWcgPSBwYXJzZUpzb24oYWN0aW9uLmNvbmZpZ0pzb24sIHByb2NlZHVyZTApXHJcbiAgY29uc3QgYXBpQ29uZmlnID0gcGFyc2VKc29uKGFjdGlvbi5jb25maWdKc29uLCBhcGkwKVxyXG4gIGNvbnN0IHJlcG9ydEVtYWlsQ29uZmlnID0gcGFyc2VKc29uKGFjdGlvbi5jb25maWdKc29uLCByZXBvcnRFbWFpbDApXHJcbiAgY29uc3Qgd29ya2Zsb3dUcmlnZ2VyQ29uZmlnID0gcGFyc2VKc29uKGFjdGlvbi5jb25maWdKc29uLCB3b3JrZmxvd1RyaWdnZXIwKVxyXG4gIGNvbnN0IGhhbmRsZXJOYW1lID0gKGtleTogc3RyaW5nKSA9PiBoYW5kbGVycy5maW5kKGl0ZW0gPT4gaXRlbS5oYW5kbGVyS2V5ID09PSBrZXkpPy5uYW1lIHx8IGtleVxyXG4gIGNvbnN0IHNjaGVkdWxlTGFiZWwgPSAocm93OiBTY2hlZHVsZWRKb2IpID0+IHJvdy5zY2hlZHVsZVR5cGUgPT09ICdJbnRlcnZhbCcgPyBgRXZlcnkgJHtyb3cuaW50ZXJ2YWxNaW51dGVzfSBtaW5gIDogcm93LnNjaGVkdWxlVHlwZSA9PT0gJ01vbnRobHknID8gYERheSAke3Jvdy5tb250aGx5UnVuRGF5fSBhdCAke3Jvdy5kYWlseVJ1blRpbWV9YCA6IGBEYWlseSBhdCAke3Jvdy5kYWlseVJ1blRpbWV9YFxyXG4gIGNvbnN0IGFjdGlvbk5hbWVGb3JKb2IgPSAocm93OiBTY2hlZHVsZWRKb2IpID0+IHtcclxuICAgIGlmIChyb3cuaGFuZGxlcktleSAhPT0gY29uZmlndXJlZEFjdGlvbktleSkgcmV0dXJuIGhhbmRsZXJOYW1lKHJvdy5oYW5kbGVyS2V5KVxyXG4gICAgY29uc3QgYWN0aW9uSWQgPSBwYXJzZUpzb24ocm93LmNvbmZpZ0pzb24sIHsgYWN0aW9uSWQ6IDAgfSkuYWN0aW9uSWRcclxuICAgIHJldHVybiBhY3Rpb25zLmZpbmQoaXRlbSA9PiBpdGVtLmlkID09PSBhY3Rpb25JZCk/LmFjdGlvbk5hbWUgfHwgJ0NvbmZpZ3VyZWQgYWN0aW9uJ1xyXG4gIH1cclxuXHJcbiAgY29uc3Qgb3BlbkpvYiA9IChyb3c/OiBTY2hlZHVsZWRKb2IpID0+IHsgc2V0Sm9iKHJvdyA/IHsgLi4ucm93IH0gOiBqb2IwKTsgc2V0Sm9iT3Blbih0cnVlKSB9XHJcbiAgY29uc3Qgb3BlbkFjdGlvbiA9IChyb3c/OiBTY2hlZHVsZWRKb2JBY3Rpb24pID0+IHsgc2V0QWN0aW9uKHJvdyA/IHsgLi4ucm93IH0gOiB7IC4uLmFjdGlvbjAsIGNvbmZpZ0pzb246IHN0cmluZ2lmeShub3RpZmljYXRpb24wKSB9KTsgc2V0QWN0aW9uT3Blbih0cnVlKSB9XHJcbiAgY29uc3Qgc2VsZWN0Sm9iID0gYXN5bmMgKGlkOiBudW1iZXIpID0+IHsgc2V0U2VsZWN0ZWRKb2JJZChpZCk7IHNldFJ1bnMoYXdhaXQgZ2V0U2NoZWR1bGVkSm9iUnVucyhpZCkpIH1cclxuICBjb25zdCBzYXZlSm9iID0gYXN5bmMgKCkgPT4geyBzZXRTYXZpbmcodHJ1ZSk7IGNvbnN0IHJlc3BvbnNlID0gYXdhaXQgc2F2ZVNjaGVkdWxlZEpvYihqb2IpOyBzZXRTYXZpbmcoZmFsc2UpOyBpZiAocmVzcG9uc2Uub2spIHsgc2V0Sm9iT3BlbihmYWxzZSk7IHZvaWQgbG9hZChyZXNwb25zZS5kYXRhPy5pZCB8fCBzZWxlY3RlZEpvYklkKSB9IH1cclxuICBjb25zdCBzYXZlQWN0aW9uID0gYXN5bmMgKCkgPT4geyBzZXRTYXZpbmcodHJ1ZSk7IGNvbnN0IHJlc3BvbnNlID0gYXdhaXQgc2F2ZVNjaGVkdWxlZEpvYkFjdGlvbihhY3Rpb24pOyBzZXRTYXZpbmcoZmFsc2UpOyBpZiAocmVzcG9uc2Uub2spIHsgc2V0QWN0aW9uT3BlbihmYWxzZSk7IHZvaWQgbG9hZChzZWxlY3RlZEpvYklkKSB9IH1cclxuICBjb25zdCB0b2dnbGUgPSBhc3luYyAocm93OiBTY2hlZHVsZWRKb2IpID0+IHsgY29uc3QgcmVzcG9uc2UgPSBhd2FpdCBzZXRTY2hlZHVsZWRKb2JFbmFibGVkKHJvdy5pZCwgIXJvdy5pc0VuYWJsZWQpOyBpZiAocmVzcG9uc2Uub2spIHZvaWQgbG9hZChyb3cuaWQpIH1cclxuICBjb25zdCBydW5Ob3cgPSBhc3luYyAocm93OiBTY2hlZHVsZWRKb2IpID0+IHsgY29uc3QgcmVzcG9uc2UgPSBhd2FpdCBydW5TY2hlZHVsZWRKb2JOb3cocm93LmlkKTsgaWYgKHJlc3BvbnNlLm9rKSB2b2lkIGxvYWQocm93LmlkKSB9XHJcbiAgY29uc3Qgc2V0Sm9iQWN0aW9uID0gKGFjdGlvbklkOiBudW1iZXIpID0+IHNldEpvYihjdXJyZW50ID0+ICh7IC4uLmN1cnJlbnQsIGhhbmRsZXJLZXk6IGNvbmZpZ3VyZWRBY3Rpb25LZXksIGNvbmZpZ0pzb246IHN0cmluZ2lmeSh7IGFjdGlvbklkIH0pIH0pKVxyXG4gIGNvbnN0IHNldE5vdGlmaWNhdGlvbkNvbmZpZyA9IChjaGFuZ2VzOiBQYXJ0aWFsPE5vdGlmaWNhdGlvbkNvbmZpZz4pID0+IHNldEFjdGlvbihjdXJyZW50ID0+ICh7IC4uLmN1cnJlbnQsIGNvbmZpZ0pzb246IHN0cmluZ2lmeSh7IC4uLnBhcnNlSnNvbihjdXJyZW50LmNvbmZpZ0pzb24sIG5vdGlmaWNhdGlvbjApLCAuLi5jaGFuZ2VzIH0pIH0pKVxyXG4gIGNvbnN0IHNldFByb2NlZHVyZUNvbmZpZyA9IChjaGFuZ2VzOiBQYXJ0aWFsPFByb2NlZHVyZUNvbmZpZz4pID0+IHNldEFjdGlvbihjdXJyZW50ID0+ICh7IC4uLmN1cnJlbnQsIGNvbmZpZ0pzb246IHN0cmluZ2lmeSh7IC4uLnBhcnNlSnNvbihjdXJyZW50LmNvbmZpZ0pzb24sIHByb2NlZHVyZTApLCAuLi5jaGFuZ2VzIH0pIH0pKVxyXG4gIGNvbnN0IHNldEFwaUNvbmZpZyA9IChjaGFuZ2VzOiBQYXJ0aWFsPEFwaUNvbmZpZz4pID0+IHNldEFjdGlvbihjdXJyZW50ID0+ICh7IC4uLmN1cnJlbnQsIGNvbmZpZ0pzb246IHN0cmluZ2lmeSh7IC4uLnBhcnNlSnNvbihjdXJyZW50LmNvbmZpZ0pzb24sIGFwaTApLCAuLi5jaGFuZ2VzIH0pIH0pKVxyXG4gIGNvbnN0IHNldFJlcG9ydEVtYWlsQ29uZmlnID0gKGNoYW5nZXM6IFBhcnRpYWw8UmVwb3J0RW1haWxDb25maWc+KSA9PiBzZXRBY3Rpb24oY3VycmVudCA9PiAoeyAuLi5jdXJyZW50LCBjb25maWdKc29uOiBzdHJpbmdpZnkoeyAuLi5wYXJzZUpzb24oY3VycmVudC5jb25maWdKc29uLCByZXBvcnRFbWFpbDApLCAuLi5jaGFuZ2VzIH0pIH0pKVxyXG4gIGNvbnN0IHNldFdvcmtmbG93VHJpZ2dlckNvbmZpZyA9IChjaGFuZ2VzOiBQYXJ0aWFsPFdvcmtmbG93VHJpZ2dlckNvbmZpZz4pID0+IHNldEFjdGlvbihjdXJyZW50ID0+ICh7IC4uLmN1cnJlbnQsIGNvbmZpZ0pzb246IHN0cmluZ2lmeSh7IC4uLnBhcnNlSnNvbihjdXJyZW50LmNvbmZpZ0pzb24sIHdvcmtmbG93VHJpZ2dlcjApLCAuLi5jaGFuZ2VzIH0pIH0pKVxyXG4gIGNvbnN0IGNvbmZpZ0ZvclR5cGUgPSAodHlwZTogU2NoZWR1bGVkSm9iQWN0aW9uWydhY3Rpb25UeXBlJ10pID0+IHN0cmluZ2lmeSh0eXBlID09PSAnU3RvcmVkIFByb2NlZHVyZScgPyBwcm9jZWR1cmUwIDogdHlwZSA9PT0gJ0ludGVybmFsIEFQSSBDYWxsJyA/IGFwaTAgOiB0eXBlID09PSAnUmVwb3J0IEVtYWlsJyA/IHJlcG9ydEVtYWlsMCA6IHR5cGUgPT09ICdXb3JrZmxvdyBUcmlnZ2VyJyA/IHdvcmtmbG93VHJpZ2dlcjAgOiBub3RpZmljYXRpb24wKVxyXG5cclxuICByZXR1cm4gPHNlY3Rpb24gY2xhc3NOYW1lPVwic2NoZWR1bGVkLWpvYnMtc2V0dGluZ3NcIj5cclxuICAgIDxDYXJkIHNpemU9XCJzbWFsbFwiIGNsYXNzTmFtZT1cInNldHRpbmdzLXBhbmVsIHNldHRpbmdzLXRhYmxlLXBhbmVsXCIgYXJpYS1sYWJlbD1cIlNjaGVkdWxlZCBqb2IgY29uZmlndXJhdGlvblwiPlxuICAgICAgPFRhYnMgaXRlbXM9e1tcclxuICAgICAgICB7IGtleTogJ2FjdGlvbnMnLCBsYWJlbDogJ0pvYiBBY3Rpb25zJywgY2hpbGRyZW46IDw+XHJcbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cImNvbXBvbmVudC10YWJsZS1oZWFkXCI+PGRpdj48Yj5SZXVzYWJsZSBqb2IgYWN0aW9uczwvYj48c3Bhbj5DcmVhdGUgd2hhdCB0aGUgc2NoZWR1bGVyIGNhbiBkby4gU2NoZWR1bGVzIHdpbGwgcmV1c2UgdGhlc2UgYWN0aW9ucy48L3NwYW4+PC9kaXY+PFNwYWNlIGNsYXNzTmFtZT1cInNldHRpbmdzLW1hc3Rlci1hY3Rpb25zXCIgc2l6ZT17OH0gd3JhcD48QnV0dG9uIG9uQ2xpY2s9eygpID0+IHZvaWQgbG9hZCgpfT5SZWZyZXNoPC9CdXR0b24+PEJ1dHRvbiB0eXBlPVwicHJpbWFyeVwiIG9uQ2xpY2s9eygpID0+IG9wZW5BY3Rpb24oKX0+QWRkIGFjdGlvbjwvQnV0dG9uPjwvU3BhY2U+PC9kaXY+XHJcbiAgICAgICAgICA8RGF0YVRhYmxlIHJvd3M9e2FjdGlvbnN9IGdldFJvd0lkPXtyb3cgPT4gcm93LmlkfSBleHBvcnRGaWxlTmFtZT1cInNjaGVkdWxlZC1qb2ItYWN0aW9uc1wiIGNvbHVtbnM9e1tcclxuICAgICAgICAgICAgeyBrZXk6ICdhY3Rpb25OYW1lJywgbGFiZWw6ICdBY3Rpb24nLCByZW5kZXI6IHJvdyA9PiA8Pntyb3cuYWN0aW9uTmFtZX08c21hbGw+e3Jvdy5hY3Rpb25Db2RlfTwvc21hbGw+PC8+LCB3aWR0aDogJzI0MHB4JyB9LFxyXG4gICAgICAgICAgICB7IGtleTogJ2FjdGlvblR5cGUnLCBsYWJlbDogJ1R5cGUnIH0sXHJcbiAgICAgICAgICAgIHsga2V5OiAnZGVzY3JpcHRpb24nLCBsYWJlbDogJ0Rlc2NyaXB0aW9uJywgd2lkdGg6ICczMjBweCcgfSxcclxuICAgICAgICAgICAgeyBrZXk6ICdpc0FjdGl2ZScsIGxhYmVsOiAnU3RhdHVzJywgcmVuZGVyOiByb3cgPT4gcm93LmlzQWN0aXZlID8gJ0FjdGl2ZScgOiAnSW5hY3RpdmUnIH1cclxuICAgICAgICAgIF19IGFjdGlvbnM9e3JvdyA9PiA8QnV0dG9uIHNpemU9XCJzbWFsbFwiIHR5cGU9XCJwcmltYXJ5XCIgb25DbGljaz17KCkgPT4gb3BlbkFjdGlvbihyb3cpfT5FZGl0PC9CdXR0b24+fSAvPlxyXG4gICAgICAgIDwvPiB9LFxyXG4gICAgICAgIHsga2V5OiAnam9icycsIGxhYmVsOiAnU2NoZWR1bGVzJywgY2hpbGRyZW46IDw+XHJcbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cImNvbXBvbmVudC10YWJsZS1oZWFkXCI+PGRpdj48Yj5TY2hlZHVsZSBjb250cm9sPC9iPjxzcGFuPkRlY2lkZSB3aGVuIGEgYnVpbHQtaW4gcHJvY2VzcyBvciBjb25maWd1cmVkIGFjdGlvbiBzaG91bGQgcnVuLjwvc3Bhbj48L2Rpdj48U3BhY2UgY2xhc3NOYW1lPVwic2V0dGluZ3MtbWFzdGVyLWFjdGlvbnNcIiBzaXplPXs4fSB3cmFwPjxCdXR0b24gb25DbGljaz17KCkgPT4gdm9pZCBsb2FkKCl9PlJlZnJlc2g8L0J1dHRvbj48QnV0dG9uIHR5cGU9XCJwcmltYXJ5XCIgb25DbGljaz17KCkgPT4gb3BlbkpvYigpfT5BZGQgc2NoZWR1bGU8L0J1dHRvbj48L1NwYWNlPjwvZGl2PlxyXG4gICAgICAgICAgPERhdGFUYWJsZSByb3dzPXtqb2JzfSBnZXRSb3dJZD17cm93ID0+IHJvdy5pZH0gZXhwb3J0RmlsZU5hbWU9XCJzY2hlZHVsZWQtam9ic1wiIGNvbHVtbnM9e1tcclxuICAgICAgICAgICAgeyBrZXk6ICdqb2JOYW1lJywgbGFiZWw6ICdTY2hlZHVsZScsIHJlbmRlcjogcm93ID0+IDw+e3Jvdy5qb2JOYW1lfTxzbWFsbD57cm93LmpvYkNvZGV9PC9zbWFsbD48Lz4sIHdpZHRoOiAnMjIwcHgnIH0sXHJcbiAgICAgICAgICAgIHsga2V5OiAnaGFuZGxlcktleScsIGxhYmVsOiAnSm9iIEFjdGlvbicsIHJlbmRlcjogcm93ID0+IDw+e2FjdGlvbk5hbWVGb3JKb2Iocm93KX08c21hbGw+e3Jvdy5oYW5kbGVyS2V5ID09PSBjb25maWd1cmVkQWN0aW9uS2V5ID8gJ0NvbmZpZ3VyZWQgYWN0aW9uJyA6IHJvdy5oYW5kbGVyS2V5fTwvc21hbGw+PC8+LCB3aWR0aDogJzI0MHB4JyB9LFxyXG4gICAgICAgICAgICB7IGtleTogJ3NjaGVkdWxlVHlwZScsIGxhYmVsOiAnV2hlbicsIHZhbHVlOiBzY2hlZHVsZUxhYmVsIH0sXHJcbiAgICAgICAgICAgIHsga2V5OiAnbGFzdFN0YXR1cycsIGxhYmVsOiAnTGFzdCBzdGF0dXMnLCByZW5kZXI6IHJvdyA9PiA8VGFnIGNvbG9yPXtzdGF0dXNDb2xvcihyb3cubGFzdFN0YXR1cyl9Pntyb3cubGFzdFN0YXR1c308L1RhZz4gfSxcclxuICAgICAgICAgICAgeyBrZXk6ICdsYXN0UnVuQXQnLCBsYWJlbDogJ0xhc3QgcnVuJywgdmFsdWU6IHJvdyA9PiBkdChyb3cubGFzdFJ1bkF0KSB9LFxyXG4gICAgICAgICAgICB7IGtleTogJ25leHRSdW5BdCcsIGxhYmVsOiAnTmV4dCBydW4nLCB2YWx1ZTogcm93ID0+IGR0KHJvdy5uZXh0UnVuQXQpIH0sXHJcbiAgICAgICAgICAgIHsga2V5OiAnaXNFbmFibGVkJywgbGFiZWw6ICdFbmFibGVkJywgcmVuZGVyOiByb3cgPT4gcm93LmlzRW5hYmxlZCA/ICdZZXMnIDogJ05vJyB9XHJcbiAgICAgICAgICBdfSBhY3Rpb25zPXtyb3cgPT4gPFNwYWNlIHNpemU9ezZ9IHdyYXA+PEJ1dHRvbiBzaXplPVwic21hbGxcIiBvbkNsaWNrPXsoKSA9PiB2b2lkIHNlbGVjdEpvYihyb3cuaWQpfT5Mb2dzPC9CdXR0b24+PEJ1dHRvbiBzaXplPVwic21hbGxcIiB0eXBlPVwicHJpbWFyeVwiIGRpc2FibGVkPXtyb3cuaXNSdW5uaW5nfSBvbkNsaWNrPXsoKSA9PiB2b2lkIHJ1bk5vdyhyb3cpfT5SdW4gbm93PC9CdXR0b24+PEJ1dHRvbiBzaXplPVwic21hbGxcIiBvbkNsaWNrPXsoKSA9PiBvcGVuSm9iKHJvdyl9PkVkaXQ8L0J1dHRvbj48QnV0dG9uIHNpemU9XCJzbWFsbFwiIGRhbmdlcj17cm93LmlzRW5hYmxlZH0gb25DbGljaz17KCkgPT4gdm9pZCB0b2dnbGUocm93KX0+e3Jvdy5pc0VuYWJsZWQgPyAnUGF1c2UnIDogJ0VuYWJsZSd9PC9CdXR0b24+PC9TcGFjZT59IC8+XHJcbiAgICAgICAgPC8+IH0sXHJcbiAgICAgICAgeyBrZXk6ICdsb2dzJywgbGFiZWw6ICdSdW4gTG9ncycsIGNoaWxkcmVuOiA8RGF0YVRhYmxlIHJvd3M9e3J1bnN9IGdldFJvd0lkPXtyb3cgPT4gcm93LmlkfSBleHBvcnRGaWxlTmFtZT1cInNjaGVkdWxlZC1qb2ItcnVuc1wiIHRpdGxlPXtzZWxlY3RlZEpvYiA/IGBSdW4gbG9ncyAtICR7c2VsZWN0ZWRKb2Iuam9iTmFtZX1gIDogJ1J1biBsb2dzJ30gY29sdW1ucz17W1xyXG4gICAgICAgICAgeyBrZXk6ICdzdGFydGVkQXQnLCBsYWJlbDogJ1N0YXJ0ZWQnLCB2YWx1ZTogcm93ID0+IGR0KHJvdy5zdGFydGVkQXQpIH0sXHJcbiAgICAgICAgICB7IGtleTogJ2NvbXBsZXRlZEF0JywgbGFiZWw6ICdDb21wbGV0ZWQnLCB2YWx1ZTogcm93ID0+IGR0KHJvdy5jb21wbGV0ZWRBdCkgfSxcclxuICAgICAgICAgIHsga2V5OiAnc3RhdHVzJywgbGFiZWw6ICdTdGF0dXMnLCByZW5kZXI6IHJvdyA9PiA8VGFnIGNvbG9yPXtzdGF0dXNDb2xvcihyb3cuc3RhdHVzKX0+e3Jvdy5zdGF0dXN9PC9UYWc+IH0sXHJcbiAgICAgICAgICB7IGtleTogJ3N1Y2Nlc3NDb3VudCcsIGxhYmVsOiAnU3VjY2VzcycgfSxcclxuICAgICAgICAgIHsga2V5OiAnZmFpbHVyZUNvdW50JywgbGFiZWw6ICdGYWlsZWQnIH0sXHJcbiAgICAgICAgICB7IGtleTogJ21lc3NhZ2UnLCBsYWJlbDogJ01lc3NhZ2UnLCB3aWR0aDogJzMyMHB4JyB9LFxyXG4gICAgICAgICAgeyBrZXk6ICd0cmlnZ2VyZWRCeScsIGxhYmVsOiAnVHJpZ2dlcmVkIGJ5JyB9LFxyXG4gICAgICAgICAgeyBrZXk6ICdkdXJhdGlvbk1zJywgbGFiZWw6ICdEdXJhdGlvbiBtcycgfVxyXG4gICAgICAgIF19IC8+IH1cclxuICAgICAgXX0gLz5cclxuICAgIDwvQ2FyZD5cclxuXHJcbiAgICA8RHJhd2VyIGNsYXNzTmFtZT1cInNldHRpbmdzLW1hc3Rlci1kcmF3ZXIgc2NoZWR1bGVkLWpvYi1kcmF3ZXJcIiB0aXRsZT17PGRpdiBjbGFzc05hbWU9XCJzZXR0aW5ncy1kcmF3ZXItdGl0bGVcIj48c3Bhbj5Kb2IgYWN0aW9uPC9zcGFuPjxoMz57YWN0aW9uLmlkID8gJ0VkaXQgam9iIGFjdGlvbicgOiAnQWRkIGpvYiBhY3Rpb24nfTwvaDM+PHA+Q3JlYXRlIHJldXNhYmxlIHdvcmsgdGhhdCBjYW4gYmUgc2NoZWR1bGVkIGxhdGVyLjwvcD48L2Rpdj59IG9wZW49e2FjdGlvbk9wZW59IHdpZHRoPXs3NjB9IG9uQ2xvc2U9eygpID0+IHNldEFjdGlvbk9wZW4oZmFsc2UpfSBkZXN0cm95T25DbG9zZSBmb290ZXI9ezxTcGFjZT48QnV0dG9uIG9uQ2xpY2s9eygpID0+IHNldEFjdGlvbk9wZW4oZmFsc2UpfT5DYW5jZWw8L0J1dHRvbj48QnV0dG9uIHR5cGU9XCJwcmltYXJ5XCIgbG9hZGluZz17c2F2aW5nfSBvbkNsaWNrPXsoKSA9PiB2b2lkIHNhdmVBY3Rpb24oKX0+e2FjdGlvbi5pZCA/ICdVcGRhdGUgYWN0aW9uJyA6ICdTYXZlIGFjdGlvbid9PC9CdXR0b24+PC9TcGFjZT59PlxyXG4gICAgICA8Rm9ybSBjb21wb25lbnQ9XCJkaXZcIiBsYXlvdXQ9XCJ2ZXJ0aWNhbFwiIGNsYXNzTmFtZT1cInNldHRpbmdzLXF1aWNrLWZvcm0gc2NoZWR1bGVkLWpvYi1mb3JtXCIgcmVxdWlyZWRNYXJrPXtmYWxzZX0+XHJcbiAgICAgICAgPEFsZXJ0IGNsYXNzTmFtZT1cInNjaGVkdWxlZC1qb2ItaGVscFwiIHR5cGU9XCJpbmZvXCIgc2hvd0ljb24gbWVzc2FnZT1cIkNyZWF0ZSBhY3Rpb24gZmlyc3QsIHNjaGVkdWxlIGxhdGVyXCIgZGVzY3JpcHRpb249XCJOb3RpZmljYXRpb24gRXZlbnQgaXMgZnVsbHkgY29uZmlndXJhYmxlIGZyb20gVUkuIFN0b3JlZCBQcm9jZWR1cmUgaXMgZm9yIGFwcHJvdmVkIGRhdGFiYXNlIHByb2NlZHVyZXMgd2hvc2UgbmFtZSBzdGFydHMgd2l0aCBqb2JfLlwiIC8+XHJcbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJzY2hlZHVsZWQtZm9ybS1zZWN0aW9uXCI+XHJcbiAgICAgICAgICA8aDQ+QmFzaWMgZGV0YWlsczwvaDQ+XHJcbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInNjaGVkdWxlZC1mb3JtLWdyaWQgdHdvXCI+PEZvcm0uSXRlbSBsYWJlbD1cIkFjdGlvbiBjb2RlXCIgcmVxdWlyZWQ+PElucHV0IHZhbHVlPXthY3Rpb24uYWN0aW9uQ29kZX0gb25DaGFuZ2U9e2V2ZW50ID0+IHNldEFjdGlvbih7IC4uLmFjdGlvbiwgYWN0aW9uQ29kZTogZXZlbnQudGFyZ2V0LnZhbHVlLnRvVXBwZXJDYXNlKCkucmVwbGFjZSgvXFxzKy9nLCAnXycpIH0pfSBwbGFjZWhvbGRlcj1cIk1PTlRITFlfTEVBVkVfUkVNSU5ERVJcIiAvPjwvRm9ybS5JdGVtPjxGb3JtLkl0ZW0gbGFiZWw9XCJBY3Rpb24gbmFtZVwiIHJlcXVpcmVkPjxJbnB1dCB2YWx1ZT17YWN0aW9uLmFjdGlvbk5hbWV9IG9uQ2hhbmdlPXtldmVudCA9PiBzZXRBY3Rpb24oeyAuLi5hY3Rpb24sIGFjdGlvbk5hbWU6IGV2ZW50LnRhcmdldC52YWx1ZSB9KX0gcGxhY2Vob2xkZXI9XCJNb250aGx5IGxlYXZlIHJlbWluZGVyXCIgLz48L0Zvcm0uSXRlbT48L2Rpdj5cclxuICAgICAgICAgIDxGb3JtLkl0ZW0gbGFiZWw9XCJEZXNjcmlwdGlvblwiPjxJbnB1dC5UZXh0QXJlYSByb3dzPXsyfSB2YWx1ZT17YWN0aW9uLmRlc2NyaXB0aW9ufSBvbkNoYW5nZT17ZXZlbnQgPT4gc2V0QWN0aW9uKHsgLi4uYWN0aW9uLCBkZXNjcmlwdGlvbjogZXZlbnQudGFyZ2V0LnZhbHVlIH0pfSAvPjwvRm9ybS5JdGVtPlxyXG4gICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJzY2hlZHVsZWQtZm9ybS1ncmlkIHR3b1wiPjxGb3JtLkl0ZW0gbGFiZWw9XCJBY3Rpb24gdHlwZVwiPjxTZWxlY3QgdmFsdWU9e2FjdGlvbi5hY3Rpb25UeXBlfSBvbkNoYW5nZT17dmFsdWUgPT4gc2V0QWN0aW9uKHsgLi4uYWN0aW9uLCBhY3Rpb25UeXBlOiB2YWx1ZSwgY29uZmlnSnNvbjogY29uZmlnRm9yVHlwZSh2YWx1ZSkgfSl9IG9wdGlvbnM9e2FjdGlvblR5cGVzLm1hcCh2YWx1ZSA9PiAoeyB2YWx1ZSwgbGFiZWw6IHZhbHVlIH0pKX0gLz48L0Zvcm0uSXRlbT48Rm9ybS5JdGVtIGxhYmVsPVwiQWN0aXZlXCI+PFN3aXRjaCBjaGVja2VkPXthY3Rpb24uaXNBY3RpdmV9IG9uQ2hhbmdlPXt2YWx1ZSA9PiBzZXRBY3Rpb24oeyAuLi5hY3Rpb24sIGlzQWN0aXZlOiB2YWx1ZSB9KX0gLz48L0Zvcm0uSXRlbT48L2Rpdj5cclxuICAgICAgICA8L2Rpdj5cclxuICAgICAgICB7YWN0aW9uLmFjdGlvblR5cGUgPT09ICdOb3RpZmljYXRpb24gRXZlbnQnICYmIDxkaXYgY2xhc3NOYW1lPVwic2NoZWR1bGVkLWZvcm0tc2VjdGlvblwiPlxyXG4gICAgICAgICAgPGg0Pk5vdGlmaWNhdGlvbiBldmVudDwvaDQ+XHJcbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInNjaGVkdWxlZC1mb3JtLWdyaWQgdHdvXCI+PEZvcm0uSXRlbSBsYWJlbD1cIkV2ZW50IGNvZGVcIiByZXF1aXJlZD48SW5wdXQgdmFsdWU9e25vdGlmaWNhdGlvbkNvbmZpZy5ldmVudENvZGV9IG9uQ2hhbmdlPXtldmVudCA9PiBzZXROb3RpZmljYXRpb25Db25maWcoeyBldmVudENvZGU6IGV2ZW50LnRhcmdldC52YWx1ZS50b1VwcGVyQ2FzZSgpLnJlcGxhY2UoL1xccysvZywgJ18nKSB9KX0gcGxhY2Vob2xkZXI9XCJNT05USExZX0xFQVZFX1JFTUlOREVSXCIgLz48L0Zvcm0uSXRlbT48Rm9ybS5JdGVtIGxhYmVsPVwiUmVjb3JkIHR5cGVcIj48SW5wdXQgdmFsdWU9e25vdGlmaWNhdGlvbkNvbmZpZy5yZXNvdXJjZVR5cGV9IG9uQ2hhbmdlPXtldmVudCA9PiBzZXROb3RpZmljYXRpb25Db25maWcoeyByZXNvdXJjZVR5cGU6IGV2ZW50LnRhcmdldC52YWx1ZSB9KX0gcGxhY2Vob2xkZXI9XCJTY2hlZHVsZWRKb2JcIiAvPjwvRm9ybS5JdGVtPjxGb3JtLkl0ZW0gbGFiZWw9XCJSZWNvcmQgcmVmZXJlbmNlXCI+PElucHV0IHZhbHVlPXtub3RpZmljYXRpb25Db25maWcucmVzb3VyY2VJZH0gb25DaGFuZ2U9e2V2ZW50ID0+IHNldE5vdGlmaWNhdGlvbkNvbmZpZyh7IHJlc291cmNlSWQ6IGV2ZW50LnRhcmdldC52YWx1ZSB9KX0gcGxhY2Vob2xkZXI9XCJPcHRpb25hbFwiIC8+PC9Gb3JtLkl0ZW0+PEZvcm0uSXRlbSBsYWJlbD1cIkNsaWVudCBJRFwiPjxJbnB1dE51bWJlciBtaW49ezF9IHZhbHVlPXtub3RpZmljYXRpb25Db25maWcuY2xpZW50SWQgPz8gdW5kZWZpbmVkfSBvbkNoYW5nZT17dmFsdWUgPT4gc2V0Tm90aWZpY2F0aW9uQ29uZmlnKHsgY2xpZW50SWQ6IHZhbHVlID8gTnVtYmVyKHZhbHVlKSA6IG51bGwgfSl9IHBsYWNlaG9sZGVyPVwiT3B0aW9uYWxcIiAvPjwvRm9ybS5JdGVtPjwvZGl2PlxyXG4gICAgICAgICAgPEZvcm0uSXRlbSBsYWJlbD1cIlBheWxvYWQgSlNPTlwiPjxJbnB1dC5UZXh0QXJlYSByb3dzPXszfSB2YWx1ZT17bm90aWZpY2F0aW9uQ29uZmlnLnBheWxvYWRKc29ufSBvbkNoYW5nZT17ZXZlbnQgPT4gc2V0Tm90aWZpY2F0aW9uQ29uZmlnKHsgcGF5bG9hZEpzb246IGV2ZW50LnRhcmdldC52YWx1ZSB8fCAne30nIH0pfSAvPjwvRm9ybS5JdGVtPlxyXG4gICAgICAgIDwvZGl2Pn1cclxuICAgICAgICB7YWN0aW9uLmFjdGlvblR5cGUgPT09ICdTdG9yZWQgUHJvY2VkdXJlJyAmJiA8ZGl2IGNsYXNzTmFtZT1cInNjaGVkdWxlZC1mb3JtLXNlY3Rpb25cIj5cclxuICAgICAgICAgIDxoND5TdG9yZWQgcHJvY2VkdXJlPC9oND5cclxuICAgICAgICAgIDxGb3JtLkl0ZW0gbGFiZWw9XCJQcm9jZWR1cmUgbmFtZVwiIHJlcXVpcmVkPjxJbnB1dCB2YWx1ZT17cHJvY2VkdXJlQ29uZmlnLnByb2NlZHVyZU5hbWV9IG9uQ2hhbmdlPXtldmVudCA9PiBzZXRQcm9jZWR1cmVDb25maWcoeyBwcm9jZWR1cmVOYW1lOiBldmVudC50YXJnZXQudmFsdWUgfSl9IHBsYWNlaG9sZGVyPVwiam9iX21vbnRoX2VuZF9yZWNvbmNpbGVcIiAvPjwvRm9ybS5JdGVtPlxyXG4gICAgICAgICAgPEZvcm0uSXRlbSBsYWJlbD1cIlBhcmFtZXRlcnMgSlNPTlwiPjxJbnB1dC5UZXh0QXJlYSByb3dzPXs0fSB2YWx1ZT17c3RyaW5naWZ5KHByb2NlZHVyZUNvbmZpZy5wYXJhbWV0ZXJzKX0gb25DaGFuZ2U9e2V2ZW50ID0+IHsgdHJ5IHsgc2V0UHJvY2VkdXJlQ29uZmlnKHsgcGFyYW1ldGVyczogSlNPTi5wYXJzZShldmVudC50YXJnZXQudmFsdWUgfHwgJ3t9JykgfSkgfSBjYXRjaCB7IHNldFByb2NlZHVyZUNvbmZpZyh7IHBhcmFtZXRlcnM6IHByb2NlZHVyZUNvbmZpZy5wYXJhbWV0ZXJzIH0pIH0gfX0gLz48L0Zvcm0uSXRlbT5cclxuICAgICAgICAgIDxzbWFsbCBjbGFzc05hbWU9XCJzY2hlZHVsZWQtY29uZmlnLWhpbnRcIj5Gb3Igc2FmZXR5LCBvbmx5IHN0b3JlZCBwcm9jZWR1cmVzIHN0YXJ0aW5nIHdpdGggam9iXyBjYW4gcnVuLjwvc21hbGw+XHJcbiAgICAgICAgPC9kaXY+fVxyXG4gICAgICAgIHthY3Rpb24uYWN0aW9uVHlwZSA9PT0gJ0ludGVybmFsIEFQSSBDYWxsJyAmJiA8ZGl2IGNsYXNzTmFtZT1cInNjaGVkdWxlZC1mb3JtLXNlY3Rpb25cIj5cclxuICAgICAgICAgIDxoND5JbnRlcm5hbCBBUEkgY2FsbDwvaDQ+XHJcbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInNjaGVkdWxlZC1mb3JtLWdyaWQgdGhyZWVcIj48Rm9ybS5JdGVtIGxhYmVsPVwiTWV0aG9kXCI+PFNlbGVjdCB2YWx1ZT17YXBpQ29uZmlnLm1ldGhvZH0gb25DaGFuZ2U9e3ZhbHVlID0+IHNldEFwaUNvbmZpZyh7IG1ldGhvZDogdmFsdWUgfSl9IG9wdGlvbnM9e1snR0VUJywgJ1BPU1QnLCAnUFVUJywgJ0RFTEVURSddLm1hcCh2YWx1ZSA9PiAoeyB2YWx1ZSwgbGFiZWw6IHZhbHVlIH0pKX0gLz48L0Zvcm0uSXRlbT48Rm9ybS5JdGVtIGxhYmVsPVwiQVBJIFVSTFwiIHJlcXVpcmVkPjxJbnB1dCB2YWx1ZT17YXBpQ29uZmlnLnVybH0gb25DaGFuZ2U9e2V2ZW50ID0+IHNldEFwaUNvbmZpZyh7IHVybDogZXZlbnQudGFyZ2V0LnZhbHVlIH0pfSBwbGFjZWhvbGRlcj1cIi9hcGkvLi4uXCIgLz48L0Zvcm0uSXRlbT48Rm9ybS5JdGVtIGxhYmVsPVwiVGltZW91dCBzZWNvbmRzXCI+PElucHV0TnVtYmVyIG1pbj17NX0gbWF4PXs2MDB9IHZhbHVlPXthcGlDb25maWcudGltZW91dFNlY29uZHN9IG9uQ2hhbmdlPXt2YWx1ZSA9PiBzZXRBcGlDb25maWcoeyB0aW1lb3V0U2Vjb25kczogTnVtYmVyKHZhbHVlIHx8IDYwKSB9KX0gLz48L0Zvcm0uSXRlbT48L2Rpdj5cclxuICAgICAgICAgIDxGb3JtLkl0ZW0gbGFiZWw9XCJCb2R5IEpTT05cIj48SW5wdXQuVGV4dEFyZWEgcm93cz17NH0gdmFsdWU9e2FwaUNvbmZpZy5ib2R5SnNvbn0gb25DaGFuZ2U9e2V2ZW50ID0+IHNldEFwaUNvbmZpZyh7IGJvZHlKc29uOiBldmVudC50YXJnZXQudmFsdWUgfHwgJ3t9JyB9KX0gLz48L0Zvcm0uSXRlbT5cclxuICAgICAgICAgIDxGb3JtLkl0ZW0gbGFiZWw9XCJIZWFkZXJzIEpTT05cIj48SW5wdXQuVGV4dEFyZWEgcm93cz17M30gdmFsdWU9e3N0cmluZ2lmeShhcGlDb25maWcuaGVhZGVycyl9IG9uQ2hhbmdlPXtldmVudCA9PiB7IHRyeSB7IHNldEFwaUNvbmZpZyh7IGhlYWRlcnM6IEpTT04ucGFyc2UoZXZlbnQudGFyZ2V0LnZhbHVlIHx8ICd7fScpIH0pIH0gY2F0Y2ggeyBzZXRBcGlDb25maWcoeyBoZWFkZXJzOiBhcGlDb25maWcuaGVhZGVycyB9KSB9IH19IC8+PC9Gb3JtLkl0ZW0+XHJcbiAgICAgICAgPC9kaXY+fVxyXG4gICAgICAgIHthY3Rpb24uYWN0aW9uVHlwZSA9PT0gJ1JlcG9ydCBFbWFpbCcgJiYgPGRpdiBjbGFzc05hbWU9XCJzY2hlZHVsZWQtZm9ybS1zZWN0aW9uXCI+XHJcbiAgICAgICAgICA8aDQ+UmVwb3J0IGVtYWlsPC9oND5cclxuICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwic2NoZWR1bGVkLWZvcm0tZ3JpZCB0aHJlZVwiPjxGb3JtLkl0ZW0gbGFiZWw9XCJSZXBvcnQgY29kZVwiIHJlcXVpcmVkPjxJbnB1dCB2YWx1ZT17cmVwb3J0RW1haWxDb25maWcucmVwb3J0Q29kZX0gb25DaGFuZ2U9e2V2ZW50ID0+IHNldFJlcG9ydEVtYWlsQ29uZmlnKHsgcmVwb3J0Q29kZTogZXZlbnQudGFyZ2V0LnZhbHVlIH0pfSBwbGFjZWhvbGRlcj1cInBmLXJlcG9ydFwiIC8+PC9Gb3JtLkl0ZW0+PEZvcm0uSXRlbSBsYWJlbD1cIk5vdGlmaWNhdGlvbiBldmVudFwiIHJlcXVpcmVkPjxJbnB1dCB2YWx1ZT17cmVwb3J0RW1haWxDb25maWcuZXZlbnRDb2RlfSBvbkNoYW5nZT17ZXZlbnQgPT4gc2V0UmVwb3J0RW1haWxDb25maWcoeyBldmVudENvZGU6IGV2ZW50LnRhcmdldC52YWx1ZS50b1VwcGVyQ2FzZSgpLnJlcGxhY2UoL1xccysvZywgJ18nKSB9KX0gcGxhY2Vob2xkZXI9XCJSRVBPUlRfUkVBRFlcIiAvPjwvRm9ybS5JdGVtPjxGb3JtLkl0ZW0gbGFiZWw9XCJQcmV2aWV3IHJvd3NcIj48SW5wdXROdW1iZXIgbWluPXsxfSBtYXg9ezUwfSB2YWx1ZT17cmVwb3J0RW1haWxDb25maWcucHJldmlld1Jvd3N9IG9uQ2hhbmdlPXt2YWx1ZSA9PiBzZXRSZXBvcnRFbWFpbENvbmZpZyh7IHByZXZpZXdSb3dzOiBOdW1iZXIodmFsdWUgfHwgMTApIH0pfSAvPjwvRm9ybS5JdGVtPjwvZGl2PlxyXG4gICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJzY2hlZHVsZWQtZm9ybS1ncmlkIHRocmVlXCI+PEZvcm0uSXRlbSBsYWJlbD1cIkNsaWVudCBJRFwiPjxJbnB1dE51bWJlciBtaW49ezB9IHZhbHVlPXtyZXBvcnRFbWFpbENvbmZpZy5maWx0ZXIuY2xpZW50SWR9IG9uQ2hhbmdlPXt2YWx1ZSA9PiBzZXRSZXBvcnRFbWFpbENvbmZpZyh7IGZpbHRlcjogeyAuLi5yZXBvcnRFbWFpbENvbmZpZy5maWx0ZXIsIGNsaWVudElkOiBOdW1iZXIodmFsdWUgfHwgMCkgfSB9KX0gLz48L0Zvcm0uSXRlbT48Rm9ybS5JdGVtIGxhYmVsPVwiTW9udGhcIj48SW5wdXQgdmFsdWU9e3JlcG9ydEVtYWlsQ29uZmlnLmZpbHRlci5tb250aH0gb25DaGFuZ2U9e2V2ZW50ID0+IHNldFJlcG9ydEVtYWlsQ29uZmlnKHsgZmlsdGVyOiB7IC4uLnJlcG9ydEVtYWlsQ29uZmlnLmZpbHRlciwgbW9udGg6IGV2ZW50LnRhcmdldC52YWx1ZSB9IH0pfSBwbGFjZWhvbGRlcj1cIjIwMjYtMDdcIiAvPjwvRm9ybS5JdGVtPjxGb3JtLkl0ZW0gbGFiZWw9XCJQYXkgcnVuIElEXCI+PElucHV0TnVtYmVyIG1pbj17MX0gdmFsdWU9e3JlcG9ydEVtYWlsQ29uZmlnLmZpbHRlci5wYXlSdW5JZCA/PyB1bmRlZmluZWR9IG9uQ2hhbmdlPXt2YWx1ZSA9PiBzZXRSZXBvcnRFbWFpbENvbmZpZyh7IGZpbHRlcjogeyAuLi5yZXBvcnRFbWFpbENvbmZpZy5maWx0ZXIsIHBheVJ1bklkOiB2YWx1ZSA/IE51bWJlcih2YWx1ZSkgOiBudWxsIH0gfSl9IC8+PC9Gb3JtLkl0ZW0+PC9kaXY+XHJcbiAgICAgICAgPC9kaXY+fVxyXG4gICAgICAgIHthY3Rpb24uYWN0aW9uVHlwZSA9PT0gJ1dvcmtmbG93IFRyaWdnZXInICYmIDxkaXYgY2xhc3NOYW1lPVwic2NoZWR1bGVkLWZvcm0tc2VjdGlvblwiPlxyXG4gICAgICAgICAgPGg0PldvcmtmbG93IHRyaWdnZXI8L2g0PlxyXG4gICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJzY2hlZHVsZWQtZm9ybS1ncmlkIHRocmVlXCI+PEZvcm0uSXRlbSBsYWJlbD1cIldvcmtmbG93IElEXCIgcmVxdWlyZWQ+PElucHV0TnVtYmVyIG1pbj17MX0gdmFsdWU9e3dvcmtmbG93VHJpZ2dlckNvbmZpZy53b3JrZmxvd0lkIHx8IHVuZGVmaW5lZH0gb25DaGFuZ2U9e3ZhbHVlID0+IHNldFdvcmtmbG93VHJpZ2dlckNvbmZpZyh7IHdvcmtmbG93SWQ6IE51bWJlcih2YWx1ZSB8fCAwKSB9KX0gLz48L0Zvcm0uSXRlbT48Rm9ybS5JdGVtIGxhYmVsPVwiUmVzb3VyY2UgdHlwZVwiIHJlcXVpcmVkPjxJbnB1dCB2YWx1ZT17d29ya2Zsb3dUcmlnZ2VyQ29uZmlnLnJlc291cmNlVHlwZX0gb25DaGFuZ2U9e2V2ZW50ID0+IHNldFdvcmtmbG93VHJpZ2dlckNvbmZpZyh7IHJlc291cmNlVHlwZTogZXZlbnQudGFyZ2V0LnZhbHVlIH0pfSBwbGFjZWhvbGRlcj1cIlBheVJ1blwiIC8+PC9Gb3JtLkl0ZW0+PEZvcm0uSXRlbSBsYWJlbD1cIlJlcXVlc3RvciB1c2VyIElEXCI+PElucHV0TnVtYmVyIG1pbj17MX0gdmFsdWU9e3dvcmtmbG93VHJpZ2dlckNvbmZpZy5yZXF1ZXN0b3JVc2VySWR9IG9uQ2hhbmdlPXt2YWx1ZSA9PiBzZXRXb3JrZmxvd1RyaWdnZXJDb25maWcoeyByZXF1ZXN0b3JVc2VySWQ6IE51bWJlcih2YWx1ZSB8fCAxKSB9KX0gLz48L0Zvcm0uSXRlbT48L2Rpdj5cclxuICAgICAgICAgIDxGb3JtLkl0ZW0gbGFiZWw9XCJSZXNvdXJjZSBJRHNcIj48SW5wdXQgdmFsdWU9e3dvcmtmbG93VHJpZ2dlckNvbmZpZy5yZXNvdXJjZUlkc30gb25DaGFuZ2U9e2V2ZW50ID0+IHNldFdvcmtmbG93VHJpZ2dlckNvbmZpZyh7IHJlc291cmNlSWRzOiBldmVudC50YXJnZXQudmFsdWUgfSl9IHBsYWNlaG9sZGVyPVwiMjYsMjcsMjhcIiAvPjwvRm9ybS5JdGVtPlxyXG4gICAgICAgICAgPEZvcm0uSXRlbSBsYWJlbD1cIlBheWxvYWQgSlNPTlwiPjxJbnB1dC5UZXh0QXJlYSByb3dzPXszfSB2YWx1ZT17d29ya2Zsb3dUcmlnZ2VyQ29uZmlnLnBheWxvYWRKc29ufSBvbkNoYW5nZT17ZXZlbnQgPT4gc2V0V29ya2Zsb3dUcmlnZ2VyQ29uZmlnKHsgcGF5bG9hZEpzb246IGV2ZW50LnRhcmdldC52YWx1ZSB8fCAne30nIH0pfSAvPjwvRm9ybS5JdGVtPlxyXG4gICAgICAgICAgPEZvcm0uSXRlbSBsYWJlbD1cIlNraXAgaWYgcGVuZGluZ1wiPjxTd2l0Y2ggY2hlY2tlZD17d29ya2Zsb3dUcmlnZ2VyQ29uZmlnLnNraXBJZlBlbmRpbmd9IG9uQ2hhbmdlPXt2YWx1ZSA9PiBzZXRXb3JrZmxvd1RyaWdnZXJDb25maWcoeyBza2lwSWZQZW5kaW5nOiB2YWx1ZSB9KX0gLz48L0Zvcm0uSXRlbT5cclxuICAgICAgICA8L2Rpdj59XHJcbiAgICAgIDwvRm9ybT5cclxuICAgIDwvRHJhd2VyPlxyXG5cclxuICAgIDxEcmF3ZXIgY2xhc3NOYW1lPVwic2V0dGluZ3MtbWFzdGVyLWRyYXdlciBzY2hlZHVsZWQtam9iLWRyYXdlclwiIHRpdGxlPXs8ZGl2IGNsYXNzTmFtZT1cInNldHRpbmdzLWRyYXdlci10aXRsZVwiPjxzcGFuPlNjaGVkdWxlPC9zcGFuPjxoMz57am9iLmlkID8gJ0VkaXQgc2NoZWR1bGUnIDogJ0FkZCBzY2hlZHVsZSd9PC9oMz48cD5TZWxlY3QgYSBqb2IgYWN0aW9uIGFuZCBkZWNpZGUgd2hlbiBpdCBzaG91bGQgcnVuLjwvcD48L2Rpdj59IG9wZW49e2pvYk9wZW59IHdpZHRoPXs3NjB9IG9uQ2xvc2U9eygpID0+IHNldEpvYk9wZW4oZmFsc2UpfSBkZXN0cm95T25DbG9zZSBmb290ZXI9ezxTcGFjZT48QnV0dG9uIG9uQ2xpY2s9eygpID0+IHNldEpvYk9wZW4oZmFsc2UpfT5DYW5jZWw8L0J1dHRvbj48QnV0dG9uIHR5cGU9XCJwcmltYXJ5XCIgbG9hZGluZz17c2F2aW5nfSBvbkNsaWNrPXsoKSA9PiB2b2lkIHNhdmVKb2IoKX0+e2pvYi5pZCA/ICdVcGRhdGUgc2NoZWR1bGUnIDogJ1NhdmUgc2NoZWR1bGUnfTwvQnV0dG9uPjwvU3BhY2U+fT5cclxuICAgICAgPEZvcm0gY29tcG9uZW50PVwiZGl2XCIgbGF5b3V0PVwidmVydGljYWxcIiBjbGFzc05hbWU9XCJzZXR0aW5ncy1xdWljay1mb3JtIHNjaGVkdWxlZC1qb2ItZm9ybVwiIHJlcXVpcmVkTWFyaz17ZmFsc2V9PlxyXG4gICAgICAgIDxkaXYgY2xhc3NOYW1lPVwic2NoZWR1bGVkLWZvcm0tc2VjdGlvblwiPjxoND5CYXNpYyBkZXRhaWxzPC9oND48ZGl2IGNsYXNzTmFtZT1cInNjaGVkdWxlZC1mb3JtLWdyaWQgdHdvXCI+PEZvcm0uSXRlbSBsYWJlbD1cIlNjaGVkdWxlIGNvZGVcIiByZXF1aXJlZD48SW5wdXQgdmFsdWU9e2pvYi5qb2JDb2RlfSBvbkNoYW5nZT17ZXZlbnQgPT4gc2V0Sm9iKHsgLi4uam9iLCBqb2JDb2RlOiBldmVudC50YXJnZXQudmFsdWUudG9VcHBlckNhc2UoKS5yZXBsYWNlKC9cXHMrL2csICdfJykgfSl9IHBsYWNlaG9sZGVyPVwiREFJTFlfTEVBVkVfUkVNSU5ERVJcIiAvPjwvRm9ybS5JdGVtPjxGb3JtLkl0ZW0gbGFiZWw9XCJTY2hlZHVsZSBuYW1lXCIgcmVxdWlyZWQ+PElucHV0IHZhbHVlPXtqb2Iuam9iTmFtZX0gb25DaGFuZ2U9e2V2ZW50ID0+IHNldEpvYih7IC4uLmpvYiwgam9iTmFtZTogZXZlbnQudGFyZ2V0LnZhbHVlIH0pfSAvPjwvRm9ybS5JdGVtPjwvZGl2PjxGb3JtLkl0ZW0gbGFiZWw9XCJEZXNjcmlwdGlvblwiPjxJbnB1dC5UZXh0QXJlYSByb3dzPXsyfSB2YWx1ZT17am9iLmRlc2NyaXB0aW9ufSBvbkNoYW5nZT17ZXZlbnQgPT4gc2V0Sm9iKHsgLi4uam9iLCBkZXNjcmlwdGlvbjogZXZlbnQudGFyZ2V0LnZhbHVlIH0pfSAvPjwvRm9ybS5JdGVtPjwvZGl2PlxyXG4gICAgICAgIDxkaXYgY2xhc3NOYW1lPVwic2NoZWR1bGVkLWZvcm0tc2VjdGlvblwiPjxoND5XaGF0IHNob3VsZCBydW4/PC9oND48ZGl2IGNsYXNzTmFtZT1cInNjaGVkdWxlZC1mb3JtLWdyaWQgYWN0aW9uXCI+PEZvcm0uSXRlbSBsYWJlbD1cIkpvYiBBY3Rpb25cIiByZXF1aXJlZD48U2VsZWN0IHNob3dTZWFyY2ggdmFsdWU9e3NlbGVjdGVkQWN0aW9uSWQgfHwgdW5kZWZpbmVkfSBwbGFjZWhvbGRlcj1cIlNlbGVjdCBjb25maWd1cmVkIGFjdGlvblwiIG9wdGlvbkZpbHRlclByb3A9XCJzZWFyY2hUZXh0XCIgb25DaGFuZ2U9e3NldEpvYkFjdGlvbn0gb3B0aW9ucz17YWN0aW9ucy5maWx0ZXIoaXRlbSA9PiBpdGVtLmlzQWN0aXZlKS5tYXAoaXRlbSA9PiAoeyB2YWx1ZTogaXRlbS5pZCwgbGFiZWw6IGAke2l0ZW0uYWN0aW9uTmFtZX0gLSAke2l0ZW0uYWN0aW9uVHlwZX1gLCBzZWFyY2hUZXh0OiBgJHtpdGVtLmFjdGlvbk5hbWV9ICR7aXRlbS5hY3Rpb25Db2RlfSAke2l0ZW0uYWN0aW9uVHlwZX1gIH0pKX0gLz48L0Zvcm0uSXRlbT48Rm9ybS5JdGVtIGxhYmVsPVwiRW5hYmxlZFwiPjxTd2l0Y2ggY2hlY2tlZD17am9iLmlzRW5hYmxlZH0gb25DaGFuZ2U9e3ZhbHVlID0+IHNldEpvYih7IC4uLmpvYiwgaXNFbmFibGVkOiB2YWx1ZSB9KX0gLz48L0Zvcm0uSXRlbT48L2Rpdj57c2VsZWN0ZWRBY3Rpb24gJiYgPGRpdiBjbGFzc05hbWU9XCJzY2hlZHVsZWQtYWN0aW9uLW5vdGVcIj48Yj57c2VsZWN0ZWRBY3Rpb24uYWN0aW9uTmFtZX08L2I+PHNwYW4+e3NlbGVjdGVkQWN0aW9uLmRlc2NyaXB0aW9uIHx8IHNlbGVjdGVkQWN0aW9uLmFjdGlvblR5cGV9PC9zcGFuPjxjb2RlPntzZWxlY3RlZEFjdGlvbi5hY3Rpb25Db2RlfTwvY29kZT48L2Rpdj59PC9kaXY+XHJcbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJzY2hlZHVsZWQtZm9ybS1zZWN0aW9uXCI+PGg0PldoZW4gc2hvdWxkIGl0IHJ1bj88L2g0PjxkaXYgY2xhc3NOYW1lPVwic2NoZWR1bGVkLWZvcm0tZ3JpZCB0aHJlZVwiPjxGb3JtLkl0ZW0gbGFiZWw9XCJSdW4gZnJlcXVlbmN5XCI+PFNlbGVjdCB2YWx1ZT17am9iLnNjaGVkdWxlVHlwZX0gb25DaGFuZ2U9e3ZhbHVlID0+IHNldEpvYih7IC4uLmpvYiwgc2NoZWR1bGVUeXBlOiB2YWx1ZSB9KX0gb3B0aW9ucz17c2NoZWR1bGVPcHRpb25zLm1hcCh2YWx1ZSA9PiAoeyB2YWx1ZSwgbGFiZWw6IHZhbHVlID09PSAnSW50ZXJ2YWwnID8gJ1JlcGVhdGVkIGludGVydmFsJyA6IHZhbHVlIH0pKX0gLz48L0Zvcm0uSXRlbT57am9iLnNjaGVkdWxlVHlwZSA9PT0gJ0ludGVydmFsJyAmJiA8Rm9ybS5JdGVtIGxhYmVsPVwiUmVwZWF0IGV2ZXJ5XCI+PElucHV0TnVtYmVyIGFkZG9uQWZ0ZXI9XCJtaW51dGVzXCIgbWluPXsxfSBtYXg9ezE0NDB9IHZhbHVlPXtqb2IuaW50ZXJ2YWxNaW51dGVzfSBvbkNoYW5nZT17dmFsdWUgPT4gc2V0Sm9iKHsgLi4uam9iLCBpbnRlcnZhbE1pbnV0ZXM6IE51bWJlcih2YWx1ZSB8fCAxKSB9KX0gLz48L0Zvcm0uSXRlbT59e2pvYi5zY2hlZHVsZVR5cGUgIT09ICdJbnRlcnZhbCcgJiYgPEZvcm0uSXRlbSBsYWJlbD1cIlJ1biB0aW1lXCI+PElucHV0IHZhbHVlPXtqb2IuZGFpbHlSdW5UaW1lfSBvbkNoYW5nZT17ZXZlbnQgPT4gc2V0Sm9iKHsgLi4uam9iLCBkYWlseVJ1blRpbWU6IGV2ZW50LnRhcmdldC52YWx1ZSB9KX0gcGxhY2Vob2xkZXI9XCIwMTowMFwiIC8+PC9Gb3JtLkl0ZW0+fXtqb2Iuc2NoZWR1bGVUeXBlID09PSAnTW9udGhseScgJiYgPEZvcm0uSXRlbSBsYWJlbD1cIkRheSBvZiBtb250aFwiPjxJbnB1dE51bWJlciBtaW49ezF9IG1heD17MzF9IHZhbHVlPXtqb2IubW9udGhseVJ1bkRheX0gb25DaGFuZ2U9e3ZhbHVlID0+IHNldEpvYih7IC4uLmpvYiwgbW9udGhseVJ1bkRheTogTnVtYmVyKHZhbHVlIHx8IDEpIH0pfSAvPjwvRm9ybS5JdGVtPn08L2Rpdj48L2Rpdj5cclxuICAgICAgPC9Gb3JtPlxyXG4gICAgPC9EcmF3ZXI+XHJcbiAgPC9zZWN0aW9uPlxyXG59XHJcbiJdfQ==

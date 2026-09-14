@@ -18,6 +18,7 @@ public class RecruitmentWorkOrder
     public DateTime UpdatedAtUtc { get; set; }
     public int LineCount { get; set; }
     public int OpenCaseCount { get; set; }
+    public string SlaLaunchMessage { get; set; } = "";
     public List<RecruitmentWorkOrderLine> Lines { get; set; } = [];
 }
 

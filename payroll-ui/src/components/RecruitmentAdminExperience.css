@@ -369,6 +369,20 @@
 .recruitment-pipeline-stage-drawer .ant-drawer-content-wrapper { width: min(760px, 96vw) !important; }
 .recruitment-form-field-drawer .ant-drawer-body,
 .recruitment-pipeline-stage-drawer .ant-drawer-body { min-width: 0 !important; overflow-x: hidden !important; }
+.recruitment-pipeline-stage-drawer .stage-action-block { min-width: 0 !important; overflow: visible !important; }
+.recruitment-pipeline-stage-drawer .stage-action-row {
+  min-width: 0 !important;
+  width: 100% !important;
+  grid-template-columns: minmax(120px, .8fr) minmax(150px, 1fr) minmax(180px, 1.25fr) auto !important;
+}
+.recruitment-pipeline-stage-drawer .stage-action-row > .ant-checkbox-wrapper { grid-column: 1 / 4; }
+.recruitment-pipeline-stage-drawer .stage-action-row > .ant-space-compact { grid-column: 4; grid-row: 1; justify-self: end; }
+
+@media (max-width: 700px) {
+  .recruitment-pipeline-stage-drawer .stage-action-row { grid-template-columns: 1fr auto !important; }
+  .recruitment-pipeline-stage-drawer .stage-action-row > :not(.ant-space-compact) { grid-column: 1 / -1; }
+  .recruitment-pipeline-stage-drawer .stage-action-row > .ant-space-compact { grid-column: 2; grid-row: 1; }
+}
 
 /* The profile editor lives in a responsive drawer, so its layout must follow
    the drawer width rather than the desktop viewport width. */

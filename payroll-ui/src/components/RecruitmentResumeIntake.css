@@ -151,6 +151,37 @@
   margin-top: 18px;
 }
 
+.resume-force-upload {
+  align-items: flex-start;
+  background: #f8fafc;
+  border: 1px solid #e3e8f1;
+  border-radius: 10px;
+  display: flex;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px 14px;
+}
+
+.resume-force-upload.is-active {
+  background: #fff8e8;
+  border-color: #f2ca72;
+}
+
+.resume-force-upload div {
+  display: grid;
+  gap: 2px;
+}
+
+.resume-force-upload strong {
+  color: #27324a;
+  font-size: 13px;
+}
+
+.resume-force-upload span {
+  color: #667085;
+  font-size: 12px;
+}
+
 .resume-intake-submit-row .ant-btn-primary {
   background: linear-gradient(100deg, #6546ec, #3b6fdd);
   border: 0;

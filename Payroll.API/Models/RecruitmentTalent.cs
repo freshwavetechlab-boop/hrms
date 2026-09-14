@@ -59,6 +59,8 @@ public class SaveRecruitmentCandidate
     public string ConsentStatus { get; set; } = "Pending";
     public DateTime? ConsentCapturedAt { get; set; }
     public DateTime? RetentionUntil { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool AllowIncompleteIdentity { get; set; }
 }
 
 public class RecruitmentCandidateResume
@@ -446,6 +448,7 @@ public class RecruitmentInterview
     public bool FeedbackRequired { get; set; }
     public bool CalendarEnabled { get; set; }
     public bool AllowReschedule { get; set; } = true;
+    public string PipelineTransitionMessage { get; set; } = "";
     public List<RecruitmentInterviewStageCompetency> Competencies { get; set; } = [];
     public int CreatedByUserId { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -468,6 +471,24 @@ public class SaveRecruitmentInterview
     public decimal OverallScore { get; set; }
     public List<int> PanelUserIds { get; set; } = [];
     public string TimeZoneId { get; set; } = "Asia/Kolkata";
+}
+
+public class RecruitmentInterviewInvitation
+{
+    public long InterviewId { get; set; }
+    public int ClientId { get; set; }
+    public string CandidateName { get; set; } = "";
+    public string CandidateEmail { get; set; } = "";
+    public string PositionTitle { get; set; } = "";
+    public string RoundCode { get; set; } = "";
+    public string InterviewType { get; set; } = "";
+    public DateTime ScheduledStart { get; set; }
+    public DateTime ScheduledEnd { get; set; }
+    public string TimeZoneId { get; set; } = "Asia/Kolkata";
+    public string Mode { get; set; } = "Virtual";
+    public string LocationOrLink { get; set; } = "";
+    public string Status { get; set; } = "Scheduled";
+    public List<string> PanelEmails { get; set; } = [];
 }
 
 public class RecruitmentInterviewSchedulingContext
@@ -571,6 +592,7 @@ public class RecruitmentOffer
     public int CandidateResponseValidityDays { get; set; }
     public Guid? OfferLetterAttachmentPublicId { get; set; }
     public string Remarks { get; set; } = "";
+    public string PipelineTransitionMessage { get; set; } = "";
     public int CreatedByUserId { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
@@ -678,6 +700,7 @@ public class RecruitmentResumeIntakeRequest
     public long? JobPostingId { get; set; }
     public long? FieldConfigurationId { get; set; }
     public bool TalentPoolOnly { get; set; }
+    public bool ForceUpload { get; set; }
     public string SourceType { get; set; } = "Direct Sourcing";
     public List<IFormFile> Files { get; set; } = [];
 }
@@ -713,6 +736,7 @@ public class RecruitmentResumeIntakeItem
 {
     public string FileName { get; set; } = "";
     public bool Success { get; set; }
+    public bool ForceUploaded { get; set; }
     public string Error { get; set; } = "";
     public string ParsingStatus { get; set; } = "";
     public string DetectedName { get; set; } = "";

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Alert, Button, Card, Col, Descriptions, Drawer, Empty, Form, Progress, Radio, Row,
-  Select, Statistic, Tag, Typography, Upload,
+  Select, Statistic, Switch, Tag, Typography, Upload,
 } from 'antd'
 import type { UploadFile, UploadProps } from 'antd'
 import { FileSearchOutlined, InboxOutlined } from '@ant-design/icons'
@@ -77,6 +77,7 @@ export default function RecruitmentResumeIntake({
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
   const [result, setResult] = useState<RecruitmentResumeIntakeResult | null>(null)
+  const [forceUpload, setForceUpload] = useState(false)
   const [contextExpanded, setContextExpanded] = useState(!initialPositionId)
   const [resolvingPostings, setResolvingPostings] = useState(false)
   const [resolvingDescription, setResolvingDescription] = useState(false)
@@ -90,6 +91,7 @@ export default function RecruitmentResumeIntake({
     setJobDescriptionId(null)
     setContextExpanded(!initialPositionId)
     setFileList([])
+    setForceUpload(false)
     setResult(null)
   }, [open, initialClientId, initialPositionId, initialJobPostingId])
 
@@ -244,7 +246,7 @@ export default function RecruitmentResumeIntake({
     setProgress(0)
     setResult(null)
     try {
-      const response = await intakeRecruitmentResumes({ clientId, positionId, jobPostingId, talentPoolOnly, sourceType, files: selectedFiles }, setProgress)
+      const response = await intakeRecruitmentResumes({ clientId, positionId, jobPostingId, talentPoolOnly, forceUpload, sourceType, files: selectedFiles }, setProgress)
       if (!response.ok) return
       setProgress(100)
       setResult(response.data)
@@ -286,6 +288,10 @@ export default function RecruitmentResumeIntake({
             <p className="ant-upload-text">Drop {mode === 'single' ? 'a resume' : 'up to 50 resumes'} here, or click to browse</p>
             <p className="ant-upload-hint">PDF, DOCX, RTF or TXT. A readable resume should be 10 MB or smaller for automatic parsing.</p>
           </Upload.Dragger>
+        </div>
+        <div className={`resume-force-upload${forceUpload ? ' is-active' : ''}`}>
+          <Switch data-testid="resume-force-upload" checked={forceUpload} disabled={uploading} onChange={setForceUpload} />
+          <div><strong>Force upload if details cannot be read</strong><span>The resume will be retained for manual review and ATS will wait until the candidate details are completed.</span></div>
         </div>
         <div className="resume-intake-submit-row">
           <Typography.Text type="secondary">{selectedFiles.length ? `${selectedFiles.length} file(s) ready` : 'No files selected'}</Typography.Text>
@@ -334,7 +340,7 @@ function ResumeIntakeResults({ result, talentPoolOnly = false }: { result: Recru
       emptyText="No resume results were returned."
       rowClassName={row => needsReview(row) ? 'resume-result-review' : 'resume-result-success'}
       columns={[
-        { key: 'outcome', label: 'Outcome', width: '145px', render: row => needsReview(row) ? <Tag color="orange">{row.success ? 'Imported · review' : 'Needs review'}</Tag> : <Tag color="green">{talentPoolOnly ? 'Stored' : 'Screened'}</Tag>, exportValue: row => needsReview(row) ? (row.success ? 'Imported - review' : 'Needs review') : (talentPoolOnly ? 'Stored' : 'Screened') },
+        { key: 'outcome', label: 'Outcome', width: '145px', render: row => needsReview(row) ? <Tag color="orange">{row.forceUploaded ? 'Forced · review' : row.success ? 'Imported · review' : 'Needs review'}</Tag> : <Tag color="green">{talentPoolOnly ? 'Stored' : 'Screened'}</Tag>, exportValue: row => needsReview(row) ? (row.forceUploaded ? 'Forced - review' : row.success ? 'Imported - review' : 'Needs review') : (talentPoolOnly ? 'Stored' : 'Screened') },
         { key: 'fileName', label: 'Resume', width: '210px' },
         { key: 'candidate', label: 'Candidate', width: '220px', render: row => <div className="resume-result-person"><b>{row.candidate?.candidateName || row.detectedName || 'Not detected'}</b><span>{row.candidate?.candidateCode || row.parsingStatus || '-'}</span></div>, exportValue: row => row.candidate?.candidateName || row.detectedName },
         { key: 'contact', label: 'Contact extracted', width: '240px', render: row => <div className="resume-result-person"><b>{row.detectedEmail || row.candidate?.email || '-'}</b><span>{row.detectedPhone || row.candidate?.phone || '-'}</span></div>, exportValue: row => `${row.detectedEmail || row.candidate?.email || ''} ${row.detectedPhone || row.candidate?.phone || ''}` },

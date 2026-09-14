@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { FileProtectOutlined, SafetyCertificateOutlined, SaveOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Form, Input, Modal, Result, Skeleton, Space, Tag, message } from 'antd'
+import { CheckCircleOutlined, ClearOutlined, FileProtectOutlined, SafetyCertificateOutlined, SaveOutlined } from '@ant-design/icons'
+import { Alert, Button, Card, Form, Input, Modal, Popconfirm, Result, Skeleton, Space, Tag, message } from 'antd'
 import RecruitmentDynamicForm, { validateDynamicForm } from '../components/RecruitmentDynamicForm'
 import {
   completePublicCandidateAction, getPublicCandidateAction, loadPublicCandidateActionOptions, savePublicCandidateActionValues,
@@ -23,6 +23,7 @@ export default function PublicCandidateActionPage({ token: suppliedToken }: Prop
   const [remarks, setRemarks] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [savingDraft, setSavingDraft] = useState(false)
+  const [validationError, setValidationError] = useState('')
   const [completed, setCompleted] = useState<{ status: string; message: string } | null>(null)
 
   useEffect(() => {
@@ -30,21 +31,29 @@ export default function PublicCandidateActionPage({ token: suppliedToken }: Prop
     setLoading(true)
     void getPublicCandidateAction(token).then(row => {
       if (!active) return
-      setContext(row || null); setValues(row?.existingValues ?? []); setFiles(row?.uploadedFiles ?? []); setLoading(false)
+      setContext(row || null); setValues([...(row?.existingValues ?? [])]); setFiles([...(row?.uploadedFiles ?? [])]); setLoading(false)
     })
     return () => { active = false }
   }, [token])
 
   const upload = async (field: DynamicFormField, file: File, metadata: PublicUploadMetadata, onProgress: (percent: number) => void) => {
     const response = await uploadPublicCandidateActionFile(token, field.id, file, metadata, onProgress)
-    if (response.ok && response.data) setFiles(current => [...current, { ...response.data, fieldId: response.data.fieldId || field.id }])
+    if (response.ok && response.data) {
+      setFiles(current => [...current, { ...response.data, fieldId: response.data.fieldId || field.id }])
+      setValidationError('')
+    }
     return { ok: response.ok, error: response.error }
   }
   const submitForm = async () => {
     if (!context?.form) return
     const error = validateDynamicForm(context.form, values, files)
-    if (error) return message.warning(error)
+    if (error) { setValidationError(error); return message.warning(error) }
+    setValidationError('')
     await complete(undefined)
+  }
+  const clearForm = () => {
+    setValues([...(context?.existingValues ?? [])])
+    setValidationError('')
   }
   const saveDraft = async () => {
     if (!context?.allowSaveDraft) return
@@ -68,27 +77,26 @@ export default function PublicCandidateActionPage({ token: suppliedToken }: Prop
 
   const expired = new Date(context.expiresAtUtc).getTime() < Date.now()
   const completedBefore = !['Active', 'Pending', 'Open'].includes(context.status)
-  return <main className="public-career-page"><div className="public-career-shell">
+  const disabled = expired || completedBefore
+  const actionTitle = context.purpose === 'OfferResponse' ? 'Your offer response' : 'Candidate information'
+  return <main className="public-career-page"><div className="public-career-shell has-application-session">
     <header className="public-career-brand"><div><span className="orchestration-kicker">Secure candidate portal</span><b>{context.organizationName}</b></div></header>
     <Card className="public-job-hero"><Space wrap><Tag color="purple">{context.purpose.replace(/([A-Z])/g, ' $1').trim()}</Tag><Tag color={expired ? 'red' : 'blue'}>{expired ? 'Expired' : `Valid until ${new Date(context.expiresAtUtc).toLocaleString('en-IN')}`}</Tag></Space><h1>{context.candidateName}</h1><p>{context.positionTitle}</p>{context.message && <Alert showIcon type="info" message={context.message} />}</Card>
-    <div className="public-job-layout">
-      <Card className="public-job-content">
-        <Alert showIcon icon={<SafetyCertificateOutlined />} type="success" message="Protected candidate action" description="This purpose-specific link does not expose a storage path. It expires automatically and every upload or response is audit logged." />
+    <div className="public-job-layout is-applying candidate-action-layout">
+      <Card className="public-job-content candidate-action-context-card">
+        <div className="candidate-action-context-heading"><FileProtectOutlined /><div><span className="orchestration-kicker">Requested action</span><h2>{context.purpose === 'OfferResponse' ? 'Review your offer' : 'Review and complete'}</h2><p>Details already available with HR are prefilled. Review them and complete only the missing information.</p></div></div>
+        <div className="candidate-action-context-list"><div><span>Candidate</span><b>{context.candidateName}</b></div><div><span>Position</span><b>{context.positionTitle}</b></div><div><span>Link validity</span><b>{new Date(context.expiresAtUtc).toLocaleString('en-IN')}</b></div></div>
+        <Alert className="candidate-action-security" showIcon icon={<SafetyCertificateOutlined />} type="info" message="Protected candidate action" description="Your responses and documents are handled by the secured HRMS document service." />
         {context.purpose === 'OfferResponse' && context.offer && <OfferSummary context={context} />}
-        {context.form && <div style={{ marginTop: 20 }}><RecruitmentDynamicForm disabled={expired || completedBefore} form={context.form} values={values} files={files} onChange={setValues} onUpload={upload} onLoadOptions={(field, search) => loadPublicCandidateActionOptions(token, field.id, search)} /></div>}
       </Card>
-      <Card className="public-apply-card">
-        <FileProtectOutlined style={{ fontSize: 34, color: '#6b4eff' }} />
-        <h2>{context.purpose === 'OfferResponse' ? 'Your offer response' : 'Complete requested details'}</h2>
-        {expired ? <Alert type="error" showIcon message="This link has expired. Request a new secure link from HR." /> : completedBefore ? <Alert type="warning" showIcon message={context.message || `This action is ${context.status.toLowerCase()}.`} /> : context.purpose === 'OfferResponse' ? <Space direction="vertical" style={{ width: '100%' }}>
-          <Button block size="large" type="primary" onClick={() => setDecisionDraft('Accepted')}>Accept offer</Button>
-          <Button block size="large" onClick={() => setDecisionDraft('Negotiation')}>Request discussion</Button>
-          <Button block size="large" danger onClick={() => setDecisionDraft('Rejected')}>Decline offer</Button>
-        </Space> : <Space direction="vertical" style={{ width: '100%' }}>
-          {context.allowSaveDraft && <Button block size="large" icon={<SaveOutlined />} loading={savingDraft} onClick={() => void saveDraft()}>Save draft</Button>}
-          <Button block size="large" type="primary" loading={submitting} onClick={() => void submitForm()}>Submit securely</Button>
-        </Space>}
-        <p style={{ marginTop: 12, color: '#7b8598', fontSize: 12 }}>Do not forward this personal link. HR can revoke it at any time.</p>
+      <Card className="public-apply-card" id="public-candidate-action-form">
+        <div className="public-apply-heading public-application-heading"><div><span className="orchestration-kicker">Verified candidate action</span><h2>{actionTitle}</h2><p>Review the prefilled details and provide only what is still missing.</p></div>{context.form && <Space wrap><Popconfirm title="Reset your field changes?" description="Entered field changes will reset to the HR records. Uploaded documents stay securely attached." okText="Reset" cancelText="Keep editing" onConfirm={clearForm}><Button icon={<ClearOutlined />} disabled={disabled || submitting || savingDraft}>Clear changes</Button></Popconfirm><Tag color="green" icon={<CheckCircleOutlined />}>Secure link</Tag></Space>}</div>
+        {expired ? <Alert type="error" showIcon message="This link has expired. Request a new secure link from HR." /> : completedBefore ? <Alert type="warning" showIcon message={context.message || `This action is ${context.status.toLowerCase()}.`} /> : <>
+          {context.form && <RecruitmentDynamicForm disabled={disabled} form={context.form} values={values} files={files} onChange={next => { setValues(next); setValidationError('') }} onUpload={upload} onLoadOptions={(field, search) => loadPublicCandidateActionOptions(token, field.id, search)} />}
+          {validationError && <Alert data-testid="public-candidate-action-validation" type="error" showIcon message="Please review your information" description={validationError} style={{ marginTop: 16 }} />}
+          {context.purpose === 'OfferResponse' ? <div className="candidate-action-decision-actions"><Button size="large" type="primary" onClick={() => setDecisionDraft('Accepted')}>Accept offer</Button><Button size="large" onClick={() => setDecisionDraft('Negotiation')}>Request discussion</Button><Button size="large" danger onClick={() => setDecisionDraft('Rejected')}>Decline offer</Button></div> : context.form ? <div className={`candidate-action-form-actions${context.allowSaveDraft ? ' has-draft' : ''}`}>{context.allowSaveDraft && <Button size="large" icon={<SaveOutlined />} loading={savingDraft} disabled={submitting} onClick={() => void saveDraft()}>Save draft</Button>}<Button className="public-submit-button" block size="large" type="primary" loading={submitting} disabled={savingDraft} onClick={() => void submitForm()}>Submit securely</Button></div> : <Alert type="info" showIcon message="No additional information is requested for this action." />}
+        </>}
+        <p className="public-session-note">Do not forward this personal link. HR can revoke it at any time. Files are handled only by the secured HRMS document service.</p>
       </Card>
     </div>
     <Modal title={decisionDraft ? `${decisionDraft} offer` : 'Offer response'} open={!!decisionDraft} onCancel={() => setDecisionDraft(null)} onOk={() => decisionDraft && void complete(decisionDraft)} confirmLoading={submitting} okText={decisionDraft === 'Accepted' ? 'Confirm acceptance' : 'Submit response'} okButtonProps={{ danger: decisionDraft === 'Rejected', disabled: decisionDraft !== 'Accepted' && !remarks.trim() }}>

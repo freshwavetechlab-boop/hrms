@@ -158,7 +158,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   const requestReadOnly = !!selectedRequisition && !['Draft', 'Sent Back', 'Approved'].includes(selectedRequisition.status)
   const readOnly = requestReadOnly || (!!draft?.id && !editableStatuses.has(draft.status))
   const editingDisabled = readOnly || saving || sourceParsing
-  const hasUnsavedChanges = Boolean(sourceFile || (draft && !readOnly && descriptionSnapshot(draft) !== draftBaseline.current))
+  const hasUnsavedChanges = Boolean(sourceFile || (draft && !readOnly && (!draft.id || descriptionSnapshot(draft) !== draftBaseline.current)))
 
   useImperativeHandle(ref, () => ({
     saveDraftIfNeeded: async () => hasUnsavedChanges ? await saveDraft() : true,

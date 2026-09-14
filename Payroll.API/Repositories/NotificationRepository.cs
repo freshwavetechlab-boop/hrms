@@ -13,6 +13,7 @@ namespace Payroll.API.Repositories;
 public class NotificationRepository(IConfiguration configuration, AttachmentRepository attachmentRepository, NotificationAutomationRepository automation, ILogger<NotificationRepository> logger)
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+    private bool DeliverySuppressed => configuration.GetValue<bool>("OutboundDelivery:Suppressed");
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
 
     public async Task InitializeAsync()
@@ -220,6 +221,7 @@ VALUES (@RuleId,@ParameterName,@SourceType,@PayloadPath,@TableName,@MatchColumn,
 
     public async Task PublishEventAsync(NotificationEvent notificationEvent)
     {
+        if (DeliverySuppressed) return;
         if (string.IsNullOrWhiteSpace(notificationEvent.EventCode) || string.IsNullOrWhiteSpace(notificationEvent.ResourceType) || string.IsNullOrWhiteSpace(notificationEvent.ResourceId))
             return;
         try
@@ -255,6 +257,8 @@ ORDER BY r.ClientId IS NULL, r.Id", new { EventCode = CleanCode(notificationEven
         NotificationEvent notificationEvent,
         CancellationToken cancellationToken = default)
     {
+        if (DeliverySuppressed)
+            return (false, "Outbound delivery is suppressed for this application instance.");
         if (!MailboxAddress.TryParse((recipientEmail ?? "").Trim(), out var mailbox))
             return (false, "The recipient email address is invalid.");
         if (string.IsNullOrWhiteSpace(subject) || string.IsNullOrWhiteSpace(bodyHtml))
@@ -293,7 +297,7 @@ SELECT LAST_INSERT_ID();", new
             await db.ExecuteAsync("UPDATE notification_queue SET Status='Failed',RetryCount=RetryCount+1,ErrorMessage=@Error WHERE Id=@Id", new { Id = queueId, Error = exception.Message });
             await WriteLogsAsync(db, row, "Failed", exception.Message);
             logger.LogWarning(exception, "Direct notification {QueueId} failed.", queueId);
-            return (false, "The verification email could not be delivered. Please retry shortly.");
+            return (false, "The email could not be delivered. Please retry shortly.");
         }
     }
 
@@ -317,7 +321,7 @@ WHERE Id=@Id AND IsActive=TRUE AND (ClientId=0 OR ClientId=@ClientId)",
         var values = BuildBaseValues(notificationEvent);
         var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO notification_queue
 (RuleId,EventCode,ResourceType,ResourceId,ClientId,ToJson,CcJson,BccJson,Subject,BodyHtml,Status)
-VALUES (NULL,@EventCode,@ResourceType,@ResourceId,@ClientId,@ToJson,'[]','[]',@Subject,@BodyHtml,'Pending');
+VALUES (NULL,@EventCode,@ResourceType,@ResourceId,@ClientId,@ToJson,'[]','[]',@Subject,@BodyHtml,@Status);
 SELECT LAST_INSERT_ID();", new
         {
             notificationEvent.EventCode,
@@ -326,13 +330,15 @@ SELECT LAST_INSERT_ID();", new
             notificationEvent.ClientId,
             ToJson = JsonSerializer.Serialize(new[] { mailbox.Address }),
             Subject = Render(template.SubjectTemplate, values),
-            BodyHtml = Render(template.BodyTemplate, values)
+            BodyHtml = Render(template.BodyTemplate, values),
+            Status = DeliverySuppressed ? "Suppressed" : "Pending"
         });
         return id;
     }
 
     public async Task<int> ProcessPendingAsync(CancellationToken cancellationToken, long? queueId = null)
     {
+        if (DeliverySuppressed) return 0;
         await using var db = Db();
         await db.OpenAsync(cancellationToken);
         var smtp = await db.QueryFirstOrDefaultAsync<NotificationSmtpSetting>("SELECT * FROM notification_smtp_settings WHERE Id=1") ?? new NotificationSmtpSetting();

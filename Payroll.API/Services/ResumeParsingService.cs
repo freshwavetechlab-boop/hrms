@@ -3,10 +3,14 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using Payroll.API.Models;
 
 namespace Payroll.API.Services;
 
-public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
+public sealed class ResumeParsingService(
+    RecruitmentAiScoringService aiScoring,
+    RecruitmentDocumentRagService documentRag,
+    ILogger<ResumeParsingService> logger)
 {
     private const int MaxInputBytes = 10 * 1024 * 1024;
     private const int MaxExtractedBytes = 20 * 1024 * 1024;
@@ -16,11 +20,86 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
     private static readonly Regex PhonePattern = new(@"(?<!\d)(?:\+?91[\s\-]?)?[6-9]\d{9}(?!\d)", RegexOptions.Compiled);
     private static readonly Regex NameLabelPattern = new(@"(?im)^\s*(?:candidate\s+)?(?:full\s+)?name\s*[:\-]\s*(?<value>[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){1,4})\s*$", RegexOptions.Compiled);
     private static readonly Regex AddressLabelPattern = new(@"(?im)^\s*(?:(?:current|permanent|residential|postal|mailing)\s+)?address\s*[:\-]\s*(?<value>[^\r\n]{8,300})(?:\r?\n(?<next>[^\r\n]{8,180}))?", RegexOptions.Compiled);
+    private static readonly Regex PersonNamePattern = new(@"^[A-Za-z][A-Za-z.'-]+(?:\s+[A-Za-z][A-Za-z.'-]+){1,4}$", RegexOptions.Compiled);
+    private static readonly Regex RoleTitlePattern = new(@"\b(?:administrator|analyst|architect|consultant|coordinator|designer|developer|devops|director|engineer|executive|intern|lead|manager|officer|recruiter|specialist|supervisor|team)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public async Task<ResumeParseResult> ParseAsync(IFormFile file, CancellationToken cancellationToken)
     {
         await using var source = file.OpenReadStream();
         return await ParseAsync(source, file.FileName, file.Length, cancellationToken);
+    }
+
+    public async Task<ResumeParseResult> ParseAsync(
+        IFormFile file,
+        int clientId,
+        IEnumerable<string>? jobContext,
+        CancellationToken cancellationToken)
+    {
+        var local = await ParseAsync(file, cancellationToken);
+        return await EnhanceAsync(file, local, clientId, jobContext, cancellationToken);
+    }
+
+    public async Task<ResumeParseResult> EnhanceAsync(
+        IFormFile file,
+        ResumeParseResult local,
+        int clientId,
+        IEnumerable<string>? jobContext,
+        CancellationToken cancellationToken)
+    {
+        byte[]? sourceDocument = null;
+        if (file.Length <= MaxInputBytes
+            && Path.GetExtension(file.FileName).Equals(".pdf", StringComparison.OrdinalIgnoreCase)
+            && !local.Status.Equals("Parsed", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                await using var source = file.OpenReadStream();
+                using var memory = new MemoryStream();
+                await CopyToLimitedAsync(source, memory, MaxInputBytes, cancellationToken);
+                var bytes = memory.ToArray();
+                if (HasPdfSignature(bytes)) sourceDocument = bytes;
+            }
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning(exception, "Resume PDF could not be prepared for optional AI extraction ({FileName}).", Path.GetFileName(file.FileName));
+            }
+        }
+        return await EnhanceWithAiAsync(local, file.FileName, clientId, jobContext, sourceDocument, cancellationToken);
+    }
+
+    public async Task<ResumeParseResult> ParseAsync(
+        Stream source,
+        string fileName,
+        long fileLength,
+        int clientId,
+        IEnumerable<string>? jobContext,
+        CancellationToken cancellationToken)
+    {
+        if (fileLength > MaxInputBytes)
+            return await ParseAsync(source, fileName, fileLength, cancellationToken);
+        try
+        {
+            using var memory = new MemoryStream();
+            await CopyToLimitedAsync(source, memory, MaxInputBytes, cancellationToken);
+            var bytes = memory.ToArray();
+            await using var localSource = new MemoryStream(bytes, writable: false);
+            var local = await ParseAsync(localSource, fileName, fileLength, cancellationToken);
+            var sourceDocument = Path.GetExtension(fileName).Equals(".pdf", StringComparison.OrdinalIgnoreCase)
+                && !local.Status.Equals("Parsed", StringComparison.OrdinalIgnoreCase)
+                && HasPdfSignature(bytes)
+                    ? bytes
+                    : null;
+            return await EnhanceWithAiAsync(local, fileName, clientId, jobContext, sourceDocument, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Resume could not be buffered for AI-assisted parsing ({FileName}).", Path.GetFileName(fileName));
+            return ResumeParseResult.WithoutContent("Failed", "BuiltIn", "2.1", "Resume text could not be extracted safely. The original document remains available for authorized manual review.");
+        }
     }
 
     public async Task<ResumeParseResult> ParseAsync(Stream source, string fileName, long fileLength, CancellationToken cancellationToken)
@@ -91,6 +170,245 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
             return ResumeParseResult.WithoutContent("Failed", "BuiltIn", "2.0", "Resume text could not be extracted safely. The original document remains available for authorized manual review.");
         }
     }
+
+    private async Task<ResumeParseResult> EnhanceWithAiAsync(
+        ResumeParseResult local,
+        string fileName,
+        int clientId,
+        IEnumerable<string>? jobContext,
+        byte[]? sourceDocument,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            RecruitmentDocumentRagContext retrieval;
+            if (sourceDocument is { Length: > 0 })
+            {
+                // A vision-only response cannot be checked against a local text layer.
+                // Keep retrieved JD language out of that request so job requirements can
+                // never be copied into the candidate's evidence text.
+                retrieval = RecruitmentDocumentRagContext.Empty(clientId, RecruitmentDocumentRagService.ResumeDocumentKind);
+            }
+            else
+            {
+                var queryParts = (jobContext ?? [])
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Append(local.Text);
+                retrieval = await documentRag.RetrieveAsync(clientId, RecruitmentDocumentRagService.ResumeDocumentKind,
+                    queryParts, cancellationToken);
+            }
+            var ai = await aiScoring.SuggestResumeDocumentAsync(clientId, local.Text, sourceDocument,
+                sourceDocument is { Length: > 0 } ? "application/pdf" : "", retrieval, cancellationToken);
+            return MergeAiSuggestion(local, ai, retrieval.HasContext, sourceDocument is { Length: > 0 });
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "AI-assisted resume parsing was unavailable for {FileName}; local parsing was retained.", Path.GetFileName(fileName));
+            return local;
+        }
+    }
+
+    internal static ResumeParseResult MergeAiSuggestion(
+        ResumeParseResult local,
+        RecruitmentAiResumeDocumentSuggestion ai,
+        bool hasRetrievalContext,
+        bool documentWasAttached)
+    {
+        if (ai.Status is not ("Completed" or "LowConfidence")) return local;
+
+        var text = local.Text;
+        var sourceHasReliableText = LooksLikeUsefulResumeText(text);
+        var fullName = local.Facts.FullName;
+        var email = local.Facts.Email;
+        var phone = local.Facts.Phone;
+        var address = local.Facts.ResidentialAddress;
+        var languageCode = local.Facts.LanguageCode;
+        var summary = local.Facts.SummaryText;
+        var totalExperienceMonths = local.Facts.TotalExperienceMonths;
+        var applied = false;
+
+        if ((string.IsNullOrWhiteSpace(fullName) || !ContainsNormalizedEvidence(text, fullName))
+            && IsPlausibleName(ai.FullName)
+            && CanUseExactAiField(ai, "fullName", ai.FullName, text, documentWasAttached))
+        {
+            fullName = ai.FullName.Trim();
+            applied = true;
+        }
+        var aiEmail = EmailPattern.Match(ai.Email ?? "").Value;
+        if (string.IsNullOrWhiteSpace(email)
+            && !string.IsNullOrWhiteSpace(aiEmail)
+            && aiEmail.Equals((ai.Email ?? "").Trim(), StringComparison.OrdinalIgnoreCase)
+            && CanUseExactAiField(ai, "email", aiEmail, text, documentWasAttached))
+        {
+            email = aiEmail;
+            applied = true;
+        }
+        var aiPhone = PhonePattern.Match(ai.Phone ?? "").Value;
+        if (string.IsNullOrWhiteSpace(phone)
+            && !string.IsNullOrWhiteSpace(aiPhone)
+            && CanUseExactAiField(ai, "phone", aiPhone, text, documentWasAttached, comparePhoneDigits: true))
+        {
+            phone = aiPhone;
+            applied = true;
+        }
+        if (string.IsNullOrWhiteSpace(address)
+            && (ai.ResidentialAddress ?? "").Trim().Length is >= 8 and <= 180
+            && CanUseExactAiField(ai, "residentialAddress", ai.ResidentialAddress ?? "", text, documentWasAttached))
+        {
+            address = (ai.ResidentialAddress ?? "").Trim();
+            applied = true;
+        }
+
+        if (ai.Status == "Completed" && !string.IsNullOrWhiteSpace(ai.SummaryText))
+        {
+            summary = ai.SummaryText.Trim();
+            if (summary.Length > 1000) summary = summary[..1000];
+            applied = true;
+        }
+        if (ai.Status == "Completed" && languageCode.Equals("und", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(ai.LanguageCode) && !ai.LanguageCode.Equals("und", StringComparison.OrdinalIgnoreCase))
+        {
+            languageCode = ai.LanguageCode;
+            applied = true;
+        }
+        if (!totalExperienceMonths.HasValue && ai.TotalExperienceMonths is >= 0 and <= 720
+            && CanUseAiDerivedField(ai, "totalExperienceMonths"))
+        {
+            totalExperienceMonths = ai.TotalExperienceMonths;
+            applied = true;
+        }
+
+        var aiSections = ai.Sections
+            .Where(section => !string.IsNullOrWhiteSpace(section.Content))
+            .Where(section => documentWasAttached
+                ? section.Confidence >= .80m
+                : ai.Status == "Completed" || EffectiveConfidence(section.Confidence, ai.Confidence) >= .75m)
+            .Where(section => sourceHasReliableText
+                ? ContainsNormalizedEvidence(text, section.Content)
+                : documentWasAttached)
+            .Select(section => new ResumeParsedSection(
+                section.SectionCode,
+                section.Heading,
+                section.Content,
+                section.DisplayOrder,
+                EffectiveConfidence(section.Confidence, ai.Confidence)))
+            .ToList();
+
+        IReadOnlyList<ResumeParsedSection> sections = local.Sections;
+        if (aiSections.Count > 0)
+        {
+            if (sections.Count == 0 || sections.All(section => section.SectionCode.Equals("GENERAL", StringComparison.OrdinalIgnoreCase)))
+                sections = aiSections;
+            else
+            {
+                var merged = sections.ToList();
+                foreach (var section in aiSections)
+                {
+                    if (merged.Any(existing => existing.SectionCode.Equals(section.SectionCode, StringComparison.OrdinalIgnoreCase))) continue;
+                    merged.Add(section);
+                }
+                sections = merged.OrderBy(section => section.DisplayOrder).ToList();
+            }
+            if (!sourceHasReliableText)
+            {
+                text = string.Join("\n\n", sections.Select(section => section.Content));
+                text = NormalizeText(text);
+            }
+            applied = true;
+        }
+
+        if (!applied) return local;
+        // AI-only text from an unreadable/scanned document is useful for recruiter
+        // review, but cannot become ATS evidence until a human verifies it.
+        var status = local.Status.Equals("Parsed", StringComparison.OrdinalIgnoreCase)
+            ? "Parsed"
+            : local.Status;
+        if (string.IsNullOrWhiteSpace(summary))
+            summary = sections.FirstOrDefault(section => section.SectionCode.Equals("SUMMARY", StringComparison.OrdinalIgnoreCase))?.Content
+                ?? sections.FirstOrDefault()?.Content
+                ?? "";
+        if (summary.Length > 1000) summary = summary[..1000];
+        var facts = new ResumeParsedFacts(
+            email,
+            phone,
+            fullName,
+            address,
+            text.Length,
+            text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length,
+            languageCode,
+            summary,
+            totalExperienceMonths);
+        var parserParts = new List<string> { local.ParserName };
+        if (hasRetrievalContext) parserParts.Add("LocalRAG");
+        if (!string.IsNullOrWhiteSpace(ai.Provider)) parserParts.Add(ai.Provider);
+        var parserName = string.Join(" + ", parserParts.Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase));
+        if (parserName.Length > 100) parserName = parserName[..100];
+        var parserVersion = string.IsNullOrWhiteSpace(local.ParserVersion) ? "ai1" : $"{local.ParserVersion}+ai1";
+        if (parserVersion.Length > 50) parserVersion = parserVersion[..50];
+        var error = status == "Parsed" ? "" : local.Error;
+        return new ResumeParseResult(status, text, facts, sections, parserName, parserVersion, error);
+    }
+
+    private static bool CanUseExactAiField(
+        RecruitmentAiResumeDocumentSuggestion ai,
+        string field,
+        string value,
+        string sourceText,
+        bool documentWasAttached,
+        bool comparePhoneDigits = false)
+    {
+        if (!ai.FieldMetadata.TryGetValue(field, out var trace)
+            || !trace.SourceType.Equals("exact", StringComparison.OrdinalIgnoreCase)
+            || trace.Confidence < .65m) return false;
+        if (ai.Status == "LowConfidence" && trace.Confidence < .75m) return false;
+        if (!string.IsNullOrWhiteSpace(sourceText))
+        {
+            if (comparePhoneDigits)
+            {
+                var expected = new string((value ?? "").Where(char.IsDigit).ToArray());
+                if (expected.Length >= 10 && PhonePattern.Matches(sourceText).Cast<Match>().Any(match =>
+                    new string(match.Value.Where(char.IsDigit).ToArray()).EndsWith(expected[^10..], StringComparison.Ordinal)))
+                    return true;
+            }
+            else if (ContainsNormalizedEvidence(sourceText, value)) return true;
+        }
+        // Model-only identity must not drive candidate de-duplication or profile
+        // linking. A scanned resume can still be retained for manual review, while
+        // identity is filled only when independently present in the local text layer.
+        return false;
+    }
+
+    private static bool CanUseAiDerivedField(RecruitmentAiResumeDocumentSuggestion ai, string field)
+    {
+        if (ai.Status != "Completed") return false;
+        if (!ai.FieldMetadata.TryGetValue(field, out var trace)) return false;
+        return (trace.SourceType.Equals("exact", StringComparison.OrdinalIgnoreCase)
+            || trace.SourceType.Equals("inferred", StringComparison.OrdinalIgnoreCase))
+            && trace.Confidence >= .65m;
+    }
+
+    private static bool ContainsNormalizedEvidence(string source, string evidence)
+    {
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(evidence)) return false;
+        static string NormalizeEvidence(string value) => Regex.Replace(value, @"\s+", " ").Trim();
+        return NormalizeEvidence(source).Contains(NormalizeEvidence(evidence), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsPlausibleName(string value)
+    {
+        var clean = Regex.Replace(value ?? "", @"\s+", " ").Trim();
+        return clean.Length is >= 2 and <= 120
+            && clean.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length <= 5
+            && clean.Any(char.IsLetter)
+            && clean.All(character => char.IsLetter(character) || char.IsWhiteSpace(character) || character is '.' or '\'' or '-');
+    }
+
+    private static decimal EffectiveConfidence(decimal fieldConfidence, decimal overallConfidence) =>
+        Math.Clamp(fieldConfidence > 0 ? fieldConfidence : overallConfidence, 0m, 1m);
 
     private static IReadOnlyList<ResumeParsedSection> BuildSections(string text)
     {
@@ -170,10 +488,13 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
         };
         foreach (var rawLine in text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Take(18))
         {
-            var line = Regex.Replace(rawLine.Trim(), @"\s+", " ").Trim(' ', '-', '|');
-            if (line.Length is < 4 or > 80 || ignored.Contains(line) || line.Contains('@') || PhonePattern.IsMatch(line)) continue;
-            if (Regex.IsMatch(line, @"https?://|www\.|linkedin|github|address|email|phone|mobile", RegexOptions.IgnoreCase)) continue;
-            if (Regex.IsMatch(line, @"^[A-Za-z][A-Za-z.'-]+(?:\s+[A-Za-z][A-Za-z.'-]+){1,4}$")) return line;
+            var withoutIdentity = EmailPattern.Replace(PhonePattern.Replace(rawLine, " "), " ");
+            foreach (var segment in Regex.Split(withoutIdentity, @"[|•\t]").Select(value => Regex.Replace(value.Trim(), @"\s+", " ").Trim(' ', '-', ',', ';', ':')))
+            {
+                if (segment.Length is < 4 or > 80 || ignored.Contains(segment)) continue;
+                if (Regex.IsMatch(segment, @"https?://|www\.|linkedin|github|address|email|phone|mobile", RegexOptions.IgnoreCase)) continue;
+                if (PersonNamePattern.IsMatch(segment) && !RoleTitlePattern.IsMatch(segment)) return segment;
+            }
         }
         var fallback = Regex.Replace(Path.GetFileNameWithoutExtension(fileName), @"(?i)\b(resume|cv|profile|updated|latest|final)\b", " ");
         fallback = Regex.Replace(fallback, @"[_\-\d]+", " ");
@@ -189,7 +510,7 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
         value = Regex.Replace(value, @"\s+", " ").Trim(' ', ',', ';', '-');
         if (EmailPattern.IsMatch(value)) value = value[..value.IndexOf(EmailPattern.Match(value).Value, StringComparison.Ordinal)].Trim(' ', ',', ';', '-');
         if (PhonePattern.IsMatch(value)) value = value[..value.IndexOf(PhonePattern.Match(value).Value, StringComparison.Ordinal)].Trim(' ', ',', ';', '-');
-        return value.Length <= 500 ? value : value[..500];
+        return value.Length <= 180 ? value : value[..180];
     }
 
     private static string ReadDocx(byte[] bytes)
@@ -425,6 +746,14 @@ public sealed class ResumeParsingService(ILogger<ResumeParsingService> logger)
             destination.Write(buffer, 0, read);
         }
     }
+
+    private static bool HasPdfSignature(byte[] bytes) =>
+        bytes.Length >= 5
+        && bytes[0] == 0x25
+        && bytes[1] == 0x50
+        && bytes[2] == 0x44
+        && bytes[3] == 0x46
+        && bytes[4] == 0x2D;
 }
 
 public sealed record ResumeParsedFacts(

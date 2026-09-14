@@ -99,6 +99,8 @@ public class PublicCandidateActionResult
     public long ApplicationId { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public long? PipelineStageInstanceId { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool ShouldResumePipeline { get; set; }
     public string Status { get; set; } = "Completed";
     public string Message { get; set; } = "Your response was submitted successfully.";
 }

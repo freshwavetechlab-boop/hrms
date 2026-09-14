@@ -70,13 +70,15 @@ export default function RecruitmentDynamicForm({ form, values, files, disabled =
       const fieldDisabled = disabled || field.semanticCodes.some(code => lockedSemanticCodes.includes(code))
       const metadata = uploadMetadata[field.id] ?? { documentNumber: '' }
       const usesLookup = Boolean(field.lookupSourceCode)
+      const maximumFiles = Math.max(1, field.attachmentConstraints?.maximumFileCount ?? 1)
+      const uploadCapacityReached = field.fieldTypeCode === 'UPLOAD' && uploaded.length >= maximumFiles
       const staticOptions = [...field.options].filter(row => row.isActive).sort((a, b) => a.displayOrder - b.displayOrder).map(row => ({ value: row.id, label: row.optionLabel }))
       return <Form.Item key={field.id} data-testid={`dynamic-field-${field.stableFieldCode}`} style={{ gridColumn: `span ${Math.max(1, Math.min(12, field.widthColumns))}` }} label={field.label} required={field.isRequired} extra={field.helpText}>
         {field.fieldTypeCode === 'TEXT' && <Input disabled={fieldDisabled} value={answer?.textValue ?? ''} placeholder={field.placeholder} minLength={field.minimumLength ?? undefined} maxLength={field.maximumLength ?? undefined} onChange={event => patch(field.id, { textValue: event.target.value })} />}
         {field.fieldTypeCode === 'TEXTAREA' && <Input.TextArea disabled={fieldDisabled} rows={4} value={answer?.textValue ?? ''} placeholder={field.placeholder} minLength={field.minimumLength ?? undefined} maxLength={field.maximumLength ?? undefined} onChange={event => patch(field.id, { textValue: event.target.value })} />}
         {field.fieldTypeCode === 'EMAIL' && <Input disabled={fieldDisabled} type="email" value={answer?.textValue ?? ''} placeholder={field.placeholder || 'name@example.com'} onChange={event => patch(field.id, { textValue: event.target.value })} />}
         {field.fieldTypeCode === 'PHONE' && <Input disabled={fieldDisabled} type="tel" value={answer?.textValue ?? ''} placeholder={field.placeholder || 'Mobile number'} onChange={event => patch(field.id, { textValue: event.target.value })} />}
-        {field.fieldTypeCode === 'NUMBER' && <InputNumber disabled={disabled} style={{ width: '100%' }} min={field.minimumNumber ?? undefined} max={field.maximumNumber ?? undefined} value={answer?.decimalValue ?? undefined} placeholder={field.placeholder} onChange={decimalValue => patch(field.id, { decimalValue: decimalValue == null ? null : Number(decimalValue) })} />}
+        {field.fieldTypeCode === 'NUMBER' && <InputNumber disabled={disabled} style={{ width: '100%' }} min={field.minimumNumber ?? undefined} max={field.maximumNumber ?? undefined} value={answer?.decimalValue ?? answer?.integerValue ?? undefined} placeholder={field.placeholder} onChange={decimalValue => patch(field.id, { decimalValue: decimalValue == null ? null : Number(decimalValue), integerValue: null })} />}
         {field.fieldTypeCode === 'DATE' && <Input disabled={disabled} type="date" min={field.minimumDate?.slice(0, 10)} max={field.maximumDate?.slice(0, 10)} value={answer?.dateValue?.slice(0, 10) ?? ''} onChange={event => patch(field.id, { dateValue: event.target.value })} />}
         {field.fieldTypeCode === 'DATETIME' && <Input disabled={disabled} type="datetime-local" min={field.minimumDate?.slice(0, 16)} max={field.maximumDate?.slice(0, 16)} value={answer?.dateTimeValue?.slice(0, 16) ?? ''} onChange={event => patch(field.id, { dateTimeValue: event.target.value })} />}
         {(field.fieldTypeCode === 'SEARCH_SELECT' || field.fieldTypeCode === 'MULTI_SELECT') && <Select<string | number | Array<string | number>>
@@ -112,7 +114,8 @@ export default function RecruitmentDynamicForm({ form, values, files, disabled =
             {field.attachmentConstraints?.requiresExpiryDate && <label><span>Expiry date <b aria-hidden="true">*</b></span><Input disabled={disabled} type="date" min={metadata.issueDate || undefined} value={metadata.expiryDate ?? ''} onChange={event => patchUploadMetadata(field.id, { expiryDate: event.target.value || null })} /></label>}
           </div>}
           {uploadErrors[field.id] && <Typography.Text className="public-upload-error" type="danger" role="alert">{uploadErrors[field.id]}</Typography.Text>}
-          <Upload.Dragger disabled={disabled} multiple={Boolean(field.attachmentConstraints?.allowMultiple)} maxCount={field.attachmentConstraints?.maximumFileCount || 1} accept={uploadAccept(field)} showUploadList={false} customRequest={uploader(field, metadata)}><p className="ant-upload-drag-icon"><InboxOutlined /></p><p>{uploaded.length ? 'Add another file if permitted' : 'Choose or drop file here'}</p><small>{uploadRuleSummary(field)}</small></Upload.Dragger>
+          {!uploadCapacityReached && <Upload.Dragger disabled={disabled} multiple={Boolean(field.attachmentConstraints?.allowMultiple)} maxCount={maximumFiles} accept={uploadAccept(field)} showUploadList={false} customRequest={uploader(field, metadata)}><p className="ant-upload-drag-icon"><InboxOutlined /></p><p>{uploaded.length ? 'Add another file' : 'Choose or drop file here'}</p><small>{uploadRuleSummary(field)}</small></Upload.Dragger>}
+          {uploadCapacityReached && <Typography.Text type="secondary">The current document is already attached.</Typography.Text>}
         </div>}
       </Form.Item>
     })}</div>

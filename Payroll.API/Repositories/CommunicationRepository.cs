@@ -763,6 +763,7 @@ VALUES (@ConversationId,@ProviderAccountId,'Inbound','Text',@Subject,@Body,'Rece
 
     public async Task<int> ProcessPendingAsync(CancellationToken cancellationToken)
     {
+        if (configuration.GetValue<bool>("OutboundDelivery:Suppressed")) return 0;
         await using var db = Db();
         await db.OpenAsync(cancellationToken);
         await SyncEmailQueueAsync(db, cancellationToken);

@@ -76,7 +76,7 @@ const recruitmentNavigation: Array<{
           { view: 'Talent Pool', label: 'Global Talent Pool', icon: 'user' },
         ],
       },
-      { view: 'Interviews', label: 'Selection & Onboarding', icon: 'onboarding' },
+      { view: 'Interviews', label: 'Interviews & Offers', icon: 'onboarding' },
     ],
   },
 ]
@@ -101,7 +101,7 @@ const recruitmentDescriptions: Record<string, string> = {
   'Global Talent Pool': 'Maintain reusable candidate profiles, resumes, experience and consent details.',
   'Work Orders': 'Register each client hiring order once, then create role-wise Hiring Requests from it.',
   Pipeline: 'Follow client demand and candidates through each stage of the hiring journey.',
-  'Selection & Onboarding': 'Coordinate interviews, offers, documents and joining readiness in one workspace.',
+  'Interviews & Offers': 'Schedule interviews, send invites, capture panel feedback and manage offers.',
 }
 
 const surfaceDescriptions: Record<string, string> = {

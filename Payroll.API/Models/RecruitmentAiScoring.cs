@@ -192,3 +192,30 @@ public sealed class RecruitmentAiHiringFieldTrace
     public string SourceType { get; set; } = "manual";
     public decimal Confidence { get; set; }
 }
+
+public sealed class RecruitmentAiResumeDocumentSuggestion
+{
+    public string Status { get; set; } = "NotEnabled";
+    public string Provider { get; set; } = "";
+    public string Model { get; set; } = "";
+    public decimal Confidence { get; set; }
+    public string Error { get; set; } = "";
+    public string FullName { get; set; } = "";
+    public string Email { get; set; } = "";
+    public string Phone { get; set; } = "";
+    public string ResidentialAddress { get; set; } = "";
+    public string LanguageCode { get; set; } = "und";
+    public string SummaryText { get; set; } = "";
+    public int? TotalExperienceMonths { get; set; }
+    public List<RecruitmentAiResumeSectionSuggestion> Sections { get; set; } = [];
+    public Dictionary<string, RecruitmentAiHiringFieldTrace> FieldMetadata { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class RecruitmentAiResumeSectionSuggestion
+{
+    public string SectionCode { get; set; } = "GENERAL";
+    public string Heading { get; set; } = "";
+    public string Content { get; set; } = "";
+    public int DisplayOrder { get; set; }
+    public decimal Confidence { get; set; }
+}

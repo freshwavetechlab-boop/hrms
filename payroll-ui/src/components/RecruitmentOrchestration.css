@@ -155,6 +155,8 @@
 .public-apply-heading p { margin: 0; color: #64718a; line-height: 1.55; }
 .public-start-form { display: grid; gap: 10px; margin-top: 18px; }
 .public-start-form .ant-form-item { margin-bottom: 4px; }
+.public-start-actions { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: stretch; gap: 10px; margin-top: 12px; }
+.public-start-actions .ant-btn { min-height: 46px; margin-top: 0; border-radius: 11px; }
 .public-start-form .ant-form-item-label > label,
 .public-form-section .ant-form-item-label > label { color: #3d4a61; font-weight: 700; }
 .public-start-form :is(.ant-input, .ant-input-affix-wrapper),
@@ -171,6 +173,7 @@
 .public-otp-panel > small { color: #6b768c; text-align: center; }
 .public-application-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .public-application-heading > div { display: grid; gap: 6px; }
+.public-application-heading > .ant-space { justify-content: flex-end; }
 .public-application-heading .ant-tag { margin: 0; border-radius: 999px; }
 .public-form-section { padding: 18px 0; border-top: 1px solid #edf1f7; }
 .public-form-section:first-of-type { padding-top: 0; border-top: 0; }
@@ -220,6 +223,23 @@
 .candidate-action-offer > div { padding: 12px; border-radius: 10px; background: #f6f7fb; }
 .candidate-action-offer span { display: block; color: #7b8598; font-size: 11px; }
 .candidate-action-offer b { color: #253049; }
+.public-job-layout.candidate-action-layout { grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); }
+.candidate-action-context-card > .ant-card-body { display: grid; gap: 20px; padding: 24px; }
+.candidate-action-context-heading { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 12px; align-items: start; }
+.candidate-action-context-heading > .anticon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 11px; color: #6b4eff; background: #f0edff; font-size: 20px; }
+.candidate-action-context-heading h2 { margin: 3px 0 7px; color: #17243d; font-size: 21px; line-height: 1.25; }
+.candidate-action-context-heading p { margin: 0; color: #66738a; font-size: 13px; line-height: 1.55; }
+.candidate-action-context-list { display: grid; gap: 0; border: 1px solid #e5eaf3; border-radius: 12px; background: #fbfcff; }
+.candidate-action-context-list > div { display: grid; gap: 4px; padding: 13px 14px; border-bottom: 1px solid #e9edf5; }
+.candidate-action-context-list > div:last-child { border-bottom: 0; }
+.candidate-action-context-list span { color: #7b8598; font-size: 11px; font-weight: 700; letter-spacing: .035em; text-transform: uppercase; }
+.candidate-action-context-list b { min-width: 0; color: #27344d; line-height: 1.4; overflow-wrap: anywhere; }
+.candidate-action-security .ant-alert-description { font-size: 12px; line-height: 1.5; }
+.candidate-action-form-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-items: stretch; margin-top: 18px; }
+.candidate-action-form-actions.has-draft { grid-template-columns: max-content minmax(0, 1fr); }
+.candidate-action-form-actions .ant-btn { min-height: 52px; margin-top: 0; border-radius: 11px; }
+.candidate-action-decision-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
+.candidate-action-decision-actions .ant-btn { min-height: 48px; border-radius: 11px; }
 .candidate-action-drawer .ant-drawer-header { flex-wrap: wrap; align-items: flex-start; gap: 10px 12px; }
 .candidate-action-drawer .ant-drawer-header-title { min-width: 0; }
 .candidate-action-drawer .ant-drawer-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -328,6 +348,9 @@
   .field-option-row .order-action { display: none; }
   .public-career-page { padding-inline: 10px; }
   .candidate-action-offer { grid-template-columns: 1fr; }
+  .candidate-action-layout .public-application-heading { align-items: flex-start; flex-direction: column; }
+  .candidate-action-layout .public-application-heading > .ant-space { width: 100%; justify-content: space-between; }
+  .candidate-action-form-actions.has-draft, .candidate-action-decision-actions { grid-template-columns: 1fr; }
   .candidate-action-drawer .ant-drawer-extra { margin-inline-start: 0; }
   .candidate-action-drawer .ant-drawer-extra > .ant-space { width: 100%; }
   .candidate-action-drawer .ant-drawer-extra .ant-space-item:last-child { flex: 1 1 180px; }

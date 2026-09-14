@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, DatePicker, Descriptions, Form, Input, InputNumber, Progress, Select, Space, Statistic, Table, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Checkbox, DatePicker, Descriptions, Form, Input, InputNumber, Progress, Select, Space, Statistic, Table, Tag, Typography } from 'antd'
 import dayjs, { type Dayjs } from 'dayjs'
-import { getInterviewFeedback, getInterviewSchedulingContext, saveInterview, saveInterviewFeedback } from '../services/recruitmentTalentService'
+import { getInterviewFeedback, getInterviewSchedulingContext, saveInterview, saveInterviewFeedback, sendInterviewInvite } from '../services/recruitmentTalentService'
 import type { RecruitmentCandidateApplication, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, SaveRecruitmentInterviewFeedbackCompetencyScore, WorkflowApprover } from '../types/payroll'
 import SearchSelect, { selectOptions } from './SearchSelect'
 import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
@@ -109,11 +109,13 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
   const [context, setContext] = useState<RecruitmentInterviewSchedulingContext | null>(interview ? contextFromInterview(interview) : null)
   const [contextLoading, setContextLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [sendInvite, setSendInvite] = useState(!interview?.id)
 
   useEffect(() => {
     if (!open) return
     setDraft(initialSchedule(interview, initialApplicationId))
     setContext(interview ? contextFromInterview(interview) : null)
+    setSendInvite(!interview?.id)
   }, [open, interview, initialApplicationId])
 
   useEffect(() => {
@@ -145,7 +147,8 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
   const rangeValid = draft.range[0]?.isValid() && draft.range[1]?.isValid() && draft.range[1].isAfter(draft.range[0])
   const cannotReschedule = Boolean(interview?.id && context?.isPipelineManaged && !context.allowReschedule)
   const completionValid = draft.status !== 'Completed' || draft.result !== 'Pending'
-  const canSave = draft.applicationId > 0 && rangeValid && completionValid && draft.panelUserIds.length >= minimumPanelCount && !contextLoading && (Boolean(interview?.id) || context !== null)
+  const destinationValid = !sendInvite || Boolean(draft.locationOrLink.trim())
+  const canSave = draft.applicationId > 0 && rangeValid && completionValid && destinationValid && draft.panelUserIds.length >= minimumPanelCount && !contextLoading && (Boolean(interview?.id) || context !== null)
 
   const submit = async () => {
     if (!canSave) return
@@ -166,8 +169,14 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
       panelUserIds: draft.panelUserIds.map(Number).filter(Number.isFinite),
       timeZoneId: draft.timeZoneId
     })
+    if (!response.ok) {
+      setSaving(false)
+      return
+    }
+    if (sendInvite && response.data?.id && ['Scheduled', 'Rescheduled'].includes(draft.status)) {
+      await sendInterviewInvite(response.data.id)
+    }
     setSaving(false)
-    if (!response.ok) return
     await onSaved()
     onClose()
   }
@@ -180,7 +189,7 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
     description="Set the interview round, schedule, panel and result in one workspace."
     onClose={onClose}
     onSubmit={() => void submit()}
-    submitText={interview?.id ? 'Save changes' : 'Schedule interview'}
+    submitText={sendInvite ? (interview?.id ? 'Save & resend invite' : 'Schedule & send invite') : (interview?.id ? 'Save changes' : 'Schedule interview')}
     submitLoading={saving}
     submitDisabled={!canSave}
     destroyOnClose
@@ -200,6 +209,9 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
         <Form.Item label={draft.mode === 'Virtual' ? 'Meeting link' : 'Location / contact'}><Input value={draft.locationOrLink} onChange={event => setDraft({ ...draft, locationOrLink: event.target.value })} /></Form.Item>
         <Form.Item className="interview-editor-span" label="Panel members" required extra={`At least ${minimumPanelCount} panel member(s) are required.`}>
           <Select mode="multiple" value={draft.panelUserIds} onChange={values => setDraft({ ...draft, panelUserIds: values.map(Number) })} options={eligiblePanelUsers.map(user => ({ value: user.id, label: `${user.displayName} - ${user.email}` }))} showSearch optionFilterProp="label" placeholder="Select interview panel" />
+        </Form.Item>
+        <Form.Item className="interview-editor-span" extra={sendInvite && !draft.locationOrLink.trim() ? 'Add the meeting link or location before sending the invite.' : 'Uses the configured notification email service.'}>
+          <Checkbox checked={sendInvite} onChange={event => setSendInvite(event.target.checked)}>Email invite to candidate and selected panel after saving</Checkbox>
         </Form.Item>
         <Form.Item label="Status"><Select value={draft.status} onChange={status => setDraft({ ...draft, status })} options={['Scheduled', 'Rescheduled', 'Completed', 'Cancelled', 'No Show'].map(value => ({ value, label: value }))} /></Form.Item>
         <Form.Item label="Result"><Select value={draft.result} onChange={result => setDraft({ ...draft, result })} options={['Pending', 'Selected', 'Rejected', 'On Hold', 'No Show', 'Reschedule'].map(value => ({ value, label: value }))} /></Form.Item>
