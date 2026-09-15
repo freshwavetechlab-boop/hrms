@@ -655,7 +655,11 @@ SELECT LAST_INSERT_ID();", new { StorageType = GoogleDriveOAuthService.StorageTy
             var currentClient = googleDrive.TryResolveOAuthClient(currentCredential);
             var currentUsesSubmittedClientId = currentClient is not null &&
                                                currentClient.ClientId.Equals(oauthClient.ClientId, StringComparison.Ordinal);
-            var wouldReplaceClientOrRemoveAccess = !currentUsesSubmittedClientId || !googleDrive.IsConnected(currentCredential);
+            // Uploading OAuth configuration is the recovery path when a legacy
+            // credential can no longer be decrypted. Only guard an actual,
+            // currently readable connection here; the callback later proves
+            // that the replacement can access the same Drive folder.
+            var wouldReplaceClientOrRemoveAccess = googleDrive.IsConnected(currentCredential) && !currentUsesSubmittedClientId;
             if (wouldReplaceClientOrRemoveAccess && GoogleStorageMayContainData(currentServer, currentCredential))
             {
                 var chatStorageBlock = await FrevoPilotStorageChangeBlockAsync(
@@ -687,15 +691,10 @@ FROM attachment_storage_servers s WHERE s.id=@Id FOR UPDATE;",
         var existingClient = googleDrive.TryResolveOAuthClient(credential);
         var sameClientId = existingClient is not null &&
                            existingClient.ClientId.Equals(oauthClient.ClientId, StringComparison.Ordinal);
-        if (row.LinkedAttachmentCount > 0 && !sameClientId)
+        if (row.LinkedAttachmentCount > 0 && existingClient is not null && !sameClientId)
         {
             await transaction.RollbackAsync();
             return (null, "This Google Drive OAuth client is linked to existing attachments. Upload credentials for the same Google OAuth client_id; switching client IDs would make those files unreadable.");
-        }
-        if (row.LinkedAttachmentCount > 0 && !googleDrive.IsConnected(credential))
-        {
-            await transaction.RollbackAsync();
-            return (null, "The existing encrypted Google Drive connection could not be retained. Reconnect or recover its credential before rotating OAuth settings for linked attachments.");
         }
 
         credential ??= new GoogleDriveCredential();
@@ -728,7 +727,7 @@ updated_by_user_id=@UserId WHERE id=@Id;",
         }
         else
         {
-            await db.ExecuteAsync(@"UPDATE attachment_storage_servers SET credential_cipher_text=@CredentialCipherText,base_path='',service_url='',
+            await db.ExecuteAsync(@"UPDATE attachment_storage_servers SET credential_cipher_text=@CredentialCipherText,
 is_read_enabled=FALSE,is_write_enabled=FALSE,is_default_write_server=FALSE,is_active=FALSE,
 last_health_check_at_utc=NULL,last_health_check_status='Ready to connect',
 last_health_check_message='OAuth client configured. Connect a Google account to activate Drive storage.',
@@ -747,7 +746,8 @@ updated_by_user_id=@UserId WHERE id=@Id;",
             currentServer.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase))
         {
             var currentCredential = googleDrive.TryReadCredential(currentServer.Credential);
-            if (GoogleStorageMayContainData(currentServer, currentCredential) &&
+            if (googleDrive.IsConnected(currentCredential) &&
+                GoogleStorageMayContainData(currentServer, currentCredential) &&
                 !SameGoogleConnection(currentCredential, authorization.Credential))
             {
                 var chatStorageBlock = await FrevoPilotStorageChangeBlockAsync(
@@ -760,8 +760,8 @@ updated_by_user_id=@UserId WHERE id=@Id;",
         await using var db = Connection();
         await db.OpenAsync();
         await using var transaction = await db.BeginTransactionAsync();
-        var row = await db.QueryFirstOrDefaultAsync<GoogleDriveConnectRow>(@"SELECT s.id Id,s.storage_type StorageType,
-s.credential_cipher_text CredentialCipherText,
+        var row = await db.QueryFirstOrDefaultAsync<GoogleDriveConnectRow>(@"SELECT s.id Id,s.storage_type StorageType,s.base_path BasePath,
+s.service_url ServiceUrl,s.credential_cipher_text CredentialCipherText,
 (SELECT COUNT(*) FROM entity_attachments a WHERE a.storage_server_id=s.id AND a.is_deleted=FALSE) LinkedAttachmentCount
 FROM attachment_storage_servers s WHERE s.id=@Id FOR UPDATE;",
             new { Id = authorization.StorageServerId }, transaction);
@@ -777,24 +777,42 @@ FROM attachment_storage_servers s WHERE s.id=@Id FOR UPDATE;",
             credentialProtector.TryUnprotectStorage(row.CredentialCipherText, out existingCredentialJson);
         if (!string.IsNullOrWhiteSpace(existingCredentialJson)) existingCredential = googleDrive.TryReadCredential(existingCredentialJson);
         var existingClient = googleDrive.TryResolveOAuthClient(existingCredential);
-        if (row.LinkedAttachmentCount > 0 &&
-            (existingClient is null ||
-             !existingClient.ClientId.Equals(authorization.Credential.OAuthClientId, StringComparison.Ordinal)))
+        if (row.LinkedAttachmentCount > 0 && existingClient is not null &&
+            !existingClient.ClientId.Equals(authorization.Credential.OAuthClientId, StringComparison.Ordinal))
         {
             await transaction.RollbackAsync();
             return (null, "The Google OAuth client_id cannot be changed while existing attachments use this Drive storage.");
         }
-        if (row.LinkedAttachmentCount > 0 && !googleDrive.IsConnected(existingCredential))
+        if (!string.IsNullOrWhiteSpace(row.BasePath) &&
+            !row.BasePath.Equals(authorization.Credential.FolderId, StringComparison.Ordinal))
         {
             await transaction.RollbackAsync();
-            return (null, "The existing encrypted Google Drive connection could not be verified for linked attachments. Account replacement was blocked.");
+            return (null, "The selected Google account cannot access the existing HRMS Drive folder. Reconnect the same Google account and OAuth client so existing files remain available.");
         }
         if (row.LinkedAttachmentCount > 0 &&
-            existingCredential is not null &&
-            !SameGoogleAccount(existingCredential, authorization.Credential))
+            googleDrive.IsConnected(existingCredential) &&
+            !SameGoogleAccount(existingCredential!, authorization.Credential))
         {
             await transaction.RollbackAsync();
             return (null, "This Google Drive contains existing HRMS attachments. Reconnect the same Google account; switching accounts would make those files unreadable.");
+        }
+
+        if (!googleDrive.IsConnected(existingCredential) && !string.IsNullOrWhiteSpace(row.BasePath))
+        {
+            var recoveredServer = new AttachmentStorageServer
+            {
+                ServerCode = "GOOGLE_DRIVE_RECOVERY",
+                StorageType = GoogleDriveOAuthService.StorageType,
+                BasePath = authorization.Credential.FolderId,
+                ServiceUrl = authorization.FolderUrl,
+                Credential = authorization.CredentialJson
+            };
+            var recoveryError = await VerifyFrevoPilotStorageAccessAsync(recoveredServer);
+            if (recoveryError is not null)
+            {
+                await transaction.RollbackAsync();
+                return (null, recoveryError);
+            }
         }
 
         var protectedCredential = credentialProtector.ProtectStorage(authorization.CredentialJson);
@@ -1816,6 +1834,23 @@ VALUES (@AttachmentId,@ClientId,@EntityType,@EntityId,@Action,@ActorUserId,@Succ
         }
     }
 
+    private async Task<string?> VerifyFrevoPilotStorageAccessAsync(AttachmentStorageServer server)
+    {
+        try
+        {
+            await using var marker = await storageService.TryOpenPathAsync(
+                server,
+                FrevoPilotChatStorageService.StorageMarkerPath,
+                CancellationToken.None);
+            return null;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Recovered Google Drive connection could not verify the existing FrevoPilot storage folder.");
+            return "The Google account was authorized, but the existing HRMS Drive folder could not be verified. Reconnect the same Google account and OAuth client.";
+        }
+    }
+
     private static void ClearGoogleDriveConnection(GoogleDriveCredential credential)
     {
         credential.RefreshToken = "";
@@ -1892,6 +1927,8 @@ LEFT JOIN authusers u ON u.Id=a.uploaded_by_user_id";
     {
         public long Id { get; set; }
         public string StorageType { get; set; } = "";
+        public string BasePath { get; set; } = "";
+        public string ServiceUrl { get; set; } = "";
         public string CredentialCipherText { get; set; } = "";
         public long LinkedAttachmentCount { get; set; }
     }
