@@ -93,8 +93,10 @@ public class RecruitmentHiringCase
     public long? AdvanceRequestId { get; set; }
     public string AdvanceMessage { get; set; } = "";
     public DateTime StartedAtUtc { get; set; }
+    public DateTime? CompletedAtUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; }
     public List<RecruitmentHiringCaseStage> Stages { get; set; } = [];
+    public List<RecruitmentHiringCaseEvent> Events { get; set; } = [];
 }
 
 public class StartRecruitmentHiringCaseRequest
@@ -145,6 +147,19 @@ public class RecruitmentHiringCasePausePeriod
     public long DurationSeconds { get; set; }
 }
 
+public class RecruitmentHiringCaseEvent
+{
+    public long Id { get; set; }
+    public long PositionPipelineInstanceId { get; set; }
+    public long? PositionStageInstanceId { get; set; }
+    public string EventType { get; set; } = "";
+    public string EventTitle { get; set; } = "";
+    public string EventDetails { get; set; } = "";
+    public int? ActorUserId { get; set; }
+    public string ActorName { get; set; } = "";
+    public DateTime CreatedAtUtc { get; set; }
+}
+
 public class MoveRecruitmentHiringCaseRequest
 {
     public string OutcomeCode { get; set; } = "ADVANCE";
@@ -164,6 +179,9 @@ public class RecruitmentProcessDocument
     public long? TemplateId { get; set; }
     public Guid? AttachmentPublicId { get; set; }
     public bool HasFinalSignedAttachment { get; set; }
+    public int SignatureCount { get; set; }
+    public int RequiredSignatureCount { get; set; }
+    public bool CapturedSignaturesComplete { get; set; }
     public string Status { get; set; } = "Draft";
     public long? WorkflowInstanceId { get; set; }
     public int CreatedByUserId { get; set; }
@@ -186,6 +204,26 @@ public class SaveRecruitmentProcessDocument
     public Guid? AttachmentPublicId { get; set; }
     public string Status { get; set; } = "Draft";
     public long? WorkflowInstanceId { get; set; }
+}
+
+public class RecruitmentProcessDocumentSignature
+{
+    public long Id { get; set; }
+    public long ProcessDocumentId { get; set; }
+    public int ClientId { get; set; }
+    public int SignerUserId { get; set; }
+    public string SignerName { get; set; } = "";
+    public string SignerRole { get; set; } = "";
+    public string SignatureMethod { get; set; } = "Typed";
+    public string SignatureDataUrl { get; set; } = "";
+    public DateTime SignedAtUtc { get; set; }
+}
+
+public class SaveRecruitmentProcessDocumentSignature
+{
+    public string SignatureMethod { get; set; } = "Typed";
+    public string SignerName { get; set; } = "";
+    public string SignatureDataUrl { get; set; } = "";
 }
 
 public class RecruitmentStageActionRecipient

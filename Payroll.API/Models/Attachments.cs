@@ -69,6 +69,7 @@ public class AttachmentStorageServer
     public long Id { get; set; }
     public string ServerCode { get; set; } = string.Empty;
     public string ServerName { get; set; } = string.Empty;
+    public string AccountLabel { get; set; } = string.Empty;
     public string StorageType { get; set; } = "LocalFileSystem";
     public string BasePath { get; set; } = string.Empty;
     public string ServiceUrl { get; set; } = string.Empty;

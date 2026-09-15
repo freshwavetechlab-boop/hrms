@@ -28,7 +28,7 @@ AttachmentStorage__PreviewTokenLifetimeSeconds=300
 AttachmentStorage__DownloadTokenLifetimeSeconds=120
 ```
 
-`App_Data` also contains the ASP.NET Data Protection keys used to encrypt remote file-server and Google Drive credentials. The directory must remain persistent when the container is redeployed.
+`App_Data` also contains the ASP.NET Data Protection keys used to encrypt remote file-server and Google Drive credentials. The directory must remain persistent when the container is redeployed. AI-provider credentials use their separate portable encryption format so the same configured database can be administered from local and production API instances.
 
 ## Switching file servers
 

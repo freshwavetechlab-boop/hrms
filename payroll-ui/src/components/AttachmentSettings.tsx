@@ -25,7 +25,7 @@ const configuration0: AttachmentFieldConfiguration = {
   versioningEnabled: true, requirementScope: 'NewEntitiesOnly', displayOrder: 100, effectiveFromUtc: null, effectiveUntilUtc: null, isActive: true
 }
 const storage0: AttachmentStorageServer = {
-  id: 0, serverCode: '', serverName: '', storageType: 'LocalFileSystem', basePath: '', serviceUrl: '', credential: '', hasCredential: false,
+  id: 0, serverCode: '', serverName: '', accountLabel: '', storageType: 'LocalFileSystem', basePath: '', serviceUrl: '', credential: '', hasCredential: false,
   isReadEnabled: true, isWriteEnabled: true, isDefaultWriteServer: false, priority: 100, maximumCapacityBytes: null,
   warningCapacityPercent: 85, isActive: true, lastHealthCheckStatus: 'Not checked', lastHealthCheckMessage: '', linkedAttachmentCount: 0
 }
@@ -426,7 +426,17 @@ export default function AttachmentSettings({ mode = 'attachments' }: { mode?: 'a
                       ? <Tag color="green">Active write target</Tag>
                       : row.isDefaultWriteServer && <Tag color="orange">Write target unavailable</Tag>}
                   </div>
-                  {row.storageType === 'GoogleDrive' && <span>{row.googleAccountEmail || googleConnectionLabel(row)}</span>}
+                  {row.storageType === 'GoogleDrive' && <span>{googleConnectionLabel(row)}</span>}
+                </div>
+              },
+              {
+                key: 'accountLabel', label: 'Account used',
+                value: row => row.accountLabel || row.googleAccountEmail || 'Not specified',
+                render: row => <div className="attachment-storage-server-cell">
+                  <strong>{row.accountLabel || row.googleAccountEmail || 'Not specified'}</strong>
+                  {row.googleAccountEmail && row.accountLabel && row.googleAccountEmail.toLowerCase() !== row.accountLabel.toLowerCase()
+                    ? <span>{row.googleAccountEmail}</span>
+                    : null}
                 </div>
               },
               { key: 'storageType', label: 'Type', value: row => storageTypeLabels[row.storageType] },
@@ -500,6 +510,7 @@ export default function AttachmentSettings({ mode = 'attachments' }: { mode?: 'a
       {drawer === 'storage' && <Form layout="vertical" requiredMark={false}><Row gutter={12}>
         <Col xs={24} md={10}><Form.Item label="Server code" required><Input value={server.serverCode} onChange={event => setServer({ ...server, serverCode: event.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '_') })} /></Form.Item></Col>
         <Col xs={24} md={14}><Form.Item label="Server name" required><Input value={server.serverName} onChange={event => setServer({ ...server, serverName: event.target.value })} /></Form.Item></Col>
+        <Col span={24}><Form.Item label="Account used / owner" extra={server.storageType === 'GoogleDrive' && server.googleAccountEmail ? `Connected Google account: ${server.googleAccountEmail}` : undefined}><Input value={server.accountLabel} onChange={event => setServer({ ...server, accountLabel: event.target.value })} placeholder={server.storageType === 'GoogleDrive' ? 'drive-account@example.com' : 'API service account / server owner'} /></Form.Item></Col>
         <Col span={24}><Form.Item label="Storage type"><Select value={server.storageType} onChange={changeStorageType} options={availableStorageTypes} /></Form.Item></Col>
         {server.storageType === 'HttpFileServer' ? <>
           <Col span={24}><Form.Item label="File server URL" required><Input value={server.serviceUrl} onChange={event => setServer({ ...server, serviceUrl: event.target.value })} placeholder="https://files.example.com" /></Form.Item></Col>

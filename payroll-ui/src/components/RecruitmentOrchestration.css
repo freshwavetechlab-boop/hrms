@@ -311,6 +311,18 @@
 .pipeline-assignment-row { margin-top: 12px; }
 .pipeline-assignment-row .ant-form-item { margin-bottom: 0; }
 
+/* Preserve complete user-facing labels across recruitment cards and lanes. */
+.job-card-heading>div:nth-child(2){min-width:0}
+.job-card-heading h4{height:auto!important;overflow:visible!important;overflow-wrap:anywhere;text-overflow:clip!important;white-space:normal!important}
+.job-card-facts .ant-tag{max-width:100%;height:auto;overflow:visible;overflow-wrap:anywhere;text-overflow:clip;white-space:normal;line-height:1.35}
+.job-card-metric strong{overflow:visible;overflow-wrap:anywhere;text-overflow:clip;white-space:normal}
+.pipeline-board-column{grid-template-rows:auto minmax(0,1fr)}
+.pipeline-board-column>header{min-height:70px}
+.pipeline-board-column>header h4{display:block;overflow:visible;text-overflow:clip;-webkit-line-clamp:unset}
+.pipeline-card-footer .ant-btn{height:auto;min-height:30px;white-space:normal}
+.pipeline-card-footer .ant-btn>span{overflow:visible;overflow-wrap:anywhere;text-overflow:clip;white-space:normal}
+.candidate-action-drawer .ant-drawer-title{overflow:visible;overflow-wrap:anywhere;text-overflow:clip;white-space:normal}
+
 @media (max-width: 900px) {
   .form-builder-layout, .pipeline-designer-layout, .public-job-layout, .jd-workspace-layout, .posting-workspace-layout { grid-template-columns: 1fr; }
   .public-job-layout.is-applying { grid-template-columns: 1fr; }

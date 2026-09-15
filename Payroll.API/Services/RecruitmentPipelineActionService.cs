@@ -10,6 +10,7 @@ public sealed class RecruitmentPipelineActionService(
     IConfiguration configuration,
     RecruitmentTalentRepository talent,
     RecruitmentPipelineRepository pipelines,
+    RecruitmentCaseRepository hiringCases,
     RecruitmentCandidateActionRepository candidateActions,
     WorkflowRepository workflows,
     NotificationRepository notifications,
@@ -225,6 +226,47 @@ ORDER BY scoreRow.ScoredAt DESC,scoreRow.Id DESC LIMIT 1", new { ApplicationId =
                 {
                     await ExecuteAsync(context.ApplicationId, "OnExit", user, context.StageInstanceId);
                     await ExecuteAsync(context.ApplicationId, "OnEntry", user);
+                    await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(context.ApplicationId, "ProfilesSelected", user);
+                }
+                break;
+            }
+            case "AUTO_REJECT":
+            {
+                if (!action.TriggerEvent.Equals("OnSlaBreach", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Automatic rejection can run only after an SLA breach.");
+                var humanActivity = await db.ExecuteScalarAsync<int>(@"SELECT
+(SELECT COUNT(*) FROM recruitment_stage_events stageEvent
+ WHERE stageEvent.StageInstanceId=@StageInstanceId AND stageEvent.EventType<>'Entered'
+   AND COALESCE(stageEvent.ActorUserId,0)>0)
++ (SELECT COUNT(*) FROM recruitment_application_scores scoreRow
+ WHERE scoreRow.ApplicationId=@ApplicationId AND scoreRow.OverriddenByUserId IS NOT NULL
+   AND scoreRow.OverriddenAt>=(SELECT EnteredAtUtc FROM recruitment_application_stage_instances WHERE Id=@StageInstanceId))",
+                    new { context.ApplicationId, context.StageInstanceId });
+                if (humanActivity > 0)
+                {
+                    await db.ExecuteAsync(@"UPDATE recruitment_stage_action_executions
+SET Status='Completed',ErrorMessage='',CompletedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id;
+INSERT INTO recruitment_stage_events (StageInstanceId,EventType,EventTitle,EventDetails,ActorUserId)
+VALUES (@StageInstanceId,'AutoRejectSkipped','Automatic rejection skipped','Human activity was recorded in this stage before its SLA expired.',NULL);",
+                        new { Id = executionId, context.StageInstanceId });
+                    break;
+                }
+                var (movement, error) = await pipelines.AdvanceApplicationForDecisionAsync(
+                    context.ApplicationId,
+                    "Rejected",
+                    user,
+                    context.StageInstanceId);
+                if (movement is null)
+                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(error)
+                        ? "No active rejection transition is configured from this candidate stage."
+                        : error);
+                await db.ExecuteAsync(@"UPDATE recruitment_stage_action_executions
+SET Status='Completed',ErrorMessage='',CompletedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id", new { Id = executionId });
+                if (movement.Status == "Applied")
+                {
+                    await ExecuteAsync(context.ApplicationId, "OnExit", user, context.StageInstanceId);
+                    await ExecuteAsync(context.ApplicationId, "OnEntry", user);
+                    await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(context.ApplicationId, "ProfilesSelected", user);
                 }
                 break;
             }

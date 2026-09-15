@@ -1163,6 +1163,9 @@ WHERE InterviewId=@Id AND AttachmentPublicId IS NOT NULL", new { Id = id })).ToL
         }
 
         await using var transaction = await db.BeginTransactionAsync();
+        await db.ExecuteAsync(@"DELETE signatureRow FROM recruitment_process_document_signatures signatureRow
+JOIN recruitment_process_documents documentRow ON documentRow.Id=signatureRow.ProcessDocumentId
+WHERE documentRow.InterviewId=@Id", new { Id = id }, transaction);
         await db.ExecuteAsync("DELETE FROM recruitment_process_documents WHERE InterviewId=@Id", new { Id = id }, transaction);
         await db.ExecuteAsync(@"DELETE scoreRow FROM recruitment_interview_feedback_competency_scores scoreRow
 JOIN recruitment_interview_feedback feedbackRow ON feedbackRow.Id=scoreRow.InterviewFeedbackId WHERE feedbackRow.InterviewId=@Id", new { Id = id }, transaction);
@@ -2976,7 +2979,7 @@ AND existingOffer.Status NOT IN ('Rejected','Expired','Withdrawn')", new { polic
         await db.ExecuteScalarAsync<int?>(@"SELECT COALESCE(requesterUser.Id,applicationRecruiter.Id,positionRecruiter.Id,fallbackUser.Id)
 FROM recruitment_candidate_applications applicationRow
 JOIN recruitment_open_positions positionRow ON positionRow.Id=applicationRow.PositionId
-LEFT JOIN recruitment_requisitions requisition ON requisition.Id=positionRow.RequisitionId
+LEFT JOIN recruitment_requisitions requisition ON requisition.Id=positionRow.RequisitionId AND requisition.Status='Approved'
 LEFT JOIN authusers requesterUser ON requesterUser.Id=requisition.RequestedByUserId AND requesterUser.IsActive=TRUE
 LEFT JOIN authusers applicationRecruiter ON applicationRecruiter.Id=applicationRow.RecruiterUserId AND applicationRecruiter.IsActive=TRUE
 LEFT JOIN authusers positionRecruiter ON positionRecruiter.Id=positionRow.RecruiterUserId AND positionRecruiter.IsActive=TRUE
@@ -3392,6 +3395,22 @@ ORDER BY (ClientId=@ClientId) DESC,Id DESC LIMIT 1", new { ClientId = clientId }
 
     private static Task AddPositionTimelineAsync(MySqlConnection db, long positionId, string eventType, string title, string details, int? userId) =>
         db.ExecuteAsync("INSERT INTO recruitment_position_timeline (PositionId,EventType,EventTitle,EventDetails,ActorUserId) VALUES (@PositionId,@EventType,@Title,@Details,@UserId)", new { PositionId = positionId, EventType = eventType, Title = title, Details = details ?? "", UserId = userId });
+
+    public async Task ApplyNegotiationSlaExtensionForApplicationAsync(long applicationId, string reason, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var application = await db.QueryFirstOrDefaultAsync<RecruitmentCandidateApplication>(@"SELECT *
+FROM recruitment_candidate_applications
+WHERE Id=@ApplicationId AND ApplicationType='Application'", new { ApplicationId = applicationId });
+        if (application is null || !CanAccessClient(user, application.ClientId)) return;
+        var offer = await db.QueryFirstOrDefaultAsync<RecruitmentOffer>(@"SELECT *
+FROM recruitment_offers
+WHERE ApplicationId=@ApplicationId AND Status='Negotiation'
+ORDER BY Id DESC LIMIT 1", new { ApplicationId = applicationId });
+        if (offer is null) return;
+        await ApplyNegotiationSlaExtensionAsync(db, offer, application, reason, user);
+    }
 
     private static async Task ApplyNegotiationSlaExtensionAsync(MySqlConnection db, RecruitmentOffer offer, RecruitmentCandidateApplication application, string reason, AuthUser user)
     {

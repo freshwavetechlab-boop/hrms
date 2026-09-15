@@ -900,7 +900,7 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
                 new { ClientId = clientId, Id = request.Id, Code = request.ExternalPositionCode.Trim() });
             if (duplicate > 0) return "External position code is already used by another position for this client.";
         }
-        if (request.CtcFlexibilityPercent is < 0 or > 100) return "CTC flexibility must be between 0 and 100 percent.";
+        if (request.CtcFlexibilityPercent is < 20 or > 30) return "Salary negotiation flexibility must be between 20 and 30 percent, or left blank.";
         return "";
     }
 

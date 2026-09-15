@@ -80,6 +80,18 @@ export type RecruitmentHiringCaseStage = {
   processDocumentRequirements: import('./recruitmentOrchestration').RecruitmentStageProcessDocumentRequirement[]
 }
 
+export type RecruitmentHiringCaseEvent = {
+  id: number
+  positionPipelineInstanceId: number
+  positionStageInstanceId?: number | null
+  eventType: string
+  eventTitle: string
+  eventDetails: string
+  actorUserId?: number | null
+  actorName: string
+  createdAtUtc: string
+}
+
 export type RecruitmentHiringCase = {
   id: number
   clientId: number
@@ -104,8 +116,10 @@ export type RecruitmentHiringCase = {
   advanceRequestId?: number | null
   advanceMessage: string
   startedAtUtc: string
+  completedAtUtc?: string | null
   updatedAtUtc: string
   stages: RecruitmentHiringCaseStage[]
+  events: RecruitmentHiringCaseEvent[]
 }
 
 export type RecruitmentProcessDocument = {
@@ -120,6 +134,9 @@ export type RecruitmentProcessDocument = {
   templateId?: number | null
   attachmentPublicId?: string | null
   hasFinalSignedAttachment: boolean
+  signatureCount: number
+  requiredSignatureCount: number
+  capturedSignaturesComplete: boolean
   status: string
   workflowInstanceId?: number | null
   createdByUserId: number
@@ -130,7 +147,21 @@ export type RecruitmentProcessDocument = {
 }
 
 export type SaveRecruitmentProcessDocument = Omit<RecruitmentProcessDocument,
-  'versionNumber' | 'hasFinalSignedAttachment' | 'createdByUserId' | 'signedByUserId' | 'signedAtUtc' | 'createdAtUtc' | 'updatedAtUtc'>
+  'versionNumber' | 'hasFinalSignedAttachment' | 'signatureCount' | 'requiredSignatureCount' | 'capturedSignaturesComplete' | 'createdByUserId' | 'signedByUserId' | 'signedAtUtc' | 'createdAtUtc' | 'updatedAtUtc'>
+
+export type RecruitmentProcessDocumentSignature = {
+  id: number
+  processDocumentId: number
+  clientId: number
+  signerUserId: number
+  signerName: string
+  signerRole: string
+  signatureMethod: 'Typed' | 'Drawn' | 'Image'
+  signatureDataUrl: string
+  signedAtUtc: string
+}
+
+export type SaveRecruitmentProcessDocumentSignature = Pick<RecruitmentProcessDocumentSignature, 'signatureMethod' | 'signerName' | 'signatureDataUrl'>
 
 export type RecruitmentProfileSubmissionBatchItem = {
   id: number

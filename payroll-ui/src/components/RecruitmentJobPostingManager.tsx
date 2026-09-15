@@ -383,7 +383,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
             <List className="job-card-grid" grid={{ gutter: 16, xs: 1, xl: 2 }} dataSource={visiblePostings} locale={{ emptyText: 'No matching jobs.' }} renderItem={row => {
               const position = positions.find(item => item.id === row.positionId)
               return <List.Item><Card hoverable className="job-summary-card" role="button" tabIndex={0} onClick={() => void choosePosting(row)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') void choosePosting(row) }}>
-                <div className="job-card-heading"><div className="job-avatar">{(row.publicTitle || row.positionTitle || 'J').trim().charAt(0).toUpperCase()}</div><div><Typography.Title level={4} ellipsis={{ rows: 1 }}>{row.publicTitle || row.positionTitle}</Typography.Title><Tag color="blue">ID: {row.positionCode || row.id}</Tag></div><Space className="job-card-top-actions" size={6}>
+                <div className="job-card-heading"><div className="job-avatar">{(row.publicTitle || row.positionTitle || 'J').trim().charAt(0).toUpperCase()}</div><div><Typography.Title level={4}>{row.publicTitle || row.positionTitle}</Typography.Title><Tag color="blue">ID: {row.positionCode || row.id}</Tag></div><Space className="job-card-top-actions" size={6}>
                   {row.status === 'Published' && <Tooltip title="Copy public link"><Button aria-label="Copy public link" size="small" shape="circle" icon={<CopyOutlined />} onClick={event => { event.stopPropagation(); void copyPostingLink(row) }} /></Tooltip>}
                   <PostingStatus status={row.status} />
                 </Space></div>

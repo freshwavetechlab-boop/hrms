@@ -650,7 +650,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     <Form.Item name="sourceDocumentName" label="Source document" className="rfr-span-2"><Input placeholder="Original PDF file name(s)" /></Form.Item>
     <Form.Item name="sourceAuthority" label="Source authority"><Input placeholder="Requesting / approving authority" /></Form.Item>
     <Form.Item name="externalApprovalStatus" label="Client approval state"><RecruitmentMasterSelect masterType="Client Approval Status" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={clientApprovalOptions} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-client-approval-status" /></Form.Item>
-    <Form.Item name="ctcFlexibilityPercent" label="CTC flexibility (%)"><InputNumber min={0} max={100} precision={2} style={{ width: '100%' }} /></Form.Item>
+    <Form.Item name="ctcFlexibilityPercent" label="Salary negotiation (%)" extra="Optional: 20–30% only. An approved 30% case receives one +5 day SLA extension."><InputNumber min={20} max={30} precision={2} style={{ width: '100%' }} /></Form.Item>
     <Form.Item name="sourceNotes" label="Source notes" className="rfr-span-2"><Input.TextArea rows={3} placeholder="Preserve ambiguities and missing facts without inventing values" /></Form.Item>
   </div>
 
@@ -941,12 +941,13 @@ function matchMaster(value: string, options: string[]) {
 function matchExperienceMaster(value: string, options: string[]) {
   const exact = matchMaster(value, options)
   if (exact) return exact
-  const years = Number(String(value || '').match(/\d+/)?.[0] || 0)
-  if (!years) return ''
+  const raw = String(value || '').trim()
+  const years = Number(raw.match(/\d+/)?.[0] || 0)
+  if (!years) return raw
   return options.find(option => {
     const numbers = (option.match(/\d+/g) || []).map(Number)
     return numbers.length >= 2 ? years >= numbers[0] && years <= numbers[1] : numbers.length === 1 && years >= numbers[0]
-  }) || ''
+  }) || raw
 }
 
 function dropValues(rows: Drop[], type: string, clientId: number) {

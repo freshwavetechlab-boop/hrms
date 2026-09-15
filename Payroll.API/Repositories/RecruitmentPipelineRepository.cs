@@ -288,6 +288,7 @@ CREATE TABLE IF NOT EXISTS recruitment_sla_adjustments (
     AppliedByUserId INT NOT NULL,
     AppliedAtUtc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     UNIQUE KEY UX_recruitment_sla_adjustment_offer_rule (OfferId,RuleCode),
+    UNIQUE KEY UX_recruitment_sla_adjustment_position_rule (PositionPipelineInstanceId,RuleCode),
     INDEX IX_recruitment_sla_adjustment_application (ApplicationId,AppliedAtUtc),
     INDEX IX_recruitment_sla_adjustment_position (PositionId,AppliedAtUtc)
 );
@@ -480,6 +481,7 @@ CREATE TABLE IF NOT EXISTS recruitment_pipeline_transition_requests (
         await EnsureColumnAsync(db, "recruitment_stage_offer_configurations", "NegotiationThresholdPercent", "DECIMAL(7,2) NOT NULL DEFAULT 30");
         await EnsureColumnAsync(db, "recruitment_stage_offer_configurations", "NegotiationSlaExtensionMinutes", "INT NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "recruitment_stage_offer_configurations", "NegotiationSlaStageCodes", "VARCHAR(1000) NOT NULL DEFAULT ''");
+        await EnsureIndexAsync(db, "recruitment_sla_adjustments", "UX_recruitment_sla_adjustment_position_rule", "UNIQUE INDEX `UX_recruitment_sla_adjustment_position_rule` (`PositionPipelineInstanceId`,`RuleCode`)");
         await DropColumnIfExistsAsync(db, "recruitment_stage_external_form_configurations", "RequireEmailVerification");
         await DropColumnIfExistsAsync(db, "recruitment_pipeline_stage_actions", "TargetOutcomeCode");
     }
@@ -1383,7 +1385,13 @@ COALESCE(stage.AllowPause,FALSE) AllowPause,COALESCE(stage.IsTerminal,FALSE) IsT
 COALESCE((SELECT advanceRequest.Status FROM recruitment_hiring_case_advance_requests advanceRequest
  WHERE advanceRequest.HiringCaseId=hiringCase.Id AND advanceRequest.PositionStageInstanceId=stageInstance.Id
    AND advanceRequest.Status='Pending Approval' ORDER BY advanceRequest.Id DESC LIMIT 1),'') AdvanceStatus,
-CASE WHEN hiringCase.Status IN ('Active','Candidate Flow') AND (stageInstance.DueAtUtc<UTC_TIMESTAMP(6) OR hiringCase.OverallDueAtUtc<UTC_TIMESTAMP(6)) THEN TRUE ELSE FALSE END IsSlaBreached,
+CASE WHEN EXISTS(SELECT 1 FROM recruitment_position_stage_instances stageHistory
+                  WHERE stageHistory.PositionPipelineInstanceId=hiringCase.Id
+                    AND stageHistory.EnteredAtUtc IS NOT NULL AND stageHistory.DueAtUtc IS NOT NULL
+                    AND COALESCE(stageHistory.CompletedAtUtc,UTC_TIMESTAMP(6))>stageHistory.DueAtUtc)
+       OR (hiringCase.OverallDueAtUtc IS NOT NULL
+           AND COALESCE(hiringCase.CompletedAtUtc,UTC_TIMESTAMP(6))>hiringCase.OverallDueAtUtc)
+     THEN TRUE ELSE FALSE END IsSlaBreached,
 requisition.Id RequisitionId,COALESCE(requisition.RfrNumber,'') RequisitionNumber,
 COALESCE(requisition.Status,'Not Started') RequisitionStatus,
 positionRow.Id PositionId,COALESCE(positionRow.PositionCode,'') PositionCode,
@@ -1628,7 +1636,7 @@ ORDER BY applicationRow.Id LIMIT 200", new
         await using var db = Db();
         await db.OpenAsync();
         var context = await db.QueryFirstOrDefaultAsync<TransitionContextRow>(@"SELECT a.ClientId,pi.Id PipelineInstanceId,pi.CurrentStageInstanceId,
-s.PipelineStageId CurrentStageId,t.Id TransitionId,t.ToStageId,t.RequiresReason,
+s.PipelineStageId CurrentStageId,t.Id TransitionId,t.ToStageId,t.OutcomeCode,t.RequiresReason,ts.StageType TargetStageType,
 COALESCE(t.ApprovalWorkflowId,CASE WHEN fs.RequiresApproval THEN fs.ApprovalWorkflowId ELSE NULL END) ApprovalWorkflowId
 FROM recruitment_candidate_applications a
 JOIN recruitment_application_pipeline_instances pi ON pi.ApplicationId=a.Id
@@ -1639,10 +1647,17 @@ JOIN recruitment_pipeline_stages ts ON ts.Id=t.ToStageId AND ts.CardScope='Appli
 WHERE a.Id=@ApplicationId", new { ApplicationId = applicationId, request.TransitionId });
         if (context is null || (user.ClientId is not null && user.ClientId != context.ClientId)) return (null, "Transition is not available from the application's current stage.");
         if (context.RequiresReason && string.IsNullOrWhiteSpace(request.Reason)) return (null, "A transition reason is required.");
-        var stageRequirementError = await ValidateStageExitRequirementsAsync(db, applicationId, context.CurrentStageId, request.TransitionId);
-        if (stageRequirementError.Length > 0) return (null, stageRequirementError);
-        var ruleError = await ValidateTransitionRulesAsync(db, applicationId, request.TransitionId);
-        if (ruleError.Length > 0) return (null, ruleError);
+        var dispositionTransition = context.TargetStageType.Equals("Rejected", StringComparison.OrdinalIgnoreCase)
+            || context.TargetStageType.Equals("Withdrawn", StringComparison.OrdinalIgnoreCase)
+            || context.OutcomeCode.Contains("REJECT", StringComparison.OrdinalIgnoreCase)
+            || context.OutcomeCode.Contains("WITHDRAW", StringComparison.OrdinalIgnoreCase);
+        if (!dispositionTransition)
+        {
+            var stageRequirementError = await ValidateStageExitRequirementsAsync(db, applicationId, context.CurrentStageId, request.TransitionId);
+            if (stageRequirementError.Length > 0) return (null, stageRequirementError);
+            var ruleError = await ValidateTransitionRulesAsync(db, applicationId, request.TransitionId);
+            if (ruleError.Length > 0) return (null, ruleError);
+        }
         var duplicate = await db.ExecuteScalarAsync<long?>(@"SELECT Id FROM recruitment_pipeline_transition_requests
 WHERE ApplicationId=@ApplicationId AND StageInstanceId=@StageId AND TransitionId=@TransitionId AND Status IN ('Requested','Pending Approval') LIMIT 1",
             new { ApplicationId = applicationId, StageId = context.CurrentStageInstanceId, TransitionId = request.TransitionId });
@@ -1784,7 +1799,7 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id", new { ApplicationId = app
         var expectedStageTypes = normalized.ToUpperInvariant() switch
         {
             "SELECTED" => new[] { "Interview" },
-            "REJECTED" => new[] { "Interview", "Offer" },
+            "REJECTED" => Array.Empty<string>(),
             "ACCEPTED" or "WITHDRAWN" => new[] { "Offer" },
             "DOCUMENTSVERIFIED" => new[] { "Documents", "PreOnboarding" },
             "JOINED" => new[] { "Joining" },
@@ -2249,7 +2264,7 @@ WHERE Id IN @Ids AND (ClientId=@ClientId OR ClientId IS NULL) AND IsActive=TRUE"
                 "OnEntry", "OnExit", "OnSlaWarning", "OnSlaBreach", "OnApproval", "OnSubmission", "OnProfileBatchForward",
                 "OnInterviewScheduled", "OnInterviewRescheduled"
             };
-            var validActions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "SEND_NOTIFICATION", "START_WORKFLOW", "GENERATE_ACTION_LINK", "RUN_ATS_SCORE" };
+            var validActions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "SEND_NOTIFICATION", "START_WORKFLOW", "GENERATE_ACTION_LINK", "RUN_ATS_SCORE", "AUTO_REJECT" };
             if (stage.Actions.Any(x => string.IsNullOrWhiteSpace(x.ActionCode) || x.ExecutionOrder < 0 || !validTriggers.Contains(x.TriggerEvent) || !validActions.Contains(x.ActionCode))) return $"Stage actions for {stage.StageName} are invalid.";
             if (stage.Actions.Any(x => x.IsBlocking && !x.TriggerEvent.Equals("OnEntry", StringComparison.OrdinalIgnoreCase) && !x.TriggerEvent.Equals("OnSubmission", StringComparison.OrdinalIgnoreCase))) return $"Blocking actions in {stage.StageName} must run on entry or candidate submission.";
             if (stage.Actions.Any(x => x.ActionCode.Equals("START_WORKFLOW", StringComparison.OrdinalIgnoreCase) && (x.WorkflowId is null or <= 0))) return $"Select a workflow for every workflow action in {stage.StageName}.";
@@ -2284,6 +2299,10 @@ WHERE Id IN @Ids AND (ClientId=@ClientId OR ClientId IS NULL) AND IsActive=TRUE"
                 return $"Candidate action links in {stage.StageName} require a candidate-facing stage and the OnEntry trigger.";
             if (stage.Actions.Any(x => x.ActionCode.Equals("RUN_ATS_SCORE", StringComparison.OrdinalIgnoreCase)
                 && !stage.StageType.Equals("ATS", StringComparison.OrdinalIgnoreCase))) return $"ATS scoring actions can be used only in ATS stages.";
+            if (stage.Actions.Any(x => x.ActionCode.Equals("AUTO_REJECT", StringComparison.OrdinalIgnoreCase)
+                && (!x.TriggerEvent.Equals("OnSlaBreach", StringComparison.OrdinalIgnoreCase)
+                    || !stage.CardScope.Equals("Application", StringComparison.OrdinalIgnoreCase)
+                    || stage.IsTerminal))) return $"SLA auto-reject can be used only on SLA breach in a non-terminal candidate stage.";
             if (stage.Actions.Any(x => x.TriggerEvent.Equals("OnSubmission", StringComparison.OrdinalIgnoreCase)
                 && !(stage.StageType.Equals("ExternalForm", StringComparison.OrdinalIgnoreCase)
                     || stage.StageType.Equals("Documents", StringComparison.OrdinalIgnoreCase)
@@ -2948,6 +2967,14 @@ WHERE applicationRow.Id=@ApplicationId LIMIT 1", new { ApplicationId = applicati
         if (exists == 0) await db.ExecuteAsync($"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}");
     }
 
+    private static async Task EnsureIndexAsync(MySqlConnection db, string table, string index, string definition)
+    {
+        var tableExists = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=@Table", new { Table = table });
+        if (tableExists == 0) return;
+        var exists = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name=@Table AND index_name=@Index", new { Table = table, Index = index });
+        if (exists == 0) await db.ExecuteAsync($"ALTER TABLE `{table}` ADD {definition}");
+    }
+
     private static Task<bool> ColumnExistsAsync(MySqlConnection db, string table, string column) =>
         db.ExecuteScalarAsync<bool>(@"SELECT COUNT(*)>0 FROM information_schema.columns
 WHERE table_schema=DATABASE() AND table_name=@Table AND LOWER(column_name)=LOWER(@Column)", new { Table = table, Column = column });
@@ -3041,7 +3068,7 @@ LEFT JOIN clients c ON c.Id=p.ClientId";
     private sealed class WorkspacePublishedPipelineRow { public int ClientId { get; set; } public long PipelineVersionId { get; set; } }
     private sealed class WorkspaceBoardCardRow : RecruitmentPipelineBoardCard { public long PipelineVersionId { get; set; } public long StageId { get; set; } }
     private sealed class BoardCardRow : RecruitmentPipelineBoardCard { public long StageId { get; set; } public RecruitmentPipelineBoardCard Card => this; }
-    private sealed class TransitionContextRow { public int ClientId { get; set; } public long PipelineInstanceId { get; set; } public long CurrentStageInstanceId { get; set; } public long CurrentStageId { get; set; } public long TransitionId { get; set; } public long ToStageId { get; set; } public bool RequiresReason { get; set; } public long? ApprovalWorkflowId { get; set; } }
+    private sealed class TransitionContextRow { public int ClientId { get; set; } public long PipelineInstanceId { get; set; } public long CurrentStageInstanceId { get; set; } public long CurrentStageId { get; set; } public long TransitionId { get; set; } public long ToStageId { get; set; } public string OutcomeCode { get; set; } = ""; public string TargetStageType { get; set; } = ""; public bool RequiresReason { get; set; } public long? ApprovalWorkflowId { get; set; } }
     private sealed class AtsAutomationRow { public int ClientId { get; set; } public long PipelineStageId { get; set; } public decimal MinimumAdvanceScore { get; set; } public decimal MaximumRejectScore { get; set; } public bool AutoAdvance { get; set; } public bool AutoReject { get; set; } public bool RequireHumanConfirmation { get; set; } public string AdvanceOutcomeCode { get; set; } = ""; public string RejectOutcomeCode { get; set; } = ""; public decimal? CurrentScore { get; set; } public string CurrentScoreStatus { get; set; } = ""; public bool CurrentScoreRequiresReview { get; set; } }
     private sealed class DecisionTransitionRow { public long Id { get; set; } public string OutcomeCode { get; set; } = ""; public int DisplayOrder { get; set; } public string FromStageType { get; set; } = ""; public string ToStageType { get; set; } = ""; public string ToStageName { get; set; } = ""; }
     private sealed class AutomaticAtsTransitionRow { public int ClientId { get; set; } public string CurrentStageType { get; set; } = ""; public string ParsingStatus { get; set; } = ""; public long? TransitionId { get; set; } }

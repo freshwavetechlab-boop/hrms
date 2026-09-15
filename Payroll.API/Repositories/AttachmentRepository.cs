@@ -4,7 +4,6 @@ using System.Text;
 using System.Text.Json;
 using System.IO.Compression;
 using Dapper;
-using Microsoft.AspNetCore.DataProtection;
 using MySqlConnector;
 using Payroll.API.Models;
 using Payroll.API.Services;
@@ -14,14 +13,15 @@ namespace Payroll.API.Repositories;
 public class AttachmentRepository(
     IConfiguration configuration,
     IWebHostEnvironment environment,
-    IDataProtectionProvider dataProtectionProvider,
+    PortableIntegrationCredentialProtector credentialProtector,
     AttachmentStorageService storageService,
     GoogleDriveOAuthService googleDrive,
     ILogger<AttachmentRepository> logger)
 {
     private const long DefaultGlobalMaximumBytes = 25L * 1024 * 1024;
-    private readonly IDataProtector credentialProtector = dataProtectionProvider.CreateProtector("Payroll.API.AttachmentStorageCredentials.v1");
     private readonly ConcurrentDictionary<long, StorageWriteReadiness> storageWriteReadiness = new();
+    private readonly SemaphoreSlim storageSchemaLock = new(1, 1);
+    private volatile bool storageAccountLabelReady;
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
 
     public async Task InitializeAsync()
@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS attachment_storage_servers (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     server_code VARCHAR(80) NOT NULL,
     server_name VARCHAR(180) NOT NULL,
+    account_label VARCHAR(240) NOT NULL DEFAULT '',
     storage_type VARCHAR(40) NOT NULL DEFAULT 'LocalFileSystem',
     base_path VARCHAR(700) NOT NULL DEFAULT '',
     service_url VARCHAR(700) NOT NULL DEFAULT '',
@@ -186,15 +187,17 @@ CREATE TABLE IF NOT EXISTS attachment_audit_logs (
     INDEX IX_attachment_audit_action (action, created_at_utc)
 );");
 
+        await EnsureStorageAccountLabelColumnAsync(db);
+
         var externalSubjectColumnExists = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*)
 FROM INFORMATION_SCHEMA.COLUMNS
 WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='entity_attachments' AND COLUMN_NAME='uploaded_by_external_subject_id';");
         if (externalSubjectColumnExists == 0)
             await db.ExecuteAsync("ALTER TABLE entity_attachments ADD COLUMN uploaded_by_external_subject_id BIGINT NULL AFTER uploaded_by_user_id");
 
-        var rootPath = configuration["AttachmentStorage:RootPath"];
-        if (string.IsNullOrWhiteSpace(rootPath))
-            rootPath = Path.Combine("App_Data", "attachments");
+        // Keep the database value portable. API_LOCAL is resolved against the
+        // current instance's configuration by AttachmentStorageService.
+        var rootPath = Path.Combine("App_Data", "attachments");
         await db.ExecuteAsync(@"INSERT INTO attachment_storage_servers
 (server_code,server_name,storage_type,base_path,is_read_enabled,is_write_enabled,is_default_write_server,priority,is_active)
 VALUES ('API_LOCAL','API local attachment storage','LocalFileSystem',@RootPath,TRUE,TRUE,FALSE,100,TRUE)
@@ -445,13 +448,15 @@ effective_from_utc=@EffectiveFromUtc,effective_until_utc=@EffectiveUntilUtc,is_a
     {
         await using var db = Connection();
         await db.OpenAsync();
-        var rows = await db.QueryAsync<StorageServerRow>(@"SELECT s.id Id,s.server_code ServerCode,s.server_name ServerName,s.storage_type StorageType,s.base_path BasePath,
+        await EnsureStorageAccountLabelColumnAsync(db);
+        var rows = (await db.QueryAsync<StorageServerRow>(@"SELECT s.id Id,s.server_code ServerCode,s.server_name ServerName,s.account_label AccountLabel,s.storage_type StorageType,s.base_path BasePath,
 s.service_url ServiceUrl,s.credential_cipher_text CredentialCipherText,s.is_read_enabled IsReadEnabled,s.is_write_enabled IsWriteEnabled,
 s.is_default_write_server IsDefaultWriteServer,s.priority Priority,s.maximum_capacity_bytes MaximumCapacityBytes,s.warning_capacity_percent WarningCapacityPercent,
 s.is_active IsActive,s.last_health_check_at_utc LastHealthCheckAtUtc,s.last_health_check_status LastHealthCheckStatus,
 s.last_health_check_message LastHealthCheckMessage,s.created_by_user_id CreatedByUserId,s.created_at_utc CreatedAtUtc,s.updated_by_user_id UpdatedByUserId,
 s.updated_at_utc UpdatedAtUtc,(SELECT COUNT(*) FROM entity_attachments a WHERE a.storage_server_id=s.id AND a.is_deleted=FALSE) LinkedAttachmentCount
-FROM attachment_storage_servers s ORDER BY s.is_default_write_server DESC,s.priority,s.server_name;");
+FROM attachment_storage_servers s ORDER BY s.is_default_write_server DESC,s.priority,s.server_name;")).ToList();
+        foreach (var row in rows) await TryMigrateLegacyStorageCredentialAsync(db, row);
         return rows.Select(row => ToStorageServer(row, includeCredential));
     }
 
@@ -459,6 +464,7 @@ FROM attachment_storage_servers s ORDER BY s.is_default_write_server DESC,s.prio
     {
         item.ServerCode = NormalizeCode(item.ServerCode);
         item.ServerName = item.ServerName.Trim();
+        item.AccountLabel = (item.AccountLabel ?? string.Empty).Trim();
         item.StorageType = NormalizeChoice(item.StorageType, ["LocalFileSystem", "MountedFileSystem", "HttpFileServer", GoogleDriveOAuthService.StorageType], "LocalFileSystem");
         item.BasePath = item.BasePath.Trim();
         item.ServiceUrl = item.ServiceUrl.Trim();
@@ -521,14 +527,14 @@ FROM attachment_storage_servers s ORDER BY s.is_default_write_server DESC,s.prio
                 ? existingStorage.CredentialCipherText
                 : null;
             var submittedCredential = item.StorageType == GoogleDriveOAuthService.StorageType ? "" : item.Credential.Trim();
-            var protectedCredential = string.IsNullOrWhiteSpace(submittedCredential) ? existingSecret : credentialProtector.Protect(submittedCredential);
+            var protectedCredential = string.IsNullOrWhiteSpace(submittedCredential) ? ProtectExistingStorageCredential(existingSecret) : credentialProtector.ProtectStorage(submittedCredential);
             var googleConnected = false;
             if (item.StorageType == GoogleDriveOAuthService.StorageType && !string.IsNullOrWhiteSpace(protectedCredential))
             {
-                try { googleConnected = googleDrive.IsConnected(googleDrive.TryReadCredential(credentialProtector.Unprotect(protectedCredential))); }
-                catch { googleConnected = false; }
+                googleConnected = credentialProtector.TryUnprotectStorage(protectedCredential, out var credentialJson)
+                                  && googleDrive.IsConnected(googleDrive.TryReadCredential(credentialJson));
             }
-            if (item.StorageType == GoogleDriveOAuthService.StorageType && !googleConnected)
+            if (item.StorageType == GoogleDriveOAuthService.StorageType && !googleConnected && string.IsNullOrWhiteSpace(protectedCredential))
             {
                 item.IsActive = false;
                 item.IsReadEnabled = false;
@@ -537,11 +543,11 @@ FROM attachment_storage_servers s ORDER BY s.is_default_write_server DESC,s.prio
             }
             if (item.Id == 0)
                 item.Id = await db.ExecuteScalarAsync<long>(@"INSERT INTO attachment_storage_servers
-(server_code,server_name,storage_type,base_path,service_url,credential_cipher_text,is_read_enabled,is_write_enabled,is_default_write_server,priority,
+(server_code,server_name,account_label,storage_type,base_path,service_url,credential_cipher_text,is_read_enabled,is_write_enabled,is_default_write_server,priority,
 maximum_capacity_bytes,warning_capacity_percent,is_active,created_by_user_id,updated_by_user_id)
-VALUES (@ServerCode,@ServerName,@StorageType,@BasePath,@ServiceUrl,@CredentialCipherText,@IsReadEnabled,@IsWriteEnabled,@IsDefaultWriteServer,@Priority,
+VALUES (@ServerCode,@ServerName,@AccountLabel,@StorageType,@BasePath,@ServiceUrl,@CredentialCipherText,@IsReadEnabled,@IsWriteEnabled,@IsDefaultWriteServer,@Priority,
 @MaximumCapacityBytes,@WarningCapacityPercent,@IsActive,@UserId,@UserId); SELECT LAST_INSERT_ID();",
-                    new { item.ServerCode, item.ServerName, item.StorageType, item.BasePath, item.ServiceUrl, CredentialCipherText = protectedCredential, item.IsReadEnabled, item.IsWriteEnabled, item.IsDefaultWriteServer, item.Priority, item.MaximumCapacityBytes, item.WarningCapacityPercent, item.IsActive, UserId = user.Id }, transaction);
+                    new { item.ServerCode, item.ServerName, item.AccountLabel, item.StorageType, item.BasePath, item.ServiceUrl, CredentialCipherText = protectedCredential, item.IsReadEnabled, item.IsWriteEnabled, item.IsDefaultWriteServer, item.Priority, item.MaximumCapacityBytes, item.WarningCapacityPercent, item.IsActive, UserId = user.Id }, transaction);
             else
             {
                 var linked = await db.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM entity_attachments WHERE storage_server_id=@Id AND is_deleted=FALSE", new { item.Id }, transaction);
@@ -550,11 +556,11 @@ VALUES (@ServerCode,@ServerName,@StorageType,@BasePath,@ServiceUrl,@CredentialCi
                     await transaction.RollbackAsync();
                     return (null, "A storage server linked to existing files must remain active and read-enabled.");
                 }
-                await db.ExecuteAsync(@"UPDATE attachment_storage_servers SET server_code=@ServerCode,server_name=@ServerName,storage_type=@StorageType,base_path=@BasePath,
+                await db.ExecuteAsync(@"UPDATE attachment_storage_servers SET server_code=@ServerCode,server_name=@ServerName,account_label=@AccountLabel,storage_type=@StorageType,base_path=@BasePath,
 service_url=@ServiceUrl,credential_cipher_text=@CredentialCipherText,is_read_enabled=@IsReadEnabled,is_write_enabled=@IsWriteEnabled,
 is_default_write_server=@IsDefaultWriteServer,priority=@Priority,maximum_capacity_bytes=@MaximumCapacityBytes,warning_capacity_percent=@WarningCapacityPercent,
 is_active=@IsActive,updated_by_user_id=@UserId WHERE id=@Id",
-                    new { item.Id, item.ServerCode, item.ServerName, item.StorageType, item.BasePath, item.ServiceUrl, CredentialCipherText = protectedCredential, item.IsReadEnabled, item.IsWriteEnabled, item.IsDefaultWriteServer, item.Priority, item.MaximumCapacityBytes, item.WarningCapacityPercent, item.IsActive, UserId = user.Id }, transaction);
+                    new { item.Id, item.ServerCode, item.ServerName, item.AccountLabel, item.StorageType, item.BasePath, item.ServiceUrl, CredentialCipherText = protectedCredential, item.IsReadEnabled, item.IsWriteEnabled, item.IsDefaultWriteServer, item.Priority, item.MaximumCapacityBytes, item.WarningCapacityPercent, item.IsActive, UserId = user.Id }, transaction);
             }
             if (item.IsDefaultWriteServer)
                 await db.ExecuteAsync("UPDATE attachment_storage_servers SET is_default_write_server=(id=@Id),updated_by_user_id=@UserId WHERE is_default_write_server=TRUE OR id=@Id", new { item.Id, UserId = user.Id }, transaction);
@@ -674,11 +680,10 @@ FROM attachment_storage_servers s WHERE s.id=@Id FOR UPDATE;",
         }
 
         GoogleDriveCredential? credential = null;
+        var credentialJson = "";
         if (!string.IsNullOrWhiteSpace(row.CredentialCipherText))
-        {
-            try { credential = googleDrive.TryReadCredential(credentialProtector.Unprotect(row.CredentialCipherText)); }
-            catch { credential = null; }
-        }
+            credentialProtector.TryUnprotectStorage(row.CredentialCipherText, out credentialJson);
+        if (!string.IsNullOrWhiteSpace(credentialJson)) credential = googleDrive.TryReadCredential(credentialJson);
         var existingClient = googleDrive.TryResolveOAuthClient(credential);
         var sameClientId = existingClient is not null &&
                            existingClient.ClientId.Equals(oauthClient.ClientId, StringComparison.Ordinal);
@@ -714,7 +719,7 @@ WHERE id<>@Id AND is_active=TRUE AND is_write_enabled=TRUE ORDER BY priority,id 
                 new { Id = replacementId.Value, UserId = user.Id }, transaction);
         }
 
-        var protectedCredential = credentialProtector.Protect(googleDrive.SerializeCredential(credential));
+        var protectedCredential = credentialProtector.ProtectStorage(googleDrive.SerializeCredential(credential));
         if (remainsConnected)
         {
             await db.ExecuteAsync(@"UPDATE attachment_storage_servers SET credential_cipher_text=@CredentialCipherText,
@@ -767,11 +772,10 @@ FROM attachment_storage_servers s WHERE s.id=@Id FOR UPDATE;",
         }
 
         GoogleDriveCredential? existingCredential = null;
+        var existingCredentialJson = "";
         if (!string.IsNullOrWhiteSpace(row.CredentialCipherText))
-        {
-            try { existingCredential = googleDrive.TryReadCredential(credentialProtector.Unprotect(row.CredentialCipherText)); }
-            catch { existingCredential = null; }
-        }
+            credentialProtector.TryUnprotectStorage(row.CredentialCipherText, out existingCredentialJson);
+        if (!string.IsNullOrWhiteSpace(existingCredentialJson)) existingCredential = googleDrive.TryReadCredential(existingCredentialJson);
         var existingClient = googleDrive.TryResolveOAuthClient(existingCredential);
         if (row.LinkedAttachmentCount > 0 &&
             (existingClient is null ||
@@ -793,13 +797,14 @@ FROM attachment_storage_servers s WHERE s.id=@Id FOR UPDATE;",
             return (null, "This Google Drive contains existing HRMS attachments. Reconnect the same Google account; switching accounts would make those files unreadable.");
         }
 
-        var protectedCredential = credentialProtector.Protect(authorization.CredentialJson);
+        var protectedCredential = credentialProtector.ProtectStorage(authorization.CredentialJson);
         await db.ExecuteAsync(@"UPDATE attachment_storage_servers
 SET is_default_write_server=FALSE,updated_by_user_id=@UserId
 WHERE is_default_write_server=TRUE AND id<>@Id;",
             new { Id = authorization.StorageServerId, UserId = authorization.ActorUserId }, transaction);
         await db.ExecuteAsync(@"UPDATE attachment_storage_servers SET
 storage_type=@StorageType,base_path=@FolderId,service_url=@FolderUrl,credential_cipher_text=@CredentialCipherText,
+account_label=@AccountLabel,
 is_read_enabled=TRUE,is_write_enabled=TRUE,is_default_write_server=TRUE,is_active=TRUE,
 last_health_check_at_utc=UTC_TIMESTAMP(6),last_health_check_status='Healthy',
 last_health_check_message=@HealthMessage,updated_by_user_id=@UserId
@@ -811,6 +816,7 @@ WHERE id=@Id;",
                 FolderId = authorization.Credential.FolderId,
                 authorization.FolderUrl,
                 CredentialCipherText = protectedCredential,
+                AccountLabel = authorization.Credential.AccountEmail,
                 HealthMessage = $"Connected to Google Drive folder '{authorization.Credential.FolderName}' for {authorization.Credential.AccountEmail}.".Trim(),
                 UserId = authorization.ActorUserId
             }, transaction);
@@ -893,17 +899,16 @@ WHERE id<>@Id AND is_active=TRUE AND is_write_enabled=TRUE ORDER BY priority,id 
         }
 
         GoogleDriveCredential? credential = null;
+        var credentialJson = "";
         if (!string.IsNullOrWhiteSpace(row.CredentialCipherText))
-        {
-            try { credential = googleDrive.TryReadCredential(credentialProtector.Unprotect(row.CredentialCipherText)); }
-            catch { credential = null; }
-        }
+            credentialProtector.TryUnprotectStorage(row.CredentialCipherText, out credentialJson);
+        if (!string.IsNullOrWhiteSpace(credentialJson)) credential = googleDrive.TryReadCredential(credentialJson);
         credential ??= new GoogleDriveCredential();
         ClearGoogleDriveConnection(credential);
         var storedOAuthConfiguration = !string.IsNullOrWhiteSpace(credential.OAuthClientId) &&
                                        !string.IsNullOrWhiteSpace(credential.OAuthClientSecret);
         var protectedCredential = storedOAuthConfiguration
-            ? credentialProtector.Protect(googleDrive.SerializeCredential(credential))
+            ? credentialProtector.ProtectStorage(googleDrive.SerializeCredential(credential))
             : null;
         var connectionStatus = googleDrive.HasOAuthClientConfiguration(credential) ? "Ready to connect" : "Not configured";
         var statusMessage = connectionStatus == "Ready to connect"
@@ -1290,8 +1295,7 @@ rejection_reason=@Reason WHERE id=@Id", new { row.Id, Status = approve ? "Verifi
 
     private async Task<AttachmentStorageServer?> RepairLocalFallbackAsync(CancellationToken cancellationToken)
     {
-        var rootPath = configuration["AttachmentStorage:RootPath"];
-        if (string.IsNullOrWhiteSpace(rootPath)) rootPath = Path.Combine("App_Data", "attachments");
+        var rootPath = Path.Combine("App_Data", "attachments");
 
         await using var db = Connection();
         await db.OpenAsync(cancellationToken);
@@ -1637,14 +1641,68 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
         UserId = userId
     };
 
+    private string? ProtectExistingStorageCredential(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || credentialProtector.IsPortableStorage(value)) return value;
+        return credentialProtector.TryUnprotectStorage(value, out var plaintext)
+            ? credentialProtector.ProtectStorage(plaintext)
+            : value;
+    }
+
+    private async Task TryMigrateLegacyStorageCredentialAsync(MySqlConnection db, StorageServerRow row)
+    {
+        if (string.IsNullOrWhiteSpace(row.CredentialCipherText) || credentialProtector.IsPortableStorage(row.CredentialCipherText)) return;
+        if (!credentialProtector.TryUnprotectStorage(row.CredentialCipherText, out var plaintext)) return;
+        var legacyCipherText = row.CredentialCipherText;
+        var portableCipherText = credentialProtector.ProtectStorage(plaintext);
+        var updated = await db.ExecuteAsync(@"
+UPDATE attachment_storage_servers
+SET credential_cipher_text=@PortableCipherText,updated_at_utc=UTC_TIMESTAMP(6)
+WHERE id=@Id AND credential_cipher_text=@LegacyCipherText", new
+        {
+            row.Id,
+            PortableCipherText = portableCipherText,
+            LegacyCipherText = legacyCipherText
+        });
+        if (updated > 0) row.CredentialCipherText = portableCipherText;
+    }
+
+    private async Task EnsureStorageAccountLabelColumnAsync(MySqlConnection db)
+    {
+        if (storageAccountLabelReady) return;
+        await storageSchemaLock.WaitAsync();
+        try
+        {
+            if (storageAccountLabelReady) return;
+            var exists = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*)
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='attachment_storage_servers' AND COLUMN_NAME='account_label';");
+            if (exists == 0)
+            {
+                try
+                {
+                    await db.ExecuteAsync("ALTER TABLE attachment_storage_servers ADD COLUMN account_label VARCHAR(240) NOT NULL DEFAULT '' AFTER server_name");
+                }
+                catch (MySqlException exception) when (exception.Number == 1060)
+                {
+                    // Another API instance completed the same one-time migration.
+                }
+            }
+            storageAccountLabelReady = true;
+        }
+        finally
+        {
+            storageSchemaLock.Release();
+        }
+    }
+
     private AttachmentStorageServer ToStorageServer(StorageServerRow row, bool includeCredential)
     {
         var credential = "";
         if (!string.IsNullOrWhiteSpace(row.CredentialCipherText) &&
             (includeCredential || row.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase)))
         {
-            try { credential = credentialProtector.Unprotect(row.CredentialCipherText); }
-            catch { credential = ""; }
+            credentialProtector.TryUnprotectStorage(row.CredentialCipherText, out credential);
         }
         var googleCredential = row.StorageType.Equals(GoogleDriveOAuthService.StorageType, StringComparison.OrdinalIgnoreCase)
             ? googleDrive.TryReadCredential(credential)
@@ -1655,7 +1713,8 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
                               googleDrive.IsConnected(googleCredential);
         return new AttachmentStorageServer
         {
-            Id = row.Id, ServerCode = row.ServerCode, ServerName = row.ServerName, StorageType = row.StorageType, BasePath = row.BasePath,
+            Id = row.Id, ServerCode = row.ServerCode, ServerName = row.ServerName, AccountLabel = row.AccountLabel,
+            StorageType = row.StorageType, BasePath = row.BasePath,
             ServiceUrl = row.ServiceUrl, Credential = includeCredential ? credential : "", HasCredential = !string.IsNullOrWhiteSpace(row.CredentialCipherText),
             IsReadEnabled = row.IsReadEnabled, IsWriteEnabled = row.IsWriteEnabled, IsDefaultWriteServer = row.IsDefaultWriteServer,
             Priority = row.Priority, MaximumCapacityBytes = row.MaximumCapacityBytes, WarningCapacityPercent = row.WarningCapacityPercent,

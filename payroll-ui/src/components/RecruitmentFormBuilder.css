@@ -662,6 +662,30 @@
   text-overflow: ellipsis;
 }
 
+/* Form/section/field names are configuration labels and remain fully visible. */
+.recruitment-form-builder .form-builder-library .ant-list-item-meta-title,
+.recruitment-form-builder .form-builder-library .ant-list-item-meta-title>span,
+.recruitment-form-builder .form-builder-list-meta>span,
+.recruitment-form-builder .form-builder-section-title h4,
+.recruitment-form-builder .form-builder-section-title p,
+.recruitment-form-builder .form-builder-field strong,
+.recruitment-form-builder .form-builder-field>small,
+.recruitment-form-field-drawer .ant-card-head-title{
+  overflow:visible;
+  overflow-wrap:anywhere;
+  text-overflow:clip;
+  white-space:normal;
+}
+.recruitment-form-builder .field-palette .ant-btn{height:auto;min-height:34px;padding-block:7px;white-space:normal}
+.recruitment-form-builder .field-palette .ant-btn>span:not(.anticon),
+.recruitment-form-builder .form-builder-palette-card .ant-btn-block{
+  overflow:visible;
+  overflow-wrap:anywhere;
+  text-overflow:clip;
+  white-space:normal;
+}
+.recruitment-form-builder .form-builder-field .ant-tag{max-width:100%;height:auto;overflow:visible;overflow-wrap:anywhere;text-overflow:clip;white-space:normal}
+
 @media (max-width: 1120px) {
   .recruitment-form-builder .form-builder-layout {
     grid-template-columns: 220px minmax(0, 1fr);

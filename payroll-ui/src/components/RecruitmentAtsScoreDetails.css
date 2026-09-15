@@ -278,6 +278,16 @@
 }
 .candidate-profile-drawer .candidate-hero > div { position: relative; z-index: 1; }
 .candidate-profile-drawer .candidate-hero h2 { color: #172136; font-size: 24px; letter-spacing: -.025em; }
+
+/* Candidate and scoring facts are readable without hover-only ellipses. */
+.ats-history-primary .ant-typography,
+.ats-score-latest-copy>b,
+.ats-candidate-facts b{
+  overflow:visible;
+  overflow-wrap:anywhere;
+  text-overflow:clip;
+  white-space:normal;
+}
 .candidate-profile-drawer .candidate-hero p { color: #6e7890; }
 .candidate-profile-drawer .candidate-facts { gap: 9px; }
 .candidate-profile-drawer .candidate-facts article { min-height: 62px; padding: 11px 12px; border-color: #e1e6ef; background: #fff; box-shadow: 0 4px 12px rgba(32, 43, 74, .025); }

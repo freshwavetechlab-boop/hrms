@@ -16,6 +16,7 @@ public class RecruitmentAiScoringSettings
     public int MaximumResumeCharacters { get; set; } = 40_000;
     public int RequestTimeoutSeconds { get; set; } = 45;
     public bool HasApiKey { get; set; }
+    public string CredentialStatus { get; set; } = "Missing";
     public string HealthStatus { get; set; } = "NotTested";
     public string LastHealthMessage { get; set; } = "";
     public DateTime? LastTestedAt { get; set; }

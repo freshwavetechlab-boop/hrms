@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
 import {
-  ApartmentOutlined, ArrowRightOutlined, BranchesOutlined, ClockCircleOutlined, DeploymentUnitOutlined, HistoryOutlined,
+  ApartmentOutlined, ArrowLeftOutlined, ArrowRightOutlined, BranchesOutlined, ClockCircleOutlined, DeploymentUnitOutlined, HistoryOutlined,
   FileDoneOutlined, FileTextOutlined, PauseCircleOutlined, PlayCircleOutlined, ProfileOutlined, RocketOutlined, SettingOutlined, TeamOutlined,
 } from '@ant-design/icons'
-import { Badge, Button, Card, Drawer, Empty, Form, Input, Modal, Segmented, Select, Skeleton, Space, Tabs, Tag, Tooltip, message } from 'antd'
+import { Alert, Badge, Button, Card, Drawer, Empty, Form, Input, Modal, Segmented, Select, Skeleton, Space, Tabs, Tag, Tooltip, message } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import { getRecruitmentPipelineWorkspace } from '../services/recruitmentOrchestrationService'
 import { advanceRecruitmentHiringCase, getRecruitmentHiringCaseTransitions, pauseRecruitmentHiringCase, resumeRecruitmentHiringCase, startRecruitmentHiringCase } from '../services/recruitmentCaseService'
@@ -12,6 +12,7 @@ import type { Drop } from '../types/payroll'
 import type { RecruitmentPipelineBoardCard, RecruitmentPipelineDemandCard, RecruitmentPipelineWorkspace as PipelineWorkspaceResponse, RecruitmentUnifiedPipelineLane } from '../types/recruitmentOrchestration'
 import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
 import { recruitmentPipelineDisplayOptions, recruitmentPipelineDisplayStorageKey } from '../types/recruitmentPipelineView'
+import { hiringTransitionLabel, isDivisionRejectionOutcome } from '../utils/recruitmentTransitions'
 import { usePipelineScroller } from '../utils/usePipelineScroller'
 import DataTable from './DataTable'
 import { useAuthSession } from './AuthGate'
@@ -100,7 +101,8 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
 
   const journeyLanes = useMemo(() => [...workspace.lanes]
     .sort((left, right) => left.pipelineVersionId - right.pipelineVersionId || left.displayOrder - right.displayOrder), [workspace.lanes])
-  const demandCount = workspace.unassignedDemandCards.length + journeyLanes.reduce((total, lane) => total + lane.demandCards.length, 0)
+  const hiringLanes = useMemo(() => journeyLanes.filter(lane => lane.cardScope === 'Position'), [journeyLanes])
+  const demandCount = workspace.unassignedDemandCards.length + hiringLanes.reduce((total, lane) => total + lane.demandCards.length, 0)
   const candidateCount = workspace.lanes.reduce((total, lane) => total + lane.applications.length, 0)
   const workspaceHeading = view === 'candidates' ? 'Candidate progression' : 'Demand to joining'
 
@@ -165,7 +167,7 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
       ? <Card><Skeleton active paragraph={{ rows: 6 }} /></Card>
       : <DemandBoard
           clientId={initialClientId}
-          lanes={journeyLanes}
+          lanes={hiringLanes}
           unassigned={workspace.unassignedDemandCards}
           displayMode={displayMode}
           clockNow={clockNow}
@@ -187,7 +189,7 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
 function PipelineFlowDiagram({ view, lanes, unassigned }: { view: PipelineView; lanes: RecruitmentUnifiedPipelineLane[]; unassigned: RecruitmentPipelineDemandCard[] }) {
   const scroller = usePipelineScroller<HTMLDivElement>({ rootScrollsVertically: true })
   const scopedLanes = lanes
-    .filter(lane => view === 'candidates' ? lane.cardScope === 'Application' : true)
+    .filter(lane => lane.cardScope === (view === 'candidates' ? 'Application' : 'Position'))
     .sort((left, right) => left.pipelineVersionId - right.pipelineVersionId || left.displayOrder - right.displayOrder)
   const groups = Array.from(scopedLanes.reduce((map, lane) => {
     const group = map.get(lane.pipelineVersionId) ?? []
@@ -331,7 +333,7 @@ function DemandCard({ card, clientId, clockNow, workspaceSyncedAt, onChanged }: 
   return <Card size="small" className={`demand-card ${card.isSlaBreached ? 'is-breached' : ''}`} data-testid={`pipeline-demand-${card.workOrderLineId}`}>
     <div className="demand-card-heading">
       <div><strong title={card.positionName}>{card.positionName}</strong><span>{card.workOrderNumber}{card.payBandLevelCode ? ` · ${card.payBandLevelCode}` : ''}</span></div>
-      <Tag color={card.isSlaBreached ? 'error' : 'processing'}>{card.currentStageName || card.status || 'Intake'}</Tag>
+      <div className="demand-card-statuses"><Tag color={statusColor(card.currentStageName || card.status || '')}>{card.currentStageName || card.status || 'Intake'}</Tag>{card.hiringCaseId && <Tag color={card.isSlaBreached ? 'error' : 'success'}>{card.isSlaBreached ? 'Business SLA breach' : 'SLA on track'}</Tag>}</div>
     </div>
     <div className="demand-card-context">
       {card.division && <span><ApartmentOutlined /> {card.division}</span>}
@@ -377,10 +379,10 @@ function DemandActions({ card, clientId, compact = false, onChanged }: { card: R
     setBusyAction('move')
     const response = await advanceRecruitmentHiringCase(hiringCaseId, reason, outcomeCode)
     setBusyAction('')
-    if (!response.ok || !response.data) return void message.error(response.error || 'The position could not move to the next stage.')
+    if (!response.ok || !response.data) return void message.error(response.error || 'The position could not be moved.')
     setMoveOpen(false); setMoveReason(''); onChanged()
     if (response.data.advanceStatus === 'Pending Approval') message.info(response.data.advanceMessage || 'Stage movement is awaiting approval.')
-    else message.success(response.data.advanceMessage || 'Position moved to the next pipeline stage.')
+    else message.success(response.data.advanceMessage || 'Position moved in the pipeline.')
   }
   const prepareMove = async () => {
     if (card.advanceStatus === 'Pending Approval') return
@@ -431,13 +433,14 @@ function DemandActions({ card, clientId, compact = false, onChanged }: { card: R
       {activeJourney && (card.isPaused
         ? <Button data-testid={`demand-resume-sla-${card.workOrderLineId}`} className="action-resume-sla" size="small" loading={busyAction === 'resume'} icon={<PlayCircleOutlined />} onClick={() => void resume()}>Resume SLA</Button>
         : card.allowPause && <Button data-testid={`demand-pause-sla-${card.workOrderLineId}`} className="action-pause-sla" size="small" loading={busyAction === 'pause'} icon={<PauseCircleOutlined />} onClick={() => setPauseOpen(true)}>Pause SLA</Button>)}
-      {(activeJourney || canAutoStart) && <Button data-testid={`demand-move-next-${card.workOrderLineId}`} className="action-next-stage" type="primary" size="small" loading={busyAction === 'move'} disabled={card.isPaused || card.advanceStatus === 'Pending Approval'} icon={<ArrowRightOutlined />} onClick={() => void prepareMove()}>{card.advanceStatus === 'Pending Approval' ? 'Approval pending' : card.isTerminal ? 'Complete journey' : 'Move next'}</Button>}
+      {(activeJourney || canAutoStart) && <Button data-testid={`demand-move-next-${card.workOrderLineId}`} className="action-next-stage" type="primary" size="small" loading={busyAction === 'move'} disabled={card.isPaused || card.advanceStatus === 'Pending Approval'} onClick={() => void prepareMove()}>{card.advanceStatus === 'Pending Approval' ? 'Approval pending' : card.isTerminal ? 'Complete journey' : <><ArrowLeftOutlined /> Move <ArrowRightOutlined /></>}</Button>}
     </Space>
     <Modal open={pauseOpen} title="Pause this SLA" okText="Pause SLA" confirmLoading={busyAction === 'pause'} okButtonProps={{ disabled: pauseReason.trim().length < 3 }} onOk={() => void pause()} onCancel={() => { setPauseOpen(false); setPauseReason('') }} destroyOnClose>
       <Form.Item label="Pause reason" required><Input.TextArea data-testid={`demand-pause-reason-${card.workOrderLineId}`} autoFocus rows={3} value={pauseReason} placeholder="For example: awaiting client documents" onChange={event => setPauseReason(event.target.value)} /></Form.Item>
     </Modal>
-    <Modal open={moveOpen} title="Move this position" okText={selectedMove?.actionLabel || 'Move stage'} confirmLoading={busyAction === 'move'} okButtonProps={{ disabled: Boolean(selectedMove?.requiresReason && moveReason.trim().length < 3) }} onOk={() => void finishMove(moveOutcome, moveReason.trim())} onCancel={() => { setMoveOpen(false); setMoveReason('') }} destroyOnClose>
-      {moveOptions.length > 1 && <Form.Item label="Pipeline action" required><Select value={moveOutcome} options={moveOptions.map(row => ({ value: row.outcomeCode, label: row.actionLabel || row.outcomeCode }))} onChange={setMoveOutcome} /></Form.Item>}
+    <Modal open={moveOpen} title={isDivisionRejectionOutcome(moveOutcome) ? 'Reject this hiring demand?' : 'Move this position'} okText={hiringTransitionLabel(selectedMove)} confirmLoading={busyAction === 'move'} okButtonProps={{ danger: isDivisionRejectionOutcome(moveOutcome), disabled: Boolean(selectedMove?.requiresReason && moveReason.trim().length < 3) }} onOk={() => void finishMove(moveOutcome, moveReason.trim())} onCancel={() => { setMoveOpen(false); setMoveReason('') }} destroyOnClose>
+      {isDivisionRejectionOutcome(moveOutcome) && <Alert showIcon type="warning" message="Rejected by Division" description="This rejection is recorded separately from the deadline-based Business SLA breach status." />}
+      {moveOptions.length > 1 && <Form.Item label="Pipeline action" required><Select value={moveOutcome} options={moveOptions.map(row => ({ value: row.outcomeCode, label: hiringTransitionLabel(row) }))} onChange={setMoveOutcome} /></Form.Item>}
       {selectedMove?.requiresReason && <Form.Item label="Reason" required><Input.TextArea rows={3} value={moveReason} onChange={event => setMoveReason(event.target.value)} /></Form.Item>}
     </Modal>
   </>
@@ -473,7 +476,8 @@ function statusColor(value: string) {
 }
 function demandSla(card: RecruitmentPipelineDemandCard, now: number, syncedAt: number) {
   if (!card.hiringCaseId) return card.hasWorkOrder ? 'Starts after request save' : 'Awaiting work-order link'
-  if (['Completed', 'Cancelled'].includes(card.status)) return card.status
+  if (['Completed', 'Cancelled', 'Rejected', 'Withdrawn'].includes(card.status))
+    return `${card.status} · ${card.isSlaBreached ? 'Business SLA breached' : 'SLA on track'}`
   const due = card.overallDueAtUtc || card.dueAtUtc
   if (!due) {
     const running = !card.isPaused && card.status === 'Active'

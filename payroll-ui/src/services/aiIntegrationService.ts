@@ -14,6 +14,7 @@ export const emptyAiIntegration = (): RecruitmentAiScoringSettings => ({
   maximumResumeCharacters: 40000,
   requestTimeoutSeconds: 120,
   hasApiKey: false,
+  credentialStatus: 'Missing',
   apiKey: '',
   healthStatus: 'NotTested',
   lastHealthMessage: '',

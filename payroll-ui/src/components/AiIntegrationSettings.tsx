@@ -132,6 +132,7 @@ export default function AiIntegrationSettings() {
       width: 120,
       render: (_, row) => <Space direction="vertical" size={4}>
         <Tag color={healthColor(row.healthStatus)}>{row.healthStatus || 'Not tested'}</Tag>
+        {row.credentialStatus === 'Unreadable' && <Typography.Text type="danger">Re-enter API key</Typography.Text>}
         <Typography.Text type="secondary">{row.enableAiScoring && row.isActive ? `Ready · order ${row.priority}` : 'Disabled'}</Typography.Text>
         {row.consecutiveFailureCount > 0 && <Typography.Text type="danger">{row.consecutiveFailureCount} recent failure{row.consecutiveFailureCount === 1 ? '' : 's'}</Typography.Text>}
       </Space>,
@@ -175,7 +176,7 @@ export default function AiIntegrationSettings() {
       width: 200,
       render: (_, row) => <Space wrap>
         <Button size="small" icon={<EditOutlined />} onClick={() => setEditor(editModel(row))}>Edit</Button>
-        <Button size="small" loading={testingId === row.id} disabled={!row.hasApiKey || testingId > 0} onClick={() => void test(row)}>Test</Button>
+        <Button size="small" loading={testingId === row.id} disabled={!row.hasApiKey || testingId > 0} onClick={() => row.credentialStatus === 'Unreadable' ? setEditor(editModel(row)) : void test(row)}>Test</Button>
         {!row.isPrimary && <Button size="small" type="primary" ghost disabled={!row.enableAiScoring || !row.isActive} onClick={() => void activate(row)}>Make active</Button>}
         <Popconfirm title={`Remove ${row.modelName}?`} description="Its encrypted API key and usage history will be removed." okText="Remove" okButtonProps={{ danger: true }} onConfirm={() => void remove(row)}>
           <Button size="small" danger icon={<DeleteOutlined />} aria-label={`Remove ${row.modelName}`} />
@@ -186,7 +187,7 @@ export default function AiIntegrationSettings() {
 
   const saveDisabled = !editor.modelName.trim()
     || (editor.providerCode === 'OpenAICompatible' && !editor.endpointUrl.trim())
-    || (!editor.hasApiKey && !editor.apiKey?.trim())
+    || (editor.credentialStatus !== 'Ready' && !editor.apiKey?.trim())
 
   return <section className="orchestration-shell ai-integration-settings" data-testid="ai-integration-settings" style={{ minWidth: 0 }}>
     <Card
@@ -207,6 +208,13 @@ export default function AiIntegrationSettings() {
         description="The active model is tried first. With Auto Switch enabled, quota, timeout or provider failures continue on the next enabled model. Keys stay encrypted and never return to the browser."
         style={{ marginBottom: 16 }}
       />
+      {pool.models.some(model => model.credentialStatus === 'Unreadable') && <Alert
+        type="warning"
+        showIcon
+        message="Migrate the existing AI credentials once"
+        description="These models still use the legacy key-ring format. Edit each affected model, enter its provider API key, and save. The new portable encrypted credential will then work from both local and production APIs."
+        style={{ marginBottom: 16 }}
+      />}
 
       <Card
         size="small"
@@ -219,9 +227,9 @@ export default function AiIntegrationSettings() {
       >
         <Form component="div" layout="vertical">
           <Row gutter={16} align="bottom">
-            <Col xs={24} md={6}><Form.Item label="Provider" required><Select value={editor.providerCode} options={providerOptions} onChange={providerCode => setEditor({ ...editor, providerCode, modelName: providerCode === 'OpenAI' ? 'gpt-4o-mini' : providerCode === 'Groq' ? 'groq/compound-mini' : '', endpointUrl: providerCode === 'OpenAICompatible' ? editor.endpointUrl : '', apiKey: '', hasApiKey: false })} /></Form.Item></Col>
+            <Col xs={24} md={6}><Form.Item label="Provider" required><Select value={editor.providerCode} options={providerOptions} onChange={providerCode => setEditor({ ...editor, providerCode, modelName: providerCode === 'OpenAI' ? 'gpt-4o-mini' : providerCode === 'Groq' ? 'groq/compound-mini' : '', endpointUrl: providerCode === 'OpenAICompatible' ? editor.endpointUrl : '', apiKey: '', hasApiKey: false, credentialStatus: 'Missing' })} /></Form.Item></Col>
             <Col xs={24} md={6}><Form.Item label="Model" required><Input data-testid="ai-scoring-model" value={editor.modelName} placeholder={modelExamples[editor.providerCode]} onChange={event => setEditor({ ...editor, modelName: event.target.value })} /></Form.Item></Col>
-            <Col xs={24} md={7}><Form.Item label="API key" required={!editor.hasApiKey} extra={editor.hasApiKey ? 'Leave blank to keep the saved encrypted key.' : 'Encrypted before storage.'}><Input.Password data-testid="ai-scoring-api-key" autoComplete="new-password" value={editor.apiKey || ''} placeholder={editor.hasApiKey ? 'Configured securely' : 'Paste provider API key'} onChange={event => setEditor({ ...editor, apiKey: event.target.value })} /></Form.Item></Col>
+            <Col xs={24} md={7}><Form.Item label="API key" required={editor.credentialStatus !== 'Ready'} extra={editor.credentialStatus === 'Unreadable' ? 'The saved key cannot be decrypted here. Enter it again.' : editor.hasApiKey ? 'Leave blank to keep the saved encrypted key.' : 'Encrypted before storage.'}><Input.Password data-testid="ai-scoring-api-key" autoComplete="new-password" status={editor.credentialStatus === 'Unreadable' ? 'error' : undefined} value={editor.apiKey || ''} placeholder={editor.credentialStatus === 'Unreadable' ? 'Re-enter provider API key' : editor.hasApiKey ? 'Configured securely' : 'Paste provider API key'} onChange={event => setEditor({ ...editor, apiKey: event.target.value })} /></Form.Item></Col>
             <Col xs={12} md={3}><Form.Item label="Monthly cap" extra="Requests"><InputNumber min={1} max={10_000_000} controls={false} value={editor.monthlyRequestLimit} onChange={value => setEditor({ ...editor, monthlyRequestLimit: Number(value || 1) })} style={{ width: '100%' }} /></Form.Item></Col>
             <Col xs={12} md={2}><Form.Item label="Order" extra="Lower first"><InputNumber min={1} max={9999} controls={false} value={editor.priority} onChange={value => setEditor({ ...editor, priority: Number(value || 100) })} style={{ width: '100%' }} /></Form.Item></Col>
             {editor.providerCode === 'OpenAICompatible' && <Col xs={24}><Form.Item label="HTTPS base URL" required extra="Example: https://ai.company.com/v1"><Input value={editor.endpointUrl} placeholder="https://provider.example/v1" onChange={event => setEditor({ ...editor, endpointUrl: event.target.value })} /></Form.Item></Col>}

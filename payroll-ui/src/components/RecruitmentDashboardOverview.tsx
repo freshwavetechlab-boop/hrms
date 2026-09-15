@@ -4,6 +4,7 @@ import {
   CalendarOutlined,
   CheckCircleOutlined,
   ClockCircleOutlined,
+  DownloadOutlined,
   FileDoneOutlined,
   FileSearchOutlined,
   NotificationOutlined,
@@ -34,6 +35,7 @@ import {
   type DashboardQueueItem,
 } from './dashboard/DashboardEngine'
 import DataTable from './DataTable'
+import { downloadXlsx } from '../utils/xlsx'
 
 type RecruitmentDashboardData = {
   requisitions: RecruitmentRequisition[]
@@ -253,7 +255,8 @@ export default function RecruitmentDashboardOverview({
   const joined = current.applications.filter(applicationIsJoined).length
   const filled = sum(current.positions.map(row => row.filledPositions))
   const joiningPending = current.offers.filter(row => offerIsAccepted(row) && !includesAny(row.status, ['joined'])).length
-  const slaBreaches = dimensionRows.hiringCases.filter(row => row.stages.some(stage => stage.isSlaBreached) || (row.overallDueAtUtc && asTime(row.overallDueAtUtc) < referenceTime && !includesAny(row.status, ['complete', 'closed']))).length
+  const slaBreaches = dimensionRows.hiringCases.filter(row => row.stages.some(stage => stage.isSlaBreached)
+    || (row.overallDueAtUtc && (row.completedAtUtc ? asTime(row.completedAtUtc) : referenceTime) > asTime(row.overallDueAtUtc))).length
   const filledDurations = current.positions.filter(row => row.filledPositions > 0).map(row => Math.max(0, (asTime(row.updatedAt) - asTime(row.createdAt)) / dayMs)).filter(Number.isFinite)
   const averageTimeToHire = filledDurations.length ? Math.round(sum(filledDurations) / filledDurations.length) : 0
   const requestTrend = bucketRows(dimensionRows.requisitions, row => row.createdAt)
@@ -356,12 +359,28 @@ export default function RecruitmentDashboardOverview({
     return items.slice(0, 8)
   }, [dimensionRows, onNavigate, referenceTime, slaBreaches])
 
-  const positionMatrix = useMemo(() => dimensionRows.positions.map(position => {
+  const positionMatrix = useMemo(() => dimensionRows.positions.flatMap(position => {
     const hiringCase = dimensionRows.hiringCases.find(row => row.positionId === position.id)
     const applications = dimensionRows.applications.filter(row => row.positionId === position.id)
-    const overdue = Boolean(hiringCase?.overallDueAtUtc && asTime(hiringCase.overallDueAtUtc) < referenceTime && !includesAny(hiringCase.status, ['completed', 'rejected', 'withdrawn']))
-    return {
-      id: position.id,
+    const joinedApplications = applications.filter(applicationIsJoined)
+    const acceptedApplications = applications.filter(row => !applicationIsJoined(row)
+      && dimensionRows.offers.some(offer => offer.applicationId === row.id && offerIsAccepted(offer)))
+    const activeApplications = applications.filter(row => !applicationIsJoined(row)
+      && !acceptedApplications.some(candidate => candidate.id === row.id)
+      && !includesAny(`${row.currentStage} ${row.currentStatus}`, ['reject', 'withdraw']))
+    const seatCandidates = [...joinedApplications, ...acceptedApplications, ...activeApplications]
+    const caseFinishedAt = hiringCase?.completedAtUtc ? asTime(hiringCase.completedAtUtc) : referenceTime
+    const overdue = Boolean(hiringCase?.stages.some(stage => stage.isSlaBreached)
+      || (hiringCase?.overallDueAtUtc && caseFinishedAt > asTime(hiringCase.overallDueAtUtc)))
+    return Array.from({ length: Math.max(1, Number(position.approvedPositions || position.numberOfPositions || 1)) }, (_, seatIndex) => {
+      const candidate = seatCandidates[seatIndex]
+      const seatStatus = candidate
+        ? applicationIsJoined(candidate) ? 'Filled' : acceptedApplications.some(row => row.id === candidate.id) ? 'Offer accepted' : candidate.currentStage || candidate.currentStatus || 'In progress'
+        : 'Open'
+      return {
+      id: `${position.id}:${seatIndex + 1}`,
+      positionId: position.id,
+      seatNumber: seatIndex + 1,
       clientName: position.clientName,
       positionCode: position.positionCode,
       positionTitle: position.positionTitle,
@@ -370,13 +389,41 @@ export default function RecruitmentDashboardOverview({
       openings: position.approvedPositions,
       remaining: position.remainingPositions,
       applications: applications.length,
+      candidate: candidate?.candidateName || 'Unassigned',
+      seatStatus,
       currentStage: hiringCase?.currentStageName || (includesAny(position.status, ['closed', 'filled']) ? position.status : position.jobDescriptionStatus || 'Request / JD'),
       owner: position.recruiterName || hiringCase?.currentStakeholderCode || 'Unassigned',
       overallDueAtUtc: hiringCase?.overallDueAtUtc || null,
       status: hiringCase?.status || position.status,
       overdue,
-    }
+    }})
   }), [dimensionRows, referenceTime])
+
+  const exportConsolidatedResources = useCallback(() => {
+    const text = (value: unknown) => value == null ? '' : String(value)
+    downloadXlsx(`talent-acquisition-resources-${new Date().toISOString().slice(0, 10)}.xlsx`, [
+      { name: 'Position seats', rows: [
+        ['Client', 'Position code', 'Position', 'Seat', 'Candidate', 'Seat status', 'Department', 'Location', 'Current stage', 'Owner', 'Overall due', 'SLA status'],
+        ...positionMatrix.map(row => [row.clientName, row.positionCode, row.positionTitle, text(row.seatNumber), row.candidate, row.seatStatus, row.department, row.location, row.currentStage, row.owner, text(row.overallDueAtUtc), row.overdue ? 'Overdue' : 'On track'])
+      ] },
+      { name: 'Candidates', rows: [
+        ['Application', 'Candidate', 'Position', 'Stage', 'Status', 'ATS score', 'Source', 'Applied at'],
+        ...dimensionRows.applications.map(row => [row.applicationCode, row.candidateName, row.positionTitle, row.currentStage, row.currentStatus, text(row.atsScore), applicationSource(row), text(row.appliedAt)])
+      ] },
+      { name: 'Interviews', rows: [
+        ['Application ID', 'Round', 'Type', 'Start', 'End', 'Status', 'Result', 'Score'],
+        ...dimensionRows.interviews.map(row => [text(row.applicationId), row.roundCode, row.interviewType, text(row.scheduledStart), text(row.scheduledEnd), row.status, row.result, text(row.overallScore)])
+      ] },
+      { name: 'Offers', rows: [
+        ['Offer', 'Application ID', 'Position', 'CTC', 'Currency', 'Joining date', 'Status', 'Expiry'],
+        ...dimensionRows.offers.map(row => [row.offerNumber, text(row.applicationId), row.positionTitle, text(row.offeredCtc), row.currency, text(row.proposedJoiningDate), row.status, text(row.expiryDate)])
+      ] },
+      { name: 'SLA stage log', rows: [
+        ['Position', 'Pipeline', 'Stage', 'Status', 'Entered', 'Completed', 'Active seconds', 'Due', 'SLA breached'],
+        ...dimensionRows.hiringCases.flatMap(hiringCase => hiringCase.stages.map(stage => [hiringCase.positionName, hiringCase.pipelineName, stage.stageName, stage.status, text(stage.enteredAtUtc), text(stage.completedAtUtc), text(stage.activeDurationSeconds), text(stage.dueAtUtc), stage.isSlaBreached ? 'Yes' : 'No']))
+      ] },
+    ])
+  }, [dimensionRows, positionMatrix])
 
   const filterDefinitions = [
     { key: 'client', label: 'Client', value: selectedClientId || 'all', allowClear: false, disabled: !canChooseClient, searchable: true, options: [{ value: 'all', label: 'All accessible clients' }, ...clients.map(row => ({ value: row.id, label: `${row.code} · ${row.name}` }))] },
@@ -414,9 +461,12 @@ export default function RecruitmentDashboardOverview({
     />
     <DashboardKpiGrid items={kpis} />
     <DashboardFunnel title="Hiring funnel" subtitle="Click any stage to open the records behind its conversion." stages={funnel} />
-    <Card className="dashboard-position-matrix" title="Position-wise hiring status" extra={<Tag color="purple">{positionMatrix.length} position{positionMatrix.length === 1 ? '' : 's'}</Tag>}>
-      <DataTable rows={positionMatrix} getRowId={row => row.id} exportFileName="position-wise-hiring-status" emptyText="No positions match the active filters." columns={[
+    <Card data-testid="opening-wise-hiring-ledger" className="dashboard-position-matrix" title="Opening-wise hiring status" extra={<><Button data-testid="recruitment-consolidated-excel" size="small" icon={<DownloadOutlined />} onClick={exportConsolidatedResources}>Consolidated Excel</Button> <Tag color="purple">{positionMatrix.length} seat{positionMatrix.length === 1 ? '' : 's'}</Tag></>}>
+      <DataTable rows={positionMatrix} getRowId={row => row.id} exportFileName="opening-wise-hiring-status" onExcelExport={() => exportConsolidatedResources()} emptyText="No position seats match the active filters." columns={[
         { key: 'position', label: 'Position', width: 230, value: row => `${row.positionTitle} ${row.positionCode}`, render: row => <div className="pipeline-table-candidate"><strong>{row.positionTitle}</strong><small>{row.positionCode} · {row.clientName}</small></div> },
+        { key: 'seatNumber', label: 'Seat', width: 80, value: row => `#${row.seatNumber}` },
+        { key: 'candidate', label: 'Candidate', width: 180 },
+        { key: 'seatStatus', label: 'Seat status', width: 130, render: row => <Tag color={row.seatStatus === 'Filled' ? 'green' : row.seatStatus === 'Open' ? 'default' : 'blue'}>{row.seatStatus}</Tag> },
         { key: 'department', label: 'Department', width: 170 },
         { key: 'location', label: 'Location', width: 150 },
         { key: 'openings', label: 'Openings', width: 90 },
@@ -426,7 +476,7 @@ export default function RecruitmentDashboardOverview({
         { key: 'owner', label: 'Owner', width: 160 },
         { key: 'overallDueAtUtc', label: 'Overall due', width: 150, render: row => row.overallDueAtUtc ? new Date(row.overallDueAtUtc).toLocaleDateString('en-IN') : 'Not started' },
         { key: 'status', label: 'Status', width: 120, render: row => <Tag color={row.overdue ? 'red' : includesAny(row.status, ['complete', 'filled']) ? 'green' : 'default'}>{row.overdue ? 'SLA overdue' : row.status}</Tag> },
-        { key: 'action', label: 'Action', width: 90, sortable: false, filterable: false, render: row => <Button size="small" onClick={() => onNavigate(`/recruitment/hiring-pipeline?positionId=${row.id}`)}>Open</Button> },
+        { key: 'action', label: 'Action', width: 90, sortable: false, filterable: false, render: row => <Button size="small" onClick={() => onNavigate(`/recruitment/hiring-pipeline?positionId=${row.positionId}`)}>Open</Button> },
       ]} />
     </Card>
     <DashboardChartGrid>{charts.map(chart => <DashboardChartCard key={chart.id} spec={chart} />)}</DashboardChartGrid>

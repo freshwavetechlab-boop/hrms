@@ -303,6 +303,15 @@
 .recruitment-candidate-metrics > button > b { font-size: 18px; font-variant-numeric: tabular-nums; }
 .recruitment-candidate-metrics > button.needs-attention > .anticon { background: #fff7ed; color: #d97706; }
 
+.recruitment-lifecycle-funnel span,
+.recruitment-candidate-metrics>button>span{
+  overflow:visible;
+  overflow-wrap:anywhere;
+  text-overflow:clip;
+  white-space:normal;
+  line-height:1.3;
+}
+
 .recruitment-experience .recruitment-dashboard-grid { align-items: stretch !important; }
 .recruitment-dashboard-grid > .recruitment-metric-card { height: 330px; min-height: 330px; }
 .recruitment-metric-card > .ant-card-body { height: calc(100% - 45px); }

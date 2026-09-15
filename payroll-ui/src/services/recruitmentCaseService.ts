@@ -1,5 +1,5 @@
 import { deleteJson, getJson, postJson } from './apiClient'
-import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProfileSubmissionBatch, RecruitmentWorkOrder, SaveRecruitmentProcessDocument, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
+import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProcessDocumentSignature, RecruitmentProfileSubmissionBatch, RecruitmentWorkOrder, SaveRecruitmentProcessDocument, SaveRecruitmentProcessDocumentSignature, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
 import type { RecruitmentPipelineTransition } from '../types/recruitmentOrchestration'
 
 export const getRecruitmentWorkOrders = (clientId = 0, query = '') => {
@@ -54,6 +54,12 @@ export const saveRecruitmentProcessDocument = (request: SaveRecruitmentProcessDo
 
 export const generateRecruitmentProcessDocument = (id: number) =>
   postJson(`/api/recruitment/process-documents/${id}/generate`, {}, null as RecruitmentProcessDocument | null, { successMessage: 'Process document generated and stored securely.' })
+
+export const getRecruitmentProcessDocumentSignatures = (id: number) =>
+  getJson<RecruitmentProcessDocumentSignature[]>(`/api/recruitment/process-documents/${id}/signatures`, [])
+
+export const saveRecruitmentProcessDocumentSignature = (id: number, request: SaveRecruitmentProcessDocumentSignature) =>
+  postJson(`/api/recruitment/process-documents/${id}/signatures`, request, null as RecruitmentProcessDocumentSignature | null, { successMessage: 'Signature captured.' })
 
 export const getRecruitmentProfileBatches = (hiringCaseId: number) =>
   getJson<RecruitmentProfileSubmissionBatch[]>(`/api/recruitment/profile-submission-batches?hiringCaseId=${hiringCaseId}`, [])

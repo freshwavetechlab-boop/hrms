@@ -3,7 +3,6 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Dapper;
-using Microsoft.AspNetCore.DataProtection;
 using MySqlConnector;
 using Payroll.API.Models;
 
@@ -11,7 +10,7 @@ namespace Payroll.API.Services;
 
 public sealed class RecruitmentAiScoringService(
     IConfiguration configuration,
-    IDataProtectionProvider dataProtectionProvider,
+    PortableIntegrationCredentialProtector credentialProtector,
     IHttpClientFactory httpClientFactory,
     ILogger<RecruitmentAiScoringService> logger)
 {
@@ -20,6 +19,7 @@ public sealed class RecruitmentAiScoringService(
     private const decimal GlobalMinimumConfidence = .65m;
     private const int GlobalMaximumResumeCharacters = 40_000;
     private const int GlobalRequestTimeoutSeconds = 120;
+    private const string UnreadableCredentialMessage = "The saved AI credential uses an unavailable legacy encryption key. Edit this model and re-enter its API key once to migrate it to portable encryption.";
     private static readonly Dictionary<string, string> SupportedProviders = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Gemini"] = "Gemini",
@@ -43,7 +43,6 @@ public sealed class RecruitmentAiScoringService(
         "GENERAL", "SUMMARY", "EXPERIENCE", "EDUCATION", "SKILLS", "CERTIFICATIONS",
         "PROJECTS", "ACHIEVEMENTS", "CONTACT", "LANGUAGES", "PUBLICATIONS"
     };
-    private readonly IDataProtector credentialProtector = dataProtectionProvider.CreateProtector("Payroll.API.RecruitmentAiScoringCredentials.v1");
     private readonly SemaphoreSlim inferenceGate = new(2, 2);
     private readonly ConcurrentDictionary<long, ProviderQuotaSnapshot> providerQuotas = new();
 
@@ -68,11 +67,12 @@ public sealed class RecruitmentAiScoringService(
     {
         await using var db = Db();
         await db.OpenAsync();
-        var row = await db.QueryFirstOrDefaultAsync<RecruitmentAiScoringSettings>($@"{SettingsSelect}
+        var row = await db.QueryFirstOrDefaultAsync<RecruitmentAiScoringSecretRow>($@"{SettingsSelect}
 WHERE settings.ClientId=@ClientId
 ORDER BY settings.IsPrimary DESC,settings.Priority,settings.Id
 LIMIT 1", new { ClientId = scopeClientId });
-        return ApplyProviderQuota(row ?? new RecruitmentAiScoringSettings { ClientId = scopeClientId, ClientName = scopeClientId == GlobalClientId ? "All Frevo" : "" })!;
+        if (row is not null) await TryMigrateLegacyCredentialAsync(db, row);
+        return ApplyRuntimeState(row ?? new RecruitmentAiScoringSecretRow { ClientId = scopeClientId, ClientName = scopeClientId == GlobalClientId ? "All Frevo" : "" })!;
     }
 
     public async Task<RecruitmentAiProviderPool> GetGlobalPoolAsync(AuthUser user)
@@ -80,18 +80,22 @@ LIMIT 1", new { ClientId = scopeClientId });
         if (user.ClientId.HasValue) return new RecruitmentAiProviderPool();
         await using var db = Db();
         await db.OpenAsync();
-        var models = (await db.QueryAsync<RecruitmentAiScoringSettings>($@"{SettingsSelect}
+        var models = (await db.QueryAsync<RecruitmentAiScoringSecretRow>($@"{SettingsSelect}
 WHERE settings.ClientId=@ClientId
 ORDER BY settings.IsPrimary DESC,settings.Priority,settings.Id", new { ClientId = GlobalClientId })).ToList();
         var autoSwitch = await db.ExecuteScalarAsync<bool?>("SELECT AutoSwitchEnabled FROM recruitment_ai_runtime_settings WHERE ScopeClientId=@ClientId", new { ClientId = GlobalClientId }) ?? false;
-        models.ForEach(model => ApplyProviderQuota(model));
-        return new RecruitmentAiProviderPool { AutoSwitchEnabled = autoSwitch, Models = models };
+        foreach (var model in models)
+        {
+            await TryMigrateLegacyCredentialAsync(db, model);
+            ApplyRuntimeState(model);
+        }
+        return new RecruitmentAiProviderPool { AutoSwitchEnabled = autoSwitch, Models = models.Cast<RecruitmentAiScoringSettings>().ToList() };
     }
 
     private const string SettingsSelect = @"SELECT settings.Id,settings.ClientId,
 COALESCE(client.Name,IF(settings.ClientId=0,'All Frevo','')) ClientName,settings.EnableAiScoring,settings.ProviderCode,settings.ModelName,settings.EndpointUrl,
 settings.AiBlendWeight,settings.MinimumConfidence,settings.MaximumResumeCharacters,settings.RequestTimeoutSeconds,
-(COALESCE(settings.ApiKeyCipherText,'')<>'') HasApiKey,settings.HealthStatus,settings.LastHealthMessage,
+(COALESCE(settings.ApiKeyCipherText,'')<>'') HasApiKey,settings.ApiKeyCipherText,settings.HealthStatus,settings.LastHealthMessage,
 settings.LastTestedAt,settings.IsActive,settings.IsPrimary,settings.Priority,settings.MonthlyRequestLimit,
 IF(settings.UsagePeriod=DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m'),settings.UsageRequestCount,0) UsageRequestCount,
 IF(settings.UsagePeriod=DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m'),settings.UsageInputTokens,0) UsageInputTokens,
@@ -148,9 +152,11 @@ LEFT JOIN clients client ON client.Id=settings.ClientId";
         if (request.Id > 0 && existing is null) return (null, "AI model was not found in this scope.");
         if (existing is not null && !NormalizeProvider(existing.ProviderCode).Equals(request.ProviderCode, StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(request.ApiKey))
             return (null, "Add the new provider API key when changing AI providers.");
+        if (existing is not null && string.IsNullOrWhiteSpace(request.ApiKey) && !CredentialCanBeRead(existing.ApiKeyCipherText))
+            return (null, "The saved API key belongs to a different or lost encryption key-ring. Re-enter the provider API key before updating this model.");
         var protectedKey = string.IsNullOrWhiteSpace(request.ApiKey)
-            ? existing?.ApiKeyCipherText ?? ""
-            : credentialProtector.Protect(request.ApiKey.Trim());
+            ? ProtectExistingCredential(existing?.ApiKeyCipherText)
+            : credentialProtector.ProtectAi(request.ApiKey);
         if ((existing is null || request.EnableAiScoring) && string.IsNullOrWhiteSpace(protectedKey))
             return (null, "Add an API key before saving a new or enabled AI model.");
 
@@ -221,7 +227,7 @@ JSON_OBJECT('clientId',ClientId,'enabled',EnableAiScoring,'provider',ProviderCod
     {
         await using var db = Db();
         await db.OpenAsync();
-        return ApplyProviderQuota(await db.QueryFirstOrDefaultAsync<RecruitmentAiScoringSettings>($@"{SettingsSelect} WHERE settings.Id=@Id AND settings.ClientId=@ClientId", new { Id = id, ClientId = clientId }));
+        return ApplyRuntimeState(await db.QueryFirstOrDefaultAsync<RecruitmentAiScoringSecretRow>($@"{SettingsSelect} WHERE settings.Id=@Id AND settings.ClientId=@ClientId", new { Id = id, ClientId = clientId }));
     }
 
     public async Task<(RecruitmentAiProviderPool? Pool, string Error)> SaveGlobalAutoSwitchAsync(bool enabled, AuthUser user)
@@ -481,7 +487,7 @@ VALUES ('RecruitmentAiScoringSetting',@Id,'Delete',JSON_OBJECT('clientId',@Clien
             return (new RecruitmentAiHiringDocumentSuggestion { Provider = settings.ProviderCode, Model = settings.ModelName, Status = "UsageLimitReached", Error = "The configured monthly request limit has been reached." }, "");
         var apiKey = TryUnprotect(settings.ApiKeyCipherText);
         if (string.IsNullOrWhiteSpace(apiKey))
-            return (new RecruitmentAiHiringDocumentSuggestion { Provider = settings.ProviderCode, Model = settings.ModelName, Status = "ConfigurationError", Error = "The encrypted AI credential is unavailable." }, "");
+            return (new RecruitmentAiHiringDocumentSuggestion { Provider = settings.ProviderCode, Model = settings.ModelName, Status = "ConfigurationError", Error = UnreadableCredentialMessage }, "");
         if (attachDocument && provider is not ("Gemini" or "Anthropic"))
             return (new RecruitmentAiHiringDocumentSuggestion { Provider = settings.ProviderCode, Model = settings.ModelName, Status = "UnsupportedInput", Error = $"{ProviderLabel(settings.ProviderCode)} document extraction is not configured for scanned PDFs." }, "");
         try
@@ -531,7 +537,7 @@ VALUES ('RecruitmentAiScoringSetting',@Id,'Delete',JSON_OBJECT('clientId',@Clien
             return (new RecruitmentAiResumeDocumentSuggestion { Provider = settings.ProviderCode, Model = settings.ModelName, Status = "UsageLimitReached", Error = "The configured monthly request limit has been reached." }, "");
         var apiKey = TryUnprotect(settings.ApiKeyCipherText);
         if (string.IsNullOrWhiteSpace(apiKey))
-            return (new RecruitmentAiResumeDocumentSuggestion { Provider = settings.ProviderCode, Model = settings.ModelName, Status = "ConfigurationError", Error = "The encrypted AI credential is unavailable." }, "");
+            return (new RecruitmentAiResumeDocumentSuggestion { Provider = settings.ProviderCode, Model = settings.ModelName, Status = "ConfigurationError", Error = UnreadableCredentialMessage }, "");
         if (attachDocument && provider is not ("Gemini" or "Anthropic"))
             return (new RecruitmentAiResumeDocumentSuggestion { Provider = settings.ProviderCode, Model = settings.ModelName, Status = "UnsupportedInput", Error = $"{ProviderLabel(settings.ProviderCode)} document extraction is not configured for scanned PDFs." }, "");
         try
@@ -575,7 +581,7 @@ VALUES ('RecruitmentAiScoringSetting',@Id,'Delete',JSON_OBJECT('clientId',@Clien
             return (new RecruitmentAiAnalysis { Provider = settings.ProviderCode, Model = settings.ModelName, Status = "UsageLimitReached", Error = "The configured monthly request limit has been reached." }, "");
         var apiKey = TryUnprotect(settings.ApiKeyCipherText);
         if (string.IsNullOrWhiteSpace(apiKey))
-            return (new RecruitmentAiAnalysis { Provider = settings.ProviderCode, Model = settings.ModelName, Status = "ConfigurationError", Error = "The encrypted AI credential is unavailable." }, "");
+            return (new RecruitmentAiAnalysis { Provider = settings.ProviderCode, Model = settings.ModelName, Status = "ConfigurationError", Error = UnreadableCredentialMessage }, "");
         try
         {
             var sent = await SendProviderAsync(settings, apiKey, BuildPrompt(request, settings.MaximumResumeCharacters), null, 1800, null, "", cancellationToken);
@@ -618,6 +624,9 @@ WHERE ClientId IN (@ClientId,0) AND IsActive=TRUE AND EnableAiScoring=TRUE
 ORDER BY CASE WHEN ClientId=@ClientId THEN 0 ELSE 1 END,IsPrimary DESC,Priority,Id",
                 new { ClientId = clientId })).ToList();
         }
+
+        foreach (var model in models)
+            await TryMigrateLegacyCredentialAsync(db, model, cancellationToken);
 
         var period = DateTime.UtcNow.ToString("yyyy-MM", System.Globalization.CultureInfo.InvariantCulture);
         foreach (var model in models.Where(model => !string.Equals(model.UsagePeriod, period, StringComparison.Ordinal)))
@@ -782,17 +791,60 @@ WHERE Id=@Id", new
         if (snapshot.RequestLimit.HasValue || snapshot.TokenLimit.HasValue) providerQuotas[settings.Id] = snapshot;
     }
 
-    private RecruitmentAiScoringSettings? ApplyProviderQuota(RecruitmentAiScoringSettings? settings)
+    private RecruitmentAiScoringSettings? ApplyRuntimeState(RecruitmentAiScoringSettings? settings)
     {
-        if (settings is null || !providerQuotas.TryGetValue(settings.Id, out var quota)) return settings;
-        settings.ProviderRequestLimit = quota.RequestLimit;
-        settings.ProviderRequestsRemaining = quota.RequestsRemaining;
-        settings.ProviderTokenLimit = quota.TokenLimit;
-        settings.ProviderTokensRemaining = quota.TokensRemaining;
-        settings.ProviderRequestReset = quota.RequestReset;
-        settings.ProviderTokenReset = quota.TokenReset;
-        settings.ProviderQuotaObservedAt = quota.ObservedAt;
+        if (settings is null) return null;
+        settings.CredentialStatus = settings is RecruitmentAiScoringSecretRow secret
+            ? string.IsNullOrWhiteSpace(secret.ApiKeyCipherText)
+                ? "Missing"
+                : CredentialCanBeRead(secret.ApiKeyCipherText) ? "Ready" : "Unreadable"
+            : settings.HasApiKey ? "Unknown" : "Missing";
+        if (providerQuotas.TryGetValue(settings.Id, out var quota))
+        {
+            settings.ProviderRequestLimit = quota.RequestLimit;
+            settings.ProviderRequestsRemaining = quota.RequestsRemaining;
+            settings.ProviderTokenLimit = quota.TokenLimit;
+            settings.ProviderTokensRemaining = quota.TokensRemaining;
+            settings.ProviderRequestReset = quota.RequestReset;
+            settings.ProviderTokenReset = quota.TokenReset;
+            settings.ProviderQuotaObservedAt = quota.ObservedAt;
+        }
         return settings;
+    }
+
+    private bool CredentialCanBeRead(string value)
+    {
+        return credentialProtector.TryUnprotectAi(value, out _);
+    }
+
+    private string ProtectExistingCredential(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        if (credentialProtector.IsPortableAi(value)) return value;
+        return credentialProtector.TryUnprotectAi(value, out var plaintext)
+            ? credentialProtector.ProtectAi(plaintext)
+            : "";
+    }
+
+    private async Task TryMigrateLegacyCredentialAsync(
+        MySqlConnection db,
+        RecruitmentAiScoringSecretRow row,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(row.ApiKeyCipherText) || credentialProtector.IsPortableAi(row.ApiKeyCipherText)) return;
+        if (!credentialProtector.TryUnprotectAi(row.ApiKeyCipherText, out var plaintext)) return;
+        var legacyCipherText = row.ApiKeyCipherText;
+        var portableCipherText = credentialProtector.ProtectAi(plaintext);
+        var updated = await db.ExecuteAsync(new CommandDefinition(@"
+UPDATE recruitment_ai_scoring_settings
+SET ApiKeyCipherText=@PortableCipherText,UpdatedAt=UTC_TIMESTAMP()
+WHERE Id=@Id AND ApiKeyCipherText=@LegacyCipherText", new
+        {
+            row.Id,
+            PortableCipherText = portableCipherText,
+            LegacyCipherText = legacyCipherText
+        }, cancellationToken: cancellationToken));
+        if (updated > 0) row.ApiKeyCipherText = portableCipherText;
     }
 
     private static bool MonthlyLimitReached(RecruitmentAiScoringSecretRow settings) =>
@@ -1340,12 +1392,7 @@ Return only this JSON shape:
     private string TryUnprotect(string value)
     {
         if (string.IsNullOrWhiteSpace(value)) return "";
-        try { return credentialProtector.Unprotect(value); }
-        catch (Exception exception)
-        {
-            logger.LogWarning(exception, "A recruitment AI credential could not be decrypted.");
-            return "";
-        }
+        return credentialProtector.TryUnprotectAi(value, out var plaintext) ? plaintext : "";
     }
 
     private static decimal ReadRatio(JsonElement element, string property) =>

@@ -248,23 +248,42 @@ public class AttachmentStorageService(
 
     public string ResolveRoot(AttachmentStorageServer server)
     {
-        var basePath = string.IsNullOrWhiteSpace(server.BasePath)
-            ? Path.Combine(environment.ContentRootPath, "App_Data", "attachments")
-            : server.BasePath.Trim();
-        var resolved = Path.GetFullPath(Path.IsPathRooted(basePath) ? basePath : Path.Combine(environment.ContentRootPath, basePath));
+        // API_LOCAL is shared through the database, but its physical path belongs
+        // to the API instance that is currently running. Never reuse a Linux
+        // container path on a Windows development host (or vice versa).
+        var resolved = server.ServerCode.Equals("API_LOCAL", StringComparison.OrdinalIgnoreCase)
+            ? ResolveConfiguredPath("AttachmentStorage:RootPath", Path.Combine("App_Data", "attachments"))
+            : ResolvePath(server.BasePath, Path.Combine("App_Data", "attachments"));
         if (!server.StorageType.Equals("LocalFileSystem", StringComparison.OrdinalIgnoreCase)) return resolved;
 
-        var configuredDataRoot = configuration["AttachmentStorage:DataRootPath"];
-        var allowedRoot = Path.GetFullPath(string.IsNullOrWhiteSpace(configuredDataRoot)
-            ? Path.Combine(environment.ContentRootPath, "App_Data")
-            : Path.IsPathRooted(configuredDataRoot)
-                ? configuredDataRoot
-                : Path.Combine(environment.ContentRootPath, configuredDataRoot));
+        var allowedRoot = ResolveConfiguredPath("AttachmentStorage:DataRootPath", "App_Data");
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         var prefix = allowedRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
         if (!resolved.Equals(allowedRoot, comparison) && !resolved.StartsWith(prefix, comparison))
             throw new InvalidOperationException($"Local attachment storage must stay under the configured data root '{allowedRoot}'. Use MountedFileSystem for an external volume.");
         return resolved;
+    }
+
+    private string ResolveConfiguredPath(string configurationKey, string fallbackRelativePath) =>
+        ResolvePath(configuration[configurationKey], fallbackRelativePath, normalizeContainerPath: true);
+
+    private string ResolvePath(string? configuredPath, string fallbackRelativePath, bool normalizeContainerPath = false)
+    {
+        var path = string.IsNullOrWhiteSpace(configuredPath) ? fallbackRelativePath : configuredPath.Trim();
+        if (normalizeContainerPath && OperatingSystem.IsWindows())
+        {
+            var portable = path.Replace('\\', '/');
+            if (portable.Equals("/app", StringComparison.OrdinalIgnoreCase) ||
+                portable.StartsWith("/app/", StringComparison.OrdinalIgnoreCase))
+            {
+                var relative = portable.Length == 4 ? "" : portable[5..];
+                path = string.IsNullOrWhiteSpace(relative)
+                    ? environment.ContentRootPath
+                    : Path.Combine(environment.ContentRootPath, relative.Replace('/', Path.DirectorySeparatorChar));
+            }
+        }
+
+        return Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(environment.ContentRootPath, path));
     }
 
     private string ResolveFilePath(AttachmentStorageServer server, string storageKey)
