@@ -317,6 +317,7 @@ LEFT JOIN (
                 Set(root, "originalEmployeeCode", personal.OriginalEmployeeCode); Set(root, "duplicateResolution", personal.DuplicateResolution);
                 root["excelRow"] = personal.ExcelRow; root["esicEmployee"] = personal.EsicEmployee; root["ptLwfWorkmenComp"] = personal.PtLwfWorkmenComp; root["tds"] = personal.Tds; root["recovery"] = personal.Recovery;
                 employee.PersonalDetails = ToPersonalDetails(personal);
+                employee.PersonalDetails.SkillCategory = Text(root, "skillCategory");
                 employee.PersonalJson = root.ToJsonString(JsonOptions);
             }
             if (paymentRows.TryGetValue(employee.Id, out var payment))
@@ -515,6 +516,7 @@ ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode
 
     private static EmployeePersonalDetails ToPersonalDetails(JsonObject root) => new()
     {
+        SkillCategory = Text(root, "skillCategory"),
         DateOfBirth = Text(root, "dob", Text(root, "dateOfBirth")),
         Mobile = Text(root, "mobile"),
         PanNumber = Text(root, "pan", Text(root, "panNumber")),
@@ -544,6 +546,7 @@ ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode
 
     private static JsonObject ToPersonalJson(EmployeePersonalDetails personal) => new()
     {
+        ["skillCategory"] = personal.SkillCategory,
         ["dob"] = personal.DateOfBirth,
         ["dateOfBirth"] = personal.DateOfBirth,
         ["mobile"] = personal.Mobile,
@@ -586,7 +589,7 @@ ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode
     };
 
     private static bool HasPersonalDetails(EmployeePersonalDetails personal) =>
-        !string.IsNullOrWhiteSpace(personal.DateOfBirth) || !string.IsNullOrWhiteSpace(personal.Mobile) || !string.IsNullOrWhiteSpace(personal.PanNumber) || !string.IsNullOrWhiteSpace(personal.AadhaarNumber) || !string.IsNullOrWhiteSpace(personal.UanNumber) || !string.IsNullOrWhiteSpace(personal.EsicNumber) || !string.IsNullOrWhiteSpace(personal.Address) || !string.IsNullOrWhiteSpace(personal.CorrespondenceAddress) || !string.IsNullOrWhiteSpace(personal.PermanentAddress) || !string.IsNullOrWhiteSpace(personal.Source) || !string.IsNullOrWhiteSpace(personal.SourceLocation) || !string.IsNullOrWhiteSpace(personal.City) || !string.IsNullOrWhiteSpace(personal.District) || !string.IsNullOrWhiteSpace(personal.State) || !string.IsNullOrWhiteSpace(personal.RawDesignation) || !string.IsNullOrWhiteSpace(personal.OriginalEmployeeCode) || !string.IsNullOrWhiteSpace(personal.DuplicateResolution) || personal.ExcelRow != 0 || personal.EsicEmployee != 0 || personal.PtLwfWorkmenComp != 0 || personal.Tds != 0 || personal.Recovery != 0;
+        !string.IsNullOrWhiteSpace(personal.SkillCategory) || !string.IsNullOrWhiteSpace(personal.DateOfBirth) || !string.IsNullOrWhiteSpace(personal.Mobile) || !string.IsNullOrWhiteSpace(personal.PanNumber) || !string.IsNullOrWhiteSpace(personal.AadhaarNumber) || !string.IsNullOrWhiteSpace(personal.UanNumber) || !string.IsNullOrWhiteSpace(personal.EsicNumber) || !string.IsNullOrWhiteSpace(personal.Address) || !string.IsNullOrWhiteSpace(personal.CorrespondenceAddress) || !string.IsNullOrWhiteSpace(personal.PermanentAddress) || !string.IsNullOrWhiteSpace(personal.Source) || !string.IsNullOrWhiteSpace(personal.SourceLocation) || !string.IsNullOrWhiteSpace(personal.City) || !string.IsNullOrWhiteSpace(personal.District) || !string.IsNullOrWhiteSpace(personal.State) || !string.IsNullOrWhiteSpace(personal.RawDesignation) || !string.IsNullOrWhiteSpace(personal.OriginalEmployeeCode) || !string.IsNullOrWhiteSpace(personal.DuplicateResolution) || personal.ExcelRow != 0 || personal.EsicEmployee != 0 || personal.PtLwfWorkmenComp != 0 || personal.Tds != 0 || personal.Recovery != 0;
 
     private static bool HasPaymentDetails(EmployeePaymentDetails payment) =>
         !string.IsNullOrWhiteSpace(payment.BankName) || !string.IsNullOrWhiteSpace(payment.BankAccountNo) || !string.IsNullOrWhiteSpace(payment.IfscCode) || !string.IsNullOrWhiteSpace(payment.PaymentMode);

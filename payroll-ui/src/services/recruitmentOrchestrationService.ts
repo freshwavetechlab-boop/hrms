@@ -136,6 +136,9 @@ export const getRecruitmentApplicationStageHistory = (applicationId: number) =>
 export const transitionRecruitmentApplication = (applicationId: number, transitionId: number, reason: string) =>
   postJson(`${internalBase}/applications/${applicationId}/transitions/${transitionId}`, { transitionId, reason }, null as RecruitmentPipelineTransitionResult | null, { successMessage: 'Candidate moved to the next stage.' })
 
+export const transitionRecruitmentApplicationSilently = (applicationId: number, transitionId: number, reason: string) =>
+  postJson(`${internalBase}/applications/${applicationId}/transitions/${transitionId}`, { transitionId, reason }, null as RecruitmentPipelineTransitionResult | null, { toast: 'error-only' })
+
 export const pauseRecruitmentApplication = (applicationId: number, reason: string) =>
   postJson(`${internalBase}/applications/${applicationId}/pause`, { reason }, null as RecruitmentApplicationStageInstance | null, { successMessage: 'Pipeline SLA paused.' })
 

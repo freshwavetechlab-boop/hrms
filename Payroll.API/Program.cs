@@ -1449,13 +1449,7 @@ app.MapPost("/api/recruitment/resume-intake", async (RecruitmentTalentRepository
     foreach (var item in result.Items.Where(item => item.Success && item.Application is not null))
     {
         var applicationId = item.Application!.Id;
-        var (pipelineId, _) = await pipelines.EnsureApplicationPipelineAsync(applicationId, user);
-        if (pipelineId.HasValue)
-        {
-            var entry = await actions.ExecuteAsync(applicationId, "OnEntry", user);
-            if (!entry.Executions.Any(execution => execution.ActionCode == "GENERATE_ACTION_LINK"))
-                await candidateActions.EnsureForCurrentStageAsync(applicationId, user);
-        }
+        await EnsureRecruitmentApplicationAutomationAsync(applicationId, user, pipelines, actions, candidateActions);
         item.Application = (await talent.GetApplicationsAsync(user, item.Application.PositionId, item.Application.CandidateId, "")).FirstOrDefault(row => row.Id == applicationId) ?? item.Application;
     }
     return Results.Ok(result);
@@ -1486,13 +1480,10 @@ app.MapPost("/api/recruitment/applications", async (RecruitmentTalentRepository 
     var pipelineWarning = "";
     try
     {
-        var (pipelineId, warning) = await pipelines.EnsureApplicationPipelineAsync(row.Id, user);
+        var (pipelineId, warning) = await EnsureRecruitmentApplicationAutomationAsync(row.Id, user, pipelines, pipelineActions, candidateActions);
         pipelineWarning = warning;
         if (pipelineId.HasValue)
         {
-            var entry = await pipelineActions.ExecuteAsync(row.Id, "OnEntry", user);
-            if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
-                await candidateActions.EnsureForCurrentStageAsync(row.Id, user);
             row = (await repository.GetApplicationsAsync(user, row.PositionId, row.CandidateId, ""))
                 .FirstOrDefault(item => item.Id == row.Id) ?? row;
         }
@@ -1518,10 +1509,12 @@ app.MapDelete("/api/recruitment/applications/{id:long}", async (RecruitmentTalen
         context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
     return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
-app.MapPost("/api/recruitment/applications/{id:long}/stage", async (RecruitmentTalentRepository repository, long id, ChangeCandidateStageRequest request, HttpContext context) =>
+app.MapPost("/api/recruitment/applications/{id:long}/stage", async (RecruitmentTalentRepository repository, RecruitmentCaseRepository hiringCases, long id, ChangeCandidateStageRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
-    var (row, error) = await repository.ChangeStageAsync(id, request, CurrentUser(context));
+    var user = CurrentUser(context);
+    var (row, error) = await repository.ChangeStageAsync(id, request, user);
+    if (row is not null) await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(id, "ProfilesSelected", user);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 app.MapPost("/api/recruitment/applications/{id:long}/score", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
@@ -1544,7 +1537,7 @@ app.MapGet("/api/recruitment/interviews/scheduling-context/{applicationId:long}"
     var (row, error) = await repository.GetInterviewSchedulingContextAsync(applicationId, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
-app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, SaveRecruitmentInterview request, HttpContext context) =>
+app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentCaseRepository hiringCases, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, SaveRecruitmentInterview request, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.interview.schedule") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var user = CurrentUser(context);
@@ -1556,6 +1549,8 @@ app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository re
         var trigger = isNew || row.RescheduleCount == 0 ? "OnInterviewScheduled" : "OnInterviewRescheduled";
         await pipelineActions.ExecuteAsync(row.ApplicationId, trigger, user, row.PipelineStageInstanceId, $"INTERVIEW{row.Id}R{row.RescheduleCount}");
     }
+    if (row is not null && row.Status is "Scheduled" or "Rescheduled")
+        await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(row.ApplicationId, "InterviewScheduled", user);
     if (row?.Status == "Completed" && row.Result is "Selected" or "Rejected"
         && (previous?.Status != row.Status || previous?.Result != row.Result))
         row.PipelineTransitionMessage = await ApplyRecruitmentDecisionAsync(row.ApplicationId, row.Result, user, pipelines, pipelineActions, candidateActions);
@@ -1888,13 +1883,7 @@ recruitmentOrchestration.MapPost("/applications/{applicationId:long}/pipeline", 
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
     var user = CurrentUser(context);
-    var (id, error) = await repository.EnsureApplicationPipelineAsync(applicationId, user);
-    if (id.HasValue)
-    {
-        var entry = await actions.ExecuteAsync(applicationId, "OnEntry", user);
-        if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
-            await candidateActions.EnsureForCurrentStageAsync(applicationId, user);
-    }
+    var (id, error) = await EnsureRecruitmentApplicationAutomationAsync(applicationId, user, repository, actions, candidateActions);
     return id.HasValue ? Results.Ok(new { pipelineInstanceId = id.Value }) : Results.BadRequest(new { error });
 });
 recruitmentOrchestration.MapGet("/pipeline-board", async (RecruitmentPipelineRepository repository, long positionId, long? jobPostingId, HttpContext context) =>
@@ -1917,7 +1906,7 @@ recruitmentOrchestration.MapPost("/applications/{applicationId:long}/stage-actio
     var result = await actions.ExecuteAsync(applicationId, triggerEvent, CurrentUser(context));
     return string.IsNullOrWhiteSpace(result.TriggerEvent) ? Results.BadRequest(new { error = "Unsupported stage action trigger." }) : Results.Ok(result);
 });
-recruitmentOrchestration.MapPost("/applications/{applicationId:long}/evaluate-ats", async (RecruitmentPipelineRepository repository, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService actions, long applicationId, HttpContext context) =>
+recruitmentOrchestration.MapPost("/applications/{applicationId:long}/evaluate-ats", async (RecruitmentPipelineRepository repository, RecruitmentCaseRepository hiringCases, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService actions, long applicationId, HttpContext context) =>
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
     var user = CurrentUser(context);
@@ -1928,10 +1917,11 @@ recruitmentOrchestration.MapPost("/applications/{applicationId:long}/evaluate-at
         var entry = await actions.ExecuteAsync(applicationId, "OnEntry", user);
         if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
             await candidateActions.EnsureForCurrentStageAsync(applicationId, user);
+        await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(applicationId, "ProfilesSelected", user);
     }
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
-recruitmentOrchestration.MapPost("/applications/{applicationId:long}/transitions/{transitionId:long}", async (RecruitmentPipelineRepository repository, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService actions, long applicationId, long transitionId, RecruitmentPipelineTransitionRequest request, HttpContext context) =>
+recruitmentOrchestration.MapPost("/applications/{applicationId:long}/transitions/{transitionId:long}", async (RecruitmentPipelineRepository repository, RecruitmentCaseRepository hiringCases, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService actions, long applicationId, long transitionId, RecruitmentPipelineTransitionRequest request, HttpContext context) =>
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
     var user = CurrentUser(context);
@@ -1969,6 +1959,7 @@ recruitmentOrchestration.MapPost("/applications/{applicationId:long}/transitions
         var entry = await actions.ExecuteAsync(applicationId, "OnEntry", user);
         if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
             await candidateActions.EnsureForCurrentStageAsync(applicationId, user);
+        await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(applicationId, "ProfilesSelected", user);
     }
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
@@ -2061,13 +2052,7 @@ app.MapPost("/api/public/recruitment/sessions/{token}/submit", async (Recruitmen
     var systemUser = new AuthUser { Id = 0, ClientId = null, IsActive = true, DisplayName = "Public recruitment portal", Permissions = ["recruitment.manage"] };
     var (_, resumeWarning) = await talent.ProcessPublicApplicationResumeAsync(row.ApplicationId, systemUser,
         context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
-    var (_, pipelineError) = await pipelines.EnsureApplicationPipelineAsync(row.ApplicationId, systemUser);
-    if (string.IsNullOrWhiteSpace(pipelineError))
-    {
-        var entry = await pipelineActions.ExecuteAsync(row.ApplicationId, "OnEntry", systemUser);
-        if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
-            await candidateActions.EnsureForCurrentStageAsync(row.ApplicationId, systemUser);
-    }
+    var (_, pipelineError) = await EnsureRecruitmentApplicationAutomationAsync(row.ApplicationId, systemUser, pipelines, pipelineActions, candidateActions);
     return string.IsNullOrWhiteSpace(resumeWarning) && string.IsNullOrWhiteSpace(pipelineError)
         ? Results.Ok(row)
         : Results.Ok(new
@@ -3864,6 +3849,25 @@ static async Task<string> ApplyRecruitmentDecisionAsync(long applicationId, stri
             await candidateActions.EnsureForCurrentStageAsync(applicationId, user);
     }
     return result?.Message ?? error;
+}
+
+static async Task<(long? PipelineId, string Error)> EnsureRecruitmentApplicationAutomationAsync(
+    long applicationId,
+    AuthUser user,
+    RecruitmentPipelineRepository pipelines,
+    RecruitmentPipelineActionService actions,
+    RecruitmentCandidateActionRepository candidateActions)
+{
+    var (pipelineId, error) = await pipelines.EnsureApplicationPipelineAsync(applicationId, user);
+    if (!pipelineId.HasValue) return (null, error);
+
+    var entry = await actions.ExecuteAsync(applicationId, "OnEntry", user);
+    var (movement, _) = await pipelines.AdvanceApplicationToAtsAsync(applicationId, user);
+    if (movement?.Status == "Applied")
+        entry = await actions.ExecuteAsync(applicationId, "OnEntry", user);
+    if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
+        await candidateActions.EnsureForCurrentStageAsync(applicationId, user);
+    return (pipelineId, error);
 }
 
 static bool IsEssAllowedApi(PathString path)

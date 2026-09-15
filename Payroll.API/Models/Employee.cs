@@ -30,6 +30,7 @@ public class Employee
 
 public class EmployeePersonalDetails
 {
+    public string SkillCategory { get; set; } = string.Empty;
     public string DateOfBirth { get; set; } = string.Empty;
     public string Mobile { get; set; } = string.Empty;
     public string PanNumber { get; set; } = string.Empty;

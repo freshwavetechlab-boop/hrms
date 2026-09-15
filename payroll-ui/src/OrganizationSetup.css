@@ -953,8 +953,20 @@ body.portal-shell-mounted #root>.payroll-app.compact.module-shell.nav-collapsed 
 .dashboard-table th,.dashboard-table td{padding:8px 10px!important;border-bottom:1px solid #e5e8f0!important;text-align:left!important;font-size:.74rem!important;white-space:nowrap!important}
 .dashboard-table th{background:#f8fafc!important;color:#64748b!important;font-size:.64rem!important;text-transform:uppercase!important;letter-spacing:.04em!important}
 .dashboard-table td{color:#243044!important}
+.rru-workforce-board{display:grid!important;gap:12px!important}
+.rru-workforce-board>header{margin-bottom:0!important}
+.rru-workforce-kpis{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:10px!important}
+.rru-workforce-kpis article{display:grid!important;gap:3px!important;padding:12px 14px!important;border:1px solid #e4e9f3!important;border-radius:9px!important;background:linear-gradient(145deg,#fbfdff,#f6f3ff)!important}
+.rru-workforce-kpis span{color:#64748b!important;font-size:.7rem!important;font-weight:900!important;text-transform:uppercase!important;letter-spacing:.04em!important}
+.rru-workforce-kpis strong{color:#172136!important;font-size:1.35rem!important;line-height:1.15!important}
+.rru-workforce-kpis small{color:#7b8496!important;font-size:.68rem!important}
+.rru-workforce-content{display:grid!important;grid-template-columns:minmax(0,1.35fr) minmax(280px,.65fr)!important;gap:14px!important;align-items:start!important}
+.rru-workforce-content>section{min-width:0!important;display:grid!important;gap:8px!important}
+.rru-workforce-content h4{margin:0!important;color:#465067!important;font-size:.72rem!important;font-weight:900!important;text-transform:uppercase!important;letter-spacing:.05em!important}
+.rru-campus-table table{min-width:580px!important}
 @media(max-width:1120px){.dashboard-kpis{grid-template-columns:repeat(2,minmax(0,1fr))!important}.dashboard-grid,.dashboard-chart-grid,.dashboard-deep-grid{grid-template-columns:1fr!important}}
-@media(max-width:700px){.dashboard-header{align-items:stretch!important;flex-direction:column!important}.dashboard-kpis,.dashboard-two-chart{grid-template-columns:1fr!important}.dashboard-donut-wrap{grid-template-columns:1fr!important;justify-items:start!important}.dashboard-action-list a{grid-template-columns:48px 1fr!important}.dashboard-table table{min-width:760px!important}}
+@media(max-width:900px){.rru-workforce-content{grid-template-columns:1fr!important}.rru-workforce-kpis{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+@media(max-width:700px){.dashboard-header{align-items:stretch!important;flex-direction:column!important}.dashboard-kpis,.dashboard-two-chart,.rru-workforce-kpis{grid-template-columns:1fr!important}.dashboard-donut-wrap{grid-template-columns:1fr!important;justify-items:start!important}.dashboard-action-list a{grid-template-columns:48px 1fr!important}.dashboard-table table{min-width:760px!important}.rru-campus-table table{min-width:580px!important}}
 
 /* Compact Attendance Review */
 .payroll-attendance-page .manual-attendance{gap:6px!important}

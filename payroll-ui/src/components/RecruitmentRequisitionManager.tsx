@@ -120,6 +120,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const replacementHiring = watchedForm.isReplacement
   const budgetAvailable = watchedForm.budgetAvailable
   const approvedEdit = activeRequest?.status === 'Approved' && watchedForm.id > 0 && canDelete && !readOnly
+  const clientOptions = useMemo(() => clients.map(row => ({ value: Number(row.id), label: row.name })), [clients])
 
   function newBrowserDraftKey() {
     return `frevo:hiring-request:draft:${session?.user.id || 'anonymous'}:${initialWorkOrderId || 0}:${initialWorkOrderLineId || 0}`
@@ -209,8 +210,14 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   }
 
   const applyDraft = (draft: SaveRecruitmentRequisition) => {
-    form.setFieldsValue(draft)
-    setWatchedForm({ id: draft.id || 0, clientId: draft.clientId || 0, isReplacement: Boolean(draft.isReplacement), budgetAvailable: Boolean(draft.budgetAvailable) })
+    const normalized = {
+      ...draft,
+      id: Number(draft.id || 0),
+      clientId: Number(draft.clientId || 0),
+      requestedByEmployeeId: Number(draft.requestedByEmployeeId || 0) || null,
+    }
+    form.setFieldsValue(normalized)
+    setWatchedForm({ id: normalized.id, clientId: normalized.clientId, isReplacement: Boolean(normalized.isReplacement), budgetAvailable: Boolean(normalized.budgetAvailable) })
   }
 
   useEffect(() => {
@@ -731,7 +738,8 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
           <Form.Item name="id" hidden><InputNumber /></Form.Item>
           <Form.Item name="branchId" hidden><InputNumber /></Form.Item>
           <Form.Item className="rfr-span-2" name="clientId" label="Client" rules={[{ required: true, message: 'Select the hiring client.' }]}>
-            <Select showSearch optionFilterProp="label" placeholder="Select client" disabled={clientScopeManaged && initialClientId > 0} options={clients.map(row => ({ value: row.id, label: row.name }))}
+            <Select showSearch optionFilterProp="label" placeholder="Select client" loading={!clients.length} disabled={clientScopeManaged && initialClientId > 0} options={clientOptions}
+              labelRender={({ value, label }) => clientOptions.find(row => row.value === Number(value))?.label || label || (clients.length ? 'Select client' : 'Loading client...')}
               onChange={value => {
                 const linkedRequester = session?.user.employeeId
                 const belongs = employees.some(row => row.id === linkedRequester && row.clientId === value && row.isActive)

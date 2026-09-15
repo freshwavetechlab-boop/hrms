@@ -11,6 +11,7 @@ public sealed class RecruitmentPipelineAutomationWorker(
         {
             try
             {
+                await actions.ProcessCandidateAutomationAsync(stoppingToken);
                 await actions.ProcessSlaActionsAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

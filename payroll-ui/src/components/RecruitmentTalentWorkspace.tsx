@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Avatar, Badge, Button, Card, Checkbox, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Tag, Tooltip } from 'antd'
+import { Avatar, Badge, Button, Card, Checkbox, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip } from 'antd'
 import { BranchesOutlined, CalendarOutlined, DeleteOutlined, FileSearchOutlined, MailOutlined, PhoneOutlined, PlusOutlined, RobotOutlined, SearchOutlined, UploadOutlined, UserAddOutlined } from '@ant-design/icons'
 import DataTable from './DataTable'
 import EntityAttachmentPanel, { type EntityAttachmentDraft } from './EntityAttachmentPanel'
 import RecruitmentAtsScoreDetails from './RecruitmentAtsScoreDetails'
 import RecruitmentInterviewEditor from './RecruitmentInterviewEditor'
+import RecruitmentBatchInterviewEditor from './RecruitmentBatchInterviewEditor'
 import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
 import RecruitmentGlobalTalentPool from './RecruitmentGlobalTalentPool'
 import RecruitmentInternalCandidateForm from './RecruitmentInternalCandidateForm'
@@ -74,6 +75,8 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   const [applicationScoreBand, setApplicationScoreBand] = useState('')
   const [applicationSort, setApplicationSort] = useState('recent')
   const [interviewQuickFilter, setInterviewQuickFilter] = useState<InterviewQuickFilter>('all')
+  const [batchInterviewOpen, setBatchInterviewOpen] = useState(false)
+  const [batchInterviewApplicationIds, setBatchInterviewApplicationIds] = useState<number[]>([])
   const [applicationTransitions, setApplicationTransitions] = useState<Record<number, RecruitmentPipelineTransition[]>>({})
   const [transitionDraft, setTransitionDraft] = useState<{ application: RecruitmentCandidateApplication; transition: RecruitmentPipelineTransition; reason: string } | null>(null)
   const routeQuery = new URLSearchParams(location.search)
@@ -241,6 +244,15 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
     if (interviewQuickFilter === 'attention') return ['Cancelled', 'No Show'].includes(row.status)
     return true
   }), [interviewQuickFilter, interviews])
+  const interviewReadyApplications = useMemo(() => {
+    const alreadyScheduled = new Set(interviews.filter(row => ['Scheduled', 'Rescheduled'].includes(row.status)).map(row => row.applicationId))
+    return applications.filter(row => row.applicationType === 'Application'
+      && /profile|shortlist|interview/i.test(row.currentStage || '')
+      && !rejectedApplication(row)
+      && !alreadyScheduled.has(row.id))
+  }, [applications, interviews])
+  const selectedBatchApplications = useMemo(() => interviewReadyApplications.filter(row => batchInterviewApplicationIds.includes(row.id)), [batchInterviewApplicationIds, interviewReadyApplications])
+  const selectedBatchPositionId = selectedBatchApplications[0]?.positionId || 0
   const interviewMetrics: Array<{ key: InterviewQuickFilter; label: string; count: number; tone: string }> = [
     { key: 'all', label: 'All interviews', count: interviews.length, tone: 'blue' },
     { key: 'scheduled', label: 'Scheduled', count: interviews.filter(row => ['Scheduled', 'Rescheduled'].includes(row.status)).length, tone: 'green' },
@@ -319,7 +331,27 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
       { key: 'applicationCode', label: 'Application' }, { key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Position', render: row => <><b>{row.positionTitle}</b><small>{row.positionCode}</small></> }, { key: 'clientName', label: 'Client' }, { key: 'sourceType', label: 'Application source', render: row => <Tag color={row.jobPostingId ? 'blue' : 'default'}>{row.jobPostingId ? 'Published job link' : `Manual · ${row.sourceType || 'Direct'}`}</Tag> }, { key: 'currentStage', label: 'Stage' }, { key: 'recruiterName', label: 'Recruiter' }, { key: 'atsScore', label: 'ATS score', render: row => row.atsScore == null ? '-' : <Tag color={row.atsScore >= 60 ? 'green' : 'orange'}>{row.atsScore.toFixed(1)}</Tag> }, { key: 'appliedAt', label: 'Applied', render: row => new Date(row.appliedAt).toLocaleDateString('en-IN') }
     ]} /></>}
     {mode === 'interviews' && <section className="interview-operations-workspace">
-      <header className="candidate-applications-heading"><div><span>INTERVIEW OPERATIONS</span><h2>Interviews</h2><p>Schedule rounds, send email invites and capture panel feedback from one queue.</p></div><Button type="primary" icon={<CalendarOutlined />} onClick={() => setInterviewDraft({ applicationId: 0 })}>Schedule interview</Button></header>
+      <header className="candidate-applications-heading"><div><span>INTERVIEW OPERATIONS</span><h2>Interviews</h2><p>Select shortlisted candidates, schedule sequential slots and capture panel feedback from one queue.</p></div><Space wrap><Button icon={<CalendarOutlined />} onClick={() => setInterviewDraft({ applicationId: 0 })}>Schedule one</Button><Button type="primary" icon={<CalendarOutlined />} disabled={!selectedBatchApplications.length} onClick={() => setBatchInterviewOpen(true)}>Schedule selected ({selectedBatchApplications.length})</Button></Space></header>
+      <Card size="small" title="Candidates ready for interview" extra={<Tag color="cyan">{interviewReadyApplications.length} ready</Tag>}>
+        <Table<RecruitmentCandidateApplication>
+          rowKey="id"
+          size="small"
+          pagination={{ pageSize: 8, hideOnSinglePage: true }}
+          dataSource={interviewReadyApplications}
+          locale={{ emptyText: 'No shortlisted candidates yet. Complete ATS review and move selected candidates to Profile Review & Shortlisting.' }}
+          rowSelection={{
+            selectedRowKeys: batchInterviewApplicationIds,
+            onChange: keys => setBatchInterviewApplicationIds(keys.map(Number)),
+            getCheckboxProps: row => ({ disabled: Boolean(selectedBatchPositionId && row.positionId !== selectedBatchPositionId) }),
+          }}
+          columns={[
+            { title: 'Candidate', render: (_, row) => <div><b>{row.candidateName}</b><br /><small>{row.applicationCode}</small></div> },
+            { title: 'Job', render: (_, row) => <div>{row.positionTitle}<br /><small>{row.positionCode}</small></div> },
+            { title: 'ATS', render: (_, row) => row.atsScore == null ? <Tag>Pending</Tag> : <Tag color={row.atsScore >= 60 ? 'green' : 'orange'}>{row.atsScore.toFixed(1)}</Tag> },
+            { title: 'Candidate stage', dataIndex: 'currentStage', render: value => <Tag color={/interview/i.test(String(value)) ? 'blue' : 'purple'}>{value}</Tag> },
+          ]}
+        />
+      </Card>
       <div className="candidate-status-strip interview-status-strip" role="tablist" aria-label="Interview status filters">{interviewMetrics.map(metric => <button key={metric.key} type="button" role="tab" aria-selected={interviewQuickFilter === metric.key} className={interviewQuickFilter === metric.key ? 'is-active' : ''} onClick={() => setInterviewQuickFilter(metric.key)}><b className={`tone-${metric.tone}`}>{metric.count}</b><span>{metric.label}</span></button>)}</div>
       <DataTable rows={visibleInterviews} emptyText="No interviews match this status." exportFileName="recruitment-interviews" actions={row => <Space wrap>
         <Button size="small" onClick={() => setInterviewDraft({ applicationId: row.applicationId, interview: row })}>Update</Button>
@@ -406,6 +438,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
     />
 
     {interviewDraft && <RecruitmentInterviewEditor mode="schedule" open applications={applications} panelUsers={panelUsers} interview={interviewDraft.interview} initialApplicationId={interviewDraft.applicationId} onClose={() => setInterviewDraft(null)} onSaved={refreshInterviewData} />}
+    {batchInterviewOpen && <RecruitmentBatchInterviewEditor open applications={selectedBatchApplications} panelUsers={panelUsers} onClose={() => { setBatchInterviewOpen(false); setBatchInterviewApplicationIds([]) }} onSaved={refreshInterviewData} />}
     {feedbackInterview && <RecruitmentInterviewEditor mode="feedback" open applications={applications} panelUsers={panelUsers} interview={feedbackInterview} onClose={() => setFeedbackInterview(null)} onSaved={refreshInterviewData} />}
     <RecruitmentEditorDrawer open={!!offerDraft} eyebrow="Candidate offer" title={offerDraft?.id ? 'Edit offer' : 'Create offer'} description="Maintain the compensation, joining date and secured offer-letter reference." onClose={() => { setOfferDraft(null); if (!detail) setCandidateAttachments([]) }} onSubmit={() => void saveOfferDraft()} submitText={offerDraft?.id ? 'Save changes' : 'Create offer'} width="min(720px, 96vw)">{offerDraft && <Form layout="vertical"><Form.Item label="Application"><SearchSelect disabled={Boolean(offerDraft.id)} value={offerDraft.applicationId} onChange={value => { const applicationId = Number(value); setOfferDraft({ ...offerDraft, applicationId }); void loadOfferDocuments(applicationId) }} options={applicationOptions} /></Form.Item><Form.Item label="Offered annual CTC"><InputNumber min={0} value={offerDraft.offeredCtc} onChange={value => setOfferDraft({ ...offerDraft, offeredCtc: Number(value || 0) })} /></Form.Item><Form.Item label="Currency"><Input value={offerDraft.currency} onChange={event => setOfferDraft({ ...offerDraft, currency: event.target.value.toUpperCase() })} /></Form.Item><Form.Item label="Proposed joining"><Input type="date" value={String(offerDraft.proposedJoiningDate || '').slice(0, 10)} onChange={event => setOfferDraft({ ...offerDraft, proposedJoiningDate: event.target.value })} /></Form.Item><Form.Item label="Expiry"><Input type="date" value={String(offerDraft.expiryDate || '').slice(0, 10)} onChange={event => setOfferDraft({ ...offerDraft, expiryDate: event.target.value })} /></Form.Item><Form.Item label="Global offer-letter document" extra="After saving this draft, use Generate letter in the Offers table. A manually uploaded current Offer Letter can also be linked here."><Select allowClear value={offerDraft.offerLetterAttachmentPublicId || undefined} onChange={offerLetterAttachmentPublicId => setOfferDraft({ ...offerDraft, offerLetterAttachmentPublicId })} options={offerDocumentOptions} placeholder="Generated or uploaded offer letter" /></Form.Item><Form.Item label="Remarks"><Input.TextArea value={offerDraft.remarks} onChange={event => setOfferDraft({ ...offerDraft, remarks: event.target.value })} /></Form.Item></Form>}</RecruitmentEditorDrawer>
     <Modal open={!!offerStatusDraft} title={offerStatusDraft ? `${offerStatusDraft.status} offer ${offerStatusDraft.row.offerNumber}` : 'Offer status'} onCancel={() => setOfferStatusDraft(null)} onOk={() => void saveOfferStatusDraft()} okButtonProps={{ disabled: !offerStatusDraft?.reason.trim() }}>{offerStatusDraft && <Form layout="vertical"><Form.Item label="Reason" required><Input.TextArea rows={4} value={offerStatusDraft.reason} onChange={event => setOfferStatusDraft({ ...offerStatusDraft, reason: event.target.value })} placeholder="This reason is retained in the candidate timeline and audit trail." /></Form.Item></Form>}</Modal>

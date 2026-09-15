@@ -171,6 +171,22 @@ ORDER BY stageInstance.ApplicationId", cancellationToken: cancellationToken))).T
         return processed;
     }
 
+    public async Task<int> ProcessCandidateAutomationAsync(CancellationToken cancellationToken)
+    {
+        var applicationIds = await pipelines.GetApplicationsReadyForAtsAsync();
+        var system = new AuthUser { Id = 0, DisplayName = "Recruitment automation", IsActive = true, ClientId = null };
+        var processed = 0;
+        foreach (var applicationId in applicationIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (movement, _) = await pipelines.AdvanceApplicationToAtsAsync(applicationId, system);
+            if (movement?.Status != "Applied") continue;
+            await ExecuteAsync(applicationId, "OnEntry", system);
+            processed++;
+        }
+        return processed;
+    }
+
     private async Task ExecuteOneAsync(
         MySqlConnection db,
         long executionId,
@@ -191,9 +207,19 @@ ORDER BY stageInstance.ApplicationId", cancellationToken: cancellationToken))).T
             }
             case "RUN_ATS_SCORE":
             {
-                var (score, error) = await talent.ScoreApplicationAsync(context.ApplicationId, user);
-                if (score is null) throw new InvalidOperationException(error);
-                await CompleteAsync(db, executionId, "ApplicationScoreId", score.Id);
+                var scoreId = await db.ExecuteScalarAsync<long?>(@"SELECT scoreRow.Id
+FROM recruitment_application_scores scoreRow
+JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=scoreRow.ApplicationId
+WHERE scoreRow.ApplicationId=@ApplicationId AND scoreRow.IsCurrent=TRUE
+  AND scoreRow.ResumeId=applicationRow.ResumeId
+ORDER BY scoreRow.ScoredAt DESC,scoreRow.Id DESC LIMIT 1", new { ApplicationId = context.ApplicationId });
+                if (scoreId is null)
+                {
+                    var (score, error) = await talent.ScoreApplicationAsync(context.ApplicationId, user);
+                    if (score is null) throw new InvalidOperationException(error);
+                    scoreId = score.Id;
+                }
+                await CompleteAsync(db, executionId, "ApplicationScoreId", scoreId.Value);
                 var (automation, _) = await pipelines.EvaluateAtsStageAutomationAsync(context.ApplicationId, user);
                 if (automation?.Status == "Applied")
                 {

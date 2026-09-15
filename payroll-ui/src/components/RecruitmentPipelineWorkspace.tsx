@@ -140,7 +140,7 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
         <div className="pipeline-command-controls">
           {canManagePipeline && <Button data-testid="manage-hiring-pipeline" icon={<SettingOutlined />} disabled={!hasClientScope} onClick={() => setPipelineManagerOpen(true)}>Manage pipeline</Button>}
           {canChooseClient
-            ? <Select data-testid="pipeline-client-scope" aria-label="Pipeline client scope" allowClear showSearch optionFilterProp="label" value={initialClientId || undefined} placeholder="Select a client" options={clientOptions} onChange={value => onClientChange?.(value)} />
+            ? <Select data-testid="pipeline-client-scope" aria-label="Pipeline client scope" allowClear showSearch optionFilterProp="label" value={initialClientId || undefined} placeholder="Select a client" loading={!clientOptions.length} options={clientOptions} labelRender={({ value, label }) => clientOptions.find(row => row.value === Number(value))?.label || label || (clientOptions.length ? 'Select a client' : 'Loading client...')} onChange={value => onClientChange?.(value)} />
             : null}
           <Select className="pipeline-view-select" data-testid="pipeline-display-mode" aria-label="Pipeline display view" disabled={!hasClientScope} value={displayMode} onChange={setDisplayMode} options={recruitmentPipelineDisplayOptions} />
         </div>
@@ -297,6 +297,7 @@ function DemandBoard({ clientId, lanes, unassigned, displayMode, clockNow, works
         { key: 'request', label: 'Request', width: '130px', value: row => row.card.requisitionStatus || 'Not started', render: row => <Tag color={statusColor(row.card.requisitionStatus || '')}>{row.card.requisitionStatus || 'Not started'}</Tag> },
         { key: 'jd', label: 'JD', width: '130px', value: row => row.card.jobDescriptionStatus || 'Not started', render: row => <Tag color={statusColor(row.card.jobDescriptionStatus || '')}>{row.card.jobDescriptionStatus || 'Not started'}</Tag> },
         { key: 'posting', label: 'Posting', width: '130px', value: row => row.card.jobPostingStatus || 'Not started', render: row => <Tag color={statusColor(row.card.jobPostingStatus || '')}>{row.card.jobPostingStatus || 'Not started'}</Tag> },
+        { key: 'candidates', label: 'Candidates', width: '110px', value: row => row.card.candidateCount || 0, render: row => <Tag color="cyan"><TeamOutlined /> {row.card.candidateCount || 0}</Tag> },
         { key: 'sla', label: 'Live SLA', width: '260px', value: row => demandSla(row.card, clockNow, workspaceSyncedAt) },
         { key: 'actions', label: 'Actions', width: '420px', sortable: false, filterable: false, render: row => <DemandActions card={row.card} clientId={clientId} compact onChanged={onChanged} /> },
       ]}
@@ -334,6 +335,7 @@ function DemandCard({ card, clientId, clockNow, workspaceSyncedAt, onChanged }: 
     </div>
     <div className="demand-card-context">
       {card.division && <span><ApartmentOutlined /> {card.division}</span>}
+      <Tag color="cyan"><TeamOutlined /> {card.candidateCount || 0} candidate{card.candidateCount === 1 ? '' : 's'}</Tag>
       <span className="demand-live-sla" data-testid={`demand-sla-timer-${card.workOrderLineId}`}><ClockCircleOutlined /> {sla}</span>
     </div>
     <div className="demand-milestones" aria-label="Hiring milestones">

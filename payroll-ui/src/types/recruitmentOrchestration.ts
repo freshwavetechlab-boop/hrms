@@ -531,6 +531,7 @@ export type RecruitmentPipelineDemandCard = {
   jobDescriptionStatus?: string | null
   jobPostingId?: number | null
   jobPostingStatus?: string | null
+  candidateCount: number
   pipelineVersionId?: number | null
   currentStageId?: number | null
   currentStageName?: string | null

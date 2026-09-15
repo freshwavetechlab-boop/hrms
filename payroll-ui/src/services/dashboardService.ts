@@ -30,6 +30,8 @@ const fallbackDashboard: DashboardSnapshot = {
   designationHeadcount: [],
   gradeHeadcount: [],
   genderHeadcount: [],
+  campusGenderHeadcount: [],
+  skillCategoryHeadcount: [],
   essAdoption: [],
   payrollPaymentStatus: [],
   payrollRunType: [],

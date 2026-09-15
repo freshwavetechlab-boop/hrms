@@ -23,7 +23,7 @@ public class DashboardRepository(IConfiguration configuration)
         var sections = DashboardAccess.For(user);
 
         var clients = (await connection.QueryAsync<DashboardClient>(
-            "SELECT Id, Name FROM clients WHERE IsActive = TRUE ORDER BY Name;")).ToList();
+            "SELECT Id, Name, Code FROM clients WHERE IsActive = TRUE ORDER BY Name;")).ToList();
 
         var activeEmployees = sections.Workforce || sections.Attendance
             ? await connection.ExecuteScalarAsync<int>(@"
@@ -250,6 +250,40 @@ GROUP BY COALESCE(NULLIF(TRIM(Gender), ''), 'Not mapped')
 ORDER BY Value DESC, Label;", parameters)).ToList()
             : [];
 
+        var campusGenderHeadcount = sections.Workforce
+            ? (await connection.QueryAsync<DashboardCampusGenderRow>(@"
+SELECT
+    COALESCE(NULLIF(TRIM(w.Name), ''), 'Not mapped') AS Campus,
+    COUNT(*) AS Total,
+    SUM(CASE WHEN LOWER(TRIM(e.Gender)) = 'male' THEN 1 ELSE 0 END) AS Male,
+    SUM(CASE WHEN LOWER(TRIM(e.Gender)) = 'female' THEN 1 ELSE 0 END) AS Female,
+    SUM(CASE WHEN LOWER(TRIM(e.Gender)) NOT IN ('male', 'female') OR e.Gender IS NULL OR TRIM(e.Gender) = '' THEN 1 ELSE 0 END) AS Other
+FROM employees e
+LEFT JOIN worklocations w ON w.Id = e.WorkLocationId
+WHERE e.IsActive = TRUE
+  AND (@ClientId = 0 OR e.ClientId = @ClientId)
+GROUP BY COALESCE(NULLIF(TRIM(w.Name), ''), 'Not mapped')
+ORDER BY Total DESC, Campus;", parameters)).ToList()
+            : [];
+
+        var skillCategoryHeadcount = sections.Workforce
+            ? (await connection.QueryAsync<DashboardChartPoint>(@"
+SELECT Category AS Label, COUNT(*) AS Value
+FROM (
+    SELECT CASE
+        WHEN JSON_VALID(PersonalJson) THEN COALESCE(
+            NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(PersonalJson, '$.skillCategory'))), ''),
+            'Not categorized')
+        ELSE 'Not categorized'
+    END AS Category
+    FROM employees
+    WHERE IsActive = TRUE
+      AND (@ClientId = 0 OR ClientId = @ClientId)
+) categories
+GROUP BY Category
+ORDER BY Value DESC, Label;", parameters)).ToList()
+            : [];
+
         var essAdoption = sections.Workforce
             ? new List<DashboardChartPoint>
             {
@@ -376,6 +410,8 @@ ORDER BY FIELD(Bucket, '< 1 day', '1-3 days', '3-7 days', '> 7 days');", paramet
             DesignationHeadcount = designationHeadcount,
             GradeHeadcount = gradeHeadcount,
             GenderHeadcount = genderHeadcount,
+            CampusGenderHeadcount = campusGenderHeadcount,
+            SkillCategoryHeadcount = skillCategoryHeadcount,
             EssAdoption = essAdoption,
             PayrollPaymentStatus = payrollPaymentStatus,
             PayrollRunType = payrollRunType,
@@ -407,6 +443,8 @@ public class DashboardSnapshot
     public List<DashboardChartPoint> DesignationHeadcount { get; set; } = [];
     public List<DashboardChartPoint> GradeHeadcount { get; set; } = [];
     public List<DashboardChartPoint> GenderHeadcount { get; set; } = [];
+    public List<DashboardCampusGenderRow> CampusGenderHeadcount { get; set; } = [];
+    public List<DashboardChartPoint> SkillCategoryHeadcount { get; set; } = [];
     public List<DashboardChartPoint> EssAdoption { get; set; } = [];
     public List<DashboardChartPoint> PayrollPaymentStatus { get; set; } = [];
     public List<DashboardChartPoint> PayrollRunType { get; set; } = [];
@@ -421,6 +459,16 @@ public class DashboardClient
 {
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
+    public string Code { get; set; } = string.Empty;
+}
+
+public class DashboardCampusGenderRow
+{
+    public string Campus { get; set; } = string.Empty;
+    public int Total { get; set; }
+    public int Male { get; set; }
+    public int Female { get; set; }
+    public int Other { get; set; }
 }
 
 public class DashboardMetrics

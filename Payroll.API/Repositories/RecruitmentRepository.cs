@@ -824,8 +824,10 @@ WHERE WorkOrderLineId=@WorkOrderLineId
 ORDER BY Id DESC LIMIT 1", new { WorkOrderLineId = workOrderLineId }, transaction);
         if (linkedCase is null) return;
 
-        await db.ExecuteAsync(@"UPDATE recruitment_position_pipeline_assignments SET IsActive=FALSE
-WHERE PositionId=@PositionId AND IsActive=TRUE AND PipelineVersionId<>@PipelineVersionId",
+        await db.ExecuteAsync(@"UPDATE recruitment_position_pipeline_assignments assignmentRow
+JOIN recruitment_pipeline_versions versionRow ON versionRow.Id=assignmentRow.PipelineVersionId AND versionRow.ScopeType IN ('Position','Hybrid')
+SET assignmentRow.IsActive=FALSE
+WHERE assignmentRow.PositionId=@PositionId AND assignmentRow.IsActive=TRUE AND assignmentRow.PipelineVersionId<>@PipelineVersionId",
             new { PositionId = positionId, linkedCase.PipelineVersionId }, transaction);
         await db.ExecuteAsync(@"INSERT INTO recruitment_position_pipeline_assignments
 (PositionId,JobPostingId,PipelineVersionId,IsActive,AssignedByUserId)

@@ -896,6 +896,62 @@ VALUES (@CaseId,@StageInstanceId,@PipelineStageId,@Outcome,@Reason,'Pending Appr
         return (await GetHiringCaseAsync(id, user), "");
     }
 
+    public async Task<string> AdvanceHiringCaseForCandidateMilestoneAsync(long applicationId, string milestone, AuthUser user)
+    {
+        var normalizedMilestone = (milestone ?? "").Trim();
+        if (normalizedMilestone is not ("ProfilesSelected" or "InterviewScheduled")) return "";
+        await using var db = Db();
+        await db.OpenAsync();
+        var application = await db.QueryFirstOrDefaultAsync<CandidateMilestoneSource>(@"SELECT applicationRow.PositionId,applicationRow.ClientId,
+COALESCE(candidateStage.StageName,applicationRow.CurrentStage,'') CandidateStageName,
+COALESCE(candidateStage.StageType,'') CandidateStageType
+FROM recruitment_candidate_applications applicationRow
+LEFT JOIN recruitment_application_pipeline_instances candidatePipeline ON candidatePipeline.ApplicationId=applicationRow.Id
+LEFT JOIN recruitment_application_stage_instances candidateInstance ON candidateInstance.Id=candidatePipeline.CurrentStageInstanceId
+LEFT JOIN recruitment_pipeline_stages candidateStage ON candidateStage.Id=candidateInstance.PipelineStageId
+WHERE applicationRow.Id=@ApplicationId AND applicationRow.ApplicationType='Application'", new { ApplicationId = applicationId });
+        if (application is null || (user.ClientId is not null && user.ClientId != application.ClientId)) return "Application was not found.";
+        if (normalizedMilestone == "ProfilesSelected" && !CandidateIsReadyForProfileSharing(application)) return "";
+
+        var targets = normalizedMilestone == "InterviewScheduled"
+            ? new[] { "ProfilesSelected", "InterviewScheduled" }
+            : new[] { "ProfilesSelected" };
+        foreach (var target in targets)
+        {
+            var transition = await db.QueryFirstOrDefaultAsync<HiringMilestoneTransition>(@"SELECT hiringCase.Id HiringCaseId,transitionRow.OutcomeCode
+FROM recruitment_position_pipeline_instances hiringCase
+JOIN recruitment_position_stage_instances currentInstance ON currentInstance.Id=hiringCase.CurrentStageInstanceId AND currentInstance.Status='Active'
+JOIN recruitment_pipeline_transitions transitionRow ON transitionRow.PipelineVersionId=hiringCase.PipelineVersionId
+ AND transitionRow.FromStageId=currentInstance.PipelineStageId AND transitionRow.IsActive=TRUE
+JOIN recruitment_pipeline_stages targetStage ON targetStage.Id=transitionRow.ToStageId AND targetStage.CardScope='Position' AND targetStage.IsActive=TRUE
+WHERE hiringCase.PositionId=@PositionId AND hiringCase.Status='Active'
+ AND transitionRow.OutcomeCode NOT LIKE '%REJECT%'
+ AND ((@Target='ProfilesSelected' AND LOWER(targetStage.StageName) LIKE '%sharing%profile%')
+   OR (@Target='InterviewScheduled' AND (targetStage.StageType='Interview' OR LOWER(targetStage.StageName) LIKE '%interview%panel%')))
+ORDER BY hiringCase.Id DESC,transitionRow.DisplayOrder,transitionRow.Id LIMIT 1", new { application.PositionId, Target = target });
+            if (transition is null) continue;
+            var (_, error) = await AdvanceHiringCaseAsync(transition.HiringCaseId, new MoveRecruitmentHiringCaseRequest
+            {
+                OutcomeCode = transition.OutcomeCode,
+                Reason = target == "ProfilesSelected"
+                    ? "Automatically advanced after a candidate was selected for profile sharing."
+                    : "Automatically advanced after an interview was scheduled."
+            }, user);
+            if (!string.IsNullOrWhiteSpace(error)) return error;
+        }
+        return "";
+    }
+
+    private static bool CandidateIsReadyForProfileSharing(CandidateMilestoneSource application)
+    {
+        if (application.CandidateStageType.Equals("Rejected", StringComparison.OrdinalIgnoreCase)
+            || application.CandidateStageType.Equals("Withdrawn", StringComparison.OrdinalIgnoreCase)) return false;
+        if (new[] { "Interview", "HR", "Offer", "Documents", "PreOnboarding", "Joining", "Completed" }
+            .Contains(application.CandidateStageType, StringComparer.OrdinalIgnoreCase)) return true;
+        var stage = application.CandidateStageName.ToLowerInvariant();
+        return stage.Contains("profile") || stage.Contains("shortlist") || stage.Contains("stakeholder");
+    }
+
     public async Task<(RecruitmentHiringCase? Row, string Error)> SyncHiringCaseAdvanceWorkflowStatusAsync(long requestId, string workflowStatus, AuthUser user)
     {
         var normalized = workflowStatus is "Approved" or "Rejected" or "Sent Back" ? workflowStatus : "Pending Approval";
@@ -1860,6 +1916,20 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
         public long PositionId { get; set; }
         public string CurrentStage { get; set; } = "";
         public long? ApplicationScoreId { get; set; }
+    }
+
+    private sealed class CandidateMilestoneSource
+    {
+        public long PositionId { get; set; }
+        public int ClientId { get; set; }
+        public string CandidateStageName { get; set; } = "";
+        public string CandidateStageType { get; set; } = "";
+    }
+
+    private sealed class HiringMilestoneTransition
+    {
+        public long HiringCaseId { get; set; }
+        public string OutcomeCode { get; set; } = "";
     }
 
     private class ProfileBatchSource

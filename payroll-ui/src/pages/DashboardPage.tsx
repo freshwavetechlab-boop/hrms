@@ -128,7 +128,10 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
     return Math.round((metrics.attendanceRecorded / metrics.activeEmployees) * 100)
   }, [metrics, sections, view])
 
-  const clientName = clientId === 0 ? 'All clients' : dashboard?.clients.find(client => client.id === clientId)?.name ?? 'Selected client'
+  const selectedClient = dashboard?.clients.find(client => client.id === clientId)
+  const clientName = clientId === 0 ? 'All clients' : selectedClient?.name ?? 'Selected client'
+  const isRru = selectedClient?.code?.toUpperCase() === 'RRU' || selectedClient?.name?.toLowerCase().includes('rashtriya raksha university')
+  const genderCount = (label: string) => Number(dashboard?.genderHeadcount.find(item => item.label.toLowerCase() === label.toLowerCase())?.value ?? 0)
   const recentTotals = ['Approved', 'Processing', 'Pending Approval'].map(status => dashboard?.payRunStatuses.find(item => item.status === status) ?? { status, count: 0, netPay: 0 })
 
   return <section className={`dashboard-page dashboard-view-${view}`}>
@@ -153,6 +156,31 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
       {canSee('attendance') && <article><CalendarOutlined /><span>Attendance ready</span><strong>{attendanceReady}%</strong><small>{count.format(metrics?.attendanceMissing ?? 0)} missing, {count.format(metrics?.attendanceIssues ?? 0)} issue(s)</small></article>}
       {canSee('approvals') && <article><ClockCircleOutlined /><span>Pending approvals</span><strong>{count.format(metrics?.pendingTasks ?? 0)}</strong><small>{count.format(metrics?.pendingLeaveRequests ?? 0)} leave request(s)</small></article>}
     </div>
+
+    {canSee('workforce') && isRru && !loading && dashboard?.selectedClientId === clientId && <section className="card dashboard-card rru-workforce-board">
+      <header><i><TeamOutlined /></i><div><h3>RRU Workforce Overview</h3><p>Campus-wise staffing, gender and skill-category distribution.</p></div></header>
+      <div className="rru-workforce-kpis">
+        <article><span>Total staff</span><strong>{count.format(metrics?.activeEmployees ?? 0)}</strong><small>Active employee records</small></article>
+        <article><span>Male</span><strong>{count.format(genderCount('Male'))}</strong><small>Across mapped campuses</small></article>
+        <article><span>Female</span><strong>{count.format(genderCount('Female'))}</strong><small>Across mapped campuses</small></article>
+        <article><span>Appointed total</span><strong>{count.format(metrics?.activeEmployees ?? 0)}</strong><small>Current active appointments</small></article>
+      </div>
+      <div className="rru-workforce-content">
+        <section>
+          <h4>Campus-wise bifurcation</h4>
+          <div className="dashboard-table rru-campus-table">
+            <table>
+              <thead><tr><th>Campus</th><th>Total staff</th><th>Male</th><th>Female</th><th>Other / unmapped</th></tr></thead>
+              <tbody>
+                {(dashboard?.campusGenderHeadcount ?? []).map(row => <tr key={row.campus}><td><strong>{row.campus}</strong></td><td>{count.format(row.total)}</td><td>{count.format(row.male)}</td><td>{count.format(row.female)}</td><td>{count.format(row.other)}</td></tr>)}
+                {!dashboard?.campusGenderHeadcount.length && <tr><td colSpan={5}>No active campus workforce found.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <section><h4>Skill category</h4><BarChart data={dashboard?.skillCategoryHeadcount ?? []} /></section>
+      </div>
+    </section>}
 
     <div className="dashboard-chart-grid">
       {canSee('workforce') && <article className="card dashboard-card dashboard-chart-card">

@@ -75,6 +75,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
   const [recruiter, setRecruiter] = useState({ primaryRecruiterUserId: 0, secondaryRecruiterUserId: 0, assignmentReason: '' })
   const [publication, setPublication] = useState({ channel: '', publishingDate: new Date().toISOString().slice(0, 10), expiryDate: '', status: 'Published', remarks: '' })
   const [campaign, setCampaign] = useState({ campaignName: '', startDate: new Date().toISOString().slice(0, 10), endDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), referralReward: 0, visibilityDepartment: '', visibilityBusinessUnit: '', visibilityLocation: '', visibilityEmploymentType: '', status: 'Open' })
+  const clientOptions = useMemo(() => clients.map(row => ({ value: Number(row.id), label: `${row.code} · ${row.name}` })), [clients])
 
   const load = useCallback(async () => {
     // JD and ATS own their scoped queries; request-table data is not needed there.
@@ -270,7 +271,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
                   positionId={Number(routeQuery.get('positionId') || 0)}
                   initialView={pipelineView}
                   canChooseClient={canChooseClient}
-                  clientOptions={clients.map(row => ({ value: row.id, label: `${row.code} · ${row.name}` }))}
+                  clientOptions={clientOptions}
                   onClientChange={changeClientScope}
                 />
               : <Tabs
@@ -295,7 +296,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
         </div>
       </div>
       <div className={`recruitment-header-actions${canChooseClient ? ' has-client-select' : ''}`}>
-        {canChooseClient && <Select data-testid="recruitment-client-scope" aria-label="Recruitment client scope" allowClear showSearch optionFilterProp="label" value={selectedClientId || undefined} placeholder="All accessible clients" options={clients.map(row => ({ value: row.id, label: `${row.code} · ${row.name}` }))} onChange={changeClientScope} />}
+        {canChooseClient && <Select data-testid="recruitment-client-scope" aria-label="Recruitment client scope" allowClear showSearch optionFilterProp="label" value={selectedClientId || undefined} placeholder="All accessible clients" loading={!clients.length} options={clientOptions} labelRender={({ value, label }) => clientOptions.find(row => row.value === Number(value))?.label || label || (clients.length ? 'All accessible clients' : 'Loading client...')} onChange={changeClientScope} />}
         {workspace === 'requests' && canDelete && !requisitionWorkflowEnabled && <Button onClick={() => setManageVacanciesOpen(true)}>Manage vacancies</Button>}
         {workspace === 'requests' && <Button data-testid="recruitment-new-hiring-request" type="primary" icon={<PlusOutlined />} onClick={() => navigate(scopedPath('/recruitment/requisitions?new=1'))}>New hiring request</Button>}
       </div>

@@ -559,6 +559,7 @@ public class RecruitmentPipelineDemandCard
     public string JobDescriptionStatus { get; set; } = "Not Started";
     public long? JobPostingId { get; set; }
     public string JobPostingStatus { get; set; } = "Not Started";
+    public int CandidateCount { get; set; }
     public long? PipelineVersionId { get; set; }
     public long? CurrentStageId { get; set; }
     public long? CurrentStageInstanceId { get; set; }

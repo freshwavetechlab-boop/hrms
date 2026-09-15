@@ -19,8 +19,9 @@ public class EmployeeRepository(IConfiguration configuration, AuthRepository aut
     private static readonly ConcurrentDictionary<Guid, EmployeeImportJobStatus> ImportJobs = new();
     private static readonly ConcurrentDictionary<Guid, EmployeeImportReviewState> ImportReviews = new();
     private static readonly TimeSpan ImportReviewLifetime = TimeSpan.FromMinutes(30);
+    private static readonly string[] SkillCategories = ["Highly skilled", "Skilled", "Semi-skilled", "Unskilled"];
     private static readonly string[] It0000ImportHeaders = ["Date Of Joining", "Active"];
-    private static readonly string[] It0001ImportHeaders = ["Work Email", "Department", "Designation", "Grade", "Work Location Id", "Work Location", "Reporting Manager User Id", "Reporting Manager Email", "Portal Access"];
+    private static readonly string[] It0001ImportHeaders = ["Work Email", "Department", "Designation", "Grade", "Employee Category", "Work Location Id", "Work Location", "Reporting Manager User Id", "Reporting Manager Email", "Portal Access"];
     private static readonly string[] It0002ImportHeaders = ["First Name", "Last Name", "Gender", "Date Of Birth", "Mobile", "PAN", "Aadhaar", "UAN Number", "ESIC Number"];
     private static readonly string[] It0006ImportHeaders = ["Address", "Correspondence Address", "Permanent Address"];
     private static readonly string[] It0008ImportHeaders = ["Salary Template Id", "Salary Template", "Annual CTC", "Salary Json"];
@@ -783,6 +784,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         Add("Department", "department", current.Department ?? "");
         Add("Designation", "designation", current.Designation ?? "");
         Add("Grade", "grade", current.Grade ?? "");
+        Add("Employee Category", "skillCategory", personal.SkillCategory);
         Add("Work Location Id", "workLocationId", current.WorkLocationId <= 0 ? "" : current.WorkLocationId.ToString());
         Add("Reporting Manager User Id", "reportingManagerUserId", current.ReportingManagerUserId?.ToString() ?? "");
         Add("Portal Access", "portalAccess", current.PortalAccess ? "TRUE" : "FALSE", sensitive: true, compare: NormalizeBoolean);
@@ -969,7 +971,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         await using var db = Connection(); await db.OpenAsync();
         await PayrollDataTableStore.EnsureAsync(db);
         var client = await db.QueryFirstOrDefaultAsync<(int Id, string Name)>("SELECT Id, Name FROM clients WHERE Id=@clientId", new { clientId });
-        var drops = (await db.QueryAsync<(string Type, string Value)>("SELECT Type, Value FROM dropdownmasters WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@clientId) AND Type IN ('Department','Designation','Employee Grade') ORDER BY Type, Value", new { clientId })).ToList();
+        var drops = (await db.QueryAsync<(string Type, string Value)>("SELECT Type, Value FROM dropdownmasters WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@clientId) AND Type IN ('Department','Designation','Employee Grade','Employee Category') ORDER BY Type, Value", new { clientId })).ToList();
         var locations = (await db.QueryAsync<LocationRef>("SELECT Id, Name, City, State FROM worklocations WHERE ClientId=@clientId AND IsActive=TRUE ORDER BY Name", new { clientId })).ToList();
         var templates = ReadSalaryTemplates(await PayrollDataTableStore.GetSetupJsonAsync(db)).Where(template => TemplateForClient(template, clientId)).ToList();
         string First(string type, string fallback) => drops.FirstOrDefault(item => item.Type == type).Value ?? fallback;
@@ -980,14 +982,14 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         var employeeHeaders = new[]
         {
             "Employee Code", "First Name", "Last Name", "Gender", "Date Of Joining", "Date Of Birth", "Work Email", "Mobile",
-            "Department", "Designation", "Grade", "Work Location", "Reporting Manager Email", "Portal Access", "Active",
+            "Department", "Designation", "Grade", "Employee Category", "Work Location", "Reporting Manager Email", "Portal Access", "Active",
             "Salary Template", "Annual CTC", "PAN", "Aadhaar", "UAN Number", "ESIC Number", "Address", "Correspondence Address",
             "Permanent Address", "Bank Name", "Bank Account No", "IFSC", "Payment Mode", "Change Reason"
         };
         var employeeExample = new[]
         {
             "EMP001", "Rahul", "Sharma", "Male", "2026-04-01", "1995-01-15", "rahul@example.com", "9876543210",
-            First("Department", ""), First("Designation", ""), First("Employee Grade", ""), location?.Name ?? "", manager?.Email ?? "",
+            First("Department", ""), First("Designation", ""), First("Employee Grade", ""), First("Employee Category", SkillCategories[0]), location?.Name ?? "", manager?.Email ?? "",
             "TRUE", "TRUE", template?.Name ?? "", template?.AnnualCtc ?? "600000", "ABCDE1234F", "123412341234", "100200300400", "",
             "Local address", "Correspondence address", "Permanent address", "HDFC Bank", "50100123456789", "HDFC0001234", "Bank Transfer", "Initial upload"
         };
@@ -1001,6 +1003,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             new[] { "Date Of Joining", "No", "Use yyyy-MM-dd, e.g. 2026-04-01.", "Optional. If filled, it must be a valid date." },
             new[] { "Work Email", "No", "Employee office email.", "Cannot already belong to another employee." },
             new[] { "Department / Designation / Grade", "No", "Use text from Dropdown Masters.", "Must match active master data for the client." },
+            new[] { "Employee Category", "No", "Highly skilled, Skilled, Semi-skilled, or Unskilled.", "Used for workforce category reporting." },
             new[] { "Work Location", "No", "Use the work location name, not ID.", "Must match one active work location for the client." },
             new[] { "Reporting Manager Email", "No", "Use manager login email from Users.", "Must match an active user for the client or global user." },
             new[] { "Salary Template", "No", "Use salary template name, not ID.", "Must match one active salary template for the client." },
@@ -1011,6 +1014,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         var references = new List<string[]> { new[] { "Reference Type", "Id", "Value", "Extra", "Notes" } };
         if (client.Id > 0) references.Add(new[] { "Client", client.Id.ToString(), client.Name, "", "Selected client" });
         references.AddRange(drops.Select(item => new[] { item.Type, "", item.Value, "", "" }));
+        references.AddRange(SkillCategories.Where(value => !drops.Any(item => item.Type == "Employee Category" && item.Value.Equals(value, StringComparison.OrdinalIgnoreCase))).Select(value => new[] { "Employee Category", "", value, "", "" }));
         references.AddRange(locations.Select(item => new[] { "Work Location", item.Id.ToString(), item.Name, item.City, item.State }));
         references.AddRange(managerUsers.Select(item => new[] { "Manager User", item.Id.ToString(), item.DisplayName, item.Email, "" }));
         references.AddRange(templates.Select(item => new[] { "Salary Template", item.Id, item.Name, item.AnnualCtc, $"ClientId={RefId(item.ClientId)}" }));
@@ -1027,7 +1031,9 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         {
             var totalRows = CountImportRows(workbook);
             if (totalRows == 0) return new EmployeeImportResult(0, 0, 0, ["Import file has no data rows."]);
-            var validDrops = (await db.QueryAsync<(string Type, string Value)>("SELECT Type, Value FROM dropdownmasters WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@clientId) AND Type IN ('Department','Designation','Employee Grade')", new { clientId })).GroupBy(x => x.Type).ToDictionary(x => x.Key, x => x.Select(v => v.Value).ToHashSet(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
+            var validDrops = (await db.QueryAsync<(string Type, string Value)>("SELECT Type, Value FROM dropdownmasters WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@clientId) AND Type IN ('Department','Designation','Employee Grade','Employee Category')", new { clientId })).GroupBy(x => x.Type).ToDictionary(x => x.Key, x => x.Select(v => v.Value).ToHashSet(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
+            if (!validDrops.TryGetValue("Employee Category", out var categoryValues)) validDrops["Employee Category"] = categoryValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            categoryValues.UnionWith(SkillCategories);
             var locations = (await db.QueryAsync<LocationRef>("SELECT Id, Name, City, State FROM worklocations WHERE ClientId=@clientId AND IsActive=TRUE", new { clientId })).ToList();
             var locationsById = locations.ToDictionary(x => x.Id);
             var locationsByName = locations.GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(x => x.Key, x => x.ToList(), StringComparer.OrdinalIgnoreCase);
@@ -1153,6 +1159,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                         if (HasHeader(map, "Department")) { var value = Cell(row, map, "Department"); ValidateMaster("Department", value, validDrops, errors, rowNumber, "Department", sheet); SetIfAny(next => employee.Department = next, value); }
                         if (HasHeader(map, "Designation")) { var value = Cell(row, map, "Designation"); ValidateMaster("Designation", value, validDrops, errors, rowNumber, "Designation", sheet); SetIfAny(next => employee.Designation = next, value); }
                         if (HasHeader(map, "Grade")) { var value = Cell(row, map, "Grade"); ValidateMaster("Employee Grade", value, validDrops, errors, rowNumber, "Grade", sheet); SetIfAny(next => employee.Grade = next, value); }
+                        if (HasHeader(map, "Employee Category")) { var value = Cell(row, map, "Employee Category"); ValidateMaster("Employee Category", value, validDrops, errors, rowNumber, "Employee Category", sheet); SetIfAny(next => employee.PersonalDetails.SkillCategory = next, value); }
                         if (HasAnyHeader(map, "Work Location Id", "Work Location"))
                         {
                             var locationId = ResolveWorkLocationId(Cell(row, map, "Work Location Id"), Cell(row, map, "Work Location"), locationsById, locationsByName, errors, sheet, rowNumber);
@@ -1324,6 +1331,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                         if (HasHeader(map, "Department")) { var value = Cell(row, map, "Department"); ValidateMaster("Department", value, validDrops, errors, rowNumber, "Department", "Employees"); SetIfAny(next => employee.Department = next, value); }
                         if (HasHeader(map, "Designation")) { var value = Cell(row, map, "Designation"); ValidateMaster("Designation", value, validDrops, errors, rowNumber, "Designation", "Employees"); SetIfAny(next => employee.Designation = next, value); }
                         if (HasHeader(map, "Grade")) { var value = Cell(row, map, "Grade"); ValidateMaster("Employee Grade", value, validDrops, errors, rowNumber, "Grade", "Employees"); SetIfAny(next => employee.Grade = next, value); }
+                        if (HasHeader(map, "Employee Category")) { var value = Cell(row, map, "Employee Category"); ValidateMaster("Employee Category", value, validDrops, errors, rowNumber, "Employee Category", "Employees"); SetIfAny(next => personal.SkillCategory = next, value); }
                         if (HasAnyHeader(map, "Work Location Id", "Work Location")) { var locationId = ResolveWorkLocationId(Cell(row, map, "Work Location Id"), Cell(row, map, "Work Location"), locationsById, locationsByName, errors, "Employees", rowNumber); if (locationId.HasValue) employee.WorkLocationId = locationId.Value; }
                         if (HasAnyHeader(map, "Reporting Manager User Id", "Reporting Manager Email")) { var managerUserId = ResolveManagerUserId(Cell(row, map, "Reporting Manager User Id"), Cell(row, map, "Reporting Manager Email"), managerUsersById, managerUsersByEmail, errors, "Employees", rowNumber); if (managerUserId.HasValue) employee.ReportingManagerUserId = managerUserId.Value; }
                         if (HasHeader(map, "Portal Access")) { if (TryBool(Cell(row, map, "Portal Access"), employee.PortalAccess, out var portal)) employee.PortalAccess = portal; else errors.Add($"Employees row {rowNumber}: Portal Access must be TRUE/FALSE."); }
@@ -1650,7 +1658,9 @@ CREATE TABLE IF NOT EXISTS employee_audit_trail (
         DateOfJoining = row.DateOfJoining, WorkEmail = row.WorkEmail, Department = row.Department, Designation = row.Designation, Grade = row.Grade,
         WorkLocationId = row.WorkLocationId, ReportingManagerId = row.ReportingManagerId, ReportingManagerUserId = row.ReportingManagerUserId, PortalAccess = row.PortalAccess, SalaryStructureId = row.SalaryStructureId,
         AnnualCtc = row.AnnualCtc, SalaryJson = row.SalaryJson, PersonalJson = row.PersonalJson, PaymentJson = row.PaymentJson, IsActive = row.IsActive,
-        SalaryComponents = new Dictionary<string, decimal>(row.SalaryComponents), PersonalDetails = row.PersonalDetails, PaymentDetails = row.PaymentDetails
+        SalaryComponents = new Dictionary<string, decimal>(row.SalaryComponents),
+        PersonalDetails = JsonSerializer.Deserialize<EmployeePersonalDetails>(JsonSerializer.Serialize(row.PersonalDetails)) ?? new EmployeePersonalDetails(),
+        PaymentDetails = JsonSerializer.Deserialize<EmployeePaymentDetails>(JsonSerializer.Serialize(row.PaymentDetails)) ?? new EmployeePaymentDetails()
     };
 
     static DateTime EffectiveDate(Employee employee) =>
@@ -1745,7 +1755,7 @@ WHERE EmployeeId=@EmployeeId AND Status='Active' AND EffectiveFrom<=@EffectiveFr
     static IEnumerable<(string InfotypeCode, string InfotypeName, string DataJson)> InfotypeSnapshots(Employee employee)
     {
         yield return ("0000", "Actions", JsonSerializer.Serialize(new { employee.IsActive, employee.DateOfJoining }));
-        yield return ("0001", "Organizational Assignment", JsonSerializer.Serialize(new { employee.ClientId, employee.Department, employee.Designation, employee.Grade, employee.WorkLocationId, employee.ReportingManagerId, employee.ReportingManagerUserId, employee.WorkEmail }));
+        yield return ("0001", "Organizational Assignment", JsonSerializer.Serialize(new { employee.ClientId, employee.Department, employee.Designation, employee.Grade, employee.PersonalDetails.SkillCategory, employee.WorkLocationId, employee.ReportingManagerId, employee.ReportingManagerUserId, employee.WorkEmail }));
         yield return ("0002", "Personal Data", JsonSerializer.Serialize(new { employee.FirstName, employee.LastName, employee.Gender, employee.PersonalDetails }));
         yield return ("0006", "Addresses", JsonSerializer.Serialize(new { employee.PersonalDetails.Address, employee.PersonalDetails.CorrespondenceAddress, employee.PersonalDetails.PermanentAddress }));
         yield return ("0008", "Basic Pay", JsonSerializer.Serialize(new { employee.SalaryStructureId, employee.AnnualCtc, employee.SalaryComponents }));
