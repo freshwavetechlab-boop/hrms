@@ -296,7 +296,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
         </div>
       </div>
       <div className={`recruitment-header-actions${canChooseClient ? ' has-client-select' : ''}`}>
-        {canChooseClient && <Select data-testid="recruitment-client-scope" aria-label="Recruitment client scope" allowClear showSearch optionFilterProp="label" value={selectedClientId || undefined} placeholder="All accessible clients" loading={!clients.length} options={clientOptions} labelRender={({ value, label }) => clientOptions.find(row => row.value === Number(value))?.label || label || (clients.length ? 'All accessible clients' : 'Loading client...')} onChange={changeClientScope} />}
+        {canChooseClient && <Select data-testid="recruitment-client-scope" aria-label="Recruitment client scope" allowClear showSearch optionFilterProp="label" optionLabelProp="label" value={selectedClientId || undefined} placeholder={clients.length ? 'All accessible clients' : 'Loading client...'} loading={!clients.length} options={clientOptions} onChange={changeClientScope} />}
         {workspace === 'requests' && canDelete && !requisitionWorkflowEnabled && <Button onClick={() => setManageVacanciesOpen(true)}>Manage vacancies</Button>}
         {workspace === 'requests' && <Button data-testid="recruitment-new-hiring-request" type="primary" icon={<PlusOutlined />} onClick={() => navigate(scopedPath('/recruitment/requisitions?new=1'))}>New hiring request</Button>}
       </div>

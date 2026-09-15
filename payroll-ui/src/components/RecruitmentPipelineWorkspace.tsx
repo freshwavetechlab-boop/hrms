@@ -142,7 +142,7 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
         <div className="pipeline-command-controls">
           {canManagePipeline && <Button data-testid="manage-hiring-pipeline" icon={<SettingOutlined />} disabled={!hasClientScope} onClick={() => setPipelineManagerOpen(true)}>Manage pipeline</Button>}
           {canChooseClient
-            ? <Select data-testid="pipeline-client-scope" aria-label="Pipeline client scope" allowClear showSearch optionFilterProp="label" value={initialClientId || undefined} placeholder="Select a client" loading={!clientOptions.length} options={clientOptions} labelRender={({ value, label }) => clientOptions.find(row => row.value === Number(value))?.label || label || (clientOptions.length ? 'Select a client' : 'Loading client...')} onChange={value => onClientChange?.(value)} />
+            ? <Select data-testid="pipeline-client-scope" aria-label="Pipeline client scope" allowClear showSearch optionFilterProp="label" optionLabelProp="label" value={initialClientId || undefined} placeholder={clientOptions.length ? 'Select a client' : 'Loading client...'} loading={!clientOptions.length} options={clientOptions} onChange={value => onClientChange?.(value)} />
             : null}
           <Select className="pipeline-view-select" data-testid="pipeline-display-mode" aria-label="Pipeline display view" disabled={!hasClientScope} value={displayMode} onChange={setDisplayMode} options={recruitmentPipelineDisplayOptions} />
         </div>

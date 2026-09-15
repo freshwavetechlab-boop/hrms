@@ -738,8 +738,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
           <Form.Item name="id" hidden><InputNumber /></Form.Item>
           <Form.Item name="branchId" hidden><InputNumber /></Form.Item>
           <Form.Item className="rfr-span-2" name="clientId" label="Client" rules={[{ required: true, message: 'Select the hiring client.' }]}>
-            <Select showSearch optionFilterProp="label" placeholder="Select client" loading={!clients.length} disabled={clientScopeManaged && initialClientId > 0} options={clientOptions}
-              labelRender={({ value, label }) => clientOptions.find(row => row.value === Number(value))?.label || label || (clients.length ? 'Select client' : 'Loading client...')}
+            <Select showSearch optionFilterProp="label" optionLabelProp="label" placeholder={clients.length ? 'Select client' : 'Loading client...'} loading={!clients.length} disabled={clientScopeManaged && initialClientId > 0} options={clientOptions}
               onChange={value => {
                 const linkedRequester = session?.user.employeeId
                 const belongs = employees.some(row => row.id === linkedRequester && row.clientId === value && row.isActive)
