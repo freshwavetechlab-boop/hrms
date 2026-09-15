@@ -3809,6 +3809,7 @@ WHERE table_schema=DATABASE() AND table_name=@Table AND LOWER(column_name)=LOWER
             ("recruitment_ai_scoring_settings","lastusedat","DATETIME NULL"),
             ("recruitment_ai_scoring_settings","consecutivefailurecount","INT NOT NULL DEFAULT 0"),
             ("recruitment_ai_scoring_settings","lastfailureat","DATETIME NULL"),
+            ("recruitment_ai_scoring_settings","accountemail","VARCHAR(254) NOT NULL DEFAULT '' AFTER ClientId"),
             ("recruitment_requisitions","jobdescriptiontemplateid","BIGINT NULL"),
             ("recruitment_requisitions","jobdescriptiontext","LONGTEXT NULL"),
             ("recruitment_requisitions","atsscoringprofileid","BIGINT NULL"),
@@ -3884,10 +3885,14 @@ INSERT IGNORE INTO recruitment_ai_runtime_settings (ScopeClientId,AutoSwitchEnab
 WHERE table_schema=DATABASE() AND table_name='recruitment_ai_scoring_settings' AND index_name='UX_recruitment_ai_scoring_client'");
         if (legacyUnique > 0)
             await db.ExecuteAsync("ALTER TABLE recruitment_ai_scoring_settings DROP INDEX UX_recruitment_ai_scoring_client");
+        var accountPoolUnique = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM information_schema.statistics
+WHERE table_schema=DATABASE() AND table_name='recruitment_ai_scoring_settings' AND index_name='UX_recruitment_ai_provider_model_account'");
+        if (accountPoolUnique == 0)
+            await db.ExecuteAsync("ALTER TABLE recruitment_ai_scoring_settings ADD UNIQUE INDEX UX_recruitment_ai_provider_model_account (ClientId,ProviderCode,ModelName,AccountEmail)");
         var poolUnique = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM information_schema.statistics
 WHERE table_schema=DATABASE() AND table_name='recruitment_ai_scoring_settings' AND index_name='UX_recruitment_ai_provider_model'");
-        if (poolUnique == 0)
-            await db.ExecuteAsync("ALTER TABLE recruitment_ai_scoring_settings ADD UNIQUE INDEX UX_recruitment_ai_provider_model (ClientId,ProviderCode,ModelName)");
+        if (poolUnique > 0)
+            await db.ExecuteAsync("ALTER TABLE recruitment_ai_scoring_settings DROP INDEX UX_recruitment_ai_provider_model");
         var orderIndex = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM information_schema.statistics
 WHERE table_schema=DATABASE() AND table_name='recruitment_ai_scoring_settings' AND index_name='IX_recruitment_ai_provider_order'");
         if (orderIndex == 0)
@@ -3970,7 +3975,7 @@ CREATE TABLE IF NOT EXISTS recruitment_application_score_components (
 CREATE TABLE IF NOT EXISTS recruitment_application_score_skill_matches (
  Id BIGINT PRIMARY KEY AUTO_INCREMENT,ApplicationScoreId BIGINT NOT NULL,SkillType VARCHAR(40) NOT NULL,SkillName VARCHAR(180) NOT NULL,MatchStatus VARCHAR(40) NOT NULL,MatchMethod VARCHAR(40) NOT NULL DEFAULT 'ExactOrAlias',MatchedTerm VARCHAR(180) NOT NULL DEFAULT '',EvidenceExcerpt VARCHAR(500) NOT NULL DEFAULT '',RequirementWeight DECIMAL(5,2) NOT NULL DEFAULT 0,MinimumYears DECIMAL(5,2) NOT NULL DEFAULT 0,MinimumProficiency VARCHAR(80) NOT NULL DEFAULT '',Confidence DECIMAL(5,4) NOT NULL DEFAULT 0,SemanticSimilarity DECIMAL(5,4) NOT NULL DEFAULT 0,UNIQUE KEY UX_recruitment_score_skill (ApplicationScoreId,SkillType,SkillName),INDEX IX_recruitment_score_skill_status (ApplicationScoreId,MatchStatus));
 CREATE TABLE IF NOT EXISTS recruitment_ai_scoring_settings (
- Id BIGINT PRIMARY KEY AUTO_INCREMENT,ClientId INT NOT NULL,EnableAiScoring BOOLEAN NOT NULL DEFAULT FALSE,ProviderCode VARCHAR(40) NOT NULL DEFAULT 'Gemini',ModelName VARCHAR(120) NOT NULL DEFAULT 'gemini-3.5-flash',EndpointUrl VARCHAR(500) NOT NULL DEFAULT '',AiBlendWeight DECIMAL(5,2) NOT NULL DEFAULT 20,MinimumConfidence DECIMAL(5,4) NOT NULL DEFAULT 0.6500,MaximumResumeCharacters INT NOT NULL DEFAULT 40000,RequestTimeoutSeconds INT NOT NULL DEFAULT 45,ApiKeyCipherText MEDIUMTEXT NULL,HealthStatus VARCHAR(40) NOT NULL DEFAULT 'NotTested',LastHealthMessage VARCHAR(500) NOT NULL DEFAULT '',LastTestedAt DATETIME NULL,IsActive BOOLEAN NOT NULL DEFAULT TRUE,IsPrimary BOOLEAN NOT NULL DEFAULT FALSE,Priority INT NOT NULL DEFAULT 100,MonthlyRequestLimit INT NOT NULL DEFAULT 1000,UsagePeriod CHAR(7) NOT NULL DEFAULT '',UsageRequestCount INT NOT NULL DEFAULT 0,UsageInputTokens BIGINT NOT NULL DEFAULT 0,UsageOutputTokens BIGINT NOT NULL DEFAULT 0,LastUsedAt DATETIME NULL,ConsecutiveFailureCount INT NOT NULL DEFAULT 0,LastFailureAt DATETIME NULL,CreatedByUserId INT NULL,UpdatedByUserId INT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,UNIQUE KEY UX_recruitment_ai_provider_model (ClientId,ProviderCode,ModelName),INDEX IX_recruitment_ai_provider_order (ClientId,IsPrimary,IsActive,Priority));
+ Id BIGINT PRIMARY KEY AUTO_INCREMENT,ClientId INT NOT NULL,AccountEmail VARCHAR(254) NOT NULL DEFAULT '',EnableAiScoring BOOLEAN NOT NULL DEFAULT FALSE,ProviderCode VARCHAR(40) NOT NULL DEFAULT 'Gemini',ModelName VARCHAR(120) NOT NULL DEFAULT 'gemini-3.5-flash',EndpointUrl VARCHAR(500) NOT NULL DEFAULT '',AiBlendWeight DECIMAL(5,2) NOT NULL DEFAULT 20,MinimumConfidence DECIMAL(5,4) NOT NULL DEFAULT 0.6500,MaximumResumeCharacters INT NOT NULL DEFAULT 40000,RequestTimeoutSeconds INT NOT NULL DEFAULT 45,ApiKeyCipherText MEDIUMTEXT NULL,HealthStatus VARCHAR(40) NOT NULL DEFAULT 'NotTested',LastHealthMessage VARCHAR(500) NOT NULL DEFAULT '',LastTestedAt DATETIME NULL,IsActive BOOLEAN NOT NULL DEFAULT TRUE,IsPrimary BOOLEAN NOT NULL DEFAULT FALSE,Priority INT NOT NULL DEFAULT 100,MonthlyRequestLimit INT NOT NULL DEFAULT 1000,UsagePeriod CHAR(7) NOT NULL DEFAULT '',UsageRequestCount INT NOT NULL DEFAULT 0,UsageInputTokens BIGINT NOT NULL DEFAULT 0,UsageOutputTokens BIGINT NOT NULL DEFAULT 0,LastUsedAt DATETIME NULL,ConsecutiveFailureCount INT NOT NULL DEFAULT 0,LastFailureAt DATETIME NULL,CreatedByUserId INT NULL,UpdatedByUserId INT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,UNIQUE KEY UX_recruitment_ai_provider_model_account (ClientId,ProviderCode,ModelName,AccountEmail),INDEX IX_recruitment_ai_provider_order (ClientId,IsPrimary,IsActive,Priority));
 CREATE TABLE IF NOT EXISTS recruitment_ai_runtime_settings (
  ScopeClientId INT PRIMARY KEY,AutoSwitchEnabled BOOLEAN NOT NULL DEFAULT FALSE,UpdatedByUserId INT NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS recruitment_ats_scoring_jobs (

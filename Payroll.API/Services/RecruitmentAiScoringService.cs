@@ -44,7 +44,9 @@ public sealed class RecruitmentAiScoringService(
         "PROJECTS", "ACHIEVEMENTS", "CONTACT", "LANGUAGES", "PUBLICATIONS"
     };
     private readonly SemaphoreSlim inferenceGate = new(2, 2);
+    private readonly SemaphoreSlim accountSchemaGate = new(1, 1);
     private readonly ConcurrentDictionary<long, ProviderQuotaSnapshot> providerQuotas = new();
+    private volatile bool accountSchemaReady;
 
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
 
@@ -67,6 +69,7 @@ public sealed class RecruitmentAiScoringService(
     {
         await using var db = Db();
         await db.OpenAsync();
+        await EnsureAccountSchemaAsync(db);
         var row = await db.QueryFirstOrDefaultAsync<RecruitmentAiScoringSecretRow>($@"{SettingsSelect}
 WHERE settings.ClientId=@ClientId
 ORDER BY settings.IsPrimary DESC,settings.Priority,settings.Id
@@ -80,6 +83,7 @@ LIMIT 1", new { ClientId = scopeClientId });
         if (user.ClientId.HasValue) return new RecruitmentAiProviderPool();
         await using var db = Db();
         await db.OpenAsync();
+        await EnsureAccountSchemaAsync(db);
         var models = (await db.QueryAsync<RecruitmentAiScoringSecretRow>($@"{SettingsSelect}
 WHERE settings.ClientId=@ClientId
 ORDER BY settings.IsPrimary DESC,settings.Priority,settings.Id", new { ClientId = GlobalClientId })).ToList();
@@ -93,7 +97,7 @@ ORDER BY settings.IsPrimary DESC,settings.Priority,settings.Id", new { ClientId 
     }
 
     private const string SettingsSelect = @"SELECT settings.Id,settings.ClientId,
-COALESCE(client.Name,IF(settings.ClientId=0,'All Frevo','')) ClientName,settings.EnableAiScoring,settings.ProviderCode,settings.ModelName,settings.EndpointUrl,
+COALESCE(client.Name,IF(settings.ClientId=0,'All Frevo','')) ClientName,settings.AccountEmail,settings.EnableAiScoring,settings.ProviderCode,settings.ModelName,settings.EndpointUrl,
 settings.AiBlendWeight,settings.MinimumConfidence,settings.MaximumResumeCharacters,settings.RequestTimeoutSeconds,
 (COALESCE(settings.ApiKeyCipherText,'')<>'') HasApiKey,settings.ApiKeyCipherText,settings.HealthStatus,settings.LastHealthMessage,
 settings.LastTestedAt,settings.IsActive,settings.IsPrimary,settings.Priority,settings.MonthlyRequestLimit,
@@ -122,11 +126,14 @@ LEFT JOIN clients client ON client.Id=settings.ClientId";
             request.RequestTimeoutSeconds = GlobalRequestTimeoutSeconds;
         }
         request.ProviderCode = NormalizeProvider(request.ProviderCode);
+        request.AccountEmail = (request.AccountEmail ?? "").Trim();
         request.ModelName = (request.ModelName ?? "").Trim();
         request.EndpointUrl = (request.EndpointUrl ?? "").Trim().TrimEnd('/');
         if (global && user.ClientId.HasValue) return (null, "Only a global settings administrator can manage the Frevo AI integration.");
         if (!global && (request.ClientId <= 0 || !CanAccessClient(user, request.ClientId))) return (null, "Select a client within your permitted scope.");
         if (!SupportedProviders.Values.Any(value => value.Equals(request.ProviderCode, StringComparison.OrdinalIgnoreCase))) return (null, "Select a supported AI provider.");
+        if (request.AccountEmail.Length > 254 || (!string.IsNullOrWhiteSpace(request.AccountEmail) && !Regex.IsMatch(request.AccountEmail, @"^[^\s@]+@[^\s@]+\.[^\s@]+$")))
+            return (null, "Enter a valid account email address.");
         if (string.IsNullOrWhiteSpace(request.ModelName) || request.ModelName.Length > 120) return (null, "Enter a valid AI model name.");
         if (request.EndpointUrl.Length > 500) return (null, "The custom provider URL is too long.");
         if (request.ProviderCode == "OpenAICompatible" && !IsValidProviderEndpoint(request.EndpointUrl)) return (null, "Enter a valid HTTPS base URL for the OpenAI-compatible provider.");
@@ -139,6 +146,7 @@ LEFT JOIN clients client ON client.Id=settings.ClientId";
 
         await using var db = Db();
         await db.OpenAsync();
+        await EnsureAccountSchemaAsync(db);
         if (!global)
         {
             var clientExists = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM clients WHERE Id=@ClientId", request);
@@ -147,7 +155,7 @@ LEFT JOIN clients client ON client.Id=settings.ClientId";
         var existing = request.Id > 0
             ? await db.QueryFirstOrDefaultAsync<RecruitmentAiScoringSecretRow>("SELECT * FROM recruitment_ai_scoring_settings WHERE Id=@Id AND ClientId=@ClientId", request)
             : global
-                ? await db.QueryFirstOrDefaultAsync<RecruitmentAiScoringSecretRow>("SELECT * FROM recruitment_ai_scoring_settings WHERE ClientId=@ClientId AND ProviderCode=@ProviderCode AND ModelName=@ModelName", request)
+                ? await db.QueryFirstOrDefaultAsync<RecruitmentAiScoringSecretRow>("SELECT * FROM recruitment_ai_scoring_settings WHERE ClientId=@ClientId AND ProviderCode=@ProviderCode AND ModelName=@ModelName AND AccountEmail=@AccountEmail", request)
                 : await db.QueryFirstOrDefaultAsync<RecruitmentAiScoringSecretRow>("SELECT * FROM recruitment_ai_scoring_settings WHERE ClientId=@ClientId ORDER BY IsPrimary DESC,Priority,Id LIMIT 1", request);
         if (request.Id > 0 && existing is null) return (null, "AI model was not found in this scope.");
         if (existing is not null && !NormalizeProvider(existing.ProviderCode).Equals(request.ProviderCode, StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(request.ApiKey))
@@ -171,6 +179,7 @@ LEFT JOIN clients client ON client.Id=settings.ClientId";
         var values = new
         {
             request.ClientId,
+            request.AccountEmail,
             request.EnableAiScoring,
             request.ProviderCode,
             request.ModelName,
@@ -190,24 +199,24 @@ LEFT JOIN clients client ON client.Id=settings.ClientId";
         {
             if (existing is null)
                 id = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_ai_scoring_settings
-(ClientId,EnableAiScoring,ProviderCode,ModelName,EndpointUrl,AiBlendWeight,MinimumConfidence,MaximumResumeCharacters,RequestTimeoutSeconds,ApiKeyCipherText,HealthStatus,LastHealthMessage,LastTestedAt,IsActive,IsPrimary,Priority,MonthlyRequestLimit,CreatedByUserId,UpdatedByUserId)
-VALUES (@ClientId,@EnableAiScoring,@ProviderCode,@ModelName,@EndpointUrl,@AiBlendWeight,@MinimumConfidence,@MaximumResumeCharacters,@RequestTimeoutSeconds,@ApiKeyCipherText,'NotTested','',NULL,@IsActive,@IsPrimary,@Priority,@MonthlyRequestLimit,@UserId,@UserId);SELECT LAST_INSERT_ID();", values, transaction);
+(ClientId,AccountEmail,EnableAiScoring,ProviderCode,ModelName,EndpointUrl,AiBlendWeight,MinimumConfidence,MaximumResumeCharacters,RequestTimeoutSeconds,ApiKeyCipherText,HealthStatus,LastHealthMessage,LastTestedAt,IsActive,IsPrimary,Priority,MonthlyRequestLimit,CreatedByUserId,UpdatedByUserId)
+VALUES (@ClientId,@AccountEmail,@EnableAiScoring,@ProviderCode,@ModelName,@EndpointUrl,@AiBlendWeight,@MinimumConfidence,@MaximumResumeCharacters,@RequestTimeoutSeconds,@ApiKeyCipherText,'NotTested','',NULL,@IsActive,@IsPrimary,@Priority,@MonthlyRequestLimit,@UserId,@UserId);SELECT LAST_INSERT_ID();", values, transaction);
             else
             {
                 id = existing.Id;
-                await db.ExecuteAsync(@"UPDATE recruitment_ai_scoring_settings SET EnableAiScoring=@EnableAiScoring,ProviderCode=@ProviderCode,ModelName=@ModelName,
+                await db.ExecuteAsync(@"UPDATE recruitment_ai_scoring_settings SET AccountEmail=@AccountEmail,EnableAiScoring=@EnableAiScoring,ProviderCode=@ProviderCode,ModelName=@ModelName,
 EndpointUrl=@EndpointUrl,AiBlendWeight=@AiBlendWeight,MinimumConfidence=@MinimumConfidence,MaximumResumeCharacters=@MaximumResumeCharacters,
 RequestTimeoutSeconds=@RequestTimeoutSeconds,ApiKeyCipherText=@ApiKeyCipherText,HealthStatus=IF(ProviderCode<>@ProviderCode OR ModelName<>@ModelName OR EndpointUrl<>@EndpointUrl OR ApiKeyCipherText<>@ApiKeyCipherText,'NotTested',HealthStatus),
 LastHealthMessage=IF(ProviderCode<>@ProviderCode OR ModelName<>@ModelName OR EndpointUrl<>@EndpointUrl OR ApiKeyCipherText<>@ApiKeyCipherText,'',LastHealthMessage),
 LastTestedAt=IF(ProviderCode<>@ProviderCode OR ModelName<>@ModelName OR EndpointUrl<>@EndpointUrl OR ApiKeyCipherText<>@ApiKeyCipherText,NULL,LastTestedAt),
 IsActive=@IsActive,IsPrimary=@IsPrimary,Priority=@Priority,MonthlyRequestLimit=@MonthlyRequestLimit,UpdatedByUserId=@UserId,UpdatedAt=UTC_TIMESTAMP()
-WHERE Id=@Id AND ClientId=@ClientId", new { Id = existing.Id, values.ClientId, values.EnableAiScoring, values.ProviderCode, values.ModelName, values.EndpointUrl, values.AiBlendWeight, values.MinimumConfidence, values.MaximumResumeCharacters, values.RequestTimeoutSeconds, values.ApiKeyCipherText, values.IsActive, values.IsPrimary, values.Priority, values.MonthlyRequestLimit, values.UserId }, transaction);
+WHERE Id=@Id AND ClientId=@ClientId", new { Id = existing.Id, values.ClientId, values.AccountEmail, values.EnableAiScoring, values.ProviderCode, values.ModelName, values.EndpointUrl, values.AiBlendWeight, values.MinimumConfidence, values.MaximumResumeCharacters, values.RequestTimeoutSeconds, values.ApiKeyCipherText, values.IsActive, values.IsPrimary, values.Priority, values.MonthlyRequestLimit, values.UserId }, transaction);
             }
         }
         catch (MySqlException exception) when (exception.Number == 1062)
         {
             await transaction.RollbackAsync();
-            return (null, "This provider and model are already saved.");
+            return (null, "This provider, model and account are already saved.");
         }
         var primaryCount = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_ai_scoring_settings WHERE ClientId=@ClientId AND IsPrimary=TRUE AND IsActive=TRUE AND EnableAiScoring=TRUE", request, transaction);
         if (primaryCount == 0)
@@ -216,7 +225,7 @@ WHERE ClientId=@ClientId AND IsActive=TRUE AND EnableAiScoring=TRUE ORDER BY Pri
         await db.ExecuteAsync(@"INSERT INTO recruitment_admin_audit
 (EntityType,EntityId,Action,NewValueJson,ChangedByUserId)
 SELECT 'RecruitmentAiScoringSetting',Id,'SaveModel',
-JSON_OBJECT('clientId',ClientId,'enabled',EnableAiScoring,'provider',ProviderCode,'model',ModelName,
+JSON_OBJECT('clientId',ClientId,'accountEmail',AccountEmail,'enabled',EnableAiScoring,'provider',ProviderCode,'model',ModelName,
 'primary',IsPrimary,'monthlyRequestLimit',MonthlyRequestLimit,'hasApiKey',COALESCE(ApiKeyCipherText,'')<>''),
 @UserId FROM recruitment_ai_scoring_settings WHERE Id=@Id", new { Id = id, UserId = user.Id }, transaction);
         await transaction.CommitAsync();
@@ -227,6 +236,7 @@ JSON_OBJECT('clientId',ClientId,'enabled',EnableAiScoring,'provider',ProviderCod
     {
         await using var db = Db();
         await db.OpenAsync();
+        await EnsureAccountSchemaAsync(db);
         return ApplyRuntimeState(await db.QueryFirstOrDefaultAsync<RecruitmentAiScoringSecretRow>($@"{SettingsSelect} WHERE settings.Id=@Id AND settings.ClientId=@ClientId", new { Id = id, ClientId = clientId }));
     }
 
@@ -609,6 +619,7 @@ VALUES ('RecruitmentAiScoringSetting',@Id,'Delete',JSON_OBJECT('clientId',@Clien
     {
         await using var db = Db();
         await db.OpenAsync(cancellationToken);
+        await EnsureAccountSchemaAsync(db, cancellationToken);
         List<RecruitmentAiScoringSecretRow> models;
         if (modelId.HasValue)
         {
@@ -845,6 +856,44 @@ WHERE Id=@Id AND ApiKeyCipherText=@LegacyCipherText", new
             LegacyCipherText = legacyCipherText
         }, cancellationToken: cancellationToken));
         if (updated > 0) row.ApiKeyCipherText = portableCipherText;
+    }
+
+    private async Task EnsureAccountSchemaAsync(MySqlConnection db, CancellationToken cancellationToken = default)
+    {
+        if (accountSchemaReady) return;
+        await accountSchemaGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (accountSchemaReady) return;
+            var columnExists = await db.ExecuteScalarAsync<int>(new CommandDefinition(@"SELECT COUNT(*) FROM information_schema.columns
+WHERE table_schema=DATABASE() AND table_name='recruitment_ai_scoring_settings' AND LOWER(column_name)='accountemail'", cancellationToken: cancellationToken));
+            if (columnExists == 0)
+            {
+                try { await db.ExecuteAsync(new CommandDefinition("ALTER TABLE recruitment_ai_scoring_settings ADD COLUMN AccountEmail VARCHAR(254) NOT NULL DEFAULT '' AFTER ClientId", cancellationToken: cancellationToken)); }
+                catch (MySqlException exception) when (exception.Number == 1060) { }
+            }
+
+            var accountIndexExists = await db.ExecuteScalarAsync<int>(new CommandDefinition(@"SELECT COUNT(*) FROM information_schema.statistics
+WHERE table_schema=DATABASE() AND table_name='recruitment_ai_scoring_settings' AND index_name='UX_recruitment_ai_provider_model_account'", cancellationToken: cancellationToken));
+            if (accountIndexExists == 0)
+            {
+                try { await db.ExecuteAsync(new CommandDefinition("ALTER TABLE recruitment_ai_scoring_settings ADD UNIQUE INDEX UX_recruitment_ai_provider_model_account (ClientId,ProviderCode,ModelName,AccountEmail)", cancellationToken: cancellationToken)); }
+                catch (MySqlException exception) when (exception.Number == 1061) { }
+            }
+
+            var legacyIndexExists = await db.ExecuteScalarAsync<int>(new CommandDefinition(@"SELECT COUNT(*) FROM information_schema.statistics
+WHERE table_schema=DATABASE() AND table_name='recruitment_ai_scoring_settings' AND index_name='UX_recruitment_ai_provider_model'", cancellationToken: cancellationToken));
+            if (legacyIndexExists > 0)
+            {
+                try { await db.ExecuteAsync(new CommandDefinition("ALTER TABLE recruitment_ai_scoring_settings DROP INDEX UX_recruitment_ai_provider_model", cancellationToken: cancellationToken)); }
+                catch (MySqlException exception) when (exception.Number == 1091) { }
+            }
+            accountSchemaReady = true;
+        }
+        finally
+        {
+            accountSchemaGate.Release();
+        }
     }
 
     private static bool MonthlyLimitReached(RecruitmentAiScoringSecretRow settings) =>

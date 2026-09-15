@@ -5,6 +5,7 @@ export const emptyAiIntegration = (): RecruitmentAiScoringSettings => ({
   id: 0,
   clientId: 0,
   clientName: 'All Frevo',
+  accountEmail: '',
   enableAiScoring: false,
   providerCode: 'Gemini',
   modelName: '',

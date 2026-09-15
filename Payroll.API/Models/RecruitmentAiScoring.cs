@@ -7,6 +7,7 @@ public class RecruitmentAiScoringSettings
     public long Id { get; set; }
     public int ClientId { get; set; }
     public string ClientName { get; set; } = "";
+    public string AccountEmail { get; set; } = "";
     public bool EnableAiScoring { get; set; }
     public string ProviderCode { get; set; } = "Gemini";
     public string ModelName { get; set; } = "gemini-3.5-flash";

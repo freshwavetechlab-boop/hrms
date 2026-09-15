@@ -138,6 +138,13 @@ export default function AiIntegrationSettings() {
       </Space>,
     },
     {
+      title: 'Account',
+      dataIndex: 'accountEmail',
+      key: 'accountEmail',
+      width: 190,
+      render: value => <Typography.Text ellipsis title={value || 'Not specified'}>{value || 'Not specified'}</Typography.Text>,
+    },
+    {
       title: 'Usage & live quota',
       key: 'usage',
       width: 250,
@@ -229,6 +236,7 @@ export default function AiIntegrationSettings() {
           <Row gutter={16} align="bottom">
             <Col xs={24} md={6}><Form.Item label="Provider" required><Select value={editor.providerCode} options={providerOptions} onChange={providerCode => setEditor({ ...editor, providerCode, modelName: providerCode === 'OpenAI' ? 'gpt-4o-mini' : providerCode === 'Groq' ? 'groq/compound-mini' : '', endpointUrl: providerCode === 'OpenAICompatible' ? editor.endpointUrl : '', apiKey: '', hasApiKey: false, credentialStatus: 'Missing' })} /></Form.Item></Col>
             <Col xs={24} md={6}><Form.Item label="Model" required><Input data-testid="ai-scoring-model" value={editor.modelName} placeholder={modelExamples[editor.providerCode]} onChange={event => setEditor({ ...editor, modelName: event.target.value })} /></Form.Item></Col>
+            <Col xs={24} md={6}><Form.Item label={editor.providerCode === 'Gemini' ? 'Google / Gmail ID' : 'Account email'} extra="Identifies this API key in the model pool."><Input type="email" autoComplete="off" value={editor.accountEmail} placeholder="account@example.com" onChange={event => setEditor({ ...editor, accountEmail: event.target.value })} /></Form.Item></Col>
             <Col xs={24} md={7}><Form.Item label="API key" required={editor.credentialStatus !== 'Ready'} extra={editor.credentialStatus === 'Unreadable' ? 'The saved key cannot be decrypted here. Enter it again.' : editor.hasApiKey ? 'Leave blank to keep the saved encrypted key.' : 'Encrypted before storage.'}><Input.Password data-testid="ai-scoring-api-key" autoComplete="new-password" status={editor.credentialStatus === 'Unreadable' ? 'error' : undefined} value={editor.apiKey || ''} placeholder={editor.credentialStatus === 'Unreadable' ? 'Re-enter provider API key' : editor.hasApiKey ? 'Configured securely' : 'Paste provider API key'} onChange={event => setEditor({ ...editor, apiKey: event.target.value })} /></Form.Item></Col>
             <Col xs={12} md={3}><Form.Item label="Monthly cap" extra="Requests"><InputNumber min={1} max={10_000_000} controls={false} value={editor.monthlyRequestLimit} onChange={value => setEditor({ ...editor, monthlyRequestLimit: Number(value || 1) })} style={{ width: '100%' }} /></Form.Item></Col>
             <Col xs={12} md={2}><Form.Item label="Order" extra="Lower first"><InputNumber min={1} max={9999} controls={false} value={editor.priority} onChange={value => setEditor({ ...editor, priority: Number(value || 100) })} style={{ width: '100%' }} /></Form.Item></Col>
@@ -257,7 +265,7 @@ export default function AiIntegrationSettings() {
           dataSource={pool.models}
           pagination={false}
           tableLayout="fixed"
-          scroll={{ x: 900 }}
+          scroll={{ x: 1090 }}
           locale={{ emptyText: 'No AI model saved yet. Add Gemini, OpenAI, Claude, Grok or a compatible provider above.' }}
         />
       </div>
