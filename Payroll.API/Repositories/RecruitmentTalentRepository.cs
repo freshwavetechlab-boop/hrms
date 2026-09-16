@@ -425,7 +425,9 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
         CancellationToken cancellationToken,
         ResumeParseResult? parsedResume = null,
         bool suppressAutoScoring = false,
-        IReadOnlyList<string>? parsingJobContext = null)
+        IReadOnlyList<string>? parsingJobContext = null,
+        bool? enableResumeParsingOverride = null,
+        bool? enableAiParsingOverride = null)
     {
         if (request.File is null) return (null, null, "Select a resume file.");
         await using var db = Db();
@@ -450,11 +452,15 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
             ExpiryDate = request.ExpiryDate
         }, request.File, user, ipAddress, userAgent, cancellationToken);
         if (attachment is null) return (null, null, error ?? "Resume upload failed.");
-        var parse = ResumeParseResult.WithoutContent("Disabled", "Disabled", "", "Resume parsing is disabled in Recruitment Administration.");
-        if (features.EnableResumeParsing)
+        var parsingEnabled = enableResumeParsingOverride ?? features.EnableResumeParsing;
+        var aiParsingEnabled = parsingEnabled && enableAiParsingOverride != false;
+        var parse = ResumeParseResult.WithoutContent("Disabled", "Disabled", "", "Resume parsing is disabled for this job.");
+        if (parsingEnabled)
         {
             var local = parsedResume ?? await resumeParser.ParseAsync(request.File, cancellationToken);
-            parse = await resumeParser.EnhanceAsync(request.File, local, candidate.ClientId, jobContext, cancellationToken);
+            parse = aiParsingEnabled
+                ? await resumeParser.EnhanceAsync(request.File, local, candidate.ClientId, jobContext, cancellationToken)
+                : local;
         }
         if (suppressAutoScoring)
         {
@@ -516,6 +522,8 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
         await lookupDb.OpenAsync(cancellationToken);
         IReadOnlyList<string> jobContext = [];
         var autoRunAts = false;
+        bool? enableResumeParsing = null;
+        bool? enableAiParsing = null;
         if (!talentPoolOnly)
         {
             var positionContext = await ResumeJobContextAsync(lookupDb, request.PositionId, clientId);
@@ -534,7 +542,7 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
             jobContext = ResumeJobContextParts(positionContext);
             if (request.JobPostingId is > 0)
             {
-                var posting = await lookupDb.QueryFirstOrDefaultAsync<JobPostingAtsRow>(@"SELECT Id,AutoRunAts FROM recruitment_job_postings
+                var posting = await lookupDb.QueryFirstOrDefaultAsync<JobPostingAtsRow>(@"SELECT Id,AutoRunAts,EnableResumeParsing,EnableAiParsing FROM recruitment_job_postings
 WHERE Id=@JobPostingId AND PositionId=@PositionId AND ClientId=@ClientId", new { request.JobPostingId, request.PositionId, ClientId = clientId });
                 if (posting is null)
                 {
@@ -543,9 +551,13 @@ WHERE Id=@JobPostingId AND PositionId=@PositionId AND ClientId=@ClientId", new {
                     return result;
                 }
                 autoRunAts = posting.AutoRunAts;
+                enableResumeParsing = posting.EnableResumeParsing;
+                enableAiParsing = posting.EnableAiParsing;
             }
         }
         var features = await FeatureSettingsAsync(lookupDb, clientId);
+        var parsingEnabled = enableResumeParsing ?? features.EnableResumeParsing;
+        var retainForManualReview = request.ForceUpload || !parsingEnabled;
         var fieldConfigurationId = request.FieldConfigurationId is > 0 ? request.FieldConfigurationId.Value : await lookupDb.ExecuteScalarAsync<long?>(@"SELECT field.id
 FROM attachment_field_configurations field
 JOIN attachment_attributes attribute ON attribute.id=field.attachment_attribute_id
@@ -570,12 +582,12 @@ ORDER BY (field.client_id=@ClientId) DESC,(field.form_code='CANDIDATE_APPLICATIO
                 // Candidate identity is established with the deterministic parser.
                 // External AI runs only after AttachmentRepository has validated and
                 // accepted the file for the candidate below.
-                var parse = features.EnableResumeParsing
+                var parse = parsingEnabled
                     ? await resumeParser.ParseAsync(file, cancellationToken)
-                    : ResumeParseResult.WithoutContent("Disabled", "Disabled", "", "Resume parsing is disabled in Recruitment Administration.");
+                    : ResumeParseResult.WithoutContent("Disabled", "Disabled", "", "Resume parsing is disabled for this job.");
                 var reviewNotes = new List<string>();
                 var identityMissing = string.IsNullOrWhiteSpace(parse.Facts.Email) && string.IsNullOrWhiteSpace(parse.Facts.Phone);
-                if (identityMissing && !request.ForceUpload)
+                if (identityMissing && !retainForManualReview)
                 {
                     item.Error = "Email or mobile could not be extracted. Enable Force upload to retain this resume for manual review.";
                     result.NeedsReview++;
@@ -586,7 +598,9 @@ ORDER BY (field.client_id=@ClientId) DESC,(field.form_code='CANDIDATE_APPLICATIO
                 if (identityMissing)
                 {
                     item.ForceUploaded = true;
-                    const string manualReviewMessage = "Force uploaded without extracted email or mobile. Complete the candidate identity manually before ATS scoring.";
+                    var manualReviewMessage = parsingEnabled
+                        ? "Force uploaded without extracted email or mobile. Complete the candidate identity manually before ATS scoring."
+                        : "Resume parsing is disabled for this job. Complete the candidate identity manually from the Applications card.";
                     parse = parse with { Status = "NeedsReview", Error = manualReviewMessage };
                     reviewNotes.Add(manualReviewMessage);
                 }
@@ -649,7 +663,7 @@ ORDER BY attachment.id DESC LIMIT 1", new { ClientId = clientId, FileHash = file
                         SourceType = string.IsNullOrWhiteSpace(request.SourceType) ? "Direct Sourcing" : request.SourceType.Trim(),
                         ProfileStatus = "Active",
                         ConsentStatus = "Pending",
-                        AllowIncompleteIdentity = identityMissing && request.ForceUpload
+                        AllowIncompleteIdentity = identityMissing && retainForManualReview
                     }, user);
                     if (saved.Row is null)
                     {
@@ -667,7 +681,9 @@ ORDER BY attachment.id DESC LIMIT 1", new { ClientId = clientId, FileHash = file
                 }, user, ipAddress, userAgent, cancellationToken,
                     parsedResume: parse,
                     suppressAutoScoring: suppressAutoScoring,
-                    parsingJobContext: jobContext);
+                    parsingJobContext: jobContext,
+                    enableResumeParsingOverride: enableResumeParsing,
+                    enableAiParsingOverride: enableAiParsing);
                 if (resume is null)
                 {
                     item.Error = uploadError;
@@ -711,7 +727,7 @@ ORDER BY attachment.id DESC LIMIT 1", new { ClientId = clientId, FileHash = file
                 }
                 if (needsScoring && !suppressAutoScoring)
                 {
-                    if (files.Count > 20)
+                    if (request.DeferAtsScoring || files.Count > 20)
                     {
                         await using var scoreDb = Db();
                         await scoreDb.OpenAsync(cancellationToken);
@@ -1036,7 +1052,8 @@ WHERE Id=@ReferralId AND ReferrerEmployeeId=@EmployeeId", new { ReferralId = ref
         await using var db = Db();
         await db.OpenAsync(cancellationToken);
         var link = await db.QueryFirstOrDefaultAsync<PublicApplicationResumeRow>(@"SELECT a.Id ApplicationId,a.CandidateId,a.PositionId,a.ClientId,a.ResumeId RequestedResumeId,
-r.Id ResumeId,r.AttachmentPublicId,r.ParsingStatus,COALESCE(posting.AutoRunAts,FALSE) AutoRunAts
+r.Id ResumeId,r.AttachmentPublicId,r.ParsingStatus,COALESCE(posting.AutoRunAts,FALSE) AutoRunAts,
+COALESCE(posting.EnableResumeParsing,TRUE) EnableResumeParsing,COALESCE(posting.EnableAiParsing,TRUE) EnableAiParsing
  FROM recruitment_candidate_applications a
 LEFT JOIN recruitment_job_postings posting ON posting.Id=a.JobPostingId
 LEFT JOIN recruitment_candidate_resumes r ON r.Id=a.ResumeId AND r.CandidateId=a.CandidateId
@@ -1051,10 +1068,10 @@ LIMIT 1", new { ApplicationId = applicationId });
         if (link.ResumeId <= 0 || !link.AttachmentPublicId.HasValue) return (null, "");
 
         var features = await FeatureSettingsAsync(db, link.ClientId);
-        if (!features.EnableResumeParsing)
+        if (!link.EnableResumeParsing)
         {
             await db.ExecuteAsync(@"UPDATE recruitment_candidate_resumes SET ParsingStatus='Disabled',ParserName='Disabled',
-ParserVersion='',ParsedAt=UTC_TIMESTAMP(),ParsingError='Resume parsing is disabled in Recruitment Administration.'
+ParserVersion='',ParsedAt=UTC_TIMESTAMP(),ParsingError='Resume parsing is disabled for this job.'
 WHERE Id=@ResumeId AND CandidateId=@CandidateId AND ParsingStatus<>'Parsed'", link);
             return (null, "");
         }
@@ -1069,8 +1086,10 @@ WHERE Id=@ResumeId AND CandidateId=@CandidateId AND ParsingStatus<>'Parsed'", li
                     return (null, string.IsNullOrWhiteSpace(accessError) ? "The uploaded resume could not be opened for parsing." : accessError!);
                 await using var handle = await attachmentStorage.OpenReadAsync(server, attachment.StorageKey, cancellationToken);
                 var jobContext = ResumeJobContextParts(await ResumeJobContextAsync(db, link.PositionId, link.ClientId));
-                var parse = await resumeParser.ParseAsync(handle.Stream, attachment.OriginalFileName, attachment.FileSizeBytes,
-                    link.ClientId, jobContext, cancellationToken);
+                var parse = link.EnableAiParsing
+                    ? await resumeParser.ParseAsync(handle.Stream, attachment.OriginalFileName, attachment.FileSizeBytes,
+                        link.ClientId, jobContext, cancellationToken)
+                    : await resumeParser.ParseAsync(handle.Stream, attachment.OriginalFileName, attachment.FileSizeBytes, cancellationToken);
                 var candidate = await CandidateByIdAsync(db, link.CandidateId);
                 if (candidate is null) return (null, "The candidate profile could not be prepared for ATS review.");
 
@@ -4303,11 +4322,15 @@ CREATE TABLE IF NOT EXISTS person_activity_events (
         public Guid? AttachmentPublicId { get; set; }
         public string ParsingStatus { get; set; } = "Pending";
         public bool AutoRunAts { get; set; }
+        public bool EnableResumeParsing { get; set; } = true;
+        public bool EnableAiParsing { get; set; } = true;
     }
     private sealed class JobPostingAtsRow
     {
         public long Id { get; set; }
         public bool AutoRunAts { get; set; }
+        public bool EnableResumeParsing { get; set; } = true;
+        public bool EnableAiParsing { get; set; } = true;
     }
     private sealed class GlobalTalentPoolMoveRow
     {

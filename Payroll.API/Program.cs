@@ -1872,9 +1872,10 @@ recruitmentOrchestration.MapPost("/job-postings/{id:long}/auto-run-ats", async (
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
     var user = CurrentUser(context);
-    var (row, error) = await repository.UpdateJobPostingAtsAsync(id, request.AutoRunAts, user);
+    var previous = await repository.GetJobPostingAsync(id, user);
+    var (row, error) = await repository.UpdateJobPostingAtsAsync(id, request, user);
     if (row is null) return Results.BadRequest(new { error });
-    if (request.AutoRunAts)
+    if (row.AutoRunAts && previous?.AutoRunAts != true)
     {
         foreach (var applicationId in await repository.GetJobPostingApplicationIdsAsync(id, user))
         {

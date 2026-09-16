@@ -628,7 +628,7 @@ WHERE s.Id=@SubmissionId AND s.ClientId=@ClientId AND s.Status='Draft' AND f.Id=
         if (!ValidPublicSlug(slug)) return null;
         await using var db = Db();
         await db.OpenAsync();
-        var job = await db.QueryFirstOrDefaultAsync<PublicRecruitmentJob>(@"SELECT j.Id PostingId,j.PublicSlug,j.PublicTitle,p.PositionCode,p.PositionTitle,c.Name ClientName,p.Department,p.JobLocation,p.EmploymentType,'' WorkMode,j.OpensAtUtc,j.ClosesAtUtc,d.Summary,d.RolePurpose,COALESCE(formDefinition.RequiresEmailVerification,TRUE) RequiresEmailVerification,
+        var job = await db.QueryFirstOrDefaultAsync<PublicRecruitmentJob>(@"SELECT j.Id PostingId,j.PublicSlug,j.PublicTitle,p.PositionCode,p.PositionTitle,c.Name ClientName,p.Department,p.JobLocation,p.EmploymentType,'' WorkMode,j.OpensAtUtc,j.ClosesAtUtc,d.Summary,d.RolePurpose,j.RequireEmailOtp RequiresEmailVerification,
 CASE WHEN (j.OpensAtUtc IS NULL OR j.OpensAtUtc<=UTC_TIMESTAMP(6))
  AND (j.ClosesAtUtc IS NULL OR j.ClosesAtUtc>=UTC_TIMESTAMP(6))
  AND (j.MaximumApplications IS NULL OR j.ApplicationCount<j.MaximumApplications)
@@ -690,6 +690,7 @@ FROM recruitment_jd_certification_requirements WHERE JobDescriptionVersionId=@Id
         await db.OpenAsync(cancellationToken);
         var posting = await FindAvailablePostingAsync(db, slug);
         if (posting is null) return (null, "This job is not accepting applications.");
+        if (!posting.RequireEmailOtp) return (null, "Email verification is disabled for this job. Continue directly to the application.");
         if ((await pipelines.GetCandidateProofValidationErrorAsync(posting.PostingId)).Length > 0)
             return (null, "Certification document collection is temporarily unavailable. Please contact the hiring team.");
 
@@ -770,10 +771,7 @@ SELECT LAST_INSERT_ID();", new
         if (posting is null) return (null, "This job is not accepting applications.");
         if ((await pipelines.GetCandidateProofValidationErrorAsync(posting.PostingId)).Length > 0)
             return (null, "Certification document collection is temporarily unavailable. Please contact the hiring team.");
-        var requiresEmailVerification = await db.ExecuteScalarAsync<bool>(@"SELECT definition.RequiresEmailVerification
-FROM form_versions version JOIN form_definitions definition ON definition.Id=version.FormDefinitionId
-WHERE version.Id=@FormVersionId", new { FormVersionId = posting.ApplicationFormVersionId });
-        if (!requiresEmailVerification)
+        if (!posting.RequireEmailOtp)
             return await StartPublicSessionWithoutOtpAsync(db, posting, request, ipAddress, userAgent);
         if (string.IsNullOrWhiteSpace(request.VerificationToken) || !Regex.IsMatch(request.VerificationCode ?? "", @"^\d{6}$"))
             return (null, "Enter the 6-digit verification code sent to your email.");
@@ -1932,7 +1930,7 @@ VALUES (@CandidateId,@PublicId,@Version,TRUE,'Pending','',JSON_OBJECT(),'','',''
     private static string Truncate(string value, int max) => string.IsNullOrEmpty(value) ? "" : value.Length <= max ? value : value[..max];
 
     private static Task<PostingSessionRow?> FindAvailablePostingAsync(MySqlConnection db, string slug) =>
-        db.QueryFirstOrDefaultAsync<PostingSessionRow>(@"SELECT posting.Id PostingId,posting.ClientId,posting.PositionId,posting.ApplicationFormVersionId,position.PositionTitle
+        db.QueryFirstOrDefaultAsync<PostingSessionRow>(@"SELECT posting.Id PostingId,posting.ClientId,posting.PositionId,posting.ApplicationFormVersionId,posting.RequireEmailOtp,position.PositionTitle
 FROM recruitment_job_postings posting JOIN recruitment_open_positions position ON position.Id=posting.PositionId
 WHERE posting.PublicSlug=@Slug AND posting.Status='Published' AND posting.ApplicationFormVersionId IS NOT NULL
 AND EXISTS (SELECT 1 FROM form_versions v WHERE v.Id=posting.ApplicationFormVersionId AND v.Status IN ('Published','Retired'))
@@ -2077,7 +2075,7 @@ WHERE ps.Id=@Id AND ps.RevokedAtUtc IS NULL AND ps.ExpiresAtUtc>UTC_TIMESTAMP(6)
 FROM form_public_sessions ps JOIN form_submissions s ON s.Id=ps.SubmissionId
 WHERE ps.TokenHash=@TokenHash";
 
-    private sealed class PostingSessionRow { public long PostingId { get; set; } public int ClientId { get; set; } public long PositionId { get; set; } public long? ApplicationFormVersionId { get; set; } public string PositionTitle { get; set; } = "this role"; }
+    private sealed class PostingSessionRow { public long PostingId { get; set; } public int ClientId { get; set; } public long PositionId { get; set; } public long? ApplicationFormVersionId { get; set; } public bool RequireEmailOtp { get; set; } = true; public string PositionTitle { get; set; } = "this role"; }
     private sealed class PublicVerificationRow { public long Id { get; set; } public string Email { get; set; } = ""; public string NormalizedEmail { get; set; } = ""; public string Phone { get; set; } = ""; public string NormalizedPhone { get; set; } = ""; public string CodeHash { get; set; } = ""; public int AttemptCount { get; set; } public int MaximumAttempts { get; set; } public DateTime ExpiresAtUtc { get; set; } public DateTime? ConsumedAtUtc { get; set; } }
     private sealed class PublishFormRow : DynamicFormVersion { public int ClientId { get; set; } public string PurposeCode { get; set; } = ""; }
     private sealed class PublicSessionRow { public long Id { get; set; } public long PostingId { get; set; } public long SubmissionId { get; set; } public long ExternalSubjectId { get; set; } public string Purpose { get; set; } = ""; public int MaximumUses { get; set; } public int UseCount { get; set; } public DateTime ExpiresAtUtc { get; set; } public DateTime? RevokedAtUtc { get; set; } public string SubmissionStatus { get; set; } = ""; }

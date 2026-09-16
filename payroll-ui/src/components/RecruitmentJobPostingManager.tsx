@@ -15,7 +15,7 @@ import { getClients } from '../services/payrollService'
 import {
   closeRecruitmentJobPosting, deleteRecruitmentJobPosting, getRecruitmentJobDescriptions,
   getRecruitmentJobPosting, getRecruitmentJobPostings, getRecruitmentOrchestrationLookups, getPublicCareerJob,
-  getRecruitmentPositionPipelineAssignment, normalizePublicCareerUrl, publishRecruitmentJobPosting, saveRecruitmentJobPosting, updateRecruitmentJobPostingAutoRunAts,
+  getRecruitmentPositionPipelineAssignment, normalizePublicCareerUrl, publishRecruitmentJobPosting, saveRecruitmentJobPosting, updateRecruitmentJobPostingAutomation,
 } from '../services/recruitmentOrchestrationService'
 import type { Client } from '../types/payroll'
 import type {
@@ -236,11 +236,23 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
     }
   }
 
-  async function toggleAutoRunAts(autoRunAts: boolean) {
+  async function updateAutomationSetting(setting: 'autoRunAts' | 'enableResumeParsing' | 'enableAiParsing' | 'requireEmailOtp', value: boolean) {
     if (!editor) return
-    if (!editor.id) return setEditor({ ...editor, autoRunAts })
+    const next = { ...editor, [setting]: value }
+    if (setting === 'enableResumeParsing' && !value) {
+      next.autoRunAts = false
+      next.enableAiParsing = false
+    } else if ((setting === 'autoRunAts' || setting === 'enableAiParsing') && value) {
+      next.enableResumeParsing = true
+    }
+    if (!editor.id) return setEditor(next)
     setActionBusy(true)
-    const response = await updateRecruitmentJobPostingAutoRunAts(editor.id, autoRunAts)
+    const response = await updateRecruitmentJobPostingAutomation(editor.id, {
+      autoRunAts: next.autoRunAts,
+      enableResumeParsing: next.enableResumeParsing,
+      enableAiParsing: next.enableAiParsing,
+      requireEmailOtp: next.requireEmailOtp,
+    })
     setActionBusy(false)
     if (!response.ok || !response.data) return
     setEditor(response.data)
@@ -265,7 +277,8 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
       id: target.id, positionId: target.positionId, jobDescriptionVersionId: target.jobDescriptionVersionId,
       applicationFormVersionId: target.applicationFormVersionId || null, publicTitle: target.publicTitle.trim(),
       opensAtUtc: target.opensAtUtc || null, closesAtUtc: target.closesAtUtc || null,
-      maximumApplications: null, autoRunAts: target.autoRunAts, searchEngineVisible: true,
+      maximumApplications: null, autoRunAts: target.autoRunAts, enableResumeParsing: target.enableResumeParsing,
+      enableAiParsing: target.enableAiParsing, requireEmailOtp: target.requireEmailOtp, searchEngineVisible: true,
     })
     if (!saved.ok || !saved.data) {
       const current = target.id ? await getRecruitmentJobPosting(target.id) : null
@@ -432,7 +445,13 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
             </div>
             {actionFeedback && <Alert data-testid="job-posting-action-feedback" style={{ marginBottom: 12 }} closable showIcon type={actionFeedback.type} message={actionFeedback.message} description={actionFeedback.description} onClose={() => setActionFeedback(null)} />}
             {readOnly && <Alert className="jd-readonly-alert" type="info" showIcon message="Published details are locked" description="Close this posting and create a new posting if the approved JD, form or schedule must change." />}
-            <div className="posting-ats-setting"><div><strong>Auto run ATS</strong><span>Score every new application automatically and send ATS-qualified candidates to interview scheduling.</span></div><Switch checked={editor.autoRunAts} loading={actionBusy} disabled={actionBusy} onChange={value => void toggleAutoRunAts(value)} /></div>
+            <div className="posting-automation-settings">
+              <div className="posting-automation-heading"><strong>Application automation</strong><span>These settings apply only to candidates received for this job.</span></div>
+              <AutomationToggle label="Auto run ATS" description="Score each parsed resume automatically and send ATS-qualified candidates to interview scheduling." checked={editor.autoRunAts} busy={actionBusy} onChange={value => void updateAutomationSetting('autoRunAts', value)} />
+              <AutomationToggle label="Enable Resume Parsing" description="Extract candidate details from uploaded resumes. Files are still stored when this is off." checked={editor.enableResumeParsing} busy={actionBusy} onChange={value => void updateAutomationSetting('enableResumeParsing', value)} />
+              <AutomationToggle label="Enable AI Parsing" description="Enhance local resume extraction with the configured AI provider." checked={editor.enableAiParsing} busy={actionBusy} disabled={!editor.enableResumeParsing} onChange={value => void updateAutomationSetting('enableAiParsing', value)} />
+              <AutomationToggle label="Email OTP Verification" description="Require candidates to verify their email before opening the public application form." checked={editor.requireEmailOtp} busy={actionBusy} onChange={value => void updateAutomationSetting('requireEmailOtp', value)} />
+            </div>
             {publicUrl && <div className="public-link-banner"><GlobalOutlined /><div><Typography.Text type="secondary">{editor.status === 'Published' ? 'Live public candidate URL' : 'Public candidate URL preview'}</Typography.Text><Typography.Link href={publicUrl} target="_blank" rel="noreferrer">{publicUrl} <LinkOutlined /></Typography.Link>{editor.status !== 'Published' && <Typography.Text type="secondary">This URL starts accepting applications only after the posting is published and open.</Typography.Text>}</div></div>}
           </Card>
 
@@ -518,9 +537,13 @@ function blankPosting(clientId: number, positionId = 0, positionTitle = ''): Rec
   return {
     id: 0, clientId, positionId, jobDescriptionVersionId: 0, applicationFormVersionId: null,
     publicSlug: '', publicTitle: positionTitle, status: 'Draft', opensAtUtc: null, closesAtUtc: null,
-    maximumApplications: null, applicationCount: 0, autoRunAts: false, searchEngineVisible: true, publishedAtUtc: null,
+    maximumApplications: null, applicationCount: 0, autoRunAts: false, enableResumeParsing: true, enableAiParsing: true, requireEmailOtp: true, searchEngineVisible: true, publishedAtUtc: null,
     positionCode: '', positionTitle, clientName: '', candidatePortalReady: false, candidateProofReady: true, candidateProofValidationMessage: '', publicUrl: '',
   }
+}
+
+function AutomationToggle({ label, description, checked, busy, disabled = false, onChange }: { label: string; description: string; checked: boolean; busy: boolean; disabled?: boolean; onChange: (value: boolean) => void }) {
+  return <div className="posting-automation-row"><div><strong>{label}</strong><span>{description}</span></div><Switch checked={checked} loading={busy} disabled={busy || disabled} onChange={onChange} /></div>
 }
 
 function withPublishDates(posting: RecruitmentJobPosting, positions: RecruitmentPositionOption[]) {

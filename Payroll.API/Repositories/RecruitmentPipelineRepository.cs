@@ -123,6 +123,9 @@ CREATE TABLE IF NOT EXISTS recruitment_job_postings (
     MaximumApplications INT NULL,
     ApplicationCount INT NOT NULL DEFAULT 0,
     AutoRunAts BOOLEAN NOT NULL DEFAULT FALSE,
+    EnableResumeParsing BOOLEAN NOT NULL DEFAULT TRUE,
+    EnableAiParsing BOOLEAN NOT NULL DEFAULT TRUE,
+    RequireEmailOtp BOOLEAN NOT NULL DEFAULT TRUE,
     SearchEngineVisible BOOLEAN NOT NULL DEFAULT FALSE,
     CreatedByUserId INT NOT NULL,
     PublishedAtUtc DATETIME NULL,
@@ -465,6 +468,15 @@ CREATE TABLE IF NOT EXISTS recruitment_pipeline_transition_requests (
 
         await EnsureColumnAsync(db, "recruitment_open_positions", "ApprovedJobDescriptionVersionId", "BIGINT NULL");
         await EnsureColumnAsync(db, "recruitment_job_postings", "AutoRunAts", "BOOLEAN NOT NULL DEFAULT FALSE AFTER ApplicationCount");
+        await EnsureColumnAsync(db, "recruitment_job_postings", "EnableResumeParsing", "BOOLEAN NOT NULL DEFAULT TRUE AFTER AutoRunAts");
+        await EnsureColumnAsync(db, "recruitment_job_postings", "EnableAiParsing", "BOOLEAN NOT NULL DEFAULT TRUE AFTER EnableResumeParsing");
+        var hadPostingEmailOtp = await ColumnExistsAsync(db, "recruitment_job_postings", "RequireEmailOtp");
+        await EnsureColumnAsync(db, "recruitment_job_postings", "RequireEmailOtp", "BOOLEAN NOT NULL DEFAULT TRUE AFTER EnableAiParsing");
+        if (!hadPostingEmailOtp && await ColumnExistsAsync(db, "form_definitions", "RequiresEmailVerification"))
+            await db.ExecuteAsync(@"UPDATE recruitment_job_postings posting
+JOIN form_versions versionRow ON versionRow.Id=posting.ApplicationFormVersionId
+JOIN form_definitions definitionRow ON definitionRow.Id=versionRow.FormDefinitionId
+SET posting.RequireEmailOtp=definitionRow.RequiresEmailVerification");
         await EnsureColumnAsync(db, "recruitment_jd_certification_requirements", "CandidateProofAttachmentFieldConfigurationId", "BIGINT NULL AFTER IsMandatory");
         await EnsureColumnAsync(db, "recruitment_candidate_applications", "PipelineInstanceId", "BIGINT NULL");
         await EnsureColumnAsync(db, "recruitment_candidate_applications", "CurrentPipelineStageInstanceId", "BIGINT NULL");
@@ -686,6 +698,11 @@ ApprovedAtUtc=CASE WHEN @Status='Approved' THEN UTC_TIMESTAMP() ELSE NULL END,Up
 
     public async Task<(RecruitmentJobPosting? Row, string Error)> SaveJobPostingAsync(SaveRecruitmentJobPosting request, AuthUser user)
     {
+        if (!request.EnableResumeParsing)
+        {
+            request.AutoRunAts = false;
+            request.EnableAiParsing = false;
+        }
         if (request.PositionId <= 0 || request.JobDescriptionVersionId <= 0) return (null, "Position and approved job description are required.");
         if (request.ClosesAtUtc is not null && request.OpensAtUtc is not null && request.ClosesAtUtc <= request.OpensAtUtc) return (null, "Posting close time must be after its open time.");
         if (request.MaximumApplications is <= 0) return (null, "Maximum applications must be greater than zero when specified.");
@@ -711,16 +728,17 @@ WHERE v.Id=@Id AND v.Status IN ('Published','Retired') AND d.ClientId IN (0,@Cli
         {
             var slug = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
             id = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_job_postings
-(ClientId,PositionId,JobDescriptionVersionId,ApplicationFormVersionId,PublicSlug,PublicTitle,Status,OpensAtUtc,ClosesAtUtc,MaximumApplications,AutoRunAts,SearchEngineVisible,CreatedByUserId)
-VALUES (@ClientId,@PositionId,@JobDescriptionVersionId,@ApplicationFormVersionId,@PublicSlug,@PublicTitle,'Draft',@OpensAtUtc,@ClosesAtUtc,@MaximumApplications,@AutoRunAts,@SearchEngineVisible,@UserId);SELECT LAST_INSERT_ID();",
-                new { source.ClientId, request.PositionId, request.JobDescriptionVersionId, request.ApplicationFormVersionId, PublicSlug = slug, PublicTitle = string.IsNullOrWhiteSpace(request.PublicTitle) ? source.PositionTitle : request.PublicTitle.Trim(), request.OpensAtUtc, request.ClosesAtUtc, request.MaximumApplications, request.AutoRunAts, request.SearchEngineVisible, UserId = user.Id });
+(ClientId,PositionId,JobDescriptionVersionId,ApplicationFormVersionId,PublicSlug,PublicTitle,Status,OpensAtUtc,ClosesAtUtc,MaximumApplications,AutoRunAts,EnableResumeParsing,EnableAiParsing,RequireEmailOtp,SearchEngineVisible,CreatedByUserId)
+VALUES (@ClientId,@PositionId,@JobDescriptionVersionId,@ApplicationFormVersionId,@PublicSlug,@PublicTitle,'Draft',@OpensAtUtc,@ClosesAtUtc,@MaximumApplications,@AutoRunAts,@EnableResumeParsing,@EnableAiParsing,@RequireEmailOtp,@SearchEngineVisible,@UserId);SELECT LAST_INSERT_ID();",
+                new { source.ClientId, request.PositionId, request.JobDescriptionVersionId, request.ApplicationFormVersionId, PublicSlug = slug, PublicTitle = string.IsNullOrWhiteSpace(request.PublicTitle) ? source.PositionTitle : request.PublicTitle.Trim(), request.OpensAtUtc, request.ClosesAtUtc, request.MaximumApplications, request.AutoRunAts, request.EnableResumeParsing, request.EnableAiParsing, request.RequireEmailOtp, request.SearchEngineVisible, UserId = user.Id });
         }
         else
         {
             var updated = await db.ExecuteAsync(@"UPDATE recruitment_job_postings SET JobDescriptionVersionId=@JobDescriptionVersionId,
 ApplicationFormVersionId=@ApplicationFormVersionId,PublicTitle=@PublicTitle,OpensAtUtc=@OpensAtUtc,ClosesAtUtc=@ClosesAtUtc,
-MaximumApplications=@MaximumApplications,AutoRunAts=@AutoRunAts,SearchEngineVisible=@SearchEngineVisible,UpdatedAtUtc=UTC_TIMESTAMP()
-WHERE Id=@Id AND ClientId=@ClientId AND PositionId=@PositionId AND Status IN ('Draft','Closed')", new { Id = id, source.ClientId, request.PositionId, request.JobDescriptionVersionId, request.ApplicationFormVersionId, PublicTitle = string.IsNullOrWhiteSpace(request.PublicTitle) ? source.PositionTitle : request.PublicTitle.Trim(), request.OpensAtUtc, request.ClosesAtUtc, request.MaximumApplications, request.AutoRunAts, request.SearchEngineVisible });
+MaximumApplications=@MaximumApplications,AutoRunAts=@AutoRunAts,EnableResumeParsing=@EnableResumeParsing,
+EnableAiParsing=@EnableAiParsing,RequireEmailOtp=@RequireEmailOtp,SearchEngineVisible=@SearchEngineVisible,UpdatedAtUtc=UTC_TIMESTAMP()
+WHERE Id=@Id AND ClientId=@ClientId AND PositionId=@PositionId AND Status IN ('Draft','Closed')", new { Id = id, source.ClientId, request.PositionId, request.JobDescriptionVersionId, request.ApplicationFormVersionId, PublicTitle = string.IsNullOrWhiteSpace(request.PublicTitle) ? source.PositionTitle : request.PublicTitle.Trim(), request.OpensAtUtc, request.ClosesAtUtc, request.MaximumApplications, request.AutoRunAts, request.EnableResumeParsing, request.EnableAiParsing, request.RequireEmailOtp, request.SearchEngineVisible });
             if (updated == 0) return (null, "Only a draft or archived job posting can be prepared for publishing.");
         }
         return (await GetJobPostingAsync(db, id, user.ClientId), "");
@@ -763,13 +781,19 @@ WHERE PositionId=@PositionId AND (JobPostingId IS NULL OR JobPostingId=@Id) AND 
         return await db.ExecuteAsync("UPDATE recruitment_job_postings SET Status='Closed',UpdatedAtUtc=UTC_TIMESTAMP() WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, user.ClientId }) > 0;
     }
 
-    public async Task<(RecruitmentJobPosting? Row, string Error)> UpdateJobPostingAtsAsync(long id, bool autoRunAts, AuthUser user)
+    public async Task<(RecruitmentJobPosting? Row, string Error)> UpdateJobPostingAtsAsync(long id, UpdateRecruitmentJobPostingAtsRequest request, AuthUser user)
     {
+        if (!request.EnableResumeParsing)
+        {
+            request.AutoRunAts = false;
+            request.EnableAiParsing = false;
+        }
         await using var db = Db();
         await db.OpenAsync();
         var updated = await db.ExecuteAsync(@"UPDATE recruitment_job_postings
-SET AutoRunAts=@AutoRunAts,UpdatedAtUtc=UTC_TIMESTAMP()
-WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, AutoRunAts = autoRunAts, user.ClientId });
+SET AutoRunAts=@AutoRunAts,EnableResumeParsing=@EnableResumeParsing,EnableAiParsing=@EnableAiParsing,
+RequireEmailOtp=@RequireEmailOtp,UpdatedAtUtc=UTC_TIMESTAMP()
+WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, request.AutoRunAts, request.EnableResumeParsing, request.EnableAiParsing, request.RequireEmailOtp, user.ClientId });
         return updated == 0
             ? (null, "Job posting was not found.")
             : (await GetJobPostingAsync(db, id, user.ClientId), "");

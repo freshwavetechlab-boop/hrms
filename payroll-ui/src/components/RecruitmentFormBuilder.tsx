@@ -88,7 +88,6 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
   const [fieldDrawer, setFieldDrawer] = useState(false)
   const [sectionEditor, setSectionEditor] = useState<DynamicFormSection | null>(null)
   const [saving, setSaving] = useState(false)
-  const [savingVerification, setSavingVerification] = useState(false)
   const [publishOpen, setPublishOpen] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [dragging, setDragging] = useState<BuilderDragPayload | null>(null)
@@ -122,7 +121,6 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     ?? version?.sections.flatMap(row => row.fields).find(row => row.id === selectedFieldId)
     ?? null
   const readOnly = version?.status === 'Published' || version?.status === 'Retired'
-  const isCandidateForm = definition?.moduleCode?.trim().toUpperCase() !== 'EMPLOYEE'
 
   const chooseForm = async (id: number) => {
     const requestId = ++selectionRequestRef.current
@@ -430,31 +428,6 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     onSaved?.(definitionResponse.data); await load(definition.clientId); await chooseForm(definitionResponse.data.id)
   }
 
-  const changeEmailVerification = async (requiresEmailVerification: boolean) => {
-    if (!definition) return
-    if (!readOnly || !definition.id) {
-      patchDefinition({ requiresEmailVerification })
-      return
-    }
-    setSavingVerification(true)
-    const response = await saveRecruitmentFormDefinition({
-      id: definition.id,
-      clientId: definition.clientId,
-      moduleCode: code(definition.moduleCode),
-      formCode: code(definition.formCode || definition.formName),
-      formName: definition.formName.trim(),
-      purposeCode: code(definition.purposeCode),
-      entityType: code(definition.entityType),
-      status: definition.status,
-      requiresEmailVerification,
-    })
-    setSavingVerification(false)
-    if (!response.ok || !response.data) return
-    setDefinition(current => current ? { ...current, requiresEmailVerification } : current)
-    message.success(requiresEmailVerification ? 'Email OTP enabled.' : 'Email OTP disabled.')
-    await load(definition.clientId)
-  }
-
   const publish = () => {
     if (!definition || !version?.id || readOnly) return message.info('Save the draft before publishing.')
     const error = validate(definition, version); if (error) return message.warning(error)
@@ -515,7 +488,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
           <div className="form-builder-meta"><Form.Item label="Form name" required><Input data-testid="form-builder-name" disabled={readOnly} value={definition.formName} onChange={event => patchDefinition({ formName: event.target.value })} /></Form.Item><Form.Item label="Form code" required><Input data-testid="form-builder-code" disabled={readOnly} value={definition.formCode} onChange={event => patchDefinition({ formCode: code(event.target.value) })} /></Form.Item><Form.Item label="Use this form for" extra="Employee forms appear automatically in the matching Employee infotype after publishing."><Select data-testid="form-builder-module" disabled={readOnly} value={definition.moduleCode || 'RECRUITMENT'} onChange={chooseModule} options={[{ value: 'RECRUITMENT', label: 'Recruitment / Candidate' }, { value: 'EMPLOYEE', label: 'Employee additional fields' }]} /></Form.Item>{definition.moduleCode === 'EMPLOYEE' && <Form.Item label="Employee infotype"><Select data-testid="form-builder-employee-infotype" disabled={readOnly} value={employeeInfotype} onChange={value => patchDefinition({ purposeCode: `EMPLOYEE_INFOTYPE_${value}`, entityType: 'EMPLOYEE' })} options={[{ value: '0001', label: '0001 - Organizational Assignment' }, { value: '0002', label: '0002 - Personal Data' }, { value: '0006', label: '0006 - Addresses' }, { value: '0008', label: '0008 - Basic Pay' }, { value: '0009', label: '0009 - Bank Details' }]} /></Form.Item>}<Form.Item label="Purpose code"><Input data-testid="form-builder-purpose" disabled={readOnly} value={definition.purposeCode} onChange={event => patchDefinition({ purposeCode: code(event.target.value) })} /></Form.Item><Form.Item label="Entity type"><Input data-testid="form-builder-entity" disabled={readOnly} value={definition.entityType} onChange={event => patchDefinition({ entityType: code(event.target.value) })} /></Form.Item></div>
         </Card>
         <div className="form-builder-design-surface">
-          <div className="form-builder-surface-head"><div><span>Form canvas</span><small>{version.sections.length} section{version.sections.length === 1 ? '' : 's'} · {version.sections.reduce((total, section) => total + section.fields.length, 0)} fields</small></div><div className="form-builder-canvas-actions">{isCandidateForm && <div className="form-builder-otp-control"><span>Email OTP</span><Switch loading={savingVerification} data-testid="form-builder-email-otp" checked={definition.requiresEmailVerification !== false} onChange={requiresEmailVerification => void changeEmailVerification(requiresEmailVerification)} checkedChildren="Required" unCheckedChildren="Off" /></div>}{readOnly ? <Button type="primary" icon={<EditOutlined />} onClick={beginRevision}>Create next version</Button> : <>{isUnsavedRevision && <Button danger onClick={cancelRevision}>Cancel revision</Button>}<Button data-testid="form-builder-save" loading={saving} onClick={() => void save()}>Save draft</Button><Button data-testid="form-builder-publish" type="primary" onClick={publish}>Publish</Button></>}<Button icon={<PlusOutlined />} disabled={readOnly} onClick={addSection}>Add section</Button></div></div>
+          <div className="form-builder-surface-head"><div><span>Form canvas</span><small>{version.sections.length} section{version.sections.length === 1 ? '' : 's'} · {version.sections.reduce((total, section) => total + section.fields.length, 0)} fields</small></div><div className="form-builder-canvas-actions">{readOnly ? <Button type="primary" icon={<EditOutlined />} onClick={beginRevision}>Create next version</Button> : <>{isUnsavedRevision && <Button danger onClick={cancelRevision}>Cancel revision</Button>}<Button data-testid="form-builder-save" loading={saving} onClick={() => void save()}>Save draft</Button><Button data-testid="form-builder-publish" type="primary" onClick={publish}>Publish</Button></>}<Button icon={<PlusOutlined />} disabled={readOnly} onClick={addSection}>Add section</Button></div></div>
           {readOnly && <Alert showIcon type="info" message="Published versions are read-only" description="Create the next version to change sections or fields without affecting existing applications." />}
         {!version.sections.length && <div className="form-builder-empty form-builder-empty-canvas"><Empty description="Add a section, then drag fields from the palette." /></div>}
         {version.sections.map((section, sectionIndex) => <Card

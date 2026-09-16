@@ -143,6 +143,10 @@
   font-weight: 700;
 }
 
+.resume-parsing-disabled-alert {
+  margin-bottom: 14px;
+}
+
 .resume-intake-submit-row {
   align-items: center;
   display: flex;
@@ -192,10 +196,25 @@
 
 .resume-intake-progress {
   background: #f7f7ff;
+  border: 1px solid #e4e0ff;
   border-radius: 10px;
+  display: grid;
+  gap: 8px;
   margin-top: 14px;
   padding: 12px 14px;
 }
+
+.resume-progress-heading,
+.resume-progress-meta {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.resume-progress-heading strong { color: #27324a; }
+.resume-progress-heading b { color: #5f43e9; font-size: 18px; }
+.resume-progress-meta { color: #667085; font-size: 12px; }
 
 .resume-result-metrics {
   display: grid;

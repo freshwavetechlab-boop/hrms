@@ -624,6 +624,9 @@ export type RecruitmentJobPosting = {
   maximumApplications?: number | null
   applicationCount: number
   autoRunAts: boolean
+  enableResumeParsing: boolean
+  enableAiParsing: boolean
+  requireEmailOtp: boolean
   searchEngineVisible: boolean
   publishedAtUtc?: string | null
   createdAtUtc?: string
@@ -647,6 +650,9 @@ export type SaveRecruitmentJobPosting = {
   closesAtUtc?: string | null
   maximumApplications?: number | null
   autoRunAts: boolean
+  enableResumeParsing: boolean
+  enableAiParsing: boolean
+  requireEmailOtp: boolean
   searchEngineVisible: boolean
 }
 

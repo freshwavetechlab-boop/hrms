@@ -9,7 +9,7 @@ import DataTable from './DataTable'
 import { getClients } from '../services/payrollService'
 import { getRecruitmentOpenPositions } from '../services/recruitmentService'
 import { getRecruitmentJobDescriptions, getRecruitmentJobPostings } from '../services/recruitmentOrchestrationService'
-import { intakeRecruitmentResumes } from '../services/recruitmentTalentService'
+import { intakeRecruitmentResumes, type RecruitmentResumeUploadProgress } from '../services/recruitmentTalentService'
 import type { Client, RecruitmentOpenPosition, RecruitmentResumeIntakeItem, RecruitmentResumeIntakeResult } from '../types/payroll'
 import type { RecruitmentJobDescriptionVersion, RecruitmentJobPosting } from '../types/recruitmentOrchestration'
 import { useToast } from './ToastProvider'
@@ -76,6 +76,7 @@ export default function RecruitmentResumeIntake({
   const [loadingContext, setLoadingContext] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
+  const [progressDetail, setProgressDetail] = useState<RecruitmentResumeUploadProgress | null>(null)
   const [result, setResult] = useState<RecruitmentResumeIntakeResult | null>(null)
   const [forceUpload, setForceUpload] = useState(false)
   const [contextExpanded, setContextExpanded] = useState(!initialPositionId)
@@ -92,6 +93,8 @@ export default function RecruitmentResumeIntake({
     setContextExpanded(!initialPositionId)
     setFileList([])
     setForceUpload(false)
+    setProgress(0)
+    setProgressDetail(null)
     setResult(null)
   }, [open, initialClientId, initialPositionId, initialJobPostingId])
 
@@ -174,6 +177,7 @@ export default function RecruitmentResumeIntake({
     .filter(row => !['Closed', 'Cancelled'].includes(row.status)), [postings, positionId])
   const selectedPosition = positions.find(row => row.id === positionId)
   const selectedPosting = postings.find(row => row.id === jobPostingId)
+  const parsingDisabled = selectedPosting?.enableResumeParsing === false
   const selectedDescription = descriptions.find(row => row.id === jobDescriptionId)
   const selectedFiles = useMemo<File[]>(() => fileList.flatMap(row => row.originFileObj ? [row.originFileObj as File] : []), [fileList])
 
@@ -244,9 +248,10 @@ export default function RecruitmentResumeIntake({
     if (!selectedFiles.length) return notify(`Select ${mode === 'single' ? 'a resume' : 'one or more resumes'}.`, 'error')
     setUploading(true)
     setProgress(0)
+    setProgressDetail({ percent: 0, completedFiles: 0, totalFiles: selectedFiles.length, activeFrom: 1, activeTo: Math.min(1, selectedFiles.length), phase: 'uploading' })
     setResult(null)
     try {
-      const response = await intakeRecruitmentResumes({ clientId, positionId, jobPostingId, talentPoolOnly, forceUpload, sourceType, files: selectedFiles }, setProgress)
+      const response = await intakeRecruitmentResumes({ clientId, positionId, jobPostingId, talentPoolOnly, forceUpload: forceUpload || parsingDisabled, deferAtsScoring: mode === 'bulk', sourceType, files: selectedFiles }, detail => { setProgress(detail.percent); setProgressDetail(detail) })
       if (!response.ok) return
       setProgress(100)
       setResult(response.data)
@@ -282,6 +287,7 @@ export default function RecruitmentResumeIntake({
       </Card>
 
       <Card size="small" className="resume-intake-upload" title={`Add ${mode === 'single' ? 'a resume' : 'resumes'}`}>
+        {parsingDisabled && <Alert className="resume-parsing-disabled-alert" type="info" showIcon message="Resume parsing is off for this job" description="All files will still be imported. Candidate cards will be marked for manual review so you can edit missing name, email or phone details." />}
         <div data-testid="resume-intake-files">
           <Upload.Dragger {...uploadProps}>
             <p className="ant-upload-drag-icon"><InboxOutlined /></p>
@@ -289,15 +295,19 @@ export default function RecruitmentResumeIntake({
             <p className="ant-upload-hint">PDF, DOCX, RTF or TXT. A readable resume should be 10 MB or smaller for automatic parsing.</p>
           </Upload.Dragger>
         </div>
-        <div className={`resume-force-upload${forceUpload ? ' is-active' : ''}`}>
-          <Switch data-testid="resume-force-upload" checked={forceUpload} disabled={uploading} onChange={setForceUpload} />
-          <div><strong>Force upload if details cannot be read</strong><span>The resume will be retained for manual review and ATS will wait until the candidate details are completed.</span></div>
+        <div className={`resume-force-upload${forceUpload || parsingDisabled ? ' is-active' : ''}`}>
+          <Switch data-testid="resume-force-upload" checked={forceUpload || parsingDisabled} disabled={uploading || parsingDisabled} onChange={setForceUpload} />
+          <div><strong>{parsingDisabled ? 'Manual-review upload enabled' : 'Force upload if details cannot be read'}</strong><span>{parsingDisabled ? 'Parsing is off, so every selected resume is retained and can be completed from the candidate card.' : 'The resume will be retained for manual review and ATS will wait until the candidate details are completed.'}</span></div>
         </div>
         <div className="resume-intake-submit-row">
           <Typography.Text type="secondary">{selectedFiles.length ? `${selectedFiles.length} file(s) ready` : 'No files selected'}</Typography.Text>
           <Button data-testid="resume-intake-submit" type="primary" size="large" icon={<FileSearchOutlined />} loading={uploading} disabled={loadingContext || resolvingPostings || resolvingDescription || (!talentPoolOnly && (!selectedPosition || selectedPosition.clientId !== clientId)) || !selectedFiles.length} onClick={() => void submit()}>{submitLabel || (talentPoolOnly ? 'Add to Talent Pool' : 'Upload & screen')}</Button>
         </div>
-        {uploading && <div className="resume-intake-progress"><Progress percent={progress} status="active" /><Typography.Text type="secondary">Uploading securely and screening each resume. Keep this window open.</Typography.Text></div>}
+        {uploading && <div className="resume-intake-progress" aria-live="polite">
+          <div className="resume-progress-heading"><strong>{progressMessage(progressDetail)}</strong><b>{progress}%</b></div>
+          <Progress percent={progress} status="active" showInfo={false} />
+          <div className="resume-progress-meta"><span>{progressDetail?.completedFiles || 0} of {progressDetail?.totalFiles || selectedFiles.length} files processed</span><span>{progressDetail?.phase === 'processing' ? 'Resume storage and candidate records are being saved.' : 'Secure upload is in progress.'}</span></div>
+        </div>}
       </Card>
 
       <div data-testid="resume-intake-results">
@@ -319,6 +329,13 @@ export default function RecruitmentResumeIntake({
   >
     {content}
   </Drawer>
+}
+
+function progressMessage(progress: RecruitmentResumeUploadProgress | null) {
+  if (!progress) return 'Preparing resume upload…'
+  if (progress.phase === 'complete') return 'Bulk upload completed'
+  const range = progress.activeFrom === progress.activeTo ? `file ${progress.activeFrom}` : `files ${progress.activeFrom}–${progress.activeTo}`
+  return progress.phase === 'processing' ? `Processing ${range} of ${progress.totalFiles}` : `Uploading ${range} of ${progress.totalFiles}`
 }
 
 function ResumeIntakeResults({ result, talentPoolOnly = false }: { result: RecruitmentResumeIntakeResult; talentPoolOnly?: boolean }) {

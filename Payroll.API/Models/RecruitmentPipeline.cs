@@ -116,6 +116,9 @@ public class RecruitmentJobPosting
     public int? MaximumApplications { get; set; }
     public int ApplicationCount { get; set; }
     public bool AutoRunAts { get; set; }
+    public bool EnableResumeParsing { get; set; } = true;
+    public bool EnableAiParsing { get; set; } = true;
+    public bool RequireEmailOtp { get; set; } = true;
     public bool SearchEngineVisible { get; set; }
     public int CreatedByUserId { get; set; }
     public DateTime? PublishedAtUtc { get; set; }
@@ -163,12 +166,18 @@ public class SaveRecruitmentJobPosting
     public DateTime? ClosesAtUtc { get; set; }
     public int? MaximumApplications { get; set; }
     public bool AutoRunAts { get; set; }
+    public bool EnableResumeParsing { get; set; } = true;
+    public bool EnableAiParsing { get; set; } = true;
+    public bool RequireEmailOtp { get; set; } = true;
     public bool SearchEngineVisible { get; set; }
 }
 
 public class UpdateRecruitmentJobPostingAtsRequest
 {
     public bool AutoRunAts { get; set; }
+    public bool EnableResumeParsing { get; set; } = true;
+    public bool EnableAiParsing { get; set; } = true;
+    public bool RequireEmailOtp { get; set; } = true;
 }
 
 public class RecruitmentPublicJobPosting

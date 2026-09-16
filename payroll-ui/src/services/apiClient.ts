@@ -109,7 +109,7 @@ export async function postForm<TResult>(path: string, body: FormData, fallback: 
   return mutateJson(path, { ...options, method: 'POST', body }, fallback)
 }
 
-export function postFormWithProgress<TResult>(path: string, body: FormData, fallback: TResult, onProgress: (percent: number) => void): Promise<ApiResult<TResult>> {
+export function postFormWithProgress<TResult>(path: string, body: FormData, fallback: TResult, onProgress: (percent: number) => void, timeoutMs = 120000): Promise<ApiResult<TResult>> {
   return new Promise(resolve => {
     const request = new XMLHttpRequest()
     const legacyToken = sessionStorage.getItem(legacyTokenKey) || localStorage.getItem(legacyTokenKey)
@@ -143,7 +143,7 @@ export function postFormWithProgress<TResult>(path: string, body: FormData, fall
     request.onerror = () => { const message = 'Network error: unable to reach the API.'; notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
     request.onabort = () => { const message = 'Upload was cancelled.'; notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
     request.ontimeout = () => { const message = 'Upload timed out.'; notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
-    request.timeout = 120000
+    request.timeout = timeoutMs
     request.send(body)
   })
 }

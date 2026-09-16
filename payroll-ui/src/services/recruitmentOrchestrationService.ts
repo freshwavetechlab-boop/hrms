@@ -166,8 +166,10 @@ export const saveRecruitmentJobPosting = (posting: SaveRecruitmentJobPosting) =>
 export const publishRecruitmentJobPosting = (id: number) =>
   postJson(`${internalBase}/job-postings/${id}/publish`, {}, null as RecruitmentJobPosting | null, { toast: false })
 
-export const updateRecruitmentJobPostingAutoRunAts = (id: number, autoRunAts: boolean) =>
-  postJson(`${internalBase}/job-postings/${id}/auto-run-ats`, { autoRunAts }, null as RecruitmentJobPosting | null, { successMessage: autoRunAts ? 'Automatic ATS enabled.' : 'Automatic ATS disabled.', timeoutMs: 180000 })
+export const updateRecruitmentJobPostingAutomation = (
+  id: number,
+  settings: Pick<RecruitmentJobPosting, 'autoRunAts' | 'enableResumeParsing' | 'enableAiParsing' | 'requireEmailOtp'>,
+) => postJson(`${internalBase}/job-postings/${id}/auto-run-ats`, settings, null as RecruitmentJobPosting | null, { successMessage: 'Application automation updated.', timeoutMs: 180000 })
 
 export const closeRecruitmentJobPosting = (id: number) =>
   postJson(`${internalBase}/job-postings/${id}/close`, {}, null as unknown, { toast: false })

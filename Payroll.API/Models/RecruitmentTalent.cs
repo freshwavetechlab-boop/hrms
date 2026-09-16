@@ -710,6 +710,7 @@ public class RecruitmentResumeIntakeRequest
     public long? FieldConfigurationId { get; set; }
     public bool TalentPoolOnly { get; set; }
     public bool ForceUpload { get; set; }
+    public bool DeferAtsScoring { get; set; }
     public string SourceType { get; set; } = "Direct Sourcing";
     public List<IFormFile> Files { get; set; } = [];
 }
