@@ -7,7 +7,7 @@ import {
 } from '@ant-design/icons'
 import {
   Alert, Badge, Button, Card, Col, DatePicker, Descriptions, Empty, Form, Input,
-  List, Modal, Popconfirm, Row, Segmented, Select, Space, Spin, Tag, Tooltip, Typography,
+  List, Modal, Popconfirm, Row, Segmented, Select, Space, Spin, Switch, Tag, Tooltip, Typography,
 } from 'antd'
 import { useAuthSession } from './AuthGate'
 import { useToast, type ToastType } from './ToastProvider'
@@ -15,7 +15,7 @@ import { getClients } from '../services/payrollService'
 import {
   closeRecruitmentJobPosting, deleteRecruitmentJobPosting, getRecruitmentJobDescriptions,
   getRecruitmentJobPosting, getRecruitmentJobPostings, getRecruitmentOrchestrationLookups, getPublicCareerJob,
-  getRecruitmentPositionPipelineAssignment, normalizePublicCareerUrl, publishRecruitmentJobPosting, saveRecruitmentJobPosting,
+  getRecruitmentPositionPipelineAssignment, normalizePublicCareerUrl, publishRecruitmentJobPosting, saveRecruitmentJobPosting, updateRecruitmentJobPostingAutoRunAts,
 } from '../services/recruitmentOrchestrationService'
 import type { Client } from '../types/payroll'
 import type {
@@ -236,6 +236,17 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
     }
   }
 
+  async function toggleAutoRunAts(autoRunAts: boolean) {
+    if (!editor) return
+    if (!editor.id) return setEditor({ ...editor, autoRunAts })
+    setActionBusy(true)
+    const response = await updateRecruitmentJobPostingAutoRunAts(editor.id, autoRunAts)
+    setActionBusy(false)
+    if (!response.ok || !response.data) return
+    setEditor(response.data)
+    setPostings(current => current.map(row => row.id === response.data!.id ? response.data! : row))
+  }
+
   function unpublishPosting() {
     if (!editor?.id) { report('warning', 'Posting cannot be unpublished', 'Select a saved posting first.'); return }
     setConfirmationError('')
@@ -254,7 +265,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
       id: target.id, positionId: target.positionId, jobDescriptionVersionId: target.jobDescriptionVersionId,
       applicationFormVersionId: target.applicationFormVersionId || null, publicTitle: target.publicTitle.trim(),
       opensAtUtc: target.opensAtUtc || null, closesAtUtc: target.closesAtUtc || null,
-      maximumApplications: null, searchEngineVisible: true,
+      maximumApplications: null, autoRunAts: target.autoRunAts, searchEngineVisible: true,
     })
     if (!saved.ok || !saved.data) {
       const current = target.id ? await getRecruitmentJobPosting(target.id) : null
@@ -387,7 +398,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
                   {row.status === 'Published' && <Tooltip title="Copy public link"><Button aria-label="Copy public link" size="small" shape="circle" icon={<CopyOutlined />} onClick={event => { event.stopPropagation(); void copyPostingLink(row) }} /></Tooltip>}
                   <PostingStatus status={row.status} />
                 </Space></div>
-                <div className="job-card-facts"><Tag>{position?.employmentType || 'Employment type not set'}</Tag><Tag color="cyan"><UserAddOutlined /> {row.applicationCount} candidate{row.applicationCount === 1 ? '' : 's'}</Tag>{position?.pipelineStageName && <Tooltip title={position.pipelineStatus || 'Current vacancy pipeline stage'}><Tag color={recruitmentStageColor(position.pipelineStageType || '', position.pipelineStageName)}><BranchesOutlined /> {position.pipelineStageName}</Tag></Tooltip>}</div>
+                <div className="job-card-facts"><Tag>{position?.employmentType || 'Employment type not set'}</Tag><Tag color="cyan"><UserAddOutlined /> {row.applicationCount} candidate{row.applicationCount === 1 ? '' : 's'}</Tag>{row.autoRunAts && <Tag color="purple"><RocketOutlined /> Auto ATS</Tag>}{position?.pipelineStageName && <Tooltip title={position.pipelineStatus || 'Current vacancy pipeline stage'}><Tag color={recruitmentStageColor(position.pipelineStageType || '', position.pipelineStageName)}><BranchesOutlined /> {position.pipelineStageName}</Tag></Tooltip>}</div>
                 <div className="job-card-metrics">
                   <JobFact icon={<FieldTimeOutlined />} label="Experience" value={position?.requisitionExperienceRange || position?.experienceRange || 'Not specified'} />
                   <JobFact icon={<DollarOutlined />} label="CTC" value={formatCtc(position)} />
@@ -421,6 +432,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
             </div>
             {actionFeedback && <Alert data-testid="job-posting-action-feedback" style={{ marginBottom: 12 }} closable showIcon type={actionFeedback.type} message={actionFeedback.message} description={actionFeedback.description} onClose={() => setActionFeedback(null)} />}
             {readOnly && <Alert className="jd-readonly-alert" type="info" showIcon message="Published details are locked" description="Close this posting and create a new posting if the approved JD, form or schedule must change." />}
+            <div className="posting-ats-setting"><div><strong>Auto run ATS</strong><span>Score every new application automatically and send ATS-qualified candidates to interview scheduling.</span></div><Switch checked={editor.autoRunAts} loading={actionBusy} disabled={actionBusy} onChange={value => void toggleAutoRunAts(value)} /></div>
             {publicUrl && <div className="public-link-banner"><GlobalOutlined /><div><Typography.Text type="secondary">{editor.status === 'Published' ? 'Live public candidate URL' : 'Public candidate URL preview'}</Typography.Text><Typography.Link href={publicUrl} target="_blank" rel="noreferrer">{publicUrl} <LinkOutlined /></Typography.Link>{editor.status !== 'Published' && <Typography.Text type="secondary">This URL starts accepting applications only after the posting is published and open.</Typography.Text>}</div></div>}
           </Card>
 
@@ -506,7 +518,7 @@ function blankPosting(clientId: number, positionId = 0, positionTitle = ''): Rec
   return {
     id: 0, clientId, positionId, jobDescriptionVersionId: 0, applicationFormVersionId: null,
     publicSlug: '', publicTitle: positionTitle, status: 'Draft', opensAtUtc: null, closesAtUtc: null,
-    maximumApplications: null, applicationCount: 0, searchEngineVisible: true, publishedAtUtc: null,
+    maximumApplications: null, applicationCount: 0, autoRunAts: false, searchEngineVisible: true, publishedAtUtc: null,
     positionCode: '', positionTitle, clientName: '', candidatePortalReady: false, candidateProofReady: true, candidateProofValidationMessage: '', publicUrl: '',
   }
 }

@@ -24,6 +24,7 @@ type ScheduleProps = CommonProps & {
 type FeedbackProps = CommonProps & {
   mode: 'feedback'
   interview: RecruitmentInterview
+  readOnly?: boolean
 }
 
 export type RecruitmentInterviewEditorProps = ScheduleProps | FeedbackProps
@@ -233,7 +234,7 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
   </RecruitmentEditorDrawer>
 }
 
-function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved }: FeedbackProps) {
+function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved, readOnly = false }: FeedbackProps) {
   const [rows, setRows] = useState<RecruitmentInterviewFeedback[]>([])
   const [panelUserId, setPanelUserId] = useState(0)
   const [recommendation, setRecommendation] = useState('Hire')
@@ -303,11 +304,11 @@ function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved }: Feedb
   return <RecruitmentEditorDrawer
     open={open}
     width="min(980px, 96vw)"
-    eyebrow="Panel feedback"
+    eyebrow={readOnly ? 'Completed interview' : 'Panel feedback'}
     title={`${interview.candidateName} · ${interview.roundCode}`}
-    description="Review submitted feedback and capture this panel member's evidence and recommendation."
+    description={readOnly ? 'Review submitted panel scores, recommendations and comments.' : "Review submitted feedback and capture this panel member's evidence and recommendation."}
     onClose={onClose}
-    onSubmit={() => void submit()}
+    onSubmit={readOnly ? undefined : () => void submit()}
     submitText="Save feedback"
     submitLoading={saving}
     submitDisabled={!canSubmit}
@@ -322,7 +323,7 @@ function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved }: Feedb
         <Descriptions.Item label="Feedback">{interview.feedbackRequired ? <Tag color="red">Required</Tag> : <Tag>Optional</Tag>}</Descriptions.Item>
       </Descriptions>
 
-      <Card size="small" title="Submitted panel feedback" loading={loading}>
+      {!readOnly && <Card size="small" title="Submitted panel feedback" loading={loading}>
         <Table<RecruitmentInterviewFeedback> rowKey="id" size="small" pagination={false} dataSource={rows} columns={[
           { title: 'Panel member', dataIndex: 'panelUserName' },
           { title: 'Score', dataIndex: 'overallScore', render: value => `${Number(value || 0).toFixed(2)}%` },
@@ -330,11 +331,28 @@ function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved }: Feedb
           { title: 'Submitted', dataIndex: 'submittedAt', render: value => dayjs(String(value)).format('DD MMM YYYY, HH:mm') },
           { title: '', key: 'action', width: 80, render: (_, row) => <Button size="small" onClick={() => editFeedback(row)}>Edit</Button> }
         ]} locale={{ emptyText: 'No panel feedback submitted yet.' }} />
-      </Card>
+      </Card>}
 
-      {!panelIds.length && <Alert type="warning" showIcon message="No panel members are assigned to this interview." />}
-      {feedbackBlocked && <Alert type="error" showIcon message={`Feedback cannot be submitted for an interview marked ${interview.status}.`} />}
-      <Form layout="vertical" className="interview-editor-grid">
+      {readOnly && <Card size="small" title="Submitted panel feedback" loading={loading}>
+        {!loading && !rows.length && <Alert type="info" showIcon message="No panel feedback has been submitted." />}
+        <div className="submitted-feedback-list">{rows.map(row => <Card size="small" key={row.id} title={row.panelUserName || `Panel member #${row.panelUserId}`} extra={<Space wrap><Tag color="blue">{Number(row.overallScore || 0).toFixed(2)} / 100</Tag><Tag color={/hire/i.test(row.recommendation || '') && !/no hire/i.test(row.recommendation || '') ? 'green' : 'orange'}>{row.recommendation || 'No recommendation'}</Tag></Space>}>
+          <Descriptions size="small" bordered column={{ xs: 1, sm: 2 }}>
+            <Descriptions.Item label="Submitted">{dayjs(row.submittedAt).format('DD MMM YYYY, HH:mm')}</Descriptions.Item>
+            <Descriptions.Item label="Score source">{row.scoreSource || 'Panel feedback'}</Descriptions.Item>
+            <Descriptions.Item label="Overall comments" span={2}>{row.comments || 'No comments recorded.'}</Descriptions.Item>
+          </Descriptions>
+          {!!row.competencyScores?.length && <Table rowKey="id" size="small" pagination={false} dataSource={row.competencyScores} columns={[
+            { title: 'Competency', dataIndex: 'competencyName' },
+            { title: 'Weight', dataIndex: 'weightPercent', render: value => `${Number(value || 0).toFixed(0)}%` },
+            { title: 'Score', dataIndex: 'score', render: value => `${Number(value || 0).toFixed(2)} / 100` },
+            { title: 'Observation', dataIndex: 'comments', render: value => value || '-' }
+          ]} />}
+        </Card>)}</div>
+      </Card>}
+
+      {!readOnly && !panelIds.length && <Alert type="warning" showIcon message="No panel members are assigned to this interview." />}
+      {!readOnly && feedbackBlocked && <Alert type="error" showIcon message={`Feedback cannot be submitted for an interview marked ${interview.status}.`} />}
+      {!readOnly && <Form layout="vertical" className="interview-editor-grid">
         <Form.Item label="Panel member" required>
           <SearchSelect value={panelUserId} onChange={value => { const id = Number(value); const existing = rows.find(row => row.panelUserId === id); existing ? editFeedback(existing) : resetFormWithPanel(id, competencies, setPanelUserId, setRecommendation, setOverallScore, setComments, setCompetencyDraft) }} options={selectOptions(panelIds.map(id => ({ value: id, label: panelUsers.find(user => user.id === id)?.displayName || `User #${id}` })), 'Select panel member', 0)} />
         </Form.Item>
@@ -357,7 +375,7 @@ function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved }: Feedb
 
         {!competencies.length && <Form.Item label="Overall score" required><InputNumber min={0} max={100} precision={2} value={overallScore} onChange={value => setOverallScore(Number(value || 0))} /></Form.Item>}
         <Form.Item className="interview-editor-span" label="Overall comments"><Input.TextArea rows={4} value={comments} onChange={event => setComments(event.target.value)} placeholder="Capture evidence, strengths, concerns and hiring rationale." /></Form.Item>
-      </Form>
+      </Form>}
     </div>
   </RecruitmentEditorDrawer>
 }

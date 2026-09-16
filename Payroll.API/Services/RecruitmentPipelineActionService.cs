@@ -208,6 +208,15 @@ ORDER BY stageInstance.ApplicationId", cancellationToken: cancellationToken))).T
             }
             case "RUN_ATS_SCORE":
             {
+                if (!await talent.IsApplicationAutoRunAtsEnabledAsync(context.ApplicationId))
+                {
+                    await db.ExecuteAsync(@"UPDATE recruitment_stage_action_executions
+SET Status='Completed',ErrorMessage='',CompletedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id;
+INSERT INTO recruitment_stage_events (StageInstanceId,EventType,EventTitle,EventDetails,ActorUserId)
+VALUES (@StageInstanceId,'AutoAtsSkipped','Automatic ATS skipped','Auto run ATS is disabled for this job posting.',NULL);",
+                        new { Id = executionId, context.StageInstanceId });
+                    break;
+                }
                 var scoreId = await db.ExecuteScalarAsync<long?>(@"SELECT scoreRow.Id
 FROM recruitment_application_scores scoreRow
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=scoreRow.ApplicationId

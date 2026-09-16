@@ -15,6 +15,7 @@ export type Column<T> = {
   sortable?: boolean
   filterable?: boolean
   width?: string | number
+  wrap?: boolean
 }
 
 type DataTableProps<T> = {
@@ -100,12 +101,17 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
         key,
         title: column.label,
         width: resolvedColumnWidth(column),
-        ellipsis: true,
+        ellipsis: !column.wrap,
         sorter: column.sortable === false ? undefined : (a: T, b: T) => text(valueOf(a, column)).localeCompare(text(valueOf(b, column)), undefined, { numeric: true, sensitivity: 'base' }),
         filters,
         filterSearch: true,
         onFilter: column.filterable === false ? undefined : (value: boolean | Key, row: T) => text(valueOf(row, column)) === String(value),
-        render: (_: unknown, row: T) => column.render ? column.render(row) : text(valueOf(row, column))
+        render: (_: unknown, row: T) => {
+          const content = column.render ? column.render(row) : text(valueOf(row, column))
+          return column.wrap
+            ? <span title={text(valueOf(row, column)) || undefined} style={{ display: 'block', whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.35 }}>{content}</span>
+            : content
+        }
       }
     })
     return actions || onEdit ? [...mapped, { key: '__actions', title: 'Actions', fixed: 'right' as const, width: actionsWidth, render: (_: unknown, row: T) => <div className="ant-table-row-actions">{actions ? actions(row) : <Button size="small" onClick={() => onEdit?.(row)}>Edit</Button>}</div> }] : mapped

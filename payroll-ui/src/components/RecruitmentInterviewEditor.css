@@ -29,6 +29,19 @@
   box-shadow: 0 6px 22px rgb(31 45 61 / 5%);
 }
 
+.submitted-feedback-list {
+  display: grid;
+  gap: 12px;
+}
+
+.submitted-feedback-list > .ant-card {
+  border-color: #e3e8f2;
+}
+
+.submitted-feedback-list .ant-table-wrapper {
+  margin-top: 12px;
+}
+
 .competency-score-grid {
   display: grid;
   gap: 10px;

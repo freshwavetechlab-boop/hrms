@@ -115,6 +115,7 @@ public class RecruitmentJobPosting
     public DateTime? ClosesAtUtc { get; set; }
     public int? MaximumApplications { get; set; }
     public int ApplicationCount { get; set; }
+    public bool AutoRunAts { get; set; }
     public bool SearchEngineVisible { get; set; }
     public int CreatedByUserId { get; set; }
     public DateTime? PublishedAtUtc { get; set; }
@@ -161,7 +162,13 @@ public class SaveRecruitmentJobPosting
     public DateTime? OpensAtUtc { get; set; }
     public DateTime? ClosesAtUtc { get; set; }
     public int? MaximumApplications { get; set; }
+    public bool AutoRunAts { get; set; }
     public bool SearchEngineVisible { get; set; }
+}
+
+public class UpdateRecruitmentJobPostingAtsRequest
+{
+    public bool AutoRunAts { get; set; }
 }
 
 public class RecruitmentPublicJobPosting
@@ -588,6 +595,7 @@ public class RecruitmentPipelineBoardCard
     public string RejectedFromStageName { get; set; } = "";
     public DateTime? RejectedAtUtc { get; set; }
     public decimal? AtsScore { get; set; }
+    public decimal? InterviewScore { get; set; }
     public DateTime EnteredAtUtc { get; set; }
     public DateTime? DueAtUtc { get; set; }
     public long ElapsedSeconds { get; set; }

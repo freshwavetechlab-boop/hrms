@@ -497,6 +497,7 @@ export type RecruitmentPipelineBoardCard = {
   rejectedFromStageName?: string
   rejectedAtUtc?: string | null
   atsScore?: number | null
+  interviewScore?: number | null
   enteredAtUtc: string
   dueAtUtc?: string | null
   elapsedSeconds: number
@@ -622,6 +623,7 @@ export type RecruitmentJobPosting = {
   closesAtUtc?: string | null
   maximumApplications?: number | null
   applicationCount: number
+  autoRunAts: boolean
   searchEngineVisible: boolean
   publishedAtUtc?: string | null
   createdAtUtc?: string
@@ -644,6 +646,7 @@ export type SaveRecruitmentJobPosting = {
   opensAtUtc?: string | null
   closesAtUtc?: string | null
   maximumApplications?: number | null
+  autoRunAts: boolean
   searchEngineVisible: boolean
 }
 

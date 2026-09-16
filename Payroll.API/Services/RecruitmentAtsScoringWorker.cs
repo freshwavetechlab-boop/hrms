@@ -4,6 +4,10 @@ namespace Payroll.API.Services;
 
 public sealed class RecruitmentAtsScoringWorker(
     RecruitmentTalentRepository repository,
+    RecruitmentPipelineRepository pipelines,
+    RecruitmentPipelineActionService actions,
+    RecruitmentCandidateActionRepository candidateActions,
+    RecruitmentCaseRepository hiringCases,
     ILogger<RecruitmentAtsScoringWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -14,7 +18,20 @@ public sealed class RecruitmentAtsScoringWorker(
             var failed = false;
             try
             {
-                processed = await repository.ProcessNextAtsScoringJobAsync(stoppingToken);
+                var work = await repository.ProcessNextAtsScoringJobAsync(stoppingToken);
+                processed = work.Processed;
+                if (work.ApplicationId.HasValue && work.User is not null)
+                {
+                    var (transition, _) = await pipelines.EvaluateAtsStageAutomationAsync(work.ApplicationId.Value, work.User);
+                    if (transition?.Status == "Applied")
+                    {
+                        await actions.ExecuteAsync(work.ApplicationId.Value, "OnExit", work.User);
+                        var entry = await actions.ExecuteAsync(work.ApplicationId.Value, "OnEntry", work.User);
+                        if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
+                            await candidateActions.EnsureForCurrentStageAsync(work.ApplicationId.Value, work.User);
+                        await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(work.ApplicationId.Value, "ProfilesSelected", work.User);
+                    }
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

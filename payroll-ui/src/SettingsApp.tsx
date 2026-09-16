@@ -76,14 +76,19 @@ const recruitmentNavigation: Array<{
           { view: 'Talent Pool', label: 'Global Talent Pool', icon: 'user' },
         ],
       },
-      { view: 'Interviews', label: 'Interviews & Offers', icon: 'onboarding' },
+      {
+        key: 'interviews-offers', label: 'Interviews & Offers', icon: 'onboarding', children: [
+          { view: 'Interview Queue', label: 'Schedule Interviews', icon: 'candidate' },
+          { view: 'Interviews', label: 'Interview Tracker', icon: 'onboarding' },
+          { view: 'Offers & Pre-Onboarding', label: 'Offers & Pre-boarding', icon: 'document' },
+        ],
+      },
     ],
   },
 ]
 const recruitmentNavigationLeaves = recruitmentNavigation.flatMap(group => group.children.flatMap(item => 'view' in item ? [item] : item.children))
 const recruitmentNavigationView = (view: RecruitmentPageView): RecruitmentPageView => {
   if (view === 'Open Positions') return 'Requisitions'
-  if (view === 'Offers & Pre-Onboarding') return 'Interviews'
   if (view === 'ATS Screening') return 'Applications'
   return view
 }
@@ -643,7 +648,7 @@ export default function SettingsApp() {
         mode="inline"
         inlineIndent={14}
         selectedKeys={[slug(recruitmentNavigationView(recruitmentView))]}
-        defaultOpenKeys={[...recruitmentNavigation.map(group => `recruitment-${group.key}`), 'recruitment-candidates']}
+        defaultOpenKeys={[...recruitmentNavigation.map(group => `recruitment-${group.key}`), 'recruitment-candidates', 'recruitment-interviews-offers']}
         items={recruitmentNavigation.map(group => ({
           key: `recruitment-${group.key}`,
           label: menuLabel(group.label, group.icon),

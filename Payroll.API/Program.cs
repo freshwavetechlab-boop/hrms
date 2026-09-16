@@ -1550,17 +1550,43 @@ app.MapPost("/api/recruitment/applications/{id:long}/stage", async (RecruitmentT
     if (row is not null) await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(id, "ProfilesSelected", user);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
-app.MapPost("/api/recruitment/applications/{id:long}/score", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+app.MapPost("/api/recruitment/applications/{id:long}/score", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentPipelineActionService actions, RecruitmentCandidateActionRepository candidateActions, RecruitmentCaseRepository hiringCases, long id, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
-    var (row, error) = await repository.ScoreApplicationAsync(id, CurrentUser(context));
+    var user = CurrentUser(context);
+    var (row, error) = await repository.ScoreApplicationAsync(id, user);
+    if (row is not null) await ApplyAtsSelectionAsync(id, user, pipelines, actions, candidateActions, hiringCases, true);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
-app.MapPost("/api/recruitment/application-scores/{id:long}/override", async (RecruitmentTalentRepository repository, long id, OverrideApplicationScoreRequest request, HttpContext context) =>
+app.MapPost("/api/recruitment/application-scores/{id:long}/override", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentPipelineActionService actions, RecruitmentCandidateActionRepository candidateActions, RecruitmentCaseRepository hiringCases, long id, OverrideApplicationScoreRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
-    var (row, error) = await repository.OverrideScoreAsync(id, request, CurrentUser(context));
+    var user = CurrentUser(context);
+    var (row, error) = await repository.OverrideScoreAsync(id, request, user);
+    if (row is not null) await ApplyAtsSelectionAsync(row.ApplicationId, user, pipelines, actions, candidateActions, hiringCases, true, true);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/applications/{id:long}/global-talent-pool", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.MoveCandidateToGlobalTalentPoolAsync(id, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/applications/global-talent-pool", async (RecruitmentTalentRepository repository, MoveRecruitmentApplicationsToTalentPoolRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var ids = request.ApplicationIds.Where(id => id > 0).Distinct().Take(500).ToArray();
+    if (ids.Length == 0) return Results.BadRequest(new { error = "Select at least one candidate application." });
+    var user = CurrentUser(context);
+    var moved = 0;
+    var errors = new List<string>();
+    foreach (var id in ids)
+    {
+        var (row, error) = await repository.MoveCandidateToGlobalTalentPoolAsync(id, user);
+        if (row is not null) moved++;
+        else errors.Add(error);
+    }
+    return Results.Ok(new { moved, failed = errors.Count, errors = errors.Distinct().ToArray() });
 });
 app.MapGet("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, long? applicationId, HttpContext context) =>
     HasPermission(context, "recruitment.interview.panel") || HasPermission(context, "recruitment.interview.schedule") || HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetInterviewsAsync(CurrentUser(context), applicationId)) : Results.StatusCode(403));
@@ -1841,6 +1867,25 @@ recruitmentOrchestration.MapPost("/job-postings/{id:long}/publish", async (Recru
     var (row, error) = await repository.PublishJobPostingAsync(id, user);
     if (row is not null) row.PublicPortalBaseUrl = publicPortalUrls.ResolveBaseUrl(row.PublicPortalBaseUrl);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+recruitmentOrchestration.MapPost("/job-postings/{id:long}/auto-run-ats", async (RecruitmentPipelineRepository repository, RecruitmentTalentRepository talent, RecruitmentPipelineActionService actions, RecruitmentCandidateActionRepository candidateActions, RecruitmentCaseRepository hiringCases, PublicPortalUrlResolver publicPortalUrls, long id, UpdateRecruitmentJobPostingAtsRequest request, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var (row, error) = await repository.UpdateJobPostingAtsAsync(id, request.AutoRunAts, user);
+    if (row is null) return Results.BadRequest(new { error });
+    if (request.AutoRunAts)
+    {
+        foreach (var applicationId in await repository.GetJobPostingApplicationIdsAsync(id, user))
+        {
+            var (score, _) = await talent.ScoreApplicationAsync(applicationId, user);
+            if (score is null) continue;
+            await EnsureRecruitmentApplicationAutomationAsync(applicationId, user, repository, actions, candidateActions);
+            await ApplyAtsSelectionAsync(applicationId, user, repository, actions, candidateActions, hiringCases, false);
+        }
+    }
+    row.PublicPortalBaseUrl = publicPortalUrls.ResolveBaseUrl(row.PublicPortalBaseUrl);
+    return Results.Ok(row);
 });
 recruitmentOrchestration.MapPost("/job-postings/{id:long}/close", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
     !HasRecruitmentManagement(context) ? Results.StatusCode(403) : await repository.CloseJobPostingAsync(id, CurrentUser(context)) ? Results.NoContent() : Results.NotFound());
@@ -3898,6 +3943,20 @@ static async Task<string> ApplyRecruitmentDecisionAsync(long applicationId, stri
         await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(applicationId, "ProfilesSelected", user);
     }
     return result?.Message ?? error;
+}
+
+static async Task ApplyAtsSelectionAsync(long applicationId, AuthUser user,
+    RecruitmentPipelineRepository pipelines, RecruitmentPipelineActionService actions,
+    RecruitmentCandidateActionRepository candidateActions, RecruitmentCaseRepository hiringCases,
+    bool humanConfirmed, bool atsOverridden = false)
+{
+    var (result, _) = await pipelines.EvaluateAtsStageAutomationAsync(applicationId, user, humanConfirmed, atsOverridden);
+    if (result?.Status != "Applied") return;
+    await actions.ExecuteAsync(applicationId, "OnExit", user);
+    var entry = await actions.ExecuteAsync(applicationId, "OnEntry", user);
+    if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
+        await candidateActions.EnsureForCurrentStageAsync(applicationId, user);
+    await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(applicationId, "ProfilesSelected", user);
 }
 
 static async Task<(long? PipelineId, string Error)> EnsureRecruitmentApplicationAutomationAsync(

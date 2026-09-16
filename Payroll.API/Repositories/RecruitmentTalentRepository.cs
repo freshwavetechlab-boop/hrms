@@ -275,6 +275,40 @@ VALUES (@CandidateCode,@ClientId,@FirstName,@LastName,@Email,@NormalizedEmail,@P
         return await ApplicationsAsync(db, user, positionId, candidateId, stage);
     }
 
+    public async Task<bool> IsApplicationAutoRunAtsEnabledAsync(long applicationId)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        return await db.ExecuteScalarAsync<bool>(@"SELECT COALESCE(posting.AutoRunAts,FALSE)
+FROM recruitment_candidate_applications applicationRow
+LEFT JOIN recruitment_job_postings posting ON posting.Id=applicationRow.JobPostingId
+WHERE applicationRow.Id=@ApplicationId", new { ApplicationId = applicationId });
+    }
+
+    public async Task<(RecruitmentCandidateApplication? Row, string Error)> MoveCandidateToGlobalTalentPoolAsync(long applicationId, AuthUser user)
+    {
+        if (user.ClientId is not null) return (null, "Only an authorised central recruitment user can move profiles to the Global Talent Pool.");
+        await using var db = Db();
+        await db.OpenAsync();
+        var source = await db.QueryFirstOrDefaultAsync<GlobalTalentPoolMoveRow>(@"SELECT applicationRow.CandidateId,applicationRow.ClientId ApplicationClientId,
+candidate.NormalizedEmail,candidate.NormalizedPhone
+FROM recruitment_candidate_applications applicationRow
+JOIN recruitment_candidates candidate ON candidate.Id=applicationRow.CandidateId
+WHERE applicationRow.Id=@ApplicationId AND applicationRow.ApplicationType='Application'", new { ApplicationId = applicationId });
+        if (source is null) return (null, "Candidate application was not found.");
+        var duplicateId = await db.ExecuteScalarAsync<long?>(@"SELECT Id FROM recruitment_candidates
+WHERE ClientId=@GlobalClientId AND Id<>@CandidateId AND ProfileStatus<>'Archived'
+ AND ((@Email<>'' AND NormalizedEmail=@Email) OR (@Phone<>'' AND NormalizedPhone=@Phone))
+ORDER BY Id LIMIT 1", new { GlobalClientId = GlobalTalentPoolClientId, source.CandidateId, Email = source.NormalizedEmail ?? "", Phone = source.NormalizedPhone ?? "" });
+        if (duplicateId.HasValue) return (null, "This person already has an active profile in the Global Talent Pool.");
+        await db.ExecuteAsync(@"UPDATE recruitment_candidates
+SET ClientId=@GlobalClientId,ProfileStatus='Active',UpdatedAt=UTC_TIMESTAMP()
+WHERE Id=@CandidateId", new { GlobalClientId = GlobalTalentPoolClientId, source.CandidateId });
+        await WriteRecruitmentAuditAsync(db, "RecruitmentCandidate", source.CandidateId, "Moved To Global Talent Pool", user.Id, new { applicationId, source.ApplicationClientId });
+        await WriteActivityAsync(db, source.ApplicationClientId, source.CandidateId, null, "RECRUITMENT", "MOVED_TO_GLOBAL_TALENT_POOL", "Candidate moved to Global Talent Pool", "The reusable profile remains available for future roles; the current application and pipeline history were retained.", "RecruitmentApplication", applicationId.ToString(CultureInfo.InvariantCulture), user);
+        return (await ApplicationByIdAsync(db, applicationId, user), "");
+    }
+
     public async Task<(RecruitmentCandidateDetail? Row, string Error)> SaveCandidateProfileSectionsAsync(long candidateId, SaveCandidateProfileSections request, AuthUser user)
     {
         await using var db = Db();
@@ -314,11 +348,13 @@ VALUES (@CandidateCode,@ClientId,@FirstName,@LastName,@Email,@NormalizedEmail,@P
         var candidate = await db.QueryFirstOrDefaultAsync<RecruitmentCandidate>("SELECT * FROM recruitment_candidates WHERE Id=@Id AND ProfileStatus<>'Archived'", new { Id = request.CandidateId });
         var position = await db.QueryFirstOrDefaultAsync<RecruitmentOpenPosition>("SELECT * FROM recruitment_open_positions WHERE Id=@Id", new { Id = request.PositionId });
         if (candidate is null || position is null || !CanAccessClient(user, position.ClientId) || !await RecruitmentAccessScope.CanAccessLocationAsync(db, user, position.ClientId, position.JobLocation) || !await CanAccessCandidateAsync(db, user, candidate)) return (null, "Candidate or open position was not found.");
+        var autoRunAts = false;
         if (request.JobPostingId is > 0)
         {
-            var validPosting = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_job_postings
+            var posting = await db.QueryFirstOrDefaultAsync<JobPostingAtsRow>(@"SELECT Id,AutoRunAts FROM recruitment_job_postings
 WHERE Id=@JobPostingId AND PositionId=@PositionId AND ClientId=@ClientId", new { request.JobPostingId, request.PositionId, position.ClientId });
-            if (validPosting == 0) return (null, "Selected job posting does not belong to this open position.");
+            if (posting is null) return (null, "Selected job posting does not belong to this open position.");
+            autoRunAts = posting.AutoRunAts;
         }
         if (!candidate.ProfileStatus.Equals("Active", StringComparison.OrdinalIgnoreCase)) return (null, $"A new application cannot be created for a {candidate.ProfileStatus} talent profile.");
         if (candidate.ConsentStatus.Equals("Revoked", StringComparison.OrdinalIgnoreCase)) return (null, "Candidate consent is revoked. A new application cannot be created.");
@@ -346,7 +382,7 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
         await AddPositionTimelineAsync(db, position.Id, "Candidate Added", "Candidate added", $"{candidate.FirstName} {candidate.LastName} / {code}", user.Id);
         await WriteActivityAsync(db, position.ClientId, candidate.Id, candidate.EmployeeId, "RECRUITMENT", "APPLICATION_CREATED", "Application created", $"Applied for {position.PositionTitle} ({position.PositionCode})", "RecruitmentApplication", id.ToString(), user);
         await RefreshPositionCountersAsync(db, position.Id);
-        if (resumeId.HasValue && !suppressAutoScoring) await QueueApplicationScoreAsync(db, id, user, false);
+        if (resumeId.HasValue && !suppressAutoScoring && autoRunAts) await QueueApplicationScoreAsync(db, id, user, true);
         return (await ApplicationByIdAsync(db, id, user), "");
     }
 
@@ -479,6 +515,7 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
         await using var lookupDb = Db();
         await lookupDb.OpenAsync(cancellationToken);
         IReadOnlyList<string> jobContext = [];
+        var autoRunAts = false;
         if (!talentPoolOnly)
         {
             var positionContext = await ResumeJobContextAsync(lookupDb, request.PositionId, clientId);
@@ -497,14 +534,15 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
             jobContext = ResumeJobContextParts(positionContext);
             if (request.JobPostingId is > 0)
             {
-                var validPosting = await lookupDb.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_job_postings
+                var posting = await lookupDb.QueryFirstOrDefaultAsync<JobPostingAtsRow>(@"SELECT Id,AutoRunAts FROM recruitment_job_postings
 WHERE Id=@JobPostingId AND PositionId=@PositionId AND ClientId=@ClientId", new { request.JobPostingId, request.PositionId, ClientId = clientId });
-                if (validPosting == 0)
+                if (posting is null)
                 {
                     result.Items.Add(new RecruitmentResumeIntakeItem { Error = "Selected job posting does not belong to this open position." });
                     result.NeedsReview = 1;
                     return result;
                 }
+                autoRunAts = posting.AutoRunAts;
             }
         }
         var features = await FeatureSettingsAsync(lookupDb, clientId);
@@ -558,7 +596,8 @@ ORDER BY (field.client_id=@ClientId) DESC,(field.form_code='CANDIDATE_APPLICATIO
                 item.DetectedPhone = parse.Facts.Phone;
                 item.DetectedAddress = parse.Facts.ResidentialAddress;
                 var suppressAutoScoring = item.ForceUploaded
-                    || !parse.Status.Equals("Parsed", StringComparison.OrdinalIgnoreCase);
+                    || !parse.Status.Equals("Parsed", StringComparison.OrdinalIgnoreCase)
+                    || !autoRunAts;
 
                 var normalizedEmail = NormalizeEmail(parse.Facts.Email);
                 var normalizedPhone = NormalizePhone(parse.Facts.Phone);
@@ -997,8 +1036,9 @@ WHERE Id=@ReferralId AND ReferrerEmployeeId=@EmployeeId", new { ReferralId = ref
         await using var db = Db();
         await db.OpenAsync(cancellationToken);
         var link = await db.QueryFirstOrDefaultAsync<PublicApplicationResumeRow>(@"SELECT a.Id ApplicationId,a.CandidateId,a.PositionId,a.ClientId,a.ResumeId RequestedResumeId,
-r.Id ResumeId,r.AttachmentPublicId,r.ParsingStatus
-FROM recruitment_candidate_applications a
+r.Id ResumeId,r.AttachmentPublicId,r.ParsingStatus,COALESCE(posting.AutoRunAts,FALSE) AutoRunAts
+ FROM recruitment_candidate_applications a
+LEFT JOIN recruitment_job_postings posting ON posting.Id=a.JobPostingId
 LEFT JOIN recruitment_candidate_resumes r ON r.Id=a.ResumeId AND r.CandidateId=a.CandidateId
 LEFT JOIN entity_attachments attachment ON attachment.public_id=r.AttachmentPublicId
  AND attachment.entity_type='CANDIDATE' AND attachment.entity_id=a.CandidateId
@@ -1077,8 +1117,8 @@ WHERE Id=@ResumeId AND CandidateId=@CandidateId", link);
             }
         }
 
-        if (!features.EnableAtsScoring) return (null, "");
-        var jobId = await QueueApplicationScoreAsync(db, applicationId, user, false);
+        if (!features.EnableAtsScoring || !link.AutoRunAts) return (null, "");
+        var jobId = await QueueApplicationScoreAsync(db, applicationId, user, true);
         if (!jobId.HasValue) return (null, "The application was submitted, but ATS scoring could not be queued.");
         await ProcessAtsScoringJobAsync(jobId.Value, cancellationToken);
         var score = await db.QueryFirstOrDefaultAsync<RecruitmentApplicationScore>("SELECT * FROM recruitment_application_scores WHERE ApplicationId=@ApplicationId AND IsCurrent=TRUE ORDER BY ScoredAt DESC,Id DESC LIMIT 1", new { ApplicationId = applicationId });
@@ -2375,7 +2415,7 @@ VALUES (@ApplicationId,@UserId,@ClientId,@Force,'Queued',UTC_TIMESTAMP());SELECT
             new { ApplicationId = applicationId, UserId = user.Id, user.ClientId, Force = force });
     }
 
-    public async Task<bool> ProcessNextAtsScoringJobAsync(CancellationToken cancellationToken)
+    public async Task<(bool Processed, long? ApplicationId, AuthUser? User)> ProcessNextAtsScoringJobAsync(CancellationToken cancellationToken)
     {
         await using var db = Db();
         await db.OpenAsync(cancellationToken);
@@ -2385,8 +2425,12 @@ WHERE Status='Processing' AND StartedAt<DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 MIN
         var jobId = await db.ExecuteScalarAsync<long?>(@"SELECT Id FROM recruitment_ats_scoring_jobs
 WHERE Status IN ('Queued','Retry') AND AvailableAt<=UTC_TIMESTAMP()
 ORDER BY AvailableAt,Id LIMIT 1");
-        if (!jobId.HasValue) return false;
-        return await ProcessAtsScoringJobAsync(jobId.Value, cancellationToken);
+        if (!jobId.HasValue) return (false, null, null);
+        var job = await db.QueryFirstOrDefaultAsync<AtsScoringJobRow>("SELECT * FROM recruitment_ats_scoring_jobs WHERE Id=@Id", new { Id = jobId.Value });
+        var scored = await ProcessAtsScoringJobAsync(jobId.Value, cancellationToken);
+        return scored && job is not null
+            ? (true, job.ApplicationId, new AuthUser { Id = job.RequestedByUserId, ClientId = job.RequestedByClientId, IsActive = true })
+            : (true, null, null);
     }
 
     private async Task<bool> ProcessAtsScoringJobAsync(long jobId, CancellationToken cancellationToken)
@@ -2742,9 +2786,9 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
 
     private static async Task<IEnumerable<RecruitmentCandidateApplication>> ApplicationsAsync(MySqlConnection db, AuthUser user, long? positionId = null, long? candidateId = null, string stage = "")
     {
-        var rows = await db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT a.*,c.CandidateCode,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,c.Email CandidateEmail,c.Phone CandidatePhone,p.PositionCode,p.PositionTitle,p.JobLocation,cl.Name ClientName,COALESCE(u.DisplayName,u.Email,'') RecruiterName,COALESCE(s.OverrideScore,s.TotalScore) AtsScore,COALESCE(s.ScoreStatus,'Not Scored') ScoreStatus
-FROM recruitment_candidate_applications a JOIN recruitment_candidates c ON c.Id=a.CandidateId JOIN recruitment_open_positions p ON p.Id=a.PositionId LEFT JOIN clients cl ON cl.Id=a.ClientId LEFT JOIN authusers u ON u.Id=a.RecruiterUserId LEFT JOIN recruitment_application_scores s ON s.ApplicationId=a.Id AND s.IsCurrent=TRUE
-WHERE a.ApplicationType='Application' AND (@ClientId IS NULL OR a.ClientId=@ClientId) AND (@PositionId IS NULL OR a.PositionId=@PositionId) AND (@CandidateId IS NULL OR a.CandidateId=@CandidateId) AND (@Stage='' OR a.CurrentStage=@Stage) ORDER BY a.UpdatedAt DESC", new { ClientId = user.ClientId, PositionId = positionId, CandidateId = candidateId, Stage = stage ?? "" });
+        var rows = await db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT a.*,c.CandidateCode,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,c.Email CandidateEmail,c.Phone CandidatePhone,p.PositionCode,p.PositionTitle,p.JobLocation,cl.Name ClientName,COALESCE(u.DisplayName,u.Email,'') RecruiterName,COALESCE(s.OverrideScore,s.TotalScore) AtsScore,COALESCE(s.ShortlistThreshold,60) AtsShortlistThreshold,COALESCE(s.ScoreStatus,'Not Scored') ScoreStatus,(s.OverrideScore IS NOT NULL) AtsOverridden,COALESCE(posting.AutoRunAts,FALSE) AutoRunAts,(c.ClientId=@GlobalClientId) IsInGlobalTalentPool
+FROM recruitment_candidate_applications a JOIN recruitment_candidates c ON c.Id=a.CandidateId JOIN recruitment_open_positions p ON p.Id=a.PositionId LEFT JOIN clients cl ON cl.Id=a.ClientId LEFT JOIN authusers u ON u.Id=a.RecruiterUserId LEFT JOIN recruitment_application_scores s ON s.ApplicationId=a.Id AND s.IsCurrent=TRUE LEFT JOIN recruitment_job_postings posting ON posting.Id=a.JobPostingId
+WHERE a.ApplicationType='Application' AND (@ClientId IS NULL OR a.ClientId=@ClientId) AND (@PositionId IS NULL OR a.PositionId=@PositionId) AND (@CandidateId IS NULL OR a.CandidateId=@CandidateId) AND (@Stage='' OR a.CurrentStage=@Stage) ORDER BY a.UpdatedAt DESC", new { ClientId = user.ClientId, PositionId = positionId, CandidateId = candidateId, Stage = stage ?? "", GlobalClientId = GlobalTalentPoolClientId });
         return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
     }
 
@@ -4258,6 +4302,19 @@ CREATE TABLE IF NOT EXISTS person_activity_events (
         public long ResumeId { get; set; }
         public Guid? AttachmentPublicId { get; set; }
         public string ParsingStatus { get; set; } = "Pending";
+        public bool AutoRunAts { get; set; }
+    }
+    private sealed class JobPostingAtsRow
+    {
+        public long Id { get; set; }
+        public bool AutoRunAts { get; set; }
+    }
+    private sealed class GlobalTalentPoolMoveRow
+    {
+        public long CandidateId { get; set; }
+        public int ApplicationClientId { get; set; }
+        public string NormalizedEmail { get; set; } = "";
+        public string NormalizedPhone { get; set; } = "";
     }
     private sealed class PipelineAtsScoringSelection
     {

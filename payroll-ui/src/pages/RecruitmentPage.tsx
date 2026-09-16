@@ -23,7 +23,7 @@ const dashboard0: RecruitmentDashboard = { drafts: 0, pendingApproval: 0, approv
 const recruitmentClientScopeKey = 'recruitment.clientScope'
 const draftRequisitionStatuses = ['Draft', 'Sent Back']
 const pendingRequisitionStatuses = ['Pending Approval']
-export const recruitmentViews = ['Dashboard', 'Work Orders & SLA', 'Requisitions', 'Open Positions', 'Job Descriptions', 'Job Postings', 'ATS Screening', 'Hiring Pipeline', 'Talent Pool', 'Applications', 'Interviews', 'Offers & Pre-Onboarding'] as const
+export const recruitmentViews = ['Dashboard', 'Work Orders & SLA', 'Requisitions', 'Open Positions', 'Job Descriptions', 'Job Postings', 'ATS Screening', 'Hiring Pipeline', 'Talent Pool', 'Applications', 'Interview Queue', 'Interviews', 'Offers & Pre-Onboarding'] as const
 export type RecruitmentPageView = (typeof recruitmentViews)[number]
 
 type RecruitmentWorkspace = 'overview' | 'orders' | 'requests' | 'jobs' | 'candidates' | 'pipeline' | 'selection'
@@ -35,7 +35,7 @@ const recruitmentWorkspace = (view: RecruitmentPageView): RecruitmentWorkspace =
   if (['Job Descriptions', 'Job Postings'].includes(view)) return 'jobs'
   if (['Talent Pool', 'Applications', 'ATS Screening'].includes(view)) return 'candidates'
   if (view === 'Hiring Pipeline') return 'pipeline'
-  if (['Interviews', 'Offers & Pre-Onboarding'].includes(view)) return 'selection'
+  if (['Interview Queue', 'Interviews', 'Offers & Pre-Onboarding'].includes(view)) return 'selection'
   return 'selection'
 }
 
@@ -274,15 +274,11 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
                   clientOptions={clientOptions}
                   onClientChange={changeClientScope}
                 />
-              : <Tabs
-                  className="recruitment-workspace-tabs recruitment-primary-tabs"
-                  activeKey={view === 'Offers & Pre-Onboarding' ? 'offers' : 'interviews'}
-                  onChange={key => navigate(scopedPath(key === 'offers' ? '/recruitment/offers-and-pre-onboarding' : '/recruitment/interviews'))}
-                  items={[
-                    { key: 'interviews', label: 'Interviews', children: <RecruitmentTalentWorkspace key={`interviews-${selectedClientId}`} mode="interviews" initialClientId={selectedClientId} /> },
-                    { key: 'offers', label: 'Offers & pre-onboarding', children: <RecruitmentTalentWorkspace key={`offers-${selectedClientId}`} mode="offers" initialClientId={selectedClientId} /> },
-                  ]}
-                />
+              : view === 'Interview Queue'
+                ? <RecruitmentTalentWorkspace key={`interview-queue-${selectedClientId}`} mode="interviewQueue" initialClientId={selectedClientId} />
+                : view === 'Offers & Pre-Onboarding'
+                  ? <RecruitmentTalentWorkspace key={`offers-${selectedClientId}`} mode="offers" initialClientId={selectedClientId} />
+                  : <RecruitmentTalentWorkspace key={`interviews-${selectedClientId}`} mode="interviews" initialClientId={selectedClientId} />
 
   return <section className="recruitment-monitor-page recruitment-experience" aria-label={copy.title}>
     {!['pipeline', 'overview'].includes(workspace) && <header className="recruitment-scopebar">

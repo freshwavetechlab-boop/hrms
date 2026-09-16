@@ -167,10 +167,19 @@ public class RecruitmentCandidateApplication
     public DateTime? WithdrawnAt { get; set; }
     public int? JoinedEmployeeId { get; set; }
     public decimal? AtsScore { get; set; }
+    public decimal AtsShortlistThreshold { get; set; } = 60;
     public string ScoreStatus { get; set; } = "Not Scored";
+    public bool AtsOverridden { get; set; }
+    public bool AutoRunAts { get; set; }
+    public bool IsInGlobalTalentPool { get; set; }
     public string PipelineWarning { get; set; } = "";
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
+}
+
+public class MoveRecruitmentApplicationsToTalentPoolRequest
+{
+    public List<long> ApplicationIds { get; set; } = [];
 }
 
 public class SaveCandidateApplication
