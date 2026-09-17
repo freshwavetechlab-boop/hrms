@@ -303,3 +303,70 @@ public class PublicApplicationResult
     public string Status { get; set; } = "Submitted";
     public string Message { get; set; } = "Application submitted successfully.";
 }
+
+public class PublicApplicationProcessingStatus
+{
+    public string ApplicationCode { get; set; } = "";
+    public string Status { get; set; } = "Processing";
+    public string ResumeStatus { get; set; } = "Pending";
+    public string AtsStatus { get; set; } = "Waiting";
+    public string Message { get; set; } = "Your application is saved. Resume processing is continuing.";
+}
+
+public class PublicApplicationTrackingLoginRequest
+{
+    public string Email { get; set; } = "";
+    public string Pin { get; set; } = "";
+}
+
+public class PublicApplicationTrackingSession
+{
+    public string TrackingToken { get; set; } = "";
+    public DateTime ExpiresAtUtc { get; set; }
+}
+
+public class PublicCandidateApplicationTracker
+{
+    public string CandidateName { get; set; } = "";
+    public List<PublicTrackedApplication> Applications { get; set; } = [];
+}
+
+public class PublicTrackedApplication
+{
+    public long ApplicationId { get; set; }
+    public string ApplicationCode { get; set; } = "";
+    public string PositionTitle { get; set; } = "";
+    public string CurrentStage { get; set; } = "";
+    public string CurrentStatus { get; set; } = "";
+    public DateTime AppliedAt { get; set; }
+    public string ProcessingStatus { get; set; } = "Processing";
+    public string ProcessingMessage { get; set; } = "";
+    public List<PublicTrackedStage> Timeline { get; set; } = [];
+    public List<PublicTrackedInterview> Interviews { get; set; } = [];
+    public PublicTrackedOffer? Offer { get; set; }
+}
+
+public class PublicTrackedStage
+{
+    public string Stage { get; set; } = "";
+    public DateTime ChangedAt { get; set; }
+}
+
+public class PublicTrackedInterview
+{
+    public string Round { get; set; } = "";
+    public DateTime ScheduledStart { get; set; }
+    public DateTime ScheduledEnd { get; set; }
+    public string Mode { get; set; } = "";
+    public string LocationOrLink { get; set; } = "";
+    public string Status { get; set; } = "";
+    public string Result { get; set; } = "";
+}
+
+public class PublicTrackedOffer
+{
+    public string OfferNumber { get; set; } = "";
+    public string Status { get; set; } = "";
+    public DateTime ProposedJoiningDate { get; set; }
+    public DateTime? ExpiryDate { get; set; }
+}

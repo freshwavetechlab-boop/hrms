@@ -11,7 +11,7 @@ using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
-public sealed class RecruitmentFormRepository(IConfiguration configuration, ILogger<RecruitmentFormRepository> logger, RecruitmentPipelineRepository pipelines, NotificationRepository notifications)
+public sealed class RecruitmentFormRepository(IConfiguration configuration, ILogger<RecruitmentFormRepository> logger, RecruitmentPipelineRepository pipelines, NotificationRepository notifications, PublicPortalUrlResolver publicPortalUrls)
 {
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
 
@@ -154,6 +154,9 @@ CREATE TABLE IF NOT EXISTS external_portal_subjects (
     NormalizedPhone VARCHAR(50) NOT NULL DEFAULT '',
     ConsentAccepted BOOLEAN NOT NULL DEFAULT FALSE,
     ConsentAcceptedAtUtc DATETIME(6) NULL,
+    TrackingPinHash CHAR(64) NOT NULL DEFAULT '',
+    TrackingPinFailedAttempts INT NOT NULL DEFAULT 0,
+    TrackingPinLockedUntilUtc DATETIME(6) NULL,
     CreatedAtUtc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     UpdatedAtUtc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     INDEX IX_external_subject_email (ClientId,NormalizedEmail),
@@ -217,6 +220,21 @@ CREATE TABLE IF NOT EXISTS form_public_verification_challenges (
     UNIQUE KEY UX_form_public_verification_token (TokenHash),
     INDEX IX_form_public_verification_rate (PostingId,NormalizedEmail,CreatedAtUtc),
     INDEX IX_form_public_verification_expiry (ExpiresAtUtc,ConsumedAtUtc)
+);
+CREATE TABLE IF NOT EXISTS recruitment_candidate_tracking_sessions (
+    Id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    TokenHash CHAR(64) NOT NULL,
+    ExternalSubjectId BIGINT NOT NULL,
+    ClientId INT NOT NULL,
+    ExpiresAtUtc DATETIME(6) NOT NULL,
+    LastUsedAtUtc DATETIME(6) NULL,
+    RevokedAtUtc DATETIME(6) NULL,
+    IpAddress VARCHAR(80) NOT NULL DEFAULT '',
+    UserAgent VARCHAR(500) NOT NULL DEFAULT '',
+    CreatedAtUtc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    UNIQUE KEY UX_candidate_tracking_token (TokenHash),
+    INDEX IX_candidate_tracking_subject (ExternalSubjectId,ExpiresAtUtc),
+    INDEX IX_candidate_tracking_expiry (ExpiresAtUtc,RevokedAtUtc)
 );
 CREATE TABLE IF NOT EXISTS form_submission_values (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -738,11 +756,16 @@ SELECT LAST_INSERT_ID();", new
         });
         var safeTitle = WebUtility.HtmlEncode(posting.PositionTitle);
         var safeCode = WebUtility.HtmlEncode(code);
+        var portalBaseUrl = publicPortalUrls.ResolveBaseUrl(null);
+        var publicLink = string.IsNullOrWhiteSpace(portalBaseUrl) ? "" : $"{portalBaseUrl}/careers/{Uri.EscapeDataString(slug)}";
+        var safePublicLink = WebUtility.HtmlEncode(publicLink);
         var body = $@"<div style='font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#17243d'>
 <h2 style='margin-bottom:8px'>Verify your application</h2>
-<p>Use this one-time code to continue your application for <strong>{safeTitle}</strong>.</p>
+<p>Use this code to continue your application for <strong>{safeTitle}</strong>.</p>
 <div style='font-size:32px;font-weight:800;letter-spacing:8px;padding:18px 22px;background:#f1f5ff;border-radius:12px;text-align:center'>{safeCode}</div>
-<p style='color:#64748b'>This code expires in {Math.Max(3, (int)(expires - DateTime.UtcNow).TotalMinutes)} minutes. If you did not request it, you can ignore this email.</p></div>";
+<p><strong>Keep this code safely.</strong> On your first verified application it becomes your application-tracking PIN. If you already registered earlier, your original tracking PIN remains valid.</p>
+{(publicLink.Length > 0 ? $"<p><a href='{safePublicLink}' style='display:inline-block;padding:11px 18px;background:#087ab8;color:#fff;text-decoration:none;border-radius:8px'>Open job and track application</a></p><p style='font-size:12px;color:#64748b'>{safePublicLink}</p>" : "")}
+<p style='color:#64748b'>Verification access expires in {Math.Max(3, (int)(expires - DateTime.UtcNow).TotalMinutes)} minutes. Your tracking PIN remains valid. If you did not request it, you can ignore this email.</p></div>";
         var (sent, sendError) = await notifications.SendDirectAsync(email, $"{code} is your application verification code", body, new NotificationEvent
         {
             EventCode = "RECRUITMENT.APPLICATION_OTP",
@@ -822,6 +845,10 @@ VALUES (@ClientId,@Email,@NormalizedEmail,@Phone,@NormalizedPhone,TRUE,UTC_TIMES
                 await db.ExecuteAsync(@"UPDATE external_portal_subjects SET Email=@Email,NormalizedEmail=@NormalizedEmail,Phone=@Phone,NormalizedPhone=@NormalizedPhone,
 ConsentAccepted=TRUE,ConsentAcceptedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id", new { challenge.Email, challenge.NormalizedEmail, challenge.Phone, challenge.NormalizedPhone, Id = subjectId }, transaction);
             }
+            await db.ExecuteAsync(@"UPDATE external_portal_subjects
+SET TrackingPinHash=CASE WHEN COALESCE(TrackingPinHash,'')='' THEN @TrackingPinHash ELSE TrackingPinHash END,
+TrackingPinFailedAttempts=0,TrackingPinLockedUntilUtc=NULL
+WHERE Id=@Id", new { Id = subjectId, TrackingPinHash = Hash(request.VerificationCode!) }, transaction);
             var identity = await ResolvePublicIdentityAsync(db, transaction, posting.ClientId, posting.PositionId, challenge.NormalizedEmail, challenge.NormalizedPhone, subject?.CandidateId);
             if (!string.IsNullOrWhiteSpace(identity.Error)) throw new InvalidOperationException(identity.Error);
             if (identity.CandidateId.HasValue)
@@ -1926,6 +1953,185 @@ VALUES (@Code,@CandidateId,@PositionId,@ClientId,'Public Job',@PostingId,@Postin
         }
     }
 
+    public async Task<PublicApplicationProcessingStatus?> GetPublicApplicationProcessingStatusAsync(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return null;
+        await using var db = Db();
+        await db.OpenAsync();
+        var row = await db.QueryFirstOrDefaultAsync<PublicApplicationProcessingRow>(@"SELECT applicationRow.ApplicationCode,
+COALESCE(resume.ParsingStatus,'NotApplicable') ResumeStatus,
+COALESCE(posting.AutoRunAts,FALSE) AutoRunAts,
+COALESCE((SELECT job.Status FROM recruitment_ats_scoring_jobs job
+ WHERE job.ApplicationId=applicationRow.Id ORDER BY job.Id DESC LIMIT 1),'') AtsStatus
+FROM form_public_sessions sessionRow
+JOIN form_submissions submission ON submission.Id=sessionRow.SubmissionId AND submission.Status='Submitted'
+JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=submission.ApplicationId
+LEFT JOIN recruitment_candidate_resumes resume ON resume.Id=applicationRow.ResumeId
+LEFT JOIN recruitment_job_postings posting ON posting.Id=applicationRow.JobPostingId
+WHERE sessionRow.TokenHash=@TokenHash AND sessionRow.Purpose='APPLICATION'
+LIMIT 1", new { TokenHash = Hash(token) });
+        if (row is null) return null;
+
+        var resumeStatus = string.IsNullOrWhiteSpace(row.ResumeStatus) ? "NotApplicable" : row.ResumeStatus;
+        var atsStatus = string.IsNullOrWhiteSpace(row.AtsStatus)
+            ? row.AutoRunAts && resumeStatus.Equals("Parsed", StringComparison.OrdinalIgnoreCase) ? "Waiting" : "NotRequested"
+            : row.AtsStatus;
+        var resumeNeedsReview = resumeStatus.Equals("Failed", StringComparison.OrdinalIgnoreCase);
+        var atsNeedsReview = atsStatus.Equals("Failed", StringComparison.OrdinalIgnoreCase);
+        var processing = resumeStatus is "Pending" or "Processing"
+            || atsStatus is "Waiting" or "Queued" or "Retry" or "Processing";
+        var status = resumeNeedsReview || atsNeedsReview ? "NeedsReview" : processing ? "Processing" : "Completed";
+        var message = status switch
+        {
+            "NeedsReview" => "Your application is safely submitted, but automated resume or ATS processing needs HR review.",
+            "Completed" => row.AutoRunAts
+                ? "Resume processing and ATS screening completed successfully."
+                : "Resume processing completed successfully.",
+            _ => row.AutoRunAts
+                ? "Your application is saved. Resume parsing and ATS screening are continuing."
+                : "Your application is saved. Resume processing is continuing."
+        };
+        return new PublicApplicationProcessingStatus
+        {
+            ApplicationCode = row.ApplicationCode,
+            Status = status,
+            ResumeStatus = resumeStatus,
+            AtsStatus = atsStatus,
+            Message = message
+        };
+    }
+
+    public async Task<(PublicApplicationTrackingSession? Session, string Error)> StartPublicTrackingSessionAsync(
+        string slug,
+        PublicApplicationTrackingLoginRequest request,
+        string ipAddress,
+        string userAgent)
+    {
+        slug = (slug ?? "").Trim();
+        var email = NormalizeEmail(request?.Email ?? "");
+        var pin = (request?.Pin ?? "").Trim();
+        if (!ValidPublicSlug(slug) || !ValidEmail(email) || !Regex.IsMatch(pin, @"^\d{6}$"))
+            return (null, "Enter your registered email and 6-digit tracking PIN.");
+
+        await using var db = Db();
+        await db.OpenAsync();
+        var posting = await db.QueryFirstOrDefaultAsync<(long PostingId, int ClientId)>(
+            "SELECT Id PostingId,ClientId FROM recruitment_job_postings WHERE PublicSlug=@Slug LIMIT 1",
+            new { Slug = slug });
+        if (posting.PostingId <= 0) return (null, "Application tracking is unavailable for this link.");
+
+        var subject = await db.QueryFirstOrDefaultAsync<TrackingSubjectRow>(@"SELECT Id,ClientId,CandidateId,TrackingPinHash,
+TrackingPinFailedAttempts,TrackingPinLockedUntilUtc
+FROM external_portal_subjects
+WHERE ClientId=@ClientId AND NormalizedEmail=@Email AND CandidateId IS NOT NULL
+ORDER BY UpdatedAtUtc DESC LIMIT 1", new { posting.ClientId, Email = email });
+        if (subject is null || string.IsNullOrWhiteSpace(subject.TrackingPinHash))
+            return (null, "Registered application or tracking PIN was not found.");
+        if (subject.TrackingPinLockedUntilUtc.HasValue && subject.TrackingPinLockedUntilUtc.Value > DateTime.UtcNow)
+            return (null, "Tracking login is temporarily locked after repeated failed attempts. Try again later.");
+
+        if (!SecureHashEquals(subject.TrackingPinHash, Hash(pin)))
+        {
+            await db.ExecuteAsync(@"UPDATE external_portal_subjects SET
+TrackingPinFailedAttempts=TrackingPinFailedAttempts+1,
+TrackingPinLockedUntilUtc=CASE WHEN TrackingPinFailedAttempts+1>=5 THEN DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 15 MINUTE) ELSE NULL END
+WHERE Id=@Id", new { subject.Id });
+            return (null, "Registered application or tracking PIN was not found.");
+        }
+
+        var hasApplication = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_candidate_applications
+WHERE CandidateId=@CandidateId AND ClientId=@ClientId", new { subject.CandidateId, posting.ClientId });
+        if (hasApplication == 0) return (null, "No submitted application was found for this account.");
+
+        var rawToken = RandomToken();
+        var expires = DateTime.UtcNow.AddDays(7);
+        await using var transaction = await db.BeginTransactionAsync();
+        await db.ExecuteAsync("UPDATE external_portal_subjects SET TrackingPinFailedAttempts=0,TrackingPinLockedUntilUtc=NULL WHERE Id=@Id", new { subject.Id }, transaction);
+        await db.ExecuteAsync("UPDATE recruitment_candidate_tracking_sessions SET RevokedAtUtc=UTC_TIMESTAMP(6) WHERE ExternalSubjectId=@Id AND RevokedAtUtc IS NULL", new { subject.Id }, transaction);
+        await db.ExecuteAsync(@"INSERT INTO recruitment_candidate_tracking_sessions
+(TokenHash,ExternalSubjectId,ClientId,ExpiresAtUtc,IpAddress,UserAgent)
+VALUES (@TokenHash,@ExternalSubjectId,@ClientId,@Expires,@IpAddress,@UserAgent)", new
+        {
+            TokenHash = Hash(rawToken),
+            ExternalSubjectId = subject.Id,
+            posting.ClientId,
+            Expires = expires,
+            IpAddress = Truncate(ipAddress, 80),
+            UserAgent = Truncate(userAgent, 500)
+        }, transaction);
+        await transaction.CommitAsync();
+        return (new PublicApplicationTrackingSession { TrackingToken = rawToken, ExpiresAtUtc = expires }, "");
+    }
+
+    public async Task<PublicCandidateApplicationTracker?> GetPublicApplicationTrackerAsync(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return null;
+        await using var db = Db();
+        await db.OpenAsync();
+        var authorization = await db.QueryFirstOrDefaultAsync<TrackingAuthorizationRow>(@"SELECT sessionRow.Id,sessionRow.ClientId,
+subject.Id ExternalSubjectId,subject.CandidateId,TRIM(CONCAT(COALESCE(candidate.FirstName,''),' ',COALESCE(candidate.LastName,''))) CandidateName
+FROM recruitment_candidate_tracking_sessions sessionRow
+JOIN external_portal_subjects subject ON subject.Id=sessionRow.ExternalSubjectId AND subject.ClientId=sessionRow.ClientId
+JOIN recruitment_candidates candidate ON candidate.Id=subject.CandidateId AND candidate.ClientId IN (0,sessionRow.ClientId)
+WHERE sessionRow.TokenHash=@TokenHash AND sessionRow.RevokedAtUtc IS NULL AND sessionRow.ExpiresAtUtc>UTC_TIMESTAMP(6)
+LIMIT 1", new { TokenHash = Hash(token) });
+        if (authorization is null || !authorization.CandidateId.HasValue) return null;
+        await db.ExecuteAsync("UPDATE recruitment_candidate_tracking_sessions SET LastUsedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id", new { authorization.Id });
+
+        var rows = (await db.QueryAsync<TrackedApplicationRow>(@"SELECT applicationRow.Id ApplicationId,applicationRow.ApplicationCode,
+position.PositionTitle,applicationRow.CurrentStage,applicationRow.CurrentStatus,applicationRow.AppliedAt,
+COALESCE(resume.ParsingStatus,'NotApplicable') ResumeStatus,COALESCE(posting.AutoRunAts,FALSE) AutoRunAts,
+COALESCE((SELECT job.Status FROM recruitment_ats_scoring_jobs job WHERE job.ApplicationId=applicationRow.Id ORDER BY job.Id DESC LIMIT 1),'') AtsStatus
+FROM recruitment_candidate_applications applicationRow
+JOIN recruitment_open_positions position ON position.Id=applicationRow.PositionId
+LEFT JOIN recruitment_candidate_resumes resume ON resume.Id=applicationRow.ResumeId
+LEFT JOIN recruitment_job_postings posting ON posting.Id=applicationRow.JobPostingId
+WHERE applicationRow.CandidateId=@CandidateId AND applicationRow.ClientId=@ClientId
+ORDER BY applicationRow.AppliedAt DESC", new { CandidateId = authorization.CandidateId.Value, authorization.ClientId })).ToList();
+
+        var result = new PublicCandidateApplicationTracker { CandidateName = authorization.CandidateName };
+        foreach (var row in rows)
+        {
+            var (processingStatus, processingMessage) = PublicProcessingSummary(row.ResumeStatus, row.AtsStatus, row.AutoRunAts);
+            var application = new PublicTrackedApplication
+            {
+                ApplicationId = row.ApplicationId,
+                ApplicationCode = row.ApplicationCode,
+                PositionTitle = row.PositionTitle,
+                CurrentStage = row.CurrentStage,
+                CurrentStatus = row.CurrentStatus,
+                AppliedAt = row.AppliedAt,
+                ProcessingStatus = processingStatus,
+                ProcessingMessage = processingMessage,
+                Timeline = (await db.QueryAsync<PublicTrackedStage>(@"SELECT ToStage Stage,ChangedAt FROM recruitment_application_stage_history
+WHERE ApplicationId=@ApplicationId ORDER BY ChangedAt,Id", new { row.ApplicationId })).ToList(),
+                Interviews = (await db.QueryAsync<PublicTrackedInterview>(@"SELECT RoundCode Round,ScheduledStart,ScheduledEnd,Mode,LocationOrLink,Status,Result
+FROM recruitment_interviews WHERE ApplicationId=@ApplicationId ORDER BY ScheduledStart,Id", new { row.ApplicationId })).ToList(),
+                Offer = await db.QueryFirstOrDefaultAsync<PublicTrackedOffer>(@"SELECT OfferNumber,Status,ProposedJoiningDate,ExpiryDate
+FROM recruitment_offers WHERE ApplicationId=@ApplicationId
+AND Status IN ('Pending Candidate','Released','Negotiation','Accepted','Rejected','Expired','Withdrawn')
+ORDER BY Id DESC LIMIT 1", new { row.ApplicationId })
+            };
+            if (application.Timeline.Count == 0)
+                application.Timeline.Add(new PublicTrackedStage { Stage = row.CurrentStage, ChangedAt = row.AppliedAt });
+            result.Applications.Add(application);
+        }
+        return result;
+    }
+
+    private static (string Status, string Message) PublicProcessingSummary(string resumeStatus, string atsStatus, bool autoRunAts)
+    {
+        resumeStatus = string.IsNullOrWhiteSpace(resumeStatus) ? "NotApplicable" : resumeStatus;
+        atsStatus = string.IsNullOrWhiteSpace(atsStatus)
+            ? autoRunAts && resumeStatus.Equals("Parsed", StringComparison.OrdinalIgnoreCase) ? "Waiting" : "NotRequested"
+            : atsStatus;
+        if (resumeStatus.Equals("Failed", StringComparison.OrdinalIgnoreCase) || atsStatus.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+            return ("NeedsReview", "Automated resume or ATS processing needs HR review. Your application remains active.");
+        if (resumeStatus is "Pending" or "Processing" || atsStatus is "Waiting" or "Queued" or "Retry" or "Processing")
+            return ("Processing", "Resume parsing or ATS screening is in progress.");
+        return ("Completed", autoRunAts ? "Resume processing and ATS screening completed." : "Resume processing completed.");
+    }
+
     private static async Task PopulateVersionAsync(MySqlConnection db, DynamicFormVersion version)
     {
         version.Sections = (await db.QueryAsync<DynamicFormSection>("SELECT * FROM form_sections WHERE FormVersionId=@Id ORDER BY DisplayOrder", new { Id = version.Id })).ToList();
@@ -2006,6 +2212,9 @@ ON DUPLICATE KEY UPDATE SourceName=VALUES(SourceName),ResolverCode=VALUES(Resolv
     {
         await EnsureColumnAsync(db, "form_definitions", "RequiresEmailVerification", "BOOLEAN NOT NULL DEFAULT TRUE");
         await EnsureColumnAsync(db, "external_portal_subjects", "CandidateId", "BIGINT NULL");
+        await EnsureColumnAsync(db, "external_portal_subjects", "TrackingPinHash", "CHAR(64) NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(db, "external_portal_subjects", "TrackingPinFailedAttempts", "INT NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "external_portal_subjects", "TrackingPinLockedUntilUtc", "DATETIME(6) NULL");
         var attachmentTableExists = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM information_schema.tables
 WHERE table_schema=DATABASE() AND table_name='entity_attachments'");
         if (attachmentTableExists == 0) return;
@@ -2371,6 +2580,10 @@ WHERE ps.TokenHash=@TokenHash";
     private sealed class PublicVerificationRow { public long Id { get; set; } public string Email { get; set; } = ""; public string NormalizedEmail { get; set; } = ""; public string Phone { get; set; } = ""; public string NormalizedPhone { get; set; } = ""; public string CodeHash { get; set; } = ""; public int AttemptCount { get; set; } public int MaximumAttempts { get; set; } public DateTime ExpiresAtUtc { get; set; } public DateTime? ConsumedAtUtc { get; set; } }
     private sealed class PublishFormRow : DynamicFormVersion { public int ClientId { get; set; } public string PurposeCode { get; set; } = ""; }
     private sealed class PublicSessionRow { public long Id { get; set; } public long PostingId { get; set; } public long SubmissionId { get; set; } public long ExternalSubjectId { get; set; } public string Purpose { get; set; } = ""; public int MaximumUses { get; set; } public int UseCount { get; set; } public DateTime ExpiresAtUtc { get; set; } public DateTime? RevokedAtUtc { get; set; } public string SubmissionStatus { get; set; } = ""; }
+    private sealed class PublicApplicationProcessingRow { public string ApplicationCode { get; set; } = ""; public string ResumeStatus { get; set; } = ""; public bool AutoRunAts { get; set; } public string AtsStatus { get; set; } = ""; }
+    private sealed class TrackingSubjectRow { public long Id { get; set; } public int ClientId { get; set; } public long? CandidateId { get; set; } public string TrackingPinHash { get; set; } = ""; public int TrackingPinFailedAttempts { get; set; } public DateTime? TrackingPinLockedUntilUtc { get; set; } }
+    private sealed class TrackingAuthorizationRow { public long Id { get; set; } public int ClientId { get; set; } public long ExternalSubjectId { get; set; } public long? CandidateId { get; set; } public string CandidateName { get; set; } = ""; }
+    private sealed class TrackedApplicationRow { public long ApplicationId { get; set; } public string ApplicationCode { get; set; } = ""; public string PositionTitle { get; set; } = ""; public string CurrentStage { get; set; } = ""; public string CurrentStatus { get; set; } = ""; public DateTime AppliedAt { get; set; } public string ResumeStatus { get; set; } = ""; public bool AutoRunAts { get; set; } public string AtsStatus { get; set; } = ""; }
     private sealed class FieldValidationRow { public long Id { get; set; } public int FieldTypeId { get; set; } public string TypeCode { get; set; } = ""; public bool SupportsOptions { get; set; } public bool SupportsMultipleValues { get; set; } public bool SupportsAttachment { get; set; } public long? LookupSourceId { get; set; } public int? MinimumLength { get; set; } public int? MaximumLength { get; set; } public decimal? MinimumNumber { get; set; } public decimal? MaximumNumber { get; set; } public DateTime? MinimumDate { get; set; } public DateTime? MaximumDate { get; set; } }
     private sealed class StoredValidationRuleRow : DynamicFormValidationRule { public string FieldCode { get; set; } = ""; public string FieldLabel { get; set; } = ""; public string FieldTypeCode { get; set; } = ""; public long? CompareFieldResolvedId { get; set; } public string CompareFieldLabel { get; set; } = ""; public string CompareFieldTypeCode { get; set; } = ""; public bool CompareFieldIsActive { get; set; } }
     private sealed class SubmissionFieldState { public long FieldId { get; set; } public string StableFieldCode { get; set; } = ""; public string Label { get; set; } = ""; public string TypeCode { get; set; } = ""; public string? TextValue { get; set; } public long? IntegerValue { get; set; } public decimal? DecimalValue { get; set; } public DateTime? DateValue { get; set; } public DateTime? DateTimeValue { get; set; } public bool? BooleanValue { get; set; } public int SelectedOptionCount { get; set; } public int LookupValueCount { get; set; } public int AttachmentCount { get; set; } }

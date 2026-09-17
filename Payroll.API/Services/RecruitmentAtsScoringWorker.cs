@@ -18,8 +18,13 @@ public sealed class RecruitmentAtsScoringWorker(
             var failed = false;
             try
             {
+                var resumeWork = await repository.ProcessNextPendingPublicResumeAsync(stoppingToken);
+                processed = resumeWork.Processed;
+                if (!string.IsNullOrWhiteSpace(resumeWork.Warning))
+                    logger.LogWarning("Public resume processing for application {ApplicationId}: {Warning}", resumeWork.ApplicationId, resumeWork.Warning);
+
                 var work = await repository.ProcessNextAtsScoringJobAsync(stoppingToken);
-                processed = work.Processed;
+                processed = processed || work.Processed;
                 if (work.ApplicationId.HasValue && work.User is not null)
                 {
                     var (transition, _) = await pipelines.EvaluateAtsStageAutomationAsync(work.ApplicationId.Value, work.User);

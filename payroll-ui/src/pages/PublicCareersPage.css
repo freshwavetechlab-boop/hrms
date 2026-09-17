@@ -168,3 +168,22 @@
   .careers-page .careers-footer { flex-direction: column; margin-top: 26px; }
 }
 .public-resume-preview-text { max-height: 65vh; margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid #dbe5f0; border-radius: 12px; background: #f7faff; color: #1f2a44; font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.careers-page .public-track-link { width: 100%; margin-top: 8px; font-weight: 650; }
+.public-tracker { display: grid; gap: 16px; }
+.public-tracker > header, .public-tracker-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.public-tracker > header span, .public-tracker-title span { color: #667085; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.public-tracker h2, .public-tracker h3, .public-tracker h4 { margin: 0; color: #17243d; }
+.public-tracker-list { display: grid; gap: 14px; max-height: 68vh; overflow: auto; padding-right: 4px; }
+.public-tracker-card { display: grid; gap: 14px; padding: 18px; border: 1px solid #dfe7f1; border-radius: 14px; background: #fff; }
+.public-tracker-title small { display: block; margin-top: 4px; color: #7c899b; }
+.public-tracker-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+.public-tracker-grid > div { min-width: 0; padding: 14px; border-radius: 10px; background: #f7f9fc; }
+.public-tracker-grid h4 { margin-bottom: 10px; font-size: 13px; }
+.public-tracker-grid ol { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.public-tracker-grid li { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 9px; }
+.public-tracker-grid li i { width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: #1591c5; box-shadow: 0 0 0 4px #e4f5fb; }
+.public-tracker-grid li div, .public-tracker-event { display: grid; gap: 4px; }
+.public-tracker-grid li small, .public-tracker-event span, .public-tracker-grid p { color: #667085; font-size: 11px; }
+.public-tracker-event { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e3e9f1; }
+.public-tracker-event a { overflow-wrap: anywhere; font-size: 11px; }
+@media (max-width: 700px) { .public-tracker-grid { grid-template-columns: minmax(0, 1fr); } .public-tracker-title { flex-direction: column; } }

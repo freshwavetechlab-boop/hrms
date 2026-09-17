@@ -1312,6 +1312,46 @@ WHERE Id=@ResumeId AND CandidateId=@CandidateId", link);
         return (null, "");
     }
 
+    public async Task<(bool Processed, long? ApplicationId, string Warning)> ProcessNextPendingPublicResumeAsync(
+        CancellationToken cancellationToken)
+    {
+        await using var db = Db();
+        await db.OpenAsync(cancellationToken);
+        var lockAcquired = await db.ExecuteScalarAsync<int>(
+            "SELECT GET_LOCK('recruitment_public_resume_worker',0)");
+        if (lockAcquired != 1) return (false, null, "");
+
+        try
+        {
+            var applicationId = await db.ExecuteScalarAsync<long?>(@"SELECT applicationRow.Id
+FROM recruitment_candidate_applications applicationRow
+JOIN recruitment_candidate_resumes resume ON resume.Id=applicationRow.ResumeId
+JOIN entity_attachments attachment ON attachment.public_id=resume.AttachmentPublicId
+ AND attachment.entity_type='CANDIDATE' AND attachment.entity_id=applicationRow.CandidateId
+ AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
+WHERE applicationRow.SourceType='Public Job' AND resume.ParsingStatus='Pending'
+ORDER BY applicationRow.AppliedAt,applicationRow.Id
+LIMIT 1");
+            if (!applicationId.HasValue) return (false, null, "");
+
+            var systemUser = new AuthUser
+            {
+                Id = 0,
+                ClientId = null,
+                IsActive = true,
+                DisplayName = "Public recruitment resume worker",
+                Permissions = ["recruitment.manage"]
+            };
+            var (_, warning) = await ProcessPublicApplicationResumeAsync(
+                applicationId.Value, systemUser, "background-worker", "Recruitment resume worker", cancellationToken);
+            return (true, applicationId, warning);
+        }
+        finally
+        {
+            await db.ExecuteAsync("SELECT RELEASE_LOCK('recruitment_public_resume_worker')");
+        }
+    }
+
     public async Task<ResumeParseResult> ParseResumeDraftAsync(
         IFormFile file,
         int clientId,

@@ -2152,6 +2152,17 @@ app.MapPost("/api/public/recruitment/jobs/{slug}/sessions", async (RecruitmentFo
     var (row, error) = await repository.StartPublicSessionAsync(slug, request, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
+app.MapPost("/api/public/recruitment/jobs/{slug}/tracking-sessions", async (RecruitmentFormRepository repository, string slug, PublicApplicationTrackingLoginRequest request, HttpContext context) =>
+{
+    var (row, error) = await repository.StartPublicTrackingSessionAsync(slug, request,
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapGet("/api/public/recruitment/tracking/{token}", async (RecruitmentFormRepository repository, string token) =>
+{
+    var row = await repository.GetPublicApplicationTrackerAsync(token);
+    return row is null ? Results.Unauthorized() : Results.Ok(row);
+});
 app.MapPut("/api/public/recruitment/sessions/{token}/values", async (RecruitmentFormRepository repository, string token, SavePublicFormValuesRequest request, HttpContext context) =>
 {
     var (ok, error) = await repository.SavePublicValuesAsync(token, request, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
@@ -2232,15 +2243,13 @@ app.MapDelete("/api/public/recruitment/sessions/{token}/files/{fieldId:long}/{pu
         context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
     return Results.NoContent();
 });
-app.MapPost("/api/public/recruitment/sessions/{token}/submit", async (RecruitmentFormRepository forms, RecruitmentTalentRepository talent, RecruitmentPipelineRepository pipelines, RecruitmentPipelineActionService pipelineActions, RecruitmentCandidateActionRepository candidateActions, string token, HttpContext context) =>
+app.MapPost("/api/public/recruitment/sessions/{token}/submit", async (RecruitmentFormRepository forms, RecruitmentPipelineRepository pipelines, RecruitmentPipelineActionService pipelineActions, RecruitmentCandidateActionRepository candidateActions, string token, HttpContext context) =>
 {
     var (row, error) = await forms.SubmitPublicApplicationAsync(token, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
     if (row is null) return Results.BadRequest(new { error });
     var systemUser = new AuthUser { Id = 0, ClientId = null, IsActive = true, DisplayName = "Public recruitment portal", Permissions = ["recruitment.manage"] };
-    var (_, resumeWarning) = await talent.ProcessPublicApplicationResumeAsync(row.ApplicationId, systemUser,
-        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
     var (_, pipelineError) = await EnsureRecruitmentApplicationAutomationAsync(row.ApplicationId, systemUser, pipelines, pipelineActions, candidateActions);
-    return string.IsNullOrWhiteSpace(resumeWarning) && string.IsNullOrWhiteSpace(pipelineError)
+    return string.IsNullOrWhiteSpace(pipelineError)
         ? Results.Ok(row)
         : Results.Ok(new
         {
@@ -2250,9 +2259,13 @@ app.MapPost("/api/public/recruitment/sessions/{token}/submit", async (Recruitmen
             row.ApplicationCode,
             row.Status,
             row.Message,
-            resumeWarning,
             pipelineWarning = pipelineError
         });
+});
+app.MapGet("/api/public/recruitment/sessions/{token}/processing-status", async (RecruitmentFormRepository forms, string token) =>
+{
+    var row = await forms.GetPublicApplicationProcessingStatusAsync(token);
+    return row is null ? Results.NotFound(new { error = "Application processing status was not found." }) : Results.Ok(row);
 });
 
 app.MapGet("/api/public/recruitment/actions/{token}", async (RecruitmentCandidateActionRepository repository, string token) =>

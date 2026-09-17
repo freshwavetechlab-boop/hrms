@@ -813,6 +813,60 @@ export type PublicApplicationSession = {
   message: string
 }
 
+export type PublicApplicationProcessingStatus = {
+  applicationCode: string
+  status: 'Processing' | 'Completed' | 'NeedsReview'
+  resumeStatus: string
+  atsStatus: string
+  message: string
+}
+
+export type PublicApplicationTrackingSession = {
+  trackingToken: string
+  expiresAtUtc: string
+}
+
+export type PublicTrackedStage = {
+  stage: string
+  changedAt: string
+}
+
+export type PublicTrackedInterview = {
+  round: string
+  scheduledStart: string
+  scheduledEnd: string
+  mode: string
+  locationOrLink: string
+  status: string
+  result: string
+}
+
+export type PublicTrackedOffer = {
+  offerNumber: string
+  status: string
+  proposedJoiningDate: string
+  expiryDate?: string | null
+}
+
+export type PublicTrackedApplication = {
+  applicationId: number
+  applicationCode: string
+  positionTitle: string
+  currentStage: string
+  currentStatus: string
+  appliedAt: string
+  processingStatus: 'Processing' | 'Completed' | 'NeedsReview'
+  processingMessage: string
+  timeline: PublicTrackedStage[]
+  interviews: PublicTrackedInterview[]
+  offer?: PublicTrackedOffer | null
+}
+
+export type PublicCandidateApplicationTracker = {
+  candidateName: string
+  applications: PublicTrackedApplication[]
+}
+
 export type PublicFormValue = {
   fieldId: number
   textValue?: string | null

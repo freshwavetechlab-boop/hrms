@@ -6,6 +6,9 @@ import type {
   DynamicFormVersion,
   DynamicLookupOption,
   PublicApplicationSession,
+  PublicApplicationProcessingStatus,
+  PublicApplicationTrackingSession,
+  PublicCandidateApplicationTracker,
   PublicApplicationVerification,
   PublicCandidateActionContext,
   PublicFormValue,
@@ -234,6 +237,15 @@ export const deletePublicApplicationFile = (token: string, fieldId: number, publ
 
 export const submitPublicApplication = (token: string) =>
   postJson(`${publicBase}/sessions/${encodeURIComponent(token)}/submit`, {}, null as { applicationCode: string; message: string; status?: string } | null, { toast: false, loader: false })
+
+export const getPublicApplicationProcessingStatus = (token: string) =>
+  getJsonResult<PublicApplicationProcessingStatus | null>(`${publicBase}/sessions/${encodeURIComponent(token)}/processing-status`, null, { toast: false, loader: false })
+
+export const createPublicApplicationTrackingSession = (slug: string, email: string, pin: string) =>
+  postJson(`${publicBase}/jobs/${encodeURIComponent(slug)}/tracking-sessions`, { email, pin }, null as PublicApplicationTrackingSession | null, { toast: false, loader: false })
+
+export const getPublicApplicationTracker = (token: string) =>
+  getJsonResult<PublicCandidateApplicationTracker | null>(`${publicBase}/tracking/${encodeURIComponent(token)}`, null, { toast: false, loader: false })
 
 export const getPublicCandidateAction = async (token: string) => {
   const row = await getJson<PublicCandidateActionContext | null>(`${publicBase}/actions/${encodeURIComponent(token)}`, null)
