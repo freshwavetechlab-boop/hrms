@@ -433,14 +433,14 @@ body.portal-shell-mounted {
 .hrms-topbar {
   position: relative;
   z-index: 20;
-  display: flex;
-  flex: 0 0 var(--hrms-topbar-height);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 8px 16px;
   width: 100%;
-  height: var(--hrms-topbar-height);
-  padding: 0 24px;
+  padding: 8px 20px 10px;
   border-bottom: 1px solid var(--hrms-line);
   background: rgba(255, 255, 255, .94);
   box-shadow: 0 1px 7px rgba(31, 49, 75, .035);
@@ -524,7 +524,7 @@ body.portal-shell-mounted {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 22px 24px 28px;
+  padding: 12px 20px 18px;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: #bdc9d6 transparent;
@@ -632,6 +632,28 @@ body.portal-shell-mounted {
   gap: 8px;
 }
 
+/* Keep page context in the persistent header and reserve the canvas for work. */
+.hrms-topbar > .hrms-page-header {
+  grid-column: 1 / -1;
+  max-width: none;
+  margin: 0;
+  padding: 7px 0 0;
+  border: 0;
+  border-top: 1px solid var(--hrms-soft-line);
+}
+
+.hrms-topbar .hrms-page-heading { gap: 10px; }
+.hrms-topbar .hrms-page-icon { width: 34px; height: 34px; flex-basis: 34px; }
+.hrms-topbar .hrms-page-copy { grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; align-items: center; }
+.hrms-topbar .hrms-page-breadcrumb { grid-column: 1 / -1; margin-bottom: 2px; }
+.hrms-topbar .hrms-page-header h1 { font-size: 20px; line-height: 1.25; }
+.hrms-topbar .hrms-page-header p { margin: 0; max-width: none; font-size: 11px; }
+
+@media (max-width: 820px) {
+  .hrms-topbar .hrms-page-copy { grid-template-columns: minmax(0, 1fr); }
+  .hrms-topbar .hrms-page-header p { display: none; }
+}
+
 .hrms-page-body,
 .hrms-page-body > * {
   width: 100%;
@@ -639,7 +661,7 @@ body.portal-shell-mounted {
 }
 
 .hrms-page-body {
-  max-width: 1400px;
+  max-width: none;
   margin-inline: auto;
 }
 
@@ -657,12 +679,12 @@ body.portal-shell-mounted {
 }
 
 .hrms-page-body .card {
-  padding: 16px 18px;
+  padding: 12px 14px;
 }
 
 .hrms-page-body .card > header {
-  margin-bottom: 14px;
-  padding-bottom: 12px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
   border-bottom-color: var(--hrms-soft-line);
 }
 
@@ -673,7 +695,7 @@ body.portal-shell-mounted {
 }
 
 .hrms-page-body .ant-card .ant-card-body {
-  padding: 16px;
+  padding: 12px;
 }
 
 /* Temporary bridge while legacy settings pages move to owned surfaces. */
@@ -985,6 +1007,20 @@ body.portal-shell-mounted .ant-select-dropdown {
   border-left: 1px solid rgba(148, 163, 184, .35);
 }
 
+.hrms-page-body .recruitment-experience { gap: 10px !important; }
+.hrms-page-body .recruitment-scopebar { margin-bottom: 0; padding: 8px 12px; gap: 12px; flex-wrap: wrap; }
+.hrms-page-body .recruitment-scopebar-meta { display: flex; align-items: center; gap: 14px; }
+.hrms-page-body .recruitment-scopebar > .recruitment-header-actions { flex: 0 1 auto; width: min(760px, 100%); }
+.hrms-page-body .recruitment-scope-workspace { padding-left: 12px; }
+.hrms-page-body .recruitment-workspace-surface { padding: 12px; }
+.hrms-page-body .candidate-applications-workspace { gap: 10px; }
+.hrms-page-body .candidate-applications-heading { gap: 12px; flex-wrap: wrap; }
+.hrms-page-body .candidate-applications-heading > .ant-space { display: flex !important; flex-wrap: wrap !important; }
+.hrms-page-body .candidate-applications-heading h2 { font-size: 19px; }
+.hrms-page-body .candidate-applications-heading > div > span { display: none; }
+.hrms-page-body .candidate-applications-heading p { font-size: 12px; }
+.hrms-page-body .candidate-status-strip button { min-height: 54px; padding: 6px 8px; }
+
 .dashboard-scopebar > div,
 .recruitment-scopebar > div,
 .recruitment-scopebar-meta > div {
@@ -1125,7 +1161,7 @@ body.portal-shell-mounted .ant-select-dropdown {
   }
 
   .hrms-content {
-    padding: 20px 18px 24px;
+    padding: 12px 16px 18px;
   }
 
   .hrms-topbar .dashboard-switcher > span {
@@ -1157,6 +1193,10 @@ body.portal-shell-mounted .ant-select-dropdown {
 }
 
 @media (max-width: 640px) {
+  .hrms-topbar .topbar-org-logo {
+    display: none !important;
+  }
+
   .hrms-shell,
   .hrms-shell.rail-collapsed {
     grid-template-columns: minmax(0, 1fr);
@@ -1253,8 +1293,6 @@ body.portal-shell-mounted .ant-select-dropdown {
   }
 
   .hrms-topbar {
-    height: 60px;
-    flex-basis: 60px;
     padding-inline: 12px;
   }
 
@@ -1274,7 +1312,7 @@ body.portal-shell-mounted .ant-select-dropdown {
   }
 
   .hrms-content {
-    padding: 16px 14px 24px;
+    padding: 10px 12px 18px;
     scrollbar-gutter: auto;
   }
 

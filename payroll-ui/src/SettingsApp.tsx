@@ -712,9 +712,10 @@ export default function SettingsApp() {
       <nav aria-label={`${activeModule.label} navigation`}><div className="submenu context-menu">{renderContextMenu()}</div></nav>
     </aside>
     <main className="hrms-main">
-      <header className="hrms-topbar">
+      <div className="hrms-topbar">
         <div className="hrms-topbar-left">
           <Button className="hrms-mobile-nav-trigger" type="text" aria-label="Open navigation" icon={<MenuUnfoldOutlined />} onClick={() => setNavOpen(true)} />
+          {shellOrg.logoDataUrl && <img className="topbar-org-logo" src={shellOrg.logoDataUrl} alt={`${shellOrg.name || 'Organization'} logo`} title={shellOrg.name || 'Organization'} />}
           <Input className="global-search-antd" prefix={<SearchOutlined />} placeholder="Search modules, employees and actions" allowClear suffix={<span className="search-shortcut">Ctrl K</span>} />
         </div>
         <Space className="hrms-topbar-tools" size={8}>
@@ -733,9 +734,9 @@ export default function SettingsApp() {
             </button>
           </Dropdown>
         </Space>
-      </header>
-      <div className="hrms-content">
         <AppPageHeader title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} />
+      </div>
+      <div className="hrms-content">
         <div className="hrms-page-body">{renderPage()}</div>
       </div>
       <footer className="hrms-footer">
