@@ -5,6 +5,8 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Payroll.API", "Payroll.API\Payroll.API.csproj", "{75FB765B-AC29-41A5-B3B2-5BDDB499B730}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Payroll.API.Tests", "Payroll.API.Tests\Payroll.API.Tests.csproj", "{1C6AA4AE-0A1D-4C85-920B-40E7A6F4B869}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -18,5 +20,9 @@ Global
 		{75FB765B-AC29-41A5-B3B2-5BDDB499B730}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{75FB765B-AC29-41A5-B3B2-5BDDB499B730}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{75FB765B-AC29-41A5-B3B2-5BDDB499B730}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1C6AA4AE-0A1D-4C85-920B-40E7A6F4B869}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1C6AA4AE-0A1D-4C85-920B-40E7A6F4B869}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1C6AA4AE-0A1D-4C85-920B-40E7A6F4B869}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1C6AA4AE-0A1D-4C85-920B-40E7A6F4B869}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

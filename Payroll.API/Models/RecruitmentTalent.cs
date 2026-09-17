@@ -722,6 +722,11 @@ public class RecruitmentResumeIntakeRequest
     public string DraftPhone { get; set; } = "";
     public string DraftAddress { get; set; } = "";
     public int? DraftTotalExperienceMonths { get; set; }
+    public string DraftCurrentCompany { get; set; } = "";
+    public string DraftCurrentTitle { get; set; } = "";
+    public string DraftHighestQualification { get; set; } = "";
+    public string DraftSkills { get; set; } = "";
+    public string DraftCertifications { get; set; } = "";
     public List<IFormFile> Files { get; set; } = [];
 }
 
@@ -746,6 +751,11 @@ public class RecruitmentResumePreview
     public string Phone { get; set; } = "";
     public string Address { get; set; } = "";
     public int TotalExperienceMonths { get; set; }
+    public string CurrentCompany { get; set; } = "";
+    public string CurrentTitle { get; set; } = "";
+    public string HighestQualification { get; set; } = "";
+    public List<string> Skills { get; set; } = [];
+    public List<string> Certifications { get; set; } = [];
     public long? ExistingCandidateId { get; set; }
     public string ExistingCandidateCode { get; set; } = "";
     public long? ExistingApplicationId { get; set; }

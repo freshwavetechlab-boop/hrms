@@ -280,7 +280,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
       stableFieldCode: 'RESUME',
       label: 'Resume / CV',
       placeholder: '',
-      helpText: 'Upload PDF, DOCX, RTF or TXT. The file is stored privately and used for ATS matching.',
+      helpText: 'Upload PDF, DOC, DOCX, ODT, RTF or TXT. The file is stored privately and used for ATS matching.',
       isRequired: true,
       displayOrder: selectedSection.fields.length + 1,
       widthColumns: 12,
@@ -774,7 +774,7 @@ function standardCandidateVersion(formDefinitionId: number, resumeConfigurationI
   if (resumeConfigurationId) section.fields.unshift({
     ...field('UPLOAD', 'RESUME', 'Resume / CV', 1, 12, true),
     attachmentFieldConfigurationId: resumeConfigurationId,
-    helpText: 'Upload PDF, DOCX, RTF or TXT. Your resume is parsed to prefill this form and support ATS matching.',
+    helpText: 'Upload PDF, DOC, DOCX, ODT, RTF or TXT. Your resume is parsed to prefill this form and support ATS matching.',
   })
   section.fields = section.fields.map((row, index) => ({ ...row, displayOrder: index + 1 }))
   return version

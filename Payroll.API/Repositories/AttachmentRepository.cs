@@ -1640,7 +1640,9 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
         var mime = DetectMimeType(header, extension);
         if (mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" && !await IsDocxAsync(file, cancellationToken))
             return FileInspection.Fail("The uploaded ZIP content is not a valid DOCX document.");
-        return mime is null ? FileInspection.Fail("File content does not match an approved PDF, image, DOCX, RTF or TXT format.") : FileInspection.Success(mime, hash);
+        if (mime == "application/vnd.oasis.opendocument.text" && !await IsOdtAsync(file, cancellationToken))
+            return FileInspection.Fail("The uploaded ZIP content is not a valid ODT document.");
+        return mime is null ? FileInspection.Fail("File content does not match an approved PDF, image, DOC, DOCX, ODT, RTF or TXT format.") : FileInspection.Success(mime, hash);
     }
 
     private static async Task<bool> IsDocxAsync(IFormFile file, CancellationToken cancellationToken)
@@ -1670,6 +1672,39 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
         }
     }
 
+    private static async Task<bool> IsOdtAsync(IFormFile file, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var source = file.OpenReadStream();
+            Stream archiveStream = source;
+            MemoryStream? copy = null;
+            if (!source.CanSeek)
+            {
+                copy = new MemoryStream((int)Math.Min(file.Length, int.MaxValue));
+                await source.CopyToAsync(copy, cancellationToken);
+                copy.Position = 0;
+                archiveStream = copy;
+            }
+            using var archive = new ZipArchive(archiveStream, ZipArchiveMode.Read, leaveOpen: true);
+            var content = archive.GetEntry("content.xml");
+            var mimeType = archive.GetEntry("mimetype");
+            if (content is null || mimeType is null || mimeType.Length > 200)
+            {
+                if (copy is not null) await copy.DisposeAsync();
+                return false;
+            }
+            using var reader = new StreamReader(mimeType.Open(), Encoding.ASCII, detectEncodingFromByteOrderMarks: false, leaveOpen: false);
+            var declaredType = (await reader.ReadToEndAsync(cancellationToken)).Trim();
+            if (copy is not null) await copy.DisposeAsync();
+            return declaredType.Equals("application/vnd.oasis.opendocument.text", StringComparison.Ordinal);
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+    }
+
     private static string? DetectMimeType(byte[] header, string extension)
     {
         if (header.Length >= 5 && header[0] == 0x25 && header[1] == 0x50 && header[2] == 0x44 && header[3] == 0x46 && header[4] == 0x2D && extension == "pdf") return "application/pdf";
@@ -1677,6 +1712,12 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
         if (header.Length >= 8 && header.Take(8).SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }) && extension == "png") return "image/png";
         if (header.Length >= 4 && header[0] == 0x50 && header[1] == 0x4B && header[2] is 0x03 or 0x05 or 0x07 && header[3] is 0x04 or 0x06 or 0x08 && extension == "docx")
             return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        if (header.Length >= 4 && header[0] == 0x50 && header[1] == 0x4B && header[2] is 0x03 or 0x05 or 0x07 && header[3] is 0x04 or 0x06 or 0x08 && extension == "odt")
+            return "application/vnd.oasis.opendocument.text";
+        if (header.Length >= 8
+            && header.Take(8).SequenceEqual(new byte[] { 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1 })
+            && extension == "doc")
+            return "application/msword";
         if (extension == "rtf" && Encoding.ASCII.GetString(header).TrimStart('\uFEFF').StartsWith(@"{\rtf", StringComparison.OrdinalIgnoreCase))
             return "application/rtf";
         if (extension == "txt" && LooksLikePlainText(header)) return "text/plain";
@@ -1685,14 +1726,22 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
 
     private static bool LooksLikePlainText(byte[] sample)
     {
+        static bool ContainsOnlyTextCharacters(string text) =>
+            text.All(character => character is '\t' or '\r' or '\n' or '\f' || !char.IsControl(character));
+
         try
         {
+            if (sample.Length >= 2 && sample[0] == 0xFF && sample[1] == 0xFE)
+                return ContainsOnlyTextCharacters(Encoding.Unicode.GetString(sample, 2, sample.Length - 2));
+            if (sample.Length >= 2 && sample[0] == 0xFE && sample[1] == 0xFF)
+                return ContainsOnlyTextCharacters(Encoding.BigEndianUnicode.GetString(sample, 2, sample.Length - 2));
             var text = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true).GetString(sample);
-            return text.All(character => character is '\t' or '\r' or '\n' or '\f' || !char.IsControl(character));
+            return ContainsOnlyTextCharacters(text);
         }
         catch (DecoderFallbackException)
         {
-            return false;
+            if (sample.Contains((byte)0)) return false;
+            return ContainsOnlyTextCharacters(Encoding.Latin1.GetString(sample));
         }
     }
 

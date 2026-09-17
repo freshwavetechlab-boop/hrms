@@ -39,7 +39,7 @@ type Props = {
   onEditCandidate?: (candidateId: number) => void | Promise<void>
 }
 
-const acceptedResumeTypes = '.pdf,.docx,.rtf,.txt'
+const acceptedResumeTypes = '.pdf,.doc,.docx,.odt,.rtf,.txt'
 const sourceOptions = ['Direct Sourcing', 'Job Portal', 'Agency', 'Employee Referral', 'Internal Database'].map(value => ({ value, label: value }))
 
 export default function RecruitmentResumeIntake({
@@ -153,6 +153,12 @@ export default function RecruitmentResumeIntake({
         setJobPostingId(posting.id)
         setPositionId(posting.positionId)
         setJobDescriptionId(posting.jobDescriptionVersionId || null)
+      } else if (initialPositionId) {
+        const matching = rows.filter(row => row.positionId === initialPositionId && row.status === 'Published')
+        if (matching.length === 1) {
+          setJobPostingId(matching[0].id)
+          setJobDescriptionId(matching[0].jobDescriptionVersionId || null)
+        }
       }
     }).finally(() => { if (active) setResolvingPostings(false) })
     return () => { active = false }
@@ -223,8 +229,9 @@ export default function RecruitmentResumeIntake({
     setPositionId(value)
     setDescriptions([])
     setContextExpanded(false)
-    setJobPostingId(null)
-    setJobDescriptionId(null)
+    const matching = postings.filter(row => row.positionId === value && row.status === 'Published')
+    setJobPostingId(matching.length === 1 ? matching[0].id : null)
+    setJobDescriptionId(matching.length === 1 ? matching[0].jobDescriptionVersionId || null : null)
     setResult(null)
     setDrafts([])
   }
@@ -284,7 +291,7 @@ export default function RecruitmentResumeIntake({
           setDrafts([])
           return
         }
-        nextDrafts.push({ ...response.data, file })
+        nextDrafts.push({ ...response.data, skills: response.data.skills || [], certifications: response.data.certifications || [], file })
         setDrafts([...nextDrafts])
         setProgress(Math.round((index + 1) / selectedFiles.length * 100))
       }
@@ -298,6 +305,8 @@ export default function RecruitmentResumeIntake({
     if (!validateSelection()) return
     if (!draftsReady) return notify('Run Preview & parse before final upload.', 'error')
     if (drafts.some(draft => !draft.firstName.trim())) return notify('First name is required for every candidate draft.', 'error')
+    if (selectedPosting?.autoRunAts && !forceUpload && !parsingDisabled && drafts.some(draft => !draft.currentTitle.trim() || !draft.skills.length))
+      return notify('Current title and at least one skill are required before automatic ATS screening.', 'error')
     setUploading(true)
     setProgress(0)
     setProgressDetail({ percent: 0, completedFiles: 0, totalFiles: selectedFiles.length, activeFrom: 1, activeTo: Math.min(1, selectedFiles.length), phase: 'uploading' })
@@ -328,6 +337,11 @@ export default function RecruitmentResumeIntake({
       email: editingDraft.email.trim(),
       phone: editingDraft.phone.trim(),
       address: editingDraft.address.trim(),
+      currentCompany: editingDraft.currentCompany.trim(),
+      currentTitle: editingDraft.currentTitle.trim(),
+      highestQualification: editingDraft.highestQualification.trim(),
+      skills: editingDraft.skills.map(value => value.trim()).filter(Boolean),
+      certifications: editingDraft.certifications.map(value => value.trim()).filter(Boolean),
     } : draft))
     setEditingDraftIndex(null)
     setEditingDraft(null)
@@ -364,7 +378,7 @@ export default function RecruitmentResumeIntake({
           <Upload.Dragger {...uploadProps}>
             <p className="ant-upload-drag-icon"><InboxOutlined /></p>
             <p className="ant-upload-text">Drop {mode === 'single' ? 'a resume' : 'up to 50 resumes'} here, or click to browse</p>
-            <p className="ant-upload-hint">PDF, DOCX, RTF or TXT. A readable resume should be 10 MB or smaller for automatic parsing.</p>
+            <p className="ant-upload-hint">PDF, DOC, DOCX, ODT, RTF or TXT. A readable resume should be 10 MB or smaller for automatic parsing.</p>
           </Upload.Dragger>
         </div>
         <div className={`resume-force-upload${forceUpload || parsingDisabled ? ' is-active' : ''}`}>
@@ -395,7 +409,7 @@ export default function RecruitmentResumeIntake({
         <div className="resume-draft-list" data-testid="resume-intake-drafts">
           {drafts.map((draft, index) => <div className="resume-draft-row" key={`${draft.file.name}-${draft.file.lastModified}-${index}`}>
             <div className="resume-draft-file"><FileSearchOutlined /><div><strong>{draft.fileName}</strong><span>{draft.parsingStatus}{draft.parsingError ? ` · ${draft.parsingError}` : ''}</span></div></div>
-            <div className="resume-draft-person"><strong>{`${draft.firstName} ${draft.lastName}`.trim() || 'Candidate name required'}</strong><span>{draft.email || 'No email'} · {draft.phone || 'No phone'}</span></div>
+            <div className="resume-draft-person"><strong>{`${draft.firstName} ${draft.lastName}`.trim() || 'Candidate name required'}</strong><span>{draft.email || 'No email'} · {draft.phone || 'No phone'}</span><span>{draft.currentTitle || 'Title needs review'} · {draft.skills.length} skill(s)</span></div>
             <div className="resume-draft-outcome">
               {draft.existingApplicationId ? <Tag color="blue">Already registered · resume update</Tag> : draft.existingCandidateId ? <Tag color="cyan">Existing profile · new application</Tag> : <Tag color="green">New candidate</Tag>}
               {draft.existingCandidateCode && <span>{draft.existingCandidateCode}</span>}
@@ -411,6 +425,7 @@ export default function RecruitmentResumeIntake({
       <Modal
         open={editingDraftIndex != null && Boolean(editingDraft)}
         title="Edit candidate draft"
+        width={760}
         okText="Save draft"
         okButtonProps={{ id: 'resume-draft-save' }}
         onOk={saveDraftEditor}
@@ -424,7 +439,12 @@ export default function RecruitmentResumeIntake({
             <Col span={12}><Form.Item label="Email"><Input data-testid="resume-draft-email" value={editingDraft.email} onChange={event => setEditingDraft({ ...editingDraft, email: event.target.value })} /></Form.Item></Col>
             <Col span={12}><Form.Item label="Phone"><Input data-testid="resume-draft-phone" value={editingDraft.phone} onChange={event => setEditingDraft({ ...editingDraft, phone: event.target.value })} /></Form.Item></Col>
             <Col span={24}><Form.Item label="Current location / address"><Input data-testid="resume-draft-address" value={editingDraft.address} onChange={event => setEditingDraft({ ...editingDraft, address: event.target.value })} /></Form.Item></Col>
-            <Col span={24}><Form.Item label="Total experience (months)"><InputNumber data-testid="resume-draft-experience" min={0} max={1200} value={editingDraft.totalExperienceMonths} onChange={value => setEditingDraft({ ...editingDraft, totalExperienceMonths: Number(value || 0) })} /></Form.Item></Col>
+            <Col span={12}><Form.Item label="Current designation" required><Input data-testid="resume-draft-title" value={editingDraft.currentTitle} onChange={event => setEditingDraft({ ...editingDraft, currentTitle: event.target.value })} /></Form.Item></Col>
+            <Col span={12}><Form.Item label="Current company"><Input data-testid="resume-draft-company" value={editingDraft.currentCompany} onChange={event => setEditingDraft({ ...editingDraft, currentCompany: event.target.value })} /></Form.Item></Col>
+            <Col span={12}><Form.Item label="Total experience (months)"><InputNumber data-testid="resume-draft-experience" min={0} max={1200} style={{ width: '100%' }} value={editingDraft.totalExperienceMonths} onChange={value => setEditingDraft({ ...editingDraft, totalExperienceMonths: Number(value || 0) })} /></Form.Item></Col>
+            <Col span={12}><Form.Item label="Highest qualification"><Input data-testid="resume-draft-qualification" value={editingDraft.highestQualification} onChange={event => setEditingDraft({ ...editingDraft, highestQualification: event.target.value })} /></Form.Item></Col>
+            <Col span={24}><Form.Item label="Skills" required extra="Comma or new-line separated. ATS matches these and the original resume text against the approved JD."><Input.TextArea data-testid="resume-draft-skills" autoSize={{ minRows: 2, maxRows: 5 }} value={editingDraft.skills.join(', ')} onChange={event => setEditingDraft({ ...editingDraft, skills: event.target.value.split(/[,;\n|]/).map(value => value.trim()).filter(Boolean) })} /></Form.Item></Col>
+            <Col span={24}><Form.Item label="Certifications"><Input.TextArea data-testid="resume-draft-certifications" autoSize={{ minRows: 2, maxRows: 4 }} value={editingDraft.certifications.join('\n')} onChange={event => setEditingDraft({ ...editingDraft, certifications: event.target.value.split(/[;\n|]/).map(value => value.trim()).filter(Boolean) })} /></Form.Item></Col>
           </Row>
         </Form>}
       </Modal>

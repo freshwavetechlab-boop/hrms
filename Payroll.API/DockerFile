@@ -10,6 +10,9 @@ RUN dotnet publish "Payroll.API.csproj" -c Release -o /app/publish
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends antiword poppler-utils tesseract-ocr tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/publish .
 RUN mkdir -p /app/App_Data/attachments
 

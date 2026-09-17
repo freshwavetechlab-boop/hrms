@@ -470,13 +470,6 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
                 ? await resumeParser.EnhanceAsync(request.File, local, candidate.ClientId, jobContext, cancellationToken)
                 : local;
         }
-        if (suppressAutoScoring)
-        {
-            var manualReviewError = parsedResume?.Error;
-            if (string.IsNullOrWhiteSpace(manualReviewError))
-                manualReviewError = "Resume requires manual review before ATS scoring.";
-            parse = parse with { Status = "NeedsReview", Error = manualReviewError };
-        }
         var resume = await RegisterResumeAsync(db, candidate, attachment, parse, user, suppressAutoScoring || !queueApplicationScoring);
         await PurgeSupersededResumeFilesAsync(candidate.Id, attachment.PublicId, user, ipAddress, userAgent, cancellationToken);
         return (attachment, resume, "");
@@ -694,8 +687,11 @@ ORDER BY attachment.id DESC LIMIT 1", new { ClientId = clientId, FileHash = file
                         LastName = names.LastName,
                         Email = parse.Facts.Email,
                         Phone = parse.Facts.Phone,
-                        CurrentLocation = Truncate(parse.Facts.ResidentialAddress, 180),
+                        CurrentCompany = parse.Facts.CurrentCompany,
+                        CurrentTitle = parse.Facts.CurrentTitle,
+                        CurrentLocation = Truncate(string.IsNullOrWhiteSpace(parse.Facts.CurrentLocation) ? parse.Facts.ResidentialAddress : parse.Facts.CurrentLocation, 180),
                         TotalExperienceMonths = parse.Facts.TotalExperienceMonths ?? 0,
+                        HighestQualification = parse.Facts.HighestQualification,
                         SourceType = string.IsNullOrWhiteSpace(request.SourceType) ? "Direct Sourcing" : request.SourceType.Trim(),
                         ProfileStatus = "Active",
                         ConsentStatus = "Pending",
@@ -717,7 +713,8 @@ ORDER BY attachment.id DESC LIMIT 1", new { ClientId = clientId, FileHash = file
                     await reviewedDb.ExecuteAsync(@"UPDATE recruitment_candidates SET
 FirstName=@FirstName,LastName=@LastName,Email=@Email,NormalizedEmail=@NormalizedEmail,
 Phone=@Phone,NormalizedPhone=@NormalizedPhone,CurrentLocation=@CurrentLocation,
-TotalExperienceMonths=@TotalExperienceMonths,UpdatedAt=UTC_TIMESTAMP()
+TotalExperienceMonths=@TotalExperienceMonths,CurrentCompany=@CurrentCompany,
+CurrentTitle=@CurrentTitle,HighestQualification=@HighestQualification,UpdatedAt=UTC_TIMESTAMP()
 WHERE Id=@Id", new
                     {
                         Id = candidateId.Value,
@@ -728,7 +725,10 @@ WHERE Id=@Id", new
                         Phone = request.DraftPhone.Trim(),
                         NormalizedPhone = NormalizePhone(request.DraftPhone),
                         CurrentLocation = Truncate(request.DraftAddress.Trim(), 180),
-                        TotalExperienceMonths = Math.Max(0, request.DraftTotalExperienceMonths ?? 0)
+                        TotalExperienceMonths = Math.Max(0, request.DraftTotalExperienceMonths ?? 0),
+                        CurrentCompany = Truncate(request.DraftCurrentCompany.Trim(), 180),
+                        CurrentTitle = Truncate(request.DraftCurrentTitle.Trim(), 180),
+                        HighestQualification = Truncate(request.DraftHighestQualification.Trim(), 250)
                     });
                 }
 
@@ -908,8 +908,15 @@ ORDER BY (ClientId=@ClientId) DESC,(ClientId=0) DESC,Id",
             LastName = names.LastName,
             Email = string.IsNullOrWhiteSpace(parse.Facts.Email) ? candidate?.Email ?? "" : parse.Facts.Email,
             Phone = string.IsNullOrWhiteSpace(parse.Facts.Phone) ? candidate?.Phone ?? "" : parse.Facts.Phone,
-            Address = string.IsNullOrWhiteSpace(parse.Facts.ResidentialAddress) ? candidate?.CurrentLocation ?? "" : parse.Facts.ResidentialAddress,
+            Address = !string.IsNullOrWhiteSpace(parse.Facts.CurrentLocation)
+                ? parse.Facts.CurrentLocation
+                : string.IsNullOrWhiteSpace(parse.Facts.ResidentialAddress) ? candidate?.CurrentLocation ?? "" : parse.Facts.ResidentialAddress,
             TotalExperienceMonths = parse.Facts.TotalExperienceMonths ?? candidate?.TotalExperienceMonths ?? 0,
+            CurrentCompany = string.IsNullOrWhiteSpace(parse.Facts.CurrentCompany) ? candidate?.CurrentCompany ?? "" : parse.Facts.CurrentCompany,
+            CurrentTitle = string.IsNullOrWhiteSpace(parse.Facts.CurrentTitle) ? candidate?.CurrentTitle ?? "" : parse.Facts.CurrentTitle,
+            HighestQualification = string.IsNullOrWhiteSpace(parse.Facts.HighestQualification) ? candidate?.HighestQualification ?? "" : parse.Facts.HighestQualification,
+            Skills = parse.Facts.Skills.ToList(),
+            Certifications = parse.Facts.Certifications.ToList(),
             ExistingCandidateId = candidate?.Id,
             ExistingCandidateCode = candidate?.CandidateCode ?? "",
             ExistingApplicationId = application?.Id,
@@ -1276,8 +1283,9 @@ SummaryText=VALUES(SummaryText),TotalExperienceMonths=VALUES(TotalExperienceMont
                 if (parse.Status == "Parsed")
                 {
                     await db.ExecuteAsync("DELETE FROM recruitment_candidate_skills WHERE CandidateId=@CandidateId AND Source='Resume'", new { link.CandidateId }, transaction);
-                    await ExtractCandidateSkillsAsync(db, candidate, link.ResumeId, parse.Text, transaction);
+                    await ExtractCandidateSkillsAsync(db, candidate, link.ResumeId, parse.Text, transaction, parse.Facts.Skills);
                     await ApplyParsedContactAsync(db, candidate, parse.Facts, transaction);
+                    await ApplyParsedProfileSectionsAsync(db, candidate.Id, parse.Facts, transaction);
                 }
                 await transaction.CommitAsync(cancellationToken);
                 await WriteActivityAsync(db, link.ClientId, link.CandidateId, candidate.EmployeeId, "RECRUITMENT", "PUBLIC_RESUME_PARSED",
@@ -2575,8 +2583,9 @@ ORDER BY ClientId=@ClientId DESC,Id LIMIT 1", new { Email = normalizedEmail, Pho
         if (parse.Status == "Parsed")
         {
             await db.ExecuteAsync("DELETE FROM recruitment_candidate_skills WHERE CandidateId=@CandidateId AND Source='Resume'", new { CandidateId = candidate.Id }, transaction);
-            await ExtractCandidateSkillsAsync(db, candidate, id, parse.Text, transaction);
+            await ExtractCandidateSkillsAsync(db, candidate, id, parse.Text, transaction, parse.Facts.Skills);
             await ApplyParsedContactAsync(db, candidate, parse.Facts, transaction);
+            await ApplyParsedProfileSectionsAsync(db, candidate.Id, parse.Facts, transaction);
         }
         await transaction.CommitAsync();
         await WriteActivityAsync(db, candidate.ClientId, candidate.Id, candidate.EmployeeId, "RECRUITMENT", "RESUME_UPLOADED", parse.Status == "Disabled" ? "Resume uploaded" : "Resume uploaded and parsed", $"{attachment.OriginalFileName} / {parse.Status}", "CandidateResume", id.ToString(), user);
@@ -3582,9 +3591,9 @@ WHERE applicationRow.CandidateId=@CandidateId AND (@ClientId IS NULL OR applicat
         return fallback > 0 ? fallback : null;
     }
 
-    private static async Task ExtractCandidateSkillsAsync(MySqlConnection db, RecruitmentCandidate candidate, long resumeId, string text, MySqlTransaction transaction)
+    private static async Task ExtractCandidateSkillsAsync(MySqlConnection db, RecruitmentCandidate candidate, long resumeId, string text, MySqlTransaction transaction, IReadOnlyList<string>? parsedSkills = null)
     {
-        if (string.IsNullOrWhiteSpace(text)) return;
+        if (string.IsNullOrWhiteSpace(text) && (parsedSkills is null || parsedSkills.Count == 0)) return;
         var search = NormalizeSearch(text);
         var terms = await db.QueryAsync<SkillDictionaryTermRow>(@"SELECT s.Id SkillId,s.SkillName,s.SkillName MatchTerm FROM recruitment_skills s WHERE s.IsActive=TRUE AND s.ClientId IN (0,@ClientId)
 UNION ALL SELECT s.Id SkillId,s.SkillName,a.AliasName MatchTerm FROM recruitment_skills s JOIN recruitment_skill_aliases a ON a.SkillId=s.Id WHERE s.IsActive=TRUE AND s.ClientId IN (0,@ClientId)", new { candidate.ClientId }, transaction);
@@ -3599,20 +3608,36 @@ UNION ALL SELECT s.Id SkillId,s.SkillName,a.AliasName MatchTerm FROM recruitment
                 Evidence = ExtractEvidenceExcerpt(text, matchedTerm)
             };
         }).Where(match => match is not null).ToList();
-        if (matches.Count == 0) return;
-        var matchesJson = JsonSerializer.Serialize(matches);
-        await db.ExecuteAsync(@"INSERT INTO recruitment_resume_skills (ResumeId,SkillId,SkillName,MatchedTerm,EvidenceExcerpt,Confidence)
+        if (matches.Count > 0)
+        {
+            var matchesJson = JsonSerializer.Serialize(matches);
+            await db.ExecuteAsync(@"INSERT INTO recruitment_resume_skills (ResumeId,SkillId,SkillName,MatchedTerm,EvidenceExcerpt,Confidence)
 SELECT @ResumeId,rowData.SkillId,rowData.SkillName,rowData.MatchedTerm,rowData.Evidence,0.85
 FROM JSON_TABLE(@MatchesJson,'$[*]' COLUMNS(
  SkillId BIGINT PATH '$.SkillId',SkillName VARCHAR(180) PATH '$.SkillName',
  MatchedTerm VARCHAR(180) PATH '$.MatchedTerm',Evidence VARCHAR(1000) PATH '$.Evidence')) rowData
 ON DUPLICATE KEY UPDATE MatchedTerm=VALUES(MatchedTerm),EvidenceExcerpt=VALUES(EvidenceExcerpt),Confidence=GREATEST(Confidence,VALUES(Confidence))",
-            new { ResumeId = resumeId, MatchesJson = matchesJson }, transaction);
-        await db.ExecuteAsync(@"INSERT INTO recruitment_candidate_skills (CandidateId,SkillId,SkillName,Source,Confidence)
+                new { ResumeId = resumeId, MatchesJson = matchesJson }, transaction);
+            await db.ExecuteAsync(@"INSERT INTO recruitment_candidate_skills (CandidateId,SkillId,SkillName,Source,Confidence)
 SELECT @CandidateId,rowData.SkillId,rowData.SkillName,'Resume',0.85
 FROM JSON_TABLE(@MatchesJson,'$[*]' COLUMNS(SkillId BIGINT PATH '$.SkillId',SkillName VARCHAR(180) PATH '$.SkillName')) rowData
 ON DUPLICATE KEY UPDATE SkillName=VALUES(SkillName),Confidence=GREATEST(Confidence,VALUES(Confidence)),UpdatedAt=UTC_TIMESTAMP()",
-            new { CandidateId = candidate.Id, MatchesJson = matchesJson }, transaction);
+                new { CandidateId = candidate.Id, MatchesJson = matchesJson }, transaction);
+        }
+        var configuredNames = matches.Where(row => row is not null).Select(row => row!.SkillName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var skill in (parsedSkills ?? []).Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).Take(100))
+        {
+            var name = Truncate(skill.Trim(), 180);
+            if (name.Length == 0 || configuredNames.Contains(name)) continue;
+            await db.ExecuteAsync(@"INSERT INTO recruitment_resume_skills (ResumeId,SkillId,SkillName,MatchedTerm,EvidenceExcerpt,Confidence)
+SELECT @ResumeId,NULL,@SkillName,@SkillName,@Evidence,0.72
+WHERE NOT EXISTS (SELECT 1 FROM recruitment_resume_skills WHERE ResumeId=@ResumeId AND LOWER(SkillName)=LOWER(@SkillName))",
+                new { ResumeId = resumeId, SkillName = name, Evidence = ExtractEvidenceExcerpt(text, name) }, transaction);
+            await db.ExecuteAsync(@"INSERT INTO recruitment_candidate_skills (CandidateId,SkillId,SkillName,Source,Confidence)
+SELECT @CandidateId,NULL,@SkillName,'Resume',0.72
+WHERE NOT EXISTS (SELECT 1 FROM recruitment_candidate_skills WHERE CandidateId=@CandidateId AND Source='Resume' AND LOWER(SkillName)=LOWER(@SkillName))",
+                new { CandidateId = candidate.Id, SkillName = name }, transaction);
+        }
     }
 
     private static Task InsertResumeSectionsAsync(MySqlConnection db, MySqlTransaction transaction, long resumeId, IReadOnlyList<ResumeParsedSection> sections)
@@ -3638,24 +3663,115 @@ Phone=CASE WHEN Phone='' THEN @Phone ELSE Phone END,
 NormalizedPhone=CASE WHEN NormalizedPhone='' THEN @NormalizedPhone ELSE NormalizedPhone END,
 CurrentLocation=CASE WHEN CurrentLocation='' THEN @ResidentialAddress ELSE CurrentLocation END,
 TotalExperienceMonths=CASE WHEN TotalExperienceMonths=0 AND @TotalExperienceMonths IS NOT NULL THEN @TotalExperienceMonths ELSE TotalExperienceMonths END,
-UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { candidate.Id, names.FirstName, names.LastName, Email = facts.Email, NormalizedEmail = NormalizeEmail(facts.Email), Phone = facts.Phone, NormalizedPhone = NormalizePhone(facts.Phone), ResidentialAddress = Truncate(facts.ResidentialAddress, 180), facts.TotalExperienceMonths }, transaction);
+CurrentCompany=CASE WHEN CurrentCompany='' THEN @CurrentCompany ELSE CurrentCompany END,
+CurrentTitle=CASE WHEN CurrentTitle='' THEN @CurrentTitle ELSE CurrentTitle END,
+HighestQualification=CASE WHEN HighestQualification='' THEN @HighestQualification ELSE HighestQualification END,
+UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new
+        {
+            candidate.Id,
+            names.FirstName,
+            names.LastName,
+            Email = facts.Email,
+            NormalizedEmail = NormalizeEmail(facts.Email),
+            Phone = facts.Phone,
+            NormalizedPhone = NormalizePhone(facts.Phone),
+            ResidentialAddress = Truncate(string.IsNullOrWhiteSpace(facts.CurrentLocation) ? facts.ResidentialAddress : facts.CurrentLocation, 180),
+            facts.TotalExperienceMonths,
+            CurrentCompany = Truncate(facts.CurrentCompany, 180),
+            CurrentTitle = Truncate(facts.CurrentTitle, 180),
+            HighestQualification = Truncate(facts.HighestQualification, 250)
+        }, transaction);
+    }
+
+    private static async Task ApplyParsedProfileSectionsAsync(MySqlConnection db, long candidateId, ResumeParsedFacts facts, MySqlTransaction transaction)
+    {
+        if (facts.Experience.Count > 0 && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidate_experience WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction) == 0)
+        {
+            var order = 10;
+            foreach (var row in facts.Experience.Take(30))
+            {
+                await db.ExecuteAsync(@"INSERT INTO recruitment_candidate_experience
+(CandidateId,Employer,JobTitle,StartDate,EndDate,IsCurrent,Description,DisplayOrder)
+VALUES (@CandidateId,@Employer,@JobTitle,@StartDate,@EndDate,@IsCurrent,@Description,@DisplayOrder)", new
+                {
+                    CandidateId = candidateId,
+                    Employer = Truncate(row.Company, 180),
+                    JobTitle = Truncate(row.JobTitle, 180),
+                    row.StartDate,
+                    row.EndDate,
+                    row.IsCurrent,
+                    Description = Truncate(row.Evidence, 2000),
+                    DisplayOrder = order
+                }, transaction);
+                order += 10;
+            }
+        }
+        if (facts.Education.Count > 0 && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidate_education WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction) == 0)
+        {
+            var order = 10;
+            foreach (var row in facts.Education.Take(20))
+            {
+                await db.ExecuteAsync(@"INSERT INTO recruitment_candidate_education
+(CandidateId,Qualification,Institution,Specialization,CompletionYear,Score,DisplayOrder)
+VALUES (@CandidateId,@Qualification,@Institution,'',@CompletionYear,'',@DisplayOrder)", new
+                {
+                    CandidateId = candidateId,
+                    Qualification = Truncate(row.Qualification, 180),
+                    Institution = Truncate(row.Institution, 250),
+                    row.CompletionYear,
+                    DisplayOrder = order
+                }, transaction);
+                order += 10;
+            }
+        }
+        if (facts.Certifications.Count > 0 && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidate_certifications WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction) == 0)
+        {
+            foreach (var certification in facts.Certifications.Take(50))
+                await db.ExecuteAsync(@"INSERT INTO recruitment_candidate_certifications
+(CandidateId,CertificationName,Issuer,CredentialId) VALUES (@CandidateId,@CertificationName,'','')",
+                    new { CandidateId = candidateId, CertificationName = Truncate(certification, 180) }, transaction);
+        }
     }
 
     private static ResumeParseResult ApplyReviewedDraft(ResumeParseResult parse, RecruitmentResumeIntakeRequest request)
     {
         var fullName = string.Join(' ', new[] { request.DraftFirstName.Trim(), request.DraftLastName.Trim() }.Where(value => value.Length > 0));
+        var skills = SplitReviewedList(request.DraftSkills);
+        var reviewerCompletedAtsMinimum = !parse.Status.Equals("Disabled", StringComparison.OrdinalIgnoreCase)
+            && fullName.Length > 0
+            && (!string.IsNullOrWhiteSpace(request.DraftEmail) || !string.IsNullOrWhiteSpace(request.DraftPhone))
+            && !string.IsNullOrWhiteSpace(request.DraftCurrentTitle)
+            && skills.Count > 0;
         return parse with
         {
+            Status = reviewerCompletedAtsMinimum ? "Parsed" : parse.Status,
+            Error = reviewerCompletedAtsMinimum ? "" : parse.Error,
+            ParserName = reviewerCompletedAtsMinimum
+                ? Truncate(string.Join(" + ", new[] { parse.ParserName, "HumanReviewed" }.Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase)), 100)
+                : parse.ParserName,
             Facts = parse.Facts with
             {
                 FullName = fullName,
                 Email = request.DraftEmail.Trim(),
                 Phone = request.DraftPhone.Trim(),
                 ResidentialAddress = request.DraftAddress.Trim(),
-                TotalExperienceMonths = Math.Max(0, request.DraftTotalExperienceMonths ?? 0)
+                TotalExperienceMonths = Math.Max(0, request.DraftTotalExperienceMonths ?? 0),
+                CurrentCompany = request.DraftCurrentCompany.Trim(),
+                CurrentTitle = request.DraftCurrentTitle.Trim(),
+                HighestQualification = request.DraftHighestQualification.Trim(),
+                Skills = skills,
+                Certifications = SplitReviewedList(request.DraftCertifications)
             }
         };
     }
+
+    private static IReadOnlyList<string> SplitReviewedList(string value) =>
+        Regex.Split(value ?? "", @"\s*(?:\r?\n|,|;|\|)\s*")
+            .Select(item => item.Trim())
+            .Where(item => item.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(100)
+            .ToList();
 
     private static async Task CreateCandidateChecklistSnapshotAsync(MySqlConnection db, RecruitmentCandidateApplication application)
     {
@@ -3884,7 +4000,7 @@ WHERE instance.ApplicationId=@ApplicationId AND instance.Status IN ('Active','Pa
         if (attachmentTable == 0) return;
         var resumeAttributeId = await db.ExecuteScalarAsync<long>(@"INSERT INTO attachment_attributes (client_id,attribute_code,attribute_name,description,data_classification,is_active) VALUES (0,'RESUME','Resume','Candidate resume/CV stored through the global document system.','Restricted',TRUE) ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id),attribute_name=VALUES(attribute_name),description=VALUES(description),data_classification=VALUES(data_classification),is_active=TRUE;SELECT LAST_INSERT_ID();");
         foreach (var form in new[] { "CANDIDATE_APPLICATION", "EMPLOYEE_REFERRAL" })
-            await db.ExecuteAsync(@"INSERT INTO attachment_field_configurations (client_id,attachment_attribute_id,module_code,form_code,section_code,field_key,field_label,help_text,is_required,allow_multiple,minimum_file_count,maximum_file_count,allowed_extensions_json,allowed_mime_types_json,maximum_file_size_bytes,owner_can_view,owner_can_upload,owner_can_replace,owner_can_delete,requires_verification,versioning_enabled,requirement_scope,display_order,is_active) VALUES (0,@AttributeId,'RECRUITMENT',@FormCode,'DOCUMENTS','RESUME','Resume / CV','PDF, DOCX, RTF or TXT. The file is stored privately and parsed for ATS matching.',TRUE,FALSE,1,1,@Extensions,@Mimes,10485760,TRUE,TRUE,TRUE,FALSE,FALSE,TRUE,'AllEntities',10,TRUE) ON DUPLICATE KEY UPDATE attachment_attribute_id=VALUES(attachment_attribute_id),field_label=VALUES(field_label),help_text=VALUES(help_text),allowed_extensions_json=VALUES(allowed_extensions_json),allowed_mime_types_json=VALUES(allowed_mime_types_json),maximum_file_size_bytes=VALUES(maximum_file_size_bytes),owner_can_view=TRUE,owner_can_upload=TRUE,owner_can_replace=TRUE,is_active=TRUE", new { AttributeId = resumeAttributeId, FormCode = form, Extensions = "[\"pdf\",\"docx\",\"rtf\",\"txt\"]", Mimes = "[\"application/pdf\",\"application/vnd.openxmlformats-officedocument.wordprocessingml.document\",\"application/rtf\",\"text/rtf\",\"text/plain\"]" });
+            await db.ExecuteAsync(@"INSERT INTO attachment_field_configurations (client_id,attachment_attribute_id,module_code,form_code,section_code,field_key,field_label,help_text,is_required,allow_multiple,minimum_file_count,maximum_file_count,allowed_extensions_json,allowed_mime_types_json,maximum_file_size_bytes,owner_can_view,owner_can_upload,owner_can_replace,owner_can_delete,requires_verification,versioning_enabled,requirement_scope,display_order,is_active) VALUES (0,@AttributeId,'RECRUITMENT',@FormCode,'DOCUMENTS','RESUME','Resume / CV','PDF, DOC, DOCX, ODT, RTF or TXT. The file is stored privately and parsed for ATS matching.',TRUE,FALSE,1,1,@Extensions,@Mimes,10485760,TRUE,TRUE,TRUE,FALSE,FALSE,TRUE,'AllEntities',10,TRUE) ON DUPLICATE KEY UPDATE attachment_attribute_id=VALUES(attachment_attribute_id),field_label=VALUES(field_label),help_text=VALUES(help_text),allowed_extensions_json=VALUES(allowed_extensions_json),allowed_mime_types_json=VALUES(allowed_mime_types_json),maximum_file_size_bytes=VALUES(maximum_file_size_bytes),owner_can_view=TRUE,owner_can_upload=TRUE,owner_can_replace=TRUE,is_active=TRUE", new { AttributeId = resumeAttributeId, FormCode = form, Extensions = "[\"pdf\",\"doc\",\"docx\",\"odt\",\"rtf\",\"txt\"]", Mimes = "[\"application/pdf\",\"application/msword\",\"application/vnd.openxmlformats-officedocument.wordprocessingml.document\",\"application/vnd.oasis.opendocument.text\",\"application/rtf\",\"text/rtf\",\"text/plain\"]" });
         var offerAttributeId = await db.ExecuteScalarAsync<long>(@"INSERT INTO attachment_attributes (client_id,attribute_code,attribute_name,description,data_classification,is_active) VALUES (0,'OFFER_LETTER','Offer letter','Generated or signed offer letter.','Restricted',TRUE) ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id),is_active=TRUE;SELECT LAST_INSERT_ID();");
         await db.ExecuteAsync(@"INSERT INTO attachment_field_configurations (client_id,attachment_attribute_id,module_code,form_code,section_code,field_key,field_label,help_text,is_required,allow_multiple,minimum_file_count,maximum_file_count,allowed_extensions_json,allowed_mime_types_json,maximum_file_size_bytes,owner_can_view,owner_can_upload,owner_can_replace,owner_can_delete,requires_verification,versioning_enabled,requirement_scope,display_order,is_active) VALUES (0,@AttributeId,'RECRUITMENT','PRE_ONBOARDING','DOCUMENTS','OFFER_LETTER','Offer letter','Offer letter managed through the global document system.',FALSE,TRUE,0,50,'[""pdf""]','[""application/pdf""]',10485760,FALSE,FALSE,FALSE,FALSE,FALSE,TRUE,'AllEntities',10,TRUE) ON DUPLICATE KEY UPDATE attachment_attribute_id=VALUES(attachment_attribute_id),allow_multiple=TRUE,maximum_file_count=50,owner_can_view=FALSE,owner_can_upload=FALSE,owner_can_replace=FALSE,owner_can_delete=FALSE,versioning_enabled=TRUE,is_active=TRUE", new { AttributeId = offerAttributeId });
     }

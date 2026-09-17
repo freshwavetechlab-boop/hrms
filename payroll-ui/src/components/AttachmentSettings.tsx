@@ -29,13 +29,17 @@ const storage0: AttachmentStorageServer = {
   isReadEnabled: true, isWriteEnabled: true, isDefaultWriteServer: false, priority: 100, maximumCapacityBytes: null,
   warningCapacityPercent: 85, isActive: true, lastHealthCheckStatus: 'Not checked', lastHealthCheckMessage: '', linkedAttachmentCount: 0
 }
-const extensionOptions = ['pdf', 'jpg', 'jpeg', 'png', 'docx']
+const extensionOptions = ['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx', 'odt', 'rtf', 'txt']
 const mimeByExtension: Record<string, string> = {
   pdf: 'application/pdf',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
   png: 'image/png',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  odt: 'application/vnd.oasis.opendocument.text',
+  rtf: 'application/rtf',
+  txt: 'text/plain'
 }
 const jsonList = (value: string) => {
   try { return JSON.parse(value) as string[] } catch { return value.split(',').map(item => item.trim()).filter(Boolean) }

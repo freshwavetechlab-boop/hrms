@@ -1651,8 +1651,12 @@ WHERE submission.Id=@SubmissionId", new { SubmissionId = submissionId })).ToList
         var experience = parse.Sections.FirstOrDefault(section => section.SectionCode.Equals("EXPERIENCE", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
         var education = parse.Sections.FirstOrDefault(section => section.SectionCode.Equals("EDUCATION", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
         var certifications = parse.Sections.FirstOrDefault(section => section.SectionCode.Equals("CERTIFICATIONS", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
-        var (currentDesignation, currentCompany) = CurrentRoleFromResume(experience);
-        var highestQualification = FirstResumeLine(education).Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+        var fallbackRole = CurrentRoleFromResume(experience);
+        var currentDesignation = string.IsNullOrWhiteSpace(facts.CurrentTitle) ? fallbackRole.Designation : facts.CurrentTitle;
+        var currentCompany = string.IsNullOrWhiteSpace(facts.CurrentCompany) ? fallbackRole.Company : facts.CurrentCompany;
+        var highestQualification = string.IsNullOrWhiteSpace(facts.HighestQualification)
+            ? FirstResumeLine(education).Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? ""
+            : facts.HighestQualification;
         var values = new List<PublicFormValue>();
         foreach (var field in fields.GroupBy(row => row.FieldId).Select(group => group.First()))
         {
@@ -1663,11 +1667,12 @@ WHERE submission.Id=@SubmissionId", new { SubmissionId = submissionId })).ToList
                 case "LAST_NAME": value.TextValue = lastName; break;
                 case "EMAIL": value.TextValue = facts.Email; break;
                 case "PHONE": value.TextValue = facts.Phone; break;
-                case "CURRENT_LOCATION": value.TextValue = facts.ResidentialAddress; break;
+                case "CURRENT_LOCATION": value.TextValue = string.IsNullOrWhiteSpace(facts.CurrentLocation) ? facts.ResidentialAddress : facts.CurrentLocation; break;
                 case "CURRENT_DESIGNATION": value.TextValue = currentDesignation; break;
                 case "CURRENT_COMPANY": value.TextValue = currentCompany; break;
                 case "HIGHEST_QUALIFICATION": value.TextValue = highestQualification; break;
-                case "CERTIFICATIONS": value.TextValue = ResumeSectionText(certifications, 2000); break;
+                case "CERTIFICATIONS": value.TextValue = facts.Certifications.Count > 0 ? ResumeSectionText(string.Join('\n', facts.Certifications), 2000) : ResumeSectionText(certifications, 2000); break;
+                case "SKILLS" or "TECHNICAL_SKILLS": value.TextValue = ResumeSectionText(string.Join(", ", facts.Skills), 2000); break;
                 case "TOTAL_EXPERIENCE_MONTHS" when facts.TotalExperienceMonths.HasValue:
                     value.IntegerValue = facts.TotalExperienceMonths.Value; break;
                 case "TOTAL_EXPERIENCE_YEARS" when facts.TotalExperienceMonths.HasValue:

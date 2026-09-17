@@ -122,6 +122,11 @@ const uploadRecruitmentResumeBatch = (request: { clientId?: number; positionId?:
     body.append('draftPhone', request.draft.phone)
     body.append('draftAddress', request.draft.address)
     body.append('draftTotalExperienceMonths', String(request.draft.totalExperienceMonths || 0))
+    body.append('draftCurrentCompany', request.draft.currentCompany)
+    body.append('draftCurrentTitle', request.draft.currentTitle)
+    body.append('draftHighestQualification', request.draft.highestQualification)
+    body.append('draftSkills', request.draft.skills.join('\n'))
+    body.append('draftCertifications', request.draft.certifications.join('\n'))
   }
   request.files.forEach(file => body.append('files', file, file.name))
   return postFormWithProgress<RecruitmentResumeIntakeResult>('/api/recruitment/resume-intake', body, { totalFiles: 0, imported: 0, needsReview: 0, items: [] }, onProgress, 600000)
