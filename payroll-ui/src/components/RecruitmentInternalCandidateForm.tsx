@@ -85,6 +85,8 @@ export default function RecruitmentInternalCandidateForm({ open, clientId, initi
       const response = await uploadPublicApplicationFile(token, field.id, file, metadata, onProgress)
       if (!response.ok || !response.data) return { ok: false, error: response.error || 'Upload failed.' }
       setFiles(current => [...current, response.data!])
+      if (response.data.suggestedValues?.length)
+        setValues(current => mergeSuggestedValues(current, response.data!.suggestedValues!))
       return { ok: true }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : 'Upload failed.' }
@@ -146,4 +148,14 @@ function semanticText(form: DynamicFormVersion, values: PublicFormValue[], seman
 function mergeInitialValues(current: PublicFormValue[], initial: PublicFormValue[]) {
   const ids = new Set(current.map(row => row.fieldId))
   return [...current, ...initial.filter(row => !ids.has(row.fieldId))]
+}
+
+function mergeSuggestedValues(current: PublicFormValue[], suggestions: PublicFormValue[]) {
+  const values = new Map(current.map(row => [row.fieldId, row]))
+  for (const suggestion of suggestions) {
+    const existing = values.get(suggestion.fieldId)
+    if (!existing?.textValue?.trim() && existing?.integerValue == null && existing?.decimalValue == null)
+      values.set(suggestion.fieldId, suggestion)
+  }
+  return [...values.values()]
 }

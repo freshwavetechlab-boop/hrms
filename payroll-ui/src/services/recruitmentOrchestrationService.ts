@@ -1,4 +1,4 @@
-import { apiRequest, apiUrl, deleteJson, getJson, postFormWithProgress, postJson, putJson, readError } from './apiClient'
+import { apiRequest, apiUrl, deleteJson, getJson, getJsonResult, postFormWithProgress, postJson, putJson, readError } from './apiClient'
 export { normalizePublicCareerUrl } from './publicCareerUrl'
 import type {
   CandidateActionDecision,
@@ -204,6 +204,9 @@ export const getRecruitmentPositionPipelineAssignment = (positionId: number) =>
 export const getPublicCareerJob = (slug: string) =>
   getJson<PublicRecruitmentJob | null>(`${publicBase}/jobs/${encodeURIComponent(slug)}`, null)
 
+export const getPublicCareerJobResult = (slug: string) =>
+  getJsonResult<PublicRecruitmentJob | null>(`${publicBase}/jobs/${encodeURIComponent(slug)}`, null, { toast: false, loader: false })
+
 export const requestPublicApplicationVerification = (slug: string, email: string, phone: string) =>
   postJson(`${publicBase}/jobs/${encodeURIComponent(slug)}/verification`, { email, phone, consentAccepted: true }, null as PublicApplicationVerification | null, { toast: false, loader: false })
 
@@ -223,8 +226,14 @@ export const uploadPublicApplicationFile = (token: string, fieldId: number, file
   return postFormWithProgress<PublicUploadedFile>(`${publicBase}/sessions/${encodeURIComponent(token)}/files/${fieldId}`, body, null as unknown as PublicUploadedFile, onProgress)
 }
 
+export const fetchPublicApplicationFile = (token: string, fieldId: number, publicId: string) =>
+  apiRequest(`${publicBase}/sessions/${encodeURIComponent(token)}/files/${fieldId}/${encodeURIComponent(publicId)}/content`, { loader: false })
+
+export const deletePublicApplicationFile = (token: string, fieldId: number, publicId: string) =>
+  deleteJson(`${publicBase}/sessions/${encodeURIComponent(token)}/files/${fieldId}/${encodeURIComponent(publicId)}`, null, { toast: false, loader: false })
+
 export const submitPublicApplication = (token: string) =>
-  postJson(`${publicBase}/sessions/${encodeURIComponent(token)}/submit`, {}, null as { applicationCode: string; message: string } | null, { toast: false, loader: false })
+  postJson(`${publicBase}/sessions/${encodeURIComponent(token)}/submit`, {}, null as { applicationCode: string; message: string; status?: string } | null, { toast: false, loader: false })
 
 export const getPublicCandidateAction = async (token: string) => {
   const row = await getJson<PublicCandidateActionContext | null>(`${publicBase}/actions/${encodeURIComponent(token)}`, null)

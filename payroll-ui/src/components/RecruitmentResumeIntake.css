@@ -155,6 +155,14 @@
   margin-top: 18px;
 }
 
+.resume-intake-submit-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .resume-force-upload {
   align-items: flex-start;
   background: #f8fafc;
@@ -192,6 +200,101 @@
   box-shadow: 0 8px 16px rgb(92 70 232 / 20%);
   font-weight: 750;
   min-width: 172px;
+}
+
+.resume-intake-drafts {
+  border: 1px solid #dcd7ff;
+  border-radius: 14px;
+  box-shadow: 0 7px 24px rgb(31 42 72 / 5%);
+}
+
+.resume-intake-drafts .ant-alert {
+  margin-bottom: 14px;
+}
+
+.resume-draft-list {
+  display: grid;
+  gap: 10px;
+}
+
+.resume-draft-row {
+  align-items: center;
+  background: #fbfbff;
+  border: 1px solid #e6e4f4;
+  border-radius: 10px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(180px, 1fr) minmax(180px, .9fr) auto;
+  padding: 12px;
+}
+
+.resume-draft-file,
+.resume-draft-person,
+.resume-draft-outcome {
+  display: flex;
+  min-width: 0;
+}
+
+.resume-draft-file {
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.resume-draft-file > .anticon {
+  color: #5f43e9;
+  font-size: 18px;
+  margin-top: 2px;
+}
+
+.resume-draft-file div,
+.resume-draft-person,
+.resume-draft-outcome {
+  flex-direction: column;
+  gap: 3px;
+}
+
+.resume-draft-file strong,
+.resume-draft-file span,
+.resume-draft-person strong,
+.resume-draft-person span,
+.resume-draft-outcome span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resume-draft-file span,
+.resume-draft-person span,
+.resume-draft-outcome span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.resume-draft-form .ant-input-number {
+  width: 100%;
+}
+
+@media (max-width: 860px) {
+  .resume-draft-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .resume-draft-person,
+  .resume-draft-outcome {
+    grid-column: 1;
+  }
+}
+
+@media (max-width: 560px) {
+  .resume-intake-submit-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .resume-intake-submit-actions,
+  .resume-intake-submit-actions .ant-btn {
+    width: 100%;
+  }
 }
 
 .resume-intake-progress {

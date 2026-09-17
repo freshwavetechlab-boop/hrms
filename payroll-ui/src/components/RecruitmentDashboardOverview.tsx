@@ -124,7 +124,7 @@ function groupCount<T>(rows: T[], readLabel: (row: T) => string | null | undefin
 }
 
 function applicationSource(row: RecruitmentCandidateApplication) {
-  if (row.jobPostingId) return 'Published job link'
+  if (includesAny(row.sourceType, ['public job', 'career'])) return 'Published job link'
   if (includesAny(row.sourceType, ['referral'])) return 'Referral'
   if (includesAny(row.sourceType, ['vendor', 'consultant'])) return 'Vendor / consultant'
   if (includesAny(row.sourceType, ['upload', 'manual', 'resume'])) return 'Manual resume upload'

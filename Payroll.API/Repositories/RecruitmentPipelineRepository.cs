@@ -1521,6 +1521,22 @@ WHERE (@ClientId IS NULL OR positionRow.ClientId=@ClientId)
 ORDER BY requisition.RequestDate DESC,positionRow.Id DESC",
             new { ClientId = effectiveClientId, PositionId = positionId is > 0 ? positionId : null, JobPostingId = jobPostingId is > 0 ? jobPostingId : null })).ToList();
         demandCards.AddRange(directRequestCards);
+        // One approved position/requisition is one hiring demand. Older databases can
+        // retain a placeholder work-order line after the real request is linked, which
+        // otherwise renders the same vacancy twice. Preserve the original active case
+        // so the work-order SLA anchor is never reset by the duplicate.
+        demandCards = demandCards
+            .GroupBy(card => card.PositionId is > 0
+                ? $"position:{card.PositionId.Value}"
+                : card.RequisitionId is > 0
+                    ? $"request:{card.RequisitionId.Value}"
+                    : $"line:{card.WorkOrderLineId}")
+            .Select(group => group
+                .OrderByDescending(card => card.Status.Equals("Active", StringComparison.OrdinalIgnoreCase))
+                .ThenBy(card => card.EnteredAtUtc ?? DateTime.MaxValue)
+                .ThenBy(card => card.HiringCaseId ?? long.MaxValue)
+                .First())
+            .ToList();
 
         var assignedTargets = (await db.QueryAsync<WorkspaceAssignmentRow>(@"SELECT DISTINCT positionRow.Id PositionId,positionRow.ClientId,assignment.PipelineVersionId
 FROM recruitment_open_positions positionRow

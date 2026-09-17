@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Alert, Button, Card, Col, Descriptions, Drawer, Empty, Form, Progress, Radio, Row,
+  Alert, Button, Card, Col, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Progress, Radio, Row,
   Select, Statistic, Switch, Tag, Typography, Upload,
 } from 'antd'
 import type { UploadFile, UploadProps } from 'antd'
-import { FileSearchOutlined, InboxOutlined } from '@ant-design/icons'
+import { EditOutlined, FileSearchOutlined, InboxOutlined } from '@ant-design/icons'
 import DataTable from './DataTable'
 import { getClients } from '../services/payrollService'
 import { getRecruitmentOpenPositions } from '../services/recruitmentService'
 import { getRecruitmentJobDescriptions, getRecruitmentJobPostings } from '../services/recruitmentOrchestrationService'
-import { intakeRecruitmentResumes, type RecruitmentResumeUploadProgress } from '../services/recruitmentTalentService'
+import { intakeRecruitmentResumes, previewRecruitmentResume, type RecruitmentResumeReviewedDraft, type RecruitmentResumeUploadProgress } from '../services/recruitmentTalentService'
 import type { Client, RecruitmentOpenPosition, RecruitmentResumeIntakeItem, RecruitmentResumeIntakeResult } from '../types/payroll'
 import type { RecruitmentJobDescriptionVersion, RecruitmentJobPosting } from '../types/recruitmentOrchestration'
 import { useToast } from './ToastProvider'
@@ -36,6 +36,7 @@ type Props = {
   description?: string
   allowBulk?: boolean
   submitLabel?: string
+  onEditCandidate?: (candidateId: number) => void | Promise<void>
 }
 
 const acceptedResumeTypes = '.pdf,.docx,.rtf,.txt'
@@ -60,6 +61,7 @@ export default function RecruitmentResumeIntake({
   description,
   allowBulk = true,
   submitLabel,
+  onEditCandidate,
 }: Props) {
   const notify = useToast()
   const [mode, setMode] = useState<RecruitmentResumeIntakeMode>(initialMode)
@@ -75,6 +77,10 @@ export default function RecruitmentResumeIntake({
   const [fileList, setFileList] = useState<UploadFile[]>([])
   const [loadingContext, setLoadingContext] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [previewing, setPreviewing] = useState(false)
+  const [drafts, setDrafts] = useState<RecruitmentResumeReviewedDraft[]>([])
+  const [editingDraftIndex, setEditingDraftIndex] = useState<number | null>(null)
+  const [editingDraft, setEditingDraft] = useState<RecruitmentResumeReviewedDraft | null>(null)
   const [progress, setProgress] = useState(0)
   const [progressDetail, setProgressDetail] = useState<RecruitmentResumeUploadProgress | null>(null)
   const [result, setResult] = useState<RecruitmentResumeIntakeResult | null>(null)
@@ -96,20 +102,24 @@ export default function RecruitmentResumeIntake({
     setProgress(0)
     setProgressDetail(null)
     setResult(null)
+    setDrafts([])
+    setEditingDraftIndex(null)
+    setEditingDraft(null)
   }, [open, initialClientId, initialPositionId, initialJobPostingId])
 
   useEffect(() => {
     setMode(initialMode)
     if (initialMode === 'single') setFileList(current => current.slice(0, 1))
+    setDrafts([])
   }, [initialMode])
-  useEffect(() => { onPendingChange?.(Boolean(fileList.length && !result) || uploading) }, [fileList.length, result, uploading, onPendingChange])
-  useEffect(() => { onBusyChange?.(uploading) }, [uploading, onBusyChange])
+  useEffect(() => { onPendingChange?.(Boolean(fileList.length && !result) || uploading || previewing) }, [fileList.length, result, uploading, previewing, onPendingChange])
+  useEffect(() => { onBusyChange?.(uploading || previewing) }, [uploading, previewing, onBusyChange])
   useEffect(() => () => { onPendingChange?.(false); onBusyChange?.(false) }, [onPendingChange, onBusyChange])
 
   useEffect(() => {
     if (!open) return
     if (talentPoolOnly) {
-      setClientId(0); setPositionId(0); setJobPostingId(null); setJobDescriptionId(null); setDescriptions([]); setResult(null)
+      setClientId(0); setPositionId(0); setJobPostingId(null); setJobDescriptionId(null); setDescriptions([]); setResult(null); setDrafts([])
       return
     }
     let active = true
@@ -180,6 +190,8 @@ export default function RecruitmentResumeIntake({
   const parsingDisabled = selectedPosting?.enableResumeParsing === false
   const selectedDescription = descriptions.find(row => row.id === jobDescriptionId)
   const selectedFiles = useMemo<File[]>(() => fileList.flatMap(row => row.originFileObj ? [row.originFileObj as File] : []), [fileList])
+  const busy = uploading || previewing
+  const draftsReady = drafts.length > 0 && drafts.length === selectedFiles.length && drafts.every((draft, index) => draft.file === selectedFiles[index])
 
   const clientOptions = clients.map(row => ({ value: row.id, label: `${row.code || 'CLIENT'} - ${row.name}` }))
   const positionOptions = availablePositions.map(row => ({
@@ -196,6 +208,7 @@ export default function RecruitmentResumeIntake({
     setMode(nextMode)
     setFileList(current => nextMode === 'single' ? current.slice(0, 1) : current)
     setResult(null)
+    setDrafts([])
   }
   const changeClient = (value: number) => {
     setClientId(value)
@@ -204,6 +217,7 @@ export default function RecruitmentResumeIntake({
     setJobDescriptionId(null)
     setDescriptions([])
     setResult(null)
+    setDrafts([])
   }
   const changePosition = (value: number) => {
     setPositionId(value)
@@ -212,6 +226,7 @@ export default function RecruitmentResumeIntake({
     setJobPostingId(null)
     setJobDescriptionId(null)
     setResult(null)
+    setDrafts([])
   }
   const changePosting = (value: number) => {
     const nextId = value || null
@@ -222,6 +237,7 @@ export default function RecruitmentResumeIntake({
       setJobDescriptionId(posting.jobDescriptionVersionId || null)
     }
     setResult(null)
+    setDrafts([])
   }
 
   const uploadProps: UploadProps = {
@@ -236,46 +252,102 @@ export default function RecruitmentResumeIntake({
         .slice(0, mode === 'single' ? 1 : 50)
       setFileList(next)
       setResult(null)
+      setDrafts([])
     },
-    onRemove: file => { setFileList(current => current.filter(row => row.uid !== file.uid)); return true },
-    disabled: uploading,
+    onRemove: file => { setFileList(current => current.filter(row => row.uid !== file.uid)); setDrafts([]); return true },
+    disabled: busy,
+  }
+
+  const validateSelection = () => {
+    if (!talentPoolOnly && !clientId) { notify('Select a client.', 'error'); return false }
+    if (!talentPoolOnly && (!selectedPosition || selectedPosition.clientId !== clientId)) { notify('Select a job position for this client.', 'error'); return false }
+    if (loadingContext || resolvingPostings || resolvingDescription || busy) return false
+    if (!selectedFiles.length) { notify(`Select ${mode === 'single' ? 'a resume' : 'one or more resumes'}.`, 'error'); return false }
+    return true
+  }
+
+  const preview = async () => {
+    if (!validateSelection()) return
+    setPreviewing(true)
+    setProgress(0)
+    setProgressDetail(null)
+    setDrafts([])
+    setResult(null)
+    const nextDrafts: RecruitmentResumeReviewedDraft[] = []
+    try {
+      for (let index = 0; index < selectedFiles.length; index++) {
+        const file = selectedFiles[index]
+        setProgress(Math.round(index / selectedFiles.length * 100))
+        const response = await previewRecruitmentResume({ clientId, positionId, jobPostingId, talentPoolOnly, enableParsing: !parsingDisabled, file })
+        if (!response.ok) {
+          notify(`${file.name}: ${response.error || 'Preview could not be prepared.'}`, 'error')
+          setDrafts([])
+          return
+        }
+        nextDrafts.push({ ...response.data, file })
+        setDrafts([...nextDrafts])
+        setProgress(Math.round((index + 1) / selectedFiles.length * 100))
+      }
+      notify(`${nextDrafts.length} resume draft(s) ready. Review them, then use Final upload.`, 'success')
+    } finally {
+      setPreviewing(false)
+    }
   }
 
   const submit = async () => {
-    if (!talentPoolOnly && !clientId) return notify('Select a client.', 'error')
-    if (!talentPoolOnly && (!selectedPosition || selectedPosition.clientId !== clientId)) return notify('Select a job position for this client.', 'error')
-    if (loadingContext || resolvingPostings || resolvingDescription || uploading) return
-    if (!selectedFiles.length) return notify(`Select ${mode === 'single' ? 'a resume' : 'one or more resumes'}.`, 'error')
+    if (!validateSelection()) return
+    if (!draftsReady) return notify('Run Preview & parse before final upload.', 'error')
+    if (drafts.some(draft => !draft.firstName.trim())) return notify('First name is required for every candidate draft.', 'error')
     setUploading(true)
     setProgress(0)
     setProgressDetail({ percent: 0, completedFiles: 0, totalFiles: selectedFiles.length, activeFrom: 1, activeTo: Math.min(1, selectedFiles.length), phase: 'uploading' })
     setResult(null)
     try {
-      const response = await intakeRecruitmentResumes({ clientId, positionId, jobPostingId, talentPoolOnly, forceUpload: forceUpload || parsingDisabled, deferAtsScoring: mode === 'bulk', sourceType, files: selectedFiles }, detail => { setProgress(detail.percent); setProgressDetail(detail) })
+      const response = await intakeRecruitmentResumes({ clientId, positionId, jobPostingId, talentPoolOnly, forceUpload: forceUpload || parsingDisabled, deferAtsScoring: mode === 'bulk', sourceType, files: selectedFiles, drafts }, detail => { setProgress(detail.percent); setProgressDetail(detail) })
       if (!response.ok) return
       setProgress(100)
       setResult(response.data)
       if (response.data.needsReview) notify(`${response.data.imported} resume(s) imported; ${response.data.needsReview} need review.`, 'warning')
-      else notify(talentPoolOnly ? `${response.data.imported} resume(s) added to the global Talent Pool.` : `${response.data.imported} resume(s) uploaded and screened.`, 'success')
+      else notify(talentPoolOnly ? `${response.data.imported} resume(s) added to the global Talent Pool.` : `${response.data.imported} resume(s) imported. ATS will run automatically when enabled.`, 'success')
       await onCompleted?.(response.data)
     } finally { setUploading(false) }
   }
 
+  const openDraftEditor = (index: number) => {
+    setEditingDraftIndex(index)
+    setEditingDraft({ ...drafts[index] })
+  }
+
+  const saveDraftEditor = () => {
+    if (editingDraftIndex == null || !editingDraft) return
+    if (!editingDraft.firstName.trim()) return notify('Candidate first name is required.', 'error')
+    setDrafts(current => current.map((draft, index) => index === editingDraftIndex ? {
+      ...editingDraft,
+      firstName: editingDraft.firstName.trim(),
+      lastName: editingDraft.lastName.trim(),
+      email: editingDraft.email.trim(),
+      phone: editingDraft.phone.trim(),
+      address: editingDraft.address.trim(),
+    } : draft))
+    setEditingDraftIndex(null)
+    setEditingDraft(null)
+  }
+
   const content = <div className="resume-intake-shell">
-      {allowBulk && <Radio.Group className="resume-intake-mode" value={mode} onChange={event => changeMode(event.target.value)} buttonStyle="solid" disabled={uploading}>
+      {allowBulk && <Radio.Group className="resume-intake-mode" value={mode} onChange={event => changeMode(event.target.value)} buttonStyle="solid" disabled={busy}>
         <Radio.Button data-testid="resume-intake-single" value="single">Single resume</Radio.Button>
         <Radio.Button data-testid="resume-intake-bulk" value="bulk">Bulk resumes</Radio.Button>
       </Radio.Group>}
 
-      <Card size="small" className="resume-intake-context" title={talentPoolOnly ? 'Resume source' : 'Job context'} extra={!talentPoolOnly && selectedPosition && !contextExpanded ? <Button size="small" onClick={() => onChangeJob ? onChangeJob() : setContextExpanded(true)} disabled={uploading}>Change job</Button> : null}>
+      <Card size="small" className="resume-intake-context" title={talentPoolOnly ? 'Resume source' : 'Job context'} extra={!talentPoolOnly && selectedPosition && !contextExpanded ? <Button size="small" onClick={() => onChangeJob ? onChangeJob() : setContextExpanded(true)} disabled={busy}>Change job</Button> : null}>
         <Form layout="vertical">
           <Row gutter={[16, 0]}>
-            {!talentPoolOnly && (contextExpanded || !selectedPosition) && <><Col xs={24} md={12}><Form.Item label="Client" required><Select data-testid="resume-intake-client" loading={loadingContext} disabled={uploading} showSearch optionFilterProp="label" value={clientId || undefined} placeholder="Select client" options={clientOptions} onChange={changeClient} /></Form.Item></Col>
-              <Col xs={24} md={12}><Form.Item label="Open position" required><Select data-testid="resume-intake-position" disabled={!clientId || uploading} showSearch optionFilterProp="label" value={positionId || undefined} placeholder="Select approved position" options={positionOptions} onChange={changePosition} /></Form.Item></Col>
-              <Col xs={24} md={12}><Form.Item label="Job posting"><Select data-testid="resume-intake-posting" disabled={!positionId || uploading} showSearch optionFilterProp="label" value={jobPostingId || 0} options={postingOptions} onChange={changePosting} /></Form.Item></Col>
+            {!talentPoolOnly && (contextExpanded || !selectedPosition) && <><Col xs={24} md={12}><Form.Item label="Client" required><Select data-testid="resume-intake-client" loading={loadingContext} disabled={busy} showSearch optionFilterProp="label" value={clientId || undefined} placeholder="Select client" options={clientOptions} onChange={changeClient} /></Form.Item></Col>
+              <Col xs={24} md={12}><Form.Item label="Open position" required><Select data-testid="resume-intake-position" disabled={!clientId || busy} showSearch optionFilterProp="label" value={positionId || undefined} placeholder="Select approved position" options={positionOptions} onChange={changePosition} /></Form.Item></Col>
+              <Col xs={24} md={12}><Form.Item label="Job posting"><Select data-testid="resume-intake-posting" disabled={!positionId || busy} showSearch optionFilterProp="label" value={jobPostingId || 0} options={postingOptions} onChange={changePosting} /></Form.Item></Col>
               <Col xs={24} md={12}><Form.Item label="Job description used for ATS"><Select data-testid="resume-intake-jd" disabled value={jobDescriptionId || undefined} placeholder={positionId ? 'Approved job requirements' : 'Select a position first'} options={descriptionOptions} /></Form.Item></Col></>}
-            {!talentPoolOnly && !contextExpanded && selectedPosition && (availablePostings.length > 0 || selectedPosting) && <Col xs={24} md={12}><Form.Item label="Job posting" extra="Use the approved job requirements or choose a posting-specific JD."><Select data-testid="resume-intake-posting" disabled={uploading || resolvingPostings} showSearch optionFilterProp="label" value={jobPostingId || 0} options={postingOptions} onChange={changePosting} /></Form.Item></Col>}
-            <Col xs={24} md={talentPoolOnly ? 24 : 12}><Form.Item label="Candidate source" required><Select data-testid="resume-intake-source" disabled={uploading} value={sourceType} options={sourceOptions} onChange={setSourceType} /></Form.Item></Col>
+            {!talentPoolOnly && !contextExpanded && selectedPosition && (availablePostings.length > 0 || selectedPosting) && <Col xs={24} md={12}><Form.Item label="Job posting" extra="Use the approved job requirements or choose a posting-specific JD."><Select data-testid="resume-intake-posting" disabled={busy || resolvingPostings} showSearch optionFilterProp="label" value={jobPostingId || 0} options={postingOptions} onChange={changePosting} /></Form.Item></Col>}
+            <Col xs={24} md={talentPoolOnly ? 24 : 12}><Form.Item label="Candidate source" required><Select data-testid="resume-intake-source" disabled={busy} value={sourceType} options={sourceOptions} onChange={value => { setSourceType(value); setDrafts([]) }} /></Form.Item></Col>
           </Row>
         </Form>
         {!talentPoolOnly && selectedPosition && <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 4 }} className="resume-job-summary">
@@ -296,13 +368,21 @@ export default function RecruitmentResumeIntake({
           </Upload.Dragger>
         </div>
         <div className={`resume-force-upload${forceUpload || parsingDisabled ? ' is-active' : ''}`}>
-          <Switch data-testid="resume-force-upload" checked={forceUpload || parsingDisabled} disabled={uploading || parsingDisabled} onChange={setForceUpload} />
+          <Switch data-testid="resume-force-upload" checked={forceUpload || parsingDisabled} disabled={busy || parsingDisabled} onChange={setForceUpload} />
           <div><strong>{parsingDisabled ? 'Manual-review upload enabled' : 'Force upload if details cannot be read'}</strong><span>{parsingDisabled ? 'Parsing is off, so every selected resume is retained and can be completed from the candidate card.' : 'The resume will be retained for manual review and ATS will wait until the candidate details are completed.'}</span></div>
         </div>
         <div className="resume-intake-submit-row">
-          <Typography.Text type="secondary">{selectedFiles.length ? `${selectedFiles.length} file(s) ready` : 'No files selected'}</Typography.Text>
-          <Button data-testid="resume-intake-submit" type="primary" size="large" icon={<FileSearchOutlined />} loading={uploading} disabled={loadingContext || resolvingPostings || resolvingDescription || (!talentPoolOnly && (!selectedPosition || selectedPosition.clientId !== clientId)) || !selectedFiles.length} onClick={() => void submit()}>{submitLabel || (talentPoolOnly ? 'Add to Talent Pool' : 'Upload & screen')}</Button>
+          <Typography.Text type="secondary">{draftsReady ? `${drafts.length} draft(s) ready for review` : selectedFiles.length ? `${selectedFiles.length} file(s) selected` : 'No files selected'}</Typography.Text>
+          <div className="resume-intake-submit-actions">
+            <Button data-testid="resume-intake-preview" size="large" icon={<FileSearchOutlined />} loading={previewing} disabled={uploading || loadingContext || resolvingPostings || resolvingDescription || (!talentPoolOnly && (!selectedPosition || selectedPosition.clientId !== clientId)) || !selectedFiles.length} onClick={() => void preview()}>{draftsReady ? 'Parse again' : 'Preview & parse'}</Button>
+            {draftsReady && <Button data-testid="resume-intake-submit" type="primary" size="large" loading={uploading} disabled={previewing} onClick={() => void submit()}>{talentPoolOnly ? 'Final upload to Talent Pool' : (submitLabel || 'Final upload')}</Button>}
+          </div>
         </div>
+        {previewing && <div className="resume-intake-progress" aria-live="polite">
+          <div className="resume-progress-heading"><strong>Preparing editable drafts — nothing is being saved</strong><b>{progress}%</b></div>
+          <Progress percent={progress} status="active" showInfo={false} />
+          <div className="resume-progress-meta"><span>Parsing {selectedFiles.length} selected file(s)</span><span>No database or file-storage write</span></div>
+        </div>}
         {uploading && <div className="resume-intake-progress" aria-live="polite">
           <div className="resume-progress-heading"><strong>{progressMessage(progressDetail)}</strong><b>{progress}%</b></div>
           <Progress percent={progress} status="active" showInfo={false} />
@@ -310,22 +390,57 @@ export default function RecruitmentResumeIntake({
         </div>}
       </Card>
 
+      {drafts.length > 0 && <Card size="small" className="resume-intake-drafts" title="Review parsed candidate drafts">
+        <Alert type="info" showIcon message="Draft only — nothing has been saved yet" description="Review or edit the parsed information. Candidate, application and resume storage records are created only when you click Final upload." />
+        <div className="resume-draft-list" data-testid="resume-intake-drafts">
+          {drafts.map((draft, index) => <div className="resume-draft-row" key={`${draft.file.name}-${draft.file.lastModified}-${index}`}>
+            <div className="resume-draft-file"><FileSearchOutlined /><div><strong>{draft.fileName}</strong><span>{draft.parsingStatus}{draft.parsingError ? ` · ${draft.parsingError}` : ''}</span></div></div>
+            <div className="resume-draft-person"><strong>{`${draft.firstName} ${draft.lastName}`.trim() || 'Candidate name required'}</strong><span>{draft.email || 'No email'} · {draft.phone || 'No phone'}</span></div>
+            <div className="resume-draft-outcome">
+              {draft.existingApplicationId ? <Tag color="blue">Already registered · resume update</Tag> : draft.existingCandidateId ? <Tag color="cyan">Existing profile · new application</Tag> : <Tag color="green">New candidate</Tag>}
+              {draft.existingCandidateCode && <span>{draft.existingCandidateCode}</span>}
+            </div>
+            <Button data-testid={`resume-draft-edit-${index}`} icon={<EditOutlined />} onClick={() => openDraftEditor(index)}>Edit</Button>
+          </div>)}
+        </div>
+      </Card>}
+
       <div data-testid="resume-intake-results">
-        {result && <ResumeIntakeResults result={result} talentPoolOnly={talentPoolOnly} />}
+        {result && <ResumeIntakeResults result={result} talentPoolOnly={talentPoolOnly} onEditCandidate={onEditCandidate} />}
       </div>
+      <Modal
+        open={editingDraftIndex != null && Boolean(editingDraft)}
+        title="Edit candidate draft"
+        okText="Save draft"
+        okButtonProps={{ id: 'resume-draft-save' }}
+        onOk={saveDraftEditor}
+        onCancel={() => { setEditingDraftIndex(null); setEditingDraft(null) }}
+        destroyOnClose
+      >
+        {editingDraft && <Form layout="vertical" className="resume-draft-form">
+          <Row gutter={12}>
+            <Col span={12}><Form.Item label="First name" required><Input data-testid="resume-draft-first-name" value={editingDraft.firstName} onChange={event => setEditingDraft({ ...editingDraft, firstName: event.target.value })} /></Form.Item></Col>
+            <Col span={12}><Form.Item label="Last name"><Input data-testid="resume-draft-last-name" value={editingDraft.lastName} onChange={event => setEditingDraft({ ...editingDraft, lastName: event.target.value })} /></Form.Item></Col>
+            <Col span={12}><Form.Item label="Email"><Input data-testid="resume-draft-email" value={editingDraft.email} onChange={event => setEditingDraft({ ...editingDraft, email: event.target.value })} /></Form.Item></Col>
+            <Col span={12}><Form.Item label="Phone"><Input data-testid="resume-draft-phone" value={editingDraft.phone} onChange={event => setEditingDraft({ ...editingDraft, phone: event.target.value })} /></Form.Item></Col>
+            <Col span={24}><Form.Item label="Current location / address"><Input data-testid="resume-draft-address" value={editingDraft.address} onChange={event => setEditingDraft({ ...editingDraft, address: event.target.value })} /></Form.Item></Col>
+            <Col span={24}><Form.Item label="Total experience (months)"><InputNumber data-testid="resume-draft-experience" min={0} max={1200} value={editingDraft.totalExperienceMonths} onChange={value => setEditingDraft({ ...editingDraft, totalExperienceMonths: Number(value || 0) })} /></Form.Item></Col>
+          </Row>
+        </Form>}
+      </Modal>
     </div>
 
   return embedded ? <section className="resume-intake-embedded">{content}</section> : <Drawer
     open={open}
     onClose={onClose}
-    maskClosable={!uploading}
-    keyboard={!uploading}
-    closable={!uploading}
+    maskClosable={!busy}
+    keyboard={!busy}
+    closable={!busy}
     width="min(1040px, 96vw)"
     destroyOnClose
     className="resume-intake-drawer"
-    title={<div className="resume-intake-title"><FileSearchOutlined /><div><strong>{title || (talentPoolOnly ? 'Global Talent Pool intake' : 'Resume intake & ATS screening')}</strong><span>{description || (talentPoolOnly ? 'Store and parse resumes now; match them against an approved job description whenever the role is ready.' : 'Upload once to create or match the candidate, attach the secure resume, create the application and calculate its ATS score.')}</span></div></div>}
-    extra={<Button onClick={onClose} disabled={uploading}>Close</Button>}
+    title={<div className="resume-intake-title"><FileSearchOutlined /><div><strong>{title || (talentPoolOnly ? 'Global Talent Pool intake' : 'Resume intake & ATS screening')}</strong><span>{description || (talentPoolOnly ? 'Preview and edit parsed details first; Final upload stores the resume in the Talent Pool.' : 'Preview and edit parsed candidate details first. Final upload creates the candidate/application and stores the resume.')}</span></div></div>}
+    extra={<Button onClick={onClose} disabled={busy}>Close</Button>}
   >
     {content}
   </Drawer>
@@ -338,16 +453,16 @@ function progressMessage(progress: RecruitmentResumeUploadProgress | null) {
   return progress.phase === 'processing' ? `Processing ${range} of ${progress.totalFiles}` : `Uploading ${range} of ${progress.totalFiles}`
 }
 
-function ResumeIntakeResults({ result, talentPoolOnly = false }: { result: RecruitmentResumeIntakeResult; talentPoolOnly?: boolean }) {
+function ResumeIntakeResults({ result, talentPoolOnly = false, onEditCandidate }: { result: RecruitmentResumeIntakeResult; talentPoolOnly?: boolean; onEditCandidate?: (candidateId: number) => void | Promise<void> }) {
   const reviewRows = result.items.filter(row => !row.success || Boolean(row.error?.trim()))
   const reviewNotes = [...new Set(reviewRows.map(row => row.error?.trim()).filter((note): note is string => Boolean(note)))]
   const reviewedWithContact = reviewRows.filter(row => Boolean(row.detectedEmail?.trim() || row.detectedPhone?.trim() || row.candidate?.email?.trim() || row.candidate?.phone?.trim())).length
   const needsReview = (row: RecruitmentResumeIntakeItem) => !row.success || Boolean(row.error?.trim())
 
-  return <Card size="small" className="resume-intake-results" title="Screening results">
+  return <Card size="small" className="resume-intake-results" title="Import results">
     <div className="resume-result-metrics">
       <Statistic title="Files" value={result.totalFiles} />
-      <Statistic title={talentPoolOnly ? 'Added to Talent Pool' : 'Imported & screened'} value={result.imported} valueStyle={{ color: '#15803d' }} />
+      <Statistic title={talentPoolOnly ? 'Added to Talent Pool' : 'Imported'} value={result.imported} valueStyle={{ color: '#15803d' }} />
       <Statistic title="Needs review" value={result.needsReview} valueStyle={{ color: result.needsReview ? '#b45309' : '#64748b' }} />
     </div>
     {result.items.length ? <DataTable<RecruitmentResumeIntakeItem>
@@ -356,8 +471,9 @@ function ResumeIntakeResults({ result, talentPoolOnly = false }: { result: Recru
       exportFileName="resume-screening-results"
       emptyText="No resume results were returned."
       rowClassName={row => needsReview(row) ? 'resume-result-review' : 'resume-result-success'}
+      actions={row => row.candidate && onEditCandidate ? <Button size="small" icon={<EditOutlined />} onClick={() => void onEditCandidate(row.candidate!.id)}>Edit candidate</Button> : null}
       columns={[
-        { key: 'outcome', label: 'Outcome', width: '145px', render: row => needsReview(row) ? <Tag color="orange">{row.forceUploaded ? 'Forced · review' : row.success ? 'Imported · review' : 'Needs review'}</Tag> : <Tag color="green">{talentPoolOnly ? 'Stored' : 'Screened'}</Tag>, exportValue: row => needsReview(row) ? (row.forceUploaded ? 'Forced - review' : row.success ? 'Imported - review' : 'Needs review') : (talentPoolOnly ? 'Stored' : 'Screened') },
+        { key: 'outcome', label: 'Outcome', width: '210px', render: row => needsReview(row) ? <Tag color="orange">{row.forceUploaded ? 'Forced · review' : row.success ? 'Imported · review' : 'Needs review'}</Tag> : row.applicationReused ? <Tag color="blue" title={row.message}>Already registered · resume updated</Tag> : row.candidateReused ? <Tag color="cyan" title={row.message}>Existing profile reused</Tag> : row.resumeReplaced ? <Tag color="blue" title={row.message}>Resume updated</Tag> : <Tag color="green">{talentPoolOnly ? 'Stored' : row.application?.autoRunAts ? 'ATS queued' : 'Imported'}</Tag>, exportValue: row => row.message || (needsReview(row) ? (row.forceUploaded ? 'Forced - review' : row.success ? 'Imported - review' : 'Needs review') : (talentPoolOnly ? 'Stored' : row.application?.autoRunAts ? 'ATS queued' : 'Imported')) },
         { key: 'fileName', label: 'Resume', width: '210px' },
         { key: 'candidate', label: 'Candidate', width: '220px', render: row => <div className="resume-result-person"><b>{row.candidate?.candidateName || row.detectedName || 'Not detected'}</b><span>{row.candidate?.candidateCode || row.parsingStatus || '-'}</span></div>, exportValue: row => row.candidate?.candidateName || row.detectedName },
         { key: 'contact', label: 'Contact extracted', width: '240px', render: row => <div className="resume-result-person"><b>{row.detectedEmail || row.candidate?.email || '-'}</b><span>{row.detectedPhone || row.candidate?.phone || '-'}</span></div>, exportValue: row => `${row.detectedEmail || row.candidate?.email || ''} ${row.detectedPhone || row.candidate?.phone || ''}` },

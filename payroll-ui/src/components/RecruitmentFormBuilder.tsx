@@ -153,7 +153,10 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     selectionRequestRef.current += 1
     setSelectingFormId(null)
     const next = blankDefinition(clientId, clients.find(row => row.id === clientId)?.name ?? '')
-    const draft = blankVersion(0)
+    const resumeConfiguration = lookups.attachmentConfigurations
+      .filter(row => row.isActive && code(row.attributeCode) === 'RESUME' && (row.clientId === 0 || row.clientId === clientId))
+      .sort((left, right) => Number(right.clientId === clientId) - Number(left.clientId === clientId))[0]
+    const draft = standardCandidateVersion(0, resumeConfiguration?.id ?? null)
     setDefinition(next); setVersion(draft); setSelectedSectionId(draft.sections[0].id); setSelectedFieldId(null)
   }
 
@@ -752,6 +755,29 @@ function blankDefinition(clientId: number, clientName: string): DynamicFormDefin
 function blankVersion(formDefinitionId: number): DynamicFormVersion {
   const sectionId = localId()
   return { id: 0, formDefinitionId, versionNumber: 1, status: 'Draft', sections: [{ id: sectionId, formVersionId: 0, sectionCode: 'PERSONAL_DETAILS', sectionLabel: 'Personal details', description: '', displayOrder: 1, fields: [] }] }
+}
+function standardCandidateVersion(formDefinitionId: number, resumeConfigurationId: number | null): DynamicFormVersion {
+  const version = blankVersion(formDefinitionId)
+  const section = version.sections[0]
+  const field = (fieldTypeCode: DynamicFormFieldTypeCode, stableFieldCode: string, label: string, displayOrder: number, widthColumns: number, isRequired: boolean): DynamicFormField => ({
+    id: localId(), formVersionId: version.id, sectionId: section.id, fieldTypeCode, stableFieldCode, label, placeholder: '', helpText: '', isRequired,
+    displayOrder, widthColumns, minimumLength: null, maximumLength: null, minimumNumber: null, maximumNumber: null,
+    minimumDate: null, maximumDate: null, attachmentFieldConfigurationId: null, lookupSourceCode: '', isActive: true,
+    options: [], semanticCodes: [stableFieldCode], validationRules: [],
+  })
+  section.fields = [
+    field('TEXT', 'FIRST_NAME', 'First name', 1, 6, true),
+    field('TEXT', 'LAST_NAME', 'Last name', 2, 6, false),
+    field('EMAIL', 'EMAIL', 'Email', 3, 6, true),
+    field('PHONE', 'PHONE', 'Contact number', 4, 6, true),
+  ]
+  if (resumeConfigurationId) section.fields.unshift({
+    ...field('UPLOAD', 'RESUME', 'Resume / CV', 1, 12, true),
+    attachmentFieldConfigurationId: resumeConfigurationId,
+    helpText: 'Upload PDF, DOCX, RTF or TXT. Your resume is parsed to prefill this form and support ATS matching.',
+  })
+  section.fields = section.fields.map((row, index) => ({ ...row, displayOrder: index + 1 }))
+  return version
 }
 function cloneVersion(source: DynamicFormVersion, formDefinitionId: number): DynamicFormVersion {
   const sourceFields = source.sections.flatMap(section => section.fields)

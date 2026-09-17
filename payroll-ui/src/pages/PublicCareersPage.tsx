@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { ArrowRightOutlined, BankOutlined, CheckCircleOutlined, CheckOutlined, ClearOutlined, ClockCircleOutlined, EnvironmentOutlined, FileTextOutlined, LaptopOutlined, LockOutlined, MailOutlined, PhoneOutlined, SafetyCertificateOutlined, TeamOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Checkbox, Form, Input, Popconfirm, Result, Skeleton, Space, Tag } from 'antd'
+import { Alert, Button, Card, Checkbox, Form, Input, Modal, Popconfirm, Result, Skeleton, Space, Tag } from 'antd'
 import RecruitmentDynamicForm, { validateDynamicForm } from '../components/RecruitmentDynamicForm'
 import { useToast } from '../components/ToastProvider'
 import { getPublicOrganizationBrand } from '../services/settingsService'
 import {
-  createPublicApplicationSession, getPublicCareerJob, loadPublicSelectOptions, requestPublicApplicationVerification, savePublicApplicationValues,
+  createPublicApplicationSession, deletePublicApplicationFile, fetchPublicApplicationFile, getPublicCareerJobResult, loadPublicSelectOptions, requestPublicApplicationVerification, savePublicApplicationValues,
   submitPublicApplication, uploadPublicApplicationFile,
 } from '../services/recruitmentOrchestrationService'
 import type {
@@ -22,6 +22,7 @@ export default function PublicCareersPage({ slug: suppliedSlug }: Props) {
   const [job, setJob] = useState<PublicRecruitmentJob | null>(null)
   const [brand, setBrand] = useState<{ name: string; logoDataUrl: string } | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadFailure, setLoadFailure] = useState<'not-found' | 'unavailable' | ''>('')
   const [session, setSession] = useState<PublicApplicationSession | null>(null)
   const [verification, setVerification] = useState<PublicApplicationVerification | null>(null)
   const [verificationCode, setVerificationCode] = useState('')
@@ -34,7 +35,9 @@ export default function PublicCareersPage({ slug: suppliedSlug }: Props) {
   const [starting, setStarting] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [validationError, setValidationError] = useState('')
-  const [result, setResult] = useState<{ applicationCode: string; message: string } | null>(null)
+  const [resumePrefill, setResumePrefill] = useState<{ status: string; message: string } | null>(null)
+  const [filePreview, setFilePreview] = useState<{ name: string; text: string } | null>(null)
+  const [result, setResult] = useState<{ applicationCode: string; message: string; status?: string } | null>(null)
   const [idempotencyKey] = useState(() => typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `application-${Date.now()}-${Math.random().toString(36).slice(2)}`)
 
   useEffect(() => {
@@ -45,7 +48,7 @@ export default function PublicCareersPage({ slug: suppliedSlug }: Props) {
 
   useEffect(() => {
     let active = true; setLoading(true)
-    void getPublicCareerJob(slug).then(row => { if (active) { setJob(row); setLoading(false) } })
+    void getPublicCareerJobResult(slug).then(response => { if (active) { setJob(response.data); setLoadFailure(response.ok ? '' : response.status === 404 ? 'not-found' : 'unavailable'); setLoading(false) } })
     return () => { active = false }
   }, [slug])
 
@@ -85,8 +88,44 @@ export default function PublicCareersPage({ slug: suppliedSlug }: Props) {
   const upload = async (field: DynamicFormField, file: File, metadata: PublicUploadMetadata, onProgress: (percent: number) => void) => {
     if (!session) return { ok: false, error: 'Start the application before uploading files.' }
     const response = await uploadPublicApplicationFile(session.sessionToken, field.id, file, metadata, onProgress)
-    if (response.ok && response.data) { setFiles(current => [...current, { ...response.data, fieldId: response.data.fieldId || field.id }]); setValidationError('') }
+    if (response.ok && response.data) {
+      setFiles(current => [...current, { ...response.data, fieldId: response.data.fieldId || field.id }])
+      if (response.data.suggestedValues?.length) {
+        setValues(current => mergeResumeSuggestions(current, response.data!.suggestedValues!))
+        setResumePrefill({ status: 'success', message: 'Resume parsed. Please review the prefilled details before submitting.' })
+      } else if (response.data.parsingStatus && !['Parsed', 'NotApplicable'].includes(response.data.parsingStatus)) {
+        setResumePrefill({ status: 'warning', message: response.data.parsingError || 'Resume uploaded. Complete the remaining details manually.' })
+      }
+      setValidationError('')
+    }
     return { ok: response.ok, error: response.error }
+  }
+  const previewFile = async (field: DynamicFormField, file: PublicUploadedFile) => {
+    if (!session) return
+    if (file.previewText?.trim()) { setFilePreview({ name: file.originalFileName, text: file.previewText }); return }
+    const publicId = file.attachmentPublicId || file.publicId
+    if (!publicId) { notify('The uploaded file reference is unavailable.', 'error'); return }
+    try {
+      const response = await fetchPublicApplicationFile(session.sessionToken, field.id, publicId)
+      if (!response.ok) { notify(await response.text() || 'Unable to preview this file.', 'error'); return }
+      const url = URL.createObjectURL(await response.blob())
+      window.open(url, '_blank', 'noopener,noreferrer')
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch { notify('Unable to preview this file.', 'error') }
+  }
+  const removeFile = async (_field: DynamicFormField, file: PublicUploadedFile) => {
+    if (!session) return { ok: false, error: 'Application session is unavailable.' }
+    const publicId = file.attachmentPublicId || file.publicId
+    if (!publicId) return { ok: false, error: 'The uploaded file reference is unavailable.' }
+    const response = await deletePublicApplicationFile(session.sessionToken, file.fieldId, publicId)
+    if (!response.ok) return { ok: false, error: response.error || 'Unable to remove this file.' }
+    const suggestedFieldIds = new Set((file.suggestedValues ?? []).map(value => value.fieldId))
+    const initialValues = (session.initialValues ?? []).filter(value => suggestedFieldIds.has(value.fieldId))
+    setValues(current => [...current.filter(value => !suggestedFieldIds.has(value.fieldId)), ...initialValues])
+    setFiles(current => current.filter(item => (item.attachmentPublicId || item.publicId) !== publicId))
+    setResumePrefill(null)
+    setValidationError('')
+    return { ok: true }
   }
   const submit = async () => {
     if (!job?.applicationForm || !session) return
@@ -110,16 +149,30 @@ export default function PublicCareersPage({ slug: suppliedSlug }: Props) {
     setResendRemaining(0)
     setValidationError('')
   }
-  const clearApplication = () => {
+  const clearApplication = async () => {
+    if (!session) return
+    setSubmitting(true)
+    for (const file of files) {
+      const publicId = file.attachmentPublicId || file.publicId
+      if (!publicId) continue
+      const response = await deletePublicApplicationFile(session.sessionToken, file.fieldId, publicId)
+      if (!response.ok) {
+        setSubmitting(false)
+        notify(response.error || `Unable to remove ${file.originalFileName}.`, 'error')
+        return
+      }
+    }
+    setSubmitting(false)
     setValues(session?.initialValues ?? [])
     setFiles([])
     setValidationError('')
+    setResumePrefill(null)
   }
 
   const branding = <CareersBrand name={brand?.name || job?.clientName || 'Careers'} logo={brand?.logoDataUrl} />
   if (loading) return <main className="public-career-page careers-page"><div className="public-career-shell">{branding}<Card><Skeleton active paragraph={{ rows: 12 }} /></Card></div></main>
-  if (!job) return <main className="public-career-page careers-page"><div className="public-career-shell">{branding}<div className="public-success"><Result status="404" title="Job posting not found" subTitle="This link may be incorrect, closed or no longer public." /></div></div></main>
-  if (result) return <main className="public-career-page careers-page"><div className="public-career-shell">{branding}<div className="public-success"><Result status="success" title="Application submitted" subTitle={result.message || `Your application reference is ${result.applicationCode}.`} extra={<><Tag color="green" icon={<CheckCircleOutlined />}>{result.applicationCode}</Tag><p>Keep this reference for future communication. You can safely close this page.</p></>} /></div></div></main>
+  if (!job) return <main className="public-career-page careers-page"><div className="public-career-shell">{branding}<div className="public-success"><Result status={loadFailure === 'unavailable' ? 'error' : '404'} title={loadFailure === 'unavailable' ? 'Unable to load this job' : 'Job posting not found'} subTitle={loadFailure === 'unavailable' ? 'The recruitment service is temporarily unavailable. Please try again shortly.' : 'This link may be incorrect, closed or no longer public.'} /></div></div></main>
+  if (result) return <main className="public-career-page careers-page"><div className="public-career-shell">{branding}<div className="public-success"><Result status="success" title={result.status === 'ResumeUpdated' ? 'Resume updated' : 'Application submitted'} subTitle={result.message || `Your application reference is ${result.applicationCode}.`} extra={<><Tag color="green" icon={<CheckCircleOutlined />}>{result.applicationCode}</Tag><p>Keep this reference for future communication. You can safely close this page.</p></>} /></div></div></main>
 
   const closed = job.availabilityStatus === 'Closed'
   const unavailable = !job.isAcceptingApplications || !job.applicationForm
@@ -195,7 +248,9 @@ export default function PublicCareersPage({ slug: suppliedSlug }: Props) {
             <div className="careers-privacy-note"><LockOutlined /><span>Your information and documents are shared privately with the hiring team.</span></div>
           </> : job.applicationForm && <>
             <div className="public-apply-heading public-application-heading"><div><span className="careers-section-eyebrow">Tell us about yourself</span><h2>Application details</h2></div><Space wrap><Popconfirm title="Clear this form?" description="Entered values and selected uploads will be reset. Verified contact details stay filled." okText="Clear" cancelText="Keep editing" onConfirm={clearApplication}><Button icon={<ClearOutlined />} disabled={submitting}>Clear form</Button></Popconfirm><Tag color="green" icon={<CheckCircleOutlined />}>{needsVerification ? 'Email verified' : 'Contact captured'}</Tag></Space></div>
-            <RecruitmentDynamicForm form={job.applicationForm} values={values} files={files} lockedSemanticCodes={['EMAIL', 'PHONE']} onChange={next => { setValues(next); setValidationError('') }} onUpload={upload} onLoadOptions={(field, search) => loadPublicSelectOptions(session.sessionToken, field.id, search)} />
+            {session.message && <Alert data-testid="existing-candidate-message" showIcon type="info" message={session.existingApplicationCode ? 'Already registered' : 'Existing profile found'} description={session.message} style={{ marginBottom: 16 }} />}
+            {resumePrefill && <Alert showIcon type={resumePrefill.status === 'success' ? 'success' : 'warning'} message={resumePrefill.message} style={{ marginBottom: 16 }} />}
+            <RecruitmentDynamicForm form={job.applicationForm} values={values} files={files} lockedSemanticCodes={['EMAIL', 'PHONE']} prioritizedSemanticCodes={['RESUME']} onChange={next => { setValues(next); setValidationError('') }} onUpload={upload} onPreviewFile={previewFile} onRemoveFile={removeFile} onLoadOptions={(field, search) => loadPublicSelectOptions(session.sessionToken, field.id, search)} />
             {validationError && <Alert data-testid="public-application-validation" type="error" showIcon message="Please review your application" description={validationError} style={{ marginTop: 16 }} />}
             <Button className="public-submit-button" block size="large" type="primary" loading={submitting} onClick={() => void submit()}>Submit application <ArrowRightOutlined /></Button>
             <p className="public-session-note"><LockOutlined /> Your application session expires {new Date(session.expiresAtUtc).toLocaleString('en-IN')}.</p>
@@ -216,6 +271,9 @@ export default function PublicCareersPage({ slug: suppliedSlug }: Props) {
         </Card>
       </div>
       <footer className="careers-footer"><span>{job.clientName} · Careers</span><span>Powered by <b>Frevo</b></span></footer>
+      <Modal open={Boolean(filePreview)} title={filePreview?.name || 'Resume preview'} footer={<Button type="primary" onClick={() => setFilePreview(null)}>Close</Button>} onCancel={() => setFilePreview(null)} width={820}>
+        <pre className="public-resume-preview-text">{filePreview?.text}</pre>
+      </Modal>
     </div>
   </main>
 }
@@ -226,4 +284,19 @@ function CareersBrand({ name, logo }: { name: string; logo?: string }) {
     <div className="careers-company">{logo ? <img className="careers-organization-logo" src={logo} alt={`${name} logo`} /> : <span className="careers-company-mark" aria-hidden="true">{initials || <BankOutlined />}</span>}<div><b>{name}</b><span>Careers & opportunities</span></div></div>
     <span className="careers-header-note"><LockOutlined /> Candidate application</span>
   </header>
+}
+
+function mergeResumeSuggestions(current: PublicFormValue[], suggestions: PublicFormValue[]) {
+  const next = new Map(current.map(value => [value.fieldId, value]))
+  for (const suggestion of suggestions) {
+    const existing = next.get(suggestion.fieldId)
+    const alreadyFilled = Boolean(existing?.textValue?.trim())
+      || existing?.integerValue != null
+      || existing?.decimalValue != null
+      || Boolean(existing?.dateValue || existing?.dateTimeValue)
+      || existing?.booleanValue != null
+      || Boolean(existing?.selectedOptionIds?.length || existing?.selectedOptionValues?.length)
+    if (!alreadyFilled) next.set(suggestion.fieldId, suggestion)
+  }
+  return [...next.values()]
 }

@@ -34,6 +34,7 @@ type ApplicationQuickFilter = 'all' | 'new' | 'needs-score' | 'scored' | 'pipeli
 type InterviewQuickFilter = 'all' | 'scheduled' | 'completed' | 'attention'
 const rejectedApplication = (row: RecruitmentCandidateApplication) => /reject|withdraw/i.test(`${row.currentStage} ${row.currentStatus}`)
 const newApplication = (row: RecruitmentCandidateApplication) => /new|application|intake/i.test(row.currentStage || '')
+const publicJobApplication = (row: RecruitmentCandidateApplication) => /public\s*job|career/i.test(row.sourceType || '')
 const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join('') || 'C'
 const experienceLabel = (months: number) => months > 0 ? `${Math.floor(months / 12)}y ${months % 12}m` : 'Not specified'
 
@@ -64,6 +65,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   const [profileDraft, setProfileDraft] = useState<{ experience: RecruitmentCandidateExperience[]; education: RecruitmentCandidateEducation[]; certifications: RecruitmentCandidateCertification[] } | null>(null)
   const [scoreOverrideDraft, setScoreOverrideDraft] = useState<{ row: RecruitmentApplicationScore; score: number; reason: string } | null>(null)
   const [resumeIntakeMode, setResumeIntakeMode] = useState<RecruitmentResumeIntakeMode | null>(null)
+  const [resumeIntakeTarget, setResumeIntakeTarget] = useState<RecruitmentCandidateApplication | null>(null)
   const [candidateFormOpen, setCandidateFormOpen] = useState(() => new URLSearchParams(location.search).get('add') === '1')
   const [applicationQuickFilter, setApplicationQuickFilter] = useState<ApplicationQuickFilter>('all')
   const [applicationSearch, setApplicationSearch] = useState('')
@@ -91,6 +93,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   }
   const closeResumeIntake = () => {
     setResumeIntakeMode(null)
+    setResumeIntakeTarget(null)
     const params = new URLSearchParams(location.search)
     if (!params.has('upload')) return
     params.delete('upload')
@@ -122,13 +125,19 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   const viewApplicationResume = async (applicationId: number) => {
     const application = applications.find(row => row.id === applicationId) ?? detail?.applications.find(row => row.id === applicationId)
     if (!application) return void notify('Candidate application could not be found.', 'warning')
+    if (application.resumeId && application.resumeAvailable === false) return void notify('Resume file was deleted from storage. Use Re-upload to attach its replacement.', 'warning')
     const candidateDetail = detail?.candidate.id === application.candidateId ? detail : await getCandidate(application.candidateId)
     const resumes = candidateDetail?.resumes ?? []
     const resume = resumes.find(row => row.id === application.resumeId)
       ?? resumes.find(row => row.isPrimary)
       ?? [...resumes].sort((left, right) => right.id - left.id)[0]
     if (!resume?.attachmentPublicId) return void notify('No resume is attached to this candidate.', 'warning')
+    if (resume.attachmentAvailable === false) return void notify('Resume file was deleted from storage. Use Re-upload to attach its replacement.', 'warning')
     await openAttachmentWithTicket(resume.attachmentPublicId, 'Preview')
+  }
+  const openResumeReplacement = (application: RecruitmentCandidateApplication) => {
+    setResumeIntakeTarget(application)
+    setResumeIntakeMode('single')
   }
   const refreshDetail = async () => { if (detail?.candidate.id) await openCandidate(detail.candidate.id) }
   const saveCandidateDraft = async () => {
@@ -230,8 +239,8 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
     const rows = intakeApplications.filter(row => {
       if (term && !`${row.candidateName} ${row.candidateEmail} ${row.candidatePhone} ${row.applicationCode} ${row.positionCode} ${row.positionTitle}`.toLowerCase().includes(term)) return false
       if (applicationPositionId && row.positionId !== applicationPositionId) return false
-      if (applicationSource === 'published' && !row.jobPostingId) return false
-      if (applicationSource === 'manual' && row.jobPostingId) return false
+      if (applicationSource === 'published' && !publicJobApplication(row)) return false
+      if (applicationSource === 'manual' && publicJobApplication(row)) return false
       if (applicationStage && row.currentStage !== applicationStage) return false
       if (applicationScoreBand === 'needs-score' && row.atsScore != null) return false
       if (applicationScoreBand === 'below-60' && !(row.atsScore != null && row.atsScore < 60)) return false
@@ -300,10 +309,11 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
           <div className="candidate-list-toolbar"><Input allowClear prefix={<SearchOutlined />} value={applicationSearch} onChange={event => setApplicationSearch(event.target.value)} placeholder="Search candidates by name, ID, email, phone or job" /><span>Showing <b>{visibleApplications.length}</b> candidates</span><Select value={applicationSort} onChange={setApplicationSort} options={[{ value: 'recent', label: 'Created date: Recent first' }, { value: 'oldest', label: 'Created date: Oldest first' }, { value: 'score', label: 'ATS score: Highest first' }]} /></div>
           <div className="candidate-application-list">{visibleApplications.map(row => {
             const candidate = candidateById.get(row.candidateId)
-            const source = row.jobPostingId ? 'Published job link' : `Manual · ${row.sourceType || 'Direct'}`
+            const isPublic = publicJobApplication(row)
+            const source = isPublic ? 'Published job link' : `Manual · ${row.sourceType || 'Direct'}`
             return <article key={row.id} className="candidate-application-card" tabIndex={0} role="button" onClick={() => void openCandidate(row.candidateId)} onKeyDown={event => { if (event.key === 'Enter') void openCandidate(row.candidateId) }}>
               <Avatar size={46}>{initials(row.candidateName)}</Avatar>
-              <div className="candidate-application-copy"><div className="candidate-card-title"><h3>{row.candidateName}</h3><Tag>{row.applicationCode}</Tag>{!row.candidateEmail && !row.candidatePhone && <Tag color="orange">Profile incomplete</Tag>}{row.atsScore != null && <Tag color={row.atsScore >= (row.atsShortlistThreshold || 60) ? 'green' : 'orange'} icon={<RobotOutlined />}>{row.atsScore.toFixed(1)} / 100</Tag>}{row.isInGlobalTalentPool && <Tag color="cyan">Global Talent Pool</Tag>}</div><p>{row.positionTitle} <span>({row.positionCode})</span></p><div className="candidate-card-contact"><span><FileSearchOutlined /> {experienceLabel(candidate?.totalExperienceMonths || 0)}</span><span><MailOutlined /> {row.candidateEmail || 'No email'}</span><span><PhoneOutlined /> {row.candidatePhone || 'No phone'}</span><Tag color={row.jobPostingId ? 'blue' : 'default'}>{source}</Tag></div><small>Applied {new Date(row.appliedAt).toLocaleString('en-IN')} · {row.recruiterName || 'Recruiter not assigned'}</small></div>
+              <div className="candidate-application-copy"><div className="candidate-card-title"><h3>{row.candidateName}</h3><Tag>{row.applicationCode}</Tag>{!row.candidateEmail && !row.candidatePhone && <Tag color="orange">Profile incomplete</Tag>}{row.atsScore != null && <Tag color={row.atsScore >= (row.atsShortlistThreshold || 60) ? 'green' : 'orange'} icon={<RobotOutlined />}>{row.atsScore.toFixed(1)} / 100</Tag>}{row.isInGlobalTalentPool && <Tag color="cyan">Global Talent Pool</Tag>}</div><p>{row.positionTitle} <span>({row.positionCode})</span></p><div className="candidate-card-contact"><span><FileSearchOutlined /> {experienceLabel(candidate?.totalExperienceMonths || 0)}</span><span><MailOutlined /> {row.candidateEmail || 'No email'}</span><span><PhoneOutlined /> {row.candidatePhone || 'No phone'}</span><Tag color={isPublic ? 'blue' : 'default'}>{source}</Tag></div><small>Applied {new Date(row.appliedAt).toLocaleString('en-IN')} · {row.recruiterName || 'Recruiter not assigned'}</small></div>
               <div className="candidate-card-actions" onClick={event => event.stopPropagation()}>
                 {rejectedApplication(row) && !row.isInGlobalTalentPool && <Checkbox checked={selectedRejectedApplicationIds.includes(row.id)} onChange={event => setSelectedRejectedApplicationIds(current => event.target.checked ? [...new Set([...current, row.id])] : current.filter(id => id !== row.id))}>Select</Checkbox>}
                 <Tag color={rejectedApplication(row) ? 'red' : 'green'}>{row.currentStage || row.currentStatus}</Tag>
@@ -318,7 +328,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
                   ]}
                   onChange={(action: 'override' | 'pool') => void selectApplicationAction(row, action)}
                 />}
-                <Space wrap><Button size="small" icon={<EditOutlined />} onClick={() => void editCandidate(row.candidateId)}>Edit</Button><Button size="small" icon={<FileSearchOutlined />} onClick={() => void viewApplicationResume(row.id)}>Resume</Button>{canMoveApplication(row) && !row.autoRunAts && <Tooltip title={row.resumeId ? 'Calculate or refresh ATS evidence' : 'Add a resume before ATS scoring'}><Button size="small" disabled={!row.resumeId} icon={<RobotOutlined />} onClick={() => void scoreApplication(row.id).then(load)}>Run ATS</Button></Tooltip>}<Button size="small" type="primary" icon={<BranchesOutlined />} onClick={() => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&positionId=${row.positionId}&flow=candidates`)}>Pipeline</Button>{canDeleteRecruitmentData && <Popconfirm title="Delete application permanently?" description="This removes its ATS and pipeline data. If it is the candidate's only application, the candidate profile and stored resume file are also permanently deleted." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteApplication(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.applicationCode}`} /></Popconfirm>}</Space>
+                <Space wrap><Button size="small" icon={<EditOutlined />} onClick={() => void editCandidate(row.candidateId)}>Edit</Button>{row.resumeId && row.resumeAvailable !== false ? <Button size="small" icon={<FileSearchOutlined />} onClick={() => void viewApplicationResume(row.id)}>Resume</Button> : <><Tag color="red">{row.resumeId ? 'Resume deleted' : 'No resume'}</Tag><Button size="small" icon={<UploadOutlined />} onClick={() => openResumeReplacement(row)}>Re-upload</Button></>}{canMoveApplication(row) && !row.autoRunAts && <Tooltip title={row.resumeId && row.resumeAvailable !== false ? 'Calculate or refresh ATS evidence' : 'Re-upload the resume before ATS scoring'}><Button size="small" disabled={!row.resumeId || row.resumeAvailable === false} icon={<RobotOutlined />} onClick={() => void scoreApplication(row.id).then(load)}>Run ATS</Button></Tooltip>}<Button size="small" type="primary" icon={<BranchesOutlined />} onClick={() => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&positionId=${row.positionId}&flow=candidates`)}>Pipeline</Button>{canDeleteRecruitmentData && <Popconfirm title="Delete application permanently?" description="This removes its ATS and pipeline data. If it is the candidate's only application, the candidate profile and stored resume file are also permanently deleted." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteApplication(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.applicationCode}`} /></Popconfirm>}</Space>
               </div>
             </article>
           })}{!visibleApplications.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No applications match these filters." />}</div>
@@ -342,7 +352,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
     </Modal>
     <CandidateEditorDrawer draft={candidateDraft} clients={clients} onChange={setCandidateDraft} onClose={() => setCandidateDraft(null)} onSubmit={() => void saveCandidateDraft()} />
     {candidateFormOpen && <RecruitmentInternalCandidateForm open clientId={initialClientId} initialPostingId={requestedPostingId} onClose={closeCandidateForm} onCompleted={load} />}
-    <RecruitmentResumeIntake open={resumeIntakeMode !== null} initialMode={resumeIntakeMode || 'single'} initialClientId={initialClientId} initialPositionId={requestedPositionId} initialJobPostingId={requestedPostingId || null} onClose={closeResumeIntake} onCompleted={async () => { await load() }} title={resumeIntakeMode === 'bulk' ? 'Bulk candidate upload' : 'Add candidate application'} description="Choose the job and upload the candidate resume. The configured intake, secure document and ATS services create the same candidate record used by the published application link." />
+    <RecruitmentResumeIntake open={resumeIntakeMode !== null} initialMode={resumeIntakeMode || 'single'} initialClientId={resumeIntakeTarget?.clientId ?? initialClientId} initialPositionId={resumeIntakeTarget?.positionId ?? requestedPositionId} initialJobPostingId={resumeIntakeTarget?.jobPostingId ?? (requestedPostingId || null)} onClose={closeResumeIntake} onCompleted={async () => { await load() }} onEditCandidate={editCandidate} title={resumeIntakeTarget ? `Re-upload resume · ${resumeIntakeTarget.candidateName}` : resumeIntakeMode === 'bulk' ? 'Bulk candidate upload' : 'Add candidate application'} description={resumeIntakeTarget ? 'Preview the replacement, correct parsed details if required, then upload. The deleted resume reference will be replaced.' : 'Preview and edit parsed candidate details first. Final upload creates the candidate/application and stores the resume.'} />
     {interviewDraft && <RecruitmentInterviewEditor mode="schedule" open applications={applications} panelUsers={panelUsers} interview={interviewDraft.interview} initialApplicationId={interviewDraft.applicationId} onClose={() => setInterviewDraft(null)} onSaved={refreshInterviewData} />}
     {feedbackInterview && <RecruitmentInterviewEditor mode="feedback" open applications={applications} panelUsers={panelUsers} interview={feedbackInterview} readOnly={feedbackInterview.status === 'Completed' && Number(feedbackInterview.overallScore || 0) > 0} onClose={() => setFeedbackInterview(null)} onSaved={refreshInterviewData} />}
   </div>
@@ -355,7 +365,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
     </Card>}
     {mode === 'candidates' && <RecruitmentGlobalTalentPool onViewCandidate={openCandidate} onChanged={load} />}
     {mode === 'applications' && <><div className="talent-toolbar right"><Button onClick={() => setResumeIntakeMode('single')}>Upload resume</Button><Button type="primary" onClick={() => setResumeIntakeMode('bulk')}>Bulk resumes</Button></div><DataTable rows={intakeApplications} emptyText="No applications have arrived through a published job link or manual upload for this client." exportFileName="candidate-applications" actions={row => <Space><Button size="small" onClick={() => void openCandidate(row.candidateId)}>Profile</Button><Button size="small" icon={<FileSearchOutlined />} onClick={() => void viewApplicationResume(row.id)}>Resume</Button>{canMoveApplication(row) && <Button size="small" onClick={() => void scoreApplication(row.id).then(load)}>Score</Button>}<Button size="small" type="primary" onClick={() => navigate(`/recruitment/hiring-pipeline?positionId=${row.positionId}`)}>Open pipeline</Button>{canDeleteRecruitmentData && <Popconfirm title="Delete application permanently?" description="This removes its ATS and pipeline data. If it is the candidate's only application, the candidate profile and stored resume file are also permanently deleted." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteApplication(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete ${row.applicationCode}`} /></Popconfirm>}</Space>} columns={[
-      { key: 'applicationCode', label: 'Application' }, { key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Position', render: row => <><b>{row.positionTitle}</b><small>{row.positionCode}</small></> }, { key: 'clientName', label: 'Client' }, { key: 'sourceType', label: 'Application source', render: row => <Tag color={row.jobPostingId ? 'blue' : 'default'}>{row.jobPostingId ? 'Published job link' : `Manual · ${row.sourceType || 'Direct'}`}</Tag> }, { key: 'currentStage', label: 'Stage' }, { key: 'recruiterName', label: 'Recruiter' }, { key: 'atsScore', label: 'ATS score', render: row => row.atsScore == null ? '-' : <Tag color={row.atsScore >= 60 ? 'green' : 'orange'}>{row.atsScore.toFixed(1)}</Tag> }, { key: 'appliedAt', label: 'Applied', render: row => new Date(row.appliedAt).toLocaleDateString('en-IN') }
+      { key: 'applicationCode', label: 'Application' }, { key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Position', render: row => <><b>{row.positionTitle}</b><small>{row.positionCode}</small></> }, { key: 'clientName', label: 'Client' }, { key: 'sourceType', label: 'Application source', render: row => <Tag color={publicJobApplication(row) ? 'blue' : 'default'}>{publicJobApplication(row) ? 'Published job link' : `Manual · ${row.sourceType || 'Direct'}`}</Tag> }, { key: 'currentStage', label: 'Stage' }, { key: 'recruiterName', label: 'Recruiter' }, { key: 'atsScore', label: 'ATS score', render: row => row.atsScore == null ? '-' : <Tag color={row.atsScore >= 60 ? 'green' : 'orange'}>{row.atsScore.toFixed(1)}</Tag> }, { key: 'appliedAt', label: 'Applied', render: row => new Date(row.appliedAt).toLocaleDateString('en-IN') }
     ]} /></>}
     {mode === 'interviewQueue' && <section className="interview-operations-workspace">
       <header className="candidate-applications-heading"><div><span>INTERVIEW QUEUE</span><h2>Candidates ready for interview</h2><p>Select shortlisted candidates and schedule individual or sequential interview slots.</p></div><Space wrap><Button icon={<CalendarOutlined />} onClick={() => setInterviewDraft({ applicationId: 0 })}>Schedule one</Button><Button type="primary" icon={<CalendarOutlined />} disabled={!selectedBatchApplications.length} onClick={() => setBatchInterviewOpen(true)}>Schedule selected ({selectedBatchApplications.length})</Button></Space></header>
@@ -457,6 +467,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
       initialMode={resumeIntakeMode || 'single'}
       onClose={() => setResumeIntakeMode(null)}
       onCompleted={async () => { await load() }}
+      onEditCandidate={editCandidate}
     />
 
     {interviewDraft && <RecruitmentInterviewEditor mode="schedule" open applications={applications} panelUsers={panelUsers} interview={interviewDraft.interview} initialApplicationId={interviewDraft.applicationId} onClose={() => setInterviewDraft(null)} onSaved={refreshInterviewData} />}

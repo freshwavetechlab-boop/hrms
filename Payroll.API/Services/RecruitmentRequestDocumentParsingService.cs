@@ -24,7 +24,9 @@ public sealed class RecruitmentRequestDocumentParsingService(
     public async Task<RecruitmentRequestDocumentParseResult> ParseAsync(IFormFile file, int clientId, CancellationToken cancellationToken)
     {
         var parsed = await documentTextParser.ParseAsync(file, cancellationToken);
-        var text = Normalize(parsed.Text);
+        var extractedText = Normalize(parsed.Text);
+        var textIsReliable = LooksLikeRecruitmentText(extractedText);
+        var text = textIsReliable ? extractedText : "";
         var draft = new SaveRecruitmentRequisition
         {
             Id = 0,
@@ -112,9 +114,9 @@ public sealed class RecruitmentRequestDocumentParsingService(
         byte[]? sourceDocument = null;
         var sourceContentType = "";
         var isPdf = Path.GetExtension(file.FileName).Equals(".pdf", StringComparison.OrdinalIgnoreCase);
-        var needsDocumentVision = isPdf && (string.IsNullOrWhiteSpace(text)
+        var needsDocumentVision = isPdf && (!textIsReliable
             || parsed.ParserName.Equals("BuiltIn", StringComparison.OrdinalIgnoreCase)
-            || !LooksLikeRecruitmentText(text));
+            || string.IsNullOrWhiteSpace(text));
         if (needsDocumentVision && file.Length <= 10 * 1024 * 1024)
         {
             await using var source = file.OpenReadStream();

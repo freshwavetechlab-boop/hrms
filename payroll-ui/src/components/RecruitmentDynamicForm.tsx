@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
-import { FileDoneOutlined, InboxOutlined } from '@ant-design/icons'
-import { Checkbox, Form, Input, InputNumber, Radio, Select, Tag, Typography, Upload } from 'antd'
+import { DeleteOutlined, EyeOutlined, FileDoneOutlined, InboxOutlined, LoadingOutlined, SyncOutlined } from '@ant-design/icons'
+import { Button, Checkbox, Form, Input, InputNumber, Popconfirm, Progress, Radio, Select, Space, Tag, Typography, Upload } from 'antd'
 import type { UploadRequestOption } from 'rc-upload/lib/interface'
 import type {
   DynamicFormField, DynamicFormVersion, DynamicLookupOption, PublicFormValue, PublicUploadedFile, PublicUploadMetadata,
@@ -13,17 +13,29 @@ type Props = {
   files: PublicUploadedFile[]
   disabled?: boolean
   lockedSemanticCodes?: string[]
+  prioritizedSemanticCodes?: string[]
   onChange: (values: PublicFormValue[]) => void
   onUpload: (field: DynamicFormField, file: File, metadata: PublicUploadMetadata, onProgress: (percent: number) => void) => Promise<{ ok: boolean; error?: string }>
+  onPreviewFile?: (field: DynamicFormField, file: PublicUploadedFile) => Promise<void> | void
+  onRemoveFile?: (field: DynamicFormField, file: PublicUploadedFile) => Promise<{ ok: boolean; error?: string }>
   onLoadOptions?: (field: DynamicFormField, search: string) => Promise<DynamicLookupOption[]>
 }
 
-export default function RecruitmentDynamicForm({ form, values, files, disabled = false, lockedSemanticCodes = [], onChange, onUpload, onLoadOptions }: Props) {
+export default function RecruitmentDynamicForm({ form, values, files, disabled = false, lockedSemanticCodes = [], prioritizedSemanticCodes = [], onChange, onUpload, onPreviewFile, onRemoveFile, onLoadOptions }: Props) {
   const [remoteOptions, setRemoteOptions] = useState<Record<number, DynamicLookupOption[]>>({})
   const [searching, setSearching] = useState<Record<number, boolean>>({})
   const [uploadMetadata, setUploadMetadata] = useState<Record<number, PublicUploadMetadata>>({})
   const [uploadErrors, setUploadErrors] = useState<Record<number, string>>({})
+  const [removingFiles, setRemovingFiles] = useState<Record<string, boolean>>({})
+  const [uploadingFields, setUploadingFields] = useState<Record<number, boolean>>({})
+  const [uploadProgress, setUploadProgress] = useState<Record<number, number>>({})
   const valueMap = useMemo(() => new Map(values.map(row => [row.fieldId, row])), [values])
+  const priority = useMemo(() => new Set(prioritizedSemanticCodes.map(code => code.toUpperCase())), [prioritizedSemanticCodes])
+  const orderedSections = useMemo(() => [...form.sections].sort((left, right) => {
+    const leftPriority = left.fields.some(field => field.semanticCodes.some(code => priority.has(code.toUpperCase())))
+    const rightPriority = right.fields.some(field => field.semanticCodes.some(code => priority.has(code.toUpperCase())))
+    return Number(rightPriority) - Number(leftPriority) || left.displayOrder - right.displayOrder
+  }), [form.sections, priority])
 
   const patch = (fieldId: number, value: Partial<PublicFormValue>) => {
     const next = values.filter(row => row.fieldId !== fieldId)
@@ -51,7 +63,13 @@ export default function RecruitmentDynamicForm({ form, values, files, disabled =
       setUploadErrors(current => ({ ...current, [field.id]: validationError }))
       return onError?.(new Error(validationError))
     }
-    const result = await onUpload(field, selected, metadata, percent => onProgress?.({ percent }))
+    setUploadingFields(current => ({ ...current, [field.id]: true }))
+    setUploadProgress(current => ({ ...current, [field.id]: 0 }))
+    const result = await onUpload(field, selected, metadata, percent => {
+      setUploadProgress(current => ({ ...current, [field.id]: percent }))
+      onProgress?.({ percent })
+    })
+    setUploadingFields(current => ({ ...current, [field.id]: false }))
     if (result.ok) {
       setUploadErrors(current => ({ ...current, [field.id]: '' }))
       setUploadMetadata(current => ({ ...current, [field.id]: { documentNumber: '' } }))
@@ -63,15 +81,21 @@ export default function RecruitmentDynamicForm({ form, values, files, disabled =
     }
   }
 
-  return <div>{[...form.sections].sort((a, b) => a.displayOrder - b.displayOrder).map(section => <section className="public-form-section" key={section.id}>
+  return <div>{orderedSections.map(section => <section className="public-form-section" key={section.id}>
     <h3>{section.sectionLabel}</h3>{section.description && <p>{section.description}</p>}
-    <div className="public-form-grid">{[...section.fields].filter(field => field.isActive).sort((a, b) => a.displayOrder - b.displayOrder).map(field => {
+    <div className="public-form-grid">{[...section.fields].filter(field => field.isActive).sort((left, right) => {
+      const leftPriority = left.semanticCodes.some(code => priority.has(code.toUpperCase()))
+      const rightPriority = right.semanticCodes.some(code => priority.has(code.toUpperCase()))
+      return Number(rightPriority) - Number(leftPriority) || left.displayOrder - right.displayOrder
+    }).map(field => {
       const answer = valueMap.get(field.id); const uploaded = files.filter(row => row.fieldId === field.id)
       const fieldDisabled = disabled || field.semanticCodes.some(code => lockedSemanticCodes.includes(code))
       const metadata = uploadMetadata[field.id] ?? { documentNumber: '' }
       const usesLookup = Boolean(field.lookupSourceCode)
       const maximumFiles = Math.max(1, field.attachmentConstraints?.maximumFileCount ?? 1)
       const uploadCapacityReached = field.fieldTypeCode === 'UPLOAD' && uploaded.length >= maximumFiles
+      const uploadBusy = Boolean(uploadingFields[field.id])
+      const isResume = field.semanticCodes.some(code => code.toUpperCase() === 'RESUME') || field.stableFieldCode.toUpperCase().includes('RESUME')
       const staticOptions = [...field.options].filter(row => row.isActive).sort((a, b) => a.displayOrder - b.displayOrder).map(row => ({ value: row.id, label: row.optionLabel }))
       return <Form.Item key={field.id} data-testid={`dynamic-field-${field.stableFieldCode}`} style={{ gridColumn: `span ${Math.max(1, Math.min(12, field.widthColumns))}` }} label={field.label} required={field.isRequired} extra={field.helpText}>
         {field.fieldTypeCode === 'TEXT' && <Input disabled={fieldDisabled} value={answer?.textValue ?? ''} placeholder={field.placeholder} minLength={field.minimumLength ?? undefined} maxLength={field.maximumLength ?? undefined} onChange={event => patch(field.id, { textValue: event.target.value })} />}
@@ -107,14 +131,30 @@ export default function RecruitmentDynamicForm({ form, values, files, disabled =
         {field.fieldTypeCode === 'RADIO' && <Radio.Group disabled={disabled} value={answer?.selectedOptionIds?.[0]} onChange={event => patch(field.id, { selectedOptionIds: [Number(event.target.value)] })} options={staticOptions} />}
         {field.fieldTypeCode === 'CHECKBOX' && <Checkbox disabled={disabled} checked={Boolean(answer?.booleanValue)} onChange={event => patch(field.id, { booleanValue: event.target.checked })}>{field.placeholder || field.label}</Checkbox>}
         {field.fieldTypeCode === 'UPLOAD' && <div className="public-upload-box">
-          {!!uploaded.length && <div>{uploaded.map(file => <Tag icon={<FileDoneOutlined />} color="green" key={file.attachmentPublicId || file.publicId || `${field.id}-${file.originalFileName}`}>{file.originalFileName}</Tag>)}</div>}
+          {!!uploaded.length && <div className="public-upload-file-list">{uploaded.map(file => {
+            const publicId = file.attachmentPublicId || file.publicId || ''
+            const key = publicId || `${field.id}-${file.originalFileName}`
+            return <div className="public-upload-file-row" key={key}>
+              <Tag icon={<FileDoneOutlined />} color="green">{file.originalFileName}</Tag>
+              <Space size={4} wrap>
+                {onPreviewFile && <Button size="small" icon={<EyeOutlined />} onClick={() => void onPreviewFile(field, file)}>Preview</Button>}
+                {onRemoveFile && <Popconfirm title={isResume ? 'Re-upload this resume?' : 'Remove this file?'} description={isResume ? 'The current resume will be removed. You can then choose and parse the corrected resume.' : 'You can upload another file after removing it.'} okText={isResume ? 'Continue' : 'Remove'} okButtonProps={{ danger: true }} onConfirm={async () => {
+                  setRemovingFiles(current => ({ ...current, [key]: true }))
+                  const result = await onRemoveFile(field, file)
+                  setRemovingFiles(current => ({ ...current, [key]: false }))
+                  setUploadErrors(current => ({ ...current, [field.id]: result.ok ? '' : result.error || 'Unable to remove the file.' }))
+                }}><Button size="small" danger icon={isResume ? <SyncOutlined /> : <DeleteOutlined />} loading={removingFiles[key]}>{isResume ? 'Re-upload' : 'Remove'}</Button></Popconfirm>}
+              </Space>
+            </div>
+          })}</div>}
           {requiresUploadMetadata(field) && <div className="public-upload-metadata" data-testid={`upload-metadata-${field.stableFieldCode}`}>
             {field.attachmentConstraints?.requiresDocumentNumber && <label><span>Credential / document number <b aria-hidden="true">*</b></span><Input disabled={disabled} value={metadata.documentNumber} onChange={event => patchUploadMetadata(field.id, { documentNumber: event.target.value })} placeholder="Enter the number shown on the certificate" /></label>}
             {field.attachmentConstraints?.requiresIssueDate && <label><span>Issue date <b aria-hidden="true">*</b></span><Input disabled={disabled} type="date" max={metadata.expiryDate || undefined} value={metadata.issueDate ?? ''} onChange={event => patchUploadMetadata(field.id, { issueDate: event.target.value || null })} /></label>}
             {field.attachmentConstraints?.requiresExpiryDate && <label><span>Expiry date <b aria-hidden="true">*</b></span><Input disabled={disabled} type="date" min={metadata.issueDate || undefined} value={metadata.expiryDate ?? ''} onChange={event => patchUploadMetadata(field.id, { expiryDate: event.target.value || null })} /></label>}
           </div>}
           {uploadErrors[field.id] && <Typography.Text className="public-upload-error" type="danger" role="alert">{uploadErrors[field.id]}</Typography.Text>}
-          {!uploadCapacityReached && <Upload.Dragger disabled={disabled} multiple={Boolean(field.attachmentConstraints?.allowMultiple)} maxCount={maximumFiles} accept={uploadAccept(field)} showUploadList={false} customRequest={uploader(field, metadata)}><p className="ant-upload-drag-icon"><InboxOutlined /></p><p>{uploaded.length ? 'Add another file' : 'Choose or drop file here'}</p><small>{uploadRuleSummary(field)}</small></Upload.Dragger>}
+          {uploadBusy && <div className="public-upload-progress" role="status" aria-live="polite"><Progress percent={uploadProgress[field.id] ?? 0} status="active" size="small" /><Typography.Text><LoadingOutlined /> {(uploadProgress[field.id] ?? 0) < 100 ? 'Uploading resume…' : 'Upload complete. Parsing resume and prefilling details…'}</Typography.Text></div>}
+          {!uploadCapacityReached && <Upload.Dragger disabled={disabled || uploadBusy} multiple={Boolean(field.attachmentConstraints?.allowMultiple)} maxCount={maximumFiles} accept={uploadAccept(field)} showUploadList={false} customRequest={uploader(field, metadata)}><p className="ant-upload-drag-icon"><InboxOutlined /></p><p>{uploadBusy ? 'Resume processing in progress' : uploaded.length ? 'Add another file' : 'Choose or drop file here'}</p><small>{uploadRuleSummary(field)}</small></Upload.Dragger>}
           {uploadCapacityReached && <Typography.Text type="secondary">The current document is already attached.</Typography.Text>}
         </div>}
       </Form.Item>

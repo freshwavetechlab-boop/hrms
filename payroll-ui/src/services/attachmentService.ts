@@ -8,6 +8,9 @@ export const getAttachmentConfigurations = (clientId?: number) => getJson<Attach
 export const getEffectiveAttachmentConfigurations = (clientId: number, moduleCode: string, formCode: string) => getJson<AttachmentFieldConfiguration[]>(`/api/attachment-configurations/effective?${new URLSearchParams({ clientId: String(clientId), moduleCode, formCode })}`, [])
 export const saveAttachmentConfiguration = (row: AttachmentFieldConfiguration) => postJson('/api/attachment-configurations', row, row, { successMessage: 'Attachment field configuration saved.' })
 export const getAttachmentStorageServers = () => getJson<AttachmentStorageServer[]>('/api/attachment-storage-servers', [])
+export const getAttachmentStorageServerFiles = (storageServerId: number) => getJson<EntityAttachment[]>(`/api/attachment-storage-servers/${storageServerId}/files`, [])
+export const fetchAttachmentStorageServerFile = (storageServerId: number, publicId: string, download = false) => apiRequest(`/api/attachment-storage-servers/${storageServerId}/files/${publicId}/content?download=${download}`)
+export const deleteAttachmentStorageServerFile = (storageServerId: number, publicId: string) => deleteJson(`/api/attachment-storage-servers/${storageServerId}/files/${publicId}`, null, { toast: false })
 export const saveAttachmentStorageServer = (row: AttachmentStorageServer) => postJson('/api/attachment-storage-servers', row, row, { successMessage: 'Attachment storage server saved.' })
 export const testAttachmentStorageServer = (id: number) => postEmpty<AttachmentStorageHealthResult>(`/api/attachment-storage-servers/${id}/test`, { healthy: false, status: '', message: '' }, { toast: 'error-only' })
 const googleDriveSetup0: GoogleDriveSetup = { storageServerId: null, googleOAuthConfigured: false, connectionStatus: 'Not configured', callbackUrl: '', googleCloudCredentialsUrl: '' }

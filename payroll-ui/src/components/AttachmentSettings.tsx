@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Button, Card, Checkbox, Col, Drawer, Form, Input, InputNumber, Modal, Row, Select, Space, Switch, Tabs, Tag } from 'antd'
+import { Button, Card, Checkbox, Col, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Row, Select, Space, Switch, Tabs, Tag } from 'antd'
 import DataTable from './DataTable'
 import SearchSelect, { selectOptions } from './SearchSelect'
 import { useToast } from './ToastProvider'
 import { getClients } from '../services/payrollService'
-import { configureGoogleDrive, connectGoogleDrive, getAttachmentAttributes, getAttachmentConfigurations, getAttachmentStorageServers, getAttachmentTargets, getGoogleDriveSetup, saveAttachmentAttribute, saveAttachmentConfiguration, saveAttachmentStorageServer, testAttachmentStorageServer } from '../services/attachmentService'
+import { configureGoogleDrive, connectGoogleDrive, deleteAttachmentStorageServerFile, fetchAttachmentStorageServerFile, getAttachmentAttributes, getAttachmentConfigurations, getAttachmentStorageServerFiles, getAttachmentStorageServers, getAttachmentTargets, getGoogleDriveSetup, saveAttachmentAttribute, saveAttachmentConfiguration, saveAttachmentStorageServer, testAttachmentStorageServer } from '../services/attachmentService'
 import { apiUrl } from '../services/apiClient'
-import type { AttachmentAttribute, AttachmentFieldConfiguration, AttachmentStorageServer, AttachmentStorageType, AttachmentTargetOption, Client, GoogleDriveSetup } from '../types/payroll'
+import type { AttachmentAttribute, AttachmentFieldConfiguration, AttachmentStorageServer, AttachmentStorageType, AttachmentTargetOption, Client, EntityAttachment, GoogleDriveSetup } from '../types/payroll'
 import './AttachmentSettings.css'
 
 type DrawerMode = 'attribute' | 'configuration' | 'storage' | null
@@ -43,6 +43,7 @@ const jsonList = (value: string) => {
 const dateInput = (value?: string | null) => value ? String(value).slice(0, 10) : ''
 const mb = (bytes?: number | null) => bytes ? Number((bytes / 1024 / 1024).toFixed(2)) : 0
 const bytes = (megabytes?: number | null) => Math.max(0, Number(megabytes || 0) * 1024 * 1024)
+const fileSize = (value: number) => value >= 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(2)} MB` : `${Math.max(1, Math.ceil(value / 1024))} KB`
 const statusColor = (status: string) => status.toLowerCase() === 'healthy' ? 'green' : status.toLowerCase().includes('not') ? 'default' : 'red'
 const googleOAuthMessageType = 'frevo:google-drive-oauth'
 const googleSetupLinks = {
@@ -89,6 +90,10 @@ export default function AttachmentSettings({ mode = 'attachments' }: { mode?: 'a
   const [configuration, setConfiguration] = useState<AttachmentFieldConfiguration>(configuration0)
   const [server, setServer] = useState<AttachmentStorageServer>(storage0)
   const [testingServerId, setTestingServerId] = useState(0)
+  const [filesServer, setFilesServer] = useState<AttachmentStorageServer | null>(null)
+  const [storageFiles, setStorageFiles] = useState<EntityAttachment[]>([])
+  const [loadingStorageFiles, setLoadingStorageFiles] = useState(false)
+  const [deletingStorageFile, setDeletingStorageFile] = useState('')
   const [connectingGoogleDrive, setConnectingGoogleDrive] = useState(false)
   const [googleSetupOpen, setGoogleSetupOpen] = useState(false)
   const [googleGuideOpen, setGoogleGuideOpen] = useState(false)
@@ -168,6 +173,43 @@ export default function AttachmentSettings({ mode = 'attachments' }: { mode?: 'a
   const openConfiguration = (row?: AttachmentFieldConfiguration) => { setConfiguration(row ? { ...row } : { ...configuration0 }); setDrawer('configuration') }
   const openStorage = (row?: AttachmentStorageServer) => { setServer(row ? { ...row, credential: '' } : { ...storage0 }); setDrawer('storage') }
   const closeDrawer = () => setDrawer(null)
+  const openStorageFiles = async (row: AttachmentStorageServer) => {
+    setFilesServer(row)
+    setStorageFiles([])
+    setLoadingStorageFiles(true)
+    setStorageFiles(await getAttachmentStorageServerFiles(row.id))
+    setLoadingStorageFiles(false)
+  }
+  const openStoredFile = async (row: EntityAttachment, download: boolean) => {
+    const preview = download ? null : window.open('', '_blank')
+    if (preview) preview.opener = null
+    const response = await fetchAttachmentStorageServerFile(row.storageServerId, row.publicId, download)
+    if (!response.ok) {
+      preview?.close()
+      notify('The stored file could not be opened.', 'error')
+      return
+    }
+    const objectUrl = URL.createObjectURL(await response.blob())
+    if (preview) preview.location.replace(objectUrl)
+    else {
+      const anchor = document.createElement('a')
+      anchor.href = objectUrl
+      anchor.download = row.originalFileName
+      anchor.click()
+    }
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+  }
+  const purgeStoredFile = async (row: EntityAttachment) => {
+    setDeletingStorageFile(row.publicId)
+    const response = await deleteAttachmentStorageServerFile(row.storageServerId, row.publicId)
+    setDeletingStorageFile('')
+    if (!response.ok) return notify(response.error || 'The stored file could not be deleted.', 'error')
+    notify('File permanently deleted from storage.', 'success')
+    if (filesServer) {
+      setStorageFiles(await getAttachmentStorageServerFiles(filesServer.id))
+      setServers(await getAttachmentStorageServers())
+    }
+  }
   const clearGoogleCredentialFile = () => {
     setGoogleCredentialFile(null)
     setGoogleFileInputKey(value => value + 1)
@@ -449,7 +491,7 @@ export default function AttachmentSettings({ mode = 'attachments' }: { mode?: 'a
                   : storageLocationLabel(row)
               },
               { key: 'access', label: 'Access', value: row => `${row.isReadEnabled ? 'Read' : '-'} / ${row.isWriteEnabled ? 'Write' : '-'}` },
-              { key: 'linkedAttachmentCount', label: 'Files' },
+              { key: 'linkedAttachmentCount', label: 'Files', render: row => <Button type="link" size="small" onClick={() => void openStorageFiles(row)}>{row.linkedAttachmentCount} files</Button> },
               {
                 key: 'lastHealthCheckStatus',
                 label: 'Health',
@@ -464,6 +506,44 @@ export default function AttachmentSettings({ mode = 'attachments' }: { mode?: 'a
         }
       ].filter(item => mode === 'storage' ? item.key === 'storage' : item.key !== 'storage')} />
     </Card>
+
+    <Drawer
+      width="min(1120px, 98vw)"
+      open={filesServer !== null}
+      onClose={() => { setFilesServer(null); setStorageFiles([]) }}
+      title={filesServer ? `${filesServer.serverName} · Stored files (${storageFiles.length})` : 'Stored files'}
+      destroyOnClose
+    >
+      <DataTable<EntityAttachment>
+        rows={storageFiles}
+        getRowId={row => row.publicId}
+        exportFileName={`storage-files-${filesServer?.serverCode || 'server'}`}
+        emptyText={loadingStorageFiles ? 'Loading stored files…' : 'No linked files are stored on this server.'}
+        actions={row => <Space size={4}>
+          <Button size="small" onClick={() => void openStoredFile(row, false)}>Preview</Button>
+          <Button size="small" onClick={() => void openStoredFile(row, true)}>Download</Button>
+          <Popconfirm
+            title="Permanently delete this stored file?"
+            description={`This removes ${row.originalFileName} from storage and it cannot be recovered.`}
+            okText="Delete permanently"
+            okButtonProps={{ danger: true }}
+            onConfirm={() => void purgeStoredFile(row)}
+          >
+            <Button size="small" danger loading={deletingStorageFile === row.publicId}>Delete</Button>
+          </Popconfirm>
+        </Space>}
+        columns={[
+          { key: 'originalFileName', label: 'File', width: '260px', wrap: true },
+          { key: 'fieldLabel', label: 'Document type', width: '180px', render: row => row.fieldLabel || row.attributeName || row.attributeCode },
+          { key: 'owner', label: 'Linked record', width: '190px', value: row => `${row.entityType} #${row.entityId}` },
+          { key: 'fileSizeBytes', label: 'Size', value: row => fileSize(row.fileSizeBytes) },
+          { key: 'versionNumber', label: 'Version', value: row => `v${row.versionNumber}` },
+          { key: 'isCurrent', label: 'State', render: row => <Tag color={row.isCurrent === false ? 'default' : 'green'}>{row.isCurrent === false ? 'Superseded' : 'Current'}</Tag> },
+          { key: 'uploadedByName', label: 'Uploaded by', render: row => row.uploadedByName || 'External candidate' },
+          { key: 'uploadedAtUtc', label: 'Uploaded', width: '180px', render: row => new Date(row.uploadedAtUtc).toLocaleString('en-IN') }
+        ]}
+      />
+    </Drawer>
 
     <Drawer className="settings-master-drawer attachment-settings-drawer" width="min(900px, 96vw)" destroyOnClose open={drawer !== null} title={drawer === 'attribute' ? `${attribute.id ? 'Edit' : 'Add'} attachment attribute` : drawer === 'configuration' ? `${configuration.id ? 'Edit' : 'Add'} attachment field` : `${server.id ? 'Edit' : 'Add'} storage server`} onClose={closeDrawer} footer={<Space><Button onClick={closeDrawer}>Cancel</Button><Button type="primary" onClick={() => drawer === 'attribute' ? void saveAttribute() : drawer === 'configuration' ? void saveConfiguration() : drawer === 'storage' && server.storageType === 'GoogleDrive' && !server.id ? openGoogleSetup() : void saveServer()}>{drawer === 'storage' && server.storageType === 'GoogleDrive' && !server.id ? 'Set up Google Drive' : 'Save'}</Button></Space>}>
       {drawer === 'attribute' && <Form layout="vertical" requiredMark={false}><Row gutter={12}>

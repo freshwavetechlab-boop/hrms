@@ -68,6 +68,7 @@ public class RecruitmentCandidateResume
     public long Id { get; set; }
     public long CandidateId { get; set; }
     public Guid AttachmentPublicId { get; set; }
+    public bool AttachmentAvailable { get; set; }
     public string OriginalFileName { get; set; } = "";
     public int VersionNumber { get; set; }
     public bool IsPrimary { get; set; }
@@ -156,6 +157,7 @@ public class RecruitmentCandidateApplication
     public string SourceType { get; set; } = "Direct";
     public long? SourceReferenceId { get; set; }
     public long? ResumeId { get; set; }
+    public bool ResumeAvailable { get; set; }
     public string CurrentStatus { get; set; } = "New";
     public string CurrentStage { get; set; } = "New";
     public int? RecruiterUserId { get; set; }
@@ -712,7 +714,42 @@ public class RecruitmentResumeIntakeRequest
     public bool ForceUpload { get; set; }
     public bool DeferAtsScoring { get; set; }
     public string SourceType { get; set; } = "Direct Sourcing";
+    public bool DraftReviewed { get; set; }
+    public long? DraftExistingCandidateId { get; set; }
+    public string DraftFirstName { get; set; } = "";
+    public string DraftLastName { get; set; } = "";
+    public string DraftEmail { get; set; } = "";
+    public string DraftPhone { get; set; } = "";
+    public string DraftAddress { get; set; } = "";
+    public int? DraftTotalExperienceMonths { get; set; }
     public List<IFormFile> Files { get; set; } = [];
+}
+
+public class RecruitmentResumePreviewRequest
+{
+    public int ClientId { get; set; }
+    public long PositionId { get; set; }
+    public long? JobPostingId { get; set; }
+    public bool TalentPoolOnly { get; set; }
+    public bool EnableParsing { get; set; } = true;
+    public IFormFile? File { get; set; }
+}
+
+public class RecruitmentResumePreview
+{
+    public string FileName { get; set; } = "";
+    public string ParsingStatus { get; set; } = "";
+    public string ParsingError { get; set; } = "";
+    public string FirstName { get; set; } = "";
+    public string LastName { get; set; } = "";
+    public string Email { get; set; } = "";
+    public string Phone { get; set; } = "";
+    public string Address { get; set; } = "";
+    public int TotalExperienceMonths { get; set; }
+    public long? ExistingCandidateId { get; set; }
+    public string ExistingCandidateCode { get; set; } = "";
+    public long? ExistingApplicationId { get; set; }
+    public string ExistingApplicationCode { get; set; } = "";
 }
 
 public class RecruitmentTalentPoolMatchRequest
@@ -753,6 +790,10 @@ public class RecruitmentResumeIntakeItem
     public string DetectedEmail { get; set; } = "";
     public string DetectedPhone { get; set; } = "";
     public string DetectedAddress { get; set; } = "";
+    public string Message { get; set; } = "";
+    public bool CandidateReused { get; set; }
+    public bool ApplicationReused { get; set; }
+    public bool ResumeReplaced { get; set; }
     public RecruitmentCandidate? Candidate { get; set; }
     public RecruitmentCandidateResume? Resume { get; set; }
     public RecruitmentCandidateApplication? Application { get; set; }

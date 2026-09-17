@@ -7,6 +7,7 @@ using System.Net;
 using Dapper;
 using MySqlConnector;
 using Payroll.API.Models;
+using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
@@ -628,7 +629,9 @@ WHERE s.Id=@SubmissionId AND s.ClientId=@ClientId AND s.Status='Draft' AND f.Id=
         if (!ValidPublicSlug(slug)) return null;
         await using var db = Db();
         await db.OpenAsync();
-        var job = await db.QueryFirstOrDefaultAsync<PublicRecruitmentJob>(@"SELECT j.Id PostingId,j.PublicSlug,j.PublicTitle,p.PositionCode,p.PositionTitle,c.Name ClientName,p.Department,p.JobLocation,p.EmploymentType,'' WorkMode,j.OpensAtUtc,j.ClosesAtUtc,d.Summary,d.RolePurpose,j.RequireEmailOtp RequiresEmailVerification,
+        var hasPostingOtp = await JobPostingColumnExistsAsync(db, "RequireEmailOtp");
+        var job = await db.QueryFirstOrDefaultAsync<PublicRecruitmentJob>($@"SELECT j.Id PostingId,j.PublicSlug,j.PublicTitle,p.PositionCode,p.PositionTitle,c.Name ClientName,p.Department,p.JobLocation,p.EmploymentType,'' WorkMode,j.OpensAtUtc,j.ClosesAtUtc,d.Summary,d.RolePurpose,
+{(hasPostingOtp ? "j.RequireEmailOtp" : "COALESCE(formDefinition.RequiresEmailVerification,FALSE)")} RequiresEmailVerification,
 CASE WHEN (j.OpensAtUtc IS NULL OR j.OpensAtUtc<=UTC_TIMESTAMP(6))
  AND (j.ClosesAtUtc IS NULL OR j.ClosesAtUtc>=UTC_TIMESTAMP(6))
  AND (j.MaximumApplications IS NULL OR j.ApplicationCount<j.MaximumApplications)
@@ -643,6 +646,9 @@ LEFT JOIN form_versions applicationFormVersion ON applicationFormVersion.Id=j.Ap
 LEFT JOIN form_definitions formDefinition ON formDefinition.Id=applicationFormVersion.FormDefinitionId
 WHERE j.PublicSlug=@Slug AND j.Status='Published'", new { Slug = slug.Trim() });
         if (job is null) return null;
+        job.Summary = SafePublicNarrative(job.Summary);
+        job.RolePurpose = SafePublicNarrative(job.RolePurpose);
+        if (string.IsNullOrWhiteSpace(job.Summary)) job.Summary = job.RolePurpose;
         var proofConfigurationError = await pipelines.GetCandidateProofValidationErrorAsync(job.PostingId);
         if (proofConfigurationError.Length > 0)
         {
@@ -796,10 +802,11 @@ WHERE TokenHash=@TokenHash AND PostingId=@PostingId FOR UPDATE", new { TokenHash
             if (duplicate > 0) return (null, "This application session has already been created. Refresh the page to start again if it expired.");
             var matchingSubjects = (await db.QueryAsync<ExternalSubjectRow>(@"SELECT Id,CandidateId,Email,NormalizedEmail,Phone,NormalizedPhone
 FROM external_portal_subjects
-WHERE ClientId=@ClientId AND (NormalizedEmail=@Email OR NormalizedPhone=@Phone)
+WHERE ClientId=@ClientId AND (NormalizedEmail=@Email
+ OR NormalizedPhone=@Phone OR (LENGTH(@Phone)>=10 AND RIGHT(NormalizedPhone,10)=RIGHT(@Phone,10)))
 ORDER BY Id FOR UPDATE", new { posting.ClientId, Email = challenge.NormalizedEmail, Phone = challenge.NormalizedPhone }, transaction)).ToList();
             var emailSubject = matchingSubjects.FirstOrDefault(row => row.NormalizedEmail == challenge.NormalizedEmail);
-            var phoneSubject = matchingSubjects.FirstOrDefault(row => row.NormalizedPhone == challenge.NormalizedPhone);
+            var phoneSubject = matchingSubjects.FirstOrDefault(row => NormalizePhone(row.NormalizedPhone) == challenge.NormalizedPhone);
             if (emailSubject is not null && phoneSubject is not null && emailSubject.Id != phoneSubject.Id)
                 return (null, "This phone number is already linked to another applicant profile. Contact HR to correct it.");
             var subject = emailSubject ?? phoneSubject;
@@ -815,6 +822,10 @@ VALUES (@ClientId,@Email,@NormalizedEmail,@Phone,@NormalizedPhone,TRUE,UTC_TIMES
                 await db.ExecuteAsync(@"UPDATE external_portal_subjects SET Email=@Email,NormalizedEmail=@NormalizedEmail,Phone=@Phone,NormalizedPhone=@NormalizedPhone,
 ConsentAccepted=TRUE,ConsentAcceptedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id", new { challenge.Email, challenge.NormalizedEmail, challenge.Phone, challenge.NormalizedPhone, Id = subjectId }, transaction);
             }
+            var identity = await ResolvePublicIdentityAsync(db, transaction, posting.ClientId, posting.PositionId, challenge.NormalizedEmail, challenge.NormalizedPhone, subject?.CandidateId);
+            if (!string.IsNullOrWhiteSpace(identity.Error)) throw new InvalidOperationException(identity.Error);
+            if (identity.CandidateId.HasValue)
+                await db.ExecuteAsync("UPDATE external_portal_subjects SET CandidateId=@CandidateId WHERE Id=@Id", new { identity.CandidateId, Id = subjectId }, transaction);
             var submissionId = await db.ExecuteScalarAsync<long>(@"INSERT INTO form_submissions (FormVersionId,ClientId,ExternalSubjectId,EntityType,Status) VALUES (@FormVersionId,@ClientId,@SubjectId,'FORM_SUBMISSION','Draft');SELECT LAST_INSERT_ID();", new { FormVersionId = posting.ApplicationFormVersionId!.Value, posting.ClientId, SubjectId = subjectId }, transaction);
             var initialValues = (await db.QueryAsync<PublicFormValue>(@"SELECT DISTINCT f.Id FieldId,
 CASE WHEN a.SemanticCode='EMAIL' THEN @Email WHEN a.SemanticCode='PHONE' THEN @Phone ELSE NULL END TextValue
@@ -830,7 +841,17 @@ ON DUPLICATE KEY UPDATE TextValue=VALUES(TextValue),UpdatedAtUtc=UTC_TIMESTAMP(6
             await db.ExecuteAsync("UPDATE form_public_verification_challenges SET AttemptCount=AttemptCount+1,VerifiedAtUtc=UTC_TIMESTAMP(6),ConsumedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id", new { challenge.Id }, transaction);
             await EventAsync(db, transaction, submissionId, "STARTED", "Email-verified public application started.", subjectId, ipAddress, userAgent);
             await transaction.CommitAsync();
-            return (new PublicApplicationSession { SessionToken = rawToken, SubmissionId = submissionId, ExpiresAtUtc = expires, Status = "Draft", InitialValues = initialValues }, "");
+            return (new PublicApplicationSession
+            {
+                SessionToken = rawToken,
+                SubmissionId = submissionId,
+                ExpiresAtUtc = expires,
+                Status = "Draft",
+                InitialValues = initialValues,
+                ExistingCandidate = identity.CandidateId.HasValue,
+                ExistingApplicationCode = identity.ApplicationCode,
+                Message = IdentityMessage(identity)
+            }, "");
         }
         catch (Exception exception)
         {
@@ -875,10 +896,11 @@ AND EXISTS (SELECT 1 FROM form_versions version WHERE version.Id=posting.Applica
             if (duplicate > 0) return (null, "This application session has already been created. Refresh the page to start again if it expired.");
             var matchingSubjects = (await db.QueryAsync<ExternalSubjectRow>(@"SELECT Id,CandidateId,Email,NormalizedEmail,Phone,NormalizedPhone
 FROM external_portal_subjects
-WHERE ClientId=@ClientId AND (NormalizedEmail=@Email OR NormalizedPhone=@Phone)
+WHERE ClientId=@ClientId AND (NormalizedEmail=@Email
+ OR NormalizedPhone=@Phone OR (LENGTH(@Phone)>=10 AND RIGHT(NormalizedPhone,10)=RIGHT(@Phone,10)))
 ORDER BY Id FOR UPDATE", new { posting.ClientId, Email = normalizedEmail, Phone = normalizedPhone }, transaction)).ToList();
             var emailSubject = matchingSubjects.FirstOrDefault(row => row.NormalizedEmail == normalizedEmail);
-            var phoneSubject = matchingSubjects.FirstOrDefault(row => row.NormalizedPhone == normalizedPhone);
+            var phoneSubject = matchingSubjects.FirstOrDefault(row => NormalizePhone(row.NormalizedPhone) == normalizedPhone);
             if (emailSubject is not null && phoneSubject is not null && emailSubject.Id != phoneSubject.Id)
                 return (null, "This phone number is already linked to another applicant profile. Contact HR to correct it.");
             var subject = emailSubject ?? phoneSubject;
@@ -894,6 +916,10 @@ VALUES (@ClientId,@Email,@NormalizedEmail,@Phone,@NormalizedPhone,TRUE,UTC_TIMES
                 await db.ExecuteAsync(@"UPDATE external_portal_subjects SET Email=@Email,NormalizedEmail=@NormalizedEmail,Phone=@Phone,NormalizedPhone=@NormalizedPhone,
 ConsentAccepted=TRUE,ConsentAcceptedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id", new { Email = email, NormalizedEmail = normalizedEmail, Phone = phone, NormalizedPhone = normalizedPhone, Id = subjectId }, transaction);
             }
+            var identity = await ResolvePublicIdentityAsync(db, transaction, posting.ClientId, posting.PositionId, normalizedEmail, normalizedPhone, subject?.CandidateId);
+            if (!string.IsNullOrWhiteSpace(identity.Error)) throw new InvalidOperationException(identity.Error);
+            if (identity.CandidateId.HasValue)
+                await db.ExecuteAsync("UPDATE external_portal_subjects SET CandidateId=@CandidateId WHERE Id=@Id", new { identity.CandidateId, Id = subjectId }, transaction);
             var submissionId = await db.ExecuteScalarAsync<long>(@"INSERT INTO form_submissions (FormVersionId,ClientId,ExternalSubjectId,EntityType,Status) VALUES (@FormVersionId,@ClientId,@SubjectId,'FORM_SUBMISSION','Draft');SELECT LAST_INSERT_ID();", new { FormVersionId = posting.ApplicationFormVersionId!.Value, posting.ClientId, SubjectId = subjectId }, transaction);
             var initialValues = (await db.QueryAsync<PublicFormValue>(@"SELECT DISTINCT f.Id FieldId,
 CASE WHEN a.SemanticCode='EMAIL' THEN @Email WHEN a.SemanticCode='PHONE' THEN @Phone ELSE NULL END TextValue
@@ -908,7 +934,17 @@ ON DUPLICATE KEY UPDATE TextValue=VALUES(TextValue),UpdatedAtUtc=UTC_TIMESTAMP(6
             await db.ExecuteAsync(@"INSERT INTO form_public_sessions (TokenHash,PostingId,SubmissionId,ExternalSubjectId,Purpose,IdempotencyHash,ExpiresAtUtc,IpAddress,UserAgent) VALUES (@TokenHash,@PostingId,@SubmissionId,@SubjectId,'APPLICATION',@IdempotencyHash,@Expires,@IpAddress,@UserAgent)", new { TokenHash = Hash(rawToken), posting.PostingId, SubmissionId = submissionId, SubjectId = subjectId, IdempotencyHash = idempotencyHash, Expires = expires, IpAddress = Truncate(ipAddress, 80), UserAgent = Truncate(userAgent, 500) }, transaction);
             await EventAsync(db, transaction, submissionId, "STARTED", "Public application started without email OTP as configured on the candidate form.", subjectId, ipAddress, userAgent);
             await transaction.CommitAsync();
-            return (new PublicApplicationSession { SessionToken = rawToken, SubmissionId = submissionId, ExpiresAtUtc = expires, Status = "Draft", InitialValues = initialValues }, "");
+            return (new PublicApplicationSession
+            {
+                SessionToken = rawToken,
+                SubmissionId = submissionId,
+                ExpiresAtUtc = expires,
+                Status = "Draft",
+                InitialValues = initialValues,
+                ExistingCandidate = identity.CandidateId.HasValue,
+                ExistingApplicationCode = identity.ApplicationCode,
+                Message = IdentityMessage(identity)
+            }, "");
         }
         catch (Exception exception)
         {
@@ -1541,6 +1577,132 @@ WHERE s.Id=@SubmissionId AND f.Id=@FieldId AND f.IsActive=TRUE AND t.TypeCode='U
         return row is null ? (null, "This field is not an active upload field.") : (row, "");
     }
 
+    public async Task<(long SubmissionId, int ClientId, string Error)> AuthorizePublicFileAsync(string token, long fieldId, Guid publicId)
+    {
+        if (string.IsNullOrWhiteSpace(token) || fieldId <= 0 || publicId == Guid.Empty)
+            return (0, 0, "Application file was not found.");
+        await using var db = Db();
+        await db.OpenAsync();
+        var session = await ValidateSessionAsync(db, token, false);
+        if (session is null) return (0, 0, "Application session is invalid or expired.");
+        var linked = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*)
+FROM form_submission_attachments link
+JOIN entity_attachments attachment ON attachment.id=link.AttachmentId
+ AND attachment.public_id=@PublicId AND attachment.entity_type='FORM_SUBMISSION'
+ AND attachment.entity_id=link.SubmissionId AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
+WHERE link.SubmissionId=@SubmissionId AND link.FieldId=@FieldId AND link.AttachmentPublicId=@PublicId",
+            new { session.SubmissionId, FieldId = fieldId, PublicId = publicId.ToString() });
+        if (linked != 1) return (0, 0, "Application file was not found.");
+        var clientId = await db.ExecuteScalarAsync<int>("SELECT ClientId FROM form_submissions WHERE Id=@SubmissionId", new { session.SubmissionId });
+        return (session.SubmissionId, clientId, "");
+    }
+
+    public async Task UnlinkPublicFileAsync(long submissionId, long fieldId, Guid publicId, string ipAddress, string userAgent)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        await using var transaction = await db.BeginTransactionAsync();
+        await db.ExecuteAsync(@"DELETE FROM form_submission_attachments
+WHERE SubmissionId=@SubmissionId AND FieldId=@FieldId AND AttachmentPublicId=@PublicId",
+            new { SubmissionId = submissionId, FieldId = fieldId, PublicId = publicId.ToString() }, transaction);
+        await EventAsync(db, transaction, submissionId, "FILE_REMOVED", "An application document was removed before submission.", null, ipAddress, userAgent);
+        await transaction.CommitAsync();
+    }
+
+    public async Task<PublicResumeParsingContext?> GetPublicResumeParsingContextAsync(string token, long fieldId)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return null;
+        await using var db = Db();
+        await db.OpenAsync();
+        var session = await ValidateSessionAsync(db, token, false);
+        if (session is null) return null;
+        var isResume = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*)
+FROM form_fields fieldRow
+JOIN form_field_semantic_mappings mapping ON mapping.FieldId=fieldRow.Id
+JOIN form_semantic_attributes semantic ON semantic.Id=mapping.SemanticAttributeId AND semantic.SemanticCode='RESUME'
+JOIN form_submissions submission ON submission.FormVersionId=fieldRow.FormVersionId
+WHERE submission.Id=@SubmissionId AND fieldRow.Id=@FieldId AND fieldRow.IsActive=TRUE", new { session.SubmissionId, FieldId = fieldId }) > 0;
+        if (!isResume) return null;
+        var parsingColumnsAvailable = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM information_schema.columns
+WHERE table_schema=DATABASE() AND table_name='recruitment_job_postings'
+AND column_name IN ('EnableResumeParsing','EnableAiParsing')") == 2;
+        return await db.QueryFirstOrDefaultAsync<PublicResumeParsingContext>($@"SELECT @SubmissionId SubmissionId,posting.ClientId,posting.PositionId,
+{(parsingColumnsAvailable ? "posting.EnableResumeParsing" : "TRUE")} EnableResumeParsing,
+{(parsingColumnsAvailable ? "posting.EnableAiParsing" : "TRUE")} EnableAiParsing
+FROM recruitment_job_postings posting WHERE posting.Id=@PostingId", new { session.SubmissionId, session.PostingId });
+    }
+
+    public async Task<IReadOnlyList<PublicFormValue>> BuildResumePrefillValuesAsync(long submissionId, ResumeParseResult parse)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var fields = (await db.QueryAsync<ResumePrefillFieldRow>(@"SELECT fieldRow.Id FieldId,typeRow.TypeCode,
+COALESCE(NULLIF(semantic.SemanticCode,''),fieldRow.StableFieldCode) SemanticCode
+FROM form_submissions submission
+JOIN form_fields fieldRow ON fieldRow.FormVersionId=submission.FormVersionId AND fieldRow.IsActive=TRUE
+JOIN form_field_types typeRow ON typeRow.Id=fieldRow.FieldTypeId
+LEFT JOIN form_field_semantic_mappings mapping ON mapping.FieldId=fieldRow.Id
+LEFT JOIN form_semantic_attributes semantic ON semantic.Id=mapping.SemanticAttributeId
+WHERE submission.Id=@SubmissionId", new { SubmissionId = submissionId })).ToList();
+        var facts = parse.Facts;
+        var names = Regex.Split((facts.FullName ?? "").Trim(), @"\s+").Where(value => value.Length > 0).ToArray();
+        var firstName = names.FirstOrDefault() ?? "";
+        var lastName = names.Length > 1 ? string.Join(" ", names.Skip(1)) : "";
+        var experience = parse.Sections.FirstOrDefault(section => section.SectionCode.Equals("EXPERIENCE", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
+        var education = parse.Sections.FirstOrDefault(section => section.SectionCode.Equals("EDUCATION", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
+        var certifications = parse.Sections.FirstOrDefault(section => section.SectionCode.Equals("CERTIFICATIONS", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
+        var (currentDesignation, currentCompany) = CurrentRoleFromResume(experience);
+        var highestQualification = FirstResumeLine(education).Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+        var values = new List<PublicFormValue>();
+        foreach (var field in fields.GroupBy(row => row.FieldId).Select(group => group.First()))
+        {
+            var value = new PublicFormValue { FieldId = field.FieldId };
+            switch (field.SemanticCode.ToUpperInvariant())
+            {
+                case "FIRST_NAME": value.TextValue = firstName; break;
+                case "LAST_NAME": value.TextValue = lastName; break;
+                case "EMAIL": value.TextValue = facts.Email; break;
+                case "PHONE": value.TextValue = facts.Phone; break;
+                case "CURRENT_LOCATION": value.TextValue = facts.ResidentialAddress; break;
+                case "CURRENT_DESIGNATION": value.TextValue = currentDesignation; break;
+                case "CURRENT_COMPANY": value.TextValue = currentCompany; break;
+                case "HIGHEST_QUALIFICATION": value.TextValue = highestQualification; break;
+                case "CERTIFICATIONS": value.TextValue = ResumeSectionText(certifications, 2000); break;
+                case "TOTAL_EXPERIENCE_MONTHS" when facts.TotalExperienceMonths.HasValue:
+                    value.IntegerValue = facts.TotalExperienceMonths.Value; break;
+                case "TOTAL_EXPERIENCE_YEARS" when facts.TotalExperienceMonths.HasValue:
+                    value.DecimalValue = Math.Round(facts.TotalExperienceMonths.Value / 12m, 1, MidpointRounding.AwayFromZero); break;
+                default: continue;
+            }
+            if (!string.IsNullOrWhiteSpace(value.TextValue) || value.IntegerValue.HasValue || value.DecimalValue.HasValue) values.Add(value);
+        }
+        return values;
+    }
+
+    private static (string Designation, string Company) CurrentRoleFromResume(string experience)
+    {
+        var line = FirstResumeLine(experience);
+        if (line.Length == 0) return ("", "");
+        var parts = line.Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length >= 2) return (Truncate(parts[0], 180), Truncate(parts[1], 180));
+        var at = Regex.Match(line, @"^(?<title>[^,]{2,100})\s+(?:at|@)\s+(?<company>[^,]{2,100})", RegexOptions.IgnoreCase);
+        return at.Success
+            ? (Truncate(at.Groups["title"].Value.Trim(), 180), Truncate(at.Groups["company"].Value.Trim(), 180))
+            : (Truncate(line, 180), "");
+    }
+
+    private static string FirstResumeLine(string value) => (value ?? "")
+        .Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+        .Select(line => Regex.Replace(line, @"^[\s\u2022\-*]+", "").Trim())
+        .FirstOrDefault(line => line.Length > 0) ?? "";
+
+    private static string ResumeSectionText(string value, int maximumLength)
+    {
+        var clean = string.Join("\n", (value ?? "").Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => Regex.Replace(line, @"^[\s\u2022\-*]+", "").Trim()));
+        return Truncate(clean, maximumLength);
+    }
+
     public async Task LinkAttachmentAsync(string token, long fieldId, long attachmentId, Guid publicId, string ipAddress, string userAgent)
     {
         if (string.IsNullOrWhiteSpace(token) || attachmentId <= 0 || fieldId <= 0 || publicId == Guid.Empty)
@@ -1637,9 +1799,19 @@ WHERE s.Id=@SubmissionId FOR UPDATE", new { session.PostingId, session.Submissio
             if (requiredError.Length > 0) return (null, requiredError);
             var ruleError = await SubmissionRuleErrorAsync(db, transaction, submission.SubmissionId, true, null);
             if (ruleError.Length > 0) return (null, ruleError);
-            var semantic = (await db.QueryAsync<SemanticValueRow>(@"SELECT a.SemanticCode,v.TextValue,v.IntegerValue,v.DecimalValue,v.DateValue,v.DateTimeValue,v.BooleanValue
-FROM form_field_semantic_mappings m JOIN form_semantic_attributes a ON a.Id=m.SemanticAttributeId JOIN form_submission_values v ON v.FieldId=m.FieldId AND v.SubmissionId=@SubmissionId", new { submission.SubmissionId }, transaction)).ToList();
+            var semantic = (await db.QueryAsync<SemanticValueRow>(@"SELECT COALESCE(NULLIF(a.SemanticCode,''),fieldRow.StableFieldCode) SemanticCode,
+v.TextValue,v.IntegerValue,v.DecimalValue,v.DateValue,v.DateTimeValue,v.BooleanValue
+FROM form_submission_values v
+JOIN form_fields fieldRow ON fieldRow.Id=v.FieldId AND fieldRow.FormVersionId=@FormVersionId
+LEFT JOIN form_field_semantic_mappings m ON m.FieldId=fieldRow.Id
+LEFT JOIN form_semantic_attributes a ON a.Id=m.SemanticAttributeId
+WHERE v.SubmissionId=@SubmissionId", new { submission.SubmissionId, submission.FormVersionId }, transaction)).ToList();
             string S(string code) => semantic.FirstOrDefault(row => row.SemanticCode == code)?.TextValue?.Trim() ?? "";
+            decimal? N(string code)
+            {
+                var value = semantic.FirstOrDefault(row => row.SemanticCode == code);
+                return value?.DecimalValue ?? value?.IntegerValue;
+            }
             var subject = await db.QueryFirstAsync<ExternalSubjectRow>("SELECT Id,CandidateId,Email,NormalizedEmail,Phone,NormalizedPhone FROM external_portal_subjects WHERE Id=@Id FOR UPDATE", new { Id = session.ExternalSubjectId }, transaction);
             var firstName = S("FIRST_NAME");
             var lastName = S("LAST_NAME");
@@ -1652,19 +1824,21 @@ FROM form_field_semantic_mappings m JOIN form_semantic_attributes a ON a.Id=m.Se
             if (normalizedEmail.Length == 0 && normalizedPhone.Length == 0) return (null, "Candidate email or phone is required.");
             if (subject.NormalizedEmail.Length > 0 && normalizedEmail.Length > 0 && subject.NormalizedEmail != normalizedEmail)
                 return (null, "The application email does not match the email used to start this session.");
-            if (subject.NormalizedPhone.Length > 0 && normalizedPhone.Length > 0 && subject.NormalizedPhone != normalizedPhone)
+            if (subject.NormalizedPhone.Length > 0 && normalizedPhone.Length > 0 && NormalizePhone(subject.NormalizedPhone) != normalizedPhone)
                 return (null, "The application phone does not match the phone used to start this session.");
             long? candidateId = subject.CandidateId;
             if (candidateId.HasValue)
             {
-                var candidateBelongsToClient = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidates WHERE Id=@Id AND ClientId=@ClientId", new { Id = candidateId.Value, submission.ClientId }, transaction);
+                var candidateBelongsToClient = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidates WHERE Id=@Id AND ClientId IN (0,@ClientId) AND ProfileStatus<>'Archived'", new { Id = candidateId.Value, submission.ClientId }, transaction);
                 if (candidateBelongsToClient == 0) return (null, "The applicant identity is invalid for this job.");
             }
             else
             {
                 var matchingCandidateIds = (await db.QueryAsync<long>(@"SELECT Id FROM recruitment_candidates
-WHERE ClientId=@ClientId AND ((@Email<>'' AND NormalizedEmail=@Email) OR (@Phone<>'' AND NormalizedPhone=@Phone))
-ORDER BY Id FOR UPDATE", new { submission.ClientId, Email = normalizedEmail, Phone = normalizedPhone }, transaction)).Distinct().ToList();
+WHERE ClientId IN (0,@ClientId) AND ProfileStatus<>'Archived'
+AND ((@Email<>'' AND NormalizedEmail=@Email)
+ OR (@Phone<>'' AND (NormalizedPhone=@Phone OR (LENGTH(@Phone)>=10 AND RIGHT(NormalizedPhone,10)=RIGHT(@Phone,10)))))
+ORDER BY (ClientId=@ClientId) DESC,Id FOR UPDATE", new { submission.ClientId, Email = normalizedEmail, Phone = normalizedPhone }, transaction)).Distinct().ToList();
                 if (matchingCandidateIds.Count > 1)
                     return (null, "The supplied email and phone match different candidate profiles. Contact HR before applying.");
                 candidateId = matchingCandidateIds.SingleOrDefault();
@@ -1676,6 +1850,31 @@ ORDER BY Id FOR UPDATE", new { submission.ClientId, Email = normalizedEmail, Pho
                 candidateId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_candidates (CandidateCode,ClientId,FirstName,LastName,Email,NormalizedEmail,Phone,NormalizedPhone,CurrentCompany,CurrentTitle,TotalExperienceMonths,CurrentLocation,PreferredLocationsJson,NoticePeriodDays,CurrentCtc,ExpectedCtc,HighestQualification,SourceType,SourceReferenceId,ProfileStatus,ConsentStatus,ConsentCapturedAt,RetentionUntil,CreatedByUserId)
 VALUES (@Code,@ClientId,@FirstName,@LastName,@Email,@NormalizedEmail,@Phone,@NormalizedPhone,'','',0,'',JSON_ARRAY(),0,0,0,'','Public Job',@PostingId,'Active','Granted',UTC_TIMESTAMP(6),DATE_ADD(UTC_DATE(),INTERVAL 24 MONTH),0);SELECT LAST_INSERT_ID();", new { Code = candidateCode, ClientId = submission.ClientId, FirstName = firstName, LastName = lastName, Email = email, NormalizedEmail = normalizedEmail, Phone = phone, NormalizedPhone = normalizedPhone, submission.PostingId }, transaction);
             }
+            await db.ExecuteAsync(@"UPDATE recruitment_candidates SET
+FirstName=COALESCE(NULLIF(@FirstName,''),FirstName),LastName=COALESCE(NULLIF(@LastName,''),LastName),
+CurrentCompany=COALESCE(NULLIF(@CurrentCompany,''),CurrentCompany),CurrentTitle=COALESCE(NULLIF(@CurrentTitle,''),CurrentTitle),
+CurrentLocation=COALESCE(NULLIF(@CurrentLocation,''),CurrentLocation),HighestQualification=COALESCE(NULLIF(@HighestQualification,''),HighestQualification),
+TotalExperienceMonths=COALESCE(@TotalExperienceMonths,TotalExperienceMonths),NoticePeriodDays=COALESCE(@NoticePeriodDays,NoticePeriodDays),
+CurrentCtc=COALESCE(@CurrentCtc,CurrentCtc),ExpectedCtc=COALESCE(@ExpectedCtc,ExpectedCtc),UpdatedAt=UTC_TIMESTAMP()
+WHERE Id=@CandidateId AND ClientId IN (0,@ClientId)", new
+            {
+                CandidateId = candidateId.Value,
+                ClientId = submission.ClientId,
+                FirstName = firstName,
+                LastName = lastName,
+                CurrentCompany = S("CURRENT_COMPANY"),
+                CurrentTitle = S("CURRENT_DESIGNATION"),
+                CurrentLocation = S("CURRENT_LOCATION"),
+                HighestQualification = S("HIGHEST_QUALIFICATION"),
+                TotalExperienceMonths = N("TOTAL_EXPERIENCE_MONTHS") is decimal experienceMonths
+                    ? (int?)Math.Max(0, decimal.ToInt32(decimal.Truncate(experienceMonths)))
+                    : N("TOTAL_EXPERIENCE_YEARS") is decimal experienceYears
+                        ? (int?)Math.Max(0, decimal.ToInt32(decimal.Round(experienceYears * 12m, 0, MidpointRounding.AwayFromZero)))
+                        : null,
+                NoticePeriodDays = N("NOTICE_PERIOD_DAYS") is decimal notice ? (int?)Math.Max(0, decimal.ToInt32(decimal.Truncate(notice))) : null,
+                CurrentCtc = N("CURRENT_CTC"),
+                ExpectedCtc = N("EXPECTED_CTC")
+            }, transaction);
             await db.ExecuteAsync(@"UPDATE external_portal_subjects SET CandidateId=@CandidateId,
 Email=CASE WHEN NormalizedEmail='' THEN @Email ELSE Email END,NormalizedEmail=CASE WHEN NormalizedEmail='' THEN @NormalizedEmail ELSE NormalizedEmail END,
 Phone=CASE WHEN NormalizedPhone='' THEN @Phone ELSE Phone END,NormalizedPhone=CASE WHEN NormalizedPhone='' THEN @NormalizedPhone ELSE NormalizedPhone END
@@ -1683,9 +1882,11 @@ WHERE Id=@Id", new { CandidateId = candidateId.Value, Email = email, NormalizedE
             var existingApplication = await db.QueryFirstOrDefaultAsync<ApplicationIdentityRow>("SELECT Id,ApplicationCode,JobPostingId FROM recruitment_candidate_applications WHERE CandidateId=@CandidateId AND PositionId=@PositionId", new { CandidateId = candidateId.Value, submission.PositionId }, transaction);
             long applicationId;
             string applicationCode;
+            var applicationReused = existingApplication is not null;
             if (existingApplication is not null)
             {
-                return (null, $"You have already applied for this position under application {existingApplication.ApplicationCode}.");
+                applicationId = existingApplication.Id;
+                applicationCode = existingApplication.ApplicationCode;
             }
             else
             {
@@ -1697,9 +1898,20 @@ VALUES (@Code,@CandidateId,@PositionId,@ClientId,'Public Job',@PostingId,@Postin
             }
             await PromoteSubmissionAttachmentsAsync(db, transaction, submission.SubmissionId, candidateId.Value, applicationId, session.ExternalSubjectId);
             await db.ExecuteAsync("UPDATE form_submissions SET CandidateId=@CandidateId,ApplicationId=@ApplicationId,EntityType='CANDIDATE',EntityId=@CandidateId,Status='Submitted',SubmittedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@SubmissionId;UPDATE form_public_sessions SET RevokedAtUtc=UTC_TIMESTAMP(6),LastUsedAtUtc=UTC_TIMESTAMP(6),UseCount=UseCount+1 WHERE Id=@SessionId", new { CandidateId = candidateId.Value, ApplicationId = applicationId, submission.SubmissionId, SessionId = session.Id }, transaction);
-            await EventAsync(db, transaction, submission.SubmissionId, "SUBMITTED", $"Application {applicationCode} submitted.", session.ExternalSubjectId, ipAddress, userAgent);
+            await EventAsync(db, transaction, submission.SubmissionId, applicationReused ? "RESUME_REPLACED" : "SUBMITTED",
+                applicationReused ? $"Latest resume submitted for existing application {applicationCode}." : $"Application {applicationCode} submitted.", session.ExternalSubjectId, ipAddress, userAgent);
             await transaction.CommitAsync();
-            return (new PublicApplicationResult { SubmissionId = submission.SubmissionId, CandidateId = candidateId.Value, ApplicationId = applicationId, ApplicationCode = applicationCode }, "");
+            return (new PublicApplicationResult
+            {
+                SubmissionId = submission.SubmissionId,
+                CandidateId = candidateId.Value,
+                ApplicationId = applicationId,
+                ApplicationCode = applicationCode,
+                Status = applicationReused ? "ResumeUpdated" : "Submitted",
+                Message = applicationReused
+                    ? $"Already registered as {applicationCode}. Your latest resume replaced the primary resume and ATS data is being refreshed."
+                    : "Application submitted successfully."
+            }, "");
         }
         catch (Exception exception)
         {
@@ -1888,11 +2100,53 @@ WHERE child.`{column}` IS NOT NULL AND parent.`{parentColumn}` IS NULL");
         return rows.ToList();
     }
 
+    private static async Task<PublicIdentityMatch> ResolvePublicIdentityAsync(
+        MySqlConnection db,
+        MySqlTransaction transaction,
+        int clientId,
+        long positionId,
+        string normalizedEmail,
+        string normalizedPhone,
+        long? linkedCandidateId)
+    {
+        var matches = (await db.QueryAsync<long>(@"SELECT Id FROM recruitment_candidates
+WHERE ProfileStatus<>'Archived' AND ClientId IN (0,@ClientId)
+AND ((@Email<>'' AND NormalizedEmail=@Email)
+ OR (@Phone<>'' AND (NormalizedPhone=@Phone OR (LENGTH(@Phone)>=10 AND RIGHT(NormalizedPhone,10)=RIGHT(@Phone,10)))))
+ORDER BY (ClientId=@ClientId) DESC,Id FOR UPDATE",
+            new { ClientId = clientId, Email = normalizedEmail, Phone = normalizedPhone }, transaction)).Distinct().ToList();
+        if (linkedCandidateId.HasValue && !matches.Contains(linkedCandidateId.Value))
+            return new PublicIdentityMatch { Error = "The supplied contact details conflict with an existing applicant profile. Contact HR before continuing." };
+        if (matches.Count > 1)
+            return new PublicIdentityMatch { Error = "The supplied email and phone match different candidate profiles. Contact HR before continuing." };
+        long? candidateId = linkedCandidateId;
+        if (!candidateId.HasValue)
+        {
+            var matchedCandidateId = matches.SingleOrDefault();
+            candidateId = matchedCandidateId > 0 ? matchedCandidateId : null;
+        }
+        var applicationCode = candidateId.HasValue
+            ? await db.ExecuteScalarAsync<string>(@"SELECT ApplicationCode FROM recruitment_candidate_applications
+WHERE CandidateId=@CandidateId AND PositionId=@PositionId ORDER BY Id LIMIT 1",
+                new { CandidateId = candidateId.Value, PositionId = positionId }, transaction) ?? ""
+            : "";
+        return new PublicIdentityMatch { CandidateId = candidateId, ApplicationCode = applicationCode };
+    }
+
+    private static string IdentityMessage(PublicIdentityMatch identity) =>
+        !string.IsNullOrWhiteSpace(identity.ApplicationCode)
+            ? $"Already registered for this position as {identity.ApplicationCode}. Uploading a new resume will replace the primary resume and refresh ATS data."
+            : identity.CandidateId.HasValue
+                ? "An existing talent profile was found. It will be reused for this position; upload the latest resume and review the parsed details."
+                : "";
+
     private static async Task PromoteSubmissionAttachmentsAsync(MySqlConnection db, MySqlTransaction transaction, long submissionId, long candidateId, long applicationId, long externalSubjectId)
     {
         await db.ExecuteAsync(@"UPDATE entity_attachments a
 JOIN form_submission_attachments sa ON sa.AttachmentId=a.id AND sa.SubmissionId=@SubmissionId
-SET a.entity_type='CANDIDATE',a.entity_id=@CandidateId,a.uploaded_by_external_subject_id=@ExternalSubjectId
+SET a.entity_type='CANDIDATE',a.entity_id=@CandidateId,
+a.client_id=(SELECT candidate.ClientId FROM recruitment_candidates candidate WHERE candidate.Id=@CandidateId),
+a.uploaded_by_external_subject_id=@ExternalSubjectId
 WHERE a.entity_type='FORM_SUBMISSION' AND a.entity_id=@SubmissionId AND a.is_deleted=FALSE", new { SubmissionId = submissionId, CandidateId = candidateId, ExternalSubjectId = externalSubjectId }, transaction);
 
         var resumePublicId = await db.ExecuteScalarAsync<Guid?>(@"SELECT sa.AttachmentPublicId
@@ -1903,6 +2157,12 @@ JOIN entity_attachments a ON a.id=sa.AttachmentId AND a.entity_type='CANDIDATE' 
 WHERE sa.SubmissionId=@SubmissionId ORDER BY sa.Id DESC LIMIT 1", new { SubmissionId = submissionId, CandidateId = candidateId }, transaction);
         if (!resumePublicId.HasValue) return;
         var resumePublicIdText = resumePublicId.Value.ToString();
+        await db.ExecuteAsync(@"UPDATE entity_attachments oldAttachment
+JOIN recruitment_candidate_resumes oldResume ON oldResume.AttachmentPublicId=CAST(oldAttachment.public_id AS CHAR(36))
+SET oldAttachment.is_current=FALSE
+WHERE oldResume.CandidateId=@CandidateId AND oldAttachment.public_id<>@PublicId
+  AND oldAttachment.entity_type='CANDIDATE' AND oldAttachment.entity_id=@CandidateId
+  AND oldAttachment.is_deleted=FALSE", new { CandidateId = candidateId, PublicId = resumePublicIdText }, transaction);
         var resumeId = await db.ExecuteScalarAsync<long?>("SELECT Id FROM recruitment_candidate_resumes WHERE AttachmentPublicId=@PublicId AND CandidateId=@CandidateId", new { PublicId = resumePublicIdText, CandidateId = candidateId }, transaction);
         if (!resumeId.HasValue)
         {
@@ -1924,18 +2184,34 @@ VALUES (@CandidateId,@PublicId,@Version,TRUE,'Pending','',JSON_OBJECT(),'','',''
     private static string ActiveStatus(string value) => value.Equals("Inactive", StringComparison.OrdinalIgnoreCase) ? "Inactive" : "Active";
     private static string Code(string value) => string.Join("_", (value ?? "").Trim().ToUpperInvariant().Split([' ', '-', '/', '\\'], StringSplitOptions.RemoveEmptyEntries));
     private static string NormalizeEmail(string value) => (value ?? "").Trim().ToLowerInvariant();
-    private static string NormalizePhone(string value) => new((value ?? "").Where(char.IsDigit).ToArray());
+    private static string NormalizePhone(string value)
+    {
+        var digits = new string((value ?? "").Where(char.IsDigit).ToArray());
+        if (digits.Length == 12 && digits.StartsWith("91", StringComparison.Ordinal)) return digits[2..];
+        if (digits.Length == 11 && digits.StartsWith('0')) return digits[1..];
+        return digits;
+    }
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
     private static string RandomToken() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     private static string Truncate(string value, int max) => string.IsNullOrEmpty(value) ? "" : value.Length <= max ? value : value[..max];
 
-    private static Task<PostingSessionRow?> FindAvailablePostingAsync(MySqlConnection db, string slug) =>
-        db.QueryFirstOrDefaultAsync<PostingSessionRow>(@"SELECT posting.Id PostingId,posting.ClientId,posting.PositionId,posting.ApplicationFormVersionId,posting.RequireEmailOtp,position.PositionTitle
+    private static async Task<PostingSessionRow?> FindAvailablePostingAsync(MySqlConnection db, string slug)
+    {
+        var hasPostingOtp = await JobPostingColumnExistsAsync(db, "RequireEmailOtp");
+        return await db.QueryFirstOrDefaultAsync<PostingSessionRow>($@"SELECT posting.Id PostingId,posting.ClientId,posting.PositionId,posting.ApplicationFormVersionId,
+{(hasPostingOtp ? "posting.RequireEmailOtp" : "COALESCE(definition.RequiresEmailVerification,FALSE)")} RequireEmailOtp,position.PositionTitle
 FROM recruitment_job_postings posting JOIN recruitment_open_positions position ON position.Id=posting.PositionId
+JOIN form_versions versionRow ON versionRow.Id=posting.ApplicationFormVersionId
+JOIN form_definitions definition ON definition.Id=versionRow.FormDefinitionId
 WHERE posting.PublicSlug=@Slug AND posting.Status='Published' AND posting.ApplicationFormVersionId IS NOT NULL
 AND EXISTS (SELECT 1 FROM form_versions v WHERE v.Id=posting.ApplicationFormVersionId AND v.Status IN ('Published','Retired'))
 AND (posting.OpensAtUtc IS NULL OR posting.OpensAtUtc<=UTC_TIMESTAMP(6)) AND (posting.ClosesAtUtc IS NULL OR posting.ClosesAtUtc>=UTC_TIMESTAMP(6))
 AND (posting.MaximumApplications IS NULL OR posting.ApplicationCount<posting.MaximumApplications)", new { Slug = slug });
+    }
+
+    private static async Task<bool> JobPostingColumnExistsAsync(MySqlConnection db, string columnName) =>
+        await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM information_schema.columns
+WHERE table_schema=DATABASE() AND table_name='recruitment_job_postings' AND column_name=@ColumnName", new { ColumnName = columnName }) > 0;
 
     private static bool SecureHashEquals(string left, string right)
     {
@@ -1967,6 +2243,17 @@ AND (posting.MaximumApplications IS NULL OR posting.ApplicationCount<posting.Max
     }
 
     private static bool ValidPublicSlug(string value) => value.Length == 32 && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static string SafePublicNarrative(string value)
+    {
+        value = (value ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Trim();
+        if (value.Length == 0 || value.Contains('\uFFFD')
+            || value.Any(character => char.IsControl(character) && character is not ('\n' or '\t')))
+            return "";
+        var sample = value.Length <= 4000 ? value : value[..4000];
+        var readable = sample.Count(character => char.IsLetterOrDigit(character) || char.IsWhiteSpace(character) || char.IsPunctuation(character));
+        return readable >= sample.Length * 3 / 4 ? value : "";
+    }
 
     private static bool HasScalarValue(string typeCode, PublicFormValue value) => typeCode switch
     {
@@ -2083,8 +2370,10 @@ WHERE ps.TokenHash=@TokenHash";
     private sealed class StoredValidationRuleRow : DynamicFormValidationRule { public string FieldCode { get; set; } = ""; public string FieldLabel { get; set; } = ""; public string FieldTypeCode { get; set; } = ""; public long? CompareFieldResolvedId { get; set; } public string CompareFieldLabel { get; set; } = ""; public string CompareFieldTypeCode { get; set; } = ""; public bool CompareFieldIsActive { get; set; } }
     private sealed class SubmissionFieldState { public long FieldId { get; set; } public string StableFieldCode { get; set; } = ""; public string Label { get; set; } = ""; public string TypeCode { get; set; } = ""; public string? TextValue { get; set; } public long? IntegerValue { get; set; } public decimal? DecimalValue { get; set; } public DateTime? DateValue { get; set; } public DateTime? DateTimeValue { get; set; } public bool? BooleanValue { get; set; } public int SelectedOptionCount { get; set; } public int LookupValueCount { get; set; } public int AttachmentCount { get; set; } }
     private sealed class FieldSemanticRow { public long FieldId { get; set; } public string SemanticCode { get; set; } = ""; }
+    private sealed class ResumePrefillFieldRow { public long FieldId { get; set; } public string TypeCode { get; set; } = ""; public string SemanticCode { get; set; } = ""; }
     private sealed class SemanticValueRow { public string SemanticCode { get; set; } = ""; public string? TextValue { get; set; } public long? IntegerValue { get; set; } public decimal? DecimalValue { get; set; } public DateTime? DateValue { get; set; } public DateTime? DateTimeValue { get; set; } public bool? BooleanValue { get; set; } }
     private sealed class ExternalSubjectRow { public long Id { get; set; } public long? CandidateId { get; set; } public string Email { get; set; } = ""; public string NormalizedEmail { get; set; } = ""; public string Phone { get; set; } = ""; public string NormalizedPhone { get; set; } = ""; }
+    private sealed class PublicIdentityMatch { public long? CandidateId { get; set; } public string ApplicationCode { get; set; } = ""; public string Error { get; set; } = ""; }
     private sealed class PublicAttachmentLinkRow { public long Id { get; set; } public int ClientId { get; set; } public long FieldConfigurationId { get; set; } public string EntityType { get; set; } = ""; public long EntityId { get; set; } public long FileSizeBytes { get; set; } }
     private sealed class ApplicationIdentityRow { public long Id { get; set; } public string ApplicationCode { get; set; } = ""; public long? JobPostingId { get; set; } }
     private sealed class SubmissionPostingRow { public long SubmissionId { get; set; } public long FormVersionId { get; set; } public int ClientId { get; set; } public string Status { get; set; } = ""; public long PostingId { get; set; } public long PositionId { get; set; } public int RecruiterUserId { get; set; } public int ApplicationCount { get; set; } public int? MaximumApplications { get; set; } public string PostingStatus { get; set; } = ""; public DateTime? OpensAtUtc { get; set; } public DateTime? ClosesAtUtc { get; set; } public long? CandidateId { get; set; } public long? ApplicationId { get; set; } }

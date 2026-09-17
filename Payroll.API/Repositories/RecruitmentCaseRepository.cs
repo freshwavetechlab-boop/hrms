@@ -743,10 +743,23 @@ SELECT LAST_INSERT_ID();", new
             }, transaction);
         }
 
-        var lineNumber = source.WorkOrderLineNumber is > 0
-            ? source.WorkOrderLineNumber.Value
-            : await db.ExecuteScalarAsync<int>("SELECT COALESCE(MAX(LineNumber),0)+1 FROM recruitment_work_order_lines WHERE WorkOrderId=@WorkOrderId",
-                new { WorkOrderId = workOrderId }, transaction);
+        var reusableLine = source.WorkOrderId is > 0
+            ? await db.QueryFirstOrDefaultAsync<(long Id, int LineNumber)>(@"SELECT Id,LineNumber
+FROM recruitment_work_order_lines
+WHERE WorkOrderId=@WorkOrderId AND RequisitionId IS NULL AND PositionId IS NULL
+  AND (@RequestedLineNumber IS NULL OR LineNumber=@RequestedLineNumber)
+ORDER BY LineNumber,Id LIMIT 1 FOR UPDATE", new
+            {
+                WorkOrderId = workOrderId,
+                RequestedLineNumber = source.WorkOrderLineNumber is > 0 ? source.WorkOrderLineNumber : null
+            }, transaction)
+            : default;
+        var lineNumber = reusableLine.Id > 0
+            ? reusableLine.LineNumber
+            : source.WorkOrderLineNumber is > 0
+                ? source.WorkOrderLineNumber.Value
+                : await db.ExecuteScalarAsync<int>("SELECT COALESCE(MAX(LineNumber),0)+1 FROM recruitment_work_order_lines WHERE WorkOrderId=@WorkOrderId",
+                    new { WorkOrderId = workOrderId }, transaction);
         var occupied = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_work_order_lines
 WHERE WorkOrderId=@WorkOrderId AND LineNumber=@LineNumber AND RequisitionId IS NOT NULL AND RequisitionId<>@RequisitionId",
             new { WorkOrderId = workOrderId, LineNumber = lineNumber, RequisitionId = requisitionId }, transaction);
@@ -754,23 +767,42 @@ WHERE WorkOrderId=@WorkOrderId AND LineNumber=@LineNumber AND RequisitionId IS N
             lineNumber = await db.ExecuteScalarAsync<int>("SELECT COALESCE(MAX(LineNumber),0)+1 FROM recruitment_work_order_lines WHERE WorkOrderId=@WorkOrderId",
                 new { WorkOrderId = workOrderId }, transaction);
 
-        var lineId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_work_order_lines
+        var lineId = reusableLine.Id;
+        if (lineId > 0)
+        {
+            await db.ExecuteAsync(@"UPDATE recruitment_work_order_lines SET PositionName=@PositionName,
+PayBandLevelCode='',NumberOfPositions=@NumberOfPositions,Location=@Location,Division=@Division,
+RequisitionId=@RequisitionId,PositionId=@PositionId,Status='Open' WHERE Id=@LineId", new
+            {
+                PositionName = source.PositionTitle,
+                NumberOfPositions = Math.Max(1, source.NumberOfOpenings),
+                Location = source.JobLocation ?? "",
+                Division = string.IsNullOrWhiteSpace(source.BusinessUnit) ? source.Department ?? "" : source.BusinessUnit,
+                RequisitionId = requisitionId,
+                PositionId = source.OpenPositionId,
+                LineId = lineId
+            }, transaction);
+        }
+        else
+        {
+            lineId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_work_order_lines
 (WorkOrderId,LineNumber,PositionName,PayBandLevelCode,NumberOfPositions,Location,Division,RequisitionId,PositionId,Status)
 VALUES (@WorkOrderId,@LineNumber,@PositionName,'',@NumberOfPositions,@Location,@Division,@RequisitionId,@PositionId,'Open');
 SELECT LAST_INSERT_ID();", new
-        {
-            WorkOrderId = workOrderId,
-            LineNumber = lineNumber,
-            PositionName = source.PositionTitle,
-            NumberOfPositions = Math.Max(1, source.NumberOfOpenings),
-            Location = source.JobLocation ?? "",
-            Division = string.IsNullOrWhiteSpace(source.BusinessUnit) ? source.Department ?? "" : source.BusinessUnit,
-            RequisitionId = requisitionId,
-            PositionId = source.OpenPositionId
-        }, transaction);
+            {
+                WorkOrderId = workOrderId,
+                LineNumber = lineNumber,
+                PositionName = source.PositionTitle,
+                NumberOfPositions = Math.Max(1, source.NumberOfOpenings),
+                Location = source.JobLocation ?? "",
+                Division = string.IsNullOrWhiteSpace(source.BusinessUnit) ? source.Department ?? "" : source.BusinessUnit,
+                RequisitionId = requisitionId,
+                PositionId = source.OpenPositionId
+            }, transaction);
+        }
         await db.ExecuteAsync(@"UPDATE recruitment_requisitions SET WorkOrderId=@WorkOrderId,WorkOrderLineNumber=@LineNumber WHERE Id=@Id;
 UPDATE recruitment_position_pipeline_instances SET WorkOrderId=@WorkOrderId,WorkOrderLineId=@LineId,RequisitionId=@Id,
-PositionId=COALESCE(@PositionId,PositionId) WHERE RequisitionId=@Id;",
+PositionId=COALESCE(@PositionId,PositionId) WHERE WorkOrderLineId=@LineId OR RequisitionId=@Id;",
             new { WorkOrderId = workOrderId, LineId = lineId, Id = requisitionId, LineNumber = lineNumber, PositionId = source.OpenPositionId }, transaction);
         await transaction.CommitAsync();
         return "";

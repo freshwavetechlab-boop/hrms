@@ -297,6 +297,53 @@ app.MapGet("/api/attachment-storage-servers", async (AttachmentRepository reposi
 .WithName("GetAttachmentStorageServers")
 .WithOpenApi();
 
+app.MapGet("/api/attachment-storage-servers/{id:long}/files", async (AttachmentRepository repository, long id, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user.ClientId is not null || (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage") && !HasPermission(context, "security.manage")))
+        return Results.StatusCode(403);
+    return Results.Ok(await repository.GetStorageServerFilesAsync(id));
+})
+.WithName("GetAttachmentStorageServerFiles")
+.WithOpenApi();
+
+app.MapGet("/api/attachment-storage-servers/{id:long}/files/{publicId:guid}/content", async (
+    AttachmentRepository repository,
+    AttachmentStorageService storage,
+    long id,
+    Guid publicId,
+    bool? download,
+    HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user.ClientId is not null || (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage") && !HasPermission(context, "security.manage")))
+        return Results.StatusCode(403);
+    var action = download == true ? "STORAGE_ADMIN_DOWNLOAD" : "STORAGE_ADMIN_PREVIEW";
+    var (attachment, server, error) = await repository.GetStorageServerFileForContentAsync(id, publicId, user, action,
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return attachment is null || server is null
+        ? Results.NotFound(new { error })
+        : new AttachmentContentResult(storage, server, attachment, download != true);
+})
+.WithName("ReadAttachmentStorageServerFile")
+.WithOpenApi();
+
+app.MapDelete("/api/attachment-storage-servers/{id:long}/files/{publicId:guid}", async (
+    AttachmentRepository repository,
+    long id,
+    Guid publicId,
+    HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user.ClientId is not null || (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage") && !HasPermission(context, "security.manage")))
+        return Results.StatusCode(403);
+    var (ok, error) = await repository.PurgeStorageServerFileAsync(id, publicId, user,
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+    return ok ? Results.NoContent() : Results.BadRequest(new { error });
+})
+.WithName("PurgeAttachmentStorageServerFile")
+.WithOpenApi();
+
 app.MapPost("/api/attachment-storage-servers", async (AttachmentRepository repository, AttachmentStorageServer request, HttpContext context) =>
 {
     if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attachment.config.manage")) return Results.StatusCode(403);
@@ -1494,6 +1541,12 @@ app.MapPost("/api/ess/recruitment/referrals/{referralId:long}/resume", async (Re
     var (attachment, resume, error) = await repository.UploadReferralResumeAsync(referralId, request, user, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
     return attachment is null ? Results.BadRequest(new { error }) : Results.Ok(new { attachment, resume });
 }).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(30L * 1024 * 1024));
+app.MapPost("/api/recruitment/resume-intake/preview", async (RecruitmentTalentRepository talent, [FromForm] RecruitmentResumePreviewRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (preview, error) = await talent.PreviewResumeAsync(request, CurrentUser(context), context.RequestAborted);
+    return preview is null ? Results.BadRequest(new { error }) : Results.Ok(preview);
+}).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(30L * 1024 * 1024));
 app.MapGet("/api/recruitment/applications", async (RecruitmentTalentRepository repository, long? positionId, long? candidateId, string? stage, HttpContext context) =>
     HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage")
         ? Results.Ok(await repository.GetApplicationsAsync(CurrentUser(context), positionId, candidateId, stage ?? ""))
@@ -2109,7 +2162,7 @@ app.MapGet("/api/public/recruitment/sessions/{token}/fields/{fieldId:long}/optio
     var (items, error) = await repository.ResolvePublicLookupAsync(token, fieldId, search ?? "");
     return string.IsNullOrWhiteSpace(error) ? Results.Ok(items) : Results.BadRequest(new { error });
 });
-app.MapPost("/api/public/recruitment/sessions/{token}/files/{fieldId:long}", async (RecruitmentFormRepository forms, AttachmentRepository attachments, string token, long fieldId, [FromForm] PublicFormAttachmentUploadRequest request, HttpContext context) =>
+app.MapPost("/api/public/recruitment/sessions/{token}/files/{fieldId:long}", async (RecruitmentFormRepository forms, RecruitmentTalentRepository talent, AttachmentRepository attachments, string token, long fieldId, [FromForm] PublicFormAttachmentUploadRequest request, HttpContext context) =>
 {
     if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select a non-empty file." });
     var (authorization, authorizationError) = await forms.AuthorizeUploadAsync(token, fieldId);
@@ -2133,8 +2186,52 @@ app.MapPost("/api/public/recruitment/sessions/{token}/files/{fieldId:long}", asy
     }, request.File, externalUser, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
     if (attachment is null) return Results.BadRequest(new { error = uploadError });
     await forms.LinkAttachmentAsync(token, fieldId, attachment.Id, attachment.PublicId, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
-    return Results.Ok(new { fieldId, attachmentPublicId = attachment.PublicId, attachment.OriginalFileName, attachment.FileSizeBytes, attachment.UploadedAtUtc });
+    var parsing = await forms.GetPublicResumeParsingContextAsync(token, fieldId);
+    ResumeParseResult? parse = null;
+    IReadOnlyList<PublicFormValue> suggestedValues = [];
+    if (parsing?.EnableResumeParsing == true)
+    {
+        parse = await talent.ParseResumeDraftAsync(request.File, parsing.ClientId, parsing.PositionId, parsing.EnableAiParsing, context.RequestAborted);
+        suggestedValues = await forms.BuildResumePrefillValuesAsync(parsing.SubmissionId, parse);
+    }
+    return Results.Ok(new
+    {
+        fieldId,
+        attachmentPublicId = attachment.PublicId,
+        attachment.OriginalFileName,
+        attachment.FileSizeBytes,
+        attachment.UploadedAtUtc,
+        parsingStatus = parse?.Status ?? "NotApplicable",
+        parsingError = parse?.Error ?? "",
+        previewText = parse is null ? "" : parse.Text.Length <= 30000 ? parse.Text : parse.Text[..30000],
+        suggestedValues
+    });
 }).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(30L * 1024 * 1024));
+app.MapGet("/api/public/recruitment/sessions/{token}/files/{fieldId:long}/{publicId:guid}/content", async (
+    RecruitmentFormRepository forms, AttachmentRepository attachments, AttachmentStorageService storage,
+    string token, long fieldId, Guid publicId, HttpContext context) =>
+{
+    var (submissionId, clientId, authorizationError) = await forms.AuthorizePublicFileAsync(token, fieldId, publicId);
+    if (submissionId <= 0) return Results.NotFound(new { error = authorizationError });
+    var (attachment, server, error) = await attachments.GetPublicFormFileForContentAsync(publicId, submissionId, clientId,
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return attachment is null || server is null
+        ? Results.NotFound(new { error })
+        : new AttachmentContentResult(storage, server, attachment, true);
+});
+app.MapDelete("/api/public/recruitment/sessions/{token}/files/{fieldId:long}/{publicId:guid}", async (
+    RecruitmentFormRepository forms, AttachmentRepository attachments,
+    string token, long fieldId, Guid publicId, HttpContext context) =>
+{
+    var (submissionId, clientId, authorizationError) = await forms.AuthorizePublicFileAsync(token, fieldId, publicId);
+    if (submissionId <= 0) return Results.NotFound(new { error = authorizationError });
+    var (removed, error) = await attachments.PurgePublicFormFileAsync(publicId, submissionId, clientId,
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+    if (!removed) return Results.BadRequest(new { error });
+    await forms.UnlinkPublicFileAsync(submissionId, fieldId, publicId,
+        context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
+    return Results.NoContent();
+});
 app.MapPost("/api/public/recruitment/sessions/{token}/submit", async (RecruitmentFormRepository forms, RecruitmentTalentRepository talent, RecruitmentPipelineRepository pipelines, RecruitmentPipelineActionService pipelineActions, RecruitmentCandidateActionRepository candidateActions, string token, HttpContext context) =>
 {
     var (row, error) = await forms.SubmitPublicApplicationAsync(token, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());

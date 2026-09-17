@@ -167,3 +167,4 @@
   .careers-page .careers-application-steps li { gap: 5px; font-size: 10px; }
   .careers-page .careers-footer { flex-direction: column; margin-top: 26px; }
 }
+.public-resume-preview-text { max-height: 65vh; margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid #dbe5f0; border-radius: 12px; background: #f7faff; color: #1f2a44; font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }

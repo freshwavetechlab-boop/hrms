@@ -241,6 +241,9 @@ public class PublicApplicationSession
     public DateTime ExpiresAtUtc { get; set; }
     public string Status { get; set; } = "Draft";
     public List<PublicFormValue> InitialValues { get; set; } = [];
+    public bool ExistingCandidate { get; set; }
+    public string ExistingApplicationCode { get; set; } = "";
+    public string Message { get; set; } = "";
 }
 
 public class SavePublicFormValuesRequest
@@ -272,6 +275,15 @@ public class PublicUploadAuthorization
     public int MaximumFileCount { get; set; } = 1;
     public long MaximumFileSizeBytes { get; set; }
     public long? MaximumTotalSizeBytes { get; set; }
+}
+
+public class PublicResumeParsingContext
+{
+    public long SubmissionId { get; set; }
+    public int ClientId { get; set; }
+    public long PositionId { get; set; }
+    public bool EnableResumeParsing { get; set; } = true;
+    public bool EnableAiParsing { get; set; } = true;
 }
 
 public class PublicFormAttachmentUploadRequest

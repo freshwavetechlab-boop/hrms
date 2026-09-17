@@ -460,6 +460,94 @@ FROM attachment_storage_servers s ORDER BY s.is_default_write_server DESC,s.prio
         return rows.Select(row => ToStorageServer(row, includeCredential));
     }
 
+    public async Task<IEnumerable<EntityAttachment>> GetStorageServerFilesAsync(long storageServerId)
+    {
+        await using var db = Connection();
+        await db.OpenAsync();
+        return await db.QueryAsync<EntityAttachment>($@"{AttachmentSelect}
+WHERE a.storage_server_id=@StorageServerId AND a.is_deleted=FALSE
+ORDER BY a.is_current DESC,a.uploaded_at_utc DESC,a.id DESC", new { StorageServerId = storageServerId });
+    }
+
+    public async Task<(EntityAttachment? Attachment, AttachmentStorageServer? Server, string? Error)> GetStorageServerFileForContentAsync(
+        long storageServerId,
+        Guid publicId,
+        AuthUser user,
+        string action,
+        string ipAddress,
+        string userAgent)
+    {
+        var row = await GetAccessRowAsync(publicId);
+        if (row is null || row.IsDeleted || row.StorageServerId != storageServerId)
+            return (null, null, "Attachment was not found on this storage server.");
+        var server = await GetStorageServerAsync(storageServerId, true);
+        if (server is null || !server.IsActive || !server.IsReadEnabled)
+            return (null, null, "Attachment storage is currently unavailable.");
+        await LogAccessAsync(row, action, user.Id, ipAddress, userAgent);
+        return (row, server, null);
+    }
+
+    public async Task<(EntityAttachment? Attachment, AttachmentStorageServer? Server, string? Error)> GetPublicFormFileForContentAsync(
+        Guid publicId,
+        long submissionId,
+        int clientId,
+        string ipAddress,
+        string userAgent)
+    {
+        var row = await GetAccessRowAsync(publicId);
+        if (row is null || row.IsDeleted || !row.IsCurrent || row.ClientId != clientId
+            || !row.EntityType.Equals("FORM_SUBMISSION", StringComparison.OrdinalIgnoreCase) || row.EntityId != submissionId)
+            return (null, null, "Application file was not found.");
+        var server = await GetStorageServerAsync(row.StorageServerId, true);
+        if (server is null || !server.IsActive || !server.IsReadEnabled)
+            return (null, null, "Attachment storage is currently unavailable.");
+        await LogAccessAsync(row, "PUBLIC_PREVIEW", 0, ipAddress, userAgent);
+        return (row, server, null);
+    }
+
+    public async Task<(bool Ok, string? Error)> PurgePublicFormFileAsync(
+        Guid publicId,
+        long submissionId,
+        int clientId,
+        string ipAddress,
+        string userAgent,
+        CancellationToken cancellationToken = default)
+    {
+        var row = await GetAccessRowAsync(publicId);
+        if (row is null || row.IsDeleted || row.ClientId != clientId
+            || !row.EntityType.Equals("FORM_SUBMISSION", StringComparison.OrdinalIgnoreCase) || row.EntityId != submissionId)
+            return (false, "Application file was not found.");
+        var server = await GetStorageServerAsync(row.StorageServerId, true);
+        if (server is null) return (false, "Attachment storage is currently unavailable.");
+        try
+        {
+            await storageService.DeleteAsync(server, row.StorageKey, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Public draft attachment {PublicId} could not be removed from storage.", publicId);
+            return (false, "The uploaded file could not be removed from storage.");
+        }
+        await using var db = Connection();
+        await db.OpenAsync(cancellationToken);
+        await using var transaction = await db.BeginTransactionAsync(cancellationToken);
+        await db.ExecuteAsync(@"UPDATE entity_attachments SET is_deleted=TRUE,is_current=FALSE,
+deleted_by_user_id=NULL,deleted_at_utc=UTC_TIMESTAMP(6)
+WHERE id=@Id AND is_deleted=FALSE", new { row.Id }, transaction);
+        await WriteAuditAsync(db, transaction, row.Id, row.ClientId, row.EntityType, row.EntityId, "PUBLIC_REMOVE", null, true, "", ipAddress, userAgent, new { publicId, storedFilePurged = true });
+        await transaction.CommitAsync(cancellationToken);
+        return (true, null);
+    }
+
+    public async Task<(bool Ok, string? Error)> PurgeStorageServerFileAsync(
+        long storageServerId,
+        Guid publicId,
+        AuthUser user,
+        string ipAddress,
+        string userAgent,
+        CancellationToken cancellationToken = default)
+        => await DeleteCoreAsync(publicId, user, ipAddress, userAgent, true, cancellationToken, true, storageServerId);
+
     public async Task<(AttachmentStorageServer? Item, string? Error)> SaveStorageServerAsync(AttachmentStorageServer item, AuthUser user)
     {
         item.ServerCode = NormalizeCode(item.ServerCode);
@@ -1172,11 +1260,17 @@ WHERE token_hash=@TokenHash AND revoked_at_utc IS NULL AND expires_at_utc>UTC_TI
         string ipAddress,
         string userAgent,
         bool purgeStoredFile,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool storageAdministrator = false,
+        long? expectedStorageServerId = null)
     {
         var row = await GetAccessRowAsync(publicId);
         if (row is null || row.IsDeleted) return (false, "Attachment was not found.");
-        var allowed = await CanManageEntityAsync(user, row.EntityType, row.EntityId, row.ClientId) || (await IsEntityOwnerAsync(user, row.EntityType, row.EntityId) && row.OwnerCanDelete);
+        if (expectedStorageServerId.HasValue && row.StorageServerId != expectedStorageServerId.Value)
+            return (false, "Attachment was not found on this storage server.");
+        var allowed = storageAdministrator
+            ? user.ClientId is null && HasAnyPermission(user, "attachment.config.manage", "settings.manage", "security.manage")
+            : await CanManageEntityAsync(user, row.EntityType, row.EntityId, row.ClientId) || (await IsEntityOwnerAsync(user, row.EntityType, row.EntityId) && row.OwnerCanDelete);
         if (!allowed) return (false, "You are not allowed to delete this attachment.");
         if (purgeStoredFile)
         {

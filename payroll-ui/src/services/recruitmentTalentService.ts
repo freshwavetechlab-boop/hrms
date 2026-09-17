@@ -1,4 +1,4 @@
-import type { ConvertCandidateToEmployeeRequest, Employee, EntityAttachment, PersonActivityEvent, RecruitmentAiScoringSettings, RecruitmentApplicationScore, RecruitmentAtsScoringCriterion, RecruitmentAtsScoringProfile, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateChecklistItem, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, RecruitmentOffer, RecruitmentOpenPosition, RecruitmentResumeIntakeItem, RecruitmentResumeIntakeResult, RecruitmentSkill, RecruitmentTalentDashboard, RecruitmentTalentPoolMatchRunResult, SaveRecruitmentCandidate, SaveRecruitmentInterviewFeedbackCompetencyScore } from '../types/payroll'
+import type { ConvertCandidateToEmployeeRequest, Employee, EntityAttachment, PersonActivityEvent, RecruitmentAiScoringSettings, RecruitmentApplicationScore, RecruitmentAtsScoringCriterion, RecruitmentAtsScoringProfile, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateChecklistItem, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, RecruitmentOffer, RecruitmentOpenPosition, RecruitmentResumeIntakeItem, RecruitmentResumeIntakeResult, RecruitmentResumePreview, RecruitmentSkill, RecruitmentTalentDashboard, RecruitmentTalentPoolMatchRunResult, SaveRecruitmentCandidate, SaveRecruitmentInterviewFeedbackCompetencyScore } from '../types/payroll'
 import { deleteJson, getJson, postFormWithProgress, postJson, putJson, type ApiResult } from './apiClient'
 
 export const getTalentDashboard = (clientId = 0) => getJson<RecruitmentTalentDashboard>(`/api/recruitment/talent/dashboard${clientId ? `?clientId=${clientId}` : ''}`, { talentProfiles: 0, activeApplications: 0, interviewsScheduled: 0, offersPending: 0, preOnboardingPending: 0, joined: 0 })
@@ -51,7 +51,20 @@ export type RecruitmentResumeUploadProgress = {
   phase: 'uploading' | 'processing' | 'complete'
 }
 
-export const intakeRecruitmentResumes = async (request: { clientId?: number; positionId?: number; jobPostingId?: number | null; talentPoolOnly?: boolean; forceUpload?: boolean; deferAtsScoring?: boolean; sourceType: string; files: File[] }, onProgress: (progress: RecruitmentResumeUploadProgress) => void): Promise<ApiResult<RecruitmentResumeIntakeResult>> => {
+export type RecruitmentResumeReviewedDraft = RecruitmentResumePreview & { file: File }
+
+export const previewRecruitmentResume = (request: { clientId?: number; positionId?: number; jobPostingId?: number | null; talentPoolOnly?: boolean; enableParsing?: boolean; file: File }) => {
+  const body = new FormData()
+  if (request.clientId) body.append('clientId', String(request.clientId))
+  if (request.positionId) body.append('positionId', String(request.positionId))
+  if (request.jobPostingId) body.append('jobPostingId', String(request.jobPostingId))
+  if (request.talentPoolOnly) body.append('talentPoolOnly', 'true')
+  body.append('enableParsing', request.enableParsing === false ? 'false' : 'true')
+  body.append('file', request.file, request.file.name)
+  return postFormWithProgress<RecruitmentResumePreview>('/api/recruitment/resume-intake/preview', body, {} as RecruitmentResumePreview, () => undefined, 120000)
+}
+
+export const intakeRecruitmentResumes = async (request: { clientId?: number; positionId?: number; jobPostingId?: number | null; talentPoolOnly?: boolean; forceUpload?: boolean; deferAtsScoring?: boolean; sourceType: string; files: File[]; drafts?: RecruitmentResumeReviewedDraft[] }, onProgress: (progress: RecruitmentResumeUploadProgress) => void): Promise<ApiResult<RecruitmentResumeIntakeResult>> => {
   const totalFiles = request.files.length
   // One resume per request gives an exact processed-file percentage, isolates a
   // bad document, and avoids holding the entire bulk operation behind one response.
@@ -67,7 +80,7 @@ export const intakeRecruitmentResumes = async (request: { clientId?: number; pos
     const activeFrom = start + 1
     const activeTo = start + files.length
     onProgress({ percent: Math.round(completedFiles / Math.max(1, totalFiles) * 100), completedFiles, totalFiles, activeFrom, activeTo, phase: 'uploading' })
-    const response = await uploadRecruitmentResumeBatch({ ...request, files }, uploadPercent => {
+    const response = await uploadRecruitmentResumeBatch({ ...request, files, draft: request.drafts?.[start] }, uploadPercent => {
       const uploadShare = files.length * Math.min(100, uploadPercent) / 100 * 0.2
       const percent = Math.min(99, Math.round((completedFiles + uploadShare) / Math.max(1, totalFiles) * 100))
       onProgress({ percent, completedFiles, totalFiles, activeFrom, activeTo, phase: uploadPercent >= 100 ? 'processing' : 'uploading' })
@@ -91,7 +104,7 @@ export const intakeRecruitmentResumes = async (request: { clientId?: number; pos
   return { ok: successResponses > 0, data: aggregate, error: errors.join(' '), status: successResponses > 0 ? 200 : lastStatus }
 }
 
-const uploadRecruitmentResumeBatch = (request: { clientId?: number; positionId?: number; jobPostingId?: number | null; talentPoolOnly?: boolean; forceUpload?: boolean; deferAtsScoring?: boolean; sourceType: string; files: File[] }, onProgress: (value: number) => void) => {
+const uploadRecruitmentResumeBatch = (request: { clientId?: number; positionId?: number; jobPostingId?: number | null; talentPoolOnly?: boolean; forceUpload?: boolean; deferAtsScoring?: boolean; sourceType: string; files: File[]; draft?: RecruitmentResumeReviewedDraft }, onProgress: (value: number) => void) => {
   const body = new FormData()
   if (request.clientId) body.append('clientId', String(request.clientId))
   if (request.positionId) body.append('positionId', String(request.positionId))
@@ -100,6 +113,16 @@ const uploadRecruitmentResumeBatch = (request: { clientId?: number; positionId?:
   if (request.forceUpload) body.append('forceUpload', 'true')
   if (request.deferAtsScoring) body.append('deferAtsScoring', 'true')
   body.append('sourceType', request.sourceType)
+  if (request.draft) {
+    body.append('draftReviewed', 'true')
+    if (request.draft.existingCandidateId) body.append('draftExistingCandidateId', String(request.draft.existingCandidateId))
+    body.append('draftFirstName', request.draft.firstName)
+    body.append('draftLastName', request.draft.lastName)
+    body.append('draftEmail', request.draft.email)
+    body.append('draftPhone', request.draft.phone)
+    body.append('draftAddress', request.draft.address)
+    body.append('draftTotalExperienceMonths', String(request.draft.totalExperienceMonths || 0))
+  }
   request.files.forEach(file => body.append('files', file, file.name))
   return postFormWithProgress<RecruitmentResumeIntakeResult>('/api/recruitment/resume-intake', body, { totalFiles: 0, imported: 0, needsReview: 0, items: [] }, onProgress, 600000)
 }

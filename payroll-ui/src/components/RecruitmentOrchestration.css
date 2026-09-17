@@ -192,6 +192,11 @@
 .public-upload-metadata { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .public-upload-metadata label { display: grid; gap: 5px; min-width: 0; color: #43506a; font-size: 12px; font-weight: 700; }
 .public-upload-error { display: block; }
+.public-upload-file-list { display: grid; gap: 8px; }
+.public-upload-file-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid #d8e3ef; border-radius: 10px; background: #fff; }
+.public-upload-file-row > .ant-tag { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.public-upload-progress { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid #91caff; border-radius: 10px; background: #f0f8ff; }
+.public-upload-progress .ant-typography { color: #0958d9; font-weight: 600; }
 .public-session-note { margin: 12px 0 0; color: #7b8598; font-size: 12px; line-height: 1.5; }
 .public-proof-tag { margin-inline: 8px 0; white-space: normal; }
 .public-form-section { margin-bottom: 18px; padding-bottom: 6px; border-bottom: 1px solid #eceef4; }

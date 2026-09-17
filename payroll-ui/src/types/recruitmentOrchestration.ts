@@ -808,6 +808,9 @@ export type PublicApplicationSession = {
   expiresAtUtc: string
   status: string
   initialValues: PublicFormValue[]
+  existingCandidate: boolean
+  existingApplicationCode: string
+  message: string
 }
 
 export type PublicFormValue = {
@@ -829,6 +832,10 @@ export type PublicUploadedFile = {
   originalFileName: string
   fileSizeBytes?: number
   uploadedAtUtc?: string
+  parsingStatus?: string
+  parsingError?: string
+  previewText?: string
+  suggestedValues?: PublicFormValue[]
 }
 
 export type RecruitmentCandidateActionSession = {

@@ -17,7 +17,7 @@ public sealed class ResumeParsingService(
     private const int MaxExtractedCharacters = 2_000_000;
     private const int MaxBuiltInPdfBytes = 2 * 1024 * 1024;
     private static readonly Regex EmailPattern = new(@"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex PhonePattern = new(@"(?<!\d)(?:\+?91[\s\-]?)?[6-9]\d{9}(?!\d)", RegexOptions.Compiled);
+    private static readonly Regex PhonePattern = new(@"(?<!\d)(?:\+?91[\s().-]*)?[6-9](?:[\s().-]*\d){9}(?![\s().-]*\d)", RegexOptions.Compiled);
     private static readonly Regex NameLabelPattern = new(@"(?im)^\s*(?:candidate\s+)?(?:full\s+)?name\s*[:\-]\s*(?<value>[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){1,4})\s*$", RegexOptions.Compiled);
     private static readonly Regex AddressLabelPattern = new(@"(?im)^\s*(?:(?:current|permanent|residential|postal|mailing)\s+)?address\s*[:\-]\s*(?<value>[^\r\n]{8,300})(?:\r?\n(?<next>[^\r\n]{8,180}))?", RegexOptions.Compiled);
     private static readonly Regex PersonNamePattern = new(@"^[A-Za-z][A-Za-z.'-]+(?:\s+[A-Za-z][A-Za-z.'-]+){1,4}$", RegexOptions.Compiled);
@@ -46,6 +46,10 @@ public sealed class ResumeParsingService(
         IEnumerable<string>? jobContext,
         CancellationToken cancellationToken)
     {
+        // AI is a fallback for incomplete extraction, not a second parser pass for
+        // already reliable text resumes.
+        if (HasCompleteLocalIdentity(local)) return local;
+
         byte[]? sourceDocument = null;
         if (file.Length <= MaxInputBytes
             && Path.GetExtension(file.FileName).Equals(".pdf", StringComparison.OrdinalIgnoreCase)
@@ -66,6 +70,12 @@ public sealed class ResumeParsingService(
         }
         return await EnhanceWithAiAsync(local, file.FileName, clientId, jobContext, sourceDocument, cancellationToken);
     }
+
+    private static bool HasCompleteLocalIdentity(ResumeParseResult parse) =>
+        parse.Status.Equals("Parsed", StringComparison.OrdinalIgnoreCase)
+        && !string.IsNullOrWhiteSpace(parse.Facts.FullName)
+        && (!string.IsNullOrWhiteSpace(parse.Facts.Email) || !string.IsNullOrWhiteSpace(parse.Facts.Phone))
+        && parse.Facts.CharacterCount >= 200;
 
     public async Task<ResumeParseResult> ParseAsync(
         Stream source,
