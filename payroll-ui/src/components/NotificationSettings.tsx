@@ -20,6 +20,7 @@ import {
 } from '@ant-design/icons'
 import { Alert, Button, Card, Col, Divider, Drawer, Empty, Form, Input, InputNumber, Row, Select, Space, Switch, Tabs, Tag, Tooltip } from 'antd'
 import DataTable from './DataTable'
+import RecruitmentMailTriggerSettings from './RecruitmentMailTriggerSettings'
 import SearchSelect from './SearchSelect'
 import { getJson } from '../services/apiClient'
 import { getClients } from '../services/payrollService'
@@ -379,6 +380,11 @@ export default function NotificationSettings() {
           { key: 'isEnabled', label: 'Status', render: row => <Tag color={row.isEnabled ? 'green' : 'default'}>{row.isEnabled ? 'Enabled' : 'Disabled'}</Tag> }
         ]} actions={row => <Button size="small" type="primary" onClick={() => openRule(row)}>Edit</Button>} />
       </>
+    },
+    {
+      key: 'recruitment-triggers',
+      label: <span><MailOutlined /> Recruitment Mail Triggers</span>,
+      children: <RecruitmentMailTriggerSettings />
     },
     {
       key: 'delivery',

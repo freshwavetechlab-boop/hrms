@@ -27,14 +27,18 @@ public sealed class RecruitmentAtsScoringWorker(
                 processed = processed || work.Processed;
                 if (work.ApplicationId.HasValue && work.User is not null)
                 {
-                    var (transition, _) = await pipelines.EvaluateAtsStageAutomationAsync(work.ApplicationId.Value, work.User);
+                    var (transition, automationError) = await pipelines.EvaluateAtsStageAutomationAsync(work.ApplicationId.Value, work.User);
+                    if (!string.IsNullOrWhiteSpace(automationError))
+                        logger.LogWarning("ATS automation for application {ApplicationId} stopped: {Error}", work.ApplicationId.Value, automationError);
                     if (transition?.Status == "Applied")
                     {
                         await actions.ExecuteAsync(work.ApplicationId.Value, "OnExit", work.User);
                         var entry = await actions.ExecuteAsync(work.ApplicationId.Value, "OnEntry", work.User);
                         if (!entry.Executions.Any(item => item.ActionCode == "GENERATE_ACTION_LINK"))
                             await candidateActions.EnsureForCurrentStageAsync(work.ApplicationId.Value, work.User);
-                        await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(work.ApplicationId.Value, "ProfilesSelected", work.User);
+                        var hiringError = await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(work.ApplicationId.Value, "ProfilesSelected", work.User);
+                        if (!string.IsNullOrWhiteSpace(hiringError))
+                            logger.LogWarning("Hiring-case automation for application {ApplicationId} stopped: {Error}", work.ApplicationId.Value, hiringError);
                     }
                 }
             }

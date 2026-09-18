@@ -315,7 +315,7 @@ public class PublicApplicationProcessingStatus
 
 public class PublicApplicationTrackingLoginRequest
 {
-    public string Email { get; set; } = "";
+    public string ApplicationCode { get; set; } = "";
     public string Pin { get; set; } = "";
 }
 

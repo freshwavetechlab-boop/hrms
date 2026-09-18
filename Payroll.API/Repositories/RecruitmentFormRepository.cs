@@ -763,7 +763,7 @@ SELECT LAST_INSERT_ID();", new
 <h2 style='margin-bottom:8px'>Verify your application</h2>
 <p>Use this code to continue your application for <strong>{safeTitle}</strong>.</p>
 <div style='font-size:32px;font-weight:800;letter-spacing:8px;padding:18px 22px;background:#f1f5ff;border-radius:12px;text-align:center'>{safeCode}</div>
-<p><strong>Keep this code safely.</strong> On your first verified application it becomes your application-tracking PIN. If you already registered earlier, your original tracking PIN remains valid.</p>
+<p><strong>Keep this code safely.</strong> After this first verification, the same 6-digit code is your application-tracking password/PIN. Sign in later with your APP reference number and this PIN. If you already registered earlier, your original tracking PIN remains valid.</p>
 {(publicLink.Length > 0 ? $"<p><a href='{safePublicLink}' style='display:inline-block;padding:11px 18px;background:#087ab8;color:#fff;text-decoration:none;border-radius:8px'>Open job and track application</a></p><p style='font-size:12px;color:#64748b'>{safePublicLink}</p>" : "")}
 <p style='color:#64748b'>Verification access expires in {Math.Max(3, (int)(expires - DateTime.UtcNow).TotalMinutes)} minutes. Your tracking PIN remains valid. If you did not request it, you can ignore this email.</p></div>";
         var (sent, sendError) = await notifications.SendDirectAsync(email, $"{code} is your application verification code", body, new NotificationEvent
@@ -1811,7 +1811,8 @@ WHERE id=@AttachmentId AND entity_type='FORM_SUBMISSION' AND entity_id=@Submissi
                 || session.ExpiresAtUtc <= DateTime.UtcNow || session.UseCount >= session.MaximumUses)
                 return (null, "Application session is invalid or expired.");
             var submission = await db.QueryFirstOrDefaultAsync<SubmissionPostingRow>(@"SELECT s.Id SubmissionId,s.FormVersionId,s.ClientId,s.Status,s.CandidateId,s.ApplicationId,
-j.Id PostingId,j.PositionId,j.ApplicationCount,j.MaximumApplications,j.Status PostingStatus,j.OpensAtUtc,j.ClosesAtUtc,COALESCE(position.RecruiterUserId,0) RecruiterUserId
+j.Id PostingId,j.PositionId,j.PublicSlug,j.ApplicationCount,j.MaximumApplications,j.Status PostingStatus,j.OpensAtUtc,j.ClosesAtUtc,
+position.PositionTitle,COALESCE(position.RecruiterUserId,0) RecruiterUserId
 FROM form_submissions s JOIN recruitment_job_postings j ON j.Id=@PostingId AND j.ClientId=s.ClientId AND j.ApplicationFormVersionId=s.FormVersionId
 JOIN recruitment_open_positions position ON position.Id=j.PositionId
 WHERE s.Id=@SubmissionId FOR UPDATE", new { session.PostingId, session.SubmissionId }, transaction);
@@ -1933,6 +1934,29 @@ VALUES (@Code,@CandidateId,@PositionId,@ClientId,'Public Job',@PostingId,@Postin
             await EventAsync(db, transaction, submission.SubmissionId, applicationReused ? "RESUME_REPLACED" : "SUBMITTED",
                 applicationReused ? $"Latest resume submitted for existing application {applicationCode}." : $"Application {applicationCode} submitted.", session.ExternalSubjectId, ipAddress, userAgent);
             await transaction.CommitAsync();
+            var portalBaseUrl = publicPortalUrls.ResolveBaseUrl(null);
+            var publicLink = string.IsNullOrWhiteSpace(portalBaseUrl) ? "" : $"{portalBaseUrl}/careers/{Uri.EscapeDataString(submission.PublicSlug)}";
+            var safeApplicationCode = WebUtility.HtmlEncode(applicationCode);
+            var safePositionTitle = WebUtility.HtmlEncode(submission.PositionTitle);
+            var safePublicLink = WebUtility.HtmlEncode(publicLink);
+            var confirmationBody = $@"<div style='font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#17243d'>
+<h2 style='margin-bottom:8px'>{(applicationReused ? "Resume updated" : "Application received")}</h2>
+<p>Your {(applicationReused ? "updated resume" : "application")} for <strong>{safePositionTitle}</strong> was received successfully.</p>
+<div style='font-size:20px;font-weight:800;padding:16px 20px;background:#f1f5ff;border-radius:12px;text-align:center'>{safeApplicationCode}</div>
+<p>Use this APP reference with the 6-digit tracking PIN from your verification email to view processing, ATS, interview and offer updates.</p>
+{(publicLink.Length > 0 ? $"<p><a href='{safePublicLink}' style='display:inline-block;padding:11px 18px;background:#087ab8;color:#fff;text-decoration:none;border-radius:8px'>Track application</a></p><p style='font-size:12px;color:#64748b'>{safePublicLink}</p>" : "")}
+<p style='color:#64748b'>Keep this reference for future communication.</p></div>";
+            var (confirmationQueued, confirmationError) = await notifications.QueueDirectAsync(email,
+                $"Application received - {applicationCode}", confirmationBody, new NotificationEvent
+                {
+                    EventCode = applicationReused ? "RECRUITMENT.APPLICATION_UPDATED" : "RECRUITMENT.APPLICATION_SUBMITTED",
+                    ResourceType = "CandidateApplication",
+                    ResourceId = applicationId.ToString(CultureInfo.InvariantCulture),
+                    ClientId = submission.ClientId,
+                    ActorEmail = email
+                });
+            if (!confirmationQueued)
+                logger.LogWarning("Application {ApplicationCode} confirmation email was not queued: {Error}", applicationCode, confirmationError);
             return (new PublicApplicationResult
             {
                 SubmissionId = submission.SubmissionId,
@@ -2008,10 +2032,10 @@ LIMIT 1", new { TokenHash = Hash(token) });
         string userAgent)
     {
         slug = (slug ?? "").Trim();
-        var email = NormalizeEmail(request?.Email ?? "");
+        var applicationCode = (request?.ApplicationCode ?? "").Trim().ToUpperInvariant();
         var pin = (request?.Pin ?? "").Trim();
-        if (!ValidPublicSlug(slug) || !ValidEmail(email) || !Regex.IsMatch(pin, @"^\d{6}$"))
-            return (null, "Enter your registered email and 6-digit tracking PIN.");
+        if (!ValidPublicSlug(slug) || applicationCode.Length is < 6 or > 80 || !Regex.IsMatch(applicationCode, @"^[A-Z0-9-]+$") || !Regex.IsMatch(pin, @"^\d{6}$"))
+            return (null, "Enter your APP reference number and 6-digit tracking PIN.");
 
         await using var db = Db();
         await db.OpenAsync();
@@ -2020,11 +2044,13 @@ LIMIT 1", new { TokenHash = Hash(token) });
             new { Slug = slug });
         if (posting.PostingId <= 0) return (null, "Application tracking is unavailable for this link.");
 
-        var subject = await db.QueryFirstOrDefaultAsync<TrackingSubjectRow>(@"SELECT Id,ClientId,CandidateId,TrackingPinHash,
+        var subject = await db.QueryFirstOrDefaultAsync<TrackingSubjectRow>(@"SELECT subject.Id,subject.ClientId,subject.CandidateId,subject.TrackingPinHash,
 TrackingPinFailedAttempts,TrackingPinLockedUntilUtc
-FROM external_portal_subjects
-WHERE ClientId=@ClientId AND NormalizedEmail=@Email AND CandidateId IS NOT NULL
-ORDER BY UpdatedAtUtc DESC LIMIT 1", new { posting.ClientId, Email = email });
+FROM recruitment_candidate_applications applicationRow
+JOIN external_portal_subjects subject ON subject.CandidateId=applicationRow.CandidateId AND subject.ClientId=applicationRow.ClientId
+WHERE applicationRow.ClientId=@ClientId AND applicationRow.ApplicationCode=@ApplicationCode
+  AND subject.CandidateId IS NOT NULL
+ORDER BY subject.UpdatedAtUtc DESC LIMIT 1", new { posting.ClientId, ApplicationCode = applicationCode });
         if (subject is null || string.IsNullOrWhiteSpace(subject.TrackingPinHash))
             return (null, "Registered application or tracking PIN was not found.");
         if (subject.TrackingPinLockedUntilUtc.HasValue && subject.TrackingPinLockedUntilUtc.Value > DateTime.UtcNow)
@@ -2038,10 +2064,6 @@ TrackingPinLockedUntilUtc=CASE WHEN TrackingPinFailedAttempts+1>=5 THEN DATE_ADD
 WHERE Id=@Id", new { subject.Id });
             return (null, "Registered application or tracking PIN was not found.");
         }
-
-        var hasApplication = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_candidate_applications
-WHERE CandidateId=@CandidateId AND ClientId=@ClientId", new { subject.CandidateId, posting.ClientId });
-        if (hasApplication == 0) return (null, "No submitted application was found for this account.");
 
         var rawToken = RandomToken();
         var expires = DateTime.UtcNow.AddDays(7);
@@ -2594,5 +2616,5 @@ WHERE ps.TokenHash=@TokenHash";
     private sealed class PublicIdentityMatch { public long? CandidateId { get; set; } public string ApplicationCode { get; set; } = ""; public string Error { get; set; } = ""; }
     private sealed class PublicAttachmentLinkRow { public long Id { get; set; } public int ClientId { get; set; } public long FieldConfigurationId { get; set; } public string EntityType { get; set; } = ""; public long EntityId { get; set; } public long FileSizeBytes { get; set; } }
     private sealed class ApplicationIdentityRow { public long Id { get; set; } public string ApplicationCode { get; set; } = ""; public long? JobPostingId { get; set; } }
-    private sealed class SubmissionPostingRow { public long SubmissionId { get; set; } public long FormVersionId { get; set; } public int ClientId { get; set; } public string Status { get; set; } = ""; public long PostingId { get; set; } public long PositionId { get; set; } public int RecruiterUserId { get; set; } public int ApplicationCount { get; set; } public int? MaximumApplications { get; set; } public string PostingStatus { get; set; } = ""; public DateTime? OpensAtUtc { get; set; } public DateTime? ClosesAtUtc { get; set; } public long? CandidateId { get; set; } public long? ApplicationId { get; set; } }
+    private sealed class SubmissionPostingRow { public long SubmissionId { get; set; } public long FormVersionId { get; set; } public int ClientId { get; set; } public string Status { get; set; } = ""; public long PostingId { get; set; } public long PositionId { get; set; } public string PublicSlug { get; set; } = ""; public string PositionTitle { get; set; } = "this role"; public int RecruiterUserId { get; set; } public int ApplicationCount { get; set; } public int? MaximumApplications { get; set; } public string PostingStatus { get; set; } = ""; public DateTime? OpensAtUtc { get; set; } public DateTime? ClosesAtUtc { get; set; } public long? CandidateId { get; set; } public long? ApplicationId { get; set; } }
 }

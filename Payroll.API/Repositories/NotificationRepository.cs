@@ -301,6 +301,43 @@ SELECT LAST_INSERT_ID();", new
         }
     }
 
+    public async Task<(bool Queued, string Error)> QueueDirectAsync(
+        string recipientEmail,
+        string subject,
+        string bodyHtml,
+        NotificationEvent notificationEvent,
+        CancellationToken cancellationToken = default)
+    {
+        if (DeliverySuppressed)
+            return (false, "Outbound delivery is suppressed for this application instance.");
+        if (!MailboxAddress.TryParse((recipientEmail ?? "").Trim(), out var mailbox))
+            return (false, "The recipient email address is invalid.");
+        if (string.IsNullOrWhiteSpace(subject) || string.IsNullOrWhiteSpace(bodyHtml))
+            return (false, "The email subject and content are required.");
+
+        await using var db = Db();
+        await db.OpenAsync(cancellationToken);
+        var smtpReady = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM notification_smtp_settings
+WHERE Id=1 AND IsEnabled=TRUE AND DeliveryPaused=FALSE AND Host<>'' AND FromEmail<>''");
+        if (smtpReady == 0)
+            return (false, "Email delivery is not configured or is currently paused.");
+
+        var eventCode = CleanCode(string.IsNullOrWhiteSpace(notificationEvent.EventCode) ? "SYSTEM_EMAIL" : notificationEvent.EventCode);
+        await db.ExecuteAsync(@"INSERT INTO notification_queue
+(RuleId,EventCode,ResourceType,ResourceId,ClientId,ToJson,CcJson,BccJson,Subject,BodyHtml,Status)
+VALUES (NULL,@EventCode,@ResourceType,@ResourceId,@ClientId,@ToJson,'[]','[]',@Subject,@BodyHtml,'Pending')", new
+        {
+            EventCode = eventCode,
+            ResourceType = string.IsNullOrWhiteSpace(notificationEvent.ResourceType) ? "System" : notificationEvent.ResourceType,
+            ResourceId = string.IsNullOrWhiteSpace(notificationEvent.ResourceId) ? "DIRECT" : notificationEvent.ResourceId,
+            notificationEvent.ClientId,
+            ToJson = JsonSerializer.Serialize(new[] { mailbox.Address }),
+            Subject = subject.Trim(),
+            BodyHtml = bodyHtml
+        });
+        return (true, "");
+    }
+
     public async Task<long?> QueueTemplateAsync(long templateId, string recipientEmail, NotificationEvent notificationEvent)
     {
         if (templateId <= 0 || string.IsNullOrWhiteSpace(recipientEmail)

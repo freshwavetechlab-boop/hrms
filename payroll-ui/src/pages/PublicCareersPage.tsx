@@ -11,6 +11,7 @@ import {
 import type {
   DynamicFormField, PublicApplicationProcessingStatus, PublicApplicationSession, PublicApplicationVerification, PublicCandidateApplicationTracker, PublicFormValue, PublicRecruitmentJob, PublicUploadedFile, PublicUploadMetadata,
 } from '../types/recruitmentOrchestration'
+import { formatApiDateTime } from '../utils/apiDateTime'
 import '../components/RecruitmentOrchestration.css'
 import './PublicCareersPage.css'
 
@@ -192,7 +193,7 @@ export default function PublicCareersPage({ slug: suppliedSlug }: Props) {
   const branding = <CareersBrand name={brand?.name || job?.clientName || 'Careers'} logo={brand?.logoDataUrl} />
   if (loading) return <main className="public-career-page careers-page"><div className="public-career-shell">{branding}<Card><Skeleton active paragraph={{ rows: 12 }} /></Card></div></main>
   if (!job) return <main className="public-career-page careers-page"><div className="public-career-shell">{branding}<div className="public-success"><Result status={loadFailure === 'unavailable' ? 'error' : '404'} title={loadFailure === 'unavailable' ? 'Unable to load this job' : 'Job posting not found'} subTitle={loadFailure === 'unavailable' ? 'The recruitment service is temporarily unavailable. Please try again shortly.' : 'This link may be incorrect, closed or no longer public.'} /></div></div></main>
-  if (result) return <main className="public-career-page careers-page"><div className="public-career-shell">{branding}<div className="public-success"><Result status="success" title={result.status === 'ResumeUpdated' ? 'Resume updated' : 'Application submitted'} subTitle={result.message || `Your application reference is ${result.applicationCode}.`} extra={<Space direction="vertical" size={12}><Tag color="green" icon={<CheckCircleOutlined />}>{result.applicationCode}</Tag><Alert showIcon type={processingStatus?.status === 'NeedsReview' ? 'warning' : processingStatus?.status === 'Completed' ? 'success' : 'info'} message={processingStatus?.status === 'NeedsReview' ? 'Processing issue detected' : processingStatus?.status === 'Completed' ? 'Processing complete' : 'Processing resume'} description={processingStatus?.message || 'Your application is saved. Resume processing is continuing.'} /><Button onClick={() => setTrackingOpen(true)}>View complete application status</Button><p>Keep this reference for future communication. You can safely close this page.</p></Space>} /></div></div><PublicApplicationTrackerModal open={trackingOpen} slug={slug} initialEmail={email} initialPin={verificationCode} onClose={() => setTrackingOpen(false)} /></main>
+  if (result) return <main className="public-career-page careers-page"><div className="public-career-shell">{branding}<div className="public-success"><Result status="success" title={result.status === 'ResumeUpdated' ? 'Resume updated' : 'Application submitted'} subTitle={result.message || `Your application reference is ${result.applicationCode}.`} extra={<Space direction="vertical" size={12}><Tag color="green" icon={<CheckCircleOutlined />}>{result.applicationCode}</Tag><Alert showIcon type={processingStatus?.status === 'NeedsReview' ? 'warning' : processingStatus?.status === 'Completed' ? 'success' : 'info'} message={processingStatus?.status === 'NeedsReview' ? 'Processing issue detected' : processingStatus?.status === 'Completed' ? 'Processing complete' : 'Processing resume'} description={processingStatus?.message || 'Your application is saved. Resume processing is continuing.'} /><Button onClick={() => setTrackingOpen(true)}>View complete application status</Button><p>Keep this APP reference and your 6-digit tracking PIN to check this application later.</p></Space>} /></div></div><PublicApplicationTrackerModal open={trackingOpen} slug={slug} initialApplicationCode={result.applicationCode} initialPin={verificationCode} onClose={() => setTrackingOpen(false)} /></main>
 
   const closed = job.availabilityStatus === 'Closed'
   const unavailable = !job.isAcceptingApplications || !job.applicationForm
@@ -295,13 +296,13 @@ export default function PublicCareersPage({ slug: suppliedSlug }: Props) {
       <Modal open={Boolean(filePreview)} title={filePreview?.name || 'Resume preview'} footer={<Button type="primary" onClick={() => setFilePreview(null)}>Close</Button>} onCancel={() => setFilePreview(null)} width={820}>
         <pre className="public-resume-preview-text">{filePreview?.text}</pre>
       </Modal>
-      <PublicApplicationTrackerModal open={trackingOpen} slug={slug} initialEmail={email} initialPin={verificationCode} onClose={() => setTrackingOpen(false)} />
+      <PublicApplicationTrackerModal open={trackingOpen} slug={slug} initialApplicationCode="" initialPin="" onClose={() => setTrackingOpen(false)} />
     </div>
   </main>
 }
 
-function PublicApplicationTrackerModal({ open, slug, initialEmail, initialPin, onClose }: { open: boolean; slug: string; initialEmail: string; initialPin: string; onClose: () => void }) {
-  const [email, setEmail] = useState(initialEmail)
+function PublicApplicationTrackerModal({ open, slug, initialApplicationCode, initialPin, onClose }: { open: boolean; slug: string; initialApplicationCode: string; initialPin: string; onClose: () => void }) {
+  const [applicationCode, setApplicationCode] = useState(initialApplicationCode)
   const [pin, setPin] = useState(initialPin)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -309,14 +310,14 @@ function PublicApplicationTrackerModal({ open, slug, initialEmail, initialPin, o
 
   useEffect(() => {
     if (!open) return
-    if (!email && initialEmail) setEmail(initialEmail)
+    if (!applicationCode && initialApplicationCode) setApplicationCode(initialApplicationCode)
     if (!pin && initialPin) setPin(initialPin)
-  }, [open, initialEmail, initialPin, email, pin])
+  }, [open, initialApplicationCode, initialPin, applicationCode, pin])
 
   const login = async () => {
     setBusy(true)
     setError('')
-    const sessionResponse = await createPublicApplicationTrackingSession(slug, email.trim(), pin.trim())
+    const sessionResponse = await createPublicApplicationTrackingSession(slug, applicationCode.trim(), pin.trim())
     if (!sessionResponse.ok || !sessionResponse.data) {
       setBusy(false)
       setError(sessionResponse.error || 'Unable to open application tracking.')
@@ -334,19 +335,19 @@ function PublicApplicationTrackerModal({ open, slug, initialEmail, initialPin, o
   const close = () => { setError(''); setTracker(null); onClose() }
   return <Modal className="public-tracker-modal" open={open} title="Track your applications" footer={null} onCancel={close} width="min(920px, 96vw)" destroyOnClose>
     {!tracker ? <Form layout="vertical" onFinish={() => void login()}>
-      <Alert showIcon type="info" message="Already registered?" description="Use your registered email and the first 6-digit verification code you used. That code is your tracking PIN." style={{ marginBottom: 16 }} />
-      <Form.Item label="Registered email" required><Input prefix={<MailOutlined />} type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} /></Form.Item>
+      <Alert showIcon type="info" message="Track your application" description="Use the APP reference shown after submission and the 6-digit tracking PIN sent during your first verification." style={{ marginBottom: 16 }} />
+      <Form.Item label="Application reference" required><Input prefix={<FileTextOutlined />} autoComplete="off" placeholder="APP-UIDAI-000072" value={applicationCode} onChange={event => setApplicationCode(event.target.value.toUpperCase())} /></Form.Item>
       <Form.Item label="Tracking PIN" required><Input.Password prefix={<LockOutlined />} inputMode="numeric" autoComplete="current-password" maxLength={6} value={pin} onChange={event => setPin(event.target.value.replace(/\D/g, '').slice(0, 6))} /></Form.Item>
       {error && <Alert showIcon type="error" message={error} style={{ marginBottom: 16 }} />}
       <Button block type="primary" htmlType="submit" loading={busy}>View application status</Button>
     </Form> : <section className="public-tracker">
       <header><div><span>Candidate</span><h2>{tracker.candidateName || 'Your applications'}</h2></div><Tag color="blue">{tracker.applications.length} application{tracker.applications.length === 1 ? '' : 's'}</Tag></header>
       <div className="public-tracker-list">{tracker.applications.map(application => <article key={application.applicationId} className="public-tracker-card">
-        <div className="public-tracker-title"><div><span>{application.applicationCode}</span><h3>{application.positionTitle}</h3><small>Applied {new Date(application.appliedAt).toLocaleString('en-IN')}</small></div><Tag color={application.currentStatus === 'Rejected' ? 'red' : application.currentStatus === 'Joined' ? 'green' : 'blue'}>{application.currentStage || application.currentStatus}</Tag></div>
+        <div className="public-tracker-title"><div><span>{application.applicationCode}</span><h3>{application.positionTitle}</h3><small>Applied {formatApiDateTime(application.appliedAt)}</small></div><Tag color={application.currentStatus === 'Rejected' ? 'red' : application.currentStatus === 'Joined' ? 'green' : 'blue'}>{application.currentStage || application.currentStatus}</Tag></div>
         <Alert showIcon type={application.processingStatus === 'NeedsReview' ? 'warning' : application.processingStatus === 'Completed' ? 'success' : 'info'} message={application.processingMessage} />
         <div className="public-tracker-grid">
-          <div><h4>Application timeline</h4><ol>{application.timeline.map((stage, index) => <li key={`${stage.stage}-${stage.changedAt}-${index}`}><i /><div><b>{stage.stage}</b><small>{new Date(stage.changedAt).toLocaleString('en-IN')}</small></div></li>)}</ol></div>
-          <div><h4>Interviews</h4>{application.interviews.length ? application.interviews.map((interview, index) => <div className="public-tracker-event" key={`${interview.round}-${index}`}><b>{interview.round}</b><span>{new Date(interview.scheduledStart).toLocaleString('en-IN')} · {interview.mode}</span><Tag color={interview.status === 'Completed' ? 'green' : interview.status === 'Cancelled' || interview.status === 'No Show' ? 'red' : 'blue'}>{interview.status}{interview.result && interview.result !== 'Pending' ? ` · ${interview.result}` : ''}</Tag>{interview.locationOrLink && <a href={interview.locationOrLink.startsWith('http') ? interview.locationOrLink : undefined} target="_blank" rel="noreferrer">{interview.locationOrLink}</a>}</div>) : <p>No interview scheduled yet.</p>}
+          <div><h4>Application timeline</h4><ol>{application.timeline.map((stage, index) => <li key={`${stage.stage}-${stage.changedAt}-${index}`}><i /><div><b>{stage.stage}</b><small>{formatApiDateTime(stage.changedAt)}</small></div></li>)}</ol></div>
+          <div><h4>Interviews</h4>{application.interviews.length ? application.interviews.map((interview, index) => <div className="public-tracker-event" key={`${interview.round}-${index}`}><b>{interview.round}</b><span>{formatApiDateTime(interview.scheduledStart)} · {interview.mode}</span><Tag color={interview.status === 'Completed' ? 'green' : interview.status === 'Cancelled' || interview.status === 'No Show' ? 'red' : 'blue'}>{interview.status}{interview.result && interview.result !== 'Pending' ? ` · ${interview.result}` : ''}</Tag>{interview.locationOrLink && <a href={interview.locationOrLink.startsWith('http') ? interview.locationOrLink : undefined} target="_blank" rel="noreferrer">{interview.locationOrLink}</a>}</div>) : <p>No interview scheduled yet.</p>}
           {application.offer && <><h4>Offer & joining</h4><div className="public-tracker-event"><b>{application.offer.offerNumber}</b><Tag color={application.offer.status === 'Accepted' ? 'green' : 'blue'}>{application.offer.status}</Tag><span>Proposed joining: {new Date(application.offer.proposedJoiningDate).toLocaleDateString('en-IN')}</span></div></>}</div>
         </div>
       </article>)}</div>

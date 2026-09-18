@@ -123,6 +123,35 @@ public sealed class ResumeParsingServiceTests
     }
 
     [Fact]
+    public async Task Txt_RoleAndDateThenEmployerAndLocation_ExtractsCurrentCompany()
+    {
+        const string text = """
+            TROZAN ONE
+            trozan@example.com | +91 98470 35128
+            SUMMARY
+            Platform Engineer with 7+ years of experience in Kubernetes and infrastructure automation.
+            EXPERIENCE
+            Senior Platform Engineer | Jan 2023 - Present
+            Tata Consultancy Services (TCS) | Bengaluru
+            DevOps Engineer | Jun 2020 - Dec 2022
+            Infosys Limited | Bengaluru
+            TECHNICAL SKILLS
+            Kubernetes, Docker, Jenkins, Terraform, Prometheus
+            EDUCATION
+            B.Tech | Computer Science & Engineering | 2018
+            """;
+        var bytes = Encoding.UTF8.GetBytes(text);
+
+        var result = await CreateParser().ParseAsync(new MemoryStream(bytes), "Trozan_One.txt", bytes.Length, NoCancellation);
+
+        Assert.Equal("Senior Platform Engineer", result.Facts.CurrentTitle);
+        Assert.Equal("Tata Consultancy Services (TCS)", result.Facts.CurrentCompany);
+        Assert.Equal("Bengaluru", result.Facts.CurrentLocation);
+        Assert.Contains(result.Facts.Experience, row => row.Company == "Infosys Limited"
+            && row.JobTitle == "DevOps Engineer" && !row.IsCurrent);
+    }
+
+    [Fact]
     public async Task Odt_StructuredResume_ExtractsAtsFactsWithoutAi()
     {
         const string text = """

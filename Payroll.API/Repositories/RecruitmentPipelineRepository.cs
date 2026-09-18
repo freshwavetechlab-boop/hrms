@@ -1963,10 +1963,37 @@ JOIN recruitment_stage_ats_configurations c ON c.PipelineStageId=si.PipelineStag
                 ? "Candidate does not meet a must-have requirement. Configure auto-reject or review the evidence manually; auto-advance is blocked."
                 : $"ATS score {row.CurrentScore:0.##} is inside the manual-review band."
         }, "");
-        var transitionId = await db.ExecuteScalarAsync<long?>(@"SELECT Id FROM recruitment_pipeline_transitions
-WHERE FromStageId=@StageId AND OutcomeCode=@Outcome AND IsActive=TRUE ORDER BY DisplayOrder,Id LIMIT 1", new { StageId = row.PipelineStageId, Outcome = outcome });
-        if (transitionId is null) return (null, $"No active {outcome} transition is configured for this ATS stage.");
-        return await RequestTransitionAsync(applicationId, new RecruitmentPipelineTransitionRequest { TransitionId = transitionId.Value, Reason = $"ATS automation: score {row.CurrentScore:0.##}." }, user);
+        var transitions = (await db.QueryAsync<AtsTransitionCandidate>(@"SELECT transitionRow.Id,transitionRow.OutcomeCode,
+targetStage.StageName TargetStageName,targetStage.StageType TargetStageType
+FROM recruitment_pipeline_transitions transitionRow
+JOIN recruitment_pipeline_stages targetStage ON targetStage.Id=transitionRow.ToStageId AND targetStage.IsActive=TRUE
+WHERE transitionRow.FromStageId=@StageId AND transitionRow.IsActive=TRUE
+ORDER BY transitionRow.DisplayOrder,transitionRow.Id", new { StageId = row.PipelineStageId })).ToList();
+        var selected = transitions.FirstOrDefault(item => item.OutcomeCode.Equals(outcome, StringComparison.OrdinalIgnoreCase));
+        if (selected is null)
+        {
+            // Published pipelines can retain an older ATS outcome code after a stage/transition is
+            // renamed. Resolve an unambiguous branch by its destination instead of leaving an
+            // otherwise qualified application stranded in ATS.
+            var rejecting = outcome.Equals(row.RejectOutcomeCode, StringComparison.OrdinalIgnoreCase);
+            var compatible = transitions.Where(item => rejecting
+                ? item.TargetStageType.Equals("Rejected", StringComparison.OrdinalIgnoreCase)
+                  || item.TargetStageName.Contains("reject", StringComparison.OrdinalIgnoreCase)
+                  || item.OutcomeCode.Contains("reject", StringComparison.OrdinalIgnoreCase)
+                : !item.TargetStageType.Equals("Rejected", StringComparison.OrdinalIgnoreCase)
+                  && !item.TargetStageType.Equals("Withdrawn", StringComparison.OrdinalIgnoreCase)
+                  && !item.TargetStageName.Contains("reject", StringComparison.OrdinalIgnoreCase)
+                  && !item.OutcomeCode.Contains("reject", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (compatible.Count != 1)
+                return (null, compatible.Count == 0
+                    ? $"No active {outcome} transition is configured for this ATS stage."
+                    : $"ATS outcome {outcome} maps to multiple active transitions. Update the pipeline configuration.");
+            selected = compatible[0];
+        }
+        var reason = selected.OutcomeCode.Equals(outcome, StringComparison.OrdinalIgnoreCase)
+            ? $"ATS automation: score {row.CurrentScore:0.##}."
+            : $"ATS automation: score {row.CurrentScore:0.##}; configured outcome {outcome} resolved to {selected.OutcomeCode}.";
+        return await RequestTransitionAsync(applicationId, new RecruitmentPipelineTransitionRequest { TransitionId = selected.Id, Reason = reason }, user);
     }
 
     public async Task<(RecruitmentPipelineTransitionResult? Result, string Error)> SyncTransitionWorkflowStatusAsync(long transitionRequestId, string workflowStatus, AuthUser user)
@@ -3149,6 +3176,7 @@ LEFT JOIN clients c ON c.Id=p.ClientId";
     private sealed class BoardCardRow : RecruitmentPipelineBoardCard { public long StageId { get; set; } public RecruitmentPipelineBoardCard Card => this; }
     private sealed class TransitionContextRow { public int ClientId { get; set; } public long PipelineInstanceId { get; set; } public long CurrentStageInstanceId { get; set; } public long CurrentStageId { get; set; } public long TransitionId { get; set; } public long ToStageId { get; set; } public string OutcomeCode { get; set; } = ""; public string TargetStageType { get; set; } = ""; public bool RequiresReason { get; set; } public long? ApprovalWorkflowId { get; set; } }
     private sealed class AtsAutomationRow { public int ClientId { get; set; } public long PipelineStageId { get; set; } public decimal MinimumAdvanceScore { get; set; } public decimal MaximumRejectScore { get; set; } public bool AutoAdvance { get; set; } public bool AutoReject { get; set; } public bool RequireHumanConfirmation { get; set; } public bool JobAutoRunAts { get; set; } public string AdvanceOutcomeCode { get; set; } = ""; public string RejectOutcomeCode { get; set; } = ""; public decimal? CurrentScore { get; set; } public string CurrentScoreStatus { get; set; } = ""; public bool CurrentScoreRequiresReview { get; set; } }
+    private sealed class AtsTransitionCandidate { public long Id { get; set; } public string OutcomeCode { get; set; } = ""; public string TargetStageName { get; set; } = ""; public string TargetStageType { get; set; } = ""; }
     private sealed class DecisionTransitionRow { public long Id { get; set; } public string OutcomeCode { get; set; } = ""; public int DisplayOrder { get; set; } public string FromStageType { get; set; } = ""; public string ToStageType { get; set; } = ""; public string ToStageName { get; set; } = ""; }
     private sealed class AutomaticAtsTransitionRow { public int ClientId { get; set; } public string CurrentStageType { get; set; } = ""; public string ParsingStatus { get; set; } = ""; public long? TransitionId { get; set; } }
     private class TransitionRequestRow { public long Id { get; set; } public long ApplicationId { get; set; } public long StageInstanceId { get; set; } public long TransitionId { get; set; } public string Reason { get; set; } = ""; public string Status { get; set; } = ""; public long? WorkflowInstanceId { get; set; } public DateTime? AppliedAtUtc { get; set; } public int ClientId { get; set; } }

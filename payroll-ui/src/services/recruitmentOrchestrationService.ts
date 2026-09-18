@@ -241,8 +241,8 @@ export const submitPublicApplication = (token: string) =>
 export const getPublicApplicationProcessingStatus = (token: string) =>
   getJsonResult<PublicApplicationProcessingStatus | null>(`${publicBase}/sessions/${encodeURIComponent(token)}/processing-status`, null, { toast: false, loader: false })
 
-export const createPublicApplicationTrackingSession = (slug: string, email: string, pin: string) =>
-  postJson(`${publicBase}/jobs/${encodeURIComponent(slug)}/tracking-sessions`, { email, pin }, null as PublicApplicationTrackingSession | null, { toast: false, loader: false })
+export const createPublicApplicationTrackingSession = (slug: string, applicationCode: string, pin: string) =>
+  postJson(`${publicBase}/jobs/${encodeURIComponent(slug)}/tracking-sessions`, { applicationCode, pin }, null as PublicApplicationTrackingSession | null, { toast: false, loader: false })
 
 export const getPublicApplicationTracker = (token: string) =>
   getJsonResult<PublicCandidateApplicationTracker | null>(`${publicBase}/tracking/${encodeURIComponent(token)}`, null, { toast: false, loader: false })

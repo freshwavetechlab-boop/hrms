@@ -1297,11 +1297,15 @@ SummaryText=VALUES(SummaryText),TotalExperienceMonths=VALUES(TotalExperienceMont
             {
                 throw;
             }
-            catch
+            catch (Exception exception)
             {
+                logger.LogError(exception, "Public resume processing failed for application {ApplicationId}, resume {ResumeId}.", applicationId, link.ResumeId);
                 await db.ExecuteAsync(@"UPDATE recruitment_candidate_resumes SET ParsingStatus='Failed',ParserName='BuiltIn',
 ParserVersion='2.0',ParsedAt=UTC_TIMESTAMP(),ParsingError='The stored resume could not be opened or parsed.'
 WHERE Id=@ResumeId AND CandidateId=@CandidateId", link);
+                await db.ExecuteAsync(@"INSERT INTO recruitment_resume_parser_runs
+(ResumeId,ParserName,ParserVersion,ParseStatus,ExtractedCharacterCount,ExtractedLineCount,ErrorMessage,StartedAt,CompletedAt)
+VALUES (@ResumeId,'BuiltIn','2.0','Failed',0,0,'The stored resume could not be opened or parsed.',UTC_TIMESTAMP(),UTC_TIMESTAMP())", link);
                 return (null, "The application was submitted, but resume parsing needs HR review.");
             }
         }
@@ -1329,8 +1333,20 @@ JOIN recruitment_candidate_resumes resume ON resume.Id=applicationRow.ResumeId
 JOIN entity_attachments attachment ON attachment.public_id=resume.AttachmentPublicId
  AND attachment.entity_type='CANDIDATE' AND attachment.entity_id=applicationRow.CandidateId
  AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
-WHERE applicationRow.SourceType='Public Job' AND resume.ParsingStatus='Pending'
-ORDER BY applicationRow.AppliedAt,applicationRow.Id
+LEFT JOIN recruitment_job_postings posting ON posting.Id=COALESCE(applicationRow.JobPostingId,
+ CASE WHEN applicationRow.SourceType='Public Job' THEN applicationRow.SourceReferenceId END)
+WHERE applicationRow.SourceType='Public Job' AND (
+ (resume.ParsingStatus='Pending' OR (resume.ParsingStatus='Failed'
+   AND resume.ParsedAt<=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 1 MINUTE)
+   AND (SELECT COUNT(*) FROM recruitment_resume_parser_runs failedRun
+        WHERE failedRun.ResumeId=resume.Id AND failedRun.ParseStatus='Failed')<3))
+ OR (resume.ParsingStatus='Parsed' AND COALESCE(posting.AutoRunAts,FALSE)=TRUE
+  AND NOT EXISTS (SELECT 1 FROM recruitment_application_scores score
+   WHERE score.ApplicationId=applicationRow.Id AND score.IsCurrent=TRUE)
+  AND NOT EXISTS (SELECT 1 FROM recruitment_ats_scoring_jobs scoringJob
+   WHERE scoringJob.ApplicationId=applicationRow.Id))
+)
+ORDER BY (resume.ParsingStatus='Pending') DESC,(resume.ParsingStatus='Failed') DESC,applicationRow.AppliedAt,applicationRow.Id
 LIMIT 1");
             if (!applicationId.HasValue) return (false, null, "");
 
@@ -1933,6 +1949,7 @@ OfferLetterAttachmentPublicId=@Attachment,Remarks=@Remarks,UpdatedAt=UTC_TIMESTA
         await db.OpenAsync();
         var offer = (await OfferRowsAsync(db, user, null, null)).FirstOrDefault(row => row.Id == id);
         if (offer is null) return (null, "Offer was not found.");
+        if (offer.Status.Equals(status, StringComparison.OrdinalIgnoreCase)) return (offer, "");
         if (status is "Approved" or "Pending Approval") return (null, "Offer approval status can only be changed by the configured workflow.");
         if (status.Equals("Pending Candidate", StringComparison.OrdinalIgnoreCase) && offer.Status is not ("Draft" or "Approved")) return (null, "Only a draft or approved offer can be released.");
         if (status.Equals("Pending Candidate", StringComparison.OrdinalIgnoreCase) && !offer.OfferLetterAttachmentPublicId.HasValue) return (null, "Link the current global Offer Letter document before releasing the offer.");
@@ -3703,7 +3720,7 @@ Phone=CASE WHEN Phone='' THEN @Phone ELSE Phone END,
 NormalizedPhone=CASE WHEN NormalizedPhone='' THEN @NormalizedPhone ELSE NormalizedPhone END,
 CurrentLocation=CASE WHEN CurrentLocation='' THEN @ResidentialAddress ELSE CurrentLocation END,
 TotalExperienceMonths=CASE WHEN TotalExperienceMonths=0 AND @TotalExperienceMonths IS NOT NULL THEN @TotalExperienceMonths ELSE TotalExperienceMonths END,
-CurrentCompany=CASE WHEN CurrentCompany='' THEN @CurrentCompany ELSE CurrentCompany END,
+CurrentCompany=CASE WHEN @ReplaceCurrentCompany=TRUE AND @CurrentCompany<>'' THEN @CurrentCompany ELSE CurrentCompany END,
 CurrentTitle=CASE WHEN CurrentTitle='' THEN @CurrentTitle ELSE CurrentTitle END,
 HighestQualification=CASE WHEN HighestQualification='' THEN @HighestQualification ELSE HighestQualification END,
 UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new
@@ -3717,6 +3734,8 @@ UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new
             NormalizedPhone = NormalizePhone(facts.Phone),
             ResidentialAddress = Truncate(string.IsNullOrWhiteSpace(facts.CurrentLocation) ? facts.ResidentialAddress : facts.CurrentLocation, 180),
             facts.TotalExperienceMonths,
+            ReplaceCurrentCompany = string.IsNullOrWhiteSpace(candidate.CurrentCompany)
+                || Regex.IsMatch(candidate.CurrentCompany, @"(?i)\b(?:19|20)\d{2}\b.*(?:present|current|now|\b(?:19|20)\d{2}\b)"),
             CurrentCompany = Truncate(facts.CurrentCompany, 180),
             CurrentTitle = Truncate(facts.CurrentTitle, 180),
             HighestQualification = Truncate(facts.HighestQualification, 250)
@@ -3725,11 +3744,27 @@ UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new
 
     private static async Task ApplyParsedProfileSectionsAsync(MySqlConnection db, long candidateId, ResumeParsedFacts facts, MySqlTransaction transaction)
     {
-        if (facts.Experience.Count > 0 && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidate_experience WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction) == 0)
+        if (facts.Experience.Count > 0)
         {
+            var existingExperienceCount = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidate_experience WHERE CandidateId=@CandidateId", new { CandidateId = candidateId }, transaction);
             var order = 10;
             foreach (var row in facts.Experience.Take(30))
             {
+                var startDate = row.StartDate?.ToDateTime(TimeOnly.MinValue);
+                var endDate = row.EndDate?.ToDateTime(TimeOnly.MinValue);
+                if (existingExperienceCount > 0)
+                {
+                    await db.ExecuteAsync(@"UPDATE recruitment_candidate_experience SET
+Employer=CASE WHEN Employer='' THEN @Employer ELSE Employer END
+WHERE CandidateId=@CandidateId AND JobTitle=@JobTitle AND StartDate<=>@StartDate", new
+                    {
+                        CandidateId = candidateId,
+                        Employer = Truncate(row.Company, 180),
+                        JobTitle = Truncate(row.JobTitle, 180),
+                        StartDate = startDate
+                    }, transaction);
+                    continue;
+                }
                 await db.ExecuteAsync(@"INSERT INTO recruitment_candidate_experience
 (CandidateId,Employer,JobTitle,StartDate,EndDate,IsCurrent,Description,DisplayOrder)
 VALUES (@CandidateId,@Employer,@JobTitle,@StartDate,@EndDate,@IsCurrent,@Description,@DisplayOrder)", new
@@ -3737,8 +3772,8 @@ VALUES (@CandidateId,@Employer,@JobTitle,@StartDate,@EndDate,@IsCurrent,@Descrip
                     CandidateId = candidateId,
                     Employer = Truncate(row.Company, 180),
                     JobTitle = Truncate(row.JobTitle, 180),
-                    row.StartDate,
-                    row.EndDate,
+                    StartDate = startDate,
+                    EndDate = endDate,
                     row.IsCurrent,
                     Description = Truncate(row.Evidence, 2000),
                     DisplayOrder = order

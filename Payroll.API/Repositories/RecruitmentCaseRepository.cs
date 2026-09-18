@@ -633,7 +633,9 @@ VALUES (@CaseId,@StageId,'CaseStarted','Hiring case started','Work-order SLA clo
         var link = await db.QueryFirstOrDefaultAsync<AutomaticCaseSource>(@"SELECT line.Id WorkOrderLineId,workOrder.ClientId,
 hiringCase.Id HiringCaseId,
 (SELECT assignment.PipelineVersionId FROM recruitment_position_pipeline_assignments assignment
+ JOIN recruitment_pipeline_versions assignedVersion ON assignedVersion.Id=assignment.PipelineVersionId
  WHERE assignment.PositionId=COALESCE(line.PositionId,requisition.OpenPositionId) AND assignment.IsActive=TRUE
+   AND assignedVersion.ScopeType IN ('Position','Hybrid')
  ORDER BY assignment.AssignedAtUtc DESC,assignment.Id DESC LIMIT 1) AssignedPipelineVersionId
 FROM recruitment_requisitions requisition
 JOIN recruitment_work_order_lines line ON line.RequisitionId=requisition.Id
@@ -1011,10 +1013,20 @@ VALUES (@CaseId,@StageInstanceId,@PipelineStageId,@Outcome,@Reason,'Pending Appr
             return await AdvanceDownstreamHiringCaseForApplicationAsync(applicationId, user);
         await using var db = Db();
         await db.OpenAsync();
-        var application = await db.QueryFirstOrDefaultAsync<CandidateMilestoneSource>(@"SELECT applicationRow.PositionId,applicationRow.ClientId
+        var application = await db.QueryFirstOrDefaultAsync<CandidateMilestoneSource>(@"SELECT applicationRow.PositionId,applicationRow.ClientId,applicationRow.JobPostingId
 FROM recruitment_candidate_applications applicationRow
 WHERE applicationRow.Id=@ApplicationId AND applicationRow.ApplicationType='Application'", new { ApplicationId = applicationId });
         if (application is null || (user.ClientId is not null && user.ClientId != application.ClientId)) return "Application was not found.";
+
+        // Older published jobs may pre-date automatic hiring-case creation. Repair that missing
+        // link when the first candidate milestone is reached so vacancy automation can continue.
+        var hasHiringCase = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_position_pipeline_instances
+WHERE PositionId=@PositionId AND Status='Active'", new { application.PositionId });
+        if (hasHiringCase == 0 && application.JobPostingId is > 0)
+        {
+            var (_, ensureError) = await EnsureHiringCaseForJobPostingAsync(application.JobPostingId.Value, user);
+            if (!string.IsNullOrWhiteSpace(ensureError)) return ensureError;
+        }
 
         // Vacancy milestones are cohort milestones, not per-candidate milestones. A single
         // shortlist or interview must never advance the cumulative position SLA while another
@@ -1171,8 +1183,8 @@ WHERE document.HiringCaseId=@CaseId AND document.PipelineStageId=@StageId AND do
             }
             else if (key.Contains("OFFER") && (key.Contains("ISSU") || current.StageType.Equals("Offer", StringComparison.OrdinalIgnoreCase)))
             {
-                ready = continuing.All(row => row.LatestOfferStatus is "Pending Candidate" or "Released" or "Accepted");
-                reason = $"Automatically completed offer issuance after all {continuing.Count} continuing candidates received their offers.";
+                ready = AreAllContinuingOffersAccepted(continuing.Select(row => row.LatestOfferStatus));
+                reason = $"Automatically completed offer issuance after all {continuing.Count} continuing candidates accepted their offers and the joining date was conveyed.";
             }
             else return "";
             if (!ready) return "";
@@ -1197,6 +1209,9 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id LIMIT 1",
         }
         return "";
     }
+
+    internal static bool AreAllContinuingOffersAccepted(IEnumerable<string> offerStatuses) =>
+        offerStatuses.Any() && offerStatuses.All(status => status.Equals("Accepted", StringComparison.OrdinalIgnoreCase));
 
     private static async Task<string> ReturnHiringCaseToProfileSharingAsync(MySqlConnection db, long positionId, int candidateCount, int actorUserId)
     {
@@ -1807,6 +1822,7 @@ WHERE PipelineStageId=@StageId AND DocumentType=@DocumentType AND TemplateId=@Te
             ["companyName"] = context.ClientName,
             ["workOrderNumber"] = context.WorkOrderNumber,
             ["positionName"] = context.PositionName,
+            ["position_name"] = context.PositionName,
             ["positionTitle"] = context.PositionName,
             ["payBandLevel"] = context.PayBandLevelCode,
             ["location"] = context.Location,
@@ -2510,6 +2526,7 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
         public long ApplicationId { get; set; }
         public long PositionId { get; set; }
         public int ClientId { get; set; }
+        public long? JobPostingId { get; set; }
         public string CandidateStageName { get; set; } = "";
         public string CandidateStageType { get; set; } = "";
         public bool HasInterview { get; set; }

@@ -1,5 +1,5 @@
-import type { NotificationAutomationCatalog, NotificationRule, NotificationSetup, NotificationSmtpSetting, NotificationStakeholderPreview, NotificationTemplate } from '../types/payroll'
-import { getJson, postEmpty, postJson } from './apiClient'
+import type { NotificationAutomationCatalog, NotificationRule, NotificationSetup, NotificationSmtpSetting, NotificationStakeholderPreview, NotificationTemplate, RecruitmentMailTrigger } from '../types/payroll'
+import { deleteJson, getJson, postEmpty, postJson } from './apiClient'
 
 export const getNotificationSetup = () => getJson<NotificationSetup>('/api/notifications/setup', { smtp: { id: 1, isEnabled: false, deliveryPaused: false, host: '', port: 587, userName: '', password: '', enableSsl: true, fromEmail: '', fromName: '' }, templates: [], rules: [], queue: [], logs: [] })
 export const saveNotificationSmtp = (smtp: NotificationSmtpSetting) => postJson('/api/notifications/smtp', smtp, smtp, { successMessage: 'SMTP settings saved.' })
@@ -9,3 +9,6 @@ export const retryNotification = (id: number) => postEmpty(`/api/notifications/q
 export const sendNotificationTest = (ruleId: number, toEmail: string) => postJson('/api/notifications/test', { ruleId, toEmail }, null, { successMessage: 'Test notification queued.' })
 export const getNotificationAutomationCatalog = () => getJson<NotificationAutomationCatalog>('/api/notifications/automation/catalog', { events: [] })
 export const previewNotificationStakeholders = (request: { eventCode: string; resourceType: string; resourceId: string; clientId?: number | null }) => postJson<typeof request, NotificationStakeholderPreview>('/api/notifications/automation/stakeholders', request, { eventCode: request.eventCode, resourceType: request.resourceType, resourceId: request.resourceId, clientId: request.clientId, stakeholders: [] }, { loader: false, toast: 'error-only' })
+export const getRecruitmentMailTriggers = (clientId?: number) => getJson<RecruitmentMailTrigger[]>(`/api/notifications/recruitment-triggers${clientId ? `?clientId=${clientId}` : ''}`, [])
+export const saveRecruitmentMailTrigger = (trigger: RecruitmentMailTrigger) => postJson('/api/notifications/recruitment-triggers', trigger, trigger, { successMessage: 'Recruitment mail trigger updated.' })
+export const deleteRecruitmentMailTrigger = (id: number) => deleteJson(`/api/notifications/recruitment-triggers/${id}`, null, { successMessage: 'Recruitment mail trigger deleted.' })

@@ -570,6 +570,23 @@ public sealed class ResumeParsingService(
             string title = "", company = "", location = "";
             ParseRoleCompanyLocation(prefix, out title, out company, out location);
 
+            if (!string.IsNullOrWhiteSpace(title) && string.IsNullOrWhiteSpace(company) && index + 1 < lines.Count)
+            {
+                // Common PDF layout: "Role | date range" followed by
+                // "Employer | location" on the next visual row.
+                var next = lines[index + 1];
+                if (!FlexibleEmploymentDateRangePattern.IsMatch(next) && !RoleTitlePattern.IsMatch(next) && !IsExperienceTableHeader(next))
+                {
+                    var metadata = Regex.Split(next, @"\s*(?:\||â€¢|Â·|\t)\s*")
+                        .Select(part => CleanField(part, 180)).Where(part => part.Length > 0).ToList();
+                    if (metadata.Count > 0 && metadata[0].Split(' ', StringSplitOptions.RemoveEmptyEntries).Length <= 12)
+                    {
+                        company = metadata[0];
+                        location = metadata.Skip(1).FirstOrDefault() ?? "";
+                    }
+                }
+            }
+
             if (string.IsNullOrWhiteSpace(title))
             {
                 // Common table layout: title, employer, location, date on four rows.
