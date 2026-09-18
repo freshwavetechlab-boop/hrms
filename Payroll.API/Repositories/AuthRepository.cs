@@ -734,6 +734,110 @@ SELECT @UserId,Id FROM worklocations WHERE Id IN @LocationIds AND IsActive=TRUE 
         return await GetUserByIdAsync(userId);
     }
 
+    public async Task<CopyAuthUserRolesResponse> CopyUserRolesAsync(CopyAuthUserRolesRequest request, int? actorClientId = null)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await SeedSecurityCatalogAsync(connection);
+        await using var transaction = await connection.BeginTransactionAsync();
+
+        var targetUserIds = request.TargetUserIds
+            .Where(id => id > 0 && id != request.SourceUserId)
+            .Distinct()
+            .ToArray();
+        if (request.SourceUserId <= 0)
+            throw new InvalidOperationException("Select a valid source user.");
+        if (targetUserIds.Length == 0)
+            throw new InvalidOperationException("Select at least one existing target user.");
+        if (targetUserIds.Length > 200)
+            throw new InvalidOperationException("A maximum of 200 users can be updated at once.");
+
+        var source = await connection.QueryFirstOrDefaultAsync<AuthUserScopeRow>(
+            "SELECT Id, ClientId FROM authusers WHERE Id=@Id",
+            new { Id = request.SourceUserId }, transaction);
+        if (source is null)
+            throw new InvalidOperationException("The role source user was not found.");
+
+        var targets = (await connection.QueryAsync<AuthUserScopeRow>(
+            "SELECT Id, ClientId FROM authusers WHERE Id IN @Ids",
+            new { Ids = targetUserIds }, transaction)).ToList();
+        if (targets.Count != targetUserIds.Length)
+            throw new InvalidOperationException("One or more selected target users were not found.");
+
+        var requestedRoles = request.Roles
+            .Where(role => !string.IsNullOrWhiteSpace(role))
+            .Select(role => role.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (requestedRoles.Length == 0)
+            throw new InvalidOperationException("Select at least one role to copy.");
+
+        var sourceRoles = (await connection.QueryAsync<AuthRoleScopeRow>(@"
+SELECT r.Id, r.ClientId, r.Code, r.IsSystem
+FROM authuserroles ur
+JOIN authroles r ON r.Id=ur.RoleId
+WHERE ur.UserId=@SourceUserId AND r.Code IN @Roles;",
+            new { request.SourceUserId, Roles = requestedRoles }, transaction)).ToList();
+        var sourceRoleCodes = sourceRoles.Select(role => role.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (requestedRoles.Any(role => !sourceRoleCodes.Contains(role)))
+            throw new InvalidOperationException("The selected roles no longer match the source user. Refresh and try again.");
+
+        if (actorClientId.HasValue)
+        {
+            if (source.ClientId != actorClientId.Value || targets.Any(target => target.ClientId != actorClientId.Value))
+                throw new InvalidOperationException("Roles can only be copied or transferred within your client scope.");
+            if (sourceRoles.Any(role => role.ClientId != actorClientId.Value && (!role.IsSystem || !ClientAssignableSystemRoleCodes.Contains(role.Code, StringComparer.OrdinalIgnoreCase))))
+                throw new InvalidOperationException("One or more selected roles are outside your client scope.");
+        }
+        else
+        {
+            foreach (var role in sourceRoles.Where(role => !role.IsSystem && role.ClientId.HasValue))
+            {
+                if (targets.Any(target => target.ClientId != role.ClientId))
+                    throw new InvalidOperationException($"The role '{role.Code}' can only be assigned within its client scope.");
+            }
+        }
+
+        foreach (var targetUserId in targetUserIds)
+        {
+            await connection.ExecuteAsync(@"INSERT IGNORE INTO authuserroles (UserId, RoleId)
+SELECT @TargetUserId, Id FROM authroles WHERE Code IN @Roles;",
+                new { TargetUserId = targetUserId, Roles = requestedRoles }, transaction);
+        }
+
+        if (request.RemoveFromSource)
+        {
+            await connection.ExecuteAsync(@"DELETE ur FROM authuserroles ur
+JOIN authroles r ON r.Id=ur.RoleId
+WHERE ur.UserId=@SourceUserId AND r.Code IN @Roles;",
+                new { request.SourceUserId, Roles = requestedRoles }, transaction);
+        }
+
+        await transaction.CommitAsync();
+        return new CopyAuthUserRolesResponse
+        {
+            SourceUserId = request.SourceUserId,
+            TargetUserIds = targetUserIds.ToList(),
+            Roles = requestedRoles.ToList(),
+            UpdatedUsers = targetUserIds.Length,
+            RemovedFromSource = request.RemoveFromSource
+        };
+    }
+
+    private sealed class AuthUserScopeRow
+    {
+        public int Id { get; set; }
+        public int? ClientId { get; set; }
+    }
+
+    private sealed class AuthRoleScopeRow
+    {
+        public int Id { get; set; }
+        public int? ClientId { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public bool IsSystem { get; set; }
+    }
+
     public async Task<AuthRole?> SaveRoleAsync(SaveAuthRoleRequest request, int? actorClientId = null)
     {
         await using var connection = CreateConnection();

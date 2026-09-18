@@ -45,6 +45,23 @@ public class SaveAuthUserRequest
     public bool TransferRoles { get; set; }
 }
 
+public class CopyAuthUserRolesRequest
+{
+    public int SourceUserId { get; set; }
+    public List<int> TargetUserIds { get; set; } = [];
+    public List<string> Roles { get; set; } = [];
+    public bool RemoveFromSource { get; set; }
+}
+
+public class CopyAuthUserRolesResponse
+{
+    public int SourceUserId { get; set; }
+    public List<int> TargetUserIds { get; set; } = [];
+    public List<string> Roles { get; set; } = [];
+    public int UpdatedUsers { get; set; }
+    public bool RemovedFromSource { get; set; }
+}
+
 public class SaveAuthRoleRequest
 {
     public int Id { get; set; }

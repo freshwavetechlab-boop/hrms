@@ -57,6 +57,7 @@ export const apiCatalog: ApiCatalogRow[] = [
   row('ESS', 'GET', '/api/ess/dashboard/birthdays', 'Today birthdays.', 'No'),
   row('Security', 'GET', '/api/security/users', 'List application users.', 'No'),
   row('Security', 'POST', '/api/security/users', 'Create or update user.', 'Possible'),
+  row('Security', 'POST', '/api/security/users/copy-roles', 'Copy or transfer roles to existing users.', 'Possible'),
   row('Security', 'GET', '/api/security/roles', 'List roles.', 'No'),
   row('Security', 'POST', '/api/security/roles', 'Create or update role.', 'Possible'),
   row('Security', 'GET', '/api/security/permissions', 'List permissions.', 'No'),

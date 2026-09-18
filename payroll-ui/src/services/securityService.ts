@@ -20,6 +20,10 @@ export async function saveSecurityUser(body: unknown) {
   return { ok: response.ok, error: response.error }
 }
 
+export async function copySecurityUserRoles(body: unknown) {
+  return postJson('/api/security/users/copy-roles', body, null as { updatedUsers: number; removedFromSource: boolean } | null)
+}
+
 export async function saveSecurityRole(body: unknown) {
   const response = await postJson('/api/security/roles', body, null)
   return { ok: response.ok, error: response.error }

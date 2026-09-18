@@ -3,7 +3,7 @@ import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Input, Modal, 
 import { CopyOutlined, DownloadOutlined, ImportOutlined, KeyOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
 import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from './BulkUploadPreviewModal'
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from './BulkUploadProgressModal'
-import { deleteSecurityRole, deleteSecurityUser, loadEmployeeProvisionPreview, loadSecurityData, provisionEmployeeLogins, saveSecurityRole, saveSecurityUser } from '../services/securityService'
+import { copySecurityUserRoles, deleteSecurityRole, deleteSecurityUser, loadEmployeeProvisionPreview, loadSecurityData, provisionEmployeeLogins, saveSecurityRole, saveSecurityUser } from '../services/securityService'
 import type { AuditLog, AuthPermission, AuthRole, AuthUser, Client, Employee, EmployeeLoginProvisionPreview, EmployeeLoginProvisionResponse, WorkLocation } from '../types/payroll'
 import { parseImportPreviewFile, validateImportPreview, type ImportPreviewData, type ImportPreviewRules } from '../utils/importPreview'
 import { downloadXlsx } from '../utils/xlsx'
@@ -174,6 +174,10 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   const [passwordPolicyOverride, setPasswordPolicyOverride] = useState<boolean | null>(null)
   const [roleSourceUser, setRoleSourceUser] = useState<AuthUser | null>(null)
   const [transferCopiedRoles, setTransferCopiedRoles] = useState(false)
+  const [roleCopySource, setRoleCopySource] = useState<AuthUser | null>(null)
+  const [roleCopyMode, setRoleCopyMode] = useState<'new' | 'existing'>('existing')
+  const [existingRoleTargetIds, setExistingRoleTargetIds] = useState<number[]>([])
+  const [roleCopySubmitting, setRoleCopySubmitting] = useState(false)
   const [accessRole, setAccessRole] = useState<AuthRole | null>(null), [accessPermissions, setAccessPermissions] = useState<string[]>([]), [savingAccess, setSavingAccess] = useState(false)
   const [accessModule, setAccessModule] = useState('')
   const [provisionOpen, setProvisionOpen] = useState(false), [provisionLoading, setProvisionLoading] = useState(false), [provisionRows, setProvisionRows] = useState<EmployeeLoginProvisionPreview[]>([])
@@ -250,19 +254,62 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   }
 
   const openNewUser = () => { setCreatedCredentials(null); setResetMustChangePassword(true); setPasswordPolicyOverride(null); setRoleSourceUser(null); setTransferCopiedRoles(false); setUser({ ...user0, clientId: clientScopeId ? String(clientScopeId) : directoryClientId }); setUserDrawerOpen(true) }
-  const copyRolesToNewUser = (source: AuthUser) => {
+  const openRoleCopy = (source: AuthUser) => {
     const copyableRoles = source.roles.filter(code => roles.some(role => role.code === code))
     if (!copyableRoles.length) {
       setMsg('This user has no client-delegable roles available to copy.')
       return
     }
+    setRoleCopySource(source)
+    setRoleCopyMode('existing')
+    setExistingRoleTargetIds([])
+    setTransferCopiedRoles(false)
+  }
+  const copyRolesToNewUser = () => {
+    if (!roleCopySource) return
+    const copyableRoles = roleCopySource.roles.filter(code => roles.some(role => role.code === code))
     setCreatedCredentials(null)
     setResetMustChangePassword(true)
     setPasswordPolicyOverride(null)
-    setRoleSourceUser(source)
+    setRoleSourceUser(roleCopySource)
     setTransferCopiedRoles(false)
-    setUser({ ...user0, roles: copyableRoles, clientId: source.clientId ? String(source.clientId) : '' })
+    setUser({ ...user0, roles: copyableRoles, clientId: roleCopySource.clientId ? String(roleCopySource.clientId) : '' })
+    setRoleCopySource(null)
     setUserDrawerOpen(true)
+  }
+  const scopedRoleClientIds = roleCopySource
+    ? new Set(roleCopySource.roles.map(code => roles.find(role => role.code === code)).filter(role => role && !role.isSystem && role.clientId).map(role => role?.clientId as number))
+    : new Set<number>()
+  const existingRoleTargets = roleCopySource
+    ? users.filter(item => item.id !== roleCopySource.id && (clientScopedAdmin || scopedRoleClientIds.size === 0 || Array.from(scopedRoleClientIds).every(clientId => item.clientId === clientId)))
+    : []
+  const applyRolesToExistingUsers = async () => {
+    if (!roleCopySource || existingRoleTargetIds.length === 0) {
+      setMsg('Select at least one existing user.')
+      return
+    }
+    setRoleCopySubmitting(true)
+    try {
+      const response = await copySecurityUserRoles({
+        sourceUserId: roleCopySource.id,
+        targetUserIds: existingRoleTargetIds,
+        roles: roleCopySource.roles.filter(code => roles.some(role => role.code === code)),
+        removeFromSource: transferCopiedRoles
+      })
+      if (!response.ok) {
+        setMsg(response.error || 'Unable to copy roles to the selected users.')
+        return
+      }
+      setMsg(`${response.data?.updatedUsers ?? existingRoleTargetIds.length} user(s) updated.${transferCopiedRoles ? ' Roles were removed from the source user.' : ''}`)
+      setRoleCopySource(null)
+      setExistingRoleTargetIds([])
+      setTransferCopiedRoles(false)
+      await load()
+    } catch {
+      setMsg('Unable to reach the server while copying roles.')
+    } finally {
+      setRoleCopySubmitting(false)
+    }
   }
   const editUser = (selected: AuthUser) => {
     setCreatedCredentials(null)
@@ -635,12 +682,62 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     ]} />}
   </Modal>
 
+  const renderRoleCopyModal = () => <Modal
+    className="security-role-copy-modal"
+    title="Copy or transfer roles"
+    open={Boolean(roleCopySource)}
+    onCancel={() => { setRoleCopySource(null); setExistingRoleTargetIds([]); setTransferCopiedRoles(false) }}
+    width="min(820px, 96vw)"
+    footer={<Space>
+      <Button disabled={roleCopySubmitting} onClick={() => { setRoleCopySource(null); setExistingRoleTargetIds([]); setTransferCopiedRoles(false) }}>Cancel</Button>
+      {roleCopyMode === 'new'
+        ? <Button type="primary" onClick={copyRolesToNewUser}>Continue to new user</Button>
+        : <Button type="primary" loading={roleCopySubmitting} disabled={!existingRoleTargetIds.length} onClick={() => void applyRolesToExistingUsers()}>Apply roles to {existingRoleTargetIds.length || 0} user(s)</Button>}
+    </Space>}
+  >
+    {roleCopySource && <div className="security-role-copy-body">
+      <Alert type="info" showIcon message={`Source: ${roleCopySource.displayName || roleCopySource.email}`} description={`${clientName(roleCopySource.clientId)} · Existing target roles will be preserved.`} />
+      <div className="security-role-copy-mode" role="group" aria-label="Role assignment target type">
+        <Button type={roleCopyMode === 'existing' ? 'primary' : 'default'} onClick={() => setRoleCopyMode('existing')}>Existing users</Button>
+        <Button type={roleCopyMode === 'new' ? 'primary' : 'default'} onClick={() => setRoleCopyMode('new')}>New user</Button>
+      </div>
+      <div className="security-role-copy-summary">
+        <b>Roles to apply</b>
+        <Space size={[4, 6]} wrap>{roleCopySource.roles.filter(code => roles.some(role => role.code === code)).map(code => <Tag key={code}>{roleName(code)}</Tag>)}</Space>
+      </div>
+      {roleCopyMode === 'existing' && <>
+        <label className="security-role-copy-targets">
+          <span>Select existing users</span>
+          <Select
+            mode="multiple"
+            showSearch
+            allowClear
+            optionFilterProp="label"
+            value={existingRoleTargetIds}
+            onChange={values => setExistingRoleTargetIds(values)}
+            options={existingRoleTargets.map(item => ({ value: item.id, label: `${item.displayName} · ${item.email}${clientScopedAdmin ? '' : ` · ${clientName(item.clientId)}`}` }))}
+            placeholder="Search and select one or more users"
+            notFoundContent="No compatible users in this client"
+            popupClassName="security-role-copy-dropdown"
+            popupMatchSelectWidth={720}
+          />
+        </label>
+        <AntCheckbox
+          disabled={roleCopySource.id === session?.user.id}
+          checked={transferCopiedRoles}
+          onChange={event => setTransferCopiedRoles(event.target.checked)}
+        >Remove these roles from source after assigning them</AntCheckbox>
+        <small className="security-role-copy-warning">Leave this unchecked to give the same roles to multiple users. Checking it transfers the roles and removes them from the source only after all selected users are updated.</small>
+      </>}
+    </div>}
+  </Modal>
+
   const renderUsers = () => <section className="security-page-stack">
     {msg && <Alert className="security-message-alert" type={/unable|required|failed|cannot/i.test(msg) ? 'warning' : 'info'} showIcon message={msg} closable onClose={() => setMsg('')} />}
     <AntCard size="small" className="settings-panel settings-table-panel security-table-panel security-user-directory-panel">
       <div className="component-table-head security-table-head security-directory-head"><div><b>User directory</b><span>{directoryClientId ? clientName(Number(directoryClientId)) : 'All clients'} · {visibleUsers.length} users · {unlinkedEmployees.length} awaiting login</span></div><div className="settings-master-actions security-directory-actions">{!clientScopedAdmin && <label className="security-filter-field"><span>Client</span><SearchSelect value={directoryClientId} onChange={value => { setDirectoryClientId(value); setUserTemplateDownloaded(false) }} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></label>}<Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} disabled={!directoryClientId} title={directoryClientId ? 'Download client-wise template' : 'Select a client first'} onClick={downloadUserTemplate}>Template</Button><label className={`settings-upload-action ${!userTemplateDownloaded || !directoryClientId ? 'disabled' : ''}`} title={!directoryClientId ? 'Select a client first' : userTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!userTemplateDownloaded || !directoryClientId} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadUserImport(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button className="settings-toolbar-secondary" icon={<ImportOutlined />} onClick={() => void openProvisionModal()}>Import Employees</Button><Button type="primary" icon={<PlusOutlined />} onClick={openNewUser}>New user</Button></div></div>
       {createdCredentials && <Alert className="security-message-alert" type="success" showIcon message="Login created" description={`Temporary password for ${createdCredentials.email}: ${createdCredentials.password}`} closable onClose={() => setCreatedCredentials(null)} />}
-      <DataTable rows={visibleUsers} getRowId={row => row.id} exportFileName="security-users" actionsWidth={350} actions={row => <Space size={6} wrap><Button size="small" icon={<CopyOutlined />} onClick={() => copyRolesToNewUser(row)}>Copy / transfer roles</Button><Button size="small" type="primary" onClick={() => editUser(row)}>Edit</Button><Button size="small" danger onClick={() => void removeUser(row)}>Delete</Button></Space>} columns={[
+      <DataTable rows={visibleUsers} getRowId={row => row.id} exportFileName="security-users" actionsWidth={350} actions={row => <Space size={6} wrap><Button size="small" icon={<CopyOutlined />} onClick={() => openRoleCopy(row)}>Copy / transfer roles</Button><Button size="small" type="primary" onClick={() => editUser(row)}>Edit</Button><Button size="small" danger onClick={() => void removeUser(row)}>Delete</Button></Space>} columns={[
       { key: 'displayName', label: 'User', width: '190px' },
       { key: 'email', label: 'Email / Login ID', width: '220px' },
       { key: 'mobile', label: 'Mobile', value: row => row.mobile || '-' },
@@ -693,6 +790,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     {renderRoleDrawer()}
     {renderAccessDrawer()}
     {renderProvisionModal()}
+    {renderRoleCopyModal()}
     <BulkUploadPreviewModal preview={userImportPreview} importing={userImporting} onCancel={() => { setUserImportPreview(emptyBulkUploadPreview); setUserImportData(null) }} onConfirm={preview => void confirmUserImport(preview)} />
     <BulkUploadProgressModal open={userUpload.open} title="Security user bulk upload" state={userUpload.state} percent={userUpload.percent} summary={userUpload.summary} onClose={() => setUserUpload(current => ({ ...current, open: false }))} />
   </section>

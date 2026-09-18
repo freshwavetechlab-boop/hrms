@@ -2428,6 +2428,47 @@ app.MapPost("/api/security/users", async (AuthRepository repository, SaveAuthUse
 .WithName("SaveSecurityUser")
 .WithOpenApi();
 
+app.MapPost("/api/security/users/copy-roles", async (AuthRepository repository, CopyAuthUserRolesRequest request, HttpContext context) =>
+{
+    if (!HasClientUserManagement(context) || !HasClientRoleManagement(context))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (request.RemoveFromSource && request.SourceUserId == CurrentUser(context).Id)
+        return Results.BadRequest(new { error = "You cannot transfer roles away from your own signed-in account." });
+    try
+    {
+        var result = await repository.CopyUserRolesAsync(request, ResolveClientAdministrationScope(context));
+        await repository.WriteAuditAsync(
+            CurrentUser(context),
+            request.RemoveFromSource ? "security.roles.transfer" : "security.roles.copy",
+            $"AuthUser:{request.SourceUserId}",
+            "POST",
+            "/api/security/users/copy-roles",
+            StatusCodes.Status200OK,
+            context.Connection.RemoteIpAddress?.ToString() ?? "",
+            context.Request.Headers.UserAgent.ToString(),
+            JsonSerializer.Serialize(new
+            {
+                actorClientId = CurrentUser(context).ClientId,
+                request.SourceUserId,
+                targetUserIds = result.TargetUserIds,
+                roles = result.Roles,
+                request.RemoveFromSource,
+                outcome = "success"
+            }));
+        return Results.Ok(result);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+    catch (Exception)
+    {
+        return Results.BadRequest(new { error = "Unable to copy roles. Refresh the user directory and try again." });
+    }
+})
+.WithName("CopySecurityUserRoles")
+.WithOpenApi();
+
 app.MapDelete("/api/security/users/{id:int}", async (AuthRepository repository, int id, HttpContext context) =>
 {
     if (!HasClientUserManagement(context))
