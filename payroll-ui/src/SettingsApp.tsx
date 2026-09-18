@@ -8,6 +8,7 @@ import type { IconName } from './components/AppIcon'
 import AppPageHeader from './components/layout/AppPageHeader'
 import AttachmentSettings from './components/AttachmentSettings'
 import EssSettings from './components/EssSettings'
+import EngineMonitoring from './components/EngineMonitoring'
 import SecurityPanel from './components/SecurityPanel'
 import { appSettingsMenus, leaveAttendanceMenus, org0, reportingMenus, securityMenus, settingsMenus, workflowMenus } from './data/payrollDefaults'
 import DashboardPage, { type DashboardView } from './pages/DashboardPage'
@@ -141,6 +142,7 @@ const surfaceDescriptions: Record<string, string> = {
   Audit: 'Review immutable security and administrative activity evidence.',
   'ESS Settings': 'Configure employee self-service access and supported capabilities.',
   'Storage Servers': 'Configure governed storage providers for HRMS documents.',
+  'Engine Monitor': 'Review live workload, latency, failures and API process health across heavy services.',
   'Workflow Setup': 'Define approval activities, approvers and the actions that start them.',
   'API Catalog': 'Review supported request paths when connecting screen actions to workflows.',
   'Department Head Assignments': 'Map each department to the user responsible for its approvals.',
@@ -226,6 +228,7 @@ const leaveAttendanceIcons: Record<LeaveAttendanceMenu, IconName> = {
 const appSettingsIcons: Record<AppSettingsTab, IconName> = {
   'ESS Settings': 'apps',
   'Storage Servers': 'server',
+  'Engine Monitor': 'dashboard',
 }
 const generalSettingsIcons: Partial<Record<SettingsTab, IconName>> = {
   Organization: 'org',
@@ -274,12 +277,13 @@ export default function SettingsApp() {
   const grantedPermissions = new Set(currentUser?.permissions ?? [])
   const hasAnyPermission = (...codes: string[]) => codes.some(code => grantedPermissions.has(code))
   const clientScopedAdmin = Boolean(currentUser?.clientId && !grantedPermissions.has('security.manage'))
+  const isSuperAdmin = Boolean(currentUser?.clientId == null && currentUser?.roles.some(role => role.toLowerCase() === 'super_admin'))
   const canAccessModule = (code: ModuleCode | 'Reports') => {
     if (code === 'Dashboard') return true
     if (code === 'Employees') return hasAnyPermission('employees.view', 'employees.manage')
     if (code === 'Payroll') return hasAnyPermission('payroll.run', 'payroll.approve', 'payroll.payments')
     if (code === 'LeaveAttendance') return hasAnyPermission('attendance.manage', 'leave.manage', 'mss.attendance.manage', 'mss.attendance.client.manage')
-    if (code === 'TalentAcquisition') return Array.from(grantedPermissions).some(permission => permission.startsWith('recruitment.'))
+    if (code === 'TalentAcquisition') return isSuperAdmin || hasAnyPermission('settings.manage') || Array.from(grantedPermissions).some(permission => permission.startsWith('recruitment.'))
     if (code === 'Security') return hasAnyPermission('security.manage', 'client.users.manage', 'client.roles.assign')
     if (code === 'Workflows') return hasAnyPermission('workflow.manage')
     if (code === 'Settings') return hasAnyPermission('settings.manage', 'client.settings.manage')
@@ -300,6 +304,7 @@ export default function SettingsApp() {
   const savedReportingTab = localStorage.getItem('payroll.reportingTab') as ReportingMenu | null
   const savedWorkflowTab = localStorage.getItem('payroll.workflowTab') as WorkflowMenu | null
   const payrollSetupMenus = allPayrollSetupMenus.filter(item => item !== 'Statutory Setup' || canManageStatutory)
+  const visibleAppSettingsMenus = appSettingsMenus.filter(item => item !== 'Engine Monitor' || isSuperAdmin)
   const routeParts = routeLocation.pathname.split('/').filter(Boolean)
   const dashboardView = routeParts[0] === 'dashboard' && dashboardViews.includes(routeParts[1] as DashboardView) ? routeParts[1] as DashboardView : 'overview'
   const recruitmentView = routeParts[0] === 'recruitment' ? fromSlug(recruitmentViews, routeParts[1], 'Dashboard') : 'Dashboard'
@@ -501,6 +506,10 @@ export default function SettingsApp() {
           navigate('/security/users', { replace: true })
           return
         }
+        if (parts[2] === 'engine-monitor' && !isSuperAdmin) {
+          navigate('/security/app-settings/ess-settings', { replace: true })
+          return
+        }
         setSecurityAppSettingsOpen(true)
         setMainModule('Security')
         return
@@ -618,7 +627,7 @@ export default function SettingsApp() {
       return
     }
     setMainModule('Dashboard')
-  }, [canManageStatutory, canViewEmployeeCommunication, clientScopedAdmin, navigate, routeLocation.pathname, routeLocation.search])
+  }, [canManageStatutory, canViewEmployeeCommunication, clientScopedAdmin, isSuperAdmin, navigate, routeLocation.pathname, routeLocation.search])
 
   useEffect(() => {
     if (!navOpen) return
@@ -744,7 +753,7 @@ export default function SettingsApp() {
       {securityMenus.filter(item => item !== 'Audit' || grantedPermissions.has('audit.view')).map(item => <Fragment key={item}>{menuLink(`/security/${slug(item)}`, item, !securityAppSettingsTab && securityTab === item, () => setSecurityModuleTab(item), undefined, securityMenuIcons[item])}</Fragment>)}
       {!clientScopedAdmin && <div className={`settings-nav-group flyout-align-end ${securityAppSettingsOpen ? 'expanded' : ''} ${collapsedFlyout === 'security-app-settings' ? 'flyout-open' : ''}`}>
         <button {...navAttrs('App Settings')} className={securityAppSettingsTab ? 'active' : ''} type="button" aria-expanded={securityAppSettingsOpen} onClick={() => toggleNavGroup('security-app-settings', () => setSecurityAppSettingsOpen(open => navOpen ? !open : true))}>{menuLabel('App Settings', null)}<small>{securityAppSettingsOpen ? '-' : '+'}</small></button>
-        {securityAppSettingsOpen && <div className="settings-nav-submenu">{appSettingsMenus.map(item => <Fragment key={item}>{menuLink(`/security/app-settings/${slug(item)}`, item, securityAppSettingsTab === item, () => setSecurityAppSettingsTab(item), undefined, appSettingsIcons[item])}</Fragment>)}</div>}
+        {securityAppSettingsOpen && <div className="settings-nav-submenu">{visibleAppSettingsMenus.map(item => <Fragment key={item}>{menuLink(`/security/app-settings/${slug(item)}`, item, securityAppSettingsTab === item, () => setSecurityAppSettingsTab(item), undefined, appSettingsIcons[item])}</Fragment>)}</div>}
       </div>}
     </>
     if (mainModule === 'Reports') return <>{tasks}{reportingMenus.map(item => {
@@ -764,7 +773,7 @@ export default function SettingsApp() {
     if (mainModule === 'Dashboard') return <DashboardPage view={dashboardView} />
     if (mainModule === 'Security') return clientScopedAdmin
       ? <SecurityPanel initialTab={securityTab === 'Audit' ? 'Users' : securityTab} />
-      : securityAppSettingsTab === 'ESS Settings' ? <EssSettings /> : securityAppSettingsTab === 'Storage Servers' ? <AttachmentSettings mode="storage" /> : <SecurityPanel initialTab={securityTab} />
+      : securityAppSettingsTab === 'ESS Settings' ? <EssSettings /> : securityAppSettingsTab === 'Storage Servers' ? <AttachmentSettings mode="storage" /> : securityAppSettingsTab === 'Engine Monitor' && isSuperAdmin ? <EngineMonitoring /> : <SecurityPanel initialTab={securityTab} />
     if (mainModule === 'LeaveAttendance') return <PayrollAttendancePage />
     if (mainModule === 'Payroll') return isPayHistory ? <PayHistoryPage /> : payrollTab === 'Employee Tax Profile' ? <EmployeeTaxProfileManager /> : payrollTab === 'Travel Advances' ? <TravelAdvancesPage /> : <PayrollPage key={payrollTab} mode={payrollTab === 'Adjustments' ? 'adjustments' : 'payrun'} runType={payrollTab === 'Off-cycle Run' ? 'Off-cycle Run' : 'Regular Run'} />
     if (mainModule === 'Employees') return employeeTab === 'Employee Communication' ? <EmployeeCommunicationPage /> : <EmployeePage view={(employeeTab === 'Org Structure' ? 'org' : 'master') as EmployeePageView} />

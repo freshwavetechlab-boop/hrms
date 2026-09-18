@@ -61,7 +61,7 @@ export const location0: WorkLocation = { id: 0, clientId: 0, clientName: '', nam
 export const drop0: Drop = { id: 0, clientId: 0, type: 'Department', value: '', configJson: '', isActive: true }
 export const settingsMenus = ['Organization', 'Clients', 'Work Locations', 'Dropdown Masters', 'Attachments', 'Tax Engine', 'Statutory Setup', 'Client Billing Configuration', 'Travel & Expense Policies', 'Salary Components', 'Salary Templates', 'Payslip Templates', 'Notifications', 'AI Integration', 'Scheduled Jobs'] as const
 export const securityMenus = ['Users', 'Roles', 'Audit'] as const
-export const appSettingsMenus = ['ESS Settings', 'Storage Servers'] as const
+export const appSettingsMenus = ['ESS Settings', 'Storage Servers', 'Engine Monitor'] as const
 export const leaveAttendanceMenus = ['Attendance Policies', 'Leave Types', 'Holiday', 'Attendance', 'Geo-Fencing', 'Import Balance'] as const
 export const reportingMenus = [
   'Payroll Reports',

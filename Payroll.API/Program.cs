@@ -128,6 +128,7 @@ builder.Services.AddSingleton<GoogleDriveOAuthService>();
 builder.Services.AddSingleton<AttachmentStorageService>();
 builder.Services.AddSingleton<AttachmentRepository>();
 builder.Services.AddSingleton<FrevoPilotChatStorageService>();
+builder.Services.AddSingleton<EngineRuntimeMonitor>();
 builder.Services.AddHostedService<PayrollRunWorker>();
 builder.Services.AddHostedService<ScheduledJobWorker>();
 builder.Services.AddHostedService<NotificationWorker>();
@@ -209,6 +210,44 @@ app.Use(async (context, next) =>
     }
 });
 
+app.Use(async (context, next) =>
+{
+    var engineCode = EngineRuntimeMonitor.Classify(context.Request.Method, context.Request.Path.Value ?? string.Empty);
+    if (engineCode is null)
+    {
+        await next();
+        return;
+    }
+
+    var monitor = context.RequestServices.GetRequiredService<EngineRuntimeMonitor>();
+    long startedAt;
+    try
+    {
+        startedAt = monitor.Start(engineCode);
+    }
+    catch
+    {
+        await next();
+        return;
+    }
+    try
+    {
+        await next();
+        try
+        {
+            monitor.Complete(engineCode, startedAt, context.Response.StatusCode >= 500,
+                context.Response.StatusCode >= 500 ? $"HTTP {context.Response.StatusCode}" : null);
+        }
+        catch { /* Telemetry must never change the business response. */ }
+    }
+    catch (Exception exception)
+    {
+        try { monitor.Complete(engineCode, startedAt, true, exception.Message); }
+        catch { /* Preserve the original engine failure. */ }
+        throw;
+    }
+});
+
 app.UseMiddleware<WorkflowActionMiddleware>();
 
 app.MapPost("/api/auth/login", async (AuthRepository repository, LoginRequest request, HttpContext context) =>
@@ -235,6 +274,35 @@ app.MapPost("/api/auth/change-password", async (AuthRepository repository, Chang
     return updated is null ? Results.BadRequest(new { error }) : Results.Ok(updated);
 })
 .WithName("ChangePassword")
+.WithOpenApi();
+
+app.MapGet("/api/system/engine-monitoring", (EngineRuntimeMonitor monitor, HttpContext context) =>
+    IsSuperAdmin(context) ? Results.Ok(monitor.Snapshot()) : Results.StatusCode(403))
+.WithName("GetEngineMonitoring")
+.WithOpenApi();
+
+app.MapGet("/api/system/engine-monitoring/stream", async (EngineRuntimeMonitor monitor, HttpContext context) =>
+{
+    if (!IsSuperAdmin(context))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
+
+    context.Response.Headers.CacheControl = "no-cache, no-transform";
+    context.Response.Headers.Connection = "keep-alive";
+    context.Response.Headers["X-Accel-Buffering"] = "no";
+    context.Response.ContentType = "text/event-stream; charset=utf-8";
+    var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+    while (!context.RequestAborted.IsCancellationRequested)
+    {
+        await context.Response.WriteAsync($"event: snapshot\ndata: {JsonSerializer.Serialize(monitor.Snapshot(), jsonOptions)}\n\n", context.RequestAborted);
+        await context.Response.Body.FlushAsync(context.RequestAborted);
+        try { await Task.Delay(TimeSpan.FromSeconds(1), context.RequestAborted); }
+        catch (OperationCanceledException) { break; }
+    }
+})
+.WithName("StreamEngineMonitoring")
 .WithOpenApi();
 
 app.MapGet("/api/attachment-targets", (HttpContext context) =>
@@ -4230,6 +4298,12 @@ static bool CanManageFrevoPilotChats(HttpContext context)
 {
     var user = CurrentUser(context);
     return user.ClientId is null && user.Permissions.Contains("security.manage", StringComparer.OrdinalIgnoreCase);
+}
+
+static bool IsSuperAdmin(HttpContext context)
+{
+    var user = CurrentUser(context);
+    return user.ClientId is null && user.Roles.Contains("super_admin", StringComparer.OrdinalIgnoreCase);
 }
 
 static bool CanAccessClient(HttpContext context, int clientId)
