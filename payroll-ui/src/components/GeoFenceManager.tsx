@@ -9,7 +9,7 @@ import type { Client, GeoFenceEmployeeOption, GeoFenceRule, WorkLocation } from 
 
 const strictness = ['Block outside fence', 'Allow with reason', 'Allow with approval'] as const
 
-export default function GeoFenceManager({ clients, clientId, onClientChange, onMessage }: { clients: Client[]; clientId: number; onClientChange: (clientId: number) => void; onMessage: (message: string) => void }) {
+export default function GeoFenceManager({ clients, clientId, fixedClientId, onClientChange, onMessage }: { clients: Client[]; clientId: number; fixedClientId?: number; onClientChange: (clientId: number) => void; onMessage: (message: string) => void }) {
   const [rules, setRules] = useState<GeoFenceRule[]>([])
   const [locations, setLocations] = useState<WorkLocation[]>([])
   const [employees, setEmployees] = useState<GeoFenceEmployeeOption[]>([])
@@ -124,6 +124,7 @@ export default function GeoFenceManager({ clients, clientId, onClientChange, onM
       <GeoFenceForm
         clients={clients}
         clientId={clientId}
+        fixedClientId={fixedClientId}
         form={form}
         errors={errors}
         locations={locations}
@@ -142,6 +143,7 @@ export default function GeoFenceManager({ clients, clientId, onClientChange, onM
 function GeoFenceForm(p: {
   clients: Client[]
   clientId: number
+  fixedClientId?: number
   form: GeoFenceRule
   errors: string[]
   locations: WorkLocation[]
@@ -157,7 +159,7 @@ function GeoFenceForm(p: {
   return <Form className="settings-quick-form geo-fence-form" component={false} layout="vertical" requiredMark={false}>
     {p.errors.length > 0 && <Alert type="error" showIcon message={p.errors.join(' ')} />}
     <Row gutter={12}>
-      <Col xs={24} md={12}><Form.Item label="Client" required><SearchSelect value={p.clientId} onChange={value => p.changeClient(Number(value))} options={p.clients.map(client => ({ value: client.id, label: client.name }))} /></Form.Item></Col>
+      {!p.fixedClientId && <Col xs={24} md={12}><Form.Item label="Client" required><SearchSelect value={p.clientId} onChange={value => p.changeClient(Number(value))} options={p.clients.map(client => ({ value: client.id, label: client.name }))} /></Form.Item></Col>}
       <Col xs={24} md={12}><Form.Item label="Rule name" required><Input value={p.form.name} onChange={event => p.set('name', event.target.value)} placeholder="Head office fence" /></Form.Item></Col>
       <Col xs={24} md={12}><Form.Item label="Work location" required><SearchSelect value={p.form.workLocationId ?? ''} onChange={value => void p.changeWorkLocation(Number(value))} options={selectOptions(p.locations.map(location => ({ value: location.id, label: `${location.name}${location.city ? ` - ${location.city}` : ''}` })))} /></Form.Item></Col>
     </Row>

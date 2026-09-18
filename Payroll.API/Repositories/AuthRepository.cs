@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS authusers (
 );
 CREATE TABLE IF NOT EXISTS authroles (
     Id INT PRIMARY KEY AUTO_INCREMENT,
+    ClientId INT NULL,
     Code VARCHAR(80) NOT NULL,
     Name VARCHAR(150) NOT NULL,
     Description VARCHAR(500),
@@ -114,6 +115,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
         await EnsureColumnAsync(connection, "authusers", "EmployeeId", "INT NULL");
         await EnsureColumnAsync(connection, "authusers", "Mobile", "VARCHAR(40) NOT NULL DEFAULT '' AFTER DisplayName");
         await EnsureColumnAsync(connection, "authusers", "RecruitmentScopeMode", "VARCHAR(40) NOT NULL DEFAULT 'Client' AFTER EmployeeId");
+        await EnsureColumnAsync(connection, "authroles", "ClientId", "INT NULL AFTER Id");
         await EnsureForeignKeyAsync(connection, "authuser_recruitment_locations", "FK_AuthUserRecruitmentLocations_User", "FOREIGN KEY (UserId) REFERENCES authusers(Id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "authuser_recruitment_locations", "FK_AuthUserRecruitmentLocations_Location", "FOREIGN KEY (WorkLocationId) REFERENCES worklocations(Id) ON DELETE CASCADE");
         await SeedSecurityCatalogAsync(connection);
@@ -158,6 +160,9 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
         "workflow.manage",
         "reports.view",
         "audit.view",
+        "client.users.manage",
+        "client.roles.assign",
+        "client.settings.manage",
         "recruitment.manage",
         "recruitment.position.view",
         "recruitment.position.manage",
@@ -196,6 +201,24 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
         "attachment.recruitment.verify"
     ];
 
+    private static readonly string[] ClientAssignableSystemRoleCodes =
+    [
+        "client_admin", "employee", "mss_manager", "client_attendance_operator",
+        "payroll_maker", "payroll_approver"
+    ];
+
+    private static readonly string[] ClientDelegablePermissionCodes =
+    [
+        "dashboard.view", "dashboard.workforce.view", "dashboard.payroll.view",
+        "dashboard.attendance.view", "dashboard.approvals.view",
+        "employees.view", "employees.manage",
+        "attachment.employee.view", "attachment.employee.upload", "attachment.employee.verify",
+        "leave.manage", "attendance.manage", "mss.attendance.manage",
+        "mss.attendance.client.manage", "ess.self", "ess.attendance.mark",
+        "payroll.run", "payroll.approve", "payroll.payments", "reports.view",
+        "client.users.manage", "client.roles.assign", "client.settings.manage"
+    ];
+
     public static bool HasBackofficeAccess(AuthUser user) =>
         user.Permissions.Any(permission => BackofficePermissionCodes.Contains(permission, StringComparer.OrdinalIgnoreCase));
 
@@ -215,13 +238,14 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
         await WriteAuditAsync(connection, user?.Id, user?.Email ?? "", "auth.logout", "AuthSession", "POST", "/api/auth/logout", 200, ipAddress, userAgent, "{}");
     }
 
-    public async Task<IEnumerable<AuthUser>> GetUsersAsync()
+    public async Task<IEnumerable<AuthUser>> GetUsersAsync(int? clientId = null)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         var users = (await connection.QueryAsync<AuthUser>(@"SELECT Id, Email, DisplayName, Mobile, ClientId, EmployeeId, RecruitmentScopeMode, IsActive, MustChangePassword
 FROM authusers
-ORDER BY DisplayName;")).ToList();
+WHERE (@ClientId IS NULL OR ClientId = @ClientId)
+ORDER BY DisplayName;", new { ClientId = clientId })).ToList();
         var roleRows = await connection.QueryAsync<UserSecurityCodeRow>(@"SELECT ur.UserId, r.Code
 FROM authuserroles ur
 JOIN authroles r ON r.Id = ur.RoleId
@@ -257,17 +281,18 @@ ORDER BY ur.UserId, p.Code;");
         public int WorkLocationId { get; set; }
     }
 
-    public async Task<IEnumerable<AuthRole>> GetRolesAsync()
+    public async Task<IEnumerable<AuthRole>> GetRolesAsync(int? clientId = null)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await SeedSecurityCatalogAsync(connection);
-        return await connection.QueryAsync<AuthRole>(@"SELECT r.Id, r.Code, r.Name, r.Description, r.IsSystem, COALESCE(GROUP_CONCAT(p.Code ORDER BY p.Code), '') AS Permissions
+        return await connection.QueryAsync<AuthRole>(@"SELECT r.Id, r.ClientId, r.Code, r.Name, r.Description, r.IsSystem, COALESCE(GROUP_CONCAT(p.Code ORDER BY p.Code), '') AS Permissions
 FROM authroles r
 LEFT JOIN authrolepermissions rp ON rp.RoleId = r.Id
 LEFT JOIN authpermissions p ON p.Id = rp.PermissionId
+WHERE (@ClientId IS NULL OR r.ClientId = @ClientId OR (r.IsSystem = TRUE AND r.Code IN @AssignableRoleCodes))
 GROUP BY r.Id
-ORDER BY r.Name;");
+ORDER BY r.Name;", new { ClientId = clientId, AssignableRoleCodes = ClientAssignableSystemRoleCodes });
     }
 
     public async Task<IEnumerable<AuditLog>> GetAuditLogsAsync(int limit = 100)
@@ -328,12 +353,14 @@ ORDER BY r.Name;");
         connection.ExecuteAsync(@"INSERT INTO auditlogs (UserId, UserEmail, Action, Resource, Method, Path, StatusCode, IpAddress, UserAgent, DetailsJson)
 VALUES (@UserId, @UserEmail, @Action, @Resource, @Method, @Path, @StatusCode, @IpAddress, @UserAgent, @DetailsJson);", new { UserId = userId, UserEmail = userEmail, Action = action, Resource = resource, Method = method, Path = path, StatusCode = statusCode, IpAddress = ipAddress, UserAgent = userAgent, DetailsJson = detailsJson });
 
-    public async Task<IEnumerable<AuthPermission>> GetPermissionsAsync()
+    public async Task<IEnumerable<AuthPermission>> GetPermissionsAsync(bool clientOnly = false)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await SeedSecurityCatalogAsync(connection);
-        return await connection.QueryAsync<AuthPermission>("SELECT * FROM authpermissions ORDER BY Module, Code");
+        return await connection.QueryAsync<AuthPermission>(@"SELECT * FROM authpermissions
+WHERE (@ClientOnly = FALSE OR Code IN @PermissionCodes)
+ORDER BY Module, Code", new { ClientOnly = clientOnly, PermissionCodes = ClientDelegablePermissionCodes });
     }
 
     public async Task<IEnumerable<EmployeeLoginProvisionPreview>> GetEmployeeProvisionPreviewAsync(int? clientId = null)
@@ -366,7 +393,7 @@ WHERE e.IsActive = TRUE
 ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = clientId.GetValueOrDefault() });
     }
 
-    public async Task<ProvisionEmployeeLoginsResponse> ProvisionEmployeeLoginsAsync(ProvisionEmployeeLoginsRequest request)
+    public async Task<ProvisionEmployeeLoginsResponse> ProvisionEmployeeLoginsAsync(ProvisionEmployeeLoginsRequest request, int? actorClientId = null)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
@@ -384,6 +411,15 @@ ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = cli
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .DefaultIfEmpty("employee")
             .ToArray();
+        if (actorClientId.HasValue)
+        {
+            var allowedRoleCodes = (await connection.QueryAsync<string>(@"
+SELECT Code FROM authroles
+WHERE (ClientId=@ClientId OR (IsSystem=TRUE AND Code IN @AssignableRoleCodes))
+  AND Code IN @RequestedRoles;", new { ClientId = actorClientId.Value, AssignableRoleCodes = ClientAssignableSystemRoleCodes, RequestedRoles = roles }, transaction)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (roles.Any(role => !allowedRoleCodes.Contains(role)))
+                throw new InvalidOperationException("One or more selected roles are outside your client scope.");
+        }
         var fixedTemporaryPassword = string.IsNullOrWhiteSpace(request.TemporaryPassword)
             ? ""
             : request.TemporaryPassword.Trim();
@@ -409,7 +445,8 @@ SELECT
 FROM employees e
 LEFT JOIN clients c ON c.Id = e.ClientId
 WHERE e.Id IN @EmployeeIds
-ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { EmployeeIds = employeeIds }, transaction)).ToList();
+  AND (@ClientId IS NULL OR e.ClientId=@ClientId)
+ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { EmployeeIds = employeeIds, ClientId = actorClientId }, transaction)).ToList();
 
         foreach (var employee in employees)
         {
@@ -604,12 +641,65 @@ SELECT @UserId, Id FROM authroles WHERE Code = 'employee';", new { UserId = resu
         return (await BuildUserAsync(connection, userId), null);
     }
 
-    public async Task<AuthUser?> SaveUserAsync(SaveAuthUserRequest request)
+    public async Task<AuthUser?> SaveUserAsync(SaveAuthUserRequest request, int? actorClientId = null)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await SeedSecurityCatalogAsync(connection);
         await using var transaction = await connection.BeginTransactionAsync();
+        int? roleSourceClientId = null;
+        HashSet<string>? sourceRoles = null;
+        if (request.RoleSourceUserId.HasValue)
+        {
+            var source = await connection.QueryFirstOrDefaultAsync<(int Id, int? ClientId)>(
+                "SELECT Id, ClientId FROM authusers WHERE Id=@Id",
+                new { Id = request.RoleSourceUserId.Value }, transaction);
+            if (source.Id <= 0)
+                throw new InvalidOperationException("The role source user was not found.");
+            roleSourceClientId = source.ClientId;
+            sourceRoles = (await connection.QueryAsync<string>(@"SELECT r.Code
+FROM authuserroles ur
+JOIN authroles r ON r.Id=ur.RoleId
+WHERE ur.UserId=@UserId;", new { UserId = source.Id }, transaction)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (request.Roles.Any(role => !sourceRoles.Contains(role)))
+                throw new InvalidOperationException("The selected roles no longer match the source user. Refresh and try again.");
+        }
+        if (actorClientId.HasValue)
+        {
+            if (request.Id > 0)
+            {
+                var targetClientId = await connection.ExecuteScalarAsync<int?>("SELECT ClientId FROM authusers WHERE Id=@Id", new { request.Id }, transaction);
+                if (targetClientId != actorClientId.Value)
+                    throw new InvalidOperationException("The selected user is outside your client scope.");
+            }
+            request.ClientId = actorClientId.Value;
+            request.RecruitmentScopeMode = "Client";
+            request.RecruitmentLocationIds = [];
+            if (request.EmployeeId.HasValue)
+            {
+                var employeeAllowed = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE Id=@EmployeeId AND ClientId=@ClientId", new { request.EmployeeId, ClientId = actorClientId.Value }, transaction) > 0;
+                if (!employeeAllowed)
+                    throw new InvalidOperationException("The selected employee is outside your client scope.");
+            }
+            var requestedRoles = request.Roles.Select(role => role.Trim().ToLowerInvariant()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var allowedRoles = (await connection.QueryAsync<string>(@"
+SELECT Code FROM authroles
+WHERE Code IN @RequestedRoles
+  AND (ClientId=@ClientId OR (IsSystem=TRUE AND Code IN @AssignableRoleCodes));", new { RequestedRoles = requestedRoles, ClientId = actorClientId.Value, AssignableRoleCodes = ClientAssignableSystemRoleCodes }, transaction)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var existingRoles = request.Id > 0
+                ? (await connection.QueryAsync<string>(@"SELECT r.Code FROM authuserroles ur JOIN authroles r ON r.Id=ur.RoleId WHERE ur.UserId=@UserId", new { UserId = request.Id }, transaction)).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (requestedRoles.Any(role => !allowedRoles.Contains(role) && !existingRoles.Contains(role)))
+                throw new InvalidOperationException("One or more selected roles are outside your client scope.");
+            request.Roles = requestedRoles.ToList();
+        }
+        if (request.RoleSourceUserId.HasValue)
+        {
+            if (roleSourceClientId != request.ClientId)
+                throw new InvalidOperationException("Roles can only be copied or transferred within the same client scope.");
+            if (request.TransferRoles && request.Id > 0 && request.Id == request.RoleSourceUserId.Value)
+                throw new InvalidOperationException("A user cannot transfer roles to the same account.");
+        }
         var email = NormalizeEmail(request.Email);
         var recruitmentScopeMode = NormalizeRecruitmentScopeMode(request.RecruitmentScopeMode);
         var userId = request.Id;
@@ -632,6 +722,10 @@ SELECT LAST_INSERT_ID();", new { Email = email, request.DisplayName, Mobile = re
         if (request.Roles.Count > 0)
             await connection.ExecuteAsync(@"INSERT IGNORE INTO authuserroles (UserId, RoleId)
 SELECT @UserId, Id FROM authroles WHERE Code IN @Roles;", new { UserId = userId, request.Roles }, transaction);
+        if (request.TransferRoles && request.RoleSourceUserId.HasValue && request.RoleSourceUserId.Value != userId && request.Roles.Count > 0)
+            await connection.ExecuteAsync(@"DELETE ur FROM authuserroles ur
+JOIN authroles r ON r.Id=ur.RoleId
+WHERE ur.UserId=@SourceUserId AND r.Code IN @Roles;", new { SourceUserId = request.RoleSourceUserId.Value, request.Roles }, transaction);
         await connection.ExecuteAsync("DELETE FROM authuser_recruitment_locations WHERE UserId=@UserId", new { UserId = userId }, transaction);
         if (recruitmentScopeMode.Equals("SelectedLocations", StringComparison.OrdinalIgnoreCase) && request.RecruitmentLocationIds.Count > 0)
             await connection.ExecuteAsync(@"INSERT IGNORE INTO authuser_recruitment_locations (UserId,WorkLocationId)
@@ -640,17 +734,31 @@ SELECT @UserId,Id FROM worklocations WHERE Id IN @LocationIds AND IsActive=TRUE 
         return await GetUserByIdAsync(userId);
     }
 
-    public async Task<AuthRole?> SaveRoleAsync(SaveAuthRoleRequest request)
+    public async Task<AuthRole?> SaveRoleAsync(SaveAuthRoleRequest request, int? actorClientId = null)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await SeedSecurityCatalogAsync(connection);
         await using var transaction = await connection.BeginTransactionAsync();
         var code = request.Code.Trim().ToLowerInvariant().Replace(' ', '_');
+        if (actorClientId.HasValue)
+        {
+            request.ClientId = actorClientId.Value;
+            if (request.Permissions.Any(permission => !ClientDelegablePermissionCodes.Contains(permission, StringComparer.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("One or more permissions cannot be delegated by a client administrator.");
+            if (request.Id == 0)
+                code = $"client_{actorClientId.Value}_{code}";
+            else
+            {
+                var ownedRole = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM authroles WHERE Id=@Id AND ClientId=@ClientId AND IsSystem=FALSE", new { request.Id, ClientId = actorClientId.Value }, transaction) > 0;
+                if (!ownedRole)
+                    throw new InvalidOperationException("The selected role is outside your client scope or is protected.");
+            }
+        }
         var roleId = request.Id;
         if (roleId == 0)
-            roleId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO authroles (Code, Name, Description, IsSystem) VALUES (@Code, @Name, @Description, FALSE);
-SELECT LAST_INSERT_ID();", new { Code = code, request.Name, request.Description }, transaction);
+            roleId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO authroles (ClientId, Code, Name, Description, IsSystem) VALUES (@ClientId, @Code, @Name, @Description, FALSE);
+SELECT LAST_INSERT_ID();", new { request.ClientId, Code = code, request.Name, request.Description }, transaction);
         else
         {
             var isSystem = await connection.ExecuteScalarAsync<bool>("SELECT IsSystem FROM authroles WHERE Id=@Id", new { Id = roleId }, transaction);
@@ -662,10 +770,10 @@ SELECT LAST_INSERT_ID();", new { Code = code, request.Name, request.Description 
             await connection.ExecuteAsync(@"INSERT IGNORE INTO authrolepermissions (RoleId, PermissionId)
 SELECT @RoleId, Id FROM authpermissions WHERE Code IN @Permissions;", new { RoleId = roleId, request.Permissions }, transaction);
         await transaction.CommitAsync();
-        return (await GetRolesAsync()).FirstOrDefault(role => role.Id == roleId);
+        return (await GetRolesAsync(actorClientId)).FirstOrDefault(role => role.Id == roleId);
     }
 
-    public async Task<bool> DeleteUserAsync(int id)
+    public async Task<bool> DeleteUserAsync(int id, int? actorClientId = null)
     {
         if (id <= 0) return false;
         await using var connection = CreateConnection();
@@ -673,7 +781,7 @@ SELECT @RoleId, Id FROM authpermissions WHERE Code IN @Permissions;", new { Role
         await SeedSecurityCatalogAsync(connection);
         await using var transaction = await connection.BeginTransactionAsync();
 
-        var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM authusers WHERE Id=@Id", new { Id = id }, transaction);
+        var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM authusers WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, ClientId = actorClientId }, transaction);
         if (exists == 0)
         {
             await transaction.RollbackAsync();
@@ -708,7 +816,7 @@ WHERE u.Id <> @Id AND u.IsActive = TRUE AND p.Code = 'security.manage';", new { 
         return affected > 0;
     }
 
-    public async Task<bool> DeleteRoleAsync(int id)
+    public async Task<bool> DeleteRoleAsync(int id, int? actorClientId = null)
     {
         if (id <= 0) return false;
         await using var connection = CreateConnection();
@@ -716,7 +824,7 @@ WHERE u.Id <> @Id AND u.IsActive = TRUE AND p.Code = 'security.manage';", new { 
         await SeedSecurityCatalogAsync(connection);
         await using var transaction = await connection.BeginTransactionAsync();
 
-        var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM authroles WHERE Id=@Id", new { Id = id }, transaction);
+        var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM authroles WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, ClientId = actorClientId }, transaction);
         if (exists == 0)
         {
             await transaction.RollbackAsync();
@@ -796,6 +904,9 @@ WHERE Code IN ('mss.attendance.manage', 'ess.attendance.mark');")).ToHashSet(Str
             new { Code = "mss.attendance.client.manage", Name = "Manage client attendance in MSS", Module = "MSS", Description = "Review and correct attendance for all active employees of the user's assigned client." },
             new { Code = "ess.attendance.mark", Name = "Mark attendance in ESS", Module = "ESS", Description = "Show and use attendance punch actions in ESS web and mobile apps." },
             new { Code = "settings.manage", Name = "Manage settings", Module = "Settings", Description = "Configure organization, clients, masters and setup data." },
+            new { Code = "client.settings.manage", Name = "Manage client settings", Module = "Client Administration", Description = "Configure permitted HR, attendance, leave and payroll settings for the assigned client only." },
+            new { Code = "client.users.manage", Name = "Manage client users", Module = "Client Administration", Description = "Create and maintain users belonging to the assigned client only." },
+            new { Code = "client.roles.assign", Name = "Assign client roles", Module = "Client Administration", Description = "Create safe client roles and assign only client-delegable permissions." },
             new { Code = "attachment.config.manage", Name = "Manage attachment configuration", Module = "Attachments", Description = "Configure attachment attributes, form fields and storage servers." },
             new { Code = "attachment.employee.view", Name = "View employee attachments", Module = "Attachments", Description = "View and download employee attachments." },
             new { Code = "attachment.employee.upload", Name = "Upload employee attachments", Module = "Attachments", Description = "Upload, replace and delete employee attachments." },
@@ -856,6 +967,7 @@ ON DUPLICATE KEY UPDATE
             new { Code = "employee", Name = "Employee", Description = "Employee self-service access.", IsSystem = true },
             new { Code = "mss_manager", Name = "MSS Manager", Description = "Manager self-service access for approvals and assigned workflow tasks.", IsSystem = true },
             new { Code = "client_attendance_operator", Name = "Client Attendance Operator", Description = "MSS attendance access for every active employee of the user's assigned client, without HRMS administration access.", IsSystem = true },
+            new { Code = "client_admin", Name = "Client Administrator", Description = "Full HR, attendance, leave, payroll, reporting and user administration for the user's assigned client only.", IsSystem = true },
             new { Code = "payroll_maker", Name = "Payroll Maker", Description = "Payroll preparation and employee master operations.", IsSystem = true },
             new { Code = "payroll_approver", Name = "Payroll Approver", Description = "Payroll approval and review access.", IsSystem = true },
             new { Code = "hr_manager", Name = "HR Manager", Description = "HR, attendance, leave and employee operations.", IsSystem = true }
@@ -916,6 +1028,7 @@ WHERE r.Code IN ('admin','hr_manager')
             ["employee"] = ["ess.self", "ess.attendance.mark"],
             ["mss_manager"] = ["ess.self", "ess.attendance.mark", "mss.attendance.manage", "dashboard.approvals.view"],
             ["client_attendance_operator"] = ["mss.attendance.client.manage"],
+            ["client_admin"] = ["dashboard.view", "dashboard.workforce.view", "dashboard.payroll.view", "dashboard.attendance.view", "dashboard.approvals.view", "employees.view", "employees.manage", "attachment.employee.view", "attachment.employee.upload", "attachment.employee.verify", "leave.manage", "attendance.manage", "mss.attendance.client.manage", "payroll.run", "payroll.approve", "payroll.payments", "reports.view", "client.users.manage", "client.roles.assign", "client.settings.manage"],
             ["payroll_maker"] = ["dashboard.view", "dashboard.payroll.view", "dashboard.workforce.view", "employees.view", "employees.manage", "attachment.employee.view", "attachment.employee.upload", "payroll.run", "reports.view"],
             ["payroll_approver"] = ["dashboard.view", "dashboard.payroll.view", "payroll.approve", "reports.view"],
             ["hr_manager"] = ["dashboard.view", "dashboard.workforce.view", "dashboard.attendance.view", "employees.view", "employees.manage", "employee.communication.view", "employee.communication.send", "attachment.employee.view", "attachment.employee.upload", "attachment.employee.verify", "attachment.recruitment.view", "attachment.recruitment.upload", "attachment.recruitment.verify", "leave.manage", "attendance.manage", "workflow.manage", "recruitment.manage", "recruitment.position.view", "recruitment.position.manage", "recruitment.assign.recruiter", "recruitment.assign.partner", "recruitment.publish", "recruitment.referral.manage", "recruitment.rfr.create", "recruitment.rfr.view", "reports.view"]

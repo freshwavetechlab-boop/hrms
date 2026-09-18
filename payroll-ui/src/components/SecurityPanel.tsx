@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Input, Modal, Select, Space, Tag } from 'antd'
-import { DownloadOutlined, ImportOutlined, KeyOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
+import { CopyOutlined, DownloadOutlined, ImportOutlined, KeyOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
 import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from './BulkUploadPreviewModal'
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from './BulkUploadProgressModal'
 import { deleteSecurityRole, deleteSecurityUser, loadEmployeeProvisionPreview, loadSecurityData, provisionEmployeeLogins, saveSecurityRole, saveSecurityUser } from '../services/securityService'
@@ -9,6 +9,7 @@ import { parseImportPreviewFile, validateImportPreview, type ImportPreviewData, 
 import { downloadXlsx } from '../utils/xlsx'
 import DataTable from './DataTable'
 import SearchSelect from './SearchSelect'
+import { useAuthSession } from './AuthGate'
 import '../SecurityAccess.css'
 import '../RoleAccessSummary.css'
 
@@ -18,7 +19,7 @@ const userImportHeaders = ['Email', 'Display Name', 'Mobile', 'Employee Code', '
 const securityTabs = ['Users', 'Roles', 'Audit'] as const
 
 const backofficePermissionCodes = new Set([
-  'security.manage', 'settings.manage', 'employees.view', 'employees.manage',
+  'security.manage', 'client.users.manage', 'client.roles.assign', 'client.settings.manage', 'settings.manage', 'employees.view', 'employees.manage',
   'employee.communication.view', 'employee.communication.send', 'payroll.run',
   'payroll.approve', 'payroll.payments', 'leave.manage', 'attendance.manage',
   'tax.statutory.manage', 'workflow.manage', 'reports.view', 'audit.view',
@@ -162,12 +163,17 @@ const unique = (items: string[]) => Array.from(new Set(items.map(item => item.tr
 const InfoField = ({ label, help, children, className = '' }: { label: string; help?: string; children: ReactNode; className?: string }) => <label className={`info-field ${className}`.trim()}><span>{label}</span>{children}{help && <small>{help}</small>}</label>
 
 export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: SecurityTab }) {
+  const session = useAuthSession()
+  const clientScopeId = session?.user.clientId
+  const clientScopedAdmin = Boolean(clientScopeId && !session?.user.permissions.includes('security.manage'))
   const [users, setUsers] = useState<AuthUser[]>([]), [roles, setRoles] = useState<AuthRole[]>([]), [permissions, setPermissions] = useState<AuthPermission[]>([]), [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
   const [clients, setClients] = useState<Client[]>([]), [employees, setEmployees] = useState<Employee[]>([]), [workLocations, setWorkLocations] = useState<WorkLocation[]>([])
-  const [user, setUser] = useState(user0), [role, setRole] = useState(role0), [msg, setMsg] = useState(''), [directoryClientId, setDirectoryClientId] = useState('')
+  const [user, setUser] = useState(user0), [role, setRole] = useState(role0), [msg, setMsg] = useState(''), [directoryClientId, setDirectoryClientId] = useState(clientScopeId ? String(clientScopeId) : '')
   const [userDrawerOpen, setUserDrawerOpen] = useState(false), [roleDrawerOpen, setRoleDrawerOpen] = useState(false), [createdCredentials, setCreatedCredentials] = useState<{ email: string; password: string } | null>(null), [saving, setSaving] = useState(false)
   const [resetMustChangePassword, setResetMustChangePassword] = useState(true)
   const [passwordPolicyOverride, setPasswordPolicyOverride] = useState<boolean | null>(null)
+  const [roleSourceUser, setRoleSourceUser] = useState<AuthUser | null>(null)
+  const [transferCopiedRoles, setTransferCopiedRoles] = useState(false)
   const [accessRole, setAccessRole] = useState<AuthRole | null>(null), [accessPermissions, setAccessPermissions] = useState<string[]>([]), [savingAccess, setSavingAccess] = useState(false)
   const [accessModule, setAccessModule] = useState('')
   const [provisionOpen, setProvisionOpen] = useState(false), [provisionLoading, setProvisionLoading] = useState(false), [provisionRows, setProvisionRows] = useState<EmployeeLoginProvisionPreview[]>([])
@@ -205,6 +211,9 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   }
 
   useEffect(() => { void load() }, [])
+  useEffect(() => {
+    if (clientScopeId) setDirectoryClientId(String(clientScopeId))
+  }, [clientScopeId])
   useEffect(() => { setUserDrawerOpen(false); setRoleDrawerOpen(false); setAccessRole(null) }, [initialTab])
   useEffect(() => {
     if (!accessRole) return
@@ -213,12 +222,12 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
 
   const load = async () => {
     const data = await loadSecurityData()
-    const activeClients = data.clients.filter(client => client.isActive)
+    const activeClients = data.clients.filter(client => client.isActive && (!clientScopeId || client.id === clientScopeId))
     const activeIds = new Set(activeClients.map(client => client.id))
-    setUsers(data.users)
+    setUsers(data.users.filter(item => !clientScopeId || item.clientId === clientScopeId))
     setRoles(data.roles)
     setPermissions(data.permissions)
-    setAuditLogs(data.auditLogs)
+    setAuditLogs(clientScopedAdmin ? [] : data.auditLogs)
     setClients(activeClients)
     setEmployees(data.employees.filter(employee => activeIds.has(employee.clientId)))
     setWorkLocations(data.workLocations.filter(location => location.isActive && activeIds.has(location.clientId)))
@@ -240,11 +249,27 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     }))
   }
 
-  const openNewUser = () => { setCreatedCredentials(null); setResetMustChangePassword(true); setPasswordPolicyOverride(null); setUser({ ...user0, clientId: directoryClientId }); setUserDrawerOpen(true) }
+  const openNewUser = () => { setCreatedCredentials(null); setResetMustChangePassword(true); setPasswordPolicyOverride(null); setRoleSourceUser(null); setTransferCopiedRoles(false); setUser({ ...user0, clientId: clientScopeId ? String(clientScopeId) : directoryClientId }); setUserDrawerOpen(true) }
+  const copyRolesToNewUser = (source: AuthUser) => {
+    const copyableRoles = source.roles.filter(code => roles.some(role => role.code === code))
+    if (!copyableRoles.length) {
+      setMsg('This user has no client-delegable roles available to copy.')
+      return
+    }
+    setCreatedCredentials(null)
+    setResetMustChangePassword(true)
+    setPasswordPolicyOverride(null)
+    setRoleSourceUser(source)
+    setTransferCopiedRoles(false)
+    setUser({ ...user0, roles: copyableRoles, clientId: source.clientId ? String(source.clientId) : '' })
+    setUserDrawerOpen(true)
+  }
   const editUser = (selected: AuthUser) => {
     setCreatedCredentials(null)
     setResetMustChangePassword(true)
     setPasswordPolicyOverride(null)
+    setRoleSourceUser(null)
+    setTransferCopiedRoles(false)
     setUser({ id: selected.id, email: selected.email, displayName: selected.displayName, mobile: selected.mobile || '', password: '', clientId: selected.clientId ? String(selected.clientId) : '', employeeId: selected.employeeId ? String(selected.employeeId) : '', recruitmentScopeMode: selected.recruitmentScopeMode || 'Client', recruitmentLocationIds: selected.recruitmentLocationIds || [], isActive: selected.isActive, mustChangePassword: selected.mustChangePassword, roles: selected.roles })
     setUserDrawerOpen(true)
   }
@@ -275,6 +300,8 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
         recruitmentLocationIds: user.recruitmentScopeMode === 'SelectedLocations' ? user.recruitmentLocationIds : [],
         isActive: user.isActive,
         roles: user.roles,
+        roleSourceUserId: roleSourceUser?.id ?? null,
+        transferRoles: Boolean(roleSourceUser && transferCopiedRoles),
         ...(user.id === 0
           ? { mustChangePassword: user.mustChangePassword }
           : user.password.trim()
@@ -508,19 +535,20 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     await load()
   }
 
-  const closeUserDrawer = () => { setUserDrawerOpen(false); setUser(user0); setResetMustChangePassword(true); setPasswordPolicyOverride(null); setCreatedCredentials(null) }
+  const closeUserDrawer = () => { setUserDrawerOpen(false); setUser(user0); setResetMustChangePassword(true); setPasswordPolicyOverride(null); setCreatedCredentials(null); setRoleSourceUser(null); setTransferCopiedRoles(false) }
   const closeRoleDrawer = () => { setRoleDrawerOpen(false); setRole(role0) }
   const activeAccessGroup = groupedPermissions.find(([module]) => module === accessModule) ?? groupedPermissions[0]
 
   const renderUserDrawer = () => userDrawerOpen ? <div className="component-drawer-backdrop security-component-backdrop" onClick={closeUserDrawer}>
-    <aside className="component-drawer security-component-drawer security-user-component-drawer" role="dialog" aria-modal="true" aria-label={user.id ? 'Edit user' : 'Add user'} onClick={event => event.stopPropagation()}>
-      <header><div><span className="eyebrow purple">User access</span><h3>{user.id ? 'Edit user' : 'Add user'}</h3><p>Create an employee-linked login or a standalone business user.</p></div><button type="button" aria-label="Close user drawer" onClick={closeUserDrawer}>x</button></header>
+    <aside className="component-drawer security-component-drawer security-user-component-drawer" role="dialog" aria-modal="true" aria-label={user.id ? 'Edit user' : roleSourceUser ? 'Add user with copied roles' : 'Add user'} onClick={event => event.stopPropagation()}>
+      <header><div><span className="eyebrow purple">User access</span><h3>{user.id ? 'Edit user' : roleSourceUser ? 'Add user with copied roles' : 'Add user'}</h3><p>{roleSourceUser ? `Roles are preselected from ${roleSourceUser.displayName || roleSourceUser.email}.` : 'Create an employee-linked login or a standalone business user.'}</p></div><button type="button" aria-label="Close user drawer" onClick={closeUserDrawer}>x</button></header>
       <div className="component-drawer-form security-component-drawer-form">
+        {roleSourceUser && <Alert className="wide" type={transferCopiedRoles ? 'warning' : 'info'} showIcon message={transferCopiedRoles ? 'Transfer selected roles' : 'Copy selected roles'} description={<span>{transferCopiedRoles ? `After this new user is created, the selected roles will be removed from ${roleSourceUser.displayName || roleSourceUser.email}. ` : `${roleSourceUser.displayName || roleSourceUser.email} will keep the selected roles. `}<AntCheckbox disabled={roleSourceUser.id === session?.user.id} checked={transferCopiedRoles} onChange={event => setTransferCopiedRoles(event.target.checked)}>Remove these roles from source user after creation</AntCheckbox>{roleSourceUser.id === session?.user.id && <small>You can copy your own roles, but cannot transfer them while signed in.</small>}</span>} />}
         <InfoField label="User type" help="Choose employee-linked ESS access or a standalone business login."><SearchSelect value={user.roles.includes('employee') && user.employeeId ? 'employee' : 'business'} onChange={value => value === 'employee' ? setUser({ ...user, roles: ['employee'] }) : setUser({ ...user, employeeId: '', roles: ['mss_manager'] })} options={[{ value: 'business', label: 'Business user' }, { value: 'employee', label: 'Employee / ESS user' }]} /></InfoField>
-        <InfoField label="Client scope" help="Leave blank for cross-client access."><SearchSelect value={user.clientId} onChange={value => setUser({ ...user, clientId: value, employeeId: '', recruitmentLocationIds: [] })} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></InfoField>
+        {!clientScopedAdmin && <InfoField label="Client scope" help="Leave blank for cross-client access."><SearchSelect value={user.clientId} onChange={value => setUser({ ...user, clientId: value, employeeId: '', recruitmentLocationIds: [] })} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></InfoField>}
         <InfoField label="Employee link" help="Employee Master records not yet linked to another login." className="wide"><SearchSelect value={user.employeeId} onChange={useEmployee} options={[{ value: '', label: 'No employee link' }, ...employeeOptions.map(employee => ({ value: employee.id, label: `${employee.firstName} ${employee.lastName} / ${employee.employeeCode} / ${employee.department}` }))]} /></InfoField>
-        <InfoField label="Recruitment visibility" help="Roles control actions; this scope controls which positions and candidates are visible."><SearchSelect value={user.recruitmentScopeMode} onChange={value => setUser({ ...user, recruitmentScopeMode: value as typeof user.recruitmentScopeMode, recruitmentLocationIds: value === 'SelectedLocations' ? user.recruitmentLocationIds : [] })} options={[{ value: 'Client', label: 'All assigned-client positions' }, { value: 'EmployeeLocation', label: 'Employee work location only' }, { value: 'SelectedLocations', label: 'Selected locations' }]} /></InfoField>
-        {user.recruitmentScopeMode === 'SelectedLocations' && <InfoField label="Visible recruitment locations" help="Select one or more HO, Tech Centre or ARO locations." className="wide"><Select mode="multiple" className="app-search-select" popupClassName="app-search-select-dropdown" showSearch optionFilterProp="label" value={user.recruitmentLocationIds} onChange={values => setUser({ ...user, recruitmentLocationIds: values })} options={workLocations.filter(location => !user.clientId || location.clientId === Number(user.clientId)).map(location => ({ value: location.id, label: `${location.name}${location.city ? ` / ${location.city}` : ''}` }))} placeholder="Select visible locations" /></InfoField>}
+        {!clientScopedAdmin && <InfoField label="Recruitment visibility" help="Roles control actions; this scope controls which positions and candidates are visible."><SearchSelect value={user.recruitmentScopeMode} onChange={value => setUser({ ...user, recruitmentScopeMode: value as typeof user.recruitmentScopeMode, recruitmentLocationIds: value === 'SelectedLocations' ? user.recruitmentLocationIds : [] })} options={[{ value: 'Client', label: 'All assigned-client positions' }, { value: 'EmployeeLocation', label: 'Employee work location only' }, { value: 'SelectedLocations', label: 'Selected locations' }]} /></InfoField>}
+        {!clientScopedAdmin && user.recruitmentScopeMode === 'SelectedLocations' && <InfoField label="Visible recruitment locations" help="Select one or more HO, Tech Centre or ARO locations." className="wide"><Select mode="multiple" className="app-search-select" popupClassName="app-search-select-dropdown" showSearch optionFilterProp="label" value={user.recruitmentLocationIds} onChange={values => setUser({ ...user, recruitmentLocationIds: values })} options={workLocations.filter(location => !user.clientId || location.clientId === Number(user.clientId)).map(location => ({ value: location.id, label: `${location.name}${location.city ? ` / ${location.city}` : ''}` }))} placeholder="Select visible locations" /></InfoField>}
         <InfoField label="Display name"><Input value={user.displayName} onChange={event => setUser({ ...user, displayName: event.target.value })} /></InfoField>
         <InfoField label="Email / Login ID"><Input value={user.email} onChange={event => setUser({ ...user, email: event.target.value })} /></InfoField>
         <InfoField label="Mobile number"><Input value={user.mobile} onChange={event => setUser({ ...user, mobile: event.target.value })} /></InfoField>
@@ -610,9 +638,9 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   const renderUsers = () => <section className="security-page-stack">
     {msg && <Alert className="security-message-alert" type={/unable|required|failed|cannot/i.test(msg) ? 'warning' : 'info'} showIcon message={msg} closable onClose={() => setMsg('')} />}
     <AntCard size="small" className="settings-panel settings-table-panel security-table-panel security-user-directory-panel">
-      <div className="component-table-head security-table-head security-directory-head"><div><b>User directory</b><span>{directoryClientId ? clientName(Number(directoryClientId)) : 'All clients'} · {visibleUsers.length} users · {unlinkedEmployees.length} awaiting login</span></div><div className="settings-master-actions security-directory-actions"><label className="security-filter-field"><span>Client</span><SearchSelect value={directoryClientId} onChange={value => { setDirectoryClientId(value); setUserTemplateDownloaded(false) }} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></label><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} disabled={!directoryClientId} title={directoryClientId ? 'Download client-wise template' : 'Select a client first'} onClick={downloadUserTemplate}>Template</Button><label className={`settings-upload-action ${!userTemplateDownloaded || !directoryClientId ? 'disabled' : ''}`} title={!directoryClientId ? 'Select a client first' : userTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!userTemplateDownloaded || !directoryClientId} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadUserImport(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button className="settings-toolbar-secondary" icon={<ImportOutlined />} onClick={() => void openProvisionModal()}>Import Employees</Button><Button type="primary" icon={<PlusOutlined />} onClick={openNewUser}>New user</Button></div></div>
+      <div className="component-table-head security-table-head security-directory-head"><div><b>User directory</b><span>{directoryClientId ? clientName(Number(directoryClientId)) : 'All clients'} · {visibleUsers.length} users · {unlinkedEmployees.length} awaiting login</span></div><div className="settings-master-actions security-directory-actions">{!clientScopedAdmin && <label className="security-filter-field"><span>Client</span><SearchSelect value={directoryClientId} onChange={value => { setDirectoryClientId(value); setUserTemplateDownloaded(false) }} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></label>}<Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} disabled={!directoryClientId} title={directoryClientId ? 'Download client-wise template' : 'Select a client first'} onClick={downloadUserTemplate}>Template</Button><label className={`settings-upload-action ${!userTemplateDownloaded || !directoryClientId ? 'disabled' : ''}`} title={!directoryClientId ? 'Select a client first' : userTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!userTemplateDownloaded || !directoryClientId} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadUserImport(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button className="settings-toolbar-secondary" icon={<ImportOutlined />} onClick={() => void openProvisionModal()}>Import Employees</Button><Button type="primary" icon={<PlusOutlined />} onClick={openNewUser}>New user</Button></div></div>
       {createdCredentials && <Alert className="security-message-alert" type="success" showIcon message="Login created" description={`Temporary password for ${createdCredentials.email}: ${createdCredentials.password}`} closable onClose={() => setCreatedCredentials(null)} />}
-      <DataTable rows={visibleUsers} getRowId={row => row.id} exportFileName="security-users" actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editUser(row)}>Edit</Button><Button size="small" danger onClick={() => void removeUser(row)}>Delete</Button></Space>} columns={[
+      <DataTable rows={visibleUsers} getRowId={row => row.id} exportFileName="security-users" actionsWidth={350} actions={row => <Space size={6} wrap><Button size="small" icon={<CopyOutlined />} onClick={() => copyRolesToNewUser(row)}>Copy / transfer roles</Button><Button size="small" type="primary" onClick={() => editUser(row)}>Edit</Button><Button size="small" danger onClick={() => void removeUser(row)}>Delete</Button></Space>} columns={[
       { key: 'displayName', label: 'User', width: '190px' },
       { key: 'email', label: 'Email / Login ID', width: '220px' },
       { key: 'mobile', label: 'Mobile', value: row => row.mobile || '-' },

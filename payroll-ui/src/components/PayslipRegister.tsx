@@ -8,6 +8,7 @@ import { downloadHtmlPdf } from '../utils/htmlPdf'
 import DataTable from './DataTable'
 import SearchSelect, { selectOptions } from './SearchSelect'
 import './PayslipRegister.css'
+import { useAuthSession } from './AuthGate'
 
 type PayslipLine = { id: string; name: string; category: string; monthlyAmount: number; amount: number; proRata: boolean }
 type PayslipContext = { employee?: Employee; location?: WorkLocation; earnings: PayslipLine[]; deductions: PayslipLine[]; earningTotal: number; deductionTotal: number; netPay: number }
@@ -114,6 +115,9 @@ function payslipHtml(org: Org, run: PayRun, selected: RunEmployee, context: Pays
 }
 
 export default function PayslipRegister() {
+  const session = useAuthSession()
+  const scopedClientId = Number(session?.user.clientId || 0)
+  const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('security.manage')
   const [clients, setClients] = useState<Client[]>([])
   const [runs, setRuns] = useState<PayRun[]>([])
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -130,13 +134,13 @@ export default function PayslipRegister() {
       const active = clientRows.filter(row => row.isActive)
       const activeClientIds = new Set(active.map(client => client.id))
       setClients(active)
-      setClientId(active[0]?.id ?? 0)
+      setClientId(clientScoped ? scopedClientId : active[0]?.id ?? 0)
       setRuns(runRows)
       setEmployees(employeeRows.filter(employee => activeClientIds.has(employee.clientId)))
       setLocations(locationRows.filter(location => location.isActive && activeClientIds.has(location.clientId)))
       setOrg({ ...org0, ...organization })
     })
-  }, [])
+  }, [clientScoped, scopedClientId])
 
   const clientRuns = useMemo(() => runs.filter(item => item.clientId === clientId && ['Approved', 'Partially Paid', 'Paid'].includes(item.status)), [runs, clientId])
   const payslipContext = selected ? createContext(selected, employees, locations) : null
@@ -185,7 +189,7 @@ export default function PayslipRegister() {
     <section className="payslip-register">
       <section className="card report-workspace" aria-label="Payslip filters">
         <div className="payslip-filters">
-          <label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label>
+          {!clientScoped && <label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label>}
           <label><span>Pay period</span><SearchSelect value={runId} onChange={value => setRunId(Number(value))} options={selectOptions(clientRuns.map(item => ({ value: item.id, label: `${item.payPeriod} - ${item.status}` })), 'Select approved pay run', 0)} /></label>
         </div>
       </section>

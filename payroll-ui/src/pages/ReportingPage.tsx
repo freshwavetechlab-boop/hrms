@@ -10,6 +10,7 @@ import PayslipRegister from '../components/PayslipRegister'
 import DataTable, { type Column } from '../components/DataTable'
 import SearchSelect from '../components/SearchSelect'
 import { downloadXlsx } from '../utils/xlsx'
+import { useAuthSession } from '../components/AuthGate'
 
 export type ReportingMenu = (typeof reportingMenus)[number]
 export type ReportDefinition = { name: string; code?: string }
@@ -61,6 +62,9 @@ export default function ReportingPage({ activeReport }: { activeMenu: ReportingM
 }
 
 function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }) {
+  const session = useAuthSession()
+  const scopedClientId = Number(session?.user.clientId || 0)
+  const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('security.manage')
   const [clients, setClients] = useState<Client[]>([]), [clientId, setClientId] = useState(0), [result, setResult] = useState<ReportResult>({ title: '', columns: [], rows: [] })
   const [payRuns, setPayRuns] = useState<PayRun[]>([]), [employees, setEmployees] = useState<Employee[]>([]), [components, setComponents] = useState<Component[]>([])
   const [locations, setLocations] = useState<WorkLocation[]>([]), [managerUsers, setManagerUsers] = useState<WorkflowApprover[]>([]), [salaryStructures, setSalaryStructures] = useState<Structure[]>([])
@@ -94,14 +98,14 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
     void Promise.all([getClients(), getPayRuns(), getEmployees(), getSetup(setup0)]).then(([clientRows, runRows, employeeRows, setup]) => {
       const active = clientRows.filter(x => x.isActive)
       setClients(active)
-      setClientId(current => current || active[0]?.id || 0)
+      setClientId(current => clientScoped ? scopedClientId : current || active[0]?.id || 0)
       setPayRuns(runRows)
       setEmployees(employeeRows)
       setComponents(setup.salaryComponents ?? [])
       setSalaryStructures(setup.salaryStructures ?? [])
       setEmployeeDataReady(true)
     })
-  }, [])
+  }, [clientScoped, scopedClientId])
   useEffect(() => {
     if (!isEmployeeMaster) { setEmployeeLookupReady(false); return }
     setEmployeeLookupReady(false)
@@ -280,7 +284,7 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   return <section className={`reporting-page${isEmployeeMaster ? ' employee-master-report' : ''}`}>
     <div className="report-filter-surface">
       {activeReport.code && <div className="report-filters">
-        <label className="report-client"><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(c => ({ value: c.id, label: c.name }))} /></label>
+        {!clientScoped && <label className="report-client"><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(c => ({ value: c.id, label: c.name }))} /></label>}
         {showMonth && <label className="report-client"><span>{['salary-register', 'component-ledger', 'monthly-advice-report', 'bank-transfer-report'].includes(activeReport.code) ? 'Pay Period' : 'Month'}</span><input type="month" value={month} onChange={e => setMonth(e.target.value)} /></label>}
         {showPayRun && <label className="report-client"><span>Payrun</span><SearchSelect value={payRunId} onChange={value => setPayRunId(Number(value))} options={[{ value: 0, label: 'Use selected month' }, ...clientPayRuns.map(run => ({ value: run.id, label: `${run.payPeriod} - ${run.runName || run.runType} - ${run.status}` }))]} /></label>}
         {showEmployee && <label className="report-client"><span>Employee</span><SearchSelect value={employeeId} onChange={value => setEmployeeId(Number(value))} options={[{ value: 0, label: 'All employees' }, ...clientEmployees.map(employee => ({ value: employee.id, label: `${employee.employeeCode} - ${employee.firstName} ${employee.lastName}` }))]} /></label>}

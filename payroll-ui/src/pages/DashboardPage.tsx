@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom'
 import { AlertOutlined, CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined, TeamOutlined, WalletOutlined } from '@ant-design/icons'
 import type { DashboardChartPoint, DashboardPayrollTrendPoint, DashboardSnapshot } from '../types/payroll'
 import { getDashboard } from '../services/dashboardService'
+import SearchSelect from '../components/SearchSelect'
+import { useAuthSession } from '../components/AuthGate'
 
 export type DashboardView = 'overview' | 'workforce' | 'payroll' | 'attendance' | 'approvals'
 
@@ -105,7 +107,10 @@ function costBreakupToChart(dashboard: DashboardSnapshot | null): DashboardChart
 }
 
 export default function DashboardPage({ view = 'overview' }: { view?: DashboardView }) {
-  const [clientId, setClientId] = useState(0)
+  const session = useAuthSession()
+  const scopedClientId = Number(session?.user.clientId || 0)
+  const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('security.manage')
+  const [clientId, setClientId] = useState(scopedClientId)
   const [dashboard, setDashboard] = useState<DashboardSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -141,13 +146,10 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
         <strong>{clientName}</strong>
         <small>{formatMonth(dashboard?.month ?? '')} reporting period</small>
       </div>
-      <label>
+      {!clientScoped && <label>
         <span>Client</span>
-        <select value={clientId} onChange={event => setClientId(Number(event.target.value))} disabled={loading}>
-          <option value={0}>All clients</option>
-          {(dashboard?.clients ?? []).map(client => <option value={client.id} key={client.id}>{client.name}</option>)}
-        </select>
-      </label>
+        <SearchSelect value={clientId} onChange={value => setClientId(Number(value))} disabled={loading} options={[{ value: 0, label: 'All clients' }, ...(dashboard?.clients ?? []).map(client => ({ value: client.id, label: client.name }))]} />
+      </label>}
     </header>
 
     <div className="dashboard-kpis">

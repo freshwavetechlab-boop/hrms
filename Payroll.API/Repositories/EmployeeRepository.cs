@@ -28,15 +28,17 @@ public class EmployeeRepository(IConfiguration configuration, AuthRepository aut
     private static readonly string[] It0009ImportHeaders = ["Bank Name", "Bank Account No", "IFSC", "Payment Mode"];
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
     public async Task InitializeAsync() { await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db); }
-    public async Task<IEnumerable<Employee>> GetAsync() { await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db); var rows = (await db.QueryAsync<Employee>("SELECT * FROM employees ORDER BY FirstName, LastName")).ToList(); await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, rows); return rows; }
-    public async Task<IEnumerable<WorkflowApprover>> GetManagerUsersAsync()
+    public async Task<IEnumerable<Employee>> GetAsync(int? clientId = null) { await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db); var rows = (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE (@ClientId IS NULL OR ClientId=@ClientId) ORDER BY FirstName, LastName", new { ClientId = clientId })).ToList(); await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, rows); return rows; }
+    public async Task<int?> GetClientIdAsync(int employeeId) { await using var db = Connection(); await db.OpenAsync(); return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM employees WHERE Id=@EmployeeId", new { EmployeeId = employeeId }); }
+    public async Task<IEnumerable<WorkflowApprover>> GetManagerUsersAsync(int? clientId = null)
     {
         await using var db = Connection(); await db.OpenAsync();
         return await db.QueryAsync<WorkflowApprover>(@"SELECT u.Id,u.DisplayName,u.Email,u.ClientId,COALESCE(c.Name,'All clients') ClientName
 FROM authusers u
 LEFT JOIN clients c ON c.Id=u.ClientId
 WHERE u.IsActive=TRUE
-ORDER BY u.DisplayName,u.Email");
+  AND (@ClientId IS NULL OR u.ClientId=@ClientId)
+ORDER BY u.DisplayName,u.Email", new { ClientId = clientId });
     }
     public async Task<int> SaveAsync(Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null)
     {

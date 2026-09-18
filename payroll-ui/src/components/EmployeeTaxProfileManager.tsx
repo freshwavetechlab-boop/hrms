@@ -7,16 +7,20 @@ import { getSetup, getWorkLocations } from '../services/settingsService'
 import { getEmployeeTaxProfile, getTaxEngineSetup, saveEmployeeTaxProfile, type EmployeeTaxProfile, type EmployeeTaxProfileLine, type TaxEngineSetup } from '../services/taxEngineService'
 import { setup0 } from '../data/payrollDefaults'
 import type { Client, Employee, Structure, TaxDeclarationSection, WorkLocation } from '../types/payroll'
+import { useAuthSession } from './AuthGate'
 
 const fy = `${new Date().getFullYear()}-${String(new Date().getFullYear() + 1).slice(2)}`
 
 export default function EmployeeTaxProfileManager() {
   const notify = useToast()
+  const session = useAuthSession()
+  const scopedClientId = String(session?.user.clientId || '')
+  const clientScoped = Boolean(scopedClientId && !session?.user.permissions.includes('security.manage'))
   const [clients, setClients] = useState<Client[]>([])
   const [employees, setEmployees] = useState<Employee[]>([])
   const [locations, setLocations] = useState<WorkLocation[]>([])
   const [salaryStructures, setSalaryStructures] = useState<Structure[]>([])
-  const [clientId, setClientId] = useState('')
+  const [clientId, setClientId] = useState(scopedClientId)
   const [workLocationId, setWorkLocationId] = useState('')
   const [department, setDepartment] = useState('')
   const [designation, setDesignation] = useState('')
@@ -40,8 +44,9 @@ export default function EmployeeTaxProfileManager() {
       setLocations(locationRows.filter(row => row.isActive))
       setTaxSetup(setup)
       setSalaryStructures(payrollSetup.salaryStructures ?? [])
+      if (clientScoped) setClientId(scopedClientId)
     })
-  }, [])
+  }, [clientScoped, scopedClientId])
 
   const filteredEmployees = useMemo(() => employees.filter(employee => {
     const location = locations.find(row => row.id === employee.workLocationId)
@@ -150,7 +155,7 @@ export default function EmployeeTaxProfileManager() {
   return <Card t="Employee Tax Profile">
     <div className="component-guide tax-guide"><b>Employee tax profile</b><span>Search employees first, then open one employee to maintain regime, planned declaration, and approved POI values.</span></div>
     <section className="tax-rule-card"><h3>Search criteria</h3><div className="grid">
-      <F l="Client"><Sel v={clientId} set={value => resetScope({ clientId: value })} a={clients.map(client => `${client.id}:${client.name}`)} /></F>
+      {!clientScoped && <F l="Client"><Sel v={clientId} set={value => resetScope({ clientId: value })} a={clients.map(client => `${client.id}:${client.name}`)} /></F>}
       <F l="Work location"><Sel v={workLocationId} set={value => resetScope({ workLocationId: value })} a={clientLocations.map(location => `${location.id}:${location.name} - ${location.city || location.state || 'Location'}`)} /></F>
       <F l="Department"><Sel v={department} set={value => resetScope({ department: value })} a={departments} /></F>
       <F l="Designation"><Sel v={designation} set={value => resetScope({ designation: value })} a={designations} /></F>

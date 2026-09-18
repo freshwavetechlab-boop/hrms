@@ -22,8 +22,12 @@ public class DashboardRepository(IConfiguration configuration)
         var parameters = new { ClientId = clientId, Month = month, UserId = user.Id };
         var sections = DashboardAccess.For(user);
 
-        var clients = (await connection.QueryAsync<DashboardClient>(
-            "SELECT Id, Name, Code FROM clients WHERE IsActive = TRUE ORDER BY Name;")).ToList();
+        var clients = (await connection.QueryAsync<DashboardClient>(@"
+SELECT Id, Name, Code
+FROM clients
+WHERE IsActive = TRUE
+  AND (@ScopedClientId IS NULL OR Id = @ScopedClientId)
+ORDER BY Name;", new { ScopedClientId = user.ClientId })).ToList();
 
         var activeEmployees = sections.Workforce || sections.Attendance
             ? await connection.ExecuteScalarAsync<int>(@"

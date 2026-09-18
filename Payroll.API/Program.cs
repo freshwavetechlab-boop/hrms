@@ -2383,36 +2383,42 @@ app.MapPost("/api/auth/logout", async (AuthRepository repository, HttpContext co
 .WithOpenApi();
 
 app.MapGet("/api/security/users", async (AuthRepository repository, HttpContext context) =>
-    HasPermission(context, "security.manage") ? Results.Ok(await repository.GetUsersAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden))
+    HasClientUserManagement(context) ? Results.Ok(await repository.GetUsersAsync(ResolveClientAdministrationScope(context))) : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetSecurityUsers")
 .WithOpenApi();
 
 app.MapGet("/api/security/roles", async (AuthRepository repository, HttpContext context) =>
-    HasPermission(context, "security.manage") ? Results.Ok(await repository.GetRolesAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden))
+    HasClientRoleManagement(context) ? Results.Ok(await repository.GetRolesAsync(ResolveClientAdministrationScope(context))) : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetSecurityRoles")
 .WithOpenApi();
 
 app.MapGet("/api/security/permissions", async (AuthRepository repository, HttpContext context) =>
-    HasPermission(context, "security.manage") ? Results.Ok(await repository.GetPermissionsAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden))
+    HasClientRoleManagement(context) ? Results.Ok(await repository.GetPermissionsAsync(!HasPermission(context, "security.manage"))) : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetSecurityPermissions")
 .WithOpenApi();
 
 app.MapPost("/api/security/users", async (AuthRepository repository, SaveAuthUserRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "security.manage"))
+    if (!HasClientUserManagement(context))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.DisplayName))
         return Results.BadRequest(new { error = "Email and display name are required." });
     if (request.Id == 0 && string.IsNullOrWhiteSpace(request.Password))
         return Results.BadRequest(new { error = "Temporary password is required for a new user." });
+    if (request.TransferRoles && request.RoleSourceUserId == CurrentUser(context).Id)
+        return Results.BadRequest(new { error = "You cannot transfer roles away from your own signed-in account." });
     try
     {
-        var user = await repository.SaveUserAsync(request);
+        var user = await repository.SaveUserAsync(request, ResolveClientAdministrationScope(context));
         return user is null ? Results.BadRequest(new { error = "Unable to save user." }) : Results.Ok(user);
     }
     catch (Exception ex) when (ex.Message.Contains("UX_AuthUsers_Email", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("Duplicate", StringComparison.OrdinalIgnoreCase))
     {
         return Results.BadRequest(new { error = "A user with this email/login ID already exists." });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
     }
     catch (Exception)
     {
@@ -2424,11 +2430,13 @@ app.MapPost("/api/security/users", async (AuthRepository repository, SaveAuthUse
 
 app.MapDelete("/api/security/users/{id:int}", async (AuthRepository repository, int id, HttpContext context) =>
 {
-    if (!HasPermission(context, "security.manage"))
+    if (!HasClientUserManagement(context))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (id == CurrentUser(context).Id)
+        return Results.BadRequest(new { error = "You cannot delete your own signed-in account." });
     try
     {
-        return await repository.DeleteUserAsync(id) ? Results.NoContent() : Results.NotFound(new { error = "User not found." });
+        return await repository.DeleteUserAsync(id, ResolveClientAdministrationScope(context)) ? Results.NoContent() : Results.NotFound(new { error = "User not found." });
     }
     catch (InvalidOperationException ex)
     {
@@ -2444,22 +2452,23 @@ app.MapDelete("/api/security/users/{id:int}", async (AuthRepository repository, 
 
 app.MapGet("/api/security/users/employee-provision-preview", async (AuthRepository repository, HttpContext context, int? clientId) =>
 {
-    if (!HasPermission(context, "security.manage"))
+    if (!HasClientUserManagement(context))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
-    return Results.Ok(await repository.GetEmployeeProvisionPreviewAsync(clientId));
+    var scopedClientId = ResolveClientAdministrationScope(context);
+    return Results.Ok(await repository.GetEmployeeProvisionPreviewAsync(scopedClientId ?? clientId));
 })
 .WithName("GetEmployeeProvisionPreview")
 .WithOpenApi();
 
 app.MapPost("/api/security/users/provision-employees", async (AuthRepository repository, ProvisionEmployeeLoginsRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "security.manage"))
+    if (!HasClientUserManagement(context))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (request.EmployeeIds.Count == 0)
         return Results.BadRequest(new { error = "Select at least one employee." });
     try
     {
-        return Results.Ok(await repository.ProvisionEmployeeLoginsAsync(request));
+        return Results.Ok(await repository.ProvisionEmployeeLoginsAsync(request, ResolveClientAdministrationScope(context)));
     }
     catch (Exception)
     {
@@ -2471,18 +2480,22 @@ app.MapPost("/api/security/users/provision-employees", async (AuthRepository rep
 
 app.MapPost("/api/security/roles", async (AuthRepository repository, SaveAuthRoleRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "security.manage"))
+    if (!HasClientRoleManagement(context))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (string.IsNullOrWhiteSpace(request.Code) || string.IsNullOrWhiteSpace(request.Name))
         return Results.BadRequest(new { error = "Role code and name are required." });
     try
     {
-        var role = await repository.SaveRoleAsync(request);
+        var role = await repository.SaveRoleAsync(request, ResolveClientAdministrationScope(context));
         return role is null ? Results.BadRequest(new { error = "Unable to save role." }) : Results.Ok(role);
     }
     catch (Exception ex) when (ex.Message.Contains("UX_AuthRoles_Code", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("Duplicate", StringComparison.OrdinalIgnoreCase))
     {
         return Results.BadRequest(new { error = "A role with this code already exists." });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
     }
     catch (Exception)
     {
@@ -2494,11 +2507,11 @@ app.MapPost("/api/security/roles", async (AuthRepository repository, SaveAuthRol
 
 app.MapDelete("/api/security/roles/{id:int}", async (AuthRepository repository, int id, HttpContext context) =>
 {
-    if (!HasPermission(context, "security.manage"))
+    if (!HasClientRoleManagement(context))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     try
     {
-        return await repository.DeleteRoleAsync(id) ? Results.NoContent() : Results.NotFound(new { error = "Role not found." });
+        return await repository.DeleteRoleAsync(id, ResolveClientAdministrationScope(context)) ? Results.NoContent() : Results.NotFound(new { error = "Role not found." });
     }
     catch (InvalidOperationException ex)
     {
@@ -2777,6 +2790,7 @@ app.MapGet("/api/reports/{code}", async (ReportingRepository repository, string 
 {
     if (!HasPermission(context, "reports.view")) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    if (!CanAccessClient(context, clientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     return Results.Ok(await repository.RunAsync(code, new ReportFilter { ClientId = clientId, Department = department, WorkLocationId = workLocationId, FromDate = fromDate, ToDate = toDate, Month = month, PayRunId = payRunId, EmployeeId = employeeId, ComponentCode = componentCode }));
 })
 .WithName("RunReport")
@@ -2798,8 +2812,9 @@ app.MapGet("/api/public/organization-brand", async (OrganizationRepository repos
 .WithName("GetPublicOrganizationBrand")
 .WithOpenApi();
 
-app.MapPost("/api/organization", async (OrganizationRepository repository, Organization organization) =>
+app.MapPost("/api/organization", async (OrganizationRepository repository, Organization organization, HttpContext context) =>
 {
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var errors = new Dictionary<string, string[]>();
 
     if (string.IsNullOrWhiteSpace(organization.Name))
@@ -2840,21 +2855,33 @@ app.MapPost("/api/organization", async (OrganizationRepository repository, Organ
 .WithName("SaveOrganization")
 .WithOpenApi();
 
-app.MapGet("/api/setup", async (SettingsRepository repository) =>
-    Results.Text(await repository.GetAsync(), "application/json"))
+app.MapGet("/api/setup", async (SettingsRepository repository, HttpContext context) =>
+{
+    if (HasPermission(context, "settings.manage"))
+        return Results.Text(await repository.GetAsync(), "application/json");
+    var user = CurrentUser(context);
+    return user.ClientId.HasValue && HasPermission(context, "client.settings.manage")
+        ? Results.Text(await repository.GetForClientAsync(user.ClientId.Value), "application/json")
+        : Results.StatusCode(StatusCodes.Status403Forbidden);
+})
 .WithName("GetPayrollSetup")
 .WithOpenApi();
 
-app.MapPost("/api/setup", async (SettingsRepository repository, JsonElement setup) =>
+app.MapPost("/api/setup", async (SettingsRepository repository, JsonElement setup, HttpContext context) =>
 {
-    await repository.SaveAsync(setup.GetRawText());
+    if (HasPermission(context, "settings.manage"))
+        await repository.SaveAsync(setup.GetRawText());
+    else if (CurrentUser(context).ClientId is int clientId && HasPermission(context, "client.settings.manage"))
+        await repository.SaveForClientAsync(clientId, setup.GetRawText());
+    else
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
     return Results.Ok(setup);
 })
 .WithName("SavePayrollSetup")
 .WithOpenApi();
 
-app.MapGet("/api/client-billing/module", async (ClientBillingRepository repository) =>
-    Results.Ok(await repository.GetModuleAsync()))
+app.MapGet("/api/client-billing/module", async (ClientBillingRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetModuleAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetClientBillingModule")
 .WithOpenApi();
 
@@ -2867,8 +2894,8 @@ app.MapPost("/api/client-billing/module", async (ClientBillingRepository reposit
 .WithName("SaveClientBillingModule")
 .WithOpenApi();
 
-app.MapGet("/api/client-billing/configurations", async (ClientBillingRepository repository) =>
-    Results.Ok(await repository.GetAsync()))
+app.MapGet("/api/client-billing/configurations", async (ClientBillingRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetClientBillingConfigurations")
 .WithOpenApi();
 
@@ -3145,14 +3172,14 @@ app.MapPost("/api/tax-engine/employee-profiles/{employeeId:int}", async (TaxEngi
 });
 app.MapDelete("/api/tax-engine/{kind}/{id:int}", async (TaxEngineRepository repository, string kind, int id, HttpContext context) => { var clientKind = kind == "client-settings"; if (!(clientKind ? HasPermission(context, "settings.manage") : HasPermission(context, "tax.statutory.manage"))) return Results.StatusCode(403); await repository.DeleteAsync(kind, id); return Results.NoContent(); });
 
-app.MapGet("/api/leave-attendance/setup", async (LeaveAttendanceRepository repository, int clientId) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetAsync(clientId)))
+app.MapGet("/api/leave-attendance/setup", async (LeaveAttendanceRepository repository, int clientId, HttpContext context) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !HasClientSettingsManagement(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetAsync(clientId)))
 .WithName("GetLeaveAttendanceSetup")
 .WithOpenApi();
 
 app.MapPost("/api/leave-attendance/module", async (LeaveAttendanceRepository repository, UpdateLeaveAttendanceModuleRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     return request.ClientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.SetEnabledAsync(request.ClientId, request.IsEnabled));
 })
@@ -3161,7 +3188,7 @@ app.MapPost("/api/leave-attendance/module", async (LeaveAttendanceRepository rep
 
 app.MapPut("/api/leave-attendance/setup/{stepCode}", async (LeaveAttendanceRepository repository, string stepCode, UpdateLeaveAttendanceStepRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var setup = request.ClientId <= 0 ? null : await repository.UpdateStepAsync(request.ClientId, stepCode, request.Status);
     return setup is null ? Results.BadRequest(new { error = "Invalid setup step/status, or mandatory General Settings cannot be disabled." }) : Results.Ok(setup);
@@ -3169,14 +3196,14 @@ app.MapPut("/api/leave-attendance/setup/{stepCode}", async (LeaveAttendanceRepos
 .WithName("UpdateLeaveAttendanceSetupStep")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/preferences", async (LeaveAttendanceRepository repository, int clientId, int? workLocationId) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetPreferencesAsync(clientId, workLocationId)))
+app.MapGet("/api/leave-attendance/preferences", async (LeaveAttendanceRepository repository, int clientId, int? workLocationId, HttpContext context) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !HasClientSettingsManagement(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetPreferencesAsync(clientId, workLocationId)))
 .WithName("GetLeaveAttendancePreferences")
 .WithOpenApi();
 
 app.MapPost("/api/leave-attendance/preferences", async (LeaveAttendanceRepository repository, SaveLeaveAttendancePreferencesRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var (preferences, error) = await repository.SavePreferencesAsync(request);
     return preferences is null ? Results.BadRequest(new { error }) : Results.Ok(preferences);
@@ -3184,14 +3211,14 @@ app.MapPost("/api/leave-attendance/preferences", async (LeaveAttendanceRepositor
 .WithName("SaveLeaveAttendancePreferences")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/attendance-settings", async (LeaveAttendanceRepository repository, int clientId) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetAttendanceSettingsAsync(clientId)))
+app.MapGet("/api/leave-attendance/attendance-settings", async (LeaveAttendanceRepository repository, int clientId, HttpContext context) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !HasClientSettingsManagement(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetAttendanceSettingsAsync(clientId)))
 .WithName("GetAttendanceSettings")
 .WithOpenApi();
 
 app.MapPost("/api/leave-attendance/attendance-settings", async (LeaveAttendanceRepository repository, SaveAttendanceSettingsRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var (settings, error) = await repository.SaveAttendanceSettingsAsync(request);
     return settings is null ? Results.BadRequest(new { error }) : Results.Ok(settings);
@@ -3199,20 +3226,21 @@ app.MapPost("/api/leave-attendance/attendance-settings", async (LeaveAttendanceR
 .WithName("SaveAttendanceSettings")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/geo-fences", async (LeaveAttendanceRepository repository, int clientId, string? scopeType) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetGeoFenceRulesAsync(clientId, scopeType)))
+app.MapGet("/api/leave-attendance/geo-fences", async (LeaveAttendanceRepository repository, int clientId, string? scopeType, HttpContext context) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !HasClientSettingsManagement(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetGeoFenceRulesAsync(clientId, scopeType)))
 .WithName("GetGeoFenceRules")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/geo-fences/employees", async (LeaveAttendanceRepository repository, int clientId, int workLocationId) =>
+app.MapGet("/api/leave-attendance/geo-fences/employees", async (LeaveAttendanceRepository repository, int clientId, int workLocationId, HttpContext context) =>
     clientId <= 0 || workLocationId <= 0
         ? Results.BadRequest(new { error = "Select a client and work location." })
+        : !HasClientSettingsManagement(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden)
         : Results.Ok(await repository.GetGeoFenceEmployeesAsync(clientId, workLocationId)))
 .WithName("GetGeoFenceEmployees")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/geo-fences/applicable", async (LeaveAttendanceRepository repository, int clientId, int employeeId, DateTime? onDate) =>
-    clientId <= 0 || employeeId <= 0 ? Results.BadRequest(new { error = "Select a client and employee." }) : Results.Ok(await repository.GetApplicableGeoFenceRuleAsync(clientId, employeeId, onDate)))
+app.MapGet("/api/leave-attendance/geo-fences/applicable", async (LeaveAttendanceRepository repository, int clientId, int employeeId, DateTime? onDate, HttpContext context) =>
+    clientId <= 0 || employeeId <= 0 ? Results.BadRequest(new { error = "Select a client and employee." }) : !HasClientSettingsManagement(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetApplicableGeoFenceRuleAsync(clientId, employeeId, onDate)))
 .WithName("GetApplicableGeoFenceRule")
 .WithOpenApi();
 
@@ -3244,7 +3272,7 @@ app.MapGet("/api/leave-attendance/groups", async (LeaveAttendanceRepository repo
 
 app.MapPost("/api/leave-attendance/groups", async (LeaveAttendanceRepository repository, SaveAttendanceGroupRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attendance.manage"))
+    if ((!HasPermission(context, "settings.manage") && !HasPermission(context, "attendance.manage")) || !CanAccessClient(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var (group, error) = await repository.SaveAttendanceGroupAsync(request);
     return group is null ? Results.BadRequest(new { error }) : Results.Ok(group);
@@ -3254,7 +3282,7 @@ app.MapPost("/api/leave-attendance/groups", async (LeaveAttendanceRepository rep
 
 app.MapPost("/api/leave-attendance/groups/batch", async (LeaveAttendanceRepository repository, SaveAttendanceGroupBatchRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attendance.manage"))
+    if ((!HasPermission(context, "settings.manage") && !HasPermission(context, "attendance.manage")) || !CanAccessClient(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var (groups, error) = await repository.SaveAttendanceGroupBatchAsync(request);
     return error is not null ? Results.BadRequest(new { error }) : Results.Ok(groups);
@@ -3264,7 +3292,7 @@ app.MapPost("/api/leave-attendance/groups/batch", async (LeaveAttendanceReposito
 
 app.MapDelete("/api/leave-attendance/groups/{id:int}", async (LeaveAttendanceRepository repository, int id, int clientId, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "attendance.manage"))
+    if ((!HasPermission(context, "settings.manage") && !HasPermission(context, "attendance.manage")) || !CanAccessClient(context, clientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     return clientId > 0 && await repository.DeleteAttendanceGroupAsync(id, clientId) ? Results.NoContent() : Results.NotFound();
 })
@@ -3291,8 +3319,8 @@ app.MapPost("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRe
 .WithName("SaveMonthlyAttendance")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepository repository, int clientId, int employeeId, string month) =>
-    clientId <= 0 || employeeId <= 0 ? Results.BadRequest(new { error = "Select a client and employee." }) : Results.Ok(await repository.GetDailyAttendanceAsync(clientId, employeeId, month)))
+app.MapGet("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepository repository, int clientId, int employeeId, string month, HttpContext context) =>
+    clientId <= 0 || employeeId <= 0 ? Results.BadRequest(new { error = "Select a client and employee." }) : !HasAttendanceManagement(context) || !CanAccessClient(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetDailyAttendanceAsync(clientId, employeeId, month)))
 .WithName("GetDailyAttendance")
 .WithOpenApi();
 
@@ -3358,7 +3386,7 @@ app.MapGet("/api/leave-attendance/leave-types", async (LeaveAttendanceRepository
 
 app.MapPost("/api/leave-attendance/leave-types", async (LeaveAttendanceRepository repository, SaveLeaveTypeRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var (leaveType, error) = await repository.SaveLeaveTypeAsync(request);
     return leaveType is null ? Results.BadRequest(new { error }) : Results.Ok(leaveType);
@@ -3368,7 +3396,7 @@ app.MapPost("/api/leave-attendance/leave-types", async (LeaveAttendanceRepositor
 
 app.MapPost("/api/leave-attendance/leave-types/{id:int}/status", async (LeaveAttendanceRepository repository, int id, int clientId, bool isActive, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, clientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var leaveType = clientId <= 0 ? null : await repository.SetLeaveTypeActiveAsync(id, clientId, isActive);
     return leaveType is null ? Results.NotFound() : Results.Ok(leaveType);
@@ -3378,23 +3406,24 @@ app.MapPost("/api/leave-attendance/leave-types/{id:int}/status", async (LeaveAtt
 
 app.MapDelete("/api/leave-attendance/leave-types/{id:int}", async (LeaveAttendanceRepository repository, int id, int clientId, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, clientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     return clientId > 0 && await repository.DeleteLeaveTypeAsync(id, clientId) ? Results.NoContent() : Results.NotFound();
 })
 .WithName("DeleteLeaveType")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/leave-types/import-template", async (LeaveAttendanceRepository repository, int clientId) =>
+app.MapGet("/api/leave-attendance/leave-types/import-template", async (LeaveAttendanceRepository repository, int clientId, HttpContext context) =>
     clientId <= 0
         ? Results.BadRequest(new { error = "Select a client." })
+        : !HasClientSettingsManagement(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden)
         : Results.File(await repository.BuildLeaveTypeImportTemplateAsync(clientId), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "leave-type-import-template.xlsx"))
 .WithName("DownloadLeaveTypeImportTemplate")
 .WithOpenApi();
 
 app.MapPost("/api/leave-attendance/leave-types/import-jobs", async (LeaveAttendanceRepository repository, [FromForm] ClientFileUploadRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select a leave type import file." });
@@ -3409,14 +3438,14 @@ app.MapGet("/api/leave-attendance/leave-types/import-jobs/{jobId:guid}", (LeaveA
 .WithName("GetLeaveTypeImportJob")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/holidays", async (LeaveAttendanceRepository repository, int clientId, int? year, int? workLocationId) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetHolidaysAsync(clientId, year, workLocationId)))
+app.MapGet("/api/leave-attendance/holidays", async (LeaveAttendanceRepository repository, int clientId, int? year, int? workLocationId, HttpContext context) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !HasClientSettingsManagement(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetHolidaysAsync(clientId, year, workLocationId)))
 .WithName("GetHolidays")
 .WithOpenApi();
 
 app.MapPost("/api/leave-attendance/holidays", async (LeaveAttendanceRepository repository, SaveHolidayRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var (holiday, error) = await repository.SaveHolidayAsync(request);
     return holiday is null ? Results.BadRequest(new { error }) : Results.Ok(holiday);
@@ -3426,23 +3455,24 @@ app.MapPost("/api/leave-attendance/holidays", async (LeaveAttendanceRepository r
 
 app.MapDelete("/api/leave-attendance/holidays/{id:int}", async (LeaveAttendanceRepository repository, int id, int clientId, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, clientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     return clientId > 0 && await repository.DeleteHolidayAsync(id, clientId) ? Results.NoContent() : Results.NotFound();
 })
 .WithName("DeleteHoliday")
 .WithOpenApi();
 
-app.MapGet("/api/leave-attendance/holidays/import-template", async (LeaveAttendanceRepository repository, int clientId) =>
+app.MapGet("/api/leave-attendance/holidays/import-template", async (LeaveAttendanceRepository repository, int clientId, HttpContext context) =>
     clientId <= 0
         ? Results.BadRequest(new { error = "Select a client." })
+        : !HasClientSettingsManagement(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden)
         : Results.File(await repository.BuildHolidayImportTemplateAsync(clientId), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "holiday-import-template.xlsx"))
 .WithName("DownloadHolidayImportTemplate")
 .WithOpenApi();
 
 app.MapPost("/api/leave-attendance/holidays/import-jobs", async (LeaveAttendanceRepository repository, [FromForm] ClientFileUploadRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select a holiday import file." });
@@ -3459,7 +3489,7 @@ app.MapGet("/api/leave-attendance/holidays/import-jobs/{jobId:guid}", (LeaveAtte
 
 app.MapGet("/api/leave-attendance/import-balances/sample", async (LeaveBalanceImportRepository repository, int clientId, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, clientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (clientId <= 0)
         return Results.BadRequest(new { error = "Select a client." });
@@ -3471,7 +3501,7 @@ app.MapGet("/api/leave-attendance/import-balances/sample", async (LeaveBalanceIm
 
 app.MapPost("/api/leave-attendance/import-balances/preview", async (LeaveBalanceImportRepository repository, [FromForm] LeaveBalancePreviewUploadRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (request.ClientId <= 0)
         return Results.BadRequest(new { error = "Select a client." });
@@ -3486,7 +3516,7 @@ app.MapPost("/api/leave-attendance/import-balances/preview", async (LeaveBalance
 
 app.MapPost("/api/leave-attendance/import-balances/finalize", async (LeaveBalanceImportRepository repository, FinalizeLeaveBalanceImportRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (request.ClientId <= 0)
         return Results.BadRequest(new { error = "Select a client." });
@@ -3496,15 +3526,34 @@ app.MapPost("/api/leave-attendance/import-balances/finalize", async (LeaveBalanc
 .WithName("FinalizeLeaveBalanceImport")
 .WithOpenApi();
 
-app.MapGet("/api/clients", async (OrganizationRepository repository) =>
-    Results.Ok(await repository.GetClientsAsync()))
+app.MapGet("/api/clients", async (OrganizationRepository repository, HttpContext context) =>
+    Results.Ok(await repository.GetClientsAsync(CurrentUser(context).ClientId)))
 .WithName("GetClients")
 .WithOpenApi();
 
-app.MapPost("/api/clients", async (OrganizationRepository repository, Client client) =>
+app.MapPost("/api/clients", async (OrganizationRepository repository, Client client, HttpContext context) =>
 {
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (string.IsNullOrWhiteSpace(client.Name))
         return Results.BadRequest(new { error = "Client name is required." });
+    if (!string.IsNullOrWhiteSpace(client.LogoDataUrl))
+    {
+        if (client.LogoDataUrl.Length > 1_500_000)
+            return Results.BadRequest(new { error = "Client logo must be a PNG, JPG or WebP image up to 1 MB." });
+        var separator = client.LogoDataUrl.IndexOf(',');
+        var allowedImage = client.LogoDataUrl.StartsWith("data:image/png;base64,", StringComparison.OrdinalIgnoreCase)
+            || client.LogoDataUrl.StartsWith("data:image/jpeg;base64,", StringComparison.OrdinalIgnoreCase)
+            || client.LogoDataUrl.StartsWith("data:image/webp;base64,", StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            if (!allowedImage || separator < 0 || Convert.FromBase64String(client.LogoDataUrl[(separator + 1)..]).Length > 1024 * 1024)
+                return Results.BadRequest(new { error = "Client logo must be a PNG, JPG or WebP image up to 1 MB." });
+        }
+        catch (FormatException)
+        {
+            return Results.BadRequest(new { error = "Client logo is not a valid image." });
+        }
+    }
     client.Name = client.Name.Trim();
     var id = await repository.SaveClientAsync(client);
     return Results.Ok(new { id });
@@ -3517,8 +3566,9 @@ app.MapGet("/api/clients/import-template", async (OrganizationRepository reposit
 .WithName("DownloadClientImportTemplate")
 .WithOpenApi();
 
-app.MapPost("/api/clients/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file) =>
+app.MapPost("/api/clients/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file, HttpContext context) =>
 {
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a client import file." });
     return Results.Accepted("/api/clients/import-jobs", await repository.StartClientImportJobAsync(file));
 })
@@ -3531,13 +3581,15 @@ app.MapGet("/api/clients/import-jobs/{jobId:guid}", (OrganizationRepository repo
 .WithName("GetClientImportJob")
 .WithOpenApi();
 
-app.MapGet("/api/work-locations", async (OrganizationRepository repository) =>
-    Results.Ok(await repository.GetWorkLocationsAsync()))
+app.MapGet("/api/work-locations", async (OrganizationRepository repository, HttpContext context) =>
+    Results.Ok(await repository.GetWorkLocationsAsync(CurrentUser(context).ClientId)))
 .WithName("GetWorkLocations")
 .WithOpenApi();
 
-app.MapPost("/api/work-locations", async (OrganizationRepository repository, WorkLocation location) =>
+app.MapPost("/api/work-locations", async (OrganizationRepository repository, WorkLocation location, HttpContext context) =>
 {
+    if (!HasPermission(context, "settings.manage") && !HasPermission(context, "client.settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!CanAccessClient(context, location.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (string.IsNullOrWhiteSpace(location.Name))
         return Results.BadRequest(new { error = "Work location name is required." });
     if (location.ClientId <= 0)
@@ -3555,8 +3607,9 @@ app.MapGet("/api/work-locations/import-template", async (OrganizationRepository 
 .WithName("DownloadWorkLocationImportTemplate")
 .WithOpenApi();
 
-app.MapPost("/api/work-locations/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file) =>
+app.MapPost("/api/work-locations/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file, HttpContext context) =>
 {
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a work-location import file." });
     return Results.Accepted("/api/work-locations/import-jobs", await repository.StartWorkLocationImportJobAsync(file));
 })
@@ -3569,8 +3622,10 @@ app.MapGet("/api/work-locations/import-jobs/{jobId:guid}", (OrganizationReposito
 .WithName("GetWorkLocationImportJob")
 .WithOpenApi();
 
-app.MapGet("/api/dropdowns", async (OrganizationRepository repository) =>
-    Results.Ok(await repository.GetDropdownMastersAsync()))
+app.MapGet("/api/dropdowns", async (OrganizationRepository repository, HttpContext context) =>
+    Results.Ok(CurrentUser(context).ClientId is int clientId
+        ? await repository.GetDropdownMastersForClientAsync(clientId)
+        : await repository.GetDropdownMastersAsync()))
 .WithName("GetDropdownMasters")
 .WithOpenApi();
 
@@ -3592,8 +3647,9 @@ app.MapGet("/api/dropdowns/import-template", async (OrganizationRepository repos
 .WithName("DownloadDropdownImportTemplate")
 .WithOpenApi();
 
-app.MapPost("/api/dropdowns/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file) =>
+app.MapPost("/api/dropdowns/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file, HttpContext context) =>
 {
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a dropdown import file." });
     return Results.Accepted("/api/dropdowns/import-jobs", await repository.StartDropdownImportJobAsync(file));
 })
@@ -3611,8 +3667,9 @@ app.MapGet("/api/salary-components/import-template", async (OrganizationReposito
 .WithName("DownloadSalaryComponentImportTemplate")
 .WithOpenApi();
 
-app.MapPost("/api/salary-components/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file) =>
+app.MapPost("/api/salary-components/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file, HttpContext context) =>
 {
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a salary component import file." });
     return Results.Accepted("/api/salary-components/import-jobs", await repository.StartSalaryComponentImportJobAsync(file));
 })
@@ -3630,8 +3687,9 @@ app.MapGet("/api/salary-templates/import-template", async (OrganizationRepositor
 .WithName("DownloadSalaryTemplateImportTemplate")
 .WithOpenApi();
 
-app.MapPost("/api/salary-templates/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file) =>
+app.MapPost("/api/salary-templates/import-jobs", async (OrganizationRepository repository, [FromForm] IFormFile file, HttpContext context) =>
 {
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a salary template import file." });
     return Results.Accepted("/api/salary-templates/import-jobs", await repository.StartSalaryTemplateImportJobAsync(file));
 })
@@ -3644,18 +3702,24 @@ app.MapGet("/api/salary-templates/import-jobs/{jobId:guid}", (OrganizationReposi
 .WithName("GetSalaryTemplateImportJob")
 .WithOpenApi();
 
-app.MapGet("/api/employees", async (EmployeeRepository repository) =>
-    Results.Ok(await repository.GetAsync()))
+app.MapGet("/api/employees", async (EmployeeRepository repository, HttpContext context) =>
+    HasPermission(context, "employees.view") || HasPermission(context, "employees.manage") || HasClientUserManagement(context)
+        ? Results.Ok(await repository.GetAsync(CurrentUser(context).ClientId))
+        : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetEmployees")
 .WithOpenApi();
 
-app.MapGet("/api/employees/manager-users", async (EmployeeRepository repository) =>
-    Results.Ok(await repository.GetManagerUsersAsync()))
+app.MapGet("/api/employees/manager-users", async (EmployeeRepository repository, HttpContext context) =>
+    HasPermission(context, "employees.view") || HasPermission(context, "employees.manage")
+        ? Results.Ok(await repository.GetManagerUsersAsync(CurrentUser(context).ClientId))
+        : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetEmployeeManagerUsers")
 .WithOpenApi();
 
 app.MapPost("/api/employees", async (EmployeeRepository repository, Employee employee, HttpContext context, string? infotypeCode, string? changeReason) =>
 {
+    if (!HasPermission(context, "employees.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!CanAccessClient(context, employee.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (employee.ClientId == 0 || string.IsNullOrWhiteSpace(employee.EmployeeCode) || string.IsNullOrWhiteSpace(employee.FirstName))
         return Results.BadRequest(new { error = "Client, employee code and first name are required." });
     employee.SalaryJson = string.IsNullOrWhiteSpace(employee.SalaryJson) ? "{}" : employee.SalaryJson;
@@ -3667,36 +3731,52 @@ app.MapPost("/api/employees", async (EmployeeRepository repository, Employee emp
 .WithName("SaveEmployee")
 .WithOpenApi();
 
-app.MapGet("/api/employees/{id:int}/delete-preview", async (EmployeeRepository repository, int id) =>
-    await repository.GetDeletePreviewAsync(id) is { } preview ? Results.Ok(preview) : Results.NotFound(new { error = "Employee not found." }))
+app.MapGet("/api/employees/{id:int}/delete-preview", async (EmployeeRepository repository, int id, HttpContext context) =>
+{
+    var clientId = await repository.GetClientIdAsync(id);
+    if (!HasPermission(context, "employees.manage") || !clientId.HasValue || !CanAccessClient(context, clientId.Value)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return await repository.GetDeletePreviewAsync(id) is { } preview ? Results.Ok(preview) : Results.NotFound(new { error = "Employee not found." });
+})
 .WithName("GetEmployeeDeletePreview")
 .WithOpenApi();
 
-app.MapGet("/api/employees/{id:int}/infotypes", async (EmployeeRepository repository, int id, bool activeOnly) =>
-    Results.Ok(await repository.GetInfotypesAsync(id, activeOnly)))
+app.MapGet("/api/employees/{id:int}/infotypes", async (EmployeeRepository repository, int id, bool activeOnly, HttpContext context) =>
+{
+    var clientId = await repository.GetClientIdAsync(id);
+    return !clientId.HasValue || !CanAccessClient(context, clientId.Value) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetInfotypesAsync(id, activeOnly));
+})
 .WithName("GetEmployeeInfotypes")
 .WithOpenApi();
 
-app.MapGet("/api/employees/{id:int}/audit", async (EmployeeRepository repository, int id) =>
-    Results.Ok(await repository.GetAuditTrailAsync(id)))
+app.MapGet("/api/employees/{id:int}/audit", async (EmployeeRepository repository, int id, HttpContext context) =>
+{
+    var clientId = await repository.GetClientIdAsync(id);
+    return !clientId.HasValue || !CanAccessClient(context, clientId.Value) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetAuditTrailAsync(id));
+})
 .WithName("GetEmployeeAuditTrail")
 .WithOpenApi();
 
-app.MapGet("/api/employees/infotypes/active", async (EmployeeRepository repository, int clientId) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : Results.Ok(await repository.GetActiveInfotypesAsync(clientId)))
+app.MapGet("/api/employees/infotypes/active", async (EmployeeRepository repository, int clientId, HttpContext context) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !CanAccessClient(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetActiveInfotypesAsync(clientId)))
 .WithName("GetActiveEmployeeInfotypes")
 .WithOpenApi();
 
 app.MapPost("/api/employees/actions", async (EmployeeRepository repository, EmployeeActionRequest request, HttpContext context) =>
 {
+    if (!HasPermission(context, "employees.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var clientId = await repository.GetClientIdAsync(request.EmployeeId);
+    if (!clientId.HasValue || !CanAccessClient(context, clientId.Value)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var (employee, error) = await repository.ProcessActionAsync(request, CurrentUser(context).Email);
     return employee is null ? Results.BadRequest(new { error }) : Results.Ok(employee);
 })
 .WithName("ProcessEmployeeAction")
 .WithOpenApi();
 
-app.MapDelete("/api/employees/{id:int}", async (EmployeeRepository repository, int id) =>
+app.MapDelete("/api/employees/{id:int}", async (EmployeeRepository repository, int id, HttpContext context) =>
 {
+    if (!HasPermission(context, "employees.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var clientId = await repository.GetClientIdAsync(id);
+    if (!clientId.HasValue || !CanAccessClient(context, clientId.Value)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var (ok, error) = await repository.DeleteAsync(id);
     return ok ? Results.NoContent() : Results.BadRequest(new { error });
 })
@@ -3740,8 +3820,9 @@ app.MapPost("/api/employee-form-bindings", async (EmployeeAttributeRepository re
 .WithName("SaveEmployeeFormBinding")
 .WithOpenApi();
 
-app.MapGet("/api/employees/import-template", async (OrganizationRepository organizationRepository, AuthRepository authRepository, EmployeeRepository repository, int clientId) =>
+app.MapGet("/api/employees/import-template", async (OrganizationRepository organizationRepository, AuthRepository authRepository, EmployeeRepository repository, int clientId, HttpContext context) =>
 {
+    if (!HasPermission(context, "employees.manage") || !CanAccessClient(context, clientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     await organizationRepository.InitializeAsync();
     await authRepository.InitializeAsync();
@@ -3751,8 +3832,9 @@ app.MapGet("/api/employees/import-template", async (OrganizationRepository organ
 .WithName("DownloadEmployeeImportTemplate")
 .WithOpenApi();
 
-app.MapPost("/api/employees/import-preflight", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request) =>
+app.MapPost("/api/employees/import-preflight", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request, HttpContext context) =>
 {
+    if (!HasPermission(context, "employees.manage") || !CanAccessClient(context, request.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select an employee CSV or Excel file." });
     var result = await repository.PreflightImportCsvAsync(request.ClientId, request.File, request.Mode);
@@ -3762,8 +3844,9 @@ app.MapPost("/api/employees/import-preflight", async (EmployeeRepository reposit
 .WithName("PreflightEmployeeImport")
 .WithOpenApi();
 
-app.MapPost("/api/employees/import", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request) =>
+app.MapPost("/api/employees/import", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request, HttpContext context) =>
 {
+    if (!HasPermission(context, "employees.manage") || !CanAccessClient(context, request.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (request.File is null || request.File.Length == 0)
         return Results.BadRequest(new { error = "Select an employee CSV or Excel file." });
@@ -3776,8 +3859,9 @@ app.MapPost("/api/employees/import", async (EmployeeRepository repository, [From
 .WithName("ImportEmployees")
 .WithOpenApi();
 
-app.MapPost("/api/employees/import-jobs", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request) =>
+app.MapPost("/api/employees/import-jobs", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request, HttpContext context) =>
 {
+    if (!HasPermission(context, "employees.manage") || !CanAccessClient(context, request.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (request.File is null || request.File.Length == 0)
         return Results.BadRequest(new { error = "Select an employee CSV or Excel file." });
@@ -3792,15 +3876,17 @@ app.MapGet("/api/employees/import-jobs/{jobId:guid}", (EmployeeRepository reposi
 .WithName("GetEmployeeImportJob")
 .WithOpenApi();
 
-app.MapGet("/api/pay-runs", async (PayRunRepository repository) =>
-    Results.Ok(await repository.GetAllAsync()))
+app.MapGet("/api/pay-runs", async (PayRunRepository repository, HttpContext context) =>
+    HasPermission(context, "payroll.run") || HasPermission(context, "payroll.approve") || HasPermission(context, "payroll.payments")
+        ? Results.Ok(await repository.GetAllAsync(CurrentUser(context).ClientId))
+        : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetPayRuns")
 .WithOpenApi();
 
-app.MapGet("/api/pay-runs/{id:int}", async (PayRunRepository repository, int id) =>
+app.MapGet("/api/pay-runs/{id:int}", async (PayRunRepository repository, int id, HttpContext context) =>
 {
     var payRun = await repository.GetAsync(id);
-    return payRun is null ? Results.NotFound() : Results.Ok(payRun);
+    return payRun is null ? Results.NotFound() : !CanAccessClient(context, payRun.ClientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(payRun);
 })
 .WithName("GetPayRun")
 .WithOpenApi();
@@ -3809,6 +3895,9 @@ app.MapGet("/api/pay-runs/{id:int}/diagnostics", async (PayRunRepository reposit
 {
     if (!HasPermission(context, "payroll.run") && !HasPermission(context, "payroll.approve"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var payRun = await repository.GetAsync(id);
+    if (payRun is null) return Results.NotFound();
+    if (!CanAccessClient(context, payRun.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var diagnostics = await repository.GetDiagnosticsAsync(id);
     return diagnostics is null ? Results.NotFound() : Results.Ok(diagnostics);
 })
@@ -3819,6 +3908,7 @@ app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunReq
 {
     if (!HasPermission(context, "payroll.run"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!CanAccessClient(context, request.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (request.ClientId == 0 || !System.Text.RegularExpressions.Regex.IsMatch(request.PayPeriod ?? "", @"^\d{4}-(0[1-9]|1[0-2])$") || request.TotalWorkingDays is < 1 or > 31)
         return Results.BadRequest(new { error = "Select a client and enter a valid pay period with 1 to 31 working days." });
     if (string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) && request.IncludedEmployeeIds.Count == 0 && request.AdjustmentIds.Count == 0)
@@ -3848,8 +3938,8 @@ app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunReq
 .WithName("CreatePayRun")
 .WithOpenApi();
 
-app.MapGet("/api/payroll-adjustments", async (PayRunRepository repository, int? clientId, string? payPeriod, string? status) =>
-    Results.Ok(await repository.GetAdjustmentsAsync(clientId, payPeriod, status)))
+app.MapGet("/api/payroll-adjustments", async (PayRunRepository repository, int? clientId, string? payPeriod, string? status, HttpContext context) =>
+    !HasPermission(context, "payroll.run") ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetAdjustmentsAsync(CurrentUser(context).ClientId ?? clientId, payPeriod, status)))
 .WithName("GetPayrollAdjustments")
 .WithOpenApi();
 
@@ -3857,6 +3947,7 @@ app.MapPost("/api/payroll-adjustments", async (PayRunRepository repository, Payr
 {
     if (!HasPermission(context, "payroll.run"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!CanAccessClient(context, adjustment.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (adjustment.ClientId == 0 || adjustment.EmployeeId == 0 || adjustment.Amount <= 0 || !System.Text.RegularExpressions.Regex.IsMatch(adjustment.PayPeriod ?? "", @"^\d{4}-(0[1-9]|1[0-2])$"))
         return Results.BadRequest(new { error = "Client, employee, pay period and positive amount are required." });
     var saved = await repository.SaveAdjustmentAsync(adjustment);
@@ -3869,6 +3960,8 @@ app.MapDelete("/api/payroll-adjustments/{id:int}", async (PayRunRepository repos
 {
     if (!HasPermission(context, "payroll.run"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var clientId = await repository.GetAdjustmentClientIdAsync(id);
+    if (!clientId.HasValue || !CanAccessClient(context, clientId.Value)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     return await repository.CancelAdjustmentAsync(id) ? Results.NoContent() : Results.BadRequest(new { error = "Applied adjustments cannot be cancelled." });
 })
 .WithName("CancelPayrollAdjustment")
@@ -3878,6 +3971,9 @@ app.MapPut("/api/pay-runs/{payRunId:int}/employees/{employeeId:int}", async (Pay
 {
     if (!HasPermission(context, "payroll.run"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var existing = await repository.GetAsync(payRunId);
+    if (existing is null) return Results.NotFound();
+    if (!CanAccessClient(context, existing.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var employee = await repository.UpdateEmployeeAsync(payRunId, employeeId, request);
     return employee is null ? Results.BadRequest(new { error = "Only draft pay runs can be updated." }) : Results.Ok(employee);
 })
@@ -3890,6 +3986,7 @@ app.MapPost("/api/pay-runs/{id:int}/submit", async (PayRunRepository repository,
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var existing = await repository.GetAsync(id);
     if (existing is null) return Results.NotFound(new { error = "Pay run not found." });
+    if (!CanAccessClient(context, existing.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var payRun = await repository.SubmitForApprovalAsync(id);
     return payRun is null ? Results.BadRequest(new { error = "Only draft pay runs can be locked and sent for approval." }) : Results.Ok(payRun);
 })
@@ -3902,6 +3999,7 @@ app.MapPost("/api/pay-runs/{id:int}/approve", async (PayRunRepository repository
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var existing = await repository.GetAsync(id);
     if (existing is null) return Results.NotFound(new { error = "Pay run not found." });
+    if (!CanAccessClient(context, existing.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var workflowId = await workflows.GetDefaultIdForActivityAsync("PAYRUN.SUBMIT", existing.ClientId);
     var state = await workflows.GetResourceStateAsync("PayRun", id.ToString());
     if (workflowId is not null && existing.Status == "Pending Approval" && state?.CurrentState == "Pending")
@@ -3916,6 +4014,9 @@ app.MapDelete("/api/pay-runs/{id:int}", async (PayRunRepository repository, int 
 {
     if (!HasPermission(context, "payroll.run"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var existing = await repository.GetAsync(id);
+    if (existing is null) return Results.NotFound();
+    if (!CanAccessClient(context, existing.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     return await repository.DeleteAsync(id) ? Results.NoContent() : Results.BadRequest(new { error = "Paid or partially paid pay runs cannot be hard deleted." });
 })
 .WithName("DeleteDraftPayRun")
@@ -3925,6 +4026,9 @@ app.MapPost("/api/pay-runs/{id:int}/recall", async (PayRunRepository repository,
 {
     if (!HasPermission(context, "payroll.approve"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var existing = await repository.GetAsync(id);
+    if (existing is null) return Results.NotFound();
+    if (!CanAccessClient(context, existing.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var payRun = await repository.RecallAsync(id);
     return payRun is null ? Results.BadRequest(new { error = "Only unpaid approved pay runs can be recalled." }) : Results.Ok(payRun);
 })
@@ -3935,16 +4039,22 @@ app.MapPost("/api/pay-runs/{id:int}/payments", async (PayRunRepository repositor
 {
     if (!HasPermission(context, "payroll.payments"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var existing = await repository.GetAsync(id);
+    if (existing is null) return Results.NotFound();
+    if (!CanAccessClient(context, existing.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var payRun = await repository.RecordPaymentsAsync(id, request);
     return payRun is null ? Results.BadRequest(new { error = "Payments can only be recorded for approved, unpaid employees." }) : Results.Ok(payRun);
 })
 .WithName("RecordPayRunPayments")
 .WithOpenApi();
 
-app.MapGet("/api/pay-runs/{id:int}/export", async (PayRunRepository repository, int id) =>
+app.MapGet("/api/pay-runs/{id:int}/export", async (PayRunRepository repository, int id, HttpContext context) =>
 {
+    if (!HasPermission(context, "payroll.run") && !HasPermission(context, "payroll.approve") && !HasPermission(context, "payroll.payments"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
     var payRun = await repository.GetAsync(id);
     if (payRun is null) return Results.NotFound();
+    if (!CanAccessClient(context, payRun.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var rows = new List<string> { "Client,Pay Period,Run Code,Run Type,Run Name,Employee Code,Employee,Department,Present Days,Payable Days,Gross Pay,Statutory Deductions,One-Time Earnings,One-Time Deductions,Manual TDS,Total Deductions,Net Pay,Payment Status" };
     rows.AddRange(payRun.Employees.Where(employee => !employee.IsSkipped).Select(employee =>
     {
@@ -4039,6 +4149,21 @@ static AuthUser CurrentUser(HttpContext context) =>
 
 static bool HasPermission(HttpContext context, string permission) =>
     CurrentUser(context).Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
+
+static bool HasClientUserManagement(HttpContext context) =>
+    HasPermission(context, "security.manage")
+    || (CurrentUser(context).ClientId.HasValue && HasPermission(context, "client.users.manage"));
+
+static bool HasClientRoleManagement(HttpContext context) =>
+    HasPermission(context, "security.manage")
+    || (CurrentUser(context).ClientId.HasValue && HasPermission(context, "client.roles.assign"));
+
+static int? ResolveClientAdministrationScope(HttpContext context) =>
+    HasPermission(context, "security.manage") ? null : CurrentUser(context).ClientId;
+
+static bool HasClientSettingsManagement(HttpContext context, int clientId) =>
+    CanAccessClient(context, clientId)
+    && (HasPermission(context, "settings.manage") || HasPermission(context, "client.settings.manage"));
 
 static bool HasRecruitmentManagement(HttpContext context) =>
     HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage");

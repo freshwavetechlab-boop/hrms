@@ -193,7 +193,7 @@ CREATE TABLE IF NOT EXISTS payroll_reconciliation_results (
         await connection.ExecuteAsync(@"UPDATE payrunemployees p JOIN employees e ON e.Id = p.EmployeeId LEFT JOIN clients c ON c.Id = e.ClientId SET p.ClientId = e.ClientId, p.ClientName = c.Name WHERE p.ClientId = 0 OR p.ClientName IS NULL;");
     }
 
-    public async Task<IEnumerable<PayRun>> GetAllAsync()
+    public async Task<IEnumerable<PayRun>> GetAllAsync(int? clientId = null)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
@@ -201,8 +201,9 @@ CREATE TABLE IF NOT EXISTS payroll_reconciliation_results (
 SELECT r.*, COUNT(e.Id) AS EmployeeCount
 FROM payruns r
 LEFT JOIN payrunemployees e ON e.PayRunId = r.Id AND e.IsSkipped = FALSE
+WHERE (@ClientId IS NULL OR r.ClientId=@ClientId)
 GROUP BY r.Id
-ORDER BY r.PayPeriod DESC, r.Id DESC;");
+ORDER BY r.PayPeriod DESC, r.Id DESC;", new { ClientId = clientId });
     }
 
     public async Task<PayRun?> GetAsync(int id)
@@ -659,6 +660,13 @@ AND NOT EXISTS (
         await connection.ExecuteAsync("UPDATE payruns SET Status = @Status WHERE Id = @Id", new { Id = id, Status = pending == 0 ? "Paid" : "Partially Paid" }, transaction);
         await transaction.CommitAsync();
         return await GetAsync(id);
+    }
+
+    public async Task<int?> GetAdjustmentClientIdAsync(int id)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        return await connection.ExecuteScalarAsync<int?>("SELECT ClientId FROM payrolladjustments WHERE Id=@Id", new { Id = id });
     }
 
     private static PayRunEmployee BuildEmployee(int payRunId, PayRunSourceEmployee employee, string setupJson, string payPeriod, int totalWorkingDays, decimal presentDays, decimal payableDays, IEnumerable<PayrollAdjustment> adjustments, decimal manualOneTimeEarnings, decimal manualOneTimeDeductions, decimal manualTds, bool isSkipped, string tdsComponentCode = "TDS")

@@ -30,6 +30,7 @@ const functionFormulaTokens = [
 ]
 
 type SalaryTemplateDesignerProps = {
+  fixedClientId?: number
   clients: Client[]
   components: Component[]
   structure: Structure
@@ -42,7 +43,7 @@ type SalaryTemplateDesignerProps = {
   onUploadTemplate?: (file: File | null) => void | Promise<void>
 }
 
-export default function SalaryTemplateDesigner({ clients, components, structure, setStructure, templates, saveTemplate, saving = false, templateDownloaded = false, onDownloadTemplate, onUploadTemplate }: SalaryTemplateDesignerProps) {
+export default function SalaryTemplateDesigner({ fixedClientId, clients, components, structure, setStructure, templates, saveTemplate, saving = false, templateDownloaded = false, onDownloadTemplate, onUploadTemplate }: SalaryTemplateDesignerProps) {
   const [tab, setTab] = useState<ComponentTab>('Earning')
   const [dragId, setDragId] = useState('')
   const [dragLineId, setDragLineId] = useState('')
@@ -147,7 +148,7 @@ export default function SalaryTemplateDesigner({ clients, components, structure,
   return <Card title="Enterprise salary template designer">
     <div className="salary-template-designer">
       <div className="salary-template-head">
-        <label>Clients<Select mode="multiple" className="app-search-select salary-template-client-select" popupClassName="app-search-select-dropdown" showSearch allowClear maxTagCount="responsive" value={selectedClientIds} placeholder="Select clients" optionFilterProp="label" filterOption={(input, option) => String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())} options={clientOptions} onChange={values => setStructure({ ...structure, clientId: values.join(',') })} /></label>
+        {!fixedClientId && <label>Clients<Select mode="multiple" className="app-search-select salary-template-client-select" popupClassName="app-search-select-dropdown" showSearch allowClear maxTagCount="responsive" value={selectedClientIds} placeholder="Select clients" optionFilterProp="label" filterOption={(input, option) => String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())} options={clientOptions} onChange={values => setStructure({ ...structure, clientId: values.join(',') })} /></label>}
         <label>Template<input value={structure.name} onChange={event => setStructure({ ...structure, name: event.target.value })} /></label>
         <label>Annual CTC<input value={structure.annualCtc} onChange={event => setStructure({ ...structure, annualCtc: event.target.value.replace(/\D/g, '') })} /></label>
         <button type="button" disabled={saving} onClick={() => void saveTemplate()}>{saving ? 'Saving...' : 'Save Template'}</button>
@@ -291,7 +292,7 @@ export default function SalaryTemplateDesigner({ clients, components, structure,
         </section>
       </div>}
     </div>
-    <DataTable rows={templates} actions={row => <><Button size="small" onClick={() => setStructure(row)}>Edit</Button><Button size="small" className="salary-simulate-button" onClick={() => openSimulation(row)}>Simulate</Button></>} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'annualCtc', label: 'Annual CTC' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} />
+    <DataTable rows={templates} actions={row => <><Button size="small" onClick={() => setStructure(fixedClientId ? { ...row, clientId: String(fixedClientId) } : row)}>Edit</Button><Button size="small" className="salary-simulate-button" onClick={() => openSimulation(row)}>Simulate</Button></>} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'annualCtc', label: 'Annual CTC' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} />
   </Card>
 }
 

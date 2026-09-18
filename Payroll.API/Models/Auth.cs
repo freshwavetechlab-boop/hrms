@@ -41,11 +41,14 @@ public class SaveAuthUserRequest
     public bool IsActive { get; set; } = true;
     public bool? MustChangePassword { get; set; }
     public List<string> Roles { get; set; } = [];
+    public int? RoleSourceUserId { get; set; }
+    public bool TransferRoles { get; set; }
 }
 
 public class SaveAuthRoleRequest
 {
     public int Id { get; set; }
+    public int? ClientId { get; set; }
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
@@ -111,6 +114,7 @@ public class AuthPermission
 public class AuthRole
 {
     public int Id { get; set; }
+    public int? ClientId { get; set; }
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;

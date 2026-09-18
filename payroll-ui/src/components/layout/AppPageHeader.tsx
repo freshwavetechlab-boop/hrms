@@ -13,11 +13,13 @@ export default function AppPageHeader({ title, description, icon, breadcrumbs, a
     <div className="hrms-page-heading">
       <span className="hrms-page-icon" aria-hidden="true">{icon}</span>
       <div className="hrms-page-copy">
-        <Breadcrumb className="hrms-page-breadcrumb" items={breadcrumbs} />
+        <div className="hrms-page-context-row">
+          <Breadcrumb className="hrms-page-breadcrumb" items={breadcrumbs} />
+          {actions && <div className="hrms-page-actions">{actions}</div>}
+        </div>
         <h1>{title}</h1>
         <p>{description}</p>
       </div>
     </div>
-    {actions && <div className="hrms-page-actions">{actions}</div>}
   </header>
 }

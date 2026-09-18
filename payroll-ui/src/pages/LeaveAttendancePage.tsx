@@ -9,11 +9,15 @@ import SearchSelect from '../components/SearchSelect'
 import { useToast } from '../components/ToastProvider'
 import { getClients } from '../services/payrollService'
 import type { Client } from '../types/payroll'
+import { useAuthSession } from '../components/AuthGate'
 
 export type LeaveAttendanceMenu = 'Attendance Policies' | 'Leave Types' | 'Holiday' | 'Attendance' | 'Geo-Fencing' | 'Import Balance'
 
 export default function LeaveAttendancePage({ activeMenu }: { activeMenu: LeaveAttendanceMenu; onSelectMenu: (menu: LeaveAttendanceMenu) => void }) {
   const toast = useToast()
+  const session = useAuthSession()
+  const scopedClientId = Number(session?.user.clientId || 0)
+  const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('settings.manage')
   const [clients, setClients] = useState<Client[]>([])
   const [clientId, setClientId] = useState(0)
 
@@ -21,15 +25,15 @@ export default function LeaveAttendancePage({ activeMenu }: { activeMenu: LeaveA
     void getClients().then(rows => {
       const active = rows.filter(row => row.isActive)
       setClients(active)
-      setClientId(current => current || active[0]?.id || 0)
+      setClientId(current => clientScoped ? scopedClientId : current || active[0]?.id || 0)
     })
-  }, [])
+  }, [clientScoped, scopedClientId])
 
   if (!clientId) return <section className="leave-attendance empty-state"><div><span className="eyebrow purple">Leave & Attendance</span><h3>No active client</h3><p>Create an active client before configuring Leave & Attendance.</p></div></section>
 
   const showMessage = (text: string) => toast(text, /error|unable|failed|required|resolve|select|cannot|must|invalid|at least/i.test(text) ? 'error' : 'success')
-  const clientFilter = activeMenu === 'Attendance Policies' ? null : <div className="card leave-client-filter"><label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label></div>
-  const content = activeMenu === 'Attendance Policies' ? <AttendanceGroupsManager onMessage={showMessage} /> : activeMenu === 'Leave Types' ? <LeaveTypesManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Holiday' ? <HolidayManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Attendance' ? <AttendanceSettingsForm clientId={clientId} onSaved={showMessage} /> : activeMenu === 'Geo-Fencing' ? <GeoFenceManager clients={clients} clientId={clientId} onClientChange={setClientId} onMessage={showMessage} /> : <LeaveBalanceImportManager clientId={clientId} onMessage={showMessage} />
+  const clientFilter = activeMenu === 'Attendance Policies' || clientScoped ? null : <div className="card leave-client-filter"><label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label></div>
+  const content = activeMenu === 'Attendance Policies' ? <AttendanceGroupsManager fixedClientId={clientScoped ? scopedClientId : undefined} onMessage={showMessage} /> : activeMenu === 'Leave Types' ? <LeaveTypesManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Holiday' ? <HolidayManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Attendance' ? <AttendanceSettingsForm clientId={clientId} onSaved={showMessage} /> : activeMenu === 'Geo-Fencing' ? <GeoFenceManager clients={clients} clientId={clientId} fixedClientId={clientScoped ? scopedClientId : undefined} onClientChange={setClientId} onMessage={showMessage} /> : <LeaveBalanceImportManager clientId={clientId} onMessage={showMessage} />
 
   return <section className="leave-attendance">{clientFilter}{content}</section>
 }

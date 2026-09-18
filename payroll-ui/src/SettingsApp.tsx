@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type MouseEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { AppstoreOutlined, BellOutlined, DownOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons'
+import { AppstoreOutlined, BankOutlined, BellOutlined, DownOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons'
 import { Avatar, Badge, Button, Dropdown, Input, Menu, Space, Tooltip } from 'antd'
 import type { MenuProps } from 'antd'
 import AppIcon from './components/AppIcon'
@@ -31,7 +31,8 @@ import MailAutomationProvider from './components/MailAutomationProvider'
 import { useAuthSession } from './components/AuthGate'
 import SettingsPage from './pages/SettingsPage'
 import { getOrganization } from './services/settingsService'
-import type { Org } from './types/payroll'
+import { getClients } from './services/payrollService'
+import type { Client, Org } from './types/payroll'
 import './OrganizationSetup.css'
 import './ModuleDrawer.css'
 import './SecurityDrawerCompact.css'
@@ -269,6 +270,23 @@ const modulePaths: Record<ModuleCode, string> = {
 
 export default function SettingsApp() {
   const session = useAuthSession()
+  const currentUser = session?.user
+  const grantedPermissions = new Set(currentUser?.permissions ?? [])
+  const hasAnyPermission = (...codes: string[]) => codes.some(code => grantedPermissions.has(code))
+  const clientScopedAdmin = Boolean(currentUser?.clientId && !grantedPermissions.has('security.manage'))
+  const canAccessModule = (code: ModuleCode | 'Reports') => {
+    if (code === 'Dashboard') return true
+    if (code === 'Employees') return hasAnyPermission('employees.view', 'employees.manage')
+    if (code === 'Payroll') return hasAnyPermission('payroll.run', 'payroll.approve', 'payroll.payments')
+    if (code === 'LeaveAttendance') return hasAnyPermission('attendance.manage', 'leave.manage', 'mss.attendance.manage', 'mss.attendance.client.manage')
+    if (code === 'TalentAcquisition') return Array.from(grantedPermissions).some(permission => permission.startsWith('recruitment.'))
+    if (code === 'Security') return hasAnyPermission('security.manage', 'client.users.manage', 'client.roles.assign')
+    if (code === 'Workflows') return hasAnyPermission('workflow.manage')
+    if (code === 'Settings') return hasAnyPermission('settings.manage', 'client.settings.manage')
+    if (code === 'Reports') return hasAnyPermission('reports.view')
+    return false
+  }
+  const visibleModules = modules.filter(module => canAccessModule(module.code))
   const sidebarRef = useRef<HTMLElement | null>(null)
   const canManageStatutory = Boolean(session?.user.permissions.includes('tax.statutory.manage'))
   const canViewEmployeeCommunication = Boolean(session?.user.permissions.includes('employee.communication.view'))
@@ -320,8 +338,8 @@ export default function SettingsApp() {
   const [reportingReport, setReportingReport] = useState<ReportDefinition>(() => reportItems(savedReportingTab && reportingMenus.includes(savedReportingTab) ? savedReportingTab : 'Payroll Reports')[0])
   const [mainModule, setMainModule] = useState<ModuleCode>(initialModule)
   const [shellOrg, setShellOrg] = useState<Org>(org0)
-  const activeModule = modules.find(module => module.code === mainModule)!
-  const currentUser = session?.user
+  const [scopedClient, setScopedClient] = useState<Client | null>(null)
+  const activeModule = visibleModules.find(module => module.code === mainModule) ?? modules[0]
   const dashboardAccess = [...(currentUser?.dashboardAccess?.length ? currentUser.dashboardAccess : fallbackDashboardAccess)].sort((left, right) => left.sortOrder - right.sortOrder)
   const activeDashboard = dashboardAccess.find(item => item.code === dashboardView) ?? dashboardAccess[0]
   const dashboardMenu: MenuProps = {
@@ -402,6 +420,25 @@ export default function SettingsApp() {
   }, [])
 
   useEffect(() => {
+    document.body.classList.toggle('client-scoped-session', clientScopedAdmin)
+    return () => document.body.classList.remove('client-scoped-session')
+  }, [clientScopedAdmin])
+
+  useEffect(() => {
+    if (!clientScopedAdmin || !currentUser?.clientId) {
+      setScopedClient(null)
+      return
+    }
+    const clientId = currentUser.clientId
+    let active = true
+    void getClients().then(rows => {
+      if (!active) return
+      setScopedClient(rows.find(row => row.id === clientId) ?? { id: clientId, name: `Client #${clientId}`, code: '', contactPerson: '', email: '', phone: '', address: '', logoDataUrl: '', payScheduleJson: '{}', isActive: true })
+    })
+    return () => { active = false }
+  }, [clientScopedAdmin, currentUser?.clientId])
+
+  useEffect(() => {
     const clearCollapsedSidebarFocus = (event: PointerEvent) => {
       if (navOpen) return
       const sidebar = sidebarRef.current
@@ -442,21 +479,37 @@ export default function SettingsApp() {
       return
     }
     if (parts[0] === 'employees') {
+      if (parts[1] === 'communications' && !canViewEmployeeCommunication) {
+        navigate('/employees/master', { replace: true })
+        return
+      }
       setEmployeeTab(parts[1] === 'org-structure' ? 'Org Structure' : parts[1] === 'communications' ? 'Employee Communication' : 'Employee Master')
       setMainModule('Employees')
       return
     }
     if (parts[0] === 'recruitment') {
+      if (!canAccessModule('TalentAcquisition')) {
+        navigate('/dashboard', { replace: true })
+        return
+      }
       setMainModule('TalentAcquisition')
       return
     }
     if (parts[0] === 'security') {
       if (parts[1] === 'app-settings') {
+        if (clientScopedAdmin) {
+          navigate('/security/users', { replace: true })
+          return
+        }
         setSecurityAppSettingsOpen(true)
         setMainModule('Security')
         return
       }
       const nextTab = fromSlug(securityMenus, tabSlug, 'Users')
+      if (nextTab === 'Audit' && !grantedPermissions.has('audit.view')) {
+        navigate('/security/users', { replace: true })
+        return
+      }
       setSecurityTab(nextTab)
       localStorage.setItem('payroll.securityTab', nextTab)
       setMainModule('Security')
@@ -474,6 +527,10 @@ export default function SettingsApp() {
       return
     }
     if (parts[0] === 'workflows') {
+      if (!canAccessModule('Workflows')) {
+        navigate('/dashboard', { replace: true })
+        return
+      }
       const nextTab = fromSlug(workflowMenus, tabSlug, 'Workflow Setup')
       setWorkflowTab(nextTab)
       localStorage.setItem('payroll.workflowTab', nextTab)
@@ -485,6 +542,13 @@ export default function SettingsApp() {
       return
     }
     if (parts[0] === 'settings') {
+      if (clientScopedAdmin) {
+        const clientAllowed = parts[1] === 'salary-templates' || parts[1] === 'payslip-templates' || parts[1] === 'leave-attendance'
+        if (!clientAllowed) {
+          navigate('/settings/salary-templates', { replace: true })
+          return
+        }
+      }
       if (parts[1] === 'recruitment-administration') {
         const legacySection = parts[2] || ''
         const legacyParams = new URLSearchParams(routeLocation.search)
@@ -554,7 +618,7 @@ export default function SettingsApp() {
       return
     }
     setMainModule('Dashboard')
-  }, [canManageStatutory, navigate, routeLocation.pathname, routeLocation.search])
+  }, [canManageStatutory, canViewEmployeeCommunication, clientScopedAdmin, navigate, routeLocation.pathname, routeLocation.search])
 
   useEffect(() => {
     if (!navOpen) return
@@ -611,6 +675,15 @@ export default function SettingsApp() {
       {tasks}
     </>
     if (mainModule === 'Settings') {
+      if (clientScopedAdmin) return <>
+        {tasks}
+        {menuLink('/settings/salary-templates', 'Salary Templates', settingsSection === 'General' && tab === 'Salary Templates', () => setTab('Salary Templates'), 'Client-wise', 'template')}
+        {menuLink('/settings/payslip-templates', 'Payslip Templates', settingsSection === 'General' && tab === 'Payslip Templates', () => setTab('Payslip Templates'), 'Client-wise', 'payslip')}
+        <div className={`settings-nav-group ${leaveAttendanceOpen ? 'expanded' : ''}`}>
+          <button {...navAttrs('Leave & Attendance')} className={settingsSection === 'LeaveAttendance' ? 'active' : ''} type="button" aria-expanded={leaveAttendanceOpen} onClick={() => setLeaveAttendanceOpen(open => !open)}>{menuLabel('Leave & Attendance', null)}<small>{leaveAttendanceOpen ? '-' : '+'}</small></button>
+          {leaveAttendanceOpen && <div className="settings-nav-submenu">{leaveAttendanceMenus.map(item => <Fragment key={item}>{menuLink(`/settings/leave-attendance/${slug(item)}`, item, settingsSection === 'LeaveAttendance' && leaveAttendanceTab === item, () => setLeaveAttendanceSettingsTab(item), undefined, leaveAttendanceIcons[item])}</Fragment>)}</div>}
+        </div>
+      </>
       const generalSettings = settingsMenus.filter(item => !payrollSetupMenus.includes(item) && !integrationMenus.includes(item))
       const payrollSetupActive = payrollSetupMenus.includes(tab)
       const integrationsActive = integrationMenus.includes(tab)
@@ -668,11 +741,11 @@ export default function SettingsApp() {
     </>
     if (mainModule === 'Security') return <>
       {tasks}
-      {securityMenus.map(item => <Fragment key={item}>{menuLink(`/security/${slug(item)}`, item, !securityAppSettingsTab && securityTab === item, () => setSecurityModuleTab(item), undefined, securityMenuIcons[item])}</Fragment>)}
-      <div className={`settings-nav-group flyout-align-end ${securityAppSettingsOpen ? 'expanded' : ''} ${collapsedFlyout === 'security-app-settings' ? 'flyout-open' : ''}`}>
+      {securityMenus.filter(item => item !== 'Audit' || grantedPermissions.has('audit.view')).map(item => <Fragment key={item}>{menuLink(`/security/${slug(item)}`, item, !securityAppSettingsTab && securityTab === item, () => setSecurityModuleTab(item), undefined, securityMenuIcons[item])}</Fragment>)}
+      {!clientScopedAdmin && <div className={`settings-nav-group flyout-align-end ${securityAppSettingsOpen ? 'expanded' : ''} ${collapsedFlyout === 'security-app-settings' ? 'flyout-open' : ''}`}>
         <button {...navAttrs('App Settings')} className={securityAppSettingsTab ? 'active' : ''} type="button" aria-expanded={securityAppSettingsOpen} onClick={() => toggleNavGroup('security-app-settings', () => setSecurityAppSettingsOpen(open => navOpen ? !open : true))}>{menuLabel('App Settings', null)}<small>{securityAppSettingsOpen ? '-' : '+'}</small></button>
         {securityAppSettingsOpen && <div className="settings-nav-submenu">{appSettingsMenus.map(item => <Fragment key={item}>{menuLink(`/security/app-settings/${slug(item)}`, item, securityAppSettingsTab === item, () => setSecurityAppSettingsTab(item), undefined, appSettingsIcons[item])}</Fragment>)}</div>}
-      </div>
+      </div>}
     </>
     if (mainModule === 'Reports') return <>{tasks}{reportingMenus.map(item => {
       const expanded = reportingTab === item
@@ -687,15 +760,20 @@ export default function SettingsApp() {
   const renderPage = () => {
     if (isProfile && currentUser) return <MyProfilePage user={currentUser} />
     if (showMyTasks) return <WorkflowTasks />
+    if (!canAccessModule(mainModule)) return <DashboardPage view={dashboardView} />
     if (mainModule === 'Dashboard') return <DashboardPage view={dashboardView} />
-    if (mainModule === 'Security') return securityAppSettingsTab === 'ESS Settings' ? <EssSettings /> : securityAppSettingsTab === 'Storage Servers' ? <AttachmentSettings mode="storage" /> : <SecurityPanel initialTab={securityTab} />
+    if (mainModule === 'Security') return clientScopedAdmin
+      ? <SecurityPanel initialTab={securityTab === 'Audit' ? 'Users' : securityTab} />
+      : securityAppSettingsTab === 'ESS Settings' ? <EssSettings /> : securityAppSettingsTab === 'Storage Servers' ? <AttachmentSettings mode="storage" /> : <SecurityPanel initialTab={securityTab} />
     if (mainModule === 'LeaveAttendance') return <PayrollAttendancePage />
     if (mainModule === 'Payroll') return isPayHistory ? <PayHistoryPage /> : payrollTab === 'Employee Tax Profile' ? <EmployeeTaxProfileManager /> : payrollTab === 'Travel Advances' ? <TravelAdvancesPage /> : <PayrollPage key={payrollTab} mode={payrollTab === 'Adjustments' ? 'adjustments' : 'payrun'} runType={payrollTab === 'Off-cycle Run' ? 'Off-cycle Run' : 'Regular Run'} />
     if (mainModule === 'Employees') return employeeTab === 'Employee Communication' ? <EmployeeCommunicationPage /> : <EmployeePage view={(employeeTab === 'Org Structure' ? 'org' : 'master') as EmployeePageView} />
     if (mainModule === 'TalentAcquisition') return <RecruitmentPage view={recruitmentView} />
     if (mainModule === 'Reports') return <ReportingPage activeMenu={reportingTab} activeReport={reportingReport} />
     if (mainModule === 'Workflows') return <WorkflowPage activeMenu={workflowTab} />
-    return settingsSection === 'LeaveAttendance' ? <LeaveAttendancePage activeMenu={leaveAttendanceTab} onSelectMenu={setLeaveAttendanceSettingsTab} /> : <SettingsPage tab={tab} onMessage={() => undefined} />
+    return settingsSection === 'LeaveAttendance'
+      ? <LeaveAttendancePage activeMenu={leaveAttendanceTab} onSelectMenu={setLeaveAttendanceSettingsTab} />
+      : <SettingsPage tab={clientScopedAdmin && !['Salary Templates', 'Payslip Templates'].includes(tab) ? 'Salary Templates' : tab} onMessage={() => undefined} />
   }
 
   const shellClassName = ['hrms-shell', navOpen ? '' : 'rail-collapsed', appDrawerOpen ? 'drawer-open' : '', mobileShell && navOpen ? 'mobile-nav-open' : ''].filter(Boolean).join(' ')
@@ -734,7 +812,7 @@ export default function SettingsApp() {
             </button>
           </Dropdown>
         </Space>
-        <AppPageHeader title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} />
+        <AppPageHeader title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined} />
       </div>
       <div className="hrms-content">
         <div className="hrms-page-body">{renderPage()}</div>
@@ -747,7 +825,7 @@ export default function SettingsApp() {
     {appDrawerOpen && <div className="drawer-scrim" onClick={() => setAppDrawerOpen(false)} />}
     <aside className="module-drawer" aria-hidden={!appDrawerOpen}>
       <header><div><span className="eyebrow purple">App Launcher</span><h3>Choose module</h3></div><button type="button" aria-label="Close app modules" onClick={() => setAppDrawerOpen(false)}><AppIcon name="close" /></button></header>
-      {modules.map(module => module.disabled ? <button className={mainModule === module.code ? 'active' : ''} type="button" disabled key={module.code}><AppIcon name={module.icon} /><strong>{module.label}</strong><small>{module.description}</small></button> : <Link className={mainModule === module.code ? 'active' : ''} to={modulePaths[module.code as ModuleCode]} onClick={event => {
+      {visibleModules.map(module => module.disabled ? <button className={mainModule === module.code ? 'active' : ''} type="button" disabled key={module.code}><AppIcon name={module.icon} /><strong>{module.label}</strong><small>{module.description}</small></button> : <Link className={mainModule === module.code ? 'active' : ''} to={modulePaths[module.code as ModuleCode]} onClick={event => {
         if (menuClickIsNewTabIntent(event)) return
         setModule(module.code as ModuleCode)
         setAppDrawerOpen(false)

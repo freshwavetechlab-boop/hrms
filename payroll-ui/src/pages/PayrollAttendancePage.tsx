@@ -6,6 +6,7 @@ import { useToast, type ToastType } from '../components/ToastProvider'
 import { getClients } from '../services/payrollService'
 import { getAttendanceGroups } from '../services/leaveAttendanceService'
 import type { AttendanceGroup, Client } from '../types/payroll'
+import { useAuthSession } from '../components/AuthGate'
 
 type AttendanceRouteState = { clientId?: number; period?: string; groupIds?: number[]; employeeIds?: number[] } | null
 
@@ -19,6 +20,9 @@ const policyBatchName = (groups: AttendanceGroup[]) => {
 }
 
 export default function PayrollAttendancePage() {
+  const session = useAuthSession()
+  const scopedClientId = Number(session?.user.clientId || 0)
+  const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('settings.manage')
   const location = useLocation()
   const routeState = location.state as AttendanceRouteState
   const routeContext = useMemo(() => {
@@ -46,17 +50,19 @@ export default function PayrollAttendancePage() {
       setClients(active)
       setClientId(current => {
         if (current && active.some(client => client.id === current)) return current
+        if (clientScoped) return scopedClientId
         return routeContext.clientId && active.some(client => client.id === routeContext.clientId) ? routeContext.clientId : 0
       })
     })
-  }, [routeContext.clientId])
+  }, [clientScoped, routeContext.clientId, scopedClientId])
 
   useEffect(() => {
     if (!routeContext.clientId && !routeContext.period && !routeContext.groupIds.length && !routeContext.employeeIds.length) return
-    if (routeContext.clientId) setClientId(routeContext.clientId)
+    if (clientScoped) setClientId(scopedClientId)
+    else if (routeContext.clientId) setClientId(routeContext.clientId)
     setFocusedEmployeeIds(routeContext.employeeIds)
     setReviewScope(routeContext.groupIds.length ? `groups:${routeContext.groupIds.join(',')}` : '')
-  }, [location.key, routeContext.clientId, routeContext.period, routeContext.groupIds, routeContext.employeeIds])
+  }, [clientScoped, location.key, routeContext.clientId, routeContext.period, routeContext.groupIds, routeContext.employeeIds, scopedClientId])
 
   useEffect(() => {
     if (!clientId) return
@@ -126,7 +132,7 @@ export default function PayrollAttendancePage() {
   }, [groups, reviewScope, selectedGroups.length])
 
   const clientControl = <>
-    <label className="attendance-client-control attendance-client-field"><span>Client</span><SearchSelect value={clientId || ''} placeholder="Select client" onChange={value => { setClientId(Number(value)); setGroups([]); setGroupsLoaded(false); setReviewScope(''); setFocusedEmployeeIds([]) }} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label>
+    {!clientScoped && <label className="attendance-client-control attendance-client-field"><span>Client</span><SearchSelect value={clientId || ''} placeholder="Select client" onChange={value => { setClientId(Number(value)); setGroups([]); setGroupsLoaded(false); setReviewScope(''); setFocusedEmployeeIds([]) }} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label>}
     <label className="attendance-client-control attendance-scope-field"><span>Attendance policy</span><SearchSelect value={reviewScope} placeholder={clientId ? 'Select attendance policy' : 'Select client first'} disabled={!clientId || !groupsLoaded || !groups.length} onChange={value => { setReviewScope(value); setFocusedEmployeeIds([]) }} options={groups.length ? reviewScopeOptions : [{ value: '', label: !clientId ? 'Select client first' : groupsLoaded ? 'No policy configured' : 'Loading policies...' }]} /></label>
   </>
 

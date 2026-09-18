@@ -5,6 +5,7 @@ import SearchSelect, { selectOptions } from '../components/SearchSelect'
 import { getClients } from '../services/payrollService'
 import { getTravelAdvances, payTravelAdvance, recoverTravelAdvance, settleTravelAdvance } from '../services/settingsService'
 import type { Client, TravelAdvance } from '../types/payroll'
+import { useAuthSession } from '../components/AuthGate'
 
 const statuses = ['Approved', 'Partially Paid', 'Paid', 'Partially Settled', 'Settled', 'Recoverable', 'Cancelled']
 const money = (value: number) => `Rs ${Number(value || 0).toLocaleString('en-IN')}`
@@ -12,9 +13,12 @@ const dateText = (value?: string | null) => value ? new Date(value).toLocaleDate
 const openBalance = (row: TravelAdvance) => Math.max((row.paidAmount || 0) - (row.settledAmount || 0) - (row.recoverableAmount || 0), 0)
 
 export default function TravelAdvancesPage() {
+  const session = useAuthSession()
+  const scopedClientId = Number(session?.user.clientId || 0)
+  const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('security.manage')
   const [clients, setClients] = useState<Client[]>([])
   const [rows, setRows] = useState<TravelAdvance[]>([])
-  const [clientId, setClientId] = useState(0)
+  const [clientId, setClientId] = useState(scopedClientId)
   const [status, setStatus] = useState('')
   const [selected, setSelected] = useState<TravelAdvance | null>(null)
   const [action, setAction] = useState<'pay' | 'settle' | 'recover' | ''>('')
@@ -58,7 +62,7 @@ export default function TravelAdvancesPage() {
   return <section className="travel-advances-page">
     <div className="card report-workspace travel-advance-workspace">
       <div className="travel-advance-filters">
-        <label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={selectOptions(clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label>
+        {!clientScoped && <label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={selectOptions(clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label>}
         <label><span>Status</span><SearchSelect value={status} onChange={setStatus} options={selectOptions(statuses, 'All statuses')} /></label>
         <Button onClick={() => void load()}>Refresh</Button>
       </div>

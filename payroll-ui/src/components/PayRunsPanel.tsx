@@ -13,6 +13,7 @@ import DataTable, { type Column } from './DataTable'
 import FileDropZone from './FileDropZone'
 import SearchSelect from './SearchSelect'
 import { componentToAdjustmentType, prepareAdjustmentImports, type AdjustmentImportMode } from '../features/payroll/adjustmentImport'
+import { useAuthSession } from './AuthGate'
 
 const currentPeriod = (() => {
   const date = new Date()
@@ -75,10 +76,13 @@ const buildPolicyBatches = (groups: AttendanceGroup[]): AttendancePolicyBatch[] 
 const adjustment0: PayrollAdjustment = { id: 0, clientId: 0, employeeId: 0, employeeName: '', employeeCode: '', componentId: 0, componentCode: '', componentName: '', adjustmentType: 'Earning', amount: 0, payPeriod: currentPeriod, payRunType: 'Regular', reasonCode: 'Overtime', notes: '', taxable: true, status: 'Approved', payRunId: null }
 
 export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regular Run' }: { mode?: 'payrun' | 'adjustments'; initialRunType?: Exclude<PayrollTab, 'Adjustments'> }) {
+  const session = useAuthSession()
+  const scopedClientId = Number(session?.user.clientId || 0)
+  const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('security.manage')
   const [clients, setClients] = useState<Client[]>([]), [employees, setEmployees] = useState<Employee[]>([]), [runs, setRuns] = useState<PayRun[]>([]), [attendanceGroups, setAttendanceGroups] = useState<AttendanceGroup[]>([])
   const [setup, setSetup] = useState<Setup>(setup0), [selected, setSelected] = useState<PayRun | null>(null)
   const [diagnostics, setDiagnostics] = useState<PayRunDiagnostics | null>(null)
-  const [clientId, setClientId] = useState(0), [period, setPeriod] = useState(currentPeriod), [workingDays] = useState(30)
+  const [clientId, setClientId] = useState(scopedClientId), [period, setPeriod] = useState(currentPeriod), [workingDays] = useState(30)
   const [includedIds, setIncludedIds] = useState<number[]>([]), [attendancePolicyBatchId, setAttendancePolicyBatchId] = useState(''), [offcycleEmployeeIds, setOffcycleEmployeeIds] = useState<number[]>([]), [offcycleAdjustmentIds, setOffcycleAdjustmentIds] = useState<number[]>([])
   const [adjustments, setAdjustments] = useState<PayrollAdjustment[]>([]), [adjustment, setAdjustment] = useState<PayrollAdjustment>(adjustment0)
   const [tab] = useState<PayrollTab>(mode === 'adjustments' ? 'Adjustments' : initialRunType), [busy, setBusy] = useState(false), [message, setMessage] = useState('Select client, verify employees, then run payroll.')
@@ -142,7 +146,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
 
   const load = async () => {
     const [clientRows, employeeRows, runRows, setupRow, adjustmentRows, groupRows] = await Promise.all([getClients(), getEmployees(), getPayRuns(), getSetup(setup0), getPayrollAdjustments(), getAttendanceGroups()])
-    const nextClientId = clientId || clientRows[0]?.id || 0
+    const nextClientId = clientScoped ? scopedClientId : clientId || clientRows[0]?.id || 0
     const activeGroups = groupRows.filter(group => group.isActive)
     const nextBatches = buildPolicyBatches(activeGroups.filter(group => group.clientId === nextClientId))
     const nextBatch = nextBatches.find(batch => batch.id === attendancePolicyBatchId) || null
@@ -315,7 +319,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const contextPanel = <div className="card payroll-control-panel">
     <header><i className="blue">R</i><div><h3>Run context</h3><p>Client, attendance policy and pay period are selected before draft processing. Working days come from Attendance Review.</p></div></header>
     <div className={`pay-run-form enterprise${tab === 'Off-cycle Run' ? ' offcycle-context' : ''}`}>
-      <label>Client<SearchSelect value={clientId} onChange={value => changeClient(Number(value))} options={clients.filter(client => client.isActive).map(client => ({ value: client.id, label: client.name }))} /></label>
+      {!clientScoped && <label>Client<SearchSelect value={clientId} onChange={value => changeClient(Number(value))} options={clients.filter(client => client.isActive).map(client => ({ value: client.id, label: client.name }))} /></label>}
       {tab === 'Regular Run' && mode !== 'adjustments' && <label>Attendance Policy<Select className="app-search-select payroll-policy-select" popupClassName="app-search-select-dropdown" showSearch optionFilterProp="label" value={attendancePolicyBatchId} onChange={value => changeAttendancePolicyBatch(String(value))} options={attendancePolicyOptions} /></label>}
       <label>Pay period<input type="month" value={period} onChange={event => changePeriod(event.target.value)} /></label>
       <label>Working days<input value={derivedWorkingDays} readOnly /></label>

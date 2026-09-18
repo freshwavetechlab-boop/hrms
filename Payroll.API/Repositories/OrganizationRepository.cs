@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS clients (
     Email VARCHAR(150),
     Phone VARCHAR(50),
     Address VARCHAR(500),
+    LogoDataUrl LONGTEXT NULL,
     PayScheduleJson JSON NULL,
     IsActive BOOLEAN NOT NULL DEFAULT TRUE,
     CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -166,6 +167,7 @@ CREATE TABLE IF NOT EXISTS employees (
         await EnsureColumnAsync(connection, "RegisteredOfficeAddress", "TEXT NULL AFTER AddressLine2");
         await EnsureColumnAsync(connection, "CorporateOfficeAddress", "TEXT NULL AFTER RegisteredOfficeAddress");
         await EnsureTableColumnAsync(connection, "clients", "PayScheduleJson", "JSON NULL");
+        await EnsureTableColumnAsync(connection, "clients", "LogoDataUrl", "LONGTEXT NULL AFTER Address");
         await EnsureTableColumnAsync(connection, "worklocations", "ClientId", "INT NOT NULL DEFAULT 0 AFTER Id");
         await EnsureTableColumnAsync(connection, "employees", "ReportingManagerUserId", "INT NULL AFTER ReportingManagerId");
         await EnsureTableColumnAsync(connection, "worklocations", "ClientName", "VARCHAR(250) NULL AFTER ClientId");
@@ -389,12 +391,12 @@ WHERE Id = @Id;";
         await PayrollDataTableStore.SaveSetupJsonAsync(connection, setupJson);
     }
 
-    public async Task<IEnumerable<Client>> GetClientsAsync()
+    public async Task<IEnumerable<Client>> GetClientsAsync(int? clientId = null)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
-        var clients = (await connection.QueryAsync<Client>("SELECT * FROM clients ORDER BY Name")).ToList();
+        var clients = (await connection.QueryAsync<Client>("SELECT * FROM clients WHERE (@ClientId IS NULL OR Id=@ClientId) ORDER BY Name", new { ClientId = clientId })).ToList();
         await PayrollDataTableStore.ApplyClientPaySchedulesAsync(connection, clients);
         return clients;
     }
@@ -407,13 +409,13 @@ WHERE Id = @Id;";
         client.PayScheduleJson = NormalizeJsonObject(client.PayScheduleJson);
         if (client.Id == 0)
         {
-            const string sql = "INSERT INTO clients (Name, Code, ContactPerson, Email, Phone, Address, PayScheduleJson, IsActive) VALUES (@Name, @Code, @ContactPerson, @Email, @Phone, @Address, @PayScheduleJson, @IsActive); SELECT LAST_INSERT_ID();";
+            const string sql = "INSERT INTO clients (Name, Code, ContactPerson, Email, Phone, Address, LogoDataUrl, PayScheduleJson, IsActive) VALUES (@Name, @Code, @ContactPerson, @Email, @Phone, @Address, @LogoDataUrl, @PayScheduleJson, @IsActive); SELECT LAST_INSERT_ID();";
             client.Id = (int)await connection.ExecuteScalarAsync<long>(sql, client);
             await PayrollDataTableStore.SyncClientPayScheduleAsync(connection, client.Id, client.PayScheduleJson);
             return client.Id;
         }
 
-        await connection.ExecuteAsync("UPDATE clients SET Name=@Name, Code=@Code, ContactPerson=@ContactPerson, Email=@Email, Phone=@Phone, Address=@Address, PayScheduleJson=@PayScheduleJson, IsActive=@IsActive WHERE Id=@Id", client);
+        await connection.ExecuteAsync("UPDATE clients SET Name=@Name, Code=@Code, ContactPerson=@ContactPerson, Email=@Email, Phone=@Phone, Address=@Address, LogoDataUrl=@LogoDataUrl, PayScheduleJson=@PayScheduleJson, IsActive=@IsActive WHERE Id=@Id", client);
         await connection.ExecuteAsync("UPDATE worklocations SET ClientName=@Name WHERE ClientId=@Id", client);
         await PayrollDataTableStore.SyncClientPayScheduleAsync(connection, client.Id, client.PayScheduleJson);
         return client.Id;
@@ -590,7 +592,7 @@ WHERE Id = @Id;";
         }
     }
 
-    public async Task<IEnumerable<WorkLocation>> GetWorkLocationsAsync()
+    public async Task<IEnumerable<WorkLocation>> GetWorkLocationsAsync(int? clientId = null)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
@@ -609,7 +611,8 @@ WHERE Id = @Id;";
     w.IsActive
 FROM worklocations w
 LEFT JOIN clients c ON c.Id = w.ClientId
-ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name");
+WHERE (@ClientId IS NULL OR w.ClientId=@ClientId)
+ORDER BY COALESCE(c.Name, w.ClientName, ''), w.IsPrimary DESC, w.Name", new { ClientId = clientId });
     }
 
     public async Task<int> SaveWorkLocationAsync(WorkLocation location)

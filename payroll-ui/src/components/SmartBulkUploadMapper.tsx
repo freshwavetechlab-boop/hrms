@@ -270,6 +270,7 @@ export default function SmartBulkUploadMapper(p: Props) {
           { value: 'upsert', label: 'Add new + update existing' }
         ]} />
       </section>
+      {operation === 'update' && <Alert type="info" showIcon message="Bulk update existing employees" description="Use the HRMS update template; keep Employee ID/Code unchanged. Blank cells preserve current data. Grade must exist in Employee Grade master; category must be Highly skilled, Skilled, Semi-skilled, or Unskilled." />}
       <div className="smart-bulk-mode-tabs" role="tablist" aria-label="Bulk upload method">
         <button type="button" role="tab" aria-selected={mode === 'mapped'} className={mode === 'mapped' ? 'active' : ''} onClick={() => setMode('mapped')}><LinkOutlined /><span><b>Map any spreadsheet</b><small>Upload different column names and connect them to HRMS fields.</small></span><em>Recommended</em></button>
         <button type="button" role="tab" aria-selected={mode === 'template'} className={mode === 'template' ? 'active' : ''} onClick={() => setMode('template')}><CloudUploadOutlined /><span><b>Use HRMS template</b><small>Upload the standard employee template without manual mapping.</small></span></button>

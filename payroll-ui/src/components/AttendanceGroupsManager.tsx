@@ -56,7 +56,7 @@ const clampCycleForMonth = (month: string, form: AttendancePolicyForm) => {
   return { form: { ...normalized, attendanceCycleEndDay: maxEnd.getDate() }, changed: true }
 }
 
-export default function AttendanceGroupsManager({ onMessage }: { onMessage: (message: string) => void }) {
+export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { onMessage: (message: string) => void; fixedClientId?: number }) {
   const [clients, setClients] = useState<Client[]>([])
   const [locations, setLocations] = useState<WorkLocation[]>([])
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -97,7 +97,7 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
 
   const employeeIdsFor = (group: AttendancePolicyForm, sourceEmployees = activeEmployees) => sourceEmployees.filter(employee => employee.clientId === group.clientId && (!group.workLocationIds.length || group.workLocationIds.includes(employee.workLocationId)) && (!group.departments.length || group.departments.includes(employee.department)) && (!group.designations.length || group.designations.includes(employee.designation)) && !mappedEmployeePolicyById.has(employee.id)).map(employee => employee.id)
   const defaultFor = (clientRows = clients, locationRows = locations, employeeRows = activeEmployees) => {
-    const clientId = clientRows.find(client => client.isActive)?.id || 0
+    const clientId = fixedClientId || clientRows.find(client => client.isActive)?.id || 0
     const next = { ...emptyForm, clientId, workLocationId: 0, workLocationIds: [] }
     return { ...next, employeeIds: employeeIdsFor(next, employeeRows.filter(employee => employee.isActive)) }
   }
@@ -281,7 +281,7 @@ export default function AttendanceGroupsManager({ onMessage }: { onMessage: (mes
     <Drawer className="settings-master-drawer attendance-policy-master-drawer" title={<div className="settings-drawer-title"><span>Attendance policy</span><h3>{form.id ? 'Edit attendance policy' : 'Add attendance policy'}</h3><p>Define client, location, employee scope, weekly off, cycle, and payroll report day.</p></div>} open={drawerOpen} width={760} onClose={() => setDrawerOpen(false)} destroyOnClose>
       <Form className="attendance-group-form settings-quick-form" component="div" layout="vertical" requiredMark={false}>
         <Form.Item label="Policy name" required><Input value={form.name} onChange={event => set('name', event.target.value)} placeholder="Consultants - RECL Site A" /></Form.Item>
-        <Form.Item label="Client" required><SearchSelect value={form.clientId} onChange={value => applyScope({ clientId: Number(value), id: 0 })} options={clients.map(client => ({ value: client.id, label: client.name }))} /></Form.Item>
+        {!fixedClientId && <Form.Item label="Client" required><SearchSelect value={form.clientId} onChange={value => applyScope({ clientId: Number(value), id: 0 })} options={clients.map(client => ({ value: client.id, label: client.name }))} /></Form.Item>}
         <Form.Item label="Work Location" extra="Leave blank for all work locations."><Select mode="multiple" className="app-search-select attendance-policy-multi" popupClassName="app-search-select-dropdown" showSearch value={form.workLocationIds.map(String)} optionFilterProp="label" onChange={values => applyScope({ workLocationIds: values.map(Number), id: 0 })} options={clientLocations.map(location => ({ value: String(location.id), label: `${location.name} - ${location.city || location.state || 'Location'}` }))} /></Form.Item>
         <Row gutter={12}>
           <Col xs={24} md={12}><Form.Item label="Department" extra="Leave blank for all departments."><Select mode="multiple" className="app-search-select attendance-policy-multi" popupClassName="app-search-select-dropdown" showSearch value={form.departments} optionFilterProp="label" onChange={values => applyScope({ departments: values, id: 0 })} options={departments.map(item => ({ value: item, label: item }))} /></Form.Item></Col>

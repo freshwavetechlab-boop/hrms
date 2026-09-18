@@ -100,6 +100,7 @@ CREATE TABLE `clients` (
   `Email` varchar(150) DEFAULT NULL,
   `Phone` varchar(50) DEFAULT NULL,
   `Address` varchar(500) DEFAULT NULL,
+  `LogoDataUrl` longtext,
   `IsActive` tinyint(1) NOT NULL DEFAULT '1',
   `CreatedAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `UpdatedAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
