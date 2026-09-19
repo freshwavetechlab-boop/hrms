@@ -69,7 +69,7 @@ export default function OfferLetterPreview({ publicId, documentUrl, title = 'Off
   return <>
     <Button size="small" icon={<FilePdfOutlined />} onClick={() => setOpen(true)}>{label}</Button>
     <Drawer title={title} open={open} width="min(1050px, 98vw)" onClose={() => setOpen(false)}
-      styles={{ body: { padding: 12, display: 'flex', flexDirection: 'column', gap: 12 } }}
+      bodyStyle={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 12 }}
       extra={<Button type="primary" icon={<ExportOutlined />} disabled={!preview} onClick={exportPdf}>Export PDF</Button>}>
       {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => setAttempt(value => value + 1)}>Retry</Button>} />}
       {!preview && !error && <Space role="status" style={{ justifyContent: 'center', minHeight: 180 }}><Spin />Opening secured offer letter…</Space>}

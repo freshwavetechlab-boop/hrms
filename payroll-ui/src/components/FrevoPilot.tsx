@@ -138,9 +138,9 @@ export default function FrevoPilot() {
             <Table data-testid="frevopilot-data" size="small" rowKey={(_, index) => String(index)} dataSource={result.rows} columns={fields.map(field => ({ title: field.replaceAll('_', ' '), dataIndex: field, render: formatted }))} pagination={{ pageSize: 10, showSizeChanger: true }} scroll={{ x: 'max-content' }} />
           </>}
           <div className="pilot-insights">{result.insights.map((insight, index) => <section key={index}><Tag color={insight.type === 'Risk' ? 'orange' : 'cyan'}>{insight.type}</Tag><h4>{insight.title}</h4><p>{insight.narrative}</p><small>{insight.evidence.join(' · ')}</small></section>)}</div>
-          <Collapse items={[{ key: 'source', label: 'Source query, business rules and explanation', children: <><p>{result.explanation}</p><pre>{result.sql}</pre><p>{result.knowledgeSources.join(' · ') || 'Live schema and governed business definitions'}</p></> }]} />
+          <Collapse><Collapse.Panel key="source" header="Source query, business rules and explanation"><p>{result.explanation}</p><pre>{result.sql}</pre><p>{result.knowledgeSources.join(' · ') || 'Live schema and governed business definitions'}</p></Collapse.Panel></Collapse>
         </div>}
-        {!!history.length && <Collapse items={[{ key: 'history', label: 'This session’s recent questions', children: <Space direction="vertical">{history.map(item => <Button key={item.id} disabled={processing} type="link" onClick={() => setRun(item)}>{item.question} · {item.status}</Button>)}</Space> }]} />}
+        {!!history.length && <Collapse><Collapse.Panel key="history" header="This session’s recent questions"><Space direction="vertical">{history.map(item => <Button key={item.id} disabled={processing} type="link" onClick={() => setRun(item)}>{item.question} · {item.status}</Button>)}</Space></Collapse.Panel></Collapse>}
       </div>
     </Drawer>
   </>
