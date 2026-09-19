@@ -1,0 +1,64 @@
+<!-- gad-uidai-offer:v1 -->
+## OFFER LETTER
+Ref: {{offerNumber}}                                      Date: - {{offerDate}}
+
+{{candidateName}},
+E-mail: {{candidateEmail}}
+Mobile: {{candidatePhone}}
+
+Subject: Offer Letter for the Post of {{positionTitle}}
+
+Dear {{candidateName}},
+
+Congratulations!
+
+With reference to your application and subsequent selection process, we are pleased to inform you that the Competent Authority, Unique Identification Authority of India (UIDAI) has approved the recommendations of the Selection Committee for engagement to the post of {{positionTitle}} at {{jobLocation}}.
+
+Accordingly, you were recommended for engagement to the above position on contract basis for a period of five (5) years or till the validity of the Agreement, whichever is earlier, in accordance with UIDAI policies. We are pleased to extend this offer to you for engagement at the ibid position based on our agreement/contract with the Unique Identification Authority of India (UIDAI) to recruit and deploy skilled professionals.
+
+## Compensation
+You will be entitled to an Annual Cost to Company (CTC) of ₹ {{formattedCtc}} ({{ctcInWords}}). The CTC shall be inclusive of all applicable allowances, benefits, perks and statutory components (PF, ESIC, etc., if applicable), as per organizational policy.
+
+## Joining
+Your date of commencement of engagement shall be {{joiningDate}}, failing which this offer shall stand automatically withdrawn. No TA/DA/Conveyance shall be payable for joining duty.
+
+## Terms & Conditions
+• You will be required to sign and adhere to Non-Disclosure and Confidentiality Agreements during the engagement period.
+• You shall devote full time and attention to the responsibilities assigned and shall not undertake any other employment or assignment during the tenure.
+[[PAGE_BREAK]]
+• This offer is based on the information furnished by you. Any discrepancy found in documents or credentials may lead to withdrawal/termination of the offer without notice.
+• Your engagement is subject to being declared medically fit by a registered medical practitioner.
+
+• This letter is a Letter of Intent. Detailed terms and conditions will be issued through the Appointment Letter, subject to:
+  o Verification of documents
+  o Background verification
+  o Receipt of confirmation of joining from UIDAI
+
+## Documents Required at Joining: -
+You are requested to submit self-attested scanned copies and produce originals at the time of joining:
+
+1. Proof of Date of Birth (Birth Certificate / SSC)
+2. PAN Card & Aadhaar Card (Mandatory)
+3. Passport size colour photographs (soft copy)
+4. Address / ID Proof (Passport / Voter ID / Driving License)
+5. Academic certificates (Class 10 onwards)
+6. Appointment letter from previous employer
+7. Resignation / Relieving letter from previous employer
+8. Salary slips / Bank statement for last 3 months
+9. Two professional references (preferably previous employers)
+10. Bank passbook with IFSC or Cancelled Cheque
+11. Copy of UAN Card
+
+We welcome you to the GA Digital Web Word Pvt. Ltd. (GAD) family and look forward to a productive and successful association.
+
+Kindly convey your earliest possible date of joining at the earliest.
+
+With best wishes,
+
+[[AUTHORIZED_SIGNATORY_BLOCK]]
+Accepted & Signed: - I agree to the above terms and conditions.
+
+Signature: -
+
+Name: - {{candidateName}},
+Mobile No.: {{candidatePhone}}

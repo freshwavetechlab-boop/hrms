@@ -9,6 +9,7 @@ import AppPageHeader from './components/layout/AppPageHeader'
 import AttachmentSettings from './components/AttachmentSettings'
 import EssSettings from './components/EssSettings'
 import EngineMonitoring from './components/EngineMonitoring'
+import FrevoPilot from './components/FrevoPilot'
 import SecurityPanel from './components/SecurityPanel'
 import { appSettingsMenus, leaveAttendanceMenus, org0, reportingMenus, securityMenus, settingsMenus, workflowMenus } from './data/payrollDefaults'
 import DashboardPage, { type DashboardView } from './pages/DashboardPage'
@@ -813,6 +814,7 @@ export default function SettingsApp() {
               <DownOutlined />
             </button>
           </Dropdown>}
+          {isSuperAdmin && <FrevoPilot />}
           <Tooltip title="Notifications"><Badge dot><Button className="topbar-icon-btn" type="default" icon={<BellOutlined />} aria-label="Notifications" /></Badge></Tooltip>
           <Tooltip title="Open app modules"><Button className="topbar-icon-btn" type="default" icon={<AppstoreOutlined />} aria-label="Open app modules" onClick={() => setAppDrawerOpen(true)} /></Tooltip>
           <Dropdown menu={accountMenu} trigger={['click']} placement="bottomRight">

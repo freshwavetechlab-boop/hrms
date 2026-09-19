@@ -7,10 +7,11 @@ using MailKit.Security;
 using MimeKit;
 using MySqlConnector;
 using Payroll.API.Models;
+using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
-public class NotificationRepository(IConfiguration configuration, AttachmentRepository attachmentRepository, NotificationAutomationRepository automation, ILogger<NotificationRepository> logger)
+public class NotificationRepository(IConfiguration configuration, AttachmentRepository attachmentRepository, NotificationAutomationRepository automation, ILogger<NotificationRepository> logger, EngineRuntimeMonitor? engineMonitor = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private bool DeliverySuppressed => configuration.GetValue<bool>("OutboundDelivery:Suppressed");
@@ -593,6 +594,7 @@ LIMIT 1", new { evt.ResourceId });
 
     private async Task SendAsync(MySqlConnection db, NotificationSmtpSetting smtp, NotificationQueueItem row, CancellationToken cancellationToken)
     {
+        using var observation = engineMonitor?.Observe("notifications",new EngineActivityContext("Deliver queued email", "Task",row.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)));
         var message = new MimeMessage();
         message.From.Add(new MailboxAddress(string.IsNullOrWhiteSpace(smtp.FromName) ? smtp.FromEmail : smtp.FromName, smtp.FromEmail));
         foreach (var email in ReadEmailArray(row.ToJson)) message.To.Add(MailboxAddress.Parse(email));
@@ -633,6 +635,7 @@ WHERE QueueId=@QueueId ORDER BY Id", new { QueueId = row.Id })).ToList();
         {
             foreach (var handle in openHandles) await handle.DisposeAsync();
         }
+        if(observation is not null) observation.Succeeded = true;
     }
 
     private static string StripHtml(string html) =>

@@ -139,6 +139,8 @@ public class RecruitmentResumeParsedSkill
 
 public class RecruitmentCandidateApplication
 {
+    public string? AtsJobStatus { get; set; }
+    public string? AtsJobError { get; set; }
     public long Id { get; set; }
     public string ApplicationCode { get; set; } = "";
     public long CandidateId { get; set; }

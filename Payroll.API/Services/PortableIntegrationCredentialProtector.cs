@@ -14,10 +14,12 @@ public sealed class PortableIntegrationCredentialProtector
 {
     private const string AiPrefix = "ai-credential:v2:";
     private const string StoragePrefix = "storage-credential:v2:";
+    private const string PlanPrefix = "frevopilot-plan:v1:";
     private const int NonceSize = 12;
     private const int TagSize = 16;
     private static readonly byte[] AiPurpose = Encoding.UTF8.GetBytes("Payroll.API.RecruitmentAiCredentials.v2");
     private static readonly byte[] StoragePurpose = Encoding.UTF8.GetBytes("Payroll.API.AttachmentStorageCredentials.v2");
+    private static readonly byte[] PlanPurpose = Encoding.UTF8.GetBytes("Payroll.API.FrevoPilotVerifiedPlans.v1");
     private readonly byte[] encryptionKey;
     private readonly IDataProtector legacyAiProtector;
     private readonly IDataProtector legacyStorageProtector;
@@ -49,6 +51,13 @@ public sealed class PortableIntegrationCredentialProtector
     public string ProtectStorage(string value) => Protect(value, StoragePrefix, StoragePurpose);
     public bool TryUnprotectStorage(string value, out string plaintext) =>
         TryUnprotect(value, StoragePrefix, StoragePurpose, legacyStorageProtector, out plaintext);
+
+    // Reuse the existing portable key, with an isolated authenticated purpose.
+    // Query memory never accepts credential ciphertext or legacy key-ring payloads.
+    internal string ProtectVerifiedPlan(string value) => Protect(value, PlanPrefix, PlanPurpose);
+    internal string? UnprotectVerifiedPlan(string value) =>
+        IsPortable(value, PlanPrefix) && TryUnprotect(value, PlanPrefix, PlanPurpose, legacyAiProtector, out var plaintext)
+            ? plaintext : null;
 
     private static bool IsPortable(string value, string prefix) =>
         !string.IsNullOrWhiteSpace(value) && value.StartsWith(prefix, StringComparison.Ordinal);

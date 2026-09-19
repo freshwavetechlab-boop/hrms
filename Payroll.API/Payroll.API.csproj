@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.79" />
+    <PackageReference Include="PDFsharp" Version="6.2.2" />
     <PackageReference Include="ExcelDataReader" Version="3.8.0" />
     <PackageReference Include="MailKit" Version="4.14.1" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.28" />
@@ -15,6 +16,16 @@
     <PackageReference Include="SmartComponents.LocalEmbeddings" Version="0.1.0-preview10148" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
     <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\OfferLetters\**\*" />
+    <Content Include="Assets\Parsing\WindowsPdfOcr.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Remove="FrevoPilot\node_modules\**;FrevoPilot\tests\**" />
+    <Content Include="FrevoPilot\**\*.mjs;FrevoPilot\**\*.md" Exclude="FrevoPilot\node_modules\**;FrevoPilot\tests\**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Update="FrevoPilot\package*.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- Private runtime signing asset, explicitly supplied for API deployment. Never wwwroot/UI. -->
+    <Content Include="PrivateAssets\OfferSigning\GadAuthrizedSignAndSeal.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <PropertyGroup>

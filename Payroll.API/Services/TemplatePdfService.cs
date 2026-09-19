@@ -39,6 +39,16 @@ public sealed class TemplatePdfService
         return (BuildPdf(Wrap(text, 100)), "");
     }
 
+    public (string? Text, string Error) RenderOfferText(string bodyTemplate, IReadOnlyDictionary<string, string> values)
+    {
+        var unresolved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var safeValues = values.ToDictionary(pair => pair.Key, pair => WebUtility.HtmlEncode(pair.Value.Replace("[[", "［［")), StringComparer.OrdinalIgnoreCase);
+        var body = Render(bodyTemplate.Replace(BrandedOfferPdfService.Marker, ""), safeValues, unresolved);
+        return unresolved.Count > 0
+            ? (null, $"Template contains unsupported placeholder(s): {string.Join(", ", unresolved.OrderBy(value => value))}.")
+            : (HtmlToText(body), "");
+    }
+
     private static string Render(string template, IReadOnlyDictionary<string, string> values, ISet<string> unresolved) =>
         PlaceholderPattern.Replace(template ?? "", match =>
         {

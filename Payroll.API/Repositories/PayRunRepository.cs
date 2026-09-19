@@ -5,10 +5,11 @@ using System.Text.RegularExpressions;
 using Dapper;
 using MySqlConnector;
 using Payroll.API.Models;
+using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
-public class PayRunRepository(IConfiguration configuration, TaxEngineRepository taxEngineRepository)
+public class PayRunRepository(IConfiguration configuration, TaxEngineRepository taxEngineRepository, EngineRuntimeMonitor? engineMonitor = null)
 {
     private MySqlConnection CreateConnection()
     {
@@ -303,10 +304,13 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         if (string.IsNullOrWhiteSpace(requestJson)) return null;
         var request = JsonSerializer.Deserialize<CreatePayRunRequest>(requestJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         if (request is null) return null;
+        using var observation = engineMonitor?.Observe("payroll",new EngineActivityContext("Process queued payroll", "Pay run", payRunId.ToString(CultureInfo.InvariantCulture), ClientId: request.ClientId));
         await connection.ExecuteAsync("UPDATE payruns SET Status='Processing', ProcessingStartedAt=UTC_TIMESTAMP(), ProcessingCompletedAt=NULL, ProcessingError='' WHERE Id=@PayRunId AND Status='Queued'", new { PayRunId = payRunId });
         try
         {
-            return await ProcessExistingAsync(payRunId, request, performedBy);
+            var processed = await ProcessExistingAsync(payRunId, request, performedBy);
+            if(observation is not null) observation.Succeeded = processed is not null && processed.Status != "Failed";
+            return processed;
         }
         catch (Exception exception)
         {

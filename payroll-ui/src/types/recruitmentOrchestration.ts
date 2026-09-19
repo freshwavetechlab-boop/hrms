@@ -489,6 +489,9 @@ export type RecruitmentPipelineBoardLane = {
 }
 
 export type RecruitmentPipelineBoardCard = {
+  positionId?: number
+  positionTitle?: string
+  positionCode?: string
   applicationId: number
   applicationCode: string
   candidateId: number

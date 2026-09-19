@@ -109,7 +109,7 @@ export async function postForm<TResult>(path: string, body: FormData, fallback: 
   return mutateJson(path, { ...options, method: 'POST', body }, fallback)
 }
 
-export function postFormWithProgress<TResult>(path: string, body: FormData, fallback: TResult, onProgress: (percent: number) => void, timeoutMs = 120000): Promise<ApiResult<TResult>> {
+export function postFormWithProgress<TResult>(path: string, body: FormData, fallback: TResult, onProgress: (percent: number) => void, timeoutMs = 120000, timeoutMessage = 'Upload timed out.'): Promise<ApiResult<TResult>> {
   return new Promise(resolve => {
     const request = new XMLHttpRequest()
     const legacyToken = sessionStorage.getItem(legacyTokenKey) || localStorage.getItem(legacyTokenKey)
@@ -142,7 +142,7 @@ export function postFormWithProgress<TResult>(path: string, body: FormData, fall
     }
     request.onerror = () => { const message = 'Network error: unable to reach the API.'; notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
     request.onabort = () => { const message = 'Upload was cancelled.'; notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
-    request.ontimeout = () => { const message = 'Upload timed out.'; notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
+    request.ontimeout = () => { const message = timeoutMessage; notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
     request.timeout = timeoutMs
     request.send(body)
   })
@@ -183,7 +183,7 @@ async function mutateJson<TResult>(path: string, options: ApiOptions, fallback: 
     notifyMutation(path, options.method, response.ok, error, options)
     return { ok: response.ok, data: response.ok ? await readJson<TResult>(response, fallback) : fallback, error, status: response.status }
   } catch (error) {
-    const message = error instanceof DOMException && error.name === 'AbortError' ? options.timeoutMessage || 'Request timed out. Payroll may still be processing; refresh and check diagnostics.' : error instanceof Error ? error.message : 'Request failed.'
+    const message = error instanceof DOMException && error.name === 'AbortError' ? options.timeoutMessage || 'Request timed out. Processing may still be in progress; refresh and check the current status before retrying.' : error instanceof Error ? error.message : 'Request failed.'
     notifyMutation(path, options.method, false, message, options)
     return { ok: false, data: fallback, error: message, status: 0 }
   }

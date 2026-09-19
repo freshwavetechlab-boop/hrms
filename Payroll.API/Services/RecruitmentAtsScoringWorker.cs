@@ -27,7 +27,7 @@ public sealed class RecruitmentAtsScoringWorker(
                 processed = processed || work.Processed;
                 if (work.ApplicationId.HasValue && work.User is not null)
                 {
-                    var (transition, automationError) = await pipelines.EvaluateAtsStageAutomationAsync(work.ApplicationId.Value, work.User);
+                    var (transition, automationError) = await pipelines.EvaluateAtsStageAutomationAsync(work.ApplicationId.Value, work.User, work.HumanConfirmed);
                     if (!string.IsNullOrWhiteSpace(automationError))
                         logger.LogWarning("ATS automation for application {ApplicationId} stopped: {Error}", work.ApplicationId.Value, automationError);
                     if (transition?.Status == "Applied")

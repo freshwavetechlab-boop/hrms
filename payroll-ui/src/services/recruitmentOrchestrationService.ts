@@ -226,7 +226,8 @@ export const uploadPublicApplicationFile = (token: string, fieldId: number, file
   const body = new FormData()
   body.append('file', file)
   appendUploadMetadata(body, metadata)
-  return postFormWithProgress<PublicUploadedFile>(`${publicBase}/sessions/${encodeURIComponent(token)}/files/${fieldId}`, body, null as unknown as PublicUploadedFile, onProgress)
+  return postFormWithProgress<PublicUploadedFile>(`${publicBase}/sessions/${encodeURIComponent(token)}/files/${fieldId}`, body, null as unknown as PublicUploadedFile, onProgress,
+    660000, 'File upload or resume parsing took too long. Check the attachment already shown in your application before uploading again.')
 }
 
 export const fetchPublicApplicationFile = (token: string, fieldId: number, publicId: string) =>

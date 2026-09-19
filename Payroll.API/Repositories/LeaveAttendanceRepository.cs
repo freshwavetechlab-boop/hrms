@@ -1,6 +1,7 @@
 using Dapper;
 using MySqlConnector;
 using Payroll.API.Models;
+using Payroll.API.Services;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO.Compression;
@@ -10,7 +11,7 @@ using System.Xml.Linq;
 
 namespace Payroll.API.Repositories;
 
-public class LeaveAttendanceRepository(IConfiguration configuration)
+public class LeaveAttendanceRepository(IConfiguration configuration, EngineRuntimeMonitor? engineMonitor = null)
 {
     public const string ManagedAttendanceScopeError = "One or more employees are outside the signed-in user's active attendance scope.";
     private static readonly ConcurrentDictionary<Guid, ClientImportJobStatus> LeaveTypeImportJobs = new();
@@ -2074,6 +2075,9 @@ WHERE job_id=@JobId
         if (job is null || !string.Equals(job.State, "Processing", StringComparison.OrdinalIgnoreCase) || job.ClaimToken != claim.ClaimToken)
             return;
 
+        using var observation = engineMonitor?.Observe("bulk-data",new EngineActivityContext("Process attendance batch", "Task",
+            Guid.TryParse(claim.JobId,out var activityJobId) ? activityJobId.ToString("N") : "",ClientId: job.ClientId));
+
         await UpdateAttendanceBatchJobStageAsync(connection, claim, "Validating", 0);
         var stagedRows = (await connection.QueryAsync<AttendanceBatchStagedRow>(@"SELECT `row_number` AS RowNumber, employee_id AS EmployeeId, attendance_date AS AttendanceDate,
 status AS Status, payable_value AS PayableValue, check_in_time AS CheckInTime, check_out_time AS CheckOutTime,
@@ -2147,6 +2151,7 @@ check_out_time=VALUES(check_out_time), total_hours=VALUES(total_hours), remarks=
         await RollupDailyAttendanceBatchAsync(connection, transaction, job.ClientId, normalizedRows.Where(row => row.ShouldRollup).Select(row => row.EmployeeId).Distinct().ToArray(), job.Month);
         await CompleteAttendanceBatchJobAsync(connection, transaction, claim, job.TotalRows, normalizedRows.Count);
         await transaction.CommitAsync();
+        if(observation is not null) observation.Succeeded = true;
     }
 
     private async Task UpdateAttendanceBatchJobStageAsync(MySqlConnection connection, AttendanceBatchJobClaim claim, string stage, int completedRows)

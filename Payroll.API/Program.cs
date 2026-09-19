@@ -36,6 +36,7 @@ builder.Logging.AddConsole();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddHttpClient();
+builder.Services.AddHttpClient("LocalLlm").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 var attachmentDataRoot = builder.Configuration["AttachmentStorage:DataRootPath"];
 if (string.IsNullOrWhiteSpace(attachmentDataRoot))
     attachmentDataRoot = Path.Combine(builder.Environment.ContentRootPath, "App_Data");
@@ -114,6 +115,7 @@ builder.Services.AddSingleton<RecruitmentDocumentRagService>();
 builder.Services.AddSingleton<RecruitmentAiScoringService>();
 builder.Services.AddSingleton<PortableIntegrationCredentialProtector>();
 builder.Services.AddSingleton<TemplatePdfService>();
+builder.Services.AddSingleton<BrandedOfferPdfService>();
 builder.Services.AddSingleton<RecruitmentTalentRepository>();
 builder.Services.AddSingleton<RecruitmentFormRepository>();
 builder.Services.AddSingleton<RecruitmentPipelineRepository>();
@@ -128,7 +130,17 @@ builder.Services.AddSingleton<GoogleDriveOAuthService>();
 builder.Services.AddSingleton<AttachmentStorageService>();
 builder.Services.AddSingleton<AttachmentRepository>();
 builder.Services.AddSingleton<FrevoPilotChatStorageService>();
+builder.Services.AddSingleton<FrevoPilotAnalyticsService>();
 builder.Services.AddSingleton<EngineRuntimeMonitor>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<EngineHistoryCollector>();
+builder.Services.AddSingleton<EngineHistoryStore>();
+builder.Services.AddHostedService<EngineHistoryWorker>();
+builder.Services.AddSingleton<EngineActivityBuffer>();
+builder.Services.AddSingleton<EngineActivityStore>();
+builder.Services.AddHostedService<EngineActivityWorker>();
+if (builder.Configuration.GetValue("BackgroundWorkers:Enabled", true))
+{
 builder.Services.AddHostedService<PayrollRunWorker>();
 builder.Services.AddHostedService<ScheduledJobWorker>();
 builder.Services.AddHostedService<NotificationWorker>();
@@ -136,6 +148,7 @@ builder.Services.AddHostedService<CommunicationWorker>();
 builder.Services.AddHostedService<RecruitmentPipelineAutomationWorker>();
 builder.Services.AddHostedService<RecruitmentAtsScoringWorker>();
 builder.Services.AddHostedService<AttendanceBatchJobWorker>();
+}
 
 var app = builder.Build();
 const string AuthCookieName = "payroll_auth";
@@ -223,7 +236,7 @@ app.Use(async (context, next) =>
     long startedAt;
     try
     {
-        startedAt = monitor.Start(engineCode);
+        startedAt = monitor.Start(engineCode, EngineActivityMetadata.ForRequest(context));
     }
     catch
     {
@@ -236,13 +249,13 @@ app.Use(async (context, next) =>
         try
         {
             monitor.Complete(engineCode, startedAt, context.Response.StatusCode >= 500,
-                context.Response.StatusCode >= 500 ? $"HTTP {context.Response.StatusCode}" : null);
+                context.Response.StatusCode >= 500 ? $"HTTP {context.Response.StatusCode}" : null, httpStatus: context.Response.StatusCode);
         }
         catch { /* Telemetry must never change the business response. */ }
     }
     catch (Exception exception)
     {
-        try { monitor.Complete(engineCode, startedAt, true, exception.Message); }
+        try { monitor.Complete(engineCode, startedAt, true, exception.GetType().Name, outcome: exception is OperationCanceledException ? "Cancelled" : null); }
         catch { /* Preserve the original engine failure. */ }
         throw;
     }
@@ -276,12 +289,69 @@ app.MapPost("/api/auth/change-password", async (AuthRepository repository, Chang
 .WithName("ChangePassword")
 .WithOpenApi();
 
-app.MapGet("/api/system/engine-monitoring", (EngineRuntimeMonitor monitor, HttpContext context) =>
-    IsSuperAdmin(context) ? Results.Ok(monitor.Snapshot()) : Results.StatusCode(403))
+app.MapGet("/api/system/engine-monitoring", async (EngineRuntimeMonitor monitor, RecruitmentTalentRepository talent, HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    return IsSuperAdmin(context) ? Results.Ok(await monitor.SnapshotWithJobsAsync(talent.GetAtsRuntimeActivityAsync, context.RequestAborted)) : Results.StatusCode(403);
+})
 .WithName("GetEngineMonitoring")
 .WithOpenApi();
 
-app.MapGet("/api/system/engine-monitoring/stream", async (EngineRuntimeMonitor monitor, HttpContext context) =>
+app.MapGet("/api/system/engine-monitoring/history", async (EngineHistoryStore store, EngineHistoryCollector collector,
+    DateTimeOffset from, DateTimeOffset until, HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    if (!EngineHistoryStore.CanRead(CurrentUser(context))) return Results.StatusCode(403);
+    try
+    {
+        var result = await store.ReadAsync(from, until, context.RequestAborted);
+        result.DroppedBuckets = collector.DroppedBuckets;
+        return Results.Ok(result);
+    }
+    catch (ArgumentException exception) { return Results.BadRequest(new { error = exception.Message }); }
+    catch (Exception) when (!context.RequestAborted.IsCancellationRequested)
+    { return Results.Json(new { error = "Saved engine history is unavailable. Check history storage configuration; live engines continue normally." }, statusCode: 503); }
+});
+
+app.MapGet("/api/system/engine-monitoring/activity", async (EngineActivityStore store,EngineActivityBuffer buffer,
+    DateTimeOffset from,DateTimeOffset until,string? engine,string? status,DateTimeOffset? before,string? beforeId,HttpContext context) =>
+{
+    context.Response.Headers.CacheControl="no-store";
+    if(!EngineHistoryStore.CanRead(CurrentUser(context))) return Results.StatusCode(403);
+    try
+    {
+        var result=await store.ReadAsync(from,until,engine,status,before,beforeId,context.RequestAborted);
+        result.DroppedRecords=buffer.DroppedRecords;
+        return Results.Ok(result);
+    }
+    catch(ArgumentException exception) { return Results.BadRequest(new { error=exception.Message }); }
+    catch(Exception) when(!context.RequestAborted.IsCancellationRequested)
+    { return Results.Json(new { error="Activity log storage is unavailable. Live engines continue normally." },statusCode:503); }
+});
+
+app.MapGet("/api/frevopilot/analytics/status", (FrevoPilotAnalyticsService pilot, HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    return FrevoPilotAnalyticsService.CanUse(CurrentUser(context))
+        ? Results.Ok(new { enabled = pilot.Enabled, access = "Global super administrator only", isReadOnly = true })
+        : Results.StatusCode(403);
+});
+app.MapPost("/api/frevopilot/analytics/runs", (FrevoPilotAnalyticsService pilot, FrevoPilotQuestion request, HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    if (!FrevoPilotAnalyticsService.CanUse(CurrentUser(context))) return Results.StatusCode(403);
+    var (run, error) = pilot.Start(request, CurrentUser(context));
+    return run is null ? Results.BadRequest(new { error }) : Results.Accepted($"/api/frevopilot/analytics/runs/{run.Id}", run);
+});
+app.MapGet("/api/frevopilot/analytics/runs/{id:guid}", (Guid id, FrevoPilotAnalyticsService pilot, HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    if (!FrevoPilotAnalyticsService.CanUse(CurrentUser(context))) return Results.StatusCode(403);
+    var run = pilot.Get(id, CurrentUser(context));
+    return run is null ? Results.NotFound(new { error = "This analysis is unavailable or has expired. Ask the question again." }) : Results.Ok(run);
+});
+
+app.MapGet("/api/system/engine-monitoring/stream", async (EngineRuntimeMonitor monitor, RecruitmentTalentRepository talent, HttpContext context) =>
 {
     if (!IsSuperAdmin(context))
     {
@@ -294,12 +364,17 @@ app.MapGet("/api/system/engine-monitoring/stream", async (EngineRuntimeMonitor m
     context.Response.Headers["X-Accel-Buffering"] = "no";
     context.Response.ContentType = "text/event-stream; charset=utf-8";
     var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
-    while (!context.RequestAborted.IsCancellationRequested)
+    var streamUntil = DateTime.UtcNow.AddMinutes(1); // Reconnect revalidates session/roles.
+    while (!context.RequestAborted.IsCancellationRequested && DateTime.UtcNow < streamUntil)
     {
-        await context.Response.WriteAsync($"event: snapshot\ndata: {JsonSerializer.Serialize(monitor.Snapshot(), jsonOptions)}\n\n", context.RequestAborted);
-        await context.Response.Body.FlushAsync(context.RequestAborted);
-        try { await Task.Delay(TimeSpan.FromSeconds(1), context.RequestAborted); }
-        catch (OperationCanceledException) { break; }
+        try
+        {
+            var snapshot = await monitor.SnapshotWithJobsAsync(talent.GetAtsRuntimeActivityAsync, context.RequestAborted);
+            await context.Response.WriteAsync($"event: snapshot\ndata: {JsonSerializer.Serialize(snapshot, jsonOptions)}\n\n", context.RequestAborted);
+            await context.Response.Body.FlushAsync(context.RequestAborted);
+            await Task.Delay(TimeSpan.FromSeconds(1), context.RequestAborted);
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { break; }
     }
 })
 .WithName("StreamEngineMonitoring")
@@ -1683,9 +1758,23 @@ app.MapPost("/api/recruitment/applications/{id:long}/score", async (RecruitmentT
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var user = CurrentUser(context);
+    if (context.Request.Query["background"] == "true")
+    {
+        var jobId = await repository.QueueManualScoreAsync(id, user);
+        return jobId.HasValue ? Results.Accepted(value: new { jobId, status = "Queued" }) : Results.NotFound();
+    }
     var (row, error) = await repository.ScoreApplicationAsync(id, user);
     if (row is not null) await ApplyAtsSelectionAsync(id, user, pipelines, actions, candidateActions, hiringCases, true);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapGet("/api/recruitment/offers/template-capabilities", (HttpContext context) =>
+    IsSuperAdmin(context) ? Results.Ok(new { brandedUidaiOffer = true, approvalBoundSigning = true }) : Results.StatusCode(403));
+app.MapGet("/api/recruitment/applications/{id:long}/score-jobs/{jobId:long}", async (RecruitmentTalentRepository repository, long id, long jobId, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    context.Response.Headers.CacheControl = "no-store";
+    var job = await repository.GetScoreJobAsync(id, jobId, CurrentUser(context));
+    return job is null ? Results.NotFound() : Results.Ok(job);
 });
 app.MapPost("/api/recruitment/application-scores/{id:long}/override", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentPipelineActionService actions, RecruitmentCandidateActionRepository candidateActions, RecruitmentCaseRepository hiringCases, long id, OverrideApplicationScoreRequest request, HttpContext context) =>
 {

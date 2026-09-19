@@ -18,7 +18,7 @@ public sealed class RecruitmentRequestDocumentParsingService(
         "experience, educational qualification", "educational qualification, experience", "requirements", "technical skills",
         "technical & analytics skills", "key skills", "key skills & technical expertise", "job profile", "job profile/duties",
         "key responsibilities", "roles and responsibilities", "responsibilities", "preferred certifications", "certifications",
-        "languages", "language", "benefits", "perks", "desirable skills", "preferred skills", "good to have"
+        "languages", "language", "benefits", "perks", "desirable skills", "preferred skills", "good to have", "UIDAI values", "company values", "declaration"
     ];
 
     public async Task<RecruitmentRequestDocumentParseResult> ParseAsync(IFormFile file, int clientId, CancellationToken cancellationToken)
@@ -69,7 +69,7 @@ public sealed class RecruitmentRequestDocumentParsingService(
         Set("experienceRange", Experience(text), value => draft.ExperienceRange = value);
         Set("qualification", Qualifications(text), value => draft.Qualification = value);
         Set("requiredSkills", RequiredSkills(text), value => draft.RequiredSkills = value);
-        Set("preferredSkills", Block(text, "preferred skills", "desirable skills", "good to have"), value => draft.PreferredSkills = CompactList(value, 1800));
+        Set("preferredSkills", PreferredSkills(text), value => draft.PreferredSkills = CompactList(value, 1800));
         Set("certifications", Block(text, "preferred certifications", "certifications"), value => draft.Certifications = CompactList(value, 480));
         Set("languages", Languages(text), value => draft.Languages = value);
         Set("benefits", Block(text, "benefits", "perks"), value => draft.Benefits = CompactList(value, 1800));
@@ -128,7 +128,8 @@ public sealed class RecruitmentRequestDocumentParsingService(
         var retrieval = await documentRag.RetrieveAsync(clientId, RecruitmentDocumentRagService.HiringDocumentKind,
             [draft.PositionTitle, draft.Department, draft.RequiredSkills, draft.Qualification, text], cancellationToken);
         var vocabularyDecisions = new List<RecruitmentRagVocabularyMatch>();
-        var ai = await aiScoring.SuggestHiringDocumentAsync(clientId, text, sourceDocument, sourceContentType, retrieval, cancellationToken);
+        var ai = await aiScoring.SuggestHiringDocumentAsync(clientId, text, sourceDocument, sourceContentType, retrieval, cancellationToken,
+            preferVerifiedFacts: HasStrongLocalHiringFacts(draft, text));
         if (ai.Status is "Completed" or "LowConfidence")
         {
             SetAi("positionTitle", Limit(ai.PositionTitle, 190), value => draft.PositionTitle = value);
@@ -147,8 +148,11 @@ public sealed class RecruitmentRequestDocumentParsingService(
             SetAi("employmentType", Limit(ai.EmploymentType, 120), value => draft.EmploymentType = value);
             SetAi("positionCategory", Limit(ai.PositionCategory, 120), value => draft.PositionCategory = value);
             SetAi("hiringPriority", Limit(ai.HiringPriority, 40), value => draft.HiringPriority = value, requireExact: true);
-            SetAi("requiredSkills", CompactList(string.Join("; ", ai.RequiredSkills), 1800), value => draft.RequiredSkills = value, preserveExact: false);
-            SetAi("preferredSkills", CompactList(string.Join("; ", ai.PreferredSkills), 1800), value => draft.PreferredSkills = value, preserveExact: false);
+            // The compact local model returns at most four skills. Never discard
+            // a richer source-grounded deterministic list just to fit that contract.
+            var local = LocalLlmProtocol.IsLocal(ai.Provider);
+            SetAi("requiredSkills", CompactList(string.Join("; ", local ? Items(draft.RequiredSkills).Concat(ai.RequiredSkills).Distinct(StringComparer.OrdinalIgnoreCase) : ai.RequiredSkills), 1800), value => draft.RequiredSkills = value, preserveExact: false);
+            SetAi("preferredSkills", CompactList(string.Join("; ", local ? Items(draft.PreferredSkills).Concat(ai.PreferredSkills).Distinct(StringComparer.OrdinalIgnoreCase) : ai.PreferredSkills), 1800), value => draft.PreferredSkills = value, preserveExact: false);
             SetAi("certifications", CompactList(string.Join("; ", ai.Certifications), 480), value => draft.Certifications = value);
             SetAi("languages", CompactList(string.Join("; ", ai.Languages), 480), value => draft.Languages = value);
             SetAi("benefits", CompactList(string.Join("; ", ai.Benefits), 1800), value => draft.Benefits = value, requireExact: true);
@@ -185,6 +189,8 @@ public sealed class RecruitmentRequestDocumentParsingService(
             if (retrieval.References.Count > 0 && ai.Status == "Completed")
                 warnings.Add($"{retrieval.References.Count} similar approved client reference(s) helped normalize the suggestions; source-document facts remained authoritative.");
         }
+        else if (ai.Status == "LocalFactsSufficient")
+            warnings.Add("Source-grounded local parsing supplied the core JD fields; redundant local-model generation was skipped. Review the extracted fields before saving.");
         else if (ai.Status is not ("NotEnabled" or "NoText"))
         {
             var detail = string.IsNullOrWhiteSpace(ai.Error) ? ai.Status : $"{ai.Status}: {ai.Error}";
@@ -273,7 +279,7 @@ public sealed class RecruitmentRequestDocumentParsingService(
         var localSkillRequirements = LocalSkillRequirements(draft.RequiredSkills, draft.PreferredSkills);
         var skillRequirements = MergeAndNormalizeSkillRequirements(
             ai.Status == "Completed" ? ai.SkillRequirements : [],
-            localSkillRequirements);
+            localSkillRequirements, preserveSourceRequirements: LocalLlmProtocol.IsLocal(ai.Provider));
         foreach (var requirement in skillRequirements.Where(row => string.IsNullOrWhiteSpace(row.Proficiency)))
         {
             requirement.Proficiency = InferReviewerLevel(draft.PositionTitle);
@@ -446,7 +452,9 @@ public sealed class RecruitmentRequestDocumentParsingService(
 
     private static string PositionTitle(string text, string fileName)
     {
-        var title = Labeled(text, "job description", "position name", "position", "designation", "job title", "role title");
+        // Explicit field wins over a document heading such as "Job Description for...".
+        var title = Labeled(text, "position name", "position title", "position", "designation", "job title", "role title");
+        if (string.IsNullOrWhiteSpace(title)) title = Labeled(text, "job description");
         if (!string.IsNullOrWhiteSpace(title) && title.Length <= 180) return title;
         var fallback = Regex.Replace(Path.GetFileNameWithoutExtension(fileName), @"(?i)^JD[_\-\s]*|[_]+", " ");
         return Regex.Replace(fallback, @"\s+", " ").Trim();
@@ -559,11 +567,34 @@ public sealed class RecruitmentRequestDocumentParsingService(
     private static string Qualifications(string text)
     {
         var block = Block(text, "educational qualification", "educational qualifications", "qualification", "qualifications", "education");
-        var candidates = Items(block).Where(LooksLikeQualification).Select(NormalizeQualification).Take(8).ToList();
+        var candidates = QualificationLines(block);
         if (candidates.Count == 0)
-            candidates = text.Split('\n').Select(CleanValue).Where(line => line.Length <= 300 && LooksLikeQualification(line))
-                .Select(NormalizeQualification).Take(8).ToList();
+            candidates = QualificationLines(text);
         return string.Join("; ", candidates.Distinct(StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static List<string> QualificationLines(string text)
+    {
+        var lines = text.Split('\n').Select(CleanValue).Where(line => line.Length > 0).ToArray();
+        var result = new List<string>();
+        for (var i = 0; i < lines.Length && result.Count < 8; i++)
+        {
+            var value = lines[i];
+            if (value.Length > 300 || !LooksLikeQualification(value)) continue;
+            // PDF rows commonly wrap "Information / Technology, or equivalent".
+            // Join only qualification-shaped continuations, never a new section.
+            for (var j = i + 1; j < lines.Length && j <= i + 3; j++)
+            {
+                // A table's left-hand "Experience / Requirements" label can
+                // repeat alongside a wrapped qualification in the right column.
+                var next = Regex.Replace(lines[j],@"(?i)^requirements\s+(?=technology\b|science\b|engineering\b|or\b|equivalent\b)","");
+                if (IsHeading(next) || LooksLikeQualification(next)
+                    || !Regex.IsMatch(next, @"(?i)^(?:technology\b|science\b|engineering\b|or\b|equivalent\b|discipline\b|from\b|minimum\s+\d+\s+years|with\s+minimum)")) break;
+                value += " " + next;
+            }
+            result.Add(NormalizeQualification(value));
+        }
+        return result;
     }
 
     private static bool LooksLikeQualification(string value) =>
@@ -574,17 +605,42 @@ public sealed class RecruitmentRequestDocumentParsingService(
     {
         var clean = CleanValue(value);
         clean = Regex.Replace(clean, @"(?i)^(?:experience|educational[ \t]+qualifications?|qualifications?)[ \t,;:|–-]*", "");
+        clean = Regex.Replace(clean, @"(?i)^essential\s*:\s*", "");
         clean = CleanValue(clean);
-        clean = Regex.Replace(clean, @"(?i)^(?:[ivx]+|[a-z])[.)][ \t]*", "");
+        clean = Regex.Replace(clean, @"(?i)^(?:[ivx]+|[a-z])[.)][ \t]+", "");
         clean = Regex.Replace(clean, @"(?i)^\[?,\.\s*Tech\b", "B.Tech");
         return clean;
+    }
+
+    internal static bool HasStrongLocalHiringFacts(SaveRecruitmentRequisition draft, string text) =>
+        text.Length >= 300 && !string.IsNullOrWhiteSpace(draft.PositionTitle)
+        && Labeled(text, "position name", "position title", "job title", "role").Equals(draft.PositionTitle, StringComparison.OrdinalIgnoreCase)
+        && !string.IsNullOrWhiteSpace(draft.JobLocation) && !string.IsNullOrWhiteSpace(draft.Qualification)
+        && !string.IsNullOrWhiteSpace(draft.ExperienceRange)
+        && Regex.IsMatch(text, @"(?i)\b\d{1,2}\s*\+?\s*(?:years?|yrs?)\b")
+        && Items(draft.RequiredSkills).Count >= 4;
+
+    private static string PreferredSkills(string text)
+    {
+        var block = Block(text, "preferred skills", "desirable skills", "good to have");
+        var lines = text.Split('\n').Where(line => Regex.IsMatch(line, @"(?i)\b(?:desirable|preferred|nice.to.have)\b"));
+        return string.Join("; ", Items(block).Concat(lines.SelectMany(RecognizedSkills)).Distinct(StringComparer.OrdinalIgnoreCase));
     }
 
     private static string RequiredSkills(string text)
     {
         var block = Block(text, "technical & analytics skills", "technical skills", "key skills & technical expertise", "key skills", "skills", "requirements");
-        var evidence = string.IsNullOrWhiteSpace(block) ? text : block;
-        var recognized = RecognizedSkills(evidence);
+        string RequiredEvidence(string evidence)
+        {
+            evidence = Regex.Replace(evidence, @"(?im)^.*\b(?:desirable|preferred)\b.*$", "");
+            foreach (var excluded in new[] { Block(text, "preferred certifications", "certifications"), Block(text,"preferred skills","desirable skills","good to have") })
+                foreach (var line in excluded.Split('\n',StringSplitOptions.RemoveEmptyEntries)) evidence = evidence.Replace(line,"",StringComparison.OrdinalIgnoreCase);
+            return evidence;
+        }
+        var recognized = RecognizedSkills(RequiredEvidence(string.IsNullOrWhiteSpace(block) ? text : block));
+        // Generic "Requirements" may contain only education. Recover explicit
+        // tools from responsibilities instead of treating degree fragments as skills.
+        if (recognized.Count < 3) recognized = RecognizedSkills(RequiredEvidence(text));
         if (recognized.Count >= 3) return string.Join("; ", recognized);
         var lines = Items(block).Where(IsUsableSkillName).Take(12);
         return string.Join("; ", recognized.Concat(lines).Distinct(StringComparer.OrdinalIgnoreCase).Take(20));
@@ -594,6 +650,11 @@ public sealed class RecruitmentRequestDocumentParsingService(
     {
         var patterns = new (string Name, string Pattern)[]
         {
+            ("Terraform", @"\bTerraform\b"), ("Ansible", @"\bAnsible\b"), ("Chef", @"\bChef\b"),
+            ("Service Mesh", @"\bservice\s+mesh\b"), ("Istio", @"\bIstio\b"), ("Linkerd", @"\bLinkerd\b"),
+            ("Jenkins", @"\bJenkins\b"), ("ArgoCD", @"\bArgo\s*CD\b"),
+            ("Prometheus", @"\bPrometheus\b"), ("Grafana", @"\bGrafana\b"), ("Loki", @"\bLoki\b"), ("OpenTelemetry", @"\bOpen\s*Telemetry\b"),
+            ("SRE", @"\bSRE\b"), ("SLO/SLI", @"\b(?:SLOs?|SLIs?)\b"),
             ("PostgreSQL", @"\bPostgre(?:SQL|s SQL|s)\b"), ("MS SQL Server", @"\b(?:MS[- ]?SQL|SQL Server)\b"),
             ("MySQL", @"\bMySQL\b"), ("MongoDB", @"\bMongoDB\b"), ("Cassandra", @"\bCas+andra\b"),
             ("HBase", @"\bHBase\b"), ("Snowflake", @"\bSnowflake\b"), ("DynamoDB", @"\bDynamoDB\b"),
@@ -732,7 +793,8 @@ public sealed class RecruitmentRequestDocumentParsingService(
 
     private static List<RecruitmentAiHiringSkillSuggestion> MergeAndNormalizeSkillRequirements(
         IEnumerable<RecruitmentAiHiringSkillSuggestion> primary,
-        IEnumerable<RecruitmentAiHiringSkillSuggestion> fallback)
+        IEnumerable<RecruitmentAiHiringSkillSuggestion> fallback,
+        bool preserveSourceRequirements = false)
     {
         var fallbackRows = fallback.Where(row => IsUsableSkillName(row.SkillName)).ToList();
         var rows = primary.Where(row => IsUsableSkillName(row.SkillName))
@@ -740,13 +802,14 @@ public sealed class RecruitmentRequestDocumentParsingService(
             .Select(group => group.OrderByDescending(row => row.IsRequired).First())
             .Take(40)
             .ToList();
+        var includeAllSourceSkills = preserveSourceRequirements || rows.Count == 0;
 
         foreach (var required in new[] { true, false })
         {
             var minimum = 3;
             foreach (var supplement in fallbackRows.Where(row => row.IsRequired == required))
             {
-                if (rows.Count(row => row.IsRequired == required) >= minimum) break;
+                if (!includeAllSourceSkills && rows.Count(row => row.IsRequired == required) >= minimum) break;
                 if (rows.Any(row => CleanValue(row.SkillName).Equals(CleanValue(supplement.SkillName), StringComparison.OrdinalIgnoreCase))) continue;
                 rows.Add(supplement);
                 if (rows.Count >= 40) break;

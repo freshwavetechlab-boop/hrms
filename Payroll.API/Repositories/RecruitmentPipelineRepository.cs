@@ -1378,6 +1378,7 @@ WHERE PipelineStageId IN @Ids ORDER BY DisplayOrder,Id", new { Ids = board.Lanes
         }
         var cards = (await db.QueryAsync<BoardCardRow>(@"SELECT s.PipelineStageId StageId,a.Id ApplicationId,a.ApplicationCode,a.CandidateId,
 CONCAT(c.FirstName,' ',c.LastName) CandidateName,c.Email CandidateEmail,
+a.PositionId,positionContext.PositionTitle,positionContext.PositionCode,
 CASE WHEN ps.StageType='Rejected' THEN COALESCE((SELECT previousStage.StageName FROM recruitment_application_stage_instances previousInstance
  JOIN recruitment_pipeline_stages previousStage ON previousStage.Id=previousInstance.PipelineStageId
  WHERE previousInstance.ApplicationId=a.Id AND previousInstance.Id<s.Id AND previousInstance.Status='Completed'
@@ -1404,6 +1405,7 @@ CASE WHEN s.DueAtUtc IS NOT NULL AND TIMESTAMPADD(SECOND,CASE WHEN ps.PauseBehav
  WHERE execution.StageInstanceId=s.Id AND execution.Status='Failed') FailedActionCount
 FROM recruitment_application_stage_instances s
 JOIN recruitment_candidate_applications a ON a.Id=s.ApplicationId
+JOIN recruitment_open_positions positionContext ON positionContext.Id=a.PositionId
 JOIN recruitment_candidates c ON c.Id=a.CandidateId
 JOIN recruitment_pipeline_stages ps ON ps.Id=s.PipelineStageId
 JOIN recruitment_application_pipeline_instances pi ON pi.Id=s.ApplicationPipelineInstanceId AND pi.CurrentStageInstanceId=s.Id
@@ -1637,6 +1639,7 @@ ORDER BY stageRow.PipelineVersionId,stageRow.DisplayOrder,stageRow.Id", new { Ve
         var candidateCards = (await db.QueryAsync<WorkspaceBoardCardRow>(@"SELECT pipelineInstance.PipelineVersionId,stageInstance.PipelineStageId StageId,
 applicationRow.Id ApplicationId,applicationRow.ApplicationCode,applicationRow.CandidateId,
 CONCAT(candidate.FirstName,' ',candidate.LastName) CandidateName,candidate.Email CandidateEmail,
+applicationRow.PositionId,positionContext.PositionTitle,positionContext.PositionCode,
 CASE WHEN stageDefinition.StageType='Rejected' THEN COALESCE((SELECT previousStage.StageName FROM recruitment_application_stage_instances previousInstance
  JOIN recruitment_pipeline_stages previousStage ON previousStage.Id=previousInstance.PipelineStageId
  WHERE previousInstance.ApplicationId=applicationRow.Id AND previousInstance.Id<stageInstance.Id AND previousInstance.Status='Completed'
@@ -1664,6 +1667,7 @@ stageInstance.Status StageStatus,
 FROM recruitment_application_stage_instances stageInstance
 JOIN recruitment_application_pipeline_instances pipelineInstance ON pipelineInstance.Id=stageInstance.ApplicationPipelineInstanceId AND pipelineInstance.CurrentStageInstanceId=stageInstance.Id
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=stageInstance.ApplicationId
+JOIN recruitment_open_positions positionContext ON positionContext.Id=applicationRow.PositionId
 JOIN recruitment_candidates candidate ON candidate.Id=applicationRow.CandidateId
 JOIN recruitment_pipeline_stages stageDefinition ON stageDefinition.Id=stageInstance.PipelineStageId AND stageDefinition.CardScope='Application'
 WHERE stageInstance.Status IN ('Active','Paused')

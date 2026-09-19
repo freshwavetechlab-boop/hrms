@@ -21,6 +21,7 @@ public sealed class EngineProcessMetric
 
 public sealed class EngineRuntimeMetric
 {
+    public int QueuedRequests { get; set; }
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
@@ -36,6 +37,14 @@ public sealed class EngineRuntimeMetric
     public DateTime? LastActivityUtc { get; set; }
     public string LastError { get; set; } = string.Empty;
     public List<EngineTrendPoint> Trend { get; set; } = [];
+}
+
+public sealed class EngineJobObservation
+{
+    public string Status { get; set; } = "";
+    public DateTime? StartedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
 }
 
 public sealed class EngineTrendPoint

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { CheckCircleOutlined, ClearOutlined, FileProtectOutlined, SafetyCertificateOutlined, SaveOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Form, Input, Modal, Popconfirm, Result, Skeleton, Space, Tag, message } from 'antd'
 import RecruitmentDynamicForm, { validateDynamicForm } from '../components/RecruitmentDynamicForm'
+import OfferLetterPreview from '../components/OfferLetterPreview'
 import {
   completePublicCandidateAction, getPublicCandidateAction, loadPublicCandidateActionOptions, savePublicCandidateActionValues,
   uploadPublicCandidateActionFile,
@@ -107,5 +108,5 @@ export default function PublicCandidateActionPage({ token: suppliedToken }: Prop
 
 function OfferSummary({ context }: { context: PublicCandidateActionContext }) {
   const offer = context.offer!
-  return <section><h2>Offer details</h2><div className="candidate-action-offer"><div><span>Offer number</span><b>{offer.offerNumber}</b></div><div><span>Annual CTC</span><b>{offer.currency} {Number(offer.offeredCtc).toLocaleString('en-IN')}</b></div><div><span>Proposed joining</span><b>{new Date(offer.proposedJoiningDate).toLocaleDateString('en-IN')}</b></div><div><span>Response due</span><b>{offer.expiryDate ? new Date(offer.expiryDate).toLocaleDateString('en-IN') : 'As communicated by HR'}</b></div></div>{offer.documentUrl && <Button icon={<FileProtectOutlined />} onClick={() => window.open(offer.documentUrl!, '_blank', 'noopener,noreferrer')}>View secured offer letter</Button>}</section>
+  return <section><h2>Offer details</h2><div className="candidate-action-offer"><div><span>Offer number</span><b>{offer.offerNumber}</b></div><div><span>Annual CTC</span><b>{offer.currency} {Number(offer.offeredCtc).toLocaleString('en-IN')}</b></div><div><span>Proposed joining</span><b>{new Date(offer.proposedJoiningDate).toLocaleDateString('en-IN')}</b></div><div><span>Response due</span><b>{offer.expiryDate ? new Date(offer.expiryDate).toLocaleDateString('en-IN') : 'As communicated by HR'}</b></div></div>{offer.documentUrl && <OfferLetterPreview documentUrl={offer.documentUrl} title={`Offer ${offer.offerNumber}`} label="View secured offer letter" />}</section>
 }

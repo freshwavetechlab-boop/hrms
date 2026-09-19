@@ -21,8 +21,8 @@ export const parseRecruitmentRequestDocument = (file: File, clientId = 0) => {
   body.append('file', file)
   body.append('clientId', String(clientId || 0))
   return postForm<RecruitmentRequestDocumentParseResult>('/api/recruitment/requisitions/parse-source', body, { status: 'NeedsReview', parserName: '', parserVersion: '', originalFileName: file.name, draft: {} as SaveRecruitmentRequisition, detectedFields: [], reviewFields: [], warnings: [] }, {
-    timeoutMs: 90_000,
-    timeoutMessage: 'Document reading took too long. The file is still selected; continue manually or retry.',
+    timeoutMs: 660_000,
+    timeoutMessage: 'Job-document parsing took too long. No job description was saved by this preview. The file is still selected; continue manually or retry.',
     toast: false,
   })
 }

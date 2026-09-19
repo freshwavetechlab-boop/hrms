@@ -213,6 +213,19 @@ WHERE a.Id=@Id AND (@ClientId IS NULL OR a.ClientId=@ClientId)", new { Id = appl
             : stage.StageType.Equals("ExternalForm", StringComparison.OrdinalIgnoreCase) ? "PROFILE_UPDATE"
             : candidateFacingStage ? "DOCUMENT_REQUEST" : "";
         if (purpose.Length == 0) return (null, "The current stage does not require a candidate action link.");
+        // Client-specific joining pack applies only to document/preboarding stages.
+        // Application/profile forms and previously issued links stay unchanged.
+        if (purpose == "DOCUMENT_REQUEST")
+        {
+            var joiningVersion = await db.ExecuteScalarAsync<long?>(@"SELECT definition.CurrentPublishedVersionId
+FROM form_definitions definition
+JOIN recruitment_candidate_applications application ON application.ClientId=definition.ClientId
+JOIN form_versions version ON version.Id=definition.CurrentPublishedVersionId AND version.Status='Published'
+WHERE application.Id=@Id AND (@ClientId IS NULL OR application.ClientId=@ClientId)
+AND definition.FormCode='UIDAI_JOINING_DOCUMENTS' AND definition.PurposeCode='DOCUMENT_REQUEST'
+AND definition.Status='Active' LIMIT 1", new { Id = applicationId, user.ClientId });
+            if (joiningVersion.HasValue) stage.FormVersionId = joiningVersion;
+        }
         return await CreateAsync(new CreateRecruitmentCandidateActionRequest
         {
             ApplicationId = applicationId,

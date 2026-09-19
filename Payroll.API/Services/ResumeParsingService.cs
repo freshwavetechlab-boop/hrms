@@ -16,12 +16,13 @@ public sealed class ResumeParsingService(
     private const int MaxExtractedBytes = 20 * 1024 * 1024;
     private const int MaxExtractedCharacters = 2_000_000;
     private const int MaxBuiltInPdfBytes = 2 * 1024 * 1024;
-    private const string ParserVersion = "2.3";
+    private const string ParserVersion = "2.5";
     private static readonly SemaphoreSlim OcrGate = new(2, 2);
     private static readonly Regex EmailPattern = new(@"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex PhonePattern = new(@"(?<!\d)(?:\+?91[\s().-]*)?[6-9](?:[\s().-]*\d){9}(?![\s().-]*\d)", RegexOptions.Compiled);
-    private static readonly Regex InternationalPhonePattern = new(@"(?<!\d)(?:\+?[1-9][\s().-]*)?(?:\d[\s().-]*){9,14}\d(?!\d)", RegexOptions.Compiled);
-    private static readonly Regex PhoneLabelPattern = new(@"(?im)^\s*(?:mobile|phone|telephone|tel|cell|contact(?:\s+(?:no|number))?)\s*[:\-]?\s*(?<value>[+()\d][+()\d\s.\-]{7,30})", RegexOptions.Compiled);
+    // Horizontal separators only: dates/IDs on the following line are not part of a phone.
+    private static readonly Regex PhonePattern = new(@"(?<!\d)(?:\+?91[ \t().-]*)?[6-9](?:[ \t().-]*\d){9}(?![ \t().-]*\d)", RegexOptions.Compiled);
+    private static readonly Regex InternationalPhonePattern = new(@"(?<![+\d])\+?\d(?:[ \t().-]*\d){9,14}(?![ \t().-]*\d)", RegexOptions.Compiled);
+    private static readonly Regex PhoneLabelPattern = new(@"(?im)^[ \t]*(?:mobile|phone|telephone|tel|cell|contact)(?:[ \t]+(?:no\.?|number))?[ \t]*[:\-]?[ \t]*(?<value>[+()\d][+()\d \t.\-]{7,35})", RegexOptions.Compiled);
     private static readonly Regex NameLabelPattern = new(@"(?im)^\s*(?:candidate\s+)?(?:full\s+)?name\s*[:\-]\s*(?<value>\p{L}[\p{L}\p{M}.'-]+(?:\s+\p{L}[\p{L}\p{M}.'-]+){1,4})\s*$", RegexOptions.Compiled);
     private static readonly Regex AddressLabelPattern = new(@"(?im)^\s*(?:(?:current|permanent|residential|postal|mailing)\s+)?address\s*[:\-]\s*(?<value>[^\r\n]{8,300})(?:\r?\n(?<next>[^\r\n]{8,180}))?", RegexOptions.Compiled);
     private static readonly Regex LocationLabelPattern = new(@"(?im)^\s*(?:current\s+)?location\s*[:\-]\s*(?<value>[^\r\n]{2,120})", RegexOptions.Compiled);
@@ -226,6 +227,8 @@ public sealed class ResumeParsingService(
         byte[]? sourceDocument,
         CancellationToken cancellationToken)
     {
+        // Public/background stream intake must use the same fast path as admin uploads.
+        if (HasCompleteLocalIdentity(local)) return local;
         try
         {
             RecruitmentDocumentRagContext retrieval;
@@ -389,7 +392,11 @@ public sealed class ResumeParsingService(
             LineCount = text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length,
             LanguageCode = languageCode,
             SummaryText = summary,
-            TotalExperienceMonths = totalExperienceMonths
+            TotalExperienceMonths = totalExperienceMonths,
+            // Sections above have already passed source-evidence checks. Populate the
+            // editable skill facts too, retaining locally extracted values first.
+            Skills = local.Facts.Skills.Concat(ExtractSkills(sections))
+                .Distinct(StringComparer.OrdinalIgnoreCase).Take(100).ToList()
         };
         var parserParts = new List<string> { local.ParserName };
         if (hasRetrievalContext) parserParts.Add("LocalRAG");
@@ -515,12 +522,14 @@ public sealed class ResumeParsingService(
         if (Regex.IsMatch(heading, @"^(PROFILE|PROFILE SUMMARY|PROFESSIONAL SUMMARY|CAREER SUMMARY|CAREER OVERVIEW|EXECUTIVE SUMMARY|EXECUTIVE PROFILE|EXPERIENCE SUMMARY|SUMMARY|ABOUT ME|OBJECTIVE|CAREER OBJECTIVE)$")) return "SUMMARY";
         if (Regex.IsMatch(heading, @"^(WORK|PROFESSIONAL|EMPLOYMENT|CAREER|RELEVANT)? ?(EXPERIENCE|HISTORY|PROFILE|TIMELINE|BACKGROUND)$")) return "EXPERIENCE";
         if (Regex.IsMatch(heading, @"^(EDUCATION|EDUCATIONAL (BACKGROUND|DETAILS|PROFILE|QUALIFICATIONS?)|ACADEMIC (BACKGROUND|DETAILS|PROFILE|QUALIFICATIONS?)|QUALIFICATIONS?)$")) return "EDUCATION";
+        if (Regex.IsMatch(heading, @"^(TOOLS (AND|&) TECHNOLOGIES|TECHNICAL TOOLKIT|TECHNICAL KNOWLEDGE|AREAS OF EXPERTISE)$")) return "SKILLS";
         if (Regex.IsMatch(heading, @"^(TECHNICAL |CORE |KEY |PROFESSIONAL )?(SKILLS|SKILL SET|SKILLS MATRIX|COMPETENCIES|EXPERTISE|PROFICIENCIES)( (AND|&) (TOOLS|TECHNOLOGIES|FRAMEWORKS))?$|^(TOOLS|TECHNOLOGIES|TECHNOLOGY STACK|TECH STACK|TECHNOLOGIES (AND|&) FRAMEWORKS)$")) return "SKILLS";
         if (Regex.IsMatch(heading, @"^(PROFESSIONAL )?(CERTIFICATIONS?|CREDENTIALS?|LICENSES?|CERTIFICATIONS? (AND|&) (LICENSES?|TRAINING|EDUCATION)|TRAINING)$")) return "CERTIFICATIONS";
         if (Regex.IsMatch(heading, @"^(PROJECTS?|KEY PROJECTS?|PROJECT EXPERIENCE)$")) return "PROJECTS";
         if (Regex.IsMatch(heading, @"^(ACHIEVEMENTS?|AWARDS?|HONORS?|AWARDS? & HONORS?)$")) return "ACHIEVEMENTS";
         if (Regex.IsMatch(heading, @"^(PERSONAL DETAILS|CONTACT|CONTACT DETAILS)$")) return "CONTACT";
         if (Regex.IsMatch(heading, @"^(LANGUAGES?|LANGUAGES? KNOWN)$")) return "LANGUAGES";
+        if (Regex.IsMatch(heading, @"^(DECLARATION|REFERENCES|PERSONAL STATEMENT)$")) return "GENERAL";
         if (Regex.IsMatch(heading, @"^(PUBLICATIONS?|RESEARCH|RESEARCH & PUBLICATIONS?)$")) return "PUBLICATIONS";
         return null;
     }
@@ -679,10 +688,15 @@ public sealed class ResumeParsingService(
         {
             var line = Regex.Replace(rawLine, @"\s+", " ").Trim(' ', '•', '·', '-', '–', '—');
             var match = QualificationPattern.Match(line);
-            if (!match.Success || line.Length > 350) continue;
+            if (!match.Success || line.Length > 350 || Regex.IsMatch(line, @"(?i)\b(?:declare|declaration|authentic|best of my knowledge|hereby)\b")) continue;
             var parts = line.Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
             var qualification = CleanField(line, 250);
-            var institution = parts.SkipWhile(part => !QualificationPattern.IsMatch(part)).Skip(1).FirstOrDefault() ?? "";
+            var following = parts.SkipWhile(part => !QualificationPattern.IsMatch(part)).Skip(1).ToList();
+            // Pipe-separated degree | specialization | institution | marks | years.
+            // A bare subject is not the awarding institution; do not invent one.
+            var institution = following.FirstOrDefault(part => Regex.IsMatch(part, @"(?i)\b(?:university|college|institute|school|polytechnic)\b")
+                || Regex.IsMatch(part.Trim(), @"^[A-Z][A-Z.& ]{1,14}$") && !Regex.IsMatch(part, @"\d|%")
+                && !Regex.IsMatch(part.Trim(), @"^(?:CS|CSE|IT|ECE|EEE|EE|ME|CE|AI|ML|AI\s*&\s*ML)$")) ?? "";
             var yearMatch = Regex.Matches(line, @"\b(?:19|20)\d{2}\b").Cast<Match>().LastOrDefault();
             result.Add(new ResumeParsedEducation(
                 qualification,
@@ -703,10 +717,16 @@ public sealed class ResumeParsingService(
         {
             foreach (var rawLine in section.Content.Split('\n', StringSplitOptions.RemoveEmptyEntries))
             {
+                if (IsUnverifiedSkillClaim(rawLine)) continue;
                 var line = Regex.Replace(rawLine, @"\s+", " ").Trim(' ', '•', '·', '-', '–', '—');
                 var colon = line.IndexOf(':');
-                if (colon >= 0 && colon < line.Length - 1) line = line[(colon + 1)..];
-                foreach (var token in Regex.Split(line, @"\s*(?:,|;|\||•|·)\s*"))
+                if (colon >= 0 && colon < line.Length - 1)
+                {
+                    // Preserve explicit skill-bearing category labels, not just their tools.
+                    if (Regex.IsMatch(line[..colon], @"(?i)\bCI\s*/\s*CD\b")) result.Add("CI/CD");
+                    line = line[(colon + 1)..];
+                }
+                foreach (var token in Regex.Split(line, @"\s*(?:,|;|\||•|·|\band\b)\s*", RegexOptions.IgnoreCase))
                 {
                     var skill = CleanField(token, 100);
                     var tokenColon = skill.IndexOf(':');
@@ -719,6 +739,7 @@ public sealed class ResumeParsingService(
         {
             foreach (var rawLine in section.Content.Split('\n', StringSplitOptions.RemoveEmptyEntries))
             {
+                if (IsUnverifiedSkillClaim(rawLine)) continue;
                 var phrase = Regex.Replace(rawLine,
                     @"(?i)^.*?\b(?:strong\s+)?(?:experience|expertise|proficiency|proficient|skilled|knowledge)\s*(?:in|with|of|:)\s*",
                     "");
@@ -730,8 +751,31 @@ public sealed class ResumeParsingService(
                 }
             }
         }
+        // Explicit candidate claims can appear in a summary without a Skills heading.
+        // Do not infer a skill list from a role title, JD, or arbitrary prose.
+        foreach (var section in sections.Where(section => section.SectionCode is "SUMMARY" or "GENERAL" or "EXPERIENCE"))
+        {
+            foreach (var rawLine in section.Content.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (IsUnverifiedSkillClaim(rawLine)) continue;
+                var claim = Regex.Match(rawLine,
+                    @"(?:^|[.!?]\s+)(?:strong\s+|hands-on\s+|technical\s+)?(?:expertise|proficiency|proficient|skilled|experience)\s+(?:in|with)\s+(?<skills>[^\r\n]{1,250})$",
+                    RegexOptions.IgnoreCase);
+                if (!claim.Success) continue;
+                var list = claim.Groups["skills"].Value.TrimEnd('.');
+                if (Regex.IsMatch(list, @"[.!?](?:\s|$)")) continue;
+                foreach (var token in Regex.Split(list, @"\s*(?:,|;|\||\band\b)\s*", RegexOptions.IgnoreCase))
+                {
+                    var skill = CleanField(token, 100).TrimEnd('.');
+                    if (skill.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length <= 4 && IsPlausibleSkill(skill)) result.Add(skill);
+                }
+            }
+        }
         return result.Distinct(StringComparer.OrdinalIgnoreCase).Take(100).ToList();
     }
+
+    private static bool IsUnverifiedSkillClaim(string line) => Regex.IsMatch(line,
+        @"\b(?:no|not|without|lack|lacking|seeking)\b|^\s*(?:learning(?!\s+and\b)|requirements?\s*:|required\s+skills\b)", RegexOptions.IgnoreCase);
 
     private static IReadOnlyList<string> ExtractCertifications(IReadOnlyList<ResumeParsedSection> sections) =>
         sections.Where(section => section.SectionCode.Equals("CERTIFICATIONS", StringComparison.OrdinalIgnoreCase))
@@ -882,12 +926,16 @@ public sealed class ResumeParsingService(
         foreach (Match labelled in PhoneLabelPattern.Matches(text))
         {
             var value = labelled.Groups["value"].Value;
+            var international = InternationalPhonePattern.Match(value);
+            if (international.Success && international.Value.StartsWith('+') && IsPlausiblePhoneDigits(international.Value))
+                return international.Value.Trim();
             var indian = PhonePattern.Match(value);
             if (indian.Success) return indian.Value.Trim();
-            var international = InternationalPhonePattern.Match(value);
             if (international.Success && IsPlausiblePhoneDigits(international.Value))
                 return international.Value.Trim();
         }
+        var withCountryCode = PlausibleInternationalPhone(text);
+        if (withCountryCode.Length > 0) return withCountryCode;
         foreach (Match match in PhonePattern.Matches(text))
         {
             if (!HasIdentifierContext(text, match)) return match.Value.Trim();
@@ -960,7 +1008,7 @@ public sealed class ResumeParsingService(
                 {
                     if (node.Name == word + "t") value.Append(node.Value);
                     else if (node.Name == word + "tab") value.Append('\t');
-                    else if (node.Name == word + "br" || node.Name == word + "cr") value.Append(' ');
+                    else if (node.Name == word + "br" || node.Name == word + "cr") value.Append('\n');
                 }
                 var line = value.ToString().Trim();
                 if (line.Length > 0)
@@ -1042,7 +1090,7 @@ public sealed class ResumeParsingService(
         }
 
         var ocr = await TryReadPdfWithOcrAsync(bytes, cancellationToken);
-        if (ocr.Succeeded) return (ocr.Text, "TesseractOCR");
+        if (ocr.Succeeded) return (ocr.Text, "LocalOCR");
 
         // Keep the dependency-free fallback bounded. A large PDF without an
         // external decoder remains available for manual review instead of tying up
@@ -1055,19 +1103,31 @@ public sealed class ResumeParsingService(
     {
         var raw = Encoding.Latin1.GetString(bytes);
         var pieces = new List<string>();
-        ExtractPdfTextOperators(raw, pieces);
+        // Never scan raw image/compressed bytes for coincidental '(...) Tj'.
+        // A scanned PDF previously passed as "Parsed" because binary noise
+        // happened to resemble text operators, preventing the OCR fallback.
         foreach (Match match in Regex.Matches(raw, @"stream\r?\n(?<data>[\s\S]*?)\r?\nendstream", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking))
         {
             if (pieces.Sum(piece => piece.Length) >= MaxExtractedCharacters) break;
             try
             {
+                var headerStart = raw.LastIndexOf("endobj", match.Index, StringComparison.Ordinal);
+                headerStart = Math.Max(headerStart < 0 ? 0 : headerStart + 6, match.Index - 4096);
+                var header = raw[headerStart..match.Index];
+                if (Regex.IsMatch(header, @"/Subtype\s*/Image\b|/Type\s*/(?:XObject|ObjStm|XRef)\b|/Length[123]\b")) continue;
                 var value = match.Groups["data"].Value;
+                if (!header.Contains("/Filter", StringComparison.Ordinal))
+                {
+                    ExtractPdfTextObjects(value, pieces);
+                    continue;
+                }
+                if (!Regex.IsMatch(header, @"/Filter\s*(?:/FlateDecode\b|\[\s*/FlateDecode\s*\])")) continue;
                 var compressed = Encoding.Latin1.GetBytes(value);
                 using var input = new MemoryStream(compressed);
                 using var zlib = new ZLibStream(input, CompressionMode.Decompress);
                 using var output = new MemoryStream();
                 CopyToLimited(zlib, output, MaxExtractedBytes);
-                ExtractPdfTextOperators(Encoding.Latin1.GetString(output.ToArray()), pieces);
+                ExtractPdfTextObjects(Encoding.Latin1.GetString(output.ToArray()), pieces);
             }
             catch
             {
@@ -1075,6 +1135,12 @@ public sealed class ResumeParsingService(
             }
         }
         return string.Join("\n", pieces);
+    }
+
+    private static void ExtractPdfTextObjects(string content, List<string> pieces)
+    {
+        foreach (Match textObject in Regex.Matches(content, @"(?:^|\s)BT\s+(?<text>[\s\S]*?)\s+ET(?:\s|$)", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking))
+            ExtractPdfTextOperators(textObject.Groups["text"].Value, pieces);
     }
 
     private static async Task<(bool Succeeded, string Text)> TryReadPdfWithPdftotextAsync(byte[] bytes, CancellationToken cancellationToken)
@@ -1179,9 +1245,19 @@ public sealed class ResumeParsingService(
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(40));
-            var rendered = await RunProcessAsync(pdftoppm,
-                ["-f", "1", "-l", "5", "-scale-to", "2200", "-png", input, outputPrefix], timeout.Token);
-            if (!rendered.Succeeded) return (false, "");
+            (bool Succeeded, string Output) rendered;
+            try { rendered = await RunProcessAsync(pdftoppm,
+                ["-f", "1", "-l", "5", "-scale-to", "2200", "-png", input, outputPrefix], timeout.Token); }
+            catch (System.ComponentModel.Win32Exception) { rendered = (false, ""); }
+            if (!rendered.Succeeded)
+            {
+                if (!OperatingSystem.IsWindows()) return (false, "");
+                var script = Path.Combine(AppContext.BaseDirectory, "Assets", "Parsing", "WindowsPdfOcr.ps1");
+                if (!File.Exists(script)) return (false, "");
+                var shell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+                var windows = await RunProcessAsync(shell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File", script, "-InputPdf", input], timeout.Token);
+                return (windows.Succeeded && LooksLikeUsefulResumeText(NormalizeText(windows.Output)), windows.Output);
+            }
             var pages = Directory.GetFiles(root, "page-*.png").OrderBy(path => path, StringComparer.OrdinalIgnoreCase).Take(5).ToList();
             if (pages.Count == 0) return (false, "");
             var text = new StringBuilder();
@@ -1225,6 +1301,7 @@ public sealed class ResumeParsingService(
                 FileName = executable,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
                 UseShellExecute = false,
                 CreateNoWindow = true
             }
@@ -1339,14 +1416,24 @@ public sealed class ResumeParsingService(
 
     private static string NormalizeText(string value)
     {
-        value = value.TrimStart('\uFEFF')
+        value = value.Normalize(NormalizationForm.FormKC).TrimStart('\uFEFF')
+            .Replace("\u200B", "", StringComparison.Ordinal)
+            .Replace("\uFEFF", "", StringComparison.Ordinal)
+            .Replace("\u00AD", "", StringComparison.Ordinal)
             .Replace('\0', ' ')
+            .Replace('\u2010', '-')
+            .Replace('\u2011', '-')
+            .Replace('\u2212', '-')
             .Replace('\u2013', '-')
             .Replace('\u2014', '-')
             .Replace('\u2022', '|')
             .Replace('\u00b7', '|')
             .Replace("\r\n", "\n")
             .Replace('\r', '\n');
+        // Repair spacing around email punctuation, never join separate lines/people.
+        value = Regex.Replace(value,
+            @"[A-Z0-9._%+\-]+[ \t]*@[ \t]*[A-Z0-9\-]+(?:[ \t]*\.[ \t]*[A-Z0-9\-]+)*[ \t]*\.[ \t]*[A-Z]{2,}",
+            match => Regex.Replace(match.Value, @"[ \t]+", ""), RegexOptions.IgnoreCase | RegexOptions.NonBacktracking);
         value = Regex.Replace(value, @"(?<=\S)\t+(?=\S)", " | ");
         value = Regex.Replace(value, @"(?<=\S) {2,}(?=\S)", " | ");
         value = Regex.Replace(value, @"[ \t]+", " ");

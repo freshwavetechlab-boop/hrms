@@ -286,7 +286,7 @@ export default function RecruitmentGlobalTalentPool({ onViewCandidate, onChanged
         {positionControl}
         {tab === 'matches' && <Button data-testid="talent-pool-run-ats" type="primary" icon={<FileSearchOutlined />} disabled={!approvedPositions.some(row => row.id === positionId)} loading={matching} onClick={() => void runMatch()}>Run ATS on Resume Bank</Button>}
       </div>
-      {runResult && <Alert type={runResult.warnings.length ? 'warning' : 'success'} showIcon message={`${runResult.scored} scored · ${runResult.queued} queued · ${runResult.skipped} skipped`} description={runResult.warnings.join(' ') || 'Role-specific ATS results are ready for recruiter selection.'} />}
+      {runResult && <Alert type={runResult.warnings.length ? 'warning' : runResult.queued > 0 ? 'info' : 'success'} showIcon message={`${runResult.scored} scored · ${runResult.queued} queued · ${runResult.skipped} skipped`} description={[runResult.warnings.join(' '), runResult.queued > 0 ? 'ATS scoring is queued in the background. Refresh the matches to see completed scores; do not resubmit the same request.' : !runResult.warnings.length ? 'Role-specific ATS results are ready for recruiter selection.' : ''].filter(Boolean).join(' ')} />}
       {matchTable}
     </>}
 

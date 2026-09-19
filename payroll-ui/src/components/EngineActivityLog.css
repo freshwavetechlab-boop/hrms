@@ -1,0 +1,6 @@
+.engine-activity-log{scroll-margin-top:100px;min-width:0}
+.engine-activity-log .engine-activity-table{margin-top:16px}
+.engine-activity-log .ant-table-cell,.engine-activity-log .ant-tag{white-space:normal!important;overflow-wrap:anywhere;text-overflow:clip!important}
+.engine-activity-log small{display:block;color:#64748b;margin-top:4px}
+.engine-activity-log input[type=date]{border:1px solid #dce5f2;border-radius:8px;padding:5px;max-width:160px}
+.engine-activity-log header p{margin-top:6px}

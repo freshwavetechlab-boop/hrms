@@ -45,7 +45,7 @@ export const emptyAiProviderPool = (): RecruitmentAiProviderPool => ({ autoSwitc
 
 export const getAiIntegration = () => getJson<RecruitmentAiProviderPool>('/api/integrations/ai', emptyAiProviderPool())
 export const saveAiIntegration = (row: RecruitmentAiScoringSettings) => postJson('/api/integrations/ai', row, null as RecruitmentAiScoringSettings | null, { successMessage: 'AI integration saved securely.' })
-export const testAiIntegration = (id: number) => postJson(`/api/integrations/ai/${id}/test`, {}, null as RecruitmentAiScoringSettings | null, { successMessage: 'AI provider connection is healthy.', timeoutMs: 120000 })
+export const testAiIntegration = (id: number, timeoutSeconds = 120) => postJson(`/api/integrations/ai/${id}/test`, {}, null as RecruitmentAiScoringSettings | null, { successMessage: 'AI provider connection is healthy.', timeoutMs: timeoutSeconds * 1000, timeoutMessage: 'AI provider test timed out. Check the model and gateway health before trying again.' })
 export const activateAiIntegration = (id: number) => postJson(`/api/integrations/ai/${id}/activate`, {}, emptyAiProviderPool(), { successMessage: 'Active AI model updated.' })
 export const updateAiAutoSwitch = (autoSwitchEnabled: boolean) => putJson('/api/integrations/ai/auto-switch', { autoSwitchEnabled }, emptyAiProviderPool())
 export const deleteAiIntegration = (id: number) => deleteJson(`/api/integrations/ai/${id}`, null, { successMessage: 'AI model and encrypted API key deleted.' })

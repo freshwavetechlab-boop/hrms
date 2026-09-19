@@ -1,5 +1,6 @@
 import type { ConvertCandidateToEmployeeRequest, Employee, EntityAttachment, PersonActivityEvent, RecruitmentAiScoringSettings, RecruitmentApplicationScore, RecruitmentAtsScoringCriterion, RecruitmentAtsScoringProfile, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateChecklistItem, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, RecruitmentOffer, RecruitmentOpenPosition, RecruitmentResumeIntakeItem, RecruitmentResumeIntakeResult, RecruitmentResumePreview, RecruitmentSkill, RecruitmentTalentDashboard, RecruitmentTalentPoolMatchRunResult, SaveRecruitmentCandidate, SaveRecruitmentInterviewFeedbackCompetencyScore } from '../types/payroll'
-import { deleteJson, getJson, postFormWithProgress, postJson, putJson, type ApiResult } from './apiClient'
+import { deleteJson, getJson, getJsonResult, postFormWithProgress, postJson, putJson, type ApiResult } from './apiClient'
+import { toast } from '../components/ToastProvider'
 
 export const getTalentDashboard = (clientId = 0) => getJson<RecruitmentTalentDashboard>(`/api/recruitment/talent/dashboard${clientId ? `?clientId=${clientId}` : ''}`, { talentProfiles: 0, activeApplications: 0, interviewsScheduled: 0, offersPending: 0, preOnboardingPending: 0, joined: 0 })
 export const getCandidates = (query = '', status = '', clientId?: number) => {
@@ -17,7 +18,42 @@ export const getApplications = (filters: { positionId?: number; candidateId?: nu
 export const createApplication = (row: { candidateId: number; positionId: number; sourceType: string; resumeId?: number | null; recruiterUserId?: number | null }) => postJson('/api/recruitment/applications', row, null as RecruitmentCandidateApplication | null, { successMessage: 'Application created.' })
 export const deleteApplication = (id: number) => deleteJson(`/api/recruitment/applications/${id}`, null, { successMessage: 'Application deleted. An orphaned candidate profile and stored resume were also purged.' })
 export const changeApplicationStage = (id: number, stage: string, reason: string) => postJson(`/api/recruitment/applications/${id}/stage`, { stage, status: stage, reason }, null as RecruitmentCandidateApplication | null, { successMessage: 'Candidate stage updated.' })
-export const scoreApplication = (id: number) => postJson(`/api/recruitment/applications/${id}/score`, {}, null, { successMessage: 'ATS score recalculated.' })
+const scoringRequests = new Map<number, Promise<ApiResult<null>>>()
+export function scoreApplication(id: number): Promise<ApiResult<null>> {
+  const running = scoringRequests.get(id)
+  if (running) return running
+  const work = (async (): Promise<ApiResult<null>> => {
+    const queued = await postJson(`/api/recruitment/applications/${id}/score?background=true`, {}, null as { jobId: number } | null, { loader: false, toast: 'error-only' })
+    if (!queued.ok || !queued.data) return { ...queued, data: null }
+    toast.info('ATS request saved. Scoring is running in the background; you can keep working.')
+    const path = `/api/recruitment/applications/${id}/score-jobs/${queued.data.jobId}`
+    for (let attempt = 0; attempt < 90; attempt++) {
+      await new Promise(resolve => window.setTimeout(resolve, 2000))
+      const result = await getJsonResult(path, null as { status: string; lastError: string } | null, { loader: false, toast: false, timeoutMs: 8000 })
+      if (!result.ok) {
+        toast.warning('ATS request is saved, but its status could not be refreshed. Check the application before retrying.')
+        return { ...result, data: null }
+      }
+      if (result.data?.status === 'Completed') {
+        toast.success('ATS score recalculated. Pipeline automation continues in the background.')
+        return { ok: true, data: null, error: '', status: 200 }
+      }
+      if (result.data?.status === 'Failed') {
+        const error = result.data.lastError || 'ATS scoring failed. Review the resume and scoring configuration.'
+        toast.error(error)
+        return { ok: false, data: null, error, status: 422 }
+      }
+      if (result.data?.status === 'Retry') {
+        toast.warning('ATS could not finish this attempt. The saved job will retry automatically; check the application status shortly.')
+        return { ok: true, data: null, error: '', status: 202 }
+      }
+    }
+    toast.info('ATS is still running in the background. The request is saved; refresh later to see its result.')
+    return { ok: true, data: null, error: '', status: 202 }
+  })().finally(() => scoringRequests.delete(id))
+  scoringRequests.set(id, work)
+  return work
+}
 export const moveApplicationCandidateToGlobalTalentPool = (id: number) => postJson(`/api/recruitment/applications/${id}/global-talent-pool`, {}, null as RecruitmentCandidateApplication | null, { successMessage: 'Candidate moved to the Global Talent Pool.' })
 export const moveApplicationsToGlobalTalentPool = (applicationIds: number[]) => postJson('/api/recruitment/applications/global-talent-pool', { applicationIds }, null as { moved: number; failed: number; errors: string[] } | null, { successMessage: 'Selected candidates moved to the Global Talent Pool.' })
 export const overrideApplicationScore = (scoreId: number, score: number, reason: string) => postJson(`/api/recruitment/application-scores/${scoreId}/override`, { score, reason }, null as RecruitmentApplicationScore | null, { successMessage: 'ATS score override saved.' })
@@ -40,7 +76,8 @@ export const convertCandidateToEmployee = (applicationId: number, row: ConvertCa
 export const uploadCandidateResume = (candidateId: number, fieldConfigurationId: number, file: File, metadata: { documentNumber?: string; issueDate?: string; expiryDate?: string }, onProgress: (value: number) => void) => {
   const body = new FormData(); body.append('fieldConfigurationId', String(fieldConfigurationId)); body.append('file', file)
   if (metadata.documentNumber) body.append('documentNumber', metadata.documentNumber); if (metadata.issueDate) body.append('issueDate', metadata.issueDate); if (metadata.expiryDate) body.append('expiryDate', metadata.expiryDate)
-  return postFormWithProgress<{ attachment: EntityAttachment }>(`/api/recruitment/candidates/${candidateId}/resume`, body, {} as { attachment: EntityAttachment }, onProgress)
+  return postFormWithProgress<{ attachment: EntityAttachment }>(`/api/recruitment/candidates/${candidateId}/resume`, body, {} as { attachment: EntityAttachment }, onProgress,
+    660000, 'Resume upload or parsing took too long. Refresh the candidate and check the current resume before uploading again; the file may already be saved.')
 }
 export type RecruitmentResumeUploadProgress = {
   percent: number
@@ -61,7 +98,8 @@ export const previewRecruitmentResume = (request: { clientId?: number; positionI
   if (request.talentPoolOnly) body.append('talentPoolOnly', 'true')
   body.append('enableParsing', request.enableParsing === false ? 'false' : 'true')
   body.append('file', request.file, request.file.name)
-  return postFormWithProgress<RecruitmentResumePreview>('/api/recruitment/resume-intake/preview', body, {} as RecruitmentResumePreview, () => undefined, 120000)
+  return postFormWithProgress<RecruitmentResumePreview>('/api/recruitment/resume-intake/preview', body, {} as RecruitmentResumePreview, () => undefined,
+    660000, 'Resume preview and parsing took too long. No candidate was created by this preview. Keep the file selected and retry or continue with manual review.')
 }
 
 export const intakeRecruitmentResumes = async (request: { clientId?: number; positionId?: number; jobPostingId?: number | null; talentPoolOnly?: boolean; forceUpload?: boolean; deferAtsScoring?: boolean; sourceType: string; files: File[]; drafts?: RecruitmentResumeReviewedDraft[] }, onProgress: (progress: RecruitmentResumeUploadProgress) => void): Promise<ApiResult<RecruitmentResumeIntakeResult>> => {
@@ -129,14 +167,15 @@ const uploadRecruitmentResumeBatch = (request: { clientId?: number; positionId?:
     body.append('draftCertifications', request.draft.certifications.join('\n'))
   }
   request.files.forEach(file => body.append('files', file, file.name))
-  return postFormWithProgress<RecruitmentResumeIntakeResult>('/api/recruitment/resume-intake', body, { totalFiles: 0, imported: 0, needsReview: 0, items: [] }, onProgress, 600000)
+  return postFormWithProgress<RecruitmentResumeIntakeResult>('/api/recruitment/resume-intake', body, { totalFiles: 0, imported: 0, needsReview: 0, items: [] }, onProgress,
+    660000, 'Candidate upload or parsing took too long. Refresh Applications and check whether the candidate and resume were saved before retrying.')
 }
 export const getGlobalTalentPoolCandidates = (query = '', status = '') => getJson<RecruitmentCandidate[]>(`/api/recruitment/talent-pool/candidates?${new URLSearchParams({ query, status })}`, [])
 export const getTalentPoolMatches = (positionId?: number, status = '') => {
   const search = new URLSearchParams({ status }); if (positionId) search.set('positionId', String(positionId))
   return getJson<RecruitmentCandidateApplication[]>(`/api/recruitment/talent-pool/matches?${search}`, [])
 }
-export const runTalentPoolMatch = (positionId: number, candidateIds: number[] = []) => postJson('/api/recruitment/talent-pool/match', { positionId, candidateIds }, null as RecruitmentTalentPoolMatchRunResult | null, { successMessage: 'Talent Pool ATS matching completed.', timeoutMs: 180000 })
+export const runTalentPoolMatch = (positionId: number, candidateIds: number[] = []) => postJson('/api/recruitment/talent-pool/match', { positionId, candidateIds }, null as RecruitmentTalentPoolMatchRunResult | null, { successMessage: 'Talent Pool matching request accepted.', timeoutMs: 180000 })
 export const directSelectTalentPoolCandidate = (candidateId: number, positionId: number) => postJson('/api/recruitment/talent-pool/select-direct', { candidateId, positionId }, null as RecruitmentCandidateApplication | null, { successMessage: 'Resume selected for the role without ATS scoring.' })
 export const setTalentPoolMatchSelection = (id: number, selected: boolean) => postJson(`/api/recruitment/talent-pool/matches/${id}/selection`, { selected }, null as RecruitmentCandidateApplication | null, { successMessage: selected ? 'Candidate added to Selected.' : 'Candidate returned to ATS Matches.' })
 export const promoteTalentPoolMatch = (id: number) => postJson(`/api/recruitment/talent-pool/matches/${id}/promote`, {}, null as RecruitmentCandidateApplication | null, { successMessage: 'Selected candidate moved to the hiring pipeline.' })

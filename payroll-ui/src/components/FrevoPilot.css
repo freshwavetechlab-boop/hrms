@@ -1,0 +1,27 @@
+.pilot-drawer .ant-drawer-body{padding:24px;background:#f6f8fc}
+.pilot-workspace{display:flex;flex-direction:column;gap:18px;color:#152640}
+.pilot-intro h2,.pilot-result h2{margin:0 0 6px;font-size:24px}
+.pilot-intro p,.pilot-result header p{margin:0;color:#64748b;line-height:1.6}
+.pilot-composer{display:grid;grid-template-columns:260px 1fr auto;align-items:start;gap:12px;padding:18px;background:white;border:1px solid #dce5f1;border-radius:16px}
+.pilot-composer .ant-select{width:100%}
+.pilot-composer .ant-btn{height:44px}
+.pilot-run-status{display:flex;flex-direction:column;gap:9px;background:#edf4ff;padding:16px;border-radius:12px}
+.pilot-result{display:flex;flex-direction:column;gap:18px;padding:22px;background:white;border:1px solid #dce5f1;border-radius:16px}
+.pilot-result header{display:flex;justify-content:space-between;gap:16px;align-items:start}
+.pilot-result header>div:first-child{flex:1;min-width:0}
+.pilot-freshness{font-size:12px;color:#64748b;margin:0}
+.pilot-metrics,.pilot-charts,.pilot-insights{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:14px}
+.pilot-metrics section{padding:16px;border-radius:12px;background:#f3f1ff;display:flex;flex-direction:column;gap:7px}
+.pilot-metrics strong{font-size:26px;color:#4f35cd}
+.pilot-metrics small{font-size:11px;color:#64748b}
+.pilot-chart{min-width:0;border:1px solid #e2e8f0;border-radius:12px;padding:16px}
+.pilot-chart h4{margin:0 0 12px}
+.pilot-chart>div{height:300px;position:relative}
+.pilot-insights section{border:1px solid #e2e8f0;border-radius:12px;padding:16px;overflow-wrap:anywhere}
+.pilot-insights h4{margin:10px 0}
+.pilot-insights p{line-height:1.6}
+.pilot-insights small{color:#64748b}
+.pilot-result pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:#f6f8fc;font-size:12px}
+.pilot-workspace .ant-table-cell{white-space:normal!important;max-width:360px;overflow-wrap:anywhere}
+.pilot-workspace .ant-btn-link{white-space:normal;height:auto;text-align:left}
+@media(max-width:800px){.pilot-drawer .ant-drawer-body{padding:12px}.pilot-composer{grid-template-columns:1fr}.pilot-result{padding:14px}.pilot-result header{flex-direction:column}}

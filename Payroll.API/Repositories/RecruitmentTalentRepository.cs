@@ -18,6 +18,8 @@ public sealed class RecruitmentTalentRepository(
     RecruitmentSemanticScoringService semanticScoring,
     RecruitmentAiScoringService aiScoring,
     TemplatePdfService templatePdf,
+    BrandedOfferPdfService brandedOfferPdf,
+    EngineRuntimeMonitor engineMonitor,
     EmployeeRepository employees,
     WorkflowRepository workflows,
     ILogger<RecruitmentTalentRepository> logger)
@@ -949,6 +951,16 @@ FROM recruitment_open_positions WHERE Id=@Id", new { Id = request.PositionId });
         if (position is null || position.Status is "Closed" or "Cancelled" or "Filled") return (null, "Select an active open position.");
         if (position.ApprovedJobDescriptionVersionId is null or <= 0) return (null, "The selected position does not have an approved job description for ATS matching.");
 
+        // Local CPU inference (including an enabled failover) can exceed an ordinary
+        // HTTP batch window. Use the same durable ATS queue already used by large batches.
+        var providerSettings = await db.QueryAsync<RecruitmentAiScoringSettings>(new CommandDefinition(@"SELECT Id,ClientId,ProviderCode,IsActive,EnableAiScoring,IsPrimary,Priority
+FROM recruitment_ai_scoring_settings WHERE ClientId IN (@ClientId,0) AND IsActive=TRUE AND EnableAiScoring=TRUE",
+            new { position.ClientId }, commandTimeout: 5, cancellationToken: cancellationToken));
+        var autoSwitch = await db.ExecuteScalarAsync<bool?>(new CommandDefinition(@"SELECT AutoSwitchEnabled
+FROM recruitment_ai_runtime_settings WHERE ScopeClientId IN (@ClientId,0)
+ORDER BY (ScopeClientId=@ClientId) DESC LIMIT 1", new { position.ClientId }, commandTimeout: 5, cancellationToken: cancellationToken)) ?? false;
+        var localProviderEligible = RecruitmentAtsJobGuard.RequiresBackgroundScoring(providerSettings, position.ClientId, autoSwitch);
+
         var requestedCandidateIds = (request.CandidateIds ?? []).Where(id => id > 0).Distinct().ToArray();
         var candidates = (await db.QueryAsync<TalentPoolResumeRow>(@"SELECT c.Id CandidateId,resume.Id ResumeId
 FROM recruitment_candidates c
@@ -1001,7 +1013,7 @@ VALUES (@Code,@CandidateId,@PositionId,@ClientId,'TalentPoolMatch','Talent Pool'
             applicationIds.Add(applicationId);
         }
 
-        var synchronous = applicationIds.Count <= 20;
+        var synchronous = applicationIds.Count <= 20 && !localProviderEligible;
         foreach (var applicationId in applicationIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1173,6 +1185,76 @@ WHERE Id=@ReferralId AND ReferrerEmployeeId=@EmployeeId", new { ReferralId = ref
         return (existing, "");
     }
 
+    public async Task<long?> QueueManualScoreAsync(long applicationId, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var application = await ApplicationByIdAsync(db, applicationId, user);
+        if (application is null) return null;
+        // Serialize enqueue per application, including requests from other API replicas.
+        await using var transaction = await db.BeginTransactionAsync();
+        await db.ExecuteScalarAsync<long>("SELECT Id FROM recruitment_candidate_applications WHERE Id=@Id FOR UPDATE", new { Id = applicationId }, transaction);
+        var jobId = await QueueApplicationScoreAsync(db, applicationId, user, true, transaction);
+        if (jobId.HasValue)
+        {
+            var resume = await db.QueryFirstOrDefaultAsync<RecruitmentCandidateResume>(@"SELECT ParsingStatus,ParsingError FROM recruitment_candidate_resumes
+WHERE CandidateId=@CandidateId AND Id=COALESCE(@ResumeId,
+ (SELECT Id FROM recruitment_candidate_resumes WHERE CandidateId=@CandidateId AND IsPrimary=TRUE ORDER BY CreatedAt DESC,Id DESC LIMIT 1))",
+                new { application.CandidateId, application.ResumeId }, transaction);
+            var prerequisiteError = AtsResumePreconditionError(resume?.ParsingStatus, resume?.ParsingError);
+            if (prerequisiteError.Length > 0)
+                await db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_jobs SET Status='Failed',LastError=@Error,
+StartedAt=UTC_TIMESTAMP(),CompletedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP()
+WHERE Id=@Id AND Status IN ('Queued','Retry')", new { Id = jobId.Value, Error = prerequisiteError }, transaction);
+            await db.ExecuteAsync(@"INSERT INTO person_activity_events
+(ClientId,CandidateId,ModuleCode,EventType,EventTitle,EventSummary,ResourceType,ResourceId,ActorUserId,Visibility,IsSensitive,MetadataJson,OccurredAt)
+SELECT @ClientId,@CandidateId,'RECRUITMENT','ATS_MANUAL_REQUESTED','Manual ATS requested','','RecruitmentAtsJob',@JobId,@UserId,'HR',FALSE,'{}',UTC_TIMESTAMP()
+WHERE NOT EXISTS (SELECT 1 FROM person_activity_events WHERE ResourceType='RecruitmentAtsJob' AND ResourceId=@JobId AND EventType='ATS_MANUAL_REQUESTED')",
+                new { application.ClientId, application.CandidateId, JobId = jobId.Value.ToString(CultureInfo.InvariantCulture), UserId = user.Id }, transaction);
+        }
+        await transaction.CommitAsync();
+        return jobId;
+    }
+
+    public static string AtsResumePreconditionError(string? parseStatus, string? parsingError = null)
+    {
+        if (parseStatus is null) return "Upload or select a resume before scoring the application.";
+        if (parseStatus == "Parsed") return "";
+        // ParsingError already contains the parser's candidate-safe explanation,
+        // not its raw exception, resume text, provider response, or stack trace.
+        var reason = string.IsNullOrWhiteSpace(parsingError) ? parseStatus switch
+        {
+            "Disabled" => "Resume parsing is disabled for this job. Enable Resume Parsing and re-upload the resume.",
+            "Pending" or "Processing" => "Resume parsing has not completed. Wait for it to finish before running ATS.",
+            "Failed" => "Resume parsing failed. Re-upload a readable PDF or DOCX and retry.",
+            _ => "Review the resume and required candidate details, then re-upload or save a reviewed intake before running ATS."
+        } : parsingError.Trim();
+        // Retain the status prefix used by the queue's terminal-failure classifier.
+        // Bound the whole message to the existing LastError VARCHAR(1000) column.
+        return Truncate($"Resume parsing status is {parseStatus}. {reason}", 1000);
+    }
+
+    public async Task<List<EngineJobObservation>> GetAtsRuntimeActivityAsync(CancellationToken cancellationToken)
+    {
+        await using var db = Db();
+        await db.OpenAsync(cancellationToken);
+        // Bounded primary-key scan, no candidate details or failure contents.
+        return (await db.QueryAsync<EngineJobObservation>(new CommandDefinition(@"SELECT recent.Status,recent.StartedAt,recent.CompletedAt,recent.UpdatedAt
+FROM (SELECT Id,Status,StartedAt,CompletedAt,UpdatedAt FROM recruitment_ats_scoring_jobs ORDER BY Id DESC LIMIT 2000) recent
+WHERE recent.Status IN ('Queued','Retry','Processing') OR recent.UpdatedAt>=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 MINUTE)",
+            commandTimeout: 3, cancellationToken: cancellationToken))).ToList();
+    }
+
+    public async Task<RecruitmentAtsJobStatus?> GetScoreJobAsync(long applicationId, long jobId, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        if (await ApplicationByIdAsync(db, applicationId, user) is null) return null;
+        return await db.QueryFirstOrDefaultAsync<RecruitmentAtsJobStatus>(
+            "SELECT Id,ApplicationId,Status,LastError FROM recruitment_ats_scoring_jobs WHERE Id=@JobId AND ApplicationId=@ApplicationId",
+            new { JobId = jobId, ApplicationId = applicationId });
+    }
+
     public async Task<(RecruitmentApplicationScore? Row, string Error)> ScoreApplicationAsync(long applicationId, AuthUser user)
     {
         await using var db = Db();
@@ -1258,10 +1340,12 @@ WHERE Id=@ResumeId AND CandidateId=@CandidateId AND ParsingStatus<>'Parsed'", li
                     return (null, string.IsNullOrWhiteSpace(accessError) ? "The uploaded resume could not be opened for parsing." : accessError!);
                 await using var handle = await attachmentStorage.OpenReadAsync(server, attachment.StorageKey, cancellationToken);
                 var jobContext = ResumeJobContextParts(await ResumeJobContextAsync(db, link.PositionId, link.ClientId));
-                var parse = link.EnableAiParsing
-                    ? await resumeParser.ParseAsync(handle.Stream, attachment.OriginalFileName, attachment.FileSizeBytes,
+                var parse = await engineMonitor.ObserveAsync("resume-parser", () => link.EnableAiParsing
+                    ? resumeParser.ParseAsync(handle.Stream, attachment.OriginalFileName, attachment.FileSizeBytes,
                         link.ClientId, jobContext, cancellationToken)
-                    : await resumeParser.ParseAsync(handle.Stream, attachment.OriginalFileName, attachment.FileSizeBytes, cancellationToken);
+                    : resumeParser.ParseAsync(handle.Stream, attachment.OriginalFileName, attachment.FileSizeBytes, cancellationToken),
+                    parse => !parse.Status.Equals("Failed", StringComparison.OrdinalIgnoreCase),
+                    new EngineActivityContext("Parse saved candidate resume", CandidateId: link.CandidateId, PositionId: link.PositionId, ClientId: link.ClientId));
                 var candidate = await CandidateByIdAsync(db, link.CandidateId);
                 if (candidate is null) return (null, "The candidate profile could not be prepared for ATS review.");
 
@@ -1375,12 +1459,18 @@ LIMIT 1");
         bool enableAiParsing,
         CancellationToken cancellationToken)
     {
-        var local = await resumeParser.ParseAsync(file, cancellationToken);
-        if (!enableAiParsing) return local;
-        await using var db = Db();
-        await db.OpenAsync(cancellationToken);
-        var jobContext = ResumeJobContextParts(await ResumeJobContextAsync(db, positionId, clientId));
-        return await resumeParser.EnhanceAsync(file, local, clientId, jobContext, cancellationToken);
+        // Public form file routes do not identify whether the field is a resume.
+        // Observe only this actual parsing branch, never unrelated attachments.
+        return await engineMonitor.ObserveAsync("resume-parser", async () =>
+        {
+            var local = await resumeParser.ParseAsync(file, cancellationToken);
+            if (!enableAiParsing) return local;
+            await using var db = Db();
+            await db.OpenAsync(cancellationToken);
+            var jobContext = ResumeJobContextParts(await ResumeJobContextAsync(db, positionId, clientId));
+            return await resumeParser.EnhanceAsync(file, local, clientId, jobContext, cancellationToken);
+        }, parse => !parse.Status.Equals("Failed", StringComparison.OrdinalIgnoreCase),
+            new EngineActivityContext("Parse resume draft", "Position", positionId.ToString(CultureInfo.InvariantCulture), PositionId: positionId, ClientId: clientId));
     }
 
     public async Task<(RecruitmentApplicationScore? Row, string Error)> OverrideScoreAsync(long scoreId, OverrideApplicationScoreRequest request, AuthUser user)
@@ -1735,7 +1825,7 @@ WHERE o.Id=@Id AND (@ClientId IS NULL OR o.ClientId=@ClientId)", new { Id = id, 
         await db.OpenAsync(cancellationToken);
         var context = await db.QueryFirstOrDefaultAsync<OfferLetterContext>(@"SELECT o.*,a.CandidateId,
 c.FirstName CandidateFirstName,c.LastName CandidateLastName,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,
-p.PositionTitle,COALESCE(client.Name,'') ClientName,
+p.PositionTitle,p.JobLocation,c.Email CandidateEmail,c.Phone CandidatePhone,COALESCE(client.Name,'') ClientName,
 t.Id TemplateId,t.ClientId TemplateClientId,t.TemplateType,t.SubjectTemplate,t.BodyTemplate,t.IsActive TemplateIsActive
 FROM recruitment_offers o
 JOIN recruitment_candidate_applications a ON a.Id=o.ApplicationId
@@ -1745,7 +1835,8 @@ LEFT JOIN clients client ON client.Id=o.ClientId
 LEFT JOIN recruitment_templates t ON t.Id=o.OfferTemplateId
 WHERE o.Id=@OfferId AND (@ClientId IS NULL OR o.ClientId=@ClientId)", new { OfferId = offerId, user.ClientId });
         if (context is null) return (null, "Offer was not found.");
-        if (!string.Equals(context.Status, "Draft", StringComparison.OrdinalIgnoreCase))
+        var branded = context.BodyTemplate.Contains(BrandedOfferPdfService.Marker, StringComparison.Ordinal);
+        if (context.Status != "Draft" && !(branded && context.Status == "Approved"))
             return (null, "Generate or regenerate the offer letter while the offer is still in Draft status.");
         if (context.TemplateId is null or <= 0 || !context.TemplateIsActive
             || !(context.TemplateType ?? "").Contains("offer", StringComparison.OrdinalIgnoreCase)
@@ -1753,6 +1844,7 @@ WHERE o.Id=@OfferId AND (@ClientId IS NULL OR o.ClientId=@ClientId)", new { Offe
             return (null, "Select an active Offer Letter template in the current pipeline Offer stage, then save the draft again.");
 
         var culture = CultureInfo.GetCultureInfo("en-IN");
+        var organization = await db.QueryFirstOrDefaultAsync<Organization>("SELECT * FROM organizations ORDER BY Id LIMIT 1");
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["offerNumber"] = context.OfferNumber,
@@ -1762,17 +1854,62 @@ WHERE o.Id=@OfferId AND (@ClientId IS NULL OR o.ClientId=@ClientId)", new { Offe
             ["positionTitle"] = context.PositionTitle,
             ["clientName"] = context.ClientName,
             ["companyName"] = context.ClientName,
+            ["organizationName"] = organization?.Name ?? "",
+            ["candidateEmail"] = context.CandidateEmail,
+            ["candidatePhone"] = context.CandidatePhone,
+            ["jobLocation"] = context.JobLocation,
+            ["ctcInWords"] = BrandedOfferPdfService.AmountInWords(context.OfferedCtc),
             ["currency"] = context.Currency,
             ["offeredCtc"] = context.OfferedCtc.ToString("0.##", CultureInfo.InvariantCulture),
             ["formattedCtc"] = context.OfferedCtc.ToString("N2", culture),
             ["proposedJoiningDate"] = context.ProposedJoiningDate.ToString("dd MMMM yyyy", culture),
             ["joiningDate"] = context.ProposedJoiningDate.ToString("dd MMMM yyyy", culture),
             ["expiryDate"] = context.ExpiryDate?.ToString("dd MMMM yyyy", culture) ?? "",
-            ["offerDate"] = DateTime.Today.ToString("dd MMMM yyyy", culture),
+            ["offerDate"] = DateTime.Today.ToString(branded ? "dd-MM-yyyy" : "dd MMMM yyyy", culture),
             ["date"] = DateTime.Today.ToString("dd MMMM yyyy", culture),
             ["remarks"] = context.Remarks ?? ""
         };
-        var (bytes, renderError) = templatePdf.Create(context.SubjectTemplate, context.BodyTemplate, values);
+        byte[]? bytes;
+        string renderError;
+        if (branded)
+        {
+            var (text, textError) = templatePdf.RenderOfferText(context.BodyTemplate, values);
+            if (text is null) return (null, textError);
+            var logo = organization?.LogoDataUrl ?? "";
+            if (!logo.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase) || !logo.Contains(";base64,"))
+                return (null, "Upload the organization's PNG or JPEG logo before generating the branded offer letter.");
+            byte[]? signature = null;
+            if (context.Status == "Approved")
+            {
+                var authorizedUserId = configuration.GetValue<int>("OfferSigning:Uidai:FinalApproverUserId");
+                var authorizedClientId = configuration.GetValue<int>("OfferSigning:Uidai:ClientId");
+                if (authorizedUserId <= 0 || authorizedClientId != context.ClientId)
+                    return (null, "Configure this client's authorized final signatory before issuing its signed offer letter.");
+                var approved = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM workflowinstances instance
+JOIN workflowtasks task ON task.InstanceId=instance.Id
+JOIN workflowstages stage ON stage.Id=task.StageId
+WHERE instance.Id=@WorkflowInstanceId AND instance.ResourceType='RecruitmentOffer'
+AND instance.ResourceId=@OfferId AND instance.Status='Approved'
+AND task.Status='Approved' AND task.ApproverUserId=@AuthorizedUserId
+AND NOT EXISTS (SELECT 1 FROM workflowstages later WHERE later.WorkflowId=instance.WorkflowId AND later.StageOrder>stage.StageOrder)",
+                    new { context.WorkflowInstanceId, OfferId = context.Id.ToString(CultureInfo.InvariantCulture), AuthorizedUserId = authorizedUserId });
+                if (approved == 0) return (null, "The authorized signatory has not approved the final offer workflow stage.");
+                var approvalPayload = await db.ExecuteScalarAsync<string>("SELECT PayloadJson FROM workflowinstances WHERE Id=@Id", new { Id = context.WorkflowInstanceId });
+                if (!BrandedOfferPdfService.MatchesApprovedTerms(approvalPayload, context.BodyTemplate, context.OfferedCtc, context.Currency, context.ProposedJoiningDate, context.TemplateId.Value))
+                    return (null, "The offer terms or template differ from the approved version. Obtain a fresh final approval before signing.");
+                var signaturePath = BrandedOfferPdfService.SigningAssetPath(configuration["OfferSigning:Uidai:SignaturePath"]);
+                if (!File.Exists(signaturePath))
+                    return (null, "The approved signatory's private seal/signature file is not configured on this API server.");
+                signature = await File.ReadAllBytesAsync(signaturePath, cancellationToken);
+            }
+            try { bytes = brandedOfferPdf.Create(text, Convert.FromBase64String(logo[(logo.IndexOf(',') + 1)..]), signature); renderError = ""; }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogError(exception, "Branded offer PDF generation failed for offer {OfferId}.", offerId);
+                return (null, "The branded offer could not be rendered. Check the organization logo and private signing asset.");
+            }
+        }
+        else (bytes, renderError) = templatePdf.Create(context.SubjectTemplate, context.BodyTemplate, values);
         if (bytes is null) return (null, renderError);
 
         var fieldConfigurationId = await db.ExecuteScalarAsync<long?>(@"SELECT field.id
@@ -1808,7 +1945,7 @@ ORDER BY CASE WHEN field.client_id=@ClientId THEN 0 ELSE 1 END,field.display_ord
 
         var linked = await db.ExecuteAsync(@"UPDATE recruitment_offers
 SET OfferLetterAttachmentPublicId=@PublicId,UpdatedAt=UTC_TIMESTAMP()
-WHERE Id=@Id AND Status='Draft'", new { Id = context.Id, PublicId = upload.Attachment.PublicId.ToString() });
+WHERE Id=@Id AND Status=@ExpectedStatus AND WorkflowInstanceId <=> @WorkflowInstanceId", new { Id = context.Id, PublicId = upload.Attachment.PublicId.ToString(), ExpectedStatus = context.Status, context.WorkflowInstanceId });
         if (linked == 0)
         {
             await attachments.DeleteAsync(upload.Attachment.PublicId, user, ipAddress, userAgent);
@@ -1995,6 +2132,14 @@ CandidateResponseValidityDays=@CandidateResponseValidityDays,UpdatedAt=UTC_TIMES
                 offer = (await OfferRowsAsync(db, user, offer.ApplicationId, null)).First(row => row.Id == id);
             }
 
+            var brandedTemplate = await db.ExecuteScalarAsync<string?>(@"SELECT template.BodyTemplate FROM recruitment_offers offer
+JOIN recruitment_templates template ON template.Id=offer.OfferTemplateId WHERE offer.Id=@Id", new { Id = id });
+            if (brandedTemplate?.Contains(BrandedOfferPdfService.Marker, StringComparison.Ordinal) == true && offer.Status == "Approved")
+            {
+                var signed = await GenerateOfferLetterAsync(id, user, "", "Offer release", CancellationToken.None);
+                if (signed.Row is null) return (null, signed.Error);
+                offer = signed.Row;
+            }
             if (!offer.Status.Equals("Approved", StringComparison.OrdinalIgnoreCase))
             {
                 long? workflowId = null;
@@ -2027,18 +2172,23 @@ CandidateResponseValidityDays=@CandidateResponseValidityDays,UpdatedAt=UTC_TIMES
                     }
                 }
 
+                if (brandedTemplate?.Contains(BrandedOfferPdfService.Marker, StringComparison.Ordinal) == true && workflowId is not > 0)
+                    return (null, "A final signatory approval workflow is required before releasing this branded offer.");
                 if (workflowId is > 0)
                 {
                     if (workflowId > int.MaxValue) return (null, "The configured offer approval workflow identifier is invalid.");
                     var workflowRequestorUserId = await ResolveOfferWorkflowRequestorAsync(db, offer.ApplicationId, user.Id);
                     if (workflowRequestorUserId <= 0)
                         return (null, "Offer approval could not start because no active hiring requestor, recruiter, or fallback user is available.");
+                    var approvalPayload = JsonSerializer.SerializeToNode(offer)!.AsObject();
+                    if (brandedTemplate?.Contains(BrandedOfferPdfService.Marker, StringComparison.Ordinal) == true)
+                        approvalPayload["OfferLetterTemplateHash"] = BrandedOfferPdfService.TemplateHash(brandedTemplate);
                     var instance = await workflows.StartAsync(new StartWorkflowRequest
                     {
                         WorkflowId = checked((int)workflowId.Value),
                         ResourceType = "RecruitmentOffer",
                         ResourceId = id.ToString(CultureInfo.InvariantCulture),
-                        PayloadJson = JsonSerializer.Serialize(offer)
+                        PayloadJson = approvalPayload.ToJsonString()
                     }, workflowRequestorUserId);
                     if (instance is null)
                         return (null, approvalPolicy == "BudgetVariance"
@@ -2107,6 +2257,16 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         if (offer is null) return;
         if (workflowInstanceId.HasValue && offer.WorkflowInstanceId != workflowInstanceId) return;
         await db.ExecuteAsync("UPDATE recruitment_offers SET Status=@Status,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = offerId, Status = offerStatus });
+        if (offerStatus == "Approved")
+        {
+            var body = await db.ExecuteScalarAsync<string?>("SELECT BodyTemplate FROM recruitment_templates WHERE Id=@Id", new { Id = offer.OfferTemplateId });
+            if (body?.Contains(BrandedOfferPdfService.Marker, StringComparison.Ordinal) == true)
+            {
+                var generated = await GenerateOfferLetterAsync(offerId, actor, "", "Final offer approval", CancellationToken.None);
+                if (generated.Row is null)
+                    logger.LogWarning("Approved offer {OfferId} needs signed-letter generation before release: {Reason}", offerId, generated.Error);
+            }
+        }
         var application = await ApplicationByIdAsync(db, offer.ApplicationId, actor);
         if (application is not null)
             await WriteActivityAsync(db, offer.ClientId, application.CandidateId, null, "RECRUITMENT", "OFFER_APPROVAL_UPDATED", $"Offer approval {workflowStatus}", "", "RecruitmentOffer", offerId.ToString(CultureInfo.InvariantCulture), actor);
@@ -2681,48 +2841,76 @@ WHERE resume.CandidateId=@CandidateId AND attachment.is_deleted=FALSE
         }
     }
 
-    private static async Task<long?> QueueApplicationScoreAsync(MySqlConnection db, long applicationId, AuthUser user, bool force)
+    private static async Task<long?> QueueApplicationScoreAsync(MySqlConnection db, long applicationId, AuthUser user, bool force, MySqlTransaction? transaction = null)
     {
         var existing = await db.ExecuteScalarAsync<long?>(@"SELECT Id FROM recruitment_ats_scoring_jobs
 WHERE ApplicationId=@ApplicationId AND Status IN ('Queued','Retry','Processing')
-ORDER BY Id DESC LIMIT 1", new { ApplicationId = applicationId });
+ORDER BY Id DESC LIMIT 1", new { ApplicationId = applicationId }, transaction);
         if (existing.HasValue)
         {
             if (force)
-                await db.ExecuteAsync("UPDATE recruitment_ats_scoring_jobs SET ForceScore=TRUE,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = existing.Value });
+                await db.ExecuteAsync("UPDATE recruitment_ats_scoring_jobs SET ForceScore=TRUE,AvailableAt=IF(Status='Retry',UTC_TIMESTAMP(),AvailableAt),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = existing.Value }, transaction);
             return existing;
         }
         return await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_ats_scoring_jobs
 (ApplicationId,RequestedByUserId,RequestedByClientId,ForceScore,Status,AvailableAt)
 VALUES (@ApplicationId,@UserId,@ClientId,@Force,'Queued',UTC_TIMESTAMP());SELECT LAST_INSERT_ID();",
-            new { ApplicationId = applicationId, UserId = user.Id, user.ClientId, Force = force });
+            new { ApplicationId = applicationId, UserId = user.Id, user.ClientId, Force = force }, transaction);
     }
 
-    public async Task<(bool Processed, long? ApplicationId, AuthUser? User)> ProcessNextAtsScoringJobAsync(CancellationToken cancellationToken)
+    public async Task<(bool Processed, long? ApplicationId, AuthUser? User, bool HumanConfirmed)> ProcessNextAtsScoringJobAsync(CancellationToken cancellationToken)
     {
         await using var db = Db();
         await db.OpenAsync(cancellationToken);
-        await db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_jobs SET Status='Retry',AvailableAt=UTC_TIMESTAMP(),
-LastError='Recovered after an interrupted worker execution.',UpdatedAt=UTC_TIMESTAMP()
-WHERE Status='Processing' AND StartedAt<DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 MINUTE)");
+        await db.ExecuteAsync(new CommandDefinition(RecruitmentAtsJobGuard.RecoverySql,
+            new { LockPrefix = RecruitmentAtsJobGuard.LockPrefix(db.Database) }, commandTimeout: 5, cancellationToken: cancellationToken));
         var jobId = await db.ExecuteScalarAsync<long?>(@"SELECT Id FROM recruitment_ats_scoring_jobs
 WHERE Status IN ('Queued','Retry') AND AvailableAt<=UTC_TIMESTAMP()
 ORDER BY AvailableAt,Id LIMIT 1");
-        if (!jobId.HasValue) return (false, null, null);
+        if (!jobId.HasValue) return (false, null, null, false);
         var job = await db.QueryFirstOrDefaultAsync<AtsScoringJobRow>("SELECT * FROM recruitment_ats_scoring_jobs WHERE Id=@Id", new { Id = jobId.Value });
         var scored = await ProcessAtsScoringJobAsync(jobId.Value, cancellationToken);
+        var manualActor = scored ? await db.ExecuteScalarAsync<int?>(@"SELECT ActorUserId FROM person_activity_events
+WHERE ResourceType='RecruitmentAtsJob' AND ResourceId=@JobId AND EventType='ATS_MANUAL_REQUESTED' ORDER BY Id DESC LIMIT 1",
+            new { JobId = jobId.Value.ToString(CultureInfo.InvariantCulture) }) : null;
         return scored && job is not null
-            ? (true, job.ApplicationId, new AuthUser { Id = job.RequestedByUserId, ClientId = job.RequestedByClientId, IsActive = true })
-            : (true, null, null);
+            ? (true, job.ApplicationId, new AuthUser { Id = manualActor ?? job.RequestedByUserId, ClientId = job.RequestedByClientId, IsActive = true }, manualActor.HasValue)
+            : (true, null, null, false);
     }
 
     private async Task<bool> ProcessAtsScoringJobAsync(long jobId, CancellationToken cancellationToken)
     {
-        await using var db = Db();
+        // A dedicated session owns the advisory lock for the entire claim/score/save.
+        // Non-pooled disposal physically closes the session even if explicit release
+        // fails, so a held lock can never leak into an idle connection-pool entry.
+        var connection = new MySqlConnectionStringBuilder(configuration.GetConnectionString("Default")
+            ?? throw new InvalidOperationException("The recruitment database connection is not configured.")) { Pooling = false };
+        await using var db = new MySqlConnection(connection.ConnectionString);
         await db.OpenAsync(cancellationToken);
-        var claimed = await db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_jobs SET Status='Processing',
+        var lockName = RecruitmentAtsJobGuard.LockName(db.Database, jobId);
+        return await RecruitmentAtsJobGuard.WithLockAsync(
+            async token => await db.ExecuteScalarAsync<int?>(new CommandDefinition("SELECT GET_LOCK(@LockName,0)",
+                new { LockName = lockName }, commandTimeout: 5, cancellationToken: token)) == 1,
+            async () =>
+            {
+                try
+                {
+                    await db.ExecuteScalarAsync<int?>(new CommandDefinition("SELECT RELEASE_LOCK(@LockName)",
+                        new { LockName = lockName }, commandTimeout: 5));
+                }
+                catch (Exception exception)
+                {
+                    logger.LogWarning("ATS job {JobId} lock release failed ({Type}); its dedicated database session will close.", jobId, exception.GetType().Name);
+                }
+            },
+            () => ProcessLockedAtsScoringJobAsync(db, jobId, cancellationToken), cancellationToken);
+    }
+
+    private async Task<bool> ProcessLockedAtsScoringJobAsync(MySqlConnection db, long jobId, CancellationToken cancellationToken)
+    {
+        var claimed = await db.ExecuteAsync(new CommandDefinition(@"UPDATE recruitment_ats_scoring_jobs SET Status='Processing',
 AttemptCount=AttemptCount+1,StartedAt=UTC_TIMESTAMP(),LastError='',UpdatedAt=UTC_TIMESTAMP()
-WHERE Id=@Id AND Status IN ('Queued','Retry') AND AvailableAt<=UTC_TIMESTAMP()", new { Id = jobId });
+WHERE Id=@Id AND Status IN ('Queued','Retry') AND AvailableAt<=UTC_TIMESTAMP()", new { Id = jobId }, commandTimeout: 5, cancellationToken: cancellationToken));
         if (claimed == 0)
         {
             var status = await db.ExecuteScalarAsync<string>("SELECT Status FROM recruitment_ats_scoring_jobs WHERE Id=@Id", new { Id = jobId });
@@ -2731,26 +2919,34 @@ WHERE Id=@Id AND Status IN ('Queued','Retry') AND AvailableAt<=UTC_TIMESTAMP()",
 
         var job = await db.QueryFirstOrDefaultAsync<AtsScoringJobRow>("SELECT * FROM recruitment_ats_scoring_jobs WHERE Id=@Id", new { Id = jobId });
         if (job is null) return false;
+        using var observation = engineMonitor.Observe("ats-scoring", new EngineActivityContext("Score candidate against job", "ATS job", job.Id.ToString(CultureInfo.InvariantCulture),
+            ApplicationId: job.ApplicationId, QueueWaitMs: job.StartedAt.HasValue ? Math.Max(0,(job.StartedAt.Value-job.AvailableAt).TotalMilliseconds) : null, Attempt: job.AttemptCount));
         try
         {
             var user = new AuthUser { Id = job.RequestedByUserId, ClientId = job.RequestedByClientId, IsActive = true };
-            var (score, error) = await ScoreApplicationInternalAsync(db, job.ApplicationId, user, job.ForceScore);
+            var (score, error) = await ScoreApplicationInternalAsync(db, job.ApplicationId, user, job.ForceScore, observation);
             if (score is not null)
             {
                 await db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_jobs SET Status='Completed',CompletedAt=UTC_TIMESTAMP(),
 LastError='',UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = jobId });
+                observation.Succeeded = true;
                 return true;
             }
 
-            var terminal = error.Contains("disabled", StringComparison.OrdinalIgnoreCase)
+            var terminal = error.Contains("Resume parsing status", StringComparison.OrdinalIgnoreCase)
+                || error.Contains("is required", StringComparison.OrdinalIgnoreCase)
+                || error.Contains("Upload or select a resume", StringComparison.OrdinalIgnoreCase)
+                || error.Contains("disabled", StringComparison.OrdinalIgnoreCase)
                 || error.Contains("not found", StringComparison.OrdinalIgnoreCase)
                 || error.Contains("requires", StringComparison.OrdinalIgnoreCase)
                 || error.Contains("cannot be recalculated", StringComparison.OrdinalIgnoreCase);
             await CompleteFailedAtsJobAsync(db, job, error, terminal);
+            observation.Outcome = terminal || job.AttemptCount>=3 ? null : "Retry";
             return false;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            observation.Outcome = "Cancelled";
             await db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_jobs SET Status='Retry',
 AvailableAt=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 MINUTE),LastError='Worker cancellation interrupted scoring.',
 UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = jobId });
@@ -2760,6 +2956,7 @@ UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = jobId });
         {
             logger.LogError(exception, "ATS scoring job {JobId} failed for application {ApplicationId}.", job.Id, job.ApplicationId);
             await CompleteFailedAtsJobAsync(db, job, "ATS scoring failed unexpectedly; the queued job will retry.", false);
+            observation.Outcome = job.AttemptCount>=3 ? null : "Retry";
             return false;
         }
     }
@@ -2780,14 +2977,14 @@ LastError=@Error,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new
         });
     }
 
-    private async Task<(RecruitmentApplicationScore? Row, string Error)> ScoreApplicationInternalAsync(MySqlConnection db, long applicationId, AuthUser user, bool force)
+    private async Task<(RecruitmentApplicationScore? Row, string Error)> ScoreApplicationInternalAsync(MySqlConnection db, long applicationId, AuthUser user, bool force, EngineRuntimeMonitor.Observation observation)
     {
         var data = await db.QueryFirstOrDefaultAsync<ScoringRow>(@"SELECT a.Id ApplicationId,a.CandidateId,a.PositionId,a.ClientId,a.ApplicationType,
 a.ResumeId ApplicationResumeId,a.CurrentStage,c.CurrentTitle,c.TotalExperienceMonths,c.CurrentLocation,c.NoticePeriodDays,
 c.HighestQualification,p.PositionCode,p.PositionTitle,p.PositionCategory,p.RequiredSkills,p.PreferredSkills,p.ExperienceRange,
 p.JobLocation,r.Qualification,r.Certifications,jd.Id JobDescriptionVersionId,COALESCE(jd.VersionNumber,0) JobDescriptionVersionNumber,
 COALESCE(NULLIF(jd.Title,''),p.PositionTitle) ScoringPositionTitle,cr.Id EffectiveResumeId,COALESCE(cr.ParsedText,'') ResumeText,
-COALESCE(cr.ParsingStatus,'Pending') ParsingStatus
+COALESCE(cr.ParsingStatus,'Pending') ParsingStatus,COALESCE(cr.ParsingError,'') ParsingError
 FROM recruitment_candidate_applications a
 JOIN recruitment_candidates c ON c.Id=a.CandidateId
 JOIN recruitment_open_positions p ON p.Id=a.PositionId
@@ -2801,8 +2998,8 @@ WHERE a.Id=@Id", new { Id = applicationId });
         if ((data.CurrentStage is "Rejected" or "Withdrawn" or "Joined") || data.CurrentStage.StartsWith("Offer", StringComparison.OrdinalIgnoreCase)) return (null, $"ATS score cannot be recalculated after the application reaches {data.CurrentStage} stage.");
         var features = await FeatureSettingsAsync(db, data.ClientId);
         if (!features.EnableAtsScoring) return (null, "ATS scoring is disabled in Recruitment Administration.");
-        if (data.EffectiveResumeId <= 0) return (null, "Upload or select a resume before scoring the application.");
-        if (data.ParsingStatus != "Parsed") return (null, $"Resume parsing status is {data.ParsingStatus}. A parsed resume is required for ATS scoring.");
+        var resumeError = AtsResumePreconditionError(data.EffectiveResumeId <= 0 ? null : data.ParsingStatus, data.ParsingError);
+        if (resumeError.Length > 0) return (null, resumeError);
         var pipelineSelection = await db.QueryFirstOrDefaultAsync<PipelineAtsScoringSelection>(@"SELECT configuration.ScoringProfileId,configuration.RequireHumanConfirmation
 FROM recruitment_application_pipeline_instances pipelineInstance
 JOIN recruitment_application_stage_instances stageInstance ON stageInstance.Id=pipelineInstance.CurrentStageInstanceId
@@ -2922,6 +3119,7 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
         };
         var ratios = new Dictionary<string, decimal>(localRatios, StringComparer.OrdinalIgnoreCase);
         var aiSettings = profile.EnableAiScoring ? await aiScoring.GetAsync(user, data.ClientId) : new RecruitmentAiScoringSettings();
+        var aiStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         var aiAnalysis = profile.EnableAiScoring
             ? await aiScoring.AnalyzeAsync(data.ClientId, new RecruitmentAiAnalysisRequest
             {
@@ -2936,6 +3134,7 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
                 ResumeText = data.ResumeText
             })
             : new RecruitmentAiAnalysis { Status = "NotEnabled" };
+        if(profile.EnableAiScoring) observation.RecordAiPhase(System.Diagnostics.Stopwatch.GetElapsedTime(aiStarted).TotalMilliseconds,aiAnalysis.Status);
         var aiBlendWeight = aiAnalysis.Applied && aiSettings.EnableAiScoring ? Math.Clamp(aiSettings.AiBlendWeight, 0m, 30m) : 0m;
         var aiBlendRatio = aiBlendWeight / 100m;
         if (aiBlendRatio > 0)
@@ -3067,16 +3266,18 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
         return (result, "");
     }
 
-    private static async Task<IEnumerable<RecruitmentCandidateApplication>> ApplicationsAsync(MySqlConnection db, AuthUser user, long? positionId = null, long? candidateId = null, string stage = "")
+    private static async Task<IEnumerable<RecruitmentCandidateApplication>> ApplicationsAsync(MySqlConnection db, AuthUser user, long? positionId = null, long? candidateId = null, string stage = "", long? applicationId = null)
     {
-        var rows = await db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT a.*,c.CandidateCode,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,c.Email CandidateEmail,c.Phone CandidatePhone,p.PositionCode,p.PositionTitle,p.JobLocation,cl.Name ClientName,COALESCE(u.DisplayName,u.Email,'') RecruiterName,COALESCE(s.OverrideScore,s.TotalScore) AtsScore,COALESCE(s.ShortlistThreshold,60) AtsShortlistThreshold,COALESCE(s.ScoreStatus,'Not Scored') ScoreStatus,(s.OverrideScore IS NOT NULL) AtsOverridden,COALESCE(posting.AutoRunAts,FALSE) AutoRunAts,(c.ClientId=@GlobalClientId) IsInGlobalTalentPool,EXISTS(SELECT 1 FROM recruitment_candidate_resumes availableResume JOIN entity_attachments availableAttachment ON availableAttachment.public_id=CAST(availableResume.AttachmentPublicId AS CHAR(36)) AND availableAttachment.is_current=TRUE AND availableAttachment.is_deleted=FALSE WHERE availableResume.Id=a.ResumeId AND availableResume.CandidateId=a.CandidateId) ResumeAvailable
+        var rows = await db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT a.*,c.CandidateCode,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,c.Email CandidateEmail,c.Phone CandidatePhone,p.PositionCode,p.PositionTitle,p.JobLocation,cl.Name ClientName,COALESCE(u.DisplayName,u.Email,'') RecruiterName,COALESCE(s.OverrideScore,s.TotalScore) AtsScore,COALESCE(s.ShortlistThreshold,60) AtsShortlistThreshold,COALESCE(s.ScoreStatus,'Not Scored') ScoreStatus,(s.OverrideScore IS NOT NULL) AtsOverridden,COALESCE(posting.AutoRunAts,FALSE) AutoRunAts,(c.ClientId=@GlobalClientId) IsInGlobalTalentPool,EXISTS(SELECT 1 FROM recruitment_candidate_resumes availableResume JOIN entity_attachments availableAttachment ON availableAttachment.public_id=CAST(availableResume.AttachmentPublicId AS CHAR(36)) AND availableAttachment.is_current=TRUE AND availableAttachment.is_deleted=FALSE WHERE availableResume.Id=a.ResumeId AND availableResume.CandidateId=a.CandidateId) ResumeAvailable,
+(SELECT job.Status FROM recruitment_ats_scoring_jobs job WHERE job.ApplicationId=a.Id ORDER BY job.Id DESC LIMIT 1) AtsJobStatus,
+(SELECT job.LastError FROM recruitment_ats_scoring_jobs job WHERE job.ApplicationId=a.Id ORDER BY job.Id DESC LIMIT 1) AtsJobError
 FROM recruitment_candidate_applications a JOIN recruitment_candidates c ON c.Id=a.CandidateId JOIN recruitment_open_positions p ON p.Id=a.PositionId LEFT JOIN clients cl ON cl.Id=a.ClientId LEFT JOIN authusers u ON u.Id=a.RecruiterUserId LEFT JOIN recruitment_application_scores s ON s.ApplicationId=a.Id AND s.IsCurrent=TRUE LEFT JOIN recruitment_job_postings posting ON posting.Id=a.JobPostingId
-WHERE a.ApplicationType='Application' AND (@ClientId IS NULL OR a.ClientId=@ClientId) AND (@PositionId IS NULL OR a.PositionId=@PositionId) AND (@CandidateId IS NULL OR a.CandidateId=@CandidateId) AND (@Stage='' OR a.CurrentStage=@Stage) ORDER BY a.UpdatedAt DESC", new { ClientId = user.ClientId, PositionId = positionId, CandidateId = candidateId, Stage = stage ?? "", GlobalClientId = GlobalTalentPoolClientId });
+WHERE a.ApplicationType='Application' AND (@ApplicationId IS NULL OR a.Id=@ApplicationId) AND (@ClientId IS NULL OR a.ClientId=@ClientId) AND (@PositionId IS NULL OR a.PositionId=@PositionId) AND (@CandidateId IS NULL OR a.CandidateId=@CandidateId) AND (@Stage='' OR a.CurrentStage=@Stage) ORDER BY a.UpdatedAt DESC", new { ClientId = user.ClientId, PositionId = positionId, CandidateId = candidateId, Stage = stage ?? "", ApplicationId = applicationId, GlobalClientId = GlobalTalentPoolClientId });
         return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
     }
 
     private static async Task<RecruitmentCandidateApplication?> ApplicationByIdAsync(MySqlConnection db, long id, AuthUser user) =>
-        (await ApplicationsAsync(db, user)).FirstOrDefault(row => row.Id == id);
+        (await ApplicationsAsync(db, user, applicationId: id)).FirstOrDefault();
 
     private static async Task<IEnumerable<RecruitmentInterview>> InterviewRowsAsync(MySqlConnection db, AuthUser user, long? applicationId, long[]? applicationIds, int? panelUserId = null)
     {
@@ -4607,6 +4808,10 @@ CREATE TABLE IF NOT EXISTS person_activity_events (
         public string Remarks { get; set; } = "";
         public string CandidateFirstName { get; set; } = "";
         public string CandidateLastName { get; set; } = "";
+        public string CandidateEmail { get; set; } = "";
+        public string CandidatePhone { get; set; } = "";
+        public string JobLocation { get; set; } = "";
+        public long? WorkflowInstanceId { get; set; }
         public string CandidateName { get; set; } = "";
         public string PositionTitle { get; set; } = "";
         public string ClientName { get; set; } = "";
@@ -4728,6 +4933,7 @@ CREATE TABLE IF NOT EXISTS person_activity_events (
         public string CurrentStage { get; set; } = "";
         public string ResumeText { get; set; } = "";
         public string ParsingStatus { get; set; } = "Pending";
+        public string ParsingError { get; set; } = "";
         public string CurrentTitle { get; set; } = "";
         public int TotalExperienceMonths { get; set; }
         public string CurrentLocation { get; set; } = "";
@@ -4828,6 +5034,8 @@ CREATE TABLE IF NOT EXISTS person_activity_events (
         public int? RequestedByClientId { get; set; }
         public bool ForceScore { get; set; }
         public int AttemptCount { get; set; }
+        public DateTime AvailableAt { get; set; }
+        public DateTime? StartedAt { get; set; }
     }
 
     private sealed class IntakeCandidateMatchRow

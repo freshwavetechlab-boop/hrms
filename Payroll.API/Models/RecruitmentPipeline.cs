@@ -596,6 +596,9 @@ public class RecruitmentPipelineDemandCard
 
 public class RecruitmentPipelineBoardCard
 {
+    public long PositionId { get; set; }
+    public string PositionTitle { get; set; } = "";
+    public string PositionCode { get; set; } = "";
     public long ApplicationId { get; set; }
     public string ApplicationCode { get; set; } = "";
     public long CandidateId { get; set; }
