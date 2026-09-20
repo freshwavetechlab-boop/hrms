@@ -264,6 +264,7 @@ export type SaveRecruitmentPipelineDefinition = Pick<RecruitmentPipelineDefiniti
   'id' | 'clientId' | 'pipelineCode' | 'pipelineName' | 'description' | 'isActive'>
 
 export type RecruitmentPipelineVersion = {
+  runtimeUpdate?: { applicationsUpdated: number; hiringJourneysUpdated: number; waiting: string[] } | null
   id: number
   pipelineDefinitionId: number
   versionNumber: number

@@ -26,6 +26,10 @@ playwright-e2e/
 .bootstrap/
 .build/
 .codex-build/
+.codex-validation/internal-interviews/
+.codex-validation/local-production/
+.codex-validation/recruitment-workflows/
+.codex-validation/recruitment-test-build/
 Payroll.API/App_Data/
 Payroll.API/.codex-*/
 

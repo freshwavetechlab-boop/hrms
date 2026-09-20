@@ -10,7 +10,7 @@ using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
-public sealed class RecruitmentTalentRepository(
+public sealed partial class RecruitmentTalentRepository(
     IConfiguration configuration,
     AttachmentRepository attachments,
     AttachmentStorageService attachmentStorage,
@@ -296,21 +296,27 @@ WHERE applicationRow.Id=@ApplicationId", new { ApplicationId = applicationId });
         if (user.ClientId is not null) return (null, "Only an authorised central recruitment user can move profiles to the Global Talent Pool.");
         await using var db = Db();
         await db.OpenAsync();
+        await using var transaction = await db.BeginTransactionAsync();
+        // Match transition lock order, so eligibility cannot change between check and move.
+        await db.QueryAsync<long>("SELECT Id FROM recruitment_application_pipeline_instances WHERE ApplicationId=@Id FOR UPDATE", new { Id = applicationId }, transaction);
         var source = await db.QueryFirstOrDefaultAsync<GlobalTalentPoolMoveRow>(@"SELECT applicationRow.CandidateId,applicationRow.ClientId ApplicationClientId,
 candidate.NormalizedEmail,candidate.NormalizedPhone
 FROM recruitment_candidate_applications applicationRow
 JOIN recruitment_candidates candidate ON candidate.Id=applicationRow.CandidateId
-WHERE applicationRow.Id=@ApplicationId AND applicationRow.ApplicationType='Application'", new { ApplicationId = applicationId });
+WHERE applicationRow.Id=@ApplicationId AND applicationRow.ApplicationType='Application' FOR UPDATE", new { ApplicationId = applicationId }, transaction);
         if (source is null) return (null, "Candidate application was not found.");
+        var eligibleForPool = await db.ExecuteScalarAsync<bool>("SELECT " + GlobalPoolEligibilitySql + " FROM recruitment_candidate_applications a WHERE a.Id=@Id", new { Id = applicationId }, transaction);
+        if (!eligibleForPool) return (null, "This candidate is in an active hiring process. Global Talent Pool is available before profile shortlisting is completed, or after rejection, withdrawal or no-show.");
         var duplicateId = await db.ExecuteScalarAsync<long?>(@"SELECT Id FROM recruitment_candidates
 WHERE ClientId=@GlobalClientId AND Id<>@CandidateId AND ProfileStatus<>'Archived'
  AND ((@Email<>'' AND NormalizedEmail=@Email)
   OR (@Phone<>'' AND (NormalizedPhone=@Phone OR (LENGTH(@Phone)>=10 AND RIGHT(NormalizedPhone,10)=RIGHT(@Phone,10)))))
-ORDER BY Id LIMIT 1", new { GlobalClientId = GlobalTalentPoolClientId, source.CandidateId, Email = source.NormalizedEmail ?? "", Phone = source.NormalizedPhone ?? "" });
+ORDER BY Id LIMIT 1", new { GlobalClientId = GlobalTalentPoolClientId, source.CandidateId, Email = source.NormalizedEmail ?? "", Phone = source.NormalizedPhone ?? "" }, transaction);
         if (duplicateId.HasValue) return (null, "This person already has an active profile in the Global Talent Pool.");
         await db.ExecuteAsync(@"UPDATE recruitment_candidates
 SET ClientId=@GlobalClientId,ProfileStatus='Active',UpdatedAt=UTC_TIMESTAMP()
-WHERE Id=@CandidateId", new { GlobalClientId = GlobalTalentPoolClientId, source.CandidateId });
+WHERE Id=@CandidateId", new { GlobalClientId = GlobalTalentPoolClientId, source.CandidateId }, transaction);
+        await transaction.CommitAsync();
         await WriteRecruitmentAuditAsync(db, "RecruitmentCandidate", source.CandidateId, "Moved To Global Talent Pool", user.Id, new { applicationId, source.ApplicationClientId });
         await WriteActivityAsync(db, source.ApplicationClientId, source.CandidateId, null, "RECRUITMENT", "MOVED_TO_GLOBAL_TALENT_POOL", "Candidate moved to Global Talent Pool", "The reusable profile remains available for future roles; the current application and pipeline history were retained.", "RecruitmentApplication", applicationId.ToString(CultureInfo.InvariantCulture), user);
         return (await ApplicationByIdAsync(db, applicationId, user), "");
@@ -1185,6 +1191,28 @@ WHERE Id=@ReferralId AND ReferrerEmployeeId=@EmployeeId", new { ReferralId = ref
         return (existing, "");
     }
 
+    public async Task<long?> QueuePolicyScoreAsync(long applicationId, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        await using var tx = await db.BeginTransactionAsync();
+        var allowed = await db.ExecuteScalarAsync<long?>(@"SELECT a.Id FROM recruitment_candidate_applications a
+JOIN recruitment_job_postings p ON p.Id=a.JobPostingId
+LEFT JOIN recruitment_application_stage_instances s ON s.Id=a.CurrentPipelineStageInstanceId
+LEFT JOIN recruitment_pipeline_stages definition ON definition.Id=s.PipelineStageId
+WHERE a.Id=@Id AND (@ClientId IS NULL OR a.ClientId=@ClientId) AND p.AutoRunAts=TRUE
+AND a.ApplicationType='Application' AND a.JoinedEmployeeId IS NULL AND a.CurrentStage NOT IN ('Rejected','Withdrawn','Joined')
+AND (a.CurrentPipelineStageInstanceId IS NULL OR (s.Status='Active' AND definition.StageType='ATS'))
+AND NOT EXISTS(SELECT 1 FROM recruitment_interviews i WHERE i.ApplicationId=a.Id)
+AND NOT EXISTS(SELECT 1 FROM recruitment_offers o WHERE o.ApplicationId=a.Id)
+FOR UPDATE", new { Id = applicationId, user.ClientId }, tx);
+        if (allowed is null) return null;
+        // No manual-confirmation audit: a configuration update is not a human decision.
+        var jobId = await QueueApplicationScoreAsync(db, applicationId, user, true, tx);
+        await tx.CommitAsync();
+        return jobId;
+    }
+
     public async Task<long?> QueueManualScoreAsync(long applicationId, AuthUser user)
     {
         await using var db = Db();
@@ -1717,7 +1745,8 @@ WHERE defaultPanel.PipelineStageId=@PipelineStageId AND defaultPanel.PanelUserId
 
     public async Task<(RecruitmentInterviewFeedback? Row, string Error)> SaveInterviewFeedbackAsync(long interviewId, SaveRecruitmentInterviewFeedback request, AuthUser user)
     {
-        if (IsPanelScoped(user)) request.PanelUserId = user.Id;
+        if (!CanRecordOtherPanelFeedback(user) && request.PanelUserId != user.Id)
+            return (null, "You can submit or edit only your own panel feedback.");
         request.CompetencyScores ??= [];
         request.Recommendation = (request.Recommendation ?? "").Trim();
         request.CompetencyScoresJson = string.IsNullOrWhiteSpace(request.CompetencyScoresJson) ? "{}" : request.CompetencyScoresJson;
@@ -1731,6 +1760,7 @@ WHERE defaultPanel.PipelineStageId=@PipelineStageId AND defaultPanel.PanelUserId
         var interview = (await InterviewRowsAsync(db, user, null, null)).FirstOrDefault(row => row.Id == interviewId);
         if (interview is null) return (null, "Interview was not found.");
         if (IsPanelScoped(user) && !interview.PanelUserIds.Contains(user.Id)) return (null, "This interview is not assigned to you.");
+        if (interview.Status == "Completed") return (null, "This interview is completed. Submitted feedback is read-only.");
         if ((interview.Status ?? "") is "Cancelled" or "No Show") return (null, $"Feedback cannot be submitted for an interview marked {interview.Status}.");
         var application = await ApplicationByIdAsync(db, interview.ApplicationId, user);
         if (application is null) return (null, "Interview application was not found.");
@@ -1819,7 +1849,8 @@ WHERE o.Id=@Id AND (@ClientId IS NULL OR o.ClientId=@ClientId)", new { Id = id, 
         AuthUser user,
         string ipAddress,
         string userAgent,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        long? finalApprovalInstanceId = null)
     {
         await using var db = Db();
         await db.OpenAsync(cancellationToken);
@@ -1835,12 +1866,39 @@ LEFT JOIN clients client ON client.Id=o.ClientId
 LEFT JOIN recruitment_templates t ON t.Id=o.OfferTemplateId
 WHERE o.Id=@OfferId AND (@ClientId IS NULL OR o.ClientId=@ClientId)", new { OfferId = offerId, user.ClientId });
         if (context is null) return (null, "Offer was not found.");
+        FinalOfferApproval? finalApproval = null;
+        if (finalApprovalInstanceId.HasValue)
+        {
+            finalApproval = await db.QueryFirstOrDefaultAsync<FinalOfferApproval>(@"SELECT i.Id,i.Status,i.PayloadJson,
+(SELECT h.Comment FROM workflowhistory h WHERE h.InstanceId=i.Id AND h.Action=@Event ORDER BY h.Id DESC LIMIT 1) AttachmentId
+FROM workflowinstances i WHERE i.Id=@Id AND i.ResourceType=@Type AND i.ResourceId=@OfferId
+AND NOT EXISTS(SELECT 1 FROM workflowinstances newer WHERE newer.ResourceType=i.ResourceType AND newer.ResourceId=i.ResourceId AND newer.Id>i.Id)",
+                new { Id = finalApprovalInstanceId, Type = FinalOfferResource, OfferId = offerId.ToString(CultureInfo.InvariantCulture), Event = FinalDocumentEvent });
+            if (context.Status != "Accepted" || finalApproval?.Status != "Approved")
+                return (null, "An accepted offer and its current approved departmental workflow are required.");
+            if (Guid.TryParse(finalApproval.AttachmentId, out _) && await db.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM entity_attachments WHERE public_id=@Id AND is_current=TRUE AND is_deleted=FALSE", new { Id = finalApproval.AttachmentId }) == 1)
+                return ((await OfferRowsAsync(db, user, context.ApplicationId, null)).First(row => row.Id == offerId), "");
+            using var payload = JsonDocument.Parse(finalApproval.PayloadJson);
+            var approvedTerms = payload.RootElement;
+            if (approvedTerms.ValueKind != JsonValueKind.Object
+                || !approvedTerms.TryGetProperty("FinalOfferBody", out var body) || body.ValueKind != JsonValueKind.String)
+                return (null, "The final offer template snapshot is missing.");
+            if (!approvedTerms.TryGetProperty("CandidateName", out var name) || name.ValueKind != JsonValueKind.String || name.GetString() != context.CandidateName
+                || !approvedTerms.TryGetProperty("PositionTitle", out var title) || title.ValueKind != JsonValueKind.String || title.GetString() != context.PositionTitle)
+                return (null, "Candidate or job identity differs from the approved final document. Obtain a fresh departmental approval.");
+            context.BodyTemplate = body.GetString() ?? "";
+            context.TemplateId = 0;
+            context.WorkflowInstanceId = finalApproval.Id;
+            if (!context.BodyTemplate.Contains(BrandedOfferPdfService.Marker, StringComparison.Ordinal))
+                return (null, "The approved final offer template is not the branded reference template.");
+        }
         var branded = context.BodyTemplate.Contains(BrandedOfferPdfService.Marker, StringComparison.Ordinal);
-        if (context.Status != "Draft" && !(branded && context.Status == "Approved"))
+        if (finalApproval is null && context.Status != "Draft" && !(branded && context.Status == "Approved"))
             return (null, "Generate or regenerate the offer letter while the offer is still in Draft status.");
-        if (context.TemplateId is null or <= 0 || !context.TemplateIsActive
+        if (finalApproval is null && (context.TemplateId is null or <= 0 || !context.TemplateIsActive
             || !(context.TemplateType ?? "").Contains("offer", StringComparison.OrdinalIgnoreCase)
-            || (context.TemplateClientId != 0 && context.TemplateClientId != context.ClientId))
+            || (context.TemplateClientId != 0 && context.TemplateClientId != context.ClientId)))
             return (null, "Select an active Offer Letter template in the current pipeline Offer stage, then save the draft again.");
 
         var culture = CultureInfo.GetCultureInfo("en-IN");
@@ -1879,23 +1937,31 @@ WHERE o.Id=@OfferId AND (@ClientId IS NULL OR o.ClientId=@ClientId)", new { Offe
             if (!logo.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase) || !logo.Contains(";base64,"))
                 return (null, "Upload the organization's PNG or JPEG logo before generating the branded offer letter.");
             byte[]? signature = null;
-            if (context.Status == "Approved")
+            if (context.Status == "Approved" || finalApproval is not null)
             {
                 var authorizedUserId = configuration.GetValue<int>("OfferSigning:Uidai:FinalApproverUserId");
                 var authorizedClientId = configuration.GetValue<int>("OfferSigning:Uidai:ClientId");
+                if (finalApproval is not null)
+                {
+                    var signing = await ResolveSigningSettingsAsync(db, context.ClientId);
+                    if (!signing.Enabled) return (null, "Final offer signing is disabled for this client.");
+                    authorizedUserId = signing.FinalApproverUserId ?? 0;
+                    authorizedClientId = context.ClientId;
+                }
                 if (authorizedUserId <= 0 || authorizedClientId != context.ClientId)
                     return (null, "Configure this client's authorized final signatory before issuing its signed offer letter.");
                 var approved = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM workflowinstances instance
 JOIN workflowtasks task ON task.InstanceId=instance.Id
 JOIN workflowstages stage ON stage.Id=task.StageId
-WHERE instance.Id=@WorkflowInstanceId AND instance.ResourceType='RecruitmentOffer'
+WHERE instance.Id=@WorkflowInstanceId AND instance.ResourceType=@ResourceType
 AND instance.ResourceId=@OfferId AND instance.Status='Approved'
 AND task.Status='Approved' AND task.ApproverUserId=@AuthorizedUserId
 AND NOT EXISTS (SELECT 1 FROM workflowstages later WHERE later.WorkflowId=instance.WorkflowId AND later.StageOrder>stage.StageOrder)",
-                    new { context.WorkflowInstanceId, OfferId = context.Id.ToString(CultureInfo.InvariantCulture), AuthorizedUserId = authorizedUserId });
+                    new { context.WorkflowInstanceId, OfferId = context.Id.ToString(CultureInfo.InvariantCulture), AuthorizedUserId = authorizedUserId,
+                        ResourceType = finalApproval is null ? "RecruitmentOffer" : FinalOfferResource });
                 if (approved == 0) return (null, "The authorized signatory has not approved the final offer workflow stage.");
                 var approvalPayload = await db.ExecuteScalarAsync<string>("SELECT PayloadJson FROM workflowinstances WHERE Id=@Id", new { Id = context.WorkflowInstanceId });
-                if (!BrandedOfferPdfService.MatchesApprovedTerms(approvalPayload, context.BodyTemplate, context.OfferedCtc, context.Currency, context.ProposedJoiningDate, context.TemplateId.Value))
+                if (!BrandedOfferPdfService.MatchesApprovedTerms(approvalPayload, context.BodyTemplate, context.OfferedCtc, context.Currency, context.ProposedJoiningDate, context.TemplateId ?? -1))
                     return (null, "The offer terms or template differ from the approved version. Obtain a fresh final approval before signing.");
                 var signaturePath = BrandedOfferPdfService.SigningAssetPath(configuration["OfferSigning:Uidai:SignaturePath"]);
                 if (!File.Exists(signaturePath))
@@ -1917,20 +1983,29 @@ FROM attachment_field_configurations field
 JOIN attachment_attributes attribute ON attribute.id=field.attachment_attribute_id
 WHERE field.is_active=TRUE AND attribute.is_active=TRUE
 AND attribute.attribute_code='OFFER_LETTER' AND field.module_code='RECRUITMENT' AND field.form_code='PRE_ONBOARDING'
+AND (@PreserveHistory=FALSE OR field.allow_multiple=TRUE)
 AND field.client_id IN (0,@ClientId)
 AND (field.effective_from_utc IS NULL OR field.effective_from_utc<=UTC_TIMESTAMP(6))
 AND (field.effective_until_utc IS NULL OR field.effective_until_utc>=UTC_TIMESTAMP(6))
-ORDER BY CASE WHEN field.client_id=@ClientId THEN 0 ELSE 1 END,field.display_order,field.id DESC LIMIT 1", new { context.ClientId });
+ORDER BY CASE WHEN field.client_id=@ClientId THEN 0 ELSE 1 END,field.display_order,field.id DESC LIMIT 1", new { context.ClientId, PreserveHistory = finalApproval is not null });
         if (fieldConfigurationId is null or <= 0)
             return (null, "No active global Offer Letter attachment field is configured for this client.");
 
         await using var source = new MemoryStream(bytes, writable: false);
         var safeOfferNumber = Regex.Replace(context.OfferNumber, @"[^A-Za-z0-9_-]+", "-").Trim('-');
         if (safeOfferNumber.Length == 0) safeOfferNumber = $"offer-{context.Id}";
-        var file = new FormFile(source, 0, bytes.Length, "file", $"{safeOfferNumber}.pdf")
+        var file = new FormFile(source, 0, bytes.Length, "file", $"{safeOfferNumber}{(finalApproval is null ? "" : $"-final-{finalApproval.Id}")}.pdf")
         {
             Headers = new HeaderDictionary(),
             ContentType = "application/pdf"
+        };
+        // A departmental approver need not have general attachment-management rights.
+        // Only this server-rendered, approval-validated PDF gets a scoped upload context;
+        // preserve the real actor for audit and never change their session/permissions.
+        var uploadActor = finalApproval is null ? user : new AuthUser
+        {
+            Id = user.Id, ClientId = context.ClientId, IsActive = true,
+            DisplayName = user.DisplayName, Permissions = ["attachment.recruitment.upload"]
         };
         var upload = await attachments.UploadAsync(new AttachmentUploadMetadata
         {
@@ -1940,8 +2015,23 @@ ORDER BY CASE WHEN field.client_id=@ClientId THEN 0 ELSE 1 END,field.display_ord
             DocumentNumber = context.OfferNumber,
             IssueDate = DateTime.Today,
             ExpiryDate = context.ExpiryDate
-        }, file, user, ipAddress, userAgent, cancellationToken);
+        }, file, uploadActor, ipAddress, userAgent, cancellationToken);
         if (upload.Attachment is null) return (null, upload.Error ?? "Offer letter could not be stored.");
+
+        if (finalApproval is not null)
+        {
+            // Immutable receipt. Original attachment and Accepted status stay exactly as issued.
+            var recorded = await db.ExecuteAsync(@"INSERT INTO workflowhistory(InstanceId,Action,ActorUserId,Comment)
+SELECT i.Id,@Event,@UserId,@PublicId FROM workflowinstances i JOIN recruitment_offers o ON i.ResourceId=CAST(o.Id AS CHAR)
+WHERE i.Id=@Id AND i.ResourceType=@Type AND i.Status='Approved' AND o.Status='Accepted'
+AND o.OfferedCtc=@Ctc AND o.Currency=@Currency AND o.ProposedJoiningDate=@Joining
+AND NOT EXISTS(SELECT 1 FROM workflowinstances newer WHERE newer.ResourceType=i.ResourceType AND newer.ResourceId=i.ResourceId AND newer.Id>i.Id)
+",
+                new { Id = finalApproval.Id, Type = FinalOfferResource, Event = FinalDocumentEvent, UserId = user.Id,
+                    PublicId = upload.Attachment.PublicId.ToString(), Ctc = context.OfferedCtc, context.Currency, Joining = context.ProposedJoiningDate });
+            if (recorded != 1) return (null, "Offer changed during final generation. The uploaded document is retained for audit; review before retrying.");
+            return ((await OfferRowsAsync(db, user, context.ApplicationId, null)).First(row => row.Id == offerId), "");
+        }
 
         var linked = await db.ExecuteAsync(@"UPDATE recruitment_offers
 SET OfferLetterAttachmentPublicId=@PublicId,UpdatedAt=UTC_TIMESTAMP()
@@ -2100,11 +2190,18 @@ OfferLetterAttachmentPublicId=@Attachment,Remarks=@Remarks,UpdatedAt=UTC_TIMESTA
         PipelineOfferPolicyContext? pipelineOfferPolicy = null;
         if (status.Equals("Pending Candidate", StringComparison.OrdinalIgnoreCase))
         {
+            var prerequisiteError = await RecruitmentOfferReleaseGate.ValidateAsync(db, offer.ApplicationId, submittingForApproval: true, offerId: offer.Id);
+            if (prerequisiteError.Length > 0) return (null, prerequisiteError);
             var (resolvedPolicy, policyError) = await PipelineOfferPolicyAsync(db, offer.ApplicationId, offer.OfferedCtc, offer.Currency, offer.Id, offer.StageOfferConfigurationId, offer.PipelineStageInstanceId);
             if (!string.IsNullOrWhiteSpace(policyError)) return (null, policyError);
             if (offer.StageOfferConfigurationId.HasValue && resolvedPolicy is null)
                 return (null, "The pipeline offer configuration used by this offer is no longer available. Restore the published pipeline configuration before release.");
             pipelineOfferPolicy = resolvedPolicy;
+            if (pipelineOfferPolicy is { VarianceExceeded: true, RequireApprovalWhenVarianceExceeded: false })
+                return (null, "The offer exceeds the allowed budget. Reduce the CTC or configure a budget-variance approval workflow before release.");
+            if (offer.Status == "Approved" && pipelineOfferPolicy is { VarianceExceeded: true }
+                && offer.ApprovalPolicy != "BudgetVariance")
+                return (null, "Budget-variance approval is required for this offer; a standard approval does not approve the excess budget.");
             if (pipelineOfferPolicy is null && offer.ExpiryDate.HasValue && offer.ExpiryDate.Value.Date < DateTime.Today)
                 return (null, "This offer has expired. Update its expiry date before release.");
 
@@ -2204,6 +2301,11 @@ AppliedApprovalWorkflowId=@WorkflowId,ApprovalPolicy=@ApprovalPolicy,Remarks=@Re
                     return ((await OfferRowsAsync(db, user, offer.ApplicationId, null)).FirstOrDefault(row => row.Id == id), "");
                 }
             }
+        }
+        if (status is "Pending Candidate" or "Accepted")
+        {
+            var releaseError = await RecruitmentOfferReleaseGate.ValidateAsync(db, offer.ApplicationId, offerId: offer.Id);
+            if (releaseError.Length > 0) return (null, releaseError);
         }
         var responseExpiry = status.Equals("Pending Candidate", StringComparison.OrdinalIgnoreCase) && pipelineOfferPolicy is not null
             ? CandidateResponseExpiry(offer.ProposedJoiningDate, pipelineOfferPolicy.CandidateResponseValidityDays)
@@ -3266,11 +3368,27 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
         return (result, "");
     }
 
+    internal const string GlobalPoolEligibilitySql = @"(a.JoinedEmployeeId IS NULL AND (
+ EXISTS(SELECT 1 FROM recruitment_application_pipeline_instances pi
+ JOIN recruitment_application_stage_instances si ON si.Id=pi.CurrentStageInstanceId
+ JOIN recruitment_pipeline_stages stage ON stage.Id=si.PipelineStageId
+ WHERE pi.ApplicationId=a.Id AND stage.StageType IN ('Rejected','Withdrawn'))
+ OR a.CurrentStage IN ('Rejected','Withdrawn','No Show','Offer Rejected')
+ OR (SELECT i.Status FROM recruitment_interviews i WHERE i.ApplicationId=a.Id ORDER BY i.Id DESC LIMIT 1)='No Show'
+ OR (SELECT o.Status FROM recruitment_offers o WHERE o.ApplicationId=a.Id ORDER BY o.Id DESC LIMIT 1) IN ('Rejected','Withdrawn','Expired')
+ OR (a.CurrentStage NOT IN ('Joined','Hired','Joined / Hired','Interview Scheduled','Interview Completed')
+ AND a.CurrentStage NOT LIKE 'Offer%'
+ AND NOT EXISTS(SELECT 1 FROM recruitment_application_stage_instances si
+ JOIN recruitment_pipeline_stages stage ON stage.Id=si.PipelineStageId
+ WHERE si.ApplicationId=a.Id AND (stage.StageType IN ('Interview','HR','Approval','Offer','Documents','PreOnboarding','Joining','Completed')
+ OR (stage.StageCode IN ('PROFILE_REVIEW_SHORTLISTING','PROFILE_REVIEW_AND_SHORTLISTING','SHARING_PROFILES','PROFILE_SHARING') AND si.Status='Completed'))))))";
+
     private static async Task<IEnumerable<RecruitmentCandidateApplication>> ApplicationsAsync(MySqlConnection db, AuthUser user, long? positionId = null, long? candidateId = null, string stage = "", long? applicationId = null)
     {
         var rows = await db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT a.*,c.CandidateCode,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,c.Email CandidateEmail,c.Phone CandidatePhone,p.PositionCode,p.PositionTitle,p.JobLocation,cl.Name ClientName,COALESCE(u.DisplayName,u.Email,'') RecruiterName,COALESCE(s.OverrideScore,s.TotalScore) AtsScore,COALESCE(s.ShortlistThreshold,60) AtsShortlistThreshold,COALESCE(s.ScoreStatus,'Not Scored') ScoreStatus,(s.OverrideScore IS NOT NULL) AtsOverridden,COALESCE(posting.AutoRunAts,FALSE) AutoRunAts,(c.ClientId=@GlobalClientId) IsInGlobalTalentPool,EXISTS(SELECT 1 FROM recruitment_candidate_resumes availableResume JOIN entity_attachments availableAttachment ON availableAttachment.public_id=CAST(availableResume.AttachmentPublicId AS CHAR(36)) AND availableAttachment.is_current=TRUE AND availableAttachment.is_deleted=FALSE WHERE availableResume.Id=a.ResumeId AND availableResume.CandidateId=a.CandidateId) ResumeAvailable,
 (SELECT job.Status FROM recruitment_ats_scoring_jobs job WHERE job.ApplicationId=a.Id ORDER BY job.Id DESC LIMIT 1) AtsJobStatus,
-(SELECT job.LastError FROM recruitment_ats_scoring_jobs job WHERE job.ApplicationId=a.Id ORDER BY job.Id DESC LIMIT 1) AtsJobError
+(SELECT job.LastError FROM recruitment_ats_scoring_jobs job WHERE job.ApplicationId=a.Id ORDER BY job.Id DESC LIMIT 1) AtsJobError,
+" + GlobalPoolEligibilitySql + @" CanMoveToGlobalTalentPool
 FROM recruitment_candidate_applications a JOIN recruitment_candidates c ON c.Id=a.CandidateId JOIN recruitment_open_positions p ON p.Id=a.PositionId LEFT JOIN clients cl ON cl.Id=a.ClientId LEFT JOIN authusers u ON u.Id=a.RecruiterUserId LEFT JOIN recruitment_application_scores s ON s.ApplicationId=a.Id AND s.IsCurrent=TRUE LEFT JOIN recruitment_job_postings posting ON posting.Id=a.JobPostingId
 WHERE a.ApplicationType='Application' AND (@ApplicationId IS NULL OR a.Id=@ApplicationId) AND (@ClientId IS NULL OR a.ClientId=@ClientId) AND (@PositionId IS NULL OR a.PositionId=@PositionId) AND (@CandidateId IS NULL OR a.CandidateId=@CandidateId) AND (@Stage='' OR a.CurrentStage=@Stage) ORDER BY a.UpdatedAt DESC", new { ClientId = user.ClientId, PositionId = positionId, CandidateId = candidateId, Stage = stage ?? "", ApplicationId = applicationId, GlobalClientId = GlobalTalentPoolClientId });
         return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
@@ -3300,12 +3418,17 @@ ORDER BY i.ScheduledStart DESC", new { ClientId = user.ClientId, ApplicationId =
         if (rows.Count == 0) return rows;
         var ids = rows.Select(row => row.Id).ToArray();
         var panels = (await db.QueryAsync<(long InterviewId, int PanelUserId)>("SELECT InterviewId,PanelUserId FROM recruitment_interview_panel_members WHERE InterviewId IN @Ids ORDER BY InterviewId,Id", new { Ids = ids })).ToLookup(row => row.InterviewId, row => row.PanelUserId);
+        var submitted = (await db.QueryAsync<(long InterviewId, int PanelUserId)>("SELECT InterviewId,PanelUserId FROM recruitment_interview_feedback WHERE InterviewId IN @Ids", new { Ids = ids })).ToLookup(row => row.InterviewId, row => row.PanelUserId);
         var configurationIds = rows.Where(row => row.RoundConfigurationId is > 0).Select(row => row.RoundConfigurationId!.Value).Distinct().ToArray();
         var competencies = configurationIds.Length == 0 ? [] : (await db.QueryAsync<InterviewCompetencyConfigRow>(InterviewCompetencySelect + " WHERE sc.InterviewStageConfigurationId IN @Ids ORDER BY sc.InterviewStageConfigurationId,sc.DisplayOrder,sc.Id", new { Ids = configurationIds })).ToList();
         var competencyLookup = competencies.ToLookup(row => row.InterviewStageConfigurationId);
         foreach (var row in rows)
         {
             row.PanelUserIds = panels[row.Id].ToList();
+            row.SubmittedPanelUserIds = submitted[row.Id].ToList();
+            row.CanRecordDecision = !IsPanelScoped(user) && row.Status is "Scheduled" or "Rescheduled"
+                && row.PanelUserIds.Count > 0
+                && ((row.IsPipelineManaged && !row.FeedbackRequired) || !row.PanelUserIds.Except(row.SubmittedPanelUserIds).Any());
             row.Competencies = row.RoundConfigurationId is > 0 ? competencyLookup[row.RoundConfigurationId.Value].Select(ToStageCompetency).ToList() : [];
         }
         return rows;
@@ -3316,6 +3439,9 @@ ORDER BY i.ScheduledStart DESC", new { ClientId = user.ClientId, ApplicationId =
         && !user.Permissions.Any(permission => permission.Equals("recruitment.manage", StringComparison.OrdinalIgnoreCase)
             || permission.Equals("settings.manage", StringComparison.OrdinalIgnoreCase)
             || permission.Equals("recruitment.interview.schedule", StringComparison.OrdinalIgnoreCase));
+
+    internal static bool CanRecordOtherPanelFeedback(AuthUser user) =>
+        user.ClientId is null && user.Roles.Contains("super_admin", StringComparer.OrdinalIgnoreCase);
 
     private static decimal AggregatePanelScore(IReadOnlyList<PanelAggregateScore> rows, string method)
     {
@@ -3455,14 +3581,8 @@ WHERE pi.ApplicationId=@ApplicationId AND pi.Status='Active'", new { Application
         policy.BudgetBasis = NormalizeOfferBudgetBasis(policy.BudgetBasis);
         if (policy.BudgetBasis != "SalaryRangeMaximum" && !policy.BudgetAvailable)
             return (null, "The offer stage uses an approved-budget basis, but budget availability is not approved for this open position.");
-        policy.ApprovedBudgetAmount = policy.BudgetBasis switch
-        {
-            "ApprovedTotal" => policy.BudgetAmount,
-            "SalaryRangeMaximum" => policy.SalaryMax,
-            _ => policy.BudgetAmount > 0
-                ? Math.Round(policy.BudgetAmount / Math.Max(1, policy.ApprovedPositions), 2, MidpointRounding.AwayFromZero)
-                : policy.SalaryMax
-        };
+        policy.ApprovedBudgetAmount = EffectiveOfferBudgetCeiling(policy.BudgetBasis, policy.BudgetAvailable,
+            policy.BudgetAmount, policy.ApprovedPositions, policy.SalaryMax);
         if (policy.ApprovedBudgetAmount <= 0)
             return (null, policy.BudgetBasis == "SalaryRangeMaximum"
                 ? "The offer stage uses salary-range maximum, but the open position has no approved maximum salary."
@@ -3520,6 +3640,14 @@ WHERE applicationRow.Id=@ApplicationId LIMIT 1", new { ApplicationId = applicati
         return proposedJoiningDate.Date < configuredExpiry ? proposedJoiningDate.Date : configuredExpiry;
     }
 
+    internal static decimal EffectiveOfferBudgetCeiling(string basis, bool available, decimal budget, int openings, decimal salaryMax)
+    {
+        var perOpening = budget > 0 ? Math.Round(budget / Math.Max(1, openings), 2, MidpointRounding.AwayFromZero) : salaryMax;
+        return basis == "ApprovedTotal" ? budget
+            : basis == "SalaryRangeMaximum" ? available && budget > 0 ? Math.Min(salaryMax, perOpening) : salaryMax
+            : perOpening;
+    }
+
     private static string NormalizeOfferBudgetBasis(string value) => (value ?? "").Trim().ToUpperInvariant() switch
     {
         "APPROVEDTOTAL" => "ApprovedTotal",
@@ -3527,15 +3655,25 @@ WHERE applicationRow.Id=@ApplicationId LIMIT 1", new { ApplicationId = applicati
         _ => "ApprovedMaximum"
     };
 
-    private static async Task<IEnumerable<RecruitmentOffer>> OfferRowsAsync(MySqlConnection db, AuthUser user, long? applicationId, long[]? applicationIds) =>
+    private async Task<IEnumerable<RecruitmentOffer>> OfferRowsAsync(MySqlConnection db, AuthUser user, long? applicationId, long[]? applicationIds) =>
         await db.QueryAsync<RecruitmentOffer>(@"SELECT o.*,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,p.PositionTitle,
-COALESCE(t.TemplateName,'') OfferTemplateName FROM recruitment_offers o
+COALESCE(t.TemplateName,'') OfferTemplateName,
+final.Id FinalApprovalWorkflowInstanceId,COALESCE(final.Status,'Not requested') FinalApprovalStatus,
+((CASE WHEN signing.Id IS NULL THEN (@FinalEnabled=TRUE AND o.ClientId=@FinalClientId)
+ ELSE signing.IsEnabled=TRUE AND CAST(JSON_UNQUOTE(JSON_EXTRACT(signing.SettingsJson,'$.FinalApproverUserId')) AS UNSIGNED)>0 END)
+ AND o.Status='Accepted') CanRequestFinalOffer,
+(SELECT h.Comment FROM workflowhistory h WHERE h.InstanceId=final.Id AND h.Action='FinalDocumentGenerated' ORDER BY h.Id DESC LIMIT 1) FinalOfferLetterAttachmentPublicId,
+(SELECT h.Comment FROM workflowhistory h WHERE h.InstanceId=final.Id AND h.Action='FinalDocumentFailed' ORDER BY h.Id DESC LIMIT 1) FinalOfferError
+FROM recruitment_offers o
 JOIN recruitment_candidate_applications a ON a.Id=o.ApplicationId
 JOIN recruitment_candidates c ON c.Id=a.CandidateId
 JOIN recruitment_open_positions p ON p.Id=a.PositionId
 LEFT JOIN recruitment_templates t ON t.Id=o.OfferTemplateId
+LEFT JOIN workflowinstances final ON final.Id=(SELECT MAX(w.Id) FROM workflowinstances w WHERE w.ResourceType='RecruitmentFinalOffer' AND w.ResourceId=CAST(o.Id AS CHAR))
+LEFT JOIN modulesettings signing ON signing.client_id=o.ClientId AND signing.ModuleCode=CONCAT('recruitment_final_offer_signing:',o.ClientId)
 WHERE (@ClientId IS NULL OR o.ClientId=@ClientId) AND (@ApplicationId IS NULL OR o.ApplicationId=@ApplicationId)
-AND (@UseIds=FALSE OR o.ApplicationId IN @Ids) ORDER BY o.UpdatedAt DESC", new { ClientId = user.ClientId, ApplicationId = applicationId, UseIds = applicationIds is { Length: > 0 }, Ids = applicationIds ?? [0L] });
+AND (@UseIds=FALSE OR o.ApplicationId IN @Ids) ORDER BY o.UpdatedAt DESC", new { ClientId = user.ClientId, ApplicationId = applicationId, UseIds = applicationIds is { Length: > 0 }, Ids = applicationIds ?? [0L],
+    FinalEnabled = configuration.GetValue<bool>("OfferSigning:Uidai:PostAcceptanceEnabled"), FinalClientId = configuration.GetValue<int>("OfferSigning:Uidai:ClientId") });
 
     private static async Task<IReadOnlyList<string>> ResumeJobContextForCandidateAsync(MySqlConnection db, long candidateId, int clientId)
     {

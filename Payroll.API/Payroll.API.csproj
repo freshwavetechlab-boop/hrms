@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Assets\OfferLetters\**\*" />
+    <EmbeddedResource Include="Database\InternalInterviews.sql" />
     <Content Include="Assets\Parsing\WindowsPdfOcr.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Remove="FrevoPilot\node_modules\**;FrevoPilot\tests\**" />
     <Content Include="FrevoPilot\**\*.mjs;FrevoPilot\**\*.md" Exclude="FrevoPilot\node_modules\**;FrevoPilot\tests\**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

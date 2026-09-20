@@ -202,20 +202,26 @@ SELECT Id FROM workflow_action_rules WHERE ActivityCode=@ActivityCode AND HttpMe
     }
     public async Task<WorkflowInstance?> StartAsync(StartWorkflowRequest r,int requestor)
     {
-        await using var db=Db();await db.OpenAsync();await using var tx=await db.BeginTransactionAsync();
+        await using var db=Db(); await db.OpenAsync(); await using var tx=await db.BeginTransactionAsync();
+        var instance=await StartInTransactionAsync(db,tx,r,requestor);
+        if(instance is not null) await tx.CommitAsync();
+        return instance;
+    }
+
+    internal async Task<WorkflowInstance?> StartInTransactionAsync(MySqlConnection db,MySqlTransaction tx,StartWorkflowRequest r,int requestor)
+    {
         // Paired with SaveAsync's master-row lock; keep it until every start record is committed.
         var master=await db.QueryFirstOrDefaultAsync<WorkflowMaster>("SELECT * FROM workflowmasters WHERE Id=@WorkflowId AND IsActive=TRUE FOR UPDATE",r,tx);
-        if(master is null){await tx.RollbackAsync();return null;}
+        if(master is null){return null;}
         var stage=await db.QueryFirstOrDefaultAsync<WorkflowStage>("SELECT * FROM workflowstages WHERE WorkflowId=@WorkflowId ORDER BY StageOrder LIMIT 1",r,tx);
-        if(stage is null){await tx.RollbackAsync();return null;}
+        if(stage is null){return null;}
         var approver=await ResolveAsync(db,stage,requestor,tx);
-        if(approver is null){await tx.RollbackAsync();return null;}
+        if(approver is null){return null;}
         var id=await db.ExecuteScalarAsync<long>("INSERT INTO workflowinstances (WorkflowId,ResourceType,ResourceId,RequestorUserId,PayloadJson) VALUES (@WorkflowId,@ResourceType,@ResourceId,@Requestor,@PayloadJson);SELECT LAST_INSERT_ID();",new{r.WorkflowId,r.ResourceType,r.ResourceId,Requestor=requestor,r.PayloadJson},tx);
         var task=await db.ExecuteScalarAsync<long>("INSERT INTO workflowtasks (InstanceId,StageId,ApproverUserId) VALUES (@Id,@StageId,@Approver);SELECT LAST_INSERT_ID();",new{Id=id,StageId=stage.Id,Approver=approver},tx);
         await db.ExecuteAsync("INSERT INTO workflowhistory (InstanceId,TaskId,Action,ActorUserId,Comment) VALUES (@Id,@Task,'Started',@User,'')",new{Id=id,Task=task,User=requestor},tx);
         await SetResourceStateAsync(db,r.ResourceType,r.ResourceId,"Pending",id,requestor,tx);
         var instance=await db.QueryFirstAsync<WorkflowInstance>("SELECT * FROM workflowinstances WHERE Id=@Id",new{Id=id},tx);
-        await tx.CommitAsync();
         return instance;
     }
     public async Task<IEnumerable<WorkflowTask>> PendingAsync(int userId){await using var db=Db();await db.OpenAsync();return await db.QueryAsync<WorkflowTask>(@"SELECT t.*,COALESCE(s.Name,'Approval') AS StageName,m.Code ActivityCode,m.ClientId,i.ResourceType,i.ResourceId,i.PayloadJson,COALESCE(approver.DisplayName,'Assigned user') AS ApproverName FROM workflowtasks t LEFT JOIN workflowstages s ON s.Id=t.StageId JOIN workflowinstances i ON i.Id=t.InstanceId JOIN workflowmasters m ON m.Id=i.WorkflowId LEFT JOIN authusers approver ON approver.Id=t.ApproverUserId WHERE t.ApproverUserId=@UserId AND t.Status='Pending' ORDER BY t.CreatedAt",new{UserId=userId});}
@@ -264,7 +270,7 @@ WHERE requester.Id=@Requestor
   AND (u.Id=employee.ReportingManagerUserId OR (COALESCE(employee.ReportingManagerUserId,0)=0 AND u.EmployeeId=manager.Id))
 ORDER BY u.Id
 LIMIT 1",new{Requestor=requestor},tx);if(s.ApproverType=="Department Head")return await db.ExecuteScalarAsync<int?>("SELECT u.Id FROM departmentheadassignments a JOIN authusers u ON u.Id=a.UserId AND u.IsActive=TRUE JOIN authusers requester ON requester.Id=@Requestor JOIN employees employee ON employee.Id=requester.EmployeeId WHERE a.ClientId=employee.ClientId AND a.Department=employee.Department",new{Requestor=requestor},tx);return null;}
-    private static async Task AdvanceAsync(MySqlConnection db,long instanceId,int stageId,int actor){var next=await db.QueryFirstOrDefaultAsync<WorkflowStage>("SELECT s.* FROM workflowstages s JOIN workflowtasks t ON t.StageId=s.Id WHERE t.InstanceId=@InstanceId AND s.StageOrder>(SELECT StageOrder FROM workflowstages WHERE Id=@StageId) ORDER BY s.StageOrder LIMIT 1",new{InstanceId=instanceId,StageId=stageId});var instance=await db.QueryFirstOrDefaultAsync<WorkflowInstance>("SELECT * FROM workflowinstances WHERE Id=@Id",new{Id=instanceId});if(next is null){await db.ExecuteAsync("UPDATE workflowinstances SET Status='Approved',CompletedAt=UTC_TIMESTAMP() WHERE Id=@Id",new{Id=instanceId});if(instance is not null)await SetResourceStateAsync(db,instance.ResourceType,instance.ResourceId,"Approved",instanceId,actor);return;}var approver=await ResolveAsync(db,next,instance?.RequestorUserId??actor);if(approver is null){await db.ExecuteAsync("UPDATE workflowinstances SET Status='Failed',CompletedAt=UTC_TIMESTAMP() WHERE Id=@Id",new{Id=instanceId});if(instance is not null)await SetResourceStateAsync(db,instance.ResourceType,instance.ResourceId,"Failed",instanceId,actor);return;}await db.ExecuteAsync("INSERT INTO workflowtasks (InstanceId,StageId,ApproverUserId) VALUES (@InstanceId,@StageId,@Approver)",new{InstanceId=instanceId,StageId=next.Id,Approver=approver});if(instance is not null)await SetResourceStateAsync(db,instance.ResourceType,instance.ResourceId,"Pending",instanceId,actor);}
+    private static async Task AdvanceAsync(MySqlConnection db,long instanceId,int stageId,int actor){var next=await db.QueryFirstOrDefaultAsync<WorkflowStage>("SELECT s.* FROM workflowstages s JOIN workflowinstances i ON i.WorkflowId=s.WorkflowId WHERE i.Id=@InstanceId AND s.StageOrder>(SELECT StageOrder FROM workflowstages WHERE Id=@StageId) ORDER BY s.StageOrder LIMIT 1",new{InstanceId=instanceId,StageId=stageId});var instance=await db.QueryFirstOrDefaultAsync<WorkflowInstance>("SELECT * FROM workflowinstances WHERE Id=@Id",new{Id=instanceId});if(next is null){await db.ExecuteAsync("UPDATE workflowinstances SET Status='Approved',CompletedAt=UTC_TIMESTAMP() WHERE Id=@Id",new{Id=instanceId});if(instance is not null)await SetResourceStateAsync(db,instance.ResourceType,instance.ResourceId,"Approved",instanceId,actor);return;}var approver=await ResolveAsync(db,next,instance?.RequestorUserId??actor);if(approver is null){await db.ExecuteAsync("UPDATE workflowinstances SET Status='Failed',CompletedAt=UTC_TIMESTAMP() WHERE Id=@Id",new{Id=instanceId});if(instance is not null)await SetResourceStateAsync(db,instance.ResourceType,instance.ResourceId,"Failed",instanceId,actor);return;}await db.ExecuteAsync("INSERT INTO workflowtasks (InstanceId,StageId,ApproverUserId) VALUES (@InstanceId,@StageId,@Approver)",new{InstanceId=instanceId,StageId=next.Id,Approver=approver});if(instance is not null)await SetResourceStateAsync(db,instance.ResourceType,instance.ResourceId,"Pending",instanceId,actor);}
     private static string RouteKeyFromSource(string source){const string prefix="route.";return !string.IsNullOrWhiteSpace(source)&&source.StartsWith(prefix,StringComparison.OrdinalIgnoreCase)?source[prefix.Length..]:"id";}
     // Only for a parent record whose deletion has already passed its domain
     // authorization/dependency checks. Never delete workflow configuration here.

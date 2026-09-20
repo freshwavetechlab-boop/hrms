@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { currentRecruitmentHiringCases } from '../services/recruitmentJobVersions'
 import { Alert, Button, Card, Divider, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Statistic, Tag, Timeline, Tooltip, message } from 'antd'
 import { ArrowLeftOutlined, ArrowRightOutlined, ClockCircleOutlined, DeleteOutlined, FileProtectOutlined, HistoryOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, TeamOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
@@ -75,7 +76,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   const requestedStageLog = queryParams.get('stageLog') === '1'
 
   const load = async () => {
-    const [orders, hiringCases] = await Promise.all([getRecruitmentWorkOrders(clientId, query), getRecruitmentHiringCases(clientId)])
+    const [orders, hiringCases] = await Promise.all([getRecruitmentWorkOrders(clientId, query), getRecruitmentHiringCases(clientId, true)])
     setWorkOrders(orders); setCases(hiringCases)
   }
   useEffect(() => { void getClients().then(setClients) }, [])
@@ -112,12 +113,15 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     return () => window.clearInterval(timer)
   }, [])
 
+  const currentCases = useMemo(() => currentRecruitmentHiringCases(cases), [cases])
+  const historicalCases = useMemo(() => cases.filter(row => !currentCases.some(current => current.id === row.id)), [cases, currentCases])
+  const historicalSelection = Boolean(selectedCase && historicalCases.some(row => row.id === selectedCase.id))
   const stats = useMemo(() => ({
     activeOrders: workOrders.filter(row => row.status === 'Active').length,
     positions: workOrders.reduce((total, row) => total + row.lineCount, 0),
-    activeCases: cases.filter(row => row.status === 'Active').length,
-    breached: cases.filter(row => row.status === 'Active' && row.overallDueAtUtc && new Date(row.overallDueAtUtc).getTime() < Date.now()).length,
-  }), [cases, workOrders])
+    activeCases: currentCases.filter(row => row.status === 'Active').length,
+    breached: currentCases.filter(row => row.status === 'Active' && row.overallDueAtUtc && new Date(row.overallDueAtUtc).getTime() < Date.now()).length,
+  }), [currentCases, workOrders])
 
   const openNew = () => { setDraft(blankWorkOrder(clientId)); setEditorOpen(true) }
   const openEdit = async (row: RecruitmentWorkOrder) => {
@@ -353,14 +357,14 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     if (!document) return true
     return Boolean(requirement.requiresSignature && (document.status !== 'Signed' || (!document.hasFinalSignedAttachment && !document.capturedSignaturesComplete)))
   }) ?? []
-  const pauseBlockedReason = !activeStage
+  const pauseBlockedReason = historicalSelection ? 'This earlier journey is retained for history.' : !activeStage
     ? 'There is no active stage to pause.'
     : activeStage.isPaused
       ? 'This stage SLA is already paused.'
       : activeStage.allowPause === false
         ? 'SLA pause is disabled in this stage configuration.'
         : ''
-  const moveBlockedReason = selectedCase?.status !== 'Active'
+  const moveBlockedReason = historicalSelection ? 'Open the currently linked journey to take action; this earlier journey is retained for history.' : selectedCase?.status !== 'Active'
     ? 'Only an active hiring journey can move to another stage.'
     : !activeStage
       ? 'There is no active stage to move.'
@@ -390,7 +394,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
         </article>)}</div>}
       </Card>
       <Card title="Position-wise hiring progress" extra={<Tag color="purple">Stages & SLA</Tag>}>
-        {!cases.length ? <Empty description="Open an order and start a published hiring pipeline for one role." /> : <div className="hiring-case-list">{cases.map(row => {
+        {!currentCases.length ? <Empty description="Open an order and start a published hiring pipeline for one role." /> : <div className="hiring-case-list">{currentCases.map(row => {
           const overdue = row.status === 'Active' && row.overallDueAtUtc && new Date(row.overallDueAtUtc).getTime() < Date.now()
           return <button type="button" key={row.id} className={overdue ? 'overdue' : ''} onClick={() => void viewCase(row)}><div><Tag color={statusColor(row.status)}>{row.status}</Tag><span>{row.currentStakeholderCode || 'Unassigned stakeholder'}</span></div><h3>{row.positionName}</h3><p>{row.workOrderNumber} · {row.pipelineName}</p><footer><span>{row.currentStageName || 'Completed'}</span><b><ClockCircleOutlined /> {remainingDuration(row.overallDueAtUtc, clockNow)}</b></footer></button>
         })}</div>}
@@ -412,7 +416,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
         ]}
       /></Card>
       <Card size="small" title="Position-wise hiring progress"><DataTable
-        rows={cases}
+        rows={currentCases}
         getRowId={row => row.id}
         exportFileName="recruitment-hiring-journeys"
         emptyText="No governed hiring journey has started for this client."
@@ -427,6 +431,8 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
         ]}
       /></Card>
     </div>}
+
+    {historicalCases.length > 0 && <Card size="small" title="Earlier journeys — history retained"><Space wrap>{historicalCases.map(row => <Button key={row.id} onClick={() => void viewCase(row)}>{row.positionName} · Journey #{row.id}</Button>)}</Space></Card>}
 
     <Drawer width={860} title={draft.id ? `Edit ${draft.workOrderNumber}` : 'New client work order'} open={editorOpen} onClose={() => setEditorOpen(false)} extra={<Button data-testid="work-order-save" type="primary" loading={saving} onClick={() => void save()}>Save work order</Button>}>
       <Alert showIcon type="info" message="Pipeline-driven SLA" description="Record the approved work order here. When a role journey starts, its cumulative SLA and stage targets are applied automatically from the published client pipeline." />

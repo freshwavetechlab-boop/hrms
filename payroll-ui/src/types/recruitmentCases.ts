@@ -93,6 +93,7 @@ export type RecruitmentHiringCaseEvent = {
 }
 
 export type RecruitmentHiringCase = {
+  isHistorical?: boolean
   id: number
   clientId: number
   clientName: string

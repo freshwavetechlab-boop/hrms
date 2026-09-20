@@ -6,7 +6,7 @@ using Payroll.API.Repositories;
 
 namespace Payroll.API.Services;
 
-public sealed class RecruitmentLifecycleNotificationService(
+public sealed partial class RecruitmentLifecycleNotificationService(
     IConfiguration configuration,
     NotificationRepository notifications,
     PublicPortalUrlResolver publicPortalUrls,
@@ -19,6 +19,8 @@ public sealed class RecruitmentLifecycleNotificationService(
         await using var db = Db();
         await db.OpenAsync();
         await EnsureSchemaAsync(db);
+        // Establish a deployment boundary: do not email historical stage movements.
+        await db.ExecuteAsync("INSERT IGNORE INTO recruitment_lifecycle_notification_deliveries(EventKey,RecipientEmail,Status) VALUES('HIRING_STAGE_MONITOR_START','','Checkpoint')");
     }
 
     public async Task<IReadOnlyList<RecruitmentLifecycleNotificationRule>> ListRulesAsync(AuthUser user, int? clientId)
@@ -57,6 +59,8 @@ ORDER BY clientRow.Name,ruleRow.Id", new { ClientId = scopedClientId })).ToList(
         await EnsureSchemaAsync(db);
         await EnsureDefaultRulesAsync(db, request.ClientId);
         var code = request.TriggerCode.Trim().ToUpperInvariant();
+        if (code == "HIRING_STAGE_MOVED" && request.SendToCandidate)
+            throw new InvalidOperationException("Hiring-stage updates are internal. Use the candidate offer/application triggers for candidate email.");
         var id = request.Id > 0
             ? request.Id
             : await db.ExecuteScalarAsync<long?>("SELECT Id FROM recruitment_lifecycle_notification_rules WHERE ClientId=@ClientId AND TriggerCode=@Code", new { request.ClientId, Code = code }) ?? 0;
@@ -123,6 +127,7 @@ KEY IX_recruitment_lifecycle_rule_active (ClientId,IsDeleted,IsEnabled)
 
     private static readonly (string Code, string Name, string Description, string Subject, string CandidateBody, string InternalBody, bool Candidate, bool Panel, bool Approvers)[] DefaultRules =
     [
+        ("HIRING_STAGE_MOVED", "Hiring stage changed", "Internal update after a committed manual or automatic hiring-stage move; historical changes are not mailed.", "Hiring update - {{positionTitle}}", "", "<p>Hello,</p><p><strong>{{positionTitle}}</strong>: {{stageName}}</p><p>Work order: {{workOrderNumber}}</p><p>Please open the hiring pipeline to review the next required action.</p>", false, false, true),
         ("MOM_SIGNED", "MoM fully signed", "Sent when every required panel signature is complete.", "Selection Committee MoM signed - {{positionTitle}}", "", "<p>Hello,</p><p>The Selection Committee MoM for <strong>{{positionTitle}}</strong> has been fully signed.</p><p><strong>Work order:</strong> {{workOrderNumber}}<br/><strong>Version:</strong> {{momVersion}}</p><p>The vacancy will now continue to negotiation and HR Division review.</p>", false, true, true),
         ("OFFER_RELEASED", "Offer released", "Candidate offer is ready for review.", "Offer ready for review - {{positionTitle}}", "<p>Hello {{candidateName}},</p><p>Your offer for <strong>{{positionTitle}}</strong> is ready for review.</p><p><strong>Offer:</strong> {{offerNumber}}<br/><strong>Annual CTC:</strong> {{currency}} {{offeredCtc}}<br/><strong>Proposed joining:</strong> {{proposedJoiningDate}}</p><p><a href=\"{{candidateActionUrl}}\">Review and respond to your offer</a></p>", "<p>Hello,</p><p>Offer <strong>{{offerNumber}}</strong> for <strong>{{candidateName}}</strong> ({{positionTitle}}) is now <strong>{{status}}</strong>.</p>", true, false, false),
         ("OFFER_APPROVED", "Offer approved", "Internal stakeholders are informed after approval.", "Offer approved - {{candidateName}} - {{positionTitle}}", "", "<p>Hello,</p><p>Offer <strong>{{offerNumber}}</strong> for <strong>{{candidateName}}</strong> ({{positionTitle}}) is now <strong>Approved</strong>.</p><p><strong>Annual CTC:</strong> {{currency}} {{offeredCtc}}<br/><strong>Proposed joining:</strong> {{proposedJoiningDate}}</p>", false, false, true),

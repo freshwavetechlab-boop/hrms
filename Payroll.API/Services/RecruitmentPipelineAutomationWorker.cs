@@ -2,6 +2,7 @@ namespace Payroll.API.Services;
 
 public sealed class RecruitmentPipelineAutomationWorker(
     RecruitmentPipelineActionService actions,
+    RecruitmentLifecycleNotificationService lifecycleNotifications,
     ILogger<RecruitmentPipelineAutomationWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -13,6 +14,7 @@ public sealed class RecruitmentPipelineAutomationWorker(
             {
                 await actions.ProcessCandidateAutomationAsync(stoppingToken);
                 await actions.ProcessSlaActionsAsync(stoppingToken);
+                await lifecycleNotifications.QueuePendingHiringStageUpdatesAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

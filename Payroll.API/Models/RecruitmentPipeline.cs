@@ -103,6 +103,8 @@ public class RecruitmentJdBenefit
 
 public class RecruitmentJobPosting
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool AtsCatchUpRequired { get; set; }
     public long Id { get; set; }
     public int ClientId { get; set; }
     public long PositionId { get; set; }
@@ -213,6 +215,7 @@ public class SaveRecruitmentPipelineDefinition
 
 public class RecruitmentPipelineVersion
 {
+    public RecruitmentPipelineRevisionSync? RuntimeUpdate { get; set; }
     public long Id { get; set; }
     public long PipelineDefinitionId { get; set; }
     public int VersionNumber { get; set; }
@@ -227,6 +230,8 @@ public class RecruitmentPipelineVersion
     public List<RecruitmentPipelineStage> Stages { get; set; } = [];
     public List<RecruitmentPipelineTransition> Transitions { get; set; } = [];
 }
+
+public sealed record RecruitmentPipelineRevisionSync(int ApplicationsUpdated, int HiringJourneysUpdated, IReadOnlyList<string> Waiting);
 
 public class SaveRecruitmentPipelineVersion
 {

@@ -561,6 +561,8 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
             render={(row, skillIndex, update) => <Row gutter={10}>
               <Col xs={24} md={16}><Form.Item label="Skill" required validateStatus={!row.skillName.trim() ? 'error' : undefined} help={!row.skillName.trim() ? 'Enter a skill or remove this row.' : undefined}><Input value={row.skillName} placeholder="e.g. SAP MM" onChange={event => update({ skillName: event.target.value })} /></Form.Item></Col>
               <Col xs={24} md={8}><Form.Item label="Category" required><Select value={row.isRequired ? 'MustHave' : 'Preferred'} options={[{ value: 'MustHave', label: 'Must-have' }, { value: 'Preferred', label: 'Preferred' }]} onChange={value => update({ isRequired: value === 'MustHave' })} /></Form.Item></Col>
+              <Col xs={24} md={12}><Form.Item label="Require skill-specific experience" extra="Off by default. Missing skill-years will not block ATS; the skill itself and total career experience are still checked."><Switch checked={row.minimumYears > 0} disabled={editingDisabled} onChange={required => update({ minimumYears: required ? 1 : 0 })} /></Form.Item></Col>
+              {row.minimumYears > 0 && <Col xs={24} md={12}><Form.Item label="Minimum years for this skill" extra={row.isRequired ? 'Must-have: unverified duration needs review; insufficient duration fails this requirement.' : 'Preferred skill: affects scoring, not the must-have gate.'}><InputNumber min={0.1} max={80} step={0.5} value={row.minimumYears} disabled={editingDisabled} onChange={value => update({ minimumYears: Number(value || 0) })} /></Form.Item></Col>}
               <Col span={24}><Collapse className="jd-skill-advanced" ghost size="small"><Collapse.Panel key="advanced" header={<span>Advanced <Typography.Text type="secondary">{[
                   row.minimumProficiency,
                   `Weight ${formatPercent(row.weightPercent)}`,
@@ -702,7 +704,7 @@ function blankDescription(request: RecruitmentRequisition): RecruitmentJobDescri
   const qualifications = parsed.qualifications.length ? parsed.qualifications : splitTerms(request.qualification)
   const responsibilities = parsed.responsibilities.length ? parsed.responsibilities : splitTerms(request.businessJustification || request.reasonForHiring)
   const skills = parsed.skillRequirements.length
-    ? parsed.skillRequirements.map(row => ({ ...skill(row.skillName, row.isRequired), minimumYears: row.minimumYears, minimumProficiency: row.proficiency, weightPercent: row.weightPercent }))
+    ? parsed.skillRequirements.map(row => ({ ...skill(row.skillName, row.isRequired), minimumYears: 0, minimumProficiency: row.proficiency, weightPercent: row.weightPercent }))
     : [...required.map(name => skill(name, true)), ...preferred.map(name => skill(name, false))]
   const qualificationRows = parsed.qualificationRequirements.length
     ? parsed.qualificationRequirements.map(row => ({ ...qualification(row.qualificationName), specialization: row.specialization, isMandatory: row.isMandatory }))

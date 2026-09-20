@@ -1,4 +1,5 @@
 import { apiRequest, apiUrl, deleteJson, getJson, getJsonResult, postFormWithProgress, postJson, putJson, readError } from './apiClient'
+import { currentRecruitmentJobPostings } from './recruitmentJobVersions'
 export { normalizePublicCareerUrl } from './publicCareerUrl'
 import type {
   CandidateActionDecision,
@@ -157,8 +158,10 @@ export const createCurrentStageCandidateAction = (applicationId: number) =>
 export const revokeRecruitmentCandidateAction = (id: number) =>
   postJson(`${internalBase}/candidate-actions/${id}/revoke`, {}, null as unknown, { toast: 'error-only' })
 
-export const getRecruitmentJobPostings = (clientId = 0) =>
-  getJson<RecruitmentJobPosting[]>(`${internalBase}/job-postings${clientId > 0 ? `?clientId=${clientId}` : ''}`, [])
+export const getRecruitmentJobPostings = async (clientId = 0, includeHistory = false) => {
+  const rows = await getJson<RecruitmentJobPosting[]>(`${internalBase}/job-postings${clientId > 0 ? `?clientId=${clientId}` : ''}`, [])
+  return includeHistory ? rows : currentRecruitmentJobPostings(rows)
+}
 
 export const getRecruitmentJobPosting = (id: number) =>
   getJson<RecruitmentJobPosting | null>(`${internalBase}/job-postings/${id}`, null)

@@ -2,6 +2,9 @@ namespace Payroll.API.Models;
 
 public class RecruitmentRequisition
 {
+    public int? BudgetApproverUserId { get; set; }
+    public long? BudgetApprovalWorkflowInstanceId { get; set; }
+    public string BudgetApprovalStatus { get; set; } = "";
     public long Id { get; set; }
     public string RfrNumber { get; set; } = "";
     public DateTime RequestDate { get; set; } = DateTime.Today;
@@ -75,6 +78,7 @@ public class RecruitmentRequisition
 
 public class SaveRecruitmentRequisition
 {
+    public int? BudgetApproverUserId { get; set; }
     public long Id { get; set; }
     public DateTime? RequestDate { get; set; }
     public int? RequestedByEmployeeId { get; set; }

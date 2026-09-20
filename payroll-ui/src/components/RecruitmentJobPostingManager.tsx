@@ -24,6 +24,7 @@ import type {
 } from '../types/recruitmentOrchestration'
 import { recruitmentStageColor } from '../utils/recruitmentStage'
 import './RecruitmentOrchestration.css'
+import { currentRecruitmentJobPostings } from '../services/recruitmentJobVersions'
 
 type Props = {
   initialClientId?: number
@@ -91,7 +92,9 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
   const positions = useMemo(() => editorClientId > 0
     ? lookups.positions.filter(row => row.clientId === editorClientId)
     : lookups.positions, [lookups.positions, editorClientId])
-  const visiblePostings = useMemo(() => postings.filter(row => {
+  const currentPostings = useMemo(() => currentRecruitmentJobPostings(postings), [postings])
+  const historicalPostings = useMemo(() => postings.filter(row => !currentPostings.some(current => current.id === row.id)), [postings, currentPostings])
+  const visiblePostings = useMemo(() => currentPostings.filter(row => {
     const statusMatch = listStatus === 'All' || row.status === listStatus
     const needle = search.trim().toLowerCase()
     return statusMatch && (!needle || `${row.publicTitle} ${row.positionCode} ${row.positionTitle}`.toLowerCase().includes(needle))
@@ -99,13 +102,13 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
     const a = dayjs(left.updatedAtUtc || left.createdAtUtc || 0).valueOf()
     const b = dayjs(right.updatedAtUtc || right.createdAtUtc || 0).valueOf()
     return sortOrder === 'recent' ? b - a : a - b
-  }), [postings, listStatus, search, sortOrder])
+  }), [currentPostings, listStatus, search, sortOrder])
   const statusCounts = useMemo(() => ({
-    All: postings.length,
-    Draft: postings.filter(row => row.status === 'Draft').length,
-    Published: postings.filter(row => row.status === 'Published').length,
-    Closed: postings.filter(row => row.status === 'Closed').length,
-  }), [postings])
+    All: currentPostings.length,
+    Draft: currentPostings.filter(row => row.status === 'Draft').length,
+    Published: currentPostings.filter(row => row.status === 'Published').length,
+    Closed: currentPostings.filter(row => row.status === 'Closed').length,
+  }), [currentPostings])
   const selectedPosition = positions.find(row => row.id === editor?.positionId)
   const readOnly = !!editor?.id && !editableStatuses.has(editor.status)
   const publicUrl = normalizePublicCareerUrl(editor?.publicUrl, editor?.publicSlug)
@@ -129,14 +132,18 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
   async function loadClient(scope: number, preferredPostingId = 0) {
     setLoading(true)
     const [lookupRows, postingRows] = await Promise.all([
-      getRecruitmentOrchestrationLookups(scope), getRecruitmentJobPostings(scope),
+      getRecruitmentOrchestrationLookups(scope), getRecruitmentJobPostings(scope, true),
     ])
     setLookups(lookupRows); setPostings(postingRows)
     const preferred = postingRows.find(row => row.id === preferredPostingId)
     if (preferred) await choosePosting(preferred, lookupRows.positions)
     else if (!editor || editor.clientId !== scope) {
       setEditor(null); setJobDescriptions([]); setPipelineVersionId(undefined); setPipelineAssignment(null)
-      if (initialPositionId && lookupRows.positions.some(row => row.id === initialPositionId)) await startNew(initialPositionId, lookupRows)
+      if (initialPositionId && lookupRows.positions.some(row => row.id === initialPositionId)) {
+        const existing = postingRows.find(row => row.positionId === initialPositionId && ['Published', 'Draft'].includes(row.status))
+        if (existing) await choosePosting(existing, lookupRows.positions)
+        else await startNew(initialPositionId, lookupRows)
+      }
     }
     setLoading(false)
   }
@@ -168,6 +175,8 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
   }
 
   async function startNew(positionId = 0, allLookups = lookups) {
+    const existing = currentRecruitmentJobPostings(postings).find(row => row.positionId === positionId && ['Published', 'Draft'].includes(row.status))
+    if (existing) { await choosePosting(existing, allLookups.positions); return }
     const position = allLookups.positions.find(row => row.id === positionId)
     setEditor(blankPosting(clientId, positionId, position?.positionTitle ?? ''))
     setJobDescriptions([]); setPipelineVersionId(undefined); setPipelineAssignment(null)
@@ -427,6 +436,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
                 </Space></div>
               </Card></List.Item>
             }} />
+            {!!historicalPostings.length && <details data-testid="job-posting-history"><summary>Earlier postings / history ({historicalPostings.length})</summary><p>Earlier records and their applications are retained. Pipeline updates do not change published URLs.</p><Space direction="vertical">{historicalPostings.map(row => <Button key={row.id} onClick={() => void choosePosting(row)}>{row.publicTitle || row.positionTitle} · Posting #{row.id} · {row.status}</Button>)}</Space></details>}
           </Space>
         </Card>}
 

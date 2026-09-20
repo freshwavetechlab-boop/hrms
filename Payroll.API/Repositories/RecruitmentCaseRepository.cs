@@ -467,13 +467,17 @@ WHERE definition.ClientId=@ClientId AND definition.IsActive=TRUE AND versionRow.
             : "Keep one current Position or Hybrid pipeline for this client so the work-order SLA can start automatically.");
 
         var lineIds = (await db.QueryAsync<long>(
-            "SELECT Id FROM recruitment_work_order_lines WHERE WorkOrderId=@Id ORDER BY LineNumber,Id", new { Id = workOrderId })).ToList();
+            "SELECT Id FROM recruitment_work_order_lines WHERE WorkOrderId=@Id AND Status<>'Superseded' ORDER BY LineNumber,Id", new { Id = workOrderId })).ToList();
         if (lineIds.Count == 0)
         {
+            // An archived demand line is history, not an invitation to recreate it.
+            if (await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_work_order_lines WHERE WorkOrderId=@Id", new { Id = workOrderId }) > 0)
+                return ([], "");
             var positionName = FirstValue(workOrder.Subject, workOrder.WorkOrderNumber, "Hiring request pending");
             var lineId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_work_order_lines
 (WorkOrderId,LineNumber,PositionName,PayBandLevelCode,NumberOfPositions,Location,Division,RequisitionId,PositionId,Status)
-VALUES (@WorkOrderId,1,@PositionName,'',1,'','',NULL,NULL,'Open');SELECT LAST_INSERT_ID();",
+VALUES (@WorkOrderId,1,@PositionName,'',1,'','',NULL,NULL,'Open')
+ON DUPLICATE KEY UPDATE Id=LAST_INSERT_ID(Id);SELECT LAST_INSERT_ID();",
                 new { WorkOrderId = workOrderId, PositionName = positionName });
             lineIds.Add(lineId);
         }
@@ -566,8 +570,10 @@ WHERE documentRow.HiringCaseId=@Id", new { Id = id }, transaction);
     {
         await using var db = Db();
         await db.OpenAsync();
-        var existingCaseId = await db.ExecuteScalarAsync<long?>(@"SELECT Id FROM recruitment_position_pipeline_instances
-WHERE WorkOrderLineId=@WorkOrderLineId AND (@ClientId IS NULL OR ClientId=@ClientId) LIMIT 1", new { request.WorkOrderLineId, user.ClientId });
+        var existingCaseId = await db.ExecuteScalarAsync<long?>(@"SELECT hiringCase.Id FROM recruitment_position_pipeline_instances hiringCase
+JOIN recruitment_work_order_lines line ON line.Id=hiringCase.WorkOrderLineId
+WHERE hiringCase.WorkOrderLineId=@WorkOrderLineId AND hiringCase.Status<>'Superseded' AND line.Status<>'Superseded'
+AND (@ClientId IS NULL OR hiringCase.ClientId=@ClientId) LIMIT 1", new { request.WorkOrderLineId, user.ClientId });
         if (existingCaseId is > 0) return (await GetHiringCaseAsync(existingCaseId.Value, user), "");
         var source = await db.QueryFirstOrDefaultAsync<StartCaseSource>(@"SELECT line.Id WorkOrderLineId,line.WorkOrderId,line.RequisitionId,line.PositionId,
 workOrder.ClientId,workOrder.ReceivedAtUtc,COALESCE(requisition.RequestDate,workOrder.ReceivedAtUtc) SlaAnchorAtUtc,
@@ -578,7 +584,7 @@ JOIN recruitment_work_orders workOrder ON workOrder.Id=line.WorkOrderId
 LEFT JOIN recruitment_requisitions requisition ON requisition.Id=line.RequisitionId
 CROSS JOIN recruitment_pipeline_versions version
 JOIN recruitment_pipeline_definitions definition ON definition.Id=version.PipelineDefinitionId AND definition.ClientId=workOrder.ClientId
-WHERE line.Id=@WorkOrderLineId AND version.Id=@PipelineVersionId AND (@ClientId IS NULL OR workOrder.ClientId=@ClientId)", new { request.WorkOrderLineId, request.PipelineVersionId, user.ClientId });
+WHERE line.Id=@WorkOrderLineId AND line.Status<>'Superseded' AND version.Id=@PipelineVersionId AND (@ClientId IS NULL OR workOrder.ClientId=@ClientId)", new { request.WorkOrderLineId, request.PipelineVersionId, user.ClientId });
         if (source is null) return (null, "Work order line or pipeline version was not found for this client.");
         if (!await RecruitmentAccessScope.CanAccessLocationAsync(db, user, source.ClientId, source.Location)) return (null, "Work order line was not found in your permitted location scope.");
         if (!source.PipelineStatus.Equals("Published", StringComparison.OrdinalIgnoreCase)) return (null, "Publish the pipeline version before starting a hiring case.");
@@ -590,6 +596,22 @@ FROM recruitment_pipeline_stages WHERE PipelineVersionId=@Id AND CardScope='Posi
 
         await using var transaction = await db.BeginTransactionAsync();
         var overallMinutes = source.PipelineOverallSlaMinutes;
+        if (source.RequisitionId is > 0)
+        {
+            var reuse = await ReuseHiringJourneyAsync(db, transaction, source.RequisitionId.Value, source.WorkOrderId,
+                source.WorkOrderLineId, source.PositionId, source.ClientId, user.Id);
+            if (reuse.Error.Length > 0) return (null, reuse.Error);
+            if (reuse.Id is > 0)
+            {
+                await transaction.CommitAsync();
+                return (await GetHiringCaseAsync(reuse.Id.Value, user), "");
+            }
+        }
+        // Serialize an unassigned line too, and reject a link changed since the initial read.
+        var currentLine = await db.QueryFirstOrDefaultAsync<(long Id, long? RequisitionId, long? PositionId, string Status)>(
+            "SELECT Id,RequisitionId,PositionId,Status FROM recruitment_work_order_lines WHERE Id=@Id FOR UPDATE", new { Id = source.WorkOrderLineId }, transaction);
+        if (currentLine.Id == 0 || currentLine.Status == "Superseded" || currentLine.RequisitionId != source.RequisitionId || currentLine.PositionId != source.PositionId)
+            return (null, "The work-order link changed. Refresh before starting its hiring journey.");
         var overallDue = overallMinutes > 0 ? source.SlaAnchorAtUtc.AddMinutes(overallMinutes) : (DateTime?)null;
         var inserted = await db.ExecuteAsync(@"INSERT IGNORE INTO recruitment_position_pipeline_instances
 (ClientId,WorkOrderId,WorkOrderLineId,RequisitionId,PositionId,PipelineVersionId,SlaAnchorAtUtc,OverallDueAtUtc,Status,StartedByUserId)
@@ -622,6 +644,48 @@ VALUES (@CaseId,@StageId,'CaseStarted','Hiring case started','Work-order SLA clo
         if (source.PositionId is > 0) await AssignPositionPipelineAsync(db, source.PositionId.Value, source.PipelineVersionId, user.Id, transaction);
         await transaction.CommitAsync();
         return (await GetHiringCaseAsync(caseId, user), "");
+    }
+
+    // Called inside the creation transaction: the request lock covers check + insert.
+    // Identity is the request, never the display title (different roles can share a title).
+    internal static async Task<(long? Id, string Error)> ReuseHiringJourneyAsync(
+        MySqlConnection db, System.Data.IDbTransaction transaction, long requisitionId, long workOrderId,
+        long lineId, long? positionId, int clientId, int actorUserId)
+    {
+        var requestId = await db.ExecuteScalarAsync<long?>("SELECT Id FROM recruitment_requisitions WHERE Id=@Id AND ClientId=@ClientId FOR UPDATE",
+            new { Id = requisitionId, ClientId = clientId }, transaction);
+        if (requestId is null) return (null, "Hiring request was not found in this client scope.");
+        var target = await db.QueryFirstOrDefaultAsync<(long Id, long? RequisitionId, long? PositionId, string Status)>(
+            "SELECT Id,RequisitionId,PositionId,Status FROM recruitment_work_order_lines WHERE Id=@Id AND WorkOrderId=@WorkOrderId FOR UPDATE",
+            new { Id = lineId, WorkOrderId = workOrderId }, transaction);
+        if (target.Id == 0 || target.Status == "Superseded" || target.RequisitionId != requisitionId || target.PositionId != positionId)
+            return (null, "The work-order link changed. Refresh before starting its hiring journey.");
+        var linked = (await db.QueryAsync<(long Id, long WorkOrderId, long WorkOrderLineId, long? PositionId)>(@"SELECT Id,WorkOrderId,WorkOrderLineId,PositionId
+FROM recruitment_position_pipeline_instances WHERE RequisitionId=@Id AND ClientId=@ClientId AND Status<>'Superseded' FOR UPDATE",
+            new { Id = requisitionId, ClientId = clientId }, transaction)).ToList();
+        if (linked.Count > 1) return (null, "This request has multiple historical hiring journeys. Reconcile the linked journey before starting another.");
+        if (linked.Count == 0) return (null, "");
+        var previous = linked[0];
+        if (previous.WorkOrderId != workOrderId || (previous.PositionId is > 0 && previous.PositionId != positionId))
+            return (null, "This hiring request already has a journey under another work order or position. Reconcile that link first.");
+        if (previous.WorkOrderLineId != lineId)
+        {
+            var occupied = await db.ExecuteScalarAsync<bool>("SELECT COUNT(*)>0 FROM recruitment_position_pipeline_instances WHERE WorkOrderLineId=@Id AND Id<>@CaseId",
+                new { Id = lineId, CaseId = previous.Id }, transaction);
+            if (occupied) return (null, "The destination line already has a hiring journey. Reconcile the existing journeys first.");
+            await db.ExecuteAsync(@"UPDATE recruitment_position_pipeline_instances SET WorkOrderLineId=@LineId,PositionId=@PositionId,UpdatedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id;
+UPDATE recruitment_work_order_lines SET Status='Superseded' WHERE Id=@OldLineId AND RequisitionId IS NULL AND PositionId IS NULL;
+UPDATE recruitment_work_order_lines SET Status=CASE WHEN Status='Open' THEN 'In Progress' ELSE Status END WHERE Id=@LineId;
+INSERT INTO recruitment_position_stage_events(PositionPipelineInstanceId,PositionStageInstanceId,EventType,EventTitle,EventDetails,ActorUserId)
+SELECT Id,CurrentStageInstanceId,'CaseRelinked','Existing hiring journey reused',@Details,@UserId FROM recruitment_position_pipeline_instances WHERE Id=@Id", new
+            {
+                previous.Id, LineId = lineId, PositionId = positionId, OldLineId = previous.WorkOrderLineId,
+                Details = $"Work-order line changed from {previous.WorkOrderLineId} to {lineId}. Original stages, SLA and history retained.", UserId = actorUserId
+            }, transaction);
+        }
+        else if (previous.PositionId is null && positionId is > 0)
+            await db.ExecuteAsync("UPDATE recruitment_position_pipeline_instances SET PositionId=@PositionId WHERE Id=@Id", new { previous.Id, PositionId = positionId }, transaction);
+        return (previous.Id, "");
     }
 
     public async Task<(RecruitmentHiringCase? Row, string Error)> EnsureHiringCaseForRequisitionAsync(long requisitionId, AuthUser user)
@@ -704,7 +768,7 @@ FOR UPDATE", new { RequisitionId = requisitionId, user.ClientId }, transaction);
         }
 
         var existingLine = await db.QueryFirstOrDefaultAsync<(long Id, long WorkOrderId, int LineNumber)>(@"SELECT Id,WorkOrderId,LineNumber
-FROM recruitment_work_order_lines WHERE RequisitionId=@RequisitionId LIMIT 1 FOR UPDATE",
+FROM recruitment_work_order_lines WHERE RequisitionId=@RequisitionId AND Status<>'Superseded' LIMIT 1 FOR UPDATE",
             new { RequisitionId = requisitionId }, transaction);
         if (existingLine.Id > 0)
         {
@@ -748,7 +812,7 @@ SELECT LAST_INSERT_ID();", new
         var reusableLine = source.WorkOrderId is > 0
             ? await db.QueryFirstOrDefaultAsync<(long Id, int LineNumber)>(@"SELECT Id,LineNumber
 FROM recruitment_work_order_lines
-WHERE WorkOrderId=@WorkOrderId AND RequisitionId IS NULL AND PositionId IS NULL
+WHERE WorkOrderId=@WorkOrderId AND RequisitionId IS NULL AND PositionId IS NULL AND Status<>'Superseded'
   AND (@RequestedLineNumber IS NULL OR LineNumber=@RequestedLineNumber)
 ORDER BY LineNumber,Id LIMIT 1 FOR UPDATE", new
             {
@@ -833,7 +897,7 @@ CASE WHEN instance.EnteredAtUtc IS NULL THEN 0 ELSE GREATEST(0,TIMESTAMPDIFF(SEC
 COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pauseRow.PausedAtUtc,UTC_TIMESTAMP(6))) FROM recruitment_position_stage_pause_periods pauseRow WHERE pauseRow.PositionStageInstanceId=instance.Id AND pauseRow.ResumedAtUtc IS NULL),0)) END ActiveDurationSeconds
 FROM recruitment_position_stage_instances instance
 JOIN recruitment_pipeline_stages stage ON stage.Id=instance.PipelineStageId
-WHERE instance.PositionPipelineInstanceId=@Id
+WHERE instance.PositionPipelineInstanceId=@Id AND instance.Status<>'Superseded'
 ORDER BY CASE WHEN instance.EnteredAtUtc IS NULL THEN 1 ELSE 0 END,instance.EnteredAtUtc,instance.Id,stage.DisplayOrder", new { Id = id })).ToList();
         if (row.Stages.Count > 0)
         {
@@ -924,6 +988,8 @@ JOIN recruitment_position_stage_instances currentStage ON currentStage.Id=hiring
 JOIN recruitment_pipeline_stages stage ON stage.Id=currentStage.PipelineStageId
 WHERE hiringCase.Id=@Id AND hiringCase.Status='Active' AND (@ClientId IS NULL OR hiringCase.ClientId=@ClientId) FOR UPDATE", new { Id = id, user.ClientId }, transaction);
         if (current is null) return (null, "Active hiring case was not found.");
+        if (await db.ExecuteScalarAsync<bool>("SELECT " + HistoricalHiringCaseSql + " FROM recruitment_position_pipeline_instances hiringCase WHERE hiringCase.Id=@Id", new { Id = id }, transaction))
+            return (null, "This is an earlier duplicate journey retained for history. Open the currently linked hiring journey instead.");
         var outcome = string.IsNullOrWhiteSpace(request.OutcomeCode) ? "ADVANCE" : request.OutcomeCode.Trim().ToUpperInvariant();
         var reason = (request.Reason ?? "").Trim();
         if (TryParseBackwardOutcome(outcome, out var backwardStageId))
@@ -1028,9 +1094,8 @@ WHERE PositionId=@PositionId AND Status='Active'", new { application.PositionId 
             if (!string.IsNullOrWhiteSpace(ensureError)) return ensureError;
         }
 
-        // Vacancy milestones are cohort milestones, not per-candidate milestones. A single
-        // shortlist or interview must never advance the cumulative position SLA while another
-        // linked application is still waiting for a decision.
+        // Advance the shortlisted/interview cohort together. Unscreened applications and
+        // ATS evidence holds are not members of that cohort and must not stall its SLA.
         var candidates = (await db.QueryAsync<CandidateMilestoneSource>(@"SELECT applicationRow.PositionId,applicationRow.ClientId,
 COALESCE(candidateStage.StageName,applicationRow.CurrentStage,'') CandidateStageName,
 COALESCE(candidateStage.StageType,'') CandidateStageType,
@@ -1045,9 +1110,11 @@ WHERE applicationRow.PositionId=@PositionId AND applicationRow.ApplicationType='
 ORDER BY applicationRow.Id", new { application.PositionId })).ToList();
         if (candidates.Count == 0) return "";
 
-        var continuingCandidates = candidates.Where(candidate => !CandidateIsRejectedOrWithdrawn(candidate)).ToList();
+        var continuingCandidates = candidates.Where(candidate => !CandidateIsRejectedOrWithdrawn(candidate)
+            && (CandidateIsReadyForProfileSharing(candidate) || candidate.HasInterview)).ToList();
         if (continuingCandidates.Count == 0)
-            return await ReturnHiringCaseToProfileSharingAsync(db, application.PositionId, candidates.Count, user.Id);
+            return candidates.All(CandidateIsRejectedOrWithdrawn)
+                ? await ReturnHiringCaseToProfileSharingAsync(db, application.PositionId, candidates.Count, user.Id) : "";
 
         var profilesResolved = continuingCandidates.Count > 0
             && continuingCandidates.All(CandidateIsReadyForProfileSharing);
@@ -1077,7 +1144,7 @@ ORDER BY hiringCase.Id DESC,transitionRow.DisplayOrder,transitionRow.Id LIMIT 1"
             {
                 OutcomeCode = transition.OutcomeCode,
                 Reason = target == "ProfilesSelected"
-                    ? $"Automatically advanced after all {candidates.Count} linked candidates were resolved for profile sharing ({continuingCandidates.Count} continuing)."
+                    ? $"Automatically advanced for the {continuingCandidates.Count} shortlisted candidates; intake/ATS-pending applications remain in their own stages."
                     : $"Automatically advanced after interviews were scheduled or completed for all {continuingCandidates.Count} continuing candidates."
             }, user);
             if (!string.IsNullOrWhiteSpace(error)) return error;
@@ -1149,8 +1216,11 @@ LEFT JOIN recruitment_application_stage_instances candidateInstance ON candidate
 LEFT JOIN recruitment_pipeline_stages candidateStage ON candidateStage.Id=candidateInstance.PipelineStageId
 WHERE applicationRow.PositionId=@PositionId AND applicationRow.ApplicationType='Application'", new { PositionId = positionId })).ToList();
             if (candidates.Count == 0) return "";
-            var continuing = candidates.Where(candidate => !CandidateIsRejectedOrWithdrawn(candidate)).ToList();
-            if (continuing.Count == 0) return await ReturnHiringCaseToProfileSharingAsync(db, positionId, candidates.Count, user.Id);
+            var continuing = candidates.Where(candidate => !CandidateIsRejectedOrWithdrawn(candidate)
+                && (CandidateIsReadyForProfileSharing(candidate) || candidate.HasInterview
+                    || candidate.IsJoined || candidate.LatestOfferStatus.Length > 0)).ToList();
+            if (continuing.Count == 0) return candidates.All(CandidateIsRejectedOrWithdrawn)
+                ? await ReturnHiringCaseToProfileSharingAsync(db, positionId, candidates.Count, user.Id) : "";
 
             var key = $"{current.StageCode} {current.StageName} {current.StageType}".ToUpperInvariant();
             bool ready;
@@ -1189,16 +1259,21 @@ WHERE document.HiringCaseId=@CaseId AND document.PipelineStageId=@StageId AND do
             else return "";
             if (!ready) return "";
 
-            var transition = await db.QueryFirstOrDefaultAsync<HiringMilestoneTransition>(@"SELECT
+            var transitions = (await db.QueryAsync<HiringMilestoneTransition>(@"SELECT
 @CaseId HiringCaseId,transitionRow.OutcomeCode
 FROM recruitment_pipeline_transitions transitionRow
 JOIN recruitment_pipeline_stages targetStage ON targetStage.Id=transitionRow.ToStageId
 WHERE transitionRow.PipelineVersionId=(SELECT PipelineVersionId FROM recruitment_position_pipeline_instances WHERE Id=@CaseId)
  AND transitionRow.FromStageId=@StageId AND transitionRow.IsActive=TRUE
- AND transitionRow.OutcomeCode NOT LIKE '%REJECT%' AND targetStage.CardScope='Position' AND targetStage.IsActive=TRUE
-ORDER BY transitionRow.DisplayOrder,transitionRow.Id LIMIT 1",
-                new { CaseId = current.HiringCaseId, StageId = current.PipelineStageId });
-            if (transition is null) return "";
+ AND transitionRow.OutcomeCode NOT LIKE '%REJECT%' AND transitionRow.OutcomeCode NOT LIKE '%WITHDRAW%'
+ AND targetStage.StageType NOT IN ('Rejected','Withdrawn')
+ AND targetStage.DisplayOrder>(SELECT DisplayOrder FROM recruitment_pipeline_stages WHERE Id=@StageId)
+ AND targetStage.CardScope='Position' AND targetStage.IsActive=TRUE
+ORDER BY transitionRow.DisplayOrder,transitionRow.Id",
+                new { CaseId = current.HiringCaseId, StageId = current.PipelineStageId })).ToList();
+            if (transitions.Count == 0) return "";
+            if (transitions.Count != 1) return "Multiple next stages are configured. Select the route using manual move.";
+            var transition = transitions[0];
             var (moved, error) = await AdvanceHiringCaseAsync(current.HiringCaseId, new MoveRecruitmentHiringCaseRequest
             {
                 OutcomeCode = transition.OutcomeCode,
@@ -1325,7 +1400,8 @@ VALUES (@CaseId,@StageInstanceId,'ProfilesReworkStarted','Profiles returned for 
         if (new[] { "Interview", "HR", "Offer", "Documents", "PreOnboarding", "Joining", "Completed" }
             .Contains(application.CandidateStageType, StringComparer.OrdinalIgnoreCase)) return true;
         var stage = application.CandidateStageName.ToLowerInvariant();
-        return stage.Contains("profile") || stage.Contains("shortlist") || stage.Contains("stakeholder");
+        return (stage.Contains("sharing") && stage.Contains("profile"))
+            || stage.Contains("shortlisted") || stage.Contains("stakeholder");
     }
 
     public async Task<(RecruitmentHiringCase? Row, string Error)> SyncHiringCaseAdvanceWorkflowStatusAsync(long requestId, string workflowStatus, AuthUser user)
@@ -1645,6 +1721,16 @@ VALUES (@CaseId,(SELECT CurrentStageInstanceId FROM recruitment_position_pipelin
                 Details = $"{signerName} signed {document.DocumentType} using {method} signature.",
                 UserId = user.Id
             });
+        // The last required signature completes a prepared document. Partial signatures
+        // and an outstanding document workflow never finalize it.
+        var signatureGate = await SignatureGateAsync(db, documentId);
+        if (signatureGate.Complete)
+            await db.ExecuteAsync(@"UPDATE recruitment_process_documents documentRow
+SET Status='Signed',SignedByUserId=@UserId,SignedAtUtc=UTC_TIMESTAMP(6),UpdatedAtUtc=UTC_TIMESTAMP(6)
+WHERE documentRow.Id=@Id AND documentRow.Status='Prepared'
+AND (documentRow.WorkflowInstanceId IS NULL OR EXISTS (
+ SELECT 1 FROM workflowinstances workflow WHERE workflow.Id=documentRow.WorkflowInstanceId AND workflow.Status='Approved'))",
+                new { Id = documentId, UserId = user.Id });
         return (await db.QueryFirstOrDefaultAsync<RecruitmentProcessDocumentSignature>(@"SELECT *
 FROM recruitment_process_document_signatures WHERE ProcessDocumentId=@DocumentId AND SignerUserId=@UserId",
             new { DocumentId = documentId, UserId = user.Id }), "");
@@ -2249,7 +2335,7 @@ JOIN authusers userRow ON userRow.Id=positionRow.RecruiterUserId AND userRow.IsA
     }
 
     private static Task<IEnumerable<RecruitmentHiringCase>> HiringCaseRowsAsync(MySqlConnection db, int? clientId, long? id) =>
-        db.QueryAsync<RecruitmentHiringCase>(@"SELECT hiringCase.*,client.Name ClientName,workOrder.WorkOrderNumber,line.PositionName,line.PayBandLevelCode,line.Division,line.Location,
+        db.QueryAsync<RecruitmentHiringCase>("SELECT " + HistoricalHiringCaseSql + @" IsHistorical,hiringCase.*,client.Name ClientName,workOrder.WorkOrderNumber,line.PositionName,line.PayBandLevelCode,line.Division,line.Location,
 definition.PipelineName,stage.StageName CurrentStageName,stage.StakeholderCode CurrentStakeholderCode
 FROM recruitment_position_pipeline_instances hiringCase
 JOIN clients client ON client.Id=hiringCase.ClientId
@@ -2261,6 +2347,12 @@ LEFT JOIN recruitment_position_stage_instances currentStage ON currentStage.Id=h
 LEFT JOIN recruitment_pipeline_stages stage ON stage.Id=currentStage.PipelineStageId
 WHERE (@ClientId IS NULL OR hiringCase.ClientId=@ClientId) AND (@Id IS NULL OR hiringCase.Id=@Id)
 ORDER BY hiringCase.UpdatedAtUtc DESC,hiringCase.Id DESC", new { ClientId = clientId, Id = id });
+
+    internal const string HistoricalHiringCaseSql = @"(hiringCase.Status='Superseded' OR EXISTS(
+SELECT 1 FROM recruitment_position_pipeline_instances newer
+WHERE newer.ClientId=hiringCase.ClientId AND newer.RequisitionId=hiringCase.RequisitionId AND newer.Status<>'Superseded'
+AND ((newer.PositionId IS NOT NULL AND hiringCase.PositionId IS NULL)
+ OR ((newer.PositionId IS NOT NULL)=(hiringCase.PositionId IS NOT NULL) AND newer.Id>hiringCase.Id))))";
 
     private static Task<ActiveStageSource?> ActiveCaseStageAsync(MySqlConnection db, long id, int? clientId, System.Data.IDbTransaction? transaction = null) =>
         db.QueryFirstOrDefaultAsync<ActiveStageSource>(@"SELECT hiringCase.Id HiringCaseId,currentStage.Id StageInstanceId,stage.AllowPause,stage.PauseBehavior

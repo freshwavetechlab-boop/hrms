@@ -959,7 +959,7 @@ LIMIT 5;", new { Id = id }, transaction)).ToList();
         return affected > 0;
     }
 
-    private async Task<AuthUser?> GetUserByIdAsync(int userId)
+    internal async Task<AuthUser?> GetUserByIdAsync(int userId)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();

@@ -6,6 +6,7 @@ using Dapper;
 using Microsoft.AspNetCore.DataProtection;
 using MySqlConnector;
 using Payroll.API.Models;
+using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
@@ -133,6 +134,15 @@ WHERE v.Id=@Id AND v.Status IN ('Published','Retired') AND d.ClientId IN (0,@Cli
             if (offerBelongs == 0) return (null, "Offer does not belong to this application.");
         }
         if (request.PurposeCode == "OFFER_RESPONSE" && !request.OfferId.HasValue) return (null, "Release an offer before creating a candidate response link.");
+        if (request.PurposeCode == "OFFER_RESPONSE")
+        {
+            var released = await db.ExecuteScalarAsync<bool>(@"SELECT COUNT(*)>0 FROM recruitment_offers
+WHERE Id=@Id AND ApplicationId=@ApplicationId AND Status IN ('Pending Candidate','Released')",
+                new { Id = request.OfferId, request.ApplicationId });
+            if (!released) return (null, "Release the approved offer before creating a candidate response link.");
+            var releaseError = await RecruitmentOfferReleaseGate.ValidateAsync(db, request.ApplicationId, offerId: request.OfferId);
+            if (releaseError.Length > 0) return (null, releaseError);
+        }
         if (request.PurposeCode != "OFFER_RESPONSE" && !request.FormVersionId.HasValue) return (null, "A published external form is required for this candidate action.");
 
         await using var transaction = await db.BeginTransactionAsync();
@@ -464,6 +474,8 @@ SET a.uploaded_by_external_subject_id=s.ExternalSubjectId WHERE a.id=@Attachment
             }
             if (locked.PurposeCode == "OFFER_RESPONSE" && locked.OfferId.HasValue)
             {
+                var releaseError = await RecruitmentOfferReleaseGate.ValidateAsync(db, locked.ApplicationId, transaction: transaction, offerId: locked.OfferId);
+                if (releaseError.Length > 0) return (null, releaseError);
                 var offer = await db.QueryFirstOrDefaultAsync<OfferResponseRow>(@"SELECT offer.Id,offer.Status,offer.ExpiryDate,
 applicationRow.ClientId,applicationRow.CandidateId,applicationRow.PositionId,applicationRow.CurrentStage
 FROM recruitment_offers offer
@@ -698,9 +710,18 @@ VALUES (@CandidateId,@CertificationName,'',NULL,NULL,'')", new { CandidateId = c
     {
         await using var db = Db();
         await db.OpenAsync();
-        var session = await ValidateAsync(db, token, true);
+        // Acceptance consumes the write action, not its still-valid read-only document access.
+        var session = await ValidateAsync(db, token, true, allowCompleted: true);
         if (session?.OfferId is null) return (null, 0, 0);
-        var publicId = await db.ExecuteScalarAsync<string>("SELECT OfferLetterAttachmentPublicId FROM recruitment_offers WHERE Id=@Id AND ApplicationId=@ApplicationId", new { Id = session.OfferId.Value, session.ApplicationId });
+        // An existing, valid candidate session may read the new final copy after approval.
+        // Keep the accepted original linked and use it when no current final document exists.
+        var publicId = await db.ExecuteScalarAsync<string>(@"SELECT COALESCE(
+(SELECT h.Comment FROM workflowinstances w JOIN workflowhistory h ON h.InstanceId=w.Id AND h.Action='FinalDocumentGenerated'
+ JOIN entity_attachments attachment ON attachment.public_id=h.Comment AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
+ WHERE w.ResourceType='RecruitmentFinalOffer' AND w.ResourceId=CAST(o.Id AS CHAR) AND w.Status='Approved' AND o.Status='Accepted'
+ AND NOT EXISTS(SELECT 1 FROM workflowinstances later WHERE later.ResourceType=w.ResourceType AND later.ResourceId=w.ResourceId AND later.Id>w.Id)
+ ORDER BY h.Id DESC LIMIT 1),o.OfferLetterAttachmentPublicId)
+FROM recruitment_offers o WHERE o.Id=@Id AND o.ApplicationId=@ApplicationId", new { Id = session.OfferId.Value, session.ApplicationId });
         return Guid.TryParse(publicId, out var parsed) ? (parsed, session.ClientId, session.CandidateId) : (null, 0, 0);
     }
 

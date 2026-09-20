@@ -12,3 +12,41 @@ The renderer is opt-in using `<!-- gad-uidai-offer:v1 -->` in a client-scoped of
 The reference document has 11 joining-document requirements; PAN and Aadhaar are collected separately, giving 12 mandatory upload fields. Newly generated document/preboarding links use the dedicated client-scoped form. Previously issued links remain unchanged and must be reissued deliberately if needed. HR must verify uploaded files and originals; no automatic verification is asserted.
 
 Tests: `dotnet test Payroll.API.Tests --filter FullyQualifiedName~EngineAndOfferTests`. Headed browser tests are in the local `playwright-e2e/tests/engine-monitor-live.spec.ts`; run only with authorized test credentials/data. Monitoring is measured busy time, not a fabricated per-engine CPU percentage.
+
+## Candidate acceptance → departmental approval → final signed copy
+
+This additive flow is **off by default**. In the super-admin portal, open
+**Offers & Pre-boarding → Final offer signatory**, select the intended client, enable
+post-acceptance signing and choose the authorized active user. The searchable list
+reuses budget-approver lookup and includes only that client's/global users. Client-bound
+admins cannot configure this authority, including through direct API requests.
+
+The audited policy reuses `modulesettings` with a client-suffixed reserved key;
+no schema migration is required. Explicit portal off overrides legacy server settings.
+When no portal row exists, `OfferSigning__Uidai__PostAcceptanceEnabled`, `ClientId` and
+`FinalApproverUserId` remain backward-compatible fallback. Existing pre-acceptance
+signing still uses its original server configuration. Pending final approvals or
+approved-but-unissued letters must be resolved before changing the signatory.
+
+Confirm the organization logo and private asset above. Keep an active
+`OFFER_LETTER` / `RECRUITMENT` / `PRE_ONBOARDING` attachment field with `allow_multiple=true`
+in that client/global scope. This prevents the signed copy from retiring the original.
+
+- Candidate acceptance automatically requests `RecruitmentFinalOffer` approval through
+  the existing workflow engine. The assigned user sees it in the normal approval bell.
+- Existing Accepted offers can use **Request final approval** in Offers & Pre-boarding.
+  There is no startup mass-signing or retroactive approval of old offers.
+- Approval uses a snapshot of the bundled branded wording, candidate/job identity and
+  financial terms. A mismatch refuses signing. The original offer template, workflow,
+  Accepted status and original PDF remain unchanged.
+- Successful approval stores a separate final PDF receipt in workflow history. A
+  rendering/storage failure leaves approval saved and exposes **Retry final PDF**.
+  Repeated successful calls reuse the same receipt/file rather than creating copies.
+- **Final signed letter** previews inside the portal; Export PDF uses the browser PDF
+  viewer. The candidate's valid, unrevoked offer link can read the final copy even after
+  acceptance consumed its write action. Expired/revoked links do not gain access.
+- This path uses existing workflow/history/attachment tables; no new signing migration.
+  It does not install or override the generic template used for the original offer.
+
+Real API + disposable DB test: `node tools/test-recruitment-workflow-portal.mjs`.
+It uses synthetic identities and local mail delivery, not production signing authority.

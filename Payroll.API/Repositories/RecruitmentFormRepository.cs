@@ -1982,11 +1982,10 @@ VALUES (@Code,@CandidateId,@PositionId,@ClientId,'Public Job',@PostingId,@Postin
         if (string.IsNullOrWhiteSpace(token)) return null;
         await using var db = Db();
         await db.OpenAsync();
-        var row = await db.QueryFirstOrDefaultAsync<PublicApplicationProcessingRow>(@"SELECT applicationRow.ApplicationCode,
+        var row = await db.QueryFirstOrDefaultAsync<PublicApplicationProcessingRow>($@"SELECT applicationRow.ApplicationCode,
 COALESCE(resume.ParsingStatus,'NotApplicable') ResumeStatus,
 COALESCE(posting.AutoRunAts,FALSE) AutoRunAts,
-COALESCE((SELECT job.Status FROM recruitment_ats_scoring_jobs job
- WHERE job.ApplicationId=applicationRow.Id ORDER BY job.Id DESC LIMIT 1),'') AtsStatus
+{CurrentPublicAtsStatusSql} AtsStatus
 FROM form_public_sessions sessionRow
 JOIN form_submissions submission ON submission.Id=sessionRow.SubmissionId AND submission.Status='Submitted'
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=submission.ApplicationId
@@ -2000,11 +1999,7 @@ LIMIT 1", new { TokenHash = Hash(token) });
         var atsStatus = string.IsNullOrWhiteSpace(row.AtsStatus)
             ? row.AutoRunAts && resumeStatus.Equals("Parsed", StringComparison.OrdinalIgnoreCase) ? "Waiting" : "NotRequested"
             : row.AtsStatus;
-        var resumeNeedsReview = resumeStatus.Equals("Failed", StringComparison.OrdinalIgnoreCase);
-        var atsNeedsReview = atsStatus.Equals("Failed", StringComparison.OrdinalIgnoreCase);
-        var processing = resumeStatus is "Pending" or "Processing"
-            || atsStatus is "Waiting" or "Queued" or "Retry" or "Processing";
-        var status = resumeNeedsReview || atsNeedsReview ? "NeedsReview" : processing ? "Processing" : "Completed";
+        var (status, _) = PublicProcessingSummary(resumeStatus, atsStatus, row.AutoRunAts);
         var message = status switch
         {
             "NeedsReview" => "Your application is safely submitted, but automated resume or ATS processing needs HR review.",
@@ -2100,10 +2095,36 @@ LIMIT 1", new { TokenHash = Hash(token) });
         if (authorization is null || !authorization.CandidateId.HasValue) return null;
         await db.ExecuteAsync("UPDATE recruitment_candidate_tracking_sessions SET LastUsedAtUtc=UTC_TIMESTAMP(6) WHERE Id=@Id", new { authorization.Id });
 
-        var rows = (await db.QueryAsync<TrackedApplicationRow>(@"SELECT applicationRow.Id ApplicationId,applicationRow.ApplicationCode,
+        return await BuildCandidateTrackerAsync(db, authorization);
+    }
+
+    public async Task<PublicCandidateApplicationTracker?> PreviewCandidateTrackerAsync(long applicationId, AuthUser user)
+    {
+        if (user.ClientId is not null || !user.Roles.Contains("super_admin", StringComparer.OrdinalIgnoreCase)) return null;
+        await using var db = Db();
+        await db.OpenAsync();
+        var authorization = await db.QueryFirstOrDefaultAsync<TrackingAuthorizationRow>(@"SELECT a.ClientId,a.CandidateId,
+TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName
+FROM recruitment_candidate_applications a JOIN recruitment_candidates c ON c.Id=a.CandidateId
+WHERE a.Id=@Id AND a.ApplicationType='Application'", new { Id = applicationId });
+        if (authorization?.CandidateId is null) return null;
+        // Read-only preview: never mint a public credential or reset/revoke a candidate session.
+        await db.ExecuteAsync(@"INSERT INTO recruitment_audit (EntityType,EntityId,Action,NewValueJson,ChangedByUserId)
+VALUES ('RecruitmentApplication',@Id,'View As Candidate',@Details,@UserId)", new
+        {
+            Id = applicationId, UserId = user.Id,
+            Details = JsonSerializer.Serialize(new { authorization.ClientId, ReadOnly = true, PasswordChanged = false })
+        });
+        return await BuildCandidateTrackerAsync(db, authorization);
+    }
+
+    private static async Task<PublicCandidateApplicationTracker> BuildCandidateTrackerAsync(MySqlConnection db, TrackingAuthorizationRow authorization)
+    {
+        if (authorization.CandidateId is not > 0) throw new InvalidOperationException("Candidate tracking authorization is invalid.");
+        var rows = (await db.QueryAsync<TrackedApplicationRow>($@"SELECT applicationRow.Id ApplicationId,applicationRow.ApplicationCode,
 position.PositionTitle,applicationRow.CurrentStage,applicationRow.CurrentStatus,applicationRow.AppliedAt,
 COALESCE(resume.ParsingStatus,'NotApplicable') ResumeStatus,COALESCE(posting.AutoRunAts,FALSE) AutoRunAts,
-COALESCE((SELECT job.Status FROM recruitment_ats_scoring_jobs job WHERE job.ApplicationId=applicationRow.Id ORDER BY job.Id DESC LIMIT 1),'') AtsStatus
+{CurrentPublicAtsStatusSql} AtsStatus
 FROM recruitment_candidate_applications applicationRow
 JOIN recruitment_open_positions position ON position.Id=applicationRow.PositionId
 LEFT JOIN recruitment_candidate_resumes resume ON resume.Id=applicationRow.ResumeId
@@ -2141,13 +2162,24 @@ ORDER BY Id DESC LIMIT 1", new { row.ApplicationId })
         return result;
     }
 
-    private static (string Status, string Message) PublicProcessingSummary(string resumeStatus, string atsStatus, bool autoRunAts)
+    // A synchronous/manual score may have no queue row. Only the current resume's score
+    // proves completion; a queued rerun or a later failure still takes precedence.
+    internal const string CurrentPublicAtsStatusSql = @"COALESCE(
+(SELECT job.Status FROM recruitment_ats_scoring_jobs job
+ WHERE job.Id=(SELECT MAX(latest.Id) FROM recruitment_ats_scoring_jobs latest WHERE latest.ApplicationId=applicationRow.Id)
+ AND (job.Status IN ('Queued','Retry','Processing') OR (job.Status='Failed' AND NOT EXISTS(
+ SELECT 1 FROM recruitment_application_scores score WHERE score.ApplicationId=applicationRow.Id AND score.IsCurrent=TRUE
+ AND score.ResumeId=applicationRow.ResumeId AND score.ScoredAt>job.UpdatedAt))) LIMIT 1),
+(SELECT score.ScoreStatus FROM recruitment_application_scores score WHERE score.ApplicationId=applicationRow.Id
+ AND score.IsCurrent=TRUE AND score.ResumeId=applicationRow.ResumeId ORDER BY score.Id DESC LIMIT 1),'')";
+
+    internal static (string Status, string Message) PublicProcessingSummary(string resumeStatus, string atsStatus, bool autoRunAts)
     {
         resumeStatus = string.IsNullOrWhiteSpace(resumeStatus) ? "NotApplicable" : resumeStatus;
         atsStatus = string.IsNullOrWhiteSpace(atsStatus)
             ? autoRunAts && resumeStatus.Equals("Parsed", StringComparison.OrdinalIgnoreCase) ? "Waiting" : "NotRequested"
             : atsStatus;
-        if (resumeStatus.Equals("Failed", StringComparison.OrdinalIgnoreCase) || atsStatus.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+        if (resumeStatus is "Failed" or "NeedsReview" || atsStatus is "Failed" or "NeedsReview")
             return ("NeedsReview", "Automated resume or ATS processing needs HR review. Your application remains active.");
         if (resumeStatus is "Pending" or "Processing" || atsStatus is "Waiting" or "Queued" or "Retry" or "Processing")
             return ("Processing", "Resume parsing or ATS screening is in progress.");

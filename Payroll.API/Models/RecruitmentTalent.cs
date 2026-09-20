@@ -139,6 +139,7 @@ public class RecruitmentResumeParsedSkill
 
 public class RecruitmentCandidateApplication
 {
+    public bool CanMoveToGlobalTalentPool { get; set; }
     public string? AtsJobStatus { get; set; }
     public string? AtsJobError { get; set; }
     public long Id { get; set; }
@@ -446,6 +447,8 @@ public class RecruitmentInterview
     public decimal OverallScore { get; set; }
     public string PanelUserIdsJson { get; set; } = "[]";
     public List<int> PanelUserIds { get; set; } = [];
+    public List<int> SubmittedPanelUserIds { get; set; } = [];
+    public bool CanRecordDecision { get; set; }
     public long? PipelineStageInstanceId { get; set; }
     public long? RoundConfigurationId { get; set; }
     public string PipelineStageName { get; set; } = "";
@@ -604,6 +607,11 @@ public class RecruitmentOffer
     public string ApprovalPolicy { get; set; } = "";
     public int CandidateResponseValidityDays { get; set; }
     public Guid? OfferLetterAttachmentPublicId { get; set; }
+    public long? FinalApprovalWorkflowInstanceId { get; set; }
+    public string FinalApprovalStatus { get; set; } = "Not requested";
+    public bool CanRequestFinalOffer { get; set; }
+    public string? FinalOfferLetterAttachmentPublicId { get; set; }
+    public string? FinalOfferError { get; set; }
     public string Remarks { get; set; } = "";
     public string PipelineTransitionMessage { get; set; } = "";
     public int CreatedByUserId { get; set; }
@@ -817,6 +825,18 @@ public class RecruitmentResumeIntakeResult
     public int Imported { get; set; }
     public int NeedsReview { get; set; }
     public List<RecruitmentResumeIntakeItem> Items { get; set; } = [];
+}
+
+public class SaveRecruitmentFinalOfferSettings
+{
+    public bool Enabled { get; set; }
+    public int? FinalApproverUserId { get; set; }
+}
+
+public class RecruitmentFinalOfferSettings : SaveRecruitmentFinalOfferSettings
+{
+    public int ClientId { get; set; }
+    public string Source { get; set; } = "Not configured";
 }
 
 public class RecruitmentTalentDashboard

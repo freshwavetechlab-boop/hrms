@@ -29,6 +29,7 @@ import WorkflowPage from './pages/WorkflowPage'
 import type { WorkflowMenu } from './pages/WorkflowPage'
 import EmployeeTaxProfileManager from './components/EmployeeTaxProfileManager'
 import WorkflowTasks from './components/WorkflowTasks'
+import ActionNotifications from './components/ActionNotifications'
 import MailAutomationProvider from './components/MailAutomationProvider'
 import { useAuthSession } from './components/AuthGate'
 import SettingsPage from './pages/SettingsPage'
@@ -815,7 +816,7 @@ export default function SettingsApp() {
             </button>
           </Dropdown>}
           {isSuperAdmin && <FrevoPilot />}
-          <Tooltip title="Notifications"><Badge dot><Button className="topbar-icon-btn" type="default" icon={<BellOutlined />} aria-label="Notifications" /></Badge></Tooltip>
+          <ActionNotifications />
           <Tooltip title="Open app modules"><Button className="topbar-icon-btn" type="default" icon={<AppstoreOutlined />} aria-label="Open app modules" onClick={() => setAppDrawerOpen(true)} /></Tooltip>
           <Dropdown menu={accountMenu} trigger={['click']} placement="bottomRight">
             <button className="account-trigger" type="button" aria-label="Open account menu">

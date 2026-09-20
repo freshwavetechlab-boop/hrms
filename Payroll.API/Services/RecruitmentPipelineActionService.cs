@@ -41,6 +41,11 @@ public sealed class RecruitmentPipelineActionService(
         await db.OpenAsync();
         var context = await ActionContextAsync(db, applicationId, trigger, stageInstanceId, user.ClientId, user.Id);
         if (context is null) return result;
+        if (trigger == "OnEntry" && !await db.ExecuteScalarAsync<bool>(@"SELECT EXISTS(
+SELECT 1 FROM recruitment_application_pipeline_instances pipeline
+JOIN recruitment_application_stage_instances stage ON stage.Id=pipeline.CurrentStageInstanceId AND stage.Status='Active'
+WHERE pipeline.ApplicationId=@ApplicationId AND pipeline.Status='Active' AND stage.Id=@StageInstanceId)",
+            new { ApplicationId = applicationId, context.StageInstanceId })) return result;
         result.StageInstanceId = context.StageInstanceId;
         var actions = (await db.QueryAsync<ActionRow>(@"SELECT action.*
 FROM recruitment_pipeline_stage_actions action
@@ -101,6 +106,16 @@ SET Status='Failed',ErrorMessage=@Error,CompletedAtUtc=UTC_TIMESTAMP(6) WHERE Id
         }
 
         result.HasBlockingFailure = result.Executions.Any(row => row.IsBlocking && row.Status != "Completed");
+        if (trigger == "OnEntry" && !result.HasBlockingFailure)
+        {
+            var (qualified, _) = await pipelines.AdvanceQualifiedProfileAsync(applicationId, user);
+            if (qualified?.Status == "Applied")
+            {
+                await ExecuteAsync(applicationId, "OnExit", user, context.StageInstanceId);
+                await ExecuteAsync(applicationId, "OnEntry", user);
+                await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(applicationId, "ProfilesSelected", user);
+            }
+        }
         return result;
     }
 
@@ -174,8 +189,18 @@ ORDER BY stageInstance.ApplicationId", cancellationToken: cancellationToken))).T
 
     public async Task<int> ProcessCandidateAutomationAsync(CancellationToken cancellationToken)
     {
-        var applicationIds = await pipelines.GetApplicationsReadyForAtsAsync();
         var system = new AuthUser { Id = 0, DisplayName = "Recruitment automation", IsActive = true, ClientId = null };
+        try
+        {
+            await pipelines.SynchronizePublishedRevisionsAsync(system);
+            await RecheckPublishedRevisionApplicationsAsync(system, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Optional revision synchronization must not stop existing intake/SLA automation.
+            logger.LogError(exception, "Published-pipeline synchronization will retry. Existing recruitment automation continues.");
+        }
+        var applicationIds = await pipelines.GetApplicationsReadyForAtsAsync();
         var processed = 0;
         foreach (var applicationId in applicationIds)
         {
@@ -186,6 +211,78 @@ ORDER BY stageInstance.ApplicationId", cancellationToken: cancellationToken))).T
             processed++;
         }
         return processed;
+    }
+
+    public async Task<bool> PrepareCurrentAtsEntryAsync(long applicationId, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        const string query = @"SELECT stage.Id FROM recruitment_application_pipeline_instances pipeline
+JOIN recruitment_application_stage_instances stage ON stage.Id=pipeline.CurrentStageInstanceId AND stage.Status='Active'
+JOIN recruitment_pipeline_stages definition ON definition.Id=stage.PipelineStageId AND definition.StageType='ATS'
+JOIN recruitment_candidate_applications application ON application.Id=pipeline.ApplicationId
+WHERE application.Id=@Id AND pipeline.Status='Active' AND (@ClientId IS NULL OR application.ClientId=@ClientId)";
+        var stageId = await db.ExecuteScalarAsync<long?>(query, new { Id = applicationId, user.ClientId });
+        if (stageId is null) return false;
+        await ExecuteAsync(applicationId, "OnEntry", user, stageId);
+        return await db.ExecuteScalarAsync<long?>(query, new { Id = applicationId, user.ClientId }) == stageId;
+    }
+
+    public async Task RecheckPublishedRevisionApplicationsAsync(AuthUser user, CancellationToken cancellationToken)
+    {
+        await using var db = Db();
+        await db.OpenAsync(cancellationToken);
+        var rows = (await db.QueryAsync<RevisionAutomationRow>(@"SELECT event.Id EventId,stage.Id StageInstanceId,
+ stage.ApplicationId,definition.StageType,COALESCE(posting.AutoRunAts,FALSE) AutoRunAts,COALESCE(ats.AutoScoreOnEntry,FALSE) AutoScore,
+ EXISTS(SELECT 1 FROM recruitment_application_scores score WHERE score.ApplicationId=application.Id AND score.IsCurrent=TRUE
+ AND score.ResumeId=application.ResumeId AND (ats.ScoringProfileId IS NULL OR score.ScoringProfileId=ats.ScoringProfileId)) HasCurrentScore
+FROM recruitment_stage_events event
+JOIN recruitment_application_stage_instances stage ON stage.Id=event.StageInstanceId AND stage.Status='Active'
+JOIN recruitment_application_pipeline_instances pipeline ON pipeline.Id=stage.ApplicationPipelineInstanceId AND pipeline.CurrentStageInstanceId=stage.Id AND pipeline.Status='Active'
+JOIN recruitment_candidate_applications application ON application.Id=stage.ApplicationId
+JOIN recruitment_pipeline_stages definition ON definition.Id=stage.PipelineStageId
+LEFT JOIN recruitment_stage_ats_configurations ats ON ats.PipelineStageId=stage.PipelineStageId
+LEFT JOIN recruitment_job_postings posting ON posting.Id=application.JobPostingId
+WHERE event.EventType='RevisionApplied' AND (@ClientId IS NULL OR application.ClientId=@ClientId)
+ AND NOT EXISTS(SELECT 1 FROM recruitment_stage_events checked WHERE checked.StageInstanceId=stage.Id AND checked.EventType='RevisionReevaluated' AND checked.EventDetails=CAST(event.Id AS CHAR))
+ORDER BY event.Id LIMIT 100", new { user.ClientId })).ToList();
+        foreach (var row in rows)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (row.StageType == "ATS" && !row.HasCurrentScore)
+            {
+                if (row.AutoRunAts || row.AutoScore) await talent.QueuePolicyScoreAsync(row.ApplicationId, user);
+            }
+            else
+            {
+                await ExecuteAsync(row.ApplicationId, "OnEntry", user, row.StageInstanceId);
+                if (row.StageType == "ATS")
+                {
+                    var (movement, _) = await pipelines.EvaluateAtsStageAutomationAsync(row.ApplicationId, user);
+                    if (movement?.Status == "Applied")
+                    {
+                        await ExecuteAsync(row.ApplicationId, "OnExit", user, row.StageInstanceId);
+                        await ExecuteAsync(row.ApplicationId, "OnEntry", user);
+                        await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(row.ApplicationId, "ProfilesSelected", user);
+                    }
+                }
+            }
+            await db.ExecuteAsync(@"INSERT INTO recruitment_stage_events(StageInstanceId,EventType,EventTitle,EventDetails,ActorUserId)
+SELECT @StageInstanceId,'RevisionReevaluated','Updated pipeline policy checked',@Reference,@ActorId FROM DUAL
+WHERE NOT EXISTS(SELECT 1 FROM recruitment_stage_events WHERE StageInstanceId=@StageInstanceId AND EventType='RevisionReevaluated' AND EventDetails=@Reference)",
+                new { row.StageInstanceId, Reference = row.EventId.ToString(System.Globalization.CultureInfo.InvariantCulture), ActorId = user.Id });
+        }
+    }
+
+    private sealed class RevisionAutomationRow
+    {
+        public long EventId { get; set; }
+        public long StageInstanceId { get; set; }
+        public long ApplicationId { get; set; }
+        public string StageType { get; set; } = "";
+        public bool AutoRunAts { get; set; }
+        public bool AutoScore { get; set; }
+        public bool HasCurrentScore { get; set; }
     }
 
     private async Task ExecuteOneAsync(
@@ -220,9 +317,11 @@ VALUES (@StageInstanceId,'AutoAtsSkipped','Automatic ATS skipped','Auto run ATS 
                 var scoreId = await db.ExecuteScalarAsync<long?>(@"SELECT scoreRow.Id
 FROM recruitment_application_scores scoreRow
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=scoreRow.ApplicationId
+LEFT JOIN recruitment_stage_ats_configurations ats ON ats.PipelineStageId=@PipelineStageId
 WHERE scoreRow.ApplicationId=@ApplicationId AND scoreRow.IsCurrent=TRUE
   AND scoreRow.ResumeId=applicationRow.ResumeId
-ORDER BY scoreRow.ScoredAt DESC,scoreRow.Id DESC LIMIT 1", new { ApplicationId = context.ApplicationId });
+  AND (ats.ScoringProfileId IS NULL OR scoreRow.ScoringProfileId=ats.ScoringProfileId)
+ORDER BY scoreRow.ScoredAt DESC,scoreRow.Id DESC LIMIT 1", new { context.ApplicationId, context.PipelineStageId });
                 if (scoreId is null)
                 {
                     var (score, error) = await talent.ScoreApplicationAsync(context.ApplicationId, user);

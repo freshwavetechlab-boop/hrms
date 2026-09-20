@@ -95,7 +95,10 @@ public class EngineAndOfferTests
         Assert.NotNull(rendered.Text);
         Assert.DoesNotContain("{{", rendered.Text);
         // Only test inputs; no real candidate file or signature is needed.
-        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../"));
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "Payroll.API/Payroll.API.csproj")))
+            directory = directory.Parent;
+        var root = directory?.FullName ?? throw new DirectoryNotFoundException("HRMS test source root was not found.");
         var logo = File.ReadAllBytes(Path.Combine(root, "ess-mss/public/assets/organization-logo.png"));
         var bytes = new BrandedOfferPdfService().Create(rendered.Text!, logo, null);
         using var document = PdfReader.Open(new MemoryStream(bytes), PdfDocumentOpenMode.Import);

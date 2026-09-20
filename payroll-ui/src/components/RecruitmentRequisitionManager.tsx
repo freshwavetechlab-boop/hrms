@@ -9,6 +9,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import { useAuthSession } from './AuthGate'
 import { getClients, getEmployees } from '../services/payrollService'
+import { getJson } from '../services/apiClient'
 import {
   deleteRecruitmentRequisition, getRecruitmentMasterOptions, getRecruitmentRequisitions, saveRecruitmentRequisition,
   parseRecruitmentRequestDocument, submitRecruitmentRequisition,
@@ -102,6 +103,14 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const [autoSaveState, setAutoSaveState] = useState<AutoSaveState>('idle')
   const [autoSavedAt, setAutoSavedAt] = useState<Date | null>(null)
   const [watchedForm, setWatchedForm] = useState({ id: 0, clientId: 0, isReplacement: false, budgetAvailable: false })
+  const [budgetApprovers, setBudgetApprovers] = useState<{ id: number; displayName: string; email: string }[]>([])
+  useEffect(() => {
+    let active = true
+    setBudgetApprovers([])
+    if (watchedForm.clientId > 0 && watchedForm.budgetAvailable)
+      void getJson<{ id: number; displayName: string; email: string }[]>(`/api/recruitment/budget-approvers?clientId=${watchedForm.clientId}`, []).then(rows => { if (active) setBudgetApprovers(rows) })
+    return () => { active = false }
+  }, [watchedForm.clientId, watchedForm.budgetAvailable])
   const [embeddedJdRefreshKey, setEmbeddedJdRefreshKey] = useState(0)
   const [atsSkillWeight, setAtsSkillWeight] = useState(0)
   const [targetSlaDays, setTargetSlaDays] = useState<number | null>(null)
@@ -768,14 +777,17 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
 
         <div className="rfr-switch-row">
           <Form.Item name="isReplacement" label="Replacement hiring" valuePropName="checked"><Switch /></Form.Item>
-          <Form.Item name="budgetAvailable" label="Approved budget available" valuePropName="checked"><Switch /></Form.Item>
+          <Form.Item name="budgetAvailable" label="Budget approval required" valuePropName="checked"><Switch /></Form.Item>
         </div>
         {(replacementHiring || budgetAvailable) && <div className="rfr-context-grid">
           {replacementHiring && <Form.Item name="replacementEmployeeId" label="Employee being replaced" rules={[{ required: true, message: 'Select the employee being replaced.' }]}>
             <Select showSearch optionFilterProp="label" options={replacementOptions} placeholder="Search employee" />
           </Form.Item>}
-          {budgetAvailable && <Form.Item name="budgetAmount" label="Approved annual budget" rules={[{ required: true, type: 'number', min: 1, message: 'Enter the approved budget.' }]}>
+          {budgetAvailable && <Form.Item name="budgetAmount" label="Annual hiring budget" extra="Total annual budget for all openings. Salary min/max is the per-person CTC range." rules={[{ required: true, type: 'number', min: 1, message: 'Enter the budget.' }]}>
             <InputNumber min={0} controls={false} style={{ width: '100%' }} placeholder={masters.budgetAmounts[0] || 'Amount'} />
+          </Form.Item>}
+          {budgetAvailable && <Form.Item name="budgetApproverUserId" label="Budget approver" extra="Saving a new or changed budget sends an approval task to this user. Offers remain blocked until approved." rules={[{ required: true, message: 'Select the budget approver.' }]}>
+            <Select showSearch optionFilterProp="label" placeholder="Select approver" options={budgetApprovers.map(user => ({ value: user.id, label: `${user.displayName} · ${user.email}` }))} />
           </Form.Item>}
         </div>}
         </section>
@@ -902,6 +914,7 @@ function fromRow(row: RecruitmentRequisition): SaveRecruitmentRequisition {
     isReplacement: row.isReplacement, replacementEmployeeId: row.replacementEmployeeId ?? null,
     targetJoiningDate: row.targetJoiningDate?.slice(0, 10) || null, jobLocation: row.jobLocation || '', workMode: row.workMode || 'Office',
     project: row.project || '', budgetAvailable: row.budgetAvailable, budgetAmount: Number(row.budgetAmount || 0),
+    budgetApproverUserId: row.budgetApproverUserId, budgetApprovalStatus: row.budgetApprovalStatus,
     hiringPriority: row.hiringPriority || 'Normal', businessJustification: row.businessJustification || '', reasonForHiring: row.reasonForHiring || '',
     experienceRange: row.experienceRange || '', qualification: row.qualification || '', requiredSkills: row.requiredSkills || '',
     preferredSkills: row.preferredSkills || '', certifications: row.certifications || '', languages: row.languages || '',

@@ -7,7 +7,7 @@ using Payroll.API.Models;
 
 namespace Payroll.API.Repositories;
 
-public class RecruitmentPipelineRepository(IConfiguration configuration, WorkflowRepository workflows)
+public partial class RecruitmentPipelineRepository(IConfiguration configuration, WorkflowRepository workflows)
 {
     private static readonly HashSet<string> StageTypes = new(StringComparer.OrdinalIgnoreCase) { "Screening", "ATS", "ExternalForm", "Documents", "Interview", "HR", "Approval", "PreOnboarding", "Offer", "Joining", "Rejected", "Withdrawn", "Completed" };
     private static readonly HashSet<string> CandidateUploadFormCodes = new(StringComparer.OrdinalIgnoreCase) { "CANDIDATE_APPLICATION", "PUBLIC_CANDIDATE_APPLICATION", "PRE_ONBOARDING" };
@@ -723,14 +723,21 @@ WHERE v.Id=@Id AND v.Status IN ('Published','Retired') AND d.ClientId IN (0,@Cli
                 new { Id = request.ApplicationFormVersionId.Value, source.ClientId });
             if (validForm == 0) return (null, "Select a published application-form version belonging to this client.");
         }
+        await using var postingTransaction = await db.BeginTransactionAsync();
+        // Serialize all creation paths on the position, not on a missing posting row.
+        await db.ExecuteScalarAsync<long>("SELECT Id FROM recruitment_open_positions WHERE Id=@PositionId FOR UPDATE", new { request.PositionId }, postingTransaction);
         long id = request.Id;
         if (id == 0)
         {
+            var existingPosting = await db.ExecuteScalarAsync<long?>(@"SELECT Id FROM recruitment_job_postings
+WHERE PositionId=@PositionId AND Status IN ('Draft','Published') ORDER BY Id LIMIT 1", new { request.PositionId }, postingTransaction);
+            if (existingPosting.HasValue)
+                return (null, "This position already has a draft or published job. Open the existing job; close it before creating a replacement posting.");
             var slug = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
             id = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_job_postings
 (ClientId,PositionId,JobDescriptionVersionId,ApplicationFormVersionId,PublicSlug,PublicTitle,Status,OpensAtUtc,ClosesAtUtc,MaximumApplications,AutoRunAts,EnableResumeParsing,EnableAiParsing,RequireEmailOtp,SearchEngineVisible,CreatedByUserId)
 VALUES (@ClientId,@PositionId,@JobDescriptionVersionId,@ApplicationFormVersionId,@PublicSlug,@PublicTitle,'Draft',@OpensAtUtc,@ClosesAtUtc,@MaximumApplications,@AutoRunAts,@EnableResumeParsing,@EnableAiParsing,@RequireEmailOtp,@SearchEngineVisible,@UserId);SELECT LAST_INSERT_ID();",
-                new { source.ClientId, request.PositionId, request.JobDescriptionVersionId, request.ApplicationFormVersionId, PublicSlug = slug, PublicTitle = string.IsNullOrWhiteSpace(request.PublicTitle) ? source.PositionTitle : request.PublicTitle.Trim(), request.OpensAtUtc, request.ClosesAtUtc, request.MaximumApplications, request.AutoRunAts, request.EnableResumeParsing, request.EnableAiParsing, request.RequireEmailOtp, request.SearchEngineVisible, UserId = user.Id });
+                new { source.ClientId, request.PositionId, request.JobDescriptionVersionId, request.ApplicationFormVersionId, PublicSlug = slug, PublicTitle = string.IsNullOrWhiteSpace(request.PublicTitle) ? source.PositionTitle : request.PublicTitle.Trim(), request.OpensAtUtc, request.ClosesAtUtc, request.MaximumApplications, request.AutoRunAts, request.EnableResumeParsing, request.EnableAiParsing, request.RequireEmailOtp, request.SearchEngineVisible, UserId = user.Id }, postingTransaction);
         }
         else
         {
@@ -738,9 +745,10 @@ VALUES (@ClientId,@PositionId,@JobDescriptionVersionId,@ApplicationFormVersionId
 ApplicationFormVersionId=@ApplicationFormVersionId,PublicTitle=@PublicTitle,OpensAtUtc=@OpensAtUtc,ClosesAtUtc=@ClosesAtUtc,
 MaximumApplications=@MaximumApplications,AutoRunAts=@AutoRunAts,EnableResumeParsing=@EnableResumeParsing,
 EnableAiParsing=@EnableAiParsing,RequireEmailOtp=@RequireEmailOtp,SearchEngineVisible=@SearchEngineVisible,UpdatedAtUtc=UTC_TIMESTAMP()
-WHERE Id=@Id AND ClientId=@ClientId AND PositionId=@PositionId AND Status IN ('Draft','Closed')", new { Id = id, source.ClientId, request.PositionId, request.JobDescriptionVersionId, request.ApplicationFormVersionId, PublicTitle = string.IsNullOrWhiteSpace(request.PublicTitle) ? source.PositionTitle : request.PublicTitle.Trim(), request.OpensAtUtc, request.ClosesAtUtc, request.MaximumApplications, request.AutoRunAts, request.EnableResumeParsing, request.EnableAiParsing, request.RequireEmailOtp, request.SearchEngineVisible });
+WHERE Id=@Id AND ClientId=@ClientId AND PositionId=@PositionId AND Status IN ('Draft','Closed')", new { Id = id, source.ClientId, request.PositionId, request.JobDescriptionVersionId, request.ApplicationFormVersionId, PublicTitle = string.IsNullOrWhiteSpace(request.PublicTitle) ? source.PositionTitle : request.PublicTitle.Trim(), request.OpensAtUtc, request.ClosesAtUtc, request.MaximumApplications, request.AutoRunAts, request.EnableResumeParsing, request.EnableAiParsing, request.RequireEmailOtp, request.SearchEngineVisible }, postingTransaction);
             if (updated == 0) return (null, "Only a draft or archived job posting can be prepared for publishing.");
         }
+        await postingTransaction.CommitAsync();
         return (await GetJobPostingAsync(db, id, user.ClientId), "");
     }
 
@@ -768,9 +776,15 @@ WHERE PositionId=@PositionId AND (JobPostingId IS NULL OR JobPostingId=@Id) AND 
         if (pipeline == 0) return (null, "Assign a published hiring pipeline before publishing this job.");
         var proofValidationError = await ValidateCandidateProofBindingsAsync(db, posting);
         if (proofValidationError.Length > 0) return (null, proofValidationError);
+        await using var publishTransaction = await db.BeginTransactionAsync();
+        await db.ExecuteScalarAsync<long>("SELECT Id FROM recruitment_open_positions WHERE Id=@PositionId FOR UPDATE", posting, publishTransaction);
+        var otherPublished = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_job_postings
+WHERE PositionId=@PositionId AND Id<>@Id AND Status='Published'", posting, publishTransaction);
+        if (otherPublished > 0) return (null, "This position already has a published job. Close the existing posting before publishing a replacement.");
         await db.ExecuteAsync("UPDATE recruitment_job_postings SET ApplicationFormVersionId=@ApplicationFormVersionId,Status='Published',PublishedAtUtc=UTC_TIMESTAMP(),UpdatedAtUtc=UTC_TIMESTAMP() WHERE Id=@Id",
-            new { posting.ApplicationFormVersionId, Id = id });
-        await db.ExecuteAsync("UPDATE recruitment_open_positions SET Status='Published',PublishedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@PositionId", posting);
+            new { posting.ApplicationFormVersionId, Id = id }, publishTransaction);
+        await db.ExecuteAsync("UPDATE recruitment_open_positions SET Status='Published',PublishedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@PositionId", posting, publishTransaction);
+        await publishTransaction.CommitAsync();
         return (await GetJobPostingAsync(db, id, user.ClientId), "");
     }
 
@@ -790,13 +804,30 @@ WHERE PositionId=@PositionId AND (JobPostingId IS NULL OR JobPostingId=@Id) AND 
         }
         await using var db = Db();
         await db.OpenAsync();
-        var updated = await db.ExecuteAsync(@"UPDATE recruitment_job_postings
+        var target = await GetJobPostingAsync(db, id, user.ClientId);
+        if (target is null) return (null, "Job posting was not found.");
+        await using var tx = await db.BeginTransactionAsync();
+        // All published URLs for one opening share operational intake policy. Drafts
+        // and closed/history rows stay independent. Serialize by opening, not by URL.
+        await db.ExecuteScalarAsync<long>("SELECT Id FROM recruitment_open_positions WHERE Id=@Id FOR UPDATE", new { Id = target.PositionId }, tx);
+        var before = (await db.QueryAsync<RecruitmentJobPosting>(@"SELECT * FROM recruitment_job_postings
+WHERE Id=@Id OR (@Published=TRUE AND ClientId=@ClientId AND PositionId=@PositionId AND Status='Published')
+ORDER BY Id FOR UPDATE", new { Id = id, Published = target.Status == "Published", target.ClientId, target.PositionId }, tx)).ToList();
+        var lockedTarget = before.FirstOrDefault(row => row.Id == id);
+        if (lockedTarget is null || lockedTarget.ClientId != target.ClientId || lockedTarget.PositionId != target.PositionId || lockedTarget.Status != target.Status)
+            return (null, "Job posting changed while saving. Refresh and retry.");
+        await db.ExecuteAsync(@"UPDATE recruitment_job_postings
 SET AutoRunAts=@AutoRunAts,EnableResumeParsing=@EnableResumeParsing,EnableAiParsing=@EnableAiParsing,
 RequireEmailOtp=@RequireEmailOtp,UpdatedAtUtc=UTC_TIMESTAMP()
-WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, request.AutoRunAts, request.EnableResumeParsing, request.EnableAiParsing, request.RequireEmailOtp, user.ClientId });
-        return updated == 0
-            ? (null, "Job posting was not found.")
-            : (await GetJobPostingAsync(db, id, user.ClientId), "");
+WHERE Id IN @Ids AND ClientId=@ClientId", new { Ids = before.Select(row => row.Id).ToArray(), request.AutoRunAts, request.EnableResumeParsing, request.EnableAiParsing, request.RequireEmailOtp, target.ClientId }, tx);
+        await db.ExecuteAsync(@"INSERT INTO recruitment_audit(EntityType,EntityId,Action,OldValueJson,NewValueJson,ChangedByUserId)
+VALUES('RecruitmentJobPosting',@Id,'Update shared intake policy',@Before,@After,@UserId)",
+            new { Id = id, Before = JsonSerializer.Serialize(before.Select(row => new { row.Id, row.AutoRunAts, row.EnableResumeParsing, row.EnableAiParsing, row.RequireEmailOtp })),
+                After = JsonSerializer.Serialize(new { PostingIds = before.Select(row => row.Id), request.AutoRunAts, request.EnableResumeParsing, request.EnableAiParsing, request.RequireEmailOtp }), UserId = user.Id }, tx);
+        await tx.CommitAsync();
+        var result = await GetJobPostingAsync(db, id, user.ClientId);
+        if (result is not null) result.AtsCatchUpRequired = request.AutoRunAts && before.Any(row => !row.AutoRunAts);
+        return result is null ? (null, "Job posting was not found after saving. Refresh the jobs list.") : (result, "");
     }
 
     public async Task<IReadOnlyList<long>> GetJobPostingApplicationIdsAsync(long jobPostingId, AuthUser user)
@@ -806,9 +837,17 @@ WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, requ
         return (await db.QueryAsync<long>(@"SELECT applicationRow.Id
 FROM recruitment_candidate_applications applicationRow
 JOIN recruitment_job_postings posting ON posting.Id=applicationRow.JobPostingId
-WHERE posting.Id=@JobPostingId AND (@ClientId IS NULL OR posting.ClientId=@ClientId)
+JOIN recruitment_job_postings target ON target.Id=@JobPostingId AND target.ClientId=posting.ClientId
+LEFT JOIN recruitment_application_stage_instances currentStage ON currentStage.Id=applicationRow.CurrentPipelineStageInstanceId
+LEFT JOIN recruitment_pipeline_stages stageDefinition ON stageDefinition.Id=currentStage.PipelineStageId
+WHERE (posting.Id=target.Id OR (target.Status='Published' AND posting.Status='Published' AND posting.PositionId=target.PositionId))
+  AND (@ClientId IS NULL OR posting.ClientId=@ClientId)
   AND applicationRow.ApplicationType='Application'
   AND applicationRow.CurrentStage NOT IN ('Rejected','Withdrawn','Joined')
+  AND applicationRow.JoinedEmployeeId IS NULL
+  AND (applicationRow.CurrentPipelineStageInstanceId IS NULL OR (currentStage.Status='Active' AND stageDefinition.StageType='ATS'))
+  AND NOT EXISTS(SELECT 1 FROM recruitment_interviews interviewRow WHERE interviewRow.ApplicationId=applicationRow.Id)
+  AND NOT EXISTS(SELECT 1 FROM recruitment_offers offerRow WHERE offerRow.ApplicationId=applicationRow.Id)
 ORDER BY applicationRow.Id", new { JobPostingId = jobPostingId, user.ClientId })).ToList();
     }
 
@@ -1190,9 +1229,13 @@ VALUES (@TransitionId,@RuleType,@ComparisonOperator,@TextValue,@IntegerValue,@De
         var workflowValidation = await ValidateWorkflowBindingsAsync(db, version.Stages, version.Transitions, clientId.Value);
         if (workflowValidation.Length > 0) return (null, workflowValidation);
         await using var tx = await db.BeginTransactionAsync();
+        await db.ExecuteScalarAsync<long>("SELECT Id FROM recruitment_pipeline_definitions WHERE Id=@Id FOR UPDATE", new { Id = version.PipelineDefinitionId }, tx);
+        var latestStatus = await db.ExecuteScalarAsync<string>("SELECT Status FROM recruitment_pipeline_versions WHERE Id=@Id FOR UPDATE", new { Id = id }, tx);
+        if (latestStatus != "Draft") return (null, "This version was already published. Refresh the pipeline.");
         await db.ExecuteAsync("UPDATE recruitment_pipeline_versions SET Status='Retired' WHERE PipelineDefinitionId=@DefinitionId AND Status='Published' AND Id<>@Id", new { DefinitionId = version.PipelineDefinitionId, Id = id }, tx);
         await db.ExecuteAsync("UPDATE recruitment_pipeline_versions SET Status='Published',PublishedByUserId=@UserId,PublishedAtUtc=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, UserId = user.Id }, tx);
         await db.ExecuteAsync("UPDATE recruitment_pipeline_definitions SET CurrentPublishedVersionId=@Id,UpdatedAtUtc=UTC_TIMESTAMP() WHERE Id=@DefinitionId", new { Id = id, DefinitionId = version.PipelineDefinitionId }, tx);
+        await PromotePipelineAssignmentsAsync(db, tx, version.PipelineDefinitionId, id, user.Id);
         await tx.CommitAsync();
         return (await GetPipelineVersionAsync(id, user), "");
     }
@@ -1321,7 +1364,9 @@ CurrentStage=@StageName,LastStageChangedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTA
         var assignment = await db.QueryFirstOrDefaultAsync<RecruitmentPositionPipelineAssignment>(@"SELECT assignmentRow.*
 FROM recruitment_position_pipeline_assignments assignmentRow
 JOIN recruitment_pipeline_versions versionRow ON versionRow.Id=assignmentRow.PipelineVersionId
+JOIN recruitment_pipeline_definitions definition ON definition.Id=versionRow.PipelineDefinitionId AND definition.CurrentPublishedVersionId=versionRow.Id
 WHERE assignmentRow.PositionId=@PositionId AND assignmentRow.IsActive=TRUE
+  AND versionRow.Status='Published'
   AND versionRow.ScopeType IN ('Application','Hybrid')
   AND (assignmentRow.JobPostingId=@JobPostingId OR assignmentRow.JobPostingId IS NULL)
   AND EXISTS (SELECT 1 FROM recruitment_pipeline_stages stageRow
@@ -1477,6 +1522,7 @@ LEFT JOIN recruitment_job_postings posting ON posting.Id=(
 WHERE (@ClientId IS NULL OR workOrder.ClientId=@ClientId)
   AND (@PositionId IS NULL OR positionRow.Id=@PositionId)
   AND (@JobPostingId IS NULL OR posting.Id=@JobPostingId)
+  AND line.Status<>'Superseded' AND (hiringCase.Id IS NULL OR NOT " + RecruitmentCaseRepository.HistoricalHiringCaseSql + @")
 ORDER BY workOrder.ReceivedAtUtc DESC,workOrder.Id DESC,line.LineNumber,line.Id",
             new { ClientId = effectiveClientId, PositionId = positionId is > 0 ? positionId : null, JobPostingId = jobPostingId is > 0 ? jobPostingId : null })).ToList();
 
@@ -1900,6 +1946,41 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id", new { ApplicationId = app
         return await RequestTransitionAsync(applicationId, new RecruitmentPipelineTransitionRequest { TransitionId = selected.Id, Reason = reason }, user);
     }
 
+    public async Task<(RecruitmentPipelineTransitionResult? Result, string Error)> AdvanceQualifiedProfileAsync(long applicationId, AuthUser user)
+    {
+        await using var db = Db();
+        await db.OpenAsync();
+        var transitions = (await db.QueryAsync<long>(@"SELECT transitionRow.Id
+FROM recruitment_candidate_applications application
+JOIN recruitment_application_pipeline_instances pipeline ON pipeline.ApplicationId=application.Id AND pipeline.Status='Active'
+JOIN recruitment_application_stage_instances currentStage ON currentStage.Id=pipeline.CurrentStageInstanceId AND currentStage.Status='Active'
+JOIN recruitment_pipeline_stages stage ON stage.Id=currentStage.PipelineStageId AND stage.StageType='Screening'
+JOIN recruitment_pipeline_transitions transitionRow ON transitionRow.FromStageId=stage.Id AND transitionRow.PipelineVersionId=pipeline.PipelineVersionId AND transitionRow.IsActive=TRUE
+JOIN recruitment_pipeline_stages target ON target.Id=transitionRow.ToStageId AND target.StageType='Interview' AND target.CardScope='Application' AND target.IsActive=TRUE
+JOIN recruitment_application_scores score ON score.ApplicationId=application.Id AND score.IsCurrent=TRUE AND score.ResumeId=application.ResumeId
+WHERE application.Id=@Id AND (@ClientId IS NULL OR application.ClientId=@ClientId)
+ AND stage.StageCode IN ('PROFILE_REVIEW_SHORTLISTING','PROFILE_REVIEW_AND_SHORTLISTING','SHARING_PROFILES','PROFILE_SHARING')
+ AND (score.OverriddenByUserId IS NOT NULL OR score.ScoreStatus IN ('Scored','Completed'))
+ AND EXISTS(SELECT 1 FROM recruitment_pipeline_stages atsStage
+ JOIN recruitment_stage_ats_configurations ats ON ats.PipelineStageId=atsStage.Id
+ JOIN recruitment_pipeline_stages previousDefinition ON previousDefinition.StageCode=atsStage.StageCode AND previousDefinition.StageType='ATS'
+ JOIN recruitment_application_stage_instances prior ON prior.PipelineStageId=previousDefinition.Id AND prior.ApplicationId=application.Id AND prior.Status='Completed'
+ WHERE atsStage.PipelineVersionId=pipeline.PipelineVersionId AND atsStage.StageType='ATS'
+ AND prior.Id=(SELECT latest.Id FROM recruitment_application_stage_instances latest
+ JOIN recruitment_pipeline_stages latestDefinition ON latestDefinition.Id=latest.PipelineStageId AND latestDefinition.StageType='ATS'
+ WHERE latest.ApplicationId=application.Id AND latest.Status='Completed' ORDER BY latest.ExitedAtUtc DESC,latest.Id DESC LIMIT 1)
+ AND (ats.ScoringProfileId IS NULL OR score.ScoringProfileId=ats.ScoringProfileId)
+ AND COALESCE(score.OverrideScore,score.TotalScore)>=ats.MinimumAdvanceScore)
+ORDER BY transitionRow.DisplayOrder,transitionRow.Id", new { Id = applicationId, user.ClientId })).Distinct().ToList();
+        if (transitions.Count != 1) return (null, transitions.Count > 1 ? "Multiple interview routes are configured. Choose the next stage manually." : "");
+        // Reuse all document, blocking-action, transition-rule and approval checks.
+        return await RequestTransitionAsync(applicationId, new RecruitmentPipelineTransitionRequest
+        {
+            TransitionId = transitions[0],
+            Reason = "Automatically made available for interview scheduling after ATS qualification or an explicit recruiter override."
+        }, user);
+    }
+
     public async Task<IEnumerable<RecruitmentApplicationStageTimelineItem>> GetApplicationStageHistoryAsync(long applicationId, AuthUser user)
     {
         await using var db = Db();
@@ -1930,18 +2011,21 @@ ORDER BY instance.EnteredAtUtc,instance.Id", new { ApplicationId = applicationId
         var row = await db.QueryFirstOrDefaultAsync<AtsAutomationRow>(@"SELECT a.ClientId,si.PipelineStageId,c.MinimumAdvanceScore,c.MaximumRejectScore,c.AutoAdvance,c.AutoReject,
 c.RequireHumanConfirmation,c.AdvanceOutcomeCode,c.RejectOutcomeCode,
 COALESCE(posting.AutoRunAts,FALSE) JobAutoRunAts,
-(SELECT COALESCE(s.OverrideScore,s.TotalScore) FROM recruitment_application_scores s WHERE s.ApplicationId=a.Id AND s.IsCurrent=TRUE ORDER BY s.ScoredAt DESC,s.Id DESC LIMIT 1) CurrentScore,
-(SELECT COALESCE(s.ScoreStatus,'') FROM recruitment_application_scores s WHERE s.ApplicationId=a.Id AND s.IsCurrent=TRUE ORDER BY s.ScoredAt DESC,s.Id DESC LIMIT 1) CurrentScoreStatus,
-(SELECT COALESCE(s.HumanReviewRequired,TRUE) FROM recruitment_application_scores s WHERE s.ApplicationId=a.Id AND s.IsCurrent=TRUE ORDER BY s.ScoredAt DESC,s.Id DESC LIMIT 1) CurrentScoreRequiresReview
+COALESCE(score.OverrideScore,score.TotalScore) CurrentScore,COALESCE(score.ScoreStatus,'') CurrentScoreStatus,
+(score.OverriddenByUserId IS NOT NULL) CurrentScoreOverridden
 FROM recruitment_candidate_applications a JOIN recruitment_application_pipeline_instances pi ON pi.ApplicationId=a.Id
 LEFT JOIN recruitment_job_postings posting ON posting.Id=a.JobPostingId
 JOIN recruitment_application_stage_instances si ON si.Id=pi.CurrentStageInstanceId AND si.Status IN ('Active','Paused')
-JOIN recruitment_stage_ats_configurations c ON c.PipelineStageId=si.PipelineStageId WHERE a.Id=@Id", new { Id = applicationId });
+JOIN recruitment_stage_ats_configurations c ON c.PipelineStageId=si.PipelineStageId
+LEFT JOIN recruitment_application_scores score ON score.Id=(SELECT s.Id FROM recruitment_application_scores s
+ WHERE s.ApplicationId=a.Id AND s.IsCurrent=TRUE AND s.ResumeId=a.ResumeId
+ AND (c.ScoringProfileId IS NULL OR s.ScoringProfileId=c.ScoringProfileId) ORDER BY s.ScoredAt DESC,s.Id DESC LIMIT 1)
+WHERE a.Id=@Id AND pi.Status='Active'", new { Id = applicationId });
         if (row is null || (user.ClientId is not null && user.ClientId != row.ClientId)) return (null, "The application's current stage has no ATS automation configuration.");
         if (row.CurrentScore is null) return (null, "ATS score is not available yet.");
         var scoreStatus = row.CurrentScoreStatus.Trim();
-        if ((!atsOverridden && scoreStatus.Equals(RecruitmentAtsDomainRules.NeedsReview, StringComparison.OrdinalIgnoreCase))
-            || ((!row.JobAutoRunAts && !humanConfirmed) && (row.RequireHumanConfirmation || row.CurrentScoreRequiresReview)))
+        atsOverridden |= row.CurrentScoreOverridden;
+        if (AtsNeedsHumanReview(scoreStatus, row.RequireHumanConfirmation, humanConfirmed, atsOverridden))
             return (new RecruitmentPipelineTransitionResult
             {
                 ApplicationId = applicationId,
@@ -1999,6 +2083,10 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id", new { StageId = row.Pipel
             : $"ATS automation: score {row.CurrentScore:0.##}; configured outcome {outcome} resolved to {selected.OutcomeCode}.";
         return await RequestTransitionAsync(applicationId, new RecruitmentPipelineTransitionRequest { TransitionId = selected.Id, Reason = reason }, user);
     }
+
+    internal static bool AtsNeedsHumanReview(string scoreStatus, bool requireConfirmation, bool humanConfirmed, bool overridden) =>
+        !overridden && (scoreStatus.Equals(RecruitmentAtsDomainRules.NeedsReview, StringComparison.OrdinalIgnoreCase)
+            || (requireConfirmation && !humanConfirmed));
 
     public async Task<(RecruitmentPipelineTransitionResult? Result, string Error)> SyncTransitionWorkflowStatusAsync(long transitionRequestId, string workflowStatus, AuthUser user)
     {
@@ -2720,6 +2808,13 @@ ORDER BY a.uploaded_at_utc,a.id", new { description.ClientId, JobDescriptionId =
 
     private static async Task BindApprovedJobDescriptionAsync(MySqlConnection db, long id, int actorUserId, MySqlTransaction? transaction = null)
     {
+        if (transaction is null)
+        {
+            await using var ownTransaction = await db.BeginTransactionAsync();
+            await BindApprovedJobDescriptionAsync(db, id, actorUserId, ownTransaction);
+            await ownTransaction.CommitAsync();
+            return;
+        }
         await db.ExecuteAsync(@"UPDATE recruitment_open_positions p JOIN recruitment_job_description_versions j ON j.RequisitionId=p.RequisitionId
 SET p.ApprovedJobDescriptionVersionId=j.Id,p.JobDescriptionText=j.Summary,p.JobDescriptionVersion=j.VersionNumber WHERE j.Id=@Id", new { Id = id }, transaction);
 
@@ -2728,6 +2823,8 @@ FROM recruitment_open_positions p
 JOIN recruitment_job_description_versions j ON j.RequisitionId=p.RequisitionId
 WHERE j.Id=@Id LIMIT 1", new { Id = id }, transaction);
         if (source is null) return;
+
+        await db.ExecuteScalarAsync<long>("SELECT Id FROM recruitment_open_positions WHERE Id=@PositionId FOR UPDATE", source, transaction);
 
         await db.ExecuteAsync(@"INSERT INTO recruitment_job_postings
 (ClientId,PositionId,JobDescriptionVersionId,ApplicationFormVersionId,PublicSlug,PublicTitle,Status,SearchEngineVisible,CreatedByUserId)
@@ -2764,7 +2861,7 @@ WHERE NOT EXISTS (
 )", new { source.PositionId, PipelineVersionId = publishedVersions[0], ActorUserId = actorUserId }, transaction);
     }
 
-    private static SaveRecruitmentJobDescriptionVersion BuildJobDescriptionFromRequisition(RecruitmentRequisition source)
+    internal static SaveRecruitmentJobDescriptionVersion BuildJobDescriptionFromRequisition(RecruitmentRequisition source)
     {
         var required = SplitRequirementTerms(source.RequiredSkills);
         if (required.Count == 0) required.Add(source.PositionTitle);
@@ -2773,7 +2870,6 @@ WHERE NOT EXISTS (
             .Concat(preferred.Select(name => (Name: name, Required: false))).ToList();
         var skillWeight = allSkills.Count == 0 ? 100m : decimal.Round(100m / allSkills.Count, 2);
         var remainingWeight = 100m;
-        var minimumYears = ParseMinimumYears(source.ExperienceRange);
         var proficiency = Regex.IsMatch(source.PositionTitle, "lead|manager|supervisor|senior|architect|head", RegexOptions.IgnoreCase)
             ? "Advanced"
             : Regex.IsMatch(source.PositionTitle, "junior|trainee|intern|associate", RegexOptions.IgnoreCase) ? "Beginner" : "Intermediate";
@@ -2783,7 +2879,9 @@ WHERE NOT EXISTS (
             remainingWeight -= weight;
             return new RecruitmentJdSkillRequirement
             {
-                SkillName = item.Name, IsRequired = item.Required, MinimumYears = minimumYears,
+                // Overall career experience is not a duration requirement for every skill.
+                // Zero reuses the existing presence-only gate; recruiters can opt in per skill.
+                SkillName = item.Name, IsRequired = item.Required, MinimumYears = 0,
                 MinimumProficiency = proficiency, WeightPercent = weight, DisplayOrder = index + 1
             };
         }).ToList();
@@ -3179,7 +3277,7 @@ LEFT JOIN clients c ON c.Id=p.ClientId";
     private sealed class WorkspaceBoardCardRow : RecruitmentPipelineBoardCard { public long PipelineVersionId { get; set; } public long StageId { get; set; } }
     private sealed class BoardCardRow : RecruitmentPipelineBoardCard { public long StageId { get; set; } public RecruitmentPipelineBoardCard Card => this; }
     private sealed class TransitionContextRow { public int ClientId { get; set; } public long PipelineInstanceId { get; set; } public long CurrentStageInstanceId { get; set; } public long CurrentStageId { get; set; } public long TransitionId { get; set; } public long ToStageId { get; set; } public string OutcomeCode { get; set; } = ""; public string TargetStageType { get; set; } = ""; public bool RequiresReason { get; set; } public long? ApprovalWorkflowId { get; set; } }
-    private sealed class AtsAutomationRow { public int ClientId { get; set; } public long PipelineStageId { get; set; } public decimal MinimumAdvanceScore { get; set; } public decimal MaximumRejectScore { get; set; } public bool AutoAdvance { get; set; } public bool AutoReject { get; set; } public bool RequireHumanConfirmation { get; set; } public bool JobAutoRunAts { get; set; } public string AdvanceOutcomeCode { get; set; } = ""; public string RejectOutcomeCode { get; set; } = ""; public decimal? CurrentScore { get; set; } public string CurrentScoreStatus { get; set; } = ""; public bool CurrentScoreRequiresReview { get; set; } }
+    private sealed class AtsAutomationRow { public int ClientId { get; set; } public long PipelineStageId { get; set; } public decimal MinimumAdvanceScore { get; set; } public decimal MaximumRejectScore { get; set; } public bool AutoAdvance { get; set; } public bool AutoReject { get; set; } public bool RequireHumanConfirmation { get; set; } public bool JobAutoRunAts { get; set; } public string AdvanceOutcomeCode { get; set; } = ""; public string RejectOutcomeCode { get; set; } = ""; public decimal? CurrentScore { get; set; } public string CurrentScoreStatus { get; set; } = ""; public bool CurrentScoreOverridden { get; set; } }
     private sealed class AtsTransitionCandidate { public long Id { get; set; } public string OutcomeCode { get; set; } = ""; public string TargetStageName { get; set; } = ""; public string TargetStageType { get; set; } = ""; }
     private sealed class DecisionTransitionRow { public long Id { get; set; } public string OutcomeCode { get; set; } = ""; public int DisplayOrder { get; set; } public string FromStageType { get; set; } = ""; public string ToStageType { get; set; } = ""; public string ToStageName { get; set; } = ""; }
     private sealed class AutomaticAtsTransitionRow { public int ClientId { get; set; } public string CurrentStageType { get; set; } = ""; public string ParsingStatus { get; set; } = ""; public long? TransitionId { get; set; } }

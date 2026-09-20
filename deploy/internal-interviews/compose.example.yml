@@ -1,0 +1,121 @@
+# Prepared deployment template, NOT an instruction to deploy automatically.
+# Review DNS, TLS, firewall, capacity, shared volumes and the HRMS container network first.
+name: hrms-interviews
+services:
+  redis:
+    image: ${INTERVIEW_REDIS_IMAGE:?Set a reviewed pinned Valkey image or digest}
+    command: ["valkey-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction", "--requirepass", "${INTERVIEW_REDIS_PASSWORD:?Set a new private hex credential}"]
+    volumes: ["interview-redis:/data"]
+    networks: [interviews]
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+
+  livekit:
+    image: livekit/livekit-server:v1.13.7
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?Set a private API key}: ${LIVEKIT_API_SECRET:?Set a private secret of at least 32 characters}"
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: false
+          node_ip: ${INTERVIEW_PUBLIC_IP:?Set the actual media server IP}
+          stun_servers:
+            - ${INTERVIEW_TURN_HOST:?Set self-hosted TURN DNS}:3478
+        redis:
+          address: redis:6379
+          password: ${INTERVIEW_REDIS_PASSWORD}
+        room:
+          auto_create: false
+          empty_timeout: 300
+          departure_timeout: 300
+        webhook:
+          api_key: ${LIVEKIT_API_KEY}
+          urls:
+            - ${INTERVIEW_MEDIA_WEBHOOK_URL:?Set the private HRMS API callback URL ending /api/public/internal-interviews/media-events}
+        turn:
+          enabled: true
+          domain: ${INTERVIEW_TURN_HOST}
+          udp_port: 3478
+          tls_port: 5349
+          cert_file: /certificates/fullchain.pem
+          key_file: /certificates/privkey.pem
+        logging:
+          level: warn
+    ports:
+      - "127.0.0.1:7880:7880"
+      - "7881:7881/tcp"
+      - "7882:7882/udp"
+      - "3478:3478/udp"
+      - "5349:5349/tcp"
+    volumes:
+      - type: bind
+        source: ${INTERVIEW_TLS_DIRECTORY:?Provision the TURN certificate directory}
+        target: /certificates
+        read_only: true
+        bind: { create_host_path: false }
+    networks: [interviews]
+    depends_on: [redis]
+    restart: unless-stopped
+    mem_limit: 2g
+    cpus: 2
+
+  egress:
+    image: livekit/egress:v1.14.1
+    environment:
+      EGRESS_CONFIG_BODY: |
+        api_key: ${LIVEKIT_API_KEY}
+        api_secret: ${LIVEKIT_API_SECRET}
+        ws_url: ws://livekit:7880
+        insecure: true
+        enable_chrome_sandbox: true
+        log_level: warn
+        health_port: 7980
+        template_port: 7981
+        redis:
+          address: redis:6379
+          password: ${INTERVIEW_REDIS_PASSWORD}
+    # Use the upstream reviewed sandbox seccomp profile; do not use privileged containers.
+    security_opt:
+      - seccomp=${INTERVIEW_EGRESS_SECCOMP_PATH:?Provide the reviewed upstream Egress Chrome sandbox seccomp JSON}
+    volumes:
+      - type: bind
+        source: ${INTERVIEW_RECORDING_HOST_DIR:?Provision a private recording volume with correct ownership}
+        target: /recordings
+        bind: { create_host_path: false }
+    networks: [interviews]
+    depends_on: [livekit]
+    restart: unless-stopped
+    mem_limit: 4g
+    cpus: 4
+    shm_size: 1g
+
+  speech:
+    build: ./speech
+    environment:
+      SPEECH_API_KEY: ${SPEECH_API_KEY:?Set a separate private speech credential}
+      SPEECH_THREADS: "2"
+      WHISPER_MODEL_DIR: /models/whisper
+      PIPER_EN_MODEL: /models/en.onnx
+      PIPER_HI_MODEL: /models/hi.onnx
+    volumes:
+      - type: bind
+        source: ${INTERVIEW_SPEECH_MODELS_DIR:?Provision licensed local speech model files first}
+        target: /models
+        read_only: true
+        bind: { create_host_path: false }
+    networks: [interviews]
+    restart: unless-stopped
+    mem_limit: 4g
+    cpus: 2
+    read_only: true
+    tmpfs: ["/tmp:size=128m,mode=1777"]
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  interviews:
+    name: hrms-interviews
+volumes:
+  interview-redis:

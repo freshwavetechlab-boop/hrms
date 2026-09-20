@@ -27,6 +27,7 @@ public sealed class EngineRuntimeMonitor
         new("bulk-data", "Bulk Data Jobs", "Platform", "Bulk import/export commands and actual attendance batch processing.", "Requests + attendance batches"),
         new("notifications", "Notification Delivery", "Communication", "Notification/invite commands and actual queued email delivery.", "Requests + email delivery"),
         new("documents", "Documents & Storage", "Platform", "Attachment, document generation and storage mutation workload."),
+        new("internal-interview", "Internal Interviews", "Talent acquisition", "Local interview speech and AI inference work. Busy time is not CPU utilization.", "Speech + local AI"),
     ];
 
     private readonly ConcurrentDictionary<string, State> states = new(StringComparer.OrdinalIgnoreCase);

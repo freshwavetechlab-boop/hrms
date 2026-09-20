@@ -151,6 +151,19 @@ FROM recruitment_open_positions WHERE RequisitionId=@Id", new { request.Id });
         var employee = await db.QueryFirstOrDefaultAsync<RequesterRow>("SELECT Id,ClientId,Department FROM employees WHERE Id=@EmployeeId AND IsActive=TRUE", new { EmployeeId = requesterEmployeeId.Value });
         if (employee is null) return (null, "Requester employee profile was not found.");
         var clientId = existing?.ClientId ?? user.ClientId ?? request.ClientId ?? employee.ClientId;
+        var budgetChanged = request.BudgetAvailable && (existing is null || !existing.BudgetAvailable
+            || existing.BudgetApprovalStatus is "Rejected" or "Sent Back" or "Failed" or "Cancelled"
+            || existing.BudgetAmount != request.BudgetAmount || existing.Currency != request.Currency
+            || existing.NumberOfOpenings != request.NumberOfOpenings
+            || (request.BudgetApproverUserId is > 0 && existing.BudgetApproverUserId != request.BudgetApproverUserId));
+        request.BudgetApproverUserId ??= existing?.BudgetApproverUserId;
+        if (budgetChanged && request.BudgetApproverUserId is not > 0)
+            return (null, "Select the user who must approve this hiring budget.");
+        if (request.BudgetAvailable && request.BudgetApproverUserId is > 0)
+        {
+            var validApprover = await db.ExecuteScalarAsync<bool>("SELECT COUNT(*)>0 FROM authusers WHERE Id=@Id AND IsActive=TRUE AND (ClientId=@ClientId OR ClientId IS NULL)", new { Id = request.BudgetApproverUserId, ClientId = clientId });
+            if (!validApprover) return (null, "Select an active budget approver from this client or central administration.");
+        }
         if (employee.ClientId != clientId) return (null, "Requester employee must belong to the selected client.");
         if (!await RecruitmentAccessScope.CanAccessLocationAsync(db, user, clientId, request.JobLocation)) return (null, "The selected job location is outside your recruitment visibility scope.");
         var enabled = canManage || await IsRequesterAllowedAsync(user);
@@ -162,6 +175,8 @@ FROM recruitment_open_positions WHERE RequisitionId=@Id", new { request.Id });
             request.WorkOrderId = existing.WorkOrderId;
             request.WorkOrderLineNumber = existing.WorkOrderLineNumber;
         }
+        if (existing is not null && request.WorkOrderId == existing.WorkOrderId && request.WorkOrderLineNumber is not > 0)
+            request.WorkOrderLineNumber = existing.WorkOrderLineNumber;
         if (request.WorkOrderId is not > 0)
         {
             var activeWorkOrders = (await db.QueryAsync<long>(@"SELECT Id FROM recruitment_work_orders
@@ -183,6 +198,8 @@ WHERE ClientId=@ClientId AND Status IN ('Draft','Active') ORDER BY ReceivedAtUtc
 
         var newRfrNumber = existing is null ? await NextRfrNumberAsync(db, clientId) : "";
         await using var transaction = await db.BeginTransactionAsync();
+        if (existing is not null)
+            await db.ExecuteScalarAsync<long>("SELECT Id FROM recruitment_requisitions WHERE Id=@Id FOR UPDATE", new { existing.Id }, transaction);
         WorkOrderLinkRow? workOrderLink = null;
         if (request.WorkOrderId.HasValue)
         {
@@ -191,7 +208,7 @@ WHERE ClientId=@ClientId AND Status IN ('Draft','Active') ORDER BY ReceivedAtUtc
                 workOrderLink = await db.QueryFirstOrDefaultAsync<WorkOrderLinkRow>(@"SELECT line.Id,workOrder.ClientId,line.RequisitionId
 FROM recruitment_work_order_lines line
 JOIN recruitment_work_orders workOrder ON workOrder.Id=line.WorkOrderId
-WHERE line.WorkOrderId=@WorkOrderId AND line.LineNumber=@WorkOrderLineNumber FOR UPDATE",
+WHERE line.WorkOrderId=@WorkOrderId AND line.LineNumber=@WorkOrderLineNumber AND line.Status<>'Superseded' FOR UPDATE",
                     new { request.WorkOrderId, request.WorkOrderLineNumber }, transaction);
             }
             else
@@ -203,8 +220,9 @@ FROM recruitment_work_orders WHERE Id=@WorkOrderId FOR UPDATE", new { request.Wo
                     var availableLine = await db.QueryFirstOrDefaultAsync<WorkOrderLinkRow>(@"SELECT line.Id,workOrder.ClientId,line.RequisitionId,line.LineNumber
 FROM recruitment_work_order_lines line
 JOIN recruitment_work_orders workOrder ON workOrder.Id=line.WorkOrderId
-WHERE line.WorkOrderId=@WorkOrderId AND line.RequisitionId IS NULL AND line.PositionId IS NULL
-ORDER BY line.LineNumber,line.Id LIMIT 1 FOR UPDATE", new { request.WorkOrderId }, transaction);
+WHERE line.WorkOrderId=@WorkOrderId AND line.Status<>'Superseded'
+AND ((@RequisitionId>0 AND line.RequisitionId=@RequisitionId) OR (line.RequisitionId IS NULL AND line.PositionId IS NULL))
+ORDER BY (line.RequisitionId=@RequisitionId) DESC,line.LineNumber,line.Id LIMIT 1 FOR UPDATE", new { request.WorkOrderId, RequisitionId = request.Id }, transaction);
                     if (availableLine is not null)
                     {
                         request.WorkOrderLineNumber = availableLine.LineNumber;
@@ -284,11 +302,16 @@ WHERE RequisitionId=@Id", new
                 await db.ExecuteAsync(@"UPDATE recruitment_work_order_lines SET RequisitionId=@RequisitionId,
 PositionId=COALESCE(@PositionId,PositionId),PositionName=@PositionName,NumberOfPositions=@NumberOfPositions,Location=@Location,Division=@Division WHERE Id=@Id",
                     new { RequisitionId = request.Id, PositionId = existing.OpenPositionId, PositionName = request.PositionTitle, NumberOfPositions = request.NumberOfOpenings, Location = request.JobLocation, Division = request.BusinessUnit, workOrderLink.Id }, transaction);
+                var reuse = await RecruitmentCaseRepository.ReuseHiringJourneyAsync(db, transaction, request.Id,
+                    request.WorkOrderId!.Value, workOrderLink.Id, existing.OpenPositionId, clientId, user.Id);
+                if (reuse.Error.Length > 0) return (null, reuse.Error);
                 await db.ExecuteAsync(@"UPDATE recruitment_position_pipeline_instances SET RequisitionId=@RequisitionId,
-PositionId=COALESCE(@PositionId,PositionId) WHERE WorkOrderLineId=@LineId",
+PositionId=COALESCE(@PositionId,PositionId) WHERE WorkOrderLineId=@LineId AND Status<>'Superseded'",
                     new { RequisitionId = request.Id, PositionId = existing.OpenPositionId, LineId = workOrderLink.Id }, transaction);
             }
             await AuditAsync(db, request.Id, existing.Status == "Approved" ? "Edit Approved" : "Edit", user.Id, request, transaction);
+            try { await PrepareBudgetApprovalAsync(db, transaction, request.Id, clientId, request, user, existing, budgetChanged); }
+            catch (InvalidOperationException exception) { return (null, exception.Message); }
             await transaction.CommitAsync();
             return (await GetAsync(request.Id, user), "");
         }
@@ -302,6 +325,8 @@ PositionName=@PositionName,NumberOfPositions=@NumberOfPositions,Location=@Locati
                 new { RequisitionId = id, LineId = workOrderLink.Id }, transaction);
         }
         await AuditAsync(db, id, "Create Draft", user.Id, request, transaction);
+        try { await PrepareBudgetApprovalAsync(db, transaction, id, clientId, request, user, existing, budgetChanged); }
+        catch (InvalidOperationException exception) { return (null, exception.Message); }
         await transaction.CommitAsync();
         return (await GetAsync(id, user), "");
     }
@@ -1023,6 +1048,62 @@ ORDER BY a.CreatedAt DESC,a.Id DESC", new { PositionId = positionId, PartnerType
             PayloadJson = JsonSerializer.Serialize(new { position, payload })
         });
 
+    internal async Task PrepareBudgetApprovalAsync(MySqlConnection db, MySqlTransaction tx, long id, int clientId,
+        SaveRecruitmentRequisition request, AuthUser user, RecruitmentRequisition? existing, bool changed)
+    {
+        if (!changed && request.BudgetAvailable) return;
+        var supersededWorkflow = await db.ExecuteScalarAsync<long?>("SELECT BudgetApprovalWorkflowInstanceId FROM recruitment_requisitions WHERE Id=@Id FOR UPDATE", new { Id = id }, tx);
+        if (supersededWorkflow is > 0)
+        {
+            await db.ExecuteAsync(@"UPDATE workflowinstances SET Status='Cancelled',CompletedAt=UTC_TIMESTAMP()
+WHERE Id=@Id AND Status='Pending'; UPDATE workflowtasks SET Status='Cancelled',ActionedAt=UTC_TIMESTAMP()
+WHERE InstanceId=@Id AND Status='Pending'", new { Id = supersededWorkflow }, tx);
+        }
+        if (!request.BudgetAvailable)
+        {
+            await db.ExecuteAsync("UPDATE recruitment_requisitions SET BudgetApproverUserId=NULL,BudgetApprovalWorkflowInstanceId=NULL,BudgetApprovalStatus='' WHERE Id=@Id", new { Id = id }, tx);
+            return;
+        }
+        var code = $"RECRUITMENT_BUDGET_{clientId}_{request.BudgetApproverUserId}";
+        await db.ExecuteAsync(@"INSERT INTO workflowmasters (ClientId,Code,Name,ResourceType,IsActive)
+VALUES (@ClientId,@Code,'Hiring budget approval','RecruitmentBudget',TRUE)
+ON DUPLICATE KEY UPDATE Id=Id", new { ClientId = clientId, Code = code }, tx);
+        var workflowId = await db.ExecuteScalarAsync<int>("SELECT Id FROM workflowmasters WHERE ClientId=@ClientId AND Code=@Code FOR UPDATE", new { ClientId = clientId, Code = code }, tx);
+        await db.ExecuteAsync(@"INSERT IGNORE INTO workflowstages (WorkflowId,StageOrder,Name,ApproverType,ApproverUserId)
+VALUES (@Id,1,'Approve hiring budget','Specific User',@ApproverId)", new { Id = workflowId, ApproverId = request.BudgetApproverUserId }, tx);
+        var stages = (await db.QueryAsync<WorkflowStage>("SELECT * FROM workflowstages WHERE WorkflowId=@Id", new { Id = workflowId }, tx)).ToList();
+        if (stages.Count != 1 || stages[0].ApproverUserId != request.BudgetApproverUserId || stages[0].ApproverType != "Specific User")
+            throw new InvalidOperationException("The budget workflow was changed and no longer matches the selected approver. Restore its single assigned approval stage before submitting.");
+        var instance = await new WorkflowRepository(configuration).StartInTransactionAsync(db, tx, new StartWorkflowRequest
+        {
+            WorkflowId = workflowId, ResourceType = "RecruitmentBudget", ResourceId = id.ToString(),
+            PayloadJson = JsonSerializer.Serialize(new { RequisitionId = id, request.PositionTitle, request.BudgetAmount, request.Currency, request.NumberOfOpenings, request.BudgetApproverUserId })
+        }, user.Id);
+        if (instance is null) throw new InvalidOperationException("Budget approval could not start. Check the selected approver and workflow configuration.");
+        await db.ExecuteAsync(@"UPDATE recruitment_requisitions SET BudgetApproverUserId=@ApproverId,
+BudgetApprovalWorkflowInstanceId=@InstanceId,BudgetApprovalStatus='Pending' WHERE Id=@Id",
+            new { Id = id, ApproverId = request.BudgetApproverUserId, InstanceId = instance.Id }, tx);
+    }
+
+    public async Task SyncBudgetApprovalAsync(long requisitionId, long workflowInstanceId, string status)
+    {
+        if (status is not ("Approved" or "Rejected" or "Sent Back")) return;
+        await using var db = Db(); await db.OpenAsync();
+        // A delayed callback from an earlier budget cannot approve a replacement budget.
+        await db.ExecuteAsync(@"UPDATE recruitment_requisitions SET BudgetApprovalStatus=@Status,UpdatedAt=UTC_TIMESTAMP()
+WHERE Id=@Id AND BudgetApprovalWorkflowInstanceId=@InstanceId AND BudgetApprovalStatus='Pending'",
+            new { Id = requisitionId, InstanceId = workflowInstanceId, Status = status });
+    }
+
+    public async Task<IEnumerable<WorkflowApprover>> GetBudgetApproversAsync(int clientId, AuthUser user)
+    {
+        var scope = user.ClientId ?? clientId;
+        if (scope <= 0) return [];
+        await using var db = Db(); await db.OpenAsync();
+        return await db.QueryAsync<WorkflowApprover>(@"SELECT Id,DisplayName,Email FROM authusers
+WHERE IsActive=TRUE AND (ClientId=@ClientId OR ClientId IS NULL) ORDER BY DisplayName,Id", new { ClientId = scope });
+    }
+
     private static object Payload(SaveRecruitmentRequisition request, AuthUser user, RequesterRow employee, int clientId, string number, long id, DateTime requestDate) => new
     {
         Id = id,
@@ -1228,6 +1309,9 @@ Id BIGINT PRIMARY KEY AUTO_INCREMENT,RequisitionId BIGINT NOT NULL,DocumentCateg
 CREATE TABLE IF NOT EXISTS recruitment_audit (
 Id BIGINT PRIMARY KEY AUTO_INCREMENT,EntityType VARCHAR(80) NOT NULL,EntityId BIGINT NOT NULL,Action VARCHAR(80) NOT NULL,OldValueJson JSON NULL,NewValueJson JSON NULL,ChangedByUserId INT NULL,ChangedOn DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,INDEX IX_recruitment_audit (EntityType,EntityId,ChangedOn));");
 
+        await EnsureColumnAsync(db, "recruitment_requisitions", "BudgetApproverUserId", "INT NULL");
+        await EnsureColumnAsync(db, "recruitment_requisitions", "BudgetApprovalWorkflowInstanceId", "BIGINT NULL");
+        await EnsureColumnAsync(db, "recruitment_requisitions", "BudgetApprovalStatus", "VARCHAR(30) NOT NULL DEFAULT ''");
         await EnsureColumnAsync(db, "recruitment_open_positions", "businessunit", "VARCHAR(120) NOT NULL DEFAULT ''");
         await EnsureColumnAsync(db, "recruitment_open_positions", "costcenter", "VARCHAR(120) NOT NULL DEFAULT ''");
         await EnsureColumnAsync(db, "recruitment_open_positions", "approvedpositions", "INT NOT NULL DEFAULT 1");

@@ -25,7 +25,8 @@ public sealed class RecruitmentAtsScoringWorker(
 
                 var work = await repository.ProcessNextAtsScoringJobAsync(stoppingToken);
                 processed = processed || work.Processed;
-                if (work.ApplicationId.HasValue && work.User is not null)
+                if (work.ApplicationId.HasValue && work.User is not null
+                    && await actions.PrepareCurrentAtsEntryAsync(work.ApplicationId.Value, work.User))
                 {
                     var (transition, automationError) = await pipelines.EvaluateAtsStageAutomationAsync(work.ApplicationId.Value, work.User, work.HumanConfirmed);
                     if (!string.IsNullOrWhiteSpace(automationError))

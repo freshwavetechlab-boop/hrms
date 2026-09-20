@@ -1,4 +1,5 @@
 import { deleteJson, getJson, postJson } from './apiClient'
+import { currentRecruitmentHiringCases } from './recruitmentJobVersions'
 import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProcessDocumentSignature, RecruitmentProfileSubmissionBatch, RecruitmentWorkOrder, SaveRecruitmentProcessDocument, SaveRecruitmentProcessDocumentSignature, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
 import type { RecruitmentPipelineTransition } from '../types/recruitmentOrchestration'
 
@@ -18,8 +19,10 @@ export const saveRecruitmentWorkOrder = (request: SaveRecruitmentWorkOrder) =>
 export const deleteRecruitmentWorkOrder = (id: number) =>
   deleteJson(`/api/recruitment/work-orders/${id}`, null, { successMessage: 'Work order deleted.' })
 
-export const getRecruitmentHiringCases = (clientId = 0) =>
-  getJson<RecruitmentHiringCase[]>(`/api/recruitment/hiring-cases${clientId ? `?clientId=${clientId}` : ''}`, [])
+export const getRecruitmentHiringCases = async (clientId = 0, includeHistory = false) => {
+  const rows = await getJson<RecruitmentHiringCase[]>(`/api/recruitment/hiring-cases${clientId ? `?clientId=${clientId}` : ''}`, [])
+  return includeHistory ? rows : currentRecruitmentHiringCases(rows)
+}
 
 export const getRecruitmentHiringCase = (id: number) =>
   getJson<RecruitmentHiringCase | null>(`/api/recruitment/hiring-cases/${id}`, null)

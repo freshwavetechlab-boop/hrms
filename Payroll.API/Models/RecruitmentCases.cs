@@ -69,6 +69,7 @@ public class SaveRecruitmentWorkOrderLine
 
 public class RecruitmentHiringCase
 {
+    public bool IsHistorical { get; set; }
     public long Id { get; set; }
     public int ClientId { get; set; }
     public string ClientName { get; set; } = "";
