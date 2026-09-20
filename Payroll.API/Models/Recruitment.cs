@@ -164,6 +164,7 @@ public class RecruitmentOptions
     public List<string> BusinessUnits { get; set; } = [];
     public List<string> CostCenters { get; set; } = [];
     public List<string> ExperienceRanges { get; set; } = [];
+    // Retained for response compatibility; budgets are free-entry numeric amounts.
     public List<string> BudgetAmounts { get; set; } = [];
     public List<string> Priorities { get; set; } = ["Low", "Normal", "High", "Critical"];
     public List<EmployeeLookup> Employees { get; set; } = [];

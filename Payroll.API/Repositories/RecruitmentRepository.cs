@@ -55,7 +55,6 @@ public class RecruitmentRepository(IConfiguration configuration)
         };
         options.PositionCategories = (await MasterValuesAsync(db, scopeClientId, "Position Category")).ToList();
         options.ExperienceRanges = (await MasterValuesAsync(db, scopeClientId, "Experience Range")).ToList();
-        options.BudgetAmounts = (await MasterValuesAsync(db, scopeClientId, "Budget Amount")).ToList();
         options.HiringTypes = (await MasterValuesAsync(db, scopeClientId, "Hiring Type")).ToList();
         options.EmploymentTypes = await DropdownValuesAsync(db, scopeClientId, "Employment Type");
         options.Departments = await DropdownOrEmployeeValuesAsync(db, scopeClientId, "Department", "Department");
@@ -69,7 +68,6 @@ public class RecruitmentRepository(IConfiguration configuration)
         else if (!enabled) options.ValidationMessages.Add("Your role requires the recruitment.rfr.create permission to create hiring requests.");
         if (options.PositionCategories.Count == 0) options.ValidationMessages.Add("No active Position Category is configured in Dropdown Masters.");
         if (options.ExperienceRanges.Count == 0) options.ValidationMessages.Add("No active Experience Range is configured in Dropdown Masters.");
-        if (options.BudgetAmounts.Count == 0) options.ValidationMessages.Add("No active Budget Amount is configured in Dropdown Masters.");
         if (options.HiringTypes.Count == 0) options.ValidationMessages.Add("No active Hiring Type is configured in Dropdown Masters.");
         return options;
     }
@@ -122,6 +120,8 @@ ORDER BY r.UpdatedAt DESC LIMIT 500";
     {
         var textErrors = RecruitmentRequisitionTextLimits.Validate(request);
         if (textErrors.Count > 0) return (null, string.Join("\n", textErrors.Select(error => error.Message)));
+        var budgetError = ValidateBudgetAmount(request);
+        if (budgetError.Length > 0) return (null, budgetError);
         await using var db = Db();
         await db.OpenAsync();
         await EnsureTablesAsync(db);
@@ -918,7 +918,6 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
         if (!string.IsNullOrWhiteSpace(request.HiringType) && !await ExistsMasterAsync(db, clientId, "Hiring Type", request.HiringType)) return "Selected hiring type is not active in Dropdown Masters.";
         if (!string.IsNullOrWhiteSpace(request.PositionCategory) && !await ExistsMasterAsync(db, clientId, "Position Category", request.PositionCategory)) return "Selected position category is not active in Dropdown Masters.";
         if (!string.IsNullOrWhiteSpace(request.ExperienceRange) && !await ExistsMasterAsync(db, clientId, "Experience Range", request.ExperienceRange)) return "Selected experience range is not active in Dropdown Masters.";
-        if (request.BudgetAmount > 0 && !await ExistsBudgetMasterAsync(db, clientId, request.BudgetAmount)) return "Selected budget amount is not active in Dropdown Masters.";
         if (!string.IsNullOrWhiteSpace(request.ExternalPositionCode))
         {
             var duplicate = await db.ExecuteScalarAsync<int>(@"SELECT
@@ -938,11 +937,14 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
                 || await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_master_values WHERE MasterType=@Type AND Name=@Value AND IsActive=TRUE AND ClientId IN (0,@ClientId)", new { Type = type, Value = value, ClientId = clientId }) > 0;
         return await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_master_values WHERE MasterType=@Type AND Name=@Value AND IsActive=TRUE AND ClientId IN (0,@ClientId)", new { Type = type, Value = value, ClientId = clientId }) > 0;
     }
-    private static async Task<bool> ExistsBudgetMasterAsync(MySqlConnection db, int clientId, decimal value)
+    internal static string ValidateBudgetAmount(SaveRecruitmentRequisition request)
     {
-        var rows = await MasterValuesAsync(db, clientId, "Budget Amount");
-        var expected = value.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
-        return rows.Any(row => new string(row.Where(ch => char.IsDigit(ch) || ch == '.').ToArray()) == expected);
+        // Standalone DECIMAL(18,2), not a Dropdown Masters value or foreign key.
+        if (request.BudgetAmount < 0) return "Hiring budget cannot be negative.";
+        if (request.BudgetAvailable && request.BudgetAmount == 0) return "Enter a hiring budget greater than zero when budget approval is required.";
+        if (request.BudgetAmount > 9999999999999999.99m) return "Hiring budget exceeds the supported numeric limit (9999999999999999.99).";
+        if (decimal.Round(request.BudgetAmount, 2) != request.BudgetAmount) return "Hiring budget can have at most two decimal places.";
+        return "";
     }
     private static async Task<IEnumerable<string>> MasterValuesAsync(MySqlConnection db, int clientId, string type)
     {

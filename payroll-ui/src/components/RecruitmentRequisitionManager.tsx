@@ -53,7 +53,6 @@ type MasterOptions = {
   positionCategories: string[]
   experienceRanges: string[]
   priorities: string[]
-  budgetAmounts: string[]
 }
 
 type BrowserDraftSnapshot = {
@@ -68,7 +67,7 @@ type AutoSaveState = 'idle' | 'local' | 'saving' | 'saved' | 'error'
 
 const editableStatuses = new Set(['Draft', 'Sent Back'])
 const emptyMasters: MasterOptions = {
-  hiringTypes: [], positionCategories: [], experienceRanges: [], priorities: [], budgetAmounts: [],
+  hiringTypes: [], positionCategories: [], experienceRanges: [], priorities: [],
 }
 
 export default function RecruitmentRequisitionManager({ initialClientId = 0, clientScopeManaged = false, initialOpen = false, initialRequisitionId = 0, initialWorkOrderId = 0, initialWorkOrderLineId = 0, statusScope = [], showStatusFilter = true, embedded = false, pipelinePositions = [], onOpenPipeline, onOpenRequestPipeline, onChanged, onPrepareJobDescription }: Props) {
@@ -278,7 +277,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       setTextLimits(data.fieldLimits)
       setMasters({
         hiringTypes: data.hiringTypes, positionCategories: data.positionCategories,
-        experienceRanges: data.experienceRanges, priorities: data.priorities, budgetAmounts: data.budgetAmounts,
+        experienceRanges: data.experienceRanges, priorities: data.priorities,
       })
       if (initialOpen) {
         const nextClientId = initialClientId || data.clientRows[0]?.id || 0
@@ -824,8 +823,8 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
           {replacementHiring && <Form.Item name="replacementEmployeeId" label="Employee being replaced" rules={[{ required: true, message: 'Select the employee being replaced.' }]}>
             <Select showSearch optionFilterProp="label" options={replacementOptions} placeholder="Search employee" />
           </Form.Item>}
-          {budgetAvailable && <Form.Item name="budgetAmount" label="Annual hiring budget" extra="Total annual budget for all openings. Salary min/max is the per-person CTC range." rules={[{ required: true, type: 'number', min: 1, message: 'Enter the budget.' }]}>
-            <InputNumber min={0} controls={false} style={{ width: '100%' }} placeholder={masters.budgetAmounts[0] || 'Amount'} />
+          {budgetAvailable && <Form.Item name="budgetAmount" label="Annual hiring budget" extra="Enter the total annual budget for all openings; no master setup is needed. Salary min/max is the per-person CTC range." rules={[{ required: true, type: 'number', min: 0.01, message: 'Enter a budget greater than zero.' }]}>
+            <InputNumber min={0.01} precision={2} controls={false} style={{ width: '100%' }} placeholder="Enter budget amount" />
           </Form.Item>}
           {budgetAvailable && <Form.Item name="budgetApproverUserId" label="Budget approver" extra="Saving a new or changed budget sends an approval task to this user. Offers remain blocked until approved." rules={[{ required: true, message: 'Select the budget approver.' }]}>
             <Select showSearch optionFilterProp="label" placeholder="Select approver" options={budgetApprovers.map(user => ({ value: user.id, label: `${user.displayName} · ${user.email}` }))} />
@@ -938,14 +937,13 @@ function addDays(value: string, days: number) {
 }
 
 async function fetchWorkspace() {
-  const [clientRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, budgetAmounts, fieldLimits] = await Promise.all([
+  const [clientRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, fieldLimits] = await Promise.all([
     getClients(), getDropdowns(), getWorkLocations(), getEmployees(),
     getRecruitmentMasterOptions('Hiring Type'), getRecruitmentMasterOptions('Position Category'),
     getRecruitmentMasterOptions('Experience Range'), getRecruitmentMasterOptions('Assignment Priority'),
-    getRecruitmentMasterOptions('Budget Amount'),
     getJson<RequisitionTextLimit[]>('/api/recruitment/requisitions/field-limits', []),
   ])
-  return { clientRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, budgetAmounts, fieldLimits }
+  return { clientRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, fieldLimits }
 }
 
 function fromRow(row: RecruitmentRequisition): SaveRecruitmentRequisition {

@@ -1,6 +1,8 @@
 # Local LLM manual recovery (opt-in)
 
-Status: implementation/test candidate, **not activated on the LLM server**.
+Status (2026-09-20): **server bridge installed and control activated** after explicit
+approval. HRMS backend secret settings are pending; the user chose guided Coolify
+configuration. The LLM remains stopped; no actual Start request was sent.
 
 AI Integration > saved Local LLM > Test now has adjacent Check/Refresh LLM status
 and Start local LLM controls, restricted to an exact global `super_admin` in UI
@@ -32,13 +34,14 @@ exact endpoint matches the configured inference URL can use recovery. Control
 and inference must have the same HTTPS authority; redirects are disabled. The
 browser never receives the control secret or a shell command.
 
-## Server approval proposal — pending
+## Approved server installation — completed 2026-09-20
 
 Candidate sources live in
 `D:\EESL-Server100-LLM\candidates\local-llm-recovery`, following that workspace's
 operating boundary. HRMS deploy alone does not install this server bridge.
 
-After explicit approval only, on the verified DCDB1 / 10.10.91.100 host:
+The following approved steps were applied on verified DCDB1 / 10.10.91.100;
+step 5 (HRMS configuration) remains pending. Do not blindly repeat installation:
 
 1. Add these three new files (refuse silent replacement):
    - `E:\Datacopy\wordpress\llm-control.php` from `public/llm-control.php`.
@@ -72,6 +75,24 @@ task/model or alter inference gateway behavior as incidental rollback. Recheck
 English/Hindi pages, Social Media marker, Apache health and new errors.
 
 ## Verification boundaries
+
+Server activation verified at 2026-09-20 05:58 UTC: three deployed file hashes
+match their reviewed candidates, separate key/state/code ACLs are restricted,
+and nine public HTTPS checks pass (missing/wrong credentials, wrong method,
+malformed JSON, unsupported action, extra command field, oversized body, wrong
+content type and authenticated stopped status). Public and direct-origin English/
+Hindi pages return 200 with unchanged Social Media markers. Apache PID 17544,
+protected runtime/gateway/config hashes and parent ACLs are unchanged; no new
+Apache/PHP error markers. Task last-run time is unchanged, with zero Start requests.
+An initial installer-only stdout-capture failure safely rolled back the new code;
+the corrected verifier reapplied the same candidates. Recoverable backup:
+`E:\LLM\logs\backups\recovery-control-20260920T055422283Z`.
+
+Full evidence stays in the server-operations workspace under
+`candidates/local-llm-recovery/deployed-verification-20260920.json` and the website
+reports. Start execution and portal-to-server recovery remain untested until
+backend secrets are configured and the operator confirms Start. No model was
+started merely to pass installation tests.
 
 2026-09-20 verification: 110 backend tests passed (28 recovery cases including
 six direct HTTP denials; 82 existing local-provider regressions); 28 UI/contract
