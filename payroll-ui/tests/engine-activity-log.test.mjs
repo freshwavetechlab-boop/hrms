@@ -17,3 +17,12 @@ test('interrupted and rejected outcomes never read as successful completion',()=
  assert.equal(activityOutcome('Rejected'),'Request rejected')
  assert.equal(activityOutcome('Completed'),'Completed')
 })
+test('safe backend reasons wrap in a separate column and old records show an honest fallback',()=>{
+ const source=fs.readFileSync(new URL('../src/components/EngineActivityLog.tsx',import.meta.url),'utf8')
+ assert.match(source,/Reason \/ next step/)
+ assert.match(source,/row.failureReason \|\|/)
+ assert.match(source,/whiteSpace: 'normal'/)
+ assert.match(source,/Detailed reason was not recorded/)
+ assert.match(source,/A 503 alone does not prove why a server stopped/)
+ assert.doesNotMatch(source,/dangerouslySetInnerHTML/)
+})

@@ -21,7 +21,8 @@ public sealed class EngineRuntimeMonitor
     [
         new("frevopilot", "FrevoPilot", "AI & analytics", "Dashboard workflow duration, including provider and database waits. Busy time is not CPU utilization.", "Dashboard workflows"),
         new("resume-parser", "Resume Parser", "Talent acquisition", "Resume preview and intake requests plus public-upload and background parsing on this API instance.", "Requests + public parser work"),
-        new("jd-parser", "JD / Hiring Parser", "Talent acquisition", "Hiring-request and job-description source parsing workload."),
+        new("jd-parser", "JD / Hiring Parser", "Talent acquisition", "Hiring-request source parsing and draft-save workload."),
+        new("ai-provider", "AI Provider Requests", "AI & analytics", "Local/cloud provider calls, including connection tests and retry attempts. Includes provider waits, not host CPU; overlaps the calling engine.", "Provider requests + local admission"),
         new("ats-scoring", "ATS Scoring", "Talent acquisition", "Actual manual and automatic ATS scoring jobs, including background work.", "Scoring worker"),
         new("payroll", "Payroll Processor", "Payroll", "Payroll commands and actual queued payroll processing.", "Requests + payroll worker"),
         new("bulk-data", "Bulk Data Jobs", "Platform", "Bulk import/export commands and actual attendance batch processing.", "Requests + attendance batches"),
@@ -67,7 +68,9 @@ public sealed class EngineRuntimeMonitor
     public async Task<T> ObserveAsync<T>(string code, Func<Task<T>> work, Func<T, bool>? succeeded = null, EngineActivityContext? context = null)
     {
         using var observation = Observe(code, context);
-        var result = await work();
+        T result;
+        try { result = await work(); }
+        catch (Exception error) { observation.RecordException(error); throw; }
         try { observation.Succeeded = succeeded?.Invoke(result) ?? true; }
         catch { observation.Succeeded = true; } // Telemetry classification cannot replace the result.
         return result;
@@ -81,6 +84,15 @@ public sealed class EngineRuntimeMonitor
         private int disposed;
         public bool Succeeded { get; set; }
         public string? Outcome { get; set; }
+        public int? HttpStatus { get; set; }
+        public string? FailureCode { get; set; }
+        public void RecordException(Exception error)
+        {
+            Succeeded = false;
+            try { FailureCode = EngineFailureCatalog.FromException(error); }
+            catch { FailureCode = "ENGINE_FAILED"; } // Exception inspection is telemetry, never business work.
+            if (error is OperationCanceledException) Outcome = "Cancelled";
+        }
         public void RecordAiPhase(double durationMs, string status)
         {
             try { if(token.HasValue) monitor.activity?.AiPhase(code,token.Value,durationMs,status); } catch { /* Telemetry only. */ }
@@ -94,20 +106,21 @@ public sealed class EngineRuntimeMonitor
         public void Dispose()
         {
             if (Interlocked.Exchange(ref disposed, 1) != 0 || token is null) return;
-            try { monitor.Complete(code, token.Value, !Succeeded, "Engine operation failed; check its result or job status.", outcome: Outcome); }
+            try { monitor.Complete(code, token.Value, !Succeeded, "Engine operation failed; check its result or job status.", httpStatus: HttpStatus, outcome: Outcome, failureCode: FailureCode); }
             catch { /* Never replace the underlying result. */ }
         }
     }
 
-    public void Complete(string code, long startedAt, bool failed, string? error = null, int? httpStatus = null, string? outcome = null)
+    public void Complete(string code, long startedAt, bool failed, string? error = null, int? httpStatus = null, string? outcome = null, string? failureCode = null)
     {
         var state = states.GetOrAdd(code, _ => new State());
         if (!state.ActiveStarts.TryRemove(startedAt, out _)) return;
         Interlocked.Decrement(ref state.ActiveRequests);
-        var sample = new Sample(DateTime.UtcNow, Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds, failed, failed ? (error ?? "Request failed.") : string.Empty);
+        var sample = new Sample(DateTime.UtcNow, Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds, failed,
+            failed ? EngineFailureCatalog.Describe(failureCode ?? (httpStatus is >=400 ? $"HTTP {httpStatus}" : "ENGINE_FAILED")) : string.Empty);
         state.Samples.Enqueue(sample);
         try { history?.Complete(code, startedAt, sample.DurationMs, failed); } catch { /* History never gates work. */ }
-        try { activity?.Complete(code, startedAt, sample.DurationMs, failed, httpStatus, outcome); } catch { /* Logs never gate work. */ }
+        try { activity?.Complete(code, startedAt, sample.DurationMs, failed, httpStatus, outcome, failureCode); } catch { /* Logs never gate work. */ }
         if (failed) state.LastError = sample.Error.Length > 300 ? sample.Error[..300] : sample.Error;
         Trim(state, sample.RecordedAtUtc.AddMinutes(-10));
     }
@@ -175,6 +188,7 @@ public sealed class EngineRuntimeMonitor
             || value.StartsWith("/api/recruitment-orchestration/applications/"))) return null;
         if (mutation && (value.Contains("/resume-intake") || value.EndsWith("/resume") || value.Contains("/public/") && value.Contains("resume"))) return "resume-parser";
         if (mutation && value.Contains("/parse-source")) return "jd-parser";
+        if (HttpMethods.IsPost(method) && value.TrimEnd('/') == "/api/recruitment/requisitions") return "jd-parser";
         // ATS is measured at the job boundary, not at the enqueue/wait HTTP request.
         if (mutation && value.StartsWith("/api/pay-runs")) return "payroll";
         if (mutation && (value.Contains("/import") || value.Contains("/bulk"))) return "bulk-data";

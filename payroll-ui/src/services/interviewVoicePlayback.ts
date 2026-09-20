@@ -18,10 +18,16 @@ export class InterviewVoicePlayback {
     this.output = this.context.createMediaStreamDestination()
   }
   resume() { return this.context.resume() } // call from the user gesture before awaiting synthesis
-  async play(blob: Blob, publish: InterviewVoicePublisher | undefined, onEnded: () => void): Promise<boolean> {
+  async play(blob: Blob, publish: InterviewVoicePublisher | undefined, onEnded: () => void, speakerId = ''): Promise<boolean> {
     if (this.started || this.disposed) return false
     this.started = true
     try {
+      if (speakerId) {
+        const sink = this.context as AudioContext & { setSinkId?: (id: string) => Promise<void> }
+        if (!sink.setSinkId) throw new Error('Selected speaker is unavailable in this browser. Use System default.')
+        await sink.setSinkId(speakerId)
+      }
+      if (this.disposed) return false
       const buffer = await this.context.decodeAudioData(await blob.arrayBuffer())
       if (this.disposed) return false
       if (publish) {

@@ -28,7 +28,7 @@ public sealed class EngineActivityBuffer(TimeProvider clock, IConfiguration conf
                 QueueWaitMs=context.QueueWaitMs,Attempt=context.Attempt,StartedAtUtc=now,UpdatedAtUtc=now,Revision=++revision };
         }
     }
-    public void Complete(string code,long token,double duration,bool failed,int? httpStatus,string? outcome)
+    public void Complete(string code,long token,double duration,bool failed,int? httpStatus,string? outcome,string? failureCode=null)
     {
         if(!Enabled) return;
         lock(gate)
@@ -36,9 +36,10 @@ public sealed class EngineActivityBuffer(TimeProvider clock, IConfiguration conf
             if(!rows.TryGetValue((code,token),out var row) || row.CompletedAtUtc.HasValue) return;
             var now=clock.GetUtcNow().UtcDateTime;
             var status=outcome is "Retry" or "Cancelled" or "NeedsReview" ? outcome
+                : failed && failureCode is not null ? "Failed"
                 : httpStatus is >=400 and <500 ? "Rejected" : failed ? "Failed" : "Completed";
             rows[(code,token)]=row with { CompletedAtUtc=now,UpdatedAtUtc=now,DurationMs=Finite(duration),
-                Status=status,HttpStatus=httpStatus,FailureCode=failed || httpStatus>=400 ? (httpStatus.HasValue ? $"HTTP {httpStatus}" : "Operation failed; see source task") : "",Revision=++revision };
+                Status=status,HttpStatus=httpStatus,FailureCode=failed || httpStatus>=400 ? EngineFailureCatalog.Clean(failureCode ?? (httpStatus.HasValue ? $"HTTP {httpStatus}" : null)) : "",Revision=++revision };
         }
     }
     public void AiPhase(string code,long token,double duration,string status)

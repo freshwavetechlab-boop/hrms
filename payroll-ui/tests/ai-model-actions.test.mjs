@@ -51,7 +51,13 @@ test('local endpoint is hidden in the saved list but retained for connection edi
   assert.equal(local.endpointUrl, 'https://synthetic.example/chat')
   assert.equal(aiModelEndpointLabel({ ...local, providerCode: 'OpenAICompatible' }), local.endpointUrl)
   assert.match(source, /\{aiModelEndpointLabel\(row\) &&/)
-  assert.doesNotMatch(source, /\{row\.endpointUrl\}/)
+  // Attributes may privately pass the URL to recovery controls; visible JSX children must not print it.
+  const inspect = node => {
+    if (ts.isJsxExpression(node) && !ts.isJsxAttribute(node.parent))
+      assert.notEqual(node.expression?.getText(file), 'row.endpointUrl')
+    ts.forEachChild(node, inspect)
+  }
+  inspect(file)
   assert.match(source, /value=\{editor\.endpointUrl\}/)
 })
 

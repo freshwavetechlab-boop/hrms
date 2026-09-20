@@ -17,7 +17,7 @@ public sealed class EngineActivityTests
     private static IConfiguration Config(bool enabled=true)=>new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?> { ["EngineActivity:Enabled"]=enabled.ToString() }).Build();
 
     [Fact]
-    public void AllEightEnginesRetainMeasuredTaskDurations()
+    public void AllRegisteredEnginesRetainMeasuredTaskDurations()
     {
         var clock=new Clock();var buffer=new EngineActivityBuffer(clock,Config());
         var index=0L;
@@ -27,7 +27,7 @@ public sealed class EngineActivityTests
             clock.Now=clock.Now.AddSeconds(72);
             buffer.Complete(code,index,72000,false,null,null);
         }
-        var rows=buffer.Checkpoint();Assert.Equal(8,rows.Count);
+        var rows=buffer.Checkpoint();Assert.Equal(EngineRuntimeMonitor.EngineNames.Count,rows.Count);
         Assert.All(rows,r=> { Assert.Equal("Completed",r.Status);Assert.Equal(72000,r.DurationMs);Assert.Equal(TimeSpan.FromSeconds(72),r.CompletedAtUtc-r.StartedAtUtc); });
     }
     [Fact]

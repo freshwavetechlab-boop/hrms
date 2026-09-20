@@ -14,7 +14,8 @@ public sealed partial class RecruitmentAiScoringService(
     IConfiguration configuration,
     PortableIntegrationCredentialProtector credentialProtector,
     IHttpClientFactory httpClientFactory,
-    ILogger<RecruitmentAiScoringService> logger)
+    ILogger<RecruitmentAiScoringService> logger,
+    EngineRuntimeMonitor? engineMonitor = null)
 {
     private const int GlobalClientId = 0;
 
@@ -905,12 +906,19 @@ ORDER BY (ScopeClientId=@ClientId) DESC LIMIT 1", new { ClientId = clientId }) ?
         timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(settings.RequestTimeoutSeconds, 10, 120)));
         for (var attempt = 1; attempt <= 3; attempt++)
         {
+            using var observation = ObserveProvider(settings, attempt);
             try
             {
                 using var message = CreateProviderRequest(settings, apiKey, prompt, systemInstruction, maximumOutputTokens, sourceDocument, sourceContentType);
                 using var response = await httpClientFactory.CreateClient().SendAsync(message, timeout.Token);
                 CaptureProviderQuota(settings, response);
                 var body = await response.Content.ReadAsStringAsync(timeout.Token);
+                if (observation is not null)
+                {
+                    observation.HttpStatus = (int)response.StatusCode;
+                    observation.Succeeded = response.IsSuccessStatusCode;
+                    if (!response.IsSuccessStatusCode) observation.FailureCode = EngineFailureCatalog.FromProviderHttp((int)response.StatusCode, false, null);
+                }
                 if (response.IsSuccessStatusCode) return new ProviderSendResult(true, "Completed", "", body);
 
                 var detail = ProviderErrorDetail(body);
@@ -920,17 +928,21 @@ ORDER BY (ScopeClientId=@ClientId) DESC LIMIT 1", new { ClientId = clientId }) ?
                 var delay = ProviderRetryDelay(response, body, attempt);
                 if (!delay.HasValue)
                     return new ProviderSendResult(false, "ProviderError", error, body);
+                observation?.Dispose(); // Provider-attempt duration excludes the retry backoff.
                 await Task.Delay(delay.Value, timeout.Token);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
+                if (observation is not null) { observation.Succeeded = false; observation.FailureCode = "REQUEST_TIMEOUT"; }
                 return new ProviderSendResult(false, "TimedOut", $"{ProviderLabel(settings.ProviderCode)} timed out; the next available model can be tried.", "");
             }
             catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
             {
+                observation?.RecordException(exception);
                 logger.LogWarning(exception, "AI provider request failed for {Provider}/{Model}.", settings.ProviderCode, settings.ModelName);
                 return new ProviderSendResult(false, "Failed", $"{ProviderLabel(settings.ProviderCode)} request failed; the next available model can be tried.", "");
             }
+            catch (OperationCanceledException exception) { observation?.RecordException(exception); throw; }
         }
         return new ProviderSendResult(false, "Failed", "AI provider request failed.", "");
     }
@@ -1144,7 +1156,18 @@ WHERE table_schema=DATABASE() AND table_name='recruitment_ai_scoring_settings' A
 
     private static bool CanFailOver(string status) => status is "ProviderError" or "TimedOut" or "ConfigurationError" or "UnsupportedInput" or "UsageLimitReached" or "LowConfidence" or "Failed" or "InputTooLarge" or "LocalBusy" or "OutputTruncated" or "InvalidResponse";
 
-    private sealed record ProviderSendResult(bool Success, string Status, string Error, string Body);
+    private sealed record ProviderSendResult(bool Success, string Status, string Error, string Body, int? HttpStatus = null, string? FailureCode = null);
+
+    private EngineRuntimeMonitor.Observation? ObserveProvider(RecruitmentAiScoringSecretRow settings, int? attempt = null)
+    {
+        try
+        {
+            var label = SupportedProviders.ContainsKey(settings.ProviderCode) ? ProviderLabel(settings.ProviderCode) : "AI provider";
+            return engineMonitor?.Observe("ai-provider", new EngineActivityContext(label + " request", "AI model",
+                settings.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), ClientId: settings.ClientId, Attempt: attempt));
+        }
+        catch { return null; } // Monitoring must not change inference behavior.
+    }
     private sealed record ProviderQuotaSnapshot(long? RequestLimit, long? RequestsRemaining, long? TokenLimit, long? TokensRemaining, string RequestReset, string TokenReset, DateTime ObservedAt);
 
     private static HttpRequestMessage CreateProviderRequest(

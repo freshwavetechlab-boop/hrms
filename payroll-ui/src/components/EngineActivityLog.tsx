@@ -44,7 +44,7 @@ export default function EngineActivityLog({ engines }: { engines: Array<{ code: 
     if (last) setCursor({ before: last.startedAtUtc, beforeId: last.id })
   }
   return <section className="engine-chart-card engine-activity-log" id="engine-activity-log">
-    <header><div><h3>Engine activity log</h3><p>Individual task timings across all monitored engines. Processing includes database/provider waits; HTTP entries measure the request, not any queued work that follows.</p></div><Tag>Super Admin only</Tag></header>
+    <header><div><h3>Engine activity log</h3><p>Task timings and safe failure reasons across monitored engines. AI Provider Requests includes local/cloud tests and provider failures; its time overlaps the calling engine. A 503 alone does not prove why a server stopped.</p></div><Tag>Super Admin only</Tag></header>
     <div className="engine-chart-controls">
       <Select aria-label="Activity engine" value={engine} onChange={setEngine} style={{ minWidth: 200 }} options={[{ value: '', label: 'All engines' }, ...engines.map(e => ({ value: e.code, label: e.name }))]} />
       <Select aria-label="Activity outcome" value={status} onChange={setStatus} style={{ minWidth: 150 }} options={[{ value: '', label: 'All outcomes' }, ...statuses.map(s => ({ value: s, label: activityOutcome(s) }))]} />
@@ -56,13 +56,14 @@ export default function EngineActivityLog({ engines }: { engines: Array<{ code: 
     {error && <Alert showIcon type="warning" message="Activity logs unavailable" description={error} />}
     {data && (!data.recordingEnabled || data.warning || data.droppedRecords > 0) && <Alert showIcon type="warning" message={!data.recordingEnabled ? 'Detailed recording is disabled' : 'Log coverage is incomplete'} description={data.warning || (data.droppedRecords > 0 ? `${data.droppedRecords} records exceeded retry-buffer limits and could not be saved.` : 'Existing saved logs remain available; new tasks are not being recorded.')} />}
     <Table<EngineActivity> className="engine-activity-table" rowKey="id" size="small" loading={loading} dataSource={data?.items ?? []}
-      scroll={{ x: 1040 }} pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }}
+      scroll={{ x: 1310 }} pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }}
       locale={{ emptyText: error ? 'Logs could not be loaded.' : 'No task logs for these filters. Detailed recording starts with this update; older timings are not invented.' }}
       columns={[
         { title: 'Engine', width: 135, render: (_, row) => engines.find(e => e.code === row.engineCode)?.name || row.engineCode },
         { title: 'Task / candidate / job', width: 290, render: (_, row) => <div><strong>{row.candidateName || row.operation}</strong>{row.candidateName && <div>{row.operation}</div>}{row.positionTitle && <div>{row.positionTitle}</div>}<small>{row.applicationCode || (row.applicationId ? `Application #${row.applicationId}` : '')}{row.referenceId && ` · ${row.referenceType} #${row.referenceId}`}</small><small>Log {row.id.slice(0, 12)}{row.attempt ? ` · Attempt ${row.attempt}` : ''}</small></div> },
         { title: 'Started / finished', width: 185, render: (_, row) => <div>{timestamp(row.startedAtUtc)}<small>End: {timestamp(row.completedAtUtc)}</small></div> },
         { title: 'Outcome', width: 145, render: (_, row) => <div><Tag color={row.status === 'Completed' ? 'green' : row.status === 'Running' ? 'blue' : 'orange'}>{activityOutcome(row.status)}</Tag>{row.httpStatus && <small>HTTP {row.httpStatus}</small>}{row.failureCode && <small>{row.failureCode}</small>}</div> },
+        { title: 'Reason / next step', width: 290, render: (_, row) => <div style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{row.failureReason || (row.failureCode ? 'Detailed reason was not recorded. Check the source task/server log.' : '—')}</div> },
         { title: 'Processing time', width: 145, render: (_, row) => <div><strong>{row.status === 'Running' ? `${activityDuration(Math.max(0, Date.now() - Date.parse(row.startedAtUtc)))} elapsed` : activityDuration(row.durationMs)}</strong>{row.queueWaitMs !== null && <small>Queue wait: {activityDuration(row.queueWaitMs)}</small>}</div> },
         { title: 'AI phase', width: 140, render: (_, row) => <div>{activityDuration(row.aiDurationMs)}{row.aiStatus && <small>{row.aiStatus}</small>}</div> },
       ]} />

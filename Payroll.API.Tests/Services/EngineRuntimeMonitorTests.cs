@@ -8,6 +8,10 @@ public sealed class EngineRuntimeMonitorTests
 {
     [Theory]
     [InlineData("POST", "/api/recruitment/requisitions/parse-source", "jd-parser")]
+    [InlineData("POST", "/api/recruitment/requisitions", "jd-parser")]
+    [InlineData("GET", "/api/recruitment/requisitions", null)]
+    [InlineData("OPTIONS", "/api/recruitment/requisitions", null)]
+    [InlineData("POST", "/api/integrations/ai/6/test", null)] // Provider service owns this observation.
     [InlineData("POST", "/api/recruitment/resume-intake/preview", "resume-parser")]
     [InlineData("POST", "/api/recruitment/resume-intake", "resume-parser")]
     [InlineData("POST", "/api/recruitment/candidates/7/resume", "resume-parser")]

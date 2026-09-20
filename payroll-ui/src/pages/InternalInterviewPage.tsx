@@ -3,6 +3,8 @@ import { Alert, Button, Card, Checkbox, Input, Modal, Select, Space, Spin, Tag }
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import InternalInterviewSetup from '../components/InternalInterviewSetup'
 import InterviewMediaRoom from '../components/InterviewMediaRoom'
+import InterviewDevicePreflight from '../components/InterviewDeviceCheck'
+import { defaultInterviewDevices } from '../services/interviewDeviceCheck'
 import InterviewVoiceControls from '../components/InterviewVoiceControls'
 import InterviewEvidenceReview from '../components/InterviewEvidenceReview'
 import InterviewParticipantHistory from '../components/InterviewParticipantHistory'
@@ -48,6 +50,7 @@ function InterviewSessionScreen({ candidate }: { candidate: boolean }) {
   const [transcriptConsent, setTranscriptConsent] = useState(false)
   const [browserNotice, setBrowserNotice] = useState(false)
   const [grant, setGrant] = useState<InterviewMediaGrant | null>(null)
+  const [devices, setDevices] = useState(() => ({ ...defaultInterviewDevices }))
   const [voicePublisher, setVoicePublisher] = useState<InterviewVoicePublisher | undefined>()
   const [link, setLink] = useState('')
   const [text, setText] = useState('')
@@ -160,7 +163,7 @@ function InterviewSessionScreen({ candidate }: { candidate: boolean }) {
     {view && <>
       <div className="interview-session-summary"><Tag>{view.configuration.mode} Interview</Tag><span>{utc(view.scheduledStart).toLocaleString(undefined, { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'short' })} · {view.timeZoneId}</span><SessionTimer started={view.startedAtUtc} ended={view.endedAtUtc} /><Tag>Control: {view.control}</Tag></div>
       {candidate && !view.consentAtUtc && !finished && <Card title="Before you join">
-        <p>This interview uses your camera and microphone after you choose Join. Focus, visibility, fullscreen, device and connection events may be captured for human review. These signals do not establish cheating and never automatically reject you. Clipboard contents are not collected.</p>
+        <p>You may check your camera and microphone locally after consent; they are shared with the room only when you choose Join audio/video with those devices on. Focus, visibility, fullscreen, device and connection events may be captured for human review. These signals do not establish cheating and never automatically reject you. Clipboard contents are not collected.</p>
         <Space direction="vertical">
           <Checkbox checked={browserNotice} onChange={e => setBrowserNotice(e.target.checked)}>I have read the interview privacy and browser-event notice.</Checkbox>
           {view.configuration.recordingEnabled && <Checkbox checked={recordConsent} onChange={e => setRecordConsent(e.target.checked)}>I consent to interview audio/video recording and authorized HR replay.</Checkbox>}
@@ -173,6 +176,7 @@ function InterviewSessionScreen({ candidate }: { candidate: boolean }) {
       {view.mediaError && <Alert type="warning" showIcon message="Media needs attention" description={view.mediaError} />}
       {view.mediaState === 'Starting' && <Alert type="info" showIcon message="Preparing the private audio/video room…" />}
       {view.mediaState === 'Closing' && <Alert type="warning" showIcon message="Session ended; the server is still confirming media-room closure. Pending closure will retry." />}
+      {!finished && !grant && (!candidate || !!view.consentAtUtc) && <InterviewDevicePreflight preferences={devices} onChange={setDevices} />}
       <Space wrap className="interview-session-actions">
         {!candidate && view.canManage && <Button onClick={() => setSetupMode(setupMode === 'bank' ? null : 'bank')}>{setupMode === 'bank' ? 'Close question bank' : 'Manage job question bank'}</Button>}
         {!candidate && view.canManage && view.status === 'Scheduled' && !view.consentAtUtc && <Button disabled={draining} onClick={() => setSetupMode(setupMode === 'settings' ? null : 'settings')}>Edit internal settings</Button>}
@@ -192,9 +196,9 @@ function InterviewSessionScreen({ candidate }: { candidate: boolean }) {
       </Modal>}
       {!candidate && context && view.canManage && setupMode && <InternalInterviewSetup key={setupMode + view.revision} context={context} bankOnly={setupMode === 'bank' || view.status !== 'Scheduled' || !!view.consentAtUtc} initial={{ ...view.configuration, questionIds: (view.questions || []).map(q => q.id) }} onSaved={() => { setSetupMode(null); setLink(''); void refresh() }} />}
       {link && !finished && <Card title="Candidate-only interview link"><Input.TextArea readOnly value={link} autoSize /><Button onClick={() => void navigator.clipboard.writeText(link).catch(() => setError('Clipboard unavailable; copy the link from the field.'))}>Copy candidate link</Button><small>Send this only to the candidate. Panel members use their normal HRMS login.</small></Card>}
-      {grant && <InterviewMediaRoom grant={grant} onLeave={() => setGrant(null)} onEvent={browserEvent} onError={setError} onVoicePublisher={publisher => setVoicePublisher(() => publisher)} />}
+      {grant && <InterviewMediaRoom grant={grant} devices={devices} onDevicesChange={setDevices} onLeave={() => setGrant(null)} onEvent={browserEvent} onError={setError} onVoicePublisher={publisher => setVoicePublisher(() => publisher)} />}
       {finished && <Alert type="success" message="Interview session ended" description="Session evidence is retained for authorized review. Your application outcome is a separate human HR decision." />}
-      {candidate && view.status === 'Live' && view.transcriptionConsent && !answered && <InterviewVoiceControls client={client} question={lastQuestion || events.find(event => event.kind === 'introduction')} answerSeconds={view.configuration.answerSeconds} publishVoice={voicePublisher} onDraft={setText} onError={setError} />}
+      {candidate && view.status === 'Live' && view.transcriptionConsent && !answered && <InterviewVoiceControls client={client} question={lastQuestion || events.find(event => event.kind === 'introduction')} answerSeconds={view.configuration.answerSeconds} publishVoice={voicePublisher} microphoneId={devices.microphoneId} speakerId={devices.speakerId} onDraft={setText} onError={setError} />}
       {!candidate && view.status === 'Live' && events.some(event => event.kind === 'ai-error') && <Button disabled={busy} onClick={() => void act(() => client.retryAi())}>Retry AI assistance</Button>}
       {!candidate && finished && <InterviewEvidenceReview client={client} events={events} canAnalyze={view.status === 'Completed' && view.transcriptionConsent} onError={setError} />}
       {!candidate && (view.startedAtUtc || finished) && <InterviewParticipantHistory events={events} />}

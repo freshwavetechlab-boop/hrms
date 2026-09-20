@@ -36,6 +36,24 @@ public sealed partial class RecruitmentAiScoringService
     private async Task<ProviderSendResult> SendLocalProviderAsync(RecruitmentAiScoringSecretRow settings, string key,
         string prompt, string? instruction, byte[]? document, CancellationToken cancellationToken)
     {
+        using var observation = ObserveProvider(settings);
+        try
+        {
+            var result = await SendLocalProviderCoreAsync(settings, key, prompt, instruction, document, cancellationToken);
+            if (observation is not null)
+            {
+                observation.Succeeded = result.Success;
+                observation.HttpStatus = result.HttpStatus;
+                observation.FailureCode = result.Success ? null : result.FailureCode ?? EngineFailureCatalog.FromAiStatus(result.Status);
+            }
+            return result;
+        }
+        catch (Exception error) { observation?.RecordException(error); throw; }
+    }
+
+    private async Task<ProviderSendResult> SendLocalProviderCoreAsync(RecruitmentAiScoringSecretRow settings, string key,
+        string prompt, string? instruction, byte[]? document, CancellationToken cancellationToken)
+    {
         if (document is { Length: > 0 }) return new(false, "UnsupportedInput", "Local LLM accepts extracted text only; use OCR/manual review for scanned PDFs.", "");
         HttpRequestMessage message;
         try { message = LocalLlmProtocol.CreateRequest(settings, key, prompt, instruction); }
@@ -82,14 +100,15 @@ public sealed partial class RecruitmentAiScoringService
                     {
                         429 => "Local LLM returned HTTP 429: its single generation slot or rate limit is busy. Retry shortly.",
                         504 => "Local LLM returned HTTP 504: the gateway deadline expired. A 90-second cooldown is active while the backend settles; align gateway and HRMS timeouts or shorten the request.",
+                        503 => "Local LLM returned HTTP 503: " + EngineFailureCatalog.Describe(EngineFailureCatalog.FromProviderHttp(503, true, body)),
                         401 or 403 => "Local LLM authentication failed. Check the public gateway API key.",
                         400 or 413 => "Local LLM rejected the input/context size or request configuration. Check the gateway limits.",
                         _ => $"Local LLM returned HTTP {(int)response.StatusCode}. Check the gateway health."
-                    }, "");
+                    }, "", (int)response.StatusCode, EngineFailureCatalog.FromProviderHttp((int)response.StatusCode, true, body));
                 }
                 try { LocalLlmProtocol.ReadResponse(body); }
-                catch (LocalLlmException error) { return new(false, error.Status, error.Message, body); }
-                return new(true, "Completed", "", body);
+                catch (LocalLlmException error) { return new(false, error.Status, error.Message, body, (int)response.StatusCode); }
+                return new(true, "Completed", "", body, (int)response.StatusCode);
             }
             catch (OperationCanceledException)
             {

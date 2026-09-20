@@ -8,11 +8,12 @@ const source = ts.transpileModule(readFileSync(new URL('../src/services/intervie
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
-function fixture(decode) {
+function fixture(decode, sink) {
   let context
   class AudioContext {
     constructor() { context = this; this.destination = {}; this.closes = 0; this.stops = 0; this.starts = 0; this.connections = []; this.track = { stop: () => this.stops++ } }
     resume() { return Promise.resolve() }
+    setSinkId(id) { this.sinkId = id; return sink ? sink(id) : Promise.resolve() }
     close() { this.closes++; return Promise.resolve() }
     createMediaStreamDestination() { return { stream: { getTracks: () => [this.track], getAudioTracks: () => [this.track] }, disconnect() {} } }
     decodeAudioData() { return decode ? decode.promise : Promise.resolve({ duration: 1 }) }
@@ -63,4 +64,11 @@ test('a clip cannot be started twice and TTS does not become the candidate micro
   assert.equal(f.api.isInterviewMicrophone({ source: 'microphone', trackName: 'microphone' }), true)
   assert.equal(f.api.isInterviewMicrophone({ source: 'camera', trackName: 'camera' }), false)
   f.playback.stop()
+})
+test('AI question uses the selected speaker, and output rejection never starts or publishes it', async () => {
+  const f = fixture()
+  await f.playback.play(clip, undefined, () => {}, 'headset'); assert.equal(f.audio().sinkId, 'headset'); f.playback.stop()
+  const bad = fixture(undefined, async () => { throw Error('Selected output denied') }); let publications = 0
+  await assert.rejects(bad.playback.play(clip, async () => { publications++; return async () => {} }, () => {}, 'denied'), /denied/)
+  assert.equal(publications, 0); assert.equal(bad.audio().starts, 0); assert.equal(bad.audio().closes, 1)
 })

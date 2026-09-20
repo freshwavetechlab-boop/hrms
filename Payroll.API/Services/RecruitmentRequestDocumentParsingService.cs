@@ -69,19 +69,19 @@ public sealed class RecruitmentRequestDocumentParsingService(
         Set("experienceRange", Experience(text), value => draft.ExperienceRange = value);
         Set("qualification", Qualifications(text), value => draft.Qualification = value);
         Set("requiredSkills", RequiredSkills(text), value => draft.RequiredSkills = value);
-        Set("preferredSkills", PreferredSkills(text), value => draft.PreferredSkills = CompactList(value, 1800));
-        Set("certifications", Block(text, "preferred certifications", "certifications"), value => draft.Certifications = CompactList(value, 480));
+        Set("preferredSkills", PreferredSkills(text), value => draft.PreferredSkills = CompactList(value));
+        Set("certifications", Block(text, "preferred certifications", "certifications"), value => draft.Certifications = CompactList(value));
         Set("languages", Languages(text), value => draft.Languages = value);
-        Set("benefits", Block(text, "benefits", "perks"), value => draft.Benefits = CompactList(value, 1800));
+        Set("benefits", Block(text, "benefits", "perks"), value => draft.Benefits = CompactList(value));
 
         var summary = Block(text, "job summary", "role summary", "role overview", "role purpose");
         if (string.IsNullOrWhiteSpace(summary)) summary = FirstUsefulParagraph(text);
-        Set("businessJustification", Limit(summary, 3800), value => draft.BusinessJustification = value);
+        Set("businessJustification", summary, value => draft.BusinessJustification = value);
 
         var responsibilityBlock = Block(text, "key responsibilities", "roles and responsibilities", "responsibilities", "job profile/duties", "job profile");
         var responsibilities = Items(responsibilityBlock).Take(20).ToList();
         var rolePurpose = responsibilities.Count > 0 ? string.Join("\n", responsibilities.Take(10)) : summary;
-        Set("reasonForHiring", Limit(rolePurpose, 480), value => draft.ReasonForHiring = value);
+        Set("reasonForHiring", rolePurpose, value => draft.ReasonForHiring = value);
 
         var openings = NumberOfOpenings(text);
         if (openings.HasValue)
@@ -132,32 +132,32 @@ public sealed class RecruitmentRequestDocumentParsingService(
             preferVerifiedFacts: HasStrongLocalHiringFacts(draft, text));
         if (ai.Status is "Completed" or "LowConfidence")
         {
-            SetAi("positionTitle", Limit(ai.PositionTitle, 190), value => draft.PositionTitle = value);
-            SetAi("department", Limit(ai.Department, 180), value => draft.Department = value);
-            SetAi("businessUnit", Limit(ai.BusinessUnit, 180), value => draft.BusinessUnit = value, requireExact: true);
-            SetAi("costCenter", Limit(ai.CostCenter, 120), value => draft.CostCenter = value, requireExact: true);
-            SetAi("jobLocation", Limit(ai.JobLocation, 240), value => draft.JobLocation = value, requireExact: true);
-            SetAi("workMode", Limit(ai.WorkMode, 120), value => draft.WorkMode = value, requireExact: true);
-            SetAi("project", Limit(ai.Project, 180), value => draft.Project = value, requireExact: true);
-            SetAi("externalPositionCode", Limit(ai.ExternalPositionCode, 120), value => draft.ExternalPositionCode = value, requireExact: true);
-            SetAi("sourceReference", Limit(ai.SourceReference, 240), value => draft.SourceReference = value, requireExact: true);
-            SetAi("sourceAuthority", Limit(ai.SourceAuthority, 240), value => draft.SourceAuthority = value, requireExact: true);
-            SetAi("experienceRange", Limit(ai.ExperienceRange, 120), value => draft.ExperienceRange = value, requireExact: true);
-            SetAi("qualification", CompactList(string.Join("; ", ai.Qualifications.Count > 0 ? ai.Qualifications : [ai.Qualification]), 1800), value => draft.Qualification = value, requireExact: true);
-            SetAi("hiringType", Limit(ai.HiringType, 120), value => draft.HiringType = value);
-            SetAi("employmentType", Limit(ai.EmploymentType, 120), value => draft.EmploymentType = value);
-            SetAi("positionCategory", Limit(ai.PositionCategory, 120), value => draft.PositionCategory = value);
-            SetAi("hiringPriority", Limit(ai.HiringPriority, 40), value => draft.HiringPriority = value, requireExact: true);
+            SetAi("positionTitle", ai.PositionTitle, value => draft.PositionTitle = value);
+            SetAi("department", ai.Department, value => draft.Department = value);
+            SetAi("businessUnit", ai.BusinessUnit, value => draft.BusinessUnit = value, requireExact: true);
+            SetAi("costCenter", ai.CostCenter, value => draft.CostCenter = value, requireExact: true);
+            SetAi("jobLocation", ai.JobLocation, value => draft.JobLocation = value, requireExact: true);
+            SetAi("workMode", ai.WorkMode, value => draft.WorkMode = value, requireExact: true);
+            SetAi("project", ai.Project, value => draft.Project = value, requireExact: true);
+            SetAi("externalPositionCode", ai.ExternalPositionCode, value => draft.ExternalPositionCode = value, requireExact: true);
+            SetAi("sourceReference", ai.SourceReference, value => draft.SourceReference = value, requireExact: true);
+            SetAi("sourceAuthority", ai.SourceAuthority, value => draft.SourceAuthority = value, requireExact: true);
+            SetAi("experienceRange", ai.ExperienceRange, value => draft.ExperienceRange = value, requireExact: true);
+            SetAi("qualification", CompactList(string.Join("; ", ai.Qualifications.Count > 0 ? ai.Qualifications : [ai.Qualification])), value => draft.Qualification = value, requireExact: true);
+            SetAi("hiringType", ai.HiringType, value => draft.HiringType = value);
+            SetAi("employmentType", ai.EmploymentType, value => draft.EmploymentType = value);
+            SetAi("positionCategory", ai.PositionCategory, value => draft.PositionCategory = value);
+            SetAi("hiringPriority", ai.HiringPriority, value => draft.HiringPriority = value, requireExact: true);
             // The compact local model returns at most four skills. Never discard
             // a richer source-grounded deterministic list just to fit that contract.
             var local = LocalLlmProtocol.IsLocal(ai.Provider);
-            SetAi("requiredSkills", CompactList(string.Join("; ", local ? Items(draft.RequiredSkills).Concat(ai.RequiredSkills).Distinct(StringComparer.OrdinalIgnoreCase) : ai.RequiredSkills), 1800), value => draft.RequiredSkills = value, preserveExact: false);
-            SetAi("preferredSkills", CompactList(string.Join("; ", local ? Items(draft.PreferredSkills).Concat(ai.PreferredSkills).Distinct(StringComparer.OrdinalIgnoreCase) : ai.PreferredSkills), 1800), value => draft.PreferredSkills = value, preserveExact: false);
-            SetAi("certifications", CompactList(string.Join("; ", ai.Certifications), 480), value => draft.Certifications = value);
-            SetAi("languages", CompactList(string.Join("; ", ai.Languages), 480), value => draft.Languages = value);
-            SetAi("benefits", CompactList(string.Join("; ", ai.Benefits), 1800), value => draft.Benefits = value, requireExact: true);
-            SetAi("businessJustification", Limit(string.IsNullOrWhiteSpace(ai.BusinessJustification) ? ai.RoleSummary : ai.BusinessJustification, 3800), value => draft.BusinessJustification = value, preserveExact: false);
-            SetAi("reasonForHiring", Limit(string.IsNullOrWhiteSpace(ai.HiringNotes) ? ai.RolePurpose : ai.HiringNotes, 480), value => draft.ReasonForHiring = value, preserveExact: false);
+            SetAi("requiredSkills", CompactList(string.Join("; ", local ? Items(draft.RequiredSkills).Concat(ai.RequiredSkills).Distinct(StringComparer.OrdinalIgnoreCase) : ai.RequiredSkills)), value => draft.RequiredSkills = value, preserveExact: false);
+            SetAi("preferredSkills", CompactList(string.Join("; ", local ? Items(draft.PreferredSkills).Concat(ai.PreferredSkills).Distinct(StringComparer.OrdinalIgnoreCase) : ai.PreferredSkills)), value => draft.PreferredSkills = value, preserveExact: false);
+            SetAi("certifications", CompactList(string.Join("; ", ai.Certifications)), value => draft.Certifications = value);
+            SetAi("languages", CompactList(string.Join("; ", ai.Languages)), value => draft.Languages = value);
+            SetAi("benefits", CompactList(string.Join("; ", ai.Benefits)), value => draft.Benefits = value, requireExact: true);
+            SetAi("businessJustification", string.IsNullOrWhiteSpace(ai.BusinessJustification) ? ai.RoleSummary : ai.BusinessJustification, value => draft.BusinessJustification = value, preserveExact: false);
+            SetAi("reasonForHiring", string.IsNullOrWhiteSpace(ai.HiringNotes) ? ai.RolePurpose : ai.HiringNotes, value => draft.ReasonForHiring = value, preserveExact: false);
             if (ai.NumberOfOpenings is > 0 and <= 999)
             {
                 SetAiValue("numberOfOpenings", () => draft.NumberOfOpenings = ai.NumberOfOpenings.Value, requireExact: true);
@@ -173,7 +173,7 @@ public sealed class RecruitmentRequestDocumentParsingService(
             if (ai.SalaryMax is > 0)
                 SetAiValue("salaryMax", () => draft.SalaryMax = ai.SalaryMax.Value, requireExact: true);
             if (ai.SalaryMin is > 0 || ai.SalaryMax is > 0)
-                SetAi("currency", Limit(ai.Currency, 12), value => draft.Currency = value, requireExact: true);
+                SetAi("currency", ai.Currency, value => draft.Currency = value, requireExact: true);
             if (DateTime.TryParse(ai.TargetJoiningDate, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var targetJoiningDate))
             {
                 SetAiValue("targetJoiningDate", () => draft.TargetJoiningDate = targetJoiningDate.Date, requireExact: true);
@@ -250,7 +250,7 @@ public sealed class RecruitmentRequestDocumentParsingService(
         {
             responsibilities = DefaultResponsibilities(draft.PositionTitle);
             rolePurpose = string.Join("\n", responsibilities);
-            Set("reasonForHiring", Limit(rolePurpose, 480), value => draft.ReasonForHiring = value, "default", .55m);
+            Set("reasonForHiring", rolePurpose, value => draft.ReasonForHiring = value, "default", .55m);
             defaultsApplied.Add("responsibilities");
         }
         if (defaultsApplied.Count > 0)
@@ -373,7 +373,7 @@ public sealed class RecruitmentRequestDocumentParsingService(
         if (!string.IsNullOrWhiteSpace(parsed.Error) && ai.Status != "Completed") warnings.Add(parsed.Error);
         if (review.Count > 0) warnings.Add("Complete the remaining business fields before saving; parser suggestions never auto-submit the request.");
 
-        return new RecruitmentRequestDocumentParseResult
+        return RecruitmentRequisitionTextLimits.Review(new RecruitmentRequestDocumentParseResult
         {
             Status = ai.Status == "Completed" ? "Parsed" : string.IsNullOrWhiteSpace(text) ? "NeedsReview" : parsed.Status,
             ParserName = $"{parsed.ParserName}{(retrieval.HasContext ? " + LocalRAG" : "")}{(ai.Status == "Completed" ? $" + {ai.Provider}" : "")}",
@@ -383,7 +383,7 @@ public sealed class RecruitmentRequestDocumentParsingService(
             DetectedFields = detected.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
             ReviewFields = review,
             Warnings = warnings.Distinct().ToList()
-        };
+        });
 
         void Set(string field, string value, Action<string> setter, string sourceType = "exact", decimal confidence = .9m)
         {
@@ -683,7 +683,7 @@ public sealed class RecruitmentRequestDocumentParsingService(
     private static string Languages(string text)
     {
         var block = Block(text, "languages", "language");
-        if (!string.IsNullOrWhiteSpace(block)) return CompactList(block, 230);
+        if (!string.IsNullOrWhiteSpace(block)) return CompactList(block);
         return string.Join(", ", new[] { "English", "Hindi" }.Where(language => Regex.IsMatch(text, $@"\b{language}\b", RegexOptions.IgnoreCase)));
     }
 
@@ -949,7 +949,7 @@ public sealed class RecruitmentRequestDocumentParsingService(
     private static List<string> Items(string value) => (value ?? "").Split(['\n', ';'], StringSplitOptions.RemoveEmptyEntries)
         .Select(CleanValue).Where(item => item.Length > 1).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
-    private static string CompactList(string value, int maximum) => Limit(string.Join("; ", Items(value)), maximum);
+    private static string CompactList(string value) => string.Join("; ", Items(value));
     private static string Limit(string value, int maximum) => value.Length <= maximum ? value : value[..Math.Max(1, maximum - 1)].TrimEnd() + "…";
     private static string CleanValue(string value)
     {

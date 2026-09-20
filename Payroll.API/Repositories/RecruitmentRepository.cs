@@ -120,6 +120,8 @@ ORDER BY r.UpdatedAt DESC LIMIT 500";
 
     public async Task<(RecruitmentRequisition? Row, string Error)> SaveDraftAsync(SaveRecruitmentRequisition request, AuthUser user)
     {
+        var textErrors = RecruitmentRequisitionTextLimits.Validate(request);
+        if (textErrors.Count > 0) return (null, string.Join("\n", textErrors.Select(error => error.Message)));
         await using var db = Db();
         await db.OpenAsync();
         await EnsureTablesAsync(db);

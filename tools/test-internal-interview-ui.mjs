@@ -3,6 +3,7 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
+import { installInterviewDeviceFixture, verifyInterviewDeviceChecks } from './test-interview-device-checks.mjs'
 
 // Actual portal UI with fully intercepted API. Does NOT claim real media/STT/LLM integration coverage.
 const require = createRequire(new URL('../playwright-e2e/package.json', import.meta.url))
@@ -94,6 +95,7 @@ async function mock(page, panel) {
 try {
   const hr = await browser.newContext({ viewport: { width: 1440, height: 960 } })
   const candidateBrowser = await browser.newContext({ viewport: { width: 1366, height: 900 }, permissions: ['microphone', 'camera'] })
+  await installInterviewDeviceFixture(candidateBrowser)
   const hrPage = await hr.newPage(), candidatePage = await candidateBrowser.newPage()
   await mock(hrPage, true); await mock(candidatePage, false)
   await hrPage.goto(`${origin}/recruitment/interview-session/7`)
@@ -138,6 +140,7 @@ try {
   await expect(candidatePage.getByRole('button', { name: 'Agree and enter waiting room' })).toBeEnabled({ timeout: 10000 })
   checks.push('maintenance admission pause is visible and disables new consent/link actions')
   await candidatePage.getByRole('button', { name: 'Agree and enter waiting room' }).click()
+  await verifyInterviewDeviceChecks(candidatePage, expect, checks, output)
   await expect(candidatePage.getByText('You are in the waiting room. The panel will start your interview.')).toBeVisible()
   checks.push('separate consent and candidate waiting room')
   await expect(hrPage.getByRole('button', { name: 'Start interview', exact: true })).toBeVisible({ timeout: 10000 })
@@ -285,7 +288,9 @@ try {
   await expect(candidatePage.getByRole('button', { name: 'Join audio/video' })).toHaveCount(0)
   checks.push('invalid-link UI denies join')
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ mode: 'actual-ui-mocked-api', checks, screenshots: output, browserErrors: errors, realMediaSpeechOrModelTested: false }, null, 2))
+  const result = { completedAtUtc: new Date().toISOString(), mode: 'actual-ui-mocked-api', checks, screenshots: output, browserErrors: errors, syntheticCameraMicrophone: true, realMediaSpeechOrModelTested: false }
+  fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(result, null, 2))
+  console.log(JSON.stringify(result, null, 2))
 } catch (error) {
   console.error(JSON.stringify({ completedChecks: checks, browserErrors: errors }))
   for (const context of browser.contexts()) for (const page of context.pages()) {

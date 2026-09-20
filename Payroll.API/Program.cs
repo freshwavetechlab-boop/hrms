@@ -37,6 +37,8 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddHttpClient();
 builder.Services.AddHttpClient("LocalLlm").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient("LocalLlmControl").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddSingleton<LocalLlmRecoveryService>();
 builder.Services.AddHttpClient("InternalInterview").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton<InternalInterviewRepository>();
 builder.Services.AddSingleton<InternalInterviewLinks>();
@@ -277,7 +279,10 @@ app.Use(async (context, next) =>
     }
     catch (Exception exception)
     {
-        try { monitor.Complete(engineCode, startedAt, true, exception.GetType().Name, outcome: exception is OperationCanceledException ? "Cancelled" : null); }
+        try { monitor.Complete(engineCode, startedAt, true, exception.GetType().Name,
+            httpStatus: exception is OperationCanceledException ? null : 500,
+            outcome: exception is OperationCanceledException ? "Cancelled" : null,
+            failureCode: EngineFailureCatalog.FromException(exception)); }
         catch { /* Preserve the original engine failure. */ }
         throw;
     }
@@ -1351,6 +1356,9 @@ app.MapPost("/api/recruitment/requisitions/parse-source", async (RecruitmentRequ
 .DisableAntiforgery()
 .WithMetadata(new RequestSizeLimitAttribute(12L * 1024 * 1024))
 .WithName("ParseRecruitmentRequestSource");
+app.MapGet("/api/recruitment/requisitions/field-limits", (HttpContext context) =>
+    HasRecruitmentManagement(context)
+        ? Results.Ok(RecruitmentRequisitionTextLimits.Fields) : Results.StatusCode(403));
 app.MapGet("/api/recruitment/requisitions", async (RecruitmentRepository repository, int? clientId, string? status, string? query, string? department, string? hiringType, string? employmentType, string? priority, string? businessUnit, string? positionCategory, string? experience, string? location, string? project, bool? replacementHiring, decimal? budgetMin, decimal? budgetMax, DateTime? dateFrom, DateTime? dateTo, int? recruiterUserId, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
@@ -3405,6 +3413,7 @@ app.MapDelete("/api/recruitment-admin/ai-scoring/{clientId:int}", async (Recruit
     return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
 
+app.MapLocalLlmRecovery();
 app.MapGet("/api/integrations/ai", async (RecruitmentAiScoringService service, HttpContext context) =>
     HasPermission(context, "settings.manage") ? Results.Ok(await service.GetGlobalPoolAsync(CurrentUser(context))) : Results.StatusCode(403));
 app.MapPost("/api/integrations/ai", async (RecruitmentAiScoringService service, SaveRecruitmentAiScoringSettings request, HttpContext context) =>

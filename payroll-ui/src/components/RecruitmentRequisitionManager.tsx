@@ -10,6 +10,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { useAuthSession } from './AuthGate'
 import { getClients, getEmployees } from '../services/payrollService'
 import { getJson } from '../services/apiClient'
+import { requisitionTextError, requisitionTextErrors, type RequisitionTextLimit } from '../services/requisitionTextLimits'
 import {
   deleteRecruitmentRequisition, getRecruitmentMasterOptions, getRecruitmentRequisitions, saveRecruitmentRequisition,
   parseRecruitmentRequestDocument, submitRecruitmentRequisition,
@@ -80,6 +81,9 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const [locations, setLocations] = useState<WorkLocation[]>([])
   const [employees, setEmployees] = useState<Employee[]>([])
   const [masters, setMasters] = useState<MasterOptions>(emptyMasters)
+  const [textLimits, setTextLimits] = useState<RequisitionTextLimit[]>([])
+  const [textErrors, setTextErrors] = useState<string[]>([])
+  const [advancedOpen, setAdvancedOpen] = useState<string[]>([])
   const [rows, setRows] = useState<RecruitmentRequisition[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -181,6 +185,29 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       && values.department?.trim() && Number(values.numberOfOpenings) > 0)
   }
 
+  function textRules(field: string) {
+    return [{ validator: async (_: unknown, value: unknown) => {
+      const rule = textLimits.find(row => row.field === field)
+      const error = rule ? requisitionTextError(value, rule) : ''
+      if (error) throw new Error(error)
+    } }]
+  }
+
+  function checkTextLengths(values: SaveRecruitmentRequisition, reveal = false) {
+    // No second hardcoded limit table: the API's schema contract drives the form.
+    if (!textLimits.length) {
+      setTextErrors(['Field limits could not be loaded. Refresh before saving; your draft is retained in this browser.'])
+      return false
+    }
+    const errors = requisitionTextErrors(values, textLimits)
+    setTextErrors(errors.flatMap(row => row.errors))
+    if (errors.length) {
+      form.setFields(errors)
+      if (reveal) setAdvancedOpen(['advanced'])
+    }
+    return errors.length === 0
+  }
+
   function scheduleAutoSave(values?: SaveRecruitmentRequisition, delay = 1200) {
     const current = values || form.getFieldsValue(true) as SaveRecruitmentRequisition
     persistBrowserDraft(current)
@@ -193,6 +220,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     if (readOnly || approvedEdit || !dialogOpen || sourceParsing || saving) return
     const values = form.getFieldsValue(true) as SaveRecruitmentRequisition
     persistBrowserDraft(values)
+    if (!checkTextLengths(values)) return
     if (!canAutoSave(values)) return
     if (autoSaveRunning.current) { autoSavePending.current = true; return autoSaveRunning.current }
     const task = (async () => {
@@ -226,6 +254,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       requestedByEmployeeId: Number(draft.requestedByEmployeeId || 0) || null,
     }
     form.setFieldsValue(normalized)
+    setTextErrors(requisitionTextErrors(normalized, textLimits).flatMap(row => row.errors))
     setWatchedForm({ id: normalized.id, clientId: normalized.clientId, isReplacement: Boolean(normalized.isReplacement), budgetAvailable: Boolean(normalized.budgetAvailable) })
   }
 
@@ -246,6 +275,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       setDropdowns(data.dropRows)
       setLocations(data.locationRows)
       setEmployees(data.employeeRows)
+      setTextLimits(data.fieldLimits)
       setMasters({
         hiringTypes: data.hiringTypes, positionCategories: data.positionCategories,
         experienceRanges: data.experienceRanges, priorities: data.priorities, budgetAmounts: data.budgetAmounts,
@@ -523,6 +553,11 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       if (detected.has('hiringType')) patch.hiringType = matchMaster(suggested.hiringType, hiringOptions.map(row => String(row.value))) || currentWithSource.hiringType
       if (detected.has('employmentType')) patch.employmentType = matchMaster(suggested.employmentType, employmentOptions.map(row => String(row.value))) || currentWithSource.employmentType
       if (detected.has('hiringPriority')) patch.hiringPriority = matchMaster(suggested.hiringPriority, priorityOptions.map(row => String(row.value))) || currentWithSource.hiringPriority
+      // An oversized master suggestion must remain editable, not disappear during matching.
+      for (const error of requisitionTextErrors(suggested, textLimits)) {
+        const key = error.name as keyof SaveRecruitmentRequisition
+        if (detected.has(error.name)) Object.assign(patch, { [key]: suggested[key] })
+      }
       if (detected.has('targetJoiningDate')) targetJoiningManual.current = true
       const next = { ...currentWithSource, ...patch, sourceDocumentName: file.name, sourceParsedJson: suggested.sourceParsedJson }
       form.setFieldsValue(next)
@@ -571,12 +606,16 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   async function saveRequest(submitAfterSave: boolean) {
     if (autoSaveTimer.current) { window.clearTimeout(autoSaveTimer.current); autoSaveTimer.current = null }
     if (autoSaveRunning.current) await autoSaveRunning.current
+    if (!checkTextLengths(form.getFieldsValue(true) as SaveRecruitmentRequisition, true)) {
+      message.error('Review the field-length messages before saving. Your text has not been shortened.')
+      return
+    }
     let values: SaveRecruitmentRequisition
     try {
       values = await form.validateFields()
     } catch (validationError) {
       const firstField = (validationError as { errorFields?: Array<{ name?: Array<string | number> }> }).errorFields?.[0]?.name
-      message.error('Complete the highlighted required fields before saving the hiring request.')
+      message.error('Correct the highlighted fields before saving the hiring request.')
       if (firstField?.length) form.scrollToField(firstField, { block: 'center' })
       return
     }
@@ -636,31 +675,31 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   }
 
   const advancedFields = <div className="rfr-advanced-grid">
-    <Form.Item name="businessUnit" label="Business unit"><AutoComplete options={businessUnitOptions} placeholder="Select or enter business unit" /></Form.Item>
-    <Form.Item name="costCenter" label="Cost center"><AutoComplete options={costCenterOptions} placeholder="Select or enter cost center" /></Form.Item>
-    <Form.Item name="workMode" label="Work mode"><RecruitmentMasterSelect masterType="Work Mode" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={workModeOptions} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} testId="rfr-work-mode" /></Form.Item>
-    <Form.Item name="project" label="Project"><Input placeholder="Project or contract" /></Form.Item>
-    <Form.Item name="experienceRange" label="Experience"><RecruitmentMasterSelect masterType="Experience Range" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={experienceOptions.map(row => String(row.value))} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-experience-range" /></Form.Item>
-    <Form.Item name="qualification" label="Qualification"><Input placeholder="Minimum qualification" /></Form.Item>
-    <Form.Item name="requiredSkills" label="Required skills" className="rfr-span-2"><Input.TextArea rows={2} placeholder="Comma-separated must-have skills" /></Form.Item>
-    <Form.Item name="preferredSkills" label="Preferred skills" className="rfr-span-2"><Input.TextArea rows={2} placeholder="Good-to-have skills" /></Form.Item>
-    <Form.Item name="certifications" label="Certifications"><Input placeholder="Add certifications" /></Form.Item>
-    <Form.Item name="languages" label="Languages"><Input placeholder="Add languages" /></Form.Item>
+    <Form.Item name="businessUnit" rules={textRules('businessUnit')} label="Business unit"><AutoComplete options={businessUnitOptions} placeholder="Select or enter business unit" /></Form.Item>
+    <Form.Item name="costCenter" rules={textRules('costCenter')} label="Cost center"><AutoComplete options={costCenterOptions} placeholder="Select or enter cost center" /></Form.Item>
+    <Form.Item name="workMode" rules={textRules('workMode')} label="Work mode"><RecruitmentMasterSelect masterType="Work Mode" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={workModeOptions} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} testId="rfr-work-mode" /></Form.Item>
+    <Form.Item name="project" rules={textRules('project')} label="Project"><Input placeholder="Project or contract" /></Form.Item>
+    <Form.Item name="experienceRange" rules={textRules('experienceRange')} label="Experience"><RecruitmentMasterSelect masterType="Experience Range" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={experienceOptions.map(row => String(row.value))} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-experience-range" /></Form.Item>
+    <Form.Item name="qualification" rules={textRules('qualification')} label="Qualification"><Input placeholder="Minimum qualification" /></Form.Item>
+    <Form.Item name="requiredSkills" rules={textRules('requiredSkills')} label="Required skills" className="rfr-span-2"><Input.TextArea rows={2} placeholder="Comma-separated must-have skills" /></Form.Item>
+    <Form.Item name="preferredSkills" rules={textRules('preferredSkills')} label="Preferred skills" className="rfr-span-2"><Input.TextArea rows={2} placeholder="Good-to-have skills" /></Form.Item>
+    <Form.Item name="certifications" rules={textRules('certifications')} label="Certifications"><Input placeholder="Add certifications" /></Form.Item>
+    <Form.Item name="languages" rules={textRules('languages')} label="Languages"><Input placeholder="Add languages" /></Form.Item>
     <Form.Item name="salaryMin" label="Salary range"><InputNumber min={0} controls={false} addonBefore="Min" style={{ width: '100%' }} /></Form.Item>
     <Form.Item name="salaryMax" label=" "><InputNumber min={0} controls={false} addonBefore="Max" style={{ width: '100%' }} /></Form.Item>
-    <Form.Item name="currency" label="Currency"><RecruitmentMasterSelect masterType="Currency" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={currencyOptions} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} testId="rfr-currency" /></Form.Item>
-    <Form.Item name="benefits" label="Benefits"><Input placeholder="Benefits summary" /></Form.Item>
-    <Form.Item name="businessJustification" label="Business justification" className="rfr-span-2"><Input.TextArea rows={2} placeholder="Why this position is needed" /></Form.Item>
-    <Form.Item name="reasonForHiring" label="Hiring notes" className="rfr-span-2"><Input.TextArea rows={2} placeholder="Context for approvers" /></Form.Item>
-    <Form.Item name="externalPositionCode" label="Client position code" extra="Use the exact code stated by the client. If approved, this becomes the open-position code."><Input placeholder="For example, UIDAI_BTC_0_25" /></Form.Item>
-    <Form.Item name="sourceType" label="Source type"><RecruitmentMasterSelect masterType="Recruitment Request Source Type" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={sourceTypeOptions} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-source-type" /></Form.Item>
-    <Form.Item name="sourceReference" label="Source reference"><Input placeholder="File number, computer number or email subject" /></Form.Item>
+    <Form.Item name="currency" rules={textRules('currency')} label="Currency"><RecruitmentMasterSelect masterType="Currency" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={currencyOptions} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} testId="rfr-currency" /></Form.Item>
+    <Form.Item name="benefits" rules={textRules('benefits')} label="Benefits"><Input placeholder="Benefits summary" /></Form.Item>
+    <Form.Item name="businessJustification" rules={textRules('businessJustification')} label="Business justification" className="rfr-span-2"><Input.TextArea rows={2} placeholder="Why this position is needed" /></Form.Item>
+    <Form.Item name="reasonForHiring" rules={textRules('reasonForHiring')} label="Hiring notes" className="rfr-span-2"><Input.TextArea rows={2} placeholder="Context for approvers" /></Form.Item>
+    <Form.Item name="externalPositionCode" rules={textRules('externalPositionCode')} label="Client position code" extra="Use the exact code stated by the client. If approved, this becomes the open-position code."><Input placeholder="For example, UIDAI_BTC_0_25" /></Form.Item>
+    <Form.Item name="sourceType" rules={textRules('sourceType')} label="Source type"><RecruitmentMasterSelect masterType="Recruitment Request Source Type" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={sourceTypeOptions} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-source-type" /></Form.Item>
+    <Form.Item name="sourceReference" rules={textRules('sourceReference')} label="Source reference"><Input placeholder="File number, computer number or email subject" /></Form.Item>
     <Form.Item name="sourceDocumentDate" label="Source document date"><Input type="date" /></Form.Item>
-    <Form.Item name="sourceDocumentName" label="Source document" className="rfr-span-2"><Input placeholder="Original PDF file name(s)" /></Form.Item>
-    <Form.Item name="sourceAuthority" label="Source authority"><Input placeholder="Requesting / approving authority" /></Form.Item>
-    <Form.Item name="externalApprovalStatus" label="Client approval state"><RecruitmentMasterSelect masterType="Client Approval Status" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={clientApprovalOptions} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-client-approval-status" /></Form.Item>
+    <Form.Item name="sourceDocumentName" rules={textRules('sourceDocumentName')} label="Source document" className="rfr-span-2"><Input placeholder="Original PDF file name(s)" /></Form.Item>
+    <Form.Item name="sourceAuthority" rules={textRules('sourceAuthority')} label="Source authority"><Input placeholder="Requesting / approving authority" /></Form.Item>
+    <Form.Item name="externalApprovalStatus" rules={textRules('externalApprovalStatus')} label="Client approval state"><RecruitmentMasterSelect masterType="Client Approval Status" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={clientApprovalOptions} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-client-approval-status" /></Form.Item>
     <Form.Item name="ctcFlexibilityPercent" label="Salary negotiation (%)" extra="Optional: 20–30% only. An approved 30% case receives one +5 day SLA extension."><InputNumber min={20} max={30} precision={2} style={{ width: '100%' }} /></Form.Item>
-    <Form.Item name="sourceNotes" label="Source notes" className="rfr-span-2"><Input.TextArea rows={3} placeholder="Preserve ambiguities and missing facts without inventing values" /></Form.Item>
+    <Form.Item name="sourceNotes" rules={textRules('sourceNotes')} label="Source notes" className="rfr-span-2"><Input.TextArea rows={3} placeholder="Preserve ambiguities and missing facts without inventing values" /></Form.Item>
   </div>
 
   return <section className="rfr-manager" data-testid="requisition-manager">
@@ -731,7 +770,9 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         </div>}
         {sourceUploadProgress > 0 && <small>Securing source document: {sourceUploadProgress}%</small>}
       </section>}
+      {textErrors.length > 0 && <Alert type="warning" showIcon data-testid="requisition-text-errors" message="Review field lengths before saving" description={<div>{textErrors.map(error => <div key={error}>{error}</div>)}<Button type="link" onClick={() => setAdvancedOpen(['advanced'])}>Show fields to correct</Button></div>} />}
       <Form form={form} layout="vertical" disabled={readOnly || sourcePrefillLoading} requiredMark className="rfr-form" onValuesChange={(changed: Partial<SaveRecruitmentRequisition>, values: SaveRecruitmentRequisition) => {
+        checkTextLengths(values)
         setWatchedForm({ id: values.id || 0, clientId: values.clientId || 0, isReplacement: Boolean(values.isReplacement), budgetAvailable: Boolean(values.budgetAvailable) })
         if (Object.prototype.hasOwnProperty.call(changed, 'targetJoiningDate')) targetJoiningManual.current = true
         if (Object.prototype.hasOwnProperty.call(changed, 'clientId') || Object.prototype.hasOwnProperty.call(changed, 'requestDate')) {
@@ -758,20 +799,20 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
             <Select showSearch optionFilterProp="label" placeholder="Select active employee" disabled={approvedEdit} options={requesterOptions} />
           </Form.Item>
           <Form.Item name="requestDate" label="Request date" rules={[{ required: true, message: 'Enter the hiring request date.' }]}><Input type="date" /></Form.Item>
-          <Form.Item name="positionTitle" label="Role / position" rules={[{ required: true, whitespace: true, message: 'Enter the position title.' }]}>
-            <Input placeholder="For example, Senior .NET Engineer" maxLength={190} />
+          <Form.Item name="positionTitle" label="Role / position" rules={[...textRules('positionTitle'), { required: true, whitespace: true, message: 'Enter the position title.' }]}>
+            <Input placeholder="For example, Senior .NET Engineer" />
           </Form.Item>
-          <Form.Item name="department" label="Department" rules={[{ required: true, whitespace: true, message: 'Enter the department.' }]}>
+          <Form.Item name="department" label="Department" rules={[...textRules('department'), { required: true, whitespace: true, message: 'Enter the department.' }]}>
             <AutoComplete options={departmentOptions} placeholder="Select or enter department" />
           </Form.Item>
           <Form.Item name="numberOfOpenings" label="Openings" rules={[{ required: true, type: 'number', min: 1, message: 'At least one opening is required.' }]}>
             <InputNumber min={1} max={999} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="hiringType" label="Hiring type"><RecruitmentMasterSelect masterType="Hiring Type" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={hiringOptions.map(row => String(row.value))} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-hiring-type" /></Form.Item>
-          <Form.Item name="employmentType" label="Employment type"><RecruitmentMasterSelect masterType="Employment Type" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={employmentOptions.map(row => String(row.value))} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-employment-type" /></Form.Item>
-          <Form.Item name="positionCategory" label="Position category"><RecruitmentMasterSelect masterType="Position Category" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={categoryOptions.map(row => String(row.value))} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-position-category" /></Form.Item>
-          <Form.Item name="hiringPriority" label="Priority"><RecruitmentMasterSelect masterType="Assignment Priority" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={priorityOptions.map(row => String(row.value))} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} testId="rfr-priority" /></Form.Item>
-          <Form.Item name="jobLocation" label="Work location"><AutoComplete options={locationOptions} placeholder="Office, city or remote" /></Form.Item>
+          <Form.Item name="hiringType" rules={textRules('hiringType')} label="Hiring type"><RecruitmentMasterSelect masterType="Hiring Type" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={hiringOptions.map(row => String(row.value))} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-hiring-type" /></Form.Item>
+          <Form.Item name="employmentType" rules={textRules('employmentType')} label="Employment type"><RecruitmentMasterSelect masterType="Employment Type" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={employmentOptions.map(row => String(row.value))} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-employment-type" /></Form.Item>
+          <Form.Item name="positionCategory" rules={textRules('positionCategory')} label="Position category"><RecruitmentMasterSelect masterType="Position Category" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={categoryOptions.map(row => String(row.value))} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-position-category" /></Form.Item>
+          <Form.Item name="hiringPriority" rules={textRules('hiringPriority')} label="Priority"><RecruitmentMasterSelect masterType="Assignment Priority" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={priorityOptions.map(row => String(row.value))} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} testId="rfr-priority" /></Form.Item>
+          <Form.Item name="jobLocation" rules={textRules('jobLocation')} label="Work location"><AutoComplete options={locationOptions} placeholder="Office, city or remote" /></Form.Item>
           <Form.Item name="targetJoiningDate" label="Target joining" extra={targetSlaDays ? `Auto-calculated from request date using the published ${targetSlaDays}-day cumulative pipeline SLA.` : undefined}><Input type="date" min={today()} /></Form.Item>
         </div>
 
@@ -793,7 +834,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         </section>
 
         <Form.Item name="sourceParsedJson" hidden><Input /></Form.Item>
-        <Collapse ghost className="rfr-advanced">
+        <Collapse ghost className="rfr-advanced" activeKey={advancedOpen} onChange={keys => setAdvancedOpen(Array.isArray(keys) ? keys : [keys])}>
           <Collapse.Panel key="advanced" forceRender header="Advanced role, skills and approval context">{advancedFields}</Collapse.Panel>
         </Collapse>
 
@@ -897,13 +938,14 @@ function addDays(value: string, days: number) {
 }
 
 async function fetchWorkspace() {
-  const [clientRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, budgetAmounts] = await Promise.all([
+  const [clientRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, budgetAmounts, fieldLimits] = await Promise.all([
     getClients(), getDropdowns(), getWorkLocations(), getEmployees(),
     getRecruitmentMasterOptions('Hiring Type'), getRecruitmentMasterOptions('Position Category'),
     getRecruitmentMasterOptions('Experience Range'), getRecruitmentMasterOptions('Assignment Priority'),
     getRecruitmentMasterOptions('Budget Amount'),
+    getJson<RequisitionTextLimit[]>('/api/recruitment/requisitions/field-limits', []),
   ])
-  return { clientRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, budgetAmounts }
+  return { clientRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, budgetAmounts, fieldLimits }
 }
 
 function fromRow(row: RecruitmentRequisition): SaveRecruitmentRequisition {

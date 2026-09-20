@@ -71,7 +71,7 @@ ORDER BY StartedAtUtc DESC,Id DESC LIMIT 51
 """,new { Deployment,From=from.UtcDateTime,Until=until.UtcDateTime,Engine=engine??"",Status=status??"",
             Before=before?.UtcDateTime,BeforeId=beforeId??"",Stale=DateTime.UtcNow.AddMinutes(-5) },ct))).ToList();
         result.HasMore=rows.Count>50;
-        result.Items=rows.Take(50).Select(row=>row with { StartedAtUtc=Utc(row.StartedAtUtc),UpdatedAtUtc=Utc(row.UpdatedAtUtc),CompletedAtUtc=row.CompletedAtUtc.HasValue ? Utc(row.CompletedAtUtc.Value) : null }).ToList();
+        result.Items=rows.Take(50).Select(row=>row with { FailureReason=EngineFailureCatalog.Describe(row.FailureCode),StartedAtUtc=Utc(row.StartedAtUtc),UpdatedAtUtc=Utc(row.UpdatedAtUtc),CompletedAtUtc=row.CompletedAtUtc.HasValue ? Utc(row.CompletedAtUtc.Value) : null }).ToList();
         try { result.Items=await EnrichAsync(db,result.Items,ct); }
         catch(Exception) when(!ct.IsCancellationRequested) { result.Warning+=" Related names are unavailable; stable task references are still shown."; }
         return result;

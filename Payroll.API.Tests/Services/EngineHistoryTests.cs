@@ -75,7 +75,7 @@ public sealed class EngineHistoryTests
     {
         var clock = new Clock(); clock.Advance(90); var history = new EngineHistoryCollector(clock);
         clock.Advance(10); var rows = history.Checkpoint();
-        Assert.Equal(8,rows.Count); Assert.All(rows,r=> { Assert.Equal(10000,r.ObservedMs); Assert.Equal(0,r.BusyMs); Assert.Equal(0,r.Completed); });
+        Assert.Equal(EngineRuntimeMonitor.EngineNames.Count,rows.Count); Assert.All(rows,r=> { Assert.Equal(10000,r.ObservedMs); Assert.Equal(0,r.BusyMs); Assert.Equal(0,r.Completed); });
         history.Acknowledge(rows); Assert.Empty(history.Checkpoint());
     }
     [Fact]
@@ -83,7 +83,7 @@ public sealed class EngineHistoryTests
     {
         var clock = new Clock(); var history = new EngineHistoryCollector(clock);
         for(var i=0;i<180;i++) { clock.Advance(60); history.Checkpoint(); }
-        Assert.InRange(history.Checkpoint().Count,1,8*13);
+        Assert.InRange(history.Checkpoint().Count,1,EngineRuntimeMonitor.EngineNames.Count*13);
         Assert.True(history.DroppedBuckets>0);
     }
     [Fact]

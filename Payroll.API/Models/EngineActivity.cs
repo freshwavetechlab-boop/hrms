@@ -27,6 +27,8 @@ public sealed record EngineActivityRow
     public string Status { get; init; } = "Running";
     public int? HttpStatus { get; init; }
     public string FailureCode { get; init; } = "";
+    // Derived from a safe code at read time; no schema change or provider prose stored.
+    public string FailureReason { get; init; } = "";
     public long Revision { get; init; }
     // Read-time display joins, not stored in telemetry.
     public string CandidateName { get; init; } = "";

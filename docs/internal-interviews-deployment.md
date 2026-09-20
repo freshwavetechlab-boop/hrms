@@ -67,6 +67,35 @@ The panel UI distinguishes source event time from HRMS receipt time and orders d
 
 ## Behavior and honest limitations
 
+### Camera/audio setup (20 September addition; activation paused by user)
+
+The existing session now includes a browser-local pre-join camera preview, microphone
+level meter, explicit speaker-test confirmation and camera/microphone/speaker selectors.
+No device is opened on page load. Candidate checks appear after consent. Stop,
+unmount/link change and late permission replies release acquired tracks. Device IDs
+and preferences remain in page memory, not server logs or persistent storage.
+
+Join respects selected inputs and camera/microphone-off choices. Inputs start
+independently so a camera denial does not discard working audio. Call device controls
+exclude the separate AI voice publication when switching the human microphone; a
+blocked browser audio playback state offers an explicit Enable call audio action.
+Voice-answer capture and AI question playback reuse the selected input/output.
+Optional checks do not reject candidates or bypass any server consent/access guard.
+
+Use HTTPS (localhost is suitable for local checks). Where output-device selection
+is unsupported, choose the speaker through system/browser settings. A rendered
+preview and moving level meter are local device checks, **not** verification of
+remote reception, echo quality, recording, TURN connectivity or STT accuracy.
+Actual headset/webcam, permission revoke/unplug during a call, reconnect and
+two-person audio/video tests remain required before enabling real interviews.
+See [browser media permissions](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia)
+and [audio output selection](https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/setSinkId).
+
+No new database migration, package, service credential or environment variable is
+needed for these controls. Existing default-off flags and prepared service topology
+remain unchanged. Per user instruction, do not start Docker/services, deploy or
+modify the LLM server until the next setup discussion.
+
 - Typed answers and voice drafts require consent. Local STT fills an editable draft; it is not an automatically submitted answer. The fixed 120-second voice-processing/review allowance is anchored to the first voice request and never extends the overall scheduled end.
 - AI questions come from the immutable selected bank. Follow-ups are at most three explicit approved question lines; Qwen may select a relevant allowed line, not invent another topic. Initial introduction/bank flow is labelled configured flow, not model-generated output.
 - Hybrid handoff may select a skill section from that frozen bank. Unknown sections are rejected. Returning to another section does not repeat already asked questions or bypass the overall question limit.

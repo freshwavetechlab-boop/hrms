@@ -1,18 +1,20 @@
 # Engine activity log
 
 App Settings > Engine Control Center > Engine activity log records individual
-observed operations for all eight engines, alongside the existing aggregate graphs.
+observed operations for the registered engines, alongside the existing aggregate graphs.
 
 | Engine | Recorded boundary |
 | --- | --- |
 | FrevoPilot | Dashboard workflow, not status polls/chat history |
 | Resume Parser | Classified intake requests, public saved-resume/background parsing, draft preview parsing |
-| JD / Hiring Parser | Parse-source requests |
+| JD / Hiring Parser | Parse-source requests and hiring-request draft saves |
+| AI Provider Requests | Shared local/cloud AI transport, connection tests and cloud retry attempts; overlaps the caller |
 | ATS Scoring | Actual scoring job attempts, not enqueue/status requests |
 | Payroll Processor | Payroll commands and actual queued payroll processing |
 | Bulk Data Jobs | Classified import/export commands and attendance batch worker |
 | Notification Delivery | Notification/invite commands and actual queued email delivery |
 | Documents & Storage | Classified attachment/storage/document-generation mutations |
+| Internal Interviews | Instrumented interview speech/local-AI work |
 
 This is instrumentation coverage, not a claim that every internal method has its
 own timer. HTTP and worker entries are separate operations, never additive task
@@ -27,6 +29,8 @@ duplicated in log storage. Unsaved uploads have no saved candidate identity.
 Deleted records retain only their stable references. No email address, phone,
 filename, document, prompt, answer, credentials or raw exception text is stored.
 HTTP operations use route templates, not token-bearing URLs or query strings.
+Known failures show a read-time Reason / next step from allow-listed codes, not
+raw exception/provider text. See [diagnostic coverage](engine-activity-diagnostics.md).
 
 ATS additionally records queue wait (job availability to worker start), attempt,
 and the AI-analysis phase where enabled/measured. AI phase includes admission,

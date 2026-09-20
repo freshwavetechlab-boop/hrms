@@ -20,7 +20,7 @@ public static class EngineActivityMetadata
     public static EngineActivityContext Clean(EngineActivityContext value)=>value with
     {
         Operation=Regex.Replace(value.Operation,@"[\r\n\x00-\x1f]"," ")[..Math.Min(value.Operation.Length,180)],
-        ReferenceType=value.ReferenceType is "Application" or "Candidate" or "Position" or "Pay run" or "Task" or "ATS job" or "Dashboard run" ? value.ReferenceType : "Task",
+        ReferenceType=value.ReferenceType is "Application" or "Candidate" or "Position" or "Pay run" or "Task" or "ATS job" or "Dashboard run" or "AI model" ? value.ReferenceType : "Task",
         ReferenceId=Regex.IsMatch(value.ReferenceId,@"^(?:[0-9]{1,19}|[a-fA-F0-9]{32})$") ? value.ReferenceId : "",
         ApplicationId=value.ApplicationId>0 ? value.ApplicationId : null,CandidateId=value.CandidateId>0 ? value.CandidateId : null,
         PositionId=value.PositionId>0 ? value.PositionId : null,ClientId=value.ClientId>0 ? value.ClientId : null,

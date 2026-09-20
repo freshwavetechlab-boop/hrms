@@ -22,6 +22,7 @@ import {
 } from '../services/aiIntegrationService'
 import type { RecruitmentAiProviderPool, RecruitmentAiScoringSettings } from '../types/payroll'
 import { aiModelEndpointLabel, canMakeAiModelActive, localPrimaryModel } from './aiModelActions'
+import LocalLlmRuntimeControl from './LocalLlmRuntimeControl'
 
 const providerOptions: Array<{ value: RecruitmentAiScoringSettings['providerCode']; label: string }> = [
   { value: 'Gemini', label: 'Google Gemini' },
@@ -224,6 +225,7 @@ export default function AiIntegrationSettings() {
       render: (_, row) => <Space wrap>
         <Button size="small" icon={<EditOutlined />} disabled={activatingId > 0} onClick={() => setEditor(editModel(row))}>Edit</Button>
         <Button size="small" loading={testingId === row.id} disabled={!row.hasApiKey || testingId > 0 || activatingId > 0} onClick={() => row.credentialStatus === 'Unreadable' ? setEditor(editModel(row)) : void test(row)}>Test</Button>
+        {row.providerCode === 'LocalOpenAICompatible' && <LocalLlmRuntimeControl key={`${row.id}:${row.endpointUrl}`} modelId={row.id} endpointUrl={row.endpointUrl} disabled={testingId > 0 || activatingId > 0 || saving} />}
         {!row.isPrimary && (row.providerCode === 'LocalOpenAICompatible'
           ? <Popconfirm
               title={`Make ${row.modelName} active for Frevo?`}

@@ -61,6 +61,42 @@ Live test is explicitly skipped in deterministic runs; its observed failure must
 
 ## Remaining release blockers / incomplete work
 
+### Camera/audio checkpoint — 20 September 2026
+
+Added local pre-join preview, device selection, bounded microphone-level display,
+speaker tone with human confirmation, explicit permission/hardware errors, cancel
+and late-permission cleanup. Join retains mute/device choices; in-call device changes
+keep AI voice separate. Selected devices are reused for voice answers/questions.
+No schema/package addition; feature remains off on the main shared-database API.
+
+Verification in this slice: 54 focused UI/service regressions passed, 84 interview
+backend tests passed (portal/live model opt-in skips), workspace production build and
+fresh isolated `npm ci --ignore-scripts` / build passed against locked AntD 5.5.0.
+Isolated copy: `C:/Users/EESL/AppData/Local/Temp/hrms-interview-devices-fd6750d84d59494088e0baec82c21ddf`.
+Known dependency audit warnings (10 findings: 2 moderate, 8 high), React peer,
+MailKit and bundle warnings remain; this is not a clean security/deployment claim.
+
+Headed Playwright using the actual built UI and synthetic Chrome camera/microphone
+passed 33 checks including permission denial, missing/busy devices, device removal,
+late permission cancellation, exact device IDs, camera-off, local signal detection,
+speaker confirmation and mobile layout. No browser errors. Screenshot files
+`camera-audio-check.png` and `camera-audio-mobile.png` were visually inspected under
+`.codex-validation/internal-interviews/ui`; latest `result.json` is the test record.
+These are **synthetic devices / mocked API**, not a physical headset/webcam or
+remote media-server test. Link-change/unmount cleanup also passed. The existing
+real-API portal rerun was interrupted at the user's pause request. Its AI-mode
+fixture passed; the other modes have no new passing result. The remaining run-owned
+loopback test database was removed. Temporary fixture files remain because the
+cleanup command was policy-blocked; these contain synthetic test attachments/keys,
+not production data. No new test or service startup should be triggered during this pause.
+
+Actual saved-server gateway probe through the opt-in interview fixture again failed:
+HTTP **503 in 0.534 seconds** on the first synthetic follow-up request. No retry,
+cloud fallback, server restart or key change. Docker Linux engine is unavailable;
+local media/speech ports are not listening. Per user instruction, leave installation,
+real-service startup and deployment paused for the next discussion. Do not mark this
+goal complete or enable real candidates based on the synthetic-device checks.
+
 20 September follow-up: the deterministic backend subset was rerun with **84 passed,
 2 explicitly skipped** (full portal and live model require opt-in). Local Docker's
 Linux-engine named pipe is still unavailable; loopback media/speech ports are not

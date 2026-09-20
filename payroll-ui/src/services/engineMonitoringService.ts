@@ -41,7 +41,7 @@ export type EngineActivity = {
   applicationId: number | null; candidateName: string; applicationCode: string; positionTitle: string; attempt: number | null
   startedAtUtc: string; completedAtUtc: string | null; updatedAtUtc: string
   durationMs: number | null; queueWaitMs: number | null; aiDurationMs: number | null; aiStatus: string
-  status: string; httpStatus: number | null; failureCode: string
+  status: string; httpStatus: number | null; failureCode: string; failureReason?: string
 }
 export type EngineActivityPage = { deployment: string; recordingEnabled: boolean; retentionDays: number; droppedRecords: number; warning: string; hasMore: boolean; items: EngineActivity[] }
 export const getEngineActivity = (params: { from: string; until: string; engine?: string; status?: string; before?: string; beforeId?: string }) => getJsonResult<EngineActivityPage>(

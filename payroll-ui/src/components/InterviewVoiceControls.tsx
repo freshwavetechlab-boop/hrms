@@ -4,9 +4,10 @@ import type { InternalInterviewEvent } from '../types/internalInterviews'
 import type { InterviewSessionClient } from '../services/internalInterviewService'
 import { InterviewVoicePlayback, type InterviewVoicePublisher } from '../services/interviewVoicePlayback'
 
-export default function InterviewVoiceControls({ client, question, answerSeconds, publishVoice, onDraft, onError }: {
+export default function InterviewVoiceControls({ client, question, answerSeconds, publishVoice, microphoneId = '', speakerId = '', onDraft, onError }: {
   client: InterviewSessionClient; question?: InternalInterviewEvent; answerSeconds: number;
   publishVoice?: InterviewVoicePublisher;
+  microphoneId?: string; speakerId?: string;
   onDraft: (text: string) => void; onError: (error: string) => void;
 }) {
   const [recording, setRecording] = useState(false)
@@ -28,6 +29,7 @@ export default function InterviewVoiceControls({ client, question, answerSeconds
   const callbacks = useRef({ onDraft, onError }); callbacks.current = { onDraft, onError }
   const lastSpoken = useRef<number | undefined>(undefined)
   const previousPublisher = useRef(publishVoice)
+  const deviceRevision = useRef(0)
   const stopAudio = () => { audio.current?.stop(); audio.current = null }
   useEffect(() => { mounted.current = true; return () => {
     mounted.current = false; window.clearInterval(timer.current)
@@ -36,9 +38,10 @@ export default function InterviewVoiceControls({ client, question, answerSeconds
     mic.current?.getTracks().forEach(track => track.stop()); stopAudio()
   } }, [])
   useEffect(() => {
+    deviceRevision.current++
     voiceRequest.current?.abort(); parseRequest.current?.abort(); stopAudio(); setSpeaking(false)
     if (recorder.current?.state === 'recording') recorder.current.stop()
-  }, [question?.id])
+  }, [question?.id, microphoneId, speakerId])
   useEffect(() => {
     if (previousPublisher.current && !publishVoice && audio.current) {
       voiceRequest.current?.abort(); stopAudio(); setSpeaking(false); setVoiceDelivery(null)
@@ -57,7 +60,7 @@ export default function InterviewVoiceControls({ client, question, answerSeconds
       if (pending.signal.aborted || !mounted.current || latest.current !== question.id) { playback.stop(); return }
       const blob = await client.speak(question.id, pending.signal)
       if (!mounted.current || latest.current !== question.id || audio.current !== playback) { playback.stop(); return }
-      const shared = await playback.play(blob, publishVoice, () => { if (mounted.current) setSpeaking(false); if (audio.current === playback) audio.current = null })
+      const shared = await playback.play(blob, publishVoice, () => { if (mounted.current) setSpeaking(false); if (audio.current === playback) audio.current = null }, speakerId)
       if (mounted.current && latest.current === question.id && !pending.signal.aborted) setVoiceDelivery(shared ? 'room' : 'local')
     } catch (error) { playback?.stop(); if (audio.current === playback) audio.current = null; if (mounted.current && latest.current === question.id && !pending.signal.aborted) callbacks.current.onError(error instanceof Error ? error.message : 'Local voice is unavailable. Read the question on screen.') }
     finally { if (mounted.current && latest.current === question.id && !audio.current) setSpeaking(false) }
@@ -66,13 +69,14 @@ export default function InterviewVoiceControls({ client, question, answerSeconds
   const start = async () => {
     if (!question || question.kind !== 'question' || opening.current || recording || parsing) return
     opening.current = true; setAcquiring(true); voiceRequest.current?.abort()
+    const revision = deviceRevision.current
     stopAudio(); setSpeaking(false)
     try {
       if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') throw new Error('This browser does not support voice recording. Type your answer.')
       const type = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(value => MediaRecorder.isTypeSupported(value))
       if (!type) throw new Error('No supported voice-recording format. Type your answer.')
-      mic.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true }, video: false })
-      if (!mounted.current || latest.current !== question.id) { mic.current.getTracks().forEach(track => track.stop()); return }
+      mic.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, ...(microphoneId ? { deviceId: { exact: microphoneId } } : {}) }, video: false })
+      if (!mounted.current || latest.current !== question.id || revision !== deviceRevision.current) { mic.current.getTracks().forEach(track => track.stop()); return }
       const current = new MediaRecorder(mic.current, { mimeType: type, audioBitsPerSecond: 64000 }); recorder.current = current
       const chunks: Blob[] = []; let bytes = 0
       current.ondataavailable = event => { if (event.data.size) { bytes += event.data.size; chunks.push(event.data) }; if (bytes > 12 * 1024 * 1024 && current.state === 'recording') current.stop() }
@@ -80,6 +84,7 @@ export default function InterviewVoiceControls({ client, question, answerSeconds
         window.clearInterval(timer.current); mic.current?.getTracks().forEach(track => track.stop())
         if (!mounted.current) return
         setRecording(false)
+        if (revision !== deviceRevision.current) { callbacks.current.onError('Question or audio device changed. No answer was submitted; record again or type your answer.'); return }
         if (latest.current !== question.id) { callbacks.current.onError('The question changed while recording. No answer was submitted.'); return }
         if (bytes > 12 * 1024 * 1024) { callbacks.current.onError('Voice clip exceeded 12 MB. Please type the answer or use a shorter clip.'); return }
         setParsing(true)
