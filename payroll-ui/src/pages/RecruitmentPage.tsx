@@ -223,11 +223,10 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
   ]} />
 
   const pipelineView = routeQuery.get('flow') === 'candidates' ? 'candidates' : 'hiring'
-  const requestTab = !requisitionWorkflowEnabled
-    ? 'requests'
-    : view === 'Open Positions'
+  // The linked-position delete route must remain reachable when approvals are off.
+  const requestTab = view === 'Open Positions'
     ? 'approved'
-    : routeQuery.get('status') === 'pending'
+    : requisitionWorkflowEnabled && routeQuery.get('status') === 'pending'
       ? 'pending'
       : 'requests'
   const workspaceContent = workspace === 'overview'
@@ -244,8 +243,8 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
               { key: 'requests', label: 'Requests', children: <RecruitmentRequisitionManager key={`${routeQuery.get('new') === '1' ? 'new-request' : 'request-list'}-${selectedClientId}-${routeQuery.get('requisitionId') || 0}-${routeQuery.get('workOrderId') || 0}-${routeQuery.get('workOrderLineId') || 0}`} embedded initialClientId={selectedClientId} clientScopeManaged initialOpen={routeQuery.get('new') === '1'} initialRequisitionId={Number(routeQuery.get('requisitionId') || 0)} initialWorkOrderId={Number(routeQuery.get('workOrderId') || 0)} initialWorkOrderLineId={Number(routeQuery.get('workOrderLineId') || 0)} statusScope={requisitionWorkflowEnabled ? draftRequisitionStatuses : []} showStatusFilter={!requisitionWorkflowEnabled} pipelinePositions={positions} onOpenPipeline={position => navigate(`/recruitment/hiring-pipeline?clientId=${position.clientId}&positionId=${position.id}&flow=hiring`)} onOpenRequestPipeline={row => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&flow=hiring${row.openPositionId ? `&positionId=${row.openPositionId}` : ''}`)} onChanged={() => void load()} onPrepareJobDescription={row => navigate(`/recruitment/requisitions?clientId=${row.clientId}&requisitionId=${row.id}`)} /> },
               ...(requisitionWorkflowEnabled ? [
                 { key: 'pending', label: `Pending for approval (${dashboard.pendingApproval})`, children: <RecruitmentRequisitionManager key={`pending-requests-${selectedClientId}`} embedded initialClientId={selectedClientId} clientScopeManaged statusScope={pendingRequisitionStatuses} showStatusFilter={false} pipelinePositions={positions} onOpenPipeline={position => navigate(`/recruitment/hiring-pipeline?clientId=${position.clientId}&positionId=${position.id}&flow=hiring`)} onOpenRequestPipeline={row => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&flow=hiring${row.openPositionId ? `&positionId=${row.openPositionId}` : ''}`)} onChanged={() => void load()} /> },
-                { key: 'approved', label: `Approved (${positions.length})`, children: openPositionsTable },
               ] : []),
+              { key: 'approved', label: `${requisitionWorkflowEnabled ? 'Approved' : 'Open positions'} (${positions.length})`, children: openPositionsTable },
             ]}
           />
         : workspace === 'jobs'
