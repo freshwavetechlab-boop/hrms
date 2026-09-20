@@ -6,7 +6,7 @@ using Payroll.API.Repositories;
 
 namespace Payroll.API.Tests.Repositories;
 
-public sealed class RecruitmentRevisionRegressionTests
+public sealed partial class RecruitmentRevisionRegressionTests
 {
     [Theory]
     [InlineData("Scored", true, false, false, true)]

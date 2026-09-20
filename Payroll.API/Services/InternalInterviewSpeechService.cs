@@ -12,8 +12,11 @@ public sealed class InternalInterviewSpeechService(IConfiguration configuration,
     private readonly MemoryCache rateWindows = new(new MemoryCacheOptions { SizeLimit = 1024 });
     private readonly object gate = new();
     public const int MaxAudioBytes = 12 * 1024 * 1024;
+    public void RequireEnabled() => Require(configuration.GetValue("InternalInterviews:SpeechEnabled", false),
+        "STT/TTS is disabled. Video calls and consented typed answers remain available.", 503);
     public async Task<byte[]> SendAsync(long interviewId, string operation, HttpContent content, string language, CancellationToken ct)
     {
+        RequireEnabled();
         Require(operation is "transcribe" or "synthesize" && language is "en" or "hi", "Unsupported speech request.");
         var options = configuration.GetSection("InternalInterviews").Get<InternalInterviewOptions>() ?? new();
         Require(Uri.TryCreate(options.SpeechBaseUrl, UriKind.Absolute, out var endpoint) && endpoint.Scheme is "http" or "https"

@@ -23,7 +23,7 @@ const dashboard0: RecruitmentDashboard = { drafts: 0, pendingApproval: 0, approv
 const recruitmentClientScopeKey = 'recruitment.clientScope'
 const draftRequisitionStatuses = ['Draft', 'Sent Back']
 const pendingRequisitionStatuses = ['Pending Approval']
-export const recruitmentViews = ['Dashboard', 'Work Orders & SLA', 'Requisitions', 'Open Positions', 'Job Descriptions', 'Job Postings', 'ATS Screening', 'Hiring Pipeline', 'Talent Pool', 'Applications', 'Interview Queue', 'Interviews', 'Offers & Pre-Onboarding'] as const
+export const recruitmentViews = ['Dashboard', 'Work Orders & SLA', 'Requisitions', 'Open Positions', 'Job Descriptions', 'Job Postings', 'ATS Screening', 'Hiring Pipeline', 'Talent Pool', 'Applications', 'Interview Queue', 'Interviews', 'MoM & Negotiation', 'Offers & Pre-Onboarding'] as const
 export type RecruitmentPageView = (typeof recruitmentViews)[number]
 
 type RecruitmentWorkspace = 'overview' | 'orders' | 'requests' | 'jobs' | 'candidates' | 'pipeline' | 'selection'
@@ -273,6 +273,11 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
                   clientOptions={clientOptions}
                   onClientChange={changeClientScope}
                 />
+              : view === 'MoM & Negotiation'
+                ? <Tabs defaultActiveKey="mom" destroyInactiveTabPane items={[
+                    { key: 'mom', label: 'MoM & stage documents', children: <RecruitmentWorkOrderWorkspace initialClientId={selectedClientId} clientScopeManaged postInterview /> },
+                    { key: 'negotiation', label: 'Negotiation & approvals', children: <RecruitmentTalentWorkspace mode="offers" initialClientId={selectedClientId} /> },
+                  ]} />
               : view === 'Interview Queue'
                 ? <RecruitmentTalentWorkspace key={`interview-queue-${selectedClientId}`} mode="interviewQueue" initialClientId={selectedClientId} />
                 : view === 'Offers & Pre-Onboarding'

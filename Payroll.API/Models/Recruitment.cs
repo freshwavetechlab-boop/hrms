@@ -276,6 +276,9 @@ public class RecruitmentOpenPosition
     public int RecruiterUserId { get; set; }
     public string RecruiterName { get; set; } = "";
     public int CandidateCount { get; set; }
+    public int RequiredCandidateCount { get; set; }
+    public int InPanelCount { get; set; }
+    public int SelectedCandidateCount { get; set; }
     public int InterviewCount { get; set; }
     public int OfferCount { get; set; }
     public int JoinedCount { get; set; }

@@ -12,6 +12,7 @@ public sealed class InternalInterviewPolicyTests
     private static InternalInterviewContext Context() => new()
     {
         InterviewId = 7, ClientId = 20, PanelUserIds = [4], InterviewStatus = "Scheduled", Result = "Pending",
+        Mode = "Virtual", LocationOrLink = InternalInterviewPolicy.InternalDestination,
         TimeZoneId = "UTC", ScheduledStart = Now.AddMinutes(-5), ScheduledEnd = Now.AddMinutes(55)
     };
     private static InternalInterviewSession Session(string status = "Waiting", string mode = "Human") => new()
@@ -22,6 +23,22 @@ public sealed class InternalInterviewPolicyTests
         TranscriptionConsent = true
     };
     private static AuthUser User(int id, int? clientId, params string[] permissions) => new() { Id = id, ClientId = clientId, IsActive = true, Permissions = [.. permissions] };
+
+    [Theory]
+    [InlineData("Virtual", "https://meet.google.com/test-interview")]
+    [InlineData("Virtual", "")]
+    [InlineData("Face-to-Face", "Internal HRMS interview")]
+    public void External_delivery_disables_old_internal_room_actions(string mode, string destination)
+    {
+        var context = Context(); context.Mode = mode; context.LocationOrLink = destination;
+        Assert.False(InternalInterviewPolicy.UsesFrevoVideo(context));
+        var error = Assert.Throws<InternalInterviewException>(() => InternalInterviewPolicy.RequireOpen(context, Session("Live"), Now));
+        Assert.Equal(409, error.StatusCode);
+        Assert.Contains("Frevo One is off", error.Message);
+        foreach (var action in new[] { "start", "ai", "human" })
+            Assert.Throws<InternalInterviewException>(() => InternalInterviewPolicy.Transition(context, Session("Live", "Hybrid"), action, Now));
+        Assert.Equal("Cancelled", InternalInterviewPolicy.Transition(context, Session("Live"), "cancel", Now));
+    }
 
     [Fact]
     public void Disabled_user_cannot_reuse_existing_interview_permissions()

@@ -4,6 +4,44 @@ Status: implementation under test, feature **off by default**. No production mig
 
 ## Reuse and scope
 
+### Frevo One video is optional; STT/TTS is off by default
+
+The schedule editor's **Interview with Frevo One** switch selects the existing
+internal-video flow. OFF keeps the ordinary external meeting/location and invite
+flow. The persisted `Internal HRMS interview` marker is retained for compatibility;
+no new delivery column or schema migration is needed. Turning it off on an existing
+schedule revokes its old candidate link, retains evidence, and requests room closure
+through maintenance. An unstarted cancelled session may be configured again with
+fresh links/consent; a started session needs another round. Do not stop the maintenance
+worker while a room is still closing.
+
+`InternalInterviews__Enabled` remains the deployment-level video gate. A disabled or
+draining service cannot be selected for a new internal session; external scheduling
+does not depend on it. Turning this global gate off does not invent external meeting
+URLs for already scheduled internal interviews: HR must edit their meeting details.
+
+`InternalInterviews__SpeechEnabled=false` is the default and independently blocks
+both STT and TTS, including direct API calls. Camera/microphone conferencing, optional
+recording consent, and consented written answers/AI review remain separate. Ordinary
+call audio is **not** STT/TTS. The saved `transcriptionEnabled` field also covers
+written-answer storage consent; it is not an instruction to start a speech service.
+
+Compose excludes the speech container unless the `speech` profile is explicitly
+selected. The video-only deployment still needs the LiveKit, Redis/Valkey and Egress
+containers, private recording mount, DNS/TLS and media ports on the existing host.
+Redeploying the HRMS API alone does not provision these services. No media server was
+started or production flag changed in this slice. Global-storage recording archival
+and real two-party media/recording verification are still pending; existing recording
+code uses the private Egress mount, not the global storage-server catalogue.
+
+Verification for this toggle slice (20 September 2026): 89 backend tests passed
+against unit fixtures/a disposable loopback database; the live-model and browser
+portal tests were explicitly skipped. The 59 focused UI/service regressions and a
+fresh isolated lockfile-based `npm ci --ignore-scripts` / production UI build passed.
+This was a Windows host build, not a Linux container build or deployment. Existing
+MailKit vulnerability, nullable, React peer and bundle-size warnings remain. No
+production data, flags or media services were changed by these checks.
+
 The existing schedule, panel assignments, client/location authorization, notification delivery, competency feedback and hiring result remain authoritative. The schedule drawer can opt into an internal session; questions/consent are configured after the existing schedule saves. Candidate invites contain only the candidate's expiring link; panel invites use normal authenticated HRMS access. Completing the media session does not select/reject a candidate or complete the original interview result.
 
 The interview AI defaults to the **existing saved LocalOpenAICompatible provider** and its encrypted key, usage ledger and bounded inference gate. It does not use Gemini/Groq/cloud fallback. The separate previously supplied server workspace `.env.example` is not copied into this repository. `OllamaBaseUrl`/`OllamaModel` are optional only if the operator actually has that service; do not replace the verified llama.cpp gateway based on a model/product name in a prompt.
@@ -48,6 +86,7 @@ No new services are installed on the existing Windows LLM server. Exact producti
 | `InternalInterviews__EgressRecordingDirectory=/recordings` | Matching Egress-side mount |
 | `InternalInterviews__MaxRecordingBytes=536870912` | Final replay-size guard; not a live filesystem quota |
 | `InternalInterviews__SpeechBaseUrl=http://speech:8094` | Private speech sidecar |
+| `InternalInterviews__SpeechEnabled=false` | Independent STT/TTS opt-in; default off; does not mute the video-call microphone |
 | `InternalInterviews__SpeechApiKey` | Same private sidecar credential |
 | `InternalInterviews__LocalModelId` | Optional explicit existing saved local model ID; otherwise the current primary must be local |
 | `InternalInterviews__OllamaBaseUrl`, `InternalInterviews__OllamaModel` | Optional verified direct Ollama adapter, not necessary for the existing gateway |

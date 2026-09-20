@@ -16,6 +16,10 @@ public sealed class RecruitmentCaseRepository(
     TemplatePdfService templatePdf,
     WorkflowRepository workflows)
 {
+    // A replaced cohort requires a fresh MoM version, not reuse of the previous committee's signature.
+    internal const string CurrentCohortDocumentSql = @"(document.DocumentType NOT IN ('MOM','SIGNED_MOM') OR NOT EXISTS(
+SELECT 1 FROM recruitment_position_stage_events rework WHERE rework.PositionPipelineInstanceId=document.HiringCaseId
+ AND rework.EventType='ProfilesReworkStarted' AND rework.CreatedAtUtc>document.CreatedAtUtc))";
     private static readonly HashSet<string> WorkOrderStatuses = new(StringComparer.OrdinalIgnoreCase)
     {
         "Draft", "Active", "On Hold", "Completed", "Cancelled"
@@ -1094,14 +1098,18 @@ WHERE PositionId=@PositionId AND Status='Active'", new { application.PositionId 
             if (!string.IsNullOrWhiteSpace(ensureError)) return ensureError;
         }
 
-        // Advance the shortlisted/interview cohort together. Unscreened applications and
-        // ATS evidence holds are not members of that cohort and must not stall its SLA.
+        // Advance a sufficiently staffed shortlisted/interview cohort, not a single
+        // successful applicant when the approved demand contains several vacancies.
         var candidates = (await db.QueryAsync<CandidateMilestoneSource>(@"SELECT applicationRow.PositionId,applicationRow.ClientId,
 COALESCE(candidateStage.StageName,applicationRow.CurrentStage,'') CandidateStageName,
 COALESCE(candidateStage.StageType,'') CandidateStageType,
+COALESCE((SELECT CASE WHEN latest.Status='No Show' THEN 'No Show' ELSE latest.Result END
+ FROM recruitment_interviews latest WHERE latest.ApplicationId=applicationRow.Id ORDER BY latest.Id DESC LIMIT 1),'') LatestInterviewResult,
+COALESCE((SELECT latest.Status FROM recruitment_offers latest WHERE latest.ApplicationId=applicationRow.Id ORDER BY latest.UpdatedAt DESC,latest.Id DESC LIMIT 1),'') LatestOfferStatus,
 EXISTS(SELECT 1 FROM recruitment_interviews interviewRow
   WHERE interviewRow.ApplicationId=applicationRow.Id
-    AND interviewRow.Status IN ('Scheduled','Rescheduled','Completed')) HasInterview
+    AND interviewRow.Status IN ('Scheduled','Rescheduled','Completed')
+    AND interviewRow.Id=(SELECT MAX(latest.Id) FROM recruitment_interviews latest WHERE latest.ApplicationId=applicationRow.Id)) HasInterview
 FROM recruitment_candidate_applications applicationRow
 LEFT JOIN recruitment_application_pipeline_instances candidatePipeline ON candidatePipeline.ApplicationId=applicationRow.Id
 LEFT JOIN recruitment_application_stage_instances candidateInstance ON candidateInstance.Id=candidatePipeline.CurrentStageInstanceId
@@ -1112,13 +1120,15 @@ ORDER BY applicationRow.Id", new { application.PositionId })).ToList();
 
         var continuingCandidates = candidates.Where(candidate => !CandidateIsRejectedOrWithdrawn(candidate)
             && (CandidateIsReadyForProfileSharing(candidate) || candidate.HasInterview)).ToList();
+        var requiredCandidates = await RequiredHiringCohortAsync(db, application.PositionId);
+        if (requiredCandidates <= 0) return "";
         if (continuingCandidates.Count == 0)
-            return candidates.All(CandidateIsRejectedOrWithdrawn)
-                ? await ReturnHiringCaseToProfileSharingAsync(db, application.PositionId, candidates.Count, user.Id) : "";
+            return await ReturnHiringCaseToProfileSharingAsync(db, application.PositionId, 0, user.Id, requiredCandidates);
 
         var profilesResolved = continuingCandidates.Count > 0
             && continuingCandidates.All(CandidateIsReadyForProfileSharing);
         var interviewsResolved = profilesResolved
+            && HasRequiredHiringCohort(requiredCandidates, continuingCandidates.Count)
             && continuingCandidates.All(candidate => candidate.HasInterview);
 
         // Evaluate both gates on every relevant candidate change. This lets the last rejection
@@ -1203,10 +1213,14 @@ ORDER BY hiringCase.Id DESC LIMIT 1", new { PositionId = positionId });
 applicationRow.PositionId,applicationRow.ClientId,
 COALESCE(candidateStage.StageName,applicationRow.CurrentStage,'') CandidateStageName,
 COALESCE(candidateStage.StageType,'') CandidateStageType,
+COALESCE((SELECT CASE WHEN latest.Status='No Show' THEN 'No Show' ELSE latest.Result END
+ FROM recruitment_interviews latest WHERE latest.ApplicationId=applicationRow.Id ORDER BY latest.Id DESC LIMIT 1),'') LatestInterviewResult,
 EXISTS(SELECT 1 FROM recruitment_interviews interviewRow WHERE interviewRow.ApplicationId=applicationRow.Id
- AND interviewRow.Status IN ('Scheduled','Rescheduled','Completed')) HasInterview,
+ AND interviewRow.Status IN ('Scheduled','Rescheduled','Completed')
+ AND interviewRow.Id=(SELECT MAX(latest.Id) FROM recruitment_interviews latest WHERE latest.ApplicationId=applicationRow.Id)) HasInterview,
 EXISTS(SELECT 1 FROM recruitment_interviews interviewRow WHERE interviewRow.ApplicationId=applicationRow.Id
- AND interviewRow.Status='Completed' AND interviewRow.Result IN ('Selected','Rejected')) HasCompletedInterviewDecision,
+ AND interviewRow.Status='Completed' AND interviewRow.Result='Selected'
+ AND interviewRow.Id=(SELECT MAX(latest.Id) FROM recruitment_interviews latest WHERE latest.ApplicationId=applicationRow.Id)) HasCompletedInterviewDecision,
 COALESCE((SELECT offerRow.Status FROM recruitment_offers offerRow WHERE offerRow.ApplicationId=applicationRow.Id
  ORDER BY offerRow.UpdatedAt DESC,offerRow.Id DESC LIMIT 1),'') LatestOfferStatus,
 (applicationRow.JoinedEmployeeId IS NOT NULL OR applicationRow.CurrentStage='Joined') IsJoined
@@ -1219,10 +1233,17 @@ WHERE applicationRow.PositionId=@PositionId AND applicationRow.ApplicationType='
             var continuing = candidates.Where(candidate => !CandidateIsRejectedOrWithdrawn(candidate)
                 && (CandidateIsReadyForProfileSharing(candidate) || candidate.HasInterview
                     || candidate.IsJoined || candidate.LatestOfferStatus.Length > 0)).ToList();
-            if (continuing.Count == 0) return candidates.All(CandidateIsRejectedOrWithdrawn)
-                ? await ReturnHiringCaseToProfileSharingAsync(db, positionId, candidates.Count, user.Id) : "";
-
+            var requiredCandidates = await RequiredHiringCohortAsync(db, positionId);
+            if (requiredCandidates <= 0) return "";
+            if (!HasRequiredHiringCohort(requiredCandidates, continuing.Count))
+                return await ReturnHiringCaseToProfileSharingAsync(db, positionId, continuing.Count, user.Id, requiredCandidates);
             var key = $"{current.StageCode} {current.StageName} {current.StageType}".ToUpperInvariant();
+            var interviewStage = key.Contains("INTERVIEW") && !key.Contains("SHARING");
+            var afterInterview = key.Contains("MOM") || key.Contains("NEGOTIATION") || key.Contains("HR_DIVISION") || key.Contains("OFFER");
+            var stageReadyCount = interviewStage ? continuing.Count(row => row.HasInterview || row.IsJoined)
+                : afterInterview ? continuing.Count(row => row.HasCompletedInterviewDecision || row.IsJoined) : continuing.Count;
+            if (!HasRequiredHiringCohort(requiredCandidates, stageReadyCount))
+                return await ReturnHiringCaseToProfileSharingAsync(db, positionId, stageReadyCount, user.Id, requiredCandidates);
             bool ready;
             string reason;
             if (key.Contains("INTERVIEW") && !key.Contains("SHARING"))
@@ -1237,7 +1258,7 @@ WHERE PipelineStageId=@StageId AND IsRequired=TRUE AND DocumentType IN ('MOM','S
                 var complete = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(DISTINCT document.DocumentType)
 FROM recruitment_process_documents document
 WHERE document.HiringCaseId=@CaseId AND document.PipelineStageId=@StageId AND document.Status='Signed'
- AND document.DocumentType IN ('MOM','SIGNED_MOM')", new { CaseId = current.HiringCaseId, StageId = current.PipelineStageId });
+ AND document.DocumentType IN ('MOM','SIGNED_MOM') AND " + CurrentCohortDocumentSql, new { CaseId = current.HiringCaseId, StageId = current.PipelineStageId });
                 ready = required > 0 && complete >= required;
                 reason = "Automatically advanced after every required committee MoM was finalized as signed.";
             }
@@ -1288,7 +1309,12 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id",
     internal static bool AreAllContinuingOffersAccepted(IEnumerable<string> offerStatuses) =>
         offerStatuses.Any() && offerStatuses.All(status => status.Equals("Accepted", StringComparison.OrdinalIgnoreCase));
 
-    private static async Task<string> ReturnHiringCaseToProfileSharingAsync(MySqlConnection db, long positionId, int candidateCount, int actorUserId)
+    internal static bool HasRequiredHiringCohort(int required, int continuing) => required > 0 && continuing >= required;
+
+    private static Task<int> RequiredHiringCohortAsync(MySqlConnection db, long positionId) =>
+        db.ExecuteScalarAsync<int>("SELECT GREATEST(0,NumberOfPositions-CancelledPositions-OnHoldPositions) FROM recruitment_open_positions WHERE Id=@Id", new { Id = positionId });
+
+    private static async Task<string> ReturnHiringCaseToProfileSharingAsync(MySqlConnection db, long positionId, int candidateCount, int actorUserId, int requiredCount = 0)
     {
         await using var transaction = await db.BeginTransactionAsync();
         var hiringCase = await db.QueryFirstOrDefaultAsync<ProfileReworkCaseSource>(@"SELECT
@@ -1321,6 +1347,10 @@ ORDER BY CASE WHEN UPPER(StageCode)='SHARING_PROFILES' THEN 0 ELSE 1 END,Display
             return "";
         }
 
+        var currentOrder = await db.ExecuteScalarAsync<int>("SELECT DisplayOrder FROM recruitment_pipeline_stages WHERE Id=@Id", new { Id = hiringCase.CurrentPipelineStageId }, transaction);
+        if (hiringCase.CurrentPipelineStageId == target.Id || currentOrder <= target.DisplayOrder)
+            return ""; // Never skip earlier work or repeatedly reset the sourcing-stage clock.
+
         var openPauses = (await db.QueryAsync<PauseSource>(@"SELECT Id,PausedAtUtc
 FROM recruitment_position_stage_pause_periods
 WHERE PositionStageInstanceId=@StageInstanceId AND ResumedAtUtc IS NULL FOR UPDATE",
@@ -1343,8 +1373,8 @@ SET PausedDurationSeconds=PausedDurationSeconds+@Seconds WHERE Id=@Id",
         else
         {
             await db.ExecuteAsync(@"UPDATE recruitment_position_stage_instances
-SET Status='Completed',OutcomeCode='ALL_PROFILES_REJECTED',CompletedAtUtc=UTC_TIMESTAMP(6)
-WHERE Id=@Id", new { Id = hiringCase.CurrentStageInstanceId }, transaction);
+SET Status='Completed',OutcomeCode=@Outcome,CompletedAtUtc=UTC_TIMESTAMP(6)
+WHERE Id=@Id", new { Id = hiringCase.CurrentStageInstanceId, Outcome = requiredCount > 0 ? "VACANCY_SHORTFALL" : "ALL_PROFILES_REJECTED" }, transaction);
             await db.ExecuteAsync(@"UPDATE recruitment_hiring_case_advance_requests
 SET Status='Superseded',DecidedAtUtc=UTC_TIMESTAMP(6)
 WHERE HiringCaseId=@CaseId AND PositionStageInstanceId=@StageInstanceId AND Status='Pending Approval'",
@@ -1375,7 +1405,9 @@ SET Status='Active',CurrentStageInstanceId=@StageInstanceId,CompletedAtUtc=NULL
 WHERE Id=@CaseId", new { CaseId = hiringCase.HiringCaseId, StageInstanceId = targetInstanceId }, transaction);
         }
 
-        var details = hiringCase.CurrentPipelineStageId == target.Id
+        var details = requiredCount > 0
+            ? $"{candidateCount} stage-ready continuing candidates for {requiredCount} required positions. Returned to {target.StageName} for the shortfall; candidate decisions/documents and the original cumulative SLA anchor remain unchanged."
+            : hiringCase.CurrentPipelineStageId == target.Id
             ? $"All {candidateCount} linked candidates were rejected or withdrawn. Profile sourcing continues in {target.StageName}; the original cumulative SLA anchor and due date remain unchanged."
             : $"All {candidateCount} linked candidates were rejected or withdrawn. Returned from {hiringCase.CurrentStageName} to {target.StageName}; the original cumulative SLA anchor and due date remain unchanged.";
         await db.ExecuteAsync(@"INSERT INTO recruitment_position_stage_events
@@ -1388,6 +1420,8 @@ VALUES (@CaseId,@StageInstanceId,'ProfilesReworkStarted','Profiles returned for 
 
     private static bool CandidateIsRejectedOrWithdrawn(CandidateMilestoneSource application)
     {
+        if (application.LatestInterviewResult is "Rejected" or "No Show"
+            || application.LatestOfferStatus is "Rejected" or "Withdrawn" or "Expired") return true;
         if (application.CandidateStageType.Equals("Rejected", StringComparison.OrdinalIgnoreCase)
             || application.CandidateStageType.Equals("Withdrawn", StringComparison.OrdinalIgnoreCase)) return true;
         var stage = application.CandidateStageName.ToLowerInvariant();
@@ -1463,6 +1497,7 @@ WHERE requirement.PipelineStageId=@StageId AND requirement.IsRequired=TRUE
 AND NOT EXISTS (SELECT 1 FROM recruitment_process_documents document
   WHERE document.HiringCaseId=@CaseId AND document.PipelineStageId=@StageId
     AND document.DocumentType=requirement.DocumentType
+    AND " + CurrentCohortDocumentSql + @"
     AND (requirement.RequiresSignature=FALSE OR (document.Status='Signed' AND (
       EXISTS (SELECT 1 FROM entity_attachments attachment WHERE attachment.entity_type='RECRUITMENT_PROCESS_DOCUMENT'
         AND attachment.entity_id=document.Id AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE)
@@ -2624,6 +2659,7 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
         public bool HasInterview { get; set; }
         public bool HasCompletedInterviewDecision { get; set; }
         public string LatestOfferStatus { get; set; } = "";
+        public string LatestInterviewResult { get; set; } = "";
         public bool IsJoined { get; set; }
     }
 

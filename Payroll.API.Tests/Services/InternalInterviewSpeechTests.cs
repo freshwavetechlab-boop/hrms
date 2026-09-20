@@ -1,4 +1,6 @@
 using System.Text;
+using Microsoft.Extensions.Configuration;
+using Payroll.API.Models;
 using Payroll.API.Repositories;
 using Payroll.API.Services;
 
@@ -6,6 +8,28 @@ namespace Payroll.API.Tests.Services;
 
 public sealed class InternalInterviewSpeechTests
 {
+    [Theory]
+    [InlineData("transcribe")]
+    [InlineData("synthesize")]
+    public async Task Speech_is_off_by_default_even_with_credentials_without_affecting_video(string operation)
+    {
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> {
+            ["InternalInterviews:Enabled"] = "true", ["InternalInterviews:SpeechBaseUrl"] = "http://127.0.0.1:8094",
+            ["InternalInterviews:SpeechApiKey"] = "synthetic-private-speech-key-for-tests-only"
+        }).Build();
+        using var service = new InternalInterviewSpeechService(config, new NoCalls(), new EngineRuntimeMonitor());
+        using var content = new StringContent("synthetic");
+        Assert.Equal(503, (await Assert.ThrowsAsync<InternalInterviewException>(() => service.SendAsync(7, operation, content, "en", default))).StatusCode);
+        Assert.True(InternalInterviewRuntimeState.Read(config).AcceptingNewSessions);
+        config["InternalInterviews:SpeechEnabled"] = "true";
+        service.RequireEnabled();
+        config["InternalInterviews:SpeechEnabled"] = "false";
+        Assert.Throws<InternalInterviewException>(service.RequireEnabled);
+    }
+    private sealed class NoCalls : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => throw new InvalidOperationException("Disabled speech must not send HTTP requests.");
+    }
     [Fact]
     public void Voice_processing_grace_is_bounded_and_does_not_depend_on_retries()
     {

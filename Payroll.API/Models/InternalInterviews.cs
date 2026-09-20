@@ -14,6 +14,7 @@ public sealed class InternalInterviewOptions
     public string LiveKitApiKey { get; set; } = "";
     public string LiveKitApiSecret { get; set; } = "";
     public bool LiveKitWebhooksEnabled { get; set; }
+    public bool SpeechEnabled { get; set; }
     public string RecordingDirectory { get; set; } = "";
     public string EgressRecordingDirectory { get; set; } = "/recordings";
     public long LocalModelId { get; set; }
@@ -55,6 +56,8 @@ public sealed class InterviewQuestion
 
 public sealed class InternalInterviewContext
 {
+    public string Mode { get; set; } = "";
+    public string LocationOrLink { get; set; } = "";
     public long InterviewId { get; set; }
     public long ApplicationId { get; set; }
     public long CandidateId { get; set; }

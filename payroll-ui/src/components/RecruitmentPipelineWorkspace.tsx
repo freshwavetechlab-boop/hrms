@@ -339,6 +339,7 @@ function DemandCard({ card, clientId, clockNow, workspaceSyncedAt, onChanged }: 
     <div className="demand-card-context">
       {card.division && <span><ApartmentOutlined /> {card.division}</span>}
       <Tag color="cyan"><TeamOutlined /> {card.candidateCount || 0} candidate{card.candidateCount === 1 ? '' : 's'}</Tag>
+      <Tag>Required: {card.requiredCandidateCount ?? '—'}</Tag><Tag color="blue">In panel: {card.inPanelCount ?? 0}</Tag><Tag color="green">Selected: {card.selectedCandidateCount ?? 0}</Tag>
       <span className="demand-live-sla" data-testid={`demand-sla-timer-${card.workOrderLineId}`}><ClockCircleOutlined /> {sla}</span>
     </div>
     <div className="demand-milestones" aria-label="Hiring milestones">

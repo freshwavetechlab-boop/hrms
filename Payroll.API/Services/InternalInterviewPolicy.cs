@@ -5,6 +5,8 @@ namespace Payroll.API.Services;
 public static class InternalInterviewPolicy
 {
     public const string ConsentNoticeVersion = "internal-interview-v1";
+    public const string InternalDestination = "Internal HRMS interview";
+    public static bool UsesFrevoVideo(InternalInterviewContext context) => context.Mode == "Virtual" && context.LocationOrLink == InternalDestination;
     public static readonly string[] BrowserEvents = ["focus", "blur", "visibility-hidden", "visibility-visible", "fullscreen-exit", "camera-off", "camera-on", "microphone-off", "microphone-on", "device-disconnected", "connection-lost", "reconnected", "copy", "paste", "page-exit", "page-reload"];
     public static bool Has(AuthUser user, params string[] permissions) => user.IsActive && permissions.Any(p => user.Permissions.Contains(p, StringComparer.OrdinalIgnoreCase));
     public static bool CanManage(AuthUser user) => Has(user, "recruitment.interview.schedule", "recruitment.manage", "settings.manage");
@@ -28,7 +30,7 @@ public static class InternalInterviewPolicy
         Require(value.FollowUpLimit is >= 0 and <= 3, "Follow-up limit must be between 0 and 3.");
         Require(value.QuestionIds is not null && value.QuestionIds.Count <= 40 && value.QuestionIds.All(id => id > 0)
             && value.QuestionIds.Distinct().Count() == value.QuestionIds.Count, "Choose at most 40 distinct questions.");
-        Require(value.Mode == "Human" || (value.QuestionIds!.Count > 0 && value.TranscriptionEnabled), "AI/hybrid interviews require a question set and transcription.");
+        Require(value.Mode == "Human" || (value.QuestionIds!.Count > 0 && value.TranscriptionEnabled), "AI/hybrid interviews require a question set and consent to saving answers for review.");
     }
 
     public static void ValidateQuestion(InterviewQuestion question)
@@ -52,6 +54,7 @@ public static class InternalInterviewPolicy
 
     public static void RequireOpen(InternalInterviewContext context, InternalInterviewSession session, DateTime now)
     {
+        Require(UsesFrevoVideo(context), "Interview with Frevo One is off for this schedule. Use the meeting details supplied by HR.", 409);
         Require(!Terminal(context.InterviewStatus) && !Terminal(session.Status), "This interview session is closed.", 409);
         Require(session.LinkExpiresAtUtc > now, "This interview access has expired. Ask HR for a new link.", 410);
         Require(now < ScheduleUtc(context.ScheduledEnd, context.TimeZoneId), "The scheduled interview duration has ended.", 409);
@@ -71,10 +74,10 @@ public static class InternalInterviewPolicy
     {
         Require(!Terminal(session.Status), "This session has already ended.", 409);
         Require(!Terminal(context.InterviewStatus), "The original interview is already closed.", 409);
+        if (action is "start" or "ai" or "human") RequireOpen(context, session, now);
         switch (action)
         {
             case "start":
-                RequireOpen(context, session, now);
                 Require(session.Status == "Waiting" && session.ConsentAtUtc.HasValue, "The candidate must consent and enter the waiting room first.", 409);
                 Require(now >= ScheduleUtc(context.ScheduledStart, context.TimeZoneId).AddMinutes(-30)
                     && now <= ScheduleUtc(context.ScheduledEnd, context.TimeZoneId), "The interview is outside its scheduled joining window.", 409);

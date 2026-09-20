@@ -36,7 +36,8 @@ public sealed partial class InternalInterviewRepository
             try { context = await ContextAsync(db, id); } catch (InternalInterviewException error) when (error.StatusCode == 404) { }
             var runtime = InternalInterviewRuntimeState.Read(configuration);
             var disabled = !runtime.Enabled;
-            var invalid = disabled || context is null || Terminal(context.InterviewStatus)
+            var externalDelivery = context is not null && !UsesFrevoVideo(context);
+            var invalid = disabled || externalDelivery || context is null || Terminal(context.InterviewStatus)
                 || session.ScheduledEndUtc == default || session.ScheduledEndUtc <= Now
                 || session.ScheduledStartUtc != ScheduleUtc(context.ScheduledStart, context.TimeZoneId)
                 || session.ScheduledEndUtc != ScheduleUtc(context.ScheduledEnd, context.TimeZoneId);
@@ -47,12 +48,13 @@ public sealed partial class InternalInterviewRepository
                 if (!Terminal(session.Status))
                 {
                     var admissionExpired = runtime.Draining && !session.StartedAtUtc.HasValue && session.ScheduledEndUtc <= Now;
-                    session.Status = disabled || admissionExpired ? "Cancelled" : session.StartedAtUtc.HasValue ? "Completed" : (context is null || Terminal(context.InterviewStatus) || session.ScheduledEndUtc > Now ? "Cancelled" : "No Show");
+                    session.Status = disabled || externalDelivery || admissionExpired ? "Cancelled" : session.StartedAtUtc.HasValue ? "Completed" : (context is null || Terminal(context.InterviewStatus) || session.ScheduledEndUtc > Now ? "Cancelled" : "No Show");
                     session.EndedAtUtc = Now; session.RetainUntilUtc = Now.AddDays(RetentionDays);
                     if (session.MediaState != "None") session.MediaState = "Closing";
                     await SaveSessionAsync(db, tx, session);
                     await AppendAsync(db, tx, id, Guid.NewGuid().ToString(), "session-closed-by-server", "server", "server", disabled
                         ? "Internal interview service disabled by deployment settings; maintenance requested room closure. Hiring result unchanged."
+                        : externalDelivery ? "Interview with Frevo One switched off for this schedule; internal room closure requested. External meeting details and hiring result unchanged."
                         : admissionExpired ? "Scheduled window ended during an admission pause. Session cancelled, not marked candidate No Show; hiring result unchanged."
                         : "Scheduled window ended or original schedule closed/changed; hiring result unchanged.");
                 }

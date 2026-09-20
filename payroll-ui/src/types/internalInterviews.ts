@@ -16,7 +16,7 @@ export type InternalInterviewView = {
   interviewId: number; applicationId: number; candidateName: string; positionTitle: string; roundCode: string;
   status: string; control: string; revision: number; startedAtUtc?: string | null; endedAtUtc?: string | null;
   consentAtUtc?: string | null; recordingConsent: boolean; transcriptionConsent: boolean;
-  mediaState?: string; mediaError?: string; retainUntilUtc?: string; draining?: boolean;
+  mediaState?: string; mediaError?: string; retainUntilUtc?: string; draining?: boolean; speechEnabled?: boolean;
   scheduledStart: string; scheduledEnd: string; timeZoneId: string; noticeVersion: string;
   configuration: InternalInterviewConfiguration; questions?: InterviewQuestion[] | null; canManage: boolean; canResetSchedule?: boolean; isCandidate: boolean;
 }

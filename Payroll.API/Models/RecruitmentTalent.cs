@@ -140,6 +140,7 @@ public class RecruitmentResumeParsedSkill
 public class RecruitmentCandidateApplication
 {
     public bool CanMoveToGlobalTalentPool { get; set; }
+    public bool IsInterviewReady { get; set; }
     public string? AtsJobStatus { get; set; }
     public string? AtsJobError { get; set; }
     public long Id { get; set; }
@@ -431,6 +432,8 @@ public class OverrideApplicationScoreRequest
 
 public class RecruitmentInterview
 {
+    public int? DecisionApproverUserId { get; set; }
+    public string DecisionApproverName { get; set; } = "";
     public long Id { get; set; }
     public long ApplicationId { get; set; }
     public string CandidateName { get; set; } = "";
@@ -473,6 +476,7 @@ public class RecruitmentInterview
 
 public class SaveRecruitmentInterview
 {
+    public int? DecisionApproverUserId { get; set; }
     public long Id { get; set; }
     public long ApplicationId { get; set; }
     public string RoundCode { get; set; } = "Round 1";

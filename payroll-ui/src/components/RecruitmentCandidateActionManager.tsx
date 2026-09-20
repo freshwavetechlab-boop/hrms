@@ -46,6 +46,8 @@ export default function RecruitmentCandidateActionManager({ applicationId, candi
     catch { window.prompt('Copy secure candidate link', url) }
   }
 
+  if (!stageAction.enabled) return null
+
   return <>
     <Button size={compact ? 'small' : 'middle'} icon={<LinkOutlined />} onClick={show}>Candidate link</Button>
     <Drawer rootClassName="candidate-action-drawer" title={`Candidate actions · ${candidateName}`} width="min(680px, calc(100vw - 16px))" open={open} destroyOnClose onClose={() => setOpen(false)}

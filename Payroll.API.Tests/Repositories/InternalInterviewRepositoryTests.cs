@@ -48,13 +48,13 @@ public sealed class InternalInterviewRepositoryTests
                 CREATE TABLE recruitment_candidates (Id BIGINT PRIMARY KEY,FirstName VARCHAR(100),LastName VARCHAR(100));
                 CREATE TABLE recruitment_open_positions (Id BIGINT PRIMARY KEY,ClientId INT,PositionTitle VARCHAR(150),JobLocation VARCHAR(150));
                 CREATE TABLE recruitment_candidate_applications (Id BIGINT PRIMARY KEY,CandidateId BIGINT,ClientId INT,PositionId BIGINT);
-                CREATE TABLE recruitment_interviews (Id BIGINT PRIMARY KEY,ApplicationId BIGINT,RoundCode VARCHAR(50),Status VARCHAR(25),Result VARCHAR(25),TimeZoneId VARCHAR(50),ScheduledStart DATETIME,ScheduledEnd DATETIME);
+                CREATE TABLE recruitment_interviews (Id BIGINT PRIMARY KEY,ApplicationId BIGINT,RoundCode VARCHAR(50),Status VARCHAR(25),Result VARCHAR(25),TimeZoneId VARCHAR(50),ScheduledStart DATETIME,ScheduledEnd DATETIME,Mode VARCHAR(30) DEFAULT 'Virtual',LocationOrLink VARCHAR(500) DEFAULT 'Internal HRMS interview');
                 CREATE TABLE recruitment_interview_panel_members (InterviewId BIGINT,PanelUserId INT);
                 CREATE TABLE worklocations (Id INT PRIMARY KEY,ClientId INT,Name VARCHAR(150),City VARCHAR(100),State VARCHAR(100),IsActive BOOLEAN);
                 INSERT INTO recruitment_candidates VALUES (1,'Synthetic','Candidate');
                 INSERT INTO recruitment_open_positions VALUES (10,20,'Test Engineer','Test Campus'),(11,21,'Other Client Engineer','Other Campus');
                 INSERT INTO recruitment_candidate_applications VALUES (100,1,20,10),(101,1,21,11);
-                INSERT INTO recruitment_interviews VALUES (7,100,'Technical','Scheduled','Pending','UTC',UTC_TIMESTAMP()-INTERVAL 5 MINUTE,UTC_TIMESTAMP()+INTERVAL 55 MINUTE),(8,101,'Technical','Scheduled','Pending','UTC',UTC_TIMESTAMP()-INTERVAL 5 MINUTE,UTC_TIMESTAMP()+INTERVAL 55 MINUTE);
+                INSERT INTO recruitment_interviews (Id,ApplicationId,RoundCode,Status,Result,TimeZoneId,ScheduledStart,ScheduledEnd) VALUES (7,100,'Technical','Scheduled','Pending','UTC',UTC_TIMESTAMP()-INTERVAL 5 MINUTE,UTC_TIMESTAMP()+INTERVAL 55 MINUTE),(8,101,'Technical','Scheduled','Pending','UTC',UTC_TIMESTAMP()-INTERVAL 5 MINUTE,UTC_TIMESTAMP()+INTERVAL 55 MINUTE);
                 INSERT INTO recruitment_interview_panel_members VALUES (7,4),(8,6);
                 INSERT INTO worklocations VALUES (1,20,'Test Campus','','',TRUE),(2,20,'Excluded Campus','','',TRUE);
                 """);
@@ -112,13 +112,33 @@ public sealed class InternalInterviewRepositoryTests
             Assert.Contains(await repository.EventsAsync(panelAccess), e => e.Kind == "blur" && e.Source == "candidate-reported");
             await repository.CommandAsync(7, new("complete", live.Revision), panel);
             Assert.Equal("Pending", await db.ExecuteScalarAsync<string>("SELECT Result FROM recruitment_interviews WHERE Id=7"));
+
+            // Turning Frevo video off must route invitations externally and permanently revoke the old link.
+            await db.ExecuteAsync("INSERT INTO recruitment_interviews (Id,ApplicationId,RoundCode,Status,Result,TimeZoneId,ScheduledStart,ScheduledEnd) SELECT 16,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7");
+            var optionalSession = await repository.ConfigureAsync(16, new(), scheduler);
+            var optionalTicket = new InterviewCandidateTicket(16, optionalSession.LinkVersion, optionalSession.LinkExpiresAtUtc);
+            Assert.True(await repository.HasInternalSessionAsync(16, scheduler));
+            await db.ExecuteAsync("UPDATE recruitment_interviews SET LocationOrLink='https://meet.google.com/synthetic-test' WHERE Id=16");
+            Assert.False(await repository.HasInternalSessionAsync(16, scheduler));
+            await repository.DisableForExternalDeliveryAsync(16, scheduler);
+            Assert.Equal("Cancelled", (await repository.AccessAsync(16, scheduler)).Session.Status);
+            Assert.Equal(410, (await Assert.ThrowsAsync<InternalInterviewException>(() => repository.AccessAsync(16, null, optionalTicket))).StatusCode);
+            Assert.Equal("https://meet.google.com/synthetic-test", (await repository.GetContextAsync(16, scheduler)).LocationOrLink);
+            var restarted = await repository.ConfigureAsync(16, new(), scheduler);
+            Assert.NotEqual(optionalTicket.LinkVersion, restarted.LinkVersion);
+            Assert.Null(restarted.ConsentAtUtc);
+            Assert.Equal("Scheduled", restarted.Status);
+            await Assert.ThrowsAsync<InternalInterviewException>(() => repository.AccessAsync(16, null, optionalTicket));
+            Assert.Contains(await repository.EventsAsync(await repository.AccessAsync(16, scheduler)), e => e.Kind == "external-delivery-selected");
+            // Finish this fixture so it does not join the later lifecycle queue-order scenario.
+            await repository.CommandAsync(16, new("cancel", restarted.Revision), scheduler);
             Assert.Equal("Scheduled", await db.ExecuteScalarAsync<string>("SELECT Status FROM recruitment_interviews WHERE Id=7"));
             var ended = await repository.AccessAsync(7, null, link);
             Assert.Equal("Completed", ended.Session.Status);
             await Assert.ThrowsAsync<InternalInterviewException>(() => repository.AddEventAsync(ended, answerRequest with { EventKey = Guid.NewGuid().ToString() }));
 
             // Actual durable AI orchestration against the same disposable database; only the model is mocked.
-            await db.ExecuteAsync("INSERT INTO recruitment_interviews SELECT 9,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7; INSERT INTO recruitment_interview_panel_members VALUES (9,4)");
+            await db.ExecuteAsync("INSERT INTO recruitment_interviews (Id,ApplicationId,RoundCode,Status,Result,TimeZoneId,ScheduledStart,ScheduledEnd) SELECT 9,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7; INSERT INTO recruitment_interview_panel_members VALUES (9,4)");
             question.Question = "Explain an integration test."; question.FollowUpInstructions = "Which components did you verify?";
             await repository.SaveQuestionAsync(question, scheduler);
             var aiSession = await repository.ConfigureAsync(9, new() { Mode = "AI", TranscriptionEnabled = true, QuestionIds = [question.Id], FollowUpLimit = 1, MaxQuestions = 1 }, scheduler);
@@ -178,7 +198,7 @@ public sealed class InternalInterviewRepositoryTests
             Assert.Equal(2, mediaFactory.Calls); // confirmed closure is not resent or silently reopened
 
             // Hybrid section choices are from the frozen bank, never arbitrary model/panel instructions.
-            await db.ExecuteAsync("INSERT INTO recruitment_interviews SELECT 10,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7; INSERT INTO recruitment_interview_panel_members VALUES (10,4)");
+            await db.ExecuteAsync("INSERT INTO recruitment_interviews (Id,ApplicationId,RoundCode,Status,Result,TimeZoneId,ScheduledStart,ScheduledEnd) SELECT 10,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7; INSERT INTO recruitment_interview_panel_members VALUES (10,4)");
             var second = await repository.SaveQuestionAsync(new() { ClientId = 20, PositionId = 10, Skill = "Security", Question = "Explain tenant isolation.", EvaluationCriteria = "Describe cross-client access denial." }, scheduler);
             var hybrid = await repository.ConfigureAsync(10, new() { Mode = "Hybrid", TranscriptionEnabled = true, QuestionIds = [question.Id, second.Id] }, scheduler);
             var hybridLink = new InterviewCandidateTicket(10, hybrid.LinkVersion, hybrid.LinkExpiresAtUtc);
@@ -198,7 +218,7 @@ public sealed class InternalInterviewRepositoryTests
             Assert.Contains(await repository.EventsAsync(await repository.AccessAsync(10, panel)), e => e.Kind == "question" && e.Text == question.Question);
             // The closure lane wins over ordinary maintenance and healthy sessions rotate out of the first batch.
             await repository.CommandAsync(10, new("complete", hybrid.Revision), panel);
-            await db.ExecuteAsync("INSERT INTO recruitment_interviews SELECT 11,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7");
+            await db.ExecuteAsync("INSERT INTO recruitment_interviews (Id,ApplicationId,RoundCode,Status,Result,TimeZoneId,ScheduledStart,ScheduledEnd) SELECT 11,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7");
             await repository.ConfigureAsync(11, new(), scheduler);
             await db.ExecuteAsync("UPDATE recruitment_internal_interview_sessions SET UpdatedAtUtc='2000-01-01' WHERE InterviewId=11");
             Assert.Equal(new long[] { 9, 10, 11 }, (await repository.PendingLifecycleAsync()).ToArray());
@@ -224,7 +244,7 @@ public sealed class InternalInterviewRepositoryTests
             await Assert.ThrowsAsync<InternalInterviewException>(() => repository.ResetUnstartedScheduleAsync(10, completedSession.Revision, scheduler));
             Assert.Equal("Pending", await db.ExecuteScalarAsync<string>("SELECT Result FROM recruitment_interviews WHERE Id=11"));
 
-            await db.ExecuteAsync("INSERT INTO recruitment_interviews SELECT 12,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7; INSERT INTO recruitment_interview_panel_members VALUES (12,4)");
+            await db.ExecuteAsync("INSERT INTO recruitment_interviews (Id,ApplicationId,RoundCode,Status,Result,TimeZoneId,ScheduledStart,ScheduledEnd) SELECT 12,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7; INSERT INTO recruitment_interview_panel_members VALUES (12,4)");
             var membership = await repository.ConfigureAsync(12, new() { RecordingEnabled = true }, scheduler);
             var membershipLink = new InterviewCandidateTicket(12, membership.LinkVersion, membership.LinkExpiresAtUtc);
             await repository.ConsentAsync(await repository.AccessAsync(12, null, membershipLink), new(true, false, InternalInterviewPolicy.ConsentNoticeVersion));
@@ -246,7 +266,7 @@ public sealed class InternalInterviewRepositoryTests
             panel.IsActive = true;
 
             // Waiting/failed live turns must not occupy the first queue page and starve completed reviews.
-            await db.ExecuteAsync("INSERT INTO recruitment_interviews SELECT 14,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7; INSERT INTO recruitment_interview_panel_members VALUES (14,4)");
+            await db.ExecuteAsync("INSERT INTO recruitment_interviews (Id,ApplicationId,RoundCode,Status,Result,TimeZoneId,ScheduledStart,ScheduledEnd) SELECT 14,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7; INSERT INTO recruitment_interview_panel_members VALUES (14,4)");
             var queued = await repository.ConfigureAsync(14, new() { Mode = "AI", TranscriptionEnabled = true, QuestionIds = [question.Id], FollowUpLimit = 1 }, scheduler);
             var queuedLink = new InterviewCandidateTicket(14, queued.LinkVersion, queued.LinkExpiresAtUtc);
             await repository.ConsentAsync(await repository.AccessAsync(14, null, queuedLink), new(false, true, InternalInterviewPolicy.ConsentNoticeVersion));
@@ -278,7 +298,7 @@ public sealed class InternalInterviewRepositoryTests
 
             // Human -> AI must not repeat wording already asked under another bank ID/source.
             // Nor should it spend a model call choosing a follow-up already asked by the panel.
-            await db.ExecuteAsync("INSERT INTO recruitment_interviews SELECT 15,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7; INSERT INTO recruitment_interview_panel_members VALUES (15,4)");
+            await db.ExecuteAsync("INSERT INTO recruitment_interviews (Id,ApplicationId,RoundCode,Status,Result,TimeZoneId,ScheduledStart,ScheduledEnd) SELECT 15,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7; INSERT INTO recruitment_interview_panel_members VALUES (15,4)");
             var duplicate = await repository.SaveQuestionAsync(new() { ClientId = 20, PositionId = 10, Skill = "Testing", Question = "EXPLAIN  AN INTEGRATION TEST.", EvaluationCriteria = "Same wording under another ID." }, scheduler);
             second.FollowUpInstructions = question.Question;
             second = await repository.SaveQuestionAsync(second, scheduler);
@@ -322,7 +342,7 @@ public sealed class InternalInterviewRepositoryTests
             Assert.Contains(await repository.EventsAsync(expiredDuringDrain), e => e.Text.Contains("not marked candidate No Show"));
 
             config["InternalInterviews:DrainMode"] = "false";
-            await db.ExecuteAsync("INSERT INTO recruitment_interviews SELECT 13,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7");
+            await db.ExecuteAsync("INSERT INTO recruitment_interviews (Id,ApplicationId,RoundCode,Status,Result,TimeZoneId,ScheduledStart,ScheduledEnd) SELECT 13,ApplicationId,RoundCode,'Scheduled','Pending',TimeZoneId,ScheduledStart,ScheduledEnd FROM recruitment_interviews WHERE Id=7");
             var shutdown = await repository.ConfigureAsync(13, new(), scheduler);
             await repository.ConsentAsync(new(await repository.GetContextAsync(13, scheduler), shutdown, null), new(false, false, InternalInterviewPolicy.ConsentNoticeVersion));
             await repository.CommandAsync(13, new("start", (await repository.AccessAsync(13, scheduler)).Session.Revision), scheduler);

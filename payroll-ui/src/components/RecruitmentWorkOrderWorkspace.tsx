@@ -31,7 +31,7 @@ const remainingDuration = (dueAt: string | null | undefined, now: number) => {
 }
 const statusColor = (status: string) => status === 'Completed' ? 'green' : status === 'Active' ? 'blue' : status === 'On Hold' ? 'orange' : ['Cancelled', 'Rejected'].includes(status) ? 'red' : 'default'
 
-export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, clientScopeManaged = false, displayMode = 'pipeline' }: { initialClientId?: number; clientScopeManaged?: boolean; displayMode?: RecruitmentPipelineDisplayMode }) {
+export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, clientScopeManaged = false, displayMode = 'pipeline', postInterview = false }: { initialClientId?: number; clientScopeManaged?: boolean; displayMode?: RecruitmentPipelineDisplayMode; postInterview?: boolean }) {
   const session = useAuthSession()
   const navigate = useNavigate()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
@@ -351,9 +351,11 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     color: event.eventType === 'RejectedByDivision' ? 'red' : event.eventType === 'ProfilesReworkStarted' ? 'orange' : 'blue',
     children: <div><b>{event.eventTitle}</b><p>{event.eventDetails || 'No additional note.'}</p><small>{dateTimeText(event.createdAtUtc)} · {event.actorName || 'System'}</small></div>,
   })) ?? []
+  const lastCohortRework = Math.max(0, ...(selectedCase?.events ?? []).filter(event => event.eventType === 'ProfilesReworkStarted').map(event => new Date(event.createdAtUtc).getTime()))
+  const currentCohortDocument = (row: RecruitmentProcessDocument) => !['MOM', 'SIGNED_MOM'].includes(row.documentType) || !lastCohortRework || new Date(row.createdAtUtc).getTime() >= lastCohortRework
   const missingRequiredDocuments = activeStage?.processDocumentRequirements.filter(requirement => {
     if (!requirement.isRequired) return false
-    const document = processDocuments.find(row => row.pipelineStageId === activeStage.pipelineStageId && row.documentType === requirement.documentType)
+    const document = processDocuments.find(row => row.pipelineStageId === activeStage.pipelineStageId && row.documentType === requirement.documentType && currentCohortDocument(row))
     if (!document) return true
     return Boolean(requirement.requiresSignature && (document.status !== 'Signed' || (!document.hasFinalSignedAttachment && !document.capturedSignaturesComplete)))
   }) ?? []
@@ -376,7 +378,15 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
             ? `Complete the required stage document${missingRequiredDocuments.length === 1 ? '' : 's'} first: ${missingRequiredDocuments.map(row => row.documentType.replaceAll('_', ' ')).join(', ')}.`
             : ''
   return <section className="work-order-workspace" data-testid="recruitment-work-orders">
-    <div className="work-order-command-bar">
+    {postInterview && <Card title="MoM signing & hiring-stage documents" extra={<Button onClick={() => void load()}>Refresh</Button>}>
+      <Alert showIcon type="info" message="Open a job → Prepare MoM → Sign MoM → Finalize signed" description="Reuses the existing audited committee signatures and stage approvals. Signing is available when its configured stage is reached; candidate progress is preserved while vacancies are being filled. Negotiation is in the adjacent tab." />
+      <DataTable rows={currentCases} getRowId={row => row.id} emptyText="No current hiring journeys." columns={[
+        { key: 'positionName', label: 'Job' }, { key: 'workOrderNumber', label: 'Work order' },
+        { key: 'currentStageName', label: 'Hiring stage' },
+        { key: 'actions', label: 'Action', render: row => <Button type="primary" onClick={() => void viewCase(row)}>Open MoM / stage documents</Button> },
+      ]} />
+    </Card>}
+    {!postInterview && <><div className="work-order-command-bar">
       <div><span>Client hiring demand</span><h2>Work orders</h2><p>Record the client order once, then create its role-wise Hiring Requests. SLA targets come automatically from the published pipeline.</p></div>
       <Space wrap>{!clientScopeManaged && <Select allowClear value={clientId || undefined} placeholder="All accessible clients" showSearch optionFilterProp="label" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={value => setClientId(value || 0)} />}<Input.Search value={query} placeholder="Work order or subject" onChange={event => setQuery(event.target.value)} onSearch={() => void load()} /><Button data-testid="work-order-add" type="primary" icon={<PlusOutlined />} onClick={openNew}>Add work order</Button></Space>
     </div>
@@ -432,7 +442,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
       /></Card>
     </div>}
 
-    {historicalCases.length > 0 && <Card size="small" title="Earlier journeys — history retained"><Space wrap>{historicalCases.map(row => <Button key={row.id} onClick={() => void viewCase(row)}>{row.positionName} · Journey #{row.id}</Button>)}</Space></Card>}
+    {historicalCases.length > 0 && <Card size="small" title="Earlier journeys — history retained"><Space wrap>{historicalCases.map(row => <Button key={row.id} onClick={() => void viewCase(row)}>{row.positionName} · Journey #{row.id}</Button>)}</Space></Card>}</>}
 
     <Drawer width={860} title={draft.id ? `Edit ${draft.workOrderNumber}` : 'New client work order'} open={editorOpen} onClose={() => setEditorOpen(false)} extra={<Button data-testid="work-order-save" type="primary" loading={saving} onClick={() => void save()}>Save work order</Button>}>
       <Alert showIcon type="info" message="Pipeline-driven SLA" description="Record the approved work order here. When a role journey starts, its cumulative SLA and stage targets are applied automatically from the published client pipeline." />
@@ -471,7 +481,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
           <p className="work-order-document-guidance">Prepare the document, then collect committee signatures by typing, drawing or uploading a signature image. A separately signed final PDF can still be uploaded.</p>
           {!activeStage?.processDocumentRequirements?.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="This stage has no process-document requirement." />}
           {activeStage?.processDocumentRequirements?.map(requirement => {
-            const document = processDocuments.find(row => row.pipelineStageId === activeStage.pipelineStageId && row.documentType === requirement.documentType)
+            const document = processDocuments.find(row => row.pipelineStageId === activeStage.pipelineStageId && row.documentType === requirement.documentType && currentCohortDocument(row))
             return <div className="work-order-document" key={requirement.id} data-testid={`hiring-document-${requirement.documentType}`}>
               <header className="work-order-document-header"><div><b><FileProtectOutlined /> {requirement.documentType.replaceAll('_', ' ')}</b><span>{requirement.isRequired ? 'Required' : 'Optional'}{requirement.requiresSignature ? ' · signature required' : ''}</span></div><Space wrap className="work-order-document-actions">
               {!document ? <Button data-testid={`hiring-document-create-${requirement.documentType}`} loading={documentSaving} onClick={() => void prepareProcessDocument(requirement.documentType, requirement.templateId)}>Prepare</Button> : <Tag color={document.status === 'Signed' ? 'green' : 'blue'}>v{document.versionNumber} · {document.status}</Tag>}

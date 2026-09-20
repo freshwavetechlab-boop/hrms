@@ -559,6 +559,9 @@ public class RecruitmentPipelineWorkspaceLane
 
 public class RecruitmentPipelineDemandCard
 {
+    public int RequiredCandidateCount { get; set; }
+    public int InPanelCount { get; set; }
+    public int SelectedCandidateCount { get; set; }
     public string CardType { get; set; } = "Demand";
     public int ClientId { get; set; }
     public long? HiringCaseId { get; set; }

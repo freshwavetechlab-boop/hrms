@@ -1221,6 +1221,7 @@ LEFT JOIN employees repl ON repl.Id=r.ReplacementEmployeeId
 {where}";
 
     private static string OpenPositionSql(string where) => $@"SELECT p.*,r.RfrNumber,r.RequestDate,COALESCE(r.WorkMode,'') WorkMode,
+{RecruitmentHiringProgress.SelectFor("p")}
 COALESCE(r.JobLocation,'') RequisitionJobLocation,COALESCE(r.WorkMode,'') RequisitionWorkMode,
 COALESCE(r.ExperienceRange,'') RequisitionExperienceRange,COALESCE(r.SalaryMin,0) RequisitionSalaryMin,
 COALESCE(r.SalaryMax,0) RequisitionSalaryMax,COALESCE(r.Currency,'') RequisitionCurrency,

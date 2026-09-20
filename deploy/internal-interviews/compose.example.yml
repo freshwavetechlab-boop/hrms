@@ -93,16 +93,17 @@ services:
     shm_size: 1g
 
   speech:
+    profiles: [speech]
     build: ./speech
     environment:
-      SPEECH_API_KEY: ${SPEECH_API_KEY:?Set a separate private speech credential}
+      SPEECH_API_KEY: ${SPEECH_API_KEY:-}
       SPEECH_THREADS: "2"
       WHISPER_MODEL_DIR: /models/whisper
       PIPER_EN_MODEL: /models/en.onnx
       PIPER_HI_MODEL: /models/hi.onnx
     volumes:
       - type: bind
-        source: ${INTERVIEW_SPEECH_MODELS_DIR:?Provision licensed local speech model files first}
+        source: ${INTERVIEW_SPEECH_MODELS_DIR:-./speech-models}
         target: /models
         read_only: true
         bind: { create_host_path: false }

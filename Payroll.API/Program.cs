@@ -1896,13 +1896,16 @@ app.MapGet("/api/recruitment/interviews/scheduling-context/{applicationId:long}"
     var (row, error) = await repository.GetInterviewSchedulingContextAsync(applicationId, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
-app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentCaseRepository hiringCases, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, SaveRecruitmentInterview request, HttpContext context) =>
+app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentCaseRepository hiringCases, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, InternalInterviewRepository internalInterviews, SaveRecruitmentInterview request, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.interview.schedule") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!HasPermission(context, "recruitment.interview.schedule") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage") && !HasPermission(context, "recruitment.interview.panel")) return Results.StatusCode(403);
     var user = CurrentUser(context);
     var isNew = request.Id <= 0;
     var previous = isNew ? null : (await repository.GetInterviewsAsync(user, request.ApplicationId)).FirstOrDefault(row => row.Id == request.Id);
     var (row, error) = await repository.SaveInterviewAsync(request, user);
+    if (row is not null && previous?.LocationOrLink == InternalInterviewPolicy.InternalDestination
+        && (row.Mode != "Virtual" || row.LocationOrLink != InternalInterviewPolicy.InternalDestination))
+        await internalInterviews.DisableForExternalDeliveryAsync(row.Id, user);
     if (row?.PipelineStageInstanceId is > 0 && row.Status is "Scheduled" or "Rescheduled")
     {
         var trigger = isNew || row.RescheduleCount == 0 ? "OnInterviewScheduled" : "OnInterviewRescheduled";
@@ -1910,6 +1913,8 @@ app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository re
     }
     if (row is not null && row.Status is "Scheduled" or "Rescheduled")
         await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(row.ApplicationId, "InterviewScheduled", user);
+    if (row is not null && row.Status is "No Show" or "Cancelled")
+        await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(row.ApplicationId, "InterviewAvailabilityChanged", user);
     if (row?.Status == "Completed" && row.Result is "Selected" or "Rejected"
         && (previous?.Status != row.Status || previous?.Result != row.Result))
         row.PipelineTransitionMessage = await ApplyRecruitmentDecisionAsync(row.ApplicationId, row.Result, user, pipelines, pipelineActions, candidateActions, hiringCases);

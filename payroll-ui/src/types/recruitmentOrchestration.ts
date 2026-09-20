@@ -191,6 +191,10 @@ export type RecruitmentWorkflowOption = {
 }
 
 export type RecruitmentPositionOption = {
+  candidateCount?: number
+  requiredCandidateCount?: number
+  inPanelCount?: number
+  selectedCandidateCount?: number
   id: number
   clientId: number
   clientName?: string
@@ -537,6 +541,9 @@ export type RecruitmentPipelineDemandCard = {
   jobPostingId?: number | null
   jobPostingStatus?: string | null
   candidateCount: number
+  requiredCandidateCount?: number
+  inPanelCount?: number
+  selectedCandidateCount?: number
   pipelineVersionId?: number | null
   currentStageId?: number | null
   currentStageName?: string | null

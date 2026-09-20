@@ -33,13 +33,15 @@ public static class InternalInterviewEndpoints
     public static void MapInternalInterviews(this WebApplication app)
     {
         app.MapInternalInterviewMediaEvents();
-        object Describe(InterviewAccess access) => View(access, InternalInterviewRuntimeState.Read(app.Configuration).Draining);
+        object Describe(InterviewAccess access) => View(access, InternalInterviewRuntimeState.Read(app.Configuration).Draining,
+            app.Configuration.GetValue("InternalInterviews:SpeechEnabled", false));
         var admin = app.MapGroup("/api/recruitment/internal-interviews").AddEndpointFilter<InternalInterviewFilter>();
         var candidate = app.MapGroup("/api/public/internal-interviews").AddEndpointFilter<InternalInterviewFilter>();
         candidate.MapPost("/{id:long}/speech/transcribe/{questionId:long}", async (long id, long questionId, InternalInterviewRepository repository,
             InternalInterviewLinks links, InternalInterviewSpeechService speech, HttpContext context, CancellationToken ct) =>
         {
             var access = await CandidateAccess(id, repository, links, context);
+            speech.RequireEnabled();
             InternalInterviewPolicy.RequireOpen(access.Context, access.Session, DateTime.UtcNow);
             InternalInterviewPolicy.Require(access.Session.Status == "Live" && access.Session.TranscriptionConsent, "Live session and transcription consent are required.", 403);
             var currentQuestion = await repository.CurrentQuestionAsync(access);
@@ -58,6 +60,7 @@ public static class InternalInterviewEndpoints
             InternalInterviewLinks links, InternalInterviewSpeechService speech, HttpContext context, CancellationToken ct) =>
         {
             var access = await CandidateAccess(id, repository, links, context);
+            speech.RequireEnabled();
             InternalInterviewPolicy.RequireOpen(access.Context, access.Session, DateTime.UtcNow);
             InternalInterviewPolicy.Require(access.Session.Status == "Live" && access.Session.TranscriptionConsent, "A consented live session is required.", 403);
             var question = await repository.SpokenQuestionAsync(access, eventId);
@@ -149,7 +152,7 @@ public static class InternalInterviewEndpoints
     internal static AuthUser User(HttpContext context) => context.Items["User"] as AuthUser ?? throw new InternalInterviewException(401, "Sign in to access the interview.");
     internal static Task<InterviewAccess> CandidateAccess(long id, InternalInterviewRepository repository, InternalInterviewLinks links, HttpContext context) =>
         repository.AccessAsync(id, null, links.Read(context.Request.Headers["X-Interview-Token"].FirstOrDefault()));
-    internal static object View(InterviewAccess access, bool draining = false)
+    internal static object View(InterviewAccess access, bool draining = false, bool speechEnabled = false)
     {
         var s = access.Session; var c = access.Context;
         // Never send the entire session model: it includes revocation state, rubric and future questions.
@@ -166,7 +169,7 @@ public static class InternalInterviewEndpoints
             canManage = access.User is not null && InternalInterviewPolicy.CanManage(access.User),
             canResetSchedule = access.User is not null && InternalInterviewPolicy.CanManage(access.User)
                 && InternalInterviewPolicy.CanResetUnstartedSchedule(c, s, DateTime.UtcNow),
-            isCandidate = access.IsCandidate, draining
+            isCandidate = access.IsCandidate, draining, speechEnabled
         };
     }
 }

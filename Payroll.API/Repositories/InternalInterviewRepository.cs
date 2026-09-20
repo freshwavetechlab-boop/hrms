@@ -18,7 +18,7 @@ public sealed partial class InternalInterviewRepository(IConfiguration configura
         SELECT i.Id InterviewId,i.ApplicationId,a.CandidateId,a.ClientId,a.PositionId,
         TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,
         p.PositionTitle,COALESCE(p.JobLocation,'') JobLocation,i.RoundCode,i.Status InterviewStatus,i.Result,
-        i.TimeZoneId,i.ScheduledStart,i.ScheduledEnd
+        i.TimeZoneId,i.ScheduledStart,i.ScheduledEnd,i.Mode,COALESCE(i.LocationOrLink,'') LocationOrLink
         FROM recruitment_interviews i
         JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId
         JOIN recruitment_candidates c ON c.Id=a.CandidateId
@@ -77,6 +77,7 @@ public sealed partial class InternalInterviewRepository(IConfiguration configura
         if (user is null)
         {
             Require(session.LinkVersion == ticket!.LinkVersion && session.LinkExpiresAtUtc > Now, "The interview link has expired or been replaced.", 410);
+            Require(UsesFrevoVideo(context), "Interview with Frevo One is off for this schedule. Use the meeting details supplied by HR.", 410);
             // Read-only status remains available after completion; writes and room grants stay closed.
         }
         Require(session.RetainUntilUtc > Now && session.MediaState != "Purged", "Session evidence retention has expired.", 410);
@@ -87,8 +88,31 @@ public sealed partial class InternalInterviewRepository(IConfiguration configura
     {
         await using var db = Db(); await db.OpenAsync();
         // Absence may fall back to an external invite; scope denial must never take that path.
-        await AuthorizeAsync(db, await ContextAsync(db, id), user, true);
+        var context = await ContextAsync(db, id);
+        await AuthorizeAsync(db, context, user, true);
+        if (!UsesFrevoVideo(context)) return false;
         return await db.ExecuteScalarAsync<bool>("SELECT COUNT(*) FROM recruitment_internal_interview_sessions WHERE InterviewId=@Id", new { Id = id });
+    }
+
+    // Called only when the existing schedule switches away from the internal marker.
+    // Keep evidence, revoke the old candidate credential, and let maintenance close any room.
+    public async Task DisableForExternalDeliveryAsync(long id, AuthUser user)
+    {
+        await using var db = Db(); await db.OpenAsync();
+        if (!await db.ExecuteScalarAsync<bool>("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='recruitment_internal_interview_sessions'")) return;
+        await using var tx = await db.BeginTransactionAsync();
+        var session = await db.QuerySingleOrDefaultAsync<InternalInterviewSession>("SELECT * FROM recruitment_internal_interview_sessions WHERE InterviewId=@Id FOR UPDATE", new { Id = id }, tx);
+        if (session is null) return;
+        var context = await ContextAsync(db, id, tx);
+        await AuthorizeAsync(db, context, user, true);
+        if (UsesFrevoVideo(context)) return;
+        session.LinkVersion = Guid.NewGuid().ToString("N"); session.LinkExpiresAtUtc = Now;
+        if (!Terminal(session.Status)) { session.Status = "Cancelled"; session.EndedAtUtc = Now; }
+        if (session.MediaState is "Starting" or "Ready") session.MediaState = "Closing";
+        await SaveSessionAsync(db, tx, session);
+        await AppendAsync(db, tx, id, Guid.NewGuid().ToString(), "external-delivery-selected", $"panel:{user.Id}", "server",
+            "Interview with Frevo One switched off. Prior candidate link revoked; external meeting details and retained evidence unchanged.");
+        await tx.CommitAsync();
     }
 
     private static async Task<int> PositionScopeAsync(MySqlConnection db, long positionId, AuthUser user)
@@ -178,7 +202,8 @@ public sealed partial class InternalInterviewRepository(IConfiguration configura
         questions = request.QuestionIds.Select(questionId => questions.Single(q => q.Id == questionId)).ToList();
         await using var tx = await db.BeginTransactionAsync();
         var session = await db.QuerySingleOrDefaultAsync<InternalInterviewSession>("SELECT * FROM recruitment_internal_interview_sessions WHERE InterviewId=@Id FOR UPDATE", new { Id = id }, tx);
-        Require(session is null || (session.Status == "Scheduled" && session.ConsentAtUtc is null), "Configuration is locked after candidate consent; schedule another round for changes.", 409);
+        var restartUnstarted = session is { Status: "Cancelled", StartedAtUtc: null, MediaState: "None" };
+        Require(session is null || restartUnstarted || (session.Status == "Scheduled" && session.ConsentAtUtc is null), "Configuration is locked after candidate consent/start; schedule another round for changes.", 409);
         if (session is null)
         {
             await db.ExecuteAsync("""
@@ -191,10 +216,13 @@ public sealed partial class InternalInterviewRepository(IConfiguration configura
         else await db.ExecuteAsync("""
             UPDATE recruitment_internal_interview_sessions SET ConfigurationJson=@Config,QuestionsJson=@Questions,
             LinkVersion=@Version,LinkExpiresAtUtc=@Expiry,Control=@Control,RetainUntilUtc=@RetainUntil,
-            ScheduledStartUtc=@Start,ScheduledEndUtc=@End,Revision=Revision+1,UpdatedAtUtc=UTC_TIMESTAMP(6) WHERE InterviewId=@Id
+            ScheduledStartUtc=@Start,ScheduledEndUtc=@End,Status='Scheduled',ConsentAtUtc=NULL,RecordingConsent=FALSE,
+            TranscriptionConsent=FALSE,EndedAtUtc=NULL,Revision=Revision+1,UpdatedAtUtc=UTC_TIMESTAMP(6) WHERE InterviewId=@Id
             """, new { Id = id, Config = Json(request), Questions = Json(questions), Version = Guid.NewGuid().ToString("N"),
                 Expiry = end.AddHours(2), Control = request.Mode == "AI" ? "AI" : "Human", RetainUntil = end.AddDays(RetentionDays), Start = start, End = end }, tx);
-        await AppendAsync(db, tx, id, Guid.NewGuid().ToString(), "configured", $"panel:{user.Id}", "server", "Internal interview configured; prior links revoked.");
+        await db.ExecuteAsync("UPDATE recruitment_interviews SET Mode='Virtual',LocationOrLink=@Destination WHERE Id=@Id",
+            new { Id = id, Destination = InternalDestination }, tx);
+        await AppendAsync(db, tx, id, Guid.NewGuid().ToString(), "configured", $"panel:{user.Id}", "server", "Interview with Frevo One configured; prior links revoked.");
         await tx.CommitAsync();
         return (await AccessAsync(id, user)).Session;
     }
@@ -204,6 +232,7 @@ public sealed partial class InternalInterviewRepository(IConfiguration configura
         InternalInterviewRuntimeState.Read(configuration).RequireAdmission();
         await using var db = Db(); await db.OpenAsync();
         var context = await ContextAsync(db, id); await AuthorizeAsync(db, context, user, true);
+        Require(UsesFrevoVideo(context), "Enable Interview with Frevo One before issuing an internal link.", 409);
         Require(!Terminal(context.InterviewStatus), "The original interview is closed.", 409);
         var expiry = ScheduleUtc(context.ScheduledEnd, context.TimeZoneId).AddHours(2);
         Require(expiry > Now, "Reschedule the interview before issuing a new link.", 409);

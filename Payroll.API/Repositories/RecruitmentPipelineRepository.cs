@@ -1502,6 +1502,7 @@ jobDescription.Id JobDescriptionId,COALESCE(jobDescription.Status,'Not Started')
 posting.Id JobPostingId,COALESCE(posting.Status,'Not Started') JobPostingStatus,
 (SELECT COUNT(*) FROM recruitment_candidate_applications candidateApplication
  WHERE candidateApplication.PositionId=positionRow.Id AND candidateApplication.ApplicationType='Application') CandidateCount,
+" + RecruitmentHiringProgress.SelectFor("positionRow") + @"
 (SELECT assignment.PipelineVersionId FROM recruitment_position_pipeline_assignments assignment
  JOIN recruitment_pipeline_versions assignedVersion ON assignedVersion.Id=assignment.PipelineVersionId AND assignedVersion.ScopeType IN ('Position','Hybrid')
  WHERE assignment.PositionId=positionRow.Id AND assignment.IsActive=TRUE
@@ -1542,6 +1543,7 @@ jobDescription.Id JobDescriptionId,COALESCE(jobDescription.Status,'Not Started')
 posting.Id JobPostingId,COALESCE(posting.Status,'Not Started') JobPostingStatus,
 (SELECT COUNT(*) FROM recruitment_candidate_applications candidateApplication
  WHERE candidateApplication.PositionId=positionRow.Id AND candidateApplication.ApplicationType='Application') CandidateCount,
+" + RecruitmentHiringProgress.SelectFor("positionRow") + @"
 FALSE NeedsPipelineSelection,assignment.PipelineVersionId AssignedPipelineVersionId
 FROM recruitment_open_positions positionRow
 JOIN recruitment_requisitions requisition ON requisition.Id=positionRow.RequisitionId

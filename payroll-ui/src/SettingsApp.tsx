@@ -84,6 +84,7 @@ const recruitmentNavigation: Array<{
         key: 'interviews-offers', label: 'Interviews & Offers', icon: 'onboarding', children: [
           { view: 'Interview Queue', label: 'Schedule Interviews', icon: 'candidate' },
           { view: 'Interviews', label: 'Interview Tracker', icon: 'onboarding' },
+          { view: 'MoM & Negotiation', label: 'MoM & Negotiation', icon: 'document' },
           { view: 'Offers & Pre-Onboarding', label: 'Offers & Pre-boarding', icon: 'document' },
         ],
       },
