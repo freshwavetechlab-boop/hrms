@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Button, Popconfirm, Space, Tag, Typography } from 'antd'
 import { useAuthSession } from './AuthGate'
 import { getJsonResult, postJson } from '../services/apiClient'
+import LocalLlmRecoverySettingsModal from './LocalLlmRecoverySettingsModal'
 
 type Runtime = { state: string; code: string; message: string; canStart: boolean }
 
@@ -13,6 +14,7 @@ export default function LocalLlmRuntimeControl({ modelId, endpointUrl, disabled 
   const [status, setStatus] = useState<Runtime | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const refresh = useCallback(async () => {
     if (!allowed) return
     setBusy(true); setError('')
@@ -35,6 +37,7 @@ export default function LocalLlmRuntimeControl({ modelId, endpointUrl, disabled 
   if (!allowed) return null
   return <Space direction="vertical" size={4} style={{ maxWidth: 300 }}>
     <Space wrap>
+      <Button size="small" disabled={disabled || busy} onClick={() => setSettingsOpen(true)}>Recovery settings</Button>
       <Button size="small" disabled={disabled || busy} loading={busy} onClick={() => void refresh()}>
         {status ? 'Refresh LLM status' : 'Check LLM status'}
       </Button>
@@ -49,5 +52,7 @@ export default function LocalLlmRuntimeControl({ modelId, endpointUrl, disabled 
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>{status.message}</Typography.Text>
     </div>}
     {error && <Typography.Text type="danger" role="alert">{error}</Typography.Text>}
+    {settingsOpen && <LocalLlmRecoverySettingsModal modelId={modelId} endpointUrl={endpointUrl}
+      onClose={() => setSettingsOpen(false)} onSaved={() => { setStatus(null); void refresh() }} />}
   </Space>
 }

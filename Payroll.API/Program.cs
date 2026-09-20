@@ -39,6 +39,7 @@ builder.Services.AddHttpClient();
 builder.Services.AddHttpClient("LocalLlm").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddHttpClient("LocalLlmControl").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton<LocalLlmRecoveryService>();
+builder.Services.AddSingleton<ILocalLlmRecoverySettingsStore, LocalLlmRecoverySettingsStore>();
 builder.Services.AddHttpClient("InternalInterview").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton<InternalInterviewRepository>();
 builder.Services.AddSingleton<InternalInterviewLinks>();

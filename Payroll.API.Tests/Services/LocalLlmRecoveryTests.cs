@@ -36,6 +36,14 @@ public sealed class LocalLlmRecoveryTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) { Calls++; return send(request, ct); }
     }
     private static Transport Never() => new((_, _) => throw new InvalidOperationException("No network allowed."));
+    private sealed class LegacyStore(IConfiguration configuration) : ILocalLlmRecoverySettingsStore
+    {
+        public Task<LocalLlmRecoverySettings> GetAsync(CancellationToken ct = default) =>
+            Task.FromResult(LocalLlmRecoverySettingsStore.LegacySettings(configuration));
+        public Task<(LocalLlmRecoverySettings? Settings, string Error)> SaveAsync(SaveLocalLlmRecoverySettings request,
+            RecruitmentAiScoringSettings model, AuthUser user, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+    private static LocalLlmRecoveryService Service(IConfiguration configuration, Transport transport) => new(new LegacyStore(configuration), transport);
 
     [Theory]
     [InlineData(null, "client_admin")]
@@ -45,7 +53,7 @@ public sealed class LocalLlmRecoveryTests
     public async Task OnlyExactGlobalSuperAdminMaySend(int? client, string role)
     {
         var transport = Never();
-        var service = new LocalLlmRecoveryService(Configuration(), transport);
+        var service = Service(Configuration(), transport);
         var user = new AuthUser { ClientId = client, Roles = [role], Permissions = ["settings.manage", "security.manage"] };
         await Assert.ThrowsAsync<UnauthorizedAccessException>(() => service.SendAsync(Model(), user, true, Guid.NewGuid()));
         Assert.Equal(0, transport.Calls);
@@ -62,7 +70,7 @@ public sealed class LocalLlmRecoveryTests
     public async Task InvalidOrDisabledConfigurationNeverDispatches(string setting, string value)
     {
         var transport = Never();
-        var result = await new LocalLlmRecoveryService(Configuration(setting, value), transport).SendAsync(Model(), Admin, true, Guid.NewGuid());
+        var result = await Service(Configuration(setting, value), transport).SendAsync(Model(), Admin, true, Guid.NewGuid());
         Assert.Equal("not_configured", result.Code);
         Assert.False(result.CanStart);
         Assert.Equal(0, transport.Calls);
@@ -77,7 +85,7 @@ public sealed class LocalLlmRecoveryTests
     {
         var model = Model(); model.ProviderCode = provider; model.EndpointUrl = endpoint; model.ClientId = client;
         var transport = Never();
-        var result = await new LocalLlmRecoveryService(Configuration(), transport).SendAsync(model, Admin, true, Guid.NewGuid());
+        var result = await Service(Configuration(), transport).SendAsync(model, Admin, true, Guid.NewGuid());
         Assert.Equal("unsupported", result.Code);
         Assert.Equal(0, transport.Calls);
     }
@@ -98,7 +106,7 @@ public sealed class LocalLlmRecoveryTests
             Assert.Equal(2, body.RootElement.EnumerateObject().Count());
             return new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(new { code, requestId = id.ToString("D") })) };
         });
-        var result = await new LocalLlmRecoveryService(Configuration(), transport).SendAsync(model, Admin, start, id);
+        var result = await Service(Configuration(), transport).SendAsync(model, Admin, start, id);
         Assert.Equal(code, result.Code); Assert.Equal("LocalLlmControl", transport.Name);
         Assert.False(model.EnableAiScoring); Assert.False(model.IsPrimary);
         Assert.Equal(code == "stopped", result.CanStart);
@@ -112,7 +120,7 @@ public sealed class LocalLlmRecoveryTests
     public async Task HttpErrorsDoNotExposeRemoteBody(int status, string code)
     {
         var transport = new Transport((_, _) => Task.FromResult(new HttpResponseMessage((HttpStatusCode)status) { Content = new StringContent("SECRET path trace") }));
-        var result = await new LocalLlmRecoveryService(Configuration(), transport).SendAsync(Model(), Admin, true, Guid.NewGuid());
+        var result = await Service(Configuration(), transport).SendAsync(Model(), Admin, true, Guid.NewGuid());
         Assert.Equal(code, result.Code); Assert.DoesNotContain("SECRET", result.Message); Assert.Equal(1, transport.Calls);
     }
 
@@ -123,7 +131,7 @@ public sealed class LocalLlmRecoveryTests
     public async Task InvalidOrUncorrelatedReplyNeverClaimsHealthy(string reply)
     {
         var transport = new Transport((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(reply) }));
-        var result = await new LocalLlmRecoveryService(Configuration(), transport).SendAsync(Model(), Admin, true, Guid.NewGuid());
+        var result = await Service(Configuration(), transport).SendAsync(Model(), Admin, true, Guid.NewGuid());
         Assert.Equal("control_unavailable", result.Code); Assert.False(result.CanStart);
     }
 
@@ -132,7 +140,7 @@ public sealed class LocalLlmRecoveryTests
     {
         var transport = new Transport((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) {
             Content = new StreamContent(new MemoryStream(Encoding.UTF8.GetBytes(new string('x', 5000)))) }));
-        var result = await new LocalLlmRecoveryService(Configuration(), transport).SendAsync(Model(), Admin, false, Guid.NewGuid());
+        var result = await Service(Configuration(), transport).SendAsync(Model(), Admin, false, Guid.NewGuid());
         Assert.Equal("control_unavailable", result.Code);
     }
 
@@ -140,7 +148,7 @@ public sealed class LocalLlmRecoveryTests
     public async Task TimeoutNeverAutomaticallyRetriesStart()
     {
         var transport = new Transport((_, _) => throw new TaskCanceledException());
-        var result = await new LocalLlmRecoveryService(Configuration(), transport).SendAsync(Model(), Admin, true, Guid.NewGuid());
+        var result = await Service(Configuration(), transport).SendAsync(Model(), Admin, true, Guid.NewGuid());
         Assert.Equal("Unknown", result.State); Assert.False(result.CanStart); Assert.Equal(1, transport.Calls);
     }
 
@@ -157,6 +165,7 @@ public sealed class LocalLlmRecoveryTests
             new EphemeralDataProtectionProvider(), NullLogger<PortableIntegrationCredentialProtector>.Instance));
         builder.Services.AddSingleton<RecruitmentAiScoringService>();
         builder.Services.AddSingleton<LocalLlmRecoveryService>();
+        builder.Services.AddSingleton<ILocalLlmRecoverySettingsStore, LocalLlmRecoverySettingsStore>();
         builder.Services.AddSingleton<AuthRepository>();
         await using var app = builder.Build();
         app.Use(async (context, next) => {
@@ -172,10 +181,11 @@ public sealed class LocalLlmRecoveryTests
         {
             using var http = new HttpClient { BaseAddress = new Uri(app.Urls.Single()) };
             foreach (var actor in new[] { "anonymous", "admin", "client-super-admin" })
-            foreach (var start in new[] { false, true })
+            foreach (var (method, path) in new[] { (HttpMethod.Get, "runtime"), (HttpMethod.Post, "start-runtime"),
+                (HttpMethod.Get, "recovery-settings"), (HttpMethod.Put, "recovery-settings") })
             {
-                using var request = new HttpRequestMessage(start ? HttpMethod.Post : HttpMethod.Get,
-                    "/api/integrations/ai/6/" + (start ? "start-runtime" : "runtime"));
+                using var request = new HttpRequestMessage(method, "/api/integrations/ai/6/" + path);
+                if (method == HttpMethod.Put) request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
                 request.Headers.Add("X-Test-Actor", actor);
                 using var response = await http.SendAsync(request);
                 Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);

@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Payroll.API.Models;
 
 namespace Payroll.API.Services;
@@ -10,7 +9,7 @@ namespace Payroll.API.Services;
 public sealed record LocalLlmRuntimeStatus(string State, string Code, string Message, bool CanStart);
 
 // Separate, opt-in control plane. Never uses a model's inference credential or changes its settings.
-public sealed class LocalLlmRecoveryService(IConfiguration configuration, IHttpClientFactory clients)
+public sealed class LocalLlmRecoveryService(ILocalLlmRecoverySettingsStore settings, IHttpClientFactory clients)
 {
     public static bool IsAllowed(AuthUser user) => user.ClientId is null
         && user.Roles.Contains("super_admin", StringComparer.OrdinalIgnoreCase);
@@ -26,23 +25,24 @@ public sealed class LocalLlmRecoveryService(IConfiguration configuration, IHttpC
         "task_disabled" => new("Blocked", code, "The scheduled task is disabled. Ask the server administrator.", false),
         "cooldown" => new("Blocked", code, "A start was recently attempted. Wait five minutes before another attempt.", false),
         "busy" => new("Blocked", code, "Another control request is running. Refresh status shortly.", false),
-        "not_configured" => new("Unavailable", code, "Server recovery control is not configured/enabled on this API.", false),
+        "not_configured" => new("Unavailable", code, "Open Recovery settings to configure and enable server recovery.", false),
+        "credential_unreadable" => new("Unavailable", code, "The saved recovery key cannot be decrypted here. Check that local and production use the same integration encryption key/database credentials, or re-enter the control key in Recovery settings.", false),
+        "settings_unavailable" => new("Unavailable", code, "Recovery settings could not be read from the database. No server action was sent; server environment settings were not used as a fallback.", false),
         "unsupported" => new("Unavailable", code, "Recovery is not configured for this model endpoint.", false),
-        "unauthorized" => new("Unavailable", code, "Server recovery authentication failed. Check the separate control credential.", false),
+        "unauthorized" => new("Unavailable", code, "Server recovery returned HTTP 401/403. Check the separate control key in Recovery settings and any gateway access restrictions.", false),
         "unreachable" => new("Unknown", code, "Server control could not be reached. If Start was clicked, its outcome is unknown; refresh status before retrying.", false),
         _ => new("Unavailable", "control_unavailable", "Server control is unavailable or returned an invalid response. Check its configuration and server logs.", false),
     };
 
-    public LocalLlmRuntimeStatus? CheckConfiguration(RecruitmentAiScoringSettings model)
+    internal static LocalLlmRuntimeStatus? CheckConfiguration(RecruitmentAiScoringSettings model, LocalLlmRecoverySettings options)
     {
         if (model.ClientId != 0 || model.ProviderCode != "LocalOpenAICompatible") return Describe("unsupported");
-        if (!configuration.GetValue<bool>("LocalLlmRecovery:Enabled")
-            || !SecureUri(configuration["LocalLlmRecovery:ControlEndpointUrl"], out var control)
-            || !SecureUri(configuration["LocalLlmRecovery:InferenceEndpointUrl"], out var inference)
-            || control!.Authority != inference!.Authority || control == inference
-            || !Regex.IsMatch(configuration["LocalLlmRecovery:ApiKey"] ?? "", "\\A[a-fA-F0-9]{64}\\z"))
+        if (options.CredentialStatus == "Unreadable") return Describe("credential_unreadable");
+        if (!options.Enabled || !LocalLlmRecoverySettingsStore.ValidEndpoints(options.ControlEndpointUrl, options.InferenceEndpointUrl)
+            || !LocalLlmRecoverySettingsStore.ValidKey(options.ApiKey))
             return Describe("not_configured");
-        if (!SecureUri(model.EndpointUrl, out var saved) || saved != inference) return Describe("unsupported");
+        if (!LocalLlmRecoverySettingsStore.SecureUri(model.EndpointUrl, out var saved) || saved != new Uri(options.InferenceEndpointUrl))
+            return Describe("unsupported");
         return null;
     }
 
@@ -50,11 +50,15 @@ public sealed class LocalLlmRecoveryService(IConfiguration configuration, IHttpC
         bool start, Guid requestId, CancellationToken cancellationToken = default)
     {
         if (!IsAllowed(user)) throw new UnauthorizedAccessException();
-        if (CheckConfiguration(model) is { } unavailable) return unavailable;
+        LocalLlmRecoverySettings options;
+        try { options = await settings.GetAsync(cancellationToken); }
+        catch (Exception exception) when (exception is MySqlConnector.MySqlException or JsonException or InvalidOperationException)
+        { return Describe("settings_unavailable"); }
+        if (CheckConfiguration(model, options) is { } unavailable) return unavailable;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(25));
-        using var request = new HttpRequestMessage(HttpMethod.Post, configuration["LocalLlmRecovery:ControlEndpointUrl"]);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", configuration["LocalLlmRecovery:ApiKey"]);
+        using var request = new HttpRequestMessage(HttpMethod.Post, options.ControlEndpointUrl);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
         request.Content = JsonContent.Create(new { action = start ? "start" : "status", requestId = requestId.ToString("D") });
         try
         {
@@ -86,7 +90,4 @@ public sealed class LocalLlmRecoveryService(IConfiguration configuration, IHttpC
         catch (KeyNotFoundException) { return Describe("control_unavailable"); }
     }
 
-    private static bool SecureUri(string? value, out Uri? uri) => Uri.TryCreate(value, UriKind.Absolute, out uri)
-        && uri.Scheme == Uri.UriSchemeHttps && string.IsNullOrEmpty(uri.UserInfo)
-        && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment);
 }

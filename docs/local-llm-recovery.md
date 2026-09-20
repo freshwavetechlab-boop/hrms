@@ -1,8 +1,11 @@
 # Local LLM manual recovery (opt-in)
 
 Status (2026-09-20): **server bridge installed and control activated** after explicit
-approval. HRMS backend secret settings are pending; the user chose guided Coolify
-configuration. The LLM remains stopped; no actual Start request was sent.
+approval. The user subsequently reported configuring Coolify and redeploying,
+but portal recovery returned HTTP 401/403. The server's original control key
+passed an authenticated invalid-body probe without dispatching status/start;
+the effective Coolify credential/network path was not independently verified.
+The new DB-settings UI/API below is implemented locally, not yet deployed.
 
 AI Integration > saved Local LLM > Test now has adjacent Check/Refresh LLM status
 and Start local LLM controls, restricted to an exact global `super_admin` in UI
@@ -17,7 +20,53 @@ audit storage; it refuses to dispatch Start when the requested audit cannot save
 Timeout/unknown outcomes never trigger a retry. A five-minute shared server
 cooldown and fixed task identity protect against repeated/concurrent starts.
 
-## API configuration (disabled when absent)
+## Portal configuration (preferred; no new migration)
+
+After deploying **both API and UI**, open **AI Integrations > saved Local LLM >
+Recovery settings** as an exact global super-admin. Enter the HTTPS control URL,
+the separate 64-hex control key and the enabled switch, then save. The inference
+URL is bound to the saved model, and control must use the same HTTPS authority.
+Saving refreshes status; it does **not** start the model or change its provider.
+Use the existing explicitly confirmed Start button separately.
+
+One global row in existing `modulesettings` (`client_id=0`,
+`ModuleCode=local_llm_recovery:0`) stores the configuration. The control key uses
+the existing portable integration encryption helper with a separate authenticated
+purpose (`llm-control-credential:v1:`), never inference/storage ciphertext. GET
+returns credential status, not plaintext or ciphertext. Blank key preserves the
+saved key; changed endpoints require re-entry. Version checks prevent stale
+editors overwriting settings. Configuration and a secret-free audit commit in
+one transaction. No new table, schema migration or model-key rewrite is needed.
+
+Every status/start resolves the current DB row; no API restart is needed after
+editing it. A saved row overrides all legacy `LocalLlmRecovery__*` variables,
+including when explicitly disabled. Missing row alone permits legacy fallback;
+DB outages, corrupt records and unreadable credentials fail closed instead.
+Once saved, the old recovery-specific Coolify variables are not required by the
+updated API. All API instances must run the updated code before relying on this.
+
+### Localhost / production portability
+
+Both APIs must point at the same logical DB to share settings. The existing
+protector ignores DB host/port and machine-local Data Protection key rings. By
+default it binds to logical database name, DB user and password; these must
+match. If using an explicit `IntegrationCredentialEncryption:MasterKey` (or
+supported legacy alias), use the **same effective value** on all instances.
+Different DB credentials require a shared explicit integration master key.
+Do not rotate or introduce that master key casually: existing AI/storage
+credentials also depend on it and need a separately planned migration.
+An unreadable key is reported clearly and is not overwritten automatically.
+
+Verification: 136 backend checks passed, including an isolated GUID-named
+loopback MySQL persistence test (two instances/key rings, different DB routes,
+DB-over-env precedence, blank-key preservation, stale-edit rejection, atomic
+audit rollback and unrelated-module preservation). The temporary database was
+removed. 33 UI/contract checks and fresh isolated `npm ci` + production build
+passed with the unchanged lockfile. No browser, production DB write, deployment
+or actual LLM start was performed for this DB-settings change. Existing MailKit,
+React/AntD peer and bundle-size warnings remain.
+
+## Legacy API configuration (used only before a DB row is saved)
 
 Set on the HRMS **backend**, not Vite/browser configuration:
 
@@ -41,7 +90,8 @@ Candidate sources live in
 operating boundary. HRMS deploy alone does not install this server bridge.
 
 The following approved steps were applied on verified DCDB1 / 10.10.91.100;
-step 5 (HRMS configuration) remains pending. Do not blindly repeat installation:
+step 5 was later reported completed by the user, but portal authentication still
+needed investigation. Do not blindly repeat installation:
 
 1. Add these three new files (refuse silent replacement):
    - `E:\Datacopy\wordpress\llm-control.php` from `public/llm-control.php`.
