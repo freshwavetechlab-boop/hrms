@@ -9,6 +9,8 @@ export const getCandidates = (query = '', status = '', clientId?: number) => {
 }
 export const getCandidate = (id: number) => getJson<RecruitmentCandidateDetail | null>(`/api/recruitment/candidates/${id}`, null)
 export const saveCandidate = (row: SaveRecruitmentCandidate) => postJson('/api/recruitment/candidates', row, null as RecruitmentCandidate | null, { successMessage: 'Talent profile saved.' })
+export const updateCandidateIntakeDetails = (id: number, row: { noticePeriodDays?: number | null; currentCtc?: number | null; expectedCtc?: number | null }) =>
+  putJson(`/api/recruitment/candidates/${id}/intake-details`, row, null as RecruitmentCandidate | null)
 export const deleteCandidate = (id: number) => deleteJson(`/api/recruitment/candidates/${id}`, null, { successMessage: 'Candidate and safe test-stage recruitment data deleted.' })
 export const saveCandidateProfileSections = (candidateId: number, row: { experience: RecruitmentCandidateExperience[]; education: RecruitmentCandidateEducation[]; certifications: RecruitmentCandidateCertification[] }) => putJson(`/api/recruitment/candidates/${candidateId}/profile-sections`, row, null as RecruitmentCandidateDetail | null)
 export const getApplications = (filters: { positionId?: number; candidateId?: number; stage?: string } = {}) => {
@@ -58,7 +60,7 @@ export const moveApplicationCandidateToGlobalTalentPool = (id: number) => postJs
 export const moveApplicationsToGlobalTalentPool = (applicationIds: number[]) => postJson('/api/recruitment/applications/global-talent-pool', { applicationIds }, null as { moved: number; failed: number; errors: string[] } | null, { successMessage: 'Selected candidates moved to the Global Talent Pool.' })
 export const overrideApplicationScore = (scoreId: number, score: number, reason: string) => postJson(`/api/recruitment/application-scores/${scoreId}/override`, { score, reason }, null as RecruitmentApplicationScore | null, { successMessage: 'ATS score override saved.' })
 export const getInterviews = () => getJson<RecruitmentInterview[]>('/api/recruitment/interviews', [])
-export const getInterviewSchedulingContext = (applicationId: number) => getJson<RecruitmentInterviewSchedulingContext | null>(`/api/recruitment/interviews/scheduling-context/${applicationId}`, null)
+export const getInterviewSchedulingContext = (applicationId: number, standalone = false) => getJson<RecruitmentInterviewSchedulingContext | null>(`/api/recruitment/interviews/scheduling-context/${applicationId}${standalone ? '?standalone=true' : ''}`, null)
 export const saveInterview = (row: Partial<RecruitmentInterview> & { applicationId: number; panelUserIds?: number[] }) => postJson('/api/recruitment/interviews', row, null as RecruitmentInterview | null, { successMessage: 'Interview saved.' })
 export const sendInterviewInvite = (id: number) => postJson(`/api/recruitment/interviews/${id}/invite`, {}, { recipientCount: 0 }, { successMessage: 'Interview invite emailed to the candidate and panel.' })
 export const saveInterviewBatchItem = (row: Partial<RecruitmentInterview> & { applicationId: number; panelUserIds?: number[] }) => postJson('/api/recruitment/interviews', row, null as RecruitmentInterview | null, { toast: 'error-only' })
@@ -165,6 +167,9 @@ const uploadRecruitmentResumeBatch = (request: { clientId?: number; positionId?:
     body.append('draftHighestQualification', request.draft.highestQualification)
     body.append('draftSkills', request.draft.skills.join('\n'))
     body.append('draftCertifications', request.draft.certifications.join('\n'))
+    if (request.draft.noticePeriodDays != null) body.append('draftNoticePeriodDays', String(request.draft.noticePeriodDays))
+    if (request.draft.currentCtc != null) body.append('draftCurrentCtc', String(request.draft.currentCtc))
+    if (request.draft.expectedCtc != null) body.append('draftExpectedCtc', String(request.draft.expectedCtc))
   }
   request.files.forEach(file => body.append('files', file, file.name))
   return postFormWithProgress<RecruitmentResumeIntakeResult>('/api/recruitment/resume-intake', body, { totalFiles: 0, imported: 0, needsReview: 0, items: [] }, onProgress,

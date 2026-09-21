@@ -23,17 +23,14 @@ export default function ActionNotifications() {
     const attempt = ++generation.current
     if (!session) { setItems([]); return }
     setLoading(true)
-    const permissions = session.user.permissions
-    const canInterview = permissions.some(value => ['recruitment.interview.panel', 'recruitment.interview.schedule', 'recruitment.manage', 'settings.manage'].includes(value))
     const [tasks, interviews] = await Promise.all([
       getJsonResult<PendingTask[]>('/api/workflows/tasks/pending', [], { loader: false, toast: false }),
-      canInterview ? getJsonResult<RecruitmentInterview[]>('/api/recruitment/interviews', [], { loader: false, toast: false }) : Promise.resolve(null),
+      getJsonResult<RecruitmentInterview[]>('/api/recruitment/interviews', [], { loader: false, toast: false }),
     ])
     if (attempt !== generation.current) return
     const next: ActionItem[] = (tasks.data || []).map(task => ({ key: `approval:${task.id}`, title: task.stageName || 'Approval required', detail: `${task.resourceType} · ${task.resourceId}`, route: '/tasks' }))
     for (const interview of interviews?.data || []) {
-      if (!['Scheduled', 'Rescheduled'].includes(interview.status)) continue
-      if (interview.panelUserIds.includes(session.user.id) && !(interview.submittedPanelUserIds || []).includes(session.user.id))
+      if (interview.isCurrentUserFeedbackPending)
         next.push({ key: `feedback:${interview.id}`, title: 'Your panel feedback is pending', detail: `${interview.candidateName} · ${interview.positionTitle}`, route: `/recruitment/interviews?feedbackInterviewId=${interview.id}` })
       else if (interview.canRecordDecision)
         next.push({ key: `decision:${interview.id}`, title: 'Panel feedback complete — record decision', detail: `${interview.candidateName} · ${interview.positionTitle}`, route: `/recruitment/interviews?decisionInterviewId=${interview.id}` })

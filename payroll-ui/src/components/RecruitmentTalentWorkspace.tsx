@@ -2,7 +2,7 @@ import CandidateTrackingPreview from './CandidateTrackingPreview'
 import { interviewReady } from '../services/recruitmentInterviewEligibility'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Alert, Avatar, Badge, Button, Card, Checkbox, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip } from 'antd'
+import { Alert, Avatar, Badge, Button, Card, Checkbox, Drawer, Dropdown, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip } from 'antd'
 import { BranchesOutlined, CalendarOutlined, DeleteOutlined, EditOutlined, FileSearchOutlined, MailOutlined, PhoneOutlined, PlusOutlined, RobotOutlined, SearchOutlined, UploadOutlined, UserAddOutlined } from '@ant-design/icons'
 import DataTable from './DataTable'
 import OfferLetterPreview from './OfferLetterPreview'
@@ -49,6 +49,15 @@ const canOverrideAts = (row: RecruitmentCandidateApplication) => row.atsScore !=
 const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join('') || 'C'
 const experienceLabel = (months: number) => months > 0 ? `${Math.floor(months / 12)}y ${months % 12}m` : 'Not specified'
 
+function NewInterviewMenu({ onSelect }: { onSelect: (startNow: boolean) => void }) {
+  return <Dropdown menu={{ items: [
+    { key: 'later', label: 'Create a meeting for later', icon: <CalendarOutlined /> },
+    { key: 'now', label: 'Start an instant meeting', icon: <CalendarOutlined /> },
+  ], onClick: ({ key }) => onSelect(key === 'now') }}>
+    <Button type="primary" icon={<CalendarOutlined />}>New interview</Button>
+  </Dropdown>
+}
+
 export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }: { mode: Mode; initialClientId?: number }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -70,7 +79,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   const [detail, setDetail] = useState<RecruitmentCandidateDetail | null>(null)
   const [candidateAttachments, setCandidateAttachments] = useState<EntityAttachment[]>([])
   const [applicationDraft, setApplicationDraft] = useState({ candidateId: 0, positionId: 0, sourceType: 'Direct' })
-  const [interviewDraft, setInterviewDraft] = useState<{ applicationId: number; interview?: RecruitmentInterview } | null>(null)
+  const [interviewDraft, setInterviewDraft] = useState<{ applicationId: number; interview?: RecruitmentInterview; standalone?: boolean; startNow?: boolean } | null>(null)
   const [feedbackInterview, setFeedbackInterview] = useState<RecruitmentInterview | null>(null)
   useEffect(() => {
     if (mode !== 'interviews') return
@@ -128,17 +137,25 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
   }
 
   const load = useCallback(async () => {
+    if (mode === 'interviews') {
+      const interviewRows = await getInterviews()
+      setInterviews(initialClientId ? interviewRows.filter(row => row.clientId === initialClientId) : interviewRows)
+      // Panel users must not depend on (or request) HR-only candidates/offers endpoints.
+      if (canScheduleInterviews) setApplications(await getApplications())
+      return
+    }
     const [candidateRows, allApplicationRows, allInterviewRows, allOfferRows] = await Promise.all([getCandidates('', '', initialClientId || undefined), getApplications(), getInterviews(), getOffers()])
     const applicationRows = initialClientId ? allApplicationRows.filter(row => row.clientId === initialClientId) : allApplicationRows
     const applicationIds = new Set(applicationRows.map(row => row.id))
     const interviewRows = initialClientId ? allInterviewRows.filter(row => applicationIds.has(row.applicationId)) : allInterviewRows
     const offerRows = initialClientId ? allOfferRows.filter(row => row.clientId === initialClientId) : allOfferRows
     setCandidates(candidateRows); setApplications(applicationRows); setInterviews(interviewRows); setOffers(offerRows)
-  }, [initialClientId])
+  }, [initialClientId, mode, canScheduleInterviews])
   useEffect(() => {
+    if (mode === 'interviews' && !canScheduleInterviews) { void load(); return }
     void Promise.all([getClients(), getWorkLocations(), getEmployeeManagerUsers(), getRecruitmentOpenPositions(initialClientId)]).then(([clientRows, locationRows, userRows, positionRows]) => { setClients(clientRows); setWorkLocations(locationRows); setPanelUsers(userRows); setPositions(positionRows) })
     void load()
-  }, [initialClientId, load])
+  }, [initialClientId, load, mode, canScheduleInterviews])
   useEffect(() => {
     if (String(mode) !== 'applications' || !['single', 'bulk'].includes(requestedUploadMode || '')) return
     setResumeIntakeMode(requestedUploadMode as RecruitmentResumeIntakeMode)
@@ -178,6 +195,15 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
     if (!response.ok) return
     if (response.data?.pipelineWarning) notify(response.data.pipelineWarning, 'warning')
     setApplicationDraft({ candidateId: 0, positionId: 0, sourceType: 'Direct' }); await load(); await refreshDetail()
+  }
+  const createStandaloneInterviewApplication = async ({ fullName, email, phone, positionId }: { fullName: string; email: string; phone: string; positionId: number }) => {
+    const position = positions.find(row => row.id === positionId)
+    if (!position) return null
+    const parts = fullName.trim().split(/\s+/)
+    const candidate = await saveCandidate({ ...candidate0, clientId: position.clientId, firstName: parts[0] || '', lastName: parts.slice(1).join(' '), email: email.trim(), phone: phone.trim(), sourceType: 'Direct', consentStatus: 'Pending' })
+    if (!candidate.ok || !candidate.data) return null
+    const application = await createApplication({ candidateId: candidate.data.id, positionId, sourceType: 'Direct' })
+    return application.ok ? application.data : null
   }
   const refreshInterviewData = async () => { await load(); await refreshDetail() }
   const selectApplicationAction = async (row: RecruitmentCandidateApplication, action: 'override' | 'pool') => {
@@ -372,7 +398,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
     <CandidateEditorDrawer draft={candidateDraft} clients={clients} onChange={setCandidateDraft} onClose={() => setCandidateDraft(null)} onSubmit={() => void saveCandidateDraft()} />
     {candidateFormOpen && <RecruitmentInternalCandidateForm open clientId={initialClientId} initialPostingId={requestedPostingId} onClose={closeCandidateForm} onCompleted={load} />}
     <RecruitmentResumeIntake open={resumeIntakeMode !== null} initialMode={resumeIntakeMode || 'single'} initialClientId={resumeIntakeTarget?.clientId ?? initialClientId} initialPositionId={resumeIntakeTarget?.positionId ?? requestedPositionId} initialJobPostingId={resumeIntakeTarget?.jobPostingId ?? (requestedPostingId || null)} onClose={closeResumeIntake} onCompleted={async () => { await load() }} onEditCandidate={editCandidate} title={resumeIntakeTarget ? `Re-upload resume · ${resumeIntakeTarget.candidateName}` : resumeIntakeMode === 'bulk' ? 'Bulk candidate upload' : 'Add candidate application'} description={resumeIntakeTarget ? 'Preview the replacement, correct parsed details if required, then upload. The deleted resume reference will be replaced.' : 'Preview and edit parsed candidate details first. Final upload creates the candidate/application and stores the resume.'} />
-    {interviewDraft && <RecruitmentInterviewEditor mode="schedule" open applications={applications} panelUsers={panelUsers} interview={interviewDraft.interview} initialApplicationId={interviewDraft.applicationId} onClose={() => setInterviewDraft(null)} onSaved={refreshInterviewData} />}
+    {interviewDraft && <RecruitmentInterviewEditor mode="schedule" open applications={applications} positions={positions} panelUsers={panelUsers} standalone={Boolean(interviewDraft.standalone)} onCreateStandaloneApplication={session?.user.permissions.some(permission => ['recruitment.manage', 'settings.manage'].includes(permission)) ? createStandaloneInterviewApplication : undefined} interview={interviewDraft.interview} initialApplicationId={interviewDraft.applicationId} initialStartNow={Boolean(interviewDraft.startNow)} onClose={() => setInterviewDraft(null)} onSaved={refreshInterviewData} />}
     {feedbackInterview && <RecruitmentInterviewEditor mode="feedback" open applications={applications} panelUsers={panelUsers} interview={feedbackInterview} readOnly={feedbackInterview.status === 'Completed'} onClose={() => setFeedbackInterview(null)} onSaved={refreshInterviewData} />}
   </div>
 
@@ -387,7 +413,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
       { key: 'applicationCode', label: 'Application' }, { key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Position', render: row => <><b>{row.positionTitle}</b><small>{row.positionCode}</small></> }, { key: 'clientName', label: 'Client' }, { key: 'sourceType', label: 'Application source', render: row => <Tag color={publicJobApplication(row) ? 'blue' : 'default'}>{publicJobApplication(row) ? 'Published job link' : `Manual · ${row.sourceType || 'Direct'}`}</Tag> }, { key: 'currentStage', label: 'Stage' }, { key: 'recruiterName', label: 'Recruiter' }, { key: 'atsScore', label: 'ATS score', render: row => row.atsScore == null ? '-' : <Tag color={row.atsScore >= 60 ? 'green' : 'orange'}>{row.atsScore.toFixed(1)}</Tag> }, { key: 'appliedAt', label: 'Applied', render: row => new Date(row.appliedAt).toLocaleDateString('en-IN') }
     ]} /></>}
     {mode === 'interviewQueue' && <section className="interview-operations-workspace">
-      <header className="candidate-applications-heading"><div><span>INTERVIEW QUEUE</span><h2>Candidates ready for interview</h2><p>Select shortlisted candidates and schedule individual or sequential interview slots.</p></div><Space wrap><Button icon={<CalendarOutlined />} onClick={() => setInterviewDraft({ applicationId: 0 })}>Schedule one</Button><Button type="primary" icon={<CalendarOutlined />} disabled={!selectedBatchApplications.length} onClick={() => setBatchInterviewOpen(true)}>Schedule selected ({selectedBatchApplications.length})</Button></Space></header>
+      <header className="candidate-applications-heading"><div><span>INTERVIEW QUEUE</span><h2>Candidates ready for interview</h2><p>ATS-qualified candidates stay in the bulk queue. New interview can be scheduled independently without changing ATS.</p></div><Space wrap><NewInterviewMenu onSelect={(startNow) => setInterviewDraft({ applicationId: 0, standalone: true, startNow })} /><Button type="primary" icon={<CalendarOutlined />} disabled={!selectedBatchApplications.length} onClick={() => setBatchInterviewOpen(true)}>Schedule selected ({selectedBatchApplications.length})</Button></Space></header>
       <Card size="small" title="Candidates ready for interview" extra={<Tag color="cyan">{interviewReadyApplications.length} ready</Tag>}>
         <Table<RecruitmentCandidateApplication>
           rowKey="id"
@@ -411,6 +437,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
     </section>}
     {mode === 'interviews' && <section className="interview-operations-workspace">
       {internalInterviewsEnabled && <InternalInterviewDashboard />}
+      {canScheduleInterviews && <div className="talent-toolbar right"><NewInterviewMenu onSelect={(startNow) => setInterviewDraft({ applicationId: 0, standalone: true, startNow })} /></div>}
       <div className="candidate-status-strip interview-status-strip" role="tablist" aria-label="Interview status filters">{interviewMetrics.map(metric => <button key={metric.key} type="button" role="tab" aria-selected={interviewQuickFilter === metric.key} className={interviewQuickFilter === metric.key ? 'is-active' : ''} onClick={() => setInterviewQuickFilter(metric.key)}><b className={`tone-${metric.tone}`}>{metric.count}</b><span>{metric.label}</span></button>)}</div>
       <DataTable rows={visibleInterviews} emptyText="No interviews match this status." exportFileName="recruitment-interviews" actions={row => <Space wrap>
         {internalInterviewsEnabled && <Button size="small" onClick={() => navigate(`/recruitment/interview-session/${row.id}`)}>Internal session</Button>}
@@ -427,6 +454,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
         { key: 'candidateName', label: 'Candidate', width: 210, wrap: true },
         { key: 'positionTitle', label: 'Position', width: 220, wrap: true },
         { key: 'roundCode', label: 'Round', width: 220, wrap: true },
+        { key: 'panelFeedbackStatus', label: 'Panel feedback', width: 240, wrap: true, render: row => <Space direction="vertical">{(row.panelFeedbackStatus || []).map(member => <span key={member.userId}>{member.displayName} <Tag color={member.submitted ? 'green' : 'orange'}>{member.submitted ? 'Submitted' : 'Pending'}</Tag></span>)}</Space> },
         { key: 'scheduledStart', label: 'Schedule', render: row => <><b>{new Date(row.scheduledStart).toLocaleDateString('en-IN')}</b><small>{new Date(row.scheduledStart).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} - {new Date(row.scheduledEnd).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</small></> },
         { key: 'mode', label: 'Mode' },
         { key: 'locationOrLink', label: 'Link / location', width: 210, wrap: true, render: row => /^https?:\/\//i.test(row.locationOrLink || '') ? <Button size="small" type="link" href={row.locationOrLink} target="_blank" rel="noreferrer">Open link</Button> : row.locationOrLink || '-' },
@@ -501,7 +529,10 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0 }
 }
 
 function CandidateEditorDrawer({ draft, clients, onChange, onClose, onSubmit }: { draft: SaveRecruitmentCandidate | null; clients: Client[]; onChange: (value: SaveRecruitmentCandidate | null) => void; onClose: () => void; onSubmit: () => void }) {
+  const [noticeUnit, setNoticeUnit] = useState<'Days' | 'Months'>('Days')
   const patch = (value: Partial<SaveRecruitmentCandidate>) => draft && onChange({ ...draft, ...value })
+  const noticeFactor = noticeUnit === 'Months' ? 30 : 1
+  const lpa = (annualInr: number) => annualInr > 0 ? Number((annualInr / 100000).toFixed(2)) : undefined
   return <RecruitmentEditorDrawer open={!!draft} eyebrow="Talent profile" title={draft?.id ? 'Edit candidate' : 'Add candidate'} description="Maintain the candidate identity, work profile and consent details." onClose={onClose} onSubmit={onSubmit} submitText={draft?.id ? 'Save changes' : 'Add candidate'} width="min(850px, 96vw)">{draft && <Form layout="vertical" className="talent-form-grid">
     <Alert className="talent-form-wide" showIcon type="info" message="ATS profile fields" description="Current title, experience, location and qualification are used with the parsed resume and approved JD during ATS scoring. Correct any parser mismatch before running ATS." />
     <Form.Item label="Client" required><SearchSelect disabled={draft.id > 0} value={draft.clientId} onChange={value => patch({ clientId: Number(value) })} options={selectOptions(clients.map(row => ({ value: row.id, label: row.name })), 'Select client', 0)} /></Form.Item>
@@ -509,8 +540,8 @@ function CandidateEditorDrawer({ draft, clients, onChange, onClose, onSubmit }: 
     <Form.Item label="Email" extra="Email or phone is required before the candidate can continue through ATS."><Input value={draft.email} onChange={event => patch({ email: event.target.value })} /></Form.Item><Form.Item label="Phone"><Input value={draft.phone} onChange={event => patch({ phone: event.target.value })} /></Form.Item>
     <Form.Item label="Current company"><Input value={draft.currentCompany} onChange={event => patch({ currentCompany: event.target.value })} /></Form.Item><Form.Item label="Current title (ATS)"><Input value={draft.currentTitle} onChange={event => patch({ currentTitle: event.target.value })} /></Form.Item>
     <Form.Item label="Total experience in months (ATS)"><InputNumber min={0} value={draft.totalExperienceMonths} onChange={value => patch({ totalExperienceMonths: Number(value || 0) })} /></Form.Item><Form.Item label="Current location (ATS)"><Input value={draft.currentLocation} onChange={event => patch({ currentLocation: event.target.value })} /></Form.Item>
-    <Form.Item label="Notice period (days)"><InputNumber min={0} value={draft.noticePeriodDays} onChange={value => patch({ noticePeriodDays: Number(value || 0) })} /></Form.Item><Form.Item label="Highest qualification (ATS)"><Input value={draft.highestQualification} onChange={event => patch({ highestQualification: event.target.value })} /></Form.Item>
-    <Form.Item label="Current annual CTC"><InputNumber min={0} value={draft.currentCtc} onChange={value => patch({ currentCtc: Number(value || 0) })} /></Form.Item><Form.Item label="Expected annual CTC"><InputNumber min={0} value={draft.expectedCtc} onChange={value => patch({ expectedCtc: Number(value || 0) })} /></Form.Item>
+    <Form.Item label="Notice period"><Space.Compact block><InputNumber min={0} max={3650 / noticeFactor} step={noticeUnit === 'Months' ? 0.5 : 1} style={{ width: '100%' }} value={draft.noticePeriodDays > 0 ? Number((draft.noticePeriodDays / noticeFactor).toFixed(2)) : undefined} onChange={value => patch({ noticePeriodDays: Math.round(Number(value || 0) * noticeFactor) })} /><Select value={noticeUnit} style={{ width: 104 }} onChange={setNoticeUnit} options={[{ value: 'Days', label: 'Days' }, { value: 'Months', label: 'Months' }]} /></Space.Compact></Form.Item><Form.Item label="Highest qualification (ATS)"><Input value={draft.highestQualification} onChange={event => patch({ highestQualification: event.target.value })} /></Form.Item>
+    <Form.Item label="Current annual CTC (LPA)"><InputNumber min={0} max={10000} step={0.1} addonAfter="LPA" value={lpa(draft.currentCtc)} onChange={value => patch({ currentCtc: Math.round(Number(value || 0) * 100000) })} /></Form.Item><Form.Item label="Expected annual CTC (LPA)"><InputNumber min={0} max={10000} step={0.1} addonAfter="LPA" value={lpa(draft.expectedCtc)} onChange={value => patch({ expectedCtc: Math.round(Number(value || 0) * 100000) })} /></Form.Item>
     <Form.Item label="Source"><Select value={draft.sourceType} onChange={sourceType => patch({ sourceType })} options={['Direct', 'Employee Referral', 'Consultant', 'Vendor', 'Job Portal', 'Campus'].map(value => ({ value, label: value }))} /></Form.Item><Form.Item label="Profile status"><Select value={draft.profileStatus} onChange={profileStatus => patch({ profileStatus })} options={['Active', 'Inactive', 'Joined', 'Archived'].map(value => ({ value, label: value }))} /></Form.Item>
     <Form.Item label="Consent"><Select value={draft.consentStatus} onChange={consentStatus => patch({ consentStatus })} options={['Pending', 'Granted', 'Revoked'].map(value => ({ value, label: value }))} /></Form.Item><Form.Item label="Retention until"><Input type="date" value={draft.retentionUntil?.slice(0, 10) || ''} onChange={event => patch({ retentionUntil: event.target.value || null })} /></Form.Item>
   </Form>}</RecruitmentEditorDrawer>

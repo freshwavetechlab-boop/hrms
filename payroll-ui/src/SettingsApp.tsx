@@ -23,6 +23,7 @@ import PayrollPage from './pages/PayrollPage'
 import ReportingPage, { reportItems } from './pages/ReportingPage'
 import type { ReportDefinition, ReportingMenu } from './pages/ReportingPage'
 import RecruitmentPage, { recruitmentViews, type RecruitmentPageView } from './pages/RecruitmentPage'
+import { getJsonResult } from './services/apiClient'
 import MyProfilePage from './pages/MyProfilePage'
 import TravelAdvancesPage from './pages/TravelAdvancesPage'
 import WorkflowPage from './pages/WorkflowPage'
@@ -281,12 +282,23 @@ export default function SettingsApp() {
   const hasAnyPermission = (...codes: string[]) => codes.some(code => grantedPermissions.has(code))
   const clientScopedAdmin = Boolean(currentUser?.clientId && !grantedPermissions.has('security.manage'))
   const isSuperAdmin = Boolean(currentUser?.clientId == null && currentUser?.roles.some(role => role.toLowerCase() === 'super_admin'))
+  const [hasAssignedInterviews, setHasAssignedInterviews] = useState(false)
+  const interviewOnly = !isSuperAdmin && !hasAnyPermission('settings.manage', 'recruitment.manage', 'recruitment.interview.schedule')
+    && !Array.from(grantedPermissions).some(permission => permission.startsWith('recruitment.') && permission !== 'recruitment.interview.panel')
+  useEffect(() => {
+    let active = true
+    const refresh = () => { void getJsonResult<unknown[]>('/api/recruitment/interviews', [], { loader: false, toast: false }).then(result => { if (active) setHasAssignedInterviews(result.ok && result.data.length > 0) }) }
+    refresh()
+    window.addEventListener('hrms:actions-changed', refresh)
+    window.addEventListener('focus', refresh)
+    return () => { active = false; window.removeEventListener('hrms:actions-changed', refresh); window.removeEventListener('focus', refresh) }
+  }, [currentUser?.id])
   const canAccessModule = (code: ModuleCode | 'Reports') => {
     if (code === 'Dashboard') return true
     if (code === 'Employees') return hasAnyPermission('employees.view', 'employees.manage')
     if (code === 'Payroll') return hasAnyPermission('payroll.run', 'payroll.approve', 'payroll.payments')
     if (code === 'LeaveAttendance') return hasAnyPermission('attendance.manage', 'leave.manage', 'mss.attendance.manage', 'mss.attendance.client.manage')
-    if (code === 'TalentAcquisition') return isSuperAdmin || hasAnyPermission('settings.manage') || Array.from(grantedPermissions).some(permission => permission.startsWith('recruitment.'))
+    if (code === 'TalentAcquisition') return hasAssignedInterviews || isSuperAdmin || hasAnyPermission('settings.manage') || Array.from(grantedPermissions).some(permission => permission.startsWith('recruitment.'))
     if (code === 'Security') return hasAnyPermission('security.manage', 'client.users.manage', 'client.roles.assign')
     if (code === 'Workflows') return hasAnyPermission('workflow.manage')
     if (code === 'Settings') return hasAnyPermission('settings.manage', 'client.settings.manage')
@@ -734,7 +746,7 @@ export default function SettingsApp() {
         inlineIndent={14}
         selectedKeys={[slug(recruitmentNavigationView(recruitmentView))]}
         defaultOpenKeys={[...recruitmentNavigation.map(group => `recruitment-${group.key}`), 'recruitment-candidates', 'recruitment-interviews-offers']}
-        items={recruitmentNavigation.map(group => ({
+        items={interviewOnly ? [{ key: slug('Interviews'), label: menuLabel('Interview Tracker', 'onboarding') }] : recruitmentNavigation.map(group => ({
           key: `recruitment-${group.key}`,
           label: menuLabel(group.label, group.icon),
           children: group.children.map(item => 'view' in item
@@ -780,7 +792,7 @@ export default function SettingsApp() {
     if (mainModule === 'LeaveAttendance') return <PayrollAttendancePage />
     if (mainModule === 'Payroll') return isPayHistory ? <PayHistoryPage /> : payrollTab === 'Employee Tax Profile' ? <EmployeeTaxProfileManager /> : payrollTab === 'Travel Advances' ? <TravelAdvancesPage /> : <PayrollPage key={payrollTab} mode={payrollTab === 'Adjustments' ? 'adjustments' : 'payrun'} runType={payrollTab === 'Off-cycle Run' ? 'Off-cycle Run' : 'Regular Run'} />
     if (mainModule === 'Employees') return employeeTab === 'Employee Communication' ? <EmployeeCommunicationPage /> : <EmployeePage view={(employeeTab === 'Org Structure' ? 'org' : 'master') as EmployeePageView} />
-    if (mainModule === 'TalentAcquisition') return <RecruitmentPage view={recruitmentView} />
+    if (mainModule === 'TalentAcquisition') return <RecruitmentPage view={interviewOnly ? 'Interviews' : recruitmentView} />
     if (mainModule === 'Reports') return <ReportingPage activeMenu={reportingTab} activeReport={reportingReport} />
     if (mainModule === 'Workflows') return <WorkflowPage activeMenu={workflowTab} />
     return settingsSection === 'LeaveAttendance'

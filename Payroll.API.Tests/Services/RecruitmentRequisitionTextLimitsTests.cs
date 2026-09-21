@@ -113,4 +113,13 @@ public sealed class RecruitmentRequisitionTextLimitsTests
         Assert.Equal("Parsed", RecruitmentRequisitionTextLimits.Review(result).Status);
         Assert.Empty(result.Warnings);
     }
+
+    [Fact]
+    public void CorruptedOcrProseIsHeldForReviewInsteadOfBeingTreatedAsAJobFact()
+    {
+        var normal = "The manager will coordinate the operations team, maintain service-level agreements, and work with all stakeholders.";
+        var corrupted = string.Join(' ', Enumerable.Repeat("Wrill be respon.sible./or rnancrging the tecrm o./'operators", 8));
+        Assert.False(RecruitmentRequestDocumentParsingService.HasDamagedProse(normal));
+        Assert.True(RecruitmentRequestDocumentParsingService.HasDamagedProse(corrupted));
+    }
 }

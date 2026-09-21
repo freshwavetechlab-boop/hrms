@@ -63,6 +63,15 @@ public class SaveRecruitmentCandidate
     public bool AllowIncompleteIdentity { get; set; }
 }
 
+// Narrow patch used by resume-intake result rows. It deliberately does not
+// overwrite identity, source, consent, or any other recruiter-maintained data.
+public class SaveRecruitmentCandidateIntakeDetails
+{
+    public int? NoticePeriodDays { get; set; }
+    public decimal? CurrentCtc { get; set; }
+    public decimal? ExpectedCtc { get; set; }
+}
+
 public class RecruitmentCandidateResume
 {
     public long Id { get; set; }
@@ -432,6 +441,14 @@ public class OverrideApplicationScoreRequest
 
 public class RecruitmentInterview
 {
+    public bool IsStandalone { get; set; }
+    public int ClientId { get; set; }
+    public string JobLocation { get; set; } = "";
+    // Actor-scoped flags. These are calculated after tenant and panel membership filtering;
+    // they do not grant a role or expose any other interview.
+    public bool IsCurrentUserAssignedPanel { get; set; }
+    public bool IsCurrentUserFeedbackPending { get; set; }
+    public List<RecruitmentInterviewPanelStatus> PanelFeedbackStatus { get; set; } = [];
     public int? DecisionApproverUserId { get; set; }
     public string DecisionApproverName { get; set; } = "";
     public long Id { get; set; }
@@ -474,8 +491,17 @@ public class RecruitmentInterview
     public DateTime UpdatedAt { get; set; }
 }
 
+public class RecruitmentInterviewPanelStatus
+{
+    public long InterviewId { get; set; }
+    public int UserId { get; set; }
+    public string DisplayName { get; set; } = "";
+    public bool Submitted { get; set; }
+}
+
 public class SaveRecruitmentInterview
 {
+    public bool IsStandalone { get; set; }
     public int? DecisionApproverUserId { get; set; }
     public long Id { get; set; }
     public long ApplicationId { get; set; }
@@ -741,6 +767,9 @@ public class RecruitmentResumeIntakeRequest
     public string DraftHighestQualification { get; set; } = "";
     public string DraftSkills { get; set; } = "";
     public string DraftCertifications { get; set; } = "";
+    public int? DraftNoticePeriodDays { get; set; }
+    public decimal? DraftCurrentCtc { get; set; }
+    public decimal? DraftExpectedCtc { get; set; }
     public List<IFormFile> Files { get; set; } = [];
 }
 
@@ -770,6 +799,9 @@ public class RecruitmentResumePreview
     public string HighestQualification { get; set; } = "";
     public List<string> Skills { get; set; } = [];
     public List<string> Certifications { get; set; } = [];
+    public int? NoticePeriodDays { get; set; }
+    public decimal? CurrentCtc { get; set; }
+    public decimal? ExpectedCtc { get; set; }
     public long? ExistingCandidateId { get; set; }
     public string ExistingCandidateCode { get; set; } = "";
     public long? ExistingApplicationId { get; set; }

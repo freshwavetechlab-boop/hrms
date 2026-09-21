@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Checkbox, DatePicker, Descriptions, Form, Input, InputNumber, Progress, Select, Space, Statistic, Switch, Table, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Checkbox, DatePicker, Descriptions, Form, Input, InputNumber, Progress, Radio, Select, Space, Statistic, Switch, Table, Tag, Typography } from 'antd'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import { getInternalInterviewCapabilities } from '../services/internalInterviewService'
 import { externalInterviewDestination, frevoInterviewDestination, isFrevoInterview } from '../services/interviewDelivery'
 import { panelRecommendationLabel } from '../services/recruitmentInterviewEligibility'
 import { getInterviewFeedback, getInterviewSchedulingContext, saveInterview, saveInterviewFeedback, sendInterviewInvite } from '../services/recruitmentTalentService'
-import type { RecruitmentCandidateApplication, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, SaveRecruitmentInterviewFeedbackCompetencyScore, WorkflowApprover } from '../types/payroll'
+import type { RecruitmentCandidateApplication, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, RecruitmentOpenPosition, SaveRecruitmentInterviewFeedbackCompetencyScore, WorkflowApprover } from '../types/payroll'
 import SearchSelect, { selectOptions } from './SearchSelect'
 import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
 import { useAuthSession } from './AuthGate'
@@ -16,6 +16,9 @@ type CommonProps = {
   open: boolean
   applications: RecruitmentCandidateApplication[]
   panelUsers: WorkflowApprover[]
+  positions?: RecruitmentOpenPosition[]
+  standalone?: boolean
+  onCreateStandaloneApplication?: (input: { fullName: string; email: string; phone: string; positionId: number }) => Promise<RecruitmentCandidateApplication | null>
   onClose: () => void
   onSaved: () => void | Promise<void>
 }
@@ -24,6 +27,7 @@ type ScheduleProps = CommonProps & {
   mode: 'schedule'
   interview?: RecruitmentInterview | null
   initialApplicationId?: number
+  initialStartNow?: boolean
 }
 
 type FeedbackProps = CommonProps & {
@@ -112,7 +116,7 @@ export default function RecruitmentInterviewEditor(props: RecruitmentInterviewEd
   return props.mode === 'schedule' ? <ScheduleEditor {...props} /> : <FeedbackEditor {...props} />
 }
 
-function ScheduleEditor({ open, interview, initialApplicationId = 0, applications, panelUsers, onClose, onSaved }: ScheduleProps) {
+function ScheduleEditor({ open, interview, initialApplicationId = 0, initialStartNow = false, applications, panelUsers, positions = [], standalone = false, onCreateStandaloneApplication, onClose, onSaved }: ScheduleProps) {
   const session = useAuthSession()
   const canSchedule = !!session?.user.permissions.some(permission => ['recruitment.interview.schedule', 'recruitment.manage', 'settings.manage'].includes(permission))
   const navigate = useNavigate()
@@ -123,24 +127,30 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
   const [contextLoading, setContextLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [sendInvite, setSendInvite] = useState(!interview?.id)
+  const [candidateMode, setCandidateMode] = useState<'existing' | 'new'>('existing')
+  const [newCandidate, setNewCandidate] = useState({ fullName: '', email: '', phone: '', positionId: 0 })
 
   useEffect(() => {
     if (!open) return
-    setDraft({ ...initialSchedule(interview, initialApplicationId), ...(!canSchedule && interview?.canRecordDecision ? { status: 'Completed', result: interview.result === 'Pending' ? 'Selected' : interview.result } : {}) })
+    const next = initialSchedule(interview, initialApplicationId)
+    if (!interview?.id && initialStartNow) next.range = [dayjs(), dayjs().add(60, 'minute')]
+    setDraft({ ...next, ...(!canSchedule && interview?.canRecordDecision ? { status: 'Completed', result: interview.result === 'Pending' ? 'Selected' : interview.result } : {}) })
     setContext(interview ? contextFromInterview(interview) : null)
     setSendInvite(!interview?.id)
     setInternalDelivery(!!interview && isFrevoInterview(interview.mode, interview.locationOrLink))
     setInternalAvailable(false)
+    setCandidateMode('existing')
+    setNewCandidate({ fullName: '', email: '', phone: '', positionId: 0 })
     let active = true
     void getInternalInterviewCapabilities().then(value => { if (active) setInternalAvailable(value.enabled && value.canManage && value.acceptingNewSessions !== false) })
     return () => { active = false }
-  }, [open, interview, initialApplicationId, canSchedule])
+  }, [open, interview, initialApplicationId, initialStartNow, canSchedule])
 
   useEffect(() => {
     if (!open || interview?.id || !draft.applicationId) return
     let active = true
     setContextLoading(true)
-    void getInterviewSchedulingContext(draft.applicationId).then(next => {
+    void getInterviewSchedulingContext(draft.applicationId, standalone).then(next => {
       if (!active) return
       setContext(next)
       if (next) {
@@ -157,24 +167,33 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
       }
     }).finally(() => { if (active) setContextLoading(false) })
     return () => { active = false }
-  }, [open, interview?.id, draft.applicationId])
+  }, [open, interview?.id, draft.applicationId, standalone])
 
   const selectedApplication = applications.find(row => row.id === draft.applicationId)
   const eligiblePanelUsers = useMemo(() => panelUsers.filter(user => !selectedApplication || user.clientId == null || user.clientId === selectedApplication.clientId), [panelUsers, selectedApplication])
-  const minimumPanelCount = context?.minimumPanelCount || 1
+  const minimumPanelCount = standalone ? 1 : context?.minimumPanelCount || 1
   const rangeValid = draft.range[0]?.isValid() && draft.range[1]?.isValid() && draft.range[1].isAfter(draft.range[0])
   const cannotReschedule = Boolean(interview?.id && context?.isPipelineManaged && !context.allowReschedule)
   const completionValid = draft.status !== 'Completed' || draft.result !== 'Pending'
   const recordingDecision = !!interview?.id && draft.status === 'Completed'
   const destinationValid = recordingDecision || (internalDelivery ? internalAvailable : !sendInvite || Boolean(draft.locationOrLink.trim()))
-  const canSave = (canSchedule || interview?.canRecordDecision === true) && draft.applicationId > 0 && rangeValid && completionValid && destinationValid && draft.panelUserIds.length >= minimumPanelCount && !contextLoading && (Boolean(interview?.id) || context !== null)
+  const hasNewCandidate = candidateMode === 'new' && Boolean(newCandidate.fullName.trim() && (newCandidate.email.trim() || newCandidate.phone.trim()) && newCandidate.positionId)
+  const hasTarget = candidateMode === 'new' ? hasNewCandidate : draft.applicationId > 0
+  const canSave = (canSchedule || interview?.canRecordDecision === true) && hasTarget && rangeValid && completionValid && destinationValid && draft.panelUserIds.length >= minimumPanelCount && !contextLoading && (Boolean(interview?.id) || standalone || context !== null)
 
   const submit = async () => {
     if (!canSave) return
     setSaving(true)
+    let applicationId = draft.applicationId
+    if (!interview?.id && candidateMode === 'new') {
+      const application = await onCreateStandaloneApplication?.(newCandidate)
+      if (!application) { setSaving(false); return }
+      applicationId = application.id
+    }
     const response = await saveInterview({
       id: draft.id,
-      applicationId: draft.applicationId,
+      applicationId,
+      isStandalone: standalone,
       roundCode: draft.roundCode,
       interviewType: draft.interviewType,
       scheduledStart: draft.range[0].format('YYYY-MM-DDTHH:mm:ss'),
@@ -193,6 +212,7 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
       setSaving(false)
       return
     }
+    window.dispatchEvent(new Event('hrms:actions-changed'))
     if (!internalDelivery && sendInvite && response.data?.id && ['Scheduled', 'Rescheduled'].includes(draft.status)) {
       await sendInterviewInvite(response.data.id)
     }
@@ -206,8 +226,8 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
     open={open}
     width="min(900px, 96vw)"
     eyebrow="Recruitment interview"
-    title={interview?.id ? 'Update interview' : 'Schedule interview'}
-    description="Set the interview round, schedule, panel and result in one workspace."
+    title={interview?.id ? 'Update interview' : standalone ? 'New interview' : 'Schedule interview'}
+    description={standalone ? 'Create a one-off meeting from an existing application or a new candidate. This does not alter ATS or pipeline progress.' : 'Set the interview round, schedule, panel and result in one workspace.'}
     onClose={onClose}
     onSubmit={() => void submit()}
     submitText={recordingDecision ? 'Record final decision' : internalDelivery ? 'Save & configure Frevo One interview' : sendInvite ? (interview?.id ? 'Save & resend invite' : 'Schedule & send invite') : (interview?.id ? 'Save changes' : 'Schedule interview')}
@@ -217,9 +237,14 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
   >
     <div className="interview-editor">
       <Form disabled={!canSchedule} layout="vertical" className="interview-editor-grid">
-        <Form.Item label="Application" required>
+        {standalone && !interview?.id && <Form.Item className="interview-editor-span" label="Meeting participant" required><Radio.Group value={candidateMode} onChange={event => setCandidateMode(event.target.value)}><Radio.Button value="existing">Existing application</Radio.Button><Radio.Button value="new" disabled={!onCreateStandaloneApplication}>New candidate</Radio.Button></Radio.Group></Form.Item>}
+        {candidateMode === 'existing' ? <Form.Item label="Application" required>
           <SearchSelect disabled={!canSchedule || Boolean(interview?.id)} value={draft.applicationId} onChange={value => { setContext(null); setDraft({ ...draft, applicationId: Number(value), panelUserIds: [] }) }} options={selectOptions(applications.map(row => ({ value: row.id, label: `${row.applicationCode} - ${row.candidateName} / ${row.positionTitle}` })), 'Select application', 0)} />
-        </Form.Item>
+        </Form.Item> : <>
+          <Form.Item label="Candidate name" required><Input value={newCandidate.fullName} onChange={event => setNewCandidate({ ...newCandidate, fullName: event.target.value })} placeholder="Full name" /></Form.Item>
+          <Form.Item label="Email or phone" required><Input value={newCandidate.email || newCandidate.phone} onChange={event => { const value = event.target.value; setNewCandidate({ ...newCandidate, email: value.includes('@') ? value : '', phone: value.includes('@') ? '' : value }) }} placeholder="name@example.com or mobile number" /></Form.Item>
+          <Form.Item className="interview-editor-span" label="Job / open position" required><Select showSearch optionFilterProp="label" value={newCandidate.positionId || undefined} onChange={positionId => setNewCandidate({ ...newCandidate, positionId: Number(positionId) })} options={positions.filter(row => !['Closed', 'Cancelled', 'Filled'].includes(row.status)).map(row => ({ value: row.id, label: `${row.positionCode} — ${row.positionTitle}` }))} placeholder="Choose open position" /></Form.Item>
+        </>}
         <Form.Item label="Time zone"><Select value={draft.timeZoneId} onChange={timeZoneId => setDraft({ ...draft, timeZoneId })} options={[{ value: 'Asia/Kolkata', label: 'Asia/Kolkata (IST)' }, { value: 'UTC', label: 'UTC' }]} /></Form.Item>
         <Form.Item label="Round" required><Input disabled={!canSchedule || Boolean(context?.isPipelineManaged)} value={draft.roundCode} onChange={event => setDraft({ ...draft, roundCode: event.target.value })} /></Form.Item>
         <Form.Item label="Interview type" required><Select disabled={!canSchedule || Boolean(context?.isPipelineManaged)} value={draft.interviewType} onChange={interviewType => setDraft({ ...draft, interviewType })} options={['Technical', 'HR', 'Managerial', 'Client', 'Panel'].map(value => ({ value, label: value }))} /></Form.Item>
@@ -241,7 +266,7 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, application
         <Form.Item className="interview-editor-span" label="HR summary"><Input.TextArea disabled={!canSchedule && !interview?.canRecordDecision} rows={3} value={draft.overallFeedback} onChange={event => setDraft({ ...draft, overallFeedback: event.target.value })} /></Form.Item>
       </Form>
 
-      {draft.applicationId > 0 && !contextLoading && !context && !interview?.id && <Alert type="warning" showIcon message="Interview cannot be scheduled from the application's current stage" description="Move the application to a configured Interview pipeline stage and ensure that stage has an interview-round configuration." />}
+      {!standalone && draft.applicationId > 0 && !contextLoading && !context && !interview?.id && <Alert type="warning" showIcon message="Interview cannot be scheduled from the application's current stage" description="Move the application to a configured Interview pipeline stage and ensure that stage has an interview-round configuration." />}
       {!completionValid && <Alert type="warning" showIcon message="Select a final result before marking this interview completed." />}
       {context && <Card size="small" className="interview-round-card" title={<Space><span>{context.pipelineStageName || context.roundCode}</span>{context.isPipelineManaged && <Tag color="purple">Pipeline managed</Tag>}</Space>}>
         <Descriptions size="small" column={{ xs: 1, sm: 2, md: 4 }}>
@@ -326,6 +351,7 @@ function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved, readOnl
     setSaving(false)
     if (!response.ok) return
     setRows(await getInterviewFeedback(interview.id))
+    window.dispatchEvent(new Event('hrms:actions-changed'))
     resetForm()
     await onSaved()
   }

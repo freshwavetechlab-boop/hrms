@@ -135,7 +135,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const clientOptions = useMemo(() => clients.map(row => ({ value: Number(row.id), label: row.name })), [clients])
 
   function newBrowserDraftKey() {
-    return `frevo:hiring-request:draft:${session?.user.id || 'anonymous'}:${initialWorkOrderId || 0}:${initialWorkOrderLineId || 0}`
+    return `frevo:hiring-request:draft:${session?.user.id || 'anonymous'}:${initialClientId || clientFilter || 0}:${initialWorkOrderId || 0}:${initialWorkOrderLineId || 0}:${new URLSearchParams(window.location.search).get('draft') || 'default'}`
   }
 
   function persistBrowserDraft(values = form.getFieldsValue(true) as SaveRecruitmentRequisition) {
@@ -476,7 +476,14 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     scheduleAutoSave({ ...current, targetJoiningDate })
   }
 
-  function openNew() {
+  async function openNew() {
+    // Finish the old save before resetting: its response must never attach the old ID to a new request.
+    if (saving || sourceParsing) return
+    if (autoSaveTimer.current) { window.clearTimeout(autoSaveTimer.current); autoSaveTimer.current = null }
+    autoSavePending.current = false
+    if (autoSaveRunning.current) await autoSaveRunning.current
+    clearBrowserDraft()
+    activeBrowserDraftKey.current = newBrowserDraftKey()
     setReadOnly(false)
     setActiveRequest(null)
     setAtsSkillWeight(0)
@@ -487,8 +494,8 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     draft.requestedByEmployeeId = session?.user.employeeId
       ?? employees.find(row => row.isActive && (!nextClientId || row.clientId === nextClientId))?.id
       ?? null
-    draft = restoreBrowserDraft(draft, newBrowserDraftKey())
     targetJoiningManual.current = Boolean(draft.targetJoiningDate)
+    form.resetFields()
     applyDraft(draft)
     void applyPipelineTarget(nextClientId, draft.requestDate, true)
     setSourceFile(null)
@@ -697,7 +704,8 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     <Form.Item name="sourceDocumentName" rules={textRules('sourceDocumentName')} label="Source document" className="rfr-span-2"><Input placeholder="Original PDF file name(s)" /></Form.Item>
     <Form.Item name="sourceAuthority" rules={textRules('sourceAuthority')} label="Source authority"><Input placeholder="Requesting / approving authority" /></Form.Item>
     <Form.Item name="externalApprovalStatus" rules={textRules('externalApprovalStatus')} label="Client approval state"><RecruitmentMasterSelect masterType="Client Approval Status" clientId={selectedClientId} clientName={clients.find(row => row.id === selectedClientId)?.name} values={clientApprovalOptions} dropdowns={dropdowns} onDropdownsChange={setDropdowns} canAdd={canManageMasters} allowClear testId="rfr-client-approval-status" /></Form.Item>
-    <Form.Item name="ctcFlexibilityPercent" label="Salary negotiation (%)" extra="Optional: 20–30% only. An approved 30% case receives one +5 day SLA extension."><InputNumber min={20} max={30} precision={2} style={{ width: '100%' }} /></Form.Item>
+    <Form.Item name="ctcFlexibilityPercent" label="Salary negotiation (%)" extra="Enter the agreed flexibility; no fixed 20–30% rule. Budget approval still applies."><InputNumber min={0} max={999.99} precision={2} controls={false} style={{ width: '100%' }} /></Form.Item>
+    <Form.Item name="negotiationSlaExtensionMinutes" label="Negotiation SLA"><NegotiationSlaInput /></Form.Item>
     <Form.Item name="sourceNotes" rules={textRules('sourceNotes')} label="Source notes" className="rfr-span-2"><Input.TextArea rows={3} placeholder="Preserve ambiguities and missing facts without inventing values" /></Form.Item>
   </div>
 
@@ -740,6 +748,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         {!readOnly && !approvedEdit && <span className={`rfr-autosave-status is-${autoSaveState}`} data-testid="hiring-request-autosave-status">{autoSaveLabel(autoSaveState, autoSavedAt)}</span>}
         <div className="rfr-dialog-action-buttons">
         <Button onClick={() => { persistBrowserDraft(); setDialogOpen(false) }}>Close</Button>
+        {!readOnly && !approvedEdit && <Popconfirm title="Clear this editor and start a new request?" description="Any server-saved draft stays in the Requests list. Unsaved fields in this editor will be cleared." onConfirm={() => openNew()}><Button disabled={saving || sourceParsing} data-testid="clear-hiring-request-draft">Clear draft / New</Button></Popconfirm>}
         {!readOnly && (approvedEdit
           ? <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => void saveRequest(false)} data-testid="update-approved-requisition">Update approved request</Button>
           : <Button type="primary" icon={<SendOutlined />} loading={saving || autoSaveState === 'saving'} onClick={() => void saveRequest(true)} data-testid="save-submit-requisition" data-mail-event="RFR.SUBMIT" data-mail-resource-type="RecruitmentRequisition" data-mail-client-id={watchedForm.clientId} data-mail-action-label="Save and submit hiring request">Save & submit</Button>)}
@@ -893,6 +902,16 @@ function submissionSuccess(row: RecruitmentRequisition) {
   return `Hiring request submitted for approval.${owner}${stage}`
 }
 
+function NegotiationSlaInput({ value, onChange }: { value?: number | null; onChange?: (value: number | null) => void }) {
+  return <Space direction="vertical">
+    <Switch checked={Number(value) > 0} onChange={enabled => onChange?.(enabled ? 1440 : 0)} checkedChildren="Extend" unCheckedChildren="Off" aria-label="Extend pipeline SLA on this negotiation" />
+    <span>Extend pipeline SLA on this negotiation</span>
+    {Number(value) > 0 && <InputNumber addonAfter="days" min={0.01} max={365} precision={2} value={Number(value) / 1440} onChange={days => onChange?.(Math.max(1, Math.round(Number(days || 0) * 1440)))} />}
+    <small>{value == null ? 'Existing pipeline rule applies. Set an explicit override here if needed.' : 'Applied once per offer when negotiation starts; existing deadlines are not changed by editing this field.'}</small>
+    {value != null && <Button size="small" type="link" onClick={() => onChange?.(null)}>Use pipeline rule</Button>}
+  </Space>
+}
+
 function autoSaveLabel(state: AutoSaveState, savedAt: Date | null) {
   if (state === 'saving') return 'Saving draft…'
   if (state === 'error') return 'Saved in this browser · server retry pending'
@@ -909,7 +928,7 @@ function blankRequest(clientId: number): SaveRecruitmentRequisition {
     budgetAmount: null, hiringPriority: 'High', businessJustification: '', reasonForHiring: '', experienceRange: '', qualification: '',
     requiredSkills: '', preferredSkills: '', certifications: '', languages: 'English', salaryMin: 0, salaryMax: 0, currency: 'INR', benefits: 'As per company norms',
     externalPositionCode: '', sourceType: '', sourceReference: '', sourceDocumentName: '', sourceDocumentDate: null,
-    sourceAuthority: '', externalApprovalStatus: '', ctcFlexibilityPercent: null, sourceNotes: '', sourceParsedJson: '',
+    sourceAuthority: '', externalApprovalStatus: '', ctcFlexibilityPercent: null, negotiationSlaExtensionMinutes: null, sourceNotes: '', sourceParsedJson: '',
   }
 }
 
@@ -962,7 +981,7 @@ function fromRow(row: RecruitmentRequisition): SaveRecruitmentRequisition {
     externalPositionCode: row.externalPositionCode || '', sourceType: row.sourceType || '', sourceReference: row.sourceReference || '',
     sourceDocumentName: row.sourceDocumentName || '', sourceDocumentDate: row.sourceDocumentDate?.slice(0, 10) || null,
     sourceAuthority: row.sourceAuthority || '', externalApprovalStatus: row.externalApprovalStatus || '',
-    ctcFlexibilityPercent: row.ctcFlexibilityPercent == null ? null : Number(row.ctcFlexibilityPercent), sourceNotes: row.sourceNotes || '', sourceParsedJson: row.sourceParsedJson || '',
+    ctcFlexibilityPercent: row.ctcFlexibilityPercent == null ? null : Number(row.ctcFlexibilityPercent), negotiationSlaExtensionMinutes: row.negotiationSlaExtensionMinutes ?? null, sourceNotes: row.sourceNotes || '', sourceParsedJson: row.sourceParsedJson || '',
   }
 }
 

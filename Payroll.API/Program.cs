@@ -18,9 +18,10 @@ var environmentAlias = args.FirstOrDefault(arg =>
     arg.Equals("prod", StringComparison.OrdinalIgnoreCase) ||
     arg.Equals("production", StringComparison.OrdinalIgnoreCase));
 
+string? selectedEnvironment = null;
 if (environmentAlias is not null)
 {
-    var selectedEnvironment = environmentAlias.StartsWith("prod", StringComparison.OrdinalIgnoreCase)
+    selectedEnvironment = environmentAlias.StartsWith("prod", StringComparison.OrdinalIgnoreCase)
         ? Environments.Production
         : Environments.Development;
     Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", selectedEnvironment);
@@ -28,7 +29,12 @@ if (environmentAlias is not null)
     args = args.Where(arg => !arg.Equals(environmentAlias, StringComparison.OrdinalIgnoreCase)).ToArray();
 }
 
-var builder = WebApplication.CreateBuilder(args);
+// launchSettings.json deliberately defaults local runs to Development. Passing the
+// environment through WebApplicationOptions makes an explicit dev/prod alias win
+// over that launch-profile default before configuration providers are loaded.
+var builder = selectedEnvironment is null
+    ? WebApplication.CreateBuilder(args)
+    : WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, EnvironmentName = selectedEnvironment });
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
@@ -1721,6 +1727,12 @@ app.MapPost("/api/recruitment/candidates", async (RecruitmentTalentRepository re
     var (row, error) = await repository.SaveCandidateAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
+app.MapPut("/api/recruitment/candidates/{id:long}/intake-details", async (RecruitmentTalentRepository repository, long id, SaveRecruitmentCandidateIntakeDetails request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.UpdateCandidateIntakeDetailsAsync(id, request, CurrentUser(context));
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
 app.MapDelete("/api/recruitment/candidates/{id:long}", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
 {
     if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
@@ -1882,7 +1894,7 @@ app.MapPost("/api/recruitment/applications/global-talent-pool", async (Recruitme
 });
 app.MapInternalInterviews();
 app.MapGet("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, long? applicationId, HttpContext context) =>
-    HasPermission(context, "recruitment.interview.panel") || HasPermission(context, "recruitment.interview.schedule") || HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetInterviewsAsync(CurrentUser(context), applicationId)) : Results.StatusCode(403));
+    CurrentUser(context).Id > 0 ? Results.Ok(await repository.GetInterviewsAsync(CurrentUser(context), applicationId)) : Results.StatusCode(403));
 app.MapPost("/api/recruitment/applications/{id:long}/view-as-candidate", async (RecruitmentFormRepository repository, long id, HttpContext context) =>
 {
     var user = CurrentUser(context);
@@ -1890,15 +1902,16 @@ app.MapPost("/api/recruitment/applications/{id:long}/view-as-candidate", async (
     var tracker = await repository.PreviewCandidateTrackerAsync(id, user);
     return tracker is null ? Results.NotFound() : Results.Ok(tracker);
 });
-app.MapGet("/api/recruitment/interviews/scheduling-context/{applicationId:long}", async (RecruitmentTalentRepository repository, long applicationId, HttpContext context) =>
+app.MapGet("/api/recruitment/interviews/scheduling-context/{applicationId:long}", async (RecruitmentTalentRepository repository, long applicationId, bool? standalone, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.interview.schedule") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
-    var (row, error) = await repository.GetInterviewSchedulingContextAsync(applicationId, CurrentUser(context));
+    var (row, error) = await repository.GetInterviewSchedulingContextAsync(applicationId, CurrentUser(context), standalone == true);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentCaseRepository hiringCases, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, InternalInterviewRepository internalInterviews, SaveRecruitmentInterview request, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.interview.schedule") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage") && !HasPermission(context, "recruitment.interview.panel")) return Results.StatusCode(403);
+    // Repository permits non-schedulers only their assigned final decision, never schedule edits.
+    if (CurrentUser(context).Id <= 0) return Results.StatusCode(403);
     var user = CurrentUser(context);
     var isNew = request.Id <= 0;
     var previous = isNew ? null : (await repository.GetInterviewsAsync(user, request.ApplicationId)).FirstOrDefault(row => row.Id == request.Id);
@@ -1906,16 +1919,16 @@ app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository re
     if (row is not null && previous?.LocationOrLink == InternalInterviewPolicy.InternalDestination
         && (row.Mode != "Virtual" || row.LocationOrLink != InternalInterviewPolicy.InternalDestination))
         await internalInterviews.DisableForExternalDeliveryAsync(row.Id, user);
-    if (row?.PipelineStageInstanceId is > 0 && row.Status is "Scheduled" or "Rescheduled")
+    if (row?.PipelineStageInstanceId is > 0 && row.Status is ("Scheduled" or "Rescheduled"))
     {
         var trigger = isNew || row.RescheduleCount == 0 ? "OnInterviewScheduled" : "OnInterviewRescheduled";
         await pipelineActions.ExecuteAsync(row.ApplicationId, trigger, user, row.PipelineStageInstanceId, $"INTERVIEW{row.Id}R{row.RescheduleCount}");
     }
-    if (row is not null && row.Status is "Scheduled" or "Rescheduled")
+    if (row is { IsStandalone: false } && row.Status is ("Scheduled" or "Rescheduled"))
         await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(row.ApplicationId, "InterviewScheduled", user);
-    if (row is not null && row.Status is "No Show" or "Cancelled")
+    if (row is { IsStandalone: false } && row.Status is ("No Show" or "Cancelled"))
         await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(row.ApplicationId, "InterviewAvailabilityChanged", user);
-    if (row?.Status == "Completed" && row.Result is "Selected" or "Rejected"
+    if (row is { IsStandalone: false, Status: "Completed" } && row.Result is ("Selected" or "Rejected")
         && (previous?.Status != row.Status || previous?.Result != row.Result))
         row.PipelineTransitionMessage = await ApplyRecruitmentDecisionAsync(row.ApplicationId, row.Result, user, pipelines, pipelineActions, candidateActions, hiringCases);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
@@ -1983,10 +1996,11 @@ app.MapDelete("/api/recruitment/interviews/{id:long}", async (RecruitmentTalentR
     return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
 app.MapGet("/api/recruitment/interviews/{id:long}/feedback", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
-    HasPermission(context, "recruitment.interview.panel") || HasPermission(context, "recruitment.interview.schedule") || HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetInterviewFeedbackAsync(id, CurrentUser(context))) : Results.StatusCode(403));
+    CurrentUser(context).Id > 0 ? Results.Ok(await repository.GetInterviewFeedbackAsync(id, CurrentUser(context))) : Results.StatusCode(403));
 app.MapPost("/api/recruitment/interviews/{id:long}/feedback", async (RecruitmentTalentRepository repository, long id, SaveRecruitmentInterviewFeedback request, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.interview.panel") && !HasPermission(context, "recruitment.interview.schedule") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    // Assignment is the capability; the repository checks tenant and exact panel membership.
+    if (CurrentUser(context).Id <= 0) return Results.StatusCode(403);
     var (row, error) = await repository.SaveInterviewFeedbackAsync(id, request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });

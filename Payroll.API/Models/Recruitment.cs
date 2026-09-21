@@ -53,6 +53,7 @@ public class RecruitmentRequisition
     public string SourceAuthority { get; set; } = "";
     public string ExternalApprovalStatus { get; set; } = "";
     public decimal? CtcFlexibilityPercent { get; set; }
+    public int? NegotiationSlaExtensionMinutes { get; set; }
     public string SourceNotes { get; set; } = "";
     public string SourceParsedJson { get; set; } = "";
     public string Status { get; set; } = "Draft";
@@ -123,6 +124,7 @@ public class SaveRecruitmentRequisition
     public string SourceAuthority { get; set; } = "";
     public string ExternalApprovalStatus { get; set; } = "";
     public decimal? CtcFlexibilityPercent { get; set; }
+    public int? NegotiationSlaExtensionMinutes { get; set; }
     public string SourceNotes { get; set; } = "";
     public string SourceParsedJson { get; set; } = "";
 }

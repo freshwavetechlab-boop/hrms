@@ -228,6 +228,11 @@
   padding: 12px;
 }
 
+.resume-draft-row.is-incomplete {
+  background: #fffaf0;
+  border-color: #f1c66e;
+}
+
 .resume-draft-file,
 .resume-draft-person,
 .resume-draft-outcome {
@@ -268,6 +273,12 @@
 .resume-draft-outcome span {
   color: #667085;
   font-size: 12px;
+}
+
+.resume-draft-person .resume-draft-required {
+  color: #ad5b00;
+  font-weight: 700;
+  white-space: normal;
 }
 
 .resume-draft-form .ant-input-number {
@@ -364,6 +375,35 @@
 
 .resume-result-alert {
   margin-top: 14px;
+}
+
+.resume-inline-number {
+  display: grid;
+  gap: 4px;
+  min-width: 116px;
+}
+
+.resume-inline-number .ant-input-number {
+  width: 100%;
+}
+
+.resume-inline-number small,
+.resume-inline-unavailable {
+  color: #758096;
+  font-size: 11px;
+}
+
+.resume-draft-form .ant-select-selection-overflow {
+  gap: 3px;
+}
+
+.resume-draft-form .ant-select-selection-item {
+  background: #eef0f3;
+  border: 0;
+  border-radius: 6px;
+  color: #344054;
+  font-size: 13px;
+  margin-inline-end: 0;
 }
 
 .resume-review-summary {

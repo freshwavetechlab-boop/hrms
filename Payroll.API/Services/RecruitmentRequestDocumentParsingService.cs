@@ -13,6 +13,7 @@ public sealed class RecruitmentRequestDocumentParsingService(
     private static readonly string[] Headings =
     [
         "job summary", "role summary", "role overview", "role purpose", "particulars", "position", "position name", "designation",
+        "business justification", "business need", "hiring justification", "reason for hiring", "hiring reason", "reason for recruitment",
         "number of positions", "no of positions", "openings", "vacancies", "band", "band/salary band", "salary band", "ctc", "location",
         "educational qualification", "educational qualifications", "qualification", "qualifications", "education", "experience",
         "experience, educational qualification", "educational qualification, experience", "requirements", "technical skills",
@@ -25,7 +26,7 @@ public sealed class RecruitmentRequestDocumentParsingService(
     {
         var parsed = await documentTextParser.ParseAsync(file, cancellationToken);
         var extractedText = Normalize(parsed.Text);
-        var textIsReliable = LooksLikeRecruitmentText(extractedText);
+        var textIsReliable = LooksLikeRecruitmentText(extractedText) && !HasDamagedProse(extractedText);
         var text = textIsReliable ? extractedText : "";
         var draft = new SaveRecruitmentRequisition
         {
@@ -52,6 +53,7 @@ public sealed class RecruitmentRequestDocumentParsingService(
             "isReplacement", "budgetAvailable", "languages", "benefits", "currency", "workMode"
         };
         var warnings = new List<string>();
+        if (HasDamagedProse(extractedText)) warnings.Add("The extracted text contains broken words/punctuation, possibly from OCR. Verify the source or upload a clearer document; damaged prose was not copied into business justification or role summary.");
         var fieldMetadata = new Dictionary<string, RecruitmentAiHiringFieldTrace>(StringComparer.OrdinalIgnoreCase)
         {
             ["numberOfOpenings"] = DefaultTrace(), ["hiringType"] = DefaultTrace(), ["employmentType"] = DefaultTrace(),
@@ -76,12 +78,13 @@ public sealed class RecruitmentRequestDocumentParsingService(
 
         var summary = Block(text, "job summary", "role summary", "role overview", "role purpose");
         if (string.IsNullOrWhiteSpace(summary)) summary = FirstUsefulParagraph(text);
-        Set("businessJustification", summary, value => draft.BusinessJustification = value);
+        // A role description is not evidence of why the client needs to hire.
+        Set("businessJustification", Block(text, "business justification", "business need", "hiring justification"), value => draft.BusinessJustification = value);
 
         var responsibilityBlock = Block(text, "key responsibilities", "roles and responsibilities", "responsibilities", "job profile/duties", "job profile");
         var responsibilities = Items(responsibilityBlock).Take(20).ToList();
         var rolePurpose = responsibilities.Count > 0 ? string.Join("\n", responsibilities.Take(10)) : summary;
-        Set("reasonForHiring", rolePurpose, value => draft.ReasonForHiring = value);
+        Set("reasonForHiring", Block(text, "reason for hiring", "hiring reason", "reason for recruitment"), value => draft.ReasonForHiring = value);
 
         var openings = NumberOfOpenings(text);
         if (openings.HasValue)
@@ -156,8 +159,8 @@ public sealed class RecruitmentRequestDocumentParsingService(
             SetAi("certifications", CompactList(string.Join("; ", ai.Certifications)), value => draft.Certifications = value);
             SetAi("languages", CompactList(string.Join("; ", ai.Languages)), value => draft.Languages = value);
             SetAi("benefits", CompactList(string.Join("; ", ai.Benefits)), value => draft.Benefits = value, requireExact: true);
-            SetAi("businessJustification", string.IsNullOrWhiteSpace(ai.BusinessJustification) ? ai.RoleSummary : ai.BusinessJustification, value => draft.BusinessJustification = value, preserveExact: false);
-            SetAi("reasonForHiring", string.IsNullOrWhiteSpace(ai.HiringNotes) ? ai.RolePurpose : ai.HiringNotes, value => draft.ReasonForHiring = value, preserveExact: false);
+            SetAi("businessJustification", ai.BusinessJustification, value => draft.BusinessJustification = value, requireExact: true);
+            SetAi("reasonForHiring", ai.HiringNotes, value => draft.ReasonForHiring = value, requireExact: true);
             if (ai.NumberOfOpenings is > 0 and <= 999)
             {
                 SetAiValue("numberOfOpenings", () => draft.NumberOfOpenings = ai.NumberOfOpenings.Value, requireExact: true);
@@ -201,6 +204,9 @@ public sealed class RecruitmentRequestDocumentParsingService(
         // the active provider has no PDF vision support. These are explicitly
         // generic defaults derived only from the role title, never invented source facts.
         var defaultsApplied = new List<string>();
+        if (HasDamagedProse(summary)) summary = "";
+        if (HasDamagedProse(draft.BusinessJustification)) draft.BusinessJustification = "";
+        if (HasDamagedProse(draft.ReasonForHiring)) draft.ReasonForHiring = "";
         var defaultSkills = DefaultSkills(draft.PositionTitle);
         if (string.IsNullOrWhiteSpace(draft.ExperienceRange))
         {
@@ -243,14 +249,12 @@ public sealed class RecruitmentRequestDocumentParsingService(
         if (string.IsNullOrWhiteSpace(summary))
         {
             summary = $"Support the organisation as {RolePhrase(draft.PositionTitle)} through reliable delivery, collaboration and continuous improvement.";
-            Set("businessJustification", summary, value => draft.BusinessJustification = value, "default", .55m);
             defaultsApplied.Add("role summary");
         }
         if (responsibilities.Count == 0)
         {
             responsibilities = DefaultResponsibilities(draft.PositionTitle);
             rolePurpose = string.Join("\n", responsibilities);
-            Set("reasonForHiring", rolePurpose, value => draft.ReasonForHiring = value, "default", .55m);
             defaultsApplied.Add("responsibilities");
         }
         if (defaultsApplied.Count > 0)
@@ -562,6 +566,15 @@ public sealed class RecruitmentRequestDocumentParsingService(
         if (string.IsNullOrWhiteSpace(text) || text.Length < 160) return false;
         var signals = Regex.Matches(text, @"(?i)\b(position|role|experience|qualification|skills?|responsibilit(?:y|ies)|location|salary|ctc|job profile)\b").Count;
         return signals >= 2;
+    }
+
+    internal static bool HasDamagedProse(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var words = Regex.Matches(text, @"\S+").Count;
+        // Conservative corruption signal, not spell-checking: keep ordinary names, C#, Node.js and abbreviations.
+        var broken = Regex.Matches(text, @"(?i)[a-z][.,/!][a-z]|[a-z][.,/!]{2,}|[a-z]['’][^a-z\s]").Count;
+        return broken >= 6 && broken >= words * .06;
     }
 
     private static string Qualifications(string text)

@@ -1489,6 +1489,7 @@ Act as an experienced recruitment analyst. Map the document semantically into th
 Rules:
 - Return confidence values as ratios from 0 to 1 and field sourceType as exact, inferred or manual.
 - Add fieldMetadata for every non-empty scalar field so the server can distinguish exact facts from safe inferences.
+- Business justification and hiring notes describe the explicit business need/reason for recruiting, not role duties. Leave them empty if absent; put responsibilities and role description only in their own fields. Do not copy corrupted OCR prose as an exact fact.
 - Do not invent client, vacancy count, budget, salary, currency, cost centre, replacement employee, request/requester details, official codes, reference numbers, certifications or skill-specific years.
 - Use individual, de-duplicated ATS skills. A skill is required only when the wording makes it mandatory/essential; desirable/good-to-have skills are preferred.
 - Skill-specific experience is non-zero only when the document ties that duration to that skill/domain.

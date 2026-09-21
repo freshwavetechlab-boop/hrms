@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Alert, Button, Card, Col, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Progress, Radio, Row,
-  Select, Statistic, Switch, Tag, Typography, Upload,
+  Select, Space, Statistic, Switch, Tag, Typography, Upload,
 } from 'antd'
 import type { UploadFile, UploadProps } from 'antd'
 import { EditOutlined, FileSearchOutlined, InboxOutlined } from '@ant-design/icons'
@@ -9,7 +9,7 @@ import DataTable from './DataTable'
 import { getClients } from '../services/payrollService'
 import { getRecruitmentOpenPositions } from '../services/recruitmentService'
 import { getRecruitmentJobDescriptions, getRecruitmentJobPostings } from '../services/recruitmentOrchestrationService'
-import { intakeRecruitmentResumes, previewRecruitmentResume, type RecruitmentResumeReviewedDraft, type RecruitmentResumeUploadProgress } from '../services/recruitmentTalentService'
+import { intakeRecruitmentResumes, previewRecruitmentResume, updateCandidateIntakeDetails, type RecruitmentResumeReviewedDraft, type RecruitmentResumeUploadProgress } from '../services/recruitmentTalentService'
 import type { Client, RecruitmentOpenPosition, RecruitmentResumeIntakeItem, RecruitmentResumeIntakeResult } from '../types/payroll'
 import type { RecruitmentJobDescriptionVersion, RecruitmentJobPosting } from '../types/recruitmentOrchestration'
 import { useToast } from './ToastProvider'
@@ -198,6 +198,9 @@ export default function RecruitmentResumeIntake({
   const selectedFiles = useMemo<File[]>(() => fileList.flatMap(row => row.originFileObj ? [row.originFileObj as File] : []), [fileList])
   const busy = uploading || previewing
   const draftsReady = drafts.length > 0 && drafts.length === selectedFiles.length && drafts.every((draft, index) => draft.file === selectedFiles[index])
+  const requireAtsDetails = Boolean(selectedPosting?.autoRunAts && !forceUpload && !parsingDisabled)
+  const requireIdentity = !forceUpload && !parsingDisabled
+  const missingFields = (draft: RecruitmentResumeReviewedDraft) => requiredDraftFields(draft, { requireIdentity, requireAtsDetails })
 
   const clientOptions = clients.map(row => ({ value: row.id, label: `${row.code || 'CLIENT'} - ${row.name}` }))
   const positionOptions = availablePositions.map(row => ({
@@ -304,9 +307,9 @@ export default function RecruitmentResumeIntake({
   const submit = async () => {
     if (!validateSelection()) return
     if (!draftsReady) return notify('Run Preview & parse before final upload.', 'error')
-    if (drafts.some(draft => !draft.firstName.trim())) return notify('First name is required for every candidate draft.', 'error')
-    if (selectedPosting?.autoRunAts && !forceUpload && !parsingDisabled && drafts.some(draft => !draft.currentTitle.trim() || !draft.skills.length))
-      return notify('Current title and at least one skill are required before automatic ATS screening.', 'error')
+    const incomplete = drafts.map((draft, index) => ({ index, fields: missingFields(draft) })).filter(row => row.fields.length)
+    if (incomplete.length)
+      return notify(`Complete mandatory fields in the review rows before Final upload: ${incomplete.map(row => `${drafts[row.index].fileName} (${row.fields.join(', ')})`).join('; ')}`, 'error')
     setUploading(true)
     setProgress(0)
     setProgressDetail({ percent: 0, completedFiles: 0, totalFiles: selectedFiles.length, activeFrom: 1, activeTo: Math.min(1, selectedFiles.length), phase: 'uploading' })
@@ -407,15 +410,18 @@ export default function RecruitmentResumeIntake({
       {drafts.length > 0 && <Card size="small" className="resume-intake-drafts" title="Review parsed candidate drafts">
         <Alert type="info" showIcon message="Draft only — nothing has been saved yet" description="Review or edit the parsed information. Candidate, application and resume storage records are created only when you click Final upload." />
         <div className="resume-draft-list" data-testid="resume-intake-drafts">
-          {drafts.map((draft, index) => <div className="resume-draft-row" key={`${draft.file.name}-${draft.file.lastModified}-${index}`}>
+          {drafts.map((draft, index) => {
+            const required = missingFields(draft)
+            return <div className={`resume-draft-row${required.length ? ' is-incomplete' : ''}`} key={`${draft.file.name}-${draft.file.lastModified}-${index}`}>
             <div className="resume-draft-file"><FileSearchOutlined /><div><strong>{draft.fileName}</strong><span>{draft.parsingStatus}{draft.parsingError ? ` · ${draft.parsingError}` : ''}</span></div></div>
-            <div className="resume-draft-person"><strong>{`${draft.firstName} ${draft.lastName}`.trim() || 'Candidate name required'}</strong><span>{draft.email || 'No email'} · {draft.phone || 'No phone'}</span><span>{draft.currentTitle || 'Title needs review'} · {draft.skills.length} skill(s)</span></div>
+            <div className="resume-draft-person"><strong>{`${draft.firstName} ${draft.lastName}`.trim() || 'Candidate name required'}</strong><span>{draft.email || 'No email'} · {draft.phone || 'No phone'}</span><span>{draft.currentTitle || 'Title needs review'} · {draft.skills.length} skill(s)</span>{required.length > 0 && <span className="resume-draft-required">Mandatory: {required.join(', ')}</span>}</div>
             <div className="resume-draft-outcome">
               {draft.existingApplicationId ? <Tag color="blue">Already registered · resume update</Tag> : draft.existingCandidateId ? <Tag color="cyan">Existing profile · new application</Tag> : <Tag color="green">New candidate</Tag>}
               {draft.existingCandidateCode && <span>{draft.existingCandidateCode}</span>}
             </div>
             <Button data-testid={`resume-draft-edit-${index}`} icon={<EditOutlined />} onClick={() => openDraftEditor(index)}>Edit</Button>
-          </div>)}
+          </div>
+          })}
         </div>
       </Card>}
 
@@ -443,7 +449,10 @@ export default function RecruitmentResumeIntake({
             <Col span={12}><Form.Item label="Current company"><Input data-testid="resume-draft-company" value={editingDraft.currentCompany} onChange={event => setEditingDraft({ ...editingDraft, currentCompany: event.target.value })} /></Form.Item></Col>
             <Col span={12}><Form.Item label="Total experience (months)"><InputNumber data-testid="resume-draft-experience" min={0} max={1200} style={{ width: '100%' }} value={editingDraft.totalExperienceMonths} onChange={value => setEditingDraft({ ...editingDraft, totalExperienceMonths: Number(value || 0) })} /></Form.Item></Col>
             <Col span={12}><Form.Item label="Highest qualification"><Input data-testid="resume-draft-qualification" value={editingDraft.highestQualification} onChange={event => setEditingDraft({ ...editingDraft, highestQualification: event.target.value })} /></Form.Item></Col>
-            <Col span={24}><Form.Item label="Skills" required extra="Comma or new-line separated. ATS matches these and the original resume text against the approved JD."><Input.TextArea data-testid="resume-draft-skills" autoSize={{ minRows: 2, maxRows: 5 }} value={editingDraft.skills.join(', ')} onChange={event => setEditingDraft({ ...editingDraft, skills: event.target.value.split(/[,;\n|]/).map(value => value.trim()).filter(Boolean) })} /></Form.Item></Col>
+            <Col span={8}><Form.Item label="Notice period"><NoticePeriodInput value={editingDraft.noticePeriodDays} onChange={noticePeriodDays => setEditingDraft({ ...editingDraft, noticePeriodDays })} /></Form.Item></Col>
+            <Col span={8}><Form.Item label="Current CTC (LPA)"><CtcLpaInput value={editingDraft.currentCtc} onChange={currentCtc => setEditingDraft({ ...editingDraft, currentCtc })} /></Form.Item></Col>
+            <Col span={8}><Form.Item label="Expected CTC (LPA)"><CtcLpaInput value={editingDraft.expectedCtc} onChange={expectedCtc => setEditingDraft({ ...editingDraft, expectedCtc })} /></Form.Item></Col>
+            <Col span={24}><Form.Item label="Skills" required extra="Type a skill and press Enter. ATS matches these and the original resume text against the approved JD."><SkillTagInput value={editingDraft.skills} onChange={skills => setEditingDraft({ ...editingDraft, skills })} testId="resume-draft-skills" /></Form.Item></Col>
             <Col span={24}><Form.Item label="Certifications"><Input.TextArea data-testid="resume-draft-certifications" autoSize={{ minRows: 2, maxRows: 4 }} value={editingDraft.certifications.join('\n')} onChange={event => setEditingDraft({ ...editingDraft, certifications: event.target.value.split(/[;\n|]/).map(value => value.trim()).filter(Boolean) })} /></Form.Item></Col>
           </Row>
         </Form>}
@@ -473,6 +482,53 @@ function progressMessage(progress: RecruitmentResumeUploadProgress | null) {
   return progress.phase === 'processing' ? `Processing ${range} of ${progress.totalFiles}` : `Uploading ${range} of ${progress.totalFiles}`
 }
 
+function requiredDraftFields(draft: RecruitmentResumeReviewedDraft, requirements: { requireIdentity: boolean; requireAtsDetails: boolean }) {
+  const missing: string[] = []
+  if (!draft.firstName.trim()) missing.push('First name')
+  if (requirements.requireIdentity && !draft.email.trim() && !draft.phone.trim()) missing.push('Email or phone')
+  if (requirements.requireAtsDetails && !draft.currentTitle.trim()) missing.push('Current designation')
+  if (requirements.requireAtsDetails && !draft.skills.length) missing.push('At least one skill')
+  return missing
+}
+
+function SkillTagInput({ value, onChange, testId }: { value: string[]; onChange: (value: string[]) => void; testId: string }) {
+  const [text, setText] = useState('')
+  const add = (raw: string) => {
+    const additions = raw.split(/[,;\n|]/).map(item => item.trim()).filter(Boolean)
+    if (!additions.length) return setText('')
+    onChange([...value, ...additions].filter((item, index, all) => all.findIndex(candidate => candidate.localeCompare(item, undefined, { sensitivity: 'accent' }) === 0) === index).slice(0, 100))
+    setText('')
+  }
+  return <Select
+    data-testid={testId}
+    mode="tags"
+    value={value}
+    searchValue={text}
+    tokenSeparators={[',', ';']}
+    open={false}
+    placeholder="Type a skill and press Enter"
+    onSearch={setText}
+    onChange={values => { onChange(values.map(String).filter(Boolean)); setText('') }}
+    onInputKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); add(text) } }}
+    onBlur={() => add(text)}
+  />
+}
+
+function NoticePeriodInput({ value, onChange }: { value?: number | null; onChange: (value: number | null) => void }) {
+  const [unit, setUnit] = useState<'Days' | 'Months'>('Days')
+  const days = value == null || Number(value) <= 0 ? null : Number(value)
+  const factor = unit === 'Months' ? 30 : 1
+  return <Space.Compact block>
+    <InputNumber min={0} max={3650 / factor} step={unit === 'Months' ? 0.5 : 1} style={{ width: '100%' }} value={days == null ? undefined : Number((days / factor).toFixed(2))} onChange={next => onChange(next == null ? null : Math.round(Number(next) * factor))} />
+    <Select value={unit} style={{ width: 104 }} onChange={setUnit} options={[{ value: 'Days', label: 'Days' }, { value: 'Months', label: 'Months' }]} />
+  </Space.Compact>
+}
+
+function CtcLpaInput({ value, onChange }: { value?: number | null; onChange: (value: number | null) => void }) {
+  const annualInr = value == null || Number(value) <= 0 ? null : Number(value)
+  return <InputNumber min={0} max={10000} step={0.1} addonAfter="LPA" style={{ width: '100%' }} value={annualInr == null ? undefined : Number((annualInr / 100000).toFixed(2))} onChange={next => onChange(next == null ? null : Math.round(Number(next) * 100000))} />
+}
+
 function ResumeIntakeResults({ result, talentPoolOnly = false, onEditCandidate }: { result: RecruitmentResumeIntakeResult; talentPoolOnly?: boolean; onEditCandidate?: (candidateId: number) => void | Promise<void> }) {
   const reviewRows = result.items.filter(row => !row.success || Boolean(row.error?.trim()))
   const reviewNotes = [...new Set(reviewRows.map(row => row.error?.trim()).filter((note): note is string => Boolean(note)))]
@@ -497,6 +553,9 @@ function ResumeIntakeResults({ result, talentPoolOnly = false, onEditCandidate }
         { key: 'fileName', label: 'Resume', width: '210px' },
         { key: 'candidate', label: 'Candidate', width: '220px', render: row => <div className="resume-result-person"><b>{row.candidate?.candidateName || row.detectedName || 'Not detected'}</b><span>{row.candidate?.candidateCode || row.parsingStatus || '-'}</span></div>, exportValue: row => row.candidate?.candidateName || row.detectedName },
         { key: 'contact', label: 'Contact extracted', width: '240px', render: row => <div className="resume-result-person"><b>{row.detectedEmail || row.candidate?.email || '-'}</b><span>{row.detectedPhone || row.candidate?.phone || '-'}</span></div>, exportValue: row => `${row.detectedEmail || row.candidate?.email || ''} ${row.detectedPhone || row.candidate?.phone || ''}` },
+        { key: 'noticePeriod', label: 'Notice period', width: '190px', render: row => <InlineIntakeNumber candidate={row.candidate} field="noticePeriodDays" label="Notice period" max={3650} allowMonths />, exportValue: row => row.candidate?.noticePeriodDays ? `${row.candidate.noticePeriodDays} days` : '' },
+        { key: 'currentCtc', label: 'Current CTC (LPA)', width: '165px', render: row => <InlineIntakeNumber candidate={row.candidate} field="currentCtc" label="Current CTC" max={1000000000} scale={100000} unit="LPA" />, exportValue: row => row.candidate?.currentCtc ? Number((row.candidate.currentCtc / 100000).toFixed(2)) : '' },
+        { key: 'expectedCtc', label: 'Expected CTC (LPA)', width: '165px', render: row => <InlineIntakeNumber candidate={row.candidate} field="expectedCtc" label="Expected CTC" max={1000000000} scale={100000} unit="LPA" />, exportValue: row => row.candidate?.expectedCtc ? Number((row.candidate.expectedCtc / 100000).toFixed(2)) : '' },
         { key: 'detectedAddress', label: 'Residential address', width: '230px', render: row => row.detectedAddress || row.candidate?.currentLocation || '-' },
         { key: 'ats', label: 'ATS score', width: '130px', render: row => talentPoolOnly ? <Tag>Run later</Tag> : row.application?.atsScore == null ? <Tag>{row.application?.scoreStatus || 'Not scored'}</Tag> : <Tag color={row.application.atsScore >= 60 ? 'green' : 'orange'}>{row.application.atsScore.toFixed(1)} / 100</Tag>, exportValue: row => talentPoolOnly ? 'Run later' : row.application?.atsScore ?? row.application?.scoreStatus ?? '' },
         { key: 'stage', label: talentPoolOnly ? 'Bucket' : 'Pipeline stage', width: '150px', render: row => talentPoolOnly ? 'Resume Bank' : row.application?.currentStage || '-' },
@@ -519,4 +578,24 @@ function ResumeIntakeResults({ result, talentPoolOnly = false, onEditCandidate }
       </div>}
     />}
   </Card>
+}
+
+function InlineIntakeNumber({ candidate, field, label, max, scale = 1, unit, allowMonths = false }: { candidate?: RecruitmentResumeIntakeItem['candidate']; field: 'noticePeriodDays' | 'currentCtc' | 'expectedCtc'; label: string; max: number; scale?: number; unit?: string; allowMonths?: boolean }) {
+  const notify = useToast()
+  const normalized = candidate?.[field] == null || Number(candidate[field]) <= 0 ? null : Number(candidate[field])
+  const [value, setValue] = useState<number | null>(normalized)
+  const [noticeUnit, setNoticeUnit] = useState<'Days' | 'Months'>('Days')
+  const [saving, setSaving] = useState(false)
+  useEffect(() => setValue(candidate?.[field] == null || Number(candidate[field]) <= 0 ? null : Number(candidate[field])), [candidate?.id, candidate?.[field]])
+  if (!candidate?.id) return <span className="resume-inline-unavailable">Save candidate first</span>
+  const factor = allowMonths && noticeUnit === 'Months' ? 30 : scale
+  const displayValue = value == null ? undefined : Number((value / factor).toFixed(2))
+  const save = async () => {
+    if (saving) return
+    setSaving(true)
+    const response = await updateCandidateIntakeDetails(candidate.id, { [field]: value == null ? 0 : value })
+    setSaving(false)
+    if (!response.ok) notify(response.error || `${label} could not be saved.`, 'error')
+  }
+  return <div className="resume-inline-number"><Space.Compact block><InputNumber aria-label={`${label} for ${candidate.candidateName}`} min={0} max={max / factor} step={factor === 30 ? 0.5 : scale === 100000 ? 0.1 : 1} controls={false} value={displayValue} placeholder="-" onChange={next => setValue(next == null ? null : Math.round(Number(next) * factor))} onBlur={() => void save()} onPressEnter={event => event.currentTarget.blur()} />{allowMonths && <Select aria-label={`Unit for ${label}`} value={noticeUnit} style={{ width: 92 }} onChange={setNoticeUnit} options={[{ value: 'Days', label: 'Days' }, { value: 'Months', label: 'Months' }]} />}</Space.Compact><small>{saving ? 'Saving...' : `${allowMonths ? noticeUnit : unit || label} · auto-save`}</small></div>
 }
