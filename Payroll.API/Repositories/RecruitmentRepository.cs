@@ -1033,11 +1033,27 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
         var employeeValues = await db.QueryAsync<string>($"SELECT DISTINCT {employeeColumn} FROM employees WHERE ClientId=@ClientId AND IsActive=TRUE AND {employeeColumn}<>'' ORDER BY {employeeColumn}", new { ClientId = clientId });
         return values.Concat(employeeValues).Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(value => value).ToList();
     }
-    private static async Task<string> NextRfrNumberAsync(MySqlConnection db, int clientId)
+    internal static async Task<string> NextRfrNumberAsync(MySqlConnection db, int clientId)
     {
-        var next = await db.ExecuteScalarAsync<int>("SELECT COUNT(*)+1 FROM recruitment_requisitions WHERE ClientId=@ClientId AND YEAR(CreatedAt)=YEAR(UTC_TIMESTAMP())", new { ClientId = clientId });
+        var year = DateTime.UtcNow.Year;
         var code = await db.ExecuteScalarAsync<string>("SELECT COALESCE(Code,CONCAT('C',Id)) FROM clients WHERE Id=@ClientId", new { ClientId = clientId }) ?? $"C{clientId}";
-        return $"RFR-{code}-{DateTime.UtcNow:yyyy}-{next:D5}";
+        var prefix = $"RFR-{code}-{year}-";
+        // Bootstrap from existing numbers, including gaps left by deleted drafts.
+        // Match the number's year, not CreatedAt: backdated/imported rows must also count.
+        var seed = await db.ExecuteScalarAsync<long>(@"SELECT COALESCE(MAX(CAST(SUBSTRING(RfrNumber,CHAR_LENGTH(@Prefix)+1) AS UNSIGNED)),0)
+FROM recruitment_requisitions
+WHERE LEFT(RfrNumber,CHAR_LENGTH(@Prefix))=@Prefix
+AND SUBSTRING(RfrNumber,CHAR_LENGTH(@Prefix)+1) REGEXP '^[0-9]+$'", new { Prefix = prefix });
+        // Allocate outside the draft transaction so rollback/deletion never reuses a number.
+        // The unique client/series row serializes concurrent allocations; LAST_INSERT_ID
+        // is connection-local and returns this caller's allocation even after another update.
+        var next = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_number_sequences (ClientId,SeriesCode,LastNumber)
+VALUES (@ClientId,@Series,@Seed)
+ON DUPLICATE KEY UPDATE LastNumber=GREATEST(LastNumber,@Seed);
+UPDATE recruitment_number_sequences SET LastNumber=LAST_INSERT_ID(LastNumber+1)
+WHERE ClientId=@ClientId AND SeriesCode=@Series;
+SELECT LAST_INSERT_ID();", new { ClientId = clientId, Series = $"RFR-{year}", Seed = seed });
+        return $"{prefix}{next:D5}";
     }
 
     private static async Task<string> NextPositionNumberAsync(MySqlConnection db, int clientId)
