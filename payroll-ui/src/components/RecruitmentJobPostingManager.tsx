@@ -1,14 +1,15 @@
 import RecruitmentHiringProgress from './RecruitmentHiringProgress'
+import { RecruitmentFilterPanel, RecruitmentQuickFilters } from './RecruitmentRecordList'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import dayjs from 'dayjs'
 import {
   BranchesOutlined, CloseCircleOutlined, CopyOutlined, DeleteOutlined, DollarOutlined, EditOutlined, EnvironmentOutlined, FieldTimeOutlined, FormOutlined, GlobalOutlined,
-  LaptopOutlined, LinkOutlined, RocketOutlined, TeamOutlined, UserAddOutlined,
+  LaptopOutlined, LinkOutlined, RocketOutlined, SearchOutlined, TeamOutlined, UserAddOutlined,
 } from '@ant-design/icons'
 import {
   Alert, Avatar, Badge, Button, Card, Col, DatePicker, Descriptions, Empty, Form, Input,
-  Modal, Popconfirm, Row, Segmented, Select, Space, Spin, Switch, Tag, Tooltip, Typography,
+  Modal, Popconfirm, Row, Select, Space, Spin, Switch, Tag, Tooltip, Typography,
 } from 'antd'
 import { useAuthSession } from './AuthGate'
 import { useToast, type ToastType } from './ToastProvider'
@@ -60,6 +61,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
   const [pipelineAssignment, setPipelineAssignment] = useState<RecruitmentPositionPipelineAssignment | null>(null)
   const [listStatus, setListStatus] = useState('All')
   const [search, setSearch] = useState('')
+  const [jobFilters, setJobFilters] = useState<Record<string, string>>({})
   const [sortOrder, setSortOrder] = useState<'recent' | 'oldest'>('recent')
   const [loading, setLoading] = useState(false)
   const [actionBusy, setActionBusy] = useState(false)
@@ -97,15 +99,27 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
     : lookups.positions, [lookups.positions, editorClientId])
   const currentPostings = useMemo(() => currentRecruitmentJobPostings(postings), [postings])
   const historicalPostings = useMemo(() => postings.filter(row => !currentPostings.some(current => current.id === row.id)), [postings, currentPostings])
+  const jobFilterDefinitions = useMemo(() => {
+    const positionById = new Map(lookups.positions.map(row => [row.id, row]))
+    return [
+      { key: 'role', label: 'Job role', value: (row: RecruitmentJobPosting) => row.positionTitle || row.publicTitle },
+      { key: 'employment', label: 'Employment type', value: (row: RecruitmentJobPosting) => positionById.get(row.positionId)?.employmentType || 'Not specified' },
+      { key: 'mode', label: 'Work mode', value: (row: RecruitmentJobPosting) => { const position = positionById.get(row.positionId); return formatWorkMode(position?.requisitionWorkMode || position?.workMode) } },
+      { key: 'location', label: 'Location', value: (row: RecruitmentJobPosting) => { const position = positionById.get(row.positionId); return position?.requisitionJobLocation || position?.jobLocation || 'Not specified' } },
+      { key: 'stage', label: 'Pipeline stage', value: (row: RecruitmentJobPosting) => positionById.get(row.positionId)?.pipelineStageName || 'Not assigned' },
+      { key: 'ats', label: 'Auto ATS', value: (row: RecruitmentJobPosting) => row.autoRunAts ? 'Enabled' : 'Disabled' },
+    ]
+  }, [lookups.positions])
   const visiblePostings = useMemo(() => currentPostings.filter(row => {
     const statusMatch = listStatus === 'All' || row.status === listStatus
     const needle = search.trim().toLowerCase()
     return statusMatch && (!needle || `${row.publicTitle} ${row.positionCode} ${row.positionTitle}`.toLowerCase().includes(needle))
+      && jobFilterDefinitions.every(filter => !jobFilters[filter.key] || filter.value(row) === jobFilters[filter.key])
   }).sort((left, right) => {
     const a = dayjs(left.updatedAtUtc || left.createdAtUtc || 0).valueOf()
     const b = dayjs(right.updatedAtUtc || right.createdAtUtc || 0).valueOf()
     return sortOrder === 'recent' ? b - a : a - b
-  }), [currentPostings, listStatus, search, sortOrder])
+  }), [currentPostings, listStatus, search, sortOrder, jobFilterDefinitions, jobFilters])
   const statusCounts = useMemo(() => ({
     All: currentPostings.length,
     Draft: currentPostings.filter(row => row.status === 'Draft').length,
@@ -404,16 +418,18 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
 
     <Spin spinning={loading}>
       <div className={`posting-workspace-layout${editor ? ' has-editor' : ''}`}>
-        {!editor && <Card size="small" className="posting-list" title={`Jobs (${visiblePostings.length})`}>
-          <Space direction="vertical" size={10} style={{ width: '100%' }}>
-            <Segmented className="job-status-strip" block value={listStatus} onChange={value => setListStatus(String(value))} options={[
-              { value: 'All', label: <span><b>{statusCounts.All}</b>All</span> },
-              { value: 'Draft', label: <span><b>{statusCounts.Draft}</b>Draft</span> },
-              { value: 'Published', label: <span><b>{statusCounts.Published}</b>Active</span> },
-              { value: 'Closed', label: <span><b>{statusCounts.Closed}</b>Archived</span> },
+        {!editor && <section className="candidate-applications-workspace">
+            <RecruitmentQuickFilters value={listStatus} onChange={setListStatus} label="Job status filters" metrics={[
+              { key: 'All', label: 'All', count: statusCounts.All, tone: 'blue' },
+              { key: 'Draft', label: 'Draft', count: statusCounts.Draft, tone: 'orange' },
+              { key: 'Published', label: 'Active', count: statusCounts.Published, tone: 'green' },
+              { key: 'Closed', label: 'Archived', count: statusCounts.Closed, tone: 'purple' },
             ]} />
-            <div className="job-filter-bar">
-              <Input.Search allowClear value={search} onChange={event => setSearch(event.target.value)} placeholder="Search jobs by name or ID" />
+          <div className="candidate-applications-layout">
+           <div className="candidate-applications-main">
+            <div className="candidate-list-toolbar job-list-toolbar">
+              <Input allowClear prefix={<SearchOutlined />} value={search} onChange={event => setSearch(event.target.value)} placeholder="Search jobs by name or ID" aria-label="Search jobs" />
+              <span>Showing <b>{visiblePostings.length}</b> of {currentPostings.length} jobs</span>
               <Select value={sortOrder} onChange={setSortOrder} options={[{ value: 'recent', label: 'Updated: recent first' }, { value: 'oldest', label: 'Updated: oldest first' }]} />
             </div>
             <div className="candidate-application-list job-application-list">{!visiblePostings.length && <Empty description="No matching jobs." />}{visiblePostings.map(row => {
@@ -446,9 +462,16 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
                 </Space></div>
               </article>
             })}</div>
-            {!!historicalPostings.length && <details data-testid="job-posting-history"><summary>Earlier postings / history ({historicalPostings.length})</summary><p>Earlier records and their applications are retained. Pipeline updates do not change published URLs.</p><Space direction="vertical">{historicalPostings.map(row => <Button key={row.id} onClick={() => void choosePosting(row)}>{row.publicTitle || row.positionTitle} · Posting #{row.id} · {row.status}</Button>)}</Space></details>}
-          </Space>
-        </Card>}
+           </div>
+           <RecruitmentFilterPanel count={Object.values(jobFilters).filter(Boolean).length} onReset={() => { setJobFilters({}); setListStatus('All'); setSearch(''); setSortOrder('recent') }}>
+             {jobFilterDefinitions.map(filter => <label key={filter.key}><span>{filter.label}</span><Select allowClear showSearch optionFilterProp="label" aria-label={filter.label}
+               placeholder={`All ${filter.label.toLowerCase()}`} value={jobFilters[filter.key] || undefined}
+               options={[...new Set(currentPostings.map(filter.value).filter(Boolean))].sort().map(value => ({ value, label: value }))}
+               onChange={value => setJobFilters(current => ({ ...current, [filter.key]: value || '' }))} /></label>)}
+           </RecruitmentFilterPanel>
+          </div>
+          {!!historicalPostings.length && <details data-testid="job-posting-history"><summary>Earlier postings / history ({historicalPostings.length})</summary><p>Earlier records and their applications are retained. Pipeline updates do not change published URLs.</p><Space direction="vertical">{historicalPostings.map(row => <Button key={row.id} onClick={() => void choosePosting(row)}>{row.publicTitle || row.positionTitle} · Posting #{row.id} · {row.status}</Button>)}</Space></details>}
+        </section>}
 
         {editor && <div className="posting-editor">
           <Button className="job-back-button" onClick={() => { setEditor(null); setActionFeedback(null) }}>Back to jobs</Button>
