@@ -17,3 +17,21 @@
 .candidate-next-action{min-width:190px;max-width:240px;width:100%}.candidate-next-action .ant-select-selector{border-color:#a99bf2!important;background:#faf9ff!important}.candidate-profile-drawer .data-table{min-width:0}
 .talent-form-wide{grid-column:1/-1;margin-bottom:10px}.candidate-profile-drawer .ant-btn-primary,.candidate-profile-drawer .ant-btn-primary:hover,.candidate-profile-drawer .ant-btn-primary:focus{color:#fff!important}
 .interview-operations-workspace{display:grid;gap:16px;min-width:0}.interview-status-strip{grid-template-columns:repeat(4,minmax(130px,1fr))}.interview-operations-workspace .data-table{min-width:0}@media(max-width:720px){.interview-status-strip{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Shared Candidate-style list used by interview, MoM and offer workspaces. */
+.recruitment-record-status{grid-template-columns:repeat(auto-fit,minmax(125px,1fr))}
+.recruitment-record-status button:focus-visible{outline:2px solid #6548e8;outline-offset:-3px}
+.recruitment-record-toolbar{grid-template-columns:minmax(180px,1fr) auto auto}
+.recruitment-record-card{grid-template-columns:auto minmax(0,1fr) auto;cursor:default}
+.recruitment-record-card:hover{transform:none}
+.recruitment-record-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:10px}
+.recruitment-record-facts>div{min-width:0;overflow-wrap:anywhere}
+.recruitment-record-facts>div>span{display:block;color:#78859a;font-size:11px;margin-bottom:4px}
+.recruitment-record-facts small{display:block;color:#667085}
+.recruitment-record-facts .ant-space{max-width:100%}
+.recruitment-record-facts .ant-tag{white-space:normal}
+.recruitment-record-actions{grid-column:1/-1;border-top:1px solid #edf0f5;padding-top:12px;display:flex;justify-content:flex-end;min-width:0}
+.recruitment-record-pagination{padding:12px}
+.recruitment-record-workspace .ant-smart-table{padding:12px;min-width:0}
+@media(max-width:1400px){.recruitment-record-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){.recruitment-record-toolbar{grid-template-columns:1fr}.recruitment-record-facts{grid-template-columns:1fr}.recruitment-record-selection{grid-column:2}.recruitment-record-actions{justify-content:flex-start}.recruitment-record-status{grid-template-columns:repeat(2,minmax(0,1fr))}}

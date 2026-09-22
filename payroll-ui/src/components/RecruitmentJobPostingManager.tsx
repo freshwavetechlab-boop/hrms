@@ -442,7 +442,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
                   <Space wrap>
                   <Button icon={<EditOutlined />} onClick={event => { event.stopPropagation(); void choosePosting(row) }}>{row.status === 'Draft' ? 'Edit' : 'View'}</Button>
                   {row.status === 'Draft' && <Button type="primary" icon={<RocketOutlined />} loading={quickPublishingId === row.id} onClick={event => { event.stopPropagation(); void publishFromCard(row) }}>Publish</Button>}
-                  {row.status === 'Published' && <Button type="primary" icon={<UserAddOutlined />} onClick={event => { event.stopPropagation(); navigate(`/recruitment/applications?clientId=${row.clientId}&add=1&jobPostingId=${row.id}`) }}>Add candidate</Button>}
+                  {row.status === 'Published' && <Button type="primary" icon={<UserAddOutlined />} onClick={event => { event.stopPropagation(); navigate(`/recruitment/applications?clientId=${row.clientId}&upload=single&positionId=${row.positionId}&jobPostingId=${row.id}`) }}>Add candidate</Button>}
                 </Space></div>
               </article>
             })}</div>

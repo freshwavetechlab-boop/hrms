@@ -2341,7 +2341,13 @@ JOIN authusers userRow ON userRow.Id=positionRow.RecruiterUserId AND userRow.IsA
 
     private static Task<IEnumerable<RecruitmentHiringCase>> HiringCaseRowsAsync(MySqlConnection db, int? clientId, long? id) =>
         db.QueryAsync<RecruitmentHiringCase>("SELECT " + HistoricalHiringCaseSql + @" IsHistorical,hiringCase.*,client.Name ClientName,workOrder.WorkOrderNumber,line.PositionName,line.PayBandLevelCode,line.Division,line.Location,
-definition.PipelineName,stage.StageName CurrentStageName,stage.StakeholderCode CurrentStakeholderCode
+definition.PipelineName,stage.StageName CurrentStageName,stage.StakeholderCode CurrentStakeholderCode,
+(hiringCase.PositionId IS NOT NULL AND hiringCase.RequisitionId IS NOT NULL AND hiringCase.Status IN ('Active','Candidate Flow')
+ AND EXISTS(SELECT 1 FROM recruitment_pipeline_stages momStage
+ WHERE momStage.PipelineVersionId=hiringCase.PipelineVersionId AND momStage.CardScope='Position' AND momStage.IsActive=TRUE
+ AND (momStage.StageCode='SIGNING_MOM' OR EXISTS(SELECT 1 FROM recruitment_stage_process_document_requirements requirement
+ WHERE requirement.PipelineStageId=momStage.Id AND requirement.DocumentType IN ('MOM','SIGNED_MOM')))
+ AND momStage.DisplayOrder<=stage.DisplayOrder)) IsPostInterviewStage
 FROM recruitment_position_pipeline_instances hiringCase
 JOIN clients client ON client.Id=hiringCase.ClientId
 JOIN recruitment_work_orders workOrder ON workOrder.Id=hiringCase.WorkOrderId
@@ -2353,7 +2359,12 @@ LEFT JOIN recruitment_pipeline_stages stage ON stage.Id=currentStage.PipelineSta
 WHERE (@ClientId IS NULL OR hiringCase.ClientId=@ClientId) AND (@Id IS NULL OR hiringCase.Id=@Id)
 ORDER BY hiringCase.UpdatedAtUtc DESC,hiringCase.Id DESC", new { ClientId = clientId, Id = id });
 
-    internal const string HistoricalHiringCaseSql = @"(hiringCase.Status='Superseded' OR EXISTS(
+    internal const string HistoricalHiringCaseSql = @"(hiringCase.Status='Superseded'
+OR (hiringCase.RequisitionId IS NOT NULL AND NOT EXISTS(
+ SELECT 1 FROM recruitment_requisitions liveRequest WHERE liveRequest.Id=hiringCase.RequisitionId AND liveRequest.ClientId=hiringCase.ClientId))
+OR (hiringCase.PositionId IS NOT NULL AND NOT EXISTS(
+ SELECT 1 FROM recruitment_open_positions livePosition WHERE livePosition.Id=hiringCase.PositionId AND livePosition.ClientId=hiringCase.ClientId))
+OR EXISTS(
 SELECT 1 FROM recruitment_position_pipeline_instances newer
 WHERE newer.ClientId=hiringCase.ClientId AND newer.RequisitionId=hiringCase.RequisitionId AND newer.Status<>'Superseded'
 AND ((newer.PositionId IS NOT NULL AND hiringCase.PositionId IS NULL)

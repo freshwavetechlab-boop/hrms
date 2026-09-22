@@ -480,7 +480,9 @@ PositionName=@PositionName,NumberOfPositions=@NumberOfPositions,Location=@Locati
 
         await using var transaction = await db.BeginTransactionAsync();
         await WorkflowRepository.DeleteResourceTransactionsAsync(db, transaction, "RecruitmentRequisition", id);
-        await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET RequisitionId=NULL WHERE RequisitionId=@Id", new { Id = id }, transaction);
+        // Retire the deleted demand instead of turning its old line into new intake.
+        await db.ExecuteAsync("UPDATE recruitment_work_order_lines SET RequisitionId=NULL,Status='Superseded' WHERE RequisitionId=@Id", new { Id = id }, transaction);
+        await db.ExecuteAsync("UPDATE recruitment_position_pipeline_instances SET Status='Superseded',CompletedAtUtc=COALESCE(CompletedAtUtc,UTC_TIMESTAMP(6)) WHERE RequisitionId=@Id", new { Id = id }, transaction);
         await db.ExecuteAsync("DELETE FROM recruitment_requisition_documents WHERE RequisitionId=@Id", new { Id = id }, transaction);
         await db.ExecuteAsync("DELETE FROM recruitment_requisitions WHERE Id=@Id", new { Id = id }, transaction);
         await db.ExecuteAsync("INSERT INTO recruitment_audit (EntityType,EntityId,Action,NewValueJson,ChangedByUserId) VALUES ('RecruitmentRequisition',@Id,'Admin Delete',@Json,@UserId)",

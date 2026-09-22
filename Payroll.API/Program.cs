@@ -1784,9 +1784,9 @@ app.MapPost("/api/recruitment/resume-intake/preview", async (RecruitmentTalentRe
     var (preview, error) = await talent.PreviewResumeAsync(request, CurrentUser(context), context.RequestAborted);
     return preview is null ? Results.BadRequest(new { error }) : Results.Ok(preview);
 }).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(30L * 1024 * 1024));
-app.MapGet("/api/recruitment/applications", async (RecruitmentTalentRepository repository, long? positionId, long? candidateId, string? stage, HttpContext context) =>
+app.MapGet("/api/recruitment/applications", async (RecruitmentTalentRepository repository, long? positionId, long? candidateId, string? stage, bool? negotiationOnly, int? clientId, HttpContext context) =>
     HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage")
-        ? Results.Ok(await repository.GetApplicationsAsync(CurrentUser(context), positionId, candidateId, stage ?? ""))
+        ? Results.Ok(await repository.GetApplicationsAsync(CurrentUser(context), positionId, candidateId, stage ?? "", negotiationOnly == true, clientId))
         : Results.StatusCode(403));
 app.MapPost("/api/recruitment/applications", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines,
     RecruitmentPipelineActionService pipelineActions, RecruitmentCandidateActionRepository candidateActions,

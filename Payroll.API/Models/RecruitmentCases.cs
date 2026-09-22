@@ -78,6 +78,7 @@ public class SaveRecruitmentWorkOrderLine
 
 public class RecruitmentHiringCase
 {
+    public bool IsPostInterviewStage { get; set; }
     public bool IsHistorical { get; set; }
     public long Id { get; set; }
     public int ClientId { get; set; }

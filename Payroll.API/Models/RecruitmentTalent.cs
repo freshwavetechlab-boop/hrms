@@ -651,6 +651,7 @@ public class RecruitmentOffer
 
 public class SaveRecruitmentOffer
 {
+    public bool PipelineNegotiation { get; set; }
     public long Id { get; set; }
     public long ApplicationId { get; set; }
     public decimal OfferedCtc { get; set; }

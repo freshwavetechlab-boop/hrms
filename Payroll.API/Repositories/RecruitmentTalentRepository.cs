@@ -301,11 +301,45 @@ CurrentCtc=@CurrentCtc,ExpectedCtc=@ExpectedCtc,UpdatedAt=UTC_TIMESTAMP() WHERE 
         return (await CandidateByIdAsync(db, candidateId), "");
     }
 
-    public async Task<IEnumerable<RecruitmentCandidateApplication>> GetApplicationsAsync(AuthUser user, long? positionId, long? candidateId, string stage)
+    public async Task<IEnumerable<RecruitmentCandidateApplication>> GetApplicationsAsync(AuthUser user, long? positionId, long? candidateId, string stage, bool negotiationOnly = false, int? clientId = null)
     {
         await using var db = Db();
         await db.OpenAsync();
-        return await ApplicationsAsync(db, user, positionId, candidateId, stage);
+        var rows = await ApplicationsAsync(db, user, positionId, candidateId, stage);
+        if (clientId is > 0) rows = rows.Where(row => row.ClientId == clientId);
+        if (!negotiationOnly) return rows;
+        var candidates = (await RecruitmentHiringProgress.ReadCandidatesAsync(db, rows.Select(row => row.PositionId), user))
+            .GroupBy(row => row.ApplicationId).ToDictionary(group => group.Key, group => group.First());
+        var eligible = new List<RecruitmentCandidateApplication>();
+        foreach (var row in rows)
+            if (candidates.TryGetValue(row.Id, out var candidate) && RecruitmentHiringProgress.MoMReady(candidate)
+                && RecruitmentHiringProgress.ReviewComplete(candidate) && !candidate.IsJoined
+                && await NegotiationCandidateErrorAsync(db, row, user, candidate) == "") eligible.Add(row);
+        return eligible;
+    }
+
+    private static async Task<string> NegotiationCandidateErrorAsync(MySqlConnection db, RecruitmentCandidateApplication application, AuthUser user,
+        RecruitmentHiringProgress.Candidate? candidate = null)
+    {
+        var inPipeline = await db.ExecuteScalarAsync<bool>(@"SELECT EXISTS(
+SELECT 1 FROM recruitment_application_pipeline_instances candidateFlow
+JOIN recruitment_application_stage_instances candidateStage ON candidateStage.Id=candidateFlow.CurrentStageInstanceId
+JOIN recruitment_pipeline_stages candidateDefinition ON candidateDefinition.Id=candidateStage.PipelineStageId
+JOIN recruitment_position_pipeline_instances hiringCase ON hiringCase.PositionId=@PositionId AND hiringCase.ClientId=@ClientId
+JOIN recruitment_requisitions liveRequest ON liveRequest.Id=hiringCase.RequisitionId AND liveRequest.ClientId=hiringCase.ClientId
+JOIN recruitment_position_stage_instances positionStage ON positionStage.Id=hiringCase.CurrentStageInstanceId
+JOIN recruitment_pipeline_stages positionDefinition ON positionDefinition.Id=positionStage.PipelineStageId
+WHERE candidateFlow.ApplicationId=@Id AND candidateFlow.Status='Active'
+ AND candidateStage.Status='Active' AND candidateDefinition.StageType IN ('HR','Offer','Documents','PreOnboarding','Joining')
+ AND hiringCase.Status IN ('Active','Candidate Flow')
+ AND (positionDefinition.StageCode IN ('NEGOTIATION_AND_MOM_TO_HR','HR_DIVISION_APPROVAL') OR positionDefinition.StageType='Offer'))", application);
+        if (!inPipeline) return "The candidate must reach negotiation through the hiring pipeline first.";
+        candidate ??= (await RecruitmentHiringProgress.ReadCandidatesAsync(db, [application.PositionId], user))
+            .FirstOrDefault(row => row.ApplicationId == application.Id);
+        if (candidate is null || !RecruitmentHiringProgress.MoMReady(candidate) || !RecruitmentHiringProgress.ReviewComplete(candidate) || candidate.IsJoined
+            || application.CurrentStage is "Rejected" or "Withdrawn" or "Joined")
+            return "Only continuing interview-selected candidates can be negotiated.";
+        return await RecruitmentOfferReleaseGate.ValidateAsync(db, application.Id, submittingForApproval: true);
     }
 
     public async Task<bool> IsApplicationAutoRunAtsEnabledAsync(long applicationId)
@@ -2143,6 +2177,11 @@ WHERE Id=@Id AND Status=@ExpectedStatus AND WorkflowInstanceId <=> @WorkflowInst
         var application = await ApplicationByIdAsync(db, request.ApplicationId, user);
         if (application is null) return (null, "Application was not found.");
         if (application.CurrentStage is "Rejected" or "Withdrawn" or "Joined") return (null, $"An offer cannot be saved for an application in {application.CurrentStage} stage.");
+        if (request.PipelineNegotiation)
+        {
+            var negotiationError = await NegotiationCandidateErrorAsync(db, application, user);
+            if (negotiationError.Length > 0) return (null, negotiationError);
+        }
         var governedNegotiation = await db.ExecuteScalarAsync<bool>(@"SELECT EXISTS(
 SELECT 1 FROM recruitment_position_pipeline_instances hiringCase
 JOIN recruitment_pipeline_stages stage ON stage.PipelineVersionId=hiringCase.PipelineVersionId

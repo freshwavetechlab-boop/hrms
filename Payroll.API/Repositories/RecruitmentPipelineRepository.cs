@@ -1523,6 +1523,9 @@ LEFT JOIN recruitment_job_postings posting ON posting.Id=(
 WHERE (@ClientId IS NULL OR workOrder.ClientId=@ClientId)
   AND (@PositionId IS NULL OR positionRow.Id=@PositionId)
   AND (@JobPostingId IS NULL OR posting.Id=@JobPostingId)
+  AND (line.RequisitionId IS NULL OR requisition.Id IS NOT NULL)
+  AND (line.PositionId IS NULL OR positionRow.Id IS NOT NULL)
+  AND (requisition.Id IS NOT NULL OR positionRow.Id IS NOT NULL OR hiringCase.Id IS NOT NULL)
   AND line.Status<>'Superseded' AND (hiringCase.Id IS NULL OR NOT " + RecruitmentCaseRepository.HistoricalHiringCaseSql + @")
 ORDER BY workOrder.ReceivedAtUtc DESC,workOrder.Id DESC,line.LineNumber,line.Id",
             new { ClientId = effectiveClientId, PositionId = positionId is > 0 ? positionId : null, JobPostingId = jobPostingId is > 0 ? jobPostingId : null })).ToList();

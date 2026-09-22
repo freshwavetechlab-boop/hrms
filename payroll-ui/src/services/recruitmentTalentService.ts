@@ -13,7 +13,7 @@ export const updateCandidateIntakeDetails = (id: number, row: { noticePeriodDays
   putJson(`/api/recruitment/candidates/${id}/intake-details`, row, null as RecruitmentCandidate | null)
 export const deleteCandidate = (id: number) => deleteJson(`/api/recruitment/candidates/${id}`, null, { successMessage: 'Candidate and safe test-stage recruitment data deleted.' })
 export const saveCandidateProfileSections = (candidateId: number, row: { experience: RecruitmentCandidateExperience[]; education: RecruitmentCandidateEducation[]; certifications: RecruitmentCandidateCertification[] }) => putJson(`/api/recruitment/candidates/${candidateId}/profile-sections`, row, null as RecruitmentCandidateDetail | null)
-export const getApplications = (filters: { positionId?: number; candidateId?: number; stage?: string } = {}) => {
+export const getApplications = (filters: { positionId?: number; candidateId?: number; stage?: string; negotiationOnly?: boolean; clientId?: number } = {}) => {
   const search = new URLSearchParams(); Object.entries(filters).forEach(([key, value]) => { if (value != null && value !== '') search.set(key, String(value)) })
   return getJson<RecruitmentCandidateApplication[]>(`/api/recruitment/applications?${search}`, [])
 }
@@ -69,7 +69,7 @@ export const deleteInterview = (id: number) => deleteJson(`/api/recruitment/inte
 export const getInterviewFeedback = (interviewId: number) => getJson<RecruitmentInterviewFeedback[]>(`/api/recruitment/interviews/${interviewId}/feedback`, [])
 export const saveInterviewFeedback = (interviewId: number, row: { panelUserId: number; overallScore: number; recommendation: string; competencyScoresJson?: string; comments: string; competencyScores: SaveRecruitmentInterviewFeedbackCompetencyScore[] }) => postJson(`/api/recruitment/interviews/${interviewId}/feedback`, row, null as RecruitmentInterviewFeedback | null, { successMessage: 'Interview feedback saved.' })
 export const getOffers = () => getJson<RecruitmentOffer[]>('/api/recruitment/offers', [])
-export const saveOffer = (row: Partial<RecruitmentOffer> & { applicationId: number }) => postJson('/api/recruitment/offers', row, null as RecruitmentOffer | null, { successMessage: 'Offer saved.' })
+export const saveOffer = (row: Partial<RecruitmentOffer> & { applicationId: number; pipelineNegotiation?: boolean }) => postJson('/api/recruitment/offers', row, null as RecruitmentOffer | null, { successMessage: 'Offer saved.' })
 export const deleteOffer = (id: number) => deleteJson(`/api/recruitment/offers/${id}`, null, { successMessage: 'Offer deleted.' })
 export const generateOfferLetter = (id: number) => postJson(`/api/recruitment/offers/${id}/generate-letter`, {}, null as RecruitmentOffer | null, { successMessage: 'Offer letter generated and stored securely.' })
 export const updateOfferStatus = (id: number, status: string, remarks = '') => postJson(`/api/recruitment/offers/${id}/status`, { status, remarks }, null as RecruitmentOffer | null, { successMessage: 'Offer status updated.' })

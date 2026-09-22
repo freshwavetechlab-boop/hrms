@@ -17,6 +17,7 @@ import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProc
 import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
 import { hiringTransitionLabel, isDivisionRejectionOutcome } from '../utils/recruitmentTransitions'
 import DataTable from './DataTable'
+import RecruitmentRecordList from './RecruitmentRecordList'
 import './RecruitmentWorkOrderWorkspace.css'
 
 type WorkOrderDraft = SaveRecruitmentWorkOrder
@@ -118,6 +119,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   }, [])
 
   const currentCases = useMemo(() => currentRecruitmentHiringCases(cases), [cases])
+  const postInterviewCases = useMemo(() => currentCases.filter(row => row.isPostInterviewStage), [currentCases])
   const historicalCases = useMemo(() => cases.filter(row => !currentCases.some(current => current.id === row.id)), [cases, currentCases])
   const historicalSelection = Boolean(selectedCase && historicalCases.some(row => row.id === selectedCase.id))
   const stats = useMemo(() => ({
@@ -164,8 +166,8 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   }
   const viewCase = async (row: RecruitmentHiringCase) => {
     setCaseActionError('')
-    const [detail, documents, batches, transitions] = await Promise.all([getRecruitmentHiringCase(row.id), getRecruitmentProcessDocuments(row.id), getRecruitmentProfileBatches(row.id), getRecruitmentHiringCaseTransitions(row.id)])
-    const applications = detail?.positionId ? await getApplications({ positionId: detail.positionId }) : []
+    const [detail, documents, batches, transitions] = await Promise.all([getRecruitmentHiringCase(row.id), getRecruitmentProcessDocuments(row.id), postInterview ? Promise.resolve([]) : getRecruitmentProfileBatches(row.id), getRecruitmentHiringCaseTransitions(row.id)])
+    const applications = !postInterview && detail?.positionId ? await getApplications({ positionId: detail.positionId }) : []
     if (!detail) setCaseActionError('This hiring journey could not be loaded. Refresh the page and try again.')
     setSelectedCase(detail); setCaseSyncedAt(Date.now()); setProcessDocuments(documents); setProfileBatches(batches); setCandidateApplications(applications); setSelectedApplicationIds([]); setCaseTransitions(transitions); setSelectedCaseOutcome(transitions[0]?.outcomeCode ?? 'ADVANCE')
   }
@@ -384,10 +386,13 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   return <section className="work-order-workspace" data-testid="recruitment-work-orders">
     {postInterview && <Card title="MoM signing & hiring-stage documents" extra={<Button onClick={() => void load()}>Refresh</Button>}>
       <Alert showIcon type="info" message="Open a job → Prepare MoM → Sign MoM → Finalize signed" description="Reuses the existing audited committee signatures and stage approvals. Signing is available when its configured stage is reached; candidate progress is preserved while vacancies are being filled. Negotiation is in the adjacent tab." />
-      <DataTable rows={currentCases} getRowId={row => row.id} emptyText="No current hiring journeys." columns={[
+      <RecruitmentRecordList<RecruitmentHiringCase> rows={postInterviewCases} title={row => row.positionName} subtitle={row => row.workOrderNumber} exportFileName="recruitment-mom"
+        filters={[{ key: 'job', label: 'Job role', value: row => row.positionName }, { key: 'stage', label: 'Hiring stage', value: row => row.currentStageName }, { key: 'order', label: 'Work order', value: row => row.workOrderNumber }]}
+        quickFilters={[...new Set(postInterviewCases.map(row => row.currentStageName).filter(Boolean))].map(stage => ({ key: stage, label: stage, tone: 'purple', matches: row => row.currentStageName === stage }))}
+        actions={row => <Button type="primary" onClick={() => void viewCase(row)}>Open MoM / stage documents</Button>}
+        emptyText="No hiring journeys have reached MoM signing yet." columns={[
         { key: 'positionName', label: 'Job' }, { key: 'workOrderNumber', label: 'Work order' },
         { key: 'currentStageName', label: 'Hiring stage' },
-        { key: 'actions', label: 'Action', render: row => <Button type="primary" onClick={() => void viewCase(row)}>Open MoM / stage documents</Button> },
       ]} />
     </Card>}
     {!postInterview && <><div className="work-order-command-bar">
@@ -499,7 +504,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
             </div>
           })}
         </Card>
-        <Card className="profile-batch-card" title="Approved candidate profile batches" extra={<Tag color="cyan">Client forwarding</Tag>}>
+        {!postInterview && <Card className="profile-batch-card" title="Approved candidate profile batches" extra={<Tag color="cyan">Client forwarding</Tag>}>
           {!selectedCase.positionId ? <Alert showIcon type="warning" message="Link this work-order line to its open position before batching candidates." description="Candidate applications are position-scoped, so the system will never mix profiles from another role or client." /> : <>
             <div className="profile-batch-compose">
               <Select data-testid="profile-batch-candidates" mode="multiple" allowClear showSearch optionFilterProp="label" value={selectedApplicationIds} placeholder="Select shortlisted candidates for this client batch" options={candidateApplications.filter(application => !['Rejected', 'Withdrawn', 'Joined'].includes(application.currentStage)).map(application => ({ value: application.id, label: `${application.candidateName} · ${application.applicationCode} · ${application.currentStage} · ATS ${application.atsScore ?? 'not scored'}` }))} onChange={setSelectedApplicationIds} />
@@ -512,7 +517,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
             <div className="profile-batch-people">{batch.items.map(item => <div key={item.id}><span><b>{item.candidateName}</b>{item.atsScore != null && <Tag>ATS {item.atsScore}</Tag>}</span><Space wrap className="profile-batch-row-actions">{item.readinessStatus === 'Ready' ? <Tag color="green">Ready</Tag> : <Tag color="red">Missing: {item.missingFields || 'candidate information'}</Tag>}{canUpdateCandidate && <Button size="small" data-testid={`profile-batch-update-${item.id}`} onClick={() => setEditingCandidate(item)}>Update fields</Button>}</Space></div>)}</div>
             <footer><span>{batch.deliveries.length ? `${batch.deliveries.length} audited delivery queue record${batch.deliveries.length === 1 ? '' : 's'}` : `Created ${dateTimeText(batch.createdAtUtc)}`}</span><Space>{batch.status === 'Draft' && <Button data-testid={`profile-batch-approve-${batch.id}`} loading={batchSaving} disabled={batch.items.some(item => item.readinessStatus !== 'Ready')} onClick={() => void approveProfileBatch(batch.id)}>Approve complete profiles</Button>}{batch.status === 'Approved' && <Button data-testid={`profile-batch-forward-${batch.id}`} type="primary" loading={batchSaving} onClick={() => void forwardProfileBatch(batch.id)}>Forward to configured client recipients</Button>}</Space></footer>
           </article>)}</div>
-        </Card>
+        </Card>}
       </>}
     </Drawer>
 

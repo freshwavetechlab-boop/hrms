@@ -4,9 +4,10 @@ import CandidateTrackingPreview from './CandidateTrackingPreview'
 import { interviewReady } from '../services/recruitmentInterviewEligibility'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Alert, Avatar, Badge, Button, Card, Checkbox, Drawer, Dropdown, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip } from 'antd'
+import { Alert, Avatar, Button, Card, Checkbox, Drawer, Dropdown, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Tag, Tooltip } from 'antd'
 import { BranchesOutlined, CalendarOutlined, DeleteOutlined, EditOutlined, FileSearchOutlined, MailOutlined, PhoneOutlined, PlusOutlined, RobotOutlined, SearchOutlined, UploadOutlined, UserAddOutlined } from '@ant-design/icons'
 import DataTable from './DataTable'
+import RecruitmentRecordList, { RecruitmentQuickFilters, RecruitmentFilterPanel } from './RecruitmentRecordList'
 import OfferLetterPreview from './OfferLetterPreview'
 import FinalOfferActions from './FinalOfferActions'
 import FinalOfferSettings from './FinalOfferSettings'
@@ -38,7 +39,6 @@ const conversion0: ConvertCandidateToEmployeeRequest = { employeeCode: '', dateO
 const canApplyCandidate = (row: RecruitmentCandidate) => row.profileStatus === 'Active' && row.consentStatus !== 'Revoked' && (!row.retentionUntil || new Date(row.retentionUntil).getTime() >= Date.now())
 const canMoveApplication = (row: RecruitmentCandidateApplication) => !['Rejected', 'Withdrawn', 'Joined'].includes(row.currentStage) && !row.currentStage.startsWith('Offer')
 type ApplicationQuickFilter = 'all' | 'new' | 'needs-score' | 'scored' | 'pipeline' | 'rejected'
-type InterviewQuickFilter = 'all' | 'scheduled' | 'completed' | 'attention'
 const rejectedApplication = (row: RecruitmentCandidateApplication) => /reject|withdraw/i.test(`${row.currentStage} ${row.currentStatus}`)
 const newApplication = (row: RecruitmentCandidateApplication) => /new|application|intake/i.test(row.currentStage || '')
 const publicJobApplication = (row: RecruitmentCandidateApplication) => /public\s*job|career/i.test(row.sourceType || '')
@@ -118,7 +118,6 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
   const [applicationStage, setApplicationStage] = useState('')
   const [applicationScoreBand, setApplicationScoreBand] = useState('')
   const [applicationSort, setApplicationSort] = useState('recent')
-  const [interviewQuickFilter, setInterviewQuickFilter] = useState<InterviewQuickFilter>('all')
   const [batchInterviewOpen, setBatchInterviewOpen] = useState(false)
   const [batchInterviewApplicationIds, setBatchInterviewApplicationIds] = useState<number[]>([])
   const [talentPoolDraft, setTalentPoolDraft] = useState<RecruitmentCandidateApplication | null>(null)
@@ -154,13 +153,13 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
       if (canScheduleInterviews) setApplications(await getApplications())
       return
     }
-    const [candidateRows, allApplicationRows, allInterviewRows, allOfferRows] = await Promise.all([getCandidates('', '', initialClientId || undefined), getApplications(), getInterviews(), getOffers()])
+    const [candidateRows, allApplicationRows, allInterviewRows, allOfferRows] = await Promise.all([getCandidates('', '', initialClientId || undefined), getApplications(negotiationMode ? { negotiationOnly: true, clientId: initialClientId || undefined } : {}), getInterviews(), getOffers()])
     const applicationRows = initialClientId ? allApplicationRows.filter(row => row.clientId === initialClientId) : allApplicationRows
     const applicationIds = new Set(applicationRows.map(row => row.id))
     const interviewRows = initialClientId ? allInterviewRows.filter(row => applicationIds.has(row.applicationId)) : allInterviewRows
     const offerRows = initialClientId ? allOfferRows.filter(row => row.clientId === initialClientId) : allOfferRows
-    setCandidates(candidateRows); setApplications(applicationRows); setInterviews(interviewRows); setOffers(offerRows)
-  }, [initialClientId, mode, canScheduleInterviews])
+    setCandidates(negotiationMode ? candidateRows.filter(row => applicationRows.some(application => application.candidateId === row.id)) : candidateRows); setApplications(applicationRows); setInterviews(interviewRows); setOffers(negotiationMode ? offerRows.filter(row => applicationIds.has(row.applicationId)) : offerRows)
+  }, [initialClientId, mode, canScheduleInterviews, negotiationMode])
   useEffect(() => {
     if (mode === 'interviews' && !canScheduleInterviews) { void load(); return }
     void Promise.all([getClients(), getWorkLocations(), getEmployeeManagerUsers(), getRecruitmentOpenPositions(initialClientId)]).then(([clientRows, locationRows, userRows, positionRows]) => { setClients(clientRows); setWorkLocations(locationRows); setPanelUsers(userRows); setPositions(positionRows) })
@@ -239,7 +238,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
   }
   const saveOfferDraft = async () => {
     if (!offerDraft) return
-    const response = await saveOffer(offerDraft)
+    const response = await saveOffer({ ...offerDraft, pipelineNegotiation: negotiationMode })
     if (!response.ok) return
     setOfferDraft(null); await load(); await refreshDetail()
   }
@@ -327,31 +326,13 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
     { key: 'pipeline', label: 'In pipeline', count: intakeApplications.filter(row => !newApplication(row) && !rejectedApplication(row)).length, tone: 'cyan' },
     { key: 'rejected', label: 'Rejected', count: intakeApplications.filter(rejectedApplication).length, tone: 'red' },
   ]
-  const visibleInterviews = useMemo(() => interviews.filter(row => {
-    if (interviewQuickFilter === 'scheduled') return ['Scheduled', 'Rescheduled'].includes(row.status)
-    if (interviewQuickFilter === 'completed') return row.status === 'Completed'
-    if (interviewQuickFilter === 'attention') return ['Cancelled', 'No Show'].includes(row.status)
-    return true
-  }), [interviewQuickFilter, interviews])
   const interviewReadyApplications = useMemo(() => applications.filter(row => interviewReady(row, interviews)), [applications, interviews])
   const selectedBatchApplications = useMemo(() => interviewReadyApplications.filter(row => batchInterviewApplicationIds.includes(row.id)), [batchInterviewApplicationIds, interviewReadyApplications])
   const selectedBatchPositionId = selectedBatchApplications[0]?.positionId || 0
-  const interviewMetrics: Array<{ key: InterviewQuickFilter; label: string; count: number; tone: string }> = [
-    { key: 'all', label: 'All interviews', count: interviews.length, tone: 'blue' },
-    { key: 'scheduled', label: 'Scheduled', count: interviews.filter(row => ['Scheduled', 'Rescheduled'].includes(row.status)).length, tone: 'green' },
-    { key: 'completed', label: 'Completed', count: interviews.filter(row => row.status === 'Completed').length, tone: 'purple' },
-    { key: 'attention', label: 'Cancelled / no show', count: interviews.filter(row => ['Cancelled', 'No Show'].includes(row.status)).length, tone: 'red' },
-  ]
   const candidateOptions = selectOptions(candidates.map(row => ({ value: row.id, label: `${row.candidateCode} - ${row.candidateName}` })), 'Select candidate', 0)
   const offerCandidate = candidates.find(candidate => candidate.id === applications.find(application => application.id === offerDraft?.applicationId)?.candidateId)
-  const negotiationApplications = applications.filter(application => {
-    if (/reject|withdraw|joined/i.test(application.currentStage)) return false
-    const interview = interviews.filter(row => row.applicationId === application.id).sort((left, right) => right.id - left.id)[0]
-    const position = positions.find(row => row.id === application.positionId)
-    return interview?.status === 'Completed' && interview.result === 'Selected'
-      && /negotiation|approval|offer/i.test(position?.pipelineStageName || '')
-  })
-  const offerApplicationOptions = selectOptions((negotiationMode ? negotiationApplications : applications).map(row => ({ value: row.id, label: `${row.applicationCode} - ${row.candidateName} / ${row.positionTitle}` })), 'Select application', 0)
+  // Negotiation mode receives only pipeline-qualified applications from the API.
+  const offerApplicationOptions = selectOptions(applications.map(row => ({ value: row.id, label: `${row.applicationCode} - ${row.candidateName} / ${row.positionTitle}` })), 'Select application', 0)
   const applicationOptions = selectOptions(applications.map(row => ({ value: row.id, label: `${row.applicationCode} - ${row.candidateName} / ${row.positionTitle}` })), 'Select application', 0)
   const positionOptions = selectOptions(positions.filter(row => !['Closed', 'Cancelled', 'Filled'].includes(row.status)).map(row => ({ value: row.id, label: `${row.positionCode} - ${row.positionTitle}` })), 'Select position', 0)
   const checklistDocumentOptions = checklistDraft ? candidateAttachments
@@ -363,7 +344,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
   if (String(mode) === 'applications') return <div className="talent-workspace">
     <section className="candidate-applications-workspace" data-testid="candidate-applications-workspace">
       <header className="candidate-applications-heading"><div><span>CANDIDATE OPERATIONS</span><h2>Candidates</h2><p>Published-link and manual applications with ATS readiness in one queue.</p></div><Space wrap>{applicationQuickFilter === 'rejected' && <Popconfirm title="Move selected candidates to Global Talent Pool?" description="Their rejected applications and complete pipeline history will remain linked to the original jobs." okText="Move selected" disabled={!selectedRejectedApplicationIds.length} onConfirm={() => void moveSelectedRejectedToGlobalTalentPool()}><Button disabled={!selectedRejectedApplicationIds.length}>Move selected to Global Talent Pool ({selectedRejectedApplicationIds.length})</Button></Popconfirm>}<AddCandidateMenu onSelect={target => { setResumeIntakeTarget(null); setResumeIntakeTalentPoolOnly(target === 'talentPool'); setResumeIntakeMode('single') }} /><Button type="primary" icon={<UploadOutlined />} onClick={() => { setResumeIntakeTalentPoolOnly(false); setResumeIntakeMode('bulk') }}>Bulk candidate upload</Button></Space></header>
-      <div className="candidate-status-strip" role="tablist" aria-label="Application status filters">{applicationMetrics.map(metric => <button key={metric.key} type="button" role="tab" aria-selected={applicationQuickFilter === metric.key} className={applicationQuickFilter === metric.key ? 'is-active' : ''} onClick={() => setApplicationQuickFilter(metric.key)}><b className={`tone-${metric.tone}`}>{metric.count}</b><span>{metric.label}</span></button>)}</div>
+      <RecruitmentQuickFilters metrics={applicationMetrics} value={applicationQuickFilter} onChange={setApplicationQuickFilter} label="Application status filters" />
       <div className="candidate-applications-layout">
         <div className="candidate-applications-main">
           <div className="candidate-list-toolbar"><Input allowClear prefix={<SearchOutlined />} value={applicationSearch} onChange={event => setApplicationSearch(event.target.value)} placeholder="Search candidates by name, ID, email, phone or job" /><span>Showing <b>{visibleApplications.length}</b> candidates</span><Select value={applicationSort} onChange={setApplicationSort} options={[{ value: 'recent', label: 'Created date: Recent first' }, { value: 'oldest', label: 'Created date: Oldest first' }, { value: 'score', label: 'ATS score: Highest first' }]} /></div>
@@ -395,7 +376,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
             </article>
           })}{!visibleApplications.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No applications match these filters." />}</div>
         </div>
-        <aside className="candidate-filter-panel"><header><strong>Filters</strong><Badge count={[applicationPositionId, applicationSource, applicationStage, applicationScoreBand].filter(Boolean).length} showZero color="#5b4ce6" /></header><label><span>Job role</span><Select allowClear showSearch optionFilterProp="label" value={applicationPositionId || undefined} onChange={value => setApplicationPositionId(Number(value || 0))} placeholder="All job roles" options={positions.map(row => ({ value: row.id, label: `${row.positionTitle} (${row.positionCode})` }))} /></label><label><span>Application source</span><Select allowClear value={applicationSource || undefined} onChange={value => setApplicationSource(value || '')} placeholder="All sources" options={[{ value: 'published', label: 'Published job link' }, { value: 'manual', label: 'Manual upload' }]} /></label><label><span>Pipeline stage</span><Select allowClear showSearch optionFilterProp="label" value={applicationStage || undefined} onChange={value => setApplicationStage(value || '')} placeholder="All stages" options={applicationStages.map(value => ({ value, label: value }))} /></label><label><span>ATS score</span><Select allowClear value={applicationScoreBand || undefined} onChange={value => setApplicationScoreBand(value || '')} placeholder="All ATS states" options={[{ value: 'needs-score', label: 'Needs scoring' }, { value: 'below-60', label: 'Below 60' }, { value: '60-79', label: '60–79' }, { value: '80-plus', label: '80 and above' }]} /></label><Button onClick={() => { setApplicationPositionId(0); setApplicationSource(''); setApplicationStage(''); setApplicationScoreBand(''); setApplicationSearch(''); setApplicationQuickFilter('all') }}>Reset filters</Button></aside>
+        <RecruitmentFilterPanel count={[applicationPositionId, applicationSource, applicationStage, applicationScoreBand].filter(Boolean).length} onReset={() => { setApplicationPositionId(0); setApplicationSource(''); setApplicationStage(''); setApplicationScoreBand(''); setApplicationSearch(''); setApplicationQuickFilter('all') }}><label><span>Job role</span><Select allowClear showSearch optionFilterProp="label" value={applicationPositionId || undefined} onChange={value => setApplicationPositionId(Number(value || 0))} placeholder="All job roles" options={positions.map(row => ({ value: row.id, label: `${row.positionTitle} (${row.positionCode})` }))} /></label><label><span>Application source</span><Select allowClear value={applicationSource || undefined} onChange={value => setApplicationSource(value || '')} placeholder="All sources" options={[{ value: 'published', label: 'Published job link' }, { value: 'manual', label: 'Manual upload' }]} /></label><label><span>Pipeline stage</span><Select allowClear showSearch optionFilterProp="label" value={applicationStage || undefined} onChange={value => setApplicationStage(value || '')} placeholder="All stages" options={applicationStages.map(value => ({ value, label: value }))} /></label><label><span>ATS score</span><Select allowClear value={applicationScoreBand || undefined} onChange={value => setApplicationScoreBand(value || '')} placeholder="All ATS states" options={[{ value: 'needs-score', label: 'Needs scoring' }, { value: 'below-60', label: 'Below 60' }, { value: '60-79', label: '60–79' }, { value: '80-plus', label: '80 and above' }]} /></label></RecruitmentFilterPanel>
       </div>
     </section>
     <Drawer className="candidate-profile-drawer candidate-application-detail" open={!!detail} onClose={() => { setDetail(null); setCandidateAttachments([]) }} width="min(1040px, 96vw)" title={candidateFromDetail ? `${candidateFromDetail.candidateName} · Candidate profile` : 'Candidate profile'}>{candidateFromDetail && <div className="candidate-360">
@@ -431,32 +412,25 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
     ]} /></>}
     {mode === 'interviewQueue' && <section className="interview-operations-workspace">
       <header className="candidate-applications-heading"><div><span>INTERVIEW QUEUE</span><h2>Candidates ready for interview</h2><p>ATS-qualified candidates stay in the bulk queue. New interview can be scheduled independently without changing ATS.</p></div><Space wrap><NewInterviewMenu onSelect={(startNow) => setInterviewDraft({ applicationId: 0, standalone: true, startNow })} /><Button type="primary" icon={<CalendarOutlined />} disabled={!selectedBatchApplications.length} onClick={() => setBatchInterviewOpen(true)}>Schedule selected ({selectedBatchApplications.length})</Button></Space></header>
-      <Card size="small" title="Candidates ready for interview" extra={<Tag color="cyan">{interviewReadyApplications.length} ready</Tag>}>
-        <Table<RecruitmentCandidateApplication>
-          rowKey="id"
-          size="small"
-          pagination={{ pageSize: 8, hideOnSinglePage: true }}
-          dataSource={interviewReadyApplications}
-          locale={{ emptyText: 'No ATS-qualified candidates are ready for interview yet.' }}
-          rowSelection={{
-            selectedRowKeys: batchInterviewApplicationIds,
-            onChange: keys => setBatchInterviewApplicationIds(keys.map(Number)),
-            getCheckboxProps: row => ({ disabled: Boolean(selectedBatchPositionId && row.positionId !== selectedBatchPositionId) }),
-          }}
-          columns={[
-            { title: 'Candidate', render: (_, row) => <div><b>{row.candidateName}</b><br /><small>{row.applicationCode}</small></div> },
-            { title: 'Job', render: (_, row) => <div>{row.positionTitle}<br /><small>{row.positionCode}</small></div> },
-            { title: 'ATS', render: (_, row) => row.atsScore == null ? <Tag>Pending</Tag> : <Tag color={row.atsScore >= (row.atsShortlistThreshold || 60) ? 'green' : 'orange'}>{row.atsScore.toFixed(1)}</Tag> },
-            { title: 'Candidate stage', dataIndex: 'currentStage', render: value => <Tag color={/interview/i.test(String(value)) ? 'blue' : 'purple'}>{value}</Tag> },
-          ]}
-        />
-      </Card>
+      <RecruitmentRecordList rows={interviewReadyApplications} title={row => row.candidateName} subtitle={row => row.positionTitle} exportFileName="interview-queue"
+        emptyText="No ATS-qualified candidates match these filters."
+        filters={[{ key: 'job', label: 'Job role', value: row => row.positionTitle }, { key: 'stage', label: 'Candidate stage', value: row => row.currentStage }, { key: 'recruiter', label: 'Recruiter', value: row => row.recruiterName || '' }]}
+        quickFilters={[{ key: 'selected', label: 'Selected to schedule', tone: 'purple', matches: row => batchInterviewApplicationIds.includes(row.id) }, { key: 'interview', label: 'Interview stage', tone: 'blue', matches: row => /interview/i.test(row.currentStage) }]}
+        selection={row => <Checkbox aria-label={`Select ${row.candidateName}`} checked={batchInterviewApplicationIds.includes(row.id)} disabled={Boolean(selectedBatchPositionId && row.positionId !== selectedBatchPositionId)} onChange={event => setBatchInterviewApplicationIds(current => event.target.checked ? [...new Set([...current, row.id])] : current.filter(id => id !== row.id))}>Select</Checkbox>}
+        rowSelection={{ selectedRowKeys: batchInterviewApplicationIds, onChange: keys => setBatchInterviewApplicationIds(keys.map(Number)), getCheckboxProps: row => ({ disabled: Boolean(selectedBatchPositionId && row.positionId !== selectedBatchPositionId) }) }}
+        columns={[
+          { key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Job' }, { key: 'applicationCode', label: 'Application' }, { key: 'positionCode', label: 'Job reference' },
+          { key: 'atsScore', label: 'ATS', render: row => row.atsScore == null ? <Tag>Pending</Tag> : <Tag color={row.atsScore >= (row.atsShortlistThreshold || 60) ? 'green' : 'orange'}>{row.atsScore.toFixed(1)}</Tag> },
+          { key: 'currentStage', label: 'Candidate stage', render: row => <Tag color={/interview/i.test(row.currentStage) ? 'blue' : 'purple'}>{row.currentStage}</Tag> },
+        ]}
+      />
     </section>}
     {mode === 'interviews' && <section className="interview-operations-workspace">
       {internalInterviewsEnabled && <InternalInterviewDashboard />}
       {canScheduleInterviews && <div className="talent-toolbar right"><NewInterviewMenu onSelect={(startNow) => setInterviewDraft({ applicationId: 0, standalone: true, startNow })} /></div>}
-      <div className="candidate-status-strip interview-status-strip" role="tablist" aria-label="Interview status filters">{interviewMetrics.map(metric => <button key={metric.key} type="button" role="tab" aria-selected={interviewQuickFilter === metric.key} className={interviewQuickFilter === metric.key ? 'is-active' : ''} onClick={() => setInterviewQuickFilter(metric.key)}><b className={`tone-${metric.tone}`}>{metric.count}</b><span>{metric.label}</span></button>)}</div>
-      <DataTable rows={visibleInterviews} emptyText="No interviews match this status." exportFileName="recruitment-interviews" actions={row => <Space wrap>
+      <RecruitmentRecordList rows={interviews} title={row => row.candidateName} subtitle={row => row.positionTitle}
+        filters={[{ key: 'job', label: 'Job role', value: row => row.positionTitle }, { key: 'status', label: 'Status', value: row => row.status }, { key: 'result', label: 'Result', value: row => row.result }, { key: 'mode', label: 'Interview mode', value: row => row.mode }]}
+        quickFilters={[{ key: 'scheduled', label: 'Scheduled', tone: 'blue', matches: row => ['Scheduled', 'Rescheduled'].includes(row.status) }, { key: 'completed', label: 'Completed', tone: 'green', matches: row => row.status === 'Completed' }, { key: 'feedback', label: 'Feedback pending', tone: 'orange', matches: row => !['Cancelled', 'No Show'].includes(row.status) && (row.panelFeedbackStatus || []).some(member => !member.submitted) }, { key: 'attention', label: 'Cancelled / no show', tone: 'red', matches: row => ['Cancelled', 'No Show'].includes(row.status) }]} emptyText="No interviews match this status." exportFileName="recruitment-interviews" actions={row => <Space wrap>
         {internalInterviewsEnabled && <Button size="small" onClick={() => navigate(`/recruitment/interview-session/${row.id}`)}>Internal session</Button>}
         <Button size="small" icon={<FileSearchOutlined />} onClick={() => void viewApplicationResume(row.applicationId)}>Resume</Button>
         {canScheduleInterviews && !['Completed', 'Cancelled', 'No Show'].includes(row.status) && <Button size="small" onClick={() => setInterviewDraft({ applicationId: row.applicationId, interview: row })}>Update</Button>}
@@ -480,7 +454,9 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
         { key: 'decisionApproverName', label: 'Decision approver', width: 180, wrap: true, render: row => row.decisionApproverName || 'HR / scheduling team' },
       ]} />
     </section>}
-    {mode === 'offers' && <><div className="talent-toolbar right">{session?.user.clientId == null && session?.user.roles.includes('super_admin') && <FinalOfferSettings clients={clients} initialClientId={initialClientId} reload={load} />}<Button type="primary" icon={<PlusOutlined />} onClick={() => { setCandidateAttachments([]); setOfferDraft({ applicationId: 0, offeredCtc: 0, currency: 'INR', proposedJoiningDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), status: 'Draft' }) }}>{negotiationMode ? 'Record negotiation' : 'Create offer'}</Button></div><DataTable rows={offers} exportFileName="recruitment-offers" actions={row => <Space wrap><Button size="small" icon={<FileSearchOutlined />} onClick={() => void viewApplicationResume(row.applicationId)}>Resume</Button>{row.status === 'Draft' && <Button size="small" onClick={() => { setOfferDraft({ ...row }); void loadOfferDocuments(row.applicationId) }}>Edit</Button>}{row.status === 'Draft' && <Button size="small" onClick={() => void generateOfferLetter(row.id).then(load)}>{row.offerLetterAttachmentPublicId ? 'Regenerate letter' : 'Generate letter'}</Button>}{row.offerLetterAttachmentPublicId && <OfferLetterPreview publicId={row.offerLetterAttachmentPublicId} title={`${row.candidateName} · ${row.offerNumber}`} label="View letter" />}<FinalOfferActions offer={row} reload={load} />{['Draft', 'Approved'].includes(row.status) && <Button size="small" type="primary" disabled={!row.offerLetterAttachmentPublicId} title={!row.offerLetterAttachmentPublicId ? 'Generate or link the offer letter first.' : undefined} onClick={() => void updateOfferStatus(row.id, 'Pending Candidate').then(load)}>{row.status === 'Approved' ? 'Release' : negotiationMode ? 'Submit negotiated terms' : 'Submit / release'}</Button>}{['Pending Candidate', 'Released', 'Negotiation'].includes(row.status) && <><Button size="small" type="primary" onClick={() => void updateOfferStatus(row.id, 'Accepted').then(load)}>Accept</Button><Button size="small" danger onClick={() => setOfferStatusDraft({ row, status: 'Rejected', reason: '' })}>Reject</Button></>}{['Pending Candidate', 'Released'].includes(row.status) && <Button size="small" onClick={() => setOfferStatusDraft({ row, status: 'Negotiation', reason: '' })}>Negotiate</Button>}{['Draft', 'Approved', 'Pending Candidate', 'Released', 'Negotiation'].includes(row.status) && <Button size="small" danger onClick={() => setOfferStatusDraft({ row, status: 'Withdrawn', reason: '' })}>Withdraw</Button>}{canDeleteRecruitmentData && <Popconfirm title="Delete this offer?" description="The generated offer letter will also be removed. Joined applications are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteOffer(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete offer ${row.offerNumber}`} /></Popconfirm>}</Space>} columns={[
+    {mode === 'offers' && <>{negotiationMode && <Alert type="info" showIcon message="Pipeline candidates only" description="Interview-selected candidates appear here after the required MoM and hiring stages. Use Record negotiation to enter their agreed terms." />}<div className="talent-toolbar right">{session?.user.clientId == null && session?.user.roles.includes('super_admin') && <FinalOfferSettings clients={clients} initialClientId={initialClientId} reload={load} />}<Button type="primary" disabled={negotiationMode && !applications.length} icon={<PlusOutlined />} onClick={() => { setCandidateAttachments([]); setOfferDraft({ applicationId: 0, offeredCtc: 0, currency: 'INR', proposedJoiningDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), status: 'Draft' }) }}>{negotiationMode ? 'Record negotiation' : 'Create offer'}</Button></div><RecruitmentRecordList key={negotiationMode ? 'negotiation' : 'offers'} rows={offers} title={row => row.candidateName} subtitle={row => row.positionTitle}
+      filters={[{ key: 'job', label: 'Job role', value: row => row.positionTitle }, { key: 'status', label: 'Status', value: row => row.status }, { key: 'approval', label: 'Final approval', value: row => row.finalApprovalStatus || '' }, { key: 'letter', label: 'Offer letter', value: row => row.offerLetterAttachmentPublicId ? 'Available' : 'Missing' }]}
+      quickFilters={[{ key: 'draft', label: 'Draft', tone: 'orange', matches: row => row.status === 'Draft' }, { key: 'pending', label: 'Awaiting candidate', tone: 'blue', matches: row => ['Pending Candidate', 'Released'].includes(row.status) }, { key: 'negotiation', label: 'Negotiation', tone: 'purple', matches: row => row.status === 'Negotiation' }, { key: 'accepted', label: 'Accepted', tone: 'green', matches: row => row.status === 'Accepted' }, { key: 'closed', label: 'Rejected / withdrawn', tone: 'red', matches: row => ['Rejected', 'Withdrawn'].includes(row.status) }]} exportFileName="recruitment-offers" actions={row => <Space wrap><Button size="small" icon={<FileSearchOutlined />} onClick={() => void viewApplicationResume(row.applicationId)}>Resume</Button>{row.status === 'Draft' && <Button size="small" onClick={() => { setOfferDraft({ ...row }); void loadOfferDocuments(row.applicationId) }}>Edit</Button>}{row.status === 'Draft' && <Button size="small" onClick={() => void generateOfferLetter(row.id).then(load)}>{row.offerLetterAttachmentPublicId ? 'Regenerate letter' : 'Generate letter'}</Button>}{row.offerLetterAttachmentPublicId && <OfferLetterPreview publicId={row.offerLetterAttachmentPublicId} title={`${row.candidateName} · ${row.offerNumber}`} label="View letter" />}<FinalOfferActions offer={row} reload={load} />{['Draft', 'Approved'].includes(row.status) && <Button size="small" type="primary" disabled={!row.offerLetterAttachmentPublicId} title={!row.offerLetterAttachmentPublicId ? 'Generate or link the offer letter first.' : undefined} onClick={() => void updateOfferStatus(row.id, 'Pending Candidate').then(load)}>{row.status === 'Approved' ? 'Release' : negotiationMode ? 'Submit negotiated terms' : 'Submit / release'}</Button>}{['Pending Candidate', 'Released', 'Negotiation'].includes(row.status) && <><Button size="small" type="primary" onClick={() => void updateOfferStatus(row.id, 'Accepted').then(load)}>Accept</Button><Button size="small" danger onClick={() => setOfferStatusDraft({ row, status: 'Rejected', reason: '' })}>Reject</Button></>}{['Pending Candidate', 'Released'].includes(row.status) && <Button size="small" onClick={() => setOfferStatusDraft({ row, status: 'Negotiation', reason: '' })}>Negotiate</Button>}{['Draft', 'Approved', 'Pending Candidate', 'Released', 'Negotiation'].includes(row.status) && <Button size="small" danger onClick={() => setOfferStatusDraft({ row, status: 'Withdrawn', reason: '' })}>Withdraw</Button>}{canDeleteRecruitmentData && <Popconfirm title="Delete this offer?" description="The generated offer letter will also be removed. Joined applications are protected." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteOffer(row.id); if (response.ok) await load() }}><Button size="small" danger icon={<DeleteOutlined />} aria-label={`Delete offer ${row.offerNumber}`} /></Popconfirm>}</Space>} columns={[
       { key: 'offerNumber', label: 'Offer' }, { key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Position' }, { key: 'offerTemplateName', label: 'Template', render: row => row.offerTemplateName || '-' }, { key: 'offerLetter', label: 'Letter', render: row => <Tag color={row.offerLetterAttachmentPublicId ? 'green' : 'orange'}>{row.offerLetterAttachmentPublicId ? 'Secured' : 'Missing'}</Tag> }, { key: 'offeredCtc', label: 'CTC', render: row => `${row.currency} ${Number(row.offeredCtc).toLocaleString('en-IN')}` }, { key: 'approvedBudgetAmount', label: 'Approved budget', render: row => row.approvedBudgetAmount > 0 ? `${row.currency} ${Number(row.approvedBudgetAmount).toLocaleString('en-IN')}` : '-' }, { key: 'variancePercent', label: 'Variance', render: row => row.stageOfferConfigurationId ? <Tag color={row.varianceExceeded ? 'red' : 'green'}>{Number(row.variancePercent).toFixed(2)}%</Tag> : '-' }, { key: 'approvalPolicy', label: 'Approval policy', render: row => row.approvalPolicy || (row.stageOfferConfigurationId ? 'Pipeline direct' : 'Global') }, { key: 'proposedJoiningDate', label: 'Joining', render: row => new Date(row.proposedJoiningDate).toLocaleDateString('en-IN') }, { key: 'status', label: 'Status' }
     ]} /></>}
 
