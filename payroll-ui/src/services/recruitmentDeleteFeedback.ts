@@ -58,6 +58,10 @@ const dependencyRoutes: DependencyRoute[] = [
 
 export function recruitmentDeleteActions(path: string, error: string): ToastAction[] {
   if (!path.toLowerCase().includes('recruitment')) return []
+  const requisitionId = path.match(/\/api\/recruitment\/requisitions\/(\d+)(?:\?|$)/i)?.[1]
+  if (requisitionId && /linked job[- ]description version/i.test(error)) {
+    return [{ label: 'Manage linked JD versions', href: `/recruitment/requisitions?requisitionId=${requisitionId}&jdHistory=1` }]
+  }
   const actions: ToastAction[] = []
   for (const route of dependencyRoutes) {
     if (!route.matches.some(pattern => pattern.test(error))) continue

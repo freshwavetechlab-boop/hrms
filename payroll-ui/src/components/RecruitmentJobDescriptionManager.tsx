@@ -36,6 +36,8 @@ type Props = {
   onNavigationStateChange?: (state: { dirty: boolean; busy: boolean }) => void
   onWeightChange?: (weight: number) => void
   embedded?: boolean
+  historyOnly?: boolean
+  onDeleted?: () => void
 }
 
 export type RecruitmentJobDescriptionManagerHandle = {
@@ -50,7 +52,7 @@ const editableStatuses = new Set(['Draft', 'Sent Back'])
 type EditorStep = 'role' | 'screening'
 type EditorSection = 'role' | 'responsibilities' | 'skills' | 'qualifications' | 'additional'
 
-const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionManagerHandle, Props>(function RecruitmentJobDescriptionManager({ initialClientId = 0, clientScopeManaged = false, initialRequisitionId = 0, onSaved, onNavigationStateChange, onWeightChange, embedded = false }, ref) {
+const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionManagerHandle, Props>(function RecruitmentJobDescriptionManager({ initialClientId = 0, clientScopeManaged = false, initialRequisitionId = 0, onSaved, onNavigationStateChange, onWeightChange, embedded = false, historyOnly = false, onDeleted }, ref) {
   const session = useAuthSession()
   const navigate = useNavigate()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
@@ -64,6 +66,8 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   const [lookups, setLookups] = useState(emptyLookups)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [deleteError, setDeleteError] = useState('')
   const [approvalOpen, setApprovalOpen] = useState(false)
   const [approvalMode, setApprovalMode] = useState<'workflow' | 'direct'>('workflow')
   const [workflowId, setWorkflowId] = useState<number>()
@@ -106,7 +110,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
     setLoading(true)
     Promise.all([
       getRecruitmentRequisitions({ clientId }),
-      getRecruitmentOrchestrationLookups(clientId),
+      historyOnly ? Promise.resolve(emptyLookups) : getRecruitmentOrchestrationLookups(clientId),
     ]).then(async ([requestRows, lookupRows]) => {
       if (sequence !== scopeLoad.current) return
       // Administrators also need access to saved JD history when the parent
@@ -116,7 +120,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
       requisitionsRef.current = eligibleRequests
       setLookups(lookupRows)
       const requestedId = requisitionId || initialRequisitionId
-      const nextId = eligibleRequests.some(row => row.id === requestedId) ? requestedId : eligibleRequests.length === 1 ? eligibleRequests[0].id : 0
+      const nextId = eligibleRequests.some(row => row.id === requestedId) ? requestedId : !historyOnly && eligibleRequests.length === 1 ? eligibleRequests[0].id : 0
       setRequisitionId(nextId)
       if (!nextId) { setVersions([]); setDraftSnapshot(null) }
       else await loadVersions(nextId, 0, eligibleRequests)
@@ -158,7 +162,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   const selectedRequisition = requisitions.find(row => row.id === requisitionId)
   const requestReadOnly = !!selectedRequisition && !['Draft', 'Sent Back', 'Approved'].includes(selectedRequisition.status)
   const readOnly = requestReadOnly || (!!draft?.id && !editableStatuses.has(draft.status))
-  const editingDisabled = readOnly || saving || sourceParsing
+  const editingDisabled = readOnly || saving || sourceParsing || Boolean(deletingId)
   const hasUnsavedChanges = Boolean(sourceFile || (draft && !readOnly && (!draft.id || descriptionSnapshot(draft) !== draftBaseline.current)))
 
   useImperativeHandle(ref, () => ({
@@ -177,7 +181,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   }, [hasUnsavedChanges, saving, sourceParsing])
   useEffect(() => {
     if (embeddedAutoSaveTimer.current) window.clearTimeout(embeddedAutoSaveTimer.current)
-    if (!embedded || !draft || readOnly || saving || sourceParsing || !hasUnsavedChanges || validateDescription(draft)) return
+    if (historyOnly || deletingId || !embedded || !draft || readOnly || saving || sourceParsing || !hasUnsavedChanges || validateDescription(draft)) return
     embeddedAutoSaveTimer.current = window.setTimeout(() => {
       embeddedAutoSaveTimer.current = null
       void saveDraft(true)
@@ -185,7 +189,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
     return () => {
       if (embeddedAutoSaveTimer.current) window.clearTimeout(embeddedAutoSaveTimer.current)
     }
-  }, [embedded, draft, readOnly, saving, sourceParsing, hasUnsavedChanges])
+  }, [embedded, historyOnly, deletingId, draft, readOnly, saving, sourceParsing, hasUnsavedChanges])
   const approvalWorkflows = useMemo(() => {
     const active = lookups.workflows.filter(row => row.isActive && (!row.clientId || row.clientId === clientId))
     return active.filter(row => row.resourceType === 'RecruitmentJobDescription')
@@ -228,7 +232,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   }
 
   function withDraftGuard(action: () => void) {
-    if (saving || sourceParsing) return
+    if (saving || sourceParsing || deletingId) return
     const proceed = () => { clearSourceDraft(); action() }
     if (hasUnsavedChanges) {
       Modal.confirm({ title: 'Leave these JD edits?', content: 'Unsaved edits and the selected source document will be discarded. Your saved versions are unchanged.', okText: 'Discard edits', cancelText: 'Keep editing', onOk: proceed })
@@ -259,12 +263,17 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
     })
   }
 
-  async function loadVersions(requestId: number, preferredId = 0, requestRows = requisitionsRef.current) {
+  async function loadVersions(requestId: number, preferredId = 0, requestRows = requisitionsRef.current, createDraft = true) {
     const sequence = ++versionLoad.current
     setLoading(true)
     try {
       const rows = await getRecruitmentJobDescriptions(requestId)
       if (sequence !== versionLoad.current) return
+      if (historyOnly) {
+        setVersions(rows)
+        setDraftSnapshot(null)
+        return
+      }
       const preferred = rows.find(row => row.id === preferredId)
         ?? rows.find(row => editableStatuses.has(row.status))
         ?? rows[0]
@@ -272,7 +281,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
       if (sequence !== versionLoad.current) return
       setVersions(rows)
       const request = requestRows.find(row => row.id === requestId)
-      setDraftSnapshot(full ?? preferred ?? (request ? blankDescription(request) : null))
+      setDraftSnapshot(full ?? preferred ?? (request && createDraft ? blankDescription(request) : null))
     } catch {
       if (sequence === versionLoad.current) message.error('Unable to load the JD. Please try again.')
     } finally {
@@ -283,6 +292,29 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   function chooseVersion(id: number) {
     if (!id || id === draft?.id) return
     withDraftGuard(() => { setHistoryOpen(false); void loadVersions(requisitionId, id) })
+  }
+
+  async function deleteVersion(id: number) {
+    if (saving || sourceParsing || deletingId) return
+    if (embeddedAutoSaveTimer.current) window.clearTimeout(embeddedAutoSaveTimer.current)
+    setDeletingId(id)
+    setDeleteError('')
+    try {
+      const response = await deleteRecruitmentJobDescription(id)
+      if (!response.ok) {
+        setDeleteError(response.error || 'The JD version could not be deleted.')
+        return
+      }
+      if (draft?.id === id) {
+        clearSourceDraft()
+        setDraftSnapshot(null)
+        await loadVersions(requisitionId, 0, requisitionsRef.current, false)
+      } else {
+        // Deleting another version must preserve the editor's current unsaved edits.
+        setVersions(await getRecruitmentJobDescriptions(requisitionId))
+      }
+      onDeleted?.()
+    } finally { setDeletingId(null) }
   }
 
   function startRevision() {
@@ -434,6 +466,18 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
     await loadVersions(draft.requisitionId, draft.id)
   }
 
+  const versionHistory = <>
+    {deleteError && <Alert type="error" showIcon message="JD could not be deleted" description={deleteError} />}
+    <List dataSource={versions} locale={{ emptyText: 'No saved versions yet.' }} renderItem={row => <List.Item className={draft?.id === row.id ? 'active' : ''} onClick={historyOnly || deletingId ? undefined : () => void chooseVersion(row.id)} actions={canDelete ? [<Popconfirm key="delete" title="Delete this JD version?" description="Delete linked postings first. ATS-scored versions are retained for audit." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async event => { event?.stopPropagation(); await deleteVersion(row.id) }} onCancel={event => event?.stopPropagation()}><Button data-testid={`delete-jd-${row.id}`} loading={deletingId === row.id} disabled={saving || sourceParsing || Boolean(deletingId)} aria-label="Delete job description" danger size="small" icon={<DeleteOutlined />} onClick={event => event.stopPropagation()} /></Popconfirm>] : []}>
+            <List.Item.Meta title={<Space><span>Version {row.versionNumber}</span><StatusTag status={row.status} /></Space>} description={row.title || 'Untitled job description'} />
+          </List.Item>} />
+  </>
+
+  if (historyOnly) return <Spin spinning={loading}>
+    <p>Delete the linked JD versions here, then retry deleting the hiring request. Versions linked to jobs or ATS scoring history cannot be deleted.</p>
+    {!loading && !selectedRequisition ? <Alert type="warning" showIcon message="This hiring request could not be loaded in your client scope." /> : versionHistory}
+  </Spin>
+
   return <section className={`orchestration-shell jd-manager${embedded ? ' is-embedded' : ''}`}>
     {!embedded && <div className="orchestration-toolbar">
       <div>
@@ -468,13 +512,11 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
     <Spin spinning={loading}>
       {!selectedRequisition ? <Card><Empty description={requisitions.length ? 'Select a hiring request to prepare its job description.' : 'No draft or approved hiring request exists for this client.'} /><Button icon={<FileAddOutlined />} onClick={openSourceDocument}>Start from a hiring document</Button></Card> : <div className="jd-simple-workspace">
         <Modal className="jd-history-modal" title={<Space><AuditOutlined /> JD version history</Space>} open={historyOpen} onCancel={() => setHistoryOpen(false)} footer={<Button icon={<PlusOutlined />} disabled={requestReadOnly || saving || sourceParsing} onClick={() => { startRevision(); setHistoryOpen(false) }}>New version</Button>}>
-          <List dataSource={versions} locale={{ emptyText: 'No saved versions yet.' }} renderItem={row => <List.Item className={draft?.id === row.id ? 'active' : ''} onClick={() => void chooseVersion(row.id)} actions={canDelete ? [<Popconfirm key="delete" title="Delete this JD version?" description="Delete linked postings first. ATS-scored versions are retained for audit." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async event => { event?.stopPropagation(); const response = await deleteRecruitmentJobDescription(row.id); if (response.ok) { if (draft?.id === row.id) setDraft(null); setVersions(await getRecruitmentJobDescriptions(requisitionId)) } }}><Button aria-label="Delete job description" danger size="small" icon={<DeleteOutlined />} onClick={event => event.stopPropagation()} /></Popconfirm>] : []}>
-            <List.Item.Meta title={<Space><span>Version {row.versionNumber}</span><StatusTag status={row.status} /></Space>} description={row.title || 'Untitled job description'} />
-          </List.Item>} />
-          {!versions.length && <Alert showIcon type="info" message="Your first draft is ready" description="Complete the role profile, save it, then submit it to the configured approval workflow." />}
+          {versionHistory}
+          {!versions.length && <Alert showIcon type="info" message="No saved JD versions" description="Use New version to prepare a job description for this request." />}
         </Modal>
 
-        {!draft ? <Card><Empty description="Create or select a version." /></Card> : <div className="jd-editor">
+        {!draft ? <Card><Empty description="Create or select a version." /><Space><Button onClick={() => setHistoryOpen(true)}>Version history</Button><Button disabled={requestReadOnly || saving || sourceParsing} onClick={startRevision}>New version</Button></Space></Card> : <div className="jd-editor">
           <div className="jd-version-toolbar">
             <Space wrap>
               <Select aria-label="JD version" className="jd-version-select" disabled={saving || sourceParsing} value={draft.id || 0} onChange={chooseVersion} options={[

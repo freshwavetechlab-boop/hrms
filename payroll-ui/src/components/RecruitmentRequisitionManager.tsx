@@ -37,6 +37,7 @@ type Props = {
   clientScopeManaged?: boolean
   initialOpen?: boolean
   initialRequisitionId?: number
+  initialJdHistory?: boolean
   initialWorkOrderId?: number
   initialWorkOrderLineId?: number
   statusScope?: string[]
@@ -71,7 +72,7 @@ const emptyMasters: MasterOptions = {
   hiringTypes: [], positionCategories: [], experienceRanges: [], priorities: [],
 }
 
-export default function RecruitmentRequisitionManager({ initialClientId = 0, clientScopeManaged = false, initialOpen = false, initialRequisitionId = 0, initialWorkOrderId = 0, initialWorkOrderLineId = 0, statusScope = [], showStatusFilter = true, embedded = false, pipelinePositions = [], onOpenPipeline, onOpenRequestPipeline, onChanged, onPrepareJobDescription }: Props) {
+export default function RecruitmentRequisitionManager({ initialClientId = 0, clientScopeManaged = false, initialOpen = false, initialRequisitionId = 0, initialJdHistory = false, initialWorkOrderId = 0, initialWorkOrderLineId = 0, statusScope = [], showStatusFilter = true, embedded = false, pipelinePositions = [], onOpenPipeline, onOpenRequestPipeline, onChanged, onPrepareJobDescription }: Props) {
   const session = useAuthSession()
   const canReviewWorkOrder = Boolean(session?.user.permissions.some(permission => ['recruitment.manage', 'settings.manage'].includes(permission)))
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
@@ -94,6 +95,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const [dialogOpen, setDialogOpen] = useState(initialOpen)
   const [readOnly, setReadOnly] = useState(false)
   const [activeRequest, setActiveRequest] = useState<RecruitmentRequisition | null>(null)
+  const [jdHistoryRequest, setJdHistoryRequest] = useState<RecruitmentRequisition | null>(null)
   const [sourcePrefillLoading, setSourcePrefillLoading] = useState(initialOpen)
   const [sourcePrefillWarning, setSourcePrefillWarning] = useState('')
   const [query, setQuery] = useState('')
@@ -296,9 +298,10 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     const requested = rows.find(row => row.id === initialRequisitionId)
     if (requested) {
       openedInitialRequisitionId.current = initialRequisitionId
-      openRequest(requested)
+      if (initialJdHistory) setJdHistoryRequest(requested)
+      else openRequest(requested)
     }
-  }, [dialogOpen, initialRequisitionId, loading, rows])
+  }, [dialogOpen, initialRequisitionId, initialJdHistory, loading, rows])
 
   async function refreshRows() {
     setLoading(true)
@@ -418,7 +421,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
           : <Tooltip title="View request"><Button aria-label="View request" size="small" icon={<EyeOutlined />} onClick={() => openRequest(row, true)} /></Tooltip>}
         {editableStatuses.has(row.status) && <Tooltip title="Submit hiring request"><Button aria-label="Submit" size="small" icon={<SendOutlined />} loading={submitting && submitDraft?.id === row.id} onClick={() => { setSubmissionNotice(null); setSubmitDraft(row) }} data-mail-event="RFR.SUBMIT" data-mail-resource-type="RecruitmentRequisition" data-mail-resource-id={row.id} data-mail-client-id={row.clientId} data-mail-action-label="Submit hiring request" /></Tooltip>}
         {(editableStatuses.has(row.status) || row.status === 'Approved') && onPrepareJobDescription && <Tooltip title={jobDescriptionActionLabel(row.jobDescriptionStatus)}><Button aria-label={jobDescriptionActionLabel(row.jobDescriptionStatus)} data-testid={`prepare-jd-${row.id}`} size="small" icon={<FilePdfOutlined />} onClick={() => onPrepareJobDescription(row)} /></Tooltip>}
-        {canDelete && <Popconfirm placement="left" title="Delete this requisition?" description="Delete its open position and job-description versions first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteRecruitmentRequisition(row.id); if (response.ok) await refreshRows() }}><Button title="Delete requisition" danger aria-label="Delete requisition" size="small" icon={<DeleteOutlined />} /></Popconfirm>}
+        {canDelete && <Popconfirm placement="left" title="Delete this requisition?" description={<span>Delete its open position and job-description versions first. This cannot be undone.<br /><Button size="small" type="link" onClick={() => setJdHistoryRequest(row)}>Manage linked JD versions</Button></span>} okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteRecruitmentRequisition(row.id); if (response.ok) await refreshRows(); else if (/linked job[- ]description version/i.test(response.error)) setJdHistoryRequest(row) }}><Button title="Delete requisition" danger aria-label="Delete requisition" size="small" icon={<DeleteOutlined />} /></Popconfirm>}
       </Space>,
     },
   ]
@@ -891,6 +894,14 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       {watchedForm.id > 0 && <EntityAttachmentPanel key={`${watchedForm.id}-${attachmentRefresh}`} entityType="RECRUITMENT_REQUISITION" entityId={watchedForm.id} clientId={watchedForm.clientId} moduleCode="RECRUITMENT" formCodes={['HIRING_REQUEST']} title="Original hiring request / JD" description="Saved source document. Preview or download it here; replacement is handled from the prefill control above." readOnly />}
       </Spin>
     </RecruitmentEditorDrawer>
+
+    <Modal title={jdHistoryRequest ? 'JD versions - ' + jdHistoryRequest.rfrNumber : 'JD versions'}
+      open={Boolean(jdHistoryRequest)} width="min(720px, 96vw)" destroyOnClose
+      onCancel={() => setJdHistoryRequest(null)} footer={<Button onClick={() => setJdHistoryRequest(null)}>Done</Button>}>
+      {jdHistoryRequest && <RecruitmentJobDescriptionManager key={jdHistoryRequest.id} embedded historyOnly
+        initialClientId={jdHistoryRequest.clientId} clientScopeManaged initialRequisitionId={jdHistoryRequest.id}
+        onDeleted={() => { void refreshRows(); setEmbeddedJdRefreshKey(value => value + 1) }} />}
+    </Modal>
 
     <Modal
       className="rfr-final-review"
