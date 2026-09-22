@@ -14,7 +14,7 @@ import {
   UserAddOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
-import { Button, Card, Tag } from 'antd'
+import { Button, Card, Empty, Tag } from 'antd'
 import type { Client, RecruitmentCandidateApplication, RecruitmentInterview, RecruitmentOffer, RecruitmentOpenPosition, RecruitmentRequisition } from '../types/payroll'
 import type { RecruitmentHiringCase } from '../types/recruitmentCases'
 import type { RecruitmentJobPosting } from '../types/recruitmentOrchestration'
@@ -35,6 +35,9 @@ import {
   type DashboardQueueItem,
 } from './dashboard/DashboardEngine'
 import DataTable from './DataTable'
+import { useAuthSession } from './AuthGate'
+import { recruitmentDashboardAccess } from '../utils/recruitmentDashboardAccess'
+import { positionsReadyToPublish } from '../utils/recruitmentPublishQueue'
 import { downloadXlsx } from '../utils/xlsx'
 
 type RecruitmentDashboardData = {
@@ -148,6 +151,8 @@ export default function RecruitmentDashboardOverview({
   onClientChange: (value?: number) => void
   onNavigate: (path: string) => void
 }) {
+  const session = useAuthSession()
+  const { manage, positions: canReadPositions, cases: canReadCases } = recruitmentDashboardAccess(session?.user.permissions || [])
   const [data, setData] = useState<RecruitmentDashboardData>(emptyData)
   const [filters, setFilters] = useState<DashboardFilters>(initialFilters)
   const [loading, setLoading] = useState(true)
@@ -160,13 +165,13 @@ export default function RecruitmentDashboardOverview({
     else setLoading(true)
     try {
       const [requisitions, positions, allApplications, allInterviews, allOffers, postings, hiringCases] = await Promise.all([
-        getRecruitmentRequisitions(selectedClientId ? { clientId: selectedClientId } : {}),
-        getRecruitmentOpenPositions(selectedClientId),
-        getApplications(),
-        getInterviews(),
-        getOffers(),
-        getRecruitmentJobPostings(selectedClientId),
-        getRecruitmentHiringCases(selectedClientId),
+        manage ? getRecruitmentRequisitions(selectedClientId ? { clientId: selectedClientId } : {}) : Promise.resolve([]),
+        canReadPositions ? getRecruitmentOpenPositions(selectedClientId) : Promise.resolve([]),
+        manage ? getApplications() : Promise.resolve([]),
+        manage ? getInterviews() : Promise.resolve([]),
+        manage ? getOffers() : Promise.resolve([]),
+        manage ? getRecruitmentJobPostings(selectedClientId) : Promise.resolve([]),
+        canReadCases ? getRecruitmentHiringCases(selectedClientId) : Promise.resolve([]),
       ])
       const applications = selectedClientId ? allApplications.filter(row => row.clientId === selectedClientId) : allApplications
       const applicationIds = new Set(applications.map(row => row.id))
@@ -185,7 +190,7 @@ export default function RecruitmentDashboardOverview({
       setLoading(false)
       setRefreshing(false)
     }
-  }, [selectedClientId])
+  }, [selectedClientId, manage, canReadPositions, canReadCases])
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0)
@@ -221,9 +226,9 @@ export default function RecruitmentDashboardOverview({
     const offers = data.offers.filter(row => applicationIds.has(row.applicationId))
     const positionClientIds = new Set(positions.map(row => row.clientId))
     const postings = data.postings.filter(row => positionIds.has(row.positionId))
-    const hiringCases = data.hiringCases.filter(row => (!row.positionId || positionIds.has(row.positionId)) && (!selectedClientId || row.clientId === selectedClientId || positionClientIds.has(row.clientId)))
+    const hiringCases = data.hiringCases.filter(row => (!canReadPositions || !row.positionId || positionIds.has(row.positionId)) && (!selectedClientId || row.clientId === selectedClientId || positionClientIds.has(row.clientId)))
     return { positions, requisitions, applications, interviews, offers, postings, hiringCases }
-  }, [data, dimensionMatch, positionById, positionByRequisitionId, selectedClientId])
+  }, [data, dimensionMatch, positionById, positionByRequisitionId, selectedClientId, canReadPositions])
 
   const current = useMemo(() => ({
     requisitions: dimensionRows.requisitions.filter(row => inRange(row.createdAt || row.requestDate, range)),
@@ -343,8 +348,7 @@ export default function RecruitmentDashboardOverview({
     dimensionRows.requisitions.filter(row => includesAny(row.status, ['pending'])).slice(0, 3).forEach(row => items.push({
       id: `approval-${row.id}`, title: row.positionTitle, meta: `Pending at ${row.pendingApproverName || row.approvalStageName || 'workflow approver'} · ${row.rfrNumber}`, owner: row.pendingApproverName || 'Approval queue', age: ageLabel(row.submittedAt || row.updatedAt, referenceTime), priority: includesAny(row.hiringPriority, ['urgent', 'high']) ? 'High' : 'Medium', icon: <AuditOutlined />, actionLabel: 'Review', onAction: () => onNavigate('/recruitment/requisitions?status=pending'),
     }))
-    const publishedPositionIds = new Set(dimensionRows.postings.filter(row => includesAny(row.status, ['publish', 'open', 'active'])).map(row => row.positionId))
-    dimensionRows.positions.filter(row => !publishedPositionIds.has(row.id) && includesAny(row.jobDescriptionStatus, ['approved'])).slice(0, 2).forEach(row => items.push({
+    positionsReadyToPublish(dimensionRows.positions, data.postings).slice(0, 2).forEach(row => items.push({
       id: `publish-${row.id}`, title: `${row.positionTitle} is ready to publish`, meta: `${row.positionCode} · ${row.clientName}`, owner: row.recruiterName || 'Recruitment team', age: ageLabel(row.updatedAt, referenceTime), priority: 'Normal', icon: <NotificationOutlined />, actionLabel: 'Publish', onAction: () => onNavigate(`/recruitment/job-postings?positionId=${row.id}`),
     }))
     const needsScoring = dimensionRows.applications.filter(row => row.atsScore == null)
@@ -357,7 +361,7 @@ export default function RecruitmentDashboardOverview({
     if (pendingJoiners.length) items.push({ id: 'joining-readiness', title: `${pendingJoiners.length} upcoming joiner${pendingJoiners.length === 1 ? '' : 's'} need readiness follow-up`, meta: 'Accepted offer awaiting joining completion', owner: 'Pre-onboarding owner', age: pendingJoiners[0].proposedJoiningDate ? `Joins ${new Date(pendingJoiners[0].proposedJoiningDate).toLocaleDateString('en-IN')}` : 'Date pending', priority: 'Medium', icon: <CalendarOutlined />, actionLabel: 'Check readiness', onAction: () => onNavigate('/recruitment/offers-and-pre-onboarding') })
     if (slaBreaches) items.push({ id: 'sla-breaches', title: `${slaBreaches} active hiring SLA breach${slaBreaches === 1 ? '' : 'es'}`, meta: 'Overdue pipeline stage or overall case target', owner: 'Hiring owner', age: 'Overdue', priority: 'High', icon: <WarningOutlined />, actionLabel: 'Resolve', onAction: () => onNavigate('/recruitment/work-orders-and-sla') })
     return items.slice(0, 8)
-  }, [dimensionRows, onNavigate, referenceTime, slaBreaches])
+  }, [dimensionRows, data.postings, onNavigate, referenceTime, slaBreaches])
 
   const positionMatrix = useMemo(() => dimensionRows.positions.flatMap(position => {
     const hiringCase = dimensionRows.hiringCases.find(row => row.positionId === position.id)
@@ -425,6 +429,14 @@ export default function RecruitmentDashboardOverview({
     ])
   }, [dimensionRows, positionMatrix])
 
+  const metricVisible = (key: string) => {
+    if (['vacancies', 'filled', 'time'].includes(key)) return canReadPositions
+    if (key === 'sla') return canReadCases
+    return manage
+  }
+  const visibleKpis = kpis.filter(item => metricVisible(item.key)).map(item => item.key === 'time' && !manage ? { ...item, onClick: () => onNavigate('/recruitment/open-positions') } : item.key === 'sla' && !manage ? { ...item, onClick: undefined } : item)
+  const visibleCharts = charts.filter(chart => ['ta-department-demand', 'ta-scope-demand'].includes(chart.id) ? canReadPositions : manage)
+
   const filterDefinitions = [
     { key: 'client', label: 'Client', value: selectedClientId || 'all', allowClear: false, disabled: !canChooseClient, searchable: true, options: [{ value: 'all', label: 'All accessible clients' }, ...clients.map(row => ({ value: row.id, label: `${row.code} · ${row.name}` }))] },
     { key: 'dateRange', label: 'Date range', value: filters.dateRange, allowClear: false, options: [{ value: 'month', label: 'This month' }, { value: 'quarter', label: 'This quarter' }, { value: 'year', label: 'This year' }, { value: 'custom', label: 'Custom range' }, { value: 'all', label: 'All time' }] },
@@ -432,7 +444,7 @@ export default function RecruitmentDashboardOverview({
     { key: 'location', label: 'Location', value: filters.location, searchable: true, options: options.locations.map(value => ({ value, label: value })) },
     { key: 'recruiter', label: 'Recruiter', value: filters.recruiter, searchable: true, options: options.recruiters.map(value => ({ value, label: value })) },
     { key: 'status', label: 'Job status', value: filters.status, searchable: true, options: options.statuses.map(value => ({ value, label: value })) },
-  ]
+  ].filter(filter => filter.key !== 'client' || canChooseClient)
   const changeFilter = (key: string, value?: string | number) => {
     if (key === 'client') { onClientChange(value === 'all' ? undefined : Number(value || 0)); return }
     setFilters(currentFilters => ({ ...currentFilters, [key]: value || '' }))
@@ -459,9 +471,9 @@ export default function RecruitmentDashboardOverview({
         <label className="dashboard-date-control"><span>To</span><input aria-label="Custom date to" type="date" value={filters.dateTo} onChange={event => setFilters(value => ({ ...value, dateTo: event.target.value }))} /></label>
       </> : undefined}
     />
-    <DashboardKpiGrid items={kpis} />
-    <DashboardFunnel title="Hiring funnel" subtitle="Click any stage to open the records behind its conversion." stages={funnel} />
-    <Card data-testid="opening-wise-hiring-ledger" className="dashboard-position-matrix" title="Opening-wise hiring status" extra={<><Button data-testid="recruitment-consolidated-excel" size="small" icon={<DownloadOutlined />} onClick={exportConsolidatedResources}>Consolidated Excel</Button> <Tag color="purple">{positionMatrix.length} seat{positionMatrix.length === 1 ? '' : 's'}</Tag></>}>
+    {visibleKpis.length > 0 ? <DashboardKpiGrid items={visibleKpis} /> : <Empty description="No overview metrics are available for your permissions." />}
+    {manage && <DashboardFunnel title="Hiring funnel" subtitle="Click any stage to open the records behind its conversion." stages={funnel} />}
+    {manage && <Card data-testid="opening-wise-hiring-ledger" className="dashboard-position-matrix" title="Opening-wise hiring status" extra={<><Button data-testid="recruitment-consolidated-excel" size="small" icon={<DownloadOutlined />} onClick={exportConsolidatedResources}>Consolidated Excel</Button> <Tag color="purple">{positionMatrix.length} seat{positionMatrix.length === 1 ? '' : 's'}</Tag></>}>
       <DataTable rows={positionMatrix} getRowId={row => row.id} exportFileName="opening-wise-hiring-status" onExcelExport={() => exportConsolidatedResources()} emptyText="No position seats match the active filters." columns={[
         { key: 'position', label: 'Position', width: 230, value: row => `${row.positionTitle} ${row.positionCode}`, render: row => <div className="pipeline-table-candidate"><strong>{row.positionTitle}</strong><small>{row.positionCode} · {row.clientName}</small></div> },
         { key: 'seatNumber', label: 'Seat', width: 80, value: row => `#${row.seatNumber}` },
@@ -478,14 +490,14 @@ export default function RecruitmentDashboardOverview({
         { key: 'status', label: 'Status', width: 120, render: row => <Tag color={row.overdue ? 'red' : includesAny(row.status, ['complete', 'filled']) ? 'green' : 'default'}>{row.overdue ? 'SLA overdue' : row.status}</Tag> },
         { key: 'action', label: 'Action', width: 90, sortable: false, filterable: false, render: row => <Button size="small" onClick={() => onNavigate(`/recruitment/hiring-pipeline?positionId=${row.positionId}`)}>Open</Button> },
       ]} />
-    </Card>
-    <DashboardChartGrid>{charts.map(chart => <DashboardChartCard key={chart.id} spec={chart} />)}</DashboardChartGrid>
-    <DashboardActionQueue title="Action needed" subtitle="One operational queue for approvals, publishing, screening, feedback and SLA risk." items={actionItems} emptyText="Nothing needs attention for the active filters." />
-    <section className="dashboard-insight-strip" aria-label="Recruitment operating health">
+    </Card>}
+    <DashboardChartGrid>{visibleCharts.map(chart => <DashboardChartCard key={chart.id} spec={chart} />)}</DashboardChartGrid>
+    {manage && <DashboardActionQueue title="Action needed" subtitle="One operational queue for approvals, publishing, screening, feedback and SLA risk." items={actionItems} emptyText="Nothing needs attention for the active filters." />}
+    {manage && <section className="dashboard-insight-strip" aria-label="Recruitment operating health">
       <article><SafetyCertificateOutlined /><div><b>{pct(joined, offeredApplicationIds.size).toFixed(0)}%</b><span>Offer-to-join conversion</span></div></article>
       <article><CheckCircleOutlined /><div><b>{pct(interviewedApplicationIds.size, shortlisted).toFixed(0)}%</b><span>Shortlist-to-interview</span></div></article>
       <article><ClockCircleOutlined /><div><b>{averageTimeToHire} days</b><span>Average time-to-hire</span></div></article>
       <article><WarningOutlined /><div><b>{slaBreaches}</b><span>SLA cases needing attention</span></div></article>
-    </section>
+    </section>}
   </DashboardEngine>
 }

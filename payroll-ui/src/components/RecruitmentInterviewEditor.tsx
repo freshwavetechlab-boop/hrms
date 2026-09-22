@@ -28,6 +28,7 @@ type ScheduleProps = CommonProps & {
   interview?: RecruitmentInterview | null
   initialApplicationId?: number
   initialStartNow?: boolean
+  initialDecision?: 'Selected' | 'Rejected'
 }
 
 type FeedbackProps = CommonProps & {
@@ -65,6 +66,9 @@ const parsePanelIds = (interview: RecruitmentInterview) => {
     return []
   }
 }
+
+const recommendationColor = (value: string) => /strong no|no hire/i.test(value) ? 'red' : /hold/i.test(value) ? 'gold' : /hire/i.test(value) ? 'green' : 'default'
+const interviewStatusColor = (value: string) => value === 'Completed' ? 'green' : ['Cancelled', 'No Show'].includes(value) ? 'red' : value === 'Rescheduled' ? 'orange' : 'blue'
 
 const contextFromInterview = (interview: RecruitmentInterview): RecruitmentInterviewSchedulingContext => ({
   applicationId: interview.applicationId,
@@ -116,7 +120,7 @@ export default function RecruitmentInterviewEditor(props: RecruitmentInterviewEd
   return props.mode === 'schedule' ? <ScheduleEditor {...props} /> : <FeedbackEditor {...props} />
 }
 
-function ScheduleEditor({ open, interview, initialApplicationId = 0, initialStartNow = false, applications, panelUsers, positions = [], standalone = false, onCreateStandaloneApplication, onClose, onSaved }: ScheduleProps) {
+function ScheduleEditor({ open, interview, initialApplicationId = 0, initialStartNow = false, initialDecision, applications, panelUsers, positions = [], standalone = false, onCreateStandaloneApplication, onClose, onSaved }: ScheduleProps) {
   const session = useAuthSession()
   const canSchedule = !!session?.user.permissions.some(permission => ['recruitment.interview.schedule', 'recruitment.manage', 'settings.manage'].includes(permission))
   const navigate = useNavigate()
@@ -126,13 +130,17 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, initialStar
   const [context, setContext] = useState<RecruitmentInterviewSchedulingContext | null>(interview ? contextFromInterview(interview) : null)
   const [contextLoading, setContextLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [savedInterview, setSavedInterview] = useState(interview)
+  const [savingApprover, setSavingApprover] = useState(false)
   const [sendInvite, setSendInvite] = useState(!interview?.id)
   const [candidateMode, setCandidateMode] = useState<'existing' | 'new'>('existing')
   const [newCandidate, setNewCandidate] = useState({ fullName: '', email: '', phone: '', positionId: 0 })
 
   useEffect(() => {
     if (!open) return
+    setSavedInterview(interview)
     const next = initialSchedule(interview, initialApplicationId)
+    if (interview?.canRecordDecision && initialDecision) { next.status = 'Completed'; next.result = initialDecision }
     if (!interview?.id && initialStartNow) next.range = [dayjs(), dayjs().add(60, 'minute')]
     setDraft({ ...next, ...(!canSchedule && interview?.canRecordDecision ? { status: 'Completed', result: interview.result === 'Pending' ? 'Selected' : interview.result } : {}) })
     setContext(interview ? contextFromInterview(interview) : null)
@@ -144,7 +152,7 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, initialStar
     let active = true
     void getInternalInterviewCapabilities().then(value => { if (active) setInternalAvailable(value.enabled && value.canManage && value.acceptingNewSessions !== false) })
     return () => { active = false }
-  }, [open, interview, initialApplicationId, initialStartNow, canSchedule])
+  }, [open, interview, initialApplicationId, initialStartNow, initialDecision, canSchedule])
 
   useEffect(() => {
     if (!open || interview?.id || !draft.applicationId) return
@@ -175,11 +183,29 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, initialStar
   const rangeValid = draft.range[0]?.isValid() && draft.range[1]?.isValid() && draft.range[1].isAfter(draft.range[0])
   const cannotReschedule = Boolean(interview?.id && context?.isPipelineManaged && !context.allowReschedule)
   const completionValid = draft.status !== 'Completed' || draft.result !== 'Pending'
-  const recordingDecision = !!interview?.id && draft.status === 'Completed'
+  const recordingDecision = !!interview?.id && (draft.status === 'Completed' || (['Selected', 'Rejected', 'On Hold'].includes(draft.result) && draft.result !== savedInterview?.result))
+  const approverChanged = Boolean(savedInterview?.id) && (draft.decisionApproverUserId || null) !== (savedInterview?.decisionApproverUserId || null)
+  const canRecordDecision = savedInterview?.canRecordDecision === true
+  const decisionReady = !recordingDecision || (!approverChanged && canRecordDecision)
   const destinationValid = recordingDecision || (internalDelivery ? internalAvailable : !sendInvite || Boolean(draft.locationOrLink.trim()))
   const hasNewCandidate = candidateMode === 'new' && Boolean(newCandidate.fullName.trim() && (newCandidate.email.trim() || newCandidate.phone.trim()) && newCandidate.positionId)
   const hasTarget = candidateMode === 'new' ? hasNewCandidate : draft.applicationId > 0
-  const canSave = (canSchedule || interview?.canRecordDecision === true) && hasTarget && rangeValid && completionValid && destinationValid && draft.panelUserIds.length >= minimumPanelCount && !contextLoading && (Boolean(interview?.id) || standalone || context !== null)
+  const canSave = !savingApprover && savedInterview?.status !== 'Completed' && decisionReady && (canSchedule || canRecordDecision) && hasTarget && rangeValid && completionValid && destinationValid && draft.panelUserIds.length >= minimumPanelCount && !contextLoading && (Boolean(interview?.id) || standalone || context !== null)
+
+  const saveApprover = async () => {
+    if (!savedInterview?.id || !canSchedule || !approverChanged || savedInterview.status === 'Completed' || saving || savingApprover) return
+    setSavingApprover(true)
+    try {
+      // Save only the assignment against the persisted schedule, never the unsaved result.
+      const response = await saveInterview({ ...savedInterview, panelUserIds: parsePanelIds(savedInterview), decisionApproverUserId: draft.decisionApproverUserId || null })
+      if (!response.ok || !response.data) return
+      setSavedInterview(response.data)
+      window.dispatchEvent(new Event('hrms:actions-changed'))
+      await onSaved()
+    } finally {
+      setSavingApprover(false)
+    }
+  }
 
   const submit = async () => {
     if (!canSave) return
@@ -231,7 +257,7 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, initialStar
     onClose={onClose}
     onSubmit={() => void submit()}
     submitText={recordingDecision ? 'Record final decision' : internalDelivery ? 'Save & configure Frevo One interview' : sendInvite ? (interview?.id ? 'Save & resend invite' : 'Schedule & send invite') : (interview?.id ? 'Save changes' : 'Schedule interview')}
-    submitLoading={saving}
+    submitLoading={saving || savingApprover}
     submitDisabled={!canSave}
     destroyOnClose
   >
@@ -257,16 +283,19 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, initialStar
         <Form.Item className="interview-editor-span" label="Panel members" required extra={`At least ${minimumPanelCount} panel member(s) are required.`}>
           <Select mode="multiple" value={draft.panelUserIds} onChange={values => setDraft({ ...draft, panelUserIds: values.map(Number) })} options={eligiblePanelUsers.map(user => ({ value: user.id, label: `${user.displayName} - ${user.email}` }))} showSearch optionFilterProp="label" placeholder="Select interview panel" />
         </Form.Item>
-<Form.Item className="interview-editor-span" label="Final decision approver" extra="After panel feedback, this user records Select / Reject. Choose a user with interview access. Existing unassigned rounds retain HR scheduling permissions."><Select allowClear showSearch optionFilterProp="label" value={draft.decisionApproverUserId || undefined} onChange={value => setDraft({ ...draft, decisionApproverUserId: value || null })} options={eligiblePanelUsers.map(user => ({ value: user.id, label: `${user.displayName} — ${user.email}` }))} placeholder="Choose decision approver" /></Form.Item>
+<Form.Item className="interview-editor-span" label="Final decision approver" extra="After panel feedback, this user records Select / Reject. Choose a user with interview access. Existing unassigned rounds retain HR scheduling permissions."><Select allowClear showSearch optionFilterProp="label" disabled={!canSchedule || savingApprover || savedInterview?.status === 'Completed'} value={draft.decisionApproverUserId || undefined} onChange={value => setDraft({ ...draft, decisionApproverUserId: value || null })} options={eligiblePanelUsers.map(user => ({ value: user.id, label: `${user.displayName} — ${user.email}` }))} placeholder="Choose decision approver" />
+          {approverChanged && <Alert style={{ marginTop: 8 }} type="info" showIcon message="Approver selection is not saved yet" description="Save this assignment first, then record the final decision. Your selected result will stay in this form." action={<Button disabled={!canSchedule || saving} loading={savingApprover} onClick={() => void saveApprover()}>Save approver</Button>} />}
+        </Form.Item>
         {internalDelivery ? <Alert className="interview-editor-span" type="info" message="Next: choose Human / AI / Hybrid, questions and consent settings. Send separate candidate/panel invites from the internal session page after configuration." /> : <Form.Item className="interview-editor-span" extra={sendInvite && !draft.locationOrLink.trim() ? 'Add the meeting link or location before sending the invite.' : 'Uses the configured notification email service.'}>
           <Checkbox checked={sendInvite} onChange={event => setSendInvite(event.target.checked)}>Email invite to candidate and selected panel after saving</Checkbox>
         </Form.Item>}
-        <Form.Item label="Status"><Select disabled={!canSchedule} value={draft.status} onChange={status => setDraft({ ...draft, status })} options={['Scheduled', 'Rescheduled', ...(interview?.canRecordDecision ? ['Completed'] : []), 'Cancelled', 'No Show'].map(value => ({ value, label: value }))} /></Form.Item>
-        <Form.Item label="Result"><Select disabled={!interview?.canRecordDecision} value={draft.result} onChange={result => setDraft({ ...draft, result })} options={['Pending', 'Selected', 'Rejected', 'On Hold', 'No Show', 'Reschedule'].map(value => ({ value, label: value }))} /></Form.Item>
+        <Form.Item label="Status"><Select disabled={!canSchedule} value={draft.status} onChange={status => setDraft({ ...draft, status })} options={['Scheduled', 'Rescheduled', ...(canRecordDecision ? ['Completed'] : []), 'Cancelled', 'No Show'].map(value => ({ value, label: value }))} /></Form.Item>
+        <Form.Item label="Result"><Select disabled={!canRecordDecision} value={draft.result} onChange={result => setDraft({ ...draft, result })} options={['Pending', 'Selected', 'Rejected', 'On Hold', 'No Show', 'Reschedule'].map(value => ({ value, label: value }))} /></Form.Item>
         <Form.Item className="interview-editor-span" label="HR summary"><Input.TextArea disabled={!canSchedule && !interview?.canRecordDecision} rows={3} value={draft.overallFeedback} onChange={event => setDraft({ ...draft, overallFeedback: event.target.value })} /></Form.Item>
       </Form>
 
       {!standalone && draft.applicationId > 0 && !contextLoading && !context && !interview?.id && <Alert type="warning" showIcon message="Interview cannot be scheduled from the application's current stage" description="Move the application to a configured Interview pipeline stage and ensure that stage has an interview-round configuration." />}
+      {recordingDecision && !approverChanged && !canRecordDecision && <Alert type="warning" showIcon message="Final decision is not available to you yet" description="The saved approver must record the decision after the required panel feedback is complete." />}
       {!completionValid && <Alert type="warning" showIcon message="Select a final result before marking this interview completed." />}
       {context && <Card size="small" className="interview-round-card" title={<Space><span>{context.pipelineStageName || context.roundCode}</span>{context.isPipelineManaged && <Tag color="purple">Pipeline managed</Tag>}</Space>}>
         <Descriptions size="small" column={{ xs: 1, sm: 2, md: 4 }}>
@@ -328,6 +357,15 @@ function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved, readOnl
   const hasConfiguredScore = !competencies.length || selectedScores.length > 0
   const feedbackBlocked = ['Cancelled', 'No Show'].includes(interview.status)
   const canSubmit = !feedbackBlocked && panelUserId > 0 && allRequiredScoresPresent && hasConfiguredScore
+  const visibleRows = canChoosePanel ? rows : rows.filter(row => row.panelUserId === session?.user.id)
+  const pendingPanelIds = panelIds.filter(id => !visibleRows.some(row => row.panelUserId === id))
+  const nextPendingPanelId = pendingPanelIds[0] || 0
+  const showFeedbackForm = !loading && !readOnly && !feedbackBlocked && (editing || visibleRows.length === 0 || pendingPanelIds.length > 0)
+
+  useEffect(() => {
+    if (open && canChoosePanel && !loading && !editing && !panelUserId && nextPendingPanelId)
+      setPanelUserId(nextPendingPanelId)
+  }, [open, canChoosePanel, loading, editing, panelUserId, nextPendingPanelId])
 
   const editFeedback = (row: RecruitmentInterviewFeedback) => {
     if (!canChoosePanel && row.panelUserId !== session?.user.id) return
@@ -363,7 +401,7 @@ function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved, readOnl
     title={`${interview.candidateName} · ${interview.roundCode}`}
     description={readOnly ? 'Review submitted panel scores, recommendations and comments.' : "Review submitted feedback and capture this panel member's evidence and recommendation."}
     onClose={onClose}
-    onSubmit={readOnly || (!editing && rows.length > 0) ? undefined : () => void submit()}
+    onSubmit={showFeedbackForm ? () => void submit() : undefined}
     submitText="Save feedback"
     submitLoading={saving}
     submitDisabled={!canSubmit}
@@ -375,22 +413,22 @@ function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved, readOnl
         <Descriptions.Item label="Position">{interview.positionTitle}</Descriptions.Item>
         <Descriptions.Item label="Schedule">{dayjs(interview.scheduledStart).format('DD MMM YYYY, HH:mm')}</Descriptions.Item>
         <Descriptions.Item label="Passing score">{interview.minimumPassingScore || 0}%</Descriptions.Item>
-        <Descriptions.Item label="Feedback">{interview.feedbackRequired ? <Tag color="red">Required</Tag> : <Tag>Optional</Tag>}</Descriptions.Item>
+        <Descriptions.Item label="Status"><Space size={4}><Tag color={interviewStatusColor(interview.status)}>{interview.status}</Tag>{interview.feedbackRequired ? <Tag color="red">Feedback required</Tag> : <Tag>Feedback optional</Tag>}</Space></Descriptions.Item>
       </Descriptions>
 
-      {!readOnly && <Card size="small" title="Submitted panel feedback" loading={loading}>
-        <Table<RecruitmentInterviewFeedback> rowKey="id" size="small" pagination={false} dataSource={rows} columns={[
-          { title: 'Panel member', dataIndex: 'panelUserName' },
-          { title: 'Score', dataIndex: 'overallScore', render: value => `${Number(value || 0).toFixed(2)}%` },
-          { title: 'Recommendation', dataIndex: 'recommendation', render: value => panelRecommendationLabel(String(value || '')) },
-          { title: 'Submitted', dataIndex: 'submittedAt', render: value => dayjs(String(value)).format('DD MMM YYYY, HH:mm') },
-          { title: '', key: 'action', width: 80, render: (_, row) => (canChoosePanel || row.panelUserId === session?.user.id) ? <Button size="small" onClick={() => editFeedback(row)}>Edit my feedback</Button> : null }
+      {!readOnly && (loading || visibleRows.length > 0) && <Card size="small" title={canChoosePanel ? 'Submitted panel feedback' : 'Your submitted feedback'} loading={loading}>
+        <Table<RecruitmentInterviewFeedback> rowKey="id" size="small" pagination={false} dataSource={visibleRows} columns={[
+          { title: 'Panel member', dataIndex: 'panelUserName', render: value => <Tag color="blue">{String(value || session?.user.displayName || session?.user.email || 'You')}</Tag> },
+          { title: 'Score', dataIndex: 'overallScore', render: value => <Tag color={Number(value || 0) >= (interview.minimumPassingScore || 0) ? 'green' : 'red'}>{Number(value || 0).toFixed(2)}%</Tag> },
+          { title: 'Recommendation', dataIndex: 'recommendation', render: value => <Tag color={recommendationColor(String(value || ''))}>{panelRecommendationLabel(String(value || ''))}</Tag> },
+          { title: 'Submitted', dataIndex: 'submittedAt', render: value => <Tag color="green">{dayjs(String(value)).format('DD MMM YYYY, HH:mm')}</Tag> },
+          { title: '', key: 'action', width: 80, render: (_, row) => (canChoosePanel || row.panelUserId === session?.user.id) ? <Button size="small" onClick={() => editFeedback(row)}>{canChoosePanel ? 'Edit feedback' : 'Edit my feedback'}</Button> : null }
         ]} locale={{ emptyText: 'No panel feedback submitted yet.' }} />
       </Card>}
 
       {readOnly && <Card size="small" title="Submitted panel feedback" loading={loading}>
-        {!loading && !rows.length && <Alert type="info" showIcon message="No panel feedback has been submitted." />}
-        <div className="submitted-feedback-list">{rows.map(row => <Card size="small" key={row.id} title={row.panelUserName || `Panel member #${row.panelUserId}`} extra={<Space wrap><Tag color="blue">{Number(row.overallScore || 0).toFixed(2)} / 100</Tag><Tag color={/hire/i.test(row.recommendation || '') && !/no hire/i.test(row.recommendation || '') ? 'green' : 'orange'}>Panel recommendation: {panelRecommendationLabel(row.recommendation || 'Not provided')}</Tag></Space>}>
+        {!loading && !visibleRows.length && <Alert type="info" showIcon message="No panel feedback has been submitted." />}
+        <div className="submitted-feedback-list">{visibleRows.map(row => <Card size="small" key={row.id} title={row.panelUserName || session?.user.displayName || session?.user.email || 'Your feedback'} extra={<Space wrap><Tag color={Number(row.overallScore || 0) >= (interview.minimumPassingScore || 0) ? 'green' : 'red'}>{Number(row.overallScore || 0).toFixed(2)} / 100</Tag><Tag color={recommendationColor(row.recommendation || '')}>Panel recommendation: {panelRecommendationLabel(row.recommendation || 'Not provided')}</Tag></Space>}>
           <Descriptions size="small" bordered column={{ xs: 1, sm: 2 }}>
             <Descriptions.Item label="Submitted">{dayjs(row.submittedAt).format('DD MMM YYYY, HH:mm')}</Descriptions.Item>
             <Descriptions.Item label="Score source">{row.scoreSource || 'Panel feedback'}</Descriptions.Item>
@@ -407,10 +445,9 @@ function FeedbackEditor({ open, interview, panelUsers, onClose, onSaved, readOnl
 
       {!readOnly && !panelIds.length && <Alert type="warning" showIcon message="No panel members are assigned to this interview." />}
       {!readOnly && feedbackBlocked && <Alert type="error" showIcon message={`Feedback cannot be submitted for an interview marked ${interview.status}.`} />}
-      {!readOnly && !editing && rows.length > 0 && panelIds.some(id => !rows.some(row => row.panelUserId === id)) && <Button onClick={() => setEditing(true)}>Add remaining panel feedback</Button>}
-      {!readOnly && (editing || rows.length === 0) && <Form layout="vertical" className="interview-editor-grid">
+      {showFeedbackForm && <Form layout="vertical" className="interview-editor-grid">
         <Form.Item label="Panel member" required>
-          <SearchSelect value={panelUserId} onChange={value => { const id = Number(value); const existing = rows.find(row => row.panelUserId === id); existing ? editFeedback(existing) : resetFormWithPanel(id, competencies, setPanelUserId, setRecommendation, setOverallScore, setComments, setCompetencyDraft) }} options={selectOptions(panelIds.map(id => ({ value: id, label: panelUsers.find(user => user.id === id)?.displayName || `User #${id}` })), 'Select panel member', 0)} />
+          {canChoosePanel ? <SearchSelect value={panelUserId} onChange={value => { const id = Number(value); const existing = visibleRows.find(row => row.panelUserId === id); existing ? editFeedback(existing) : resetFormWithPanel(id, competencies, setPanelUserId, setRecommendation, setOverallScore, setComments, setCompetencyDraft) }} options={selectOptions(panelIds.map(id => ({ value: id, label: panelUsers.find(user => user.id === id)?.displayName || `User #${id}` })), 'Select panel member', 0)} /> : <Tag className="feedback-panel-chip" color="blue">{session?.user.displayName || session?.user.email || 'Assigned panel member'}</Tag>}
         </Form.Item>
         <Form.Item label="Panel recommendation (not the final decision)" required><Select value={recommendation} onChange={setRecommendation} options={['Strong Hire', 'Hire', 'On Hold', 'No Hire', 'Strong No Hire'].map(value => ({ value, label: panelRecommendationLabel(value) }))} /></Form.Item>
 

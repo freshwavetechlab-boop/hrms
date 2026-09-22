@@ -38,17 +38,29 @@ for (const rule of limits) test(`${rule.field}: boundary, overflow, Unicode and 
   assert.notEqual(error(unicode + 'ह', rule), '')
 })
 
-test('every form field validates; manual and automatic save guard before writing', () => {
+test('every form field validates before the explicit server write', () => {
   const manager = read('../src/components/RecruitmentRequisitionManager.tsx')
   for (const { field } of limits) assert.ok(manager.includes(`textRules('${field}')`), `${field} inline validation`)
-  for (const name of ['runAutoSave', 'saveRequest']) {
-    const fn = manager.slice(manager.indexOf(`async function ${name}(`))
-    assert.ok(fn.indexOf('checkTextLengths(') < fn.indexOf('saveRecruitmentRequisition('), name)
-  }
+  const fn = manager.slice(manager.indexOf('async function saveRequest('))
+  assert.ok(fn.indexOf('checkTextLengths(') < fn.indexOf('saveRecruitmentRequisition('), 'saveRequest')
   assert.match(manager, /field-limits/)
   assert.match(manager, /if \(!textLimits.length\)/)
   assert.match(manager, /requisition-text-errors/)
   assert.doesNotMatch(manager, /maxLength=\{190\}/)
+})
+
+test('new hiring request drafts stay browser-local until explicit submit', () => {
+  const manager = read('../src/components/RecruitmentRequisitionManager.tsx')
+  const schedule = manager.slice(manager.indexOf('function scheduleAutoSave('), manager.indexOf('const applyDraft'))
+  assert.match(schedule, /persistBrowserDraft\(current\)/)
+  assert.doesNotMatch(schedule, /saveRecruitmentRequisition|runAutoSave/)
+  assert.doesNotMatch(manager, /async function runAutoSave/)
+  assert.match(manager, /data-testid="clear-hiring-request-draft"/)
+  assert.match(manager, /data-testid="review-work-order"/)
+  assert.match(manager, /No database row has been created/)
+  const clear = manager.slice(manager.indexOf('async function openNew('), manager.indexOf('function openRequest('))
+  assert.match(clear, /clearBrowserDraft\(\)/)
+  assert.match(clear, /applyPipelineTarget\([^\n]+, false\)/)
 })
 
 test('parser and API reuse the contract, including ESS save; JSON is not a bounded text column', () => {

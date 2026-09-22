@@ -1,3 +1,5 @@
+import RecruitmentWorkOrderFields from './RecruitmentWorkOrderFields'
+import RecruitmentBatchCandidateEditor from './RecruitmentBatchCandidateEditor'
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { currentRecruitmentHiringCases } from '../services/recruitmentJobVersions'
 import { Alert, Button, Card, Divider, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Statistic, Tag, Timeline, Tooltip, message } from 'antd'
@@ -11,7 +13,7 @@ import { advanceRecruitmentHiringCase, approveRecruitmentProfileBatch, createRec
 import { getApplications } from '../services/recruitmentTalentService'
 import type { Client, RecruitmentCandidateApplication } from '../types/payroll'
 import type { RecruitmentPipelineTransition } from '../types/recruitmentOrchestration'
-import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProcessDocumentSignature, RecruitmentProfileSubmissionBatch, RecruitmentWorkOrder, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
+import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProcessDocumentSignature, RecruitmentProfileSubmissionBatch, RecruitmentProfileSubmissionBatchItem, RecruitmentWorkOrder, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
 import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
 import { hiringTransitionLabel, isDivisionRejectionOutcome } from '../utils/recruitmentTransitions'
 import DataTable from './DataTable'
@@ -62,6 +64,8 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   const [profileBatches, setProfileBatches] = useState<RecruitmentProfileSubmissionBatch[]>([])
   const [selectedApplicationIds, setSelectedApplicationIds] = useState<number[]>([])
   const [batchSaving, setBatchSaving] = useState(false)
+  const [editingCandidate, setEditingCandidate] = useState<RecruitmentProfileSubmissionBatchItem | null>(null)
+  const canUpdateCandidate = Boolean(session?.user.permissions.some(permission => ['recruitment.manage', 'settings.manage'].includes(permission)))
   const [caseActionBusy, setCaseActionBusy] = useState(false)
   const [caseActionError, setCaseActionError] = useState('')
   const [caseActionDialog, setCaseActionDialog] = useState<'pause' | 'advance' | null>(null)
@@ -459,7 +463,8 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
         </Space>
       </div>
       <Form layout="vertical" className="work-order-form">
-        <div className="work-order-form-grid"><Form.Item label="Client" required><Select data-testid="work-order-client" value={draft.clientId || undefined} disabled={clientScopeManaged && initialClientId > 0} showSearch optionFilterProp="label" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={clientId => patchDraft({ clientId, receivedFrom: clients.find(row => row.id === clientId)?.name || '' })} /></Form.Item><Form.Item label="Work order number" required><Input data-testid="work-order-number" value={draft.workOrderNumber} onChange={event => patchDraft({ workOrderNumber: event.target.value })} /></Form.Item><Form.Item label="Received date & time" required><Input data-testid="work-order-received-at" type="datetime-local" value={draft.receivedAtUtc} onChange={event => patchDraft({ receivedAtUtc: event.target.value })} /></Form.Item><Form.Item label="Status"><Select data-testid="work-order-status" value={draft.status} options={['Draft', 'Active', 'On Hold', 'Completed', 'Cancelled'].map(value => ({ value }))} onChange={status => patchDraft({ status })} /></Form.Item><Form.Item className="wide" label="Internal note"><Input.TextArea data-testid="work-order-remarks" rows={2} value={draft.remarks} onChange={event => patchDraft({ remarks: event.target.value })} /></Form.Item></div>
+        <RecruitmentWorkOrderFields value={draft} clients={clients} clientDisabled={clientScopeManaged && initialClientId > 0}
+          onChange={patch => patchDraft({ ...patch, ...(patch.clientId ? { receivedFrom: clients.find(row => row.id === patch.clientId)?.name || '' } : {}) })} />
       </Form>
     </Drawer>
 
@@ -504,13 +509,15 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
           </>}
           <div className="profile-batch-list">{profileBatches.map(batch => <article key={batch.id} data-testid={`profile-batch-${batch.id}`}>
             <header><div><span>{batch.batchNumber}</span><b>{batch.items.length} candidate{batch.items.length === 1 ? '' : 's'}</b></div><Tag color={batch.status === 'Forwarded' ? 'green' : batch.status === 'Approved' ? 'blue' : 'gold'}>{batch.status}</Tag></header>
-            <div className="profile-batch-people">{batch.items.map(item => <div key={item.id}><span><b>{item.candidateName}</b>{item.atsScore != null && <Tag>ATS {item.atsScore}</Tag>}</span>{item.readinessStatus === 'Ready' ? <Tag color="green">Ready</Tag> : <Tag color="red">Missing: {item.missingFields || 'candidate information'}</Tag>}</div>)}</div>
-            <footer><span>{batch.deliveries.length ? `${batch.deliveries.length} audited delivery queue record${batch.deliveries.length === 1 ? '' : 's'}` : `Created ${dateTimeText(batch.createdAtUtc)}`}</span><Space>{batch.status === 'Draft' && <Button data-testid={`profile-batch-approve-${batch.id}`} loading={batchSaving} onClick={() => void approveProfileBatch(batch.id)}>Approve complete profiles</Button>}{batch.status === 'Approved' && <Button data-testid={`profile-batch-forward-${batch.id}`} type="primary" loading={batchSaving} onClick={() => void forwardProfileBatch(batch.id)}>Forward to configured client recipients</Button>}</Space></footer>
+            <div className="profile-batch-people">{batch.items.map(item => <div key={item.id}><span><b>{item.candidateName}</b>{item.atsScore != null && <Tag>ATS {item.atsScore}</Tag>}</span><Space wrap className="profile-batch-row-actions">{item.readinessStatus === 'Ready' ? <Tag color="green">Ready</Tag> : <Tag color="red">Missing: {item.missingFields || 'candidate information'}</Tag>}{canUpdateCandidate && <Button size="small" data-testid={`profile-batch-update-${item.id}`} onClick={() => setEditingCandidate(item)}>Update fields</Button>}</Space></div>)}</div>
+            <footer><span>{batch.deliveries.length ? `${batch.deliveries.length} audited delivery queue record${batch.deliveries.length === 1 ? '' : 's'}` : `Created ${dateTimeText(batch.createdAtUtc)}`}</span><Space>{batch.status === 'Draft' && <Button data-testid={`profile-batch-approve-${batch.id}`} loading={batchSaving} disabled={batch.items.some(item => item.readinessStatus !== 'Ready')} onClick={() => void approveProfileBatch(batch.id)}>Approve complete profiles</Button>}{batch.status === 'Approved' && <Button data-testid={`profile-batch-forward-${batch.id}`} type="primary" loading={batchSaving} onClick={() => void forwardProfileBatch(batch.id)}>Forward to configured client recipients</Button>}</Space></footer>
           </article>)}</div>
         </Card>
       </>}
     </Drawer>
 
+    {editingCandidate && <RecruitmentBatchCandidateEditor key={editingCandidate.candidateId} item={editingCandidate} clients={clients}
+      onClose={() => setEditingCandidate(null)} onSaved={async () => { if (selectedCase) setProfileBatches(await getRecruitmentProfileBatches(selectedCase.id)) }} />}
     <Modal
       width={720}
       open={!!signatureDocument}
@@ -522,7 +529,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
       onCancel={() => { if (!signatureSaving) { setSignatureDocument(null); setSignatureDataUrl(''); setDocumentSignatures([]) } }}
       destroyOnClose
     >
-      <Alert showIcon type="info" message="Audited electronic signature" description="Your signed-in user, method and timestamp are stored with this MoM. Every required panel member signs separately." />
+      <Alert showIcon type="info" message="Audited electronic signature" description="Your signed-in user, method and timestamp are stored with this MoM. An authorized user can sign the MoM; assigning interview panel members is optional." />
       <div className="mom-signature-form">
         <Form.Item label="Signer name" required><Input value={signerName} onChange={event => setSignerName(event.target.value)} /></Form.Item>
         <Form.Item label="Signature method" required><Select value={signatureMethod} options={['Typed', 'Drawn', 'Image'].map(value => ({ value, label: value === 'Image' ? 'Upload PNG/JPG' : value }))} onChange={value => { setSignatureMethod(value); setSignatureDataUrl('') }} /></Form.Item>

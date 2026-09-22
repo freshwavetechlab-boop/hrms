@@ -230,7 +230,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
       ? 'pending'
       : 'requests'
   const workspaceContent = workspace === 'overview'
-    ? <RecruitmentDashboardOverview clients={clients} selectedClientId={selectedClientId} canChooseClient={canChooseClient} onClientChange={changeClientScope} onNavigate={path => navigate(scopedPath(path))} />
+    ? <RecruitmentDashboardOverview key={`overview-${session?.user.id}-${boundClientId || selectedClientId}-${session?.user.permissions.join(',')}`} clients={clients} selectedClientId={selectedClientId} canChooseClient={canChooseClient} onClientChange={changeClientScope} onNavigate={path => navigate(scopedPath(path))} />
     : workspace === 'orders'
       ? <RecruitmentWorkOrderWorkspace key={`work-orders-${selectedClientId}`} initialClientId={selectedClientId} clientScopeManaged displayMode="pipeline" />
     : workspace === 'requests'
@@ -276,7 +276,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
               : view === 'MoM & Negotiation'
                 ? <Tabs defaultActiveKey="mom" destroyInactiveTabPane items={[
                     { key: 'mom', label: 'MoM & stage documents', children: <RecruitmentWorkOrderWorkspace initialClientId={selectedClientId} clientScopeManaged postInterview /> },
-                    { key: 'negotiation', label: 'Negotiation & approvals', children: <RecruitmentTalentWorkspace mode="offers" initialClientId={selectedClientId} /> },
+                    { key: 'negotiation', label: 'Negotiation & approvals', children: <RecruitmentTalentWorkspace mode="offers" initialClientId={selectedClientId} negotiationMode /> },
                   ]} />
               : view === 'Interview Queue'
                 ? <RecruitmentTalentWorkspace key={`interview-queue-${selectedClientId}`} mode="interviewQueue" initialClientId={selectedClientId} />

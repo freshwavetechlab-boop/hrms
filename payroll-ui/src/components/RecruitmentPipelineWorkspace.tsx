@@ -1,3 +1,4 @@
+import RecruitmentHiringProgress from './RecruitmentHiringProgress'
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
 import {
   ApartmentOutlined, ArrowLeftOutlined, ArrowRightOutlined, BranchesOutlined, ClockCircleOutlined, DeploymentUnitOutlined, HistoryOutlined,
@@ -342,6 +343,7 @@ function DemandCard({ card, clientId, clockNow, workspaceSyncedAt, onChanged }: 
       <Tag>Required: {card.requiredCandidateCount ?? '—'}</Tag><Tag color="blue">In panel: {card.inPanelCount ?? 0}</Tag><Tag color="green">Selected: {card.selectedCandidateCount ?? 0}</Tag>
       <span className="demand-live-sla" data-testid={`demand-sla-timer-${card.workOrderLineId}`}><ClockCircleOutlined /> {sla}</span>
     </div>
+    <RecruitmentHiringProgress progress={card.hiringProgress} />
     <div className="demand-milestones" aria-label="Hiring milestones">
       <Milestone label="Work order" status={card.workOrderStatus} />
       <Milestone label="Request" status={card.requisitionStatus} />

@@ -1821,7 +1821,7 @@ WHERE defaultPanel.PipelineStageId=@PipelineStageId AND defaultPanel.PanelUserId
         var interview = (await InterviewRowsAsync(db, user, null, null)).FirstOrDefault(row => row.Id == interviewId);
         if (interview is null) return [];
         if (IsPanelScoped(user) && !interview.PanelUserIds.Contains(user.Id) && interview.DecisionApproverUserId != user.Id) return [];
-        return await InterviewFeedbackRowsAsync(db, interviewId);
+        return await InterviewFeedbackRowsAsync(db, interviewId, CanRecordOtherPanelFeedback(user) ? null : user.Id);
     }
 
     public async Task<(RecruitmentInterviewFeedback? Row, string Error)> SaveInterviewFeedbackAsync(long interviewId, SaveRecruitmentInterviewFeedback request, AuthUser user)
@@ -2143,6 +2143,24 @@ WHERE Id=@Id AND Status=@ExpectedStatus AND WorkflowInstanceId <=> @WorkflowInst
         var application = await ApplicationByIdAsync(db, request.ApplicationId, user);
         if (application is null) return (null, "Application was not found.");
         if (application.CurrentStage is "Rejected" or "Withdrawn" or "Joined") return (null, $"An offer cannot be saved for an application in {application.CurrentStage} stage.");
+        var governedNegotiation = await db.ExecuteScalarAsync<bool>(@"SELECT EXISTS(
+SELECT 1 FROM recruitment_position_pipeline_instances hiringCase
+JOIN recruitment_pipeline_stages stage ON stage.PipelineVersionId=hiringCase.PipelineVersionId
+WHERE hiringCase.PositionId=@PositionId AND hiringCase.ClientId=@ClientId AND hiringCase.Status IN ('Active','Candidate Flow')
+ AND stage.IsActive=TRUE AND stage.CardScope='Position' AND stage.StageCode='SIGNING_MOM')", application);
+        if (governedNegotiation)
+        {
+            var prerequisiteError = await RecruitmentOfferReleaseGate.ValidateAsync(db, application.Id, submittingForApproval: true);
+            if (prerequisiteError.Length > 0) return (null, prerequisiteError);
+            var candidate = (await RecruitmentHiringProgress.ReadCandidatesAsync(db, [application.PositionId], user))
+                .FirstOrDefault(row => row.ApplicationId == application.Id);
+            if (candidate is null || !RecruitmentHiringProgress.MoMReady(candidate))
+                return (null, "Only an interview-selected candidate can proceed to negotiation after MoM signing.");
+            var expectedCtc = await db.ExecuteScalarAsync<decimal?>(
+                "SELECT ExpectedCtc FROM recruitment_candidates WHERE Id=@CandidateId", application);
+            if (expectedCtc is null or <= 0)
+                return (null, "Complete the candidate's expected annual CTC before recording the negotiated offer terms.");
+        }
         RecruitmentOffer? existingOffer = null;
         if (request.Id > 0)
         {
@@ -3611,9 +3629,9 @@ WHERE a.Id=@ApplicationId", new { ApplicationId = applicationId });
         DisplayOrder = row.DisplayOrder
     };
 
-    private static async Task<List<RecruitmentInterviewFeedback>> InterviewFeedbackRowsAsync(MySqlConnection db, long interviewId)
+    private static async Task<List<RecruitmentInterviewFeedback>> InterviewFeedbackRowsAsync(MySqlConnection db, long interviewId, int? panelUserId = null)
     {
-        var rows = (await db.QueryAsync<RecruitmentInterviewFeedback>(@"SELECT f.Id,f.InterviewId,f.PanelUserId,COALESCE(u.DisplayName,u.Email,'') PanelUserName,f.OverallScore,f.Recommendation,f.CompetencyScoresJson,f.WeightedScore,f.ScoreSource,COALESCE(f.Comments,'') Comments,f.SubmittedAt FROM recruitment_interview_feedback f LEFT JOIN authusers u ON u.Id=f.PanelUserId WHERE f.InterviewId=@InterviewId ORDER BY f.SubmittedAt,f.Id", new { InterviewId = interviewId })).ToList();
+        var rows = (await db.QueryAsync<RecruitmentInterviewFeedback>(@"SELECT f.Id,f.InterviewId,f.PanelUserId,COALESCE(u.DisplayName,u.Email,'') PanelUserName,f.OverallScore,f.Recommendation,f.CompetencyScoresJson,f.WeightedScore,f.ScoreSource,COALESCE(f.Comments,'') Comments,f.SubmittedAt FROM recruitment_interview_feedback f LEFT JOIN authusers u ON u.Id=f.PanelUserId WHERE f.InterviewId=@InterviewId AND (@PanelUserId IS NULL OR f.PanelUserId=@PanelUserId) ORDER BY f.SubmittedAt,f.Id", new { InterviewId = interviewId, PanelUserId = panelUserId })).ToList();
         if (rows.Count == 0) return rows;
         var ids = rows.Select(row => row.Id).ToArray();
         var scores = (await db.QueryAsync<RecruitmentInterviewFeedbackCompetencyScore>(@"SELECT s.*,d.CompetencyCode,COALESCE(NULLIF(s.CompetencyName,''),d.CompetencyName) CompetencyName,(s.Score>=s.MinimumScore) MeetsMinimum FROM recruitment_interview_feedback_competency_scores s LEFT JOIN recruitment_interview_competency_definitions d ON d.Id=s.CompetencyId WHERE s.InterviewFeedbackId IN @Ids ORDER BY s.InterviewFeedbackId,s.Id", new { Ids = ids })).ToLookup(row => row.InterviewFeedbackId);

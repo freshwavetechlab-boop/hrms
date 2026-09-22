@@ -1,3 +1,4 @@
+import RecruitmentHiringProgress from './RecruitmentHiringProgress'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import dayjs from 'dayjs'
@@ -6,8 +7,8 @@ import {
   LaptopOutlined, LinkOutlined, RocketOutlined, TeamOutlined, UserAddOutlined,
 } from '@ant-design/icons'
 import {
-  Alert, Badge, Button, Card, Col, DatePicker, Descriptions, Empty, Form, Input,
-  List, Modal, Popconfirm, Row, Segmented, Select, Space, Spin, Switch, Tag, Tooltip, Typography,
+  Alert, Avatar, Badge, Button, Card, Col, DatePicker, Descriptions, Empty, Form, Input,
+  Modal, Popconfirm, Row, Segmented, Select, Space, Spin, Switch, Tag, Tooltip, Typography,
 } from 'antd'
 import { useAuthSession } from './AuthGate'
 import { useToast, type ToastType } from './ToastProvider'
@@ -24,6 +25,8 @@ import type {
 } from '../types/recruitmentOrchestration'
 import { recruitmentStageColor } from '../utils/recruitmentStage'
 import './RecruitmentOrchestration.css'
+import './RecruitmentTalentWorkspace.css'
+import './RecruitmentJobCards.css'
 import { currentRecruitmentJobPostings } from '../services/recruitmentJobVersions'
 
 type Props = {
@@ -413,15 +416,15 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
               <Input.Search allowClear value={search} onChange={event => setSearch(event.target.value)} placeholder="Search jobs by name or ID" />
               <Select value={sortOrder} onChange={setSortOrder} options={[{ value: 'recent', label: 'Updated: recent first' }, { value: 'oldest', label: 'Updated: oldest first' }]} />
             </div>
-            <List className="job-card-grid" grid={{ gutter: 16, xs: 1, xl: 2 }} dataSource={visiblePostings} locale={{ emptyText: 'No matching jobs.' }} renderItem={row => {
+            <div className="candidate-application-list job-application-list">{!visiblePostings.length && <Empty description="No matching jobs." />}{visiblePostings.map(row => {
               const position = positions.find(item => item.id === row.positionId)
-              return <List.Item><Card hoverable className="job-summary-card" role="button" tabIndex={0} onClick={() => void choosePosting(row)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') void choosePosting(row) }}>
-                <div className="job-card-heading"><div className="job-avatar">{(row.publicTitle || row.positionTitle || 'J').trim().charAt(0).toUpperCase()}</div><div><Typography.Title level={4}>{row.publicTitle || row.positionTitle}</Typography.Title><Tag color="blue">ID: {row.positionCode || row.id}</Tag></div><Space className="job-card-top-actions" size={6}>
-                  {row.status === 'Published' && <Tooltip title="Copy public link"><Button aria-label="Copy public link" size="small" shape="circle" icon={<CopyOutlined />} onClick={event => { event.stopPropagation(); void copyPostingLink(row) }} /></Tooltip>}
-                  <PostingStatus status={row.status} />
-                </Space></div>
+              return <article key={row.id} className="candidate-application-card job-application-card" role="button" tabIndex={0} onClick={() => void choosePosting(row)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') void choosePosting(row) }}>
+                <Avatar size={46}>{(row.publicTitle || row.positionTitle || 'J').trim().charAt(0).toUpperCase()}</Avatar>
+                <div className="candidate-application-copy">
+                  <div className="candidate-card-title"><h3>{row.publicTitle || row.positionTitle}</h3><Tag color="blue">ID: {row.positionCode || row.id}</Tag></div>
                 <div className="job-card-facts"><Tag>{position?.employmentType || 'Employment type not set'}</Tag><Tag color="cyan"><UserAddOutlined /> Total candidates: {position?.candidateCount ?? row.applicationCount}</Tag><Tag>Required: {position?.requiredCandidateCount ?? position?.numberOfPositions ?? '—'}</Tag><Tag color="blue">In panel: {position?.inPanelCount ?? 0}</Tag><Tag color="green">Selected: {position?.selectedCandidateCount ?? 0}</Tag>{row.autoRunAts && <Tag color="purple"><RocketOutlined /> Auto ATS</Tag>}{position?.pipelineStageName && <Tooltip title={position.pipelineStatus || 'Current vacancy pipeline stage'}><Tag color={recruitmentStageColor(position.pipelineStageType || '', position.pipelineStageName)}><BranchesOutlined /> {position.pipelineStageName}</Tag></Tooltip>}</div>
-                <div className="job-card-metrics">
+                <RecruitmentHiringProgress progress={position?.hiringProgress} />
+                <div className="job-card-metrics candidate-card-contact">
                   <JobFact icon={<FieldTimeOutlined />} label="Experience" value={position?.requisitionExperienceRange || position?.experienceRange || 'Not specified'} />
                   <JobFact icon={<DollarOutlined />} label="CTC" value={formatCtc(position)} />
                   <JobFact icon={<LaptopOutlined />} label="Work mode" value={formatWorkMode(position?.requisitionWorkMode || position?.workMode)} />
@@ -429,13 +432,20 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
                   <JobFact icon={<TeamOutlined />} label="Vacancies" value={position ? `${position.remainingPositions ?? 0} open / ${position.numberOfPositions || position.requisitionNumberOfOpenings || 0} total` : 'Not specified'} />
                 </div>
                 {clientId === 0 && <Typography.Text type="secondary">{row.clientName || `Client #${row.clientId}`}</Typography.Text>}
-                <div className="job-card-footer"><Typography.Text type="secondary">Updated {row.updatedAtUtc ? dayjs(row.updatedAtUtc).format('DD MMM YYYY') : '—'}</Typography.Text><Space wrap>
+                <small>Updated {row.updatedAtUtc ? dayjs(row.updatedAtUtc).format('DD MMM YYYY') : '—'}</small>
+                </div>
+                <div className="candidate-card-actions" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
+                  <Space size={6}>
+                    {row.status === 'Published' && <Tooltip title="Copy public link"><Button aria-label="Copy public link" size="small" shape="circle" icon={<CopyOutlined />} onClick={event => { event.stopPropagation(); void copyPostingLink(row) }} /></Tooltip>}
+                    <PostingStatus status={row.status} />
+                  </Space>
+                  <Space wrap>
                   <Button icon={<EditOutlined />} onClick={event => { event.stopPropagation(); void choosePosting(row) }}>{row.status === 'Draft' ? 'Edit' : 'View'}</Button>
                   {row.status === 'Draft' && <Button type="primary" icon={<RocketOutlined />} loading={quickPublishingId === row.id} onClick={event => { event.stopPropagation(); void publishFromCard(row) }}>Publish</Button>}
                   {row.status === 'Published' && <Button type="primary" icon={<UserAddOutlined />} onClick={event => { event.stopPropagation(); navigate(`/recruitment/applications?clientId=${row.clientId}&add=1&jobPostingId=${row.id}`) }}>Add candidate</Button>}
                 </Space></div>
-              </Card></List.Item>
-            }} />
+              </article>
+            })}</div>
             {!!historicalPostings.length && <details data-testid="job-posting-history"><summary>Earlier postings / history ({historicalPostings.length})</summary><p>Earlier records and their applications are retained. Pipeline updates do not change published URLs.</p><Space direction="vertical">{historicalPostings.map(row => <Button key={row.id} onClick={() => void choosePosting(row)}>{row.publicTitle || row.positionTitle} · Posting #{row.id} · {row.status}</Button>)}</Space></details>}
           </Space>
         </Card>}
@@ -547,7 +557,7 @@ function blankPosting(clientId: number, positionId = 0, positionTitle = ''): Rec
   return {
     id: 0, clientId, positionId, jobDescriptionVersionId: 0, applicationFormVersionId: null,
     publicSlug: '', publicTitle: positionTitle, status: 'Draft', opensAtUtc: null, closesAtUtc: null,
-    maximumApplications: null, applicationCount: 0, autoRunAts: false, enableResumeParsing: true, enableAiParsing: true, requireEmailOtp: true, searchEngineVisible: true, publishedAtUtc: null,
+    maximumApplications: null, applicationCount: 0, autoRunAts: true, enableResumeParsing: true, enableAiParsing: true, requireEmailOtp: true, searchEngineVisible: true, publishedAtUtc: null,
     positionCode: '', positionTitle, clientName: '', candidatePortalReady: false, candidateProofReady: true, candidateProofValidationMessage: '', publicUrl: '',
   }
 }

@@ -167,7 +167,7 @@ public class SaveRecruitmentJobPosting
     public DateTime? OpensAtUtc { get; set; }
     public DateTime? ClosesAtUtc { get; set; }
     public int? MaximumApplications { get; set; }
-    public bool AutoRunAts { get; set; }
+    public bool AutoRunAts { get; set; } = true;
     public bool EnableResumeParsing { get; set; } = true;
     public bool EnableAiParsing { get; set; } = true;
     public bool RequireEmailOtp { get; set; } = true;
@@ -559,6 +559,7 @@ public class RecruitmentPipelineWorkspaceLane
 
 public class RecruitmentPipelineDemandCard
 {
+    public RecruitmentHiringProgressView? HiringProgress { get; set; }
     public int RequiredCandidateCount { get; set; }
     public int InPanelCount { get; set; }
     public int SelectedCandidateCount { get; set; }

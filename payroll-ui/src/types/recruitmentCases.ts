@@ -202,3 +202,5 @@ export type RecruitmentProfileSubmissionBatch = {
   items: RecruitmentProfileSubmissionBatchItem[]
   deliveries: RecruitmentProfileBatchNotificationDelivery[]
 }
+
+export type RecruitmentWorkOrderReview = Pick<SaveRecruitmentWorkOrder, 'clientId' | 'workOrderNumber' | 'receivedAtUtc' | 'status' | 'remarks'>

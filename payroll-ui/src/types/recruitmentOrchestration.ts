@@ -1,3 +1,4 @@
+import type { HiringProgress } from '../components/RecruitmentHiringProgress'
 export type DynamicFormVersionStatus = 'Draft' | 'Published' | 'Retired'
 export type DynamicFormFieldTypeCode =
   | 'TEXT'
@@ -191,6 +192,7 @@ export type RecruitmentWorkflowOption = {
 }
 
 export type RecruitmentPositionOption = {
+  hiringProgress?: HiringProgress
   candidateCount?: number
   requiredCandidateCount?: number
   inPanelCount?: number
@@ -519,6 +521,7 @@ export type RecruitmentPipelineBoardCard = {
 }
 
 export type RecruitmentPipelineDemandCard = {
+  hiringProgress?: HiringProgress
   cardType: 'Demand'
   clientId: number
   hiringCaseId?: number | null

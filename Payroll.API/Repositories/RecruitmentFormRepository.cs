@@ -1098,7 +1098,27 @@ VALUES (@SubmissionId,@FieldId,@SelectedValue,@DisplayLabel,@DisplayOrder)", new
 
     private static async Task<string> RequiredSubmissionErrorAsync(MySqlConnection db, MySqlTransaction? transaction, long submissionId, long versionId)
     {
-        var missing = (await db.QueryAsync<string>(@"SELECT f.Label
+        var missing = await RequiredSubmissionMissingFieldsAsync(db, transaction, submissionId, versionId);
+        return missing.Count == 0 ? "" : $"Complete required fields: {string.Join(", ", missing.Select(field => field.Label))}.";
+    }
+
+    internal sealed class RequiredProfileField
+    {
+        public long Id { get; set; }
+        public string Label { get; set; } = "";
+        public string SemanticCode { get; set; } = "";
+        public string FieldTypeCode { get; set; } = "";
+        public long? AttachmentFieldConfigurationId { get; set; }
+        public int MinimumFileCount { get; set; }
+    }
+
+    internal static async Task<List<RequiredProfileField>> RequiredSubmissionMissingFieldsAsync(MySqlConnection db, MySqlTransaction? transaction, long submissionId, long versionId)
+    {
+        var missing = (await db.QueryAsync<RequiredProfileField>(@"SELECT f.Id,f.Label,t.TypeCode FieldTypeCode,
+f.AttachmentFieldConfigurationId,GREATEST(1,COALESCE(attachmentConfiguration.minimum_file_count,1)) MinimumFileCount,
+COALESCE((SELECT semantic.SemanticCode FROM form_field_semantic_mappings mapping
+ JOIN form_semantic_attributes semantic ON semantic.Id=mapping.SemanticAttributeId AND semantic.IsActive=TRUE
+ WHERE mapping.FieldId=f.Id ORDER BY mapping.SemanticAttributeId LIMIT 1),f.StableFieldCode) SemanticCode
 FROM form_fields f JOIN form_sections sectionRow ON sectionRow.Id=f.SectionId JOIN form_field_types t ON t.Id=f.FieldTypeId
 LEFT JOIN attachment_field_configurations attachmentConfiguration ON attachmentConfiguration.id=f.AttachmentFieldConfigurationId
 WHERE f.FormVersionId=@VersionId AND f.IsActive=TRUE AND f.IsRequired=TRUE AND (
@@ -1126,7 +1146,7 @@ WHERE f.FormVersionId=@VersionId AND f.IsActive=TRUE AND f.IsRequired=TRUE AND (
  OR (t.TypeCode='CHECKBOX' AND NOT EXISTS (SELECT 1 FROM form_submission_values v WHERE v.SubmissionId=@SubmissionId AND v.FieldId=f.Id AND v.BooleanValue=TRUE))
 )
 ORDER BY sectionRow.DisplayOrder,sectionRow.Id,f.DisplayOrder,f.Id", new { VersionId = versionId, SubmissionId = submissionId }, transaction)).ToList();
-        return missing.Count == 0 ? "" : $"Complete required fields: {string.Join(", ", missing)}.";
+        return missing;
     }
 
     private static async Task<string> StoredRuleConfigurationErrorAsync(MySqlConnection db, long versionId)

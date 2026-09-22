@@ -46,13 +46,16 @@
 .dashboard-filter-grid { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: 9px; }
 .dashboard-filter-grid label { display: grid; min-width: 0; gap: 5px; }
 .dashboard-filter-grid label > span { color: #59647a; font-size: 10px; font-weight: 800; letter-spacing: .035em; text-transform: uppercase; }
-.dashboard-filter-grid .ant-select { width: 100%; }
+.dashboard-filter-grid .ant-select { width: 100%; min-width: 0; max-width: 100%; }
+.dashboard-filter-grid .ant-select-selector { min-width: 0; overflow: hidden; }
+.dashboard-filter-grid .ant-select-selection-item { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dashboard-filter-grid .ant-select-selector { min-height: 36px !important; align-items: center; background: rgba(255,255,255,.88) !important; }
 .dashboard-date-control input { width: 100%; min-height: 36px; padding: 6px 9px; border: 1px solid #d9deea; border-radius: 9px; color: #35405a; background: #fff; font: inherit; }
 .dashboard-active-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #ebedf4; }
 .dashboard-active-filters > span { color: #7a8499; font-size: 10px; font-weight: 800; text-transform: uppercase; }
 .dashboard-active-filters > button:not(.ant-btn) { display: inline-flex; gap: 4px; align-items: center; min-height: 25px; padding: 3px 8px; border: 1px solid #ddd7fb; border-radius: 999px; color: #5a4aab; background: #f7f5ff; font-size: 10px; cursor: pointer; }
-.dashboard-active-filters > button b { font-weight: 800; }
+.dashboard-active-filters > button:not(.ant-btn) { max-width: 100%; min-width: 0; }
+.dashboard-active-filters > button b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 800; }
 .dashboard-active-filters > button i { margin-left: 2px; color: #8a7fd0; font-size: 14px; font-style: normal; line-height: 1; }
 
 .dashboard-kpi-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
@@ -191,4 +194,15 @@ button.dashboard-kpi:not(:disabled):hover { border-color: #cfc6f9; box-shadow: 0
   .recruitment-experience .dashboard-engine .dashboard-chart-card { height: 300px !important; min-height: 300px !important; }
   .dashboard-engine-action-list article { grid-template-columns: 34px minmax(0, 1fr) auto; }
   .dashboard-engine-action-list .dashboard-priority { display: none; }
+}
+
+/* Permission-filtered overview cards fill the available space. */
+.recruitment-experience .dashboard-engine .dashboard-kpi-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+}
+.recruitment-experience .dashboard-engine .dashboard-chart-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)) !important;
+}
+.recruitment-experience .dashboard-engine .dashboard-filter-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
 }

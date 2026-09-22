@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS recruitment_job_postings (
     ClosesAtUtc DATETIME NULL,
     MaximumApplications INT NULL,
     ApplicationCount INT NOT NULL DEFAULT 0,
-    AutoRunAts BOOLEAN NOT NULL DEFAULT FALSE,
+    AutoRunAts BOOLEAN NOT NULL DEFAULT TRUE,
     EnableResumeParsing BOOLEAN NOT NULL DEFAULT TRUE,
     EnableAiParsing BOOLEAN NOT NULL DEFAULT TRUE,
     RequireEmailOtp BOOLEAN NOT NULL DEFAULT TRUE,
@@ -467,7 +467,7 @@ CREATE TABLE IF NOT EXISTS recruitment_pipeline_transition_requests (
         await db.ExecuteAsync("UPDATE recruitment_pipeline_stages SET CardScope='Application' WHERE CardScope IS NULL OR CardScope NOT IN ('Position','Application')");
 
         await EnsureColumnAsync(db, "recruitment_open_positions", "ApprovedJobDescriptionVersionId", "BIGINT NULL");
-        await EnsureColumnAsync(db, "recruitment_job_postings", "AutoRunAts", "BOOLEAN NOT NULL DEFAULT FALSE AFTER ApplicationCount");
+        await EnsureColumnAsync(db, "recruitment_job_postings", "AutoRunAts", "BOOLEAN NOT NULL DEFAULT TRUE AFTER ApplicationCount");
         await EnsureColumnAsync(db, "recruitment_job_postings", "EnableResumeParsing", "BOOLEAN NOT NULL DEFAULT TRUE AFTER AutoRunAts");
         await EnsureColumnAsync(db, "recruitment_job_postings", "EnableAiParsing", "BOOLEAN NOT NULL DEFAULT TRUE AFTER EnableResumeParsing");
         var hadPostingEmailOtp = await ColumnExistsAsync(db, "recruitment_job_postings", "RequireEmailOtp");
@@ -1643,9 +1643,15 @@ WHERE versionRow.Status='Published' AND definition.IsActive=TRUE
             .Concat(publishedPositionVersions.Select(row => row.PipelineVersionId))
             .Concat(publishedApplicationVersions)
             .Distinct().ToArray();
+        var progressCandidates = await RecruitmentHiringProgress.ReadCandidatesAsync(db, demandCards.Select(card => card.PositionId ?? 0), user);
         var workspace = new RecruitmentPipelineWorkspace { ClientId = effectiveClientId };
         if (versionIds.Length == 0)
         {
+            foreach (var card in demandCards)
+            {
+                card.HiringProgress = RecruitmentHiringProgress.Describe(card.RequiredCandidateCount, progressCandidates.Where(row => row.PositionId == card.PositionId), "");
+                card.HiringProgress.PendingReason = "Next: choose a published hiring pipeline.";
+            }
             workspace.UnassignedDemandCards = demandCards.Cast<RecruitmentPipelineDemandCard>().ToList();
             return workspace;
         }
@@ -1665,20 +1671,25 @@ ORDER BY stageRow.PipelineVersionId,stageRow.DisplayOrder,stageRow.Id", new { Ve
         {
             if (!card.PipelineVersionId.HasValue)
             {
+                card.HiringProgress = RecruitmentHiringProgress.Describe(card.RequiredCandidateCount, progressCandidates.Where(row => row.PositionId == card.PositionId), "");
+                card.HiringProgress.PendingReason = "Next: choose a published hiring pipeline.";
                 workspace.UnassignedDemandCards.Add(card);
                 continue;
             }
+            var candidateProgress = progressCandidates.Where(row => row.PositionId == card.PositionId).ToList();
             if (!card.HiringCaseId.HasValue)
             {
-                var initialLane = workspace.Lanes.FirstOrDefault(lane => lane.PipelineVersionId == card.PipelineVersionId
-                    && lane.CardScope.Equals("Position", StringComparison.OrdinalIgnoreCase));
+                var initialLane = RecruitmentHiringProgress.SupportedInitialStage(workspace.Lanes
+                    .Where(lane => lane.PipelineVersionId == card.PipelineVersionId && lane.CardScope == "Position")
+                    .Select(lane => new RecruitmentHiringProgress.PositionStage { Id = lane.StageId, StageName = lane.StageName, StageCode = lane.StageCode, StageType = lane.StageType, DisplayOrder = lane.DisplayOrder }), card.RequiredCandidateCount, candidateProgress);
                 if (initialLane is not null)
                 {
-                    card.CurrentStageId = initialLane.StageId;
+                    card.CurrentStageId = initialLane.Id;
                     card.CurrentStageName = initialLane.StageName;
                     card.Status = string.IsNullOrWhiteSpace(card.Status) ? "Not Started" : card.Status;
                 }
             }
+            card.HiringProgress = RecruitmentHiringProgress.Describe(card.RequiredCandidateCount, candidateProgress, card.CurrentStageName);
             var lane = workspace.Lanes.FirstOrDefault(row => row.PipelineVersionId == card.PipelineVersionId && row.StageId == card.CurrentStageId);
             if (lane is null) workspace.UnassignedDemandCards.Add(card);
             else lane.DemandCards.Add(card);
@@ -2829,8 +2840,8 @@ WHERE j.Id=@Id LIMIT 1", new { Id = id }, transaction);
         await db.ExecuteScalarAsync<long>("SELECT Id FROM recruitment_open_positions WHERE Id=@PositionId FOR UPDATE", source, transaction);
 
         await db.ExecuteAsync(@"INSERT INTO recruitment_job_postings
-(ClientId,PositionId,JobDescriptionVersionId,ApplicationFormVersionId,PublicSlug,PublicTitle,Status,SearchEngineVisible,CreatedByUserId)
-SELECT @ClientId,@PositionId,@JobDescriptionVersionId,NULL,@PublicSlug,@PublicTitle,'Draft',FALSE,@ActorUserId FROM DUAL
+(ClientId,PositionId,JobDescriptionVersionId,ApplicationFormVersionId,PublicSlug,PublicTitle,Status,AutoRunAts,SearchEngineVisible,CreatedByUserId)
+SELECT @ClientId,@PositionId,@JobDescriptionVersionId,NULL,@PublicSlug,@PublicTitle,'Draft',TRUE,FALSE,@ActorUserId FROM DUAL
 WHERE NOT EXISTS (
     SELECT 1 FROM recruitment_job_postings
     WHERE PositionId=@PositionId AND Status IN ('Draft','Published')

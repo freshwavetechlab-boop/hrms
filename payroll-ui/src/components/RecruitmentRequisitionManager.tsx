@@ -1,3 +1,4 @@
+import RecruitmentWorkOrderFields from './RecruitmentWorkOrderFields'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   BranchesOutlined, CheckCircleOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, EyeOutlined, FilePdfOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SearchOutlined, SendOutlined, UploadOutlined,
@@ -17,7 +18,7 @@ import {
 } from '../services/recruitmentService'
 import { getEffectiveAttachmentConfigurations, uploadEntityAttachment } from '../services/attachmentService'
 import { getDropdowns, getWorkLocations } from '../services/settingsService'
-import { getRecruitmentWorkOrder } from '../services/recruitmentCaseService'
+import { getRecruitmentWorkOrder, getRecruitmentWorkOrders } from '../services/recruitmentCaseService'
 import { getRecruitmentPipelineVersions, getRecruitmentPipelines } from '../services/recruitmentOrchestrationService'
 import type {
   Client, Drop, Employee, RecruitmentOpenPosition, RecruitmentRequisition, RecruitmentRequestDocumentParseResult, SaveRecruitmentRequisition, WorkLocation,
@@ -63,7 +64,7 @@ type BrowserDraftSnapshot = {
   sourceFilePending: boolean
 }
 
-type AutoSaveState = 'idle' | 'local' | 'saving' | 'saved' | 'error'
+type AutoSaveState = 'idle' | 'local'
 
 const editableStatuses = new Set(['Draft', 'Sent Back'])
 const emptyMasters: MasterOptions = {
@@ -72,6 +73,7 @@ const emptyMasters: MasterOptions = {
 
 export default function RecruitmentRequisitionManager({ initialClientId = 0, clientScopeManaged = false, initialOpen = false, initialRequisitionId = 0, initialWorkOrderId = 0, initialWorkOrderLineId = 0, statusScope = [], showStatusFilter = true, embedded = false, pipelinePositions = [], onOpenPipeline, onOpenRequestPipeline, onChanged, onPrepareJobDescription }: Props) {
   const session = useAuthSession()
+  const canReviewWorkOrder = Boolean(session?.user.permissions.some(permission => ['recruitment.manage', 'settings.manage'].includes(permission)))
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const canManageMasters = Boolean(session?.user.permissions.includes('settings.manage'))
   const [form] = Form.useForm<SaveRecruitmentRequisition>()
@@ -105,6 +107,8 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const [attachmentRefresh, setAttachmentRefresh] = useState(0)
   const [autoSaveState, setAutoSaveState] = useState<AutoSaveState>('idle')
   const [autoSavedAt, setAutoSavedAt] = useState<Date | null>(null)
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [reviewDraft, setReviewDraft] = useState<SaveRecruitmentRequisition | null>(null)
   const [watchedForm, setWatchedForm] = useState({ id: 0, clientId: 0, isReplacement: false, budgetAvailable: false })
   const [budgetApprovers, setBudgetApprovers] = useState<{ id: number; displayName: string; email: string }[]>([])
   useEffect(() => {
@@ -121,9 +125,6 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const targetJoiningManual = useRef(false)
   const targetSlaLoad = useRef(0)
   const embeddedJdRef = useRef<RecruitmentJobDescriptionManagerHandle>(null)
-  const autoSaveTimer = useRef<number | null>(null)
-  const autoSaveRunning = useRef<Promise<void> | null>(null)
-  const autoSavePending = useRef(false)
   const activeBrowserDraftKey = useRef('')
   const sourceFileRef = useRef<File | null>(null)
   const selectedClientId = watchedForm.clientId
@@ -149,8 +150,9 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         sourceFilePending: Boolean(sourceFileRef.current),
       }
       window.localStorage.setItem(activeBrowserDraftKey.current, JSON.stringify(snapshot))
-      setAutoSaveState(current => current === 'saving' ? current : 'local')
-    } catch { /* Server autosave remains available if browser storage is full or disabled. */ }
+      setAutoSavedAt(new Date(snapshot.savedAt))
+      setAutoSaveState('local')
+    } catch { /* Browser storage can be unavailable in restricted sessions. */ }
   }
 
   function restoreBrowserDraft(base: SaveRecruitmentRequisition, key: string) {
@@ -162,7 +164,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       if (snapshot.version !== 1 || !snapshot.values) return base
       setSourceParse(snapshot.sourceParse || null)
       setAutoSavedAt(snapshot.savedAt ? new Date(snapshot.savedAt) : null)
-      setAutoSaveState(snapshot.values.id ? 'saved' : 'local')
+      setAutoSaveState('local')
       if (snapshot.sourceFilePending) setSourcePrefillWarning('Your field values were restored. Re-select the source document if it had not finished attaching before refresh.')
       return { ...base, ...snapshot.values }
     } catch {
@@ -177,11 +179,6 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     activeBrowserDraftKey.current = ''
     setAutoSaveState('idle')
     setAutoSavedAt(null)
-  }
-
-  function canAutoSave(values: SaveRecruitmentRequisition) {
-    return Boolean(values.clientId && values.requestedByEmployeeId && values.requestDate && values.positionTitle?.trim()
-      && values.department?.trim() && Number(values.numberOfOpenings) > 0)
   }
 
   function textRules(field: string) {
@@ -207,46 +204,14 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     return errors.length === 0
   }
 
-  function scheduleAutoSave(values?: SaveRecruitmentRequisition, delay = 1200) {
+  function scheduleAutoSave(values?: SaveRecruitmentRequisition, _delay = 1200) {
     const current = values || form.getFieldsValue(true) as SaveRecruitmentRequisition
     persistBrowserDraft(current)
-    if (autoSaveTimer.current) window.clearTimeout(autoSaveTimer.current)
-    if (readOnly || approvedEdit || !dialogOpen) return
-    autoSaveTimer.current = window.setTimeout(() => { autoSaveTimer.current = null; void runAutoSave() }, delay)
-  }
-
-  async function runAutoSave() {
-    if (readOnly || approvedEdit || !dialogOpen || sourceParsing || saving) return
-    const values = form.getFieldsValue(true) as SaveRecruitmentRequisition
-    persistBrowserDraft(values)
-    if (!checkTextLengths(values)) return
-    if (!canAutoSave(values)) return
-    if (autoSaveRunning.current) { autoSavePending.current = true; return autoSaveRunning.current }
-    const task = (async () => {
-      setAutoSaveState('saving')
-      const originalId = Number(values.id || 0)
-      const response = await saveRecruitmentRequisition(normalize(values))
-      if (!response.ok || !response.data) { setAutoSaveState('error'); return }
-      const saved = response.data
-      if (!originalId && !Number(form.getFieldValue('id') || 0)) form.setFieldValue('id', saved.id)
-      setActiveRequest(saved)
-      setWatchedForm(current => ({ ...current, id: saved.id, clientId: saved.clientId }))
-      setRows(current => [saved, ...current.filter(row => row.id !== saved.id)])
-      await storeSourceDocument(saved)
-      const latest = form.getFieldsValue(true) as SaveRecruitmentRequisition
-      persistBrowserDraft({ ...latest, id: saved.id })
-      setAutoSavedAt(new Date())
-      setAutoSaveState('saved')
-    })().catch(() => setAutoSaveState('error')).finally(() => {
-      autoSaveRunning.current = null
-      if (autoSavePending.current) { autoSavePending.current = false; scheduleAutoSave(undefined, 250) }
-    })
-    autoSaveRunning.current = task
-    return task
   }
 
   const applyDraft = (draft: SaveRecruitmentRequisition) => {
     const normalized = {
+      workOrderReview: undefined,
       ...draft,
       id: Number(draft.id || 0),
       clientId: Number(draft.clientId || 0),
@@ -324,10 +289,6 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       setLoading(false)
     })
     return () => { active = false }
-  }, [])
-
-  useEffect(() => () => {
-    if (autoSaveTimer.current) window.clearTimeout(autoSaveTimer.current)
   }, [])
 
   useEffect(() => {
@@ -462,7 +423,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     },
   ]
 
-  async function applyPipelineTarget(clientId: number, requestDate?: string | null, replaceExisting = false) {
+  async function applyPipelineTarget(clientId: number, requestDate?: string | null, replaceExisting = false, saveBrowserDraft = true) {
     const sequence = ++targetSlaLoad.current
     if (!clientId || !requestDate) { setTargetSlaDays(null); return }
     const days = await publishedCumulativeSlaDays(clientId)
@@ -473,15 +434,11 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     if (current.clientId !== clientId || current.requestDate !== requestDate || (!replaceExisting && current.targetJoiningDate)) return
     const targetJoiningDate = addDays(requestDate, days)
     form.setFieldValue('targetJoiningDate', targetJoiningDate)
-    scheduleAutoSave({ ...current, targetJoiningDate })
+    if (saveBrowserDraft) scheduleAutoSave({ ...current, targetJoiningDate })
   }
 
   async function openNew() {
-    // Finish the old save before resetting: its response must never attach the old ID to a new request.
     if (saving || sourceParsing) return
-    if (autoSaveTimer.current) { window.clearTimeout(autoSaveTimer.current); autoSaveTimer.current = null }
-    autoSavePending.current = false
-    if (autoSaveRunning.current) await autoSaveRunning.current
     clearBrowserDraft()
     activeBrowserDraftKey.current = newBrowserDraftKey()
     setReadOnly(false)
@@ -497,7 +454,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     targetJoiningManual.current = Boolean(draft.targetJoiningDate)
     form.resetFields()
     applyDraft(draft)
-    void applyPipelineTarget(nextClientId, draft.requestDate, true)
+    void applyPipelineTarget(nextClientId, draft.requestDate, true, false)
     setSourceFile(null)
     sourceFileRef.current = null
     setSourceUploadProgress(0)
@@ -506,7 +463,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
 
   function openRequest(row: RecruitmentRequisition, forceReadOnly = false) {
     activeBrowserDraftKey.current = `frevo:hiring-request:request:${session?.user.id || 'anonymous'}:${row.id}`
-    setAutoSaveState(editableStatuses.has(row.status) ? 'saved' : 'idle')
+    setAutoSaveState('idle')
     setAutoSavedAt(row.updatedAt ? new Date(row.updatedAt) : null)
     setAtsSkillWeight(0)
     setReadOnly(forceReadOnly || (!editableStatuses.has(row.status) && !(canDelete && row.status === 'Approved')))
@@ -541,7 +498,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       const response = await parseRecruitmentRequestDocument(file, Number(current.clientId || selectedClientId || 0))
       if (!response.ok || !response.data) {
         setSourceParse(manualSourceReview(file, { ...current, ...sourceDefaults } as SaveRecruitmentRequisition, response.error))
-        return void message.warning('Automatic prefill was unavailable. The document is retained; complete the visible fields and save normally.')
+        return void message.warning('Automatic prefill was unavailable. The document is retained in this editor; complete the visible fields and submit when ready.')
       }
       const result = response.data
       const currentWithSource = form.getFieldsValue(true) as SaveRecruitmentRequisition
@@ -574,12 +531,12 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       })
       scheduleAutoSave(next, 250)
       const detectedCount = result.detectedFields.filter(field => field !== 'sourceParsedJson').length
-      if (result.status === 'Parsed') message.success(`${detectedCount} fields prefilled. Review and save the draft.`)
+      if (result.status === 'Parsed') message.success(`${detectedCount} fields prefilled. Review them; changes remain in this browser until submit.`)
       else message.warning(`${detectedCount} fields were suggested. Review the document and complete the remaining fields manually.`)
     } catch (cause) {
       const error = cause instanceof Error ? cause.message : 'The document could not be read automatically.'
       setSourceParse(manualSourceReview(file, { ...current, ...sourceDefaults } as SaveRecruitmentRequisition, error))
-      message.warning('Automatic prefill was unavailable. The document is retained; complete the visible fields and save normally.')
+      message.warning('Automatic prefill was unavailable. The document is retained in this editor; complete the visible fields and submit when ready.')
     } finally {
       setSourceParsing(false)
       scheduleAutoSave(form.getFieldsValue(true) as SaveRecruitmentRequisition, 250)
@@ -609,21 +566,79 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     return true
   }
 
-  async function saveRequest(submitAfterSave: boolean) {
-    if (autoSaveTimer.current) { window.clearTimeout(autoSaveTimer.current); autoSaveTimer.current = null }
-    if (autoSaveRunning.current) await autoSaveRunning.current
-    if (!checkTextLengths(form.getFieldsValue(true) as SaveRecruitmentRequisition, true)) {
+  async function openSubmissionReview() {
+    const current = form.getFieldsValue(true) as SaveRecruitmentRequisition
+    if (!checkTextLengths(current, true)) {
+      message.error('Review the field-length messages before opening the final review.')
+      return
+    }
+    try {
+      await form.validateFields()
+      setReviewLoading(true)
+      const values = form.getFieldsValue(true) as SaveRecruitmentRequisition
+      let workOrderId = values.workOrderId
+      if (!workOrderId && !values.workOrderReview) {
+        const active = (await getRecruitmentWorkOrders(values.clientId)).filter(row => ['Draft', 'Active'].includes(row.status))
+        if (active.length === 1) workOrderId = active[0].id
+      }
+      const linked = workOrderId ? await getRecruitmentWorkOrder(workOrderId) : null
+      if (workOrderId && (!linked || linked.clientId !== values.clientId)) {
+        message.error('The linked work order could not be loaded. Reopen the review to try again.')
+        return
+      }
+      const savedReview = values.workOrderReview?.clientId === values.clientId ? values.workOrderReview : undefined
+      setReviewDraft({ ...values, workOrderId, workOrderReview: savedReview || {
+        clientId: values.clientId!, workOrderNumber: linked?.workOrderNumber || '',
+        receivedAtUtc: linked ? localDateTime(linked.receivedAtUtc) : (values.requestDate?.slice(0, 10) || today()) + 'T00:00',
+        status: linked?.status || 'Active', remarks: linked?.remarks || '',
+      } })
+    } catch (validationError) {
+      const firstField = (validationError as { errorFields?: Array<{ name?: Array<string | number> }> }).errorFields?.[0]?.name
+      message.error('Correct the highlighted fields before reviewing the hiring request.')
+      if (firstField?.length) form.scrollToField(firstField, { block: 'center' })
+    } finally { setReviewLoading(false) }
+  }
+
+  function keepReviewedChanges() {
+    if (!reviewDraft) return
+    form.setFieldsValue(reviewDraft)
+    setWatchedForm({ id: reviewDraft.id || 0, clientId: reviewDraft.clientId || 0, isReplacement: Boolean(reviewDraft.isReplacement), budgetAvailable: Boolean(reviewDraft.budgetAvailable) })
+    persistBrowserDraft(reviewDraft)
+    setReviewDraft(null)
+    message.success('Work order review saved in this browser draft.')
+  }
+
+  async function submitReviewedRequest() {
+    if (!reviewDraft) return
+    const values = reviewDraft
+    form.setFieldsValue(values)
+    setWatchedForm({ id: values.id || 0, clientId: values.clientId || 0, isReplacement: Boolean(values.isReplacement), budgetAvailable: Boolean(values.budgetAvailable) })
+    persistBrowserDraft(values)
+    await saveRequest(true, values)
+  }
+
+  async function saveRequest(submitAfterSave: boolean, reviewedValues?: SaveRecruitmentRequisition) {
+    if (reviewedValues) form.setFieldsValue(reviewedValues)
+    if (!checkTextLengths((reviewedValues || form.getFieldsValue(true)) as SaveRecruitmentRequisition, true)) {
       message.error('Review the field-length messages before saving. Your text has not been shortened.')
       return
     }
     let values: SaveRecruitmentRequisition
     try {
-      values = await form.validateFields()
+      await form.validateFields()
+      values = form.getFieldsValue(true) as SaveRecruitmentRequisition
     } catch (validationError) {
       const firstField = (validationError as { errorFields?: Array<{ name?: Array<string | number> }> }).errorFields?.[0]?.name
       message.error('Correct the highlighted fields before saving the hiring request.')
       if (firstField?.length) form.scrollToField(firstField, { block: 'center' })
       return
+    }
+    if (values.workOrderReview) {
+      const review = values.workOrderReview
+      if (review.clientId !== values.clientId) return void message.error('The request client changed. Reopen the Work Order review.')
+      if (!review.receivedAtUtc || Number.isNaN(new Date(review.receivedAtUtc).getTime())) return void message.error('Enter the work order received date and time.')
+      if (values.workOrderId && !review.workOrderNumber.trim()) return void message.error('Work order number is required.')
+      if (review.workOrderNumber.trim().length > 120) return void message.error('Work order number must be at most 120 characters.')
     }
     if (watchedForm.id > 0 && embeddedJdRef.current && !await embeddedJdRef.current.saveDraftIfNeeded()) return
     setSaving(true)
@@ -631,6 +646,15 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       const saved = await saveRecruitmentRequisition(normalize(values))
       if (!saved.ok || !saved.data) return void message.error(saved.error || 'Hiring request could not be saved.')
       let completed = saved.data
+      // Retain the saved identity if attachment upload or submission needs a retry.
+      const savedValues = { ...values, ...fromRow(saved.data), workOrderReview: values.workOrderReview ? {
+        ...values.workOrderReview, workOrderNumber: values.workOrderReview.workOrderNumber.trim() || 'AUTO-WO-' + saved.data.rfrNumber,
+      } : undefined }
+      form.setFieldsValue(savedValues)
+      setActiveRequest(saved.data)
+      setWatchedForm({ id: saved.data.id, clientId: saved.data.clientId, isReplacement: saved.data.isReplacement, budgetAvailable: saved.data.budgetAvailable })
+      setReviewDraft(current => current ? savedValues : null)
+      persistBrowserDraft(savedValues)
       if (!await storeSourceDocument(saved.data)) {
         setActiveRequest(saved.data)
         applyDraft(fromRow(saved.data))
@@ -645,6 +669,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         clearBrowserDraft(saved.data.id)
         message.success(submissionSuccess(completed))
       } else message.success(activeRequest?.status === 'Approved' ? 'Approved hiring request, linked vacancy and JD updated.' : 'Hiring request and JD draft saved.')
+      setReviewDraft(null)
       if (submitAfterSave) setDialogOpen(false)
       else {
         setActiveRequest(completed)
@@ -748,10 +773,10 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         {!readOnly && !approvedEdit && <span className={`rfr-autosave-status is-${autoSaveState}`} data-testid="hiring-request-autosave-status">{autoSaveLabel(autoSaveState, autoSavedAt)}</span>}
         <div className="rfr-dialog-action-buttons">
         <Button onClick={() => { persistBrowserDraft(); setDialogOpen(false) }}>Close</Button>
-        {!readOnly && !approvedEdit && <Popconfirm title="Clear this editor and start a new request?" description="Any server-saved draft stays in the Requests list. Unsaved fields in this editor will be cleared." onConfirm={() => openNew()}><Button disabled={saving || sourceParsing} data-testid="clear-hiring-request-draft">Clear draft / New</Button></Popconfirm>}
+        {!readOnly && !approvedEdit && <Popconfirm title="Clear this browser draft and start a new request?" description="Browser-only changes will be removed. An existing submitted or server-saved record is not deleted." onConfirm={() => openNew()}><Button disabled={saving || sourceParsing} data-testid="clear-hiring-request-draft">Clear draft / New</Button></Popconfirm>}
         {!readOnly && (approvedEdit
           ? <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => void saveRequest(false)} data-testid="update-approved-requisition">Update approved request</Button>
-          : <Button type="primary" icon={<SendOutlined />} loading={saving || autoSaveState === 'saving'} onClick={() => void saveRequest(true)} data-testid="save-submit-requisition" data-mail-event="RFR.SUBMIT" data-mail-resource-type="RecruitmentRequisition" data-mail-client-id={watchedForm.clientId} data-mail-action-label="Save and submit hiring request">Save & submit</Button>)}
+          : <><Button icon={<EyeOutlined />} disabled={saving || sourceParsing || sourcePrefillLoading || !textLimits.length || !canReviewWorkOrder} loading={reviewLoading} onClick={() => void openSubmissionReview()} data-testid="review-work-order">Review Work Order</Button><Button type="primary" icon={<SendOutlined />} loading={saving} onClick={() => void saveRequest(true)} data-testid="save-submit-requisition" data-mail-event="RFR.SUBMIT" data-mail-resource-type="RecruitmentRequisition" data-mail-client-id={watchedForm.clientId} data-mail-action-label="Save and submit hiring request">Save & submit</Button></>)}
         </div>
       </div>}>
       {readOnly && activeRequest?.status === 'Pending Approval' && <Alert
@@ -788,7 +813,8 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
           form.setFieldValue('targetJoiningDate', null)
           void applyPipelineTarget(Number(values.clientId || 0), values.requestDate, true)
         }
-        scheduleAutoSave(values)
+        if (Object.prototype.hasOwnProperty.call(changed, 'clientId')) form.setFieldValue('workOrderReview', undefined)
+        scheduleAutoSave(form.getFieldsValue(true))
       }}>
         <section className="rfr-form-section">
           <header className="rfr-form-section-head"><div><b>Request essentials</b><span>Hiring ownership, demand and target details</span></div><Tag color={watchedForm.id ? 'blue' : 'purple'}>{watchedForm.id ? 'Existing request' : 'New request'}</Tag></header>
@@ -859,12 +885,36 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
                 initialRequisitionId={watchedForm.id}
                 onWeightChange={setAtsSkillWeight}
               />
-            : <Alert type="info" showIcon message="Save the hiring request once to prepare its JD" description="The parsed role, skills and ATS suggestions will carry forward automatically. Saving does not submit the request." />}
+            : <Alert type="info" showIcon message="Job description" description="The job fields above are used to prepare the job description. Save the request to open the full JD editor." />}
         </Collapse.Panel>
       </Collapse>}
       {watchedForm.id > 0 && <EntityAttachmentPanel key={`${watchedForm.id}-${attachmentRefresh}`} entityType="RECRUITMENT_REQUISITION" entityId={watchedForm.id} clientId={watchedForm.clientId} moduleCode="RECRUITMENT" formCodes={['HIRING_REQUEST']} title="Original hiring request / JD" description="Saved source document. Preview or download it here; replacement is handled from the prefill control above." readOnly />}
       </Spin>
     </RecruitmentEditorDrawer>
+
+    <Modal
+      className="rfr-final-review"
+      open={Boolean(reviewDraft)}
+      width="min(720px, 96vw)"
+      title="Review Work Order"
+      closable={!saving}
+      maskClosable={!saving}
+      onCancel={() => !saving && setReviewDraft(null)}
+      footer={<Space wrap>
+        <Button disabled={saving} onClick={() => setReviewDraft(null)}>Back to editor</Button>
+        <Button icon={<SaveOutlined />} disabled={saving} onClick={keepReviewedChanges}>Save browser draft</Button>
+        <Button type="primary" icon={<SendOutlined />} loading={saving} onClick={() => void submitReviewedRequest()}>Submit request</Button>
+      </Space>}
+    >
+      {reviewDraft?.workOrderReview && <>
+        <Alert type="info" showIcon message={reviewDraft.workOrderId ? 'Review linked work order' : 'Review automatic work order'}
+          description={reviewDraft.workOrderId ? 'These changes update the linked work order when you save the request.' : 'No database row has been created. This work order will be created and linked when you save the request.'} />
+        <Form layout="vertical" disabled={saving}>
+          <RecruitmentWorkOrderFields value={reviewDraft.workOrderReview} clients={clients} clientDisabled automaticNumber={!reviewDraft.workOrderId}
+            onChange={patch => setReviewDraft({ ...reviewDraft, workOrderReview: { ...reviewDraft.workOrderReview!, ...patch } })} />
+        </Form>
+      </>}
+    </Modal>
 
     <Modal
       open={!!submitDraft}
@@ -913,11 +963,8 @@ function NegotiationSlaInput({ value, onChange }: { value?: number | null; onCha
 }
 
 function autoSaveLabel(state: AutoSaveState, savedAt: Date | null) {
-  if (state === 'saving') return 'Saving draft…'
-  if (state === 'error') return 'Saved in this browser · server retry pending'
-  if (state === 'saved') return `Draft saved automatically${savedAt ? ` · ${savedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : ''}`
-  if (state === 'local') return 'Draft saved in this browser'
-  return 'Changes save automatically'
+  if (state === 'local') return `Browser draft saved${savedAt ? ` · ${savedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : ''}`
+  return 'Changes stay in this browser until submit'
 }
 
 function blankRequest(clientId: number): SaveRecruitmentRequisition {
@@ -999,6 +1046,8 @@ function normalize(row: SaveRecruitmentRequisition): SaveRecruitmentRequisition 
     certifications: clean(row.certifications), languages: clean(row.languages), salaryMin: Number(row.salaryMin || 0), salaryMax: Number(row.salaryMax || 0),
     currency: clean(row.currency) || 'INR', benefits: clean(row.benefits),
     sourceParsedJson: clean(row.sourceParsedJson),
+    workOrderReview: row.workOrderReview ? { ...row.workOrderReview, workOrderNumber: clean(row.workOrderReview.workOrderNumber),
+      receivedAtUtc: new Date(row.workOrderReview.receivedAtUtc).toISOString() } : undefined,
   }
 }
 
@@ -1056,6 +1105,11 @@ function manualSourceReview(file: File, draft: SaveRecruitmentRequisition, error
     draft,
     detectedFields: ['sourceType', 'sourceDocumentName', 'externalApprovalStatus'],
     reviewFields: ['Role / position', 'Department', 'Openings'],
-    warnings: [error || 'Readable text was not found.', 'The original document will be secured with the hiring request when you save. Continue manually; nothing was submitted automatically.'],
+    warnings: [error || 'Readable text was not found.', 'The original document will be secured with the hiring request when you submit. Continue manually; nothing was saved automatically.'],
   }
+}
+
+function localDateTime(value: string) {
+  const date = new Date(/[zZ]$|[+-]\d\d:\d\d$/.test(value) ? value : value + 'Z')
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
 }

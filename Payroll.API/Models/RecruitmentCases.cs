@@ -1,5 +1,14 @@
 namespace Payroll.API.Models;
 
+public class RecruitmentWorkOrderReview
+{
+    public int ClientId { get; set; }
+    public string WorkOrderNumber { get; set; } = "";
+    public DateTime ReceivedAtUtc { get; set; }
+    public string Status { get; set; } = "Active";
+    public string Remarks { get; set; } = "";
+}
+
 public class RecruitmentWorkOrder
 {
     public long Id { get; set; }

@@ -79,6 +79,7 @@ public class RecruitmentRequisition
 
 public class SaveRecruitmentRequisition
 {
+    public RecruitmentWorkOrderReview? WorkOrderReview { get; set; }
     public int? BudgetApproverUserId { get; set; }
     public long Id { get; set; }
     public DateTime? RequestDate { get; set; }
@@ -232,6 +233,7 @@ public class RecruitmentSearchRequest
 
 public class RecruitmentOpenPosition
 {
+    public RecruitmentHiringProgressView? HiringProgress { get; set; }
     public long Id { get; set; }
     public long RequisitionId { get; set; }
     public string RfrNumber { get; set; } = "";

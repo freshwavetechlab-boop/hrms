@@ -179,7 +179,7 @@ FROM recruitment_open_positions WHERE RequisitionId=@Id", new { request.Id });
         }
         if (existing is not null && request.WorkOrderId == existing.WorkOrderId && request.WorkOrderLineNumber is not > 0)
             request.WorkOrderLineNumber = existing.WorkOrderLineNumber;
-        if (request.WorkOrderId is not > 0)
+        if (request.WorkOrderId is not > 0 && request.WorkOrderReview is null)
         {
             var activeWorkOrders = (await db.QueryAsync<long>(@"SELECT Id FROM recruitment_work_orders
 WHERE ClientId=@ClientId AND Status IN ('Draft','Active') ORDER BY ReceivedAtUtc DESC,Id DESC LIMIT 2",
@@ -198,10 +198,56 @@ WHERE ClientId=@ClientId AND Status IN ('Draft','Active') ORDER BY ReceivedAtUtc
             request.WorkOrderLineNumber = null;
         }
 
+        SaveRecruitmentWorkOrder? reviewedWorkOrder = null;
+        if (request.WorkOrderReview is { } review)
+        {
+            var reviewError = ValidateWorkOrderReview(review, clientId, user, request.WorkOrderId is > 0);
+            if (reviewError.Length > 0) return (null, reviewError);
+            RecruitmentWorkOrder? linked = null;
+            if (request.WorkOrderId is > 0)
+            {
+                linked = await db.QueryFirstOrDefaultAsync<RecruitmentWorkOrder>(
+                    "SELECT * FROM recruitment_work_orders WHERE Id=@Id AND ClientId=@ClientId",
+                    new { Id = request.WorkOrderId, ClientId = clientId });
+                if (linked is null) return (null, "The linked work order was not found for this client.");
+                if (RecruitmentAccessScope.IsRestricted(user))
+                {
+                    var locations = (await db.QueryAsync<string>("SELECT Location FROM recruitment_work_order_lines WHERE WorkOrderId=@Id", new { Id = linked.Id })).ToList();
+                    var visible = await RecruitmentAccessScope.FilterAsync(db, user, locations, _ => clientId, location => location);
+                    if (visible.Count != locations.Count) return (null, "This work order includes locations outside your scope and cannot be edited from a restricted account.");
+                }
+            }
+            reviewedWorkOrder = new SaveRecruitmentWorkOrder
+            {
+                Id = linked?.Id ?? 0, ClientId = clientId, WorkOrderNumber = review.WorkOrderNumber.Trim(),
+                ReceivedAtUtc = review.ReceivedAtUtc, Status = review.Status, Remarks = review.Remarks.Trim(),
+                ReceivedFrom = linked?.ReceivedFrom ?? await db.ExecuteScalarAsync<string>("SELECT Name FROM clients WHERE Id=@Id", new { Id = clientId }) ?? "",
+                Subject = linked?.Subject ?? "", OverallSlaMinutes = 0,
+            };
+        }
+
         var newRfrNumber = existing is null ? await NextRfrNumberAsync(db, clientId) : "";
         await using var transaction = await db.BeginTransactionAsync();
         if (existing is not null)
             await db.ExecuteScalarAsync<long>("SELECT Id FROM recruitment_requisitions WHERE Id=@Id FOR UPDATE", new { existing.Id }, transaction);
+        if (reviewedWorkOrder is not null)
+        {
+            if (reviewedWorkOrder.WorkOrderNumber.Length == 0)
+                reviewedWorkOrder.WorkOrderNumber = $"AUTO-WO-{existing?.RfrNumber ?? newRfrNumber}";
+            var duplicate = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_work_orders
+WHERE ClientId=@ClientId AND WorkOrderNumber=@WorkOrderNumber AND Id<>@Id", reviewedWorkOrder, transaction);
+            if (duplicate > 0) return (null, "This work order number already exists for the client.");
+            try
+            {
+                var (workOrderId, reviewError) = await RecruitmentCaseRepository.SaveWorkOrderHeaderAsync(db, transaction, reviewedWorkOrder, user, headerOnly: true);
+                if (reviewError.Length > 0) return (null, reviewError);
+                request.WorkOrderId = workOrderId;
+            }
+            catch (MySqlException exception) when (exception.Number == 1062)
+            {
+                return (null, "This work order number already exists for the client.");
+            }
+        }
         WorkOrderLinkRow? workOrderLink = null;
         if (request.WorkOrderId.HasValue)
         {
@@ -331,6 +377,24 @@ PositionName=@PositionName,NumberOfPositions=@NumberOfPositions,Location=@Locati
         catch (InvalidOperationException exception) { return (null, exception.Message); }
         await transaction.CommitAsync();
         return (await GetAsync(id, user), "");
+    }
+
+    internal static string ValidateWorkOrderReview(RecruitmentWorkOrderReview review, int clientId, AuthUser user, bool existingWorkOrder)
+    {
+        if (!user.Permissions.Contains("recruitment.manage", StringComparer.OrdinalIgnoreCase)
+            && !user.Permissions.Contains("settings.manage", StringComparer.OrdinalIgnoreCase))
+            return "Your role does not allow work order updates.";
+        if (review.ClientId != clientId || (user.ClientId.HasValue && user.ClientId != clientId))
+            return "The work order client must match the hiring request and your access.";
+        var number = (review.WorkOrderNumber ?? "").Trim();
+        if (existingWorkOrder && number.Length == 0) return "Work order number is required.";
+        if (number.Length > 120) return "Work order number must be at most 120 characters.";
+        if (review.ReceivedAtUtc == default) return "Work order received date is required.";
+        if (review.Status is not ("Draft" or "Active" or "On Hold" or "Completed" or "Cancelled")) return "Select a valid work order status.";
+        if (System.Text.Encoding.UTF8.GetByteCount(review.Remarks ?? "") > 65535) return "Work order internal note is too long.";
+        review.WorkOrderNumber = number;
+        review.Remarks ??= "";
+        return "";
     }
 
     public async Task<(RecruitmentRequisition? Row, string Error)> SubmitAsync(long id, AuthUser user, WorkflowRepository workflows)
@@ -511,7 +575,9 @@ PositionName=@PositionName,NumberOfPositions=@NumberOfPositions,Location=@Locati
         await db.OpenAsync();
         var scopedClientId = user.ClientId ?? (requestedClientId is > 0 ? requestedClientId : null);
         var rows = await db.QueryAsync<RecruitmentOpenPosition>(OpenPositionSql("WHERE (@ClientId IS NULL OR p.ClientId=@ClientId) ORDER BY p.CreatedAt DESC"), new { ClientId = scopedClientId });
-        return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
+        var scoped = await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
+        await RecruitmentHiringProgress.EnrichPositionsAsync(db, scoped, user);
+        return scoped;
     }
 
     public async Task<(bool Ok, string Error)> DeleteOpenPositionAsync(long id, AuthUser user)

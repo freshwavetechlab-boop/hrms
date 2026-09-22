@@ -1,0 +1,39 @@
+/* Reuse the Applications card layout without Ant List's competing column wrappers. */
+.posting-manager .job-application-list {
+  max-height: none;
+  min-height: 0;
+  width: 100%;
+  border: 1px solid #dde5f0;
+  border-radius: 14px;
+}
+.posting-manager .job-application-card { width: 100%; }
+.posting-manager .job-application-card .job-card-facts { gap: 5px; }
+.posting-manager .job-application-card .job-card-facts .ant-tag {
+  padding: 1px 6px;
+  font-size: 11px;
+  border-radius: 6px;
+}
+.posting-manager .job-application-card .job-card-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 5px 0;
+}
+.posting-manager .job-application-card .job-card-metric {
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 2px 5px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.posting-manager .job-application-card .candidate-card-actions { max-width: 250px; }
+@media (max-width: 720px) {
+  .posting-manager .job-application-card .candidate-card-actions { max-width: none; }
+  .posting-manager .job-filter-bar { grid-template-columns: minmax(0, 1fr); }
+  .posting-manager .job-application-card .candidate-card-title .ant-tag {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
