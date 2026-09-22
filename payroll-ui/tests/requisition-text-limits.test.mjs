@@ -49,7 +49,7 @@ test('every form field validates before the explicit server write', () => {
   assert.doesNotMatch(manager, /maxLength=\{190\}/)
 })
 
-test('new hiring request drafts stay browser-local until explicit submit', () => {
+test('new hiring request drafts stay browser-local until explicit save or submit', () => {
   const manager = read('../src/components/RecruitmentRequisitionManager.tsx')
   const schedule = manager.slice(manager.indexOf('function scheduleAutoSave('), manager.indexOf('const applyDraft'))
   assert.match(schedule, /persistBrowserDraft\(current\)/)
@@ -59,7 +59,9 @@ test('new hiring request drafts stay browser-local until explicit submit', () =>
   assert.match(manager, /data-testid="review-work-order"/)
   assert.match(manager, /No database row has been created/)
   const clear = manager.slice(manager.indexOf('async function openNew('), manager.indexOf('function openRequest('))
-  assert.match(clear, /clearBrowserDraft\(\)/)
+  assert.match(clear, /if \(discardDraft\) \{\s*clearBrowserDraft\(\)/)
+  assert.match(clear, /restoreBrowserDraft\(draft, key\)/)
+  assert.match(manager, /data-testid="save-draft-open-jd"/)
   assert.match(clear, /applyPipelineTarget\([^\n]+, false\)/)
 })
 

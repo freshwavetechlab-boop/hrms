@@ -292,6 +292,7 @@
 
 .rfr-dialog-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -302,6 +303,7 @@
 
 .rfr-dialog-action-buttons {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 10px;

@@ -86,6 +86,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const [textLimits, setTextLimits] = useState<RequisitionTextLimit[]>([])
   const [textErrors, setTextErrors] = useState<string[]>([])
   const [advancedOpen, setAdvancedOpen] = useState<string[]>([])
+  const [jdOpen, setJdOpen] = useState<string[]>([])
   const [rows, setRows] = useState<RecruitmentRequisition[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -129,6 +130,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const embeddedJdRef = useRef<RecruitmentJobDescriptionManagerHandle>(null)
   const activeBrowserDraftKey = useRef('')
   const sourceFileRef = useRef<File | null>(null)
+  const sourceParseRef = useRef<RecruitmentRequestDocumentParseResult | null>(null)
   const selectedClientId = watchedForm.clientId
   const sourceDocumentName = Form.useWatch('sourceDocumentName', form) || ''
   const canSeedHiring = statusScope.length === 0 || statusScope.some(status => editableStatuses.has(status))
@@ -141,6 +143,11 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     return `frevo:hiring-request:draft:${session?.user.id || 'anonymous'}:${initialClientId || clientFilter || 0}:${initialWorkOrderId || 0}:${initialWorkOrderLineId || 0}:${new URLSearchParams(window.location.search).get('draft') || 'default'}`
   }
 
+  function updateSourceParse(value: RecruitmentRequestDocumentParseResult | null) {
+    sourceParseRef.current = value
+    setSourceParse(value)
+  }
+
   function persistBrowserDraft(values = form.getFieldsValue(true) as SaveRecruitmentRequisition) {
     if (!activeBrowserDraftKey.current || readOnly || approvedEdit) return
     try {
@@ -148,12 +155,13 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         version: 1,
         savedAt: new Date().toISOString(),
         values,
-        sourceParse,
+        sourceParse: sourceParseRef.current,
         sourceFilePending: Boolean(sourceFileRef.current),
       }
       window.localStorage.setItem(activeBrowserDraftKey.current, JSON.stringify(snapshot))
       setAutoSavedAt(new Date(snapshot.savedAt))
       setAutoSaveState('local')
+      return true
     } catch { /* Browser storage can be unavailable in restricted sessions. */ }
   }
 
@@ -164,10 +172,11 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       if (!raw) return base
       const snapshot = JSON.parse(raw) as BrowserDraftSnapshot
       if (snapshot.version !== 1 || !snapshot.values) return base
-      setSourceParse(snapshot.sourceParse || null)
+      updateSourceParse(snapshot.sourceParse || null)
       setAutoSavedAt(snapshot.savedAt ? new Date(snapshot.savedAt) : null)
       setAutoSaveState('local')
-      if (snapshot.sourceFilePending) setSourcePrefillWarning('Your field values were restored. Re-select the source document if it had not finished attaching before refresh.')
+      if (snapshot.sourceFilePending && !sourceFileRef.current) setSourcePrefillWarning('Your field values were restored. Re-select the source document if it had not finished attaching before refresh.')
+      if (snapshot.values.sourceParsedJson) { setAdvancedOpen(['advanced']); setJdOpen(['job-description']) }
       return { ...base, ...snapshot.values }
     } catch {
       window.localStorage.removeItem(key)
@@ -440,26 +449,39 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     if (saveBrowserDraft) scheduleAutoSave({ ...current, targetJoiningDate })
   }
 
-  async function openNew() {
+  async function openNew(discardDraft = false) {
     if (saving || sourceParsing) return
-    clearBrowserDraft()
-    activeBrowserDraftKey.current = newBrowserDraftKey()
+    const key = newBrowserDraftKey()
+    const keepSourceFile = !discardDraft && activeBrowserDraftKey.current === key
+    if (discardDraft) {
+      clearBrowserDraft()
+      window.localStorage.removeItem(key)
+    }
+    if (!keepSourceFile) { setSourceFile(null); sourceFileRef.current = null }
     setReadOnly(false)
     setActiveRequest(null)
     setAtsSkillWeight(0)
     setSourcePrefillWarning('')
-    setSourceParse(null)
+    updateSourceParse(null)
+    setAutoSaveState('idle')
+    setAutoSavedAt(null)
+    setAdvancedOpen([])
+    setJdOpen([])
     const nextClientId = initialClientId || clientFilter || clients[0]?.id || 0
     let draft = blankRequest(nextClientId)
     draft.requestedByEmployeeId = session?.user.employeeId
       ?? employees.find(row => row.isActive && (!nextClientId || row.clientId === nextClientId))?.id
       ?? null
+    draft = restoreBrowserDraft(draft, key)
+    const restoredRequest = draft.id ? rows.find(row => row.id === draft.id) : undefined
+    if (restoredRequest) {
+      setActiveRequest(restoredRequest)
+      setReadOnly(!editableStatuses.has(restoredRequest.status) && !(canDelete && restoredRequest.status === 'Approved'))
+    }
     targetJoiningManual.current = Boolean(draft.targetJoiningDate)
     form.resetFields()
     applyDraft(draft)
-    void applyPipelineTarget(nextClientId, draft.requestDate, true, false)
-    setSourceFile(null)
-    sourceFileRef.current = null
+    void applyPipelineTarget(Number(draft.clientId || nextClientId), draft.requestDate, true, false)
     setSourceUploadProgress(0)
     setDialogOpen(true)
   }
@@ -473,10 +495,15 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     setActiveRequest(row)
     targetJoiningManual.current = true
     setTargetSlaDays(null)
-    applyDraft(fromRow(row))
     setSourceFile(null)
     sourceFileRef.current = null
-    setSourceParse(null)
+    updateSourceParse(null)
+    setSourcePrefillWarning('')
+    setAdvancedOpen([])
+    setJdOpen(['job-description'])
+    applyDraft(!forceReadOnly && editableStatuses.has(row.status)
+      ? restoreBrowserDraft(fromRow(row), activeBrowserDraftKey.current)
+      : fromRow(row))
     setSourceUploadProgress(0)
     setDialogOpen(true)
   }
@@ -494,13 +521,14 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     form.setFieldsValue(sourceDefaults)
     setSourceFile(file)
     sourceFileRef.current = file
-    setSourceParse(null)
+    updateSourceParse(null)
     setSourceParsing(true)
     setSourceUploadProgress(0)
+    persistBrowserDraft(form.getFieldsValue(true) as SaveRecruitmentRequisition)
     try {
       const response = await parseRecruitmentRequestDocument(file, Number(current.clientId || selectedClientId || 0))
       if (!response.ok || !response.data) {
-        setSourceParse(manualSourceReview(file, { ...current, ...sourceDefaults } as SaveRecruitmentRequisition, response.error))
+        updateSourceParse(manualSourceReview(file, { ...current, ...sourceDefaults } as SaveRecruitmentRequisition, response.error))
         return void message.warning('Automatic prefill was unavailable. The document is retained in this editor; complete the visible fields and submit when ready.')
       }
       const result = response.data
@@ -514,8 +542,8 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         const value = suggested[key]
         if (value !== undefined && value !== null && value !== '') Object.assign(patch, { [key]: value })
       }
-      if (detected.has('experienceRange')) patch.experienceRange = matchExperienceMaster(suggested.experienceRange, experienceOptions.map(row => String(row.value))) || undefined
-      if (detected.has('positionCategory')) patch.positionCategory = matchMaster(suggested.positionCategory, categoryOptions.map(row => String(row.value))) || undefined
+      if (detected.has('experienceRange')) patch.experienceRange = matchExperienceMaster(suggested.experienceRange, experienceOptions.map(row => String(row.value))) || currentWithSource.experienceRange
+      if (detected.has('positionCategory')) patch.positionCategory = matchMaster(suggested.positionCategory, categoryOptions.map(row => String(row.value))) || suggested.positionCategory || currentWithSource.positionCategory
       if (detected.has('hiringType')) patch.hiringType = matchMaster(suggested.hiringType, hiringOptions.map(row => String(row.value))) || currentWithSource.hiringType
       if (detected.has('employmentType')) patch.employmentType = matchMaster(suggested.employmentType, employmentOptions.map(row => String(row.value))) || currentWithSource.employmentType
       if (detected.has('hiringPriority')) patch.hiringPriority = matchMaster(suggested.hiringPriority, priorityOptions.map(row => String(row.value))) || currentWithSource.hiringPriority
@@ -528,17 +556,19 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       const next = { ...currentWithSource, ...patch, sourceDocumentName: file.name, sourceParsedJson: suggested.sourceParsedJson }
       form.setFieldsValue(next)
       setWatchedForm({ id: next.id || 0, clientId: next.clientId || 0, isReplacement: Boolean(next.isReplacement), budgetAvailable: Boolean(next.budgetAvailable) })
-      setSourceParse({
+      updateSourceParse({
         ...result,
         reviewFields: result.reviewFields.filter(field => !(field === 'Client' && next.clientId) && !(field === 'Requested by' && next.requestedByEmployeeId)),
       })
+      setAdvancedOpen(['advanced'])
+      setJdOpen(['job-description'])
       scheduleAutoSave(next, 250)
       const detectedCount = result.detectedFields.filter(field => field !== 'sourceParsedJson').length
-      if (result.status === 'Parsed') message.success(`${detectedCount} fields prefilled. Review them; changes remain in this browser until submit.`)
+      if (result.status === 'Parsed') message.success(`${detectedCount} fields prefilled. Review them, then save a draft to open JD / ATS or submit when ready.`)
       else message.warning(`${detectedCount} fields were suggested. Review the document and complete the remaining fields manually.`)
     } catch (cause) {
       const error = cause instanceof Error ? cause.message : 'The document could not be read automatically.'
-      setSourceParse(manualSourceReview(file, { ...current, ...sourceDefaults } as SaveRecruitmentRequisition, error))
+      updateSourceParse(manualSourceReview(file, { ...current, ...sourceDefaults } as SaveRecruitmentRequisition, error))
       message.warning('Automatic prefill was unavailable. The document is retained in this editor; complete the visible fields and submit when ready.')
     } finally {
       setSourceParsing(false)
@@ -566,6 +596,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     }
     setSourceUploadProgress(0)
     setAttachmentRefresh(value => value + 1)
+    persistBrowserDraft()
     return true
   }
 
@@ -621,7 +652,9 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   }
 
   async function saveRequest(submitAfterSave: boolean, reviewedValues?: SaveRecruitmentRequisition) {
+    if (saving || sourceParsing || sourcePrefillLoading) return
     if (reviewedValues) form.setFieldsValue(reviewedValues)
+    persistBrowserDraft()
     if (!checkTextLengths((reviewedValues || form.getFieldsValue(true)) as SaveRecruitmentRequisition, true)) {
       message.error('Review the field-length messages before saving. Your text has not been shortened.')
       return
@@ -632,6 +665,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       values = form.getFieldsValue(true) as SaveRecruitmentRequisition
     } catch (validationError) {
       const firstField = (validationError as { errorFields?: Array<{ name?: Array<string | number> }> }).errorFields?.[0]?.name
+      setAdvancedOpen(['advanced'])
       message.error('Correct the highlighted fields before saving the hiring request.')
       if (firstField?.length) form.scrollToField(firstField, { block: 'center' })
       return
@@ -647,7 +681,10 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     setSaving(true)
     try {
       const saved = await saveRecruitmentRequisition(normalize(values))
-      if (!saved.ok || !saved.data) return void message.error(saved.error || 'Hiring request could not be saved.')
+      if (!saved.ok || !saved.data) {
+        if (saved.status === 0) setSourcePrefillWarning('The API did not confirm the hiring-request save. Your browser draft is retained. Check the connection and the request list before retrying; the server may still have processed the request.')
+        return void message.error(saved.error || 'Hiring request could not be saved.')
+      }
       let completed = saved.data
       // Retain the saved identity if attachment upload or submission needs a retry.
       const savedValues = { ...values, ...fromRow(saved.data), workOrderReview: values.workOrderReview ? {
@@ -657,7 +694,14 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       setActiveRequest(saved.data)
       setWatchedForm({ id: saved.data.id, clientId: saved.data.clientId, isReplacement: saved.data.isReplacement, budgetAvailable: saved.data.budgetAvailable })
       setReviewDraft(current => current ? savedValues : null)
-      persistBrowserDraft(savedValues)
+      const previousDraftKey = activeBrowserDraftKey.current
+      activeBrowserDraftKey.current = `frevo:hiring-request:request:${session?.user.id || 'anonymous'}:${saved.data.id}`
+      const browserDraftStored = persistBrowserDraft(savedValues)
+      // Migrate only after the replacement snapshot is safely stored.
+      if (browserDraftStored && previousDraftKey && previousDraftKey !== activeBrowserDraftKey.current) {
+        try { window.localStorage.removeItem(previousDraftKey) } catch { /* Keep the original draft if storage is unavailable. */ }
+      }
+      setJdOpen(['job-description'])
       if (!await storeSourceDocument(saved.data)) {
         setActiveRequest(saved.data)
         applyDraft(fromRow(saved.data))
@@ -681,6 +725,9 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       }
       onChanged?.(completed)
       await refreshRows()
+    } catch (cause) {
+      persistBrowserDraft()
+      setSourcePrefillWarning(`The hiring-request operation could not finish: ${cause instanceof Error ? cause.message : 'Unexpected error'}. Your browser draft is retained; check the request list before retrying.`)
     } finally {
       setSaving(false)
     }
@@ -743,7 +790,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       <Space wrap>
         <Button icon={<DownloadOutlined />} onClick={downloadHiringSeedTemplate}>Seed template</Button>
         <Button icon={<UploadOutlined />} onClick={() => setSeedPackOpen(true)}>Import seed pack</Button>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openNew} data-testid="new-hiring-request">New hiring request</Button>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => void openNew()} data-testid="new-hiring-request">New hiring request</Button>
       </Space>
     </header>}
 
@@ -768,15 +815,16 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     </div>
 
     <RecruitmentEditorDrawer className="rfr-dialog" open={dialogOpen} width="min(1120px, 96vw)" destroyOnClose={false}
-      onClose={() => { if (!saving) { persistBrowserDraft(); setDialogOpen(false) } }} kicker="Hiring request"
+      onClose={() => { if (!saving && !sourceParsing) { persistBrowserDraft(); setDialogOpen(false) } }} kicker="Hiring request"
       title={readOnly ? 'Request details' : approvedEdit ? 'Edit approved request' : watchedForm.id ? 'Edit draft' : 'New hiring request'}
       description={readOnly ? activeRequest?.status === 'Pending Approval' ? 'Review the submitted demand and its current approval ownership.' : 'Review the approved demand and its hiring context.' : 'Capture the essential demand first; advanced role and approval context is available below.'}
       extra={!readOnly && watchedForm.id > 0 ? <Tooltip title="Weights are automatically redistributed so the cumulative ATS skill weight never exceeds 100%."><div className="rfr-ats-weight-indicator"><Progress type="circle" size={52} percent={Math.min(100, Math.max(0, atsSkillWeight))} status={Math.abs(atsSkillWeight - 100) < 0.01 ? 'success' : 'normal'} format={() => `${Math.round(atsSkillWeight)}%`} /><span>Cumulative<br />skill weight</span></div></Tooltip> : undefined}
       footer={<div className="rfr-dialog-actions">
         {!readOnly && !approvedEdit && <span className={`rfr-autosave-status is-${autoSaveState}`} data-testid="hiring-request-autosave-status">{autoSaveLabel(autoSaveState, autoSavedAt)}</span>}
         <div className="rfr-dialog-action-buttons">
-        <Button onClick={() => { persistBrowserDraft(); setDialogOpen(false) }}>Close</Button>
-        {!readOnly && !approvedEdit && <Popconfirm title="Clear this browser draft and start a new request?" description="Browser-only changes will be removed. An existing submitted or server-saved record is not deleted." onConfirm={() => openNew()}><Button disabled={saving || sourceParsing} data-testid="clear-hiring-request-draft">Clear draft / New</Button></Popconfirm>}
+        <Button disabled={saving || sourceParsing} onClick={() => { persistBrowserDraft(); setDialogOpen(false) }}>Close</Button>
+        {!readOnly && !approvedEdit && <Popconfirm title="Clear this browser draft and start a new request?" description="Browser-only changes will be removed. An existing submitted or server-saved record is not deleted." onConfirm={() => openNew(true)}><Button disabled={saving || sourceParsing} data-testid="clear-hiring-request-draft">Clear draft / New</Button></Popconfirm>}
+        {!readOnly && !approvedEdit && <Button icon={<SaveOutlined />} loading={saving} disabled={sourceParsing || sourcePrefillLoading || !textLimits.length} onClick={() => void saveRequest(false)} data-testid="save-draft-open-jd">{watchedForm.id ? 'Save draft' : 'Save draft & open JD / ATS'}</Button>}
         {!readOnly && (approvedEdit
           ? <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => void saveRequest(false)} data-testid="update-approved-requisition">Update approved request</Button>
           : <><Button icon={<EyeOutlined />} disabled={saving || sourceParsing || sourcePrefillLoading || !textLimits.length || !canReviewWorkOrder} loading={reviewLoading} onClick={() => void openSubmissionReview()} data-testid="review-work-order">Review Work Order</Button><Button type="primary" icon={<SendOutlined />} loading={saving} onClick={() => void saveRequest(true)} data-testid="save-submit-requisition" data-mail-event="RFR.SUBMIT" data-mail-resource-type="RecruitmentRequisition" data-mail-client-id={watchedForm.clientId} data-mail-action-label="Save and submit hiring request">Save & submit</Button></>)}
@@ -876,7 +924,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         </Collapse>
 
       </Form>
-      {!readOnly && <Collapse ghost className="rfr-advanced rfr-jd-workspace">
+      {!readOnly && <Collapse ghost className="rfr-advanced rfr-jd-workspace" activeKey={jdOpen} onChange={keys => setJdOpen(Array.isArray(keys) ? keys : [keys])}>
         <Collapse.Panel key="job-description" forceRender header="Job description & ATS screening">
           {watchedForm.id > 0
             ? <RecruitmentJobDescriptionManager
@@ -888,7 +936,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
                 initialRequisitionId={watchedForm.id}
                 onWeightChange={setAtsSkillWeight}
               />
-            : <Alert type="info" showIcon message="Job description" description="The job fields above are used to prepare the job description. Save the request to open the full JD editor." />}
+            : <Alert type="info" showIcon message="Prepare JD & ATS screening" description="Review the parsed fields, then choose Save draft & open JD / ATS below. This saves a draft without submitting it for approval and opens the full JD editor with the parsed skills." />}
         </Collapse.Panel>
       </Collapse>}
       {watchedForm.id > 0 && <EntityAttachmentPanel key={`${watchedForm.id}-${attachmentRefresh}`} entityType="RECRUITMENT_REQUISITION" entityId={watchedForm.id} clientId={watchedForm.clientId} moduleCode="RECRUITMENT" formCodes={['HIRING_REQUEST']} title="Original hiring request / JD" description="Saved source document. Preview or download it here; replacement is handled from the prefill control above." readOnly />}
@@ -975,7 +1023,7 @@ function NegotiationSlaInput({ value, onChange }: { value?: number | null; onCha
 
 function autoSaveLabel(state: AutoSaveState, savedAt: Date | null) {
   if (state === 'local') return `Browser draft saved${savedAt ? ` · ${savedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : ''}`
-  return 'Changes stay in this browser until submit'
+  return 'Changes stay in this browser until saved or submitted'
 }
 
 function blankRequest(clientId: number): SaveRecruitmentRequisition {
@@ -1064,6 +1112,7 @@ function normalize(row: SaveRecruitmentRequisition): SaveRecruitmentRequisition 
 
 function matchMaster(value: string, options: string[]) {
   const needle = String(value || '').trim().toLowerCase()
+  if (!needle) return ''
   return options.find(option => option.trim().toLowerCase() === needle)
     || options.find(option => option.toLowerCase().includes(needle) || needle.includes(option.toLowerCase()))
     || ''
@@ -1116,7 +1165,7 @@ function manualSourceReview(file: File, draft: SaveRecruitmentRequisition, error
     draft,
     detectedFields: ['sourceType', 'sourceDocumentName', 'externalApprovalStatus'],
     reviewFields: ['Role / position', 'Department', 'Openings'],
-    warnings: [error || 'Readable text was not found.', 'The original document will be secured with the hiring request when you submit. Continue manually; nothing was saved automatically.'],
+    warnings: [error || 'Readable text was not found.', 'The original document will be secured with the hiring request when you save or submit. Continue manually; nothing was saved automatically.'],
   }
 }
 
