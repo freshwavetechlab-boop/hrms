@@ -1,8 +1,12 @@
+import { RecruitmentViewContext, useSessionPreference, type RecruitmentView } from '../hooks/useRecruitmentPreferences'
+import { PageHeaderPortal } from '../components/layout/AppPageHeader'
+import '../RecruitmentViewport.css'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BranchesOutlined, DeleteOutlined, FormOutlined, PlusOutlined, RocketOutlined } from '@ant-design/icons'
-import { Button, Card, Drawer, Input, InputNumber, Modal, Popconfirm, Select, Space, Tabs, Tag, message } from 'antd'
+import { Button, Card, Drawer, Input, InputNumber, Modal, Popconfirm, Segmented, Select, Space, Tabs, Tag, message } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
-import DataTable from '../components/DataTable'
+import RecruitmentRecordList from '../components/RecruitmentRecordList'
+import { recruitmentPipelineDisplayOptions, type RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
 import RecruitmentDashboardOverview from '../components/RecruitmentDashboardOverview'
 import RecruitmentFormBuilder from '../components/RecruitmentFormBuilder'
 import RecruitmentJobPostingManager from '../components/RecruitmentJobPostingManager'
@@ -20,7 +24,6 @@ const fallbackPositionStatuses = ['Open', 'Recruiter Assigned', 'Published', 'Ca
 const money = (value: number, currency = 'INR') => `${currency} ${Number(value || 0).toLocaleString('en-IN')}`
 const dateText = (value?: string | null) => value ? new Date(value).toLocaleDateString('en-GB') : '-'
 const dashboard0: RecruitmentDashboard = { drafts: 0, pendingApproval: 0, approved: 0, rejected: 0, returned: 0, withdrawn: 0, openPositions: 0, filledPositions: 0, cancelledPositions: 0, onHoldPositions: 0, remainingPositions: 0, averageApprovalHours: 0, departmentWiseHiring: [], companyWiseHiring: [], priorityWiseHiring: [], upcomingJoiningTargets: [] }
-const recruitmentClientScopeKey = 'recruitment.clientScope'
 const draftRequisitionStatuses = ['Draft', 'Sent Back']
 const pendingRequisitionStatuses = ['Pending Approval']
 export const recruitmentViews = ['Dashboard', 'Work Orders & SLA', 'Requisitions', 'Open Positions', 'Job Descriptions', 'Job Postings', 'ATS Screening', 'Hiring Pipeline', 'Talent Pool', 'Applications', 'Interview Queue', 'Interviews', 'MoM & Negotiation', 'Offers & Pre-Onboarding'] as const
@@ -49,7 +52,9 @@ const workspaceCopy: Record<RecruitmentWorkspace, { group: string; title: string
   selection: { group: 'Close hiring', title: 'Interviews & Offers', description: 'Schedule interviews, email candidates and panel members, then manage offers and joining readiness.' },
 }
 
-export default function RecruitmentPage({ view = 'Dashboard' }: { view?: RecruitmentPageView }) {
+export type RecruitmentRequestNavigation = { workflowEnabled: boolean; openPositions: number; pendingApproval: number }
+
+export default function RecruitmentPage({ view = 'Dashboard', onRequestNavigationChange }: { view?: RecruitmentPageView; onRequestNavigationChange?: (value: RecruitmentRequestNavigation) => void }) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const navigate = useNavigate()
@@ -61,7 +66,11 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
   const canChooseClient = !boundClientId && Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
   const [workspacePending, setWorkspacePending] = useState({ dirty: false, busy: false })
-  const [selectedClientId, setSelectedClientId] = useState(() => boundClientId || Number(routeQuery.get('clientId') || sessionStorage.getItem(recruitmentClientScopeKey) || 0))
+  const preferenceScope = 'recruitment.ui:' + session?.user.id + ':' + boundClientId
+  const [savedClientId, setSavedClientId] = useSessionPreference(preferenceScope + ':client', 0)
+  const [selectedClientId, setSelectedClientId] = useState(() => boundClientId || Number(routeQuery.get('clientId') ?? savedClientId))
+  const [recordView, setRecordView] = useSessionPreference<RecruitmentView>(preferenceScope + ':view', 'Cards')
+  const [pipelineDisplay, setPipelineDisplay] = useSessionPreference<RecruitmentPipelineDisplayMode>(preferenceScope + ':' + selectedClientId + ':pipeline-view', 'pipeline')
   const [dashboard, setDashboard] = useState<RecruitmentDashboard>(dashboard0)
   const [requisitionWorkflowEnabled, setRequisitionWorkflowEnabled] = useState(true)
   const [positions, setPositions] = useState<RecruitmentOpenPosition[]>([])
@@ -88,7 +97,8 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
     setDashboard(metrics)
     setPositions(positionRows)
     setRequisitionWorkflowEnabled(approvalMode.workflowEnabled)
-  }, [selectedClientId, isRequestWorkspace])
+    onRequestNavigationChange?.({ workflowEnabled: approvalMode.workflowEnabled, openPositions: positionRows.length, pendingApproval: metrics.pendingApproval })
+  }, [selectedClientId, isRequestWorkspace, onRequestNavigationChange])
 
   useEffect(() => {
     void getClients().then(setClients)
@@ -109,6 +119,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
     const routeClientId = Number(routeQuery.get('clientId'))
     if (Number.isSafeInteger(routeClientId) && routeClientId >= 0) setSelectedClientId(routeClientId)
   }, [boundClientId, routeQuery])
+  useEffect(() => { setSavedClientId(selectedClientId) }, [selectedClientId])
   useEffect(() => { void load() }, [load])
   useEffect(() => { if (detail?.position.status) setPositionStatus(detail.position.status) }, [detail?.position.status])
 
@@ -136,8 +147,6 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
     confirmWorkspaceNavigation(() => {
       setSelectedClientId(next)
       setDetail(null)
-      if (next) sessionStorage.setItem(recruitmentClientScopeKey, String(next))
-      else sessionStorage.removeItem(recruitmentClientScopeKey)
       const params = new URLSearchParams(location.search)
       for (const key of ['positionId', 'requisitionId', 'jobDescriptionVersionId', 'jobPostingId', 'workOrderId', 'workOrderLineId', 'upload']) params.delete(key)
       if (next) params.set('clientId', String(next))
@@ -152,7 +161,6 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
     const separator = path.includes('?') ? '&' : '?'
     return `${path}${separator}clientId=${selectedClientId}`
   }
-  const selectedClientName = selectedClientId ? clients.find(row => row.id === selectedClientId)?.name || 'Selected client' : 'All accessible clients'
 
   const openDetail = async (row: RecruitmentOpenPosition) => {
     const next = await getRecruitmentOpenPositionDetail(row.id)
@@ -190,7 +198,9 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
   }
 
   const copy = workspaceCopy[workspace]
-  const openPositionsTable = <DataTable rows={positions} exportFileName="recruitment-open-positions" actions={row => <Space size={6} wrap>
+  const openPositionsTable = <RecruitmentRecordList rows={positions} title={row => row.positionTitle} subtitle={row => [row.positionCode, row.rfrNumber].filter(Boolean).join(' · ')} hiddenCardColumns={['positionCode']} cardSummaryColumns={['vacancies', 'pipelineStageName', 'status']}
+    filters={[{ key: 'department', label: 'Department', value: row => row.department }, { key: 'status', label: 'Status', value: row => row.status }, { key: 'stage', label: 'Current stage', value: row => row.pipelineStageName || 'Pipeline not started' }, { key: 'jd', label: 'JD status', value: row => row.jobDescriptionStatus || 'Not Started' }]}
+    quickFilters={[{ key: 'open', label: 'Open', tone: 'green', matches: row => row.remainingPositions > 0 }, { key: 'filled', label: 'Filled', tone: 'purple', matches: row => row.remainingPositions === 0 }, { key: 'hold', label: 'On hold', tone: 'orange', matches: row => row.status === 'On Hold' }]} exportFileName="recruitment-open-positions" actions={row => <Space size={6} wrap>
     <Button size="small" onClick={() => void openDetail(row)}>View</Button>
     {canDelete && <Button size="small" onClick={() => navigate(`/recruitment/requisitions?clientId=${row.clientId}&requisitionId=${row.requisitionId}`)}>Edit request</Button>}
     <Button size="small" type="primary" onClick={() => navigate(`/recruitment/requisitions?requisitionId=${row.requisitionId}&clientId=${row.clientId}`)}>{jobDescriptionActionLabel(row.jobDescriptionStatus)}</Button>
@@ -229,24 +239,13 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
     : requisitionWorkflowEnabled && routeQuery.get('status') === 'pending'
       ? 'pending'
       : 'requests'
+  const requestContent = requestTab === 'approved' ? openPositionsTable : requestTab === 'pending' ? <RecruitmentRequisitionManager key={`pending-requests-${selectedClientId}`} embedded initialClientId={selectedClientId} clientScopeManaged statusScope={pendingRequisitionStatuses} showStatusFilter={false} pipelinePositions={positions} onOpenPipeline={position => navigate(`/recruitment/hiring-pipeline?clientId=${position.clientId}&positionId=${position.id}&flow=hiring`)} onOpenRequestPipeline={row => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&flow=hiring${row.openPositionId ? `&positionId=${row.openPositionId}` : ''}`)} onChanged={() => void load()} /> : <RecruitmentRequisitionManager key={`${routeQuery.get('new') === '1' ? 'new-request' : 'request-list'}-${selectedClientId}-${routeQuery.get('draft') || ''}-${routeQuery.get('requisitionId') || 0}-${routeQuery.get('jdHistory') || ''}-${routeQuery.get('workOrderId') || 0}-${routeQuery.get('workOrderLineId') || 0}`} embedded initialClientId={selectedClientId} clientScopeManaged initialOpen={routeQuery.get('new') === '1'} initialRequisitionId={Number(routeQuery.get('requisitionId') || 0)} initialJdHistory={routeQuery.get('jdHistory') === '1'} initialWorkOrderId={Number(routeQuery.get('workOrderId') || 0)} initialWorkOrderLineId={Number(routeQuery.get('workOrderLineId') || 0)} statusScope={requisitionWorkflowEnabled ? draftRequisitionStatuses : []} showStatusFilter={!requisitionWorkflowEnabled} pipelinePositions={positions} onOpenPipeline={position => navigate(`/recruitment/hiring-pipeline?clientId=${position.clientId}&positionId=${position.id}&flow=hiring`)} onOpenRequestPipeline={row => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&flow=hiring${row.openPositionId ? `&positionId=${row.openPositionId}` : ''}`)} onChanged={() => void load()} onPrepareJobDescription={row => navigate(`/recruitment/requisitions?clientId=${row.clientId}&requisitionId=${row.id}`)} />
   const workspaceContent = workspace === 'overview'
-    ? <RecruitmentDashboardOverview key={`overview-${session?.user.id}-${boundClientId || selectedClientId}-${session?.user.permissions.join(',')}`} clients={clients} selectedClientId={selectedClientId} canChooseClient={canChooseClient} onClientChange={changeClientScope} onNavigate={path => navigate(scopedPath(path))} />
+    ? <RecruitmentDashboardOverview key={`overview-${session?.user.id}-${boundClientId || selectedClientId}-${session?.user.permissions.join(',')}`} clients={clients} selectedClientId={selectedClientId} canChooseClient={false} onClientChange={changeClientScope} onNavigate={path => navigate(scopedPath(path))} />
     : workspace === 'orders'
-      ? <RecruitmentWorkOrderWorkspace key={`work-orders-${selectedClientId}`} initialClientId={selectedClientId} clientScopeManaged displayMode="pipeline" />
+      ? <RecruitmentWorkOrderWorkspace key={`work-orders-${selectedClientId}`} initialClientId={selectedClientId} clientScopeManaged displayMode={recordView === 'Table' ? 'table' : 'pipeline'} />
     : workspace === 'requests'
-        ? <Tabs
-            className="recruitment-workspace-tabs recruitment-primary-tabs"
-            activeKey={requestTab}
-            destroyInactiveTabPane
-            onChange={key => navigate(scopedPath(key === 'approved' ? '/recruitment/open-positions' : key === 'pending' ? '/recruitment/requisitions?status=pending' : '/recruitment/requisitions'))}
-            items={[
-              { key: 'requests', label: 'Requests', children: <RecruitmentRequisitionManager key={`${routeQuery.get('new') === '1' ? 'new-request' : 'request-list'}-${selectedClientId}-${routeQuery.get('draft') || ''}-${routeQuery.get('requisitionId') || 0}-${routeQuery.get('jdHistory') || ''}-${routeQuery.get('workOrderId') || 0}-${routeQuery.get('workOrderLineId') || 0}`} embedded initialClientId={selectedClientId} clientScopeManaged initialOpen={routeQuery.get('new') === '1'} initialRequisitionId={Number(routeQuery.get('requisitionId') || 0)} initialJdHistory={routeQuery.get('jdHistory') === '1'} initialWorkOrderId={Number(routeQuery.get('workOrderId') || 0)} initialWorkOrderLineId={Number(routeQuery.get('workOrderLineId') || 0)} statusScope={requisitionWorkflowEnabled ? draftRequisitionStatuses : []} showStatusFilter={!requisitionWorkflowEnabled} pipelinePositions={positions} onOpenPipeline={position => navigate(`/recruitment/hiring-pipeline?clientId=${position.clientId}&positionId=${position.id}&flow=hiring`)} onOpenRequestPipeline={row => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&flow=hiring${row.openPositionId ? `&positionId=${row.openPositionId}` : ''}`)} onChanged={() => void load()} onPrepareJobDescription={row => navigate(`/recruitment/requisitions?clientId=${row.clientId}&requisitionId=${row.id}`)} /> },
-              ...(requisitionWorkflowEnabled ? [
-                { key: 'pending', label: `Pending for approval (${dashboard.pendingApproval})`, children: <RecruitmentRequisitionManager key={`pending-requests-${selectedClientId}`} embedded initialClientId={selectedClientId} clientScopeManaged statusScope={pendingRequisitionStatuses} showStatusFilter={false} pipelinePositions={positions} onOpenPipeline={position => navigate(`/recruitment/hiring-pipeline?clientId=${position.clientId}&positionId=${position.id}&flow=hiring`)} onOpenRequestPipeline={row => navigate(`/recruitment/hiring-pipeline?clientId=${row.clientId}&flow=hiring${row.openPositionId ? `&positionId=${row.openPositionId}` : ''}`)} onChanged={() => void load()} /> },
-              ] : []),
-              { key: 'approved', label: `${requisitionWorkflowEnabled ? 'Approved' : 'Open positions'} (${positions.length})`, children: openPositionsTable },
-            ]}
-          />
+        ? requestContent
         : workspace === 'jobs'
           ? <Tabs
               className="recruitment-workspace-tabs recruitment-primary-tabs"
@@ -269,7 +268,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
                   clientScopeManaged
                   positionId={Number(routeQuery.get('positionId') || 0)}
                   initialView={pipelineView}
-                  canChooseClient={canChooseClient}
+                  canChooseClient={false}
                   clientOptions={clientOptions}
                   onClientChange={changeClientScope}
                 />
@@ -284,23 +283,13 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
                   ? <RecruitmentTalentWorkspace key={`offers-${selectedClientId}`} mode="offers" initialClientId={selectedClientId} />
                   : <RecruitmentTalentWorkspace key={`interviews-${selectedClientId}`} mode="interviews" initialClientId={selectedClientId} />
 
-  return <section className="recruitment-monitor-page recruitment-experience" aria-label={copy.title}>
-    {!['pipeline', 'overview'].includes(workspace) && <header className="recruitment-scopebar">
-      <div className="recruitment-scopebar-meta">
-        <div className="recruitment-scope-cell">
-          <span>Client scope</span>
-          <strong>{selectedClientName}</strong>
-        </div>
-        <div className="recruitment-scope-cell recruitment-scope-workspace">
-          <strong>{copy.group}</strong>
-        </div>
-      </div>
-      <div className={`recruitment-header-actions${canChooseClient ? ' has-client-select' : ''}`}>
-        {canChooseClient && <Select data-testid="recruitment-client-scope" aria-label="Recruitment client scope" allowClear showSearch optionFilterProp="label" optionLabelProp="label" value={selectedClientId || undefined} placeholder={clients.length ? 'All accessible clients' : 'Loading client...'} loading={!clients.length} options={clientOptions} onChange={changeClientScope} />}
+  return <RecruitmentViewContext.Provider value={{ view: workspace === 'pipeline' ? pipelineDisplay === 'table' ? 'Table' : 'Cards' : recordView, pipelineDisplay: workspace === 'pipeline' ? pipelineDisplay : undefined, scope: String(session?.user.id) + ':' + selectedClientId }}><section className={`recruitment-monitor-page recruitment-experience${workspace !== 'overview' ? ' recruitment-viewport' : ''}${workspace === 'pipeline' && pipelineDisplay === 'both' ? ' recruitment-pipeline-both' : ''}`} aria-label={copy.title}>
+    <PageHeaderPortal slot="recruitment-client-controls">{canChooseClient && <Select data-testid="recruitment-client-scope" aria-label="Recruitment client scope" allowClear showSearch optionFilterProp="label" optionLabelProp="label" value={selectedClientId || undefined} placeholder={clients.length ? 'All accessible clients' : 'Loading client...'} loading={!clients.length} options={clientOptions} onChange={changeClientScope} />}</PageHeaderPortal>
+    <PageHeaderPortal slot="recruitment-view-controls">{workspace === 'pipeline' ? <Segmented aria-label="Pipeline display view" options={recruitmentPipelineDisplayOptions.map(option => option.value === 'pipeline' ? { ...option, label: 'Card view' } : option)} value={pipelineDisplay} onChange={value => setPipelineDisplay(value as RecruitmentPipelineDisplayMode)} /> : <Segmented aria-label="Recruitment display view" options={[{ label: 'Card view', value: 'Cards' }, { label: 'Table view', value: 'Table' }]} value={recordView} onChange={value => setRecordView(value as RecruitmentView)} />}</PageHeaderPortal>
+    <PageHeaderPortal slot="recruitment-page-controls"><Space wrap>
         {workspace === 'requests' && canDelete && !requisitionWorkflowEnabled && <Button onClick={() => setManageVacanciesOpen(true)}>Manage vacancies</Button>}
         {workspace === 'requests' && <Button data-testid="recruitment-new-hiring-request" type="primary" icon={<PlusOutlined />} onClick={() => navigate(scopedPath(`/recruitment/requisitions?new=1&draft=${crypto.randomUUID()}`))}>New hiring request</Button>}
-      </div>
-    </header>}
+    </Space></PageHeaderPortal>
     <div className="recruitment-workspace-surface">
       <div className="recruitment-workspace-content">
         {workspaceContent}
@@ -340,7 +329,7 @@ export default function RecruitmentPage({ view = 'Dashboard' }: { view?: Recruit
         ].filter(Boolean) as any} />
       </section>}
     </Drawer>
-  </section>
+  </section></RecruitmentViewContext.Provider>
 }
 
 function jobDescriptionActionLabel(status?: string) {

@@ -1,3 +1,7 @@
+import DataTable, { type Column } from './DataTable'
+import RecruitmentRecordList from './RecruitmentRecordList'
+import { useRecruitmentPreference, useRecruitmentView } from '../hooks/useRecruitmentPreferences'
+import type { ReactNode } from 'react'
 import RecruitmentWorkOrderFields from './RecruitmentWorkOrderFields'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -5,9 +9,9 @@ import {
 } from '@ant-design/icons'
 import {
   Alert, AutoComplete, Button, Collapse, Form, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Spin, Switch,
-  Table, Tag, Tooltip, message,
+  Tag, Tooltip, message,
 } from 'antd'
-import type { ColumnsType } from 'antd/es/table'
+import type { ColumnsType, ColumnType } from 'antd/es/table'
 import { useAuthSession } from './AuthGate'
 import { getClients, getEmployees } from '../services/payrollService'
 import { getJson } from '../services/apiClient'
@@ -30,6 +34,7 @@ import RecruitmentSeedPackModal from './RecruitmentSeedPackModal'
 import RecruitmentJobDescriptionManager, { type RecruitmentJobDescriptionManagerHandle } from './RecruitmentJobDescriptionManager'
 import EntityAttachmentPanel from './EntityAttachmentPanel'
 import { downloadHiringSeedTemplate } from '../services/recruitmentSeedPackService'
+import { PageHeaderPortal } from './layout/AppPageHeader'
 import './RecruitmentRequisitionManager.css'
 
 type Props = {
@@ -99,9 +104,10 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const [jdHistoryRequest, setJdHistoryRequest] = useState<RecruitmentRequisition | null>(null)
   const [sourcePrefillLoading, setSourcePrefillLoading] = useState(initialOpen)
   const [sourcePrefillWarning, setSourcePrefillWarning] = useState('')
-  const [query, setQuery] = useState('')
+  const recordView = useRecruitmentView()
+  const [query, setQuery] = useRecruitmentPreference('requests:search', '')
   const [clientFilter, setClientFilter] = useState(initialClientId)
-  const [statusFilter, setStatusFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useRecruitmentPreference('requests:status', '')
   const [seedPackOpen, setSeedPackOpen] = useState(false)
   const [sourceFile, setSourceFile] = useState<File | null>(null)
   const [sourceParse, setSourceParse] = useState<RecruitmentRequestDocumentParseResult | null>(null)
@@ -323,12 +329,12 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     return rows.filter(row => {
       if (clientFilter && row.clientId !== clientFilter) return false
       if (statusScope.length && !statusScope.includes(row.status)) return false
-      if (statusFilter && row.status !== statusFilter) return false
-      if (!needle) return true
+      if (recordView !== 'Cards' && statusFilter && row.status !== statusFilter) return false
+      if (recordView === 'Cards' || !needle) return true
       return [row.rfrNumber, row.positionTitle, row.department, row.clientName, row.requestedByName]
         .some(value => String(value || '').toLowerCase().includes(needle))
     })
-  }, [rows, clientFilter, statusFilter, query, statusScope])
+  }, [recordView, rows, clientFilter, statusFilter, query, statusScope])
 
   const statuses = useMemo(() => unique(rows.map(row => row.status)), [rows])
   const departmentOptions = useMemo(() => asOptions(unique([
@@ -784,6 +790,15 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     <Form.Item name="sourceNotes" rules={textRules('sourceNotes')} label="Source notes" className="rfr-span-2"><Input.TextArea rows={3} placeholder="Preserve ambiguities and missing facts without inventing values" /></Form.Item>
   </div>
 
+  const recordColumns: Column<RecruitmentRequisition>[] = columns.filter(column => column.key !== 'actions').map(column => {
+    const field = column as ColumnType<RecruitmentRequisition>
+    const key = String(field.dataIndex || field.key)
+    return { key, label: String(field.title), width: field.width, wrap: true,
+      value: row => key === 'request' ? row.positionTitle + ' ' + row.rfrNumber : key === 'client' ? row.clientName + ' ' + row.department : key === 'plan' ? row.numberOfOpenings + ' ' + row.hiringType : key === 'pipelineStage' ? positionByRequisition.get(row.id)?.pipelineStageName || row.pipelineStageName || requestStageLabel(row.status) : key === 'target' ? row.targetJoiningDate : row[key as keyof RecruitmentRequisition] as string | number | boolean,
+      render: field.render ? row => field.render!(row[String(field.dataIndex) as keyof RecruitmentRequisition], row, 0) as ReactNode : undefined }
+  })
+  const recordActions = (row: RecruitmentRequisition) => (columns.find(column => column.key === 'actions') as ColumnType<RecruitmentRequisition>)?.render?.(undefined, row, 0) as ReactNode
+
   return <section className="rfr-manager" data-testid="requisition-manager">
     {!embedded && <header className="rfr-header">
       <div><span>Recruitment</span><h2>Hiring Requests</h2><p>Raise, review and submit workforce demand without leaving the request register.</p></div>
@@ -794,25 +809,26 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       </Space>
     </header>}
 
-    <div className={`rfr-toolbar${clientScopeManaged ? ' is-client-scoped' : ''}${!showStatusFilter && clientScopeManaged ? ' is-status-scoped' : ''}`}>
+    {recordView !== 'Cards' && <div className={`rfr-toolbar${clientScopeManaged ? ' is-client-scoped' : ''}${!showStatusFilter && clientScopeManaged ? ' is-status-scoped' : ''}`}>
       <Input allowClear prefix={<SearchOutlined />} value={query} onChange={event => setQuery(event.target.value)} placeholder="Search role, RFR or requester" />
       {!clientScopeManaged && <Select allowClear value={clientFilter || undefined} onChange={value => setClientFilter(value || 0)} placeholder="All clients" showSearch optionFilterProp="label"
         options={clients.map(row => ({ value: row.id, label: row.name }))} />}
       {showStatusFilter && <Select allowClear value={statusFilter || undefined} onChange={value => setStatusFilter(value || '')} placeholder="All statuses" options={asOptions(statuses)} />}
-      <Space className="rfr-toolbar-actions" wrap={false}>
+    </div>}
+      <PageHeaderPortal slot="recruitment-page-controls"><Space className="rfr-toolbar-actions" wrap>
         {canSeedHiring && <Button data-testid="hiring-seed-template" icon={<DownloadOutlined />} onClick={downloadHiringSeedTemplate}>Template</Button>}
         {canSeedHiring && <Button data-testid="hiring-seed-import" icon={<UploadOutlined />} onClick={() => setSeedPackOpen(true)}>Import</Button>}
         <Tooltip title="Refresh register"><Button aria-label="Refresh register" icon={<ReloadOutlined />} onClick={() => void refreshRows()} /></Tooltip>
-      </Space>
-    </div>
+      </Space></PageHeaderPortal>
 
     {submissionNotice && <Alert data-testid="requisition-submission-notice" type={submissionNotice.type} showIcon closable message={submissionNotice.text} onClose={() => setSubmissionNotice(null)} />}
 
-    <div className="ant-smart-table rfr-register-table-shell">
-      <Table rowKey="id" className="zoho-ant-table rfr-register-table" loading={loading} columns={columns} dataSource={filteredRows} size="middle" tableLayout="fixed"
-        pagination={{ pageSize: 10, showSizeChanger: true, showTotal: total => `${total} requests` }}
-        scroll={{ x: 1445 }} locale={{ emptyText: 'No hiring requests match the selected filters.' }} />
-    </div>
+    {recordView === 'Cards' ? <RecruitmentRecordList rows={filteredRows} title={row => row.positionTitle || 'Untitled role'} subtitle={row => row.rfrNumber || 'Draft request'}
+      exportFileName="hiring-requests" columns={recordColumns.filter(column => column.key !== 'request')} actions={recordActions} cardSummaryColumns={['plan', 'pipelineStage', 'status']}
+      filters={[{ key: 'status', label: 'Status', value: row => row.status }, { key: 'department', label: 'Department', value: row => row.department || '' }, { key: 'hiringType', label: 'Hiring type', value: row => row.hiringType || '' }, ...(!clientScopeManaged ? [{ key: 'client', label: 'Client', value: (row: RecruitmentRequisition) => row.clientName || '' }] : [])]}
+      quickFilters={statuses.map(status => ({ key: status, label: status, tone: status === 'Approved' ? 'green' : status === 'Rejected' ? 'red' : 'purple', matches: (row: RecruitmentRequisition) => row.status === status }))}
+      emptyText="No hiring requests match the selected filters." />
+      : <DataTable<RecruitmentRequisition> fillHeight rows={filteredRows} loading={loading} hideSearch exportFileName="hiring-requests" columns={recordColumns} actions={recordActions} emptyText="No hiring requests match the selected filters." />}
 
     <RecruitmentEditorDrawer className="rfr-dialog" open={dialogOpen} width="min(1120px, 96vw)" destroyOnClose={false}
       onClose={() => { if (!saving && !sourceParsing) { persistBrowserDraft(); setDialogOpen(false) } }} kicker="Hiring request"

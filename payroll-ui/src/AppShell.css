@@ -1423,3 +1423,24 @@ body.portal-shell-mounted .ant-select-dropdown {
     transition: none;
   }
 }
+
+/* Recruitment controls stay in the persistent header instead of taking a second row in the workspace. */
+.recruitment-page-header .hrms-page-heading { width: 100%; }
+.recruitment-page-header .hrms-page-copy { flex: 1; width: 100%; }
+.recruitment-title-controls { align-items: center; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+#recruitment-client-controls:empty, #recruitment-page-controls:empty { display: none; }
+#recruitment-client-controls .ant-select { width: min(410px, 36vw); min-width: 220px; }
+#recruitment-page-controls { margin-left: auto; }
+#recruitment-page-controls .ant-space { flex-wrap: wrap; justify-content: flex-end; }
+.shared-record-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 12px; padding: 12px 0; }
+.shared-record-cards article { min-width: 0; border: 1px solid #dde5f0; border-radius: 12px; padding: 16px; background: #fff; }
+.shared-record-cards dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.shared-record-cards dt { color: #78859a; font-size: 12px; }
+.shared-record-cards dd { margin: 3px 0 0; overflow-wrap: anywhere; }
+.shared-record-cards footer { border-top: 1px solid #edf0f5; margin-top: 12px; padding-top: 12px; }
+@media (max-width: 900px) {
+  .recruitment-page-header .hrms-page-copy { grid-template-columns: minmax(0, 1fr); }
+  .recruitment-page-header .hrms-page-context-row { flex-wrap: wrap; }
+  #recruitment-client-controls .ant-select { width: min(410px, 70vw); }
+  .recruitment-title-controls { margin-top: 6px; }
+}

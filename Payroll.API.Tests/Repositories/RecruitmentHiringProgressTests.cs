@@ -11,13 +11,13 @@ public sealed class RecruitmentHiringProgressTests
 {
     private static Candidate Interview() => new() { HasInterview = true, CandidateStageType = "Interview", CandidateStageName = "Interview / Panel Assessment" };
     private static Candidate Hr() => new() { HasInterview = true, HasCompletedInterviewDecision = true, CandidateStageType = "HR", CandidateStageName = "Selection & HR Review", LatestInterviewResult = "Selected" };
-    private static Candidate Offer(string status = "Released") => new() { HasInterview = true, HasCompletedInterviewDecision = true, CandidateStageType = "Offer", CandidateStageName = "Offer Issuance & Acceptance", LatestInterviewResult = "Selected", LatestOfferStatus = status };
+    private static Candidate Offer(string status = "Released") => new() { HasInterview = true, HasCompletedInterviewDecision = true, CandidateStageType = "Offer", CandidateStageName = "Offer Issuance & Acceptance", LatestInterviewResult = "Selected", LatestOfferStatus = status, TermsConfirmed = true, CandidateMomSigned = true, CandidateMomApproved = true };
     private static readonly Stage[] Stages = [
         new() { Id = 1, DisplayOrder = 1, StageCode = "ORDER_FOR_HIRING", StageName = "Order for Hiring", StageType = "Screening" },
         new() { Id = 2, DisplayOrder = 2, StageCode = "SHARING_PROFILES", StageName = "Sharing of Profiles for Interview", StageType = "Screening" },
         new() { Id = 3, DisplayOrder = 3, StageCode = "PANEL_ASSESSMENT", StageName = "Interview / Panel Assessment", StageType = "Interview" },
-        new() { Id = 4, DisplayOrder = 4, StageCode = "SIGNING_MOM", StageName = "Signing of MOM", StageType = "Approval" },
-        new() { Id = 5, DisplayOrder = 5, StageCode = "NEGOTIATION_AND_MOM_TO_HR", StageName = "Negotiation with Selected Candidates", StageType = "HR" },
+        new() { Id = 4, DisplayOrder = 5, StageCode = "SIGNING_MOM", StageName = "Signing of MOM", StageType = "Approval" },
+        new() { Id = 5, DisplayOrder = 4, StageCode = "NEGOTIATION_AND_MOM_TO_HR", StageName = "Negotiation with Selected Candidates", StageType = "HR" },
         new() { Id = 6, DisplayOrder = 6, StageCode = "HR_DIVISION_APPROVAL", StageName = "Conveying of Approval by HR Division", StageType = "Approval" },
         new() { Id = 7, DisplayOrder = 7, StageCode = "OFFER_ISSUANCE", StageName = "Issuance of Offer", StageType = "Offer" },
     ];
@@ -32,12 +32,12 @@ public sealed class RecruitmentHiringProgressTests
     }
 
     [Fact]
-    public void Offer_plus_hr_review_for_two_vacancies_supports_interview_not_mom()
+    public void Selected_candidates_support_negotiation_while_unconfirmed_terms_hold_mom()
     {
         Candidate[] rows = [Offer(), Hr()];
         Assert.False(RecruitmentHiringProgress.Enough(2, rows, RecruitmentHiringProgress.ReviewComplete));
-        Assert.Equal(3, RecruitmentHiringProgress.SupportedInitialStage(Stages, 2, rows)?.Id);
-        Assert.Equal(3, RecruitmentHiringProgress.SupportedRollbackStage(Stages.Where(stage => stage.Id < 7), 2, rows)?.Id);
+        Assert.Equal(5, RecruitmentHiringProgress.SupportedInitialStage(Stages, 2, rows)?.Id);
+        Assert.Equal(5, RecruitmentHiringProgress.SupportedRollbackStage(Stages.Where(stage => stage.Id < 7), 2, rows)?.Id);
     }
 
     [Fact]
@@ -46,7 +46,7 @@ public sealed class RecruitmentHiringProgressTests
         var rejected = Offer();
         rejected.LatestOfferStatus = "Rejected";
         Candidate[] rows = [Offer(), rejected, Hr(), new() { CandidateStageType = "ATS" }];
-        Assert.Equal(3, RecruitmentHiringProgress.SupportedRollbackStage(Stages.Where(stage => stage.Id < 7), 2, rows)?.Id);
+        Assert.Equal(5, RecruitmentHiringProgress.SupportedRollbackStage(Stages.Where(stage => stage.Id < 7), 2, rows)?.Id);
         Assert.Equal(2, RecruitmentHiringProgress.SupportedRollbackStage(Stages.Where(stage => stage.Id < 7), 2, [Offer(), rejected])?.Id);
     }
 
@@ -79,8 +79,7 @@ public sealed class RecruitmentHiringProgressTests
         Assert.Equal(3, progress.CandidateStages.Single(stage => stage.Stage == "Interview / Panel Assessment").Count);
         Assert.Equal(1, progress.CandidateStages.Single(stage => stage.Stage == "Selection & HR Review").Count);
         Assert.Equal(1, progress.CandidateStages.Single(stage => stage.Stage == "ATS Screening & JD Match").Count);
-        Assert.Contains("0/1 ready", progress.PendingReason);
-        Assert.Contains("HR review", progress.PendingReason);
+        Assert.Contains("Candidate requirement met", progress.PendingReason);
         Assert.Equal("Selection & HR Review", rows[3].CandidateStageName);
     }
 

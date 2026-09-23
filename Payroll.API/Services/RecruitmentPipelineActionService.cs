@@ -206,8 +206,18 @@ ORDER BY stageInstance.ApplicationId", cancellationToken: cancellationToken))).T
         {
             cancellationToken.ThrowIfCancellationRequested();
             var (movement, _) = await pipelines.AdvanceApplicationToAtsAsync(applicationId, system);
+            if (movement?.Status == "Already Ready")
+            {
+                var previousStage = movement.CurrentStageInstanceId;
+                var (evaluated, error) = await pipelines.EvaluateAtsStageAutomationAsync(applicationId, system);
+                if (!string.IsNullOrWhiteSpace(error))
+                    logger.LogWarning("ATS automation for application {ApplicationId} stopped: {Error}", applicationId, error);
+                movement = evaluated;
+                if (movement?.Status == "Applied") await ExecuteAsync(applicationId, "OnExit", system, previousStage);
+            }
             if (movement?.Status != "Applied") continue;
             await ExecuteAsync(applicationId, "OnEntry", system);
+            await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(applicationId, "ProfilesSelected", system);
             processed++;
         }
         return processed;

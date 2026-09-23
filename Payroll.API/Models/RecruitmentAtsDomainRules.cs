@@ -23,6 +23,11 @@ public static class RecruitmentAtsDomainRules
     public const string InsufficientExperience = "InsufficientExperience";
     public const string Ineligible = "Ineligible";
 
+    // A passing ATS score takes precedence over skill-evidence warnings, including older scores.
+    public static string EffectiveScoreStatus(decimal? score, decimal threshold, string status) =>
+        score >= threshold && (status.Equals(Ineligible, StringComparison.OrdinalIgnoreCase)
+            || status.Equals(NeedsReview, StringComparison.OrdinalIgnoreCase)) ? "Completed" : status;
+
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(100);
     private const string DurationPattern = @"(?<amount>\d{1,2}(?:\.\d{1,2})?)(?:\s*(?:-|\u2013|\u2014)\s*\d{1,2}(?:\.\d{1,2})?)?\s*\+?\s*(?:-\s*)?(?<unit>years?|yrs?|months?|mos?)(?:\s+(?<extraMonths>\d{1,2})\s*(?:months?|mos?))?";
 

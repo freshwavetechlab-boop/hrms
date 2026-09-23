@@ -1,3 +1,5 @@
+import { PageHeaderPortal } from './layout/AppPageHeader'
+import { useRecruitmentView, useRecruitmentPipelineDisplay } from '../hooks/useRecruitmentPreferences'
 import RecruitmentHiringProgress from './RecruitmentHiringProgress'
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
 import {
@@ -57,12 +59,15 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
   })
   const [managerRevision, setManagerRevision] = useState(0)
   const [designerDropdowns, setDesignerDropdowns] = useState<Drop[]>([])
-  const [displayMode, setDisplayMode] = useState<RecruitmentPipelineDisplayMode>(() => {
+  const [localDisplayMode, setDisplayMode] = useState<RecruitmentPipelineDisplayMode>(() => {
     if (typeof window === 'undefined') return 'pipeline'
     const saved = window.localStorage.getItem(recruitmentPipelineDisplayStorageKey)
     return saved === 'table' || saved === 'both' || saved === 'flow' ? saved : 'pipeline'
   })
 
+  const sharedView = useRecruitmentView()
+  const sharedPipelineDisplay = useRecruitmentPipelineDisplay()
+  const displayMode: RecruitmentPipelineDisplayMode = sharedPipelineDisplay ?? (sharedView ? sharedView === 'Table' ? 'table' : 'pipeline' : localDisplayMode)
   useEffect(() => { setView(initialView) }, [initialView])
   const load = useCallback(async (silent = false) => {
     if (!initialClientId) {
@@ -105,7 +110,6 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
   const hiringLanes = useMemo(() => journeyLanes.filter(lane => lane.cardScope === 'Position'), [journeyLanes])
   const demandCount = workspace.unassignedDemandCards.length + hiringLanes.reduce((total, lane) => total + lane.demandCards.length, 0)
   const candidateCount = workspace.lanes.reduce((total, lane) => total + lane.applications.length, 0)
-  const workspaceHeading = view === 'candidates' ? 'Candidate progression' : 'Demand to joining'
 
   const setWorkspaceView = (next: PipelineView) => {
     setView(next)
@@ -133,23 +137,9 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
   }
 
   return <section className="unified-pipeline-workspace" data-testid="recruitment-unified-pipeline">
-    <Card className="pipeline-command-card" size="small">
-      <div className="pipeline-command-row">
-        <div>
-          <span className="orchestration-kicker">One hiring journey</span>
-          <h2>{workspaceHeading}</h2>
-          <p>Follow each client demand from work-order intake and approval through publishing, candidates and joining.</p>
-        </div>
-        <div className="pipeline-command-controls">
-          {canManagePipeline && <Button data-testid="manage-hiring-pipeline" icon={<SettingOutlined />} disabled={!hasClientScope} onClick={() => setPipelineManagerOpen(true)}>Manage pipeline</Button>}
-          {canChooseClient
-            ? <Select data-testid="pipeline-client-scope" aria-label="Pipeline client scope" allowClear showSearch optionFilterProp="label" optionLabelProp="label" value={initialClientId || undefined} placeholder={clientOptions.length ? 'Select a client' : 'Loading client...'} loading={!clientOptions.length} options={clientOptions} onChange={value => onClientChange?.(value)} />
-            : null}
-          <Select className="pipeline-view-select" data-testid="pipeline-display-mode" aria-label="Pipeline display view" disabled={!hasClientScope} value={displayMode} onChange={setDisplayMode} options={recruitmentPipelineDisplayOptions} />
-        </div>
-      </div>
+    {sharedView && <PageHeaderPortal slot="recruitment-page-controls">{canManagePipeline && <Button data-testid="manage-hiring-pipeline" icon={<SettingOutlined />} disabled={!hasClientScope} onClick={() => setPipelineManagerOpen(true)}>Manage pipeline</Button>}</PageHeaderPortal>}
+    <div className="pipeline-workspace-toolbar">
       <Segmented
-        block
         aria-label="Pipeline workspace view"
         value={view}
         onChange={value => setWorkspaceView(value as PipelineView)}
@@ -158,7 +148,8 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
           { value: 'candidates', disabled: !hasClientScope, label: <span title={view === 'candidates' && displayMode !== 'flow' ? 'Candidates in the selected position / posting pipeline' : 'Candidates across this client pipeline'}><TeamOutlined /> Candidates <Badge data-testid="pipeline-candidate-count" count={view === 'candidates' && displayMode !== 'flow' ? selectedCandidateCount ?? '…' : candidateCount} showZero color="#2563eb" /></span> },
         ]}
       />
-    </Card>
+      {!sharedView && <div className="pipeline-command-controls">{canManagePipeline && <Button data-testid="manage-hiring-pipeline" icon={<SettingOutlined />} disabled={!hasClientScope} onClick={() => setPipelineManagerOpen(true)}>Manage pipeline</Button>}{canChooseClient && <Select aria-label="Pipeline client scope" allowClear showSearch optionFilterProp="label" value={initialClientId || undefined} options={clientOptions} placeholder="Select client" onChange={onClientChange} />}<Select aria-label="Pipeline display view" value={displayMode} onChange={setDisplayMode} options={recruitmentPipelineDisplayOptions} /></div>}
+    </div>
 
     {!hasClientScope && <Card className="pipeline-empty-card" data-testid="pipeline-client-required"><Empty description={canChooseClient ? 'Select a client to load its configured hiring pipeline and candidates.' : 'A client scope is required to load the hiring pipeline.'} /></Card>}
     {hasClientScope && displayMode === 'flow' && (loading
@@ -269,7 +260,7 @@ function DemandBoard({ clientId, lanes, unassigned, displayMode, clockNow, works
     ...unassigned.map(card => ({ id: `unassigned-${card.workOrderLineId}`, card, stageName: 'Work-order intake', stageType: 'Position' })),
     ...lanes.flatMap(lane => lane.demandCards.map(card => ({ id: `${lane.stageId}-${card.workOrderLineId}`, card, stageName: lane.stageName, stageType: lane.stageType }))),
   ]
-  return <>
+  return <div className={`pipeline-results${displayMode === 'both' ? ' is-both' : ''}`}>
     {displayMode !== 'table' && <div ref={scroller.ref} className="demand-pipeline-board" data-testid="pipeline-hiring-flow" tabIndex={0} onKeyDown={scroller.onKeyDown} aria-label="Scrollable hiring pipeline">
       <div className="demand-pipeline-columns">
         {!!unassigned.length && <DemandLane
@@ -285,10 +276,10 @@ function DemandBoard({ clientId, lanes, unassigned, displayMode, clockNow, works
           onOpenCandidates={onOpenCandidates}
           onChanged={onChanged}
         />}
-        {lanes.map(lane => <DemandLane key={lane.stageId} clientId={clientId} title={lane.stageName} color={stageColor(lane.stageType)} cards={lane.demandCards} applications={lane.applications} helper={laneTargetLabel(lane)} context={(stageNameCounts.get(lane.stageName.trim().toLowerCase()) ?? 0) > 1 || lanes.length > 1 ? `${lane.pipelineName || 'Hiring pipeline'} · ${lane.clientName || 'Client'} · v${lane.pipelineVersionNumber || lane.pipelineVersionId}` : lane.pipelineName} clockNow={clockNow} workspaceSyncedAt={workspaceSyncedAt} onOpenCandidates={onOpenCandidates} onChanged={onChanged} />)}
+        {lanes.map(lane => <DemandLane key={lane.stageId} clientId={clientId} title={lane.stageName} color={stageColor(lane.stageType)} cards={lane.demandCards} applications={lane.applications} helper={laneTargetLabel(lane)} context={(stageNameCounts.get(lane.stageName.trim().toLowerCase()) ?? 0) > 1 || lanes.length > 1 ? `${lane.pipelineName || 'Hiring pipeline'} · v${lane.pipelineVersionNumber || lane.pipelineVersionId}` : lane.pipelineName} clockNow={clockNow} workspaceSyncedAt={workspaceSyncedAt} onOpenCandidates={onOpenCandidates} onChanged={onChanged} />)}
       </div>
     </div>}
-    {displayMode !== 'pipeline' && <Card size="small" className="pipeline-demand-table" data-testid="pipeline-demand-table"><DataTable
+    {displayMode !== 'pipeline' && <Card size="small" className="pipeline-demand-table" data-testid="pipeline-demand-table"><DataTable fillHeight
       rows={tableRows}
       getRowId={row => row.id}
       exportFileName="hiring-demand-pipeline"
@@ -305,7 +296,7 @@ function DemandBoard({ clientId, lanes, unassigned, displayMode, clockNow, works
         { key: 'actions', label: 'Actions', width: '420px', sortable: false, filterable: false, render: row => <DemandActions card={row.card} clientId={clientId} compact onChanged={onChanged} /> },
       ]}
     /></Card>}
-  </>
+  </div>
 }
 
 function DemandLane({ clientId, title, color, cards, applications, helper, context, clockNow, workspaceSyncedAt, onOpenCandidates, onChanged }: { clientId: number; title: string; color: string; cards: RecruitmentPipelineDemandCard[]; applications: RecruitmentPipelineBoardCard[]; helper: string; context?: string; clockNow: number; workspaceSyncedAt: number; onOpenCandidates: () => void; onChanged: () => void }) {
@@ -335,7 +326,7 @@ function DemandCard({ card, clientId, clockNow, workspaceSyncedAt, onChanged }: 
   return <Card size="small" className={`demand-card ${card.isSlaBreached ? 'is-breached' : ''}`} data-testid={`pipeline-demand-${card.workOrderLineId}`}>
     <div className="demand-card-heading">
       <div><strong title={card.positionName}>{card.positionName}</strong><span>{card.workOrderNumber}{card.payBandLevelCode ? ` · ${card.payBandLevelCode}` : ''}</span></div>
-      <div className="demand-card-statuses"><Tag color={statusColor(card.currentStageName || card.status || '')}>{card.currentStageName || card.status || 'Intake'}</Tag>{card.hiringCaseId && <Tag color={card.isSlaBreached ? 'error' : 'success'}>{card.isSlaBreached ? 'Business SLA breach' : 'SLA on track'}</Tag>}</div>
+      <div className="demand-card-statuses">{card.hiringCaseId && <Tag color={card.isSlaBreached ? 'error' : 'success'}>{card.isSlaBreached ? 'Business SLA breach' : 'SLA on track'}</Tag>}</div>
     </div>
     <div className="demand-card-context">
       {card.division && <span><ApartmentOutlined /> {card.division}</span>}
@@ -344,13 +335,13 @@ function DemandCard({ card, clientId, clockNow, workspaceSyncedAt, onChanged }: 
       <span className="demand-live-sla" data-testid={`demand-sla-timer-${card.workOrderLineId}`}><ClockCircleOutlined /> {sla}</span>
     </div>
     <RecruitmentHiringProgress progress={card.hiringProgress} />
-    <div className="demand-milestones" aria-label="Hiring milestones">
+    <details className="demand-supporting-details"><summary>Documents & status</summary><div className="demand-milestones" aria-label="Hiring milestones">
       <Milestone label="Work order" status={card.workOrderStatus} />
       <Milestone label="Request" status={card.requisitionStatus} />
       <Milestone label="Vacancy" status={card.positionStatus} />
       <Milestone label="JD" status={card.jobDescriptionStatus} />
       <Milestone label="Posting" status={card.jobPostingStatus} />
-    </div>
+    </div></details>
     <div className="demand-card-actions"><DemandActions card={card} clientId={clientId} onChanged={onChanged} /></div>
     {card.needsPipelineSelection && <div className="demand-card-callout">Choose a published Position or Hybrid pipeline in the work order to start governed stage tracking.</div>}
   </Card>
@@ -426,19 +417,23 @@ function DemandActions({ card, clientId, compact = false, onChanged }: { card: R
     onChanged()
   }
 
-  return <>
-    <Space size={compact ? 4 : 6} wrap>
+  const secondaryActions = <Space size={4} wrap>
       {card.hasWorkOrder && <Tooltip title="Open the original work order and secured documents"><Button className="action-work-order" size="small" icon={<FileDoneOutlined />} onClick={() => navigate(`/recruitment/work-orders-and-sla?${params}`)}>Work order</Button></Tooltip>}
       {card.hiringCaseId && <Tooltip title="View time spent in every completed and active stage"><Button data-testid={`demand-stage-log-${card.workOrderLineId}`} size="small" icon={<HistoryOutlined />} onClick={() => navigate(`/recruitment/work-orders-and-sla?${params}&stageLog=1`)}>Time log</Button></Tooltip>}
-      {(card.requisitionId || !card.hiringCaseId) && <Button className="action-request" title={requestActionLabel(card)} size="small" icon={<ProfileOutlined />} onClick={() => navigate(requestPath)}>{requestActionLabel(card)}</Button>}
       {jdPath && <Button className="action-jd" title={jdActionLabel(card)} size="small" onClick={() => navigate(jdPath)}>{jdActionLabel(card)}</Button>}
       {postingPath && <Button className="action-posting" title={postingActionLabel(card)} size="small" onClick={() => navigate(postingPath)}>{postingActionLabel(card)}</Button>}
       {resumePath && <Button className="action-resume" title="Add resume" size="small" icon={<RocketOutlined />} onClick={() => navigate(resumePath)}>Add resume</Button>}
       {activeJourney && (card.isPaused
         ? <Button data-testid={`demand-resume-sla-${card.workOrderLineId}`} className="action-resume-sla" size="small" loading={busyAction === 'resume'} icon={<PlayCircleOutlined />} onClick={() => void resume()}>Resume SLA</Button>
         : card.allowPause && <Button data-testid={`demand-pause-sla-${card.workOrderLineId}`} className="action-pause-sla" size="small" loading={busyAction === 'pause'} icon={<PauseCircleOutlined />} onClick={() => setPauseOpen(true)}>Pause SLA</Button>)}
+  </Space>
+  return <>
+    <Space size={compact ? 4 : 6} wrap>
+      {(card.requisitionId || !card.hiringCaseId) && <Button className="action-request" title={requestActionLabel(card)} size="small" icon={<ProfileOutlined />} onClick={() => navigate(requestPath)}>{requestActionLabel(card)}</Button>}
       {(activeJourney || canAutoStart) && <Button data-testid={`demand-move-next-${card.workOrderLineId}`} className="action-next-stage" type="primary" size="small" loading={busyAction === 'move'} disabled={card.isPaused || card.advanceStatus === 'Pending Approval'} onClick={() => void prepareMove()}>{card.advanceStatus === 'Pending Approval' ? 'Approval pending' : card.isTerminal ? 'Complete journey' : <><ArrowLeftOutlined /> Move <ArrowRightOutlined /></>}</Button>}
+      {compact && secondaryActions}
     </Space>
+    {!compact && <details className="demand-supporting-details"><summary>More actions</summary>{secondaryActions}</details>}
     <Modal open={pauseOpen} title="Pause this SLA" okText="Pause SLA" confirmLoading={busyAction === 'pause'} okButtonProps={{ disabled: pauseReason.trim().length < 3 }} onOk={() => void pause()} onCancel={() => { setPauseOpen(false); setPauseReason('') }} destroyOnClose>
       <Form.Item label="Pause reason" required><Input.TextArea data-testid={`demand-pause-reason-${card.workOrderLineId}`} autoFocus rows={3} value={pauseReason} placeholder="For example: awaiting client documents" onChange={event => setPauseReason(event.target.value)} /></Form.Item>
     </Modal>

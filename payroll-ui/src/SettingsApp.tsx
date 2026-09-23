@@ -22,7 +22,7 @@ import PayrollAttendancePage from './pages/PayrollAttendancePage'
 import PayrollPage from './pages/PayrollPage'
 import ReportingPage, { reportItems } from './pages/ReportingPage'
 import type { ReportDefinition, ReportingMenu } from './pages/ReportingPage'
-import RecruitmentPage, { recruitmentViews, type RecruitmentPageView } from './pages/RecruitmentPage'
+import RecruitmentPage, { recruitmentViews, type RecruitmentPageView, type RecruitmentRequestNavigation } from './pages/RecruitmentPage'
 import { getJsonResult } from './services/apiClient'
 import MyProfilePage from './pages/MyProfilePage'
 import TravelAdvancesPage from './pages/TravelAdvancesPage'
@@ -57,8 +57,8 @@ const productLogo = '/assets/FrevoOneLogo.png'
 const productMark = '/favicon.svg'
 const dashboardViews: DashboardView[] = ['overview', 'workforce', 'payroll', 'attendance', 'approvals']
 const fallbackDashboardAccess = [{ code: 'overview', name: 'Overview Dashboard', description: 'Combined HR, payroll, attendance and approval summary.', route: '/dashboard', sortOrder: 10 }]
-type RecruitmentNavigationLeaf = { view: RecruitmentPageView; label: string; icon: IconName }
-type RecruitmentNavigationItem = RecruitmentNavigationLeaf | { key: string; label: string; icon: IconName; children: RecruitmentNavigationLeaf[] }
+type RecruitmentNavigationLeaf = { view: RecruitmentPageView; label: string; icon: IconName; query?: string }
+type RecruitmentNavigationItem = RecruitmentNavigationLeaf | { key: string; label: string; icon: IconName; children: RecruitmentNavigationItem[] }
 const recruitmentNavigation: Array<{
   key: string
   label: string
@@ -73,12 +73,23 @@ const recruitmentNavigation: Array<{
       { view: 'Dashboard', label: 'Overview', icon: 'dashboard' },
       { view: 'Work Orders & SLA', label: 'Work Orders', icon: 'document' },
       { view: 'Hiring Pipeline', label: 'Pipeline', icon: 'pipeline' },
-      { view: 'Requisitions', label: 'Hiring Requests', icon: 'request' },
+      { key: 'hiring-requests', label: 'Hiring Requests', icon: 'request', children: [
+        { view: 'Requisitions', label: 'Requests', icon: 'request' },
+        { view: 'Requisitions', label: 'Pending for approval', icon: 'request', query: 'status=pending' },
+        { view: 'Open Positions', label: 'Open positions', icon: 'job' },
+      ] },
       { view: 'Job Postings', label: 'Jobs', icon: 'job' },
       {
         key: 'candidates', label: 'Candidates', icon: 'candidate', children: [
           { view: 'Applications', label: 'Applications', icon: 'application' },
-          { view: 'Talent Pool', label: 'Global Talent Pool', icon: 'user' },
+          { key: 'talent-pool', label: 'Talent Pool', icon: 'user', children: [
+            { key: 'global-talent-pool', label: 'Global Talent Pool', icon: 'user', children: [
+              { view: 'Talent Pool', label: 'Resume Bank', icon: 'document' },
+              { view: 'Talent Pool', label: 'ATS Matches', icon: 'candidate', query: 'pool=matches' },
+              { view: 'Talent Pool', label: 'Selected', icon: 'candidate', query: 'pool=selected' },
+            ] },
+            { view: 'Talent Pool', label: 'Client candidate profiles', icon: 'candidate', query: 'pool=client' },
+          ] },
         ],
       },
       {
@@ -92,15 +103,15 @@ const recruitmentNavigation: Array<{
     ],
   },
 ]
-const recruitmentNavigationLeaves = recruitmentNavigation.flatMap(group => group.children.flatMap(item => 'view' in item ? [item] : item.children))
+const recruitmentLeaves = (items: RecruitmentNavigationItem[]): RecruitmentNavigationLeaf[] => items.flatMap(item => 'view' in item ? [item] : recruitmentLeaves(item.children))
+const recruitmentNavigationLeaves = recruitmentLeaves(recruitmentNavigation)
 const recruitmentNavigationView = (view: RecruitmentPageView): RecruitmentPageView => {
-  if (view === 'Open Positions') return 'Requisitions'
   if (view === 'ATS Screening') return 'Applications'
   return view
 }
-const recruitmentNavigationLabel = (view: RecruitmentPageView) => {
+const recruitmentNavigationLabel = (view: RecruitmentPageView, query = '') => {
   const canonicalView = recruitmentNavigationView(view)
-  return recruitmentNavigationLeaves.find(item => item.view === canonicalView)?.label ?? view
+  return recruitmentNavigationLeaves.find(item => item.view === canonicalView && (item.query || '') === query)?.label ?? view
 }
 
 const recruitmentDescriptions: Record<string, string> = {
@@ -322,7 +333,19 @@ export default function SettingsApp() {
   const visibleAppSettingsMenus = appSettingsMenus.filter(item => item !== 'Engine Monitor' || isSuperAdmin)
   const routeParts = routeLocation.pathname.split('/').filter(Boolean)
   const dashboardView = routeParts[0] === 'dashboard' && dashboardViews.includes(routeParts[1] as DashboardView) ? routeParts[1] as DashboardView : 'overview'
+  const [requestNavigation, setRequestNavigation] = useState<RecruitmentRequestNavigation | null>(null)
   const recruitmentView = routeParts[0] === 'recruitment' ? fromSlug(recruitmentViews, routeParts[1], 'Dashboard') : 'Dashboard'
+  const recruitmentQuery = new URLSearchParams(routeLocation.search)
+  const recruitmentNavQuery = recruitmentView === 'Talent Pool'
+    ? ['matches', 'selected', 'client'].includes(recruitmentQuery.get('pool') || '') ? 'pool=' + recruitmentQuery.get('pool') : ''
+    : recruitmentView === 'Requisitions' && requestNavigation?.workflowEnabled !== false && recruitmentQuery.get('status') === 'pending' ? 'status=pending' : ''
+  const recruitmentNavKey = (item: RecruitmentNavigationLeaf) => slug(item.view) + (item.query ? '?' + item.query : '')
+  const recruitmentMenuItems = (items: RecruitmentNavigationItem[]): NonNullable<MenuProps['items']> => items
+    .filter(item => !('view' in item) || item.query !== 'status=pending' || requestNavigation?.workflowEnabled !== false)
+    .map(item => 'view' in item ? {
+      key: recruitmentNavKey(item),
+      label: menuLabel(item.label + (item.view === 'Open Positions' && requestNavigation ? ' (' + requestNavigation.openPositions + ')' : item.query === 'status=pending' && requestNavigation ? ' (' + requestNavigation.pendingApproval + ')' : ''), item.icon),
+    } : { key: 'recruitment-' + item.key, label: menuLabel(item.label, item.icon), children: recruitmentMenuItems(item.children) })
   const securityAppSettingsTab: AppSettingsTab | null = routeParts[0] === 'security' && routeParts[1] === 'app-settings'
     ? fromSlug(appSettingsMenus, routeParts[2], 'ESS Settings')
     : null
@@ -373,7 +396,7 @@ export default function SettingsApp() {
       navigate(item.route || '/dashboard')
     }
   }
-  const pageTitle = isProfile ? 'My Profile' : showMyTasks ? 'My Tasks' : mainModule === 'Dashboard' ? activeDashboard.name : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? employeeTab : mainModule === 'TalentAcquisition' ? recruitmentNavigationLabel(recruitmentView) : mainModule === 'Security' ? securityAppSettingsTab ?? securityTab : mainModule === 'Reports' ? reportingReport.name : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
+  const pageTitle = isProfile ? 'My Profile' : showMyTasks ? 'My Tasks' : mainModule === 'Dashboard' ? activeDashboard.name : mainModule === 'Settings' ? settingsSection === 'LeaveAttendance' ? leaveAttendanceTab : tab : mainModule === 'LeaveAttendance' ? 'Attendance Review' : mainModule === 'Employees' ? employeeTab : mainModule === 'TalentAcquisition' ? recruitmentNavigationLabel(recruitmentView, recruitmentNavQuery) : mainModule === 'Security' ? securityAppSettingsTab ?? securityTab : mainModule === 'Reports' ? reportingReport.name : mainModule === 'Workflows' ? workflowTab : isPayHistory ? 'Pay History' : mainModule === 'Payroll' ? payrollTab : 'Pay Run'
   const breadcrumbItems = isProfile
     ? [{ title: 'Account' }, { title: pageTitle }]
     : mainModule === 'Reports'
@@ -684,7 +707,7 @@ export default function SettingsApp() {
   const setModule = (nextModule: ModuleCode) => { setShowMyTasks(false); localStorage.setItem('payroll.module', nextModule); setMainModule(nextModule); navigate(modulePaths[nextModule]) }
   const setPayrollModuleTab = (nextTab: PayrollTab) => { localStorage.setItem('payroll.payrollTab', nextTab); setPayrollTab(nextTab); setShowMyTasks(false); setMainModule('Payroll'); navigate(nextTab === 'Adjustments' ? '/payroll/adjustments' : nextTab === 'Off-cycle Run' ? '/payroll/off-cycle' : nextTab === 'Employee Tax Profile' ? '/payroll/tax-profile' : nextTab === 'Travel Advances' ? '/payroll/travel-advances' : '/payroll/regular') }
   const setEmployeeModuleTab = (nextTab: EmployeeTab) => { setEmployeeTab(nextTab); setShowMyTasks(false); setMainModule('Employees'); navigate(nextTab === 'Org Structure' ? '/employees/org-structure' : nextTab === 'Employee Communication' ? '/employees/communications' : '/employees/master') }
-  const setRecruitmentModuleView = (nextView: RecruitmentPageView) => { setShowMyTasks(false); setMainModule('TalentAcquisition'); localStorage.setItem('payroll.module', 'TalentAcquisition'); navigate(`/recruitment/${slug(nextView)}`) }
+  const setRecruitmentModuleView = (nextView: RecruitmentPageView, query = '') => { setShowMyTasks(false); setMainModule('TalentAcquisition'); localStorage.setItem('payroll.module', 'TalentAcquisition'); const params = new URLSearchParams(query); const client = recruitmentQuery.get('clientId'); if (client) params.set('clientId', client); navigate(`/recruitment/${slug(nextView)}${params.size ? '?' + params.toString() : ''}`) }
   const setPayHistory = () => { setShowMyTasks(false); localStorage.setItem('payroll.module', 'Payroll'); setMainModule('Payroll'); navigate('/pay-runs/history') }
   const setSecurityModuleTab = (nextTab: SecurityTab) => { localStorage.setItem('payroll.securityTab', nextTab); setSecurityTab(nextTab); setShowMyTasks(false); setMainModule('Security'); navigate(`/security/${slug(nextTab)}`) }
   const setSecurityAppSettingsTab = (nextTab: AppSettingsTab) => { setSecurityAppSettingsOpen(true); setShowMyTasks(false); setMainModule('Security'); navigate(`/security/app-settings/${slug(nextTab)}`) }
@@ -743,23 +766,13 @@ export default function SettingsApp() {
       <Menu
         className="recruitment-nav-menu"
         mode="inline"
-        inlineIndent={14}
-        selectedKeys={[slug(recruitmentNavigationView(recruitmentView))]}
-        defaultOpenKeys={[...recruitmentNavigation.map(group => `recruitment-${group.key}`), 'recruitment-candidates', 'recruitment-interviews-offers']}
-        items={interviewOnly ? [{ key: slug('Interviews'), label: menuLabel('Interview Tracker', 'onboarding') }] : recruitmentNavigation.map(group => ({
-          key: `recruitment-${group.key}`,
-          label: menuLabel(group.label, group.icon),
-          children: group.children.map(item => 'view' in item
-            ? { key: slug(item.view), label: menuLabel(item.label, item.icon) }
-            : {
-                key: `recruitment-${item.key}`,
-                label: menuLabel(item.label, item.icon),
-                children: item.children.map(child => ({ key: slug(child.view), label: menuLabel(child.label, child.icon) })),
-              }),
-        }))}
+        inlineIndent={10}
+        selectedKeys={[slug(recruitmentNavigationView(recruitmentView)) + (recruitmentNavQuery ? '?' + recruitmentNavQuery : '')]}
+        defaultOpenKeys={[...recruitmentNavigation.map(group => `recruitment-${group.key}`), 'recruitment-hiring-requests', 'recruitment-candidates', 'recruitment-talent-pool', 'recruitment-global-talent-pool', 'recruitment-interviews-offers']}
+        items={interviewOnly ? [{ key: slug('Interviews'), label: menuLabel('Interview Tracker', 'onboarding') }] : recruitmentMenuItems(recruitmentNavigation)}
         onClick={({ key }) => {
-          const next = recruitmentViews.find(item => slug(item) === key)
-          if (next) setRecruitmentModuleView(next)
+          const next = recruitmentNavigationLeaves.find(item => recruitmentNavKey(item) === key)
+          if (next) navigateFromMenu(() => setRecruitmentModuleView(next.view, next.query))
         }}
       />
     </>
@@ -792,7 +805,7 @@ export default function SettingsApp() {
     if (mainModule === 'LeaveAttendance') return <PayrollAttendancePage />
     if (mainModule === 'Payroll') return isPayHistory ? <PayHistoryPage /> : payrollTab === 'Employee Tax Profile' ? <EmployeeTaxProfileManager /> : payrollTab === 'Travel Advances' ? <TravelAdvancesPage /> : <PayrollPage key={payrollTab} mode={payrollTab === 'Adjustments' ? 'adjustments' : 'payrun'} runType={payrollTab === 'Off-cycle Run' ? 'Off-cycle Run' : 'Regular Run'} />
     if (mainModule === 'Employees') return employeeTab === 'Employee Communication' ? <EmployeeCommunicationPage /> : <EmployeePage view={(employeeTab === 'Org Structure' ? 'org' : 'master') as EmployeePageView} />
-    if (mainModule === 'TalentAcquisition') return <RecruitmentPage view={interviewOnly ? 'Interviews' : recruitmentView} />
+    if (mainModule === 'TalentAcquisition') return <RecruitmentPage view={interviewOnly ? 'Interviews' : recruitmentView} onRequestNavigationChange={setRequestNavigation} />
     if (mainModule === 'Reports') return <ReportingPage activeMenu={reportingTab} activeReport={reportingReport} />
     if (mainModule === 'Workflows') return <WorkflowPage activeMenu={workflowTab} />
     return settingsSection === 'LeaveAttendance'
@@ -837,7 +850,7 @@ export default function SettingsApp() {
             </button>
           </Dropdown>
         </Space>
-        <AppPageHeader title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined} />
+        <AppPageHeader recruitment={mainModule === 'TalentAcquisition' && !showMyTasks && !isProfile} title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined} />
       </div>
       <div className="hrms-content">
         <div className="hrms-page-body">{renderPage()}</div>
@@ -858,4 +871,3 @@ export default function SettingsApp() {
     </aside>
   </div>
 }
-

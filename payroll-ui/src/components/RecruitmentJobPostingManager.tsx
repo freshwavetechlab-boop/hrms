@@ -1,3 +1,5 @@
+import DataTable from './DataTable'
+import { useRecruitmentPreference, useRecruitmentView } from '../hooks/useRecruitmentPreferences'
 import RecruitmentHiringProgress from './RecruitmentHiringProgress'
 import { RecruitmentFilterPanel, RecruitmentQuickFilters } from './RecruitmentRecordList'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
@@ -46,6 +48,7 @@ type ActionFeedback = { type: ToastType; message: string; description?: string }
 type ConfirmationAction = 'publish' | 'close'
 
 export default function RecruitmentJobPostingManager({ initialClientId = 0, clientScopeManaged = false, initialPositionId = 0, onPublished, onManageCandidateForms }: Props) {
+  const recordView = useRecruitmentView()
   const navigate = useNavigate()
   const session = useAuthSession()
   const notify = useToast()
@@ -59,10 +62,10 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
   const [jobDescriptions, setJobDescriptions] = useState<RecruitmentJobDescriptionVersion[]>([])
   const [pipelineVersionId, setPipelineVersionId] = useState<number>()
   const [pipelineAssignment, setPipelineAssignment] = useState<RecruitmentPositionPipelineAssignment | null>(null)
-  const [listStatus, setListStatus] = useState('All')
-  const [search, setSearch] = useState('')
-  const [jobFilters, setJobFilters] = useState<Record<string, string>>({})
-  const [sortOrder, setSortOrder] = useState<'recent' | 'oldest'>('recent')
+  const [listStatus, setListStatus] = useRecruitmentPreference('jobs:listStatus', 'All')
+  const [search, setSearch] = useRecruitmentPreference('jobs:search', '')
+  const [jobFilters, setJobFilters] = useRecruitmentPreference<Record<string, string>>('jobs:jobFilters', {})
+  const [sortOrder, setSortOrder] = useRecruitmentPreference<'recent' | 'oldest'>('jobs:sortOrder', 'recent')
   const [loading, setLoading] = useState(false)
   const [actionBusy, setActionBusy] = useState(false)
   const [confirmationAction, setConfirmationAction] = useState<ConfirmationAction | null>(null)
@@ -111,15 +114,15 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
     ]
   }, [lookups.positions])
   const visiblePostings = useMemo(() => currentPostings.filter(row => {
-    const statusMatch = listStatus === 'All' || row.status === listStatus
+    const statusMatch = recordView === 'Table' || listStatus === 'All' || row.status === listStatus
     const needle = search.trim().toLowerCase()
     return statusMatch && (!needle || `${row.publicTitle} ${row.positionCode} ${row.positionTitle}`.toLowerCase().includes(needle))
-      && jobFilterDefinitions.every(filter => !jobFilters[filter.key] || filter.value(row) === jobFilters[filter.key])
+      && (recordView === 'Table' || jobFilterDefinitions.every(filter => !jobFilters[filter.key] || filter.value(row) === jobFilters[filter.key]))
   }).sort((left, right) => {
     const a = dayjs(left.updatedAtUtc || left.createdAtUtc || 0).valueOf()
     const b = dayjs(right.updatedAtUtc || right.createdAtUtc || 0).valueOf()
     return sortOrder === 'recent' ? b - a : a - b
-  }), [currentPostings, listStatus, search, sortOrder, jobFilterDefinitions, jobFilters])
+  }), [recordView, currentPostings, listStatus, search, sortOrder, jobFilterDefinitions, jobFilters])
   const statusCounts = useMemo(() => ({
     All: currentPostings.length,
     Draft: currentPostings.filter(row => row.status === 'Draft').length,
@@ -402,8 +405,19 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
     }
   }
 
+  const postingActions = (row: RecruitmentJobPosting) => (<div className="candidate-card-actions" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
+                  <Space size={6}>
+                    {row.status === 'Published' && <Tooltip title="Copy public link"><Button aria-label="Copy public link" size="small" shape="circle" icon={<CopyOutlined />} onClick={event => { event.stopPropagation(); void copyPostingLink(row) }} /></Tooltip>}
+                    <PostingStatus status={row.status} />
+                  </Space>
+                  <Space wrap>
+                  <Button icon={<EditOutlined />} onClick={event => { event.stopPropagation(); void choosePosting(row) }}>{row.status === 'Draft' ? 'Edit' : 'View'}</Button>
+                  {row.status === 'Draft' && <Button type="primary" icon={<RocketOutlined />} loading={quickPublishingId === row.id} onClick={event => { event.stopPropagation(); void publishFromCard(row) }}>Publish</Button>}
+                  {row.status === 'Published' && <Button type="primary" icon={<UserAddOutlined />} onClick={event => { event.stopPropagation(); navigate(`/recruitment/applications?clientId=${row.clientId}&upload=single&positionId=${row.positionId}&jobPostingId=${row.id}`) }}>Add candidate</Button>}
+                </Space></div>)
+
   return <section className="orchestration-shell posting-manager">
-    <div className="orchestration-toolbar">
+    {!clientScopeManaged && <div className="orchestration-toolbar">
       <div>
         <span className="orchestration-kicker">Approved JD to external careers page</span>
         <h2 className="orchestration-title">Jobs</h2>
@@ -414,7 +428,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
           options={[...(canViewAllClients ? [{ value: 0, label: 'All clients' }] : []), ...clients.map(row => ({ value: row.id, label: row.name }))]}
           onChange={value => { setClientId(value); setEditor(null); setActionFeedback(null) }} />}
       </Space>
-    </div>
+    </div>}
 
     <Spin spinning={loading}>
       <div className={`posting-workspace-layout${editor ? ' has-editor' : ''}`}>
@@ -432,7 +446,12 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
               <span>Showing <b>{visiblePostings.length}</b> of {currentPostings.length} jobs</span>
               <Select value={sortOrder} onChange={setSortOrder} options={[{ value: 'recent', label: 'Updated: recent first' }, { value: 'oldest', label: 'Updated: oldest first' }]} />
             </div>
-            <div className="candidate-application-list job-application-list">{!visiblePostings.length && <Empty description="No matching jobs." />}{visiblePostings.map(row => {
+            {recordView === 'Table' ? <DataTable fillHeight rows={visiblePostings} hideSearch exportFileName="recruitment-jobs" actions={postingActions} columns={[
+              { key: 'publicTitle', label: 'Job', value: row => row.publicTitle || row.positionTitle }, { key: 'positionCode', label: 'Job reference' },
+              { key: 'clientName', label: 'Client' }, { key: 'status', label: 'Status', render: row => <PostingStatus status={row.status} /> },
+              { key: 'applicationCount', label: 'Candidates' }, { key: 'autoRunAts', label: 'Automatic ATS', render: row => row.autoRunAts ? 'Enabled' : 'Disabled' },
+              { key: 'updatedAtUtc', label: 'Updated', value: row => row.updatedAtUtc ? dayjs(row.updatedAtUtc).format('DD MMM YYYY') : '' },
+            ]} /> : <div className="candidate-application-list job-application-list">{!visiblePostings.length && <Empty description="No matching jobs." />}{visiblePostings.map(row => {
               const position = positions.find(item => item.id === row.positionId)
               return <article key={row.id} className="candidate-application-card job-application-card" role="button" tabIndex={0} onClick={() => void choosePosting(row)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') void choosePosting(row) }}>
                 <Avatar size={46}>{(row.publicTitle || row.positionTitle || 'J').trim().charAt(0).toUpperCase()}</Avatar>
@@ -450,18 +469,9 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
                 {clientId === 0 && <Typography.Text type="secondary">{row.clientName || `Client #${row.clientId}`}</Typography.Text>}
                 <small>Updated {row.updatedAtUtc ? dayjs(row.updatedAtUtc).format('DD MMM YYYY') : '—'}</small>
                 </div>
-                <div className="candidate-card-actions" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
-                  <Space size={6}>
-                    {row.status === 'Published' && <Tooltip title="Copy public link"><Button aria-label="Copy public link" size="small" shape="circle" icon={<CopyOutlined />} onClick={event => { event.stopPropagation(); void copyPostingLink(row) }} /></Tooltip>}
-                    <PostingStatus status={row.status} />
-                  </Space>
-                  <Space wrap>
-                  <Button icon={<EditOutlined />} onClick={event => { event.stopPropagation(); void choosePosting(row) }}>{row.status === 'Draft' ? 'Edit' : 'View'}</Button>
-                  {row.status === 'Draft' && <Button type="primary" icon={<RocketOutlined />} loading={quickPublishingId === row.id} onClick={event => { event.stopPropagation(); void publishFromCard(row) }}>Publish</Button>}
-                  {row.status === 'Published' && <Button type="primary" icon={<UserAddOutlined />} onClick={event => { event.stopPropagation(); navigate(`/recruitment/applications?clientId=${row.clientId}&upload=single&positionId=${row.positionId}&jobPostingId=${row.id}`) }}>Add candidate</Button>}
-                </Space></div>
+                {postingActions(row)}
               </article>
-            })}</div>
+            })}</div>}
            </div>
            <RecruitmentFilterPanel count={Object.values(jobFilters).filter(Boolean).length} onReset={() => { setJobFilters({}); setListStatus('All'); setSearch(''); setSortOrder('recent') }}>
              {jobFilterDefinitions.map(filter => <label key={filter.key}><span>{filter.label}</span><Select allowClear showSearch optionFilterProp="label" aria-label={filter.label}

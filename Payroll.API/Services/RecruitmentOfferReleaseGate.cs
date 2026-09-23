@@ -27,6 +27,13 @@ WHERE a.Id=@ApplicationId AND r.BudgetAvailable=TRUE AND r.BudgetApproverUserId 
             new { ApplicationId = applicationId }, transaction);
         if (budgetState is not null && budgetState != "Approved")
             return "The selected budget approver must approve the current hiring budget before an offer can proceed.";
+        if (await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM recruitment_candidate_applications WHERE Id=@applicationId AND TermsVersion>0) OR EXISTS(SELECT 1 FROM recruitment_candidate_applications a JOIN recruitment_position_pipeline_instances hiring ON hiring.PositionId=a.PositionId AND hiring.Status<>'Superseded' JOIN recruitment_pipeline_stages stage ON stage.PipelineVersionId=hiring.PipelineVersionId JOIN recruitment_stage_process_document_requirements r ON r.PipelineStageId=stage.Id AND r.DocumentType='MOM' AND r.IsRequired=TRUE WHERE a.Id=@applicationId)", new { applicationId }, transaction))
+        {
+            var termsError = await RecruitmentCandidateJourneyGate.TermsApprovalAsync(db, applicationId, transaction);
+            if (termsError.Length > 0) return termsError;
+            if (offerId.HasValue && !await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM recruitment_offers o JOIN recruitment_candidate_applications a ON a.Id=o.ApplicationId JOIN recruitment_open_positions p ON p.Id=a.PositionId WHERE o.Id=@offerId AND a.Id=@applicationId AND o.OfferedCtc=a.AgreedCtc AND o.Currency=p.Currency)", new { offerId, applicationId }, transaction)) return "Offer CTC and currency must match the signed and HR-approved MoM terms.";
+            return await ValidateBudgetAsync(db, applicationId, offerId, submittingForApproval, transaction);
+        }
         var stage = await db.QueryFirstOrDefaultAsync<PositionStage>(@"SELECT hiring.Id HiringCaseId,hiring.PipelineVersionId,stage.DisplayOrder,stage.StageCode,stage.StageType,stage.StageName
 FROM recruitment_candidate_applications application
 JOIN recruitment_position_pipeline_instances hiring ON hiring.PositionId=application.PositionId

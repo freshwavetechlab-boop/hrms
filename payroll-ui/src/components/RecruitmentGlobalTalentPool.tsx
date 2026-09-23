@@ -1,7 +1,10 @@
+import { PageHeaderPortal } from './layout/AppPageHeader'
+import RecruitmentRecordList from './RecruitmentRecordList'
+import { useRecruitmentView, useRecruitmentPreference } from '../hooks/useRecruitmentPreferences'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Input, Modal, Select, Space, Spin, Tabs, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Descriptions, Drawer, Empty, Modal, Select, Space, Spin, Tabs, Tag, Typography } from 'antd'
 import { CheckCircleOutlined, EyeOutlined, FileSearchOutlined, FolderOpenOutlined, RocketOutlined, ThunderboltOutlined, UserSwitchOutlined } from '@ant-design/icons'
-import DataTable, { type Column } from './DataTable'
+import { type Column } from './DataTable'
 import RecruitmentResumeIntake, { type RecruitmentResumeIntakeMode } from './RecruitmentResumeIntake'
 import { downloadAttachmentBlob } from '../services/attachmentService'
 import { getRecruitmentOpenPositions } from '../services/recruitmentService'
@@ -20,18 +23,21 @@ type Props = {
   initialPositionId?: number
   clientId?: number
   contextPositions?: RecruitmentOpenPosition[]
+  activeTab?: PoolTab
   embeddedPreview?: boolean
 }
 
 type PoolTab = 'resumes' | 'matches' | 'selected'
 
-export default function RecruitmentGlobalTalentPool({ onViewCandidate, onChanged, initialPositionId = 0, clientId = 0, contextPositions, embeddedPreview = false }: Props) {
-  const [tab, setTab] = useState<PoolTab>('resumes')
-  const [query, setQuery] = useState('')
-  const [status, setStatus] = useState('')
+export default function RecruitmentGlobalTalentPool({ onViewCandidate, onChanged, initialPositionId = 0, clientId = 0, contextPositions, activeTab, embeddedPreview = false }: Props) {
+  const recordView = useRecruitmentView()
+  const [localTab, setTab] = useState<PoolTab>('resumes')
+  const tab = activeTab ?? localTab
+  const [query, setQuery] = useRecruitmentPreference('talent-pool:query', '')
+  const [status, setStatus] = useRecruitmentPreference('talent-pool:status', '')
   const [candidates, setCandidates] = useState<RecruitmentCandidate[]>([])
   const [positions, setPositions] = useState<RecruitmentOpenPosition[]>(contextPositions || [])
-  const [positionId, setPositionId] = useState(initialPositionId)
+  const [positionId, setPositionId] = useRecruitmentPreference('talent-pool:position', initialPositionId)
   const [matches, setMatches] = useState<RecruitmentCandidateApplication[]>([])
   const [intakeMode, setIntakeMode] = useState<RecruitmentResumeIntakeMode | null>(null)
   const [matching, setMatching] = useState(false)
@@ -60,9 +66,9 @@ export default function RecruitmentGlobalTalentPool({ onViewCandidate, onChanged
 
   const loadResumes = useCallback(async () => {
     const request = ++resumeRequest.current
-    const rows = await getGlobalTalentPoolCandidates(query, status)
+    const rows = await getGlobalTalentPoolCandidates(query, recordView === 'Table' ? '' : status)
     if (request === resumeRequest.current) setCandidates(rows)
-  }, [query, status])
+  }, [query, status, recordView])
 
   const loadMatches = useCallback(async (nextTab: PoolTab = tab, nextPositionId = positionId) => {
     const request = ++matchRequest.current
@@ -83,7 +89,7 @@ export default function RecruitmentGlobalTalentPool({ onViewCandidate, onChanged
     return () => { active = false }
   }, [contextPositions])
 
-  useEffect(() => { setPositionId(initialPositionId); setRunResult(null) }, [initialPositionId])
+  useEffect(() => { if (initialPositionId) setPositionId(initialPositionId); setRunResult(null) }, [initialPositionId])
   useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl) }, [previewUrl])
   useEffect(() => () => { ++resumeRequest.current; ++matchRequest.current; ++actionRequest.current; ++previewRequest.current }, [])
 
@@ -211,9 +217,9 @@ export default function RecruitmentGlobalTalentPool({ onViewCandidate, onChanged
     { key: 'currentStatus', label: 'Bucket', width: '120px', render: row => <Tag color={row.currentStatus === 'Selected' ? 'purple' : 'blue'}>{row.currentStatus}</Tag> },
   ]
 
-  const matchTable = <DataTable<RecruitmentCandidateApplication>
+  const matchTable = <RecruitmentRecordList<RecruitmentCandidateApplication> title={row => row.candidateName} subtitle={row => row.positionTitle}
+    filters={[{ key: 'role', label: 'Matched role', value: row => row.positionTitle }, { key: 'status', label: 'Bucket', value: row => row.currentStatus }, { key: 'client', label: 'Client', value: row => row.clientName }]}
     rows={matches.filter(row => (!clientId || row.clientId === clientId) && (!positionId || row.positionId === positionId))}
-    getRowId={row => row.id}
     exportFileName={tab === 'selected' ? 'talent-pool-selected' : 'talent-pool-ats-matches'}
     emptyText={positionId || tab === 'selected' ? 'No candidates in this bucket.' : 'Select an approved job role to view ATS matches.'}
     actions={row => <Space wrap>
@@ -228,6 +234,7 @@ export default function RecruitmentGlobalTalentPool({ onViewCandidate, onChanged
 
   const positionControl = <Select
     data-testid="talent-pool-position"
+    aria-label="Approved job / JD"
     value={positionId || undefined}
     disabled={matching}
     onChange={value => { setPositionId(Number(value || 0)); setRunResult(null) }}
@@ -243,26 +250,20 @@ export default function RecruitmentGlobalTalentPool({ onViewCandidate, onChanged
   const selectedActionPosition = approvedPositions.find(row => row.id === actionPositionId)
 
   return <div className="global-talent-pool" data-testid="global-talent-pool">
-    <Tabs activeKey={tab} onChange={changeTab} items={[
+    {activeTab === undefined && <Tabs activeKey={tab} onChange={changeTab} items={[
       { key: 'resumes', label: <span><FolderOpenOutlined /> Resume Bank <Tag>{candidates.length}</Tag></span> },
       { key: 'matches', label: <span><FileSearchOutlined /> ATS Matches</span> },
       { key: 'selected', label: <span><UserSwitchOutlined /> Selected</span> },
-    ]} />
+    ]} />}
 
     {tab === 'resumes' && <>
-      <div className="talent-toolbar">
-        <Input.Search data-testid="talent-pool-search" value={query} onChange={event => setQuery(event.target.value)} onSearch={() => void loadResumes()} placeholder="Search resume keywords, skills, name, email or phone" allowClear enterButton="Search resumes" />
-        <Select value={status} onChange={setStatus} options={[{ value: '', label: 'All active profiles' }, ...['Active', 'Inactive', 'Joined', 'Archived'].map(value => ({ value, label: value }))]} />
-        <div className="talent-toolbar-actions">
-          <Button onClick={() => setIntakeMode('single')}>Upload resume</Button>
-          <Button data-testid="talent-pool-bulk-upload" type="primary" onClick={() => setIntakeMode('bulk')}>Bulk resumes</Button>
-        </div>
-      </div>
-      <Alert type="info" showIcon message="Global resume bank" description="Resumes are stored without a client or job. Search inside parsed resume content, preview the original, then run ATS or select directly for an approved role." />
-      <DataTable<RecruitmentCandidate>
+      <PageHeaderPortal slot="recruitment-page-controls"><Space wrap><Button onClick={() => setIntakeMode('single')}>Upload resume</Button>
+          <Button data-testid="talent-pool-bulk-upload" type="primary" onClick={() => setIntakeMode('bulk')}>Bulk resumes</Button></Space></PageHeaderPortal>
+      <RecruitmentRecordList<RecruitmentCandidate> title={row => row.candidateName} subtitle={row => [row.candidateCode, row.email || row.phone].filter(Boolean).join(' · ')} hiddenCardColumns={['candidateCode']}
+        cardSummaryColumns={['currentTitle', 'experience', 'profileStatus']} searchValue={query} onSearchChange={setQuery} remoteSearch searchPlaceholder="Search resume keywords, skills, name, email or phone"
+        filters={[{ key: 'status', label: 'Status', value: row => row.profileStatus, options: ['Active', 'Inactive', 'Joined', 'Archived'], selectedValue: status, onChange: setStatus }, { key: 'location', label: 'Location', value: row => row.currentLocation || '' }, { key: 'source', label: 'Source', value: row => row.sourceType || '' }, { key: 'role', label: 'Current role', value: row => row.currentTitle || '' }]}
         rows={candidates}
         exportFileName="global-talent-pool-resumes"
-        hideSearch
         emptyText="No resumes have been added to the global Talent Pool."
         actionsWidth={250}
         actions={row => <Space wrap>
@@ -281,10 +282,10 @@ export default function RecruitmentGlobalTalentPool({ onViewCandidate, onChanged
     </>}
 
     {tab !== 'resumes' && <>
+      {tab === 'matches' && <PageHeaderPortal slot="recruitment-page-controls"><Button data-testid="talent-pool-run-ats" type="primary" icon={<FileSearchOutlined />} disabled={!approvedPositions.some(row => row.id === positionId)} loading={matching} onClick={() => void runMatch()}>Run ATS on Resume Bank</Button></PageHeaderPortal>}
       <div className="talent-pool-match-toolbar">
-        <div><Typography.Text strong>{tab === 'matches' ? 'Match Resume Bank against an approved JD' : 'Selected candidates ready for promotion'}</Typography.Text><Typography.Text type="secondary">The role determines its client, approved JD version and configured ATS profile.</Typography.Text></div>
+        <Typography.Text strong>Approved job / JD</Typography.Text>
         {positionControl}
-        {tab === 'matches' && <Button data-testid="talent-pool-run-ats" type="primary" icon={<FileSearchOutlined />} disabled={!approvedPositions.some(row => row.id === positionId)} loading={matching} onClick={() => void runMatch()}>Run ATS on Resume Bank</Button>}
       </div>
       {runResult && <Alert type={runResult.warnings.length ? 'warning' : runResult.queued > 0 ? 'info' : 'success'} showIcon message={`${runResult.scored} scored · ${runResult.queued} queued · ${runResult.skipped} skipped`} description={[runResult.warnings.join(' '), runResult.queued > 0 ? 'ATS scoring is queued in the background. Refresh the matches to see completed scores; do not resubmit the same request.' : !runResult.warnings.length ? 'Role-specific ATS results are ready for recruiter selection.' : ''].filter(Boolean).join(' ')} />}
       {matchTable}

@@ -14,13 +14,14 @@ type Props = {
   onSaved: () => void | Promise<void>
 }
 
-type BatchRow = { application: RecruitmentCandidateApplication; start: Dayjs; destination: string }
+type BatchRow = { application: RecruitmentCandidateApplication; start: Dayjs; destination: string; panelUserIds?: number[]; decisionApproverUserId?: number; durationMinutes?: number; roundCode?: string; interviewType?: string }
 
 const nextStart = () => dayjs().add(1, 'day').hour(10).minute(0).second(0).millisecond(0)
 
 export default function RecruitmentBatchInterviewEditor({ open, applications, panelUsers, onClose, onSaved }: Props) {
   const [rows, setRows] = useState<BatchRow[]>([])
   const [panelUserIds, setPanelUserIds] = useState<number[]>([])
+  const [decisionApproverUserId, setDecisionApproverUserId] = useState<number>()
   const [mode, setMode] = useState('Virtual')
   const [timeZoneId, setTimeZoneId] = useState('Asia/Kolkata')
   const [durationMinutes, setDurationMinutes] = useState(60)
@@ -35,6 +36,7 @@ export default function RecruitmentBatchInterviewEditor({ open, applications, pa
   const rebuildSlots = (source = applications) => {
     const base = rows[0]?.start || nextStart()
     setRows(source.map((application, index) => ({
+      ...rows.find(row => row.application.id === application.id),
       application,
       start: base.add(index * (durationMinutes + gapMinutes), 'minute'),
       destination: rows.find(row => row.application.id === application.id)?.destination || defaultDestination,
@@ -58,7 +60,7 @@ export default function RecruitmentBatchInterviewEditor({ open, applications, pa
   }
 
   const submit = async () => {
-    if (!rows.length || !panelUserIds.length) return
+    if (!rows.length || rows.some(row => !(row.panelUserIds ?? panelUserIds).length || !(row.decisionApproverUserId ?? decisionApproverUserId))) return
     if (sendInvites && rows.some(row => !row.destination.trim())) return void message.warning('Add a meeting link or location for every candidate before sending invites.')
     setSaving(true)
     setFailures([])
@@ -69,14 +71,16 @@ export default function RecruitmentBatchInterviewEditor({ open, applications, pa
       try {
         await moveToInterview(row.application)
         const context = await getInterviewSchedulingContext(row.application.id)
-        if (!context) throw new Error('Interview round configuration is unavailable')
-        if (panelUserIds.length < Math.max(1, context.minimumPanelCount || 1)) throw new Error(`requires at least ${context.minimumPanelCount} panel member(s)`)
-        const duration = Math.max(durationMinutes, context.defaultDurationMinutes || 1)
+        if (!context) throw new Error('Interview scheduling context is unavailable')
+        if (row.application.interviewSettingsMissing && (!row.roundCode?.trim() || !row.interviewType?.trim())) throw new Error('enter the missing round name and interview type in this row')
+        const rowPanel = row.panelUserIds ?? panelUserIds
+        if (rowPanel.length < Math.max(1, context.minimumPanelCount || 1)) throw new Error(`requires at least ${context.minimumPanelCount} panel member(s)`)
+        const duration = Math.max(row.durationMinutes ?? durationMinutes, context.defaultDurationMinutes || 1)
         const saved = await saveInterviewBatchItem({
           id: 0,
           applicationId: row.application.id,
-          roundCode: context.roundCode || context.pipelineStageName || 'Interview',
-          interviewType: context.interviewType || 'Panel',
+          roundCode: row.roundCode || context.roundCode || context.pipelineStageName || 'Interview',
+          interviewType: row.interviewType || context.interviewType || 'Panel',
           scheduledStart: row.start.format('YYYY-MM-DDTHH:mm:ss'),
           scheduledEnd: row.start.add(duration, 'minute').format('YYYY-MM-DDTHH:mm:ss'),
           mode,
@@ -85,7 +89,8 @@ export default function RecruitmentBatchInterviewEditor({ open, applications, pa
           result: 'Pending',
           overallFeedback: '',
           overallScore: 0,
-          panelUserIds,
+          panelUserIds: rowPanel,
+          decisionApproverUserId: row.decisionApproverUserId ?? decisionApproverUserId,
           timeZoneId,
         })
         if (!saved.ok || !saved.data) throw new Error(saved.error || 'interview could not be saved')
@@ -116,12 +121,13 @@ export default function RecruitmentBatchInterviewEditor({ open, applications, pa
     onSubmit={() => void submit()}
     submitText={sendInvites ? 'Schedule & send invites' : 'Schedule interviews'}
     submitLoading={saving}
-    submitDisabled={!rows.length || !panelUserIds.length || (sendInvites && rows.some(row => !row.destination.trim()))}
+    submitDisabled={!rows.length || rows.some(row => !(row.panelUserIds ?? panelUserIds).length || !(row.decisionApproverUserId ?? decisionApproverUserId)) || (sendInvites && rows.some(row => !row.destination.trim()))}
     destroyOnClose
   >
     <Form layout="vertical">
       <div className="interview-editor-grid">
         <Form.Item label="Panel members" required className="interview-editor-span"><Select mode="multiple" showSearch optionFilterProp="label" value={panelUserIds} onChange={values => setPanelUserIds(values.map(Number))} options={eligiblePanelUsers.map(user => ({ value: user.id, label: `${user.displayName} - ${user.email}` }))} placeholder="Select common interview panel" /></Form.Item>
+        <Form.Item label="Final decision approver" required><Select allowClear showSearch optionFilterProp="label" value={decisionApproverUserId} onChange={setDecisionApproverUserId} options={eligiblePanelUsers.map(user => ({ value: user.id, label: user.displayName }))} placeholder="Select common decision approver" /></Form.Item>
         <Form.Item label="Mode"><Select value={mode} onChange={setMode} options={['Virtual', 'Face-to-Face', 'Telephonic'].map(value => ({ value, label: value }))} /></Form.Item>
         <Form.Item label="Time zone"><Select value={timeZoneId} onChange={setTimeZoneId} options={[{ value: 'Asia/Kolkata', label: 'Asia/Kolkata (IST)' }, { value: 'UTC', label: 'UTC' }]} /></Form.Item>
         <Form.Item label="Duration (minutes)"><InputNumber min={15} max={480} value={durationMinutes} onChange={value => setDurationMinutes(Number(value || 60))} style={{ width: '100%' }} /></Form.Item>
@@ -136,9 +142,14 @@ export default function RecruitmentBatchInterviewEditor({ open, applications, pa
       pagination={false}
       size="small"
       dataSource={rows}
+      scroll={{ x: 1400 }}
       columns={[
         { title: 'Candidate', render: (_, row) => <div><b>{row.application.candidateName}</b><br /><small>{row.application.applicationCode} · ATS {row.application.atsScore ?? 'pending'}</small></div> },
         { title: 'Job', render: (_, row) => <div>{row.application.positionTitle}<br /><Tag>{row.application.currentStage}</Tag></div> },
+        { title: 'Panel (required)', width: 220, render: (_, row) => <Select mode="multiple" value={row.panelUserIds ?? panelUserIds} options={eligiblePanelUsers.map(user => ({ value: user.id, label: user.displayName }))} onChange={panelUserIds => setRows(current => current.map(item => item.application.id === row.application.id ? { ...item, panelUserIds } : item))} style={{ width: '100%' }} /> },
+        { title: 'Decision approver (required)', width: 190, render: (_, row) => <Select value={row.decisionApproverUserId ?? decisionApproverUserId} options={eligiblePanelUsers.map(user => ({ value: user.id, label: user.displayName }))} onChange={decisionApproverUserId => setRows(current => current.map(item => item.application.id === row.application.id ? { ...item, decisionApproverUserId } : item))} style={{ width: '100%' }} /> },
+        { title: 'Duration (minutes)', render: (_, row) => <InputNumber min={15} max={480} value={row.durationMinutes ?? durationMinutes} onChange={value => setRows(current => current.map(item => item.application.id === row.application.id ? { ...item, durationMinutes: value || undefined } : item))} /> },
+        { title: 'Round / type', width: 180, render: (_, row) => row.application.interviewSettingsMissing ? <Space direction="vertical"><Tag color="orange">Complete round settings</Tag><Input placeholder="Round name (required)" value={row.roundCode} onChange={event => setRows(current => current.map(item => item.application.id === row.application.id ? { ...item, roundCode: event.target.value } : item))} /><Input placeholder="Interview type (required)" value={row.interviewType} onChange={event => setRows(current => current.map(item => item.application.id === row.application.id ? { ...item, interviewType: event.target.value } : item))} /></Space> : <Tag>Job round configured</Tag> },
         { title: 'Start', width: 230, render: (_, row) => <DatePicker showTime format="DD MMM YYYY, HH:mm" value={row.start} onChange={value => value && setRows(current => current.map(item => item.application.id === row.application.id ? { ...item, start: value } : item))} style={{ width: '100%' }} /> },
         { title: mode === 'Virtual' ? 'Meeting link' : 'Location / contact', render: (_, row) => <Input value={row.destination} onChange={event => setRows(current => current.map(item => item.application.id === row.application.id ? { ...item, destination: event.target.value } : item))} /> },
       ]}

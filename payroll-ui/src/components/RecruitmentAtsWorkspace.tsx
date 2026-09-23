@@ -1,3 +1,4 @@
+import { useRecruitmentView } from '../hooks/useRecruitmentPreferences'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Badge, Button, Card, Drawer, Dropdown, Empty, Input, Modal, Popconfirm, Progress, Select, Space, Spin, Tabs, Tag, Typography } from 'antd'
 import { ArrowLeftOutlined, DeleteOutlined, DownloadOutlined, EyeOutlined, FileAddOutlined, FileSearchOutlined, FolderOpenOutlined, MoreOutlined, ReloadOutlined, RobotOutlined, SettingOutlined, UploadOutlined } from '@ant-design/icons'
@@ -32,6 +33,7 @@ type IntakeLaunch = { mode: RecruitmentResumeIntakeMode; clientId: number; posit
 type CandidateSelection = { candidateId: number; applicationId?: number }
 
 export default function RecruitmentAtsWorkspace({ initialClientId = 0, clientScopeManaged = false, initialPositionId = 0, initialJobPostingId = null, initialUploadMode, onNavigationStateChange }: Props) {
+  const recordView = useRecruitmentView()
   const session = useAuthSession()
   const navigate = useNavigate()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
@@ -258,7 +260,7 @@ export default function RecruitmentAtsWorkspace({ initialClientId = 0, clientSco
           <Select aria-label="Application stage" value={stage || undefined} placeholder="All pipeline stages" allowClear options={stages.map(value => ({ value, label: value }))} onChange={value => setStage(value || '')} />
         </div>
         <div data-testid="ats-applications-table">
-          {loading && !applications.length ? <div className="ats-workbench-loading"><Spin /><span>Loading applications…</span></div> : <DataTable<RecruitmentCandidateApplication>
+          {loading && !applications.length ? <div className="ats-workbench-loading"><Spin /><span>Loading applications…</span></div> : <DataTable<RecruitmentCandidateApplication> view={recordView}
             rows={rows} hideSearch exportFileName="ats-screening-applications" emptyText="No applications match this view. Add resumes or search the resume bank."
             actions={row => <Space size={4} wrap>
               <Button size="small" icon={<EyeOutlined />} onClick={() => void openEvidence(row)}>Evidence</Button>

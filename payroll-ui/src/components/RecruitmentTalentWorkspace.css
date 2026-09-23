@@ -35,3 +35,16 @@
 .recruitment-record-workspace .ant-smart-table{padding:12px;min-width:0}
 @media(max-width:1400px){.recruitment-record-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:720px){.recruitment-record-toolbar{grid-template-columns:1fr}.recruitment-record-facts{grid-template-columns:1fr}.recruitment-record-selection{grid-column:2}.recruitment-record-actions{justify-content:flex-start}.recruitment-record-status{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Keep the controls visible while the candidate list scrolls inside the available canvas. */
+.recruitment-record-toolbar { display: flex; flex-wrap: wrap; gap: 10px; }
+.recruitment-record-toolbar > .ant-input-affix-wrapper { flex: 1; min-width: 200px; }
+.recruitment-record-workspace .candidate-application-list { min-height: 0; max-height: calc(100dvh - 410px); }
+.recruitment-record-workspace .candidate-filter-panel { max-height: calc(100dvh - 290px); overflow: auto; }
+.interview-operations-workspace { min-width: 0; }
+.recruitment-record-card { padding: 12px; gap: 10px; }
+.recruitment-record-facts { gap: 10px 16px; }
+@media (max-width: 900px) {
+  .recruitment-record-workspace .candidate-applications-layout { grid-template-columns: minmax(0, 1fr); }
+  .recruitment-record-workspace .candidate-application-list { max-height: 55dvh; }
+}

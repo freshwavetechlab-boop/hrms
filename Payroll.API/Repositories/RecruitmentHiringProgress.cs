@@ -22,6 +22,9 @@ internal static class RecruitmentHiringProgress
         public string LatestOfferStatus { get; set; } = "";
         public string LatestInterviewResult { get; set; } = "";
         public bool IsJoined { get; set; }
+        public bool TermsConfirmed { get; set; }
+        public bool CandidateMomSigned { get; set; }
+        public bool CandidateMomApproved { get; set; }
     }
 
     internal static async Task<List<Candidate>> ReadCandidatesAsync(MySqlConnection db, IEnumerable<long> positionIds, AuthUser user)
@@ -33,7 +36,11 @@ COALESCE(stage.StageName,a.CurrentStage,'') CandidateStageName,COALESCE(stage.St
 COALESCE(CASE WHEN interview.Status='No Show' THEN 'No Show' ELSE interview.Result END,'') LatestInterviewResult,
 COALESCE(interview.Status IN ('Scheduled','Rescheduled','Completed'),FALSE) HasInterview,
 COALESCE(interview.Status='Completed' AND interview.Result='Selected',FALSE) HasCompletedInterviewDecision,
-COALESCE(offerRow.Status,'') LatestOfferStatus,
+COALESCE(offerRow.Status,'') LatestOfferStatus,a.TermsConfirmedAtUtc IS NOT NULL TermsConfirmed,
+EXISTS(SELECT 1 FROM recruitment_process_documents d JOIN recruitment_process_document_signatures signature ON signature.ProcessDocumentId=d.Id AND signature.CandidateId=a.CandidateId
+ WHERE d.ApplicationId=a.Id AND d.TermsVersion=a.TermsVersion AND d.Status='Signed' AND d.DocumentType='MOM' AND a.TermsConfirmedAtUtc IS NOT NULL) CandidateMomSigned,
+EXISTS(SELECT 1 FROM recruitment_process_documents d JOIN workflowinstances w ON w.Id=d.WorkflowInstanceId AND w.ResourceType='RecruitmentPipelineTransition' AND w.ResourceId=CONCAT('MOM:',d.Id) AND w.Status='Approved'
+ WHERE d.ApplicationId=a.Id AND d.TermsVersion=a.TermsVersion AND d.Status='Signed' AND d.DocumentType='MOM' AND a.TermsConfirmedAtUtc IS NOT NULL) CandidateMomApproved,
 (a.JoinedEmployeeId IS NOT NULL OR LOWER(a.CurrentStage) IN ('joined','joined / hired')) IsJoined
 FROM recruitment_candidate_applications a
 JOIN recruitment_open_positions p ON p.Id=a.PositionId AND p.ClientId=a.ClientId
@@ -69,9 +76,8 @@ ORDER BY a.Id", new { Ids = ids, user.ClientId });
     internal static bool OfferAt(Candidate row, params string[] statuses) => !Excluded(row)
         && (row.IsJoined || statuses.Contains(row.LatestOfferStatus, StringComparer.OrdinalIgnoreCase));
 
-    // Signing precedes negotiation. An offer/negotiation result must never be
-    // required to enter MoM, and a later-stage label alone is not interview evidence.
-    internal static bool MoMReady(Candidate row) => !Excluded(row) && row.HasCompletedInterviewDecision;
+    internal static bool SelectionComplete(Candidate row) => !Excluded(row) && row.HasCompletedInterviewDecision;
+    internal static bool MoMReady(Candidate row) => SelectionComplete(row) && row.TermsConfirmed;
 
     internal static bool Enough(int required, IEnumerable<Candidate> candidates, Func<Candidate, bool> qualifies) =>
         required > 0 && candidates.Count(qualifies) >= required;
@@ -81,11 +87,11 @@ ORDER BY a.Id", new { Ids = ids, user.ClientId });
     {
         var key = $"{code} {name} {type}".ToUpperInvariant();
         if (key.Contains("REJECT") || key.Contains("WITHDRAW")) return _ => false;
-        if (key.Contains("JOIN") || type.Equals("Completed", StringComparison.OrdinalIgnoreCase)) return row => OfferAt(row, "Accepted");
-        if (key.Contains("OFFER") && !key.Contains("NEGOTIATION")) return row => OfferAt(row, "Approved", "Pending Candidate", "Released", "Accepted");
-        if (key.Contains("HR") && key.Contains("APPROVAL")) return row => OfferAt(row, "Pending Approval", "Approved", "Pending Candidate", "Released", "Accepted");
-        if (key.Contains("MOM") && !key.Contains("NEGOTIATION")) return row => MoMReady(row) && ReviewComplete(row);
-        if (key.Contains("NEGOTIATION")) return ReviewComplete;
+        if (key.Contains("JOIN") || type.Equals("Completed", StringComparison.OrdinalIgnoreCase)) return row => row.IsJoined;
+        if (key.Contains("OFFER") && !key.Contains("NEGOTIATION")) return row => !Excluded(row) && row.CandidateMomApproved;
+        if (key.Contains("HR") && key.Contains("APPROVAL")) return row => !Excluded(row) && row.CandidateMomSigned;
+        if (key.Contains("MOM") && !key.Contains("NEGOTIATION")) return MoMReady;
+        if (key.Contains("NEGOTIATION")) return SelectionComplete;
         if ((key.Contains("INTERVIEW") || key.Contains("PANEL")) && !key.Contains("SHARING")) return InterviewsReady;
         if (key.Contains("SHARING") || key.Contains("SHORTLIST")) return ProfilesReady;
         return null;
@@ -98,13 +104,13 @@ ORDER BY a.Id", new { Ids = ids, user.ClientId });
         Func<Candidate, bool> gate = ProfilesReady;
         var action = "shortlisted candidate(s)";
         if (key.Contains("SHARING")) { gate = InterviewsReady; action = "candidate(s) with an interview scheduled"; }
-        else if (key.Contains("INTERVIEW") || key.Contains("PANEL")) { gate = ReviewComplete; action = "candidate(s) to complete interview selection and HR review"; }
-        else if (key.Contains("NEGOTIATION")) { gate = row => OfferAt(row, "Pending Approval", "Approved", "Pending Candidate", "Released", "Accepted"); action = "candidate negotiations submitted to HR"; }
-        else if (key.Contains("APPROVAL") && key.Contains("HR")) { gate = row => OfferAt(row, "Approved", "Pending Candidate", "Released", "Accepted"); action = "candidate offers approved by HR"; }
-        else if (key.Contains("OFFER")) { gate = row => OfferAt(row, "Accepted"); action = "accepted offers"; }
+        else if (key.Contains("INTERVIEW") || key.Contains("PANEL")) { gate = SelectionComplete; action = "candidate(s) to complete final interview selection"; }
+        else if (key.Contains("NEGOTIATION")) { gate = MoMReady; action = "candidate(s) with confirmed agreed terms"; }
+        else if (key.Contains("APPROVAL") && key.Contains("HR")) { gate = row => !Excluded(row) && row.CandidateMomApproved; action = "candidate MoMs approved by HR"; }
+        else if (key.Contains("OFFER")) { gate = row => row.IsJoined; action = "confirmed joinings"; }
         var count = rows.Count(gate);
         var pending = required <= 0 ? "No active vacancies."
-            : key.Contains("SIGNING") && key.Contains("MOM") ? "Next: complete the required committee MoM signatures."
+            : key.Contains("SIGNING") && key.Contains("MOM") ? "Next: complete the required candidate MoM signatures."
             : key.Contains("JOIN") ? "Joining dates conveyed; candidate joining continues in each candidate journey."
             : count < required ? $"Next: {Math.Min(count, required)}/{required} ready; need {required - count} more {action}."
             : $"Candidate requirement met ({required}/{required}); next movement follows the configured documents and approvals.";

@@ -327,6 +327,8 @@ public class PublicApplicationTrackingSession
 
 public class PublicCandidateApplicationTracker
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public long CandidateId { get; set; }
     public string CandidateName { get; set; } = "";
     public List<PublicTrackedApplication> Applications { get; set; } = [];
 }

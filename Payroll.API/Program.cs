@@ -184,6 +184,13 @@ if (args.Any(arg => arg.Equals("--migrate-internal-interviews", StringComparison
     return;
 }
 
+if (args.Contains("--migrate-recruitment-journey"))
+{
+    await app.Services.GetRequiredService<RecruitmentTalentRepository>().InitializeJourneySchemaAsync();
+    app.Logger.LogInformation("Recruitment journey additive schema upgrade completed.");
+    return;
+}
+
 var migrateDatabaseOnly = args.Any(arg =>
     arg.Equals("--migrate", StringComparison.OrdinalIgnoreCase) ||
     arg.Equals("--migrate-database", StringComparison.OrdinalIgnoreCase));
@@ -191,6 +198,7 @@ var migrateDatabaseOnly = args.Any(arg =>
 if (migrateDatabaseOnly)
 {
     await RunDatabaseSetupAsync(app.Services, app.Configuration);
+    await app.Services.GetRequiredService<RecruitmentTalentRepository>().InitializeJourneySchemaAsync();
     app.Logger.LogInformation("Database setup completed.");
     return;
 }
@@ -984,6 +992,13 @@ app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowReposi
     {
         var (_, finalError) = await recruitmentTalent.GenerateFinalOfferAsync(finalOfferId,instance.Id,user,context.RequestAborted);
         if(finalError.Length>0)return Results.Conflict(new { error="Approval saved. Final PDF needs retry: " + finalError });
+        var finalOffer = (await recruitmentTalent.GetOffersAsync(user, null)).FirstOrDefault(row => row.Id == finalOfferId);
+        if(finalOffer is not null) await ApplyRecruitmentDecisionAsync(finalOffer.ApplicationId,"DocumentsVerified",user,recruitmentPipeline,pipelineActions,candidateActions,recruitmentCases);
+    }
+    if(instance?.ResourceType=="RecruitmentPipelineTransition" && instance.ResourceId.StartsWith("MOM:") && long.TryParse(instance.ResourceId[4..],out var momDocumentId))
+    {
+        var momApplicationId = await recruitmentCases.SyncCandidateMomApprovalAsync(momDocumentId,instance.Id,instance.Status);
+        if(momApplicationId.HasValue) await ApplyRecruitmentDecisionAsync(momApplicationId.Value,"MOM_APPROVED",user,recruitmentPipeline,pipelineActions,candidateActions,recruitmentCases);
     }
     if(instance?.ResourceType=="RecruitmentJobDescription" && long.TryParse(instance.ResourceId,out var jobDescriptionId))await recruitmentPipeline.SyncJobDescriptionWorkflowStatusAsync(jobDescriptionId,instance.Status,user);
     if(instance?.ResourceType=="RecruitmentPipelineTransition" && instance.ResourceId.StartsWith("HIRING_CASE:",StringComparison.OrdinalIgnoreCase) && long.TryParse(instance.ResourceId[12..],out var hiringCaseAdvanceRequestId))
@@ -1519,7 +1534,7 @@ app.MapDelete("/api/recruitment/hiring-cases/{id:long}", async (RecruitmentCaseR
 app.MapPost("/api/recruitment/hiring-cases/{id:long}/advance", async (RecruitmentCaseRepository repository, long id, MoveRecruitmentHiringCaseRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.hiring-case.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
-    var (row, error) = await repository.AdvanceHiringCaseAsync(id, request, CurrentUser(context));
+    var (row, error) = await repository.AdvanceHiringCaseAsync(id, request, CurrentUser(context), manual: true);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 app.MapPost("/api/recruitment/hiring-cases/{id:long}/pause", async (RecruitmentCaseRepository repository, long id, RecruitmentStagePauseRequest request, HttpContext context) =>
@@ -1604,7 +1619,7 @@ app.MapPost("/api/recruitment/profile-submission-batches/{id:long}/forward", asy
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 app.MapGet("/api/recruitment/open-positions", async (RecruitmentRepository repository, int? clientId, HttpContext context) =>
-    HasPermission(context, "recruitment.manage") || HasPermission(context, "recruitment.position.view") || HasPermission(context, "recruitment.position.manage") || HasPermission(context, "recruitment.work-order.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.OpenPositionsAsync(CurrentUser(context), clientId)) : Results.StatusCode(403));
+    RecruitmentPermissions.Has(CurrentUser(context), "recruitment.interview.schedule", "recruitment.offer.manage", "recruitment.proposal.manage", "recruitment.position.view", "recruitment.position.manage", "recruitment.work-order.manage") ? Results.Ok(await repository.OpenPositionsAsync(CurrentUser(context), clientId)) : Results.StatusCode(403));
 app.MapGet("/api/recruitment/operations/options", async (RecruitmentRepository repository, HttpContext context) =>
     HasPermission(context, "recruitment.manage") || HasPermission(context, "recruitment.position.view") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.OperationsOptionsAsync(CurrentUser(context))) : Results.StatusCode(403));
 app.MapGet("/api/recruitment/masters/{masterType}", async (RecruitmentRepository repository, string masterType, HttpContext context) =>
@@ -1663,7 +1678,7 @@ app.MapGet("/api/recruitment/talent/dashboard", async (RecruitmentTalentReposito
         ? Results.Ok(await repository.DashboardAsync(CurrentUser(context), clientId))
         : Results.StatusCode(403));
 app.MapGet("/api/recruitment/candidates", async (RecruitmentTalentRepository repository, int? clientId, string? query, string? status, HttpContext context) =>
-    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage")
+    RecruitmentPermissions.Has(CurrentUser(context), "recruitment.candidate.view", "recruitment.offer.manage", "recruitment.proposal.manage")
         ? Results.Ok(await repository.SearchCandidatesAsync(CurrentUser(context), clientId, query ?? "", status ?? ""))
         : Results.StatusCode(403));
 app.MapGet("/api/recruitment/talent-pool/candidates", async (RecruitmentTalentRepository repository, string? query, string? status, HttpContext context) =>
@@ -1785,7 +1800,7 @@ app.MapPost("/api/recruitment/resume-intake/preview", async (RecruitmentTalentRe
     return preview is null ? Results.BadRequest(new { error }) : Results.Ok(preview);
 }).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(30L * 1024 * 1024));
 app.MapGet("/api/recruitment/applications", async (RecruitmentTalentRepository repository, long? positionId, long? candidateId, string? stage, bool? negotiationOnly, int? clientId, HttpContext context) =>
-    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage")
+    RecruitmentPermissions.Has(CurrentUser(context), "recruitment.interview.schedule", "recruitment.offer.manage", "recruitment.proposal.manage", "recruitment.candidate.view")
         ? Results.Ok(await repository.GetApplicationsAsync(CurrentUser(context), positionId, candidateId, stage ?? "", negotiationOnly == true, clientId))
         : Results.StatusCode(403));
 app.MapPost("/api/recruitment/applications", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines,
@@ -1893,6 +1908,46 @@ app.MapPost("/api/recruitment/applications/global-talent-pool", async (Recruitme
     return Results.Ok(new { moved, failed = errors.Count, errors = errors.Distinct().ToArray() });
 });
 app.MapInternalInterviews();
+app.MapPost("/api/recruitment/interviews/direct-application", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentPipelineActionService actions, RecruitmentCandidateActionRepository candidateActions, DirectInterviewApplication request, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    var (row, error) = await repository.CreateDirectInterviewApplicationAsync(request, user);
+    if (row is null) return Results.BadRequest(new { error });
+    var (_, pipelineError) = await EnsureRecruitmentApplicationAutomationAsync(row.Id, user, pipelines, actions, candidateActions);
+    row.PipelineWarning = pipelineError;
+    return Results.Ok(row);
+});
+app.MapGet("/api/recruitment/applications/{id:long}/negotiation", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!RecruitmentPermissions.Has(user, "recruitment.offer.manage", "recruitment.proposal.manage")) return Results.StatusCode(403);
+    var row = await repository.GetNegotiationAsync(id, user);
+    return row is null ? Results.NotFound() : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/applications/{id:long}/negotiation", async (RecruitmentTalentRepository repository, RecruitmentCaseRepository cases, long id, SaveRecruitmentNegotiation request, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    var (row, error) = await repository.SaveNegotiationAsync(id, request, user);
+    if (row is null) return Results.BadRequest(new { error });
+    if (request.ConfirmTerms)
+    {
+        var prepared = await cases.PrepareCandidateMomAsync(id, user, context.RequestAborted);
+        if (prepared.Row is null) return Results.BadRequest(new { error = "Terms saved. MoM needs attention: " + prepared.Error });
+        await cases.AdvanceHiringCaseForCandidateMilestoneAsync(id, "TermsConfirmed", user);
+    }
+    return Results.Ok(row);
+});
+app.MapPost("/api/recruitment/interviews/{id:long}/link-application", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentCaseRepository hiringCases, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, long id, JsonElement request, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!request.TryGetProperty("applicationId", out var property) || !property.TryGetInt64(out var applicationId)) return Results.BadRequest(new { error = "Select the candidate's application." });
+    var (row, error) = await repository.LinkDirectInterviewAsync(id, applicationId, user);
+    if (row is null) return Results.BadRequest(new { error });
+    row.PipelineTransitionMessage = await pipelines.EnterDirectInterviewAsync(applicationId, user);
+    if (row.Status == "Completed" && row.Result is "Selected" or "Rejected")
+        row.PipelineTransitionMessage = await ApplyRecruitmentDecisionAsync(applicationId, row.Result, user, pipelines, pipelineActions, candidateActions, hiringCases);
+    return Results.Ok(row);
+});
 app.MapGet("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, long? applicationId, HttpContext context) =>
     CurrentUser(context).Id > 0 ? Results.Ok(await repository.GetInterviewsAsync(CurrentUser(context), applicationId)) : Results.StatusCode(403));
 app.MapPost("/api/recruitment/applications/{id:long}/view-as-candidate", async (RecruitmentFormRepository repository, long id, HttpContext context) =>
@@ -1916,6 +1971,8 @@ app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository re
     var isNew = request.Id <= 0;
     var previous = isNew ? null : (await repository.GetInterviewsAsync(user, request.ApplicationId)).FirstOrDefault(row => row.Id == request.Id);
     var (row, error) = await repository.SaveInterviewAsync(request, user);
+    if (row is { ApplicationId: > 0, IsStandalone: true } && RecruitmentPermissions.Has(user, "recruitment.interview.schedule"))
+        row.PipelineTransitionMessage = await pipelines.EnterDirectInterviewAsync(row.ApplicationId, user);
     if (row is not null && previous?.LocationOrLink == InternalInterviewPolicy.InternalDestination
         && (row.Mode != "Virtual" || row.LocationOrLink != InternalInterviewPolicy.InternalDestination))
         await internalInterviews.DisableForExternalDeliveryAsync(row.Id, user);
@@ -1924,11 +1981,11 @@ app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository re
         var trigger = isNew || row.RescheduleCount == 0 ? "OnInterviewScheduled" : "OnInterviewRescheduled";
         await pipelineActions.ExecuteAsync(row.ApplicationId, trigger, user, row.PipelineStageInstanceId, $"INTERVIEW{row.Id}R{row.RescheduleCount}");
     }
-    if (row is { IsStandalone: false } && row.Status is ("Scheduled" or "Rescheduled"))
+    if (row is { ApplicationId: > 0 } && row.Status is ("Scheduled" or "Rescheduled"))
         await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(row.ApplicationId, "InterviewScheduled", user);
-    if (row is { IsStandalone: false } && row.Status is ("No Show" or "Cancelled"))
+    if (row is { ApplicationId: > 0 } && row.Status is ("No Show" or "Cancelled"))
         await hiringCases.AdvanceHiringCaseForCandidateMilestoneAsync(row.ApplicationId, "InterviewAvailabilityChanged", user);
-    if (row is { IsStandalone: false, Status: "Completed" } && row.Result is ("Selected" or "Rejected")
+    if (row is { ApplicationId: > 0, Status: "Completed" } && row.Result is ("Selected" or "Rejected")
         && (previous?.Status != row.Status || previous?.Result != row.Result))
         row.PipelineTransitionMessage = await ApplyRecruitmentDecisionAsync(row.ApplicationId, row.Result, user, pipelines, pipelineActions, candidateActions, hiringCases);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
@@ -2005,10 +2062,10 @@ app.MapPost("/api/recruitment/interviews/{id:long}/feedback", async (Recruitment
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 app.MapGet("/api/recruitment/offers", async (RecruitmentTalentRepository repository, long? applicationId, HttpContext context) =>
-    HasPermission(context, "recruitment.manage") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetOffersAsync(CurrentUser(context), applicationId)) : Results.StatusCode(403));
+    RecruitmentPermissions.Has(CurrentUser(context), "recruitment.offer.manage", "recruitment.offer.issue", "recruitment.proposal.manage") ? Results.Ok(await repository.GetOffersAsync(CurrentUser(context), applicationId)) : Results.StatusCode(403));
 app.MapPost("/api/recruitment/offers", async (RecruitmentTalentRepository repository, SaveRecruitmentOffer request, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!RecruitmentPermissions.Has(CurrentUser(context), "recruitment.offer.manage", "recruitment.proposal.manage")) return Results.StatusCode(403);
     var (row, error) = await repository.SaveOfferAsync(request, CurrentUser(context));
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
@@ -2021,22 +2078,24 @@ app.MapDelete("/api/recruitment/offers/{id:long}", async (RecruitmentTalentRepos
 });
 app.MapPost("/api/recruitment/offers/{id:long}/generate-letter", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!RecruitmentPermissions.Has(CurrentUser(context), "recruitment.offer.issue")) return Results.StatusCode(403);
     var (row, error) = await repository.GenerateOfferLetterAsync(id, CurrentUser(context),
         context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 app.MapPost("/api/recruitment/offers/{id:long}/final-letter", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!RecruitmentPermissions.Has(CurrentUser(context), "recruitment.offer.issue")) return Results.StatusCode(403);
     var (row,error) = await repository.RequestFinalOfferAsync(id,CurrentUser(context),context.RequestAborted);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
 app.MapPost("/api/recruitment/offers/{id:long}/status", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, RecruitmentCaseRepository hiringCases, RecruitmentLifecycleNotificationService lifecycleNotifications, long id, JsonElement request, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!RecruitmentPermissions.Has(CurrentUser(context), "recruitment.offer.manage", "recruitment.offer.issue", "recruitment.proposal.manage")) return Results.StatusCode(403);
     var user = CurrentUser(context);
     var status = request.TryGetProperty("status", out var value) ? value.GetString() ?? "" : "";
+    var requiredOfferPermissions = status is "Pending Candidate" or "Released" or "Accepted" ? new[] { "recruitment.offer.issue" } : status is "Negotiation" or "Pending Approval" ? new[] { "recruitment.offer.manage", "recruitment.proposal.manage" } : new[] { "recruitment.offer.manage" };
+    if (!RecruitmentPermissions.Has(user, requiredOfferPermissions)) return Results.StatusCode(403);
     var remarks = request.TryGetProperty("remarks", out var note) ? note.GetString() ?? "" : "";
     var (row, error) = await repository.UpdateOfferStatusAsync(id, status, remarks, user);
     if (row is not null)
@@ -2452,6 +2511,20 @@ app.MapGet("/api/public/recruitment/tracking/{token}", async (RecruitmentFormRep
 {
     var row = await repository.GetPublicApplicationTrackerAsync(token);
     return row is null ? Results.Unauthorized() : Results.Ok(row);
+});
+app.MapGet("/api/public/recruitment/tracking/{token}/applications/{id:long}/mom", async (RecruitmentFormRepository forms, RecruitmentCaseRepository cases, string token, long id) =>
+{
+    var tracker = await forms.GetPublicApplicationTrackerAsync(token);
+    if (tracker is null || !tracker.Applications.Any(row => row.ApplicationId == id)) return Results.NotFound();
+    return Results.Ok(await cases.GetCandidateMomAsync(id, tracker.CandidateId));
+});
+app.MapPost("/api/public/recruitment/tracking/{token}/applications/{id:long}/mom/{documentId:long}/sign", async (RecruitmentFormRepository forms, RecruitmentCaseRepository cases, string token, long id, long documentId, SignCandidateMom request) =>
+{
+    var tracker = await forms.GetPublicApplicationTrackerAsync(token);
+    if (tracker is null || !tracker.Applications.Any(row => row.ApplicationId == id)) return Results.NotFound();
+    if (!request.Consent) return Results.BadRequest(new { error = "Review and accept the MoM before signing." });
+    var error = await cases.SignCandidateMomAsync(documentId, id, tracker.CandidateId, request.SignerName, request.TermsVersion);
+    return error.Length > 0 ? Results.BadRequest(new { error }) : Results.Ok(await cases.GetCandidateMomAsync(id, tracker.CandidateId));
 });
 app.MapPut("/api/public/recruitment/sessions/{token}/values", async (RecruitmentFormRepository repository, string token, SavePublicFormValuesRequest request, HttpContext context) =>
 {
@@ -4029,7 +4102,7 @@ app.MapGet("/api/employees", async (EmployeeRepository repository, HttpContext c
 .WithOpenApi();
 
 app.MapGet("/api/employees/manager-users", async (EmployeeRepository repository, HttpContext context) =>
-    HasPermission(context, "employees.view") || HasPermission(context, "employees.manage")
+    HasPermission(context, "employees.view") || HasPermission(context, "employees.manage") || RecruitmentPermissions.Has(CurrentUser(context), "recruitment.interview.schedule")
         ? Results.Ok(await repository.GetManagerUsersAsync(CurrentUser(context).ClientId))
         : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetEmployeeManagerUsers")

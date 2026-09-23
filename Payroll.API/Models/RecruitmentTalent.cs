@@ -148,6 +148,7 @@ public class RecruitmentResumeParsedSkill
 
 public class RecruitmentCandidateApplication
 {
+    public bool InterviewSettingsMissing { get; set; }
     public bool CanMoveToGlobalTalentPool { get; set; }
     public bool IsInterviewReady { get; set; }
     public string? AtsJobStatus { get; set; }
@@ -441,6 +442,11 @@ public class OverrideApplicationScoreRequest
 
 public class RecruitmentInterview
 {
+    public long CandidateId { get; set; }
+    public string CandidateEmail { get; set; } = "";
+    public string DirectEmail { get; set; } = "";
+    public string DirectName { get; set; } = "";
+    public int DirectClientId { get; set; }
     public bool IsStandalone { get; set; }
     public int ClientId { get; set; }
     public string JobLocation { get; set; } = "";
@@ -501,6 +507,9 @@ public class RecruitmentInterviewPanelStatus
 
 public class SaveRecruitmentInterview
 {
+    public string DirectEmail { get; set; } = "";
+    public string DirectName { get; set; } = "";
+    public int DirectClientId { get; set; }
     public bool IsStandalone { get; set; }
     public int? DecisionApproverUserId { get; set; }
     public long Id { get; set; }
@@ -539,6 +548,7 @@ public class RecruitmentInterviewInvitation
 
 public class RecruitmentInterviewSchedulingContext
 {
+    public bool SettingsMissing { get; set; }
     public long ApplicationId { get; set; }
     public bool IsPipelineManaged { get; set; }
     public long? PipelineStageInstanceId { get; set; }

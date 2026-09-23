@@ -179,6 +179,8 @@ public class MoveRecruitmentHiringCaseRequest
 
 public class RecruitmentProcessDocument
 {
+    public int? TermsVersion { get; set; }
+    public string? BodySnapshot { get; set; }
     public long Id { get; set; }
     public int ClientId { get; set; }
     public long? HiringCaseId { get; set; }

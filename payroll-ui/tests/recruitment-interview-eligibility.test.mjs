@@ -22,10 +22,15 @@ test('configured new round stays eligible; scheduled or rescheduled candidates d
     assert.equal(interviewReady(ready, [{ applicationId: 77, status }]), false)
   assert.equal(interviewReady(ready, [{ applicationId: 999, status: 'Scheduled' }]), true)
 })
-test('ATS readiness and human overrides remain enforced', () => {
-  for (const changes of [{ atsScore: null }, { atsScore: 40 }, { scoreStatus: 'NeedsReview' }, { scoreStatus: 'Ineligible' }, { applicationType: 'TalentPoolMatch' }])
+test('passing ATS scores qualify despite legacy skill warnings; below-cutoff scores do not', () => {
+  for (const changes of [{ atsScore: null }, { atsScore: 40 }, { applicationType: 'TalentPoolMatch' }])
     assert.equal(interviewReady({ ...ready, ...changes }, []), false)
-  assert.equal(interviewReady({ ...ready, scoreStatus: 'NeedsReview', atsOverridden: true }, []), true)
+  for (const scoreStatus of ['NeedsReview', 'Ineligible', 'CompletedWithAiFallback']) {
+    assert.equal(interviewReady({ ...ready, atsScore: 75, atsShortlistThreshold: 75, scoreStatus }, []), true)
+    assert.equal(interviewReady({ ...ready, atsScore: 74.99, atsShortlistThreshold: 75, scoreStatus }, []), false)
+    assert.equal(interviewReady({ ...ready, scoreStatus, isInterviewReady: false }, []), false)
+    assert.equal(interviewReady({ ...ready, scoreStatus }, [{ applicationId: ready.id, status: 'Scheduled' }]), false)
+  }
 })
 test('panel recommendation is not presented as final hire or rejection', () => {
   assert.equal(panelRecommendationLabel('Hire'), 'Recommend selection')

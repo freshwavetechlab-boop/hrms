@@ -2152,7 +2152,7 @@ LEFT JOIN recruitment_job_postings posting ON posting.Id=applicationRow.JobPosti
 WHERE applicationRow.CandidateId=@CandidateId AND applicationRow.ClientId=@ClientId
 ORDER BY applicationRow.AppliedAt DESC", new { CandidateId = authorization.CandidateId.Value, authorization.ClientId })).ToList();
 
-        var result = new PublicCandidateApplicationTracker { CandidateName = authorization.CandidateName };
+        var result = new PublicCandidateApplicationTracker { CandidateId = authorization.CandidateId.Value, CandidateName = authorization.CandidateName };
         foreach (var row in rows)
         {
             var (processingStatus, processingMessage) = PublicProcessingSummary(row.ResumeStatus, row.AtsStatus, row.AutoRunAts);

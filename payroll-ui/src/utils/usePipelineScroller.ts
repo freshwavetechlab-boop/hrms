@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useCallback, useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 
 type Options = {
   rootScrollsVertically?: boolean
@@ -26,10 +26,9 @@ const nearestVerticalScroller = (target: EventTarget | null, root: HTMLElement) 
  * board. A mouse wheel over a lane header/gutter moves a wide board sideways.
  */
 export function usePipelineScroller<T extends HTMLElement>({ rootScrollsVertically = false }: Options = {}) {
-  const ref = useRef<T>(null)
+  const [element, ref] = useState<T | null>(null)
 
   useEffect(() => {
-    const element = ref.current
     if (!element) return
 
     const onWheel = (event: WheelEvent) => {
@@ -56,11 +55,11 @@ export function usePipelineScroller<T extends HTMLElement>({ rootScrollsVertical
 
     element.addEventListener('wheel', onWheel, { passive: false })
     return () => element.removeEventListener('wheel', onWheel)
-  }, [rootScrollsVertically])
+  }, [element, rootScrollsVertically])
 
   const onKeyDown = useCallback((event: ReactKeyboardEvent<T>) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-    const element = ref.current
+    const element = event.currentTarget
     if (!element || element.scrollWidth <= element.clientWidth + 1) return
     event.preventDefault()
     element.scrollBy({ left: event.key === 'ArrowLeft' ? -280 : 280, behavior: 'smooth' })

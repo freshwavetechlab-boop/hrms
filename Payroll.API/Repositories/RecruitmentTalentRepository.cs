@@ -310,12 +310,7 @@ CurrentCtc=@CurrentCtc,ExpectedCtc=@ExpectedCtc,UpdatedAt=UTC_TIMESTAMP() WHERE 
         if (!negotiationOnly) return rows;
         var candidates = (await RecruitmentHiringProgress.ReadCandidatesAsync(db, rows.Select(row => row.PositionId), user))
             .GroupBy(row => row.ApplicationId).ToDictionary(group => group.Key, group => group.First());
-        var eligible = new List<RecruitmentCandidateApplication>();
-        foreach (var row in rows)
-            if (candidates.TryGetValue(row.Id, out var candidate) && RecruitmentHiringProgress.MoMReady(candidate)
-                && RecruitmentHiringProgress.ReviewComplete(candidate) && !candidate.IsJoined
-                && await NegotiationCandidateErrorAsync(db, row, user, candidate) == "") eligible.Add(row);
-        return eligible;
+        return rows.Where(row => candidates.TryGetValue(row.Id, out var candidate) && RecruitmentHiringProgress.SelectionComplete(candidate) && !candidate.IsJoined);
     }
 
     private static async Task<string> NegotiationCandidateErrorAsync(MySqlConnection db, RecruitmentCandidateApplication application, AuthUser user,
@@ -1604,15 +1599,15 @@ LIMIT 1");
     {
         await using var db = Db();
         await db.OpenAsync();
-        var row = await db.QueryFirstOrDefaultAsync<RecruitmentInterviewInvitation>(@"SELECT i.Id InterviewId,a.ClientId,
-TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,COALESCE(c.Email,'') CandidateEmail,
-p.PositionTitle,i.RoundCode,i.InterviewType,i.ScheduledStart,i.ScheduledEnd,COALESCE(i.TimeZoneId,'Asia/Kolkata') TimeZoneId,
+        var row = await db.QueryFirstOrDefaultAsync<RecruitmentInterviewInvitation>(@"SELECT i.Id InterviewId,COALESCE(a.ClientId,i.DirectClientId) ClientId,
+COALESCE(NULLIF(TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))),''),NULLIF(i.DirectName,''),i.DirectEmail) CandidateName,COALESCE(c.Email,i.DirectEmail) CandidateEmail,
+COALESCE(p.PositionTitle,'Interview') PositionTitle,i.RoundCode,i.InterviewType,i.ScheduledStart,i.ScheduledEnd,COALESCE(i.TimeZoneId,'Asia/Kolkata') TimeZoneId,
 i.Mode,COALESCE(i.LocationOrLink,'') LocationOrLink,i.Status
 FROM recruitment_interviews i
-JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId
-JOIN recruitment_candidates c ON c.Id=a.CandidateId
-JOIN recruitment_open_positions p ON p.Id=a.PositionId
-WHERE i.Id=@InterviewId AND (@ClientId IS NULL OR a.ClientId=@ClientId)", new { InterviewId = interviewId, user.ClientId });
+LEFT JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId
+LEFT JOIN recruitment_candidates c ON c.Id=a.CandidateId
+LEFT JOIN recruitment_open_positions p ON p.Id=a.PositionId
+WHERE i.Id=@InterviewId AND (@ClientId IS NULL OR COALESCE(a.ClientId,i.DirectClientId)=@ClientId)", new { InterviewId = interviewId, user.ClientId });
         if (row is null) return (null, "Interview was not found in your permitted client scope.");
         if (row.Status is not ("Scheduled" or "Rescheduled"))
             return (null, $"An invite cannot be sent for an interview marked {row.Status}.");
@@ -1628,10 +1623,12 @@ ORDER BY u.Email", new { InterviewId = interviewId })).ToList();
     {
         await using var db = Db();
         await db.OpenAsync();
-        var row = await db.QueryFirstOrDefaultAsync<(long Id, long ApplicationId, int ClientId, long CandidateId, string CurrentStage)>(@"SELECT i.Id,i.ApplicationId,a.ClientId,a.CandidateId,a.CurrentStage
-FROM recruitment_interviews i JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId
-WHERE i.Id=@Id AND (@ClientId IS NULL OR a.ClientId=@ClientId)", new { Id = id, user.ClientId });
+        var row = await db.QueryFirstOrDefaultAsync<(long Id, long ApplicationId, int ClientId, long CandidateId, string CurrentStage)>(@"SELECT i.Id,i.ApplicationId,COALESCE(a.ClientId,i.DirectClientId),COALESCE(a.CandidateId,0),COALESCE(a.CurrentStage,'')
+FROM recruitment_interviews i LEFT JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId
+WHERE i.Id=@Id AND (@ClientId IS NULL OR COALESCE(a.ClientId,i.DirectClientId)=@ClientId)", new { Id = id, user.ClientId });
         if (row.Id <= 0) return (false, "Interview was not found in your permitted client scope.");
+        if (await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM recruitment_process_documents WHERE InterviewId=@id AND (Status='Signed' OR WorkflowInstanceId IS NOT NULL))", new { id }))
+            return (false, "Retain this interview because it has a signed MoM or an approval record.");
         if (row.CurrentStage.Equals("Joined", StringComparison.OrdinalIgnoreCase))
             return (false, "An interview belonging to an employee-converted application must be retained for audit.");
 
@@ -1673,12 +1670,12 @@ JOIN recruitment_interview_feedback feedbackRow ON feedbackRow.Id=scoreRow.Inter
         var pipeline = await InterviewPipelineContextAsync(db, applicationId, null);
         if (pipeline is { HasPipelineInstance: true } && !string.Equals(pipeline.StageType, "Interview", StringComparison.OrdinalIgnoreCase))
             return (null, $"Interview scheduling is available when the application reaches an Interview pipeline stage. Current stage: {pipeline.PipelineStageName}.");
-        if (pipeline is { HasPipelineInstance: true, RoundConfigurationId: null })
-            return (null, "The current Interview pipeline stage has no round configuration. Configure the round before scheduling.");
+
         var context = new RecruitmentInterviewSchedulingContext { ApplicationId = applicationId };
         if (pipeline is { HasPipelineInstance: true })
         {
             context.IsPipelineManaged = true;
+            context.SettingsMissing = pipeline.RoundConfigurationId is null;
             context.PipelineStageInstanceId = pipeline.PipelineStageInstanceId;
             context.RoundConfigurationId = pipeline.RoundConfigurationId;
             context.PipelineStageName = pipeline.PipelineStageName;
@@ -1693,7 +1690,7 @@ JOIN recruitment_interview_feedback feedbackRow ON feedbackRow.Id=scoreRow.Inter
             context.CalendarEnabled = pipeline.CalendarEnabled;
             context.AllowReschedule = pipeline.AllowReschedule;
             context.NextAttemptNumber = await db.ExecuteScalarAsync<int>("SELECT COALESCE(MAX(AttemptNumber),0)+1 FROM recruitment_interviews WHERE ApplicationId=@ApplicationId AND RoundConfigurationId=@RoundConfigurationId", new { ApplicationId = applicationId, RoundConfigurationId = pipeline.RoundConfigurationId });
-            context.Competencies = (await InterviewCompetenciesAsync(db, pipeline.RoundConfigurationId!.Value)).Select(ToStageCompetency).ToList();
+            context.Competencies = pipeline.RoundConfigurationId.HasValue ? (await InterviewCompetenciesAsync(db, pipeline.RoundConfigurationId.Value)).Select(ToStageCompetency).ToList() : [];
             context.DefaultPanelUserIds = (await db.QueryAsync<int>(@"SELECT PanelUserId FROM recruitment_stage_default_panel_members
 WHERE PipelineStageId=@PipelineStageId ORDER BY DisplayOrder,Id", new { pipeline.PipelineStageId })).ToList();
         }
@@ -1711,7 +1708,7 @@ WHERE PipelineStageId=@PipelineStageId ORDER BY DisplayOrder,Id", new { pipeline
         request.Result = (request.Result ?? "").Trim();
         request.OverallFeedback = (request.OverallFeedback ?? "").Trim();
         request.TimeZoneId = (request.TimeZoneId ?? "").Trim();
-        if (request.ApplicationId <= 0) return (null, "Application is required.");
+        if (request.ApplicationId <= 0 && !request.IsStandalone) return (null, "Application is required.");
         if (request.ScheduledEnd <= request.ScheduledStart) return (null, "Interview end time must be after start time.");
         if (!InterviewStatuses.Contains(request.Status, StringComparer.OrdinalIgnoreCase)) return (null, "Select a valid interview status.");
         if (!InterviewResults.Contains(request.Result, StringComparer.OrdinalIgnoreCase)) return (null, "Select a valid interview result.");
@@ -1721,13 +1718,20 @@ WHERE PipelineStageId=@PipelineStageId ORDER BY DisplayOrder,Id", new { pipeline
         if (request.Id <= 0 && request.Status == "Completed") return (null, "Save the interview schedule before completing it.");
         await using var db = Db();
         await db.OpenAsync();
-        var application = await ApplicationByIdAsync(db, request.ApplicationId, user);
+        var application = request.ApplicationId > 0 ? await ApplicationByIdAsync(db, request.ApplicationId, user) : new RecruitmentCandidateApplication { ClientId = user.ClientId ?? request.DirectClientId };
         if (application is null) return (null, "Application was not found.");
         var applicationStage = application.CurrentStage ?? "";
         var existingDecision = request.Id > 0
-            ? (await InterviewRowsAsync(db, user, request.ApplicationId, null)).FirstOrDefault(row => row.Id == request.Id) : null;
+            ? (await InterviewRowsAsync(db, user, request.ApplicationId, null, IsPanelScoped(user) ? user.Id : null)).FirstOrDefault(row => row.Id == request.Id) : null;
         if (request.Id > 0 && existingDecision is null) return (null, "Interview was not found.");
-        if (existingDecision is not null) request.IsStandalone = existingDecision.IsStandalone;
+        if (existingDecision is not null) { request.IsStandalone = existingDecision.IsStandalone; request.DirectEmail = existingDecision.DirectEmail; request.DirectName = existingDecision.DirectName; request.DirectClientId = existingDecision.DirectClientId; }
+        if (request.ApplicationId == 0) {
+            if (!System.Net.Mail.MailAddress.TryCreate(request.DirectEmail?.Trim(), out var address) || address.Address != request.DirectEmail?.Trim()) return (null, "Enter a valid candidate email.");
+            request.DirectEmail = address.Address;
+            request.DirectClientId = user.ClientId ?? request.DirectClientId;
+            application.ClientId = request.DirectClientId;
+        }
+        if (request.Id <= 0 && request.DecisionApproverUserId is not > 0) return (null, "Select the final decision approver.");
         if (request.Id <= 0 && IsPanelScoped(user)) return (null, "Scheduling permission is required.");
         if (existingDecision?.Status == "Completed") return (null, "Completed interview decisions are read-only. Schedule another configured round if needed.");
         if (IsPanelScoped(user))
@@ -1767,13 +1771,16 @@ WHERE ur.UserId=u.Id AND permission.Code IN ('recruitment.interview.panel','recr
         var pipeline = request.IsStandalone ? null : await InterviewPipelineContextAsync(db, request.ApplicationId, request.Id > 0 ? request.Id : null);
         if (pipeline is { HasPipelineInstance: true } && !string.Equals(pipeline.StageType, "Interview", StringComparison.OrdinalIgnoreCase))
             return (null, $"Interview scheduling is available when the application reaches an Interview pipeline stage. Current stage: {pipeline.PipelineStageName}.");
-        if (pipeline is { HasPipelineInstance: true, RoundConfigurationId: null })
-            return (null, "The current Interview pipeline stage has no round configuration. Configure the round before scheduling.");
+        if (pipeline is { HasPipelineInstance: true, RoundConfigurationId: null } && (string.IsNullOrWhiteSpace(request.RoundCode) || string.IsNullOrWhiteSpace(request.InterviewType)))
+            return (null, "Enter the round name and interview type for this candidate.");
         var isPipelineManaged = pipeline is { HasPipelineInstance: true };
         if (isPipelineManaged)
         {
-            request.RoundCode = pipeline!.PipelineStageName;
-            request.InterviewType = pipeline.InterviewType;
+            if (pipeline!.RoundConfigurationId.HasValue)
+            {
+                request.RoundCode = pipeline.PipelineStageName;
+                request.InterviewType = pipeline.InterviewType;
+            }
             request.TimeZoneId = string.IsNullOrWhiteSpace(request.TimeZoneId) ? "Asia/Kolkata" : request.TimeZoneId.Trim();
             var durationMinutes = (request.ScheduledEnd - request.ScheduledStart).TotalMinutes;
             if (durationMinutes < pipeline.DefaultDurationMinutes)
@@ -1801,11 +1808,11 @@ AND i.ScheduledStart<@ScheduledEnd AND i.ScheduledEnd>@ScheduledStart ORDER BY i
         if (request.Id <= 0)
         {
             var attempt = isPipelineManaged ? await db.ExecuteScalarAsync<int>("SELECT COALESCE(MAX(AttemptNumber),0)+1 FROM recruitment_interviews WHERE ApplicationId=@ApplicationId AND RoundConfigurationId=@RoundConfigurationId", new { ApplicationId = request.ApplicationId, RoundConfigurationId = pipeline!.RoundConfigurationId }) : 1;
-            id = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_interviews (IsStandalone,DecisionApproverUserId,ApplicationId,RoundCode,InterviewType,ScheduledStart,ScheduledEnd,Mode,LocationOrLink,Status,Result,OverallFeedback,OverallScore,CreatedByUserId,PipelineStageInstanceId,RoundConfigurationId,TimeZoneId,AttemptNumber,RescheduleCount) VALUES (@IsStandalone,@DecisionApproverUserId,@ApplicationId,@RoundCode,@InterviewType,@ScheduledStart,@ScheduledEnd,@Mode,@LocationOrLink,@Status,@Result,@OverallFeedback,0,@UserId,@PipelineStageInstanceId,@RoundConfigurationId,@TimeZoneId,@AttemptNumber,0);SELECT LAST_INSERT_ID();", new { request.IsStandalone, request.DecisionApproverUserId, request.ApplicationId, request.RoundCode, request.InterviewType, request.ScheduledStart, request.ScheduledEnd, request.Mode, request.LocationOrLink, request.Status, request.Result, request.OverallFeedback, UserId = user.Id, PipelineStageInstanceId = pipeline?.PipelineStageInstanceId, RoundConfigurationId = pipeline?.RoundConfigurationId, TimeZoneId = string.IsNullOrWhiteSpace(request.TimeZoneId) ? "Asia/Kolkata" : request.TimeZoneId, AttemptNumber = attempt });
+            id = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_interviews (DirectEmail,DirectName,DirectClientId,IsStandalone,DecisionApproverUserId,ApplicationId,RoundCode,InterviewType,ScheduledStart,ScheduledEnd,Mode,LocationOrLink,Status,Result,OverallFeedback,OverallScore,CreatedByUserId,PipelineStageInstanceId,RoundConfigurationId,TimeZoneId,AttemptNumber,RescheduleCount) VALUES (@DirectEmail,@DirectName,@DirectClientId,@IsStandalone,@DecisionApproverUserId,@ApplicationId,@RoundCode,@InterviewType,@ScheduledStart,@ScheduledEnd,@Mode,@LocationOrLink,@Status,@Result,@OverallFeedback,0,@UserId,@PipelineStageInstanceId,@RoundConfigurationId,@TimeZoneId,@AttemptNumber,0);SELECT LAST_INSERT_ID();", new { request.DirectEmail, request.DirectName, request.DirectClientId, request.IsStandalone, request.DecisionApproverUserId, request.ApplicationId, request.RoundCode, request.InterviewType, request.ScheduledStart, request.ScheduledEnd, request.Mode, request.LocationOrLink, request.Status, request.Result, request.OverallFeedback, UserId = user.Id, PipelineStageInstanceId = pipeline?.PipelineStageInstanceId, RoundConfigurationId = pipeline?.RoundConfigurationId, TimeZoneId = string.IsNullOrWhiteSpace(request.TimeZoneId) ? "Asia/Kolkata" : request.TimeZoneId, AttemptNumber = attempt });
         }
         else
         {
-            var existing = await db.QueryFirstOrDefaultAsync<ExistingInterviewRow>(@"SELECT i.ApplicationId,i.Status,i.ScheduledStart,i.ScheduledEnd,i.RescheduleCount,i.PipelineStageInstanceId,i.RoundConfigurationId,i.TimeZoneId,i.AttemptNumber FROM recruitment_interviews i JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId WHERE i.Id=@Id AND (@ClientId IS NULL OR a.ClientId=@ClientId)", new { request.Id, ClientId = user.ClientId });
+            var existing = await db.QueryFirstOrDefaultAsync<ExistingInterviewRow>(@"SELECT i.ApplicationId,i.Status,i.ScheduledStart,i.ScheduledEnd,i.RescheduleCount,i.PipelineStageInstanceId,i.RoundConfigurationId,i.TimeZoneId,i.AttemptNumber FROM recruitment_interviews i LEFT JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId WHERE i.Id=@Id AND (@ClientId IS NULL OR COALESCE(a.ClientId,i.DirectClientId)=@ClientId)", new { request.Id, ClientId = user.ClientId });
             if (existing is null) return (null, "Interview was not found.");
             if (existing.ApplicationId != request.ApplicationId) return (null, "An interview cannot be moved to another application.");
             var scheduleChanged = existing.ScheduledStart != request.ScheduledStart || existing.ScheduledEnd != request.ScheduledEnd;
@@ -1842,10 +1849,12 @@ WHERE defaultPanel.PipelineStageId=@PipelineStageId AND defaultPanel.PanelUserId
         if (isPipelineManaged && pipeline!.PipelineStageInstanceId is > 0)
             await db.ExecuteAsync("INSERT INTO recruitment_stage_events (StageInstanceId,EventType,EventTitle,EventDetails,ActorUserId) VALUES (@StageInstanceId,@EventType,@EventTitle,@Details,@UserId)", new { StageInstanceId = pipeline.PipelineStageInstanceId, EventType = request.Status == "Completed" ? "InterviewCompleted" : "InterviewScheduled", EventTitle = $"{request.RoundCode} {request.Status}", Details = $"{request.InterviewType} / {request.ScheduledStart:g} - {request.ScheduledEnd:g} / {request.TimeZoneId}", UserId = user.Id });
         var activityTitle = string.IsNullOrWhiteSpace(stage) ? $"Interview {request.Status}" : stage;
+        if (application.Id > 0) {
         await AddPositionTimelineAsync(db, application.PositionId, "Interview", $"{activityTitle}: {application.CandidateName}", $"{request.RoundCode} / {request.InterviewType}", user.Id);
         await WriteActivityAsync(db, application.ClientId, application.CandidateId, null, "RECRUITMENT", "INTERVIEW_UPDATED", activityTitle, $"{application.PositionTitle}: {request.RoundCode} / {request.Result}; decision approver {existingDecision?.DecisionApproverUserId?.ToString() ?? "unassigned"} -> {request.DecisionApproverUserId?.ToString() ?? "unassigned"}", "RecruitmentInterview", id.ToString(), user);
         await RefreshPositionCountersAsync(db, application.PositionId);
-        return ((await InterviewRowsAsync(db, user, null, [application.Id])).FirstOrDefault(row => row.Id == id), "");
+        }
+        return ((await InterviewRowsAsync(db, user, null, application.Id > 0 ? [application.Id] : null)).FirstOrDefault(row => row.Id == id), "");
     }
 
     public async Task<IEnumerable<RecruitmentInterviewFeedback>> GetInterviewFeedbackAsync(long interviewId, AuthUser user)
@@ -1877,7 +1886,7 @@ WHERE defaultPanel.PipelineStageId=@PipelineStageId AND defaultPanel.PanelUserId
         if (IsPanelScoped(user) && !interview.PanelUserIds.Contains(user.Id)) return (null, "This interview is not assigned to you.");
         if (interview.Status == "Completed") return (null, "This interview is completed. Submitted feedback is read-only.");
         if ((interview.Status ?? "") is "Cancelled" or "No Show") return (null, $"Feedback cannot be submitted for an interview marked {interview.Status}.");
-        var application = await ApplicationByIdAsync(db, interview.ApplicationId, user);
+        var application = interview.ApplicationId > 0 ? await ApplicationByIdAsync(db, interview.ApplicationId, user) : new RecruitmentCandidateApplication { ClientId = interview.ClientId };
         if (application is null) return (null, "Interview application was not found.");
         var isPanelMember = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_interview_panel_members WHERE InterviewId=@InterviewId AND PanelUserId=@PanelUserId", new { InterviewId = interviewId, request.PanelUserId });
         if (isPanelMember == 0) return (null, "Feedback can only be recorded for an assigned panel member.");
@@ -1926,7 +1935,7 @@ WHERE feedback.InterviewId=@InterviewId ORDER BY feedback.OverallScore", new { I
         await db.ExecuteAsync("UPDATE recruitment_interviews SET OverallScore=@OverallScore,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@InterviewId", new { InterviewId = interviewId, OverallScore = aggregateScore }, transaction);
         await transaction.CommitAsync();
         await WriteRecruitmentAuditAsync(db, "RecruitmentInterviewFeedback", id, "Submitted", user.Id, request);
-        await WriteActivityAsync(db, application.ClientId, application.CandidateId, null, "RECRUITMENT", "INTERVIEW_FEEDBACK_SUBMITTED", $"Interview feedback: {request.Recommendation}", $"{interview.RoundCode} / {request.OverallScore:0.##}/100", "RecruitmentInterview", interviewId.ToString(CultureInfo.InvariantCulture), user);
+        if (application.Id > 0) await WriteActivityAsync(db, application.ClientId, application.CandidateId, null, "RECRUITMENT", "INTERVIEW_FEEDBACK_SUBMITTED", $"Interview feedback: {request.Recommendation}", $"{interview.RoundCode} / {request.OverallScore:0.##}/100", "RecruitmentInterview", interviewId.ToString(CultureInfo.InvariantCulture), user);
         var saved = (await InterviewFeedbackRowsAsync(db, interviewId)).FirstOrDefault(row => row.Id == id);
         if (saved is null) return (null, "Interview feedback was saved but could not be reloaded.");
         return (saved, "");
@@ -2549,6 +2558,11 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         }
         var acceptedOffer = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_offers WHERE ApplicationId=@Id AND Status='Accepted'", new { Id = applicationId });
         if (acceptedOffer == 0) return (null, "Accept the candidate offer before converting the profile to an employee.");
+        if ((await ResolveSigningSettingsAsync(db, application.ClientId)).Enabled)
+        {
+            var joiningError = await RecruitmentCandidateJourneyGate.JoiningAsync(db, applicationId);
+            if (joiningError.Length > 0) return (null, joiningError);
+        }
         var pendingMandatory = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidate_checklist_items WHERE ApplicationId=@Id AND Mandatory=TRUE AND Status<>'Completed'", new { Id = applicationId });
         if (pendingMandatory > 0) return (null, $"Complete {pendingMandatory} mandatory pre-onboarding checklist item(s) before employee creation.");
         var duplicateCode = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE ClientId=@ClientId AND EmployeeCode=@EmployeeCode", new { application.ClientId, request.EmployeeCode });
@@ -3388,7 +3402,7 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
             ratios["preferredSkills"] = Math.Min(ratios.GetValueOrDefault("preferredSkills"), preferredRatio);
         var evidenceSummaries = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["requiredSkills"] = $"{SkillEvidenceSummary(requiredMatches)}; must-have gate {eligibilityStatus}",
+            ["requiredSkills"] = $"{SkillEvidenceSummary(requiredMatches)}; skill gaps are advisory when the ATS cutoff is met",
             ["preferredSkills"] = SkillEvidenceSummary(preferredMatches),
             ["experience"] = $"{data.TotalExperienceMonths} months against requirement '{experienceRange}'",
             ["qualification"] = $"Candidate '{data.HighestQualification}' against '{qualificationRequirement}'",
@@ -3423,11 +3437,12 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
             ? Math.Clamp(Round(criteria.Sum(criterion => aiAnalysis.Criteria.GetValueOrDefault(criterion.CriterionCode, localRatios.GetValueOrDefault(criterion.CriterionCode)) * criterion.Weight)), 0, 100)
             : null;
         var total = Math.Clamp(Round(components.Sum(row => row.AwardedScore)), 0, 100);
+        if (total >= profile.MinimumShortlistScore) eligibilityStatus = RecruitmentAtsEligibilityStatus.Eligible;
         var recommendation = eligibilityStatus switch
         {
             RecruitmentAtsEligibilityStatus.Ineligible => "Ineligible - must-have requirements not met",
             RecruitmentAtsEligibilityStatus.NeedsReview => "Needs review - must-have skill duration is not verified",
-            _ => total >= profile.MinimumShortlistScore ? "Review for shortlist" : "Below shortlist threshold"
+            _ => total >= profile.MinimumShortlistScore ? "Eligible - ATS cutoff met" : "Below shortlist threshold"
         };
         var humanReviewRequired = (pipelineSelection?.RequireHumanConfirmation ?? true)
             || eligibilityStatus == RecruitmentAtsEligibilityStatus.NeedsReview;
@@ -3437,7 +3452,7 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
                 ? "Hybrid ATS used deterministic rules and local semantic vectors"
                 : "Deterministic ATS rules were used";
         var fallbackNote = profile.EnableAiScoring && !aiAnalysis.Applied ? $" External AI was not applied ({aiAnalysis.Status}); local scoring was retained." : "";
-        var gateSummary = MustHaveGateSummary(requiredMatches, eligibilityStatus);
+        var gateSummary = RequiredSkillSummary(requiredMatches);
         var explanationText = Truncate(eligibilityStatus switch
         {
             RecruitmentAtsEligibilityStatus.Ineligible => $"{recommendation}. {gateSummary}. {methodLabel}.{fallbackNote}",
@@ -3525,7 +3540,7 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
 THEN EXISTS(SELECT 1 FROM recruitment_application_pipeline_instances pi
  JOIN recruitment_application_stage_instances si ON si.Id=pi.CurrentStageInstanceId AND si.Status='Active'
  JOIN recruitment_pipeline_stages stage ON stage.Id=si.PipelineStageId AND stage.StageType='Interview'
- JOIN recruitment_interview_stage_configurations roundConfig ON roundConfig.PipelineStageId=stage.Id
+
  WHERE pi.ApplicationId=a.Id AND pi.Status='Active' AND NOT EXISTS(SELECT 1 FROM recruitment_interviews scheduled
  WHERE scheduled.ApplicationId=a.Id AND scheduled.PipelineStageInstanceId=si.Id AND scheduled.Status IN ('Scheduled','Rescheduled','Completed')))
 ELSE a.CurrentStage IN ('Shortlisted','Interview') AND NOT EXISTS(SELECT 1 FROM recruitment_interviews scheduled
@@ -3537,9 +3552,12 @@ ELSE a.CurrentStage IN ('Shortlisted','Interview') AND NOT EXISTS(SELECT 1 FROM 
 (SELECT job.Status FROM recruitment_ats_scoring_jobs job WHERE job.ApplicationId=a.Id ORDER BY job.Id DESC LIMIT 1) AtsJobStatus,
 (SELECT job.LastError FROM recruitment_ats_scoring_jobs job WHERE job.ApplicationId=a.Id ORDER BY job.Id DESC LIMIT 1) AtsJobError,
 " + GlobalPoolEligibilitySql + @" CanMoveToGlobalTalentPool,
-" + InterviewReadySql + @" IsInterviewReady
+" + InterviewReadySql + @" IsInterviewReady,
+EXISTS(SELECT 1 FROM recruitment_application_pipeline_instances flow JOIN recruitment_application_stage_instances stage ON stage.Id=flow.CurrentStageInstanceId JOIN recruitment_pipeline_stages definition ON definition.Id=stage.PipelineStageId AND definition.StageType='Interview' WHERE flow.ApplicationId=a.Id AND NOT EXISTS(SELECT 1 FROM recruitment_interview_stage_configurations config WHERE config.PipelineStageId=definition.Id)) InterviewSettingsMissing
 FROM recruitment_candidate_applications a JOIN recruitment_candidates c ON c.Id=a.CandidateId JOIN recruitment_open_positions p ON p.Id=a.PositionId LEFT JOIN clients cl ON cl.Id=a.ClientId LEFT JOIN authusers u ON u.Id=a.RecruiterUserId LEFT JOIN recruitment_application_scores s ON s.ApplicationId=a.Id AND s.IsCurrent=TRUE LEFT JOIN recruitment_job_postings posting ON posting.Id=a.JobPostingId
 WHERE a.ApplicationType='Application' AND (@ApplicationId IS NULL OR a.Id=@ApplicationId) AND (@ClientId IS NULL OR a.ClientId=@ClientId) AND (@PositionId IS NULL OR a.PositionId=@PositionId) AND (@CandidateId IS NULL OR a.CandidateId=@CandidateId) AND (@Stage='' OR a.CurrentStage=@Stage) ORDER BY a.UpdatedAt DESC", new { ClientId = user.ClientId, PositionId = positionId, CandidateId = candidateId, Stage = stage ?? "", ApplicationId = applicationId, GlobalClientId = GlobalTalentPoolClientId });
+        foreach (var row in rows)
+            row.ScoreStatus = RecruitmentAtsDomainRules.EffectiveScoreStatus(row.AtsScore, row.AtsShortlistThreshold, row.ScoreStatus);
         return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
     }
 
@@ -3548,25 +3566,26 @@ WHERE a.ApplicationType='Application' AND (@ApplicationId IS NULL OR a.Id=@Appli
 
     private static async Task<IEnumerable<RecruitmentInterview>> InterviewRowsAsync(MySqlConnection db, AuthUser user, long? applicationId, long[]? applicationIds, int? panelUserId = null)
     {
-        var rows = (await db.QueryAsync<RecruitmentInterview>(@"SELECT i.*,a.ClientId,p.JobLocation,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,p.PositionTitle,
+        var rows = (await db.QueryAsync<RecruitmentInterview>(@"SELECT i.*,COALESCE(a.ClientId,i.DirectClientId) ClientId,p.JobLocation,COALESCE(c.Id,0) CandidateId,COALESCE(c.Email,i.DirectEmail) CandidateEmail,COALESCE(NULLIF(TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))),''),NULLIF(i.DirectName,''),i.DirectEmail) CandidateName,COALESCE(p.PositionTitle,'Unlinked interview') PositionTitle,
 COALESCE(ps.StageName,'') PipelineStageName,(i.PipelineStageInstanceId IS NOT NULL) IsPipelineManaged,
 COALESCE((SELECT COALESCE(approver.DisplayName,approver.Email) FROM authusers approver WHERE approver.Id=i.DecisionApproverUserId),'') DecisionApproverName,
 COALESCE(rc.DefaultDurationMinutes,0) DefaultDurationMinutes,COALESCE(rc.MinimumPanelCount,0) MinimumPanelCount,
-COALESCE(rc.MinimumPassingScore,0) MinimumPassingScore,COALESCE(rc.FeedbackRequired,FALSE) FeedbackRequired,
+COALESCE(rc.MinimumPassingScore,0) MinimumPassingScore,COALESCE(rc.FeedbackRequired,TRUE) FeedbackRequired,
 COALESCE(rc.ScoreInputMode,'PercentageWeighted') ScoreInputMode,COALESCE(rc.PanelAggregationMethod,'Average') PanelAggregationMethod,
 COALESCE(rc.CalendarEnabled,FALSE) CalendarEnabled,COALESCE(rc.AllowReschedule,TRUE) AllowReschedule,
 COALESCE((SELECT JSON_ARRAYAGG(pm.PanelUserId) FROM recruitment_interview_panel_members pm WHERE pm.InterviewId=i.Id),'[]') PanelUserIdsJson
-FROM recruitment_interviews i JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId
-JOIN recruitment_candidates c ON c.Id=a.CandidateId JOIN recruitment_open_positions p ON p.Id=a.PositionId
+FROM recruitment_interviews i LEFT JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId
+LEFT JOIN recruitment_candidates c ON c.Id=a.CandidateId LEFT JOIN recruitment_open_positions p ON p.Id=a.PositionId
 LEFT JOIN recruitment_application_stage_instances si ON si.Id=i.PipelineStageInstanceId
 LEFT JOIN recruitment_pipeline_stages ps ON ps.Id=si.PipelineStageId
 LEFT JOIN recruitment_interview_stage_configurations rc ON rc.Id=i.RoundConfigurationId
-WHERE (@ClientId IS NULL OR a.ClientId=@ClientId) AND (@ApplicationId IS NULL OR i.ApplicationId=@ApplicationId)
+WHERE (@ClientId IS NULL OR COALESCE(a.ClientId,i.DirectClientId)=@ClientId) AND (@ApplicationId IS NULL OR i.ApplicationId=@ApplicationId)
 AND (@UseIds=FALSE OR i.ApplicationId IN @Ids)
 AND (@PanelUserId IS NULL OR i.DecisionApproverUserId=@PanelUserId OR EXISTS (SELECT 1 FROM recruitment_interview_panel_members scopedPanel WHERE scopedPanel.InterviewId=i.Id AND scopedPanel.PanelUserId=@PanelUserId))
 ORDER BY i.ScheduledStart DESC", new { ClientId = user.ClientId, ApplicationId = applicationId, UseIds = applicationIds is { Length: > 0 }, Ids = applicationIds ?? [0L], PanelUserId = panelUserId })).ToList();
         if (rows.Count == 0) return rows;
-        rows = (await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation)).ToList();
+        var directRows = rows.Where(row => row.ApplicationId == 0 && (row.CreatedByUserId == user.Id || RecruitmentPermissions.IsAdmin(user) || row.DecisionApproverUserId == user.Id || JsonSerializer.Deserialize<int[]>(row.PanelUserIdsJson)!.Contains(user.Id))).ToList();
+        rows = (await RecruitmentAccessScope.FilterAsync(db, user, rows.Where(row => row.ApplicationId > 0), row => row.ClientId, row => row.JobLocation)).Concat(directRows).ToList();
         if (rows.Count == 0) return rows;
         var ids = rows.Select(row => row.Id).ToArray();
         var panelStatus = (await db.QueryAsync<RecruitmentInterviewPanelStatus>(@"SELECT pm.InterviewId,pm.PanelUserId UserId,COALESCE(NULLIF(u.DisplayName,''),u.Email,'Panel member') DisplayName,
@@ -3601,7 +3620,7 @@ FROM recruitment_interview_panel_members pm LEFT JOIN authusers u ON u.Id=pm.Pan
             || permission.Equals("recruitment.interview.schedule", StringComparison.OrdinalIgnoreCase));
 
     internal static bool CanRecordInterviewDecision(AuthUser user, int? approverId) =>
-        CanRecordOtherPanelFeedback(user) || (approverId is > 0 ? approverId == user.Id
+        RecruitmentPermissions.IsAdmin(user) || (approverId is > 0 ? approverId == user.Id
             && user.Permissions.Any(permission => permission is "recruitment.interview.panel" or "recruitment.interview.schedule" or "recruitment.manage" or "settings.manage")
             : user.Permissions.Any(permission => permission is "recruitment.interview.schedule" or "recruitment.manage" or "settings.manage"));
 
@@ -3633,7 +3652,7 @@ i.RoundConfigurationId,ps.Id PipelineStageId,COALESCE(ps.StageType,'') StageType
 COALESCE(rc.InterviewType,i.InterviewType) InterviewType,COALESCE(rc.DefaultDurationMinutes,60) DefaultDurationMinutes,
 COALESCE(rc.MinimumPanelCount,1) MinimumPanelCount,COALESCE(rc.MinimumPassingScore,60) MinimumPassingScore,
 COALESCE(rc.ScoreInputMode,'PercentageWeighted') ScoreInputMode,COALESCE(rc.PanelAggregationMethod,'Average') PanelAggregationMethod,
-COALESCE(rc.FeedbackRequired,FALSE) FeedbackRequired,COALESCE(rc.CalendarEnabled,TRUE) CalendarEnabled,
+COALESCE(rc.FeedbackRequired,TRUE) FeedbackRequired,COALESCE(rc.CalendarEnabled,TRUE) CalendarEnabled,
 COALESCE(rc.AllowReschedule,TRUE) AllowReschedule
 FROM recruitment_interviews i JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId
 LEFT JOIN recruitment_application_stage_instances si ON si.Id=i.PipelineStageInstanceId
@@ -3645,7 +3664,7 @@ rc.Id RoundConfigurationId,ps.Id PipelineStageId,COALESCE(ps.StageType,'') Stage
 COALESCE(rc.InterviewType,'Technical') InterviewType,COALESCE(rc.DefaultDurationMinutes,60) DefaultDurationMinutes,
 COALESCE(rc.MinimumPanelCount,1) MinimumPanelCount,COALESCE(rc.MinimumPassingScore,60) MinimumPassingScore,
 COALESCE(rc.ScoreInputMode,'PercentageWeighted') ScoreInputMode,COALESCE(rc.PanelAggregationMethod,'Average') PanelAggregationMethod,
-COALESCE(rc.FeedbackRequired,FALSE) FeedbackRequired,COALESCE(rc.CalendarEnabled,TRUE) CalendarEnabled,
+COALESCE(rc.FeedbackRequired,TRUE) FeedbackRequired,COALESCE(rc.CalendarEnabled,TRUE) CalendarEnabled,
 COALESCE(rc.AllowReschedule,TRUE) AllowReschedule
 FROM recruitment_candidate_applications a LEFT JOIN recruitment_application_pipeline_instances pi ON pi.ApplicationId=a.Id
 LEFT JOIN recruitment_application_stage_instances si ON si.Id=pi.CurrentStageInstanceId AND si.Status IN ('Active','Paused')
@@ -3932,6 +3951,13 @@ WHERE applicationRow.CandidateId=@CandidateId AND (@ClientId IS NULL OR applicat
         var snapshots = (await db.QueryAsync<RecruitmentApplicationScorePositionSnapshot>("SELECT * FROM recruitment_application_score_position_snapshots WHERE ApplicationScoreId IN @Ids", new { Ids = ids })).ToDictionary(row => row.ApplicationScoreId);
         foreach (var score in scores)
         {
+            var status = RecruitmentAtsDomainRules.EffectiveScoreStatus(score.OverrideScore ?? score.TotalScore, score.ShortlistThreshold, score.ScoreStatus);
+            if (score.IsCurrent && status != score.ScoreStatus)
+            {
+                score.ScoreStatus = status;
+                score.Recommendation = "Eligible - ATS cutoff met";
+                score.ExplanationText = "The ATS cutoff is met. Missing or unverified skills remain available below as advisory evidence.";
+            }
             score.Components = components.GetValueOrDefault(score.Id) ?? [];
             score.SkillMatches = skills.GetValueOrDefault(score.Id) ?? [];
             score.Evidence = evidence.GetValueOrDefault(score.Id) ?? [];
@@ -4094,7 +4120,7 @@ WHERE applicationRow.CandidateId=@CandidateId AND (@ClientId IS NULL OR applicat
         return Math.Clamp(rows.Select((row, index) => row.IsRequirementMet ? normalizedWeights[index] : 0m).Sum(), 0, 1);
     }
 
-    private static string MustHaveGateSummary(IReadOnlyCollection<CalculatedSkillMatch> requiredMatches, RecruitmentAtsEligibilityStatus status)
+    private static string RequiredSkillSummary(IReadOnlyCollection<CalculatedSkillMatch> requiredMatches)
     {
         if (requiredMatches.Count == 0) return "No must-have skills were configured";
         var exceptions = requiredMatches.Where(match => !match.IsRequirementMet).Select(match => match.MatchStatus switch
@@ -4105,8 +4131,8 @@ WHERE applicationRow.CandidateId=@CandidateId AND (@ClientId IS NULL OR applicat
             _ => $"{match.SkillName}: {match.MatchStatus}"
         }).ToArray();
         return exceptions.Length == 0
-            ? $"Must-have gate {status}: all {requiredMatches.Count} requirements satisfied"
-            : $"Must-have gate {status}: {string.Join("; ", exceptions)}";
+            ? $"All {requiredMatches.Count} required skills evidenced"
+            : $"Required-skill evidence: {string.Join("; ", exceptions)}";
     }
 
     private static string SkillRequirementExpected(CalculatedSkillMatch skill) => skill.MinimumYears > 0

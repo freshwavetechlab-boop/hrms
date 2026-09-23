@@ -1,9 +1,10 @@
+import { PageHeaderPortal } from './layout/AppPageHeader'
 import RecruitmentWorkOrderFields from './RecruitmentWorkOrderFields'
 import RecruitmentBatchCandidateEditor from './RecruitmentBatchCandidateEditor'
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { currentRecruitmentHiringCases } from '../services/recruitmentJobVersions'
-import { Alert, Button, Card, Divider, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Statistic, Tag, Timeline, Tooltip, message } from 'antd'
-import { ArrowLeftOutlined, ArrowRightOutlined, ClockCircleOutlined, DeleteOutlined, FileProtectOutlined, HistoryOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, TeamOutlined } from '@ant-design/icons'
+import { Alert, Button, Card, Divider, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Tabs, Tag, Timeline, Tooltip, message } from 'antd'
+import { ArrowLeftOutlined, ArrowRightOutlined, ClockCircleOutlined, DeleteOutlined, FileProtectOutlined, HistoryOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useAuthSession } from './AuthGate'
 import EntityAttachmentPanel from './EntityAttachmentPanel'
@@ -16,7 +17,6 @@ import type { RecruitmentPipelineTransition } from '../types/recruitmentOrchestr
 import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProcessDocumentSignature, RecruitmentProfileSubmissionBatch, RecruitmentProfileSubmissionBatchItem, RecruitmentWorkOrder, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
 import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
 import { hiringTransitionLabel, isDivisionRejectionOutcome } from '../utils/recruitmentTransitions'
-import DataTable from './DataTable'
 import RecruitmentRecordList from './RecruitmentRecordList'
 import './RecruitmentWorkOrderWorkspace.css'
 
@@ -40,7 +40,6 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
   const [clientId, setClientId] = useState(initialClientId)
-  const [query, setQuery] = useState('')
   const [workOrders, setWorkOrders] = useState<RecruitmentWorkOrder[]>([])
   const [cases, setCases] = useState<RecruitmentHiringCase[]>([])
   const [draft, setDraft] = useState<WorkOrderDraft>(() => blankWorkOrder(initialClientId))
@@ -81,7 +80,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   const requestedStageLog = queryParams.get('stageLog') === '1'
 
   const load = async () => {
-    const [orders, hiringCases] = await Promise.all([getRecruitmentWorkOrders(clientId, query), getRecruitmentHiringCases(clientId, true)])
+    const [orders, hiringCases] = await Promise.all([getRecruitmentWorkOrders(clientId), getRecruitmentHiringCases(clientId, true)])
     setWorkOrders(orders); setCases(hiringCases)
   }
   useEffect(() => { void getClients().then(setClients) }, [])
@@ -122,12 +121,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   const postInterviewCases = useMemo(() => currentCases.filter(row => row.isPostInterviewStage), [currentCases])
   const historicalCases = useMemo(() => cases.filter(row => !currentCases.some(current => current.id === row.id)), [cases, currentCases])
   const historicalSelection = Boolean(selectedCase && historicalCases.some(row => row.id === selectedCase.id))
-  const stats = useMemo(() => ({
-    activeOrders: workOrders.filter(row => row.status === 'Active').length,
-    positions: workOrders.reduce((total, row) => total + row.lineCount, 0),
-    activeCases: currentCases.filter(row => row.status === 'Active').length,
-    breached: currentCases.filter(row => row.status === 'Active' && row.overallDueAtUtc && new Date(row.overallDueAtUtc).getTime() < Date.now()).length,
-  }), [currentCases, workOrders])
+
 
   const openNew = () => { setDraft(blankWorkOrder(clientId)); setEditorOpen(true) }
   const openEdit = async (row: RecruitmentWorkOrder) => {
@@ -372,7 +366,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
       : activeStage.allowPause === false
         ? 'SLA pause is disabled in this stage configuration.'
         : ''
-  const moveBlockedReason = historicalSelection ? 'Open the currently linked journey to take action; this earlier journey is retained for history.' : selectedCase?.status !== 'Active'
+  const moveBlockedReason = canDelete && !historicalSelection && selectedCase?.status !== 'Superseded' ? '' : historicalSelection ? 'Open the currently linked journey to take action; this earlier journey is retained for history.' : selectedCase?.status !== 'Active'
     ? 'Only an active hiring journey can move to another stage.'
     : !activeStage
       ? 'There is no active stage to move.'
@@ -384,8 +378,8 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
             ? `Complete the required stage document${missingRequiredDocuments.length === 1 ? '' : 's'} first: ${missingRequiredDocuments.map(row => row.documentType.replaceAll('_', ' ')).join(', ')}.`
             : ''
   return <section className="work-order-workspace" data-testid="recruitment-work-orders">
-    {postInterview && <Card title="MoM signing & hiring-stage documents" extra={<Button onClick={() => void load()}>Refresh</Button>}>
-      <Alert showIcon type="info" message="Open a job → Prepare MoM → Sign MoM → Finalize signed" description="Reuses the existing audited committee signatures and stage approvals. Signing is available when its configured stage is reached; candidate progress is preserved while vacancies are being filled. Negotiation is in the adjacent tab." />
+    {postInterview && <><PageHeaderPortal slot="recruitment-page-controls"><Button onClick={() => void load()}>Refresh</Button></PageHeaderPortal>
+      <Alert showIcon type="info" message="Confirm agreed terms → Candidate signs MoM → HR approval"  />
       <RecruitmentRecordList<RecruitmentHiringCase> rows={postInterviewCases} title={row => row.positionName} subtitle={row => row.workOrderNumber} exportFileName="recruitment-mom"
         filters={[{ key: 'job', label: 'Job role', value: row => row.positionName }, { key: 'stage', label: 'Hiring stage', value: row => row.currentStageName }, { key: 'order', label: 'Work order', value: row => row.workOrderNumber }]}
         quickFilters={[...new Set(postInterviewCases.map(row => row.currentStageName).filter(Boolean))].map(stage => ({ key: stage, label: stage, tone: 'purple', matches: row => row.currentStageName === stage }))}
@@ -394,35 +388,16 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
         { key: 'positionName', label: 'Job' }, { key: 'workOrderNumber', label: 'Work order' },
         { key: 'currentStageName', label: 'Hiring stage' },
       ]} />
-    </Card>}
-    {!postInterview && <><div className="work-order-command-bar">
-      <div><span>Client hiring demand</span><h2>Work orders</h2><p>Record the client order once, then create its role-wise Hiring Requests. SLA targets come automatically from the published pipeline.</p></div>
-      <Space wrap>{!clientScopeManaged && <Select allowClear value={clientId || undefined} placeholder="All accessible clients" showSearch optionFilterProp="label" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={value => setClientId(value || 0)} />}<Input.Search value={query} placeholder="Work order or subject" onChange={event => setQuery(event.target.value)} onSearch={() => void load()} /><Button data-testid="work-order-add" type="primary" icon={<PlusOutlined />} onClick={openNew}>Add work order</Button></Space>
-    </div>
-    <div className="work-order-metrics">
-      <Card><Statistic title="Active orders" value={stats.activeOrders} prefix={<FileProtectOutlined />} /></Card>
-      <Card><Statistic title="Linked hiring requests" value={stats.positions} prefix={<TeamOutlined />} /></Card>
-      <Card><Statistic title="Active journeys" value={stats.activeCases} prefix={<PlayCircleOutlined />} /></Card>
-      <Card className={stats.breached ? 'risk' : ''}><Statistic title="Overdue journeys" value={stats.breached} prefix={<ClockCircleOutlined />} /></Card>
-    </div>
-    {displayMode !== 'table' && <div className="work-order-columns" data-testid="work-orders-pipeline-view">
-      <Card title="Work orders" extra={<Tag>{workOrders.length} records</Tag>}>
-        {!workOrders.length ? <Empty description="No work order has been entered for this client." /> : <div className="work-order-list">{workOrders.map(row => <article key={row.id}>
-          <button type="button" onClick={() => void viewWorkOrder(row)}><div><span>{row.clientName}</span><h3>{row.workOrderNumber}</h3><p>{row.subject || 'No subject entered'}</p></div><Tag color={statusColor(row.status)}>{row.status}</Tag></button>
-          <footer><span>{dateTimeText(row.receivedAtUtc)}</span><b>{row.lineCount} hiring request{row.lineCount === 1 ? '' : 's'}</b><span>Pipeline SLA applies on journey start</span><Button size="small" onClick={() => void openEdit(row)}>Edit</Button>{canDelete && <Popconfirm title="Delete this work order?" description="Delete its live cumulative pipeline cases first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeWorkOrder(row)}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</footer>
-        </article>)}</div>}
-      </Card>
-      <Card title="Position-wise hiring progress" extra={<Tag color="purple">Stages & SLA</Tag>}>
-        {!currentCases.length ? <Empty description="Open an order and start a published hiring pipeline for one role." /> : <div className="hiring-case-list">{currentCases.map(row => {
-          const overdue = row.status === 'Active' && row.overallDueAtUtc && new Date(row.overallDueAtUtc).getTime() < Date.now()
-          return <button type="button" key={row.id} className={overdue ? 'overdue' : ''} onClick={() => void viewCase(row)}><div><Tag color={statusColor(row.status)}>{row.status}</Tag><span>{row.currentStakeholderCode || 'Unassigned stakeholder'}</span></div><h3>{row.positionName}</h3><p>{row.workOrderNumber} · {row.pipelineName}</p><footer><span>{row.currentStageName || 'Completed'}</span><b><ClockCircleOutlined /> {remainingDuration(row.overallDueAtUtc, clockNow)}</b></footer></button>
-        })}</div>}
-      </Card>
-    </div>}
-    {displayMode !== 'pipeline' && <div className="work-order-table-stack" data-testid="work-orders-table-view">
-      <Card size="small" title="Work orders"><DataTable
+    </>}
+    {!postInterview && <>
+    <PageHeaderPortal slot="recruitment-page-controls"><Button data-testid="work-order-add" type="primary" icon={<PlusOutlined />} onClick={openNew}>Add work order</Button></PageHeaderPortal>
+    {!clientScopeManaged && <Select allowClear value={clientId || undefined} placeholder="All accessible clients" showSearch optionFilterProp="label" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={value => setClientId(value || 0)} />}
+    <Tabs className="work-order-list-tabs" items={[
+      { key: 'orders', label: 'Work orders', children: <RecruitmentRecordList<RecruitmentWorkOrder> view={displayMode === 'table' ? 'Table' : 'Cards'} title={row => row.workOrderNumber} subtitle={row => row.subject || row.clientName}
+        actions={row =>  <Space size={4} wrap><Button size="small" onClick={() => void viewWorkOrder(row)}>View</Button><Button size="small" onClick={() => void openEdit(row)}>Edit</Button>{canDelete && <Popconfirm title="Delete this work order?" description="Delete its live cumulative pipeline cases first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeWorkOrder(row)}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space>}
+        filters={[{ key: 'status', label: 'Status', value: row => row.status }, { key: 'client', label: 'Client', value: row => row.clientName || '' }]}
+        quickFilters={[{ key: 'active', label: 'Active', tone: 'green', matches: row => row.status === 'Active' }, { key: 'completed', label: 'Completed', tone: 'purple', matches: row => row.status === 'Completed' }]}
         rows={workOrders}
-        getRowId={row => row.id}
         exportFileName="recruitment-work-orders"
         emptyText="No work order has been entered for this client."
         columns={[
@@ -431,12 +406,13 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
           { key: 'receivedAtUtc', label: 'Received', width: '170px', render: row => dateTimeText(row.receivedAtUtc) },
           { key: 'lineCount', label: 'Hiring requests', width: '130px' },
           { key: 'status', label: 'Status', width: '110px', render: row => <Tag color={statusColor(row.status)}>{row.status}</Tag> },
-          { key: 'actions', label: 'Actions', width: '240px', sortable: false, filterable: false, render: row => <Space size={4} wrap><Button size="small" onClick={() => void viewWorkOrder(row)}>View</Button><Button size="small" onClick={() => void openEdit(row)}>Edit</Button>{canDelete && <Popconfirm title="Delete this work order?" description="Delete its live cumulative pipeline cases first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeWorkOrder(row)}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space> },
-        ]}
-      /></Card>
-      <Card size="small" title="Position-wise hiring progress"><DataTable
+
+        ]} /> },
+      { key: 'progress', label: 'Position-wise hiring progress', children: <RecruitmentRecordList<RecruitmentHiringCase> view={displayMode === 'table' ? 'Table' : 'Cards'} title={row => row.positionName} subtitle={row => row.workOrderNumber}
+        actions={row =>  <Space size={4} wrap><Button size="small" onClick={() => void viewCase(row)}>Open</Button>{canDelete && <Popconfirm title="Delete this hiring journey?" description="Only empty test journeys can be deleted safely." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeHiringCase(row)}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space>}
+        filters={[{ key: 'status', label: 'Status', value: row => row.status }, { key: 'stage', label: 'Hiring stage', value: row => row.currentStageName || 'Completed' }, { key: 'order', label: 'Work order', value: row => row.workOrderNumber }]}
+        quickFilters={[{ key: 'active', label: 'Active', tone: 'green', matches: row => row.status === 'Active' }, { key: 'completed', label: 'Completed', tone: 'purple', matches: row => row.status === 'Completed' }, { key: 'overdue', label: 'Overdue', tone: 'red', matches: row => row.status === 'Active' && Boolean(row.overallDueAtUtc && new Date(row.overallDueAtUtc).getTime() < clockNow) }]}
         rows={currentCases}
-        getRowId={row => row.id}
         exportFileName="recruitment-hiring-journeys"
         emptyText="No governed hiring journey has started for this client."
         columns={[
@@ -444,14 +420,16 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
           { key: 'pipelineName', label: 'Pipeline', width: '190px' },
           { key: 'currentStageName', label: 'Current stage', width: '180px', render: row => row.currentStageName || 'Completed' },
           { key: 'currentStakeholderCode', label: 'Stakeholder', width: '160px', render: row => row.currentStakeholderCode || 'Unassigned' },
-          { key: 'overallDueAtUtc', label: 'Overall due', width: '170px', render: row => dateTimeText(row.overallDueAtUtc) },
+          { key: 'overallDueAtUtc', label: 'Overall due', width: '170px', render: row => <div className="pipeline-table-candidate"><span>{dateTimeText(row.overallDueAtUtc)}</span>{row.status === 'Active' && <small><ClockCircleOutlined /> {remainingDuration(row.overallDueAtUtc, clockNow)}</small>}</div> },
           { key: 'status', label: 'Status', width: '110px', render: row => <Tag color={statusColor(row.status)}>{row.status}</Tag> },
-          { key: 'actions', label: 'Actions', width: '170px', sortable: false, filterable: false, render: row => <Space size={4} wrap><Button size="small" onClick={() => void viewCase(row)}>Open</Button>{canDelete && <Popconfirm title="Delete this hiring journey?" description="Only empty test journeys can be deleted safely." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeHiringCase(row)}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space> },
-        ]}
-      /></Card>
-    </div>}
 
-    {historicalCases.length > 0 && <Card size="small" title="Earlier journeys — history retained"><Space wrap>{historicalCases.map(row => <Button key={row.id} onClick={() => void viewCase(row)}>{row.positionName} · Journey #{row.id}</Button>)}</Space></Card>}</>}
+        ]} /> },
+      ...(historicalCases.length ? [{ key: 'history', label: 'Earlier journeys', children: <RecruitmentRecordList<RecruitmentHiringCase>
+        view={displayMode === 'table' ? 'Table' : 'Cards'} rows={historicalCases} title={row => row.positionName} subtitle={row => `Journey #${row.id}`}
+        exportFileName="recruitment-journey-history" filters={[{ key: 'status', label: 'Status', value: row => row.status }]}
+        columns={[{ key: 'workOrderNumber', label: 'Work order' }, { key: 'currentStageName', label: 'Stage' }, { key: 'status', label: 'Status' }]}
+        actions={row => <Button onClick={() => void viewCase(row)}>View history</Button>} /> }] : []),
+    ]} /></>}
 
     <Drawer width={860} title={draft.id ? `Edit ${draft.workOrderNumber}` : 'New client work order'} open={editorOpen} onClose={() => setEditorOpen(false)} extra={<Button data-testid="work-order-save" type="primary" loading={saving} onClick={() => void save()}>Save work order</Button>}>
       <Alert showIcon type="info" message="Pipeline-driven SLA" description="Record the approved work order here. When a role journey starts, its cumulative SLA and stage targets are applied automatically from the published client pipeline." />
@@ -481,7 +459,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
       </>}
     </Drawer>
 
-    <Drawer rootClassName="hiring-journey-drawer" width="min(1180px, 96vw)" title={selectedCase ? `${selectedCase.positionName} · ${selectedCase.workOrderNumber}` : 'Hiring journey'} open={!!selectedCase} onClose={() => { setSelectedCase(null); setStageLogOpen(false); setProcessDocuments([]); setProfileBatches([]); setCandidateApplications([]); setSelectedApplicationIds([]); setCaseActionError(''); setCaseActionDialog(null); setCaseDialogError('') }} extra={selectedCase && <Space wrap><Button data-testid="hiring-case-time-log" icon={<HistoryOutlined />} onClick={() => setStageLogOpen(true)}>Stage time log</Button>{selectedCase.status === 'Active' && <>{activeStage?.isPaused ? <Button data-testid="hiring-case-resume" loading={caseActionBusy} icon={<PlayCircleOutlined />} onClick={() => void resume()}>Resume SLA</Button> : <Tooltip title={pauseBlockedReason}><span><Button data-testid="hiring-case-pause" loading={caseActionBusy} disabled={Boolean(pauseBlockedReason)} icon={<PauseCircleOutlined />} onClick={pause}>Pause SLA</Button></span></Tooltip>}<Tooltip title={moveBlockedReason}><span><Button data-testid="hiring-case-move" type="primary" loading={caseActionBusy} disabled={Boolean(moveBlockedReason)} onClick={advance}>{selectedCase.advanceStatus === 'Pending Approval' ? 'Approval pending' : activeStage?.isTerminal ? 'Complete journey' : <><ArrowLeftOutlined /> Move <ArrowRightOutlined /></>}</Button></span></Tooltip></>}{canDelete && <Popconfirm title="Delete this hiring case?" description="Its SLA history and generated process records will be removed. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeHiringCase(selectedCase)}><Button danger icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space>}>
+    <Drawer rootClassName="hiring-journey-drawer" width="min(1180px, 96vw)" title={selectedCase ? `${selectedCase.positionName} · ${selectedCase.workOrderNumber}` : 'Hiring journey'} open={!!selectedCase} onClose={() => { setSelectedCase(null); setStageLogOpen(false); setProcessDocuments([]); setProfileBatches([]); setCandidateApplications([]); setSelectedApplicationIds([]); setCaseActionError(''); setCaseActionDialog(null); setCaseDialogError('') }} extra={selectedCase && <Space wrap><Button data-testid="hiring-case-time-log" icon={<HistoryOutlined />} onClick={() => setStageLogOpen(true)}>Stage time log</Button>{(selectedCase.status === 'Active' || canDelete) && <>{activeStage?.isPaused ? <Button data-testid="hiring-case-resume" loading={caseActionBusy} icon={<PlayCircleOutlined />} onClick={() => void resume()}>Resume SLA</Button> : <Tooltip title={pauseBlockedReason}><span><Button data-testid="hiring-case-pause" loading={caseActionBusy} disabled={Boolean(pauseBlockedReason)} icon={<PauseCircleOutlined />} onClick={pause}>Pause SLA</Button></span></Tooltip>}<Tooltip title={moveBlockedReason}><span><Button data-testid="hiring-case-move" type="primary" loading={caseActionBusy} disabled={Boolean(moveBlockedReason)} onClick={advance}>{selectedCase.advanceStatus === 'Pending Approval' ? 'Approval pending' : activeStage?.isTerminal ? 'Complete journey' : <><ArrowLeftOutlined /> Move <ArrowRightOutlined /></>}</Button></span></Tooltip></>}{canDelete && <Popconfirm title="Delete this hiring case?" description="Its SLA history and generated process records will be removed. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeHiringCase(selectedCase)}><Button danger icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space>}>
       {selectedCase && <><div className="case-hero"><div><span>{selectedCase.pipelineName}</span><h2>{selectedCase.currentStageName || 'Pipeline complete'}</h2><p>SLA anchored at {dateTimeText(selectedCase.slaAnchorAtUtc)} · overall due {dateTimeText(selectedCase.overallDueAtUtc)}</p></div><Tag color={statusColor(selectedCase.status)}>{selectedCase.status}</Tag></div>
         {caseActionError && <Alert data-testid="hiring-case-action-error" showIcon closable type="error" message="Action could not be completed" description={caseActionError} onClose={() => setCaseActionError('')} />}
         {moveBlockedReason && selectedCase.advanceStatus !== 'Pending Approval' && <Alert data-testid="hiring-case-action-guidance" showIcon type="warning" message="Next action needed" description={moveBlockedReason} />}

@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using Dapper;
 using MySqlConnector;
 using Payroll.API.Models;
+using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
@@ -1804,6 +1805,9 @@ WHERE ApplicationId=@ApplicationId AND StageInstanceId=@StageId AND TransitionId
             new { ApplicationId = applicationId, StageId = context.CurrentStageInstanceId, TransitionId = request.TransitionId });
         if (duplicate is not null) return (null, "This transition is already pending.");
         var pendingApproval = context.ApprovalWorkflowId is > 0;
+        if (pendingApproval && context.TargetStageType == "Offer"
+            && await RecruitmentCandidateJourneyGate.TermsApprovalAsync(db, applicationId, configuredWorkflowId: context.ApprovalWorkflowId) == "")
+            pendingApproval = false; // Reuse the approval of these exact signed terms by the configured HR workflow.
         var requestId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_pipeline_transition_requests
 (ApplicationId,StageInstanceId,TransitionId,Reason,Status,RequestedByUserId)
 VALUES (@ApplicationId,@StageInstanceId,@TransitionId,@Reason,@Status,@UserId);SELECT LAST_INSERT_ID();",
@@ -1857,7 +1861,7 @@ WHERE a.Id=@ApplicationId AND (@ClientId IS NULL OR a.ClientId=@ClientId) ORDER 
         await using var db = Db();
         await db.OpenAsync();
         var row = await db.QueryFirstOrDefaultAsync<AutomaticAtsTransitionRow>(@"SELECT applicationRow.ClientId,
-currentStage.StageType CurrentStageType,resume.ParsingStatus,
+currentStage.StageType CurrentStageType,stageInstance.Id CurrentStageInstanceId,resume.ParsingStatus,
 (SELECT transitionRow.Id
  FROM recruitment_pipeline_transitions transitionRow
  JOIN recruitment_pipeline_stages targetStage ON targetStage.Id=transitionRow.ToStageId
@@ -1881,6 +1885,7 @@ WHERE applicationRow.Id=@ApplicationId", new { ApplicationId = applicationId });
             {
                 ApplicationId = applicationId,
                 Status = "Already Ready",
+                CurrentStageInstanceId = row.CurrentStageInstanceId,
                 Message = "Candidate is already in ATS review."
             }, "");
         if (!row.ParsingStatus.Equals("Parsed", StringComparison.OrdinalIgnoreCase) || row.TransitionId is null)
@@ -1911,7 +1916,19 @@ JOIN recruitment_pipeline_transitions transitionRow ON transitionRow.PipelineVer
 JOIN recruitment_pipeline_stages targetStage ON targetStage.Id=transitionRow.ToStageId
   AND targetStage.CardScope='Application' AND targetStage.IsActive=TRUE AND targetStage.StageType='ATS'
 WHERE applicationRow.ApplicationType='Application' AND currentStage.StageType<>'ATS'
-ORDER BY applicationRow.Id
+UNION
+SELECT application.Id
+FROM recruitment_candidate_applications application
+JOIN recruitment_application_pipeline_instances pipeline ON pipeline.ApplicationId=application.Id AND pipeline.Status='Active'
+JOIN recruitment_application_stage_instances stage ON stage.Id=pipeline.CurrentStageInstanceId AND stage.Status='Active'
+JOIN recruitment_pipeline_stages definition ON definition.Id=stage.PipelineStageId AND definition.StageType='ATS' AND definition.IsActive=TRUE
+JOIN recruitment_stage_ats_configurations ats ON ats.PipelineStageId=stage.PipelineStageId
+JOIN recruitment_application_scores score ON score.ApplicationId=application.Id AND score.IsCurrent=TRUE AND score.ResumeId=application.ResumeId
+ AND (ats.ScoringProfileId IS NULL OR score.ScoringProfileId=ats.ScoringProfileId)
+LEFT JOIN recruitment_job_postings posting ON posting.Id=application.JobPostingId
+WHERE application.ApplicationType='Application' AND COALESCE(score.OverrideScore,score.TotalScore)>=ats.MinimumAdvanceScore
+ AND (posting.AutoRunAts=TRUE OR (ats.AutoAdvance=TRUE AND (ats.RequireHumanConfirmation=FALSE OR score.OverriddenByUserId IS NOT NULL)))
+ORDER BY Id
 LIMIT @Limit", new { Limit = Math.Clamp(limit, 1, 500) })).ToList();
     }
 
@@ -1940,6 +1957,7 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id", new { ApplicationId = app
         var expectedStageTypes = normalized.ToUpperInvariant() switch
         {
             "SELECTED" => new[] { "Interview" },
+            "MOM_APPROVED" => new[] { "HR", "Approval" },
             "REJECTED" => Array.Empty<string>(),
             "ACCEPTED" or "WITHDRAWN" => new[] { "Offer" },
             "DOCUMENTSVERIFIED" => new[] { "Documents", "PreOnboarding" },
@@ -1956,6 +1974,7 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id", new { ApplicationId = app
                 && !row.OutcomeCode.Contains("REJECT", StringComparison.OrdinalIgnoreCase)).ToList();
         if (normalized.Equals("Submitted", StringComparison.OrdinalIgnoreCase) && eligible.Count > 1)
             return (null, "Candidate information was submitted, but this stage has multiple next routes. Select the required route from the application.");
+        if (normalized.Equals("Accepted", StringComparison.OrdinalIgnoreCase)) eligible = eligible.Where(row => row.ToStageType is not ("Completed" or "Joined" or "Hired")).ToList();
         var selected = eligible.FirstOrDefault();
         if (selected is null) return (null, "");
         var reason = $"Automatic pipeline decision: {normalized}.";
@@ -1976,7 +1995,6 @@ JOIN recruitment_pipeline_stages target ON target.Id=transitionRow.ToStageId AND
 JOIN recruitment_application_scores score ON score.ApplicationId=application.Id AND score.IsCurrent=TRUE AND score.ResumeId=application.ResumeId
 WHERE application.Id=@Id AND (@ClientId IS NULL OR application.ClientId=@ClientId)
  AND stage.StageCode IN ('PROFILE_REVIEW_SHORTLISTING','PROFILE_REVIEW_AND_SHORTLISTING','SHARING_PROFILES','PROFILE_SHARING')
- AND (score.OverriddenByUserId IS NOT NULL OR score.ScoreStatus IN ('Scored','Completed'))
  AND EXISTS(SELECT 1 FROM recruitment_pipeline_stages atsStage
  JOIN recruitment_stage_ats_configurations ats ON ats.PipelineStageId=atsStage.Id
  JOIN recruitment_pipeline_stages previousDefinition ON previousDefinition.StageCode=atsStage.StageCode AND previousDefinition.StageType='ATS'
@@ -2039,9 +2057,9 @@ LEFT JOIN recruitment_application_scores score ON score.Id=(SELECT s.Id FROM rec
 WHERE a.Id=@Id AND pi.Status='Active'", new { Id = applicationId });
         if (row is null || (user.ClientId is not null && user.ClientId != row.ClientId)) return (null, "The application's current stage has no ATS automation configuration.");
         if (row.CurrentScore is null) return (null, "ATS score is not available yet.");
-        var scoreStatus = row.CurrentScoreStatus.Trim();
+        var scoreStatus = RecruitmentAtsDomainRules.EffectiveScoreStatus(row.CurrentScore, row.MinimumAdvanceScore, row.CurrentScoreStatus.Trim());
         atsOverridden |= row.CurrentScoreOverridden;
-        if (AtsNeedsHumanReview(scoreStatus, row.RequireHumanConfirmation, humanConfirmed, atsOverridden))
+        if (AtsNeedsHumanReview(scoreStatus, row.RequireHumanConfirmation && !row.JobAutoRunAts, humanConfirmed, atsOverridden))
             return (new RecruitmentPipelineTransitionResult
             {
                 ApplicationId = applicationId,
@@ -2279,6 +2297,8 @@ WHERE i.ApplicationId=@Id AND i.Status<>'Cancelled' AND f.Id IS NULL", new { Id 
 
     private static async Task<string> ValidateStageExitRequirementsAsync(MySqlConnection db, long applicationId, long stageId, long transitionId)
     {
+        var journeyError = await RecruitmentCandidateJourneyGate.ValidateTransitionAsync(db, applicationId, transitionId);
+        if (journeyError.Length > 0) return journeyError;
         var candidateId = await db.ExecuteScalarAsync<long?>("SELECT CandidateId FROM recruitment_candidate_applications WHERE Id=@Id", new { Id = applicationId });
         if (candidateId is null) return "Candidate application was not found.";
         var stageInstanceId = await db.ExecuteScalarAsync<long?>(@"SELECT CurrentPipelineStageInstanceId
@@ -3296,7 +3316,7 @@ LEFT JOIN clients c ON c.Id=p.ClientId";
     private sealed class AtsAutomationRow { public int ClientId { get; set; } public long PipelineStageId { get; set; } public decimal MinimumAdvanceScore { get; set; } public decimal MaximumRejectScore { get; set; } public bool AutoAdvance { get; set; } public bool AutoReject { get; set; } public bool RequireHumanConfirmation { get; set; } public bool JobAutoRunAts { get; set; } public string AdvanceOutcomeCode { get; set; } = ""; public string RejectOutcomeCode { get; set; } = ""; public decimal? CurrentScore { get; set; } public string CurrentScoreStatus { get; set; } = ""; public bool CurrentScoreOverridden { get; set; } }
     private sealed class AtsTransitionCandidate { public long Id { get; set; } public string OutcomeCode { get; set; } = ""; public string TargetStageName { get; set; } = ""; public string TargetStageType { get; set; } = ""; }
     private sealed class DecisionTransitionRow { public long Id { get; set; } public string OutcomeCode { get; set; } = ""; public int DisplayOrder { get; set; } public string FromStageType { get; set; } = ""; public string ToStageType { get; set; } = ""; public string ToStageName { get; set; } = ""; }
-    private sealed class AutomaticAtsTransitionRow { public int ClientId { get; set; } public string CurrentStageType { get; set; } = ""; public string ParsingStatus { get; set; } = ""; public long? TransitionId { get; set; } }
+    private sealed class AutomaticAtsTransitionRow { public int ClientId { get; set; } public long CurrentStageInstanceId { get; set; } public string CurrentStageType { get; set; } = ""; public string ParsingStatus { get; set; } = ""; public long? TransitionId { get; set; } }
     private class TransitionRequestRow { public long Id { get; set; } public long ApplicationId { get; set; } public long StageInstanceId { get; set; } public long TransitionId { get; set; } public string Reason { get; set; } = ""; public string Status { get; set; } = ""; public long? WorkflowInstanceId { get; set; } public DateTime? AppliedAtUtc { get; set; } public int ClientId { get; set; } }
     private sealed class ApplyTransitionRow : TransitionRequestRow { public long FromStageId { get; set; } public long ToStageId { get; set; } public string OutcomeCode { get; set; } = ""; public string FromStageName { get; set; } = ""; public string FromStageType { get; set; } = ""; public string ToStageName { get; set; } = ""; public int SlaDurationMinutes { get; set; } public bool IsTerminal { get; set; } public string ToStageType { get; set; } = ""; }
     private sealed class StageLockRow { public long Id { get; set; } public long ApplicationPipelineInstanceId { get; set; } public long ApplicationId { get; set; } public long PipelineStageId { get; set; } public string Status { get; set; } = ""; public DateTime EnteredAtUtc { get; set; } public long PausedDurationSeconds { get; set; } public string PauseBehavior { get; set; } = "ShiftStageAndOverall"; public long CurrentStageInstanceId { get; set; } public long PipelineInstanceId { get; set; } }

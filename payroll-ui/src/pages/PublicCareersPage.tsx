@@ -4,6 +4,7 @@ import { Alert, Button, Card, Checkbox, Form, Input, Modal, Popconfirm, Result, 
 import RecruitmentDynamicForm, { validateDynamicForm } from '../components/RecruitmentDynamicForm'
 import { useToast } from '../components/ToastProvider'
 import CandidateTrackerStatus from '../components/CandidateTrackerStatus'
+import CandidateMom from '../components/CandidateMom'
 import { getPublicOrganizationBrand } from '../services/settingsService'
 import {
   createPublicApplicationSession, createPublicApplicationTrackingSession, deletePublicApplicationFile, fetchPublicApplicationFile, getPublicApplicationProcessingStatus, getPublicApplicationTracker, getPublicCareerJobResult, loadPublicSelectOptions, requestPublicApplicationVerification, savePublicApplicationValues,
@@ -308,6 +309,7 @@ function PublicApplicationTrackerModal({ open, slug, initialApplicationCode, ini
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [tracker, setTracker] = useState<PublicCandidateApplicationTracker | null>(null)
+  const [trackingToken, setTrackingToken] = useState('')
 
   useEffect(() => {
     if (!open) return
@@ -331,9 +333,10 @@ function PublicApplicationTrackerModal({ open, slug, initialApplicationCode, ini
       return
     }
     setTracker(trackerResponse.data)
+    setTrackingToken(sessionResponse.data.trackingToken)
   }
 
-  const close = () => { setError(''); setTracker(null); onClose() }
+  const close = () => { setError(''); setTracker(null); setTrackingToken(''); onClose() }
   return <Modal className="public-tracker-modal" open={open} title="Track your applications" footer={null} onCancel={close} width="min(920px, 96vw)" destroyOnClose>
     {!tracker ? <Form layout="vertical" onFinish={() => void login()}>
       <Alert showIcon type="info" message="Track your application" description="Use the APP reference shown after submission and the 6-digit tracking PIN sent during your first verification." style={{ marginBottom: 16 }} />
@@ -341,7 +344,7 @@ function PublicApplicationTrackerModal({ open, slug, initialApplicationCode, ini
       <Form.Item label="Tracking PIN" required><Input.Password prefix={<LockOutlined />} inputMode="numeric" autoComplete="current-password" maxLength={6} value={pin} onChange={event => setPin(event.target.value.replace(/\D/g, '').slice(0, 6))} /></Form.Item>
       {error && <Alert showIcon type="error" message={error} style={{ marginBottom: 16 }} />}
       <Button block type="primary" htmlType="submit" loading={busy}>View application status</Button>
-    </Form> : <CandidateTrackerStatus tracker={tracker} />}
+    </Form> : <><CandidateTrackerStatus tracker={tracker} />{tracker.applications.map(application => <CandidateMom key={application.applicationId} token={trackingToken} applicationId={application.applicationId} positionTitle={application.positionTitle} />)}</>}
   </Modal>
 }
 
