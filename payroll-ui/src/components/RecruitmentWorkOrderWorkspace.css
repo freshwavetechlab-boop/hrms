@@ -33,7 +33,10 @@
 .work-order-table-stack>.ant-card{min-width:0;border-radius:16px;border-color:#e7e3f2}
 .work-order-columns>.ant-card{border-radius:16px}
 .work-order-list,.hiring-case-list{gap:10px}
-.case-action-confirm{display:grid;gap:14px}
+.case-action-confirm{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;min-width:0}
+.case-action-confirm > *{min-width:0;max-width:100%}
+.case-action-confirm .ant-select{width:100%;min-width:0}
+.case-action-confirm .ant-form-item{margin-bottom:0}
 .case-action-confirm p{margin:0;color:#676173;line-height:1.45}
 .case-action-confirm .ant-alert{margin:0}
 .ant-drawer-content .case-hero+.ant-alert{margin:-12px 0 18px}

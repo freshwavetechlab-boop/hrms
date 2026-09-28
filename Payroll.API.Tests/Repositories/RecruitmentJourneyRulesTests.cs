@@ -66,7 +66,7 @@ public class RecruitmentJourneyRulesTests
     }
 
     [Fact]
-    public void Hr_waits_for_candidate_signature_and_offer_waits_for_hr_approval()
+    public void Hr_waits_for_panel_signatures_and_offer_waits_for_hr_approval()
     {
         var candidate = new Candidate { HasCompletedInterviewDecision = true, TermsConfirmed = true };
         var hr = RecruitmentHiringProgress.EntryGate("HR_DIVISION_APPROVAL", "HR Division approval", "Approval")!;

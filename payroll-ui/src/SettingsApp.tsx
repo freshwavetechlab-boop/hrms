@@ -96,7 +96,10 @@ const recruitmentNavigation: Array<{
         key: 'interviews-offers', label: 'Interviews & Offers', icon: 'onboarding', children: [
           { view: 'Interview Queue', label: 'Schedule Interviews', icon: 'candidate' },
           { view: 'Interviews', label: 'Interview Tracker', icon: 'onboarding' },
-          { view: 'MoM & Negotiation', label: 'MoM & Negotiation', icon: 'document' },
+          { key: 'mom-negotiation', label: 'MoM & Negotiation', icon: 'document', children: [
+            { view: 'MoM & Negotiation', label: 'MoM & stage documents', icon: 'document' },
+            { view: 'MoM & Negotiation', label: 'Negotiation & approvals', icon: 'document', query: 'section=negotiation' },
+          ] },
           { view: 'Offers & Pre-Onboarding', label: 'Offers & Pre-boarding', icon: 'document' },
         ],
       },
@@ -338,6 +341,7 @@ export default function SettingsApp() {
   const recruitmentQuery = new URLSearchParams(routeLocation.search)
   const recruitmentNavQuery = recruitmentView === 'Talent Pool'
     ? ['matches', 'selected', 'client'].includes(recruitmentQuery.get('pool') || '') ? 'pool=' + recruitmentQuery.get('pool') : ''
+    : recruitmentView === 'MoM & Negotiation' && recruitmentQuery.get('section') === 'negotiation' ? 'section=negotiation'
     : recruitmentView === 'Requisitions' && requestNavigation?.workflowEnabled !== false && recruitmentQuery.get('status') === 'pending' ? 'status=pending' : ''
   const recruitmentNavKey = (item: RecruitmentNavigationLeaf) => slug(item.view) + (item.query ? '?' + item.query : '')
   const recruitmentMenuItems = (items: RecruitmentNavigationItem[]): NonNullable<MenuProps['items']> => items
@@ -768,7 +772,7 @@ export default function SettingsApp() {
         mode="inline"
         inlineIndent={10}
         selectedKeys={[slug(recruitmentNavigationView(recruitmentView)) + (recruitmentNavQuery ? '?' + recruitmentNavQuery : '')]}
-        defaultOpenKeys={[...recruitmentNavigation.map(group => `recruitment-${group.key}`), 'recruitment-hiring-requests', 'recruitment-candidates', 'recruitment-talent-pool', 'recruitment-global-talent-pool', 'recruitment-interviews-offers']}
+        defaultOpenKeys={[...recruitmentNavigation.map(group => `recruitment-${group.key}`), 'recruitment-hiring-requests', 'recruitment-candidates', 'recruitment-talent-pool', 'recruitment-global-talent-pool', 'recruitment-interviews-offers', 'recruitment-mom-negotiation']}
         items={interviewOnly ? [{ key: slug('Interviews'), label: menuLabel('Interview Tracker', 'onboarding') }] : recruitmentMenuItems(recruitmentNavigation)}
         onClick={({ key }) => {
           const next = recruitmentNavigationLeaves.find(item => recruitmentNavKey(item) === key)

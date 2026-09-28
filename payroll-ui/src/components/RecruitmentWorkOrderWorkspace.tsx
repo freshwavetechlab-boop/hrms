@@ -1,7 +1,8 @@
+import RecruitmentMomSignature from './RecruitmentMomSignature'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import RecruitmentWorkOrderFields from './RecruitmentWorkOrderFields'
 import RecruitmentBatchCandidateEditor from './RecruitmentBatchCandidateEditor'
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { currentRecruitmentHiringCases } from '../services/recruitmentJobVersions'
 import { Alert, Button, Card, Divider, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Tabs, Tag, Timeline, Tooltip, message } from 'antd'
 import { ArrowLeftOutlined, ArrowRightOutlined, ClockCircleOutlined, DeleteOutlined, FileProtectOutlined, HistoryOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons'
@@ -10,11 +11,11 @@ import { useAuthSession } from './AuthGate'
 import EntityAttachmentPanel from './EntityAttachmentPanel'
 import { getClients } from '../services/payrollService'
 import { getRecruitmentPipelineVersions, getRecruitmentPipelines } from '../services/recruitmentOrchestrationService'
-import { advanceRecruitmentHiringCase, approveRecruitmentProfileBatch, createRecruitmentProfileBatch, deleteRecruitmentHiringCase, deleteRecruitmentWorkOrder, forwardRecruitmentProfileBatch, generateRecruitmentProcessDocument, getRecruitmentHiringCase, getRecruitmentHiringCases, getRecruitmentHiringCaseTransitions, getRecruitmentProcessDocumentSignatures, getRecruitmentProcessDocuments, getRecruitmentProfileBatches, getRecruitmentWorkOrder, getRecruitmentWorkOrders, pauseRecruitmentHiringCase, resumeRecruitmentHiringCase, saveRecruitmentProcessDocument, saveRecruitmentProcessDocumentSignature, saveRecruitmentWorkOrder, startRecruitmentHiringCase } from '../services/recruitmentCaseService'
+import { advanceRecruitmentHiringCase, approveRecruitmentProfileBatch, createRecruitmentProfileBatch, deleteRecruitmentHiringCase, deleteRecruitmentWorkOrder, forwardRecruitmentProfileBatch, generateRecruitmentProcessDocument, getRecruitmentHiringCase, getRecruitmentHiringCases, getRecruitmentHiringCaseTransitions, getRecruitmentProcessDocuments, getRecruitmentProfileBatches, getRecruitmentWorkOrder, getRecruitmentWorkOrders, pauseRecruitmentHiringCase, resumeRecruitmentHiringCase, saveRecruitmentProcessDocument, saveRecruitmentWorkOrder, startRecruitmentHiringCase } from '../services/recruitmentCaseService'
 import { getApplications } from '../services/recruitmentTalentService'
 import type { Client, RecruitmentCandidateApplication } from '../types/payroll'
 import type { RecruitmentPipelineTransition } from '../types/recruitmentOrchestration'
-import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProcessDocumentSignature, RecruitmentProfileSubmissionBatch, RecruitmentProfileSubmissionBatchItem, RecruitmentWorkOrder, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
+import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProfileSubmissionBatch, RecruitmentProfileSubmissionBatchItem, RecruitmentWorkOrder, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
 import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
 import { hiringTransitionLabel, isDivisionRejectionOutcome } from '../utils/recruitmentTransitions'
 import RecruitmentRecordList from './RecruitmentRecordList'
@@ -55,11 +56,6 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   const [processDocuments, setProcessDocuments] = useState<RecruitmentProcessDocument[]>([])
   const [documentSaving, setDocumentSaving] = useState(false)
   const [signatureDocument, setSignatureDocument] = useState<RecruitmentProcessDocument | null>(null)
-  const [documentSignatures, setDocumentSignatures] = useState<RecruitmentProcessDocumentSignature[]>([])
-  const [signatureMethod, setSignatureMethod] = useState<'Typed' | 'Drawn' | 'Image'>('Typed')
-  const [signerName, setSignerName] = useState(session?.user.displayName || '')
-  const [signatureDataUrl, setSignatureDataUrl] = useState('')
-  const [signatureSaving, setSignatureSaving] = useState(false)
   const [candidateApplications, setCandidateApplications] = useState<RecruitmentCandidateApplication[]>([])
   const [profileBatches, setProfileBatches] = useState<RecruitmentProfileSubmissionBatch[]>([])
   const [selectedApplicationIds, setSelectedApplicationIds] = useState<number[]>([])
@@ -218,41 +214,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     if (response.ok && selectedCase) setProcessDocuments(await getRecruitmentProcessDocuments(selectedCase.id))
   }
 
-  const openSignature = async (document: RecruitmentProcessDocument) => {
-    setSignatureDocument(document)
-    setSignatureMethod('Typed')
-    setSignerName(session?.user.displayName || '')
-    setSignatureDataUrl('')
-    setDocumentSignatures(await getRecruitmentProcessDocumentSignatures(document.id))
-  }
-
-  const captureSignature = async () => {
-    if (!signatureDocument) return
-    if (signerName.trim().length < 2) return void message.error("Enter the signer's full name.")
-    if (signatureMethod !== 'Typed' && !signatureDataUrl) return void message.error('Draw or upload the signature first.')
-    setSignatureSaving(true)
-    const response = await saveRecruitmentProcessDocumentSignature(signatureDocument.id, {
-      signatureMethod,
-      signerName: signerName.trim(),
-      signatureDataUrl: signatureMethod === 'Typed' ? signerName.trim() : signatureDataUrl,
-    })
-    setSignatureSaving(false)
-    if (!response.ok || !response.data) return
-    setDocumentSignatures(await getRecruitmentProcessDocumentSignatures(signatureDocument.id))
-    if (selectedCase) {
-      const refreshed = await getRecruitmentProcessDocuments(selectedCase.id)
-      setProcessDocuments(refreshed)
-      setSignatureDocument(refreshed.find(row => row.id === signatureDocument.id) || signatureDocument)
-    }
-  }
-
-  const uploadSignatureImage = (file?: File | null) => {
-    if (!file) return
-    if (!/^image\/(png|jpeg)$/i.test(file.type) || file.size > 750 * 1024) return void message.error('Use a PNG/JPG signature image up to 750 KB.')
-    const reader = new FileReader()
-    reader.onload = () => setSignatureDataUrl(String(reader.result || ''))
-    reader.readAsDataURL(file)
-  }
+  const openSignature = (document: RecruitmentProcessDocument) => setSignatureDocument(document)
 
   const generateProcessDocument = async (document: RecruitmentProcessDocument) => {
     setDocumentSaving(true)
@@ -357,7 +319,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     if (!requirement.isRequired) return false
     const document = processDocuments.find(row => row.pipelineStageId === activeStage.pipelineStageId && row.documentType === requirement.documentType && currentCohortDocument(row))
     if (!document) return true
-    return Boolean(requirement.requiresSignature && (document.status !== 'Signed' || (!document.hasFinalSignedAttachment && !document.capturedSignaturesComplete)))
+    return Boolean(requirement.requiresSignature && (document.status !== 'Signed' || (!document.capturedSignaturesComplete && (['MOM', 'SIGNED_MOM'].includes(document.documentType) || !document.hasFinalSignedAttachment))))
   }) ?? []
   const pauseBlockedReason = historicalSelection ? 'This earlier journey is retained for history.' : !activeStage
     ? 'There is no active stage to pause.'
@@ -379,7 +341,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
             : ''
   return <section className="work-order-workspace" data-testid="recruitment-work-orders">
     {postInterview && <><PageHeaderPortal slot="recruitment-page-controls"><Button onClick={() => void load()}>Refresh</Button></PageHeaderPortal>
-      <Alert showIcon type="info" message="Confirm agreed terms → Candidate signs MoM → HR approval"  />
+      <Alert showIcon type="info" message="Confirm agreed terms → Panel signs MoM → HR approval"  />
       <RecruitmentRecordList<RecruitmentHiringCase> rows={postInterviewCases} title={row => row.positionName} subtitle={row => row.workOrderNumber} exportFileName="recruitment-mom"
         filters={[{ key: 'job', label: 'Job role', value: row => row.positionName }, { key: 'stage', label: 'Hiring stage', value: row => row.currentStageName }, { key: 'order', label: 'Work order', value: row => row.workOrderNumber }]}
         quickFilters={[...new Set(postInterviewCases.map(row => row.currentStageName).filter(Boolean))].map(stage => ({ key: stage, label: stage, tone: 'purple', matches: row => row.currentStageName === stage }))}
@@ -466,20 +428,21 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
         {selectedCase.advanceStatus === 'Pending Approval' && <Alert data-testid="hiring-case-approval-pending" showIcon type="info" message="Stage movement awaiting approval" description={selectedCase.advanceMessage || 'The configured approver can action this request from global My Tasks.'} />}
         <div className="case-live-timers" data-testid="hiring-case-live-timers"><div><span>Current stage active time</span><b><ClockCircleOutlined /> {formatStageDuration(activeStageSeconds)}</b><small>{activeStage?.isPaused ? 'Paused — inactive time is excluded' : activeStage ? 'Live timer' : 'Journey completed'}</small></div><div><span>Overall SLA</span><b>{remainingDuration(selectedCase.overallDueAtUtc, clockNow)}</b><small>Anchored at {dateTimeText(selectedCase.slaAnchorAtUtc)}</small></div><Button icon={<HistoryOutlined />} onClick={() => setStageLogOpen(true)}>View stage history</Button></div>
         <Card title="Documents for this stage" extra={<Tag color="purple">Stage requirements</Tag>}>
-          <p className="work-order-document-guidance">Prepare the document, then collect committee signatures by typing, drawing or uploading a signature image. A separately signed final PDF can still be uploaded.</p>
+          <p className="work-order-document-guidance">Prepare the document, then collect committee signatures by typing, drawing or uploading a signature image. All assigned panel members must sign the prepared MoM.</p>
           {!activeStage?.processDocumentRequirements?.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="This stage has no process-document requirement." />}
-          {activeStage?.processDocumentRequirements?.map(requirement => {
-            const document = processDocuments.find(row => row.pipelineStageId === activeStage.pipelineStageId && row.documentType === requirement.documentType && currentCohortDocument(row))
-            return <div className="work-order-document" key={requirement.id} data-testid={`hiring-document-${requirement.documentType}`}>
-              <header className="work-order-document-header"><div><b><FileProtectOutlined /> {requirement.documentType.replaceAll('_', ' ')}</b><span>{requirement.isRequired ? 'Required' : 'Optional'}{requirement.requiresSignature ? ' · signature required' : ''}</span></div><Space wrap className="work-order-document-actions">
+          {activeStage?.processDocumentRequirements?.flatMap(requirement => {
+            const matching = processDocuments.filter(row => row.pipelineStageId === activeStage.pipelineStageId && row.documentType === requirement.documentType && currentCohortDocument(row))
+            const latest = matching.filter((row, index) => matching.findIndex(other => other.applicationId === row.applicationId) === index)
+            return (latest.length ? latest : [undefined]).map(document => <div className="work-order-document" key={document?.id || requirement.id} data-testid={`hiring-document-${requirement.documentType}`}>
+              <header className="work-order-document-header"><div><b><FileProtectOutlined /> {requirement.documentType.replaceAll('_', ' ')}{document?.applicationId ? ` - ${candidateApplications.find(row => row.id === document.applicationId)?.candidateName || `Application #${document.applicationId}`}` : ''}</b><span>{requirement.isRequired ? 'Required' : 'Optional'}{requirement.requiresSignature ? ' · signature required' : ''}</span></div><Space wrap className="work-order-document-actions">
               {!document ? <Button data-testid={`hiring-document-create-${requirement.documentType}`} loading={documentSaving} onClick={() => void prepareProcessDocument(requirement.documentType, requirement.templateId)}>Prepare</Button> : <Tag color={document.status === 'Signed' ? 'green' : 'blue'}>v{document.versionNumber} · {document.status}</Tag>}
-              {document && requirement.templateId && document.status !== 'Signed' && <Button loading={documentSaving} onClick={() => void generateProcessDocument(document)}>{document.attachmentPublicId ? 'Regenerate PDF' : 'Generate PDF'}</Button>}
+              {document && requirement.templateId && document.status !== 'Signed' && !(document.termsVersion && document.bodySnapshot) && <Button loading={documentSaving} onClick={() => void generateProcessDocument(document)}>{document.attachmentPublicId ? 'Regenerate PDF' : 'Generate PDF'}</Button>}
               {document && requirement.requiresSignature && document.status !== 'Signed' && <Button data-testid={`hiring-document-sign-${requirement.documentType}`} onClick={() => void openSignature(document)}>Sign MoM</Button>}
-              {document && requirement.requiresSignature && document.status !== 'Signed' && (document.hasFinalSignedAttachment || document.capturedSignaturesComplete) && <Button type="primary" onClick={() => void markProcessDocumentSigned(document)}>Finalize signed</Button>}
-              {document && requirement.requiresSignature && document.status !== 'Signed' && <Tag color={document.capturedSignaturesComplete ? 'green' : 'orange'}>{document.signatureCount || 0}/{document.requiredSignatureCount || 1} signatures</Tag>}
+              {document && requirement.requiresSignature && document.status !== 'Signed' && (document.capturedSignaturesComplete || (!['MOM', 'SIGNED_MOM'].includes(document.documentType) && document.hasFinalSignedAttachment)) && <Button type="primary" onClick={() => void markProcessDocumentSigned(document)}>Finalize signed</Button>}
+              {document && requirement.requiresSignature && document.status !== 'Signed' && <Tag color={document.capturedSignaturesComplete ? 'green' : 'orange'}>{document.signatureCount || 0}/{document.requiredSignatureCount ?? 0} signatures</Tag>}
               </Space></header>
-              {document && <EntityAttachmentPanel entityType="RECRUITMENT_PROCESS_DOCUMENT" entityId={document.id} clientId={selectedCase.clientId} moduleCode="RECRUITMENT" formCodes={['PROCESS_DOCUMENT']} title="Document file" description="Private, versioned storage with secure preview and download." singleFieldLabel={requirement.documentType.replaceAll('_', ' ')} singleFieldHelp={requirement.requiresSignature ? 'Optional alternative: upload a separately signed final PDF instead of using the signature capture.' : 'Upload the source document for this requirement. Use Generate PDF only when a template is configured.'} onChanged={() => void viewCase(selectedCase)} />}
-            </div>
+              {document && <EntityAttachmentPanel entityType="RECRUITMENT_PROCESS_DOCUMENT" entityId={document.id} clientId={selectedCase.clientId} moduleCode="RECRUITMENT" formCodes={['PROCESS_DOCUMENT']} title="Document file" description="Private, versioned storage with secure preview and download." singleFieldLabel={requirement.documentType.replaceAll('_', ' ')} singleFieldHelp={requirement.requiresSignature ? 'A PDF upload does not replace the required panel signatures.' : 'Upload the source document for this requirement. Use Generate PDF only when a template is configured.'} onChanged={() => void viewCase(selectedCase)} />}
+            </div>)
           })}
         </Card>
         {!postInterview && <Card className="profile-batch-card" title="Approved candidate profile batches" extra={<Tag color="cyan">Client forwarding</Tag>}>
@@ -501,27 +464,13 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
 
     {editingCandidate && <RecruitmentBatchCandidateEditor key={editingCandidate.candidateId} item={editingCandidate} clients={clients}
       onClose={() => setEditingCandidate(null)} onSaved={async () => { if (selectedCase) setProfileBatches(await getRecruitmentProfileBatches(selectedCase.id)) }} />}
-    <Modal
-      width={720}
-      open={!!signatureDocument}
-      title="Sign committee MoM"
-      okText="Capture signature"
-      confirmLoading={signatureSaving}
-      okButtonProps={{ disabled: signerName.trim().length < 2 || (signatureMethod !== 'Typed' && !signatureDataUrl) }}
-      onOk={() => void captureSignature()}
-      onCancel={() => { if (!signatureSaving) { setSignatureDocument(null); setSignatureDataUrl(''); setDocumentSignatures([]) } }}
-      destroyOnClose
-    >
-      <Alert showIcon type="info" message="Audited electronic signature" description="Your signed-in user, method and timestamp are stored with this MoM. An authorized user can sign the MoM; assigning interview panel members is optional." />
-      <div className="mom-signature-form">
-        <Form.Item label="Signer name" required><Input value={signerName} onChange={event => setSignerName(event.target.value)} /></Form.Item>
-        <Form.Item label="Signature method" required><Select value={signatureMethod} options={['Typed', 'Drawn', 'Image'].map(value => ({ value, label: value === 'Image' ? 'Upload PNG/JPG' : value }))} onChange={value => { setSignatureMethod(value); setSignatureDataUrl('') }} /></Form.Item>
-        {signatureMethod === 'Typed' && <div className="mom-typed-signature" aria-label="Typed signature preview">{signerName || 'Your signature'}</div>}
-        {signatureMethod === 'Drawn' && <SignaturePad onChange={setSignatureDataUrl} />}
-        {signatureMethod === 'Image' && <div className="mom-signature-upload"><input type="file" accept="image/png,image/jpeg" onChange={event => uploadSignatureImage(event.target.files?.[0])} />{signatureDataUrl && <img src={signatureDataUrl} alt="Uploaded signature preview" />}</div>}
-        {!!documentSignatures.length && <div className="mom-signature-list"><b>Captured signatures</b>{documentSignatures.map(row => <div key={row.id}><span>{row.signerName} · {row.signerRole}</span><Tag color="green">{row.signatureMethod} · {dateTimeText(row.signedAtUtc)}</Tag></div>)}</div>}
-      </div>
-    </Modal>
+    {signatureDocument && <RecruitmentMomSignature key={signatureDocument.id} document={signatureDocument} onClose={() => setSignatureDocument(null)} onSaved={async () => {
+      if (selectedCase) {
+        const rows = await getRecruitmentProcessDocuments(selectedCase.id)
+        setProcessDocuments(rows)
+        setSignatureDocument(rows.find(row => row.id === signatureDocument.id) || null)
+      }
+    }} />}
 
     <Modal className="stage-time-log-modal" width={820} open={stageLogOpen && !!selectedCase} title={selectedCase ? `Stage time log · ${selectedCase.positionName}` : 'Stage time log'} footer={null} onCancel={() => setStageLogOpen(false)} destroyOnClose>
       <p className="stage-time-log-help">Active time excludes every recorded pause. Completed stages stay fixed; the current stage updates live.</p>
@@ -540,13 +489,13 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
       onCancel={() => { if (!caseActionBusy) { setCaseActionDialog(null); setCaseDialogError('') } }}
       destroyOnClose
     >
-      <div className="case-action-confirm">
+      <Form component="div" layout="vertical" className="case-action-confirm">
         <p>The SLA clock will pause. The reason is required and will remain in the journey audit history.</p>
         {caseDialogError && <Alert data-testid="hiring-case-dialog-error" showIcon type="error" message={caseDialogError} />}
         <Form.Item label="Reason for pause" required>
           <Input.TextArea data-testid="hiring-case-pause-reason" autoFocus rows={3} value={caseActionReason} placeholder="For example: awaiting documents from the client" onChange={event => { setCaseActionReason(event.target.value); setCaseDialogError('') }} />
         </Form.Item>
-      </div>
+      </Form>
     </Modal>
 
     <Modal
@@ -560,57 +509,19 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
       onCancel={() => { if (!caseActionBusy) { setCaseActionDialog(null); setCaseDialogError('') } }}
       destroyOnClose
     >
-      <div className="case-action-confirm">
+      <Form component="div" layout="vertical" className="case-action-confirm">
         <Alert
           showIcon
-          type={isDivisionRejectionOutcome(selectedCaseOutcome) ? 'warning' : activeStage?.requiresApproval && !selectedCaseMovingBack ? 'info' : 'success'}
-          message={isDivisionRejectionOutcome(selectedCaseOutcome) ? 'Rejected by Division' : selectedCaseMovingBack ? 'Previous-stage movement will be audit logged' : activeStage?.requiresApproval ? 'Approval will be requested' : activeStage?.isTerminal ? 'This will complete the journey' : 'All required checks are complete'}
-          description={isDivisionRejectionOutcome(selectedCaseOutcome) ? 'This is recorded as a process outcome. Business SLA breach remains an independent deadline-based status.' : selectedCaseMovingBack ? 'The original stage history remains unchanged and a new stage cycle starts.' : activeStage?.requiresApproval ? 'The configured approver will receive this action in My Tasks. The stage moves only after approval.' : undefined}
+          type={isDivisionRejectionOutcome(selectedCaseOutcome) || missingRequiredDocuments.length ? 'warning' : 'info'}
+          message={isDivisionRejectionOutcome(selectedCaseOutcome) ? 'Rejected by Division' : selectedCaseMovingBack ? 'Previous-stage movement will be audit logged' : activeStage?.requiresApproval ? 'Approval will be requested' : activeStage?.isTerminal ? 'This will complete the journey' : missingRequiredDocuments.length ? 'Admin movement: required documents are still pending' : 'Stage checks will run when you confirm'}
+          description={isDivisionRejectionOutcome(selectedCaseOutcome) ? 'This is recorded as a process outcome. Business SLA breach remains an independent deadline-based status.' : selectedCaseMovingBack ? 'The original stage history remains unchanged and a new stage cycle starts.' : activeStage?.requiresApproval ? 'The configured approver will receive this action in My Tasks. The stage moves only after approval.' : missingRequiredDocuments.length ? `Pending: ${missingRequiredDocuments.map(row => row.documentType.replaceAll('_', ' ')).join(', ')}. Manual movement is audit logged; it does not sign or approve documents.` : undefined}
         />
         {caseDialogError && <Alert data-testid="hiring-case-dialog-error" showIcon type="error" message={caseDialogError} />}
         {!!caseTransitions.length && <Form.Item label="Stage action" required><Select data-testid="hiring-case-transition" value={selectedCaseOutcome} options={caseTransitions.map(row => ({ value: row.outcomeCode, label: hiringTransitionLabel(row) }))} onChange={setSelectedCaseOutcome} /></Form.Item>}
         <Form.Item label={selectedCaseTransition?.requiresReason ? 'Reason' : 'Movement note (optional)'} required={selectedCaseTransition?.requiresReason}>
           <Input.TextArea data-testid="hiring-case-move-note" rows={3} value={caseActionReason} placeholder="Add a short note for the audit history" onChange={event => { setCaseActionReason(event.target.value); setCaseDialogError('') }} />
         </Form.Item>
-      </div>
+      </Form>
     </Modal>
   </section>
-}
-
-function SignaturePad({ onChange }: { onChange: (value: string) => void }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const drawing = useRef(false)
-  const point = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current!
-    const bounds = canvas.getBoundingClientRect()
-    return { x: (event.clientX - bounds.left) * (canvas.width / bounds.width), y: (event.clientY - bounds.top) * (canvas.height / bounds.height) }
-  }
-  const start = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current!
-    const current = point(event)
-    drawing.current = true
-    canvas.setPointerCapture(event.pointerId)
-    const context = canvas.getContext('2d')!
-    context.beginPath(); context.moveTo(current.x, current.y)
-  }
-  const move = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (!drawing.current) return
-    const canvas = canvasRef.current!
-    const current = point(event)
-    const context = canvas.getContext('2d')!
-    context.strokeStyle = '#17223b'; context.lineWidth = 2.4; context.lineCap = 'round'; context.lineJoin = 'round'
-    context.lineTo(current.x, current.y); context.stroke()
-  }
-  const finish = () => {
-    if (!drawing.current || !canvasRef.current) return
-    drawing.current = false
-    onChange(canvasRef.current.toDataURL('image/png'))
-  }
-  const clear = () => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height)
-    onChange('')
-  }
-  return <div className="mom-signature-pad"><canvas ref={canvasRef} width={640} height={180} onPointerDown={start} onPointerMove={move} onPointerUp={finish} onPointerCancel={finish} onPointerLeave={finish} /><Button size="small" onClick={clear}>Clear drawing</Button></div>
 }

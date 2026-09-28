@@ -34,11 +34,11 @@ public sealed class RecruitmentProfileReadinessTests
     [InlineData("Rejected", true, false)]
     [InlineData("Withdrawn", true, false)]
     [InlineData("Approved", false, false)]
-    public void Mom_requires_interview_selection_and_does_not_require_negotiation(string offerStatus, bool selected, bool expected)
+    public void Mom_requires_interview_selection_with_confirmed_terms_regardless_of_negotiation(string offerStatus, bool selected, bool expected)
     {
         Assert.Equal(expected, RecruitmentHiringProgress.MoMReady(new()
         {
-            HasCompletedInterviewDecision = selected, LatestOfferStatus = offerStatus,
+            HasCompletedInterviewDecision = selected, LatestOfferStatus = offerStatus, TermsConfirmed = true,
             LatestInterviewResult = selected ? "Selected" : "Pending"
         }));
     }
@@ -46,8 +46,8 @@ public sealed class RecruitmentProfileReadinessTests
     [Fact]
     public void Rejected_or_pending_extra_candidates_do_not_hold_selected_cohort()
     {
-        RecruitmentHiringProgress.Candidate selected = new() { HasCompletedInterviewDecision = true };
-        RecruitmentHiringProgress.Candidate rejected = new() { HasCompletedInterviewDecision = true, LatestInterviewResult = "Rejected" };
+        RecruitmentHiringProgress.Candidate selected = new() { HasCompletedInterviewDecision = true, TermsConfirmed = true };
+        RecruitmentHiringProgress.Candidate rejected = new() { HasCompletedInterviewDecision = true, LatestInterviewResult = "Rejected", TermsConfirmed = true };
         Assert.True(RecruitmentHiringProgress.Enough(2, [selected, selected, rejected, new()], RecruitmentHiringProgress.MoMReady));
         Assert.False(RecruitmentHiringProgress.Enough(2, [selected, rejected, new()], RecruitmentHiringProgress.MoMReady));
     }
@@ -94,11 +94,11 @@ FROM recruitment_profile_submission_batch_items item JOIN recruitment_profile_su
 WHERE batch.HiringCaseId=@HiringCaseId ORDER BY item.Id", new { source.HiringCaseId })).ToArray();
         Assert.Equal(before, after);
         Assert.Empty(await repository.ListProfileBatchesAsync(source.HiringCaseId, new AuthUser { ClientId = source.ClientId + 1 }));
-        var documents = await repository.ListProcessDocumentsAsync(new AuthUser { ClientId = source.ClientId }, null, null);
+        var documents = await repository.ListProcessDocumentsAsync(new AuthUser { ClientId = source.ClientId, Permissions = ["recruitment.document.view"] }, null, null);
         Assert.All(documents.Where(document => RecruitmentCaseRepository.IsMoM(document.DocumentType)), document =>
         {
-            Assert.Equal(1, document.RequiredSignatureCount);
-            Assert.Equal(document.SignatureCount >= 1, document.CapturedSignaturesComplete);
+            Assert.True(document.RequiredSignatureCount >= 0);
+            Assert.Equal(document.RequiredSignatureCount > 0 && document.SignatureCount >= document.RequiredSignatureCount, document.CapturedSignaturesComplete);
         });
         var fixturePath = Environment.GetEnvironmentVariable("HRMS_PROFILE_REVIEW_FIXTURE_PATH");
         if (!string.IsNullOrWhiteSpace(fixturePath))

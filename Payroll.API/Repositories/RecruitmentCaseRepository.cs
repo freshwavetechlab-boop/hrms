@@ -1453,12 +1453,13 @@ AND NOT EXISTS (SELECT 1 FROM recruitment_process_documents document
   WHERE document.HiringCaseId=@CaseId AND document.PipelineStageId=@StageId
     AND document.DocumentType=requirement.DocumentType
     AND " + CurrentCohortDocumentSql + @"
-    AND (requirement.RequiresSignature=FALSE OR (document.Status='Signed' AND (
-      EXISTS (SELECT 1 FROM entity_attachments attachment WHERE attachment.entity_type='RECRUITMENT_PROCESS_DOCUMENT'
-        AND attachment.entity_id=document.Id AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE)
-      OR (SELECT COUNT(*) FROM recruitment_process_document_signatures signatureRow WHERE signatureRow.ProcessDocumentId=document.Id)
-        >= (CASE WHEN document.DocumentType IN ('MOM','SIGNED_MOM') THEN 1 ELSE GREATEST(1,COALESCE(NULLIF((SELECT COUNT(*) FROM recruitment_stage_default_panel_members panel
-          WHERE panel.PipelineStageId=document.PipelineStageId AND panel.IsRequired=TRUE),0),1)) END)))) )
+    AND (requirement.RequiresSignature=FALSE OR (document.Status='Signed' AND
+      ((document.DocumentType IN ('MOM','SIGNED_MOM') AND " + RecruitmentPanelSignatures.CompleteFor("document") + @")
+       OR (document.DocumentType NOT IN ('MOM','SIGNED_MOM') AND (
+         EXISTS (SELECT 1 FROM entity_attachments attachment WHERE attachment.entity_type='RECRUITMENT_PROCESS_DOCUMENT'
+           AND attachment.entity_id=document.Id AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE)
+         OR (SELECT COUNT(*) FROM recruitment_process_document_signatures signatureRow WHERE signatureRow.ProcessDocumentId=document.Id)
+           >= GREATEST(1,(SELECT COUNT(*) FROM recruitment_stage_default_panel_members panel WHERE panel.PipelineStageId=document.PipelineStageId AND panel.IsRequired=TRUE))))))))
 ORDER BY requirement.DisplayOrder,requirement.Id", new { StageId = current.PipelineStageId, CaseId = current.HiringCaseId }, transaction)).ToArray();
         return missingDocuments.Length > 0 ? $"Complete required process documents before moving this stage: {string.Join(", ", missingDocuments)}." : "";
     }
@@ -1616,8 +1617,10 @@ VALUES (@CaseId,@StageId,'SlaResumed','SLA resumed',@Details,@UserId)", new { Ca
     {
         await using var db = Db();
         await db.OpenAsync();
-        var allowed = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_process_documents
-WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = documentId, user.ClientId });
+        var allowed = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_process_documents documentRow
+WHERE documentRow.Id=@Id AND (@ClientId IS NULL OR documentRow.ClientId=@ClientId)
+AND (@ViewAll OR (documentRow.DocumentType IN ('MOM','SIGNED_MOM') AND @UserId IN (" + RecruitmentPanelSignatures.MembersSql + ")))",
+            new { Id = documentId, user.ClientId, UserId = user.Id, ViewAll = RecruitmentPermissions.Has(user, "recruitment.document.view", "recruitment.document.manage") });
         if (allowed == 0) return [];
         return (await db.QueryAsync<RecruitmentProcessDocumentSignature>(@"SELECT *
 FROM recruitment_process_document_signatures WHERE ProcessDocumentId=@Id ORDER BY SignedAtUtc,Id", new { Id = documentId })).ToList();
@@ -1658,15 +1661,21 @@ FROM recruitment_process_document_signatures WHERE ProcessDocumentId=@Id ORDER B
         var document = await db.QueryFirstOrDefaultAsync<RecruitmentProcessDocument>(@"SELECT * FROM recruitment_process_documents
 WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = documentId, user.ClientId });
         if (document is null) return (null, "Recruitment process document was not found.");
-        if (document.ApplicationId is > 0 && document.TermsVersion.HasValue && IsMoM(document.DocumentType))
-            return (null, "The candidate must sign this MoM through their existing application login.");
         if (document.Status.Equals("Signed", StringComparison.OrdinalIgnoreCase)) return (null, "This document is already final and signed.");
         var requiresSignature = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_stage_process_document_requirements
 WHERE PipelineStageId=@StageId AND DocumentType=@DocumentType AND RequiresSignature=TRUE",
             new { StageId = document.PipelineStageId, document.DocumentType });
         if (requiresSignature == 0) return (null, "This pipeline document does not require signatures.");
-        if (!IsMoM(document.DocumentType))
+        if (IsMoM(document.DocumentType))
         {
+            var member = await db.ExecuteScalarAsync<bool>("SELECT @UserId IN (" + RecruitmentPanelSignatures.MembersSql + ") FROM recruitment_process_documents documentRow WHERE documentRow.Id=@Id", new { Id = documentId, UserId = user.Id });
+            if (!member) return (null, "Only an assigned interview panel member can sign this MoM. Configure the panel first if no members are assigned.");
+            if (string.IsNullOrWhiteSpace(document.BodySnapshot) && document.AttachmentPublicId is null)
+                return (null, "Generate the MoM before collecting panel signatures.");
+        }
+        else
+        {
+            if (!RecruitmentPermissions.Has(user, "recruitment.document.sign")) return (null, "Document signing permission is required.");
             var access = await db.QueryFirstAsync<PanelSignatureAccess>(@"SELECT
     (SELECT COUNT(DISTINCT panel.PanelUserId) FROM recruitment_position_pipeline_instances hiringCase
      JOIN recruitment_candidate_applications applicationRow ON applicationRow.PositionId=hiringCase.PositionId AND applicationRow.ApplicationType='Application'
@@ -1689,6 +1698,14 @@ WHERE PipelineStageId=@StageId AND DocumentType=@DocumentType AND RequiresSignat
         }
         var eligibilityError = await ValidateMoMCandidatesAsync(db, document);
         if (eligibilityError.Length > 0) return (null, eligibilityError);
+        await using var tx = await db.BeginTransactionAsync();
+        // Match the terms editor lock order, so a changed CTC cannot receive a stale signature.
+        if (document.ApplicationId is > 0)
+            await db.ExecuteScalarAsync<long>("SELECT Id FROM recruitment_candidate_applications WHERE Id=@ApplicationId FOR UPDATE", document, tx);
+        document = await db.QueryFirstAsync<RecruitmentProcessDocument>("SELECT * FROM recruitment_process_documents WHERE Id=@Id FOR UPDATE", new { Id = documentId }, tx);
+        if (document.Status == "Signed") return (null, "This document is already final and signed.");
+        if (IsMoM(document.DocumentType) && document.ApplicationId is > 0 && !await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM recruitment_candidate_applications WHERE Id=@ApplicationId AND TermsVersion=@TermsVersion AND TermsConfirmedAtUtc IS NOT NULL AND CurrentStage NOT LIKE '%Reject%' AND CurrentStage NOT LIKE '%Withdraw%')", document, tx))
+            return (null, "The candidate's agreed terms changed or this application is no longer selected. Prepare the current MoM again.");
         var signerRole = await db.ExecuteScalarAsync<string?>(@"SELECT roleName FROM (
 SELECT panel.PanelRole roleName,1 sortOrder FROM recruitment_position_pipeline_instances hiringCase
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.PositionId=hiringCase.PositionId AND applicationRow.ApplicationType='Application'
@@ -1698,7 +1715,7 @@ WHERE hiringCase.Id=@HiringCaseId AND panel.PanelUserId=@UserId
 UNION ALL
 SELECT panel.PanelRole,2 FROM recruitment_stage_default_panel_members panel
 WHERE panel.PipelineStageId=@StageId AND panel.PanelUserId=@UserId
-) roles ORDER BY sortOrder LIMIT 1", new { document.HiringCaseId, StageId = document.PipelineStageId, UserId = user.Id }) ?? "Authorised signatory";
+) roles ORDER BY sortOrder LIMIT 1", new { document.HiringCaseId, StageId = document.PipelineStageId, UserId = user.Id }, tx) ?? "Panel member";
         await db.ExecuteAsync(@"INSERT INTO recruitment_process_document_signatures
 (ProcessDocumentId,ClientId,SignerUserId,SignerName,SignerRole,SignatureMethod,SignatureDataUrl,SignedAtUtc)
 VALUES (@DocumentId,@ClientId,@UserId,@SignerName,@SignerRole,@Method,@SignatureValue,UTC_TIMESTAMP(6))
@@ -1707,7 +1724,7 @@ SignatureDataUrl=VALUES(SignatureDataUrl),SignedAtUtc=VALUES(SignedAtUtc)", new
         {
             DocumentId = documentId, document.ClientId, UserId = user.Id, SignerName = signerName, SignerRole = signerRole,
             Method = method, SignatureValue = signatureValue
-        });
+        }, tx);
         if (document.HiringCaseId is > 0)
             await db.ExecuteAsync(@"INSERT INTO recruitment_position_stage_events
 (PositionPipelineInstanceId,PositionStageInstanceId,EventType,EventTitle,EventDetails,ActorUserId)
@@ -1717,24 +1734,30 @@ VALUES (@CaseId,(SELECT CurrentStageInstanceId FROM recruitment_position_pipelin
                 CaseId = document.HiringCaseId.Value,
                 Details = $"{signerName} signed {document.DocumentType} using {method} signature.",
                 UserId = user.Id
-            });
-        // The last required signature completes a prepared document. Partial signatures
-        // and an outstanding document workflow never finalize it.
-        var signatureGate = await SignatureGateAsync(db, documentId);
+            }, tx);
+        // The last required signature completes a prepared document and starts HR review for agreed terms.
+        var signatureGate = await SignatureGateAsync(db, documentId, tx);
         if (signatureGate.Complete)
+        {
+            var approvalError = await StartPanelMomApprovalAsync(db, tx, document, user);
+            if (approvalError.Length > 0) return (null, approvalError);
             await db.ExecuteAsync(@"UPDATE recruitment_process_documents documentRow
 SET Status='Signed',SignedByUserId=@UserId,SignedAtUtc=UTC_TIMESTAMP(6),UpdatedAtUtc=UTC_TIMESTAMP(6)
 WHERE documentRow.Id=@Id AND documentRow.Status='Prepared'
-AND (documentRow.WorkflowInstanceId IS NULL OR EXISTS (
+AND (@CandidateTerms OR documentRow.WorkflowInstanceId IS NULL OR EXISTS (
  SELECT 1 FROM workflowinstances workflow WHERE workflow.Id=documentRow.WorkflowInstanceId AND workflow.Status='Approved'))",
-                new { Id = documentId, UserId = user.Id });
+                new { Id = documentId, UserId = user.Id, CandidateTerms = document.ApplicationId is > 0 && document.TermsVersion.HasValue }, tx);
+        }
+        await tx.CommitAsync();
         return (await db.QueryFirstOrDefaultAsync<RecruitmentProcessDocumentSignature>(@"SELECT *
 FROM recruitment_process_document_signatures WHERE ProcessDocumentId=@DocumentId AND SignerUserId=@UserId",
             new { DocumentId = documentId, UserId = user.Id }), "");
     }
 
-    private static async Task<SignatureGate> SignatureGateAsync(MySqlConnection db, long documentId)
+    private static async Task<SignatureGate> SignatureGateAsync(MySqlConnection db, long documentId, MySqlTransaction? tx = null)
     {
+        var panelGate = await db.QueryFirstOrDefaultAsync<SignatureGate>("SELECT " + RecruitmentPanelSignatures.CapturedSql + " Captured," + RecruitmentPanelSignatures.RequiredSql + " Required FROM recruitment_process_documents documentRow WHERE documentRow.Id=@Id AND documentRow.DocumentType IN ('MOM','SIGNED_MOM')", new { Id = documentId }, tx);
+        if (panelGate is not null) return panelGate;
         var gate = await db.QueryFirstOrDefaultAsync<SignatureGate>(@"SELECT
 (SELECT COUNT(*) FROM recruitment_process_document_signatures signatureRow WHERE signatureRow.ProcessDocumentId=documentRow.Id) Captured,
 CASE WHEN documentRow.DocumentType IN ('MOM','SIGNED_MOM') THEN 1 ELSE GREATEST(1,COALESCE(
@@ -1745,7 +1768,7 @@ CASE WHEN documentRow.DocumentType IN ('MOM','SIGNED_MOM') THEN 1 ELSE GREATEST(
    WHERE hiringCase.Id=documentRow.HiringCaseId),0),
  NULLIF((SELECT COUNT(*) FROM recruitment_stage_default_panel_members panel
    WHERE panel.PipelineStageId=documentRow.PipelineStageId AND panel.IsRequired=TRUE),0),1)) END Required
-FROM recruitment_process_documents documentRow WHERE documentRow.Id=@Id", new { Id = documentId });
+FROM recruitment_process_documents documentRow WHERE documentRow.Id=@Id", new { Id = documentId }, tx);
         return gate ?? new SignatureGate { Required = 1 };
     }
 
@@ -1753,34 +1776,29 @@ FROM recruitment_process_documents documentRow WHERE documentRow.Id=@Id", new { 
     {
         await using var db = Db();
         await db.OpenAsync();
+        var required = "CASE WHEN documentRow.DocumentType IN ('MOM','SIGNED_MOM') THEN " + RecruitmentPanelSignatures.RequiredSql + @" ELSE GREATEST(1,COALESCE(
+ NULLIF((SELECT COUNT(DISTINCT panel.PanelUserId) FROM recruitment_position_pipeline_instances hiringCase
+   JOIN recruitment_candidate_applications applicationRow ON applicationRow.PositionId=hiringCase.PositionId AND applicationRow.ApplicationType='Application'
+   JOIN recruitment_interviews interviewRow ON interviewRow.ApplicationId=applicationRow.Id
+   JOIN recruitment_interview_panel_members panel ON panel.InterviewId=interviewRow.Id
+   WHERE hiringCase.Id=documentRow.HiringCaseId),0),
+ NULLIF((SELECT COUNT(*) FROM recruitment_stage_default_panel_members panel
+   WHERE panel.PipelineStageId=documentRow.PipelineStageId AND panel.IsRequired=TRUE),0),1)) END";
+        var captured = "CASE WHEN documentRow.DocumentType IN ('MOM','SIGNED_MOM') THEN " + RecruitmentPanelSignatures.CapturedSql
+            + " ELSE (SELECT COUNT(*) FROM recruitment_process_document_signatures signatureRow WHERE signatureRow.ProcessDocumentId=documentRow.Id) END";
         return (await db.QueryAsync<RecruitmentProcessDocument>(@"SELECT documentRow.*,
 EXISTS (SELECT 1 FROM entity_attachments attachment
     WHERE attachment.entity_type='RECRUITMENT_PROCESS_DOCUMENT' AND attachment.entity_id=documentRow.Id
     AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
     AND NOT (attachment.public_id <=> documentRow.AttachmentPublicId)) HasFinalSignedAttachment,
-(SELECT COUNT(*) FROM recruitment_process_document_signatures signatureRow
-    WHERE signatureRow.ProcessDocumentId=documentRow.Id) SignatureCount,
-CASE WHEN documentRow.DocumentType IN ('MOM','SIGNED_MOM') THEN 1 ELSE GREATEST(1,COALESCE(
- NULLIF((SELECT COUNT(DISTINCT panel.PanelUserId) FROM recruitment_position_pipeline_instances hiringCase
-   JOIN recruitment_candidate_applications applicationRow ON applicationRow.PositionId=hiringCase.PositionId AND applicationRow.ApplicationType='Application'
-   JOIN recruitment_interviews interviewRow ON interviewRow.ApplicationId=applicationRow.Id
-   JOIN recruitment_interview_panel_members panel ON panel.InterviewId=interviewRow.Id
-   WHERE hiringCase.Id=documentRow.HiringCaseId),0),
- NULLIF((SELECT COUNT(*) FROM recruitment_stage_default_panel_members panel
-   WHERE panel.PipelineStageId=documentRow.PipelineStageId AND panel.IsRequired=TRUE),0),1)) END RequiredSignatureCount,
-((SELECT COUNT(*) FROM recruitment_process_document_signatures signatureRow WHERE signatureRow.ProcessDocumentId=documentRow.Id)
- >= CASE WHEN documentRow.DocumentType IN ('MOM','SIGNED_MOM') THEN 1 ELSE GREATEST(1,COALESCE(
- NULLIF((SELECT COUNT(DISTINCT panel.PanelUserId) FROM recruitment_position_pipeline_instances hiringCase
-   JOIN recruitment_candidate_applications applicationRow ON applicationRow.PositionId=hiringCase.PositionId AND applicationRow.ApplicationType='Application'
-   JOIN recruitment_interviews interviewRow ON interviewRow.ApplicationId=applicationRow.Id
-   JOIN recruitment_interview_panel_members panel ON panel.InterviewId=interviewRow.Id
-   WHERE hiringCase.Id=documentRow.HiringCaseId),0),
- NULLIF((SELECT COUNT(*) FROM recruitment_stage_default_panel_members panel
-   WHERE panel.PipelineStageId=documentRow.PipelineStageId AND panel.IsRequired=TRUE),0),1)) END) CapturedSignaturesComplete
+" + captured + " SignatureCount," + required + " RequiredSignatureCount,(" + captured + ") >= GREATEST(1," + required + @") CapturedSignaturesComplete
 FROM recruitment_process_documents documentRow
 WHERE (@ClientId IS NULL OR documentRow.ClientId=@ClientId) AND (@HiringCaseId IS NULL OR documentRow.HiringCaseId=@HiringCaseId)
-AND (@ApplicationId IS NULL OR documentRow.ApplicationId=@ApplicationId) ORDER BY documentRow.DocumentType,documentRow.VersionNumber DESC,documentRow.Id DESC",
-            new { user.ClientId, HiringCaseId = hiringCaseId, ApplicationId = applicationId })).ToList();
+AND (@ApplicationId IS NULL OR documentRow.ApplicationId=@ApplicationId)
+AND (@ViewAll OR (documentRow.DocumentType IN ('MOM','SIGNED_MOM') AND @UserId IN (" + RecruitmentPanelSignatures.MembersSql + @")))
+ORDER BY documentRow.DocumentType,documentRow.VersionNumber DESC,documentRow.Id DESC",
+            new { user.ClientId, HiringCaseId = hiringCaseId, ApplicationId = applicationId, UserId = user.Id,
+                ViewAll = RecruitmentPermissions.Has(user, "recruitment.document.view", "recruitment.document.manage") })).ToList();
     }
 
     public async Task<(RecruitmentProcessDocument? Row, string Error)> SaveProcessDocumentAsync(SaveRecruitmentProcessDocument request, AuthUser user)
@@ -1818,7 +1836,7 @@ WHERE Id=@Id AND IsActive=TRUE AND ClientId IN (0,@ClientId)", new { Id = reques
         if (request.Id > 0)
         {
             if (await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM recruitment_process_documents WHERE Id=@Id AND ApplicationId IS NOT NULL AND TermsVersion IS NOT NULL)", new { request.Id }))
-                return (null, "Use candidate negotiation to revise terms. Candidate MoM signatures and signed versions are preserved.");
+                return (null, "Use candidate negotiation to revise terms. Panel MoM signatures and signed versions are preserved.");
             var existingStatus = await db.ExecuteScalarAsync<string?>("SELECT Status FROM recruitment_process_documents WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { request.Id, user.ClientId });
             if (existingStatus is null) return (null, "Recruitment document was not found.");
             if (existingStatus.Equals("Signed", StringComparison.OrdinalIgnoreCase) && !request.Status.Equals("Signed", StringComparison.OrdinalIgnoreCase)) return (null, "A signed process document cannot be moved back to draft.");
@@ -1834,8 +1852,8 @@ WHERE attachment.entity_type='RECRUITMENT_PROCESS_DOCUMENT' AND attachment.entit
 AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
 AND NOT (attachment.public_id <=> documentRow.AttachmentPublicId)", new { request.Id });
                 var signatureGate = await SignatureGateAsync(db, request.Id);
-                if (finalAttachmentCount == 0 && !signatureGate.Complete)
-                    return (null, $"Upload the final signed document or collect all required signatures ({signatureGate.Captured}/{signatureGate.Required}) before marking it signed.");
+                if ((IsMoM(persisted.DocumentType) || finalAttachmentCount == 0) && !signatureGate.Complete)
+                    return (null, IsMoM(persisted.DocumentType) ? $"Collect all assigned panel signatures ({signatureGate.Captured}/{signatureGate.Required}) before marking MoM signed." : $"Upload the final signed document or collect all required signatures ({signatureGate.Captured}/{signatureGate.Required}) before marking it signed.");
             }
         }
         long id;
@@ -2038,7 +2056,7 @@ AND NOT EXISTS (SELECT 1 FROM recruitment_offers offerRow WHERE offerRow.Id=(
  ORDER BY latestOffer.UpdatedAt DESC,latestOffer.Id DESC LIMIT 1) AND offerRow.Status IN ('Rejected','Withdrawn','Expired'))
 ORDER BY CandidateName", new { context.ApplicationId, HiringCaseId = context.HiringCaseId.Value, PositionId = context.PositionId.Value, context.ClientId })).ToList();
         if (candidates.Count == 0)
-            return (null, "MoM needs interview-selected candidates in an approved profile batch. Negotiation follows MoM signing.");
+            return (null, "MoM needs interview-selected candidates in an approved profile batch. Confirm agreed terms before panel signing.");
         var required = await RequiredHiringCohortAsync(db, context.PositionId.Value);
         if (context.ApplicationId is null && !HasRequiredHiringCohort(required, candidates.Count))
             return (null, $"MoM needs {required} interview-selected candidates; {candidates.Count} are ready. Other candidates can continue their own journey.");
@@ -2066,7 +2084,7 @@ LEFT JOIN clients clientRow ON clientRow.Id=COALESCE(employeeRow.ClientId,userRo
 WHERE panel.InterviewId IN @Ids
 GROUP BY panel.PanelUserId,PanelName,panel.PanelRole,Designation,OrganisationName
 ORDER BY CASE WHEN LOWER(panel.PanelRole) LIKE '%chair%' THEN 0 WHEN LOWER(panel.PanelRole) LIKE '%member%' THEN 1 ELSE 2 END,PanelName", new { Ids = interviewIds })).ToList();
-        // Interview panels may appear in the MoM, but assigning a committee is optional.
+        // The same assigned interview panel signs the prepared committee MoM.
 
         var competencies = (await db.QueryAsync<SelectionCommitteeCompetency>(@"SELECT DISTINCT stageCompetency.Id StageCompetencyId,
 definition.CompetencyName,stageCompetency.WeightPercent MaximumScore,stageCompetency.DisplayOrder

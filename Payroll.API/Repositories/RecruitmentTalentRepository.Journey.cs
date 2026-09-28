@@ -39,7 +39,7 @@ LEFT JOIN recruitment_stage_offer_configurations config ON config.Id=(SELECT pol
  WHERE stage.PipelineVersionId=flow.PipelineVersionId AND stage.IsActive=TRUE ORDER BY stage.DisplayOrder LIMIT 1)
 WHERE a.Id=@applicationId", new { applicationId });
         row.ApprovedBudget = EffectiveOfferBudgetCeiling(row.BudgetBasis, row.BudgetAvailable, row.BudgetAmount, row.ApprovedPositions, row.SalaryMax);
-        var review = await db.QueryFirstOrDefaultAsync<RecruitmentNegotiation>(@"SELECT COALESCE(w.Status,'Awaiting candidate signature') ApprovalStatus,
+        var review = await db.QueryFirstOrDefaultAsync<RecruitmentNegotiation>(@"SELECT COALESCE(w.Status,'Awaiting panel signatures') ApprovalStatus,
 COALESCE((SELECT Comment FROM workflowhistory WHERE InstanceId=w.Id AND Action IN ('Rejected','Sent Back') ORDER BY Id DESC LIMIT 1),'') ReviewComment
 FROM recruitment_process_documents d LEFT JOIN workflowinstances w ON w.Id=d.WorkflowInstanceId
 WHERE d.ApplicationId=@applicationId AND d.TermsVersion=@TermsVersion AND d.DocumentType='MOM' ORDER BY d.Id DESC LIMIT 1", new { applicationId, row.TermsVersion });
@@ -61,6 +61,8 @@ WHERE d.ApplicationId=@applicationId AND d.TermsVersion=@TermsVersion AND d.Docu
         if (current is null) return (null, "Application was not found.");
         if (await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM recruitment_offers WHERE ApplicationId=@applicationId AND Status IN ('Pending Approval','Approved','Pending Candidate','Released','Accepted'))", new { applicationId }, tx))
             return (null, "Withdraw or resolve the current offer before changing its agreed terms.");
+        if (await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM recruitment_candidate_applications WHERE Id=@applicationId AND (CurrentStage LIKE '%Reject%' OR CurrentStage LIKE '%Withdraw%'))", new { applicationId }, tx))
+            return (null, "Reopen the application through the pipeline before changing rejected or withdrawn candidate terms.");
         if (request.ConfirmTerms)
         {
             if (request.AgreedCtc is not > 0) return (null, "Enter the agreed annual CTC before confirming terms.");

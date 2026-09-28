@@ -1551,7 +1551,7 @@ app.MapPost("/api/recruitment/hiring-cases/{id:long}/resume", async (Recruitment
 });
 app.MapGet("/api/recruitment/process-documents", async (RecruitmentCaseRepository repository, long? hiringCaseId, long? applicationId, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.document.view") && !HasPermission(context, "recruitment.document.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!HasPermission(context, "recruitment.document.sign") && !HasPermission(context, "recruitment.interview.panel") && !HasPermission(context, "recruitment.document.view") && !HasPermission(context, "recruitment.document.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     return Results.Ok(await repository.ListProcessDocumentsAsync(CurrentUser(context), hiringCaseId, applicationId));
 });
 app.MapPost("/api/recruitment/process-documents", async (RecruitmentCaseRepository repository, RecruitmentLifecycleNotificationService lifecycleNotifications, SaveRecruitmentProcessDocument request, HttpContext context) =>
@@ -1569,12 +1569,12 @@ app.MapPost("/api/recruitment/process-documents", async (RecruitmentCaseReposito
 });
 app.MapGet("/api/recruitment/process-documents/{id:long}/signatures", async (RecruitmentCaseRepository repository, long id, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.document.view") && !HasPermission(context, "recruitment.document.sign") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!HasPermission(context, "recruitment.interview.panel") && !HasPermission(context, "recruitment.document.view") && !HasPermission(context, "recruitment.document.sign") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     return Results.Ok(await repository.ListProcessDocumentSignaturesAsync(id, CurrentUser(context)));
 });
 app.MapPost("/api/recruitment/process-documents/{id:long}/signatures", async (RecruitmentCaseRepository repository, RecruitmentLifecycleNotificationService lifecycleNotifications, long id, SaveRecruitmentProcessDocumentSignature request, HttpContext context) =>
 {
-    if (!HasPermission(context, "recruitment.document.sign") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!HasPermission(context, "recruitment.interview.panel") && !HasPermission(context, "recruitment.document.sign") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
     var user = CurrentUser(context);
     var (row, error) = await repository.SaveProcessDocumentSignatureAsync(id, request, user);
     if (row is not null)
@@ -2512,20 +2512,8 @@ app.MapGet("/api/public/recruitment/tracking/{token}", async (RecruitmentFormRep
     var row = await repository.GetPublicApplicationTrackerAsync(token);
     return row is null ? Results.Unauthorized() : Results.Ok(row);
 });
-app.MapGet("/api/public/recruitment/tracking/{token}/applications/{id:long}/mom", async (RecruitmentFormRepository forms, RecruitmentCaseRepository cases, string token, long id) =>
-{
-    var tracker = await forms.GetPublicApplicationTrackerAsync(token);
-    if (tracker is null || !tracker.Applications.Any(row => row.ApplicationId == id)) return Results.NotFound();
-    return Results.Ok(await cases.GetCandidateMomAsync(id, tracker.CandidateId));
-});
-app.MapPost("/api/public/recruitment/tracking/{token}/applications/{id:long}/mom/{documentId:long}/sign", async (RecruitmentFormRepository forms, RecruitmentCaseRepository cases, string token, long id, long documentId, SignCandidateMom request) =>
-{
-    var tracker = await forms.GetPublicApplicationTrackerAsync(token);
-    if (tracker is null || !tracker.Applications.Any(row => row.ApplicationId == id)) return Results.NotFound();
-    if (!request.Consent) return Results.BadRequest(new { error = "Review and accept the MoM before signing." });
-    var error = await cases.SignCandidateMomAsync(documentId, id, tracker.CandidateId, request.SignerName, request.TermsVersion);
-    return error.Length > 0 ? Results.BadRequest(new { error }) : Results.Ok(await cases.GetCandidateMomAsync(id, tracker.CandidateId));
-});
+app.MapGet("/api/public/recruitment/tracking/{token}/applications/{id:long}/mom", () => Results.Json(new { error = "MoM is reviewed and signed by the interview panel." }, statusCode: 410));
+app.MapPost("/api/public/recruitment/tracking/{token}/applications/{id:long}/mom/{documentId:long}/sign", () => Results.Json(new { error = "MoM signing is available only to the assigned interview panel." }, statusCode: 410));
 app.MapPut("/api/public/recruitment/sessions/{token}/values", async (RecruitmentFormRepository repository, string token, SavePublicFormValuesRequest request, HttpContext context) =>
 {
     var (ok, error) = await repository.SavePublicValuesAsync(token, request, context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());

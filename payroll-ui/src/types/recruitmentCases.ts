@@ -133,6 +133,8 @@ export type RecruitmentProcessDocument = {
   pipelineStageId?: number | null
   documentType: string
   versionNumber: number
+  termsVersion?: number | null
+  bodySnapshot?: string | null
   templateId?: number | null
   attachmentPublicId?: string | null
   hasFinalSignedAttachment: boolean

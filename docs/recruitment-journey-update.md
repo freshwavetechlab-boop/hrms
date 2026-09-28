@@ -13,7 +13,7 @@ The targeted migration adds only missing columns:
 | `recruitment_interviews` | `DirectEmail`, `DirectName`, `DirectClientId` | Interview before a candidate/application/job exists. |
 | `recruitment_candidate_applications` | `NegotiationOverride`, `AgreedCtc`, `TermsConfirmedAtUtc`, `TermsVersion` | Per-job terms and explicit ON/OFF override, preserving the candidate's global expected CTC. |
 | `recruitment_process_documents` | `TermsVersion`, `BodySnapshot` | Bind the MoM to exact confirmed terms and preserve the content presented for signing. Existing `VersionNumber` remains the document revision number. |
-| `recruitment_process_document_signatures` | `CandidateId` | Identify the authenticated candidate independently of an internal staff user. |
+| `recruitment_process_document_signatures` | `CandidateId` | Legacy candidate signature identity; retained for history. New MoM signatures use existing `SignerUserId` for panel members. |
 
 There are 10 additive columns. No table/column/data is dropped. The migration checks each column before adding it, so it can be rerun. Run it before using the updated API, because the new queries reference these fields.
 
@@ -35,7 +35,7 @@ Create new draft revisions from the currently published UIDAI pipelines. Preserv
 
 Move `NEGOTIATION_AND_MOM_TO_HR` before `SIGNING_MOM` and update the successful transition destinations as well as display order. Keep the configured MoM template on `SIGNING_MOM`. Position auto-movement counts candidates; HR approval comes from each candidate's signed MoM. Keep position-level approval disabled unless a separate aggregate approval is intentionally required. Position terminal joining waits for actual employee conversion.
 
-**Candidate pipeline `UIDAI_CANDIDATE_JOURNEYDN`:** retain the existing selection/HR stage code, rename its display label to `Negotiation, MoM & HR approval`, and select the existing `UIDAI_HR_APPROVAL` workflow in Advanced stage controls. Its approval is started when the candidate signs the MoM. The same approved workflow is reused for the transition into Offer; it is not requested twice.
+**Candidate pipeline `UIDAI_CANDIDATE_JOURNEYDN`:** retain the existing selection/HR stage code, rename its display label to `Negotiation, MoM & HR approval`, and select the existing `UIDAI_HR_APPROVAL` workflow in Advanced stage controls. Its approval is started after every assigned panel member signs the MoM. The same approved workflow is reused for the transition into Offer; it is not requested twice.
 
 Replace the successful `Offer → Joined/Hired` route with:
 
@@ -53,7 +53,8 @@ Use the existing role editor: scheduling uses `recruitment.interview.schedule`; 
 - ATS scores at or above the configured cutoff qualify even when skill evidence is missing or unverified. Evidence remains available for review. Existing passing scores are rechecked by the existing automation worker after the updated API starts; no extra migration or rescore is required. Explicit manual-confirmation settings and interview-stage checks still apply.
 - A direct email interview can be saved with no job and linked later to an application with the same email. A job-linked direct interview can advance an early candidate pipeline with an audited screening override.
 - Negotiation uses the configured budget basis unless explicitly overridden ON/OFF for the application. Confirming selected-candidate terms prepares the candidate-specific MoM.
-- The candidate opens the existing published job link, signs in using the existing APP reference/PIN, reviews the prepared MoM and signs it. HR receives a normal My Tasks approval. Revised or returned terms require confirmation and a fresh MoM signature.
+- Assigned panel members open Interview Tracker ? Panel MoM, review the prepared document and sign using their own login (typed, drawn or uploaded signature). All assigned members must sign before HR receives the normal My Tasks approval. Candidate portal signing is retired. Revised or returned terms require confirmation and fresh panel signatures. Existing schema is reused; this correction adds no migration.
+- MoM & Negotiation has sidebar submenus for stage documents and negotiation/approvals. The negotiation popup offers rejection through configured pipeline transitions with a mandatory reason. Admin manual stage movement remains available and explicitly warns about pending documents.
 - Offer acceptance leaves the candidate in pre-boarding. Final departmental approval, generated final offer, mandatory checklist completion and HR-confirmed employee creation precede Joined/Hired.
 - Individual candidates continue even if a position lacks enough candidates. Position auto-movement holds; admins can explicitly move a position with a reason without manufacturing document signatures or candidate approvals.
 

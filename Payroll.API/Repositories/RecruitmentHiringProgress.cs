@@ -37,10 +37,10 @@ COALESCE(CASE WHEN interview.Status='No Show' THEN 'No Show' ELSE interview.Resu
 COALESCE(interview.Status IN ('Scheduled','Rescheduled','Completed'),FALSE) HasInterview,
 COALESCE(interview.Status='Completed' AND interview.Result='Selected',FALSE) HasCompletedInterviewDecision,
 COALESCE(offerRow.Status,'') LatestOfferStatus,a.TermsConfirmedAtUtc IS NOT NULL TermsConfirmed,
-EXISTS(SELECT 1 FROM recruitment_process_documents d JOIN recruitment_process_document_signatures signature ON signature.ProcessDocumentId=d.Id AND signature.CandidateId=a.CandidateId
- WHERE d.ApplicationId=a.Id AND d.TermsVersion=a.TermsVersion AND d.Status='Signed' AND d.DocumentType='MOM' AND a.TermsConfirmedAtUtc IS NOT NULL) CandidateMomSigned,
+EXISTS(SELECT 1 FROM recruitment_process_documents d
+ WHERE d.ApplicationId=a.Id AND d.TermsVersion=a.TermsVersion AND d.Status='Signed' AND d.DocumentType='MOM' AND a.TermsConfirmedAtUtc IS NOT NULL AND " + RecruitmentPanelSignatures.CompleteFor("d") + @") CandidateMomSigned,
 EXISTS(SELECT 1 FROM recruitment_process_documents d JOIN workflowinstances w ON w.Id=d.WorkflowInstanceId AND w.ResourceType='RecruitmentPipelineTransition' AND w.ResourceId=CONCAT('MOM:',d.Id) AND w.Status='Approved'
- WHERE d.ApplicationId=a.Id AND d.TermsVersion=a.TermsVersion AND d.Status='Signed' AND d.DocumentType='MOM' AND a.TermsConfirmedAtUtc IS NOT NULL) CandidateMomApproved,
+ WHERE d.ApplicationId=a.Id AND d.TermsVersion=a.TermsVersion AND d.Status='Signed' AND d.DocumentType='MOM' AND a.TermsConfirmedAtUtc IS NOT NULL AND " + RecruitmentPanelSignatures.CompleteFor("d") + @") CandidateMomApproved,
 (a.JoinedEmployeeId IS NOT NULL OR LOWER(a.CurrentStage) IN ('joined','joined / hired')) IsJoined
 FROM recruitment_candidate_applications a
 JOIN recruitment_open_positions p ON p.Id=a.PositionId AND p.ClientId=a.ClientId
@@ -110,7 +110,7 @@ ORDER BY a.Id", new { Ids = ids, user.ClientId });
         else if (key.Contains("OFFER")) { gate = row => row.IsJoined; action = "confirmed joinings"; }
         var count = rows.Count(gate);
         var pending = required <= 0 ? "No active vacancies."
-            : key.Contains("SIGNING") && key.Contains("MOM") ? "Next: complete the required candidate MoM signatures."
+            : key.Contains("SIGNING") && key.Contains("MOM") ? "Next: complete the required panel MoM signatures."
             : key.Contains("JOIN") ? "Joining dates conveyed; candidate joining continues in each candidate journey."
             : count < required ? $"Next: {Math.Min(count, required)}/{required} ready; need {required - count} more {action}."
             : $"Candidate requirement met ({required}/{required}); next movement follows the configured documents and approvals.";

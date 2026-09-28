@@ -13,8 +13,8 @@ FROM recruitment_candidate_applications a JOIN recruitment_process_documents d O
 JOIN workflowinstances w ON w.Id=d.WorkflowInstanceId AND w.ResourceType='RecruitmentPipelineTransition' AND w.ResourceId=CONCAT('MOM:',d.Id) AND w.Status='Approved'
 WHERE a.Id=@applicationId AND a.TermsConfirmedAtUtc IS NOT NULL AND d.Status='Signed' AND d.DocumentType='MOM'
 AND (@configuredWorkflowId IS NULL OR w.WorkflowId=@configuredWorkflowId)
-AND EXISTS(SELECT 1 FROM recruitment_process_document_signatures s WHERE s.ProcessDocumentId=d.Id AND s.CandidateId=a.CandidateId))", new { applicationId, configuredWorkflowId }, tx);
-        return approved ? "" : "Confirm agreed terms, collect the candidate's MoM signature and complete HR Division approval first.";
+AND " + RecruitmentPanelSignatures.CompleteFor("d") + ")", new { applicationId, configuredWorkflowId }, tx);
+        return approved ? "" : "Confirm agreed terms, collect all assigned panel MoM signatures and complete HR Division approval first.";
     }
 
     internal static async Task<string> ValidateTransitionAsync(MySqlConnection db, long applicationId, long transitionId)

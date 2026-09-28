@@ -273,10 +273,9 @@ export default function RecruitmentPage({ view = 'Dashboard', onRequestNavigatio
                   onClientChange={changeClientScope}
                 />
               : view === 'MoM & Negotiation'
-                ? <Tabs defaultActiveKey="mom" destroyInactiveTabPane items={[
-                    { key: 'mom', label: 'MoM & stage documents', children: <RecruitmentWorkOrderWorkspace initialClientId={selectedClientId} clientScopeManaged postInterview /> },
-                    { key: 'negotiation', label: 'Negotiation & approvals', children: <RecruitmentTalentWorkspace mode="offers" initialClientId={selectedClientId} negotiationMode /> },
-                  ]} />
+                ? routeQuery.get('section') === 'negotiation'
+                  ? <RecruitmentTalentWorkspace key={`negotiation-${selectedClientId}`} mode="offers" initialClientId={selectedClientId} negotiationMode />
+                  : <RecruitmentWorkOrderWorkspace key={`mom-${selectedClientId}`} initialClientId={selectedClientId} clientScopeManaged postInterview />
               : view === 'Interview Queue'
                 ? <RecruitmentTalentWorkspace key={`interview-queue-${selectedClientId}`} mode="interviewQueue" initialClientId={selectedClientId} />
                 : view === 'Offers & Pre-Onboarding'
