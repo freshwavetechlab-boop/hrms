@@ -31,7 +31,7 @@ type RecordFilter<T> = { key: string; label: string; value: (row: T) => string; 
 type QuickFilter<T> = { key: string; label: string; tone: string; matches: (row: T) => boolean }
 
 // The same rows, column renderers and action handlers drive both views.
-export default function RecruitmentRecordList<T extends { id: number }>({ rows, columns, title, subtitle, filters, quickFilters = [], actions, selection, rowSelection, selectionGroup, exportFileName, emptyText = 'No records match these filters.', view: requestedView, searchValue, onSearchChange, remoteSearch = false, loading = false, actionsWidth, searchPlaceholder = 'Search by name, job or reference', hiddenCardColumns = [], cardSummaryColumns }: {
+export default function RecruitmentRecordList<T extends { id: number }>({ rows, columns, title, subtitle, filters, quickFilters = [], actions, selection, rowSelection, selectionGroup, exportFileName, emptyText = 'No records match these filters.', view: requestedView, searchValue, onSearchChange, remoteSearch = false, loading = false, actionsWidth, searchPlaceholder = 'Search by name, job or reference', hiddenCardColumns = [], cardSummaryColumns, cardExtra, selectAllDescription }: {
   rows: T[]; columns: Column<T>[]; title: (row: T) => string; subtitle?: (row: T) => string
   filters: RecordFilter<T>[]; quickFilters?: QuickFilter<T>[]; actions?: (row: T) => ReactNode
   selection?: (row: T) => ReactNode; rowSelection?: TableRowSelection<T>; exportFileName?: string; emptyText?: string
@@ -39,6 +39,8 @@ export default function RecruitmentRecordList<T extends { id: number }>({ rows, 
   view?: RecruitmentView; searchValue?: string; onSearchChange?: (value: string) => void; remoteSearch?: boolean; loading?: boolean; actionsWidth?: number; searchPlaceholder?: string
   hiddenCardColumns?: string[]
   cardSummaryColumns?: string[]
+  selectAllDescription?: string
+  cardExtra?: (row: T) => ReactNode
 }) {
   const prefix = exportFileName || 'records'
   const [savedSearch, setSavedSearch] = useRecruitmentPreference(prefix + ':search', '')
@@ -81,7 +83,7 @@ export default function RecruitmentRecordList<T extends { id: number }>({ rows, 
           <Input allowClear prefix={<SearchOutlined />} value={search} onChange={event => { setSearch(event.target.value); setPage(1) }} placeholder={searchPlaceholder} aria-label="Search records" />
           <span>Showing <b>{visible.length}</b> of {rows.length}</span>
           {!!selected.size && <Button size="small" onClick={() => rowSelection?.onChange?.([], [], { type: 'none' })}>Clear selection</Button>}
-          {rowSelection && <Tooltip title={multipleGroups ? 'Filter to one job or select one candidate first.' : 'Select all matching candidates for this job'}><Checkbox disabled={!selectable.length || Boolean(multipleGroups)} checked={!!selectable.length && selectedCount === selectable.length} indeterminate={selectedCount > 0 && selectedCount < selectable.length} onChange={event => selectAll(event.target.checked)}>Select all</Checkbox></Tooltip>}
+          {rowSelection && <Tooltip title={multipleGroups ? 'Filter to one job or select one candidate first.' : selectAllDescription || 'Select all matching candidates for this job'}><Checkbox disabled={!selectable.length || Boolean(multipleGroups)} checked={!!selectable.length && selectedCount === selectable.length} indeterminate={selectedCount > 0 && selectedCount < selectable.length} onChange={event => selectAll(event.target.checked)}>Select all</Checkbox></Tooltip>}
           {!sharedView && !requestedView && <Segmented options={['Cards', 'Table']} value={view} onChange={value => setView(String(value))} />}
         </div>
         {view === 'Table' ? <DataTable rows={visible} columns={columns} actions={actions} rowSelection={rowSelection} exportFileName={exportFileName} emptyText={emptyText} hideSearch fillHeight loading={loading} actionsWidth={actionsWidth} /> : <>
@@ -90,6 +92,7 @@ export default function RecruitmentRecordList<T extends { id: number }>({ rows, 
               <Avatar size={38}>{title(row).split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase()}</Avatar>
               <div className="candidate-application-copy"><div className="candidate-card-title"><h3>{title(row)}</h3></div>{subtitle && <p>{subtitle(row)}</p>}
                 {facts(row, summaryColumns)}
+                {cardExtra?.(row)}
                 {!!detailColumns.length && <details className="recruitment-record-details"><summary>More details</summary>{facts(row, detailColumns)}</details>}
               </div>
               {selection && <div className="recruitment-record-selection">{selection(row)}</div>}

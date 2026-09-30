@@ -1,11 +1,12 @@
 import type { AttachmentAccessTicket, AttachmentAttribute, AttachmentFieldConfiguration, AttachmentStorageHealthResult, AttachmentStorageServer, AttachmentTargetOption, EntityAttachment, GoogleDriveConnectStart, GoogleDriveSetup } from '../types/payroll'
-import { apiRequest, apiUrl, deleteJson, getJson, postEmpty, postForm, postFormWithProgress, postJson } from './apiClient'
+import { apiRequest, apiUrl, deleteJson, getJson, getJsonResult, postEmpty, postForm, postFormWithProgress, postJson } from './apiClient'
 
 export const getAttachmentTargets = () => getJson<AttachmentTargetOption[]>('/api/attachment-targets', [])
 export const getAttachmentAttributes = (clientId?: number) => getJson<AttachmentAttribute[]>(`/api/attachment-attributes${clientId == null ? '' : `?clientId=${clientId}`}`, [])
 export const saveAttachmentAttribute = (row: AttachmentAttribute) => postJson('/api/attachment-attributes', row, row, { successMessage: 'Attachment attribute saved.' })
 export const getAttachmentConfigurations = (clientId?: number) => getJson<AttachmentFieldConfiguration[]>(`/api/attachment-configurations${clientId == null ? '' : `?clientId=${clientId}`}`, [])
 export const getEffectiveAttachmentConfigurations = (clientId: number, moduleCode: string, formCode: string) => getJson<AttachmentFieldConfiguration[]>(`/api/attachment-configurations/effective?${new URLSearchParams({ clientId: String(clientId), moduleCode, formCode })}`, [])
+export const getEffectiveAttachmentConfigurationsResult = (clientId: number, moduleCode: string, formCode: string) => getJsonResult<AttachmentFieldConfiguration[]>(`/api/attachment-configurations/effective?${new URLSearchParams({ clientId: String(clientId), moduleCode, formCode })}`, [], { loader: false, toast: false })
 export const saveAttachmentConfiguration = (row: AttachmentFieldConfiguration) => postJson('/api/attachment-configurations', row, row, { successMessage: 'Attachment field configuration saved.' })
 export const getAttachmentStorageServers = () => getJson<AttachmentStorageServer[]>('/api/attachment-storage-servers', [])
 export const getAttachmentStorageServerFiles = (storageServerId: number) => getJson<EntityAttachment[]>(`/api/attachment-storage-servers/${storageServerId}/files`, [])
@@ -24,6 +25,7 @@ export const configureGoogleDrive = (credentialFile: File, storageServerId?: num
 export const connectGoogleDrive = () => postEmpty<GoogleDriveConnectStart>('/api/attachment-storage-servers/google/connect', { authorizationUrl: '' }, { toast: 'error-only' })
 
 export const getEntityAttachments = (entityType: string, entityId: number) => getJson<EntityAttachment[]>(`/api/attachments?${new URLSearchParams({ entityType, entityId: String(entityId) })}`, [])
+export const getEntityAttachmentsResult = (entityType: string, entityId: number) => getJsonResult<EntityAttachment[]>(`/api/attachments?${new URLSearchParams({ entityType, entityId: String(entityId) })}`, [], { loader: false, toast: false })
 export const uploadEntityAttachment = (fieldConfigurationId: number, entityType: string, entityId: number, file: File, metadata: { documentNumber?: string; issueDate?: string; expiryDate?: string }, onProgress: (percent: number) => void) => {
   const body = new FormData()
   body.append('fieldConfigurationId', String(fieldConfigurationId))

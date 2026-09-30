@@ -1,0 +1,41 @@
+.employee-master.employee-record-page { display: flex; flex: 1; min-width: 0; min-height: 0; max-width: none; width: 100%; }
+.employee-record-workspace { width: 100%; }
+.employee-record-workspace .recruitment-record-card .recruitment-record-selection { grid-column: 3; grid-row: 1; }
+.employee-record-workspace .recruitment-record-card .recruitment-record-actions { grid-column: 2 / -1; grid-row: auto; max-width: none; }
+.employee-record-workspace .row-actions { flex-wrap: wrap; min-width: 0; }
+.employee-record-workspace .row-actions > span { max-width: 100%; }
+.employee-record-workspace .row-actions .ant-btn { height: auto; min-height: 26px; white-space: normal; }
+.employee-record-workspace .row-actions .employee-reminder-button { display: inline-flex !important; align-items: center; justify-content: center; gap: 6px; }
+.employee-record-workspace .zoho-ant-table .employee-reminder-button { white-space: nowrap; }
+.employee-record-workspace .zoho-ant-table .ant-table-row-actions .employee-reminder-button:disabled { background: #f5f5f5 !important; border-color: #d9d9d9 !important; color: #a3a3a3 !important; cursor: not-allowed; }
+.employee-record-workspace .candidate-card-title h3 { overflow-wrap: anywhere; }
+.employee-dashboard-scope { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex-shrink: 0; padding-bottom: 8px; }
+.employee-card .employee-infotype-tabs { min-width: 0; }
+.employee-card .employee-infotype-tabs .ant-tabs-nav { margin-bottom: 0; }
+.employee-card .employee-infotype-tabs .ant-tabs-content-holder { display: none; }
+.employee-card .employee-infotype-tabs .ant-tabs-tab { padding: 10px 0; }
+.employee-modal { overscroll-behavior: contain; }
+.employee-missing-information { background: #fff7e6; border: 1px solid #ffd591; border-radius: 10px; padding: 9px 11px; margin-top: 6px; min-width: 0; color: #874d00; }
+.employee-missing-information summary { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.employee-missing-information summary > span:last-child { background: #ad6800; color: #fff; border-radius: 12px; padding: 0 7px; font-size: 11px; }
+.employee-missing-items { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.employee-missing-items button { border: 1px solid #ffe0b0; border-radius: 7px; padding: 4px 7px; background: #fffdf7; color: inherit; font: inherit; font-size: 11px; line-height: 1.45; text-align: left; white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
+.employee-missing-items button:hover { border-color: #d48806; }
+.employee-missing-information small { display: block; margin-top: 4px; font-size: 11px; }
+.employee-missing-information small button { border: 0; background: none; color: inherit; text-decoration: underline; cursor: pointer; }
+.employee-missing-information.is-pending { color: #667085; background: #f8fafc; border-color: #e3e8ef; }
+@media (max-width: 600px) {
+  .employee-record-workspace .recruitment-record-card { grid-template-columns: auto minmax(0, 1fr); }
+  .employee-record-workspace .recruitment-record-card .recruitment-record-selection { grid-column: 2; grid-row: auto; }
+  .employee-modal-backdrop { padding: 6px; }
+  .employee-modal { max-height: calc(100dvh - 12px); }
+  .employee-card { padding: 10px; min-width: 0; }
+  .employee-modal .employee-basic-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .employee-modal .employee-card .grid { grid-template-columns: minmax(0, 1fr); }
+  .employee-card .grid > * { min-width: 0; grid-column: auto; }
+}
+
+.employee-missing-information summary { cursor: pointer; font-weight: 700; }
+.employee-missing-information summary::before { content: "\25b8"; }
+.employee-missing-information details[open] summary::before { content: "\25be"; }
+.employee-reminder-preview + .employee-reminder-preview { border-top: 1px solid #e3e8f2; margin-top: 16px; padding-top: 12px; }

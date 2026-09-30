@@ -38,9 +38,9 @@ COALESCE(interview.Status IN ('Scheduled','Rescheduled','Completed'),FALSE) HasI
 COALESCE(interview.Status='Completed' AND interview.Result='Selected',FALSE) HasCompletedInterviewDecision,
 COALESCE(offerRow.Status,'') LatestOfferStatus,a.TermsConfirmedAtUtc IS NOT NULL TermsConfirmed,
 EXISTS(SELECT 1 FROM recruitment_process_documents d
- WHERE d.ApplicationId=a.Id AND d.TermsVersion=a.TermsVersion AND d.Status='Signed' AND d.DocumentType='MOM' AND a.TermsConfirmedAtUtc IS NOT NULL AND " + RecruitmentPanelSignatures.CompleteFor("d") + @") CandidateMomSigned,
+ WHERE " + RecruitmentJobMom.CoversApplication("d", "a") + " AND " + RecruitmentJobMom.CurrentFor("d") + @" AND d.Status='Signed' AND d.DocumentType='MOM' AND a.TermsConfirmedAtUtc IS NOT NULL AND " + RecruitmentPanelSignatures.CompleteFor("d") + @") CandidateMomSigned,
 EXISTS(SELECT 1 FROM recruitment_process_documents d JOIN workflowinstances w ON w.Id=d.WorkflowInstanceId AND w.ResourceType='RecruitmentPipelineTransition' AND w.ResourceId=CONCAT('MOM:',d.Id) AND w.Status='Approved'
- WHERE d.ApplicationId=a.Id AND d.TermsVersion=a.TermsVersion AND d.Status='Signed' AND d.DocumentType='MOM' AND a.TermsConfirmedAtUtc IS NOT NULL AND " + RecruitmentPanelSignatures.CompleteFor("d") + @") CandidateMomApproved,
+ WHERE " + RecruitmentJobMom.CoversApplication("d", "a") + " AND " + RecruitmentJobMom.CurrentFor("d") + @" AND d.Status='Signed' AND d.DocumentType='MOM' AND a.TermsConfirmedAtUtc IS NOT NULL AND " + RecruitmentPanelSignatures.CompleteFor("d") + @") CandidateMomApproved,
 (a.JoinedEmployeeId IS NOT NULL OR LOWER(a.CurrentStage) IN ('joined','joined / hired')) IsJoined
 FROM recruitment_candidate_applications a
 JOIN recruitment_open_positions p ON p.Id=a.PositionId AND p.ClientId=a.ClientId
@@ -106,7 +106,7 @@ ORDER BY a.Id", new { Ids = ids, user.ClientId });
         if (key.Contains("SHARING")) { gate = InterviewsReady; action = "candidate(s) with an interview scheduled"; }
         else if (key.Contains("INTERVIEW") || key.Contains("PANEL")) { gate = SelectionComplete; action = "candidate(s) to complete final interview selection"; }
         else if (key.Contains("NEGOTIATION")) { gate = MoMReady; action = "candidate(s) with confirmed agreed terms"; }
-        else if (key.Contains("APPROVAL") && key.Contains("HR")) { gate = row => !Excluded(row) && row.CandidateMomApproved; action = "candidate MoMs approved by HR"; }
+        else if (key.Contains("APPROVAL") && key.Contains("HR")) { gate = row => !Excluded(row) && row.CandidateMomApproved; action = "candidates covered by the HR-approved job MoM"; }
         else if (key.Contains("OFFER")) { gate = row => row.IsJoined; action = "confirmed joinings"; }
         var count = rows.Count(gate);
         var pending = required <= 0 ? "No active vacancies."

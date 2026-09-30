@@ -1056,6 +1056,12 @@ ORDER BY f.display_order,a.uploaded_at_utc DESC;", new { ClientId = clientId.Val
         if (configurationRow is null) return (null, "Attachment field configuration is inactive or not applicable.");
         if (!await CanUploadEntityAsync(user, metadata.EntityType, metadata.EntityId, clientId.Value, configurationRow))
             return (null, "You are not allowed to upload this attachment.");
+        if (IsSelfProfileWrite(user, metadata.EntityType, metadata.EntityId))
+        {
+            await using var editDb = Connection(); await editDb.OpenAsync();
+            if (!(await EssMssRepository.ProfileEditAccessAsync(editDb, (int)metadata.EntityId)).CanEdit)
+                return (null, "Your profile is locked. Request edit access before uploading documents.");
+        }
         var validationError = ValidateMetadata(configurationRow, metadata, file);
         if (validationError is not null) return (null, validationError);
 
@@ -1103,6 +1109,16 @@ ORDER BY id DESC LIMIT 1", new
             await using var db = Connection();
             await db.OpenAsync();
             await using var transaction = await db.BeginTransactionAsync();
+            if (IsSelfProfileWrite(user, metadata.EntityType, metadata.EntityId))
+            {
+                await db.ExecuteScalarAsync<int>("SELECT Id FROM employees WHERE Id=@Id FOR UPDATE", new { Id = metadata.EntityId }, transaction);
+                if (!(await EssMssRepository.ProfileEditAccessAsync(db, (int)metadata.EntityId, transaction)).CanEdit)
+                {
+                    await transaction.RollbackAsync();
+                    await storageService.DeleteAsync(server, storageKey, cancellationToken);
+                    return (null, "Your profile is locked. Request edit access before uploading documents.");
+                }
+            }
             var current = (await db.QueryAsync<EntityAttachment>("SELECT id Id,version_number VersionNumber,file_size_bytes FileSizeBytes FROM entity_attachments WHERE client_id=@ClientId AND entity_type=@EntityType AND entity_id=@EntityId AND field_configuration_id=@FieldId AND is_current=TRUE AND is_deleted=FALSE FOR UPDATE",
                 new { ClientId = clientId.Value, EntityType = metadata.EntityType, EntityId = metadata.EntityId, FieldId = configurationRow.Id }, transaction)).ToList();
             var isOwner = metadata.EntityType == "EMPLOYEE" && user.EmployeeId == metadata.EntityId;
@@ -1288,6 +1304,12 @@ WHERE token_hash=@TokenHash AND revoked_at_utc IS NULL AND expires_at_utc>UTC_TI
         await using var db = Connection();
         await db.OpenAsync();
         await using var transaction = await db.BeginTransactionAsync();
+        if (!storageAdministrator && IsSelfProfileWrite(user, row.EntityType, row.EntityId))
+        {
+            await db.ExecuteScalarAsync<int>("SELECT Id FROM employees WHERE Id=@Id FOR UPDATE", new { Id = row.EntityId }, transaction);
+            if (!(await EssMssRepository.ProfileEditAccessAsync(db, (int)row.EntityId, transaction)).CanEdit)
+                return (false, "Your profile is locked. Request edit access before deleting documents.");
+        }
         await db.ExecuteAsync(@"UPDATE entity_attachments SET is_deleted=TRUE,is_current=FALSE,deleted_by_user_id=@UserId,deleted_at_utc=UTC_TIMESTAMP(6)
 WHERE id=@Id AND is_deleted=FALSE", new { row.Id, UserId = user.Id }, transaction);
         await WriteAuditAsync(db, transaction, row.Id, row.ClientId, row.EntityType, row.EntityId, purgeStoredFile ? "PURGE" : "DELETE", user.Id, true, "", ipAddress, userAgent, new { publicId, storedFilePurged = purgeStoredFile });
@@ -1524,6 +1546,8 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
     private static bool CanManageClient(AuthUser user, int clientId) =>
         (user.ClientId is null || user.ClientId == clientId) &&
         HasAnyPermission(user, "attachment.config.manage", "settings.manage", "security.manage");
+
+    private static bool IsSelfProfileWrite(AuthUser user, string entityType, long entityId) => entityType == "EMPLOYEE" && user.EmployeeId == entityId && !HasAnyPermission(user, "employees.manage");
 
     private async Task<bool> CanReadEntityAsync(AuthUser user, string entityType, long entityId, int clientId)
     {

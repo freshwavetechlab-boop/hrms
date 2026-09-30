@@ -201,10 +201,10 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     setSelectedCase(response.data); setCaseSyncedAt(Date.now()); setProcessDocuments([]); setSelectedWorkOrder(null); await load()
   }
 
-  const prepareProcessDocument = async (documentType: string, templateId?: number | null) => {
-    if (!selectedCase || !activeStage) return
+  const prepareProcessDocument = async (documentType: string, templateId?: number | null, pipelineStageId = activeStage?.pipelineStageId) => {
+    if (!selectedCase || !pipelineStageId) return
     setDocumentSaving(true)
-    const response = await saveRecruitmentProcessDocument({ id: 0, clientId: selectedCase.clientId, hiringCaseId: selectedCase.id, applicationId: null, interviewId: null, pipelineStageId: activeStage.pipelineStageId, documentType, templateId: templateId || null, attachmentPublicId: null, status: 'Draft', workflowInstanceId: null })
+    const response = await saveRecruitmentProcessDocument({ id: 0, clientId: selectedCase.clientId, hiringCaseId: selectedCase.id, applicationId: null, interviewId: null, pipelineStageId, documentType, templateId: templateId || null, attachmentPublicId: null, status: 'Draft', workflowInstanceId: null })
     setDocumentSaving(false)
     if (response.ok && response.data) setProcessDocuments(await getRecruitmentProcessDocuments(selectedCase.id))
   }
@@ -314,7 +314,8 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     children: <div><b>{event.eventTitle}</b><p>{event.eventDetails || 'No additional note.'}</p><small>{dateTimeText(event.createdAtUtc)} · {event.actorName || 'System'}</small></div>,
   })) ?? []
   const lastCohortRework = Math.max(0, ...(selectedCase?.events ?? []).filter(event => event.eventType === 'ProfilesReworkStarted').map(event => new Date(event.createdAtUtc).getTime()))
-  const currentCohortDocument = (row: RecruitmentProcessDocument) => !['MOM', 'SIGNED_MOM'].includes(row.documentType) || !lastCohortRework || new Date(row.createdAtUtc).getTime() >= lastCohortRework
+  const currentCohortDocument = (row: RecruitmentProcessDocument) => !['MOM', 'SIGNED_MOM'].includes(row.documentType) || (row.isCurrentJobMom && (!lastCohortRework || new Date(row.createdAtUtc).getTime() >= lastCohortRework))
+  const documentRequirements = postInterview ? selectedCase?.stages.flatMap(stage => stage.processDocumentRequirements.filter(requirement => ['MOM', 'SIGNED_MOM'].includes(requirement.documentType) || stage.id === activeStage?.id)) ?? [] : activeStage?.processDocumentRequirements ?? []
   const missingRequiredDocuments = activeStage?.processDocumentRequirements.filter(requirement => {
     if (!requirement.isRequired) return false
     const document = processDocuments.find(row => row.pipelineStageId === activeStage.pipelineStageId && row.documentType === requirement.documentType && currentCohortDocument(row))
@@ -341,7 +342,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
             : ''
   return <section className="work-order-workspace" data-testid="recruitment-work-orders">
     {postInterview && <><PageHeaderPortal slot="recruitment-page-controls"><Button onClick={() => void load()}>Refresh</Button></PageHeaderPortal>
-      <Alert showIcon type="info" message="Confirm agreed terms → Panel signs MoM → HR approval"  />
+      <Alert showIcon type="info" message="Individual agreed terms → One job MoM → Panel signatures → HR approval" />
       <RecruitmentRecordList<RecruitmentHiringCase> rows={postInterviewCases} title={row => row.positionName} subtitle={row => row.workOrderNumber} exportFileName="recruitment-mom"
         filters={[{ key: 'job', label: 'Job role', value: row => row.positionName }, { key: 'stage', label: 'Hiring stage', value: row => row.currentStageName }, { key: 'order', label: 'Work order', value: row => row.workOrderNumber }]}
         quickFilters={[...new Set(postInterviewCases.map(row => row.currentStageName).filter(Boolean))].map(stage => ({ key: stage, label: stage, tone: 'purple', matches: row => row.currentStageName === stage }))}
@@ -428,17 +429,17 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
         {selectedCase.advanceStatus === 'Pending Approval' && <Alert data-testid="hiring-case-approval-pending" showIcon type="info" message="Stage movement awaiting approval" description={selectedCase.advanceMessage || 'The configured approver can action this request from global My Tasks.'} />}
         <div className="case-live-timers" data-testid="hiring-case-live-timers"><div><span>Current stage active time</span><b><ClockCircleOutlined /> {formatStageDuration(activeStageSeconds)}</b><small>{activeStage?.isPaused ? 'Paused — inactive time is excluded' : activeStage ? 'Live timer' : 'Journey completed'}</small></div><div><span>Overall SLA</span><b>{remainingDuration(selectedCase.overallDueAtUtc, clockNow)}</b><small>Anchored at {dateTimeText(selectedCase.slaAnchorAtUtc)}</small></div><Button icon={<HistoryOutlined />} onClick={() => setStageLogOpen(true)}>View stage history</Button></div>
         <Card title="Documents for this stage" extra={<Tag color="purple">Stage requirements</Tag>}>
-          <p className="work-order-document-guidance">Prepare the document, then collect committee signatures by typing, drawing or uploading a signature image. All assigned panel members must sign the prepared MoM.</p>
-          {!activeStage?.processDocumentRequirements?.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="This stage has no process-document requirement." />}
-          {activeStage?.processDocumentRequirements?.flatMap(requirement => {
-            const matching = processDocuments.filter(row => row.pipelineStageId === activeStage.pipelineStageId && row.documentType === requirement.documentType && currentCohortDocument(row))
-            const latest = matching.filter((row, index) => matching.findIndex(other => other.applicationId === row.applicationId) === index)
+          <p className="work-order-document-guidance">Prepare one combined MoM for this job with its selected candidates and agreed terms. All assigned panel members sign the same MoM. Use a new version when terms change or HR returns it.</p>
+          {!documentRequirements.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="This stage has no process-document requirement." />}
+          {documentRequirements.flatMap(requirement => {
+            const latest = processDocuments.filter(row => row.pipelineStageId === requirement.pipelineStageId && row.documentType === requirement.documentType).slice(0, 1)
             return (latest.length ? latest : [undefined]).map(document => <div className="work-order-document" key={document?.id || requirement.id} data-testid={`hiring-document-${requirement.documentType}`}>
               <header className="work-order-document-header"><div><b><FileProtectOutlined /> {requirement.documentType.replaceAll('_', ' ')}{document?.applicationId ? ` - ${candidateApplications.find(row => row.id === document.applicationId)?.candidateName || `Application #${document.applicationId}`}` : ''}</b><span>{requirement.isRequired ? 'Required' : 'Optional'}{requirement.requiresSignature ? ' · signature required' : ''}</span></div><Space wrap className="work-order-document-actions">
-              {!document ? <Button data-testid={`hiring-document-create-${requirement.documentType}`} loading={documentSaving} onClick={() => void prepareProcessDocument(requirement.documentType, requirement.templateId)}>Prepare</Button> : <Tag color={document.status === 'Signed' ? 'green' : 'blue'}>v{document.versionNumber} · {document.status}</Tag>}
-              {document && requirement.templateId && document.status !== 'Signed' && !(document.termsVersion && document.bodySnapshot) && <Button loading={documentSaving} onClick={() => void generateProcessDocument(document)}>{document.attachmentPublicId ? 'Regenerate PDF' : 'Generate PDF'}</Button>}
-              {document && requirement.requiresSignature && document.status !== 'Signed' && <Button data-testid={`hiring-document-sign-${requirement.documentType}`} onClick={() => void openSignature(document)}>Sign MoM</Button>}
-              {document && requirement.requiresSignature && document.status !== 'Signed' && (document.capturedSignaturesComplete || (!['MOM', 'SIGNED_MOM'].includes(document.documentType) && document.hasFinalSignedAttachment)) && <Button type="primary" onClick={() => void markProcessDocumentSigned(document)}>Finalize signed</Button>}
+              {!document ? <Button data-testid={`hiring-document-create-${requirement.documentType}`} loading={documentSaving} onClick={() => void prepareProcessDocument(requirement.documentType, requirement.templateId, requirement.pipelineStageId)}>Prepare</Button> : <Tag color={document.status === 'Signed' ? 'green' : 'blue'}>v{document.versionNumber} · {document.status}</Tag>}
+              {document && ['MOM', 'SIGNED_MOM'].includes(document.documentType) && document.bodySnapshot && <Button loading={documentSaving} onClick={() => void prepareProcessDocument(requirement.documentType, requirement.templateId, requirement.pipelineStageId)}>Prepare new version</Button>}
+              {document && requirement.templateId && document.status !== 'Signed' && !(['MOM', 'SIGNED_MOM'].includes(document.documentType) && document.bodySnapshot) && <Button loading={documentSaving} onClick={() => void generateProcessDocument(document)}>{document.attachmentPublicId ? 'Regenerate PDF' : 'Generate PDF'}</Button>}
+              {document && requirement.requiresSignature && document.status !== 'Signed' && currentCohortDocument(document) && <Button data-testid={`hiring-document-sign-${requirement.documentType}`} onClick={() => void openSignature(document)}>Sign MoM</Button>}
+              {document && !['MOM', 'SIGNED_MOM'].includes(document.documentType) && requirement.requiresSignature && document.status !== 'Signed' && (document.capturedSignaturesComplete || (!['MOM', 'SIGNED_MOM'].includes(document.documentType) && document.hasFinalSignedAttachment)) && <Button type="primary" onClick={() => void markProcessDocumentSigned(document)}>Finalize signed</Button>}
               {document && requirement.requiresSignature && document.status !== 'Signed' && <Tag color={document.capturedSignaturesComplete ? 'green' : 'orange'}>{document.signatureCount || 0}/{document.requiredSignatureCount ?? 0} signatures</Tag>}
               </Space></header>
               {document && <EntityAttachmentPanel entityType="RECRUITMENT_PROCESS_DOCUMENT" entityId={document.id} clientId={selectedCase.clientId} moduleCode="RECRUITMENT" formCodes={['PROCESS_DOCUMENT']} title="Document file" description="Private, versioned storage with secure preview and download." singleFieldLabel={requirement.documentType.replaceAll('_', ' ')} singleFieldHelp={requirement.requiresSignature ? 'A PDF upload does not replace the required panel signatures.' : 'Upload the source document for this requirement. Use Generate PDF only when a template is configured.'} onChanged={() => void viewCase(selectedCase)} />}

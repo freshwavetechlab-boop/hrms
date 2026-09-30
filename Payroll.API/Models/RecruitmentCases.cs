@@ -179,6 +179,7 @@ public class MoveRecruitmentHiringCaseRequest
 
 public class RecruitmentProcessDocument
 {
+    public bool IsCurrentJobMom { get; set; }
     public int? TermsVersion { get; set; }
     public string? BodySnapshot { get; set; }
     public long Id { get; set; }

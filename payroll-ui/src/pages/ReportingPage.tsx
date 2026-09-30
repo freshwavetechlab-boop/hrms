@@ -10,6 +10,7 @@ import PayslipRegister from '../components/PayslipRegister'
 import DataTable, { type Column } from '../components/DataTable'
 import SearchSelect from '../components/SearchSelect'
 import { downloadXlsx } from '../utils/xlsx'
+import { workforceValue } from '../utils/employeeWorkforce'
 import { useAuthSession } from '../components/AuthGate'
 
 export type ReportingMenu = (typeof reportingMenus)[number]
@@ -68,6 +69,9 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   const [clients, setClients] = useState<Client[]>([]), [clientId, setClientId] = useState(0), [result, setResult] = useState<ReportResult>({ title: '', columns: [], rows: [] })
   const [payRuns, setPayRuns] = useState<PayRun[]>([]), [employees, setEmployees] = useState<Employee[]>([]), [components, setComponents] = useState<Component[]>([])
   const [locations, setLocations] = useState<WorkLocation[]>([]), [managerUsers, setManagerUsers] = useState<WorkflowApprover[]>([]), [salaryStructures, setSalaryStructures] = useState<Structure[]>([])
+  const [classifications, setClassifications] = useState({ clientId: 0, employmentType: '', skillCategory: '' })
+  const classificationFilters = classifications.clientId === clientId ? classifications : { employmentType: '', skillCategory: '' }
+  const showClassifications = ['employee-master', 'tenure', 'new-joiners'].includes(activeReport.code || '')
   const [employeeExportGroups, setEmployeeExportGroups] = useState<EmployeeExportGroup[]>(['table'])
   const [employeeDataReady, setEmployeeDataReady] = useState(false), [employeeLookupReady, setEmployeeLookupReady] = useState(false)
   const [reportLoading, setReportLoading] = useState(false), [reportError, setReportError] = useState(''), [reportReloadKey, setReportReloadKey] = useState(0)
@@ -133,6 +137,9 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
     let cancelled = false
     setReportLoading(true)
     void runReportResult(activeReport.code, clientId, {
+      employmentType: showClassifications ? classificationFilters.employmentType || undefined : undefined,
+      employeeCategory: showClassifications ? classificationFilters.skillCategory || undefined : undefined,
+      activeOnly: activeReport.name === 'Active Employees',
       month: showMonth ? month : undefined,
       fromDate: showPeriod ? fromDate : undefined,
       toDate: showPeriod ? toDate : undefined,
@@ -145,7 +152,7 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
       else setReportError(response.status ? `The report service returned status ${response.status}. Please retry or contact the administrator if it continues.` : 'The report service could not be reached. Check the local API and retry.')
     }).finally(() => { if (!cancelled) setReportLoading(false) })
     return () => { cancelled = true }
-  }, [clientId, activeReport, month, fromDate, toDate, payRunId, employeeId, componentCode, showMonth, showPeriod, showPayRun, showEmployee, showComponent, reportReloadKey])
+  }, [clientId, activeReport, month, fromDate, toDate, payRunId, employeeId, componentCode, showMonth, showPeriod, showPayRun, showEmployee, showComponent, reportReloadKey, showClassifications, classificationFilters.employmentType, classificationFilters.skillCategory])
   const reportColumns: Column<ReportRow>[] = result.columns.map(column => ({ key: column, label: column }))
   const changeEmployeeExportGroups = (values: EmployeeExportGroup[]) => {
     const added = values.find(value => !employeeExportGroups.includes(value))
@@ -185,6 +192,8 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
     const tableColumnKeys: Record<string, string> = {
       'Employee Code': 'employeeCode',
       Employee: 'employeeName',
+      'Employee Type': 'employmentType',
+      'Employee Category': 'skillCategory',
       Department: 'department',
       Designation: 'designation',
       Location: 'workLocation',
@@ -205,6 +214,8 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
       addColumn({ key: 'client', label: 'Client', read: () => client?.name ?? '' })
       addColumn({ key: 'department', label: 'Department', read: employee => employee?.department ?? '' })
       addColumn({ key: 'designation', label: 'Designation', read: employee => employee?.designation ?? '' })
+      addColumn({ key: 'employmentType', label: 'Employee Type', read: employee => employee ? workforceValue(employee, 'employmentType') : '' })
+      addColumn({ key: 'skillCategory', label: 'Employee Category', read: employee => employee ? workforceValue(employee, 'skillCategory') : '' })
       addColumn({ key: 'grade', label: 'Grade', read: employee => employee?.grade ?? '' })
       addColumn({ key: 'workLocation', label: 'Work Location', read: employee => employee ? locationById.get(employee.workLocationId)?.name ?? '' : '' })
       addColumn({
@@ -285,6 +296,7 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
     <div className="report-filter-surface">
       {activeReport.code && <div className="report-filters">
         {!clientScoped && <label className="report-client"><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(c => ({ value: c.id, label: c.name }))} /></label>}
+        {showClassifications && (['employmentType', 'skillCategory'] as const).map(key => <label className="report-client" key={key}><span>{key === 'employmentType' ? 'Employee type' : 'Employee category'}</span><Select allowClear showSearch optionFilterProp="label" placeholder="All" value={classificationFilters[key] || undefined} onChange={value => setClassifications({ clientId, ...classificationFilters, [key]: value || '' })} options={[...new Set(employees.filter(row => row.clientId === clientId).map(row => workforceValue(row, key)))].sort().map(value => ({ value, label: value }))} /></label>)}
         {showMonth && <label className="report-client"><span>{['salary-register', 'component-ledger', 'monthly-advice-report', 'bank-transfer-report'].includes(activeReport.code) ? 'Pay Period' : 'Month'}</span><input type="month" value={month} onChange={e => setMonth(e.target.value)} /></label>}
         {showPayRun && <label className="report-client"><span>Payrun</span><SearchSelect value={payRunId} onChange={value => setPayRunId(Number(value))} options={[{ value: 0, label: 'Use selected month' }, ...clientPayRuns.map(run => ({ value: run.id, label: `${run.payPeriod} - ${run.runName || run.runType} - ${run.status}` }))]} /></label>}
         {showEmployee && <label className="report-client"><span>Employee</span><SearchSelect value={employeeId} onChange={value => setEmployeeId(Number(value))} options={[{ value: 0, label: 'All employees' }, ...clientEmployees.map(employee => ({ value: employee.id, label: `${employee.employeeCode} - ${employee.firstName} ${employee.lastName}` }))]} /></label>}

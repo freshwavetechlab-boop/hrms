@@ -6,7 +6,7 @@ using System.Text.Json;
 
 namespace Payroll.API.Repositories;
 
-public class EssMssRepository(IConfiguration configuration)
+public partial class EssMssRepository(IConfiguration configuration)
 {
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
 
@@ -113,6 +113,10 @@ LEFT JOIN travel_expense_client_settings te ON te.ClientId=e.ClientId
   AND (te.EffectiveTo IS NULL OR te.EffectiveTo>=CURRENT_DATE)
 WHERE e.Id=@EmployeeId AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { EmployeeId = employeeId, ClientId = clientId });
         if (profile is null) return null;
+        var editAccess = await ProfileEditAccessAsync(db, employeeId);
+        profile.CanEdit = editAccess.CanEdit;
+        profile.EditStatus = editAccess.Status;
+        profile.CanRequestEdit = !editAccess.CanEdit && editAccess.Status == "Locked";
         var applicableOffices = await GetApplicableGeoFenceRulesAsync(db, null, employeeId, profile.ClientId, AttendanceNow().Date);
         profile.AttendanceOffice = string.Join(", ", applicableOffices
             .Select(rule => rule.Name.Trim())
@@ -133,16 +137,15 @@ WHERE e.Id=@EmployeeId AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { E
         await using var db = Connection();
         await db.OpenAsync();
         await EnsureProfileTablesAsync(db);
-        var employee = await db.QueryFirstOrDefaultAsync<(int Id, int ClientId)>("SELECT Id,ClientId FROM employees WHERE Id=@EmployeeId AND IsActive=TRUE AND (@ClientId IS NULL OR ClientId=@ClientId)", new { EmployeeId = employeeId, ClientId = clientId });
-        if (employee.Id == 0) return (null, "Employee profile was not found.");
-        var allowed = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM ess_client_settings WHERE ClientId=@ClientId AND AllowProfileEdit=TRUE AND IsActive=TRUE", new { employee.ClientId });
-        if (allowed == 0) return (null, "Profile self-update is not enabled for your client.");
+        var before = await GetProfileAsync(employeeId, clientId);
+        await using var tx = await db.BeginTransactionAsync();
+        var employee = await db.QueryFirstOrDefaultAsync<Employee>("SELECT * FROM employees WHERE Id=@EmployeeId AND IsActive=TRUE AND (@ClientId IS NULL OR ClientId=@ClientId) FOR UPDATE", new { EmployeeId = employeeId, ClientId = clientId }, tx);
+        if (employee is null) return (null, "Employee profile was not found.");
+        if (!(await ProfileEditAccessAsync(db, employeeId, tx)).CanEdit) return (null, "Your profile is locked. Request edit access and wait for approval.");
         var pan = Clean(request.PanNumber);
         var ifsc = Clean(request.IfscCode);
         var email = request.WorkEmail.Trim();
         if (!string.IsNullOrWhiteSpace(email) && !System.Text.RegularExpressions.Regex.IsMatch(email, @"^[^@\s]+@[^@\s]+\.[^@\s]+$")) return (null, "Enter a valid email address.");
-        var before = await GetProfileAsync(employeeId, clientId);
-        await using var tx = await db.BeginTransactionAsync();
         await db.ExecuteAsync(@"UPDATE employees
 SET FirstName=@FirstName,LastName=@LastName,WorkEmail=@WorkEmail
 WHERE Id=@EmployeeId", new { EmployeeId = employeeId, FirstName = Clean(request.FirstName), LastName = Clean(request.LastName), WorkEmail = email }, tx);
@@ -154,23 +157,29 @@ VALUES (@EmployeeId,@BankName,@BankAccountNo,@IfscCode,@PaymentMode)
 ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode=@IfscCode,PaymentMode=@PaymentMode", new { EmployeeId = employeeId, BankName = Clean(request.BankName), BankAccountNo = Clean(request.BankAccountNo), IfscCode = ifsc, PaymentMode = Clean(request.PaymentMode) }, tx);
         await db.ExecuteAsync(@"INSERT INTO ess_profile_update_audit (EmployeeId,ClientId,ChangedBy,OldValueJson,NewValueJson)
 VALUES (@EmployeeId,@ClientId,@ChangedBy,@OldValue,@NewValue)", new { EmployeeId = employeeId, employee.ClientId, ChangedBy = changedBy, OldValue = JsonSerializer.Serialize(before), NewValue = JsonSerializer.Serialize(request) }, tx);
+        employee.FirstName = Clean(request.FirstName); employee.LastName = Clean(request.LastName); employee.WorkEmail = email;
+        employee.PersonalDetails = await db.QuerySingleAsync<EmployeePersonalDetails>("SELECT * FROM employeepersonaldetails WHERE EmployeeId=@EmployeeId", new { EmployeeId = employeeId }, tx);
+        employee.PaymentDetails = new EmployeePaymentDetails { BankName = Clean(request.BankName), BankAccountNo = Clean(request.BankAccountNo), IfscCode = ifsc, PaymentMode = Clean(request.PaymentMode) };
+        foreach (var code in new[] { "0002", "0006", "0009" })
+            await EmployeeRepository.WritePhysicalInfotypeAsync(db, employee, code, "ESS profile update", DateTime.Today, "Employee one-time profile save", changedBy, tx);
+        await db.ExecuteAsync("UPDATE ResourceStates SET CurrentState='Consumed',ModifiedOn=UTC_TIMESTAMP() WHERE ResourceType='EmployeeProfileEdit' AND ResourceId=@Id AND CurrentState='Approved'", new { Id = employeeId.ToString() }, tx);
         await tx.CommitAsync();
         return (await GetProfileAsync(employeeId, clientId), null);
     }
 
-    public async Task<IEnumerable<EssClientSetting>> GetEssClientSettingsAsync()
+    public async Task<IEnumerable<EssClientSetting>> GetEssClientSettingsAsync(int? clientId = null)
     {
         await using var db = Connection();
         await db.OpenAsync();
         await EnsureProfileTablesAsync(db);
         await db.ExecuteAsync(@"INSERT INTO ess_client_settings (ClientId,AllowProfileEdit,InitialPasswordMode,FixedPassword,IsActive)
-SELECT Id,FALSE,'App Default','',TRUE FROM clients WHERE IsActive=TRUE
-ON DUPLICATE KEY UPDATE ClientId=ClientId");
-        return await db.QueryAsync<EssClientSetting>(@"SELECT s.*,COALESCE(c.Name,'') ClientName
-FROM ess_client_settings s JOIN clients c ON c.Id=s.ClientId ORDER BY c.Name");
+SELECT Id,TRUE,'App Default','',TRUE FROM clients WHERE IsActive=TRUE AND (@ClientId IS NULL OR Id=@ClientId)
+ON DUPLICATE KEY UPDATE ClientId=ClientId", new { ClientId = clientId });
+        return await db.QueryAsync<EssClientSetting>(@"SELECT s.Id,s.ClientId,s.InitialPasswordMode,s.FixedPassword,s.IsActive,COALESCE(policy.CurrentState,'Enabled')<>'Disabled' AllowProfileEdit,COALESCE(c.Name,'') ClientName
+FROM ess_client_settings s JOIN clients c ON c.Id=s.ClientId LEFT JOIN ResourceStates policy ON policy.ResourceType='EmployeeProfileFirstEdit' AND policy.ResourceId=CAST(s.ClientId AS CHAR) WHERE (@ClientId IS NULL OR s.ClientId=@ClientId) ORDER BY c.Name", new { ClientId = clientId });
     }
 
-    public async Task<EssClientSetting> SaveEssClientSettingAsync(EssClientSetting setting)
+    public async Task<EssClientSetting> SaveEssClientSettingAsync(EssClientSetting setting, int actor = 0)
     {
         await using var db = Connection();
         await db.OpenAsync();
@@ -179,6 +188,7 @@ FROM ess_client_settings s JOIN clients c ON c.Id=s.ClientId ORDER BY c.Name");
 VALUES (@Id,@ClientId,@AllowProfileEdit,@InitialPasswordMode,@FixedPassword,@IsActive)
 ON DUPLICATE KEY UPDATE Id=LAST_INSERT_ID(Id),AllowProfileEdit=VALUES(AllowProfileEdit),InitialPasswordMode=VALUES(InitialPasswordMode),FixedPassword=VALUES(FixedPassword),IsActive=VALUES(IsActive),UpdatedAt=CURRENT_TIMESTAMP;
 SELECT LAST_INSERT_ID();", setting);
+        await SetFirstProfileEditAsync(setting.ClientId, setting.AllowProfileEdit, actor);
         return await db.QueryFirstAsync<EssClientSetting>(@"SELECT s.*,COALESCE(c.Name,'') ClientName FROM ess_client_settings s JOIN clients c ON c.Id=s.ClientId WHERE s.Id=@Id", new { Id = id });
     }
 

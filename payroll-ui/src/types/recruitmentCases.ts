@@ -125,6 +125,7 @@ export type RecruitmentHiringCase = {
 }
 
 export type RecruitmentProcessDocument = {
+  isCurrentJobMom?: boolean
   id: number
   clientId: number
   hiringCaseId?: number | null

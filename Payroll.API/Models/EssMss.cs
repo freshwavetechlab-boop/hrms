@@ -37,6 +37,8 @@ public class EssProfile
     public string AttendanceOffice { get; set; } = string.Empty;
     public string ReportingManager { get; set; } = string.Empty;
     public bool CanEdit { get; set; }
+    public bool CanRequestEdit { get; set; }
+    public string EditStatus { get; set; } = "Locked";
     public bool TravelExpenseEnabled { get; set; }
 }
 

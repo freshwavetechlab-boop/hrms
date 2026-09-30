@@ -9,12 +9,15 @@ internal static class RecruitmentCandidateJourneyGate
     internal static async Task<string> TermsApprovalAsync(MySqlConnection db, long applicationId, IDbTransaction? tx = null, long? configuredWorkflowId = null)
     {
         var approved = await db.ExecuteScalarAsync<bool>(@"SELECT EXISTS(SELECT 1
-FROM recruitment_candidate_applications a JOIN recruitment_process_documents d ON d.ApplicationId=a.Id AND d.TermsVersion=a.TermsVersion
+FROM recruitment_candidate_applications a JOIN recruitment_process_documents d ON " + RecruitmentJobMom.CoversApplication("d", "a") + @"
 JOIN workflowinstances w ON w.Id=d.WorkflowInstanceId AND w.ResourceType='RecruitmentPipelineTransition' AND w.ResourceId=CONCAT('MOM:',d.Id) AND w.Status='Approved'
 WHERE a.Id=@applicationId AND a.TermsConfirmedAtUtc IS NOT NULL AND d.Status='Signed' AND d.DocumentType='MOM'
-AND (@configuredWorkflowId IS NULL OR w.WorkflowId=@configuredWorkflowId)
-AND " + RecruitmentPanelSignatures.CompleteFor("d") + ")", new { applicationId, configuredWorkflowId }, tx);
-        return approved ? "" : "Confirm agreed terms, collect all assigned panel MoM signatures and complete HR Division approval first.";
+AND (@configuredWorkflowId IS NULL OR w.WorkflowId=@configuredWorkflowId OR EXISTS(
+ SELECT 1 FROM recruitment_position_pipeline_instances jobFlow
+ JOIN recruitment_pipeline_stages jobStage ON jobStage.PipelineVersionId=jobFlow.PipelineVersionId
+ WHERE jobFlow.Id=d.HiringCaseId AND jobStage.StageType IN ('HR','Approval') AND jobStage.IsActive=TRUE AND jobStage.ApprovalWorkflowId=w.WorkflowId))
+AND " + RecruitmentJobMom.CurrentFor("d") + " AND " + RecruitmentPanelSignatures.CompleteFor("d") + ")", new { applicationId, configuredWorkflowId }, tx);
+        return approved ? "" : "Confirm agreed terms, prepare the job MoM, collect all assigned panel signatures and complete HR Division approval first.";
     }
 
     internal static async Task<string> ValidateTransitionAsync(MySqlConnection db, long applicationId, long transitionId)

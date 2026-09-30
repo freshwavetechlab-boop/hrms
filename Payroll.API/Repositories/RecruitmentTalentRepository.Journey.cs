@@ -41,9 +41,10 @@ WHERE a.Id=@applicationId", new { applicationId });
         row.ApprovedBudget = EffectiveOfferBudgetCeiling(row.BudgetBasis, row.BudgetAvailable, row.BudgetAmount, row.ApprovedPositions, row.SalaryMax);
         var review = await db.QueryFirstOrDefaultAsync<RecruitmentNegotiation>(@"SELECT COALESCE(w.Status,'Awaiting panel signatures') ApprovalStatus,
 COALESCE((SELECT Comment FROM workflowhistory WHERE InstanceId=w.Id AND Action IN ('Rejected','Sent Back') ORDER BY Id DESC LIMIT 1),'') ReviewComment
-FROM recruitment_process_documents d LEFT JOIN workflowinstances w ON w.Id=d.WorkflowInstanceId
-WHERE d.ApplicationId=@applicationId AND d.TermsVersion=@TermsVersion AND d.DocumentType='MOM' ORDER BY d.Id DESC LIMIT 1", new { applicationId, row.TermsVersion });
-        row.ApprovalStatus = review?.ApprovalStatus ?? "Terms not confirmed";
+FROM recruitment_process_documents d JOIN recruitment_candidate_applications a ON a.Id=@applicationId
+LEFT JOIN workflowinstances w ON w.Id=d.WorkflowInstanceId
+WHERE " + RecruitmentJobMom.CoversApplication("d", "a") + " AND " + RecruitmentJobMom.CurrentFor("d") + @" AND d.DocumentType='MOM' ORDER BY d.Id DESC LIMIT 1", new { applicationId, row.TermsVersion });
+        row.ApprovalStatus = review?.ApprovalStatus ?? (row.TermsConfirmedAtUtc.HasValue ? "Awaiting job MoM" : "Terms not confirmed");
         row.ReviewComment = review?.ReviewComment ?? "";
         return row;
     }

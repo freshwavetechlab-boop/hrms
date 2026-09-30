@@ -10,7 +10,7 @@ const allowedExtensions = (configuration: AttachmentFieldConfiguration) => {
 }
 const formatBytes = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)} MB` : `${Math.ceil(bytes / 1024)} KB`
 
-export function ProfileDocuments({ employeeId, clientId }: { employeeId: number; clientId: number }) {
+export function ProfileDocuments({ employeeId, clientId, canEdit, onBusyChange }: { employeeId: number; clientId: number; canEdit: boolean; onBusyChange: (busy: boolean) => void }) {
   const [configurations, setConfigurations] = useState<AttachmentFieldConfiguration[]>([])
   const [attachments, setAttachments] = useState<EntityAttachment[]>([])
   const [drafts, setDrafts] = useState<Record<number, Draft>>({})
@@ -36,10 +36,13 @@ export function ProfileDocuments({ employeeId, clientId }: { employeeId: number;
     return () => window.clearTimeout(timer)
   }, [load])
 
+  useEffect(() => { onBusyChange(Object.values(busy).some(Boolean)) }, [busy, onBusyChange])
+
   const grouped = useMemo(() => new Map(configurations.map(row => [row.id, attachments.filter(file => file.fieldConfigurationId === row.id)])), [attachments, configurations])
   const patchDraft = (id: number, patch: Partial<Draft>) => setDrafts(current => ({ ...current, [id]: { ...(current[id] ?? emptyDraft()), ...patch } }))
 
   const upload = async (configuration: AttachmentFieldConfiguration) => {
+    if (!canEdit) return
     const draft = drafts[configuration.id] ?? emptyDraft()
     if (!draft.file) return showToast('Choose a document first.', 'error')
     if (draft.file.size > configuration.maximumFileSizeBytes) return showToast(`Maximum allowed size is ${formatBytes(configuration.maximumFileSizeBytes)}.`, 'error')
@@ -57,13 +60,17 @@ export function ProfileDocuments({ employeeId, clientId }: { employeeId: number;
   }
 
   const remove = async (file: EntityAttachment) => {
+    if (!canEdit) return
     if (!window.confirm(`Delete ${file.originalFileName}?`)) return
+    setBusy(current => ({ ...current, [file.fieldConfigurationId]: true }))
     try {
       await essApi.deleteAttachment(file.publicId)
       showToast('Document deleted.', 'success')
       await load()
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Unable to delete document.', 'error')
+    } finally {
+      setBusy(current => ({ ...current, [file.fieldConfigurationId]: false }))
     }
   }
 
@@ -100,7 +107,7 @@ export function ProfileDocuments({ employeeId, clientId }: { employeeId: number;
         const extensions = allowedExtensions(configuration)
         const fileInputId = `profile-document-file-${configuration.id}`
         const canReplace = !files.length || (configuration.ownerCanReplace && configuration.versioningEnabled)
-        const canUpload = configuration.ownerCanUpload && (configuration.allowMultiple ? files.length < configuration.maximumFileCount : canReplace)
+        const canUpload = canEdit && configuration.ownerCanUpload && (configuration.allowMultiple ? files.length < configuration.maximumFileCount : canReplace)
         return <article className={configuration.isRequired && !files.length ? 'missing' : ''} key={configuration.id}>
           <header><div><b>{configuration.fieldLabel}{configuration.isRequired ? ' *' : ''}</b><span>{configuration.attributeName} · {configuration.dataClassification}</span></div><small>{files.length ? `${files.length} uploaded` : 'Pending'}</small></header>
           <p>{configuration.helpText || `${extensions.join(', ').toUpperCase()} · Maximum ${formatBytes(configuration.maximumFileSizeBytes)}`}</p>
@@ -109,7 +116,7 @@ export function ProfileDocuments({ employeeId, clientId }: { employeeId: number;
             <div>
               <button type="button" onClick={() => void open(file, 'Preview')}>Preview</button>
               <button type="button" onClick={() => void open(file, 'Download')}>Download</button>
-              {configuration.ownerCanDelete && <button type="button" className="danger" onClick={() => void remove(file)}>Delete</button>}
+              {canEdit && configuration.ownerCanDelete && <button type="button" className="danger" onClick={() => void remove(file)}>Delete</button>}
             </div>
           </div>)}
           {canUpload && <div className="profile-document-upload">

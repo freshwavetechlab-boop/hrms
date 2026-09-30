@@ -21,7 +21,7 @@ public class EmployeeRepository(IConfiguration configuration, AuthRepository aut
     private static readonly TimeSpan ImportReviewLifetime = TimeSpan.FromMinutes(30);
     private static readonly string[] SkillCategories = ["Highly skilled", "Skilled", "Semi-skilled", "Unskilled"];
     private static readonly string[] It0000ImportHeaders = ["Date Of Joining", "Active"];
-    private static readonly string[] It0001ImportHeaders = ["Work Email", "Department", "Designation", "Grade", "Employee Category", "Work Location Id", "Work Location", "Reporting Manager User Id", "Reporting Manager Email", "Portal Access"];
+    private static readonly string[] It0001ImportHeaders = ["Work Email", "Department", "Designation", "Grade", "Employee Type", "Employee Category", "Work Location Id", "Work Location", "Reporting Manager User Id", "Reporting Manager Email", "Portal Access"];
     private static readonly string[] It0002ImportHeaders = ["First Name", "Last Name", "Gender", "Date Of Birth", "Mobile", "PAN", "Aadhaar", "UAN Number", "ESIC Number"];
     private static readonly string[] It0006ImportHeaders = ["Address", "Correspondence Address", "Permanent Address"];
     private static readonly string[] It0008ImportHeaders = ["Salary Template Id", "Salary Template", "Annual CTC", "Salary Json"];
@@ -786,6 +786,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         Add("Department", "department", current.Department ?? "");
         Add("Designation", "designation", current.Designation ?? "");
         Add("Grade", "grade", current.Grade ?? "");
+        Add("Employee Type", "employmentType", personal.EmploymentType);
         Add("Employee Category", "skillCategory", personal.SkillCategory);
         Add("Work Location Id", "workLocationId", current.WorkLocationId <= 0 ? "" : current.WorkLocationId.ToString());
         Add("Reporting Manager User Id", "reportingManagerUserId", current.ReportingManagerUserId?.ToString() ?? "");
@@ -973,7 +974,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         await using var db = Connection(); await db.OpenAsync();
         await PayrollDataTableStore.EnsureAsync(db);
         var client = await db.QueryFirstOrDefaultAsync<(int Id, string Name)>("SELECT Id, Name FROM clients WHERE Id=@clientId", new { clientId });
-        var drops = (await db.QueryAsync<(string Type, string Value)>("SELECT Type, Value FROM dropdownmasters WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@clientId) AND Type IN ('Department','Designation','Employee Grade','Employee Category') ORDER BY Type, Value", new { clientId })).ToList();
+        var drops = (await db.QueryAsync<(string Type, string Value)>("SELECT Type, Value FROM dropdownmasters WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@clientId) AND Type IN ('Department','Designation','Employee Grade','Employee Category','Employment Type') ORDER BY Type, Value", new { clientId })).ToList();
         var locations = (await db.QueryAsync<LocationRef>("SELECT Id, Name, City, State FROM worklocations WHERE ClientId=@clientId AND IsActive=TRUE ORDER BY Name", new { clientId })).ToList();
         var templates = ReadSalaryTemplates(await PayrollDataTableStore.GetSetupJsonAsync(db)).Where(template => TemplateForClient(template, clientId)).ToList();
         string First(string type, string fallback) => drops.FirstOrDefault(item => item.Type == type).Value ?? fallback;
@@ -984,14 +985,14 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         var employeeHeaders = new[]
         {
             "Employee Code", "First Name", "Last Name", "Gender", "Date Of Joining", "Date Of Birth", "Work Email", "Mobile",
-            "Department", "Designation", "Grade", "Employee Category", "Work Location", "Reporting Manager Email", "Portal Access", "Active",
+            "Department", "Designation", "Grade", "Employee Type", "Employee Category", "Work Location", "Reporting Manager Email", "Portal Access", "Active",
             "Salary Template", "Annual CTC", "PAN", "Aadhaar", "UAN Number", "ESIC Number", "Address", "Correspondence Address",
             "Permanent Address", "Bank Name", "Bank Account No", "IFSC", "Payment Mode", "Change Reason"
         };
         var employeeExample = new[]
         {
             "EMP001", "Rahul", "Sharma", "Male", "2026-04-01", "1995-01-15", "rahul@example.com", "9876543210",
-            First("Department", ""), First("Designation", ""), First("Employee Grade", ""), First("Employee Category", SkillCategories[0]), location?.Name ?? "", manager?.Email ?? "",
+            First("Department", ""), First("Designation", ""), First("Employee Grade", ""), First("Employment Type", ""), First("Employee Category", SkillCategories[0]), location?.Name ?? "", manager?.Email ?? "",
             "TRUE", "TRUE", template?.Name ?? "", template?.AnnualCtc ?? "600000", "ABCDE1234F", "123412341234", "100200300400", "",
             "Local address", "Correspondence address", "Permanent address", "HDFC Bank", "50100123456789", "HDFC0001234", "Bank Transfer", "Initial upload"
         };
@@ -1004,9 +1005,10 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             new[] { "Gender", "No", "Male, Female, or Other.", "Must match allowed values." },
             new[] { "Date Of Joining", "No", "Use yyyy-MM-dd, e.g. 2026-04-01.", "Optional. If filled, it must be a valid date." },
             new[] { "Work Email", "No", "Employee office email.", "Cannot already belong to another employee." },
-            new[] { "Department / Designation / Grade", "No", "Use text from Dropdown Masters.", "Must match active master data for the client." },
+            new[] { "Department / Designation / Grade", "No", "Use the master name.", "New names are added to the selected client after validation." },
+            new[] { "Employee Type", "No", "Full time, part time, contractual, or your employment type.", "Existing Employment Type values are reused; new names are added for this client." },
             new[] { "Employee Category", "No", "Highly skilled, Skilled, Semi-skilled, or Unskilled.", "Used for workforce category reporting." },
-            new[] { "Work Location", "No", "Use the work location name, not ID.", "Must match one active work location for the client." },
+            new[] { "Work Location", "No", "Use the work location name, not ID.", "Existing names are reused; new names are added to this client after validation." },
             new[] { "Reporting Manager Email", "No", "Use manager login email from Users.", "Must match an active user for the client or global user." },
             new[] { "Salary Template", "No", "Use salary template name, not ID.", "Must match one active salary template for the client." },
             new[] { "Annual CTC", "No", "Numeric amount only.", "If blank, template CTC is used where available." },
@@ -1033,9 +1035,10 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         {
             var totalRows = CountImportRows(workbook);
             if (totalRows == 0) return new EmployeeImportResult(0, 0, 0, ["Import file has no data rows."]);
-            var validDrops = (await db.QueryAsync<(string Type, string Value)>("SELECT Type, Value FROM dropdownmasters WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@clientId) AND Type IN ('Department','Designation','Employee Grade','Employee Category')", new { clientId })).GroupBy(x => x.Type).ToDictionary(x => x.Key, x => x.Select(v => v.Value).ToHashSet(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
+            var validDrops = (await db.QueryAsync<(string Type, string Value)>("SELECT Type, Value FROM dropdownmasters WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@clientId) AND Type IN ('Department','Designation','Employee Grade','Employee Category','Employment Type')", new { clientId })).GroupBy(x => x.Type).ToDictionary(x => x.Key, x => x.Select(v => v.Value).ToHashSet(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
             if (!validDrops.TryGetValue("Employee Category", out var categoryValues)) validDrops["Employee Category"] = categoryValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             categoryValues.UnionWith(SkillCategories);
+            var originalDrops = validDrops.ToDictionary(x => x.Key, x => x.Value.ToHashSet(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
             var locations = (await db.QueryAsync<LocationRef>("SELECT Id, Name, City, State FROM worklocations WHERE ClientId=@clientId AND IsActive=TRUE", new { clientId })).ToList();
             var locationsById = locations.ToDictionary(x => x.Id);
             var locationsByName = locations.GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(x => x.Key, x => x.ToList(), StringComparer.OrdinalIgnoreCase);
@@ -1161,6 +1164,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                         if (HasHeader(map, "Department")) { var value = Cell(row, map, "Department"); ValidateMaster("Department", value, validDrops, errors, rowNumber, "Department", sheet); SetIfAny(next => employee.Department = next, value); }
                         if (HasHeader(map, "Designation")) { var value = Cell(row, map, "Designation"); ValidateMaster("Designation", value, validDrops, errors, rowNumber, "Designation", sheet); SetIfAny(next => employee.Designation = next, value); }
                         if (HasHeader(map, "Grade")) { var value = Cell(row, map, "Grade"); ValidateMaster("Employee Grade", value, validDrops, errors, rowNumber, "Grade", sheet); SetIfAny(next => employee.Grade = next, value); }
+                        if (HasHeader(map, "Employee Type")) { var value = Cell(row, map, "Employee Type"); ValidateMaster("Employment Type", value, validDrops, errors, rowNumber, "Employee Type", sheet); SetIfAny(next => employee.PersonalDetails.EmploymentType = next, value); }
                         if (HasHeader(map, "Employee Category")) { var value = Cell(row, map, "Employee Category"); ValidateMaster("Employee Category", value, validDrops, errors, rowNumber, "Employee Category", sheet); SetIfAny(next => employee.PersonalDetails.SkillCategory = next, value); }
                         if (HasAnyHeader(map, "Work Location Id", "Work Location"))
                         {
@@ -1333,6 +1337,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                         if (HasHeader(map, "Department")) { var value = Cell(row, map, "Department"); ValidateMaster("Department", value, validDrops, errors, rowNumber, "Department", "Employees"); SetIfAny(next => employee.Department = next, value); }
                         if (HasHeader(map, "Designation")) { var value = Cell(row, map, "Designation"); ValidateMaster("Designation", value, validDrops, errors, rowNumber, "Designation", "Employees"); SetIfAny(next => employee.Designation = next, value); }
                         if (HasHeader(map, "Grade")) { var value = Cell(row, map, "Grade"); ValidateMaster("Employee Grade", value, validDrops, errors, rowNumber, "Grade", "Employees"); SetIfAny(next => employee.Grade = next, value); }
+                        if (HasHeader(map, "Employee Type")) { var value = Cell(row, map, "Employee Type"); ValidateMaster("Employment Type", value, validDrops, errors, rowNumber, "Employee Type", "Employees"); SetIfAny(next => personal.EmploymentType = next, value); }
                         if (HasHeader(map, "Employee Category")) { var value = Cell(row, map, "Employee Category"); ValidateMaster("Employee Category", value, validDrops, errors, rowNumber, "Employee Category", "Employees"); SetIfAny(next => personal.SkillCategory = next, value); }
                         if (HasAnyHeader(map, "Work Location Id", "Work Location")) { var locationId = ResolveWorkLocationId(Cell(row, map, "Work Location Id"), Cell(row, map, "Work Location"), locationsById, locationsByName, errors, "Employees", rowNumber); if (locationId.HasValue) employee.WorkLocationId = locationId.Value; }
                         if (HasAnyHeader(map, "Reporting Manager User Id", "Reporting Manager Email")) { var managerUserId = ResolveManagerUserId(Cell(row, map, "Reporting Manager User Id"), Cell(row, map, "Reporting Manager Email"), managerUsersById, managerUsersByEmail, errors, "Employees", rowNumber); if (managerUserId.HasValue) employee.ReportingManagerUserId = managerUserId.Value; }
@@ -1395,6 +1400,29 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                 if (string.IsNullOrWhiteSpace(draft.Employee.FirstName)) draft.Employee.FirstName = draft.Employee.EmployeeCode;
             }
             if (errors.Count > 0) return new EmployeeImportResult(totalRows, 0, 0, errors);
+
+            // Plan first; no master records are created for an invalid workbook.
+            var newDrops = validDrops.SelectMany(group => group.Value.Where(value => !originalDrops.TryGetValue(group.Key, out var values) || !values.Contains(value)).Select(value => (Type: group.Key, Value: value))).ToList();
+            var newLocations = locationsByName.Values.SelectMany(x => x).Where(x => x.Id < 0).ToList();
+            if (newDrops.Count > 0 || newLocations.Count > 0)
+            {
+                await using var transaction = await db.BeginTransactionAsync();
+                var clientName = await db.QuerySingleAsync<string>("SELECT Name FROM clients WHERE Id=@clientId FOR UPDATE", new { clientId }, transaction);
+                foreach (var item in newDrops)
+                {
+                    var active = await db.QueryFirstOrDefaultAsync<bool?>("SELECT IsActive FROM dropdownmasters WHERE (ClientId=0 OR ClientId=@clientId) AND Type=@Type AND TRIM(Value)=@Value ORDER BY IsActive DESC LIMIT 1", new { clientId, item.Type, item.Value }, transaction);
+                    if (active == false) throw new InvalidOperationException($"{item.Type} '{item.Value}' is inactive. Activate it before importing.");
+                    if (active is null) await db.ExecuteAsync("INSERT INTO dropdownmasters (ClientId,Type,Value,ConfigJson,IsActive) VALUES (@clientId,@Type,@Value,NULL,TRUE)", new { clientId, item.Type, item.Value }, transaction);
+                }
+                foreach (var location in newLocations)
+                {
+                    var matches = (await db.QueryAsync<(int Id, bool IsActive)>("SELECT Id,IsActive FROM worklocations WHERE ClientId=@clientId AND TRIM(Name)=@Name", new { clientId, location.Name }, transaction)).ToList();
+                    if (matches.Count > 1 || matches.Any(x => !x.IsActive)) throw new InvalidOperationException($"Work location '{location.Name}' is inactive or ambiguous. Review this client's work locations before importing.");
+                    var id = matches.Count == 1 ? matches[0].Id : await db.ExecuteScalarAsync<int>("INSERT INTO worklocations (ClientId,ClientName,Name,Address,City,State,PostalCode,GSTIN,IsPrimary,IsActive) VALUES (@clientId,@clientName,@Name,'','','','','',FALSE,TRUE); SELECT LAST_INSERT_ID();", new { clientId, clientName, location.Name }, transaction);
+                    foreach (var draft in drafts.Values.Where(x => x.Employee.WorkLocationId == location.Id)) draft.Employee.WorkLocationId = id;
+                }
+                await transaction.CommitAsync();
+            }
 
             var inserted = 0; var updated = 0; var completed = 0;
             var savedEmployees = new List<Employee>();
@@ -1711,53 +1739,53 @@ WHERE g.client_id=@ClientId
         });
     }
 
-    static async Task WritePhysicalInfotypeAsync(MySqlConnection db, Employee employee, string infotypeCode, string actionType, DateTime effectiveDate, string reason, string changedBy)
+    internal static async Task WritePhysicalInfotypeAsync(MySqlConnection db, Employee employee, string infotypeCode, string actionType, DateTime effectiveDate, string reason, string changedBy, MySqlTransaction? tx = null)
     {
         var meta = new { EmployeeId = employee.Id, employee.ClientId, ActionType = actionType, EffectiveFrom = effectiveDate, ChangeReason = reason ?? "", CreatedBy = changedBy ?? "" };
         switch (infotypeCode)
         {
             case "0000":
-                await CloseActiveInfotypeAsync(db, "employee_it0000_actions", employee.Id, effectiveDate);
+                await CloseActiveInfotypeAsync(db, "employee_it0000_actions", employee.Id, effectiveDate, tx);
                 await db.ExecuteAsync(@"INSERT INTO employee_it0000_actions (EmployeeId,ClientId,ActionType,EffectiveFrom,Status,IsActive,DateOfJoining,ChangeReason,CreatedBy)
-VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@IsActive,@DateOfJoining,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.IsActive, employee.DateOfJoining, meta.ChangeReason, meta.CreatedBy });
+VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@IsActive,@DateOfJoining,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.IsActive, employee.DateOfJoining, meta.ChangeReason, meta.CreatedBy }, tx);
                 break;
             case "0001":
-                await CloseActiveInfotypeAsync(db, "employee_it0001_org_assignment", employee.Id, effectiveDate);
+                await CloseActiveInfotypeAsync(db, "employee_it0001_org_assignment", employee.Id, effectiveDate, tx);
                 await db.ExecuteAsync(@"INSERT INTO employee_it0001_org_assignment (EmployeeId,ClientId,ActionType,EffectiveFrom,Status,Department,Designation,Grade,WorkLocationId,ReportingManagerId,ReportingManagerUserId,WorkEmail,PortalAccess,ChangeReason,CreatedBy)
-VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@Department,@Designation,@Grade,@WorkLocationId,@ReportingManagerId,@ReportingManagerUserId,@WorkEmail,@PortalAccess,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.Department, employee.Designation, employee.Grade, employee.WorkLocationId, employee.ReportingManagerId, employee.ReportingManagerUserId, employee.WorkEmail, employee.PortalAccess, meta.ChangeReason, meta.CreatedBy });
+VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@Department,@Designation,@Grade,@WorkLocationId,@ReportingManagerId,@ReportingManagerUserId,@WorkEmail,@PortalAccess,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.Department, employee.Designation, employee.Grade, employee.WorkLocationId, employee.ReportingManagerId, employee.ReportingManagerUserId, employee.WorkEmail, employee.PortalAccess, meta.ChangeReason, meta.CreatedBy }, tx);
                 break;
             case "0002":
-                await CloseActiveInfotypeAsync(db, "employee_it0002_personal_data", employee.Id, effectiveDate);
+                await CloseActiveInfotypeAsync(db, "employee_it0002_personal_data", employee.Id, effectiveDate, tx);
                 await db.ExecuteAsync(@"INSERT INTO employee_it0002_personal_data (EmployeeId,ClientId,ActionType,EffectiveFrom,Status,FirstName,LastName,Gender,DateOfBirth,Mobile,PanNumber,AadhaarNumber,UanNumber,EsicNumber,ChangeReason,CreatedBy)
-VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@FirstName,@LastName,@Gender,@DateOfBirth,@Mobile,@PanNumber,@AadhaarNumber,@UanNumber,@EsicNumber,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.FirstName, employee.LastName, employee.Gender, employee.PersonalDetails.DateOfBirth, employee.PersonalDetails.Mobile, employee.PersonalDetails.PanNumber, employee.PersonalDetails.AadhaarNumber, employee.PersonalDetails.UanNumber, employee.PersonalDetails.EsicNumber, meta.ChangeReason, meta.CreatedBy });
+VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@FirstName,@LastName,@Gender,@DateOfBirth,@Mobile,@PanNumber,@AadhaarNumber,@UanNumber,@EsicNumber,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.FirstName, employee.LastName, employee.Gender, employee.PersonalDetails.DateOfBirth, employee.PersonalDetails.Mobile, employee.PersonalDetails.PanNumber, employee.PersonalDetails.AadhaarNumber, employee.PersonalDetails.UanNumber, employee.PersonalDetails.EsicNumber, meta.ChangeReason, meta.CreatedBy }, tx);
                 break;
             case "0006":
-                await CloseActiveInfotypeAsync(db, "employee_it0006_addresses", employee.Id, effectiveDate);
+                await CloseActiveInfotypeAsync(db, "employee_it0006_addresses", employee.Id, effectiveDate, tx);
                 await db.ExecuteAsync(@"INSERT INTO employee_it0006_addresses (EmployeeId,ClientId,ActionType,EffectiveFrom,Status,Address,CorrespondenceAddress,PermanentAddress,ChangeReason,CreatedBy)
-VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@Address,@CorrespondenceAddress,@PermanentAddress,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.PersonalDetails.Address, employee.PersonalDetails.CorrespondenceAddress, employee.PersonalDetails.PermanentAddress, meta.ChangeReason, meta.CreatedBy });
+VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@Address,@CorrespondenceAddress,@PermanentAddress,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.PersonalDetails.Address, employee.PersonalDetails.CorrespondenceAddress, employee.PersonalDetails.PermanentAddress, meta.ChangeReason, meta.CreatedBy }, tx);
                 break;
             case "0008":
-                await CloseActiveInfotypeAsync(db, "employee_it0008_basic_pay", employee.Id, effectiveDate);
+                await CloseActiveInfotypeAsync(db, "employee_it0008_basic_pay", employee.Id, effectiveDate, tx);
                 await db.ExecuteAsync(@"INSERT INTO employee_it0008_basic_pay (EmployeeId,ClientId,ActionType,EffectiveFrom,Status,SalaryStructureId,AnnualCtc,SalaryJson,ChangeReason,CreatedBy)
-VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@SalaryStructureId,@AnnualCtc,@SalaryJson,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.SalaryStructureId, employee.AnnualCtc, SalaryJson = string.IsNullOrWhiteSpace(employee.SalaryJson) ? "{}" : employee.SalaryJson, meta.ChangeReason, meta.CreatedBy });
+VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@SalaryStructureId,@AnnualCtc,@SalaryJson,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.SalaryStructureId, employee.AnnualCtc, SalaryJson = string.IsNullOrWhiteSpace(employee.SalaryJson) ? "{}" : employee.SalaryJson, meta.ChangeReason, meta.CreatedBy }, tx);
                 break;
             case "0009":
-                await CloseActiveInfotypeAsync(db, "employee_it0009_bank_details", employee.Id, effectiveDate);
+                await CloseActiveInfotypeAsync(db, "employee_it0009_bank_details", employee.Id, effectiveDate, tx);
                 await db.ExecuteAsync(@"INSERT INTO employee_it0009_bank_details (EmployeeId,ClientId,ActionType,EffectiveFrom,Status,BankName,BankAccountNo,IfscCode,PaymentMode,ChangeReason,CreatedBy)
-VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@BankName,@BankAccountNo,@IfscCode,@PaymentMode,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.PaymentDetails.BankName, employee.PaymentDetails.BankAccountNo, employee.PaymentDetails.IfscCode, employee.PaymentDetails.PaymentMode, meta.ChangeReason, meta.CreatedBy });
+VALUES (@EmployeeId,@ClientId,@ActionType,@EffectiveFrom,'Active',@BankName,@BankAccountNo,@IfscCode,@PaymentMode,@ChangeReason,@CreatedBy)", new { meta.EmployeeId, meta.ClientId, meta.ActionType, meta.EffectiveFrom, employee.PaymentDetails.BankName, employee.PaymentDetails.BankAccountNo, employee.PaymentDetails.IfscCode, employee.PaymentDetails.PaymentMode, meta.ChangeReason, meta.CreatedBy }, tx);
                 break;
         }
     }
 
-    static Task CloseActiveInfotypeAsync(MySqlConnection db, string tableName, int employeeId, DateTime effectiveDate) =>
+    static Task CloseActiveInfotypeAsync(MySqlConnection db, string tableName, int employeeId, DateTime effectiveDate, MySqlTransaction? tx = null) =>
         db.ExecuteAsync($@"UPDATE {tableName}
 SET Status='Historical', EffectiveTo=DATE_SUB(@EffectiveFrom, INTERVAL 1 DAY)
-WHERE EmployeeId=@EmployeeId AND Status='Active' AND EffectiveFrom<=@EffectiveFrom", new { EmployeeId = employeeId, EffectiveFrom = effectiveDate });
+WHERE EmployeeId=@EmployeeId AND Status='Active' AND EffectiveFrom<=@EffectiveFrom", new { EmployeeId = employeeId, EffectiveFrom = effectiveDate }, tx);
 
     static IEnumerable<(string InfotypeCode, string InfotypeName, string DataJson)> InfotypeSnapshots(Employee employee)
     {
         yield return ("0000", "Actions", JsonSerializer.Serialize(new { employee.IsActive, employee.DateOfJoining }));
-        yield return ("0001", "Organizational Assignment", JsonSerializer.Serialize(new { employee.ClientId, employee.Department, employee.Designation, employee.Grade, employee.PersonalDetails.SkillCategory, employee.WorkLocationId, employee.ReportingManagerId, employee.ReportingManagerUserId, employee.WorkEmail }));
+        yield return ("0001", "Organizational Assignment", JsonSerializer.Serialize(new { employee.ClientId, employee.Department, employee.Designation, employee.Grade, employee.PersonalDetails.SkillCategory, employee.PersonalDetails.EmploymentType, employee.WorkLocationId, employee.ReportingManagerId, employee.ReportingManagerUserId, employee.WorkEmail }));
         yield return ("0002", "Personal Data", JsonSerializer.Serialize(new { employee.FirstName, employee.LastName, employee.Gender, employee.PersonalDetails }));
         yield return ("0006", "Addresses", JsonSerializer.Serialize(new { employee.PersonalDetails.Address, employee.PersonalDetails.CorrespondenceAddress, employee.PersonalDetails.PermanentAddress }));
         yield return ("0008", "Basic Pay", JsonSerializer.Serialize(new { employee.SalaryStructureId, employee.AnnualCtc, employee.SalaryComponents }));
@@ -1780,6 +1808,8 @@ VALUES (@Id,@EmployeeCode,@ActionType,@InfotypeCode,@FieldName,@OldValue,@NewVal
     static Dictionary<string, string> AuditValues(Employee employee) => new()
     {
         ["0000:IsActive"] = employee.IsActive.ToString(),
+        ["0001:EmploymentType"] = employee.PersonalDetails.EmploymentType,
+        ["0001:SkillCategory"] = employee.PersonalDetails.SkillCategory,
         ["0001:Department"] = employee.Department ?? "",
         ["0001:Designation"] = employee.Designation ?? "",
         ["0001:Grade"] = employee.Grade ?? "",
@@ -1805,7 +1835,13 @@ VALUES (@Id,@EmployeeCode,@ActionType,@InfotypeCode,@FieldName,@OldValue,@NewVal
 WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", new { table, column });
         if (exists == 0) await db.ExecuteAsync($"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}");
     }
-    static void ValidateMaster(string type, string value, Dictionary<string, HashSet<string>> masters, List<string> errors, int row, string label, string sheet) { if (!string.IsNullOrWhiteSpace(value) && (!masters.TryGetValue(type, out var values) || !values.Contains(value))) errors.Add($"{sheet} row {row}: {label} \"{value}\" is not in Dropdown Masters."); }
+    static void ValidateMaster(string type, string value, Dictionary<string, HashSet<string>> masters, List<string> errors, int row, string label, string sheet)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+        if (value.Length > 100) { errors.Add($"{sheet} row {row}: {label} must be at most 100 characters."); return; }
+        if (!masters.TryGetValue(type, out var values)) masters[type] = values = new(StringComparer.OrdinalIgnoreCase);
+        values.Add(value.Trim());
+    }
     static bool DateOk(string value) => TryDate(value, out _);
     static string? DbDate(string value) => TryDate(value, out var date) && !string.IsNullOrWhiteSpace(date) ? date : null;
     static string Norm(string? value) => (value ?? "").Replace(" ", "").Replace("_", "").Replace("-", "").ToLowerInvariant();
@@ -1925,7 +1961,7 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
     static string SheetXml(IEnumerable<string[]> rows) => new XDocument(new XElement(XName.Get("worksheet", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), new XElement(XName.Get("sheetData", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), rows.Select((row, r) => new XElement(XName.Get("row", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), new XAttribute("r", r + 1), row.Select((cell, c) => new XElement(XName.Get("c", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), new XAttribute("r", $"{Col(c + 1)}{r + 1}"), new XAttribute("t", "inlineStr"), new XElement(XName.Get("is", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), new XElement(XName.Get("t", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"), cell ?? ""))))))))).ToString(SaveOptions.DisableFormatting);
     static string Col(int n) { var s = ""; while (n > 0) { n--; s = (char)('A' + n % 26) + s; n /= 26; } return s; }
     static string SafeSheetName(string name) => string.Join("", name.Where(ch => !"[]:*?/\\ ".Contains(ch) || ch == ' ')).Trim() is var clean && clean.Length > 31 ? clean[..31] : string.IsNullOrWhiteSpace(clean) ? "Sheet" : clean;
-    static Dictionary<string, int> HeaderMap(List<string> header) => header.Select((value, index) => (Key: Norm(value), Index: index)).Where(item => !string.IsNullOrWhiteSpace(item.Key)).GroupBy(item => item.Key).ToDictionary(group => group.Key, group => group.First().Index, StringComparer.OrdinalIgnoreCase);
+    static Dictionary<string, int> HeaderMap(List<string> header) => header.Select((value, index) => (Key: Norm(value) == "employmenttype" ? "employeetype" : Norm(value), Index: index)).Where(item => !string.IsNullOrWhiteSpace(item.Key)).GroupBy(item => item.Key).ToDictionary(group => group.Key, group => group.First().Index, StringComparer.OrdinalIgnoreCase);
     static string Cell(List<string> row, Dictionary<string, int> header, string name) => header.TryGetValue(Norm(name), out var index) && index >= 0 && index < row.Count ? row[index].Trim() : "";
     static bool Blank(List<string> row) => row.All(string.IsNullOrWhiteSpace);
     static void SetIfAny(Action<string> set, string value) { if (!string.IsNullOrWhiteSpace(value)) set(value.Trim()); }
@@ -1994,7 +2030,14 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
             return null;
         }
         if (string.IsNullOrWhiteSpace(name)) return null;
-        if (!byName.TryGetValue(name, out var matches)) { errors.Add($"{sheet} row {row}: Work Location \"{name}\" is not an active Work Location for this client."); return null; }
+        name = name.Trim();
+        if (name.Length > 200) { errors.Add($"{sheet} row {row}: Work Location must be at most 200 characters."); return null; }
+        if (!byName.TryGetValue(name, out var matches))
+        {
+            // Negative IDs exist only in the validated import plan, never in the database.
+            var location = new LocationRef { Id = -byName.Count - 1, Name = name };
+            byName[name] = matches = [location];
+        }
         if (matches.Count > 1) { errors.Add($"{sheet} row {row}: Work Location \"{name}\" is found more than once. Rename one location or use a unique location name."); return null; }
         return matches[0].Id;
     }

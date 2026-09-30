@@ -58,13 +58,13 @@ export default function RecruitmentNegotiationAction({ applicationId, onSaved }:
       if (!routes.length) setError('No rejection route is configured from this candidate’s current stage. Configure it in the candidate pipeline.')
     } finally { setBusy(false) }
   }
-  return <><Button size="small" loading={busy && !terms} onClick={event => { event.stopPropagation(); void open() }}>Negotiation / MoM</Button>
+  return <><Button size="small" loading={busy && !terms} onClick={event => { event.stopPropagation(); void open() }}>Negotiation</Button>
     <Modal title={rejecting ? 'Reject candidate' : 'Candidate negotiation & agreed terms'} open={!!terms} onCancel={() => !busy && setTerms(null)} footer={<Space wrap>
       <Button disabled={busy} onClick={() => setTerms(null)}>Cancel</Button>
       {rejecting ? <><Button disabled={busy} onClick={() => { setRejecting(false); setError('') }}>Back to negotiation</Button><Button danger type="primary" loading={busy} disabled={!rejectRoute || !reason.trim()} onClick={() => void reject()}>Confirm rejection</Button></> : <>
       {canReject && <Button danger disabled={busy} onClick={() => void openRejection()}>Reject candidate</Button>}
       <Button loading={busy} onClick={() => void save(false)}>Save</Button>
-      <Button type="primary" loading={busy} disabled={!terms?.agreedCtc} onClick={() => void save(true)}>Confirm terms & prepare MoM</Button>
+      <Button type="primary" loading={busy} disabled={!terms?.agreedCtc} onClick={() => void save(true)}>Confirm terms</Button>
       </>}
     </Space>}>
       {terms && <Form layout="vertical" disabled={busy}>
@@ -82,7 +82,7 @@ export default function RecruitmentNegotiationAction({ applicationId, onSaved }:
         <Form.Item label={(terms.negotiationOverride ?? (Number(terms.expectedCtc) > terms.approvedBudget && terms.approvedBudget > 0)) ? 'Negotiated annual CTC' : 'Agreed annual CTC'} required>
           <InputNumber min={1} max={1000000000} value={terms.agreedCtc} onChange={value => setTerms({ ...terms, agreedCtc: value ?? undefined })} style={{ width: '100%' }} />
         </Form.Item>
-        <Alert type="info" showIcon message="Confirm only after the candidate agrees to these terms." description="The assigned interview panel signs the prepared MoM, then it goes to HR Division for approval. Revised terms require fresh panel signatures and approval." />
+        <Alert type="info" showIcon message="Confirm only after the candidate agrees to these terms." description="After individual terms are confirmed, HR prepares one combined job MoM in MoM & Negotiation. The panel signs that job MoM before HR Division approval. Revised terms need a fresh MoM version and approval." />
         </>}
         {error && <Alert type="error" showIcon message={error} style={{ marginTop: 12 }} />}
       </Form>}

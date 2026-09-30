@@ -1,0 +1,13 @@
+﻿.hrms-dashboard { min-width: 0; }
+.hrms-dashboard .dashboard-classifications { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.hrms-dashboard .dashboard-classifications h4 { margin: 12px 0 8px; color: var(--dashboard-muted); font-size: 12px; }
+.hrms-dashboard .employee-classification-counts button:not(:disabled) { cursor: pointer; }
+.hrms-dashboard .employee-classification-counts button:not(:disabled):hover { border-color: #cfc6f9; background: #f7f5ff; }
+.hrms-dashboard .employee-classification-counts span { overflow-wrap: anywhere; }
+.hrms-dashboard .employee-classification-counts button:focus-visible { outline: 2px solid #6546e8; outline-offset: 2px; }
+.hrms-dashboard .dashboard-section-card > :is(.dashboard-kpi-grid, .dashboard-insight-strip, .ant-smart-table) { margin-top: 12px; }
+.hrms-dashboard .dashboard-insight-strip { grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); }
+.hrms-dashboard .dashboard-kpi-copy strong { overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .hrms-dashboard .dashboard-classifications { grid-template-columns: 1fr; gap: 0; }
+}

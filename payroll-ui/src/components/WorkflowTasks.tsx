@@ -76,6 +76,7 @@ const formatTaskDate = (value?: string) => {
 
 const referenceText = (row: Pick<Task, 'resourceType' | 'resourceId'>) => {
   if (row.resourceType === 'PayRun') return `PayRun #${row.resourceId}`
+  if (row.resourceType === 'EmployeeProfileEdit') return `Employee profile edit #${row.resourceId}`
   if (row.resourceType === 'LeaveRequest') return `Leave request #${row.resourceId}`
   return `${row.resourceType} #${row.resourceId}`
 }

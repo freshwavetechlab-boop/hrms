@@ -120,6 +120,7 @@ builder.Services.AddSingleton<LeaveAttendanceRepository>();
 builder.Services.AddSingleton<LeaveBalanceImportRepository>();
 builder.Services.AddSingleton<ReportingRepository>();
 builder.Services.AddSingleton<EssMssRepository>();
+builder.Services.AddSingleton<EmployeeProfileCompletionService>();
 builder.Services.AddSingleton<WorkflowRepository>();
 builder.Services.AddSingleton<TaxEngineRepository>();
 builder.Services.AddSingleton<DashboardRepository>();
@@ -937,7 +938,7 @@ app.MapPost("/api/workflows/department-heads", async (WorkflowRepository reposit
 app.MapPost("/api/workflows", async (WorkflowRepository repository, SaveWorkflowRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); var(row,error)=await repository.SaveAsync(request); return row is null ? Results.Conflict(new{error}) : Results.Ok(row); });
 app.MapPost("/api/workflows/activities", async (WorkflowRepository repository, SaveWorkflowActivityRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); if(string.IsNullOrWhiteSpace(request.ActivityCode)||string.IsNullOrWhiteSpace(request.DisplayName)||string.IsNullOrWhiteSpace(request.ModuleCode)||string.IsNullOrWhiteSpace(request.ResourceType)) return Results.BadRequest(new{error="Activity code, activity name, module, and record type are required."}); return Results.Ok(await repository.SaveActivityAsync(request)); });
 app.MapPost("/api/workflows/action-rules", async (WorkflowRepository repository, SaveWorkflowActionRuleRequest request, HttpContext context) => { if(!HasPermission(context,"workflow.manage")) return Results.StatusCode(403); if(string.IsNullOrWhiteSpace(request.ActivityCode)||string.IsNullOrWhiteSpace(request.HttpMethod)||string.IsNullOrWhiteSpace(request.PathPattern)||string.IsNullOrWhiteSpace(request.ResourceType)||string.IsNullOrWhiteSpace(request.ResourceIdSource)) return Results.BadRequest(new{error="Activity, method, path, resource type, and resource id source are required."}); if(!request.ResourceIdSource.Contains('.')) return Results.BadRequest(new{error="Resource id source must use scope.field format, for example route.id or body.employeeId."}); return Results.Ok(await repository.SaveActionRuleAsync(request)); });
-app.MapPost("/api/workflows/start", async (WorkflowRepository repository, StartWorkflowRequest request, HttpContext context) => { var item=await repository.StartAsync(request,CurrentUser(context).Id); return item is null ? Results.BadRequest(new {error="Workflow cannot start. Check stages and approver setup."}) : Results.Ok(item); });
+app.MapPost("/api/workflows/start", async (WorkflowRepository repository, StartWorkflowRequest request, HttpContext context) => { if(request.ResourceType.Equals(EssMssRepository.ProfileEditResource,StringComparison.OrdinalIgnoreCase)) return Results.BadRequest(new{error="Submit profile edit requests from your ESS profile."}); var item=await repository.StartAsync(request,CurrentUser(context).Id); return item is null ? Results.BadRequest(new {error="Workflow cannot start. Check stages and approver setup."}) : Results.Ok(item); });
 app.MapGet("/api/workflows/tasks/pending", async (WorkflowRepository repository,HttpContext context) => Results.Ok(await repository.PendingAsync(CurrentUser(context).Id)));
 app.MapGet("/api/workflows/requests/mine", async (WorkflowRepository repository,long? instanceId,HttpContext context) => Results.Ok(await repository.RequesterProgressAsync(CurrentUser(context).Id,instanceId)));
 app.MapGet("/api/workflows/tasks/actioned", async (WorkflowRepository repository,string? scope,HttpContext context) =>
@@ -997,8 +998,9 @@ app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowReposi
     }
     if(instance?.ResourceType=="RecruitmentPipelineTransition" && instance.ResourceId.StartsWith("MOM:") && long.TryParse(instance.ResourceId[4..],out var momDocumentId))
     {
-        var momApplicationId = await recruitmentCases.SyncCandidateMomApprovalAsync(momDocumentId,instance.Id,instance.Status);
-        if(momApplicationId.HasValue) await ApplyRecruitmentDecisionAsync(momApplicationId.Value,"MOM_APPROVED",user,recruitmentPipeline,pipelineActions,candidateActions,recruitmentCases);
+        var momApplicationIds = await recruitmentCases.SyncJobMomApprovalAsync(momDocumentId,instance.Id,instance.Status);
+        foreach (var momApplicationId in momApplicationIds)
+            await ApplyRecruitmentDecisionAsync(momApplicationId,"MOM_APPROVED",user,recruitmentPipeline,pipelineActions,candidateActions,recruitmentCases);
     }
     if(instance?.ResourceType=="RecruitmentJobDescription" && long.TryParse(instance.ResourceId,out var jobDescriptionId))await recruitmentPipeline.SyncJobDescriptionWorkflowStatusAsync(jobDescriptionId,instance.Status,user);
     if(instance?.ResourceType=="RecruitmentPipelineTransition" && instance.ResourceId.StartsWith("HIRING_CASE:",StringComparison.OrdinalIgnoreCase) && long.TryParse(instance.ResourceId[12..],out var hiringCaseAdvanceRequestId))
@@ -1075,6 +1077,8 @@ app.MapGet("/api/ess/leave/balances", async (EssMssRepository repository, HttpCo
 .WithName("GetEssLeaveBalances")
 .WithOpenApi();
 
+app.MapEmployeeProfileCompletion();
+
 app.MapGet("/api/ess/profile", async (EssMssRepository repository, HttpContext context) =>
 {
     var user = CurrentUser(context);
@@ -1111,7 +1115,7 @@ app.MapGet("/api/ess-admin/settings", async (EssMssRepository repository, HttpCo
 {
     if (!HasPermission(context, "settings.manage") && !HasPermission(context, "employees.manage"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
-    return Results.Ok(await repository.GetEssClientSettingsAsync());
+    return Results.Ok(await repository.GetEssClientSettingsAsync(CurrentUser(context).ClientId));
 })
 .WithName("GetEssClientSettings")
 .WithOpenApi();
@@ -1121,7 +1125,8 @@ app.MapPost("/api/ess-admin/settings", async (EssMssRepository repository, EssCl
     if (!HasPermission(context, "settings.manage") && !HasPermission(context, "employees.manage"))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (setting.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
-    return Results.Ok(await repository.SaveEssClientSettingAsync(setting));
+    if (!CanAccessClient(context, setting.ClientId)) return Results.StatusCode(403);
+    return Results.Ok(await repository.SaveEssClientSettingAsync(setting, CurrentUser(context).Id));
 })
 .WithName("SaveEssClientSetting")
 .WithOpenApi();
@@ -1931,8 +1936,6 @@ app.MapPost("/api/recruitment/applications/{id:long}/negotiation", async (Recrui
     if (row is null) return Results.BadRequest(new { error });
     if (request.ConfirmTerms)
     {
-        var prepared = await cases.PrepareCandidateMomAsync(id, user, context.RequestAborted);
-        if (prepared.Row is null) return Results.BadRequest(new { error = "Terms saved. MoM needs attention: " + prepared.Error });
         await cases.AdvanceHiringCaseForCandidateMilestoneAsync(id, "TermsConfirmed", user);
     }
     return Results.Ok(row);
@@ -3165,12 +3168,12 @@ app.MapPost("/api/scheduled-jobs/{id:int}/run-now", async (ScheduledJobRepositor
     catch (Exception exception) { return Results.BadRequest(new { error = exception.Message }); }
 });
 
-app.MapGet("/api/reports/{code}", async (ReportingRepository repository, string code, int clientId, string? department, int? workLocationId, string? fromDate, string? toDate, string? month, int? payRunId, int? employeeId, string? componentCode, HttpContext context) =>
+app.MapGet("/api/reports/{code}", async (ReportingRepository repository, string code, int clientId, string? employmentType, string? employeeCategory, bool? activeOnly, string? department, int? workLocationId, string? fromDate, string? toDate, string? month, int? payRunId, int? employeeId, string? componentCode, HttpContext context) =>
 {
     if (!HasPermission(context, "reports.view")) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (!CanAccessClient(context, clientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
-    return Results.Ok(await repository.RunAsync(code, new ReportFilter { ClientId = clientId, Department = department, WorkLocationId = workLocationId, FromDate = fromDate, ToDate = toDate, Month = month, PayRunId = payRunId, EmployeeId = employeeId, ComponentCode = componentCode }));
+    return Results.Ok(await repository.RunAsync(code, new ReportFilter { ClientId = clientId, EmploymentType = string.IsNullOrWhiteSpace(employmentType) ? null : employmentType.Trim(), EmployeeCategory = string.IsNullOrWhiteSpace(employeeCategory) ? null : employeeCategory.Trim(), ActiveOnly = activeOnly == true, Department = department, WorkLocationId = workLocationId, FromDate = fromDate, ToDate = toDate, Month = month, PayRunId = payRunId, EmployeeId = employeeId, ComponentCode = componentCode }));
 })
 .WithName("RunReport")
 .WithOpenApi();

@@ -12,7 +12,7 @@ namespace Payroll.API.Repositories;
 
 public sealed class CommunicationRepository
 {
-    private const int MaxRecipients = 5000;
+    internal const int MaxRecipients = 5000;
     private static readonly Regex CodePattern = new("^[A-Za-z0-9._-]{2,120}$", RegexOptions.Compiled);
     private static readonly Regex TokenPattern = new("{{\\s*([A-Za-z][A-Za-z0-9]*)\\s*}}", RegexOptions.Compiled);
     private static readonly HashSet<string> AllowedSources = new(StringComparer.OrdinalIgnoreCase)

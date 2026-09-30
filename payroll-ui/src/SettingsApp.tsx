@@ -854,7 +854,7 @@ export default function SettingsApp() {
             </button>
           </Dropdown>
         </Space>
-        <AppPageHeader recruitment={mainModule === 'TalentAcquisition' && !showMyTasks && !isProfile} title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined} />
+        <AppPageHeader workspace={!showMyTasks && !isProfile ? mainModule === 'Dashboard' ? 'dashboard' : mainModule === 'Employees' && employeeTab === 'Employee Master' ? 'employees' : undefined : undefined} recruitment={mainModule === 'TalentAcquisition' && !showMyTasks && !isProfile} title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined} />
       </div>
       <div className="hrms-content">
         <div className="hrms-page-body">{renderPage()}</div>

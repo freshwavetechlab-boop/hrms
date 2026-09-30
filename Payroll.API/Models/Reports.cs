@@ -3,6 +3,9 @@ namespace Payroll.API.Models;
 public class ReportFilter
 {
     public int ClientId { get; set; }
+    public string? EmploymentType { get; set; }
+    public string? EmployeeCategory { get; set; }
+    public bool ActiveOnly { get; set; }
     public string? Department { get; set; }
     public int? WorkLocationId { get; set; }
     public string? FromDate { get; set; }

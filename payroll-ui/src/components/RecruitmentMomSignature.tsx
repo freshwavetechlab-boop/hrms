@@ -42,7 +42,7 @@ export default function RecruitmentMomSignature({ document, onClose, onSaved }: 
       centered
       bodyStyle={{ maxHeight: '65dvh', overflowY: 'auto' }}
       open
-      title="Sign committee MoM"
+      title="Sign job MoM"
       okText="Capture signature"
       confirmLoading={signatureSaving}
       okButtonProps={{ disabled: document.status === 'Signed' || signerName.trim().length < 2 || (signatureMethod !== 'Typed' && !signatureDataUrl) }}
@@ -51,7 +51,7 @@ export default function RecruitmentMomSignature({ document, onClose, onSaved }: 
       cancelButtonProps={{ disabled: signatureSaving }}
       destroyOnClose
     >
-      <Alert showIcon type="info" message="Audited electronic signature" description="Your signed-in user, method and timestamp are stored with this MoM. Every assigned panel member signs using their own login. The final required signature sends agreed terms to HR Division for approval." />
+      <Alert showIcon type="info" message="Audited electronic signature" description="Your signed-in user, method and timestamp are stored with this MoM. This combined MoM belongs to the job. Every assigned panel member signs using their own login. The final required signature sends agreed terms to HR Division for approval." />
       <Tag>{document.signatureCount}/{document.requiredSignatureCount} panel signatures</Tag>
       {document.bodySnapshot && <pre style={{ whiteSpace: 'pre-wrap', maxHeight: 300, overflow: 'auto' }}>{document.bodySnapshot}</pre>}
       <Form component="div" layout="vertical" className="mom-signature-form">

@@ -551,3 +551,10 @@
 .travel-trip-table{min-width:1460px}.travel-booking-choice{min-width:148px;display:grid!important;gap:4px}.travel-booking-choice .ant-radio-wrapper{margin:0;color:#344054;font-size:.66rem;line-height:1.25}.travel-booking-choice .ant-radio-inner{width:15px;height:15px}.travel-arrangement-note .ant-checkbox-wrapper,.travel-checks .ant-checkbox-wrapper{color:#172136;font-size:.74rem;font-weight:800}
 .travel-editor-actions .ant-btn{height:36px;border-radius:8px;font-size:.72rem;font-weight:850}.travel-editor-actions .ant-btn-primary{background:#6546e8}.request-list-head .ant-select{min-width:150px}.request-list-head .ant-select-selector{height:34px!important;border-radius:8px!important;align-items:center}
 @media(max-width:760px){.travel-journey{grid-template-columns:1fr 1fr;gap:12px;padding:12px}.travel-journey:before{display:none}.travel-journey-step{padding:8px;border:1px solid #dfe6e1;border-radius:10px;background:#fff}.travel-journey-step i{width:36px;height:36px}.travel-desk-note{align-items:flex-start;display:grid}.travel-editor-actions{flex-wrap:wrap}.travel-editor-actions .ant-btn{flex:1 1 42%}}
+
+.profile-edit-fields { border: 0; padding: 0; margin: 0; min-width: 0; display: grid; gap: 16px; }
+.profile-edit-fields:disabled :is(input, textarea, select) { opacity: 1; color: #475569; background: #f8fafc; }
+.profile-edit-request { display: grid; gap: 10px; margin-top: 12px; }
+.profile-edit-request label { display: grid; gap: 6px; }
+.profile-edit-request textarea { min-height: 72px; width: 100%; }
+.profile-edit-request button { justify-self: start; }

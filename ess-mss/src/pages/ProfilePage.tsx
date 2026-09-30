@@ -10,6 +10,9 @@ export function ProfilePage({ user }: { user: User }) {
   const [form, setForm] = useState<SaveProfileData | null>(null)
   const [state, setState] = useState<LoadState>('loading')
   const [saving, setSaving] = useState(false)
+  const [editReason, setEditReason] = useState('')
+  const [requesting, setRequesting] = useState(false)
+  const [documentsBusy, setDocumentsBusy] = useState(false)
 
   const load = useCallback(async () => {
     setState('loading')
@@ -30,16 +33,30 @@ export function ProfilePage({ user }: { user: User }) {
     window.dispatchEvent(new CustomEvent('ess:page-title', { detail: { section: 'Home', title: 'My profile' } }))
   }, [])
 
+  useEffect(() => {
+    if (profile?.editStatus !== 'Pending approval') return
+    const refresh = () => { if (!document.hidden) void essApi.profile().then(data => { setProfile(data); if (data) setForm(toForm(data)) }).catch(() => {}) }
+    const timer = window.setInterval(refresh, 30000)
+    window.addEventListener('focus', refresh)
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', refresh) }
+  }, [profile?.editStatus])
+  const requestEdit = async () => {
+    if (!editReason.trim()) return showToast('Please enter why you need to edit your profile.', 'error')
+    setRequesting(true)
+    try { setProfile(await essApi.requestProfileEdit(editReason.trim())); setEditReason(''); showToast('Edit request sent to your approver.', 'success') }
+    catch (error) { showToast(error instanceof Error ? error.message : 'Unable to request edit access.', 'error') }
+    finally { setRequesting(false) }
+  }
   const set = <K extends keyof SaveProfileData>(key: K, value: SaveProfileData[K]) => setForm(current => current ? { ...current, [key]: value } : current)
   const save = async (event: FormEvent) => {
     event.preventDefault()
-    if (!form) return
+    if (!form || !profile?.canEdit || documentsBusy || saving) return
     setSaving(true)
     try {
       const saved = await essApi.saveProfile(form)
       setProfile(saved)
       setForm(toForm(saved))
-      showToast('Profile updated.', 'success')
+      showToast('Profile saved. Editing is now locked; request approval for any further changes.', 'success')
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Unable to update profile.', 'error')
     } finally {
@@ -54,10 +71,15 @@ export function ProfilePage({ user }: { user: User }) {
     <div className="profile-head">
       <span>{initials(`${profile.firstName} ${profile.lastName}`)}</span>
       <div><h3>{`${profile.firstName} ${profile.lastName}`.trim()}</h3><p>{profile.employeeCode} / {profile.designation || 'Employee'}</p></div>
-      <small className={profile.canEdit ? 'profile-edit-badge on' : 'profile-edit-badge'}>{profile.canEdit ? 'Self update enabled' : 'Self update disabled'}</small>
+      <small className={profile.canEdit ? 'profile-edit-badge on' : 'profile-edit-badge'}>{profile.canEdit ? 'One save available' : profile.editStatus || 'Locked'}</small>
     </div>
     <div className="profile-grid readonly">{fields.map(([label, value]) => <div key={label}><span>{label}</span><b>{value}</b></div>)}</div>
-    {profile.canEdit && <>
+    <section className="profile-form-section profile-edit-access">
+      <p>{profile.canEdit ? 'Complete your details and upload the required documents before saving. One successful save locks editing again.' : profile.editStatus === 'Pending approval' ? 'Your edit request is pending approval. This page checks the status automatically.' : 'Your profile is locked. Request edit access for one more save.'}</p>
+      {!profile.canEdit && <button type="button" className="secondary" onClick={() => void load()}>Refresh edit status</button>}
+      {profile.canRequestEdit && <div className="profile-edit-request"><label><span>Reason for editing</span><textarea aria-label="Reason for editing" maxLength={1000} value={editReason} onChange={event => setEditReason(event.target.value)} /></label><button type="button" disabled={requesting || !editReason.trim()} onClick={() => void requestEdit()}>{requesting ? 'Requesting...' : 'Request edit access'}</button></div>}
+    </section>
+    <fieldset disabled={!profile.canEdit || saving} className="profile-edit-fields">
       <section className="profile-form-section"><h4>Basic and contact details</h4><div className="travel-form-grid profile-form-grid">
         <label><span>First name</span><input value={form.firstName} onChange={event => set('firstName', event.target.value)} /></label>
         <label><span>Last name</span><input value={form.lastName} onChange={event => set('lastName', event.target.value)} /></label>
@@ -81,9 +103,9 @@ export function ProfilePage({ user }: { user: User }) {
         <label><span>IFSC</span><input value={form.ifscCode} onChange={event => set('ifscCode', event.target.value)} /></label>
         <label><span>Payment mode</span><select value={form.paymentMode} onChange={event => set('paymentMode', event.target.value)}><option value="">Select</option><option>Bank Transfer</option><option>Cheque</option><option>Cash</option></select></label>
       </div></section>
-      <div className="profile-actions"><button type="button" className="secondary" onClick={() => setForm(toForm(profile))}>Reset</button><button disabled={saving}>{saving ? 'Saving...' : 'Save profile'}</button></div>
-    </>}
-    {user.employeeId && <ProfileDocuments employeeId={user.employeeId} clientId={profile.clientId} />}
+    </fieldset>
+    {user.employeeId && <ProfileDocuments employeeId={user.employeeId} clientId={profile.clientId} canEdit={profile.canEdit && !saving} onBusyChange={setDocumentsBusy} />}
+    {profile.canEdit && <div className="profile-actions"><button type="button" className="secondary" disabled={saving} onClick={() => setForm(toForm(profile))}>Reset</button><button disabled={saving || documentsBusy}>{saving ? 'Saving...' : 'Save profile and lock editing'}</button></div>}
   </form>
 }
 

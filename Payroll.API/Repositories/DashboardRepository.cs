@@ -270,23 +270,11 @@ GROUP BY COALESCE(NULLIF(TRIM(w.Name), ''), 'Not mapped')
 ORDER BY Total DESC, Campus;", parameters)).ToList()
             : [];
 
-        var skillCategoryHeadcount = sections.Workforce
-            ? (await connection.QueryAsync<DashboardChartPoint>(@"
-SELECT Category AS Label, COUNT(*) AS Value
-FROM (
-    SELECT CASE
-        WHEN JSON_VALID(PersonalJson) THEN COALESCE(
-            NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(PersonalJson, '$.skillCategory'))), ''),
-            'Not categorized')
-        ELSE 'Not categorized'
-    END AS Category
-    FROM employees
-    WHERE IsActive = TRUE
-      AND (@ClientId = 0 OR ClientId = @ClientId)
-) categories
-GROUP BY Category
-ORDER BY Value DESC, Label;", parameters)).ToList()
+        async Task<List<DashboardChartPoint>> ClassificationHeadcount(string expression) => sections.Workforce
+            ? (await connection.QueryAsync<DashboardChartPoint>($"SELECT {expression} AS Label, COUNT(*) AS Value FROM employees e WHERE e.IsActive=TRUE AND (@ClientId=0 OR e.ClientId=@ClientId) GROUP BY Label ORDER BY Value DESC, Label", parameters)).ToList()
             : [];
+        var skillCategoryHeadcount = await ClassificationHeadcount(EmployeeClassification.Category);
+        var employmentTypeHeadcount = await ClassificationHeadcount(EmployeeClassification.EmploymentType);
 
         var essAdoption = sections.Workforce
             ? new List<DashboardChartPoint>
@@ -416,6 +404,7 @@ ORDER BY FIELD(Bucket, '< 1 day', '1-3 days', '3-7 days', '> 7 days');", paramet
             GenderHeadcount = genderHeadcount,
             CampusGenderHeadcount = campusGenderHeadcount,
             SkillCategoryHeadcount = skillCategoryHeadcount,
+            EmploymentTypeHeadcount = employmentTypeHeadcount,
             EssAdoption = essAdoption,
             PayrollPaymentStatus = payrollPaymentStatus,
             PayrollRunType = payrollRunType,
@@ -448,6 +437,7 @@ public class DashboardSnapshot
     public List<DashboardChartPoint> GradeHeadcount { get; set; } = [];
     public List<DashboardChartPoint> GenderHeadcount { get; set; } = [];
     public List<DashboardCampusGenderRow> CampusGenderHeadcount { get; set; } = [];
+    public List<DashboardChartPoint> EmploymentTypeHeadcount { get; set; } = [];
     public List<DashboardChartPoint> SkillCategoryHeadcount { get; set; } = [];
     public List<DashboardChartPoint> EssAdoption { get; set; } = [];
     public List<DashboardChartPoint> PayrollPaymentStatus { get; set; } = [];

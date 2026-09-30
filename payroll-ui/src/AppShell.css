@@ -1428,10 +1428,10 @@ body.portal-shell-mounted .ant-select-dropdown {
 .recruitment-page-header .hrms-page-heading { width: 100%; }
 .recruitment-page-header .hrms-page-copy { flex: 1; width: 100%; }
 .recruitment-title-controls { align-items: center; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
-#recruitment-client-controls:empty, #recruitment-page-controls:empty { display: none; }
-#recruitment-client-controls .ant-select { width: min(410px, 36vw); min-width: 220px; }
-#recruitment-page-controls { margin-left: auto; }
-#recruitment-page-controls .ant-space { flex-wrap: wrap; justify-content: flex-end; }
+:is(#recruitment-client-controls, #employees-client-controls, #dashboard-client-controls):empty, :is(#recruitment-page-controls, #employees-page-controls, #dashboard-page-controls):empty { display: none; }
+:is(#recruitment-client-controls, #employees-client-controls, #dashboard-client-controls) .ant-select { width: min(410px, 36vw); min-width: 220px; }
+:is(#recruitment-page-controls, #employees-page-controls, #dashboard-page-controls) { margin-left: auto; }
+:is(#recruitment-page-controls, #employees-page-controls, #dashboard-page-controls) .ant-space { flex-wrap: wrap; justify-content: flex-end; }
 .shared-record-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 12px; padding: 12px 0; }
 .shared-record-cards article { min-width: 0; border: 1px solid #dde5f0; border-radius: 12px; padding: 16px; background: #fff; }
 .shared-record-cards dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
@@ -1441,6 +1441,12 @@ body.portal-shell-mounted .ant-select-dropdown {
 @media (max-width: 900px) {
   .recruitment-page-header .hrms-page-copy { grid-template-columns: minmax(0, 1fr); }
   .recruitment-page-header .hrms-page-context-row { flex-wrap: wrap; }
-  #recruitment-client-controls .ant-select { width: min(410px, 70vw); }
+  :is(#recruitment-client-controls, #employees-client-controls, #dashboard-client-controls) .ant-select { width: min(410px, 70vw); }
   .recruitment-title-controls { margin-top: 6px; }
 }
+.dashboard-page [role="button"] { cursor: pointer; }
+.dashboard-page [role="button"]:focus-visible { outline: 2px solid #6546e8; outline-offset: 3px; }
+.employee-classification-dashboard { margin-bottom: 16px; }
+.employee-classification-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 10px; }
+.employee-classification-counts button { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid #e3e8f2; background: #f8faff; border-radius: 10px; text-align: left; }
+.employee-classification-counts strong { color: #6546e8; font-size: 22px; }

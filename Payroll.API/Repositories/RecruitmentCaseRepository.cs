@@ -1059,6 +1059,12 @@ ORDER BY DisplayOrder,Id LIMIT 1", new { current.PipelineVersionId, StageId = cu
             current.RequiresApproval = true;
             current.ApprovalWorkflowId = selectedTransition.ApprovalWorkflowId;
         }
+        if (current.RequiresApproval && current.ApprovalWorkflowId is > 0 && await db.ExecuteScalarAsync<bool>(@"SELECT EXISTS(
+SELECT 1 FROM recruitment_process_documents d JOIN workflowinstances w ON w.Id=d.WorkflowInstanceId
+WHERE d.HiringCaseId=@HiringCaseId AND d.Status='Signed' AND w.Status='Approved' AND w.WorkflowId=@ApprovalWorkflowId
+AND w.ResourceType='RecruitmentPipelineTransition' AND w.ResourceId=CONCAT('MOM:',d.Id)
+AND " + RecruitmentJobMom.CurrentFor("d") + " AND " + RecruitmentPanelSignatures.CompleteFor("d") + ")", current, transaction))
+            current.RequiresApproval = false;
         if (current.RequiresApproval)
         {
             if (current.ApprovalWorkflowId is null or <= 0) return (null, $"Stage {current.StageName} requires approval but has no active workflow mapping.");
@@ -1232,7 +1238,7 @@ ORDER BY hiringCase.Id DESC LIMIT 1", new { PositionId = positionId });
             else if (key.Contains("SIGNING") && key.Contains("MOM"))
             {
                 ready = RecruitmentHiringProgress.Enough(requiredCandidates, candidates, row => !RecruitmentHiringProgress.Excluded(row) && row.CandidateMomSigned);
-                reason = "Automatically advanced after the required candidates signed their current agreed terms.";
+                reason = "Automatically advanced after all assigned panel members signed the job MoM.";
             }
             else if (key.Contains("NEGOTIATION") || key.Contains("MOM_TO_HR"))
             {
@@ -1453,6 +1459,7 @@ AND NOT EXISTS (SELECT 1 FROM recruitment_process_documents document
   WHERE document.HiringCaseId=@CaseId AND document.PipelineStageId=@StageId
     AND document.DocumentType=requirement.DocumentType
     AND " + CurrentCohortDocumentSql + @"
+    AND (document.DocumentType NOT IN ('MOM','SIGNED_MOM') OR " + RecruitmentJobMom.CurrentFor("document") + @")
     AND (requirement.RequiresSignature=FALSE OR (document.Status='Signed' AND
       ((document.DocumentType IN ('MOM','SIGNED_MOM') AND " + RecruitmentPanelSignatures.CompleteFor("document") + @")
        OR (document.DocumentType NOT IN ('MOM','SIGNED_MOM') AND (
@@ -1700,12 +1707,17 @@ WHERE PipelineStageId=@StageId AND DocumentType=@DocumentType AND RequiresSignat
         if (eligibilityError.Length > 0) return (null, eligibilityError);
         await using var tx = await db.BeginTransactionAsync();
         // Match the terms editor lock order, so a changed CTC cannot receive a stale signature.
-        if (document.ApplicationId is > 0)
+        if (IsMoM(document.DocumentType))
+            await db.QueryAsync<long>(@"SELECT a.Id FROM recruitment_candidate_applications a
+JOIN recruitment_position_pipeline_instances hiring ON hiring.PositionId=a.PositionId AND hiring.ClientId=a.ClientId
+WHERE hiring.Id=@HiringCaseId ORDER BY a.Id FOR UPDATE", document, tx);
+        else if (document.ApplicationId is > 0)
             await db.ExecuteScalarAsync<long>("SELECT Id FROM recruitment_candidate_applications WHERE Id=@ApplicationId FOR UPDATE", document, tx);
         document = await db.QueryFirstAsync<RecruitmentProcessDocument>("SELECT * FROM recruitment_process_documents WHERE Id=@Id FOR UPDATE", new { Id = documentId }, tx);
         if (document.Status == "Signed") return (null, "This document is already final and signed.");
-        if (IsMoM(document.DocumentType) && document.ApplicationId is > 0 && !await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM recruitment_candidate_applications WHERE Id=@ApplicationId AND TermsVersion=@TermsVersion AND TermsConfirmedAtUtc IS NOT NULL AND CurrentStage NOT LIKE '%Reject%' AND CurrentStage NOT LIKE '%Withdraw%')", document, tx))
-            return (null, "The candidate's agreed terms changed or this application is no longer selected. Prepare the current MoM again.");
+        if (IsMoM(document.DocumentType) && (!await db.ExecuteScalarAsync<bool>("SELECT " + RecruitmentJobMom.CurrentFor("d") + " FROM recruitment_process_documents d WHERE d.Id=@Id", document, tx)
+            || !await db.ExecuteScalarAsync<bool>("SELECT @UserId IN (" + RecruitmentPanelSignatures.MembersSql + ") FROM recruitment_process_documents documentRow WHERE documentRow.Id=@Id", new { document.Id, UserId = user.Id }, tx)))
+            return (null, "The job MoM or its agreed terms changed. Prepare the current job MoM again.");
         var signerRole = await db.ExecuteScalarAsync<string?>(@"SELECT roleName FROM (
 SELECT panel.PanelRole roleName,1 sortOrder FROM recruitment_position_pipeline_instances hiringCase
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.PositionId=hiringCase.PositionId AND applicationRow.ApplicationType='Application'
@@ -1744,9 +1756,9 @@ VALUES (@CaseId,(SELECT CurrentStageInstanceId FROM recruitment_position_pipelin
             await db.ExecuteAsync(@"UPDATE recruitment_process_documents documentRow
 SET Status='Signed',SignedByUserId=@UserId,SignedAtUtc=UTC_TIMESTAMP(6),UpdatedAtUtc=UTC_TIMESTAMP(6)
 WHERE documentRow.Id=@Id AND documentRow.Status='Prepared'
-AND (@CandidateTerms OR documentRow.WorkflowInstanceId IS NULL OR EXISTS (
+AND (@IsMom OR documentRow.WorkflowInstanceId IS NULL OR EXISTS (
  SELECT 1 FROM workflowinstances workflow WHERE workflow.Id=documentRow.WorkflowInstanceId AND workflow.Status='Approved'))",
-                new { Id = documentId, UserId = user.Id, CandidateTerms = document.ApplicationId is > 0 && document.TermsVersion.HasValue }, tx);
+                new { Id = documentId, UserId = user.Id, IsMom = IsMoM(document.DocumentType) }, tx);
         }
         await tx.CommitAsync();
         return (await db.QueryFirstOrDefaultAsync<RecruitmentProcessDocumentSignature>(@"SELECT *
@@ -1787,6 +1799,7 @@ FROM recruitment_process_documents documentRow WHERE documentRow.Id=@Id", new { 
         var captured = "CASE WHEN documentRow.DocumentType IN ('MOM','SIGNED_MOM') THEN " + RecruitmentPanelSignatures.CapturedSql
             + " ELSE (SELECT COUNT(*) FROM recruitment_process_document_signatures signatureRow WHERE signatureRow.ProcessDocumentId=documentRow.Id) END";
         return (await db.QueryAsync<RecruitmentProcessDocument>(@"SELECT documentRow.*,
+" + RecruitmentJobMom.CurrentFor("documentRow") + @" IsCurrentJobMom,
 EXISTS (SELECT 1 FROM entity_attachments attachment
     WHERE attachment.entity_type='RECRUITMENT_PROCESS_DOCUMENT' AND attachment.entity_id=documentRow.Id
     AND attachment.is_current=TRUE AND attachment.is_deleted=FALSE
@@ -1794,7 +1807,10 @@ EXISTS (SELECT 1 FROM entity_attachments attachment
 " + captured + " SignatureCount," + required + " RequiredSignatureCount,(" + captured + ") >= GREATEST(1," + required + @") CapturedSignaturesComplete
 FROM recruitment_process_documents documentRow
 WHERE (@ClientId IS NULL OR documentRow.ClientId=@ClientId) AND (@HiringCaseId IS NULL OR documentRow.HiringCaseId=@HiringCaseId)
-AND (@ApplicationId IS NULL OR documentRow.ApplicationId=@ApplicationId)
+AND (documentRow.DocumentType NOT IN ('MOM','SIGNED_MOM') OR documentRow.ApplicationId IS NULL)
+AND (@ApplicationId IS NULL OR documentRow.ApplicationId=@ApplicationId OR
+ (documentRow.DocumentType IN ('MOM','SIGNED_MOM') AND EXISTS(SELECT 1 FROM recruitment_candidate_applications a
+ WHERE a.Id=@ApplicationId AND " + RecruitmentJobMom.CoversApplication("documentRow", "a") + @")))
 AND (@ViewAll OR (documentRow.DocumentType IN ('MOM','SIGNED_MOM') AND @UserId IN (" + RecruitmentPanelSignatures.MembersSql + @")))
 ORDER BY documentRow.DocumentType,documentRow.VersionNumber DESC,documentRow.Id DESC",
             new { user.ClientId, HiringCaseId = hiringCaseId, ApplicationId = applicationId, UserId = user.Id,
@@ -1820,6 +1836,12 @@ ORDER BY documentRow.DocumentType,documentRow.VersionNumber DESC,documentRow.Id 
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=interviewRow.ApplicationId
 WHERE interviewRow.Id=@Id AND applicationRow.ClientId=@ClientId", new { Id = request.InterviewId.Value, request.ClientId }) == 0)
             return (null, "The linked interview is outside this client.");
+        if (IsMoM(request.DocumentType) && (request.HiringCaseId is not > 0 || request.ApplicationId.HasValue || request.InterviewId.HasValue))
+            return (null, "MoM is job-wise. Prepare the combined MoM from MoM & Negotiation > MoM for this hiring case.");
+        if (IsMoM(request.DocumentType) && !await db.ExecuteScalarAsync<bool>(@"SELECT EXISTS(SELECT 1 FROM recruitment_position_pipeline_instances hiring
+JOIN recruitment_pipeline_stages stage ON stage.PipelineVersionId=hiring.PipelineVersionId AND stage.IsActive=TRUE
+WHERE hiring.Id=@HiringCaseId AND stage.Id=@PipelineStageId AND hiring.Status<>'Superseded')", request))
+            return (null, "Use the MoM stage configured on this job's current hiring journey.");
         if (request.PipelineStageId is null or <= 0)
             return (null, "This document type is not configured for the selected pipeline stage.");
         var configuredTemplateId = await db.ExecuteScalarAsync<long?>(@"SELECT TemplateId FROM recruitment_stage_process_document_requirements
@@ -1832,6 +1854,8 @@ WHERE PipelineStageId=@StageId AND DocumentType=@DocumentType", new { StageId = 
         if (request.TemplateId is > 0 && await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_templates
 WHERE Id=@Id AND IsActive=TRUE AND ClientId IN (0,@ClientId)", new { Id = request.TemplateId.Value, request.ClientId }) == 0)
             return (null, "The configured process-document template is inactive or belongs to another client.");
+        if (IsMoM(request.DocumentType) && (request.Status != "Draft" || request.Id > 0 || request.WorkflowInstanceId.HasValue || request.AttachmentPublicId.HasValue))
+            return (null, "Generate the job MoM and use panel signatures to finalize it. Prepare a new version for changes.");
         if (request.Id <= 0 && request.Status.Equals("Signed", StringComparison.OrdinalIgnoreCase)) return (null, "Prepare and attach the process document before signing it.");
         if (request.Id > 0)
         {
@@ -1911,6 +1935,10 @@ LEFT JOIN recruitment_interviews interviewRow ON interviewRow.Id=documentRow.Int
 WHERE documentRow.Id=@Id AND (@ClientId IS NULL OR documentRow.ClientId=@ClientId)", new { Id = id, user.ClientId });
         if (context is null) return (null, "Process document or its configured template was not found.");
         if (context.Status.Equals("Signed", StringComparison.OrdinalIgnoreCase)) return (null, "A signed process document cannot be regenerated.");
+        if (IsMoM(context.DocumentType) && (context.ApplicationId.HasValue || context.InterviewId.HasValue))
+            return (null, "Prepare a combined job MoM from MoM & Negotiation. Candidate-specific MoMs are retained only as history.");
+        if (IsMoM(context.DocumentType) && !string.IsNullOrEmpty(context.BodySnapshot))
+            return (null, "This job MoM is already prepared. Prepare a new version to change its candidates or terms.");
         if (context.TermsVersion.HasValue && !string.IsNullOrEmpty(context.BodySnapshot))
             return (null, "This candidate MoM is already prepared. Revise and reconfirm terms to create another version.");
         if (context.TermsVersion.HasValue && !await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM recruitment_candidate_applications WHERE Id=@ApplicationId AND TermsVersion=@TermsVersion AND TermsConfirmedAtUtc IS NOT NULL)", context))
@@ -1954,7 +1982,7 @@ WHERE PipelineStageId=@StageId AND DocumentType=@DocumentType AND TemplateId=@Te
         }
         var (snapshot, snapshotError) = templatePdf.RenderOfferText(context.SubjectTemplate + "\n\n" + context.BodyTemplate, values);
         if (snapshot is null) return (null, snapshotError);
-        if (context.ApplicationId is > 0 && IsMoM(context.DocumentType)) snapshot += "\n\nAgreed annual CTC: " + values["agreedCtc"];
+        if (IsMoM(context.DocumentType)) snapshot += "\n\nSelected candidates and agreed annual CTC\n" + values["candidateTermsTable"];
         var (bytes, renderError) = templatePdf.Create("", "{{document}}", new Dictionary<string,string> { ["document"] = System.Net.WebUtility.HtmlEncode(snapshot) });
         if (bytes is null) return (null, renderError);
 
@@ -1987,16 +2015,29 @@ ORDER BY CASE WHEN field.client_id=@ClientId THEN 0 ELSE 1 END,field.display_ord
         }, file, user, ipAddress, userAgent, cancellationToken);
         if (upload.Attachment is null) return (null, upload.Error ?? "Process document could not be stored.");
 
+        await using var tx = await db.BeginTransactionAsync(cancellationToken);
+        if (IsMoM(context.DocumentType))
+            await db.QueryAsync<long>(@"SELECT a.Id FROM recruitment_candidate_applications a
+JOIN recruitment_position_pipeline_instances hiring ON hiring.PositionId=a.PositionId AND hiring.ClientId=a.ClientId
+WHERE hiring.Id=@HiringCaseId ORDER BY a.Id FOR UPDATE", context, tx);
         var updated = await db.ExecuteAsync(@"UPDATE recruitment_process_documents
 SET AttachmentPublicId=@PublicId,BodySnapshot=@Snapshot,Status='Prepared',UpdatedAtUtc=UTC_TIMESTAMP(6)
-WHERE Id=@Id AND Status<>'Signed' AND (TermsVersion IS NULL OR (BodySnapshot IS NULL AND EXISTS(
+WHERE Id=@Id AND Status<>'Signed' AND (@IsMom=FALSE OR BodySnapshot IS NULL) AND (TermsVersion IS NULL OR (BodySnapshot IS NULL AND EXISTS(
 SELECT 1 FROM recruitment_candidate_applications a WHERE a.Id=@ApplicationId AND a.TermsVersion=@TermsVersion AND a.TermsConfirmedAtUtc IS NOT NULL)))",
-            new { Id = context.Id, context.ApplicationId, context.TermsVersion, PublicId = upload.Attachment.PublicId.ToString(), Snapshot = snapshot });
+            new { Id = context.Id, context.ApplicationId, context.TermsVersion, IsMom = IsMoM(context.DocumentType), PublicId = upload.Attachment.PublicId.ToString(), Snapshot = snapshot }, tx);
+        if (updated > 0 && IsMoM(context.DocumentType))
+        {
+            await db.ExecuteAsync(@"INSERT INTO recruitment_audit(EntityType,EntityId,Action,NewValueJson,ChangedByUserId)
+VALUES ('RecruitmentProcessDocument',@Id,'Job MoM prepared',@MomSnapshotJson,@UserId)", new { context.Id, context.MomSnapshotJson, UserId = user.Id }, tx);
+            if (!await db.ExecuteScalarAsync<bool>("SELECT " + RecruitmentJobMom.CurrentFor("d") + " FROM recruitment_process_documents d WHERE d.Id=@Id", context, tx)) updated = 0;
+        }
         if (updated == 0)
         {
+            await tx.RollbackAsync(cancellationToken);
             await attachments.DeleteAsync(upload.Attachment.PublicId, user, ipAddress, userAgent);
             return (null, "Document status changed while it was being generated. Reload and retry.");
         }
+        await tx.CommitAsync(cancellationToken);
         if (context.AttachmentPublicId.HasValue && context.AttachmentPublicId.Value != upload.Attachment.PublicId)
             await attachments.DeleteAsync(context.AttachmentPublicId.Value, user, ipAddress, userAgent);
         return (await db.QueryFirstOrDefaultAsync<RecruitmentProcessDocument>("SELECT * FROM recruitment_process_documents WHERE Id=@Id", new { Id = context.Id }), "");
@@ -2007,19 +2048,8 @@ SELECT 1 FROM recruitment_candidate_applications a WHERE a.Id=@ApplicationId AND
     private static async Task<string> ValidateMoMCandidatesAsync(MySqlConnection db, RecruitmentProcessDocument document)
     {
         if (!IsMoM(document.DocumentType)) return "";
-        if (document.ApplicationId is > 0) return await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM recruitment_candidate_applications WHERE Id=@ApplicationId AND TermsConfirmedAtUtc IS NOT NULL AND TermsVersion=@TermsVersion)", document) ? "" : "Confirm the current candidate terms before preparing MoM.";
-        if (document.Id > 0 && !await db.ExecuteScalarAsync<bool>(
-            "SELECT " + CurrentCohortDocumentSql + " FROM recruitment_process_documents document WHERE document.Id=@Id", new { document.Id }))
-            return "Prepare a new MoM for the current candidate group before signing.";
-        var positionId = await db.ExecuteScalarAsync<long?>(
-            "SELECT PositionId FROM recruitment_position_pipeline_instances WHERE Id=@HiringCaseId AND ClientId=@ClientId", document);
-        if (positionId is null) return "Link the MoM to its hiring case and position.";
-        var candidates = await RecruitmentHiringProgress.ReadCandidatesAsync(db, [positionId.Value],
-            new AuthUser { ClientId = document.ClientId, RecruitmentScopeMode = "Client" });
-        var selected = candidates.Count(RecruitmentHiringProgress.MoMReady);
-        var required = await RequiredHiringCohortAsync(db, positionId.Value);
-        return HasRequiredHiringCohort(required, selected) ? ""
-            : $"MoM needs {required} interview-selected candidates; {selected} are ready. Confirm agreed terms before MoM signing.";
+        return await db.ExecuteScalarAsync<bool>("SELECT " + RecruitmentJobMom.CurrentFor("d") + " FROM recruitment_process_documents d WHERE d.Id=@Id", document)
+            ? "" : "Prepare a current job MoM with confirmed terms for its selected candidates before panel signing.";
     }
 
     private static bool RequiresSelectionCommitteeData(params string[] templates) =>
@@ -2039,7 +2069,8 @@ SELECT 1 FROM recruitment_candidate_applications a WHERE a.Id=@ApplicationId AND
         var candidates = (await db.QueryAsync<SelectionCommitteeCandidate>(@"SELECT DISTINCT applicationRow.Id ApplicationId,
 CONCAT(candidateRow.FirstName,' ',candidateRow.LastName) CandidateName,
 interviewRow.Id InterviewId,interviewRow.ScheduledStart,interviewRow.Status InterviewStatus,
-interviewRow.Result,interviewRow.OverallScore,interviewRow.RoundConfigurationId
+interviewRow.Result,interviewRow.OverallScore,interviewRow.RoundConfigurationId,
+applicationRow.AgreedCtc,applicationRow.TermsVersion,applicationRow.TermsConfirmedAtUtc
 FROM recruitment_candidate_applications applicationRow
 LEFT JOIN recruitment_profile_submission_batch_items batchItem ON batchItem.ApplicationId=applicationRow.Id
 LEFT JOIN recruitment_profile_submission_batches batch ON batch.Id=batchItem.BatchId
@@ -2061,6 +2092,8 @@ ORDER BY CandidateName", new { context.ApplicationId, HiringCaseId = context.Hir
         if (context.ApplicationId is null && !HasRequiredHiringCohort(required, candidates.Count))
             return (null, $"MoM needs {required} interview-selected candidates; {candidates.Count} are ready. Other candidates can continue their own journey.");
 
+        var unconfirmed = candidates.Where(row => row.TermsConfirmedAtUtc is null || row.AgreedCtc is not > 0).Select(row => row.CandidateName).ToArray();
+        if (IsMoM(context.DocumentType) && unconfirmed.Length > 0) return (null, "Confirm individual agreed terms before preparing the job MoM: " + string.Join(", ", unconfirmed) + ".");
         var interviewIds = candidates.Select(row => row.InterviewId!.Value).Distinct().ToArray();
         var missingFeedback = (await db.QueryAsync<string>(@"SELECT CONCAT(candidateRow.FirstName,' ',candidateRow.LastName)
 FROM recruitment_interviews interviewRow
@@ -2084,7 +2117,14 @@ LEFT JOIN clients clientRow ON clientRow.Id=COALESCE(employeeRow.ClientId,userRo
 WHERE panel.InterviewId IN @Ids
 GROUP BY panel.PanelUserId,PanelName,panel.PanelRole,Designation,OrganisationName
 ORDER BY CASE WHEN LOWER(panel.PanelRole) LIKE '%chair%' THEN 0 WHEN LOWER(panel.PanelRole) LIKE '%member%' THEN 1 ELSE 2 END,PanelName", new { Ids = interviewIds })).ToList();
-        // The same assigned interview panel signs the prepared committee MoM.
+        if (panelMembers.Count == 0)
+            panelMembers = (await db.QueryAsync<SelectionCommitteePanelMember>(@"SELECT panel.PanelUserId,COALESCE(u.DisplayName,u.Email) PanelName,panel.PanelRole
+FROM recruitment_stage_default_panel_members panel JOIN authusers u ON u.Id=panel.PanelUserId
+WHERE panel.PipelineStageId=@PipelineStageId AND panel.IsRequired=TRUE", context)).ToList();
+        context.MomSnapshotJson = JsonSerializer.Serialize(new {
+            Candidates = candidates.Select(row => new { row.ApplicationId, row.TermsVersion, row.InterviewId }),
+            PanelMembers = panelMembers.Select(row => row.PanelUserId).Distinct().Select(id => new { UserId = id })
+        });
 
         var competencies = (await db.QueryAsync<SelectionCommitteeCompetency>(@"SELECT DISTINCT stageCompetency.Id StageCompetencyId,
 definition.CompetencyName,stageCompetency.WeightPercent MaximumScore,stageCompetency.DisplayOrder
@@ -2139,6 +2179,7 @@ GROUP BY feedback.InterviewId,score.InterviewStageCompetencyId", new { Ids = int
             ["presentCount"] = candidates.Count(row => row.InterviewStatus.Equals("Completed", StringComparison.OrdinalIgnoreCase)).ToString(CultureInfo.InvariantCulture),
             ["panelMembersList"] = panelList,
             ["candidateAttendanceTable"] = BuildTextTable(["Sl. No.", "Name of Candidate", "Present for Interview"], attendanceRows),
+            ["candidateTermsTable"] = BuildTextTable(["Application", "Candidate", "Agreed annual CTC"], candidates.Select(row => new[] { row.ApplicationId.ToString(CultureInfo.InvariantCulture), row.CandidateName, row.AgreedCtc?.ToString("N2", culture) ?? "Not confirmed" }).ToList()),
             ["candidateResultTable"] = BuildTextTable(["Sl. No.", "Candidate Name", "Result"], resultRows),
             ["scoreAnnexureTable"] = BuildTextTable(annexureHeaders, annexureRows),
             ["panelSignatureBlock"] = signatures
@@ -2628,12 +2669,16 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
         public string CandidateFirstName { get; set; } = "";
         public string CandidateLastName { get; set; } = "";
         public string CandidateEmail { get; set; } = "";
+        public string? MomSnapshotJson { get; set; }
         public DateTime? InterviewDate { get; set; }
         public decimal? AgreedCtc { get; set; }
     }
 
     private sealed class SelectionCommitteeCandidate
     {
+        public decimal? AgreedCtc { get; set; }
+        public int TermsVersion { get; set; }
+        public DateTime? TermsConfirmedAtUtc { get; set; }
         public long ApplicationId { get; set; }
         public string CandidateName { get; set; } = "";
         public long? InterviewId { get; set; }

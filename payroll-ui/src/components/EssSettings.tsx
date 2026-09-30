@@ -53,12 +53,12 @@ export default function EssSettings() {
       </div>
       <div className="ess-settings-summary">
         <article><b>{settings.length}</b><span>Configured clients</span></article>
-        <article><b>{settings.filter(row => row.allowProfileEdit).length}</b><span>Profile update enabled</span></article>
+        <article><b>{settings.filter(row => row.allowProfileEdit).length}</b><span>First profile save enabled</span></article>
         <article><b>{settings.filter(row => (row.initialPasswordMode || 'App Default') !== 'App Default').length}</b><span>Custom password policies</span></article>
       </div>
       <DataTable rows={settings} columns={[
         { key: 'clientName', label: 'Client' },
-        { key: 'allowProfileEdit', label: 'Profile update', render: row => row.allowProfileEdit ? 'Allowed' : 'Blocked' },
+        { key: 'allowProfileEdit', label: 'First profile save', render: row => row.allowProfileEdit ? 'Allowed' : 'Blocked' },
         { key: 'initialPasswordMode', label: 'Initial password', render: row => row.initialPasswordMode || 'App Default' },
         { key: 'isActive', label: 'Status', render: row => row.isActive ? 'Active' : 'Inactive' }
       ]} actions={row => <Button size="small" type="primary" onClick={() => edit(row)}>Configure</Button>} />
@@ -66,7 +66,7 @@ export default function EssSettings() {
         {draft && <Form component="div" layout="vertical" className="settings-quick-form ess-settings-form">
           <Form.Item label="Client"><Input value={draft.clientName} disabled /></Form.Item>
           <Form.Item label="ESS setting status"><Checkbox checked={draft.isActive} onChange={event => patch({ isActive: event.target.checked })}>Active for this client</Checkbox></Form.Item>
-          <Form.Item label="Employee profile update"><Checkbox checked={draft.allowProfileEdit} onChange={event => patch({ allowProfileEdit: event.target.checked })}>Allow employees to update basic, contact, address, PAN, Aadhaar and bank information from ESS</Checkbox></Form.Item>
+          <Form.Item label="First-time profile edit"><Checkbox checked={draft.allowProfileEdit} onChange={event => patch({ allowProfileEdit: event.target.checked })}>Allow the first profile save without approval. After saving, each further edit requires approval in My Tasks.</Checkbox></Form.Item>
           <Form.Item label="Initial password mode" required><Select value={draft.initialPasswordMode || 'App Default'} options={initialPasswordModeOptions.map(value => ({ value, label: value === 'EmployeeCode' ? 'Employee code' : value }))} onChange={value => patch({ initialPasswordMode: value, fixedPassword: value === 'Fixed' ? draft.fixedPassword : '' })} /></Form.Item>
           {(draft.initialPasswordMode || 'App Default') === 'Fixed' && <Form.Item label="Fixed initial password" required><Input.Password value={draft.fixedPassword || ''} onChange={event => patch({ fixedPassword: event.target.value })} placeholder="Enter fixed initial password" /></Form.Item>}
           <div className="ess-settings-note"><b>Login rule</b><span>Username remains employee code. Welcome email is queued only when a valid work email exists. If Aadhaar mode is selected and Aadhaar is missing, the system falls back to a generated temporary password.</span></div>

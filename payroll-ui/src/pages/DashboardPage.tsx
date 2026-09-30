@@ -1,10 +1,21 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { AlertOutlined, CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined, TeamOutlined, WalletOutlined } from '@ant-design/icons'
-import type { DashboardChartPoint, DashboardPayrollTrendPoint, DashboardSnapshot } from '../types/payroll'
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined, ReloadOutlined, TeamOutlined, WalletOutlined } from '@ant-design/icons'
+import { Button, Empty, Space, Tag } from 'antd'
+import type { DashboardChartPoint, DashboardSnapshot } from '../types/payroll'
 import { getDashboard } from '../services/dashboardService'
-import SearchSelect from '../components/SearchSelect'
+import { workforcePath, type WorkforceField } from '../utils/employeeWorkforce'
+import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
 import { useAuthSession } from '../components/AuthGate'
+import SearchSelect from '../components/SearchSelect'
+import DataTable from '../components/DataTable'
+import { PageHeaderPortal } from '../components/layout/AppPageHeader'
+import {
+  DashboardActionQueue, DashboardChartCard, DashboardChartGrid, DashboardEngine,
+  DashboardKpiGrid, DashboardSectionCard,
+  type DashboardChartSpec, type DashboardKpi, type DashboardQueueItem,
+} from '../components/dashboard/DashboardEngine'
+import './DashboardPage.css'
 
 export type DashboardView = 'overview' | 'workforce' | 'payroll' | 'attendance' | 'approvals'
 
@@ -15,104 +26,20 @@ function formatMonth(value: string) {
   const [year, month] = value.split('-').map(Number)
   return new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric' }).format(new Date(year, month - 1, 1))
 }
-
 function formatDate(value: string) {
-  if (!value) return ''
-  return new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(value))
-}
-
-function shortMonth(value: string) {
-  if (!value) return ''
-  const [year, month] = value.split('-').map(Number)
-  return new Intl.DateTimeFormat('en-IN', { month: 'short' }).format(new Date(year, month - 1, 1))
-}
-
-function EmptyChart() {
-  return <div className="dashboard-empty-chart">No chart data available.</div>
-}
-
-function BarChart({ data, valueFormat = value => count.format(value) }: { data: DashboardChartPoint[]; valueFormat?: (value: number) => string }) {
-  const rows = data.filter(item => Number(item.value) > 0)
-  const max = Math.max(...rows.map(item => Number(item.value)), 0)
-  if (!rows.length) return <EmptyChart />
-  return <div className="dashboard-bar-chart">
-    {rows.map(item => {
-      const value = Number(item.value)
-      return <div className="dashboard-bar-row" key={item.label}>
-        <span title={item.label}>{item.label}</span>
-        <b>{valueFormat(value)}</b>
-        <i><em style={{ width: `${max ? Math.max((value / max) * 100, 4) : 0}%` }} /></i>
-      </div>
-    })}
-  </div>
-}
-
-function DonutChart({ data }: { data: DashboardChartPoint[] }) {
-  const palette = ['#6546e8', '#22c55e', '#f97316', '#ef4444', '#0ea5e9', '#a855f7']
-  const rows = data.filter(item => Number(item.value) > 0)
-  const total = rows.reduce((sum, item) => sum + Number(item.value), 0)
-  if (!rows.length || total <= 0) return <EmptyChart />
-  let cursor = 0
-  const gradient = rows.map((item, index) => {
-    const start = cursor
-    cursor += (Number(item.value) / total) * 100
-    return `${palette[index % palette.length]} ${start}% ${cursor}%`
-  }).join(', ')
-  return <div className="dashboard-donut-wrap">
-    <div className="dashboard-donut" style={{ background: `conic-gradient(${gradient})` }}><strong>{count.format(total)}</strong><small>Total</small></div>
-    <div className="dashboard-donut-legend">
-      {rows.map((item, index) => <span key={item.label}><i style={{ background: palette[index % palette.length] }} />{item.label}<b>{count.format(Number(item.value))}</b></span>)}
-    </div>
-  </div>
-}
-
-function PayrollTrendChart({ data }: { data: DashboardPayrollTrendPoint[] }) {
-  const rows = data.filter(item => Number(item.netPay) > 0 || Number(item.payrollCost) > 0)
-  if (!rows.length) return <EmptyChart />
-  const max = Math.max(...rows.map(item => Math.max(Number(item.netPay), Number(item.payrollCost))), 1)
-  const width = 520
-  const height = 190
-  const points = rows.map((item, index) => {
-    const x = rows.length === 1 ? width / 2 : 28 + (index * (width - 56)) / (rows.length - 1)
-    const y = height - 34 - (Number(item.netPay) / max) * (height - 72)
-    return { x, y, item }
-  })
-  const path = points.map((point, index) => `${index ? 'L' : 'M'}${point.x},${point.y}`).join(' ')
-  return <div className="dashboard-line-chart">
-    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Payroll net pay trend">
-      <path className="dashboard-line-grid" d={`M28 ${height - 34}H${width - 28}M28 36H${width - 28}`} />
-      <path className="dashboard-line-fill" d={`${path} L${points.at(-1)?.x ?? 28},${height - 34} L${points[0]?.x ?? 28},${height - 34} Z`} />
-      <path className="dashboard-line-stroke" d={path} />
-      {points.map(point => <g key={point.item.month}>
-        <circle cx={point.x} cy={point.y} r="4.5" />
-        <text x={point.x} y={height - 12} textAnchor="middle">{shortMonth(point.item.month)}</text>
-      </g>)}
-    </svg>
-    <div className="dashboard-trend-caption">
-      <span>Latest net pay</span><strong>{money.format(rows.at(-1)?.netPay ?? 0)}</strong>
-      <span>Peak net pay</span><strong>{money.format(Math.max(...rows.map(item => item.netPay)))}</strong>
-    </div>
-  </div>
-}
-
-function costBreakupToChart(dashboard: DashboardSnapshot | null): DashboardChartPoint[] {
-  const item = dashboard?.payrollCostBreakup
-  if (!item) return []
-  return [
-    { label: 'Gross earnings', value: item.grossEarnings },
-    { label: 'Statutory deductions', value: item.statutoryDeductions },
-    { label: 'Other deductions', value: item.otherDeductions },
-    { label: 'Net pay', value: item.netPay }
-  ]
+  return value ? new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(value)) : ''
 }
 
 export default function DashboardPage({ view = 'overview' }: { view?: DashboardView }) {
   const session = useAuthSession()
+  const navigate = useNavigate()
   const scopedClientId = Number(session?.user.clientId || 0)
   const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('security.manage')
-  const [clientId, setClientId] = useState(scopedClientId)
+  const [preferredClient, setClientId] = useSessionPreference('dashboard.ui:' + session?.user.id + ':' + scopedClientId + ':client', scopedClientId)
+  const clientId = clientScoped ? scopedClientId : preferredClient
   const [dashboard, setDashboard] = useState<DashboardSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
+  const [revision, setRevision] = useState(0)
 
   useEffect(() => {
     let active = true
@@ -120,227 +47,130 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
     void getDashboard(clientId).then(data => {
       if (!active) return
       setDashboard(data)
-      if (data.selectedClientId !== clientId) setClientId(data.selectedClientId)
+      if (!clientScoped && data.selectedClientId !== clientId) setClientId(data.selectedClientId)
     }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [clientId])
+  }, [clientId, clientScoped, revision])
 
+  const canOpenEmployees = !loading && ['employees.view', 'employees.manage'].some(permission => session?.user.permissions.includes(permission))
+  const openWorkforce = (filters: Partial<Record<WorkforceField, string>> = {}) => navigate(workforcePath(clientId, filters))
+  const workforceAction = (filters: Partial<Record<WorkforceField, string>> = {}) => canOpenEmployees ? () => openWorkforce(filters) : undefined
   const metrics = dashboard?.metrics
-  const sections = dashboard?.sections ?? []
-  const canSee = (section: string) => sections.includes(section) && (view === 'overview' || view === section)
-  const attendanceReady = useMemo(() => {
-    if (!canSee('attendance') || !metrics?.activeEmployees) return 0
-    return Math.round((metrics.attendanceRecorded / metrics.activeEmployees) * 100)
-  }, [metrics, sections, view])
-
+  const canSee = (section: string) => dashboard?.sections.includes(section) && (view === 'overview' || view === section)
+  const attendanceReady = metrics?.activeEmployees ? Math.round(metrics.attendanceRecorded / metrics.activeEmployees * 100) : 0
   const selectedClient = dashboard?.clients.find(client => client.id === clientId)
   const clientName = clientId === 0 ? 'All clients' : selectedClient?.name ?? 'Selected client'
   const isRru = selectedClient?.code?.toUpperCase() === 'RRU' || selectedClient?.name?.toLowerCase().includes('rashtriya raksha university')
-  const genderCount = (label: string) => Number(dashboard?.genderHeadcount.find(item => item.label.toLowerCase() === label.toLowerCase())?.value ?? 0)
-  const recentTotals = ['Approved', 'Processing', 'Pending Approval'].map(status => dashboard?.payRunStatuses.find(item => item.status === status) ?? { status, count: 0, netPay: 0 })
+  const period = formatMonth(dashboard?.month ?? '')
+  const statuses = dashboard?.payRunStatuses ?? []
+  const kpis: DashboardKpi[] = []
+  const charts: DashboardChartSpec[] = []
+  const actions: DashboardQueueItem[] = []
+  const chart = (id: string, title: string, subtitle: string, data: DashboardChartPoint[] = [], kind: DashboardChartSpec['kind'] = 'horizontalBar', field?: WorkforceField, currency = false) => {
+    charts.push({ id: 'hrms-' + id, title, subtitle, labels: data.map(point => point.label), series: [{ label: title, values: data.map(point => point.value) }], kind,
+      compatibleKinds: ['horizontalBar', 'bar', 'doughnut'], valueFormat: currency ? value => money.format(value) : undefined,
+      onPointClick: field && canOpenEmployees ? label => openWorkforce({ [field]: label }) : undefined })
+  }
+  const action = (id: string, title: string, value: number, path: string, icon: DashboardQueueItem['icon']) => {
+    actions.push({ id, title: count.format(value) + ' ' + title, meta: clientName, owner: period, age: '', priority: value > 0 ? 'High' : 'Normal', icon, actionLabel: 'Open', onAction: () => navigate(path) })
+  }
 
-  return <section className={`dashboard-page dashboard-view-${view}`}>
-    <header className="dashboard-scopebar">
-      <div>
-        <span>Dashboard scope</span>
-        <strong>{clientName}</strong>
-        <small>{formatMonth(dashboard?.month ?? '')} reporting period</small>
-      </div>
-      {!clientScoped && <label>
-        <span>Client</span>
-        <SearchSelect value={clientId} onChange={value => setClientId(Number(value))} disabled={loading} options={[{ value: 0, label: 'All clients' }, ...(dashboard?.clients ?? []).map(client => ({ value: client.id, label: client.name }))]} />
-      </label>}
-    </header>
+  if (canSee('workforce')) {
+    kpis.push({ key: 'employees', label: 'Active employees', value: count.format(metrics?.activeEmployees ?? 0), helper: count.format(metrics?.portalUsers ?? 0) + ' ESS enabled', icon: <TeamOutlined />, onClick: workforceAction() })
+    chart('department', 'Workforce by department', 'Active headcount concentration by department.', dashboard?.departmentHeadcount, 'horizontalBar', 'department')
+    chart('location', 'Workforce by location', 'Active headcount across mapped work locations.', dashboard?.locationHeadcount, 'horizontalBar', 'location')
+    if (view === 'workforce') {
+      chart('ess', 'ESS Adoption', 'Portal access enablement across active employees.', dashboard?.essAdoption, 'doughnut', 'portalAccess')
+      chart('gender', 'Gender Mix', 'Employee master distribution by gender.', dashboard?.genderHeadcount, 'doughnut', 'gender')
+      chart('designation', 'Designation Concentration', 'Largest employee groups by designation.', dashboard?.designationHeadcount, 'horizontalBar', 'designation')
+      chart('grade', 'Grade Distribution', 'Grade-wise workforce segmentation.', dashboard?.gradeHeadcount, 'horizontalBar', 'grade')
+    }
+  }
+  if (canSee('payroll')) {
+    kpis.push({ key: 'payroll', label: 'Net payroll', value: money.format(metrics?.currentMonthNetPay ?? 0), helper: count.format(metrics?.currentMonthPayRuns ?? 0) + ' run(s) this month', icon: <WalletOutlined />, tone: 'success' })
+    const trend = dashboard?.payrollTrend ?? []
+    charts.push({ id: 'hrms-payroll-trend', title: 'Payroll Cost Trend', subtitle: 'Latest net pay ' + money.format(trend.at(-1)?.netPay ?? 0) + ' / Peak ' + money.format(Math.max(0, ...trend.map(row => row.netPay))),
+      labels: trend.map(row => formatMonth(row.month)), series: [{ label: 'Net pay', values: trend.map(row => row.netPay) }, { label: 'Payroll cost', values: trend.map(row => row.payrollCost), color: '#20a46b' }], kind: 'area', compatibleKinds: ['area', 'line', 'bar'], valueFormat: value => money.format(value) })
+    action('payroll', 'blocking payroll validations', metrics?.payrollExceptions ?? 0, '/payroll/regular', <WalletOutlined />)
+    if (view === 'payroll') {
+      chart('run-status', 'Run Status Mix', 'Current month payrun control status.', statuses.map(item => ({ label: item.status, value: item.count })), 'doughnut')
+      chart('payment-status', 'Employee Payment Status', 'Payment progress inside current month payruns.', dashboard?.payrollPaymentStatus, 'doughnut')
+      const cost = dashboard?.payrollCostBreakup
+      chart('amounts', 'Payroll Amount Composition', 'Earnings, deductions and net pay comparison.', cost ? [
+        { label: 'Gross earnings', value: cost.grossEarnings }, { label: 'Statutory deductions', value: cost.statutoryDeductions },
+        { label: 'Other deductions', value: cost.otherDeductions }, { label: 'Net pay', value: cost.netPay },
+      ] : [], 'horizontalBar', undefined, true)
+      chart('run-type', 'Run Type Mix', 'Regular, off-cycle and other payroll runs.', dashboard?.payrollRunType, 'doughnut')
+    }
+  }
+  if (canSee('attendance')) {
+    kpis.push({ key: 'attendance', label: 'Attendance ready', value: attendanceReady + '%', helper: count.format(metrics?.attendanceMissing ?? 0) + ' missing, ' + count.format(metrics?.attendanceIssues ?? 0) + ' issue(s)', icon: <CalendarOutlined />, tone: 'warning' })
+    chart('attendance-ready', 'Attendance Readiness', 'Current month attendance recording readiness.', dashboard?.attendanceMix, 'doughnut')
+    chart('payability', 'Payable Exposure', 'Present and LOP day totals from attendance review.', dashboard?.attendancePayability)
+    action('attendance', 'attendance exceptions', metrics?.attendanceIssues ?? 0, '/attendance', <CalendarOutlined />)
+    if (view === 'attendance') {
+      chart('daily-attendance', 'Daily Attendance Status', 'Daily attendance event mix for the reporting month.', dashboard?.attendanceDailyStatus, 'doughnut')
+      chart('attendance-source', 'Attendance Source', 'How monthly attendance records were populated.', dashboard?.attendanceSourceType)
+      chart('attendance-exceptions', 'Readiness Exceptions', 'Missing attendance and blocking value issues.', [{ label: 'Missing employees', value: metrics?.attendanceMissing ?? 0 }, { label: 'Check value issues', value: metrics?.attendanceIssues ?? 0 }])
+    }
+  }
+  if (canSee('approvals')) {
+    kpis.push({ key: 'approvals', label: 'Pending approvals', value: count.format(metrics?.pendingTasks ?? 0), helper: count.format(metrics?.pendingLeaveRequests ?? 0) + ' leave request(s)', icon: <ClockCircleOutlined />, tone: 'danger' })
+    chart('approval-stages', 'Approval Stage Load', 'Current pending tasks grouped by approval stage.', dashboard?.approvalStageBreakup)
+    chart('approval-actions', 'Action History Mix', 'Your recently completed task outcomes.', dashboard?.approvalActionMix, 'doughnut')
+    action('approvals', 'workflow tasks', metrics?.pendingTasks ?? 0, '/tasks', <ClockCircleOutlined />)
+    if (view === 'approvals') {
+      chart('approval-resource', 'Pending by Resource', 'Request type split of your pending approval queue.', dashboard?.approvalResourceBreakup, 'doughnut')
+      chart('approval-aging', 'Approval Aging', 'How long tasks have waited for action.', dashboard?.approvalAging)
+    }
+  }
 
-    <div className="dashboard-kpis">
-      {canSee('workforce') && <article><TeamOutlined /><span>Active employees</span><strong>{count.format(metrics?.activeEmployees ?? 0)}</strong><small>{count.format(metrics?.portalUsers ?? 0)} ESS enabled</small></article>}
-      {canSee('payroll') && <article><WalletOutlined /><span>Net payroll</span><strong>{money.format(metrics?.currentMonthNetPay ?? 0)}</strong><small>{count.format(metrics?.currentMonthPayRuns ?? 0)} run(s) this month</small></article>}
-      {canSee('attendance') && <article><CalendarOutlined /><span>Attendance ready</span><strong>{attendanceReady}%</strong><small>{count.format(metrics?.attendanceMissing ?? 0)} missing, {count.format(metrics?.attendanceIssues ?? 0)} issue(s)</small></article>}
-      {canSee('approvals') && <article><ClockCircleOutlined /><span>Pending approvals</span><strong>{count.format(metrics?.pendingTasks ?? 0)}</strong><small>{count.format(metrics?.pendingLeaveRequests ?? 0)} leave request(s)</small></article>}
-    </div>
-
-    {canSee('workforce') && isRru && !loading && dashboard?.selectedClientId === clientId && <section className="card dashboard-card rru-workforce-board">
-      <header><i><TeamOutlined /></i><div><h3>RRU Workforce Overview</h3><p>Campus-wise staffing, gender and skill-category distribution.</p></div></header>
-      <div className="rru-workforce-kpis">
-        <article><span>Total staff</span><strong>{count.format(metrics?.activeEmployees ?? 0)}</strong><small>Active employee records</small></article>
-        <article><span>Male</span><strong>{count.format(genderCount('Male'))}</strong><small>Across mapped campuses</small></article>
-        <article><span>Female</span><strong>{count.format(genderCount('Female'))}</strong><small>Across mapped campuses</small></article>
-        <article><span>Appointed total</span><strong>{count.format(metrics?.activeEmployees ?? 0)}</strong><small>Current active appointments</small></article>
-      </div>
-      <div className="rru-workforce-content">
-        <section>
-          <h4>Campus-wise bifurcation</h4>
-          <div className="dashboard-table rru-campus-table">
-            <table>
-              <thead><tr><th>Campus</th><th>Total staff</th><th>Male</th><th>Female</th><th>Other / unmapped</th></tr></thead>
-              <tbody>
-                {(dashboard?.campusGenderHeadcount ?? []).map(row => <tr key={row.campus}><td><strong>{row.campus}</strong></td><td>{count.format(row.total)}</td><td>{count.format(row.male)}</td><td>{count.format(row.female)}</td><td>{count.format(row.other)}</td></tr>)}
-                {!dashboard?.campusGenderHeadcount.length && <tr><td colSpan={5}>No active campus workforce found.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </section>
-        <section><h4>Skill category</h4><BarChart data={dashboard?.skillCategoryHeadcount ?? []} /></section>
-      </div>
-    </section>}
-
-    <div className="dashboard-chart-grid">
-      {canSee('workforce') && <article className="card dashboard-card dashboard-chart-card">
-        <header><i><TeamOutlined /></i><div><h3>Workforce Distribution</h3><p>Headcount concentration by department and location.</p></div></header>
-        <div className="dashboard-two-chart">
-          <section><h4>By department</h4><BarChart data={dashboard?.departmentHeadcount ?? []} /></section>
-          <section><h4>By location</h4><BarChart data={dashboard?.locationHeadcount ?? []} /></section>
-        </div>
-      </article>}
-
-      {canSee('payroll') && <article className="card dashboard-card dashboard-chart-card">
-        <header><i><WalletOutlined /></i><div><h3>Payroll Cost Trend</h3><p>Six latest payroll periods by net pay.</p></div></header>
-        <PayrollTrendChart data={dashboard?.payrollTrend ?? []} />
-      </article>}
-
-      {canSee('attendance') && <article className="card dashboard-card dashboard-chart-card">
-        <header><i><CalendarOutlined /></i><div><h3>Attendance Control View</h3><p>Current month recording readiness and LOP exposure.</p></div></header>
-        <div className="dashboard-two-chart compact">
-          <section><h4>Readiness</h4><DonutChart data={dashboard?.attendanceMix ?? []} /></section>
-          <section><h4>Payability</h4><BarChart data={dashboard?.attendancePayability ?? []} valueFormat={value => count.format(value)} /></section>
-        </div>
-      </article>}
-
-      {canSee('approvals') && <article className="card dashboard-card dashboard-chart-card">
-        <header><i><ClockCircleOutlined /></i><div><h3>Approval Workload</h3><p>Pending queue by stage and recent action mix.</p></div></header>
-        <div className="dashboard-two-chart">
-          <section><h4>Pending by stage</h4><BarChart data={dashboard?.approvalStageBreakup ?? []} /></section>
-          <section><h4>Actioned outcomes</h4><DonutChart data={dashboard?.approvalActionMix ?? []} /></section>
-        </div>
-      </article>}
-    </div>
-
-    {view !== 'overview' && <div className="dashboard-deep-grid">
-      {view === 'workforce' && canSee('workforce') && <>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><TeamOutlined /></i><div><h3>ESS Adoption</h3><p>Portal access enablement across active employees.</p></div></header>
-          <DonutChart data={dashboard?.essAdoption ?? []} />
-        </article>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><TeamOutlined /></i><div><h3>Gender Mix</h3><p>Employee master distribution by gender field.</p></div></header>
-          <DonutChart data={dashboard?.genderHeadcount ?? []} />
-        </article>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><TeamOutlined /></i><div><h3>Designation Concentration</h3><p>Largest employee groups by designation.</p></div></header>
-          <BarChart data={dashboard?.designationHeadcount ?? []} />
-        </article>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><TeamOutlined /></i><div><h3>Grade Distribution</h3><p>Grade-wise workforce segmentation.</p></div></header>
-          <BarChart data={dashboard?.gradeHeadcount ?? []} />
-        </article>
+  return <section className={'hrms-dashboard dashboard-view-' + view}>
+    <PageHeaderPortal slot="dashboard-client-controls">{!clientScoped && <SearchSelect testId="dashboard-client" value={clientId} onChange={value => setClientId(Number(value))} disabled={loading} options={[{ value: 0, label: 'All clients' }, ...(dashboard?.clients ?? []).map(client => ({ value: client.id, label: client.name }))]} />}</PageHeaderPortal>
+    <PageHeaderPortal slot="dashboard-page-controls"><Space wrap><Tag icon={<CalendarOutlined />}>{period}</Tag><Button aria-label="Refresh dashboard" icon={<ReloadOutlined spin={loading} />} disabled={loading} onClick={() => setRevision(value => value + 1)}>Refresh</Button></Space></PageHeaderPortal>
+    <DashboardEngine loading={loading}>
+      {kpis.length > 0 ? <DashboardKpiGrid items={kpis} label="HR and payroll metrics" /> : <Empty description="No dashboard sections are assigned for this view." />}
+      {canSee('workforce') && <DashboardSectionCard title="Employee type & category" subtitle="Active employees by classification. Select a count to open the matching employee list.">
+        <div className="dashboard-classifications">{([{ key: 'employmentType', label: 'Employee type', data: dashboard?.employmentTypeHeadcount }, { key: 'skillCategory', label: 'Employee category', data: dashboard?.skillCategoryHeadcount }] as const).map(group => <section key={group.key}>
+          <h4>{group.label}</h4><div className="employee-classification-counts">{(group.data || []).map(point => <button key={point.label} type="button" disabled={!canOpenEmployees} onClick={() => openWorkforce({ [group.key]: point.label })}><span>{point.label}</span><strong>{count.format(point.value)}</strong></button>)}</div>
+          {!group.data?.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No active employees in this group." />}
+        </section>)}</div>
+      </DashboardSectionCard>}
+      {canSee('workforce') && isRru && dashboard?.selectedClientId === clientId && <DashboardSectionCard title="RRU Workforce Overview" subtitle="Campus-wise staffing, gender and skill-category distribution.">
+        <DashboardKpiGrid label="RRU workforce metrics" items={[
+          { key: 'total', label: 'Total staff', value: count.format(metrics?.activeEmployees ?? 0), helper: 'Active employee records', icon: <TeamOutlined />, onClick: workforceAction() },
+          ...(['Male', 'Female'] as const).map(gender => ({ key: gender, label: gender, value: count.format(dashboard.genderHeadcount.find(point => point.label.toLowerCase() === gender.toLowerCase())?.value ?? 0), helper: 'Across mapped campuses', icon: <TeamOutlined />, onClick: workforceAction({ gender }) })),
+          { key: 'appointed', label: 'Appointed total', value: count.format(metrics?.activeEmployees ?? 0), helper: 'Current active appointments', icon: <CheckCircleOutlined />, onClick: workforceAction() },
+        ]} />
+        <DataTable rows={dashboard.campusGenderHeadcount} getRowId={row => row.campus} exportFileName="campus-workforce" emptyText="No active campus workforce found." columns={[
+          { key: 'campus', label: 'Campus', width: 220 },
+          ...(['total', 'male', 'female', 'other'] as const).map(key => ({ key, label: ({ total: 'Total staff', male: 'Male', female: 'Female', other: 'Other / unmapped' })[key], value: (row: DashboardSnapshot['campusGenderHeadcount'][number]) => row[key], render: (row: DashboardSnapshot['campusGenderHeadcount'][number]) => <Button type="link" disabled={!canOpenEmployees} onClick={() => openWorkforce({ location: row.campus, ...(key !== 'total' ? { campusGender: key } : {}) })}>{count.format(row[key])}</Button> })),
+        ]} />
+      </DashboardSectionCard>}
+      {charts.length > 0 && <DashboardChartGrid label="HR and payroll analytics">{charts.map(spec => <DashboardChartCard key={spec.id} spec={spec} />)}</DashboardChartGrid>}
+      {actions.length > 0 && <DashboardActionQueue title="Action Queue" subtitle="Items that can block HR and payroll closure." items={actions} emptyText="No pending actions." />}
+      {canSee('payroll') && <>
+        <DashboardSectionCard title="Payroll Status" subtitle="Current month run health by status.">
+          <DataTable rows={statuses} getRowId={row => row.status} exportFileName="payroll-status" emptyText="No runs yet." columns={[
+            { key: 'status', label: 'Status' }, { key: 'count', label: 'Pay runs', render: row => count.format(row.count) },
+            { key: 'netPay', label: 'Net pay (INR)', render: row => money.format(row.netPay) },
+          ]} />
+        </DashboardSectionCard>
+        <DashboardSectionCard title="Recent Pay Runs" subtitle="Latest payroll activity for the selected client view.">
+          <div className="dashboard-insight-strip" aria-label="Payroll status totals">{['Approved', 'Processing', 'Pending Approval'].map(status => {
+            const item = statuses.find(row => row.status === status)
+            return <article key={status}><WalletOutlined /><div><b>{count.format(item?.count ?? 0)}</b><span>{status} pay runs</span><span>{money.format(item?.netPay ?? 0)}</span></div></article>
+          })}</div>
+          <DataTable rows={dashboard?.recentPayRuns ?? []} getRowId={row => row.id} exportFileName="recent-pay-runs" emptyText="No payroll activity found for this view." columns={[
+            { key: 'clientName', label: 'Client', width: 220 }, { key: 'payPeriod', label: 'Period' },
+            { key: 'run', label: 'Run', value: row => row.runName || row.runType },
+            { key: 'status', label: 'Status', render: row => <Tag color={row.status === 'Approved' ? 'green' : row.status === 'Processing' ? 'blue' : 'orange'}>{row.status}</Tag> },
+            { key: 'employeeCount', label: 'Employees', render: row => count.format(row.employeeCount) },
+            { key: 'netPay', label: 'Net pay (INR)', render: row => money.format(row.netPay) },
+            { key: 'updatedAt', label: 'Updated', render: row => formatDate(row.updatedAt) },
+          ]} />
+        </DashboardSectionCard>
       </>}
-
-      {view === 'payroll' && canSee('payroll') && <>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><WalletOutlined /></i><div><h3>Run Status Mix</h3><p>Current month payrun control status.</p></div></header>
-          <DonutChart data={(dashboard?.payRunStatuses ?? []).map(item => ({ label: item.status, value: item.count }))} />
-        </article>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><WalletOutlined /></i><div><h3>Employee Payment Status</h3><p>Payment progress inside current month payruns.</p></div></header>
-          <DonutChart data={dashboard?.payrollPaymentStatus ?? []} />
-        </article>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><WalletOutlined /></i><div><h3>Payroll Amount Composition</h3><p>Earnings, deductions and net pay comparison.</p></div></header>
-          <BarChart data={costBreakupToChart(dashboard)} valueFormat={value => money.format(value)} />
-        </article>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><WalletOutlined /></i><div><h3>Run Type Mix</h3><p>Regular, off-cycle and other payroll runs.</p></div></header>
-          <DonutChart data={dashboard?.payrollRunType ?? []} />
-        </article>
-      </>}
-
-      {view === 'attendance' && canSee('attendance') && <>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><CalendarOutlined /></i><div><h3>Daily Attendance Status</h3><p>Daily attendance event mix for the selected month.</p></div></header>
-          <DonutChart data={dashboard?.attendanceDailyStatus ?? []} />
-        </article>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><CalendarOutlined /></i><div><h3>Attendance Source</h3><p>How monthly attendance records were populated.</p></div></header>
-          <BarChart data={dashboard?.attendanceSourceType ?? []} />
-        </article>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><CalendarOutlined /></i><div><h3>Readiness Exceptions</h3><p>Missing attendance and blocking value issues.</p></div></header>
-          <BarChart data={[{ label: 'Missing employees', value: metrics?.attendanceMissing ?? 0 }, { label: 'Check value issues', value: metrics?.attendanceIssues ?? 0 }]} />
-        </article>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><CalendarOutlined /></i><div><h3>Payable Exposure</h3><p>Present and LOP day totals from attendance review.</p></div></header>
-          <BarChart data={dashboard?.attendancePayability ?? []} />
-        </article>
-      </>}
-
-      {view === 'approvals' && canSee('approvals') && <>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><ClockCircleOutlined /></i><div><h3>Pending by Resource</h3><p>Request type split of your pending approval queue.</p></div></header>
-          <DonutChart data={dashboard?.approvalResourceBreakup ?? []} />
-        </article>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><ClockCircleOutlined /></i><div><h3>Approval Aging</h3><p>How long tasks have waited for action.</p></div></header>
-          <BarChart data={dashboard?.approvalAging ?? []} />
-        </article>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><ClockCircleOutlined /></i><div><h3>Stage Load</h3><p>Current pending tasks grouped by approval stage.</p></div></header>
-          <BarChart data={dashboard?.approvalStageBreakup ?? []} />
-        </article>
-        <article className="card dashboard-card dashboard-chart-card">
-          <header><i><ClockCircleOutlined /></i><div><h3>Action History Mix</h3><p>Your recently completed task outcomes.</p></div></header>
-          <DonutChart data={dashboard?.approvalActionMix ?? []} />
-        </article>
-      </>}
-    </div>}
-
-    {!loading && sections.length === 0 && <article className="card dashboard-card">
-      <header><i><AlertOutlined /></i><div><h3>No Dashboard Sections Assigned</h3><p>Ask a security administrator to assign Dashboard permissions to your role.</p></div></header>
-    </article>}
-
-    <div className="dashboard-grid">
-      {canSee('payroll') && <article className="card dashboard-card">
-        <header><i><CheckCircleOutlined /></i><div><h3>Payroll Status</h3><p>Current month run health by status.</p></div></header>
-        <div className="dashboard-status-list">
-          {(dashboard?.payRunStatuses.length ? dashboard.payRunStatuses : [{ status: 'No runs yet', count: 0, netPay: 0 }]).map(item => <div key={item.status}>
-            <span>{item.status}</span>
-            <strong>{count.format(item.count)}</strong>
-            <small>{money.format(item.netPay)}</small>
-          </div>)}
-        </div>
-      </article>}
-
-      {(canSee('approvals') || canSee('attendance') || canSee('payroll')) && <article className="card dashboard-card">
-        <header><i><AlertOutlined /></i><div><h3>Action Queue</h3><p>Items that can block HR and payroll closure.</p></div></header>
-        <div className="dashboard-action-list">
-          {canSee('approvals') && <Link to="/tasks"><strong>{count.format(metrics?.pendingTasks ?? 0)}</strong><span>My workflow tasks</span></Link>}
-          {canSee('attendance') && <Link to="/attendance"><strong>{count.format(metrics?.attendanceIssues ?? 0)}</strong><span>Attendance exceptions</span></Link>}
-          {canSee('payroll') && <Link to="/payroll/regular"><strong>{count.format(metrics?.payrollExceptions ?? 0)}</strong><span>Blocking payroll validations</span></Link>}
-        </div>
-      </article>}
-    </div>
-
-    {canSee('payroll') && <article className="card dashboard-card dashboard-recent">
-      <header><i><WalletOutlined /></i><div><h3>Recent Pay Runs</h3><p>Latest payroll activity for the selected client view.</p></div></header>
-      <div className="dashboard-status-list dashboard-recent-totals">
-        {recentTotals.map(item => <div key={item.status}><span>{item.status} Pay Runs</span><strong>{count.format(item.count)}</strong><small>{money.format(item.netPay)}</small></div>)}
-      </div>
-      <div className="dashboard-table">
-        <table>
-          <thead><tr><th>Client</th><th>Period</th><th>Run</th><th>Status</th><th>Employees</th><th>Net Pay</th><th>Updated</th></tr></thead>
-          <tbody>
-            {(dashboard?.recentPayRuns ?? []).map(run => <tr key={run.id}>
-              <td>{run.clientName || '-'}</td>
-              <td>{run.payPeriod}</td>
-              <td>{run.runName || run.runType}</td>
-              <td><span className={`status-chip ${run.status.toLowerCase().replace(/\s+/g, '-')}`}>{run.status}</span></td>
-              <td>{count.format(run.employeeCount)}</td>
-              <td>{money.format(run.netPay)}</td>
-              <td>{formatDate(run.updatedAt)}</td>
-            </tr>)}
-            {!dashboard?.recentPayRuns.length && <tr><td colSpan={7}>No payroll activity found for this view.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-    </article>}
+    </DashboardEngine>
   </section>
 }

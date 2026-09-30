@@ -70,6 +70,7 @@ export const essApi = {
   attendanceBatchJob: (jobId: string) => essFetch(`/api/ess/mss/attendance/daily/batch-jobs/${jobId}`).then(jsonOrThrow<AttendanceBatchJob>),
   features: () => essFetch('/api/ess/features').then(r => r.ok ? r.json() as Promise<FeatureAccess> : { travelExpenseEnabled: false }),
   profile: () => essFetch('/api/ess/profile').then(r => r.ok ? r.json() as Promise<ProfileData> : null),
+  requestProfileEdit: (comment: string) => essFetch('/api/ess/profile/edit-request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ comment }) }).then(jsonOrThrow<ProfileData>),
   saveProfile: (request: SaveProfileData) => essFetch('/api/ess/profile', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) }).then(jsonOrThrow<ProfileData>),
   attachmentConfigurations: async (clientId: number) => {
     const forms = ['EMPLOYEE_PROFILE', 'EMPLOYEE_CREATE_EDIT']

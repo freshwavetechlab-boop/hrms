@@ -27,6 +27,7 @@ export const employeeBulkImportDefinition: BulkImportDefinition = {
     field('Department', 'Department', 'Employment', 'lookup', ['Dept', 'Business Department']),
     field('Designation', 'Designation', 'Employment', 'lookup', ['Job Title', 'Position', 'Role Title']),
     field('Grade', 'Grade', 'Employment', 'lookup', ['Employee Grade', 'Band', 'Level']),
+    field('EmploymentType', 'Employee Type', 'Employment', 'lookup', ['Employment Type', 'Contract Type']),
     field('EmployeeCategory', 'Employee Category', 'Employment', 'lookup', ['Skill Category', 'Worker Category', 'Employment Category']),
     field('WorkLocation', 'Work Location', 'Employment', 'lookup', ['Location', 'Office Location', 'Workplace', 'Branch']),
     field('ReportingManagerEmail', 'Reporting Manager Email', 'Employment', 'email', ['Manager Email', 'Supervisor Email', 'Reporting To Email']),

@@ -1,8 +1,11 @@
 import { getJson, getJsonResult } from './apiClient'
 export type ReportResult = { title: string; columns: string[]; rows: Record<string, string | number | boolean | null>[] }
-export type ReportFilters = { month?: string; fromDate?: string; toDate?: string; payRunId?: number; employeeId?: number; componentCode?: string }
+export type ReportFilters = { employmentType?: string; employeeCategory?: string; activeOnly?: boolean; month?: string; fromDate?: string; toDate?: string; payRunId?: number; employeeId?: number; componentCode?: string }
 const reportPath = (code: string, clientId: number, filters: ReportFilters = {}) => {
   const params = new URLSearchParams({ clientId: String(clientId) })
+  if (filters.employmentType) params.set('employmentType', filters.employmentType)
+  if (filters.employeeCategory) params.set('employeeCategory', filters.employeeCategory)
+  if (filters.activeOnly) params.set('activeOnly', 'true')
   if (filters.month) params.set('month', filters.month)
   if (filters.fromDate) params.set('fromDate', filters.fromDate)
   if (filters.toDate) params.set('toDate', filters.toDate)

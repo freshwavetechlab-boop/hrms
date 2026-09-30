@@ -116,8 +116,8 @@ button.dashboard-kpi:not(:disabled):hover { border-color: #cfc6f9; box-shadow: 0
 .dashboard-position-matrix .ant-card-head { min-height: 54px; }
 .dashboard-position-matrix .ant-card-body { padding: 12px; }
 .dashboard-chart-card { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 286px; overflow: hidden; }
-.recruitment-experience .dashboard-engine .dashboard-chart-grid { display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)) !important; gap: 12px !important; align-items: stretch !important; }
-.recruitment-experience .dashboard-engine .dashboard-chart-card { height: 286px !important; min-height: 286px !important; align-self: stretch !important; align-content: normal !important; }
+:is(.recruitment-experience, .hrms-dashboard) .dashboard-engine .dashboard-chart-grid { display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)) !important; gap: 12px !important; align-items: stretch !important; }
+:is(.recruitment-experience, .hrms-dashboard) .dashboard-engine .dashboard-chart-card { height: 286px !important; min-height: 286px !important; align-self: stretch !important; align-content: normal !important; }
 .dashboard-chart-card > header { min-height: 58px; padding: 12px 13px 9px; border-bottom: 1px solid #edf0f5; }
 .dashboard-chart-card > header > div { min-width: 0; }
 .dashboard-chart-card > header .ant-select { width: 108px; flex: 0 0 108px; }
@@ -125,6 +125,8 @@ button.dashboard-kpi:not(:disabled):hover { border-color: #cfc6f9; box-shadow: 0
 .dashboard-chart-canvas { position: relative; min-width: 0; height: 190px; padding: 10px 12px 6px; }
 .dashboard-chart-canvas.kind-doughnut { padding-inline: 16px; }
 .dashboard-chart-canvas canvas { max-width: 100%; max-height: 100%; }
+.dashboard-engine .dashboard-chart-canvas { height: 100%; min-height: 0; }
+.dashboard-engine .dashboard-chart-card > header { margin-bottom: 0 !important; }
 .dashboard-chart-empty { position: absolute; inset: 10px; display: grid; place-content: center; justify-items: center; gap: 3px; border: 1px dashed #dfe4ee; border-radius: 10px; color: #8a94a8; background: rgba(250,251,254,.86); text-align: center; pointer-events: none; }
 .dashboard-chart-empty span { color: #a59adc; font-size: 24px; }
 .dashboard-chart-empty b { font-size: 11px; }
@@ -173,7 +175,7 @@ button.dashboard-kpi:not(:disabled):hover { border-color: #cfc6f9; box-shadow: 0
   .dashboard-filter-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .dashboard-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .dashboard-chart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .recruitment-experience .dashboard-engine .dashboard-chart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  :is(.recruitment-experience, .hrms-dashboard) .dashboard-engine .dashboard-chart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
   .dashboard-insight-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-funnel { grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: 8px; }
   .dashboard-funnel button:nth-child(4) .dashboard-funnel-arrow { display: none; }
@@ -186,23 +188,23 @@ button.dashboard-kpi:not(:disabled):hover { border-color: #cfc6f9; box-shadow: 0
   .dashboard-kpi-grid,
   .dashboard-chart-grid,
   .dashboard-engine-action-list { grid-template-columns: 1fr; }
-  .recruitment-experience .dashboard-engine .dashboard-chart-grid { grid-template-columns: 1fr !important; }
+  :is(.recruitment-experience, .hrms-dashboard) .dashboard-engine .dashboard-chart-grid { grid-template-columns: 1fr !important; }
   .dashboard-insight-strip { grid-template-columns: 1fr; }
   .dashboard-funnel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-funnel button:nth-child(2n) .dashboard-funnel-arrow { display: none; }
   .dashboard-chart-card,
-  .recruitment-experience .dashboard-engine .dashboard-chart-card { height: 300px !important; min-height: 300px !important; }
+  :is(.recruitment-experience, .hrms-dashboard) .dashboard-engine .dashboard-chart-card { height: 300px !important; min-height: 300px !important; }
   .dashboard-engine-action-list article { grid-template-columns: 34px minmax(0, 1fr) auto; }
   .dashboard-engine-action-list .dashboard-priority { display: none; }
 }
 
 /* Permission-filtered overview cards fill the available space. */
-.recruitment-experience .dashboard-engine .dashboard-kpi-grid {
+:is(.recruitment-experience, .hrms-dashboard) .dashboard-engine .dashboard-kpi-grid {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
 }
-.recruitment-experience .dashboard-engine .dashboard-chart-grid {
+:is(.recruitment-experience, .hrms-dashboard) .dashboard-engine .dashboard-chart-grid {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)) !important;
 }
-.recruitment-experience .dashboard-engine .dashboard-filter-grid {
+:is(.recruitment-experience, .hrms-dashboard) .dashboard-engine .dashboard-filter-grid {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
 }

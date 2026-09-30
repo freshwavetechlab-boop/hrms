@@ -33,6 +33,7 @@ public sealed class GoogleDriveOAuthService
     private readonly IConfiguration configuration;
     private readonly IWebHostEnvironment environment;
     private readonly IDataProtector stateProtector;
+    private readonly ILogger<GoogleDriveOAuthService> logger;
     private readonly ConcurrentDictionary<string, CachedAccessToken> accessTokens = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> tokenLocks = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> pathLocks = new(StringComparer.Ordinal);
@@ -42,11 +43,13 @@ public sealed class GoogleDriveOAuthService
         IHttpClientFactory httpClientFactory,
         IConfiguration configuration,
         IWebHostEnvironment environment,
-        IDataProtectionProvider dataProtectionProvider)
+        IDataProtectionProvider dataProtectionProvider,
+        ILogger<GoogleDriveOAuthService> logger)
     {
         this.httpClientFactory = httpClientFactory;
         this.configuration = configuration;
         this.environment = environment;
+        this.logger = logger;
         stateProtector = dataProtectionProvider.CreateProtector("Payroll.API.GoogleDriveOAuthState.v1");
     }
 
@@ -855,21 +858,84 @@ public sealed class GoogleDriveOAuthService
                 cached.ExpiresAtUtc > DateTime.UtcNow.AddMinutes(2))
                 return cached.AccessToken;
 
-            using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+            using var client = Client();
+            for (var attempt = 1; ; attempt++)
             {
-                ["client_id"] = oauthClient.ClientId,
-                ["client_secret"] = oauthClient.ClientSecret,
-                ["refresh_token"] = refreshToken,
-                ["grant_type"] = "refresh_token"
-            });
-            using var response = await Client().PostAsync("https://oauth2.googleapis.com/token", content, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException("Google Drive access expired or was revoked. Reconnect the Google account.");
-            var token = await response.Content.ReadFromJsonAsync<OAuthTokenResponse>(JsonOptions, cancellationToken);
-            if (token is null || string.IsNullOrWhiteSpace(token.AccessToken))
-                throw new InvalidOperationException("Google Drive returned an invalid access token. Reconnect the Google account.");
-            CacheAccessToken(refreshToken, oauthClient, token.AccessToken, token.ExpiresIn);
-            return token.AccessToken;
+                int? statusCode = null;
+                var errorCode = "invalid_token_response";
+                var transient = true;
+                var retryDelay = TimeSpan.FromSeconds(attempt);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                // Leave time for storage failover within the UI's 30-second request timeout.
+                timeout.CancelAfter(TimeSpan.FromSeconds(5));
+                try
+                {
+                    using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+                    {
+                        ["client_id"] = oauthClient.ClientId,
+                        ["client_secret"] = oauthClient.ClientSecret,
+                        ["refresh_token"] = refreshToken,
+                        ["grant_type"] = "refresh_token"
+                    });
+                    using var response = await client.PostAsync("https://oauth2.googleapis.com/token", content, timeout.Token);
+                    statusCode = (int)response.StatusCode;
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var token = await response.Content.ReadFromJsonAsync<OAuthTokenResponse>(JsonOptions, timeout.Token);
+                        if (!string.IsNullOrWhiteSpace(token?.AccessToken))
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            CacheAccessToken(refreshToken, oauthClient, token.AccessToken, token.ExpiresIn);
+                            return token.AccessToken;
+                        }
+                    }
+                    else
+                    {
+                        // Only allow known codes into logs/messages, never Google's raw body or credentials.
+                        var googleError = await ReadGoogleErrorAsync(response, timeout.Token);
+                        errorCode = googleError switch
+                        {
+                            "invalid_grant" or "invalid_client" or "unauthorized_client" or "access_denied"
+                                or "admin_policy_enforced" or "invalid_request" or "invalid_scope"
+                                or "unsupported_grant_type" or "temporarily_unavailable" or "server_error" => googleError,
+                            _ => "unknown_error"
+                        };
+                        transient = statusCode is 408 or 429 or >= 500 ||
+                            errorCode is "temporarily_unavailable" or "server_error";
+                        retryDelay = response.Headers.RetryAfter?.Delta ??
+                            (response.Headers.RetryAfter?.Date - DateTimeOffset.UtcNow) ?? retryDelay;
+                    }
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    errorCode = "timeout";
+                }
+                catch (HttpRequestException)
+                {
+                    errorCode = "network_error";
+                }
+                catch (JsonException)
+                {
+                    errorCode = "invalid_token_response";
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                logger.LogWarning("Google Drive token refresh failed: HTTP {StatusCode}, code {ErrorCode}, attempt {Attempt}/3.",
+                    statusCode, errorCode, attempt);
+                // Do not hold an upload open for a long Retry-After; let existing storage failover take over.
+                if (!transient || attempt >= 3 || retryDelay > TimeSpan.FromSeconds(5))
+                {
+                    var message = transient ? "Google Drive is temporarily unavailable. Please try again shortly." : errorCode switch
+                    {
+                        "invalid_grant" => "Google Drive access expired or was revoked. Reconnect the Google account.",
+                        "invalid_client" or "unauthorized_client" => "Google Drive OAuth client configuration was rejected. Check the configured client ID and secret.",
+                        "access_denied" or "admin_policy_enforced" => "Google Drive access is blocked. Check Google account permissions and administrator policy.",
+                        _ => "Google Drive token refresh failed. Check the storage configuration and error code."
+                    };
+                    throw new InvalidOperationException($"{message} (HTTP {statusCode?.ToString() ?? "none"}; code {errorCode}).");
+                }
+                await Task.Delay(retryDelay < TimeSpan.Zero ? TimeSpan.Zero : retryDelay, cancellationToken);
+            }
         }
         finally
         {
@@ -973,6 +1039,10 @@ public sealed class GoogleDriveOAuthService
                 message = description.GetString();
             if (string.IsNullOrWhiteSpace(message)) return fallback;
             return message.Length > 300 ? message[..300] : message;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {

@@ -76,6 +76,7 @@ export type DashboardChartSpec = {
   compatibleKinds: DashboardChartKind[]
   stacked?: boolean
   valueSuffix?: string
+  valueFormat?: (value: number) => string
   emptyText?: string
   onPointClick?: (label: string, series: string) => void
 }
@@ -153,8 +154,8 @@ export function DashboardFilterBar({
   </section>
 }
 
-export function DashboardKpiGrid({ items }: { items: DashboardKpi[] }) {
-  return <section className="dashboard-kpi-grid" aria-label="Primary hiring metrics">
+export function DashboardKpiGrid({ items, label = 'Primary hiring metrics' }: { items: DashboardKpi[]; label?: string }) {
+  return <section className="dashboard-kpi-grid" aria-label={label}>
     {items.map(item => <button data-testid="dashboard-kpi" type="button" key={item.key} className={`dashboard-kpi tone-${item.tone || 'primary'}`} onClick={item.onClick} disabled={!item.onClick}>
       <span className="dashboard-kpi-icon">{item.icon}</span>
       <span className="dashboard-kpi-copy"><small>{item.label}</small><strong>{item.value}</strong><em>{item.helper}</em></span>
@@ -191,8 +192,15 @@ const chartKindOptions: Record<DashboardChartKind, { label: string; icon: ReactN
   doughnut: { label: 'Donut', icon: <PieChartOutlined /> },
 }
 
-export function DashboardChartGrid({ children }: { children: ReactNode }) {
-  return <section className="dashboard-chart-grid" aria-label="Hiring analytics charts">{children}</section>
+export function DashboardSectionCard({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
+  return <section className="dashboard-section-card" aria-label={title}>
+    <header className="dashboard-section-heading"><div><h3>{title}</h3><p>{subtitle}</p></div></header>
+    {children}
+  </section>
+}
+
+export function DashboardChartGrid({ children, label = 'Hiring analytics charts' }: { children: ReactNode; label?: string }) {
+  return <section className="dashboard-chart-grid" aria-label={label}>{children}</section>
 }
 
 export function DashboardChartCard({ spec }: { spec: DashboardChartSpec }) {
@@ -202,6 +210,7 @@ export function DashboardChartCard({ spec }: { spec: DashboardChartSpec }) {
     return saved && spec.compatibleKinds.includes(saved) ? saved : spec.kind
   })
   const [showData, setShowData] = useState(false)
+  const formatValue = (value: number) => spec.valueFormat?.(value) ?? `${Number(value).toLocaleString('en-IN')}${spec.valueSuffix || ''}`
   const hasData = spec.series.some(series => series.values.some(value => Number(value || 0) !== 0))
   const colors = spec.series.length === 1
     ? spec.labels.map((_, index) => dashboardPalette[index % dashboardPalette.length])
@@ -237,7 +246,7 @@ export function DashboardChartCard({ spec }: { spec: DashboardChartSpec }) {
         position: kind === 'doughnut' ? 'right' as const : 'bottom' as const,
         labels: { boxWidth: 8, boxHeight: 8, usePointStyle: true, pointStyle: 'circle' as const, padding: 12, color: '#59647a', font: { size: 10, weight: 600 as const } },
       },
-      tooltip: { enabled: hasData, callbacks: { label: (context: { dataset: { label?: string }; formattedValue: string }) => `${context.dataset.label || spec.title}: ${context.formattedValue}${spec.valueSuffix || ''}` } },
+      tooltip: { enabled: hasData, callbacks: { label: (context: { dataset: { label?: string }; raw: unknown }) => `${context.dataset.label || spec.title}: ${formatValue(Number(context.raw || 0))}` } },
     },
   }
   const cartesianOptions = {
@@ -282,7 +291,7 @@ export function DashboardChartCard({ spec }: { spec: DashboardChartSpec }) {
     <footer><button type="button" onClick={() => setShowData(true)}><EyeOutlined /> View data</button>{spec.onPointClick && <span>Click a chart point to drill down</span>}</footer>
     <Drawer className="dashboard-data-drawer" title={spec.title} open={showData} width="min(620px, 94vw)" onClose={() => setShowData(false)} extra={<Button icon={<DownloadOutlined />} onClick={exportCsv}>Export CSV</Button>}>
       <p className="dashboard-data-subtitle">{spec.subtitle}</p>
-      {spec.labels.length ? <div className="dashboard-data-table"><table><thead><tr><th>Group</th>{spec.series.map(series => <th key={series.label}>{series.label}</th>)}</tr></thead><tbody>{spec.labels.map((label, index) => <tr key={`${label}-${index}`}><td>{label}</td>{spec.series.map(series => <td key={series.label}>{Number(series.values[index] || 0).toLocaleString('en-IN')}{spec.valueSuffix || ''}</td>)}</tr>)}</tbody></table></div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+      {spec.labels.length ? <div className="dashboard-data-table"><table><thead><tr><th>Group</th>{spec.series.map(series => <th key={series.label}>{series.label}</th>)}</tr></thead><tbody>{spec.labels.map((label, index) => <tr key={`${label}-${index}`}><td>{label}</td>{spec.series.map(series => <td key={series.label}>{spec.onPointClick ? <Button type="link" onClick={() => spec.onPointClick?.(label, series.label)} aria-label={`Open ${label}: ${formatValue(series.values[index] || 0)}`}>{formatValue(series.values[index] || 0)}</Button> : formatValue(series.values[index] || 0)}</td>)}</tr>)}</tbody></table></div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />}
     </Drawer>
   </article>
 }
@@ -292,7 +301,7 @@ export function DashboardActionQueue({ title, subtitle, items, emptyText }: { ti
     <header className="dashboard-section-heading"><div><h3>{title}</h3><p>{subtitle}</p></div><span>{items.length} open</span></header>
     {items.length ? <div className="dashboard-engine-action-list">{items.map(item => <article key={item.id}>
       <span className={`dashboard-action-icon priority-${item.priority.toLowerCase()}`}>{item.icon}</span>
-      <div><strong>{item.title}</strong><p>{item.meta}</p><small>{item.owner} · {item.age}</small></div>
+      <div><strong>{item.title}</strong><p>{item.meta}</p><small>{[item.owner, item.age].filter(Boolean).join(' · ')}</small></div>
       <span className={`dashboard-priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span>
       <Button size="small" onClick={item.onAction}>{item.actionLabel}<ArrowRightOutlined /></Button>
     </article>)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyText} />}

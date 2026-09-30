@@ -38,7 +38,7 @@
 .recruitment-viewport .recruitment-record-details > summary { cursor: pointer; color: #58627a; font-size: 11px; padding-top: 4px; }
 .recruitment-viewport .recruitment-record-details[open] { padding-top: 4px; }
 .recruitment-viewport .recruitment-record-workspace .recruitment-record-pagination { padding: 6px 10px; }
-.recruitment-page-header #recruitment-page-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.recruitment-page-header :is(#recruitment-page-controls, #employees-page-controls, #dashboard-page-controls) { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .recruitment-desktop-filters { min-width: 0; min-height: 0; overflow: auto; }
 .recruitment-viewport .candidate-filter-panel { position: static; max-height: none; }
 .recruitment-mobile-filters { display: none; }
@@ -176,9 +176,9 @@
   .recruitment-page-header .hrms-page-icon { display: none; }
   .recruitment-page-header .hrms-page-copy { gap: 6px; }
   .recruitment-title-controls { gap: 6px; }
-  #recruitment-page-controls { margin-left: 0; }
-  #recruitment-page-controls .ant-space { gap: 6px !important; justify-content: flex-start; }
-  #recruitment-page-controls .ant-btn { padding-inline: 9px; font-size: 12px; }
+  :is(#recruitment-page-controls, #employees-page-controls, #dashboard-page-controls) { margin-left: 0; }
+  :is(#recruitment-page-controls, #employees-page-controls, #dashboard-page-controls) .ant-space { gap: 6px !important; justify-content: flex-start; }
+  :is(#recruitment-page-controls, #employees-page-controls, #dashboard-page-controls) .ant-btn { padding-inline: 9px; font-size: 12px; }
   .hrms-content:has(.recruitment-viewport) { padding: 6px; }
   .recruitment-viewport .recruitment-workspace-surface { padding: 6px; }
   .recruitment-viewport .candidate-list-toolbar { padding: 6px; }

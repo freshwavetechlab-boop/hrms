@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, type Dispatch, type Set
 import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
 
 export type RecruitmentView = 'Cards' | 'Table'
-export const RecruitmentViewContext = createContext<{ view: RecruitmentView; scope: string; pipelineDisplay?: RecruitmentPipelineDisplayMode } | null>(null)
+export const RecruitmentViewContext = createContext<{ view: RecruitmentView; scope: string; namespace?: string; pipelineDisplay?: RecruitmentPipelineDisplayMode } | null>(null)
 export const useRecruitmentView = () => useContext(RecruitmentViewContext)?.view
 export const useRecruitmentPipelineDisplay = () => useContext(RecruitmentViewContext)?.pipelineDisplay
 
@@ -28,5 +28,5 @@ export function useSessionPreference<T>(key: string, fallback: T): [T, Dispatch<
 
 export function useRecruitmentPreference<T>(name: string, fallback: T) {
   const context = useContext(RecruitmentViewContext)
-  return useSessionPreference(`recruitment.ui:${context?.scope ?? 'local'}:${window.location.pathname}:${name}`, fallback)
+  return useSessionPreference(`${context?.namespace ?? 'recruitment.ui'}:${context?.scope ?? 'local'}:${window.location.pathname}:${name}`, fallback)
 }
