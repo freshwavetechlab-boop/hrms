@@ -3,6 +3,7 @@ using MySqlConnector;
 using Payroll.API.Models;
 using System.Net;
 using System.Text.Json;
+using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
@@ -192,13 +193,16 @@ SELECT LAST_INSERT_ID();", setting);
         return await db.QueryFirstAsync<EssClientSetting>(@"SELECT s.*,COALESCE(c.Name,'') ClientName FROM ess_client_settings s JOIN clients c ON c.Id=s.ClientId WHERE s.Id=@Id", new { Id = id });
     }
 
-    public async Task<(EssLeaveRequest? Request, string? Error)> CreateLeaveRequestAsync(int employeeId, int? clientId, CreateEssLeaveRequest request)
+    public async Task<(EssLeaveRequest? Request, string? Error)> CreateLeaveRequestAsync(int employeeId, int? clientId, CreateEssLeaveRequest request, WorkflowRepository? workflows = null, int? requestorUserId = null)
     {
         if (!DateTime.TryParse(request.FromDate, out var from) || !DateTime.TryParse(request.ToDate, out var to) || to.Date < from.Date) return (null, "Select a valid leave date range.");
         var dayType = NormalizeDayType(request.DayType);
         if (dayType != "Full Day" && from.Date != to.Date) return (null, "Half-day leave can be applied for one date only.");
         var days = dayType == "Full Day" ? (decimal)(to.Date - from.Date).TotalDays + 1 : 0.5m;
+        if (string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Length > 1000) return (null, "Enter a reason, up to 1000 characters.");
         await using var db = Connection(); await db.OpenAsync();
+        await using var tx = await db.BeginTransactionAsync();
+        if (await db.ExecuteScalarAsync<int?>("SELECT Id FROM employees WHERE Id=@EmployeeId AND IsActive=TRUE AND (@ClientId IS NULL OR ClientId=@ClientId) FOR UPDATE", new { EmployeeId = employeeId, ClientId = clientId }, tx) is null) return (null, "Active employee mapping is unavailable.");
         var leave = await db.QueryFirstOrDefaultAsync<EssLeaveSelection>(@"SELECT lt.Id,e.ClientId,lt.Name,lt.Code,lt.Type,COALESCE(b.balance_count,0) Balance,COALESCE(p.allow_negative_leave_balance,FALSE) AllowNegativeLeaveBalance,COALESCE(p.allow_half_day,TRUE) AllowHalfDay,COALESCE(p.attendance_action,'Mark as leave') AttendanceAction
 FROM employees e
 JOIN leave_types lt ON lt.client_id=e.ClientId AND lt.code=@Code AND lt.is_active=TRUE
@@ -214,15 +218,61 @@ LEFT JOIN (
     ) latest ON latest.employee_id=b1.employee_id AND latest.leave_type_id=b1.leave_type_id AND latest.balance_date=b1.balance_date
 ) b ON b.employee_id=e.Id AND b.leave_type_id=lt.Id
 WHERE e.Id=@EmployeeId AND (@ClientId IS NULL OR e.ClientId=@ClientId)
-LIMIT 1", new { EmployeeId = employeeId, ClientId = clientId, Code = request.LeaveCode });
+LIMIT 1", new { EmployeeId = employeeId, ClientId = clientId, Code = request.LeaveCode }, tx);
         if (leave is null || leave.Id == 0) return (null, "Selected leave type is unavailable.");
+        var policy = await db.QueryFirstOrDefaultAsync<LeaveType>(LeaveAttendanceRepository.LeaveTypeSelectSql + " WHERE lt.id=@Id", new { leave.Id }, tx);
+        if (policy is null) return (null, "Configure the selected leave type's policy and applicability first.");
+        var todayDate = AttendanceNow().Date;
+        if (from.Date < policy.EffectiveFrom.Date || policy.ExpiresOn is DateTime expiry && to.Date > expiry.Date) return (null, "Selected dates are outside the leave type's effective period.");
+        if (from.Date < todayDate && (!policy.AllowPastDates || policy.PastDateLimitType == "Set number of days" && policy.PastDateLimitDays is int past && from.Date < todayDate.AddDays(-past))) return (null, "Past dates exceed the selected leave policy's allowed window.");
+        if (to.Date > todayDate && (!policy.AllowFutureDates || policy.FutureDateLimitType == "Set number of days" && policy.FutureDateLimitDays is int future && to.Date > todayDate.AddDays(future))) return (null, "Future dates exceed the selected leave policy's allowed window.");
+        if (policy.ApplicabilityMode != "All employees")
+        {
+            var employee = await db.QueryFirstAsync<Employee>("SELECT * FROM employees WHERE Id=@Id", new { Id = employeeId }, tx);
+            var location = await db.ExecuteScalarAsync<string?>("SELECT Name FROM worklocations WHERE Id=@Id AND ClientId=@ClientId", new { Id = employee.WorkLocationId, employee.ClientId }, tx) ?? "";
+            bool Matches(string expected, string actual) => string.IsNullOrWhiteSpace(expected) || expected.Equals("All", StringComparison.OrdinalIgnoreCase) || expected.Equals(actual, StringComparison.OrdinalIgnoreCase);
+            if (!Matches(policy.WorkLocation, location) || !Matches(policy.Department, employee.Department) || !Matches(policy.Designation, employee.Designation) || !Matches(policy.Gender, employee.Gender)) return (null, "The selected leave type does not apply to this employee.");
+        }
         if (dayType != "Full Day" && !leave.AllowHalfDay) return (null, "Selected leave type does not allow half-day leave.");
         var marksPresent = leave.AttendanceAction.Equals("Mark as present", StringComparison.OrdinalIgnoreCase);
-        if (marksPresent && dayType != "Full Day") return (null, "Attendance regularization can only be requested for full days.");
+        if (!marksPresent && (request.RegularizationKind is not null || request.CheckInTime is not null || request.CheckOutTime is not null)) return (null, "Choose a leave type configured to mark attendance as present for regularization.");
+        if (marksPresent)
+        {
+            var settings = await db.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id Id,allow_regularization_requests AllowRegularizationRequests,regularization_window RegularizationWindow,past_days_allowed PastDaysAllowed,restrict_regularization_requests_per_month RestrictRegularizationRequestsPerMonth,max_regularization_requests_per_month MaxRegularizationRequestsPerMonth FROM attendance_settings WHERE client_id=@ClientId", new { ClientId = leave.ClientId }, tx);
+            if (settings is null || !settings.AllowRegularizationRequests) return (null, "Attendance regularization is disabled or not configured for this client.");
+            var today = AttendanceNow().Date;
+            if (to.Date > today) return (null, "Regularization cannot be requested for future attendance.");
+            if (settings.RegularizationWindow == "Limited by past days" && from.Date < today.AddDays(-settings.PastDaysAllowed)) return (null, "Selected attendance date is outside the allowed regularization window.");
+            var kind = request.RegularizationKind ?? (leave.Code.Equals("OD", StringComparison.OrdinalIgnoreCase) ? "OD" : "MissPunch");
+            if (kind is not ("OD" or "MissPunch")) return (null, "Select OD or MissPunch regularization.");
+            request.RegularizationKind = kind;
+            if (kind == "OD" && (request.CheckInTime is not null || request.CheckOutTime is not null)) return (null, "OD requests do not accept punch-time corrections.");
+            var rules = (await AttendanceIntegrationRepository.ReadAsync(db, tx, leave.ClientId)).Rules;
+            var limit = kind == "OD" ? rules.MonthlyOdLimit : rules.MonthlyMissPunchLimit;
+            if (limit is null) return (null, $"Configure the monthly {kind} limit in client attendance settings first.");
+            if (from.Year != to.Year || from.Month != to.Month) return (null, "Request regularization for one month at a time.");
+            var counts = await db.QuerySingleAsync<(int Total, int Kind)>(@"SELECT COUNT(*) Total,COALESCE(SUM(CASE WHEN COALESCE((SELECT JSON_UNQUOTE(JSON_EXTRACT(i.PayloadJson,'$.RegularizationKind')) FROM workflowinstances i WHERE i.ResourceType IN ('LeaveRequest','AttendanceRegularization') AND i.ResourceId=CAST(r.Id AS CHAR) ORDER BY i.Id DESC LIMIT 1),IF(lt.code='OD','OD','MissPunch'))=@Kind THEN 1 ELSE 0 END),0) Kind
+FROM essleaverequests r JOIN leave_types lt ON lt.id=r.LeaveTypeId JOIN leave_type_policies p ON p.leave_type_id=lt.id AND p.attendance_action='Mark as present'
+WHERE r.EmployeeId=@EmployeeId AND r.ClientId=@ClientId AND r.Status IN ('Pending Approval','Approved') AND r.FromDate>=@Start AND r.FromDate<@End", new { EmployeeId = employeeId, ClientId = leave.ClientId, Kind = kind, Start = new DateTime(from.Year, from.Month, 1), End = new DateTime(from.Year, from.Month, 1).AddMonths(1) }, tx);
+            if (counts.Kind >= limit || settings.RestrictRegularizationRequestsPerMonth && counts.Total >= settings.MaxRegularizationRequestsPerMonth) return (null, "Monthly regularization request limit has been reached.");
+            if (await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM essleaverequests WHERE EmployeeId=@EmployeeId AND ClientId=@ClientId AND Status IN ('Pending Approval','Approved') AND FromDate<=@ToDate AND ToDate>=@FromDate", new { EmployeeId = employeeId, ClientId = leave.ClientId, FromDate = from.Date, ToDate = to.Date }, tx) > 0) return (null, "A pending or approved leave / regularization request already covers this date.");
+            if (kind == "MissPunch" && (from.Date != to.Date || request.CheckInTime is null || request.CheckOutTime is null || request.CheckInTime == request.CheckOutTime)) return (null, "Miss-punch correction requires one date and different check-in / check-out times.");
+            if (request.CheckInTime is TimeSpan ci && (ci < TimeSpan.Zero || ci >= TimeSpan.FromDays(1)) || request.CheckOutTime is TimeSpan co && (co < TimeSpan.Zero || co >= TimeSpan.FromDays(1))) return (null, "Select valid correction times.");
+        }
         var isPaidLeave = !marksPresent && leave.Type.Equals("Paid", StringComparison.OrdinalIgnoreCase) && !leave.Code.Equals("LWP", StringComparison.OrdinalIgnoreCase);
         if (isPaidLeave && !leave.AllowNegativeLeaveBalance && days > leave.Balance) return (null, "Requested days exceed the available leave balance.");
-        var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO essleaverequests (EmployeeId,ClientId,LeaveTypeId,FromDate,ToDate,DayType,Days,Reason,Status) VALUES (@EmployeeId,@ClientId,@LeaveTypeId,@FromDate,@ToDate,@DayType,@Days,@Reason,'Pending Approval'); SELECT LAST_INSERT_ID();", new { EmployeeId = employeeId, ClientId = clientId ?? leave.ClientId, LeaveTypeId = leave.Id, FromDate = from.Date, ToDate = to.Date, DayType = dayType, Days = days, Reason = request.Reason.Trim() });
-        return (new EssLeaveRequest { Id = id, LeaveCode = request.LeaveCode, LeaveType = leave.Name, FromDate = from.Date, ToDate = to.Date, DayType = dayType, Days = days, Reason = request.Reason, Status = "Pending Approval", CreatedAt = DateTime.UtcNow }, null);
+        if (await IsLeavePeriodLockedAsync(db, tx, leave.ClientId, employeeId, from, to)) return (null, "Attendance belongs to a submitted or completed payroll period.");
+        var id = await db.ExecuteScalarAsync<long>(@"INSERT INTO essleaverequests (EmployeeId,ClientId,LeaveTypeId,FromDate,ToDate,DayType,Days,Reason,Status) VALUES (@EmployeeId,@ClientId,@LeaveTypeId,@FromDate,@ToDate,@DayType,@Days,@Reason,'Pending Approval'); SELECT LAST_INSERT_ID();", new { EmployeeId = employeeId, ClientId = leave.ClientId, LeaveTypeId = leave.Id, FromDate = from.Date, ToDate = to.Date, DayType = dayType, Days = days, Reason = request.Reason.Trim() }, tx);
+        var result = new EssLeaveRequest { Id = id, LeaveCode = request.LeaveCode, LeaveType = leave.Name, FromDate = from.Date, ToDate = to.Date, DayType = dayType, Days = days, Reason = request.Reason, Status = "Pending Approval", CreatedAt = DateTime.UtcNow };
+        var workflow = await db.QueryFirstOrDefaultAsync<WorkflowMaster>("SELECT * FROM workflowmasters WHERE IsActive=TRUE AND (ClientId=@ClientId OR ClientId IS NULL) AND (ResourceType='LeaveRequest' OR (@Regularization AND ResourceType='AttendanceRegularization')) ORDER BY ClientId IS NULL,ResourceType='AttendanceRegularization' DESC,Id LIMIT 1", new { ClientId = leave.ClientId, Regularization = marksPresent }, tx);
+        if (workflows is not null && requestorUserId is int actor && workflow is not null)
+        {
+            var payload = System.Text.Json.JsonSerializer.Serialize(new { result.Id, result.LeaveCode, result.LeaveType, result.FromDate, result.ToDate, result.DayType, result.Days, result.Reason, EmployeeId = employeeId, ClientId = leave.ClientId, request.RegularizationKind, request.CheckInTime, request.CheckOutTime });
+            if (await workflows.StartInTransactionAsync(db, tx, new StartWorkflowRequest { WorkflowId = workflow.Id, ResourceType = workflow.ResourceType, ResourceId = id.ToString(), PayloadJson = payload }, actor) is null) return (null, "Configure an active workflow and reporting-manager approver before submitting this request.");
+        }
+        else if (marksPresent) return (null, "Configure regularization approval workflow and the employee's reporting manager first.");
+        await tx.CommitAsync();
+        return (result, null);
     }
 
     public async Task<IEnumerable<EssLeaveRequest>> GetLeaveRequestsAsync(int employeeId, int? clientId)
@@ -711,7 +761,7 @@ ORDER BY CreatedAt",new{instance.InstanceId})).ToList();
     {
         await using var db=Connection();await db.OpenAsync();
         var instance=await db.QueryFirstOrDefaultAsync<EssWorkflowTrail>(@"SELECT i.Id InstanceId,COALESCE(m.Code,'') WorkflowCode,COALESCE(m.Name,'') WorkflowName,COALESCE(i.ResourceType,'LeaveRequest') ResourceType,CASE WHEN m.ClientId IS NULL THEN 'Global fallback' ELSE 'Client specific' END MatchScope,i.Status,i.CreatedAt,i.CompletedAt
-FROM essleaverequests r LEFT JOIN workflowinstances i ON i.ResourceType='LeaveRequest' AND i.ResourceId=CAST(r.Id AS CHAR) LEFT JOIN workflowmasters m ON m.Id=i.WorkflowId
+FROM essleaverequests r LEFT JOIN workflowinstances i ON i.ResourceType IN ('LeaveRequest','AttendanceRegularization') AND i.ResourceId=CAST(r.Id AS CHAR) LEFT JOIN workflowmasters m ON m.Id=i.WorkflowId
 WHERE r.Id=@RequestId AND r.EmployeeId=@EmployeeId AND (@ClientId IS NULL OR r.ClientId=@ClientId)",new{RequestId=requestId,EmployeeId=employeeId,ClientId=clientId});
         if(instance is null)return null;
         if(instance.InstanceId is null){instance.Events=[];return instance;}
@@ -941,14 +991,23 @@ WHERE c.Id=@Id", new { Id = id, Status = status, PayrollStatus = payrollStatus }
         await db.OpenAsync();
         var rows = (await db.QueryAsync<LeaveWorkflowReconciliationRow>(@"SELECT r.Id,w.Status
 FROM essleaverequests r
-JOIN workflowinstances w ON w.ResourceType='LeaveRequest' AND w.ResourceId=CAST(r.Id AS CHAR)
+JOIN workflowinstances w ON w.ResourceType IN ('LeaveRequest','AttendanceRegularization') AND w.ResourceId=CAST(r.Id AS CHAR)
 WHERE w.Status IN ('Approved','Rejected','Sent Back') AND r.Status<>w.Status
 ORDER BY r.Id;")).ToList();
         foreach (var row in rows)
             await SyncLeaveWorkflowStatusAsync(row.Id.ToString(), row.Status);
     }
 
-    private static async Task ApplyApprovedLeaveEffectsAsync(MySqlConnection db, MySqlTransaction tx, long requestId)
+    internal static async Task<bool> IsLeavePeriodLockedAsync(MySqlConnection db, System.Data.IDbTransaction? tx, int clientId, int employeeId, DateTime from, DateTime to)
+    {
+        var policy = await db.QueryFirstOrDefaultAsync<AttendanceCycleRow>(@"SELECT g.attendance_cycle_start_day StartDay,g.attendance_cycle_end_day EndDay
+FROM attendance_group_employees age JOIN attendance_groups g ON g.id=age.attendance_group_id AND g.client_id=@ClientId AND g.is_active=TRUE
+WHERE age.employee_id=@EmployeeId ORDER BY g.id LIMIT 1", new { ClientId = clientId, EmployeeId = employeeId }, tx);
+        string Month(DateTime date) => ResolveAttendanceCycle(date, policy?.StartDay ?? 1, policy?.EndDay ?? DateTime.DaysInMonth(date.Year, date.Month)).Month;
+        return await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM payruns p JOIN payrunemployees e ON e.PayRunId=p.Id WHERE p.ClientId=@ClientId AND e.EmployeeId=@EmployeeId AND p.PayPeriod BETWEEN @FromMonth AND @ToMonth AND p.Status NOT IN ('Draft','Failed','Cancelled')", new { ClientId = clientId, EmployeeId = employeeId, FromMonth = Month(from), ToMonth = Month(to) }, tx) > 0;
+    }
+
+    internal static async Task ApplyApprovedLeaveEffectsAsync(MySqlConnection db, MySqlTransaction tx, long requestId)
     {
         var row = await db.QueryFirstOrDefaultAsync<ApprovedLeaveRequestRow>(@"SELECT r.Id,r.EmployeeId,r.ClientId,r.LeaveTypeId,r.FromDate,r.ToDate,COALESCE(r.DayType,'Full Day') DayType,r.Days,COALESCE(r.Reason,'') Reason,lt.Code LeaveCode,lt.Type LeaveTypeKind,COALESCE(p.attendance_action,'Mark as leave') AttendanceAction
 FROM essleaverequests r
@@ -958,6 +1017,12 @@ WHERE r.Id=@RequestId", new { RequestId = requestId }, tx);
         if (row is null) return;
 
         var marksPresent = row.AttendanceAction.Equals("Mark as present", StringComparison.OrdinalIgnoreCase);
+        CreateEssLeaveRequest? correction = null;
+        if (marksPresent)
+        {
+            var payload = await db.ExecuteScalarAsync<string?>("SELECT PayloadJson FROM workflowinstances WHERE ResourceType IN ('LeaveRequest','AttendanceRegularization') AND ResourceId=@Id AND Status='Approved' ORDER BY Id DESC LIMIT 1", new { Id = row.Id.ToString() }, tx);
+            if (!string.IsNullOrWhiteSpace(payload)) correction = System.Text.Json.JsonSerializer.Deserialize<CreateEssLeaveRequest>(payload, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        }
         var deductsBalance = !marksPresent && row.LeaveTypeKind.Equals("Paid", StringComparison.OrdinalIgnoreCase) && !row.LeaveCode.Equals("LWP", StringComparison.OrdinalIgnoreCase);
         if (deductsBalance)
         {
@@ -980,6 +1045,14 @@ ON DUPLICATE KEY UPDATE balance_count=VALUES(balance_count);", new { row.ClientI
         var payableValue = marksPresent || row.LeaveTypeKind.Equals("Paid", StringComparison.OrdinalIgnoreCase)
             ? 1m
             : row.DayType.Equals("Full Day", StringComparison.OrdinalIgnoreCase) ? 0m : 0.5m;
+        if (marksPresent && row.DayType != "Full Day") payableValue = .5m;
+        var correctedHours = 0m;
+        if (marksPresent && correction?.RegularizationKind == "MissPunch" && correction.CheckInTime is TimeSpan checkIn && correction.CheckOutTime is TimeSpan checkOut)
+        {
+            var settings = await GetAttendanceSettingsAsync(db, tx, row.ClientId);
+            correctedHours = Math.Min(CalculatePunchHours(checkIn, checkOut), settings.MaximumHoursAllowedForFullDay);
+            payableValue = correctedHours >= settings.MinimumHoursForFullDay ? 1m : correctedHours >= settings.MinimumHoursForHalfDay ? .5m : 0m;
+        }
         var remarks = marksPresent
             ? $"Approved attendance regularization #{row.Id}: {row.Reason}".TrimEnd(' ', ':')
             : $"Approved leave request #{row.Id}: {row.Reason}".TrimEnd(' ', ':');
@@ -993,13 +1066,13 @@ ORDER BY g.id LIMIT 1;", new { row.ClientId, row.EmployeeId }, tx);
         {
             await db.ExecuteAsync(@"INSERT INTO employee_daily_attendance
 (client_id,employee_id,attendance_date,status,payable_value,check_in_time,check_out_time,total_hours,remarks)
-VALUES (@ClientId,@EmployeeId,@AttendanceDate,@Status,@PayableValue,NULL,NULL,0,@Remarks)
+VALUES (@ClientId,@EmployeeId,@AttendanceDate,@Status,@PayableValue,@CheckIn,@CheckOut,@Hours,@Remarks)
 ON DUPLICATE KEY UPDATE
 status=VALUES(status),
 payable_value=VALUES(payable_value),
-check_in_time=IF(@MarksPresent,check_in_time,NULL),
-check_out_time=IF(@MarksPresent,check_out_time,NULL),
-total_hours=IF(@MarksPresent,total_hours,0),
+check_in_time=IF(@HasCorrection,VALUES(check_in_time),IF(@MarksPresent,check_in_time,NULL)),
+check_out_time=IF(@HasCorrection,VALUES(check_out_time),IF(@MarksPresent,check_out_time,NULL)),
+total_hours=IF(@HasCorrection,VALUES(total_hours),IF(@MarksPresent,total_hours,0)),
 remarks=VALUES(remarks);", new
             {
                 row.ClientId,
@@ -1008,6 +1081,10 @@ remarks=VALUES(remarks);", new
                 Status = status,
                 PayableValue = payableValue,
                 Remarks = remarks,
+                CheckIn = correction?.CheckInTime,
+                CheckOut = correction?.CheckOutTime,
+                Hours = correctedHours,
+                HasCorrection = correction?.RegularizationKind == "MissPunch",
                 MarksPresent = marksPresent
             }, tx);
             var cycle = ResolveAttendanceCycle(date, policy?.StartDay ?? 1, policy?.EndDay ?? DateTime.DaysInMonth(date.Year, date.Month));
@@ -1184,7 +1261,7 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND INDEX_NAME = @Index"
         var identity = await GetPunchIdentityAsync(db, null, employeeId, clientId, false);
         return identity is null
             ? null
-            : await GetAttendanceStateAsync(db, null, identity.ClientId, employeeId, AttendanceNow().Date);
+            : await GetAttendanceStateAsync(db, null, identity.ClientId, employeeId, AttendanceNow(), true);
     }
 
     public async Task<AttendancePunchValidationResponse> ValidateAttendancePunchAsync(int employeeId, int? clientId, ValidateAttendancePunchRequest request)
@@ -1219,7 +1296,7 @@ LIMIT 1;", new { identity.ClientId, EmployeeId = employeeId, ClientRequestId = c
             {
                 if (!string.Equals(existing.Action, action, StringComparison.OrdinalIgnoreCase))
                     return Block("IdempotencyKeyConflict", "This attendance request id was already used for a different action.", "RefreshAttendance");
-                var replayState = await GetAttendanceStateAsync(db, transaction, identity.ClientId, employeeId, existing.CapturedAt.Date);
+                var replayState = await GetAttendanceStateAsync(db, transaction, identity.ClientId, employeeId, existing.CapturedAt, true);
                 await transaction.CommitAsync();
                 return new AttendancePunchValidationResponse
                 {
@@ -1319,7 +1396,9 @@ SELECT LAST_INSERT_ID();", new
         if (capturedAt > AttendanceNow().AddMinutes(10))
             return Block("InvalidCapturedAt", "The device attendance time is ahead of the server time.", "CorrectDeviceTime");
 
-        var state = await GetAttendanceStateAsync(db, transaction, clientId, employeeId, capturedAt.Date);
+        var state = await GetAttendanceStateAsync(db, transaction, clientId, employeeId, capturedAt, true);
+        if (await IsLeavePeriodLockedAsync(db, transaction, clientId, employeeId, state.AttendanceDate, state.AttendanceDate))
+            return Block("PayrollPeriodLocked", "Attendance belongs to a submitted or completed payroll period.", "ContactHR");
         if (state.ApprovalPending)
             return Block("ApprovalPending", "An attendance request is already waiting for approval.", "WaitForApproval");
         if (state.NextExpectedAction == "Unavailable")
@@ -1342,7 +1421,7 @@ SELECT LAST_INSERT_ID();", new
                 Message = "No geo-fence rule is configured for this employee.",
                 NextAction = "SubmitPunch",
                 NextExpectedAction = state.NextExpectedAction,
-                AttendanceDate = capturedAt.Date,
+                AttendanceDate = state.AttendanceDate,
                 DeviceAccuracyMeters = Math.Max(0, request.AccuracyMeters)
             };
         var actionRules = rules.Where(rule => action == "CheckIn" ? rule.AllowCheckIn : rule.AllowCheckOut).ToList();
@@ -1383,7 +1462,7 @@ SELECT LAST_INSERT_ID();", new
             Message = outsideBy <= 0 ? "Attendance punch allowed." : $"You are {Math.Ceiling(outsideBy)} meters outside the allowed attendance range.",
             NextAction = outsideBy <= 0 ? "SubmitPunch" : "MoveInsideFence",
             NextExpectedAction = state.NextExpectedAction,
-            AttendanceDate = capturedAt.Date,
+            AttendanceDate = state.AttendanceDate,
             DistanceMeters = Math.Round((decimal)distance, 2),
             AllowedRadiusMeters = rule.RadiusMeters,
             GpsToleranceMeters = rule.GpsToleranceMeters,
@@ -1426,32 +1505,34 @@ WHERE e.Id=@EmployeeId AND e.IsActive=TRUE AND (@ClientId IS NULL OR e.ClientId=
             new { EmployeeId = employeeId, ClientId = clientId }, transaction);
     }
 
-    private static async Task<EssAttendanceTodayState> GetAttendanceStateAsync(MySqlConnection db, System.Data.IDbTransaction? transaction, int clientId, int employeeId, DateTime attendanceDate)
+    private static async Task<EssAttendanceTodayState> GetAttendanceStateAsync(MySqlConnection db, System.Data.IDbTransaction? transaction, int clientId, int employeeId, DateTime attendanceDate, bool fromPunchTime = false)
     {
-        var daily = await db.QueryFirstOrDefaultAsync<AttendanceDailyStateRow>(@"SELECT status AS Status, payable_value AS PayableValue, check_in_time AS CheckInTime,
+        var settings = await GetAttendanceSettingsAsync(db, transaction, clientId);
+        if (fromPunchTime) attendanceDate = AttendancePunchCalculator.AttendanceDate(attendanceDate, settings);
+        var bounds = AttendancePunchCalculator.Bounds(attendanceDate, settings);
+        var daily = await db.QueryFirstOrDefaultAsync<AttendanceDailyStateRow>(@"SELECT status AS Status,COALESCE(remarks,'') Remarks, payable_value AS PayableValue, check_in_time AS CheckInTime,
 check_out_time AS CheckOutTime, total_hours AS TotalHours
 FROM employee_daily_attendance
 WHERE client_id=@ClientId AND employee_id=@EmployeeId AND attendance_date=@AttendanceDate
 LIMIT 1;", new { ClientId = clientId, EmployeeId = employeeId, AttendanceDate = attendanceDate.Date }, transaction);
         var punches = await db.QuerySingleAsync<AttendancePunchAggregate>(@"SELECT
+SUBSTRING_INDEX(GROUP_CONCAT(CASE WHEN decision IN ('Accepted','AcceptedWithReason','SubmittedWithReason') THEN action END ORDER BY captured_at DESC,id DESC),',',1) LastAction,
 MIN(CASE WHEN action='CheckIn' AND decision IN ('Accepted','AcceptedWithReason','SubmittedWithReason') THEN captured_at END) AS CheckInAt,
 MAX(CASE WHEN action='CheckOut' AND decision IN ('Accepted','AcceptedWithReason','SubmittedWithReason') THEN captured_at END) AS CheckOutAt,
 SUM(CASE WHEN decision='PendingApproval' THEN 1 ELSE 0 END) AS ApprovalPendingCount
 FROM employee_attendance_punches
 WHERE client_id=@ClientId AND employee_id=@EmployeeId AND captured_at>=@DayStart AND captured_at<@DayEnd;",
-            new { ClientId = clientId, EmployeeId = employeeId, DayStart = attendanceDate.Date, DayEnd = attendanceDate.Date.AddDays(1) }, transaction);
-        var settings = await GetAttendanceSettingsAsync(db, transaction, clientId);
+            new { ClientId = clientId, EmployeeId = employeeId, DayStart = bounds.Start, DayEnd = bounds.End }, transaction);
         var checkIn = daily?.CheckInTime ?? punches.CheckInAt?.TimeOfDay;
         var checkOut = daily?.CheckOutTime ?? punches.CheckOutAt?.TimeOfDay;
-        var lockedStatus = daily is not null &&
-            !string.Equals(daily.Status, "Present", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(daily.Status, "A", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(daily.Status, "Absent", StringComparison.OrdinalIgnoreCase);
+        var lockedStatus = daily is not null && !(daily.Remarks.StartsWith("Mobile Punch", StringComparison.Ordinal) || daily.Remarks.StartsWith("Machine attendance:", StringComparison.Ordinal) || daily.Status is "A" or "Absent" && daily.Remarks.Length == 0);
         var approvalPending = punches.ApprovalPendingCount > 0;
         var nextExpectedAction = approvalPending
             ? "WaitForApproval"
             : lockedStatus
                 ? "Unavailable"
+                : settings.WorkingHoursCalculation == "Every valid check-in and check-out" && !string.IsNullOrEmpty(punches.LastAction)
+                    ? punches.LastAction == "CheckIn" ? "CheckOut" : "CheckIn"
                 : checkOut.HasValue
                     ? "Completed"
                     : checkIn.HasValue
@@ -1467,7 +1548,7 @@ WHERE client_id=@ClientId AND employee_id=@EmployeeId AND captured_at>=@DayStart
             CheckInTime = checkIn,
             CheckOutTime = checkOut,
             TotalHours = totalHours,
-            PayableValue = daily?.PayableValue ?? (checkIn.HasValue ? 1 : 0),
+PayableValue = daily?.PayableValue ?? 0,
             NextExpectedAction = nextExpectedAction,
             ApprovalPending = approvalPending,
             ShiftCheckInTime = settings.CheckInTime,
@@ -1488,52 +1569,12 @@ FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { ClientId = c
 
     private static async Task<EssAttendanceTodayState> ProjectAcceptedPunchAsync(MySqlConnection db, MySqlTransaction transaction, int clientId, int employeeId, string action, DateTime capturedAt)
     {
-        var attendanceDate = capturedAt.Date;
-        if (action == "CheckIn")
-        {
-            await db.ExecuteAsync(@"INSERT INTO employee_daily_attendance
-(client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
-VALUES (@ClientId, @EmployeeId, @AttendanceDate, 'Present', 1, @CheckInTime, NULL, 0, 'Mobile Punch In')
-ON DUPLICATE KEY UPDATE status='Present', payable_value=1,
-check_in_time=COALESCE(check_in_time, VALUES(check_in_time)), remarks='Mobile Punch In';",
-                new { ClientId = clientId, EmployeeId = employeeId, AttendanceDate = attendanceDate, CheckInTime = capturedAt.TimeOfDay }, transaction);
-        }
-        else
-        {
-            var beforeCheckout = await GetAttendanceStateAsync(db, transaction, clientId, employeeId, attendanceDate);
-            var checkIn = beforeCheckout.CheckInTime ?? capturedAt.TimeOfDay;
-            var totalHours = CalculatePunchHours(checkIn, capturedAt.TimeOfDay);
-            var settings = await GetAttendanceSettingsAsync(db, transaction, clientId);
-            var maximum = settings.MaximumHoursAllowedForFullDay > 0 ? settings.MaximumHoursAllowedForFullDay : 24;
-            var evaluatedHours = Math.Min(totalHours, maximum);
-            var payableValue = evaluatedHours >= settings.MinimumHoursForFullDay
-                ? 1m
-                : evaluatedHours >= settings.MinimumHoursForHalfDay
-                    ? 0.5m
-                    : 0m;
-            var status = payableValue > 0 ? "Present" : "A";
-            await db.ExecuteAsync(@"INSERT INTO employee_daily_attendance
-(client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
-VALUES (@ClientId, @EmployeeId, @AttendanceDate, @Status, @PayableValue, @CheckInTime, @CheckOutTime, @TotalHours, 'Mobile Punch Out')
-ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value),
-check_in_time=COALESCE(check_in_time, VALUES(check_in_time)), check_out_time=VALUES(check_out_time),
-total_hours=VALUES(total_hours), remarks='Mobile Punch Out';",
-                new
-                {
-                    ClientId = clientId,
-                    EmployeeId = employeeId,
-                    AttendanceDate = attendanceDate,
-                    Status = status,
-                    PayableValue = payableValue,
-                    CheckInTime = checkIn,
-                    CheckOutTime = capturedAt.TimeOfDay,
-                    TotalHours = totalHours
-                }, transaction);
-        }
-        await RollupMobileAttendanceAsync(db, transaction, clientId, employeeId, attendanceDate);
-        return await GetAttendanceStateAsync(db, transaction, clientId, employeeId, attendanceDate);
+        var settings = await GetAttendanceSettingsAsync(db, transaction, clientId);
+        var date = AttendancePunchCalculator.AttendanceDate(capturedAt, settings);
+        var rules = (await AttendanceIntegrationRepository.ReadAsync(db, transaction, clientId)).Rules;
+        await ProjectRecordedPunchesAsync(db, transaction, clientId, employeeId, date, settings, rules, "Mobile Punch:");
+        return await GetAttendanceStateAsync(db, transaction, clientId, employeeId, date);
     }
-
     private static async Task RollupMobileAttendanceAsync(MySqlConnection db, MySqlTransaction transaction, int clientId, int employeeId, DateTime attendanceDate)
     {
         var policy = await db.QueryFirstOrDefaultAsync<AttendanceCycleRow>(@"SELECT g.attendance_cycle_start_day AS StartDay, g.attendance_cycle_end_day AS EndDay
@@ -1694,8 +1735,8 @@ ORDER BY CASE r.scope_type WHEN 'Employee' THEN 1 WHEN 'Work Location' THEN 2 EL
     private static readonly TimeZoneInfo AttendanceTimeZone = ResolveAttendanceTimeZone();
     private sealed class PunchIdentity { public int EmployeeId { get; set; } public int ClientId { get; set; } }
     private sealed class ExistingAttendancePunch { public long Id { get; set; } public string Action { get; set; } = ""; public DateTime CapturedAt { get; set; } public string Decision { get; set; } = "Accepted"; }
-    private sealed class AttendanceDailyStateRow { public string Status { get; set; } = ""; public decimal PayableValue { get; set; } public TimeSpan? CheckInTime { get; set; } public TimeSpan? CheckOutTime { get; set; } public decimal TotalHours { get; set; } }
-    private sealed class AttendancePunchAggregate { public DateTime? CheckInAt { get; set; } public DateTime? CheckOutAt { get; set; } public int ApprovalPendingCount { get; set; } }
+    private sealed class AttendanceDailyStateRow { public string Status { get; set; } = ""; public string Remarks { get; set; } = ""; public decimal PayableValue { get; set; } public TimeSpan? CheckInTime { get; set; } public TimeSpan? CheckOutTime { get; set; } public decimal TotalHours { get; set; } }
+    private sealed class AttendancePunchAggregate { public DateTime? CheckInAt { get; set; } public DateTime? CheckOutAt { get; set; } public string LastAction { get; set; } = ""; public int ApprovalPendingCount { get; set; } }
     private sealed class GeoFenceEvaluation { public GeoFenceRule Rule { get; set; } = new(); public double DistanceMeters { get; set; } public int EffectiveRadiusMeters { get; set; } public double OutsideByMeters { get; set; } }
     private sealed class AttendanceCycleRow { public int StartDay { get; set; } public int EndDay { get; set; } }
     private sealed class AttendanceMonthlySummary { public decimal WorkingDays { get; set; } public decimal PresentDays { get; set; } public decimal PayableDays { get; set; } }

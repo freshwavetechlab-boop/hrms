@@ -122,7 +122,7 @@ export const essApi = {
   taxPortal: () => essFetch('/api/ess/tax').then(r => r.ok ? r.json() as Promise<TaxPortal> : Promise.reject()),
   saveTaxRegime: (regime: 'Old' | 'New') => essFetch('/api/ess/tax/regime', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ regime }) }).then(jsonOrThrow<unknown>),
   saveTaxDeclarations: (phase: 'Planned' | 'Actual', lines: { sectionId: number; amount: number; remarks: string }[]) => essFetch('/api/ess/tax/declarations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phase, lines }) }).then(jsonOrThrow<unknown>),
-  createLeaveRequest: (request: { leaveCode: string; fromDate: string; toDate: string; dayType: string; reason: string }) => essFetch('/api/ess/leave/requests', {
+  createLeaveRequest: (request: { leaveCode: string; fromDate: string; toDate: string; dayType: string; reason: string; regularizationKind?: string; checkInTime?: string; checkOutTime?: string }) => essFetch('/api/ess/leave/requests', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),

@@ -8,7 +8,7 @@ foreach ($relative in @('payroll-ui/package.json', 'Payroll.API/Payroll.API.cspr
     if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot $relative))) { throw "Project root does not contain $relative" }
 }
 New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
-foreach ($name in @('Launcher.ps1', 'Worker.ps1')) {
+foreach ($name in @('Launcher.ps1', 'Worker.ps1', 'ProcessHelpers.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $InstallDirectory $name) -Force
 }
 $settingsFile = Join-Path $InstallDirectory 'settings.json'

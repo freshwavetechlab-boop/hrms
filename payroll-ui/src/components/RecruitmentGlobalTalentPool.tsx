@@ -7,6 +7,7 @@ import { CheckCircleOutlined, EyeOutlined, FileSearchOutlined, FolderOpenOutline
 import { type Column } from './DataTable'
 import RecruitmentResumeIntake, { type RecruitmentResumeIntakeMode } from './RecruitmentResumeIntake'
 import { downloadAttachmentBlob } from '../services/attachmentService'
+import { toast } from './ToastProvider'
 import { getRecruitmentOpenPositions } from '../services/recruitmentService'
 import {
   directSelectTalentPoolCandidate, getCandidate, getGlobalTalentPoolCandidates, getTalentPoolMatches,
@@ -202,11 +203,25 @@ export default function RecruitmentGlobalTalentPool({ onViewCandidate, onChanged
     setPreviewLoading(true)
     try {
       const response = await downloadAttachmentBlob(primaryResume.attachmentPublicId)
-      if (request !== previewRequest.current || !response.ok || !response.blob) return
+      if (request !== previewRequest.current) return
+      if (!response.ok || !response.blob) {
+        toast.error('Resume could not be opened. The original file may be unavailable in storage.')
+        return
+      }
       setPreviewName(primaryResume.originalFileName || 'Resume preview')
       const blob = /\.pdf$/i.test(primaryResume.originalFileName) && response.blob.type === 'application/octet-stream' ? new Blob([response.blob], { type: 'application/pdf' }) : response.blob
+      if (!/^(application\/pdf|text\/plain|image\/(png|jpeg|gif|webp))/.test(blob.type)) {
+        const anchor = document.createElement('a')
+        anchor.href = URL.createObjectURL(blob)
+        anchor.download = primaryResume.originalFileName || 'Resume'
+        anchor.click()
+        setTimeout(() => URL.revokeObjectURL(anchor.href), 1000)
+        return
+      }
       setPreviewType(blob.type)
       setPreviewUrl(URL.createObjectURL(blob))
+    } catch {
+      if (request === previewRequest.current) toast.error('Unable to open the resume. Please try again.')
     } finally { if (request === previewRequest.current) setPreviewLoading(false) }
   }
 

@@ -19,6 +19,12 @@ const row = (module: string, method: string, path: string, purpose: string, work
 })
 
 export const apiCatalog: ApiCatalogRow[] = [
+  row('Attendance integration', 'POST', '/api/integrations/attendance/punches', 'Receive machine punch logs and update daily / monthly attendance.', 'No', 'Device bearer token only. Registered client / location. Inspect each batch result.'),
+  row('Attendance integration', 'GET', '/api/integrations/attendance/devices', 'List client devices without secret tokens.', 'No', 'Query: clientId.'),
+  row('Attendance integration', 'POST', '/api/integrations/attendance/devices', 'Map a punch machine to a client work location.', 'No', 'Client settings permission required.'),
+  row('Attendance integration', 'POST', '/api/integrations/attendance/devices/{deviceId}/token', 'Generate or rotate a device bearer token.', 'No', 'Client settings permission. Raw token shown once; previous token revoked.'),
+  row('Attendance integration', 'DELETE', '/api/integrations/attendance/devices/{deviceId}/token', 'Revoke a machine token immediately.', 'No', 'Query: clientId.'),
+  row('Attendance integration', 'GET', '/api/leave-attendance/configuration-gaps', 'Missing configuration with links; resolved settings disappear automatically.', 'No', 'Query: clientId.'),
   row('Authentication', 'POST', '/api/auth/login', 'Sign in and create session.', 'No'),
   row('Authentication', 'GET', '/api/auth/me', 'Get current signed-in user.', 'No'),
   row('Authentication', 'POST', '/api/auth/logout', 'Sign out.', 'No'),
@@ -53,6 +59,7 @@ export const apiCatalog: ApiCatalogRow[] = [
   row('ESS', 'GET', '/api/ess/dashboard/attendance/daily', 'ESS daily attendance.', 'No', 'Query: month'),
   row('ESS', 'POST', '/api/ess/attendance/punch/validate', 'Validate attendance punch.', 'No'),
   row('ESS', 'POST', '/api/ess/attendance/punch', 'Record attendance punch.', 'Possible'),
+    row('ESS', 'GET', '/api/ess/attendance/regularization-options', 'Get this employee\'s attendance rules and eligible OD / miss-punch request types.', 'No', 'Employee self-service permission required.'),
   row('ESS', 'GET', '/api/ess/dashboard/holidays', 'ESS holiday list.', 'No', 'Query: month'),
   row('ESS', 'GET', '/api/ess/dashboard/birthdays', 'Today birthdays.', 'No'),
   row('Security', 'GET', '/api/security/users', 'List application users.', 'No'),

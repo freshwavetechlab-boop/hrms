@@ -102,7 +102,7 @@ ORDER BY a.ModuleCode,a.DisplayName")).ToList();
                 "RECRUITMENTINTERVIEW" => await db.ExecuteScalarAsync<int?>("SELECT a.ClientId FROM recruitment_interviews i JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId WHERE i.Id=@ResourceId", new { ResourceId = resourceId }),
                 "RECRUITMENTOFFER" => await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM recruitment_offers WHERE Id=@ResourceId", new { ResourceId = resourceId }),
                 "PAYRUN" => await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM payruns WHERE Id=@ResourceId", new { ResourceId = resourceId }),
-                "LEAVEREQUEST" => await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM essleaverequests WHERE Id=@ResourceId", new { ResourceId = resourceId }),
+                "LEAVEREQUEST" or "ATTENDANCEREGULARIZATION" => await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM essleaverequests WHERE Id=@ResourceId", new { ResourceId = resourceId }),
                 "TRAVELREQUEST" => await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM ess_travel_requests WHERE Id=@ResourceId", new { ResourceId = resourceId }),
                 "EXPENSECLAIM" => await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM ess_expense_claims WHERE Id=@ResourceId", new { ResourceId = resourceId }),
                 "EMPLOYEE" or "EMPLOYEEACTION" => await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM employees WHERE Id=@ResourceId", new { ResourceId = resourceId }),

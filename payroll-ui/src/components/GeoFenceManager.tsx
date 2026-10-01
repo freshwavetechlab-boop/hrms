@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Drawer, Form, Input, InputNumber, Row, Space, Tag } from 'antd'
-import DataTable from './DataTable'
+import RecruitmentRecordList from './RecruitmentRecordList'
+import { PageHeaderPortal } from './layout/AppPageHeader'
 import GeoFenceMapPicker from './GeoFenceMapPicker'
 import SearchSelect, { selectOptions } from './SearchSelect'
 import { deleteGeoFenceRule, geoFenceFallback, getGeoFenceEmployees, getGeoFenceRules, saveGeoFenceRule } from '../services/leaveAttendanceService'
@@ -106,12 +107,12 @@ export default function GeoFenceManager({ clients, clientId, fixedClientId, onCl
   }
 
   return <section className="geo-fence-manager">
-    <AntCard className="settings-panel settings-table-panel geo-fence-card" size="small" title="Geo-Fencing Rules">
+    <AntCard className="settings-panel settings-table-panel geo-fence-card" size="small">
       <div className="component-table-head">
         <div><b>Geo-fence rule master</b><span>Select a work location, choose its employees if required, and pin one or more permitted offices on the map.</span></div>
-        <Button type="primary" onClick={add}>Add rule</Button>
+        <PageHeaderPortal slot="attendance-settings-page-controls"><Button type="primary" onClick={add}>Add rule</Button></PageHeaderPortal>
       </div>
-      <DataTable rows={rules} emptyText="No geo-fence rules configured." exportFileName="geo-fence-rules" columns={[
+      <RecruitmentRecordList rows={rules} title={row => row.name} subtitle={row => row.workLocationName} filters={[{ key: 'location', label: 'Location', value: row => row.workLocationName }, { key: 'mode', label: 'Mode', value: row => row.strictness }, { key: 'status', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive' }]} emptyText="No geo-fence rules configured." exportFileName="geo-fence-rules" columns={[
         { key: 'name', label: 'Rule' },
         { key: 'target', label: 'Work location / employees', value: row => `${row.workLocationName || 'Work location'} - ${row.employeeIds.length ? `${row.employeeIds.length} selected employees` : 'All location employees'}` },
         { key: 'radiusMeters', label: 'Radius', value: row => `${row.radiusMeters}m + ${row.gpsToleranceMeters}m` },

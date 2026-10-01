@@ -68,10 +68,14 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
             clientId ??= await workflows.ResolveClientIdFromLookupAsync(rule.ClientLookupTable, rule.ClientLookupKeyColumn, rule.ClientLookupClientColumn, resourceId);
             clientId ??= await workflows.ResolveClientIdAsync(rule.ClientIdSql, routeValues);
             clientId ??= user.ClientId;
+            var resourceType = rule.ResourceType;
+            if (context.Request.Path == "/api/ess/leave/requests" && resourceType == "LeaveRequest" &&
+                (await workflows.GetResourceStateAsync("AttendanceRegularization", resourceId))?.CurrentState == "Pending")
+                resourceType = "AttendanceRegularization";
             var payload = JsonSerializer.Serialize(new
             {
                 rule.ActivityCode,
-                rule.ResourceType,
+                ResourceType = resourceType,
                 ResourceId = resourceId,
                 RouteValues = routeValues,
                 ClientId = clientId,
@@ -84,12 +88,12 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
             var workflowId = rule.WorkflowId ?? await workflows.GetDefaultIdForActivityAsync(rule.ActivityCode, clientId);
             if (workflowId is not null)
             {
-                var existingState = await workflows.GetResourceStateAsync(rule.ResourceType, resourceId);
+                var existingState = await workflows.GetResourceStateAsync(resourceType, resourceId);
                 if (existingState?.CurrentState != "Pending")
                     await workflows.StartAsync(new StartWorkflowRequest
                     {
                         WorkflowId = workflowId.Value,
-                        ResourceType = rule.ResourceType,
+                        ResourceType = resourceType,
                         ResourceId = resourceId,
                         PayloadJson = payload
                     }, user.Id);
@@ -100,7 +104,7 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
             await notifications.PublishEventAsync(new NotificationEvent
             {
                 EventCode = rule.ActivityCode,
-                ResourceType = rule.ResourceType,
+                ResourceType = resourceType,
                 ResourceId = resourceId,
                 ClientId = clientId,
                 ActorUserId = user.Id,

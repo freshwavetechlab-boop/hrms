@@ -267,6 +267,14 @@ LIMIT 250",new{UserId=userId,All=all});}
         var instance=await db.QueryFirstOrDefaultAsync<WorkflowInstance>("SELECT i.* FROM workflowinstances i JOIN workflowtasks t ON t.InstanceId=i.Id WHERE t.Id=@TaskId",new{TaskId=taskId},tx);
         if(instance?.ResourceType==EssMssRepository.ProfileEditResource)
             await db.ExecuteScalarAsync<int>("SELECT Id FROM employees WHERE Id=@Id FOR UPDATE",new{Id=instance.ResourceId},tx);
+        var leaveId = 0L;
+        if (instance?.ResourceType is "LeaveRequest" or "AttendanceRegularization" && long.TryParse(instance.ResourceId, out leaveId))
+        {
+            var leave = await db.QueryFirstOrDefaultAsync<EssLeaveApprovalPeriod>("SELECT EmployeeId,ClientId,FromDate,ToDate FROM essleaverequests WHERE Id=@Id", new { Id = leaveId }, tx);
+            if (leave is null) return false;
+            await db.ExecuteScalarAsync<int>("SELECT Id FROM employees WHERE Id=@Id FOR UPDATE", new { Id = leave.EmployeeId }, tx);
+            if (action == "Approved" && await EssMssRepository.IsLeavePeriodLockedAsync(db, tx, leave.ClientId, leave.EmployeeId, leave.FromDate, leave.ToDate)) return false;
+        }
         var task=await db.QueryFirstOrDefaultAsync<WorkflowTask>("SELECT * FROM workflowtasks WHERE Id=@Id AND ApproverUserId=@Actor AND Status='Pending' FOR UPDATE",new{Id=taskId,Actor=actor},tx);
         if(task is null || instance is null) return false;
         await db.ExecuteAsync("UPDATE workflowtasks SET Status=@Action,ActionedAt=UTC_TIMESTAMP(),Comment=@Comment WHERE Id=@Id",new{Action=action,Comment=comment,Id=taskId},tx);
@@ -276,8 +284,18 @@ LIMIT 250",new{UserId=userId,All=all});}
             await db.ExecuteAsync("UPDATE workflowinstances SET Status=@Status,CompletedAt=UTC_TIMESTAMP() WHERE Id=@Id",new{Status=action,Id=task.InstanceId},tx);
             await SetResourceStateAsync(db,instance.ResourceType,instance.ResourceId,action,task.InstanceId,actor,tx);
         }
+        if (leaveId > 0)
+        {
+            var outcome = await db.ExecuteScalarAsync<string>("SELECT Status FROM workflowinstances WHERE Id=@Id", new { Id = task.InstanceId }, tx);
+            if (outcome is "Approved" or "Rejected" or "Sent Back")
+            {
+                await db.ExecuteAsync("UPDATE essleaverequests SET Status=@Status WHERE Id=@Id", new { Id = leaveId, Status = outcome }, tx);
+                if (outcome == "Approved") await EssMssRepository.ApplyApprovedLeaveEffectsAsync(db, tx, leaveId);
+            }
+        }
         await tx.CommitAsync(); return true;
     }
+    private class EssLeaveApprovalPeriod { public int EmployeeId { get; set; } public int ClientId { get; set; } public DateTime FromDate { get; set; } public DateTime ToDate { get; set; } }
     private static async Task<int?> ResolveAsync(MySqlConnection db,WorkflowStage s,int requestor,MySqlTransaction? tx=null){if(s.ApproverType=="Employee Administrator") return await db.ExecuteScalarAsync<int?>(@"SELECT u.Id
 FROM authusers u JOIN authusers requester ON requester.Id=@Requestor JOIN employees e ON e.Id=requester.EmployeeId
 WHERE u.IsActive=TRUE AND u.Id<>requester.Id AND (u.ClientId=e.ClientId OR u.ClientId IS NULL)

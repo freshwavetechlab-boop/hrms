@@ -30,6 +30,7 @@ export default function AppPageHeader({ title, description, icon, breadcrumbs, a
 
 export function PageHeaderPortal({ slot, children }: { slot: string; children: ReactNode }) {
   const [target, setTarget] = useState<HTMLElement | null>(null)
-  useEffect(() => { setTarget(document.getElementById(slot)) }, [slot])
+  // Route state can add / replace the header slots after this child first mounts.
+  useEffect(() => { const element = document.getElementById(slot); if (element !== target) setTarget(element) })
   return target ? createPortal(children, target) : null
 }

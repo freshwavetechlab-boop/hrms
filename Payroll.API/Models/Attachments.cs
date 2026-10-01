@@ -155,6 +155,7 @@ public class AttachmentTargetOption
 public class AttachmentAccessTicket
 {
     public string Url { get; set; } = string.Empty;
+    public string Purpose { get; set; } = "Preview";
     public DateTime ExpiresAtUtc { get; set; }
 }
 

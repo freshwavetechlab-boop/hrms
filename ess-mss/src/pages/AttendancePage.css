@@ -1,0 +1,13 @@
+.ess-main:has(.ess-attendance-workspace) { height: 100dvh; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.ess-main:has(.ess-attendance-workspace) > .ess-topbar { flex-shrink: 0; }
+.ess-attendance-workspace { display: flex; flex: 1; flex-direction: column; gap: 10px; min-height: 0; min-width: 0; }
+.ess-attendance-controls { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
+.ess-attendance-controls input { max-width: 160px; }
+.ess-attendance-records-layout { display: flex; gap: 12px; flex: 1; min-height: 0; }
+.ess-attendance-records { display: flex; flex: 1; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; padding: 12px; border: 1px solid #e3e8ef; border-radius: 14px; background: white; }
+.ess-attendance-records > .ant-input-search { flex-shrink: 0; }
+.ess-attendance-records-body { flex: 1; min-height: 0; overflow: hidden; }
+.ess-attendance-cards { height: 100%; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+.ess-attendance-cards p { margin: 6px 0; }
+.ess-attendance-filters { display: flex; flex-direction: column; gap: 12px; width: 220px; padding: 14px; border: 1px solid #e3e8ef; border-radius: 14px; background: white; }
+@media (max-width: 800px) { .ess-attendance-records-layout { flex-direction: column-reverse; } .ess-attendance-filters { width: 100%; flex-direction: row; flex-wrap: wrap; padding: 8px; } .ess-attendance-filters .ant-select { flex: 1; min-width: 140px; } }

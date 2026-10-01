@@ -40,8 +40,10 @@ builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options => options.DocumentFilter<ApiCatalogDocumentFilter>());
 builder.Services.AddHttpClient();
+builder.Services.AddHttpClient(nameof(AttachmentContentResult), client => client.Timeout = TimeSpan.FromSeconds(30))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false }).RemoveAllLoggers();
 builder.Services.AddHttpClient("LocalLlm").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddHttpClient("LocalLlmControl").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton<LocalLlmRecoveryService>();
@@ -117,6 +119,7 @@ builder.Services.AddSingleton<EmployeeAttributeRepository>();
 builder.Services.AddSingleton<PayRunRepository>();
 builder.Services.AddSingleton<AuthRepository>();
 builder.Services.AddSingleton<LeaveAttendanceRepository>();
+builder.Services.AddSingleton<AttendanceIntegrationRepository>();
 builder.Services.AddSingleton<LeaveBalanceImportRepository>();
 builder.Services.AddSingleton<ReportingRepository>();
 builder.Services.AddSingleton<EssMssRepository>();
@@ -229,6 +232,16 @@ app.Use(async (context, next) =>
         return;
     }
 
+    if (context.Request.Path == "/api/integrations/attendance/punches" && HttpMethods.IsPost(context.Request.Method))
+    {
+        var header = context.Request.Headers.Authorization.ToString();
+        var machineToken = header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? header[7..].Trim() : "";
+        var device = await context.RequestServices.GetRequiredService<AttendanceIntegrationRepository>().AuthenticateAsync(machineToken);
+        if (device is null) { context.Response.StatusCode = 401; await context.Response.WriteAsJsonAsync(new { error = "A valid active device bearer token is required." }); return; }
+        context.Items["AttendanceDevice"] = device;
+        context.Items["AttendanceDeviceToken"] = machineToken;
+        await next(); return;
+    }
     var authRepository = context.RequestServices.GetRequiredService<AuthRepository>();
     var token = ReadAuthToken(context, AuthCookieName);
     var user = string.IsNullOrWhiteSpace(token) ? null : await authRepository.GetUserByTokenAsync(token);
@@ -305,6 +318,20 @@ app.Use(async (context, next) =>
 });
 
 app.UseMiddleware<WorkflowActionMiddleware>();
+
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/api/docs") && !CanViewApiCatalog(context)) { context.Response.StatusCode = 403; return; }
+    await next();
+});
+app.UseSwaggerUI(options => { options.RoutePrefix = "api/docs"; options.SwaggerEndpoint("/api/openapi/v1.json", "Frevo HRMS API"); });
+app.MapGet("/api/openapi/v1.json", (Swashbuckle.AspNetCore.Swagger.ISwaggerProvider provider, HttpContext context) =>
+{
+    if (!CanViewApiCatalog(context)) return Results.StatusCode(403);
+    using var output = new StringWriter();
+    provider.GetSwagger("v1").SerializeAsV3(new Microsoft.OpenApi.Writers.OpenApiJsonWriter(output));
+    return Results.Text(output.ToString(), "application/json");
+});
 
 app.MapPost("/api/auth/login", async (AuthRepository repository, LoginRequest request, HttpContext context) =>
 {
@@ -964,7 +991,6 @@ app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowReposi
     var task=await repository.ActionAsync(taskId,user.Id,action,request.Comment);
     if(!task)return Results.NotFound();
     var instance=await repository.GetInstanceForTaskAsync(taskId);
-    if(instance?.ResourceType=="LeaveRequest")await essRepository.SyncLeaveWorkflowStatusAsync(instance.ResourceId,instance.Status);
     if(instance?.ResourceType=="TravelRequest")await essRepository.SyncTravelWorkflowStatusAsync(instance.ResourceId,instance.Status);
     if(instance?.ResourceType=="ExpenseClaim")await essRepository.SyncExpenseWorkflowStatusAsync(instance.ResourceId,instance.Status);
     if(instance?.ResourceType=="RecruitmentRequisition")
@@ -1132,6 +1158,7 @@ app.MapPost("/api/ess-admin/settings", async (EssMssRepository repository, EssCl
 .WithOpenApi();
 
 app.MapGet("/api/ess/leave/requests", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetLeaveRequestsAsync(user.EmployeeId.Value,user.ClientId)); });
+app.MapGet("/api/ess/attendance/regularization-options", async (EssMssRepository repository, HttpContext context) => { var user = CurrentUser(context); return user.EmployeeId is null || !user.Permissions.Contains("ess.self", StringComparer.OrdinalIgnoreCase) ? Results.StatusCode(403) : Results.Ok(await repository.GetRegularizationOptionsAsync(user.EmployeeId.Value, user.ClientId)); });
 app.MapGet("/api/ess/leave/requests/{id:long}/trail", async (EssMssRepository repository, long id, HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var trail=await repository.GetLeaveRequestTrailAsync(id,user.EmployeeId.Value,user.ClientId); return trail is null ? Results.NotFound() : Results.Ok(trail); });
 app.MapGet("/api/ess/pay/payslips", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetPayslipsAsync(user.EmployeeId.Value,user.ClientId)); });
 app.MapGet("/api/ess/pay/payslips/{payRunId:int}", async (EssMssRepository repository, int payRunId, HttpContext context) => { var user=CurrentUser(context); if(user.EmployeeId is null)return Results.StatusCode(403); var document=await repository.GetPayslipDocumentAsync(user.EmployeeId.Value,user.ClientId,payRunId); return document is null ? Results.NotFound() : Results.Ok(document); });
@@ -1213,7 +1240,7 @@ app.MapGet("/api/ess/mss/attendance/daily/batch-jobs/{jobId:guid}", async (Leave
 });
 app.MapGet("/api/ess/dashboard/holidays", async (EssMssRepository repository, string month, HttpContext context) => Results.Ok(await repository.GetHolidaysAsync(CurrentUser(context).ClientId,month)));
 app.MapGet("/api/ess/dashboard/birthdays", async (EssMssRepository repository, HttpContext context) => Results.Ok(await repository.GetTodaysBirthdaysAsync(CurrentUser(context).ClientId)));
-app.MapPost("/api/ess/leave/requests", async (EssMssRepository repository, WorkflowRepository workflows, CreateEssLeaveRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(result,error)=await repository.CreateLeaveRequestAsync(user.EmployeeId.Value,user.ClientId,request); if(result is null)return Results.BadRequest(new{error}); var workflowId=await workflows.GetDefaultIdAsync("LeaveRequest",user.ClientId); if(workflowId is not null) await workflows.StartAsync(new StartWorkflowRequest{WorkflowId=workflowId.Value,ResourceType="LeaveRequest",ResourceId=result.Id.ToString(),PayloadJson=System.Text.Json.JsonSerializer.Serialize(result)},user.Id); return Results.Created($"/api/ess/leave/requests/{result.Id}",result); });
+app.MapPost("/api/ess/leave/requests", async (EssMssRepository repository, WorkflowRepository workflows, CreateEssLeaveRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var(result,error)=await repository.CreateLeaveRequestAsync(user.EmployeeId.Value,user.ClientId,request,workflows,user.Id); return result is null ? Results.BadRequest(new{error}) : Results.Created($"/api/ess/leave/requests/{result.Id}",result); });
 
 app.MapGet("/api/ess/travel/options", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetTravelOptionsAsync(user.EmployeeId.Value,user.ClientId)); });
 app.MapGet("/api/ess/travel/requests", async (EssMssRepository repository, HttpContext context) => { var user=CurrentUser(context); return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetTravelRequestsAsync(user.EmployeeId.Value,user.ClientId)); });
@@ -3599,6 +3626,41 @@ app.MapGet("/api/leave-attendance/attendance-settings", async (LeaveAttendanceRe
 .WithName("GetAttendanceSettings")
 .WithOpenApi();
 
+app.MapGet("/api/leave-attendance/configuration-gaps", async (AttendanceIntegrationRepository repository, int? clientId, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (clientId.HasValue && (clientId <= 0 || !CanAccessClient(context, clientId.Value))) return Results.StatusCode(403);
+    if (!user.Permissions.Any(p => p is "settings.manage" or "client.settings.manage" or "attendance.manage" or "workflow.manage" or "employees.manage")) return Results.StatusCode(403);
+    return Results.Ok(await repository.GapsAsync(user.ClientId ?? clientId, user));
+});
+app.MapGet("/api/integrations/attendance/devices", async (AttendanceIntegrationRepository repository, int clientId, HttpContext context) =>
+    HasClientSettingsManagement(context, clientId) ? Results.Ok(await repository.ListAsync(clientId)) : Results.StatusCode(403));
+app.MapPost("/api/integrations/attendance/devices", async (AttendanceIntegrationRepository repository, AttendanceDeviceRegistration request, HttpContext context) =>
+{
+    if (!HasClientSettingsManagement(context, request.ClientId)) return Results.StatusCode(403);
+    var error = await repository.SaveDeviceAsync(request); return error is null ? Results.Ok(new { saved = true }) : Results.BadRequest(new { error });
+});
+app.MapPost("/api/integrations/attendance/devices/{deviceId}/token", async (AttendanceIntegrationRepository repository, string deviceId, AttendanceTokenRequest request, HttpContext context) =>
+{
+    if (!HasClientSettingsManagement(context, request.ClientId)) return Results.StatusCode(403);
+    var (token, error) = await repository.TokenAsync(request.ClientId, deviceId, request.ValidDays);
+    context.Response.Headers.CacheControl = "no-store";
+    return error is null ? Results.Ok(new { token }) : Results.BadRequest(new { error });
+});
+app.MapDelete("/api/integrations/attendance/devices/{deviceId}/token", async (AttendanceIntegrationRepository repository, string deviceId, int clientId, HttpContext context) =>
+{
+    if (!HasClientSettingsManagement(context, clientId)) return Results.StatusCode(403);
+    var (_, error) = await repository.TokenAsync(clientId, deviceId, 0, true);
+    return error is null ? Results.Ok(new { revoked = true }) : Results.BadRequest(new { error });
+});
+app.MapPost("/api/integrations/attendance/punches", async (EssMssRepository repository, MachineAttendanceRequest request, HttpContext context) =>
+{
+    if (context.Items["AttendanceDevice"] is not AttendanceDevice device) return Results.Unauthorized();
+    if (request.DeviceId != device.DeviceId) return Results.StatusCode(403);
+    if (request.Punches is null || request.Punches.Count is < 1 or > 500 || request.Punches.Any(p => p is null)) return Results.BadRequest(new { error = "Send 1–500 punches per batch." });
+    return Results.Ok(new { results = await repository.ImportMachinePunchesAsync(device, (string)context.Items["AttendanceDeviceToken"]!, request) });
+}).WithName("ImportMachineAttendance").WithOpenApi();
+
 app.MapPost("/api/leave-attendance/attendance-settings", async (LeaveAttendanceRepository repository, SaveAttendanceSettingsRequest request, HttpContext context) =>
 {
     if (!HasClientSettingsManagement(context, request.ClientId))
@@ -3629,7 +3691,7 @@ app.MapGet("/api/leave-attendance/geo-fences/applicable", async (LeaveAttendance
 
 app.MapPost("/api/leave-attendance/geo-fences", async (LeaveAttendanceRepository repository, SaveGeoFenceRuleRequest request, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, request.ClientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     var (rule, error) = await repository.SaveGeoFenceRuleAsync(request);
     return rule is null ? Results.BadRequest(new { error }) : Results.Ok(rule);
@@ -3639,7 +3701,7 @@ app.MapPost("/api/leave-attendance/geo-fences", async (LeaveAttendanceRepository
 
 app.MapDelete("/api/leave-attendance/geo-fences/{id:int}", async (LeaveAttendanceRepository repository, int id, int clientId, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage"))
+    if (!HasClientSettingsManagement(context, clientId))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     return clientId > 0 && await repository.DeleteGeoFenceRuleAsync(id, clientId) ? Results.NoContent() : Results.NotFound();
 })
@@ -4532,6 +4594,8 @@ static AuthUser CurrentUser(HttpContext context) =>
 
 static bool HasPermission(HttpContext context, string permission) =>
     CurrentUser(context).Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
+
+static bool CanViewApiCatalog(HttpContext context) => HasPermission(context, "workflow.manage") || HasPermission(context, "settings.manage") || HasPermission(context, "client.settings.manage");
 
 static bool HasClientUserManagement(HttpContext context) =>
     HasPermission(context, "security.manage")

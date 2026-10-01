@@ -71,6 +71,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const route = useLocation()
   const fromDashboard = searchParams.get('source') === 'workforce'
   const [savedClient, setClientFilter] = useSessionPreference('employees.ui:' + session?.user.id + ':client', 0)
+  useEffect(() => { const id = Number(searchParams.get('clientId')); if (!fromDashboard && clients.some(client => client.id === id) && (!clientScoped || id === scopedClientId)) setClientFilter(id) }, [searchParams, clients, clientScoped, scopedClientId, fromDashboard])
   const clientFilter = clientScoped ? scopedClientId : fromDashboard ? Number(searchParams.get('clientId') || 0) : savedClient
   const [upload, setUpload] = useState<{ open: boolean; state: BulkUploadState; percent: number; summary: BulkUploadSummary }>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
   const [bulkMapperOpen, setBulkMapperOpen] = useState(false)

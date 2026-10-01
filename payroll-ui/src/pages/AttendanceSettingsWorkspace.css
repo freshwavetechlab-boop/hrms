@@ -1,0 +1,6 @@
+.attendance-settings-record-page :is(.attendance-groups, .leave-types, .holiday-manager, .geo-fence-manager) { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
+.attendance-settings-record-page > section > .ant-card,
+.attendance-settings-record-page > section > .ant-card > .ant-card-body { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
+.attendance-settings-record-page .component-table-head > div:first-child { display: none; }
+.attendance-settings-record-page .leave-type-summary { display: none; }
+.attendance-settings-record-page .recruitment-record-workspace { flex: 1; min-height: 0; }

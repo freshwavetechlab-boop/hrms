@@ -50,11 +50,12 @@ export const openAttachmentWithTicket = async (publicId: string, purpose: 'Previ
     return response
   }
   const target = apiUrl(response.data.url)
-  if (purpose === 'Preview') {
+  if (purpose === 'Preview' && response.data.purpose !== 'Download') {
     if (previewWindow) previewWindow.location.replace(target)
     else window.open(target, '_blank', 'noopener,noreferrer')
   }
   else {
+    previewWindow?.close()
     const anchor = document.createElement('a')
     anchor.href = target
     anchor.rel = 'noopener noreferrer'
@@ -63,6 +64,8 @@ export const openAttachmentWithTicket = async (publicId: string, purpose: 'Previ
   return response
 }
 export const downloadAttachmentBlob = async (publicId: string) => {
-  const response = await apiRequest(`/api/attachments/${publicId}/content?download=true`)
+  const ticket = await issueAttachmentTicket(publicId, 'Download')
+  if (!ticket.ok || !ticket.data) return { ok: false, blob: null }
+  const response = await apiRequest(ticket.data.url)
   return { ok: response.ok, blob: response.ok ? await response.blob() : null }
 }

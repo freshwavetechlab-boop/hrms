@@ -1222,6 +1222,7 @@ SELECT LAST_INSERT_ID();", new
         purpose = purpose.Equals("download", StringComparison.OrdinalIgnoreCase) ? "Download" : "Preview";
         var access = await GetForContentAsync(publicId, user, "TOKEN_ISSUED", ipAddress, userAgent);
         if (access.Attachment is null) return (null, access.Error);
+        if (purpose == "Preview" && !AttachmentContentResult.CanPreview(access.Attachment.DetectedMimeType)) purpose = "Download";
         var rawToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         var expiresAt = DateTime.UtcNow.AddSeconds(purpose == "Download"
             ? configuration.GetValue("AttachmentStorage:DownloadTokenLifetimeSeconds", 120)
@@ -1232,7 +1233,7 @@ SELECT LAST_INSERT_ID();", new
 (token_hash,attachment_id,issued_to_user_id,purpose,use_policy,maximum_uses,expires_at_utc)
 VALUES (@TokenHash,@AttachmentId,@UserId,@Purpose,'UntilExpiry',@MaximumUses,@ExpiresAt);",
             new { TokenHash = HashToken(rawToken), AttachmentId = access.Attachment.Id, UserId = user.Id, Purpose = purpose, MaximumUses = purpose == "Download" ? 3 : 30, ExpiresAt = expiresAt });
-        return (new AttachmentAccessTicket { Url = $"/api/public/attachments/content?token={Uri.EscapeDataString(rawToken)}", ExpiresAtUtc = expiresAt }, null);
+        return (new AttachmentAccessTicket { Url = $"/api/public/attachments/content?token={Uri.EscapeDataString(rawToken)}", ExpiresAtUtc = expiresAt, Purpose = purpose }, null);
     }
 
     public async Task<(EntityAttachment? Attachment, AttachmentStorageServer? Server, string? Purpose)> ConsumeAccessTicketAsync(string rawToken, string ipAddress, string userAgent)

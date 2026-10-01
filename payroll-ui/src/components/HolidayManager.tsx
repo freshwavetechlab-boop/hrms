@@ -10,15 +10,15 @@ import { parseImportPreviewFile, validateImportPreview, type ImportPreviewIssue,
 import { previewToXlsxFile } from '../utils/previewFile'
 import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from './BulkUploadPreviewModal'
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from './BulkUploadProgressModal'
-import DataTable from './DataTable'
-import PageTabs from './PageTabs'
+import RecruitmentRecordList from './RecruitmentRecordList'
+import { PageHeaderPortal } from './layout/AppPageHeader'
+import { Modal } from 'antd'
 import SearchSelect, { selectOptions } from './SearchSelect'
 
 const today = new Date().toISOString().slice(0, 10)
 const holidayTypes = ['Holiday', 'Restricted Holiday'] as const
 const blank: Holiday = { id: 0, clientId: 0, name: '', holidayType: 'Holiday', startDate: today, endDate: today, description: '', allLocations: true, workLocationIds: [], workLocations: 'All locations' }
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-const holidayViews = ['Table', 'Calendar'] as const
 const holidayPreviewRules: ImportPreviewRules = {
   required: ['Holiday Name', 'Holiday Type', 'Start Date'],
   unique: [['Id']],
@@ -182,14 +182,10 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
   }
 
   return <section className="holiday-manager">
-    <AntCard className="settings-panel settings-table-panel holiday-list-card" size="small" title="Holiday Management">
-      <div className="component-table-head"><div><b>Holiday master</b><span>Maintain holidays and restricted holidays by year and work-location applicability.</span></div><Space className="settings-master-actions" size={8} wrap><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={() => void downloadTemplate()}>Template</Button><label className={`settings-upload-action ${!templateDownloaded ? 'disabled' : ''}`} title={templateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!templateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadTemplate(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" onClick={() => { setForm({ ...blank, clientId }); setErrors([]); setDrawerOpen(true) }}>Add holiday</Button></Space></div>
-      <Row gutter={12} className="holiday-toolbar">
-        <Col xs={24} sm={8} md={6} lg={5} className="holiday-year-field"><Form.Item label="Year"><SearchSelect value={year} onChange={value => setYear(Number(value))} options={years.map(value => ({ value, label: String(value) }))} /></Form.Item></Col>
-        <Col xs={24} sm={16} md={12} lg={10} className="holiday-location-field"><Form.Item label="Work Location"><SearchSelect value={workLocationId} onChange={value => setWorkLocationId(Number(value))} options={selectOptions(locations.map(location => ({ value: location.id, label: `${location.name}${location.city ? ` - ${location.city}` : ''}` })), 'All locations', 0)} /></Form.Item></Col>
-      </Row>
-      <PageTabs items={holidayViews} value={view} onChange={setView} label="Holiday views" />
-      {view === 'Table' ? <HolidayTable rows={rows} edit={edit} remove={remove} /> : <div className="holiday-calendar">{calendar.map(item => <article key={item.month}><h4>{item.month}</h4>{item.holidays.length ? item.holidays.map(holiday => <button type="button" key={holiday.id} onClick={() => edit(holiday)}><strong>{holiday.name}</strong><span>{holiday.holidayType}</span><span>{dateRange(holiday)}</span><small>{holiday.workLocations}</small></button>) : <p>No holidays</p>}</article>)}</div>}
+    <AntCard className="settings-panel settings-table-panel holiday-list-card" size="small">
+      <PageHeaderPortal slot="attendance-settings-page-controls"><Space className="settings-master-actions" size={8} wrap><SearchSelect value={year} onChange={value => setYear(Number(value))} options={years.map(value => ({ value, label: String(value) }))} /><Button onClick={() => setView('Calendar')}>Calendar</Button><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={() => void downloadTemplate()}>Template</Button><label className={`settings-upload-action ${!templateDownloaded ? 'disabled' : ''}`} title={templateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!templateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadTemplate(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" onClick={() => { setForm({ ...blank, clientId }); setErrors([]); setDrawerOpen(true) }}>Add holiday</Button></Space></PageHeaderPortal>
+      <HolidayTable rows={rows} edit={edit} remove={remove} />
+      <Modal title="Holiday calendar" open={view === 'Calendar'} onCancel={() => setView('Table')} footer={null} width="min(1000px, 96vw)"><div className="holiday-calendar">{calendar.map(item => <article key={item.month}><h4>{item.month}</h4>{item.holidays.length ? item.holidays.map(holiday => <button type="button" key={holiday.id} onClick={() => { setView('Table'); edit(holiday) }}><strong>{holiday.name}</strong><span>{holiday.holidayType}</span><span>{dateRange(holiday)}</span><small>{holiday.workLocations}</small></button>) : <p>No holidays</p>}</article>)}</div></Modal>
     </AntCard>
     <Drawer className="settings-master-drawer" title={form.id ? 'Edit holiday' : 'Add holiday'} open={drawerOpen} width={620} onClose={() => { setDrawerOpen(false); setForm({ ...blank, clientId }); setErrors([]) }} destroyOnClose>
       <HolidayForm form={form} locations={locations} errors={errors} set={set} toggleLocation={toggleLocation} save={save} cancel={() => { setDrawerOpen(false); setForm({ ...blank, clientId }); setErrors([]) }} />
@@ -200,7 +196,7 @@ export default function HolidayManager({ clientId, onMessage }: { clientId: numb
 }
 
 function HolidayTable({ rows, edit, remove }: { rows: Holiday[]; edit: (row: Holiday) => void; remove: (row: Holiday) => void }) {
-  return <DataTable rows={rows} emptyText="No holidays configured for this filter." exportFileName="holidays" columns={[
+  return <RecruitmentRecordList rows={rows} title={row => row.name} subtitle={row => dateRange(row)} filters={[{ key: 'type', label: 'Type', value: row => row.holidayType }, { key: 'location', label: 'Locations', value: row => row.workLocations }]} emptyText="No holidays configured for this filter." exportFileName="holidays" columns={[
     { key: 'name', label: 'Holiday Name' },
     { key: 'holidayType', label: 'Type' },
     { key: 'startDate', label: 'Start Date', value: row => formatDate(row.startDate) },

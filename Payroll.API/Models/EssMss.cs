@@ -79,7 +79,7 @@ public class EssClientSetting
     public bool IsActive { get; set; } = true;
 }
 
-public class CreateEssLeaveRequest { public string LeaveCode { get; set; } = ""; public string FromDate { get; set; } = ""; public string ToDate { get; set; } = ""; public string DayType { get; set; } = "Full Day"; public string Reason { get; set; } = ""; }
+public class CreateEssLeaveRequest { public string LeaveCode { get; set; } = ""; public string FromDate { get; set; } = ""; public string ToDate { get; set; } = ""; public string DayType { get; set; } = "Full Day"; public string Reason { get; set; } = ""; public string? RegularizationKind { get; set; } public TimeSpan? CheckInTime { get; set; } public TimeSpan? CheckOutTime { get; set; } }
 public class EssLeaveRequest { public long Id { get; set; } public string LeaveCode { get; set; } = ""; public string LeaveType { get; set; } = ""; public DateTime FromDate { get; set; } public DateTime ToDate { get; set; } public string DayType { get; set; } = "Full Day"; public decimal Days { get; set; } public string Reason { get; set; } = ""; public string Status { get; set; } = ""; public DateTime CreatedAt { get; set; } }
 public class EssTravelRequest
 {

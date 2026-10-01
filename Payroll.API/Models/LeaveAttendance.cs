@@ -60,6 +60,7 @@ public class SaveLeaveAttendancePreferencesRequest
 
 public class AttendanceSettings
 {
+    public AttendanceRules Rules { get; set; } = new();
     public int Id { get; set; }
     public int ClientId { get; set; }
     public TimeSpan CheckInTime { get; set; } = new(9, 0, 0);

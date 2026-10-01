@@ -196,7 +196,7 @@ async function readJson<T>(response: Response, fallback: T) {
 }
 
 function notifyMutation(path: string, method = 'POST', ok: boolean, error: string, options: ApiOptions = {}) {
-  if (ok && typeof window !== 'undefined' && /^\/api\/(workflows|recruitment|recruitment-orchestration)\//.test(path))
+  if (ok && typeof window !== 'undefined' && /^\/api\/(workflows|recruitment|recruitment-orchestration|leave-attendance|work-locations|employees)(\/|$)/.test(path))
     window.dispatchEvent(new Event('hrms:actions-changed'))
   if (options.toast === false) return
   if (!ok) {

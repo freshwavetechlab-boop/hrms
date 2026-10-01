@@ -80,10 +80,11 @@ export function ProfileDocuments({ employeeId, clientId, canEdit, onBusyChange }
     try {
       const ticket = await essApi.attachmentTicket(file.publicId, purpose)
       const url = `${apiBase}${ticket.url}`
-      if (purpose === 'Preview') {
+      if (purpose === 'Preview' && ticket.purpose !== 'Download') {
         if (previewWindow) previewWindow.location.replace(url)
         else window.open(url, '_blank', 'noopener,noreferrer')
       } else {
+        previewWindow?.close()
         const anchor = document.createElement('a')
         anchor.href = url
         anchor.rel = 'noopener noreferrer'

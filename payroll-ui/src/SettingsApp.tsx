@@ -314,7 +314,7 @@ export default function SettingsApp() {
     if (code === 'LeaveAttendance') return hasAnyPermission('attendance.manage', 'leave.manage', 'mss.attendance.manage', 'mss.attendance.client.manage')
     if (code === 'TalentAcquisition') return hasAssignedInterviews || isSuperAdmin || hasAnyPermission('settings.manage') || Array.from(grantedPermissions).some(permission => permission.startsWith('recruitment.'))
     if (code === 'Security') return hasAnyPermission('security.manage', 'client.users.manage', 'client.roles.assign')
-    if (code === 'Workflows') return hasAnyPermission('workflow.manage')
+    if (code === 'Workflows') return hasAnyPermission('workflow.manage', 'settings.manage', 'client.settings.manage')
     if (code === 'Settings') return hasAnyPermission('settings.manage', 'client.settings.manage')
     if (code === 'Reports') return hasAnyPermission('reports.view')
     return false
@@ -582,7 +582,7 @@ export default function SettingsApp() {
         navigate('/dashboard', { replace: true })
         return
       }
-      const nextTab = fromSlug(workflowMenus, tabSlug, 'Workflow Setup')
+      const nextTab = hasAnyPermission('workflow.manage') ? fromSlug(workflowMenus, tabSlug, 'Workflow Setup') : 'API Catalog'
       setWorkflowTab(nextTab)
       localStorage.setItem('payroll.workflowTab', nextTab)
       setMainModule('Workflows')
@@ -594,7 +594,7 @@ export default function SettingsApp() {
     }
     if (parts[0] === 'settings') {
       if (clientScopedAdmin) {
-        const clientAllowed = parts[1] === 'salary-templates' || parts[1] === 'payslip-templates' || parts[1] === 'leave-attendance'
+        const clientAllowed = parts[1] === 'salary-templates' || parts[1] === 'payslip-templates' || parts[1] === 'leave-attendance' || parts[1] === 'work-locations'
         if (!clientAllowed) {
           navigate('/settings/salary-templates', { replace: true })
           return
@@ -730,6 +730,7 @@ export default function SettingsApp() {
         {tasks}
         {menuLink('/settings/salary-templates', 'Salary Templates', settingsSection === 'General' && tab === 'Salary Templates', () => setTab('Salary Templates'), 'Client-wise', 'template')}
         {menuLink('/settings/payslip-templates', 'Payslip Templates', settingsSection === 'General' && tab === 'Payslip Templates', () => setTab('Payslip Templates'), 'Client-wise', 'payslip')}
+        {menuLink('/settings/work-locations', 'Work Locations', settingsSection === 'General' && tab === 'Work Locations', () => setTab('Work Locations'), undefined, 'location')}
         <div className={`settings-nav-group ${leaveAttendanceOpen ? 'expanded' : ''}`}>
           <button {...navAttrs('Leave & Attendance')} className={settingsSection === 'LeaveAttendance' ? 'active' : ''} type="button" aria-expanded={leaveAttendanceOpen} onClick={() => setLeaveAttendanceOpen(open => !open)}>{menuLabel('Leave & Attendance', null)}<small>{leaveAttendanceOpen ? '-' : '+'}</small></button>
           {leaveAttendanceOpen && <div className="settings-nav-submenu">{leaveAttendanceMenus.map(item => <Fragment key={item}>{menuLink(`/settings/leave-attendance/${slug(item)}`, item, settingsSection === 'LeaveAttendance' && leaveAttendanceTab === item, () => setLeaveAttendanceSettingsTab(item), undefined, leaveAttendanceIcons[item])}</Fragment>)}</div>}
@@ -795,7 +796,7 @@ export default function SettingsApp() {
         {expanded && <div className="report-nav-submenu">{reportItems(item).map(report => <Fragment key={report.name}>{menuLink(`/reports/${slug(item)}?report=${slug(report.name)}`, report.name, reportingReport.name === report.name, () => setReportingReportTab(item, report), undefined, null)}</Fragment>)}</div>}
       </div>
     })}</>
-    if (mainModule === 'Workflows') return workflowMenus.map(item => <Fragment key={item}>{menuLink(`/workflows/${slug(item)}`, item, workflowTab === item, () => setWorkflowModuleTab(item), undefined, workflowMenuIcons[item])}</Fragment>)
+    if (mainModule === 'Workflows') return workflowMenus.filter(item => hasAnyPermission('workflow.manage') || item === 'API Catalog').map(item => <Fragment key={item}>{menuLink(`/workflows/${slug(item)}`, item, workflowTab === item, () => setWorkflowModuleTab(item), undefined, workflowMenuIcons[item])}</Fragment>)
     return menuLink('/employees/master', 'Employee Master', true, () => setModule('Employees'), 'Core HR')
   }
   const renderPage = () => {
@@ -811,10 +812,10 @@ export default function SettingsApp() {
     if (mainModule === 'Employees') return employeeTab === 'Employee Communication' ? <EmployeeCommunicationPage /> : <EmployeePage view={(employeeTab === 'Org Structure' ? 'org' : 'master') as EmployeePageView} />
     if (mainModule === 'TalentAcquisition') return <RecruitmentPage view={interviewOnly ? 'Interviews' : recruitmentView} onRequestNavigationChange={setRequestNavigation} />
     if (mainModule === 'Reports') return <ReportingPage activeMenu={reportingTab} activeReport={reportingReport} />
-    if (mainModule === 'Workflows') return <WorkflowPage activeMenu={workflowTab} />
+    if (mainModule === 'Workflows') return <WorkflowPage activeMenu={hasAnyPermission('workflow.manage') ? workflowTab : 'API Catalog'} />
     return settingsSection === 'LeaveAttendance'
       ? <LeaveAttendancePage activeMenu={leaveAttendanceTab} onSelectMenu={setLeaveAttendanceSettingsTab} />
-      : <SettingsPage tab={clientScopedAdmin && !['Salary Templates', 'Payslip Templates'].includes(tab) ? 'Salary Templates' : tab} onMessage={() => undefined} />
+      : <SettingsPage tab={clientScopedAdmin && !['Salary Templates', 'Payslip Templates', 'Work Locations'].includes(tab) ? 'Salary Templates' : tab} onMessage={() => undefined} />
   }
 
   const shellClassName = ['hrms-shell', navOpen ? '' : 'rail-collapsed', appDrawerOpen ? 'drawer-open' : '', mobileShell && navOpen ? 'mobile-nav-open' : ''].filter(Boolean).join(' ')
@@ -854,7 +855,7 @@ export default function SettingsApp() {
             </button>
           </Dropdown>
         </Space>
-        <AppPageHeader workspace={!showMyTasks && !isProfile ? mainModule === 'Dashboard' ? 'dashboard' : mainModule === 'Employees' && employeeTab === 'Employee Master' ? 'employees' : undefined : undefined} recruitment={mainModule === 'TalentAcquisition' && !showMyTasks && !isProfile} title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined} />
+        <AppPageHeader workspace={!showMyTasks && !isProfile ? mainModule === 'Workflows' && workflowTab === 'API Catalog' ? 'workflows' : mainModule === 'Settings' && settingsSection === 'LeaveAttendance' ? 'attendance-settings' : mainModule === 'Dashboard' ? 'dashboard' : mainModule === 'Employees' && employeeTab === 'Employee Master' ? 'employees' : undefined : undefined} recruitment={mainModule === 'TalentAcquisition' && !showMyTasks && !isProfile} title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined} />
       </div>
       <div className="hrms-content">
         <div className="hrms-page-body">{renderPage()}</div>

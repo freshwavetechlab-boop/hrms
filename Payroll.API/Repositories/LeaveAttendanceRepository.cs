@@ -458,7 +458,7 @@ leave_encashment_salary_component_id = @LeaveEncashmentSalaryComponentId
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        return await connection.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId,
+        var settings = await connection.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId,
 check_in_time AS CheckInTime,
 check_out_time AS CheckOutTime,
 working_hours_calculation AS WorkingHoursCalculation,
@@ -473,6 +473,8 @@ max_regularization_requests_per_month AS MaxRegularizationRequestsPerMonth,
 created_at AS CreatedAt,
 updated_at AS UpdatedAt
 FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { ClientId = clientId }) ?? new AttendanceSettings { ClientId = clientId };
+        settings.Rules = (await AttendanceIntegrationRepository.ReadAsync(connection, null, clientId)).Rules;
+        return settings;
     }
 
     public async Task<(AttendanceSettings? Settings, string? Error)> SaveAttendanceSettingsAsync(SaveAttendanceSettingsRequest request)
@@ -481,6 +483,9 @@ FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { ClientId = c
         if (error is not null) return (null, error);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+        await AttendanceIntegrationRepository.EnsureRowAsync(connection, transaction, request.ClientId);
+        var integration = await AttendanceIntegrationRepository.ReadAsync(connection, transaction, request.ClientId, true);
         await connection.ExecuteAsync(@"INSERT INTO attendance_settings (client_id, check_in_time, check_out_time, working_hours_calculation, minimum_hours_for_half_day, minimum_hours_for_full_day, maximum_hours_allowed_for_full_day, allow_regularization_requests, regularization_window, past_days_allowed, restrict_regularization_requests_per_month, max_regularization_requests_per_month)
 VALUES (@ClientId, @CheckInTime, @CheckOutTime, @WorkingHoursCalculation, @MinimumHoursForHalfDay, @MinimumHoursForFullDay, @MaximumHoursAllowedForFullDay, @AllowRegularizationRequests, @RegularizationWindow, @PastDaysAllowed, @RestrictRegularizationRequestsPerMonth, @MaxRegularizationRequestsPerMonth)
 ON DUPLICATE KEY UPDATE
@@ -495,7 +500,10 @@ regularization_window=@RegularizationWindow,
 past_days_allowed=@PastDaysAllowed,
 restrict_regularization_requests_per_month=@RestrictRegularizationRequestsPerMonth,
 max_regularization_requests_per_month=@MaxRegularizationRequestsPerMonth
-;", request);
+;", request, transaction);
+        integration.Rules = request.Rules;
+        await AttendanceIntegrationRepository.WriteAsync(connection, transaction, request.ClientId, integration);
+        await transaction.CommitAsync();
         return (await GetAttendanceSettingsAsync(request.ClientId), null);
     }
 
@@ -1839,7 +1847,11 @@ WHERE age.attendance_group_id IN @Ids
 
     private static string? ValidateAttendanceSettings(SaveAttendanceSettingsRequest request)
     {
-        if (request.CheckOutTime <= request.CheckInTime) return "Check-out time must be after check-in time.";
+        if (request.ClientId <= 0) return "Select a client.";
+        if (request.CheckOutTime == request.CheckInTime || request.CheckInTime < TimeSpan.Zero || request.CheckOutTime < TimeSpan.Zero || request.CheckInTime >= TimeSpan.FromDays(1) || request.CheckOutTime >= TimeSpan.FromDays(1)) return "Select different valid check-in and check-out times. Overnight shifts are supported.";
+        if (request.Rules is null) return "Attendance rules are required.";
+        if (request.Rules.LateGraceMinutes is < 0 or > 1440 || request.Rules.EarlyGraceMinutes is < 0 or > 1440 || request.Rules.MonthlyMissPunchLimit is < 0 or > 31 || request.Rules.MonthlyOdLimit is < 0 or > 31) return "Grace minutes must be 0–1440 and monthly limits 0–31. Leave an unknown value empty.";
+        if (request.MaximumHoursAllowedForFullDay > 24) return "Maximum hours cannot exceed 24.";
         if (request.WorkingHoursCalculation is not ("First check-in and last check-out" or "Every valid check-in and check-out")) return "Select a valid working hours calculation method.";
         if (request.MinimumHoursForHalfDay <= 0 || request.MinimumHoursForFullDay <= 0 || request.MaximumHoursAllowedForFullDay <= 0) return "Workday duration hours must be greater than zero.";
         if (request.MinimumHoursForHalfDay > request.MinimumHoursForFullDay) return "Half-day minimum hours cannot exceed full-day minimum hours.";
@@ -2796,7 +2808,7 @@ ON DUPLICATE KEY UPDATE entitlement=VALUES(entitlement), entitlement_period=VALU
 VALUES (@LeaveTypeId, @ApplicabilityMode, @WorkLocation, @Department, @Designation, @Gender)
 ON DUPLICATE KEY UPDATE applicability_mode=VALUES(applicability_mode), work_location=VALUES(work_location), department=VALUES(department), designation=VALUES(designation), gender=VALUES(gender);", new { LeaveTypeId = leaveTypeId, request.ApplicabilityMode, request.WorkLocation, request.Department, request.Designation, request.Gender }, transaction);
 
-    private const string LeaveTypeSelectSql = @"SELECT lt.id AS Id, lt.client_id AS ClientId, lt.name AS Name, lt.code AS Code, lt.type AS Type, lt.description AS Description, lt.is_active AS IsActive, lt.created_at AS CreatedAt, lt.updated_at AS UpdatedAt,
+    internal const string LeaveTypeSelectSql = @"SELECT lt.id AS Id, lt.client_id AS ClientId, lt.name AS Name, lt.code AS Code, lt.type AS Type, lt.description AS Description, lt.is_active AS IsActive, lt.created_at AS CreatedAt, lt.updated_at AS UpdatedAt,
 p.entitlement AS Entitlement, p.entitlement_period AS EntitlementPeriod, p.pro_rate_for_new_joinees AS ProRateForNewJoinees, p.reset_enabled AS ResetEnabled, p.reset_frequency AS ResetFrequency, p.carry_forward_unused_leaves AS CarryForwardUnusedLeaves, p.max_carry_forward_limit AS MaxCarryForwardLimit, p.encash_unused_leaves AS EncashUnusedLeaves, p.max_encashment_limit AS MaxEncashmentLimit, p.allow_negative_leave_balance AS AllowNegativeLeaveBalance, COALESCE(p.allow_half_day, TRUE) AS AllowHalfDay, p.negative_balance_handling AS NegativeBalanceHandling, COALESCE(p.attendance_action, 'Mark as leave') AS AttendanceAction, p.allow_past_dates AS AllowPastDates, p.past_date_limit_type AS PastDateLimitType, p.past_date_limit_days AS PastDateLimitDays, p.allow_future_dates AS AllowFutureDates, p.future_date_limit_type AS FutureDateLimitType, p.future_date_limit_days AS FutureDateLimitDays, p.effective_from AS EffectiveFrom, p.expires_on AS ExpiresOn, p.postpone_credits_for_new_employees AS PostponeCreditsForNewEmployees, p.postpone_credit_value AS PostponeCreditValue, p.postpone_credit_unit AS PostponeCreditUnit,
 a.applicability_mode AS ApplicabilityMode, a.work_location AS WorkLocation, a.department AS Department, a.designation AS Designation, a.gender AS Gender
 FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id = lt.id JOIN leave_type_applicability a ON a.leave_type_id = lt.id";

@@ -1,6 +1,7 @@
 param([Parameter(Mandatory = $true)][string]$JobFile, [switch]$Stop)
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'ProcessHelpers.ps1')
 $job = Get-Content -LiteralPath $JobFile -Raw | ConvertFrom-Json
 
 function Set-JobStatus([string]$status, [string]$message) {
@@ -18,24 +19,31 @@ if ($Stop) {
     try {
         $previous = if (Test-Path -LiteralPath $job.StateFile) { Get-Content -LiteralPath $job.StateFile -Raw | ConvertFrom-Json }
         $worker = if ($previous) { Get-Process -Id $previous.WorkerId -ErrorAction SilentlyContinue }
+        $ownedWorkerAlive = $worker -and $previous.Status -eq 'Starting' -and $worker.StartTime.ToUniversalTime().ToString('o') -eq $previous.StartedAt
         $targetId = $null
-        if ($worker -and $previous.Status -eq 'Starting' -and $worker.StartTime.ToUniversalTime().ToString('o') -eq $previous.StartedAt) {
+        if ($job.TargetProcessId) {
+            $process = Get-PortProcess $job.Port
+            if ($process) {
+                if ($process.ProcessId -le 4) { throw 'This is a Windows system process and cannot be stopped here.' }
+                if ($process.ProcessId -ne $job.TargetProcessId -or $process.CreationDate.ToUniversalTime().ToString('o') -ne $job.TargetCreatedAt) {
+                    throw 'The process on this port has changed. Click Kill process again to review it.'
+                }
+                $targetId = $process.ProcessId
+                if ($ownedWorkerAlive -and (Test-ProcessInTree $process $worker.Id)) { $targetId = $worker.Id }
+            }
+        } elseif ($ownedWorkerAlive) {
             # Stop our worker and its complete process tree, including dotnet's API child.
             $targetId = $worker.Id
         } else {
-            $listener = Get-NetTCPConnection -State Listen -LocalPort $job.Port -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($listener) {
-                $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)"
-                $expectedApi = [System.IO.Path]::GetFullPath($job.ProjectDirectory).TrimEnd('\') + '\'
-                $isApi = $job.Id -eq 'api' -and $process.Name -eq 'Payroll.API.exe' -and $process.ExecutablePath.StartsWith($expectedApi, [StringComparison]::OrdinalIgnoreCase)
-                $isVite = $job.Id -in @('ui', 'ess') -and $process.Name -eq 'node.exe' -and $process.CommandLine -match 'vite[/\\]bin[/\\]vite\.js' -and $process.CommandLine -match "(?:^|\s)--port(?:=|\s+)$($job.Port)(?:\s|$)"
-                if (-not ($isApi -or $isVite)) { throw "Port $($job.Port) belongs to another app. Stop it from its own console." }
+            $process = Get-PortProcess $job.Port
+            if ($process) {
+                if (-not (Test-HrmsProcess $process $job)) { throw "Another app is using port $($job.Port). Use Kill process below." }
                 $targetId = $process.ProcessId
             }
         }
         Set-JobStatus 'Stopping' 'Stopping...'
         if ($targetId) {
-            & "$env:SystemRoot\System32\taskkill.exe" /PID $targetId /T /F *> $job.OutputLog
+            & "$env:SystemRoot\System32\taskkill.exe" /PID $targetId /T /F *> "$($job.OutputLog).stop.log"
             if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $targetId -ErrorAction SilentlyContinue)) { throw 'Could not stop the app. Open logs for details.' }
         }
         Set-JobStatus 'Stopped' 'Stopped. Click Start to run again.'
@@ -89,6 +97,9 @@ try {
     # Retain the handle so Windows PowerShell can read ExitCode after the process exits.
     $null = $server.Handle
     $server.WaitForExit()
+    # A Stop/Kill worker now owns the status; don't overwrite it with an exit error.
+    $currentState = Get-Content -LiteralPath $job.StateFile -Raw | ConvertFrom-Json
+    if ($currentState.WorkerId -ne $PID) { exit }
     if ($server.ExitCode -ne 0) { throw "Process exited ($($server.ExitCode)). Open logs for details." }
     Set-JobStatus 'Stopped' 'Stopped. Click Start to run again.'
 } catch {

@@ -22,6 +22,7 @@ import { ExpensePage } from './pages/ExpensePage'
 import { RecruitmentPage } from './pages/RecruitmentPage'
 import { ChangePasswordPage } from './pages/ChangePasswordPage'
 import { AttendanceReviewPage } from './pages/AttendanceReviewPage'
+import { AttendancePage } from './pages/AttendancePage'
 import { canMaintainTravelExpense } from './utils/access'
 
 const viewStorageKey = 'ess.current.view'
@@ -103,6 +104,7 @@ function Page({ view, manager, employeeSelf, user, setView }: { view: View; mana
   if (view === 'My Profile') return <ProfilePage user={user} />
   if (view === 'My Tasks') return <TasksPage user={user} />
   if (view === 'Leave') return <LeavePage user={user} />
+  if (view === 'Attendance') return <AttendancePage user={user} setView={setView} />
   if (view === 'Travel') return <TravelPage user={user} setView={setView} />
   if (view === 'Expense') return <ExpensePage user={user} />
   if (view === 'Recruitment') return <RecruitmentPage user={user} />

@@ -5,6 +5,7 @@ import { BellOutlined, ReloadOutlined } from '@ant-design/icons'
 import { getJsonResult } from '../services/apiClient'
 import { useAuthSession } from './AuthGate'
 import type { RecruitmentInterview } from '../types/payroll'
+import { getAttendanceGaps } from '../services/attendanceIntegrationService'
 
 type ActionItem = { key: string; title: string; detail: string; route: string }
 type PendingTask = { id: number; stageName: string; resourceType: string; resourceId: string }
@@ -23,12 +24,19 @@ export default function ActionNotifications() {
     const attempt = ++generation.current
     if (!session) { setItems([]); return }
     setLoading(true)
-    const [tasks, interviews] = await Promise.all([
+    const canConfigure = session.user.permissions.some(p => ['settings.manage', 'client.settings.manage', 'attendance.manage', 'workflow.manage', 'employees.manage'].includes(p))
+    const [tasks, interviews, configuration] = await Promise.all([
       getJsonResult<PendingTask[]>('/api/workflows/tasks/pending', [], { loader: false, toast: false }),
       getJsonResult<RecruitmentInterview[]>('/api/recruitment/interviews', [], { loader: false, toast: false }),
+      canConfigure ? getAttendanceGaps(session.user.clientId || undefined) : Promise.resolve(null),
     ])
     if (attempt !== generation.current) return
     const next: ActionItem[] = (tasks.data || []).map(task => ({ key: `approval:${task.id}`, title: task.stageName || 'Approval required', detail: `${task.resourceType} · ${task.resourceId}`, route: '/tasks' }))
+    const gaps = (configuration?.data || []).filter(gap => (!session.user.clientId || gap.clientId === session.user.clientId) && gap.requiredPermissions?.some(p => session.user.permissions.includes(p)))
+    if (gaps.length) {
+      const clients = new Set(gaps.map(gap => gap.clientId)).size
+      next.push({ key: 'attendance:setup', title: 'Attendance setup needs attention', detail: clients === 1 ? `${gaps[0].clientName} · ${gaps.length} missing settings` : `${clients} clients · ${gaps.length} missing settings`, route: gaps[0].route })
+    }
     for (const interview of interviews?.data || []) {
       if (interview.isCurrentUserFeedbackPending)
         next.push({ key: `feedback:${interview.id}`, title: 'Your panel feedback is pending', detail: `${interview.candidateName} · ${interview.positionTitle}`, route: `/recruitment/interviews?feedbackInterviewId=${interview.id}` })
@@ -36,7 +44,7 @@ export default function ActionNotifications() {
         next.push({ key: `decision:${interview.id}`, title: 'Panel feedback complete — record decision', detail: `${interview.candidateName} · ${interview.positionTitle}`, route: `/recruitment/interviews?decisionInterviewId=${interview.id}` })
     }
     setItems(next)
-    setError(!tasks.ok || (interviews && !interviews.ok) ? 'Some pending actions could not be refreshed. Retry to check the latest status.' : '')
+    setError(!tasks.ok || (interviews && !interviews.ok) || (configuration && !configuration.ok) ? 'Some pending actions could not be refreshed. Retry to check the latest status.' : '')
     setLoading(false)
   }, [session?.user.id, session?.user.clientId, session?.user.permissions.join('|')])
 

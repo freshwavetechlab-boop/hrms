@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'ProcessHelpers.ps1')
 $services = @(
     @{ Id = 'ui'; Title = 'Payroll UI'; Folder = 'payroll-ui'; Port = 5173; Url = 'http://localhost:5173'; Button = 'Start UI' },
     @{ Id = 'api'; Title = 'Payroll API'; Folder = 'Payroll.API'; Port = 5062; Url = 'http://localhost:5062/swagger'; Button = 'Start API' },
@@ -64,7 +65,7 @@ function Test-WorkerAlive($state) {
     return $process -and $process.StartTime.ToUniversalTime().ToString('o') -eq $state.StartedAt
 }
 
-function Start-ServiceJob($service, [switch]$Stop) {
+function Start-ServiceJob($service, [switch]$Stop, $KillProcess) {
     if (-not $Stop) {
         if ((Get-ListeningPorts) -contains $service.Port) { return }
         if (Test-WorkerAlive (Get-ServiceState $service.Id)) { return }
@@ -72,12 +73,17 @@ function Start-ServiceJob($service, [switch]$Stop) {
     }
     $stamp = [DateTime]::Now.ToString('yyyyMMdd-HHmmss-fff')
     $jobFile = Join-Path $jobsDirectory "$($service.Id)-$stamp.json"
-    @{
+    $job = @{
         Id = $service.Id; Port = $service.Port; ProjectDirectory = $locations[$service.Id]
         StateFile = Join-Path $jobsDirectory "$($service.Id)-state.json"
         OutputLog = Join-Path $logsDirectory "$($service.Id)-$stamp.log"
         ErrorLog = Join-Path $logsDirectory "$($service.Id)-$stamp.error.log"
-    } | ConvertTo-Json | Set-Content -LiteralPath $jobFile -Encoding UTF8
+    }
+    if ($KillProcess) {
+        $job.TargetProcessId = $KillProcess.ProcessId
+        $job.TargetCreatedAt = $KillProcess.CreationDate.ToUniversalTime().ToString('o')
+    }
+    $job | ConvertTo-Json | Set-Content -LiteralPath $jobFile -Encoding UTF8
     $workerPath = Join-Path $PSScriptRoot 'Worker.ps1'
     $workerArguments = @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
@@ -152,12 +158,14 @@ function Refresh-Status {
         $row = $controls[$service.Id]
         $state = Get-ServiceState $service.Id
         $busy = (Test-WorkerAlive $state) -or ($startingUntil.ContainsKey($service.Id) -and $startingUntil[$service.Id] -gt [DateTime]::Now)
+        $stopping = $state -and $state.Status -eq 'Stopping' -and (Test-WorkerAlive $state)
         $row.Start.Enabled = $row.Valid -and -not $busy -and $ports -notcontains $service.Port
-        $row.Stop.Enabled = (($ports -contains $service.Port) -or (Test-WorkerAlive $state)) -and (-not $state -or $state.Status -ne 'Stopping')
+        $row.Stop.Enabled = (($ports -contains $service.Port) -or (Test-WorkerAlive $state)) -and -not $stopping
+        $row.Kill.Enabled = $ports -contains $service.Port -and -not $stopping
         $row.Choose.Enabled = -not $busy -and $ports -notcontains $service.Port
         $row.Status.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#627088')
         if ($state -and $state.Status -eq 'StopFailed') {
-            $row.Status.Text = $state.Message
+            $row.Status.Text = $state.Message.Replace('Stop it from its own console.', 'Use Kill process below.')
             $row.Status.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#b42318')
         } elseif ($state -and $state.Status -eq 'Stopping' -and $busy) {
             $row.Status.Text = 'Stopping...'
@@ -176,9 +184,9 @@ function Refresh-Status {
     }
 }
 
-function Invoke-Start($service, [switch]$Stop) {
+function Invoke-Start($service, [switch]$Stop, $KillProcess) {
     try {
-        Start-ServiceJob $service -Stop:$Stop
+        Start-ServiceJob $service -Stop:$Stop -KillProcess $KillProcess
         $startingUntil[$service.Id] = [DateTime]::Now.AddSeconds(4)
     } catch { Show-Error $_.Exception.Message }
     Refresh-Status
@@ -249,14 +257,31 @@ foreach ($service in $services) {
     }
     $stopButton.Tag = $id
     $stopButton.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#b42318')
+    $killButton = Add-Button $panel 'Kill process' 205 80 105 {
+        param($sender, $eventArgs)
+        try {
+            $selectedService = $services | Where-Object { $_.Id -eq $sender.Tag }
+            $process = Get-PortProcess $selectedService.Port
+            if (-not $process) { Refresh-Status; return }
+            if ($process.ProcessId -le 4) { throw 'This is a Windows system process and cannot be stopped here.' }
+            $message = "Kill $($process.Name) (PID $($process.ProcessId)) on port $($selectedService.Port)?`n`nThe process and its child processes will stop."
+            if ([System.Windows.Forms.MessageBox]::Show($form, $message, 'Kill running process', 'YesNo', 'Warning', 'Button2') -eq 'Yes') {
+                Invoke-Start $selectedService -Stop -KillProcess $process
+            }
+        } catch { Show-Error $_.Exception.Message }
+    }
+    $killButton.Tag = $id
+    $killButton.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#b42318')
+    $tooltip.SetToolTip($stopButton, 'Stop this app, including when started from another terminal.')
+    $tooltip.SetToolTip($killButton, 'Kill the process currently using this port. Shows its name and PID before stopping it.')
     $link = New-Object System.Windows.Forms.LinkLabel
     $link.Text = $service.Url
     $link.Tag = $service.Url
-    $link.SetBounds(211, 87, 421, 24)
+    $link.SetBounds(325, 87, 307, 24)
     $link.LinkColor = [System.Drawing.ColorTranslator]::FromHtml('#087bb8')
     $link.Add_LinkClicked({ param($sender, $eventArgs) Start-Process ([string]$sender.Tag) })
     $panel.Controls.Add($link)
-    $controls[$id] = @{ Path = $path; Status = $status; Start = $start; Stop = $stopButton; Choose = $choose; Valid = $false }
+    $controls[$id] = @{ Path = $path; Status = $status; Start = $start; Stop = $stopButton; Kill = $killButton; Choose = $choose; Valid = $false }
     $index++
 }
 Add-Label $form 'Closing this window keeps your apps running.' 21 494 472 21 | Out-Null

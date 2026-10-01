@@ -6,6 +6,7 @@ import type { Client } from '../types/payroll'
 import { apiCatalog, type ApiCatalogRow } from '../data/apiCatalog'
 import DataTable from './DataTable'
 import SearchSelect from './SearchSelect'
+import { useSearchParams } from 'react-router-dom'
 
 type Stage = { id: number; stageOrder: number; name: string; approverType: string; approverUserId?: number | null }
 type Flow = { id: number; clientId?: number | null; code: string; name: string; resourceType: string; isActive: boolean; stages: Stage[] }
@@ -104,6 +105,8 @@ export default function WorkflowAdmin() {
   const [flow, setFlow] = useState<Flow>(newWorkflow)
   const [selectedFlowActivityCode, setSelectedFlowActivityCode] = useState('')
   const [clients, setClients] = useState<Client[]>([])
+  const [searchParams] = useSearchParams()
+  useEffect(() => { const id = Number(searchParams.get('clientId')); if (clients.some(client => client.id === id)) setFlow(current => current.id ? current : { ...current, clientId: id }) }, [clients, searchParams])
   const [activities, setActivities] = useState<Activity[]>([])
   const [activityRows, setActivityRows] = useState<Activity[]>([])
   const [activity, setActivity] = useState<Activity>(newActivity)

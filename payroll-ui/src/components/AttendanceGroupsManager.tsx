@@ -5,7 +5,8 @@ import { workWeekOptionsFromDrops } from '../data/payrollDefaults'
 import { getDropdowns, getWorkLocations } from '../services/settingsService'
 import { deleteAttendanceGroup, getAttendanceGroups, saveAttendanceGroupBatch } from '../services/leaveAttendanceService'
 import type { AttendanceGroup, AttendanceWorkWeek, Client, Drop, Employee, WorkLocation } from '../types/payroll'
-import DataTable from './DataTable'
+import RecruitmentRecordList from './RecruitmentRecordList'
+import { PageHeaderPortal } from './layout/AppPageHeader'
 import SearchSelect, { selectOptions } from './SearchSelect'
 
 type AttendancePolicyForm = AttendanceGroup & { workLocationIds: number[]; departments: string[]; designations: string[] }
@@ -265,8 +266,8 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
 
   return <section className="attendance-groups">
         <AntCard className="settings-panel settings-table-panel attendance-group-panel attendance-group-table" size="small" aria-label="Attendance policy master">
-          <div className="component-table-head"><div><b>Attendance policy master</b><span>Define client, location, employee scope, work-week, attendance cycle, and payroll report day.</span></div><Button type="primary" onClick={openNew}>Add policy</Button></div>
-          <DataTable rows={policyRows} getRowId={row => row.policyBatchId || row.id} emptyText="No attendance policies configured." exportFileName="attendance-policies" columns={[
+          <PageHeaderPortal slot="attendance-settings-page-controls"><Button type="primary" onClick={openNew}>Add policy</Button></PageHeaderPortal>
+          <RecruitmentRecordList rows={policyRows} title={row => row.name} subtitle={row => row.workLocationName} filters={[{ key: 'location', label: 'Location', value: row => row.workLocationName }, { key: 'status', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive' }]} emptyText="No attendance policies configured." exportFileName="attendance-policies" columns={[
             { key: 'name', label: 'Policy' },
             { key: 'clientName', label: 'Client' },
             { key: 'workLocationName', label: 'Location' },

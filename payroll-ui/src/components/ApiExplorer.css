@@ -1,0 +1,26 @@
+.api-explorer-address { display: flex; margin-bottom: 12px; }
+.api-explorer-address .ant-space-item:first-child { flex: 1; min-width: 200px; }
+.api-explorer-auth { margin-bottom: 14px; }
+.api-explorer-auth label { display: block; font-weight: 600; margin-bottom: 6px; }
+.api-explorer-auth p { margin: 6px 0; color: #64748b; }
+.api-explorer-document { min-width: 0; }
+.api-explorer-document .swagger-ui { font-family: inherit; }
+.api-explorer-document .swagger-ui :is(.info, .scheme-container, .opblock-tag) { display: none; }
+.api-explorer-document .swagger-ui .wrapper { padding: 0; }
+.api-explorer-document .swagger-ui .opblock-summary-path { word-break: break-word; }
+.api-explorer-document .swagger-ui :is(pre, .highlight-code, .responses-inner) { max-width: 100%; overflow: auto; }
+.api-explorer-document .swagger-ui .btn.execute { background: #0879b0; border-color: #0879b0; }
+.api-explorer-modal { top: 24px; padding-bottom: 0; }
+.api-explorer-modal .ant-modal-content { max-height: calc(100dvh - 48px); display: flex; flex-direction: column; }
+.api-explorer-modal .ant-modal-header { flex-shrink: 0; overflow-wrap: anywhere; }
+.api-explorer-modal .ant-modal-body { min-height: 0; max-height: 78dvh; overflow-y: auto; }
+.attendance-api-key { display: block; overflow-wrap: anywhere; white-space: normal; }
+.attendance-device-settings { scroll-margin-top: 12px; }
+@media (max-width: 600px) {
+  .api-explorer-document .swagger-ui .opblock .opblock-summary { flex-wrap: wrap; }
+  .api-explorer-document .swagger-ui table { display: block; overflow-x: auto; }
+  .api-explorer-auth .ant-space-compact { flex-wrap: wrap; }
+  .api-explorer-auth .ant-btn { width: 100%; }
+  .attendance-api-keys .ant-table-cell-fix-right { position: static !important; }
+  .attendance-api-keys .ant-table-cell-fix-right::after { display: none; }
+}

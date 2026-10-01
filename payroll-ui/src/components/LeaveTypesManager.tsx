@@ -12,7 +12,8 @@ import { downloadXlsx } from '../utils/xlsx'
 import { previewToXlsxFile } from '../utils/previewFile'
 import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from './BulkUploadPreviewModal'
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from './BulkUploadProgressModal'
-import DataTable from './DataTable'
+import RecruitmentRecordList from './RecruitmentRecordList'
+import { PageHeaderPortal } from './layout/AppPageHeader'
 import SearchSelect, { type SearchOption } from './SearchSelect'
 import { useToast } from './ToastProvider'
 
@@ -211,7 +212,7 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
     <AntCard className="settings-panel settings-table-panel leave-types-panel" size="small" aria-label="Leave policy master">
       <div className="component-table-head">
         <div><b>Leave policy master</b><span>Maintain leave categories, eligibility, accrual rules, and opening configuration.</span></div>
-        <Space className="settings-master-actions leave-type-toolbar" size={8} wrap>
+        <PageHeaderPortal slot="attendance-settings-page-controls"><Space className="settings-master-actions leave-type-toolbar" size={8} wrap>
           <Button type="primary" icon={<DownloadOutlined />} onClick={downloadTemplate}>Template</Button>
           <label className={`settings-upload-action ${!templateDownloaded ? 'disabled' : ''}`} title={templateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}>
             <input type="file" disabled={!templateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadTemplate(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} />
@@ -219,7 +220,7 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
             Bulk upload
           </label>
           <Button type="primary" onClick={add}>Add Leave Type</Button>
-        </Space>
+        </Space></PageHeaderPortal>
       </div>
       <div className="leave-type-summary">
         <span><b>{metrics.total}</b><small>Total policies</small></span>
@@ -236,7 +237,7 @@ export default function LeaveTypesManager({ clientId, onMessage }: { clientId: n
 }
 
 function LeaveTypesTable(p: { rows: LeaveType[]; edit: (row: LeaveType) => void; toggle: (row: LeaveType) => void; remove: (row: LeaveType) => void }) {
-  return <DataTable rows={p.rows} emptyText="No leave types configured." exportFileName="leave-types" columns={[
+  return <RecruitmentRecordList rows={p.rows} title={row => row.name} subtitle={row => row.code} filters={[{ key: 'type', label: 'Type', value: row => row.type }, { key: 'status', label: 'Status', value: row => row.isActive ? 'Active' : 'Disabled' }, { key: 'attendanceAction', label: 'Approval effect', value: row => row.attendanceAction }]} quickFilters={[{ key: 'active', label: 'Active', tone: 'green', matches: row => row.isActive }, { key: 'paid', label: 'Paid', tone: 'blue', matches: row => row.type === 'Paid' }, { key: 'unpaid', label: 'Unpaid', tone: 'orange', matches: row => row.type === 'Unpaid' }]} emptyText="No leave types configured." exportFileName="leave-types" columns={[
     { key: 'name', label: 'Leave Type Name' },
     { key: 'code', label: 'Code' },
     { key: 'type', label: 'Paid/Unpaid' },
