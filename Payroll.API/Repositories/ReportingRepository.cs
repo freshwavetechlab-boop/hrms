@@ -60,9 +60,9 @@ ORDER BY x.`Employee Code`";
 COALESCE(pd.UanNumber,'') AS UAN,
 p.EmployeeName AS `Member Name`,
 CAST(ROUND(x.GrossWages,0) AS SIGNED) AS `Gross Wages`,
-CAST(ROUND(x.EpfWages,0) AS SIGNED) AS `EPF Wages`,
+CAST(ROUND(COALESCE(pf_snapshot.EpfWages,x.EpfWages),0) AS SIGNED) AS `EPF Wages`,
 CAST(ROUND(x.EpsWages,0) AS SIGNED) AS `EPS Wages`,
-CAST(ROUND(x.EdliWages,0) AS SIGNED) AS `EDLI Wages`,
+CAST(ROUND(COALESCE(pf_snapshot.EdliWages,x.EdliWages),0) AS SIGNED) AS `EDLI Wages`,
 CAST(ROUND(x.EmployeePf,0) AS SIGNED) AS `EPF Contribution Remitted`,
 CAST(ROUND(x.EpsContribution,0) AS SIGNED) AS `EPS Contribution Remitted`,
 CAST(ROUND(CASE WHEN x.EmployerPfActual <> 0 OR x.EpsContribution <> 0 THEN x.EmployerPfActual ELSE x.EmployeePf END,0) AS SIGNED) AS `EPF EPS Difference Remitted`,
@@ -71,6 +71,17 @@ CAST(ROUND(GREATEST(0, r.TotalWorkingDays - p.PayableDays),0) AS SIGNED) AS `NCP
 FROM payrunemployees p
 JOIN payruns r ON r.Id=p.PayRunId
 LEFT JOIN employeepersonaldetails pd ON pd.EmployeeId=p.EmployeeId
+LEFT JOIN (
+    SELECT saved.Id AS PayRunEmployeeId, SUM(snapshot.EpfWages) AS EpfWages, SUM(snapshot.EdliWages) AS EdliWages
+    FROM payrunemployees saved
+    JOIN JSON_TABLE(saved.DetailsJson, '$[*]' COLUMNS (
+        SnapshotVersion INT PATH '$.pfPolicy.SchemaVersion' NULL ON EMPTY,
+        StatutoryType VARCHAR(80) PATH '$.pfPolicy.StatutoryType' NULL ON EMPTY,
+        EpfWages DECIMAL(18,6) PATH '$.pfPolicy.EpfWages' NULL ON EMPTY,
+        EdliWages DECIMAL(18,6) PATH '$.pfPolicy.EdliWages' NULL ON EMPTY
+    )) snapshot ON snapshot.SnapshotVersion=1 AND snapshot.StatutoryType='PF Employee'
+    GROUP BY saved.Id
+) pf_snapshot ON pf_snapshot.PayRunEmployeeId=p.Id
 JOIN (
     SELECT l.PayRunEmployeeId,
     SUM(CASE WHEN COALESCE(l.Category,'') IN ('Earning','Reimbursement') THEN l.Amount ELSE 0 END) AS GrossWages,

@@ -856,9 +856,13 @@ ORDER BY e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = clientId, M
             var payable = Math.Clamp(row.PayableDays, 0, working == 0 ? row.PayableDays : working);
             return new { request.ClientId, request.Month, row.EmployeeId, WorkingDays = working, PresentDays = present, PayableDays = payable, LopDays = Math.Max(0, row.LopDays), Remarks = row.Remarks ?? string.Empty };
         }).ToList();
+        await using var transaction = await connection.BeginTransactionAsync();
+        var lockedError = await WeeklyOffAttendanceService.ValidateMonthlyChangesAsync(connection, transaction, request.ClientId, rows.Select(row => row.EmployeeId).Distinct().ToArray(), request.Month);
+        if (lockedError is not null) return (null, lockedError);
         await connection.ExecuteAsync(@"INSERT INTO employee_monthly_attendance (client_id, employee_id, attendance_month, working_days, present_days, payable_days, lop_days, source_type, remarks)
 VALUES (@ClientId, @EmployeeId, @Month, @WorkingDays, @PresentDays, @PayableDays, @LopDays, 'Monthly', @Remarks)
-ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(present_days), payable_days=VALUES(payable_days), lop_days=VALUES(lop_days), source_type='Monthly', remarks=VALUES(remarks);", rows);
+ON DUPLICATE KEY UPDATE working_days=VALUES(working_days), present_days=VALUES(present_days), payable_days=VALUES(payable_days), lop_days=VALUES(lop_days), source_type='Monthly', remarks=VALUES(remarks);", rows, transaction);
+        await transaction.CommitAsync();
         return (await GetMonthlyAttendanceAsync(request.ClientId, request.Month), null);
     }
 
@@ -926,11 +930,18 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
         }).ToList();
         var balanceError = await ValidateLeaveBalancesAsync(connection, request.ClientId, request.EmployeeId, request.Month, rows.Select(row => new AttendanceSaveRow(row.Status, row.PayableValue)), activeLeaveTypes);
         if (balanceError is not null) return (null, balanceError);
+        await using var transaction = await connection.BeginTransactionAsync();
+        var lockedError = await WeeklyOffAttendanceService.ValidateChangesAsync(connection, transaction, request.ClientId,
+            rows.Select(row => new WeeklyOffAttendanceDay(request.EmployeeId, row.AttendanceDate, row.Status, row.PayableValue)));
+        if (lockedError is not null) return (null, lockedError);
         await connection.ExecuteAsync(@"INSERT INTO employee_daily_attendance (client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
 VALUES (@ClientId, @EmployeeId, @AttendanceDate, @Status, @PayableValue, @CheckInTime, @CheckOutTime, @TotalHours, @Remarks)
-ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), check_in_time=VALUES(check_in_time), check_out_time=VALUES(check_out_time), total_hours=VALUES(total_hours), remarks=VALUES(remarks);", rows);
+ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), check_in_time=VALUES(check_in_time), check_out_time=VALUES(check_out_time), total_hours=VALUES(total_hours), remarks=VALUES(remarks);", rows, transaction);
         var cycleDates = rows.Select(row => row.AttendanceDate.Date).Distinct().OrderBy(date => date).ToArray();
-        await RollupDailyAttendanceAsync(connection, request.ClientId, request.EmployeeId, request.Month, cycleDates.First(), cycleDates.Last());
+        if (!await WeeklyOffAttendanceService.TryRollupAsync(connection, transaction, request.ClientId, [request.EmployeeId], cycleDates.First(), cycleDates.Last(),
+            changedDays: rows.Select(row => new WeeklyOffAttendanceDay(request.EmployeeId, row.AttendanceDate, row.Status, row.PayableValue)).ToArray()))
+            await RollupDailyAttendanceAsync(connection, request.ClientId, request.EmployeeId, request.Month, cycleDates.First(), cycleDates.Last(), transaction);
+        await transaction.CommitAsync();
         return (await GetDailyAttendanceAsync(request.ClientId, request.EmployeeId, request.Month), null);
     }
 
@@ -978,6 +989,9 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
         }
 
         await using var transaction = await connection.BeginTransactionAsync();
+        var lockedError = await WeeklyOffAttendanceService.ValidateChangesAsync(connection, transaction, request.ClientId,
+            request.Rows.Where(row => validEmployeeIds.Contains(row.EmployeeId)).Select(row => new WeeklyOffAttendanceDay(row.EmployeeId, row.AttendanceDate, row.Status, row.PayableValue)));
+        if (lockedError is not null) return (null, lockedError);
         await connection.ExecuteAsync(@"INSERT INTO employee_daily_attendance (client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
 VALUES (@ClientId, @EmployeeId, @AttendanceDate, @Status, @PayableValue, @CheckInTime, @CheckOutTime, @TotalHours, @Remarks)
 ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), check_in_time=VALUES(check_in_time), check_out_time=VALUES(check_out_time), total_hours=VALUES(total_hours), remarks=VALUES(remarks);", rows, transaction);
@@ -985,7 +999,11 @@ ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_valu
         var rollupEmployeeIds = requestedRollupEmployeeIds is null
             ? groupedRows.Select(row => row.Key).ToArray()
             : groupedRows.Select(row => row.Key).Where(requestedRollupEmployeeIds.Contains).ToArray();
-        await RollupDailyAttendanceBatchAsync(connection, transaction, request.ClientId, rollupEmployeeIds, request.Month);
+        var changedRows = request.Rows.Where(row => validEmployeeIds.Contains(row.EmployeeId)).ToArray();
+        if (!await WeeklyOffAttendanceService.TryRollupAsync(connection, transaction, request.ClientId, groupedRows.Select(g => g.Key).ToArray(),
+            changedRows.Min(r => r.AttendanceDate), changedRows.Max(r => r.AttendanceDate), monthlyEmployeeIds: rollupEmployeeIds,
+            changedDays: changedRows.Select(row => new WeeklyOffAttendanceDay(row.EmployeeId, row.AttendanceDate, row.Status, row.PayableValue)).ToArray()))
+            await RollupDailyAttendanceBatchAsync(connection, transaction, request.ClientId, rollupEmployeeIds, request.Month);
         await transaction.CommitAsync();
         return (await GetMonthlyAttendanceAsync(request.ClientId, request.Month), null);
     }
@@ -2150,6 +2168,9 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { job.ClientId }))
 
         await UpdateAttendanceBatchJobStageAsync(connection, claim, "Calculating summaries", Math.Min(job.TotalRows, normalizedRows.Count));
         await using var transaction = await connection.BeginTransactionAsync();
+        var lockedError = await WeeklyOffAttendanceService.ValidateChangesAsync(connection, transaction, job.ClientId,
+            normalizedRows.Select(row => new WeeklyOffAttendanceDay(row.EmployeeId, row.AttendanceDate, row.Status, row.PayableValue)));
+        if (lockedError is not null) throw new InvalidOperationException(lockedError);
         await connection.ExecuteAsync(@"INSERT INTO employee_daily_attendance
 (client_id, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks)
 SELECT @ClientId, employee_id, attendance_date, status, payable_value, check_in_time, check_out_time, total_hours, remarks
@@ -2158,7 +2179,11 @@ WHERE job_id=@JobId AND is_valid=TRUE
 ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_value), check_in_time=VALUES(check_in_time),
 check_out_time=VALUES(check_out_time), total_hours=VALUES(total_hours), remarks=VALUES(remarks);",
             new { job.ClientId, claim.JobId }, transaction);
-        await RollupDailyAttendanceBatchAsync(connection, transaction, job.ClientId, normalizedRows.Where(row => row.ShouldRollup).Select(row => row.EmployeeId).Distinct().ToArray(), job.Month);
+        var rollupEmployeeIds = normalizedRows.Where(row => row.ShouldRollup).Select(row => row.EmployeeId).Distinct().ToArray();
+        if (normalizedRows.Count > 0 && !await WeeklyOffAttendanceService.TryRollupAsync(connection, transaction, job.ClientId,
+            normalizedRows.Select(row => row.EmployeeId).Distinct().ToArray(), normalizedRows.Min(row => row.AttendanceDate), normalizedRows.Max(row => row.AttendanceDate), monthlyEmployeeIds: rollupEmployeeIds,
+            changedDays: normalizedRows.Select(row => new WeeklyOffAttendanceDay(row.EmployeeId, row.AttendanceDate, row.Status, row.PayableValue)).ToArray()))
+            await RollupDailyAttendanceBatchAsync(connection, transaction, job.ClientId, rollupEmployeeIds, job.Month);
         await CompleteAttendanceBatchJobAsync(connection, transaction, claim, job.TotalRows, normalizedRows.Count);
         await transaction.CommitAsync();
         if(observation is not null) observation.Succeeded = true;

@@ -8,6 +8,7 @@ import { setup0 } from '../data/payrollDefaults'
 import type { Client, Component, Employee, PayRun, Structure, WorkflowApprover, WorkLocation } from '../types/payroll'
 import type { reportingMenus } from '../data/payrollDefaults'
 import PayslipRegister from '../components/PayslipRegister'
+import ExcelPayslips from '../components/ExcelPayslips'
 import DataTable, { type Column } from '../components/DataTable'
 import SearchSelect from '../components/SearchSelect'
 import { downloadXlsx } from '../utils/xlsx'
@@ -29,7 +30,7 @@ const employeeExportOptions = [
   { value: '0009', label: '0009 — Bank details' }
 ] satisfies { value: EmployeeExportGroup; label: string }[]
 const catalogue = {
-  'Payroll Reports': [{ name: 'Salary Register', code: 'salary-register' }, { name: 'Payslip Register', code: 'payslip-register' }, { name: 'Payroll Summary', code: 'payroll-summary' }, { name: 'Component Ledger', code: 'component-ledger' }, { name: 'Monthly Advice Report', code: 'monthly-advice-report' }, { name: 'Department Payroll Cost', code: 'headcount' }, { name: 'Location Payroll Cost', code: 'location-cost' }, { name: 'Employee Wise Salary', code: 'salary-register' }, { name: 'Net Pay Report', code: 'net-pay-estimate' }, { name: 'Bank Transfer Report', code: 'bank-transfer-report' }],
+  'Payroll Reports': [{ name: 'Salary Register', code: 'salary-register' }, { name: 'Payslip Register', code: 'payslip-register' }, { name: 'Excel Payslips', code: 'excel-payslips' }, { name: 'Payroll Summary', code: 'payroll-summary' }, { name: 'Component Ledger', code: 'component-ledger' }, { name: 'Monthly Advice Report', code: 'monthly-advice-report' }, { name: 'Department Payroll Cost', code: 'headcount' }, { name: 'Location Payroll Cost', code: 'location-cost' }, { name: 'Employee Wise Salary', code: 'salary-register' }, { name: 'Net Pay Report', code: 'net-pay-estimate' }, { name: 'Bank Transfer Report', code: 'bank-transfer-report' }],
   'Client Billing Report': [{ name: 'Payrun Billing Basis', code: 'client-billing-report' }, { name: 'Payroll Cost Report', code: 'payroll-cost-report' }],
   'Employee Reports': [
     { name: 'Employee Master Report', code: 'employee-master' },
@@ -60,6 +61,7 @@ const catalogue = {
 } satisfies Record<string, ReportDefinition[]>
 export const reportItems = (menu: ReportingMenu) => catalogue[menu] ?? []
 export default function ReportingPage({ activeReport }: { activeMenu: ReportingMenu; activeReport: ReportDefinition }) {
+  if (activeReport.code === 'excel-payslips') return <ExcelPayslips />
   return activeReport.code === 'payslip-register' ? <PayslipRegister /> : <ReportingWorkspace activeReport={activeReport} />
 }
 

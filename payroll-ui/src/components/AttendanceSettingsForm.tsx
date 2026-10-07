@@ -7,6 +7,7 @@ import DataTable from './DataTable'
 import AttendanceConfigurationGaps from './AttendanceConfigurationGaps'
 import AttendanceDevices from './AttendanceDevices'
 import AttendanceShiftSelect from './AttendanceShiftSelect'
+import WeeklyOffPolicyVersions from './WeeklyOffPolicyVersions'
 
 const ruleFields = [
   { id: 1, key: 'lateGraceMinutes', label: 'Late-coming grace (minutes)', max: 1440 },
@@ -80,6 +81,7 @@ export default function AttendanceSettingsForm({ clientId, onSaved }: { clientId
       <Divider />
       <Row justify="end"><Space><Button type="primary" disabled={form.clientId !== clientId} loading={saving} onClick={() => void save()}>Save attendance settings</Button></Space></Row>
     </Form>
+    <WeeklyOffPolicyVersions key={clientId} clientId={clientId} onSaved={onSaved} />
     <Divider orientation="left">Punch machines & work locations</Divider>
     <AttendanceDevices clientId={clientId} mode="settings" />
   </AntCard>

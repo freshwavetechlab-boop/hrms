@@ -605,6 +605,8 @@ LIMIT 1", new { evt.ResourceId });
         var builder = new BodyBuilder { HtmlBody = row.BodyHtml, TextBody = StripHtml(row.BodyHtml) };
         if (row.EventCode == "PAYSLIP.SEND")
             builder.Attachments.Add($"payslip-{row.ResourceId}.html", System.Text.Encoding.UTF8.GetBytes(row.BodyHtml), new ContentType("text", "html"));
+        if (row.EventCode == ExcelPayslipEvent)
+            await AttachExcelPayslipPdfAsync(db, row, builder);
         var openHandles = new List<AttachmentFileHandle>();
         try
         {

@@ -1007,8 +1007,20 @@ FROM essleaverequests r
 JOIN workflowinstances w ON w.ResourceType IN ('LeaveRequest','AttendanceRegularization') AND w.ResourceId=CAST(r.Id AS CHAR)
 WHERE w.Status IN ('Approved','Rejected','Sent Back') AND r.Status<>w.Status
 ORDER BY r.Id;")).ToList();
+        await ReconcileOpenLeaveWorkflowRowsAsync(rows.Select(row => (row.Id.ToString(), row.Status)), SyncLeaveWorkflowStatusAsync);
+    }
+
+    internal static async Task ReconcileOpenLeaveWorkflowRowsAsync(IEnumerable<(string ResourceId, string Status)> rows, Func<string, string, Task> sync)
+    {
         foreach (var row in rows)
-            await SyncLeaveWorkflowStatusAsync(row.Id.ToString(), row.Status);
+        {
+            try { await sync(row.ResourceId, row.Status); }
+            catch (AttendancePeriodLockedException)
+            {
+                // Sync's transaction is disposed (and rolled back) before this catch.
+                // Leave a historical mismatch untouched; it must not prevent startup.
+            }
+        }
     }
 
     internal static async Task<bool> IsLeavePeriodLockedAsync(MySqlConnection db, System.Data.IDbTransaction? tx, int clientId, int employeeId, DateTime from, DateTime to)
@@ -1028,6 +1040,10 @@ JOIN leave_types lt ON lt.Id=r.LeaveTypeId
 LEFT JOIN leave_type_policies p ON p.leave_type_id=lt.Id
 WHERE r.Id=@RequestId", new { RequestId = requestId }, tx);
         if (row is null) return;
+        var lockedError = await WeeklyOffAttendanceService.ValidateChangesAsync(db, tx, row.ClientId,
+            Enumerable.Range(0, Math.Max(0, (row.ToDate.Date - row.FromDate.Date).Days + 1))
+                .Select(offset => new WeeklyOffAttendanceDay(row.EmployeeId, row.FromDate.Date.AddDays(offset), "", 0)));
+        if (lockedError is not null) throw new AttendancePeriodLockedException(lockedError);
 
         var marksPresent = row.AttendanceAction.Equals("Mark as present", StringComparison.OrdinalIgnoreCase);
         CreateEssLeaveRequest? correction = null;
@@ -1105,8 +1121,9 @@ remarks=VALUES(remarks);", new
             var cycle = ResolveAttendanceCycle(date, policy?.StartDay ?? 1, policy?.EndDay ?? DateTime.DaysInMonth(date.Year, date.Month));
             rollupCycles.TryAdd(cycle.Month, cycle);
         }
-        foreach (var cycle in rollupCycles.Values)
-            await RollupApprovedLeaveAttendanceAsync(db, tx, row.ClientId, row.EmployeeId, cycle);
+        if (!await WeeklyOffAttendanceService.TryRollupAsync(db, tx, row.ClientId, [row.EmployeeId], row.FromDate.Date, row.ToDate.Date))
+            foreach (var cycle in rollupCycles.Values)
+                await RollupApprovedLeaveAttendanceAsync(db, tx, row.ClientId, row.EmployeeId, cycle);
     }
 
     private async Task<EssTravelAdvance?> GetTravelAdvanceAsync(long id)
@@ -1586,6 +1603,7 @@ PayableValue = daily?.PayableValue ?? 0,
     }
     private static async Task RollupMobileAttendanceAsync(MySqlConnection db, MySqlTransaction transaction, int clientId, int employeeId, DateTime attendanceDate)
     {
+        if (await WeeklyOffAttendanceService.TryRollupAsync(db, transaction, clientId, [employeeId], attendanceDate.Date, attendanceDate.Date, preserveManualMonthly: true)) return;
         var policy = await db.QueryFirstOrDefaultAsync<AttendanceCycleRow>(@"SELECT g.attendance_cycle_start_day AS StartDay, g.attendance_cycle_end_day AS EndDay
 FROM attendance_group_employees age
 JOIN attendance_groups g ON g.id=age.attendance_group_id AND g.client_id=@ClientId AND g.is_active=TRUE

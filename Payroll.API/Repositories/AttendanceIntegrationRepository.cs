@@ -8,12 +8,17 @@ using Payroll.API.Models;
 namespace Payroll.API.Repositories;
 
 // Integration configuration lives in the existing module JSON, never in new tables.
-public class AttendanceIntegrationRepository(IConfiguration configuration)
+public partial class AttendanceIntegrationRepository(IConfiguration configuration)
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
     internal class StoredDevice : AttendanceDevice { public string TokenHash { get; set; } = ""; }
-    internal class IntegrationSettings { public List<StoredDevice> Devices { get; set; } = []; public AttendanceRules Rules { get; set; } = new(); }
+    internal class IntegrationSettings
+    {
+        public List<StoredDevice> Devices { get; set; } = [];
+        public AttendanceRules Rules { get; set; } = new();
+        public List<WeeklyOffRuleVersion> WeeklyOffRuleVersions { get; set; } = [];
+    }
     private class GapClient { public int Id { get; set; } public string Name { get; set; } = ""; public string? IntegrationJson { get; set; } public bool HasShift { get; set; } public bool HasLocation { get; set; } public bool HasRequestType { get; set; } public bool HasPolicy { get; set; } public bool HasWorkflow { get; set; } public bool MissingManager { get; set; } }
 
     internal static async Task<IntegrationSettings> ReadAsync(MySqlConnection db, System.Data.IDbTransaction? tx, int clientId, bool locked = false)

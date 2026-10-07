@@ -309,7 +309,9 @@ export default function ManualAttendanceManager({ clientId, group = null, review
     const checkOut = normalized === 'Present' ? apiTime(patch.checkOutTime !== undefined ? patch.checkOutTime : existing?.checkOutTime || shift?.endTime || settings.checkOutTime) : null
     const calculated = normalized === 'Present' ? calculateReviewShift(reviewContext, employeeId, date, checkIn, checkOut) : null
     const hours = normalized === 'Present' ? calculated?.hours ?? hoursBetween(checkIn, checkOut) : 0
-    const payableValue = calculated?.payable ?? patch.payableValue ?? payableForStatus(normalized, hours, Boolean(checkIn && checkOut))
+    // A saved weekly off already includes the server's dated entitlement rule.
+    const savedWeeklyOff = normalized === 'WO' && existing?.status === 'WO' ? existing.payableValue : undefined
+    const payableValue = savedWeeklyOff ?? calculated?.payable ?? patch.payableValue ?? payableForStatus(normalized, hours, Boolean(checkIn && checkOut))
     return { id: existing?.id ?? 0, clientId, employeeId, attendanceDate: date, status: normalized, payableValue: Math.max(0, Math.min(1, payableValue)), checkInTime: checkIn, checkOutTime: checkOut, totalHours: hours, remarks: existing?.remarks || '' }
   }
   const cellText = (status: string, payableValue: number) => status === manualHalfDayStatus ? 'P.5' : status === 'Present' ? payableValue === 0.5 ? 'P.5' : 'P' : payableValue === 0.5 ? `${status}.5` : status
@@ -325,8 +327,11 @@ export default function ManualAttendanceManager({ clientId, group = null, review
     const cls = status === manualHalfDayStatus ? 'half' : status === 'Present'
       ? hours > 0 && hours < (shift?.minimumHalfDayHours ?? settings.minimumHoursForHalfDay) ? 'short' : hours > 0 && hours < (shift?.minimumFullDayHours ?? settings.minimumHoursForFullDay) ? 'half' : payable === 0.5 ? 'half' : payable === 0 ? 'short' : 'present'
       : status === 'WO' ? 'weekoff' : status === 'H' ? 'holiday' : status === 'A' ? 'absent' : leave?.type === 'Paid' ? 'paid' : 'absent'
-    const hoursText = status === 'Present' && hours > 0 ? `${hours.toFixed(hours % 1 ? 1 : 0)}h` : ''
-    return { text: shift && status === 'Present' && payable === 0 ? 'A' : cellText(status, payable), cls, title: holiday?.name || leave?.name || status, status, row, hoursText }
+    const weeklyOffPending = status === 'WO' && row?.remarks?.includes('pending=true')
+    const weeklyOffText = !row || !row.id || dirtyCellKeys.has(attendanceCellKey(employee.employeeId, date)) ? 'On save' : weeklyOffPending ? 'Review' : payable > 0 ? 'Paid' : 'Unpaid'
+    const hoursText = status === 'WO' ? weeklyOffText : status === 'Present' && hours > 0 ? `${hours.toFixed(hours % 1 ? 1 : 0)}h` : ''
+    const title = status === 'WO' ? `Weekly off: ${weeklyOffText}. ${row?.remarks || 'Entitlement is calculated when attendance is saved.'}` : holiday?.name || leave?.name || status
+    return { text: shift && status === 'Present' && payable === 0 ? 'A' : cellText(status, payable), cls, title, status, row, hoursText }
   }
   const missingCountFor = (employee: EmployeeMonthlyAttendance) => monthDays.filter((date) => !dailyByEmployee.get(employee.employeeId)?.has(date) && !defaultStatusFor(employee, date)).length
   const rowTone = (row: EmployeeMonthlyAttendance) => reviewStatus(row) === 'Ready' ? 'ready' : reviewStatus(row) === 'Missing attendance' ? 'warn' : 'danger'

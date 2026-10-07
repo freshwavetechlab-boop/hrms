@@ -1,0 +1,21 @@
+.pf-policy-settings-page,
+.pf-policy-versions {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.pf-policy-settings-page > nav,
+.pf-policy-versions > .ant-alert { flex-shrink: 0; }
+.pf-policy-versions { gap: 12px; }
+.pf-policy-versions > .ant-smart-table { flex: 1; min-height: 0; }
+.pf-policy-editor .pf-contribution-editor {
+  border: 1px solid var(--hrms-line, #e5e8f0);
+  border-radius: var(--hrms-radius, 8px);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.pf-policy-editor .ant-form-item { margin-bottom: 16px; }
+.pf-policy-editor p { margin: 0 0 12px; }

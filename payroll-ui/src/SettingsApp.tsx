@@ -336,6 +336,8 @@ export default function SettingsApp() {
   const payrollSetupMenus = allPayrollSetupMenus.filter(item => item !== 'Statutory Setup' || canManageStatutory)
   const visibleAppSettingsMenus = appSettingsMenus.filter(item => item !== 'Engine Monitor' || isSuperAdmin)
   const routeParts = routeLocation.pathname.split('/').filter(Boolean)
+  const initialReportingTab = routeParts[0] === 'reports' ? fromSlug(reportingMenus, routeParts.at(-1), 'Payroll Reports')
+    : savedReportingTab && reportingMenus.includes(savedReportingTab) ? savedReportingTab : 'Payroll Reports'
   const dashboardView = routeParts[0] === 'dashboard' && dashboardViews.includes(routeParts[1] as DashboardView) ? routeParts[1] as DashboardView : 'overview'
   const [requestNavigation, setRequestNavigation] = useState<RecruitmentRequestNavigation | null>(null)
   const recruitmentView = routeParts[0] === 'recruitment' ? fromSlug(recruitmentViews, routeParts[1], 'Dashboard') : 'Dashboard'
@@ -381,9 +383,13 @@ export default function SettingsApp() {
   const [employeeTab, setEmployeeTab] = useState<EmployeeTab>('Employee Master')
   const [payrollTab, setPayrollTab] = useState<PayrollTab>((localStorage.getItem('payroll.payrollTab') as PayrollTab | null) ?? 'Regular Run')
   const [leaveAttendanceTab, setLeaveAttendanceTab] = useState<LeaveAttendanceMenu>(savedLeaveAttendanceTab && leaveAttendanceMenus.includes(savedLeaveAttendanceTab) ? savedLeaveAttendanceTab : 'Attendance Policies')
-  const [reportingTab, setReportingTab] = useState<ReportingMenu>(savedReportingTab && reportingMenus.includes(savedReportingTab) ? savedReportingTab : 'Payroll Reports')
+  const [reportingTab, setReportingTab] = useState<ReportingMenu>(initialReportingTab)
   const [workflowTab, setWorkflowTab] = useState<WorkflowMenu>(savedWorkflowTab && workflowMenus.includes(savedWorkflowTab) ? savedWorkflowTab : 'Workflow Setup')
-  const [reportingReport, setReportingReport] = useState<ReportDefinition>(() => reportItems(savedReportingTab && reportingMenus.includes(savedReportingTab) ? savedReportingTab : 'Payroll Reports')[0])
+  const [reportingReport, setReportingReport] = useState<ReportDefinition>(() => {
+    const reports = reportItems(initialReportingTab)
+    const requested = routeParts[0] === 'reports' ? new URLSearchParams(routeLocation.search).get('report') : null
+    return reports.find(report => slug(report.name) === requested) ?? reports[0]
+  })
   const [mainModule, setMainModule] = useState<ModuleCode>(initialModule)
   const [shellOrg, setShellOrg] = useState<Org>(org0)
   const [scopedClient, setScopedClient] = useState<Client | null>(null)
@@ -856,7 +862,7 @@ export default function SettingsApp() {
             </button>
           </Dropdown>
         </Space>
-        <AppPageHeader workspace={!showMyTasks && !isProfile ? mainModule === 'Workflows' && workflowTab === 'API Catalog' ? 'workflows' : mainModule === 'Settings' && settingsSection === 'LeaveAttendance' ? 'attendance-settings' : mainModule === 'Dashboard' ? 'dashboard' : mainModule === 'Employees' && employeeTab === 'Employee Master' ? 'employees' : mainModule === 'Reports' && reportingReport.code === 'payslip-register' ? 'payslips' : undefined : undefined} recruitment={mainModule === 'TalentAcquisition' && !showMyTasks && !isProfile} title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined} />
+        <AppPageHeader workspace={!showMyTasks && !isProfile ? mainModule === 'Workflows' && workflowTab === 'API Catalog' ? 'workflows' : mainModule === 'Settings' && settingsSection === 'LeaveAttendance' ? 'attendance-settings' : mainModule === 'Settings' && settingsSection === 'General' && tab === 'Statutory Setup' ? 'statutory-settings' : mainModule === 'Dashboard' ? 'dashboard' : mainModule === 'Employees' && employeeTab === 'Employee Master' ? 'employees' : mainModule === 'Reports' && reportingReport.code === 'payslip-register' ? 'payslips' : mainModule === 'Reports' && reportingReport.code === 'excel-payslips' ? 'excel-payslips' : undefined : undefined} recruitment={mainModule === 'TalentAcquisition' && !showMyTasks && !isProfile} title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined} />
       </div>
       <div className="hrms-content">
         <div className="hrms-page-body">{renderPage()}</div>

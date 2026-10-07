@@ -356,6 +356,8 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         if (runType == "Regular" && requestedIncludedIds.Count > 0)
             adjustments = adjustments.Where(item => includedEmployeeIds.Contains(item.EmployeeId)).ToList();
         var adjustmentByEmployee = adjustments.GroupBy(item => item.EmployeeId).ToDictionary(group => group.Key, group => group.ToList());
+        if (runType == "Regular")
+            await LoadPfPolicyPeriodsAsync(connection, transaction, employees.Where(employee => includedEmployeeIds.Contains(employee.Id)).ToList(), request.PayPeriod, setupJson);
         if (runType == "Off Cycle" && includedEmployeeIds.Count == 0)
         {
             await transaction.RollbackAsync();
@@ -390,6 +392,7 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             var employeeWorkingDays = runType == "Off Cycle" ? request.TotalWorkingDays : AttendanceWorkingDays(attendanceRow, request.TotalWorkingDays);
             var presentDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? employeeWorkingDays : Math.Clamp(attendanceRow.PresentDays, 0, employeeWorkingDays);
             var payableDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? employeeWorkingDays : Math.Clamp(attendanceRow.PayableDays, 0, employeeWorkingDays);
+            employee.AttendancePolicySnapshot = attendanceRow?.PolicySnapshot;
             var employeeAdjustments = adjustmentByEmployee.GetValueOrDefault(employee.Id) ?? [];
             var row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, 0, false);
             if (runType == "Regular")
@@ -450,10 +453,11 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await connection.ExecuteAsync("DELETE FROM tax_computation_snapshots WHERE pay_run_id=@PayRunId", new { PayRunId = payRunId });
         await using var transaction = await connection.BeginTransactionAsync();
-        var payRun = await connection.QueryFirstOrDefaultAsync<PayRun>("SELECT * FROM payruns WHERE Id=@PayRunId AND Status='Processing'", new { PayRunId = payRunId }, transaction);
+        var payRun = await connection.QueryFirstOrDefaultAsync<PayRun>("SELECT * FROM payruns WHERE Id=@PayRunId AND Status='Processing' FOR UPDATE", new { PayRunId = payRunId }, transaction);
         if (payRun is null) return null;
+        // Explicitly queued draft/failed attempts can calculate a new snapshot. Approved and paid runs cannot enter this path.
+        await connection.ExecuteAsync("DELETE FROM tax_computation_snapshots WHERE pay_run_id=@PayRunId", new { PayRunId = payRunId }, transaction);
         var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id AND IsActive = TRUE", new { Id = request.ClientId }, transaction);
         if (client is null) return null;
         await ClearPayRunDetailsAsync(connection, transaction, payRunId);
@@ -477,6 +481,8 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         if (runType == "Regular" && requestedIncludedIds.Count > 0)
             adjustments = adjustments.Where(item => includedEmployeeIds.Contains(item.EmployeeId)).ToList();
         var adjustmentByEmployee = adjustments.GroupBy(item => item.EmployeeId).ToDictionary(group => group.Key, group => group.ToList());
+        if (runType == "Regular")
+            await LoadPfPolicyPeriodsAsync(connection, transaction, employees.Where(employee => includedEmployeeIds.Contains(employee.Id)).ToList(), request.PayPeriod, setupJson);
         var validationIssues = ValidatePayRunInputs(payRunId, request, runType, employees.Where(employee => includedEmployeeIds.Contains(employee.Id)).ToList(), attendance, setupJson);
         if (runType == "Off Cycle" && includedEmployeeIds.Count == 0)
             validationIssues.Add(Issue(payRunId, null, "", "Run", "Critical", "Payroll Validation", "Off-cycle payroll needs at least one employee or approved adjustment.", true));
@@ -498,6 +504,7 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             var employeeWorkingDays = runType == "Off Cycle" ? request.TotalWorkingDays : AttendanceWorkingDays(attendanceRow, request.TotalWorkingDays);
             var presentDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? employeeWorkingDays : Math.Clamp(attendanceRow.PresentDays, 0, employeeWorkingDays);
             var payableDays = runType == "Off Cycle" ? 0 : attendanceRow is null ? employeeWorkingDays : Math.Clamp(attendanceRow.PayableDays, 0, employeeWorkingDays);
+            employee.AttendancePolicySnapshot = attendanceRow?.PolicySnapshot;
             var employeeAdjustments = adjustmentByEmployee.GetValueOrDefault(employee.Id) ?? [];
             var row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, 0, false);
             if (runType == "Regular")
@@ -526,9 +533,12 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await using var transaction = await connection.BeginTransactionAsync();
-        var payRun = await connection.QueryFirstOrDefaultAsync<PayRun>("SELECT * FROM payruns WHERE Id = @Id", new { Id = payRunId }, transaction);
+        var payRun = await connection.QueryFirstOrDefaultAsync<PayRun>("SELECT * FROM payruns WHERE Id = @Id FOR UPDATE", new { Id = payRunId }, transaction);
         if (payRun is null || payRun.Status != "Draft")
             return null;
+        var savedDetails = await connection.ExecuteScalarAsync<string?>("SELECT CAST(DetailsJson AS CHAR) FROM payrunemployees WHERE PayRunId=@PayRunId AND EmployeeId=@EmployeeId", new { PayRunId = payRunId, EmployeeId = employeeId }, transaction);
+        if (HasPfPolicySnapshot(savedDetails) || HasAttendancePolicySnapshot(savedDetails))
+            throw new InvalidOperationException("This payroll employee has a frozen effective policy calculation. Direct attendance/amount edits would discard its dated snapshot; use a new reviewed payroll calculation instead.");
         var employee = await connection.QueryFirstOrDefaultAsync<PayRunSourceEmployee>("SELECT e.*, c.Name AS ClientName, COALESCE(w.State,'') AS WorkState FROM employees e LEFT JOIN clients c ON c.Id = e.ClientId LEFT JOIN worklocations w ON w.Id = e.WorkLocationId WHERE e.Id = @Id", new { Id = employeeId }, transaction);
         if (employee is null)
             return null;
@@ -686,7 +696,10 @@ AND NOT EXISTS (
         foreach (var row in salary)
         {
             var amount = isSkipped ? 0 : row.Component.ProRata ? decimal.Round(row.Monthly * factor, 2) : row.Monthly;
-            lines.Add(new { Id = row.Component.Code, row.Component.Name, row.Component.Category, row.Component.ComponentRole, row.Component.StatutoryType, monthlyAmount = row.Monthly, amount, row.Component.ProRata });
+            if (row.PfPolicy is null)
+                lines.Add(new { Id = row.Component.Code, row.Component.Name, row.Component.Category, row.Component.ComponentRole, row.Component.StatutoryType, monthlyAmount = row.Monthly, amount, row.Component.ProRata });
+            else
+                lines.Add(new { Id = row.Component.Code, row.Component.Name, row.Component.Category, row.Component.ComponentRole, row.Component.StatutoryType, monthlyAmount = row.Monthly, amount, row.Component.ProRata, pfPolicy = row.PfPolicy });
             if (IsDeductionCategory(row.Component.Category))
                 deductions += amount;
             else if (IsPayableEarningCategory(row.Component.Category))
@@ -744,7 +757,10 @@ AND NOT EXISTS (
         }
 
         var net = Math.Max(0, grossPay + oneTimeEarnings - deductions - oneTimeDeductions);
-        lines.Add(new { Id = "GROSS_EARNED", Name = "Gross Earned", Category = "Summary", monthlyAmount = monthlyGross, amount = grossPay, ProRata = false });
+        if (employee.AttendancePolicySnapshot is null)
+            lines.Add(new { Id = "GROSS_EARNED", Name = "Gross Earned", Category = "Summary", monthlyAmount = monthlyGross, amount = grossPay, ProRata = false });
+        else
+            lines.Add(new { Id = "GROSS_EARNED", Name = "Gross Earned", Category = "Summary", monthlyAmount = monthlyGross, amount = grossPay, ProRata = false, attendancePolicy = employee.AttendancePolicySnapshot });
         lines.Add(new { Id = "NET_PAY", Name = "Net Pay", Category = "Summary", monthlyAmount = net, amount = net, ProRata = false });
 
         return new PayRunEmployee
@@ -782,7 +798,12 @@ AND NOT EXISTS (
             monthlyTarget = NumberFrom(structure?.AnnualCtc ?? "") / 12m;
 
         if (structure is not null && structure.Lines.Count > 0 && monthlyTarget > 0)
-            return CalculateStructureLines(setup.Components, structure, monthlyTarget, payrollDays, presentDays, payableDays);
+        {
+            ValidateRuntimePfMappings(setup.Components, structure, employee.PfPolicyPeriod);
+            return CalculateStructureLines(setup.Components, structure, monthlyTarget, payrollDays, presentDays, payableDays, employee.PfPolicyPeriod);
+        }
+        if (employee.PfPolicyPeriod is not null)
+            throw new InvalidOperationException("The published PF policy requires its salary template and a positive monthly salary base.");
 
         return salaryJson
             .Select(entry => componentById.TryGetValue(entry.Key, out var component)
@@ -825,7 +846,29 @@ AND NOT EXISTS (
         return rows;
     }
 
-    private static List<CalculatedPayrollComponent> CalculateStructureLines(List<PayrollComponent> components, SalaryStructureSetup structure, decimal monthlyTarget, int payrollDays, decimal presentDays, decimal payableDays)
+    private static void ValidateRuntimePfMappings(List<PayrollComponent> components, SalaryStructureSetup structure, PfPolicyPeriod? period)
+    {
+        if (period is null) return;
+        foreach (var version in period.Versions)
+        {
+            var baseComponent = components.SingleOrDefault(c => c.Active && c.Code.Equals(version.BaseComponentCode, StringComparison.OrdinalIgnoreCase) && c.Category == "Earning");
+            var baseLine = baseComponent is null ? null : structure.Lines.FirstOrDefault(l => l.ComponentId == baseComponent.Id);
+            if (baseComponent is null || baseLine is null) throw new InvalidOperationException("A published PF policy monthly base was removed or deactivated. Review the policy before payroll.");
+            var baseProRata = NullableBool(baseLine.ProRataOverride) ?? baseComponent.ProRata;
+            var baseFormula = FirstText(baseLine.Formula, baseLine.Value, baseComponent.Formula, baseComponent.Value);
+            if (!baseProRata || baseFormula.Contains("PAYABLE_DAYS", StringComparison.OrdinalIgnoreCase) || baseFormula.Contains("PRESENT_DAYS", StringComparison.OrdinalIgnoreCase) || baseFormula.Contains("_EARNED", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("A published PF monthly base now uses incompatible proration. Review the policy before payroll.");
+            foreach (var rule in version.Contributions)
+            {
+                var component = components.SingleOrDefault(c => c.Id == rule.ComponentId && c.Active);
+                if (component is null || !structure.Lines.Any(l => l.ComponentId == rule.ComponentId) || component.Code != rule.ComponentCode || component.StatutoryType != rule.StatutoryType || component.Priority <= baseComponent.Priority
+                    || rule.StatutoryType == "PF Employee" && component.Category != "Deduction" || rule.StatutoryType == "PF Employer" && component.Category != "Benefit")
+                    throw new InvalidOperationException("A published PF component mapping was removed, reclassified or reordered. Review the policy before payroll.");
+            }
+        }
+    }
+
+    private static List<CalculatedPayrollComponent> CalculateStructureLines(List<PayrollComponent> components, SalaryStructureSetup structure, decimal monthlyTarget, int payrollDays, decimal presentDays, decimal payableDays, PfPolicyPeriod? pfPeriod = null)
     {
         var componentById = components.ToDictionary(component => component.Id);
         var values = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
@@ -861,6 +904,13 @@ AND NOT EXISTS (
                 "Formula" => EvaluateComponentFormula(effectiveComponent, formula, monthlyTarget, payrollDays, presentDays, payableDays, values),
                 _ => NumberFrom(formula)
             };
+            var pfSnapshot = PfPolicyCalculator.Calculate(pfPeriod, structure.Id, component.Id, component.Code, component.StatutoryType,
+                values, payrollDays, payableDays);
+            if (pfSnapshot is not null)
+            {
+                monthly = pfSnapshot.Contribution;
+                effectiveComponent = effectiveComponent with { ProRata = false };
+            }
             monthly = Math.Max(0, decimal.Round(monthly, 2));
             values[component.Id] = monthly;
             values[component.Code] = monthly;
@@ -869,7 +919,7 @@ AND NOT EXISTS (
             var earned = effectiveComponent.ProRata && payrollDays > 0 ? decimal.Round(monthly * payableDays / payrollDays, 2) : monthly;
             values[$"{component.Id}_EARNED"] = earned;
             values[$"{component.Code}_EARNED"] = earned;
-            rows.Add(new CalculatedPayrollComponent(effectiveComponent, monthly));
+            rows.Add(new CalculatedPayrollComponent(effectiveComponent, monthly, pfSnapshot));
         }
 
         return rows;
@@ -1123,7 +1173,7 @@ AND NOT EXISTS (
     private sealed record PayrollComponent(string Id, string Code, string Name, string Category, string ComponentRole, string StatutoryType, string CalculationType, string Value, string Formula, string BaseComponent, bool ProRata, bool Active, int Priority, string PayType);
     private sealed record ProfessionalTaxSetup(bool Enabled, string DefaultState, string Cycle, List<ProfessionalTaxSlab> Slabs);
     private sealed record ProfessionalTaxSlab(string State, decimal SalaryFrom, decimal? SalaryTo, decimal DeductionAmount, DateTime? EffectiveFrom, DateTime? EffectiveTo, string Gender, bool Active);
-    private sealed record CalculatedPayrollComponent(PayrollComponent Component, decimal Monthly);
+    private sealed record CalculatedPayrollComponent(PayrollComponent Component, decimal Monthly, PfComponentSnapshot? PfPolicy = null);
     private sealed record SeededPayrollDeduction(string Code, string Name, decimal Amount, string StatutoryType);
 
     private sealed class FormulaParser(string text, Func<string, decimal> resolve)
@@ -1231,6 +1281,8 @@ SELECT LAST_INSERT_ID();", row, transaction);
         issues.AddRange(ValidateFormulaMasters(payRunId, setup.Components));
         foreach (var employee in employees)
         {
+            if (runType == "Regular" && attendance.TryGetValue(employee.Id, out var policyAttendance) && !string.IsNullOrWhiteSpace(policyAttendance.PolicyError))
+                issues.Add(Issue(payRunId, employee.Id, employee.EmployeeCode, "Employee", "Critical", "Attendance Policy", policyAttendance.PolicyError, true));
             if (string.IsNullOrWhiteSpace(employee.EmployeeCode))
                 issues.Add(Issue(payRunId, employee.Id, employee.EmployeeCode, "Employee", "Critical", "Employee Master Validation", "Employee code is missing.", true));
             if (string.IsNullOrWhiteSpace(employee.FirstName))
@@ -1361,7 +1413,7 @@ VALUES (@PayRunId,@EmployeeId,@StepNumber,@StepName,@StartTime,@EndTime,@Duratio
                 ParentComponentCode = category == "Summary" ? "" : "GROSS",
                 TraceOrder = order++,
                 RuleUsed = category,
-                FormulaUsed = Bool(element, "ProRata", false) ? "MonthlyAmount * PayableDays / TotalWorkingDays" : "Configured amount",
+                FormulaUsed = element.TryGetProperty("pfPolicy", out _) ? "Sum of effective PF segments; round once after aggregation" : Bool(element, "ProRata", false) ? "MonthlyAmount * PayableDays / TotalWorkingDays" : "Configured amount",
                 BaseAmount = NumberFrom(Text(element, "monthlyAmount")),
                 Factor = Bool(element, "ProRata", false) ? factor : 1,
                 CalculatedAmount = NumberFrom(Text(element, "amount")),
@@ -1621,10 +1673,12 @@ WHERE a.client_id = @ClientId
     {
         var monthlyRows = (await connection.QueryAsync<PayRunAttendance>(@"SELECT employee_id AS EmployeeId, working_days AS WorkingDays, present_days AS PresentDays, payable_days AS PayableDays
 FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=@Month", new { ClientId = clientId, Month = payPeriod }, transaction)).ToList();
-        if (monthlyRows.Count > 0)
-            return monthlyRows;
-
-        return (await connection.QueryAsync<PayRunAttendance>(@"
+        var periodStart = PayPeriodStart(payPeriod);
+        var periodEnd = periodStart.AddMonths(1).AddDays(-1);
+        var woVersions = (await AttendanceIntegrationRepository.ReadAsync(connection, transaction, clientId)).WeeklyOffRuleVersions;
+        var applicable = woVersions.Any(v => v.EffectiveFrom.Date <= periodEnd.Date);
+        if (monthlyRows.Count > 0 && !applicable) return monthlyRows;
+        List<PayRunAttendance> legacyDaily = monthlyRows.Count > 0 ? [] : (await connection.QueryAsync<PayRunAttendance>(@"
 SELECT employee_id AS EmployeeId,
        COUNT(*) AS WorkingDays,
        COALESCE(SUM(CASE WHEN status='Present' THEN payable_value ELSE 0 END), 0) AS PresentDays,
@@ -1632,6 +1686,53 @@ SELECT employee_id AS EmployeeId,
 FROM employee_daily_attendance
 WHERE client_id=@ClientId AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month
 GROUP BY employee_id;", new { ClientId = clientId, Month = payPeriod }, transaction)).ToList();
+        if (!applicable) return legacyDaily;
+
+        var cycles = (await connection.QueryAsync<EmployeeCycleRow>(@"
+SELECT e.Id AS EmployeeId, COALESCE(g.attendance_cycle_start_day,1) AS StartDay,
+COALESCE(g.attendance_cycle_end_day,DAY(LAST_DAY(STR_TO_DATE(CONCAT(@PayPeriod,'-01'),'%Y-%m-%d')))) AS EndDay
+FROM employees e
+LEFT JOIN (SELECT membership.employee_id,MIN(g.id) AS group_id FROM attendance_group_employees membership
+JOIN attendance_groups g ON g.id=membership.attendance_group_id AND g.client_id=@ClientId AND g.is_active=TRUE GROUP BY membership.employee_id) current_group ON current_group.employee_id=e.Id
+LEFT JOIN attendance_groups g ON g.id=current_group.group_id
+WHERE e.ClientId=@ClientId AND e.IsActive=TRUE", new { ClientId = clientId, PayPeriod = payPeriod }, transaction)).ToList();
+        if (cycles.Count == 0) return monthlyRows.Count > 0 ? monthlyRows : legacyDaily;
+        var ranges = cycles.ToDictionary(c => c.EmployeeId, c => CycleRangeFor(payPeriod, (int)c.StartDay, (int)c.EndDay));
+        var resolved = await WeeklyOffAttendanceService.ResolveAsync(connection, transaction, clientId, cycles.Select(c => c.EmployeeId).ToArray(), ranges.Values.Min(r => r.Start), ranges.Values.Max(r => r.End));
+        var monthlyById = monthlyRows.ToDictionary(r => r.EmployeeId);
+        var dailyById = legacyDaily.ToDictionary(r => r.EmployeeId);
+        var result = new List<PayRunAttendance>();
+        foreach (var cycle in cycles)
+        {
+            var range = ranges[cycle.EmployeeId];
+            var saved = monthlyById.GetValueOrDefault(cycle.EmployeeId);
+            if (!woVersions.Any(v => v.EffectiveFrom.Date <= range.End.Date))
+            {
+                var legacy = monthlyRows.Count > 0 ? saved : dailyById.GetValueOrDefault(cycle.EmployeeId);
+                if (legacy is not null) result.Add(legacy);
+                continue;
+            }
+            var days = resolved.Days.Where(d => d.EmployeeId == cycle.EmployeeId && d.Date >= range.Start && d.Date <= range.End).ToArray();
+            var row = saved ?? new PayRunAttendance { EmployeeId = cycle.EmployeeId, WorkingDays = days.Length, PresentDays = days.Where(d => d.Status == "Present").Sum(d => d.PayableValue), PayableDays = days.Sum(d => d.PayableValue) };
+            row.PolicyError = AttendancePolicyError(range.Start, range.End, days, saved?.PresentDays, saved?.PayableDays);
+            row.PolicySnapshot = new(1, DateOnly.FromDateTime(range.Start), DateOnly.FromDateTime(range.End), saved is null ? "Date-wise" : "Monthly validated against dated attendance",
+                woVersions.Where(v => v.EffectiveFrom.Date <= range.End.Date).ToArray(),
+                days.Select(d => new PayrollAttendanceDaySnapshot(DateOnly.FromDateTime(d.Date), d.Status, d.PayableValue, d.RuleVersionId, d.RuleVersionNumber, d.Reason, d.WorkWeek, d.WorkWeekConfig,
+                    d.PreviousWorkingDate is DateTime before ? DateOnly.FromDateTime(before) : null, d.NextWorkingDate is DateTime after ? DateOnly.FromDateTime(after) : null)).ToArray());
+            result.Add(row);
+        }
+        return result;
+    }
+
+    internal static string AttendancePolicyError(DateTime start, DateTime end, IReadOnlyList<WeeklyOffResolvedDay> days, decimal? savedPresentDays, decimal? savedPayableDays)
+    {
+        if (days.Any(d => d.Pending)) return "Weekly-off attendance is unresolved; complete the adjacent attendance before payroll.";
+        var expected = (end.Date - start.Date).Days + 1;
+        if (days.Count != expected || days.Select(d => d.Date.Date).Distinct().Count() != expected)
+            return "The published weekly-off policy needs recorded attendance for every day in the payroll cycle; monthly totals cannot identify weekly-off eligibility.";
+        if (savedPayableDays.HasValue && days.Sum(d => d.PayableValue) != savedPayableDays.Value || savedPresentDays.HasValue && days.Where(d => d.Status == "Present").Sum(d => d.PayableValue) != savedPresentDays.Value)
+            return "Stored monthly attendance does not match the effective weekly-off rules. Review and save the dated attendance before payroll; publishing a version does not rewrite attendance.";
+        return "";
     }
 
     private static int AttendanceWorkingDays(PayRunAttendance? row, int fallback) =>
@@ -1771,6 +1872,9 @@ LIMIT 1;", new { request.ClientId, GroupIds = groupIds }, transaction) ?? string
 
     private sealed class PayRunAttendance
     {
+        public string PolicyError { get; set; } = "";
+        public PayrollAttendanceSnapshot? PolicySnapshot { get; set; }
+
         public int EmployeeId { get; set; }
         public decimal WorkingDays { get; set; }
         public decimal PresentDays { get; set; }
@@ -1789,6 +1893,9 @@ LIMIT 1;", new { request.ClientId, GroupIds = groupIds }, transaction) ?? string
     private sealed record EmployeePaymentPayrollRow(int EmployeeId, string BankAccountNo, string IfscCode);
     private sealed class PayRunSourceEmployee : Employee
     {
+        [JsonIgnore] public PfPolicyPeriod? PfPolicyPeriod { get; set; }
+        [JsonIgnore] public PayrollAttendanceSnapshot? AttendancePolicySnapshot { get; set; }
+
         public string ClientName { get; set; } = string.Empty;
         public string WorkState { get; set; } = string.Empty;
         public string PersonalState { get; set; } = string.Empty;
@@ -1802,6 +1909,65 @@ LIMIT 1;", new { request.ClientId, GroupIds = groupIds }, transaction) ?? string
         public string EsicNumber { get; set; } = string.Empty;
         public string BankAccountNo { get; set; } = string.Empty;
         public string IfscCode { get; set; } = string.Empty;
+    }
+
+    internal static bool HasPfPolicySnapshot(string? detailsJson)
+    {
+        if (string.IsNullOrWhiteSpace(detailsJson)) return false;
+        using var document = JsonDocument.Parse(detailsJson);
+        return document.RootElement.ValueKind == JsonValueKind.Array && document.RootElement.EnumerateArray().Any(line => line.TryGetProperty("pfPolicy", out var snapshot) && snapshot.ValueKind == JsonValueKind.Object);
+    }
+
+    internal static bool HasAttendancePolicySnapshot(string? detailsJson)
+    {
+        if (string.IsNullOrWhiteSpace(detailsJson)) return false;
+        using var document = JsonDocument.Parse(detailsJson);
+        return document.RootElement.ValueKind == JsonValueKind.Array && document.RootElement.EnumerateArray().Any(line => line.TryGetProperty("attendancePolicy", out var snapshot) && snapshot.ValueKind == JsonValueKind.Object);
+    }
+
+    internal static bool IsProtectedPolicyRun(string status, IEnumerable<string> details) =>
+        !LatestAttemptStatuses.Contains(status) && details.Any(d => HasPfPolicySnapshot(d) || HasAttendancePolicySnapshot(d));
+
+    private static async Task LoadPfPolicyPeriodsAsync(MySqlConnection connection, MySqlTransaction transaction, List<PayRunSourceEmployee> employees, string payPeriod, string setupJson)
+    {
+        if (employees.Count == 0) return;
+        var clientId = employees[0].ClientId;
+        var allVersions = await PfPolicyRepository.ReadVersionsAsync(connection, transaction, clientId);
+        if (!allVersions.Any(v => v.Status == "Published")) return;
+        var setup = ReadPayrollSetup(setupJson);
+        var employeeIds = employees.Select(e => e.Id).ToArray();
+        var cycles = (await connection.QueryAsync<EmployeeCycleRow>(@"
+SELECT e.Id AS EmployeeId, COALESCE(g.attendance_cycle_start_day,1) AS StartDay,
+COALESCE(g.attendance_cycle_end_day,DAY(LAST_DAY(STR_TO_DATE(CONCAT(@PayPeriod,'-01'),'%Y-%m-%d')))) AS EndDay
+FROM employees e
+LEFT JOIN (SELECT membership.employee_id,MIN(g.id) AS group_id FROM attendance_group_employees membership
+JOIN attendance_groups g ON g.id=membership.attendance_group_id AND g.client_id=@ClientId AND g.is_active=TRUE GROUP BY membership.employee_id) current_group ON current_group.employee_id=e.Id
+LEFT JOIN attendance_groups g ON g.id=current_group.group_id
+WHERE e.ClientId=@ClientId AND e.Id IN @EmployeeIds", new { ClientId = clientId, PayPeriod = payPeriod, EmployeeIds = employeeIds }, transaction)).ToDictionary(c => c.EmployeeId);
+        foreach (var employee in employees)
+        {
+            var structure = setup.Structures.FirstOrDefault(s => s.Active && s.Id == employee.SalaryStructureId)
+                ?? setup.Structures.FirstOrDefault(s => s.Active && s.ClientId.Split(':')[0] == clientId.ToString(CultureInfo.InvariantCulture));
+            if (structure is null) continue;
+            var cycle = cycles.GetValueOrDefault(employee.Id);
+            var range = CycleRangeFor(payPeriod, cycle is null ? 1 : (int)cycle.StartDay, cycle is null ? DateTime.DaysInMonth(PayPeriodStart(payPeriod).Year, PayPeriodStart(payPeriod).Month) : (int)cycle.EndDay);
+            var start = DateOnly.FromDateTime(range.Start); var end = DateOnly.FromDateTime(range.End);
+            var versions = PfPolicyCalculator.ApplicableVersions(allVersions, structure.Id, start, end);
+            if (versions.Count == 0) continue;
+            employee.PfPolicyPeriod = new(start, end, versions, []);
+        }
+        var splitEmployees = employees.Where(e => e.PfPolicyPeriod?.Versions.Count > 1).ToList();
+        if (splitEmployees.Count == 0) return;
+        var first = splitEmployees.Min(e => e.PfPolicyPeriod!.Start).ToDateTime(TimeOnly.MinValue);
+        var last = splitEmployees.Max(e => e.PfPolicyPeriod!.End).ToDateTime(TimeOnly.MinValue);
+        var resolved = await WeeklyOffAttendanceService.ResolveAsync(connection, transaction, clientId, splitEmployees.Select(e => e.Id).ToArray(), first, last);
+        foreach (var employee in splitEmployees)
+        {
+            var period = employee.PfPolicyPeriod!;
+            var days = resolved.Days.Where(d => d.EmployeeId == employee.Id && DateOnly.FromDateTime(d.Date) >= period.Start && DateOnly.FromDateTime(d.Date) <= period.End).ToArray();
+            if (days.Any(d => d.Pending)) throw new InvalidOperationException($"Date-split PF for {employee.EmployeeCode} has unresolved weekly-off attendance. Resolve the neighboring attendance before payroll.");
+            employee.PfPolicyPeriod = period with { Days = days.Select(d => new PfPolicyAttendanceDay(DateOnly.FromDateTime(d.Date), d.PayableValue, d.Status, d.RuleVersionId)).ToArray() };
+        }
     }
 
     private static async Task LoadEmployeeTablesAsync(MySqlConnection connection, MySqlTransaction transaction, List<PayRunSourceEmployee> employees, string payPeriod)
@@ -1904,6 +2070,9 @@ LEFT JOIN (
 
     private static async Task DeletePayRunAttemptAsync(MySqlConnection connection, MySqlTransaction transaction, int payRunId)
     {
+        var status = await connection.ExecuteScalarAsync<string?>("SELECT Status FROM payruns WHERE Id=@PayRunId FOR UPDATE", new { PayRunId = payRunId }, transaction);
+        var storedDetails = await connection.QueryAsync<string>("SELECT CAST(DetailsJson AS CHAR) FROM payrunemployees WHERE PayRunId=@PayRunId", new { PayRunId = payRunId }, transaction);
+        if (IsProtectedPolicyRun(status ?? "", storedDetails)) throw new InvalidOperationException("An approved or completed pay run with frozen policy calculations cannot be deleted or replaced. Recall an unpaid approval to Draft before correcting it.");
         await SyncExpenseClaimPayrollStatusAsync(connection, transaction, payRunId, "Pending Payroll");
         await connection.ExecuteAsync("UPDATE payrolladjustments SET Status='Approved', PayRunId=NULL WHERE PayRunId=@PayRunId;DELETE FROM tax_computation_snapshots WHERE pay_run_id=@PayRunId;DELETE FROM payrunemployeelines WHERE PayRunId=@PayRunId;DELETE FROM payrunemployees WHERE PayRunId=@PayRunId;DELETE FROM payrun_step_logs WHERE PayRunId=@PayRunId;DELETE FROM payroll_validation_issues WHERE PayRunId=@PayRunId;DELETE FROM payroll_calculation_traces WHERE PayRunId=@PayRunId;DELETE FROM payroll_reconciliation_results WHERE PayRunId=@PayRunId;DELETE FROM payruns WHERE Id=@PayRunId;", new { PayRunId = payRunId }, transaction);
     }

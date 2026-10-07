@@ -113,10 +113,13 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddSingleton<OrganizationRepository>();
 builder.Services.AddSingleton<SettingsRepository>();
+builder.Services.AddSingleton<PfPolicyRepository>();
 builder.Services.AddSingleton<ClientBillingRepository>();
 builder.Services.AddSingleton<EmployeeRepository>();
 builder.Services.AddSingleton<EmployeeAttributeRepository>();
 builder.Services.AddSingleton<PayRunRepository>();
+builder.Services.AddSingleton<ExcelPayslipRepository>();
+builder.Services.AddSingleton<ExcelPayslipPdfService>();
 builder.Services.AddSingleton<AuthRepository>();
 builder.Services.AddSingleton<LeaveAttendanceRepository>();
 builder.Services.AddSingleton<AttendanceIntegrationRepository>();
@@ -181,6 +184,13 @@ var app = builder.Build();
 const string AuthCookieName = "payroll_auth";
 
 // Narrow additive migration entrypoint: avoids running unrelated legacy seed/migration routines.
+if (args.Any(arg => arg.Equals("--migrate-excel-payslips", StringComparison.OrdinalIgnoreCase)))
+{
+    var transferred = await app.Services.GetRequiredService<ExcelPayslipRepository>().MigrateStorageAsync();
+    app.Logger.LogInformation("Excel payslip storage migration completed. {Count} existing batches transferred; no PDFs stored or emails sent.", transferred);
+    return;
+}
+
 if (args.Any(arg => arg.Equals("--migrate-internal-interviews", StringComparison.OrdinalIgnoreCase)))
 {
     await app.Services.GetRequiredService<InternalInterviewRepository>().InitializeAsync();
@@ -995,7 +1005,15 @@ app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowReposi
 {
     if(action is not ("Approved" or "Rejected" or "Sent Back")) return Results.BadRequest();
     var user=CurrentUser(context);
-    var task=await repository.ActionAsync(taskId,user.Id,action,request.Comment);
+    bool task;
+    try
+    {
+        task = await repository.ActionAsync(taskId,user.Id,action,request.Comment);
+    }
+    catch (AttendancePeriodLockedException exception)
+    {
+        return Results.Conflict(new { error = exception.Message });
+    }
     if(!task)return Results.NotFound();
     var instance=await repository.GetInstanceForTaskAsync(taskId);
     if(instance?.ResourceType=="TravelRequest")await essRepository.SyncTravelWorkflowStatusAsync(instance.ResourceId,instance.Status);
@@ -3303,6 +3321,28 @@ app.MapPost("/api/setup", async (SettingsRepository repository, JsonElement setu
 .WithName("SavePayrollSetup")
 .WithOpenApi();
 
+app.MapGet("/api/clients/{clientId:int}/pf-policy-versions", async (PfPolicyRepository repository, int clientId, HttpContext context) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." })
+    : !CanAccessClient(context, clientId) || !HasPermission(context, "tax.statutory.manage") ? Results.StatusCode(403)
+    : Results.Ok(await repository.ListAsync(clientId)))
+.WithName("GetPfPolicyVersions").WithOpenApi();
+
+app.MapPost("/api/clients/{clientId:int}/pf-policy-versions", async (PfPolicyRepository repository, int clientId, SavePfPolicyVersionRequest request, HttpContext context) =>
+{
+    if (!CanAccessClient(context, clientId) || !HasPermission(context, "tax.statutory.manage")) return Results.StatusCode(403);
+    if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    var (item, error) = await repository.SaveDraftAsync(clientId, request, CurrentUser(context).Email);
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+}).WithName("SavePfPolicyVersion").WithOpenApi();
+
+app.MapPost("/api/clients/{clientId:int}/pf-policy-versions/{id}/publish", async (PfPolicyRepository repository, int clientId, string id, PublishPfPolicyVersionRequest request, HttpContext context) =>
+{
+    if (!CanAccessClient(context, clientId) || !HasPermission(context, "tax.statutory.manage")) return Results.StatusCode(403);
+    if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
+    var (item, error) = await repository.PublishAsync(clientId, id, request, CurrentUser(context).Email);
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+}).WithName("PublishPfPolicyVersion").WithOpenApi();
+
 app.MapGet("/api/client-billing/module", async (ClientBillingRepository repository, HttpContext context) =>
     HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetModuleAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetClientBillingModule")
@@ -3639,6 +3679,19 @@ app.MapGet("/api/leave-attendance/attendance-settings", async (LeaveAttendanceRe
     clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !HasClientSettingsManagement(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetAttendanceSettingsAsync(clientId)))
 .WithName("GetAttendanceSettings")
 .WithOpenApi();
+
+app.MapGet("/api/leave-attendance/weekly-off-rules", async (AttendanceIntegrationRepository repository, int clientId, HttpContext context) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." })
+    : !HasClientSettingsManagement(context, clientId) ? Results.StatusCode(403)
+    : Results.Ok(await repository.GetWeeklyOffRulesAsync(clientId)))
+.WithName("GetWeeklyOffRuleVersions").WithOpenApi();
+
+app.MapPost("/api/leave-attendance/weekly-off-rules", async (AttendanceIntegrationRepository repository, PublishWeeklyOffRuleRequest request, HttpContext context) =>
+{
+    if (!HasClientSettingsManagement(context, request.ClientId)) return Results.StatusCode(403);
+    var (versions, error) = await repository.PublishWeeklyOffRuleAsync(request, CurrentUser(context).Email);
+    return versions is null ? Results.BadRequest(new { error }) : Results.Ok(versions);
+}).WithName("PublishWeeklyOffRuleVersion").WithOpenApi();
 
 app.MapGet("/api/leave-attendance/configuration-gaps", async (AttendanceIntegrationRepository repository, int? clientId, HttpContext context) =>
 {
@@ -4366,6 +4419,8 @@ app.MapGet("/api/employees/import-jobs/{jobId:guid}", (EmployeeRepository reposi
 .WithName("GetEmployeeImportJob")
 .WithOpenApi();
 
+ExcelPayslipEndpoints.Map(app, CanViewPayslipRegister, CanSendPayslips, CanAccessClient, CurrentUser);
+
 app.MapGet("/api/pay-runs", async (PayRunRepository repository, HttpContext context) =>
     HasPermission(context, "payroll.run") || HasPermission(context, "payroll.approve") || HasPermission(context, "payroll.payments")
         ? Results.Ok(await repository.GetAllAsync(CurrentUser(context).ClientId))
@@ -4513,8 +4568,15 @@ app.MapPut("/api/pay-runs/{payRunId:int}/employees/{employeeId:int}", async (Pay
     var existing = await repository.GetAsync(payRunId);
     if (existing is null) return Results.NotFound();
     if (!CanAccessClient(context, existing.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
-    var employee = await repository.UpdateEmployeeAsync(payRunId, employeeId, request);
-    return employee is null ? Results.BadRequest(new { error = "Only draft pay runs can be updated." }) : Results.Ok(employee);
+    try
+    {
+        var employee = await repository.UpdateEmployeeAsync(payRunId, employeeId, request);
+        return employee is null ? Results.BadRequest(new { error = "Only draft pay runs can be updated." }) : Results.Ok(employee);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
 })
 .WithName("UpdatePayRunEmployee")
 .WithOpenApi();
@@ -4556,7 +4618,14 @@ app.MapDelete("/api/pay-runs/{id:int}", async (PayRunRepository repository, int 
     var existing = await repository.GetAsync(id);
     if (existing is null) return Results.NotFound();
     if (!CanAccessClient(context, existing.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
-    return await repository.DeleteAsync(id) ? Results.NoContent() : Results.BadRequest(new { error = "Paid or partially paid pay runs cannot be hard deleted." });
+    try
+    {
+        return await repository.DeleteAsync(id) ? Results.NoContent() : Results.BadRequest(new { error = "Paid or partially paid pay runs cannot be hard deleted." });
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
 })
 .WithName("DeleteDraftPayRun")
 .WithOpenApi();
