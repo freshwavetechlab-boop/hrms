@@ -1,4 +1,4 @@
-import { calculateReviewShift, resolveAttendanceShift } from '../../../shared/attendanceShift'
+import { calculateReviewShift, resolveAttendanceShift } from '../shared/attendanceShift'
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { Button, Card, Input, Space, Typography } from 'antd'

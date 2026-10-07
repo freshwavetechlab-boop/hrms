@@ -1,4 +1,4 @@
-import type { AttendanceShift } from '../../shared/attendanceShift'
+import type { AttendanceShift } from './shared/attendanceShift'
 export type User = {
   id: number
   email: string

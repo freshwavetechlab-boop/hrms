@@ -1,8 +1,6 @@
-**
-!payroll-ui/
-!payroll-ui/**
-!shared/
-!shared/**
+.git
+.vscode
 **/node_modules
 **/dist
 **/*.tsbuildinfo
+**/*.log

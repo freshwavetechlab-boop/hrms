@@ -1,8 +1,6 @@
-**
-!ess-mss/
-!ess-mss/**
-!shared/
-!shared/**
+.git
+.vscode
 **/node_modules
 **/dist
 **/*.tsbuildinfo
+**/*.log

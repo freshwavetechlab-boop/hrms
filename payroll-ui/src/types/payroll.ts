@@ -1,5 +1,5 @@
-import type { AttendanceShift } from '../../../shared/attendanceShift'
-export type { AttendanceShift } from '../../../shared/attendanceShift'
+import type { AttendanceShift } from '../shared/attendanceShift'
+export type { AttendanceShift } from '../shared/attendanceShift'
 export type Org = { name: string; legalName: string; businessType: string; businessLocation: string; industry: string; hasRunPayrollThisYear: boolean; setupCompleted: boolean; logoDataUrl: string; pan: string; gstin: string; tanNumber: string; addressLine1: string; addressLine2: string; registeredOfficeAddress: string; corporateOfficeAddress: string; city: string; state: string; postalCode: string; country: string; professionalTaxNumber: string }
 export type Component = { id: number; code: string; componentType: string; componentRole: string; statutoryType: string; category: string; name: string; payType: string; calculationType: string; value: string; formula: string; baseComponent: string; taxable: boolean; ctc: boolean; proRata: boolean; fbp: boolean; restrictFbp: boolean; epf: string; esi: boolean; recurring: boolean; scheduled: boolean; investmentType: string; correctionOf: string; active: boolean; priority: string }
 export type StructureLine = { componentId: string; value: string; calculationType?: string; formula?: string; baseComponent?: string; proRataOverride?: string; roundingMode?: string }

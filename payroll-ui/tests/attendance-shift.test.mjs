@@ -1,12 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 
-const compiled = ts.transpileModule(readFileSync(new URL('../../shared/attendanceShift.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText
+const compiled = ts.transpileModule(readFileSync(new URL('../src/shared/attendanceShift.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText
 const { calculateReviewShift, resolveAttendanceShift, manualHalfDayAttendance } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
 const shift = { id: 1, clientId: 20, shiftCode: 'DAY', shiftName: 'Day', shiftType: 'Fixed', startTime: '09:00:00', endTime: '18:00:00', breakMinutes: 60, graceMinutes: 10, minimumFullDayHours: 8, minimumHalfDayHours: 4, isOvernight: false, isActive: true, effectiveFrom: '2026-09-01', effectiveTo: null }
 const context = (shifts = [shift]) => ({ settings: { clientId: 20, shiftId: 1, maximumHoursAllowedForFullDay: 12 }, shifts, employeeShiftIds: {} })
+
+test('both independently deployable frontends retain the canonical attendance rules', () => {
+  execFileSync(process.execPath, [fileURLToPath(new URL('../../shared/sync-attendance-shift.mjs', import.meta.url)), '--check'])
+})
 
 test('manual half day and saved no-punch half day survive repeated normalization without shift defaults', () => {
   const manual = manualHalfDayAttendance('P.5', {})
