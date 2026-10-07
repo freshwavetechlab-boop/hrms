@@ -1,0 +1,8 @@
+**
+!ess-mss/
+!ess-mss/**
+!shared/
+!shared/**
+**/node_modules
+**/dist
+**/*.tsbuildinfo

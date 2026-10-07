@@ -1,0 +1,8 @@
+**
+!payroll-ui/
+!payroll-ui/**
+!shared/
+!shared/**
+**/node_modules
+**/dist
+**/*.tsbuildinfo
