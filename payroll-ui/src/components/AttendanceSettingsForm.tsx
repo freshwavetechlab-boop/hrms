@@ -6,6 +6,7 @@ import SearchSelect, { selectOptions } from './SearchSelect'
 import DataTable from './DataTable'
 import AttendanceConfigurationGaps from './AttendanceConfigurationGaps'
 import AttendanceDevices from './AttendanceDevices'
+import AttendanceShiftSelect from './AttendanceShiftSelect'
 
 const ruleFields = [
   { id: 1, key: 'lateGraceMinutes', label: 'Late-coming grace (minutes)', max: 1440 },
@@ -44,6 +45,8 @@ export default function AttendanceSettingsForm({ clientId, onSaved }: { clientId
     <Form className="settings-quick-form" component={false} layout="vertical" requiredMark={false}>
       {errors.length > 0 && <Alert type="error" showIcon message={errors.join(' ')} />}
       <AttendanceConfigurationGaps clientId={clientId} />
+      <Form.Item label="Default shift" extra="An employee's assigned policy shift takes priority. Leave blank to keep existing attendance rules."><AttendanceShiftSelect defaultShift clientId={clientId} value={form.shiftId} onChange={value => set('shiftId', value)} /></Form.Item>
+      {form.shiftId && <Alert type="info" showIcon message="Configured shifts provide the times, grace, break and hours thresholds. The rules below apply when no active shift is available." />}
       <Divider orientation="left">Work Shift Time</Divider>
       <Row gutter={12}>
         <Col xs={24} md={12}><Form.Item label="Check-in time" required><Input type="time" value={timeValue(form.checkInTime)} onChange={event => set('checkInTime', `${event.target.value}:00`)} /></Form.Item></Col>
@@ -59,6 +62,9 @@ export default function AttendanceSettingsForm({ clientId, onSaved }: { clientId
         <Col xs={24} md={8}><Form.Item label="Maximum hours allowed for full-day"><InputNumber step={0.25} value={form.maximumHoursAllowedForFullDay} onChange={value => set('maximumHoursAllowedForFullDay', Number(value || 0))} style={{ width: '100%' }} /></Form.Item></Col>
       </Row>
       <Divider orientation="left">Regularization Settings</Divider>
+      <Form.Item extra="Shows Half Day in Attendance Review for this client: 0.5 payable day and 0.5 LOP. Paid leave is adjusted through leave approval.">
+        <AntCheckbox checked={form.rules?.allowManualHalfDay ?? false} onChange={event => set('rules', { ...emptyRules, ...form.rules, allowManualHalfDay: event.target.checked })}>Allow manual half-day attendance</AntCheckbox>
+      </Form.Item>
       <DataTable rows={[...ruleFields]} columns={[
         { key: 'label', label: 'Client rule' },
         { key: 'key', label: 'Value', value: row => form.rules?.[row.key] ?? '', render: row => <InputNumber aria-label={row.label} min={0} max={row.max} value={form.rules?.[row.key]} placeholder="Not configured" onChange={value => set('rules', { ...emptyRules, ...form.rules, [row.key]: value })} /> },

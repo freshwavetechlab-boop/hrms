@@ -12,6 +12,12 @@ Employee Master keeps Table view as the default. In Card view, Missing informati
 
 ## ESS editing and approvals
 
+Employee Master **Manage → Configure fields** shows a field list for the selected client. Choose an Info Type, then **Add field**, **Edit** or **Delete**. **Save** makes changes available immediately; there are no manual draft/publish steps. Core fields stay unchanged. Existing form storage and employee submissions retain history internally. Saved field codes and types remain stable when labels are renamed; deleting a field hides it from forms/templates while retaining earlier values.
+
+Configured data fields appear in the matching Employee Master tab, employee list/report columns, bulk mapping and generated templates. For a new employee, save the core record first, then complete additional fields from its Info Type tabs. Employee Master's Excel export produces the importable **Employees** worksheet with core fields, salary component JSON and configured values. Keep the `[CUSTOM:InfoType:FormCode:FieldCode]` header markers. Use **Add new + update existing** for mixed uploads; leave Employee ID blank for new employees. Blank update cells preserve existing values. Document files continue through the existing Documents upload.
+
+Required configured fields join missing-information counts and the ESS profile form. ESS saves them within the same transaction as the profile update; failed validation does not consume edit access. TA joining uses the same employee identity checks, requires explicit confirmation to link an existing employee and fills only blank mapped values. Candidate data transfers by compatible stable field codes, never by labels; unavailable required values remain missing information. Conflicting candidate mappings stop the transfer for correction.
+
 1. First-time profile saving defaults ON for each client. An employee with no previous successful ESS profile save can upload documents and update their profile once. Upload documents before choosing **Save profile and lock editing**.
 2. A successful save locks profile editing and employee document uploads/deletions. Failed saves do not consume access. Existing document preview/download permissions still apply. Employee Master changes by authorised administrators remain available.
 3. A locked employee enters a reason and selects **Request edit access**. Duplicate pending requests are rejected.
@@ -36,7 +42,7 @@ Custom roles use these existing permissions; no new roles or permissions are req
 
 ## Storage and verification
 
-No schema migration is introduced. This reuses `communication_templates`, template variables/campaigns, workflow tables, `ResourceStates`, `ess_profile_update_audit`, employee infotypes and attachments. `EmployeeProfileFirstEdit` resource state stores the client policy; `EmployeeProfileEdit` stores Pending/Approved/Consumed access. Profile saves, grant consumption and infotype updates share a transaction. Profile/document writes and approvals coordinate on the employee row.
+No schema migration is introduced. This reuses form definitions/versions, employee form bindings/submissions, `communication_templates`, template variables/campaigns, workflow tables, `ResourceStates`, `ess_profile_update_audit`, employee infotypes and attachments. `EmployeeProfileFirstEdit` resource state stores the client policy; `EmployeeProfileEdit` stores Pending/Approved/Consumed access. Profile saves, grant consumption and infotype updates share a transaction. Profile/document writes and approvals coordinate on the employee row.
 
 Build the API, payroll-ui and ess-mss, then restart/deploy the updated API and both UIs together. There is no need to run a migration for this feature. Existing employees with an ESS save audit are treated as having used their initial save.
 

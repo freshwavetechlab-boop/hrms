@@ -60,6 +60,9 @@ public class SaveLeaveAttendancePreferencesRequest
 
 public class AttendanceSettings
 {
+    public int? ShiftId { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public AttendanceShift? Shift { get; set; }
     public AttendanceRules Rules { get; set; } = new();
     public int Id { get; set; }
     public int ClientId { get; set; }
@@ -121,6 +124,8 @@ public class GeoFenceEmployeeOption
 
 public class AttendanceGroup
 {
+    public int? ShiftId { get; set; }
+    public string ShiftName { get; set; } = string.Empty;
     public int Id { get; set; }
     public int ClientId { get; set; }
     public string ClientName { get; set; } = string.Empty;
@@ -146,6 +151,7 @@ public class SaveAttendanceGroupRequest : AttendanceGroup { }
 
 public class SaveAttendanceGroupBatchRequest
 {
+    public int? ShiftId { get; set; }
     public string PolicyBatchId { get; set; } = string.Empty;
     public int ClientId { get; set; }
     public string Name { get; set; } = string.Empty;
@@ -257,6 +263,8 @@ public class EmployeeLeaveBalanceSummary
 
 public class AttendanceReviewContext
 {
+    public List<AttendanceShift> Shifts { get; set; } = [];
+    public IReadOnlyDictionary<int, int> EmployeeShiftIds { get; set; } = new Dictionary<int, int>();
     public int ClientId { get; set; }
     public string ClientName { get; set; } = string.Empty;
     public string AccessScope { get; set; } = "DirectReports";

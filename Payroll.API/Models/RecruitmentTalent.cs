@@ -1,3 +1,5 @@
+using Payroll.API.Repositories;
+
 namespace Payroll.API.Models;
 
 public class RecruitmentCandidate
@@ -694,6 +696,7 @@ public class RecruitmentCandidateChecklistItem
 
 public class ConvertCandidateToEmployeeRequest
 {
+    public int? ExistingEmployeeId { get; set; }
     public string EmployeeCode { get; set; } = "";
     public string DateOfJoining { get; set; } = "";
     public string WorkEmail { get; set; } = "";
@@ -708,6 +711,8 @@ public class ConvertCandidateToEmployeeRequest
     public string SalaryStructureId { get; set; } = "";
     public decimal AnnualCtc { get; set; }
 }
+
+public record EmployeeConversionPreview(EmployeeImportPreflightRow Identity, List<EmployeeImportFieldChange> CustomFields);
 
 public class PersonActivityEvent
 {

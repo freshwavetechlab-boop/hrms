@@ -11,6 +11,7 @@ public class EssLeaveBalance
 
 public class EssProfile
 {
+    public EmployeeFieldExchange? AdditionalInformation { get; set; }
     public int ClientId { get; set; }
     public string EmployeeCode { get; set; } = string.Empty;
     public string FirstName { get; set; } = string.Empty;
@@ -49,6 +50,7 @@ public class EssFeatureAccess
 
 public class SaveEssProfileRequest
 {
+    public List<EmployeeFieldInput> AdditionalFields { get; set; } = [];
     public string FirstName { get; set; } = string.Empty;
     public string LastName { get; set; } = string.Empty;
     public string WorkEmail { get; set; } = string.Empty;

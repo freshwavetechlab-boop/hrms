@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import type { LoadState, ProfileData, SaveProfileData, User } from '../types'
 import { essApi } from '../services/essApi'
 import { initials, showToast } from '../utils/ui'
+import { ProfileAdditionalFields } from '../components/ProfileAdditionalFields'
 import { ProfileDocuments } from '../components/ProfileDocuments'
 
 export function ProfilePage({ user }: { user: User }) {
@@ -103,6 +104,7 @@ export function ProfilePage({ user }: { user: User }) {
         <label><span>IFSC</span><input value={form.ifscCode} onChange={event => set('ifscCode', event.target.value)} /></label>
         <label><span>Payment mode</span><select value={form.paymentMode} onChange={event => set('paymentMode', event.target.value)}><option value="">Select</option><option>Bank Transfer</option><option>Cheque</option><option>Cash</option></select></label>
       </div></section>
+      <ProfileAdditionalFields information={profile.additionalInformation} employeeId={user.employeeId!} clientId={profile.clientId} values={form.additionalFields} onChange={(code, value) => set('additionalFields', [...form.additionalFields.filter(field => field.code !== code), { code, value }])} />
     </fieldset>
     {user.employeeId && <ProfileDocuments employeeId={user.employeeId} clientId={profile.clientId} canEdit={profile.canEdit && !saving} onBusyChange={setDocumentsBusy} />}
     {profile.canEdit && <div className="profile-actions"><button type="button" className="secondary" disabled={saving} onClick={() => setForm(toForm(profile))}>Reset</button><button disabled={saving || documentsBusy}>{saving ? 'Saving...' : 'Save profile and lock editing'}</button></div>}
@@ -111,6 +113,7 @@ export function ProfilePage({ user }: { user: User }) {
 
 function toForm(profile: ProfileData): SaveProfileData {
   return {
+    additionalFields: Object.entries(Object.values(profile.additionalInformation?.values || {})[0] || {}).map(([code, value]) => ({ code, value })),
     firstName: profile.firstName || '',
     lastName: profile.lastName || '',
     workEmail: profile.workEmail || '',

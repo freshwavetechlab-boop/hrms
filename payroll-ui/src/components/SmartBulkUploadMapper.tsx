@@ -91,7 +91,7 @@ export default function SmartBulkUploadMapper(p: Props) {
   }, [p.open, reset])
 
   const mappedSourceColumns = useMemo(() => new Set(Object.values(mappings)), [mappings])
-  const missingRequired = useMemo(() => p.definition.fields.filter(field => field.required && mappings[field.code] === undefined && !(field.code === 'EmployeeCode' && generateEmployeeCodes && operation !== 'update')), [generateEmployeeCodes, mappings, operation, p.definition.fields])
+  const missingRequired = useMemo(() => p.definition.fields.filter(field => field.required && !(field.requiredForNew && operation === 'update') && mappings[field.code] === undefined && !(field.code === 'EmployeeCode' && generateEmployeeCodes && operation !== 'update')), [generateEmployeeCodes, mappings, operation, p.definition.fields])
   const sourceColumns = useMemo(() => (activeSheet?.headers ?? []).map((header, index) => ({
     index,
     header: header.trim() || `Unnamed column ${index + 1}`,
@@ -378,11 +378,11 @@ function SourceUploadPanel(p: { file: File | null; busy: boolean; onFile: (file:
 }
 
 function TemplateUploadPanel(p: { file: File | null; busy: boolean; operation: BulkImportOperation; definition: BulkImportDefinition; selectedFields: string[]; onSelectedFields: (fields: string[]) => void; onFile: (file: File) => void; onDownload?: (operation?: BulkImportOperation, selectedFieldCodes?: string[]) => void }) {
-  const requiredCodes = p.definition.fields.filter(field => field.required).map(field => field.code)
+  const requiredCodes = p.definition.fields.filter(field => field.required && !(field.requiredForNew && p.operation === 'update')).map(field => field.code)
   const effectiveFields = Array.from(new Set([...requiredCodes, ...p.selectedFields]))
   return <section className="smart-bulk-template-panel">
     <div><span>SELECTIVE TEMPLATE</span><h3>Download only the fields you need</h3><p>{p.operation === 'update' ? 'The update workbook includes Employee ID and current values. Unselected and blank fields remain unchanged.' : 'Required identity fields are included automatically. Pick any additional columns for new employees.'}</p>
-      <Select mode="multiple" allowClear value={p.selectedFields} onChange={p.onSelectedFields} maxTagCount="responsive" placeholder="Select employee fields" options={p.definition.fields.map(field => ({ value: field.code, label: `${field.group} / ${field.label}`, disabled: Boolean(field.required) }))} />
+      <Select mode="multiple" allowClear value={p.selectedFields} onChange={p.onSelectedFields} maxTagCount="responsive" placeholder="Select employee fields" options={p.definition.fields.map(field => ({ value: field.code, label: `${field.group} / ${field.label}`, disabled: requiredCodes.includes(field.code) }))} />
       {p.onDownload && <Button data-testid="smart-bulk-selective-template-download" icon={<DownloadOutlined />} disabled={!effectiveFields.length} onClick={() => p.onDownload?.(p.operation, effectiveFields)}>Download selected template</Button>}
     </div>
     <FileDropZone testId="smart-bulk-template-file-input" title={p.file ? p.file.name : 'Drop completed HRMS template here'} detail={p.file ? formatBytes(p.file.size) : 'Excel (.xlsx) and CSV files are accepted.'} busy={p.busy} onFile={p.onFile} />

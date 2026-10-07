@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { emptyEmployeeFields, getEmployeeFields, type EmployeeFieldExchange } from '../utils/employeeFields'
 import { Alert, Button, Select, Spin } from 'antd'
 import { getClients, getEmployees, getPayRuns } from '../services/payrollService'
 import { runReportResult, type ReportResult } from '../services/reportingService'
@@ -87,7 +88,15 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   const showEmployee = !!activeReport.code && employeeCodes.includes(activeReport.code)
   const showComponent = activeReport.code === 'component-ledger'
   const isEmployeeMaster = activeReport.code === 'employee-master' && activeReport.name === 'Employee Master Report'
-  const employeeExportReady = employeeDataReady && employeeLookupReady
+  const [fieldExchange, setFieldExchange] = useState<EmployeeFieldExchange>(emptyEmployeeFields)
+  const [fieldsReady, setFieldsReady] = useState(false)
+  const [fieldsError, setFieldsError] = useState('')
+  useEffect(() => {
+    let active = true; setFieldsReady(false); setFieldExchange(emptyEmployeeFields); setFieldsError('')
+    if (isEmployeeMaster && clientId) void getEmployeeFields(clientId).then(data => { if (active) { setFieldExchange(data); setFieldsReady(true) } }).catch(error => { if (active) setFieldsError(error.message) })
+    return () => { active = false }
+  }, [isEmployeeMaster, clientId, reportReloadKey])
+  const employeeExportReady = employeeDataReady && employeeLookupReady && fieldsReady
   const clientPayRuns = useMemo(() => payRuns.filter(run => run.clientId === clientId).sort((a, b) => b.id - a.id), [clientId, payRuns])
   const clientEmployees = useMemo(() => employees.filter(employee => employee.clientId === clientId && employee.isActive), [clientId, employees])
   const componentOptions = useMemo(() => [
@@ -153,7 +162,9 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
     }).finally(() => { if (!cancelled) setReportLoading(false) })
     return () => { cancelled = true }
   }, [clientId, activeReport, month, fromDate, toDate, payRunId, employeeId, componentCode, showMonth, showPeriod, showPayRun, showEmployee, showComponent, reportReloadKey, showClassifications, classificationFilters.employmentType, classificationFilters.skillCategory])
-  const reportColumns: Column<ReportRow>[] = result.columns.map(column => ({ key: column, label: column }))
+  const employeeByCode = useMemo(() => new Map(employees.filter(employee => employee.clientId === clientId).map(employee => [employee.employeeCode.toLowerCase(), employee])), [employees, clientId])
+  const employeeForRow = (row: ReportRow) => employeeByCode.get(String(row['Employee Code'] ?? '').toLowerCase())
+  const reportColumns: Column<ReportRow>[] = [...result.columns.map(column => ({ key: column, label: column })), ...(isEmployeeMaster ? fieldExchange.fields.map(field => ({ key: field.code, label: field.field.label, value: (row: ReportRow) => fieldExchange.values[employeeForRow(row)?.id || 0]?.[field.code] || '' })) : [])]
   const changeEmployeeExportGroups = (values: EmployeeExportGroup[]) => {
     const added = values.find(value => !employeeExportGroups.includes(value))
     let next = values
@@ -268,6 +279,11 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
       addColumn({ key: 'paymentMode', label: 'Payment Mode', read: employee => employee?.paymentDetails?.paymentMode ?? '' })
     }
 
+    fieldExchange.fields.filter(field => selected.includes('table') || selected.includes(field.infotypeCode as EmployeeExportGroup)).forEach(field => addColumn({ key: field.code, label: field.header, read: employee => employee ? fieldExchange.values[employee.id]?.[field.code] || '' : '' }))
+    if (employeeExportGroups.includes('all')) {
+      addColumn({ key: 'joiningDate', label: 'Date Of Joining', read: employee => employee?.dateOfJoining || '' })
+      addColumn({ key: 'active', label: 'Active', read: employee => employee ? yesNo(employee.isActive) : '' })
+    }
     downloadXlsx(`employee-master-${filePart(client?.code || client?.name || String(clientId))}.xlsx`, [{
       name: 'Employee Master',
       rows: [
@@ -293,6 +309,7 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   /> : undefined
 
   return <section className={`reporting-page${isEmployeeMaster ? ' employee-master-report' : ''}`}>
+    {fieldsError && isEmployeeMaster && <Alert type="error" showIcon message={fieldsError} action={<Button onClick={() => setReportReloadKey(value => value + 1)}>Retry</Button>} />}
     <div className="report-filter-surface">
       {activeReport.code && <div className="report-filters">
         {!clientScoped && <label className="report-client"><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(c => ({ value: c.id, label: c.name }))} /></label>}

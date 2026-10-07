@@ -1,0 +1,34 @@
+ARJUN SHARMA
+arjun.sharma.dev@example.com | +91-98765 43210 | linkedin.com/in/arjunsharma-dev
+EXPERIENCE SUMMARY
+DevOps Engineer with 7+ years of experience in CI/CD automation, cloud infrastructure, containerization, and release management across banking, healthcare, and enterprise applications. Strong expertise in Jenkins, Azure DevOps, Docker, Kubernetes, Terraform, Git, Linux, and cloud-native deployment practices.
+Senior DevOps Engineer | Accenture | Bengaluru, India   Jan 2023 - Present
+Designed and maintained end-to-end CI/CD pipelines using Jenkins and Azure DevOps.
+Managed application deployments across development, testing, staging, and production environments.
+Containerized enterprise applications using Docker and deployed workloads on Kubernetes.
+Created reusable Terraform modules for Azure infrastructure provisioning.
+Integrated SonarQube and security scanning tools into CI/CD pipelines.
+DevOps Engineer | Tech Mahindra | Pune, India   Jun 2020 - Dec 2022
+Developed Jenkins pipelines for automated application builds and deployments.
+Managed Docker images and supported Kubernetes deployments.
+Worked with Azure Virtual Machines, Storage, Networking, and Azure DevOps.
+Automated infrastructure provisioning using Terraform and shell scripting.
+System Engineer | TCS | Mumbai, India   Jul 2017 - May 2020
+Supported Java-based enterprise applications and deployment processes.
+Administered Linux servers and automated operational tasks using Bash.
+Worked with Git and Jenkins for source control and build automation.
+SKILLS AND TOOLS
+DevOps & CI/CD: Jenkins, Azure DevOps, GitHub Actions
+Containerization: Docker, Kubernetes, Helm
+Cloud: Microsoft Azure
+IaC: Terraform
+Security: SonarQube, Trivy
+Monitoring: Prometheus, Grafana
+OS: Linux, Ubuntu, RHEL
+Scripting: Bash, Shell
+CERTIFICATIONS
+Microsoft Certified: Azure Fundamentals
+Docker and Kubernetes Fundamentals
+EDUCATION
+B.E. | Computer Science Engineering | VTU | 72% | 2013 - 2017
+Declaration: I hereby declare that the information provided by me is true and authentic to the best of my knowledge.

@@ -1555,7 +1555,7 @@ LIMIT 2;", new { payRun.ClientId, payRun.PayPeriod })).ToList();
         }
     }
 
-    private static async Task ApplyLeaveBreakdownAsync(MySqlConnection connection, PayRun payRun)
+    internal static async Task ApplyLeaveBreakdownAsync(MySqlConnection connection, PayRun payRun)
     {
         if (payRun.RunType == "Off Cycle" || payRun.Employees.Count == 0)
             return;

@@ -5,6 +5,7 @@ import {
 } from '@ant-design/icons'
 import { Alert, Button, Card, DatePicker, Drawer, Dropdown, Empty, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Switch, Tag, Tooltip, message } from 'antd'
 import { useAuthSession } from './AuthGate'
+import { useToast } from './ToastProvider'
 import { getClients } from '../services/payrollService'
 import {
   deleteRecruitmentFormDefinition, getRecruitmentForm, getRecruitmentForms, getRecruitmentOrchestrationLookups, publishRecruitmentFormVersion,
@@ -15,10 +16,13 @@ import type {
   DynamicFormDefinition, DynamicFormField, DynamicFormFieldOption, DynamicFormFieldTypeCode, DynamicFormSection,
   DynamicFormValidationRule, DynamicFormValidationRuleType, DynamicFormVersion, RecruitmentOrchestrationLookups,
 } from '../types/recruitmentOrchestration'
+import { employeeCoreFields } from '../utils/employeeFields'
+import DataTable from './DataTable'
+import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
 import './RecruitmentOrchestration.css'
 import './RecruitmentFormBuilder.css'
 
-type Props = { initialClientId?: number; clientScopeManaged?: boolean; onSaved?: (form: DynamicFormDefinition) => void }
+type Props = { initialClientId?: number; clientScopeManaged?: boolean; employeeMode?: boolean; onSaved?: (form: DynamicFormDefinition) => void }
 
 type BuilderDragPayload =
   | { kind: 'palette'; fieldTypeCode: DynamicFormFieldTypeCode }
@@ -34,6 +38,10 @@ const fieldTypes: Array<{ value: DynamicFormFieldTypeCode; label: string }> = [
   { value: 'PHONE', label: 'Phone' }, { value: 'SEARCH_SELECT', label: 'Searchable dropdown' },
   { value: 'MULTI_SELECT', label: 'Searchable multi-select' }, { value: 'RADIO', label: 'Radio group' },
   { value: 'CHECKBOX', label: 'Checkbox' }, { value: 'UPLOAD', label: 'Secure upload' },
+]
+const employeeInfoTypes = [
+  { value: '0001', label: 'Organization' }, { value: '0002', label: 'Personal data' },
+  { value: '0006', label: 'Addresses' }, { value: '0008', label: 'Basic pay' }, { value: '0009', label: 'Bank details' },
 ]
 const semanticOptions = ['FIRST_NAME', 'LAST_NAME', 'FATHERS_NAME', 'EMAIL', 'PHONE', 'RESUME', 'CONSENT', 'CURRENT_LOCATION', 'CURRENT_COMPANY', 'CURRENT_DESIGNATION', 'TOTAL_EXPERIENCE_MONTHS', 'HIGHEST_QUALIFICATION', 'CERTIFICATIONS', 'CURRENT_CTC', 'EXPECTED_CTC', 'NOTICE_PERIOD_DAYS']
 const emptyLookups: RecruitmentOrchestrationLookups = { lookupSources: [], attachmentConfigurations: [], attachmentFieldConfigurations: [], workflows: [], forms: [], positions: [], atsProfiles: [] }
@@ -73,11 +81,14 @@ const validationRuleOptions = (fieldType: DynamicFormFieldTypeCode) => {
   return types.map(value => ({ value, label: validationRuleLabels[value] }))
 }
 
-export default function RecruitmentFormBuilder({ initialClientId = 0, clientScopeManaged = false, onSaved }: Props) {
+export default function RecruitmentFormBuilder({ initialClientId = 0, clientScopeManaged = false, employeeMode = false, onSaved }: Props) {
   const session = useAuthSession()
-  const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
+  const toast = useToast()
+  const apiBase = employeeMode ? '/api/employees/field-configuration' : '/api/recruitment-orchestration'
+  const canDelete = !employeeMode && Boolean(session?.user.permissions.includes('settings.manage'))
   const [clients, setClients] = useState<Client[]>([])
   const [clientId, setClientId] = useState(initialClientId)
+  const [employeeType, setEmployeeType] = useSessionPreference<string>(`employees.fields:${session?.user.id}:${clientId}:infotype`, '0002')
   const [forms, setForms] = useState<DynamicFormDefinition[]>([])
   const [lookups, setLookups] = useState(emptyLookups)
   const [definition, setDefinition] = useState<DynamicFormDefinition | null>(null)
@@ -95,11 +106,25 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
   const selectionRequestRef = useRef(0)
   const canvasScrollRef = useRef<HTMLDivElement | null>(null)
   const paletteScrollRef = useRef<HTMLDivElement | null>(null)
+  const employeeBeforeEdit = useRef<DynamicFormVersion | null>(null)
 
-  const load = async (scope: number) => {
+  const load = async (scope: number, preferredId?: number) => {
     if (!scope) return
-    const [rows, options] = await Promise.all([getRecruitmentForms(scope), getRecruitmentOrchestrationLookups(scope)])
+    const requestId = ++selectionRequestRef.current
+    const [rows, options] = await Promise.all([getRecruitmentForms(scope, apiBase), getRecruitmentOrchestrationLookups(scope, apiBase)])
+    if (requestId !== selectionRequestRef.current) return
     setForms(rows); setLookups(options)
+    if (employeeMode) {
+      const matches = rows.filter(row => row.purposeCode === `EMPLOYEE_INFOTYPE_${employeeType}`)
+      const existing = matches.find(row => row.id === (preferredId ?? definition?.id)) ?? matches.find(row => row.status === 'Active') ?? matches[0]
+      if (existing) await chooseForm(existing.id)
+      else {
+        const next = { ...blankDefinition(scope, clients.find(row => row.id === scope)?.name ?? ''), moduleCode: 'EMPLOYEE', entityType: 'EMPLOYEE',
+          purposeCode: `EMPLOYEE_INFOTYPE_${employeeType}`, formCode: `EMPLOYEE_FIELDS_${employeeType}`, formName: `${employeeInfoTypes.find(row => row.value === employeeType)?.label || employeeType} fields`, requiresEmailVerification: false }
+        const blank = blankVersion(0)
+        setDefinition(next); setVersion(blank); setSelectedSectionId(blank.sections[0].id); setSelectedFieldId(null)
+      }
+    }
   }
 
   useEffect(() => {
@@ -113,7 +138,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     setSelectingFormId(null)
     if (clientId) void load(clientId)
     setDefinition(null); setVersion(null); setSelectedSectionId(null); setSelectedFieldId(null); setFieldDrawer(false); setSectionEditor(null)
-  }, [clientId])
+  }, [clientId, employeeMode ? employeeType : ''])
   useEffect(() => () => { selectionRequestRef.current += 1 }, [])
 
   const selectedSection = version?.sections.find(row => row.id === selectedSectionId) ?? null
@@ -127,18 +152,19 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     setSelectingFormId(id)
     setDefinition(null); setVersion(null); setSelectedSectionId(null); setSelectedFieldId(null); setFieldDrawer(false); setSectionEditor(null)
     try {
-      const row = await getRecruitmentForm(id)
+      const row = await getRecruitmentForm(id, apiBase)
       if (requestId !== selectionRequestRef.current) return
       if (!row) {
         message.error('Unable to load the selected form.')
         return
       }
       const ordered = [...(row.versions || [])].sort((a, b) => b.versionNumber - a.versionNumber)
-      const selected = ordered.find(item => item.status === 'Draft')
+      const selected = (employeeMode ? ordered.find(item => item.id === row.currentPublishedVersionId) : ordered.find(item => item.status === 'Draft'))
+        ?? ordered.find(item => item.status === 'Draft')
         ?? ordered.find(item => item.id === row.currentPublishedVersionId)
         ?? ordered[0]
         ?? blankVersion(row.id)
-      const normalized = normalizeVersionValidationRules(selected)
+      const normalized = normalizeVersionValidationRules(employeeMode ? cloneVersion(selected, row.id) : selected)
       setDefinition(row); setVersion(normalized)
       setSelectedSectionId(normalized.sections[0]?.id ?? null); setSelectedFieldId(null)
     } catch {
@@ -157,6 +183,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
       .filter(row => row.isActive && code(row.attributeCode) === 'RESUME' && (row.clientId === 0 || row.clientId === clientId))
       .sort((left, right) => Number(right.clientId === clientId) - Number(left.clientId === clientId))[0]
     const draft = standardCandidateVersion(0, resumeConfiguration?.id ?? null)
+    if (employeeMode) { next.moduleCode = 'EMPLOYEE'; next.entityType = 'EMPLOYEE'; next.purposeCode = 'EMPLOYEE_INFOTYPE_0002'; next.requiresEmailVerification = false; draft.sections[0].fields = [] }
     setDefinition(next); setVersion(draft); setSelectedSectionId(draft.sections[0].id); setSelectedFieldId(null)
   }
 
@@ -172,7 +199,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     const publishedVersionId = definition.currentPublishedVersionId
     setSelectingFormId(definitionId)
     try {
-      const row = await getRecruitmentForm(definitionId)
+      const row = await getRecruitmentForm(definitionId, apiBase)
       const published = row?.versions.find(item => item.id === publishedVersionId)
       if (!row || !published) return message.error('Published version could not be restored.')
       const normalized = normalizeVersionValidationRules(published)
@@ -414,21 +441,36 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     finishDrag()
   }
 
-  const save = async () => {
-    if (!definition || !version || readOnly) return
-    const preparedVersion = withStableValidationReferences(version)
-    const error = validate(definition, preparedVersion); if (error) return message.warning(error)
+  const save = async (nextVersion = version) => {
+    if (!definition || !nextVersion || readOnly || saving) return false
+    const preparedVersion = withStableValidationReferences(nextVersion)
+    const error = validate(definition, preparedVersion); if (error) { if (employeeMode) toast(error, 'warning'); else message.warning(error); return false }
+    if (employeeMode) {
+      const names = preparedVersion.sections.flatMap(section => section.fields).filter(field => field.isActive).map(field => field.label.trim().toLowerCase())
+      if (new Set(names).size !== names.length) { toast('A field with this name already exists.', 'warning'); return false }
+    }
     setSaving(true)
-    const definitionResponse = await saveRecruitmentFormDefinition({
-      id: definition.id, clientId: definition.clientId, moduleCode: code(definition.moduleCode), formCode: code(definition.formCode || definition.formName),
-      formName: definition.formName.trim(), purposeCode: code(definition.purposeCode), entityType: code(definition.entityType), status: definition.status,
-      requiresEmailVerification: definition.requiresEmailVerification,
-    })
-    if (!definitionResponse.ok || !definitionResponse.data) { setSaving(false); return }
-    const versionResponse = await saveRecruitmentFormVersion(definitionResponse.data.id, { ...preparedVersion, formDefinitionId: definitionResponse.data.id })
-    setSaving(false)
-    if (!versionResponse.ok || !versionResponse.data) return
-    onSaved?.(definitionResponse.data); await load(definition.clientId); await chooseForm(definitionResponse.data.id)
+    try {
+      const definitionResponse = await saveRecruitmentFormDefinition({
+        id: definition.id, clientId: definition.clientId, moduleCode: code(definition.moduleCode), formCode: code(definition.formCode || definition.formName),
+        formName: definition.formName.trim(), purposeCode: code(definition.purposeCode), entityType: code(definition.entityType), status: definition.status,
+        requiresEmailVerification: definition.requiresEmailVerification,
+      }, apiBase)
+      if (!definitionResponse.ok || !definitionResponse.data) return false
+      if (employeeMode) setDefinition(definitionResponse.data)
+      const versionResponse = await saveRecruitmentFormVersion(definitionResponse.data.id, { ...preparedVersion, formDefinitionId: definitionResponse.data.id }, apiBase)
+      if (!versionResponse.ok || !versionResponse.data) return false
+      if (employeeMode) {
+        const published = await publishRecruitmentFormVersion(versionResponse.data.id, apiBase, definitionResponse.data.id)
+        if (!published.ok) return false
+        setFieldDrawer(false); employeeBeforeEdit.current = null
+        toast('Employee fields saved.', 'success')
+      }
+      onSaved?.(definitionResponse.data); await load(definition.clientId, definitionResponse.data.id)
+      if (!employeeMode) await chooseForm(definitionResponse.data.id)
+      return true
+    } catch { if (employeeMode) toast('Unable to save. Please try again.', 'error'); else message.error('Unable to save. Please try again.'); return false }
+    finally { setSaving(false) }
   }
 
   const publish = () => {
@@ -440,9 +482,10 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
   const confirmPublish = async () => {
     if (!definition || !version?.id || publishing) return
     setPublishing(true)
-    const response = await publishRecruitmentFormVersion(version.id)
+    const response = await publishRecruitmentFormVersion(version.id, apiBase, definition!.id)
     if (response.ok) {
       setPublishOpen(false)
+      onSaved?.(definition)
       await load(definition.clientId)
       await chooseForm(definition.id)
     }
@@ -464,7 +507,29 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
 
   const clientOptions = clients.map(row => ({ value: row.id, label: row.name }))
   const isUnsavedRevision = Boolean(definition?.id && definition.currentPublishedVersionId && version?.id === 0)
-  return <section className="orchestration-shell recruitment-form-builder">
+  if (employeeMode) {
+    const fields = version?.sections.flatMap(section => section.fields).filter(field => field.isActive) ?? []
+    const cancelEdit = () => { if (employeeBeforeEdit.current) setVersion(employeeBeforeEdit.current); employeeBeforeEdit.current = null; setFieldDrawer(false) }
+    const groups = forms.filter(row => row.purposeCode === `EMPLOYEE_INFOTYPE_${employeeType}`)
+    const locked = !!selectedField && definition?.versions.some(version => ['Published', 'Retired'].includes(version.status) && version.sections.some(section => section.fields.some(field => field.stableFieldCode === selectedField.stableFieldCode)))
+    return <section className="employee-fields-crud">
+      <Space wrap className="employee-fields-toolbar">
+        <Select aria-label="Info type" disabled={saving || fieldDrawer} value={employeeType} options={employeeInfoTypes} onChange={setEmployeeType} />
+        {groups.length > 1 && <Select aria-label="Field group" disabled={saving || fieldDrawer} value={definition?.id} options={groups.map(row => ({ value: row.id, label: row.formName }))} onChange={id => void chooseForm(id)} />}
+        <Button type="primary" icon={<PlusOutlined />} disabled={!version || saving || selectingFormId !== null} onClick={() => { employeeBeforeEdit.current = version; addField('TEXT', version?.sections[0]?.id) }}>Add field</Button>
+      </Space>
+      <details className="employee-core-fields"><summary>Existing fields</summary>{employeeCoreFields[employeeType]?.join(', ')}</details>
+      <DataTable rows={fields} loading={!version || selectingFormId !== null} fillHeight exportFileName="employee-field-configuration" emptyText="No additional fields. Use Add field to create one."
+        columns={[{ key: 'label', label: 'Field name' }, { key: 'fieldTypeCode', label: 'Type', value: row => fieldTypes.find(type => type.value === row.fieldTypeCode)?.label || row.fieldTypeCode }, { key: 'isRequired', label: 'Required', value: row => row.isRequired ? 'Yes' : 'No' }]}
+        actions={field => <Space><Button size="small" disabled={saving} onClick={() => { employeeBeforeEdit.current = version; setSelectedSectionId(field.sectionId); setSelectedFieldId(field.id); setFieldDrawer(true) }}>Edit</Button>
+          <Popconfirm title={`Delete ${field.label}?`} description="Removes this field from forms and templates; saved employee history is retained." okText="Delete" onConfirm={async () => { await save({ ...version!, sections: version!.sections.map(section => ({ ...section, fields: section.fields.map(row => row.id === field.id ? { ...row, isActive: false } : row) })) }) }}><Button size="small" danger disabled={saving}>Delete</Button></Popconfirm></Space>} />
+      <Drawer rootClassName="recruitment-form-field-drawer" width="min(720px, 96vw)" title={employeeBeforeEdit.current?.sections.some(section => section.fields.some(field => field.id === selectedFieldId)) ? 'Edit field' : 'Add field'} open={fieldDrawer && !!selectedField} onClose={() => !saving && cancelEdit()} closable={!saving}
+        footer={<Space><Button disabled={saving} onClick={cancelEdit}>Cancel</Button><Button type="primary" loading={saving} onClick={() => void save()}>Save</Button></Space>}>
+        {selectedField && <FieldProperties simple stableCodeLocked={locked} field={selectedField} allFields={version?.sections.flatMap(section => section.fields) ?? []} lookups={lookups} clientId={clientId} readOnly={saving} patch={value => patchField(selectedField.id, value)} />}
+      </Drawer>
+    </section>
+  }
+  return <section className={`orchestration-shell recruitment-form-builder${employeeMode ? ' employee-field-builder' : ''}`}>
     <div className="orchestration-toolbar form-builder-page-toolbar">
       <Space wrap className="form-builder-top-actions"><span className="recruitment-command-label">Client</span><Select data-testid="form-builder-client" disabled={clientScopeManaged} value={clientId || undefined} placeholder="Select client" options={clientOptions} onChange={setClientId} showSearch optionFilterProp="label" /><Button data-testid="form-builder-new" icon={<PlusOutlined />} type="primary" onClick={startNew}>New form</Button></Space>
     </div>
@@ -488,11 +553,12 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
       </aside>
       {selectingFormId !== null ? <Card data-testid="form-builder-selection-loading" className="form-builder-start-card" loading aria-busy="true" aria-label="Loading selected form" /> : !definition || !version ? <Card className="form-builder-start-card"><Empty description="Select a form from the left or create a new one." /></Card> : <div ref={canvasScrollRef} className="form-builder-canvas" onDragOver={autoScrollCanvas} onWheel={scrollWithMouse}>
         <Card size="small" className="form-builder-settings-card"><div className="orchestration-toolbar form-builder-version-toolbar"><Space wrap><Tag color={version.status === 'Published' ? 'green' : version.status === 'Retired' ? 'default' : 'gold'}>v{version.versionNumber} · {version.status}</Tag><Switch disabled={readOnly} checked={definition.status === 'Active'} onChange={active => patchDefinition({ status: active ? 'Active' : 'Inactive' })} checkedChildren="Active" unCheckedChildren="Inactive" /></Space></div>
-          <div className="form-builder-meta"><Form.Item label="Form name" required><Input data-testid="form-builder-name" disabled={readOnly} value={definition.formName} onChange={event => patchDefinition({ formName: event.target.value })} /></Form.Item><Form.Item label="Form code" required><Input data-testid="form-builder-code" disabled={readOnly} value={definition.formCode} onChange={event => patchDefinition({ formCode: code(event.target.value) })} /></Form.Item><Form.Item label="Use this form for" extra="Employee forms appear automatically in the matching Employee infotype after publishing."><Select data-testid="form-builder-module" disabled={readOnly} value={definition.moduleCode || 'RECRUITMENT'} onChange={chooseModule} options={[{ value: 'RECRUITMENT', label: 'Recruitment / Candidate' }, { value: 'EMPLOYEE', label: 'Employee additional fields' }]} /></Form.Item>{definition.moduleCode === 'EMPLOYEE' && <Form.Item label="Employee infotype"><Select data-testid="form-builder-employee-infotype" disabled={readOnly} value={employeeInfotype} onChange={value => patchDefinition({ purposeCode: `EMPLOYEE_INFOTYPE_${value}`, entityType: 'EMPLOYEE' })} options={[{ value: '0001', label: '0001 - Organizational Assignment' }, { value: '0002', label: '0002 - Personal Data' }, { value: '0006', label: '0006 - Addresses' }, { value: '0008', label: '0008 - Basic Pay' }, { value: '0009', label: '0009 - Bank Details' }]} /></Form.Item>}<Form.Item label="Purpose code"><Input data-testid="form-builder-purpose" disabled={readOnly} value={definition.purposeCode} onChange={event => patchDefinition({ purposeCode: code(event.target.value) })} /></Form.Item><Form.Item label="Entity type"><Input data-testid="form-builder-entity" disabled={readOnly} value={definition.entityType} onChange={event => patchDefinition({ entityType: code(event.target.value) })} /></Form.Item></div>
+          <div className="form-builder-meta"><Form.Item label="Form name" required><Input data-testid="form-builder-name" disabled={readOnly} value={definition.formName} onChange={event => patchDefinition({ formName: event.target.value })} /></Form.Item><Form.Item label="Form code" required><Input data-testid="form-builder-code" disabled={readOnly || (employeeMode && !!definition.currentPublishedVersionId)} value={definition.formCode} onChange={event => patchDefinition({ formCode: code(event.target.value) })} /></Form.Item><Form.Item label="Use this form for" extra="Employee forms appear automatically in the matching Employee infotype after publishing."><Select data-testid="form-builder-module" disabled={readOnly || employeeMode} value={definition.moduleCode || 'RECRUITMENT'} onChange={chooseModule} options={employeeMode ? [{ value: 'EMPLOYEE', label: 'Employee additional fields' }] : [{ value: 'RECRUITMENT', label: 'Recruitment / Candidate' }, { value: 'EMPLOYEE', label: 'Employee additional fields' }]} /></Form.Item>{definition.moduleCode === 'EMPLOYEE' && <Form.Item label="Employee infotype"><Select data-testid="form-builder-employee-infotype" disabled={readOnly || (employeeMode && !!definition.currentPublishedVersionId)} value={employeeInfotype} onChange={value => patchDefinition({ purposeCode: `EMPLOYEE_INFOTYPE_${value}`, entityType: 'EMPLOYEE' })} options={[{ value: '0001', label: '0001 - Organizational Assignment' }, { value: '0002', label: '0002 - Personal Data' }, { value: '0006', label: '0006 - Addresses' }, { value: '0008', label: '0008 - Basic Pay' }, { value: '0009', label: '0009 - Bank Details' }]} /></Form.Item>}<Form.Item label="Purpose code"><Input data-testid="form-builder-purpose" disabled={readOnly || employeeMode} value={definition.purposeCode} onChange={event => patchDefinition({ purposeCode: code(event.target.value) })} /></Form.Item><Form.Item label="Entity type"><Input data-testid="form-builder-entity" disabled={readOnly || employeeMode} value={definition.entityType} onChange={event => patchDefinition({ entityType: code(event.target.value) })} /></Form.Item></div>
         </Card>
         <div className="form-builder-design-surface">
+          {employeeMode && <Alert type="info" showIcon message="Existing core fields stay unchanged" description={<><p>{employeeCoreFields[employeeInfotype]?.join(", ")}</p><span>Added fields appear in the same Info Type. Use the same stable field code in the candidate form to transfer its value during joining. Required fields also appear in missing information.</span></>} />}
           <div className="form-builder-surface-head"><div><span>Form canvas</span><small>{version.sections.length} section{version.sections.length === 1 ? '' : 's'} · {version.sections.reduce((total, section) => total + section.fields.length, 0)} fields</small></div><div className="form-builder-canvas-actions">{readOnly ? <Button type="primary" icon={<EditOutlined />} onClick={beginRevision}>Create next version</Button> : <>{isUnsavedRevision && <Button danger onClick={cancelRevision}>Cancel revision</Button>}<Button data-testid="form-builder-save" loading={saving} onClick={() => void save()}>Save draft</Button><Button data-testid="form-builder-publish" type="primary" onClick={publish}>Publish</Button></>}<Button icon={<PlusOutlined />} disabled={readOnly} onClick={addSection}>Add section</Button></div></div>
-          {readOnly && <Alert showIcon type="info" message="Published versions are read-only" description="Create the next version to change sections or fields without affecting existing applications." />}
+          {readOnly && <Alert showIcon type="info" message="Published versions are read-only" description={employeeMode ? "Create the next version to add, rename or disable fields. Existing employee values are kept by their stable codes." : "Create the next version to change sections or fields without affecting existing applications."} />}
         {!version.sections.length && <div className="form-builder-empty form-builder-empty-canvas"><Empty description="Add a section, then drag fields from the palette." /></div>}
         {version.sections.map((section, sectionIndex) => <Card
           key={section.id}
@@ -551,11 +617,19 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
       Published versions are immutable. Existing application links keep their assigned version.
     </Modal>
     <Modal title="Section properties" open={!!sectionEditor} onCancel={() => setSectionEditor(null)} onOk={saveSectionEditor}>{sectionEditor && <Form layout="vertical"><Form.Item label="Section label" required><Input value={sectionEditor.sectionLabel} onChange={event => setSectionEditor({ ...sectionEditor, sectionLabel: event.target.value })} /></Form.Item><Form.Item label="Section code"><Input value={sectionEditor.sectionCode} onChange={event => setSectionEditor({ ...sectionEditor, sectionCode: code(event.target.value) })} /></Form.Item><Form.Item label="Description"><Input.TextArea value={sectionEditor.description} onChange={event => setSectionEditor({ ...sectionEditor, description: event.target.value })} /></Form.Item></Form>}</Modal>
-    <Drawer rootClassName="recruitment-form-field-drawer" width={720} title="Field properties" open={fieldDrawer && !!selectedField} onClose={() => setFieldDrawer(false)} extra={selectedField && <Space><Tooltip title="Move field up"><Button aria-label="Move field up" icon={<ArrowUpOutlined />} disabled={readOnly} onClick={() => moveField(selectedField.id, -1)} /></Tooltip><Tooltip title="Move field down"><Button aria-label="Move field down" icon={<ArrowDownOutlined />} disabled={readOnly} onClick={() => moveField(selectedField.id, 1)} /></Tooltip><Button danger icon={<DeleteOutlined />} disabled={readOnly} onClick={() => confirmRemoveField(selectedField)}>Delete</Button></Space>}>{selectedField && <FieldProperties field={selectedField} allFields={version?.sections.flatMap(section => section.fields) ?? []} lookups={lookups} clientId={definition?.clientId ?? 0} readOnly={readOnly} patch={value => patchField(selectedField.id, value)} />}</Drawer>
+    <Drawer rootClassName="recruitment-form-field-drawer" width={720} title="Field properties" open={fieldDrawer && !!selectedField} onClose={() => setFieldDrawer(false)} extra={selectedField && <Space><Tooltip title="Move field up"><Button aria-label="Move field up" icon={<ArrowUpOutlined />} disabled={readOnly} onClick={() => moveField(selectedField.id, -1)} /></Tooltip><Tooltip title="Move field down"><Button aria-label="Move field down" icon={<ArrowDownOutlined />} disabled={readOnly} onClick={() => moveField(selectedField.id, 1)} /></Tooltip><Button danger icon={<DeleteOutlined />} disabled={readOnly} onClick={() => confirmRemoveField(selectedField)}>Delete</Button></Space>}>{selectedField && <FieldProperties stableCodeLocked={employeeMode && !!definition?.versions.find(version => version.id === definition.currentPublishedVersionId)?.sections.some(section => section.fields.some(field => field.stableFieldCode === selectedField.stableFieldCode))} field={selectedField} allFields={version?.sections.flatMap(section => section.fields) ?? []} lookups={lookups} clientId={definition?.clientId ?? 0} readOnly={readOnly} patch={value => patchField(selectedField.id, value)} />}</Drawer>
   </section>
 }
 
-function FieldProperties({ field, allFields, lookups, clientId, readOnly, patch }: { field: DynamicFormField; allFields: DynamicFormField[]; lookups: RecruitmentOrchestrationLookups; clientId: number; readOnly: boolean; patch: (value: Partial<DynamicFormField>) => void }) {
+function FieldProperties({ field, allFields, lookups, clientId, readOnly, patch, stableCodeLocked = false, simple = false }: { field: DynamicFormField; allFields: DynamicFormField[]; lookups: RecruitmentOrchestrationLookups; clientId: number; readOnly: boolean; stableCodeLocked?: boolean; simple?: boolean; patch: (value: Partial<DynamicFormField>) => void }) {
+  const [showValidation, setShowValidation] = useState(false)
+  const changeLabel = (label: string) => {
+    if (!simple || stableCodeLocked) return patch({ label })
+    const base = code(label) || 'FIELD'
+    let stableFieldCode = base
+    for (let suffix = 2; allFields.some(row => row.id !== field.id && row.stableFieldCode === stableFieldCode); suffix++) stableFieldCode = `${base}_${suffix}`
+    patch({ label, stableFieldCode })
+  }
   const addOption = () => patch({ options: [...field.options, { id: localId(), fieldId: field.id, optionCode: '', optionLabel: '', displayOrder: field.options.length + 1, isActive: true }] })
   const patchOption = (id: number, value: Partial<DynamicFormFieldOption>) => patch({ options: field.options.map(row => row.id === id ? { ...row, ...value } : row) })
   const removeOption = (id: number) => patch({ options: field.options.filter(row => row.id !== id).map((row, index) => ({ ...row, displayOrder: index + 1 })) })
@@ -567,18 +641,19 @@ function FieldProperties({ field, allFields, lookups, clientId, readOnly, patch 
   const comparableFields = allFields.filter(row => row.id !== field.id && row.isActive && scalarTypesCompatible(field.fieldTypeCode, row.fieldTypeCode))
   const selectedAttachment = lookups.attachmentConfigurations.find(row => row.id === field.attachmentFieldConfigurationId)
   return <Form layout="vertical"><div className="field-property-grid">
-    <Form.Item label="Field label" required><Input data-testid="form-field-label" disabled={readOnly} value={field.label} onChange={event => patch({ label: event.target.value })} /></Form.Item><Form.Item label="Stable field code" required><Input data-testid="form-field-code" disabled={readOnly} value={field.stableFieldCode} onChange={event => patch({ stableFieldCode: code(event.target.value) })} /></Form.Item>
-    <Form.Item label="Field type"><Select data-testid="form-field-type" disabled={readOnly} value={field.fieldTypeCode} options={fieldTypes} onChange={fieldTypeCode => patch({ fieldTypeCode, options: isChoice(fieldTypeCode) ? field.options : [], lookupSourceCode: isChoice(fieldTypeCode) ? field.lookupSourceCode : '', attachmentFieldConfigurationId: fieldTypeCode === 'UPLOAD' ? field.attachmentFieldConfigurationId : null })} /></Form.Item><Form.Item label="Width"><Select data-testid="form-field-width" disabled={readOnly} value={field.widthColumns} onChange={widthColumns => patch({ widthColumns })} options={[{ value: 3, label: 'Quarter' }, { value: 4, label: 'One third' }, { value: 6, label: 'Half' }, { value: 12, label: 'Full' }]} /></Form.Item>
+    <Form.Item label={simple ? 'Field name' : 'Field label'} required><Input data-testid="form-field-label" disabled={readOnly} value={field.label} onChange={event => changeLabel(event.target.value)} /></Form.Item>{!simple && <Form.Item label="Stable field code" required><Input data-testid="form-field-code" disabled={readOnly || stableCodeLocked} value={field.stableFieldCode} onChange={event => patch({ stableFieldCode: code(event.target.value) })} /></Form.Item>}
+    <Form.Item label="Field type"><Select data-testid="form-field-type" disabled={readOnly || stableCodeLocked} value={field.fieldTypeCode} options={fieldTypes} onChange={fieldTypeCode => patch({ fieldTypeCode, options: isChoice(fieldTypeCode) ? field.options : [], lookupSourceCode: isChoice(fieldTypeCode) ? field.lookupSourceCode : '', attachmentFieldConfigurationId: fieldTypeCode === 'UPLOAD' ? field.attachmentFieldConfigurationId : null })} /></Form.Item><Form.Item label="Width"><Select data-testid="form-field-width" disabled={readOnly} value={field.widthColumns} onChange={widthColumns => patch({ widthColumns })} options={[{ value: 3, label: 'Quarter' }, { value: 4, label: 'One third' }, { value: 6, label: 'Half' }, { value: 12, label: 'Full' }]} /></Form.Item>
     <Form.Item className="wide" label="Placeholder"><Input disabled={readOnly} value={field.placeholder} onChange={event => patch({ placeholder: event.target.value })} /></Form.Item><Form.Item className="wide" label="Help text"><Input data-testid="form-field-help" disabled={readOnly} value={field.helpText} onChange={event => patch({ helpText: event.target.value })} /></Form.Item>
-    <Form.Item label="Required"><Switch data-testid="form-field-required" disabled={readOnly} checked={field.isRequired} onChange={isRequired => patch({ isRequired })} /></Form.Item><Form.Item label="Active"><Switch disabled={readOnly} checked={field.isActive} onChange={isActive => patch({ isActive })} /></Form.Item>
+    <Form.Item label="Required"><Switch data-testid="form-field-required" disabled={readOnly} checked={field.isRequired} onChange={isRequired => patch({ isRequired })} /></Form.Item>{!simple && <Form.Item label="Active"><Switch disabled={readOnly} checked={field.isActive} onChange={isActive => patch({ isActive })} /></Form.Item>}
     {['TEXT', 'TEXTAREA', 'EMAIL', 'PHONE'].includes(field.fieldTypeCode) && <><Form.Item label="Minimum characters"><InputNumber disabled={readOnly} min={0} value={field.minimumLength} onChange={value => patch({ minimumLength: value == null ? null : Number(value) })} /></Form.Item><Form.Item label="Maximum characters"><InputNumber disabled={readOnly} min={1} value={field.maximumLength} onChange={value => patch({ maximumLength: value == null ? null : Number(value) })} /></Form.Item></>}
     {field.fieldTypeCode === 'NUMBER' && <><Form.Item label="Minimum value"><InputNumber disabled={readOnly} value={field.minimumNumber} onChange={value => patch({ minimumNumber: value == null ? null : Number(value) })} /></Form.Item><Form.Item label="Maximum value"><InputNumber disabled={readOnly} value={field.maximumNumber} onChange={value => patch({ maximumNumber: value == null ? null : Number(value) })} /></Form.Item></>}
     {isChoice(field.fieldTypeCode) && <Form.Item className="wide" label="Registered lookup source" extra="Leave blank to maintain normalized static options below."><Select disabled={readOnly} allowClear value={field.lookupSourceCode || undefined} placeholder="Static options" onChange={value => patch({ lookupSourceCode: value || '' })} options={lookups.lookupSources.filter(row => row.isActive).map(row => ({ value: row.sourceCode, label: row.sourceName }))} /></Form.Item>}
     {field.fieldTypeCode === 'UPLOAD' && <Form.Item className="wide" label="Global attachment field configuration" required extra={selectedAttachment ? `${selectedAttachment.allowMultiple ? `Up to ${selectedAttachment.maximumFileCount} files` : 'Single file'} · ${formatBytes(selectedAttachment.maximumFileSizeBytes)} each · ${extensions(selectedAttachment.allowedExtensionsJson)}` : 'File type, size, permissions and versioning are enforced by the global attachment system.'}><Select data-testid="form-field-attachment-configuration" disabled={readOnly} showSearch optionFilterProp="label" value={field.attachmentFieldConfigurationId || undefined} onChange={attachmentFieldConfigurationId => patch({ attachmentFieldConfigurationId })} options={lookups.attachmentConfigurations.filter(row => row.isActive && (row.clientId === 0 || row.clientId === clientId)).map(row => ({ value: row.id, label: `${row.fieldLabel || row.attributeName} (${row.attributeCode})` }))} /></Form.Item>}
-    <Form.Item className="wide" label="Semantic mappings" extra="Use stable meanings such as EMAIL or RESUME so submission conversion does not depend on labels."><Select data-testid="form-field-semantics" disabled={readOnly} mode="tags" value={field.semanticCodes} onChange={values => patch({ semanticCodes: values.map(code) })} options={semanticOptions.map(value => ({ value, label: value.replaceAll('_', ' ') }))} /></Form.Item>
+    {!simple && <Form.Item className="wide" label="Semantic mappings" extra="Use stable meanings such as EMAIL or RESUME so submission conversion does not depend on labels."><Select data-testid="form-field-semantics" disabled={readOnly} mode="tags" value={field.semanticCodes} onChange={values => patch({ semanticCodes: values.map(code) })} options={semanticOptions.map(value => ({ value, label: value.replaceAll('_', ' ') }))} /></Form.Item>}
   </div>
     {isChoice(field.fieldTypeCode) && !field.lookupSourceCode && <Card size="small" title="Static options" extra={<Button disabled={readOnly} size="small" icon={<PlusOutlined />} onClick={addOption}>Add option</Button>}>{!field.options.length && <Alert type="info" showIcon message="Add at least one option, or select a registered lookup source." />}{field.options.map((option, index) => <div className="field-option-row" key={option.id}><Input disabled={readOnly} value={option.optionLabel} placeholder="Label" onChange={event => patchOption(option.id, { optionLabel: event.target.value })} /><Input disabled={readOnly} value={option.optionCode} placeholder="Stored code" onChange={event => patchOption(option.id, { optionCode: code(event.target.value) })} /><Button disabled={readOnly || !index} className="order-action" icon={<ArrowUpOutlined />} onClick={() => moveOption(option.id, -1)} /><Button disabled={readOnly || index === field.options.length - 1} className="order-action" icon={<ArrowDownOutlined />} onClick={() => moveOption(option.id, 1)} /><Button disabled={readOnly} danger icon={<DeleteOutlined />} onClick={() => removeOption(option.id)} /></div>)}</Card>}
-    <Card
+    {simple && <Button type="link" onClick={() => setShowValidation(value => !value)}>{showValidation ? 'Hide' : 'Show'} additional validation</Button>}
+    {(!simple || showValidation) && <Card
       size="small"
       title="Additional validation rules"
       extra={<Button disabled={readOnly} size="small" icon={<PlusOutlined />} onClick={addRule}>Add rule</Button>}
@@ -613,7 +688,7 @@ function FieldProperties({ field, allFields, lookups, clientId, readOnly, patch 
           </div>
         </Card>)}
       </div>
-    </Card>
+    </Card>}
   </Form>
 }
 

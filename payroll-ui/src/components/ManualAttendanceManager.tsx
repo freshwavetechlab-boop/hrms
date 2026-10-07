@@ -1,3 +1,4 @@
+import { calculateReviewShift, resolveAttendanceShift, manualHalfDayAttendance, manualHalfDayStatus } from '../../../shared/attendanceShift'
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { Button, Card, Input, Space, Typography } from 'antd'
@@ -212,12 +213,16 @@ export default function ManualAttendanceManager({ clientId, group = null, review
   const leaveTypeByCode = useMemo(() => new Map(activeLeaveTypes.map((leaveType) => [leaveType.code.toLowerCase(), leaveType])), [activeLeaveTypes])
   const statusChoices = useMemo(() => [
     { value: 'Present', label: 'P - Present' },
+    ...(settings.rules?.allowManualHalfDay ? [{ value: manualHalfDayStatus, label: 'P.5 - Half Day' }] : []),
     { value: 'A', label: 'A - Absent' },
     { value: 'WO', label: 'WO - Weekly Off' },
     { value: 'H', label: 'H - Holiday' },
     ...activeLeaveTypes.map((leaveType) => ({ value: leaveType.code, label: `${leaveType.code} - ${leaveType.name}` }))
-  ], [activeLeaveTypes])
+  ], [activeLeaveTypes, settings.rules?.allowManualHalfDay])
   const statusOptions = statusChoices
+  useEffect(() => {
+    if (!settings.rules?.allowManualHalfDay && bulkStatus === manualHalfDayStatus) setBulkStatus('Present')
+  }, [settings.rules?.allowManualHalfDay, bulkStatus])
   const cycleRange = useMemo(() => cycleRangeFor(month, cycleSettings.attendanceCycleStartDay, cycleSettings.attendanceCycleEndDay), [month, cycleSettings.attendanceCycleStartDay, cycleSettings.attendanceCycleEndDay])
   const monthDays = useMemo(() => dateRangeDates(cycleRange.start, cycleRange.end), [cycleRange.start, cycleRange.end])
   const cycleRangeDisplay = useMemo(() => rangeLabel(cycleRange.start, cycleRange.end), [cycleRange.start, cycleRange.end])
@@ -294,29 +299,34 @@ export default function ManualAttendanceManager({ clientId, group = null, review
   const holidayFor = (row: EmployeeMonthlyAttendance, date: string) => reviewContext.holidays.find((holiday) =>
     isoDate(holiday.startDate) <= date && isoDate(holiday.endDate) >= date && (holiday.allLocations || !holiday.workLocationIds.length || holiday.workLocationIds.includes(row.workLocationId)))
   const defaultStatusFor = (row: EmployeeMonthlyAttendance, date: string) => holidayFor(row, date) ? 'H' : isWorkingDate(row, date) ? '' : 'WO'
-  const totalHoursFor = (row: EmployeeDailyAttendance) => toNumber(row.totalHours) || hoursBetween(row.checkInTime, row.checkOutTime)
+  const totalHoursFor = (row: EmployeeDailyAttendance) => resolveAttendanceShift(reviewContext, row.employeeId, row.attendanceDate) ? toNumber(row.totalHours) : toNumber(row.totalHours) || hoursBetween(row.checkInTime, row.checkOutTime)
   const makeRow = (employeeId: number, date: string, status: DailyStatus, existing?: EmployeeDailyAttendance, patch: RowPatch = {}): EmployeeDailyAttendance => {
     const normalized = normalizeStatus(status)
-    const checkIn = normalized === 'Present' ? apiTime(patch.checkInTime !== undefined ? patch.checkInTime : existing?.checkInTime || settings.checkInTime) : null
-    const checkOut = normalized === 'Present' ? apiTime(patch.checkOutTime !== undefined ? patch.checkOutTime : existing?.checkOutTime || settings.checkOutTime) : null
-    const hours = normalized === 'Present' ? hoursBetween(checkIn, checkOut) : 0
-    const payableValue = patch.payableValue ?? payableForStatus(normalized, hours, Boolean(checkIn && checkOut))
+    const manual = manualHalfDayAttendance(normalized, patch)
+    if (manual) return { id: existing?.id ?? 0, clientId, employeeId, attendanceDate: date, ...manual, remarks: existing?.remarks || '' }
+    const shift = resolveAttendanceShift(reviewContext, employeeId, date)
+    const checkIn = normalized === 'Present' ? apiTime(patch.checkInTime !== undefined ? patch.checkInTime : existing?.checkInTime || shift?.startTime || settings.checkInTime) : null
+    const checkOut = normalized === 'Present' ? apiTime(patch.checkOutTime !== undefined ? patch.checkOutTime : existing?.checkOutTime || shift?.endTime || settings.checkOutTime) : null
+    const calculated = normalized === 'Present' ? calculateReviewShift(reviewContext, employeeId, date, checkIn, checkOut) : null
+    const hours = normalized === 'Present' ? calculated?.hours ?? hoursBetween(checkIn, checkOut) : 0
+    const payableValue = calculated?.payable ?? patch.payableValue ?? payableForStatus(normalized, hours, Boolean(checkIn && checkOut))
     return { id: existing?.id ?? 0, clientId, employeeId, attendanceDate: date, status: normalized, payableValue: Math.max(0, Math.min(1, payableValue)), checkInTime: checkIn, checkOutTime: checkOut, totalHours: hours, remarks: existing?.remarks || '' }
   }
-  const cellText = (status: string, payableValue: number) => status === 'Present' ? payableValue === 0.5 ? 'P.5' : 'P' : payableValue === 0.5 ? `${status}.5` : status
+  const cellText = (status: string, payableValue: number) => status === manualHalfDayStatus ? 'P.5' : status === 'Present' ? payableValue === 0.5 ? 'P.5' : 'P' : payableValue === 0.5 ? `${status}.5` : status
   const gridCell = (employee: EmployeeMonthlyAttendance, date: string) => {
     const row = dailyByEmployee.get(employee.employeeId)?.get(date)
     const status = row ? normalizeStatus(row.status) : defaultStatusFor(employee, date)
     const holiday = holidayFor(employee, date)
     if (!status) return { text: '-', cls: 'missing', title: 'Missing', status: '', row: undefined as EmployeeDailyAttendance | undefined, hoursText: '' }
+    const shift = resolveAttendanceShift(reviewContext, employee.employeeId, date)
     const hours = row ? totalHoursFor(row) : 0
     const payable = row ? toNumber(row.payableValue) : 0
     const leave = leaveTypeByCode.get(status.toLowerCase())
-    const cls = status === 'Present'
-      ? hours > 0 && hours < settings.minimumHoursForHalfDay ? 'short' : hours > 0 && hours < settings.minimumHoursForFullDay ? 'half' : payable === 0.5 ? 'half' : payable === 0 ? 'short' : 'present'
+    const cls = status === manualHalfDayStatus ? 'half' : status === 'Present'
+      ? hours > 0 && hours < (shift?.minimumHalfDayHours ?? settings.minimumHoursForHalfDay) ? 'short' : hours > 0 && hours < (shift?.minimumFullDayHours ?? settings.minimumHoursForFullDay) ? 'half' : payable === 0.5 ? 'half' : payable === 0 ? 'short' : 'present'
       : status === 'WO' ? 'weekoff' : status === 'H' ? 'holiday' : status === 'A' ? 'absent' : leave?.type === 'Paid' ? 'paid' : 'absent'
     const hoursText = status === 'Present' && hours > 0 ? `${hours.toFixed(hours % 1 ? 1 : 0)}h` : ''
-    return { text: cellText(status, payable), cls, title: holiday?.name || leave?.name || status, status, row, hoursText }
+    return { text: shift && status === 'Present' && payable === 0 ? 'A' : cellText(status, payable), cls, title: holiday?.name || leave?.name || status, status, row, hoursText }
   }
   const missingCountFor = (employee: EmployeeMonthlyAttendance) => monthDays.filter((date) => !dailyByEmployee.get(employee.employeeId)?.has(date) && !defaultStatusFor(employee, date)).length
   const rowTone = (row: EmployeeMonthlyAttendance) => reviewStatus(row) === 'Ready' ? 'ready' : reviewStatus(row) === 'Missing attendance' ? 'warn' : 'danger'
@@ -400,6 +410,9 @@ export default function ManualAttendanceManager({ clientId, group = null, review
   }
   const saveGridChanges = async (sourceRows = allDailyRows, keys = dirtyCellKeys) => {
     if (!keys.size || saving) return
+    if (!settings.rules?.allowManualHalfDay && sourceRows.some(row => keys.has(attendanceCellKey(row.employeeId, isoDate(row.attendanceDate))) && row.status === manualHalfDayStatus)) {
+      onMessage('Enable manual half-day attendance in Leave & Attendance settings for this client.', 'warning'); return
+    }
     const rowByKey = new Map(sourceRows.map((row) => [attendanceCellKey(row.employeeId, isoDate(row.attendanceDate)), row]))
     const prepared = new Map<number, EmployeeDailyAttendance[]>()
     keys.forEach((key) => {
@@ -515,7 +528,7 @@ export default function ManualAttendanceManager({ clientId, group = null, review
     let code = timeMatch ? text.replace(timeMatch[0], '').replace('@', '').trim() : text
     const half = /\.5$/i.test(code)
     code = code.replace(/\.5$/i, '').trim()
-    const status = code ? normalizeStatus(code) : timeMatch ? 'Present' : ''
+    const status = half && !timeMatch && normalizeStatus(code) === 'Present' ? manualHalfDayStatus : code ? normalizeStatus(code) : timeMatch ? 'Present' : ''
     if (!status) return null
     return { status, patch: { payableValue: half ? 0.5 : payableForStatus(status), checkInTime: timeMatch ? apiTime(timeMatch[1]) : undefined, checkOutTime: timeMatch ? apiTime(timeMatch[2]) : undefined } as RowPatch }
   }
@@ -546,6 +559,9 @@ export default function ManualAttendanceManager({ clientId, group = null, review
     if (!imported.size) { onMessage('No attendance rows imported.', 'warning'); return }
     const saveKeys = new Set([...dirtyCellKeys, ...importedCellKeys])
     const nextGridRows = Array.from(nextRows.values())
+    if (!settings.rules?.allowManualHalfDay && nextGridRows.some(row => importedCellKeys.has(attendanceCellKey(row.employeeId, isoDate(row.attendanceDate))) && row.status === manualHalfDayStatus)) {
+      onMessage('Enable manual half-day attendance in Leave & Attendance settings for this client.', 'warning'); return
+    }
     setAllDailyRows(nextGridRows); setDirtyCellKeys(saveKeys)
     await saveGridChanges(nextGridRows, saveKeys)
   }
@@ -659,7 +675,7 @@ export default function ManualAttendanceManager({ clientId, group = null, review
           <tbody>{filteredRows.map((row) => <tr key={row.employeeId} className={`attendance-grid-${rowTone(row)}`}><th className="employee-col"><div className="employee-cell"><strong>{row.employeeName}</strong><small>{row.employeeCode || 'No code'} {row.department ? `- ${row.department}` : ''}</small><span className="employee-attendance-line"><em className={`attendance-dot ${rowTone(row)}`} /><i>{reviewStatus(row)}</i><i>Pay {toNumber(row.payableDays).toFixed(1)}</i><i>LOP {toNumber(row.lopDays).toFixed(1)}</i><i>Miss {missingCountFor(row)}</i><button disabled={saving} type="button" className="row-apply" onClick={() => applyEmployeeRow(row)}>Apply row</button><button disabled={saving} type="button" className={cellSelectionMode === row.employeeId ? 'row-apply row-select-cells active' : 'row-apply row-select-cells'} onClick={() => toggleCellSelectionMode(row.employeeId)}>{cellSelectionMode === row.employeeId ? 'Selecting' : 'Select cells'}</button></span></div></th>{monthDays.map((date) => {
             const cell = gridCell(row, date)
             const editing = gridEdit?.employeeId === row.employeeId && gridEdit.date === date
-            const editStatus = cell.row?.status ?? cell.status
+            const editStatus = cell.row?.status === 'Present' && cell.row.payableValue === .5 && !cell.row.checkInTime && !cell.row.checkOutTime && settings.rules?.allowManualHalfDay ? manualHalfDayStatus : cell.row?.status ?? cell.status
             const selected = selectedCellKeys.has(attendanceCellKey(row.employeeId, date))
             return <td key={date} className={`${cell.cls}${selected ? ' cell-selected' : ''}`} data-tip={selected ? `Selected - ${cell.title}` : cell.title} aria-selected={selected} onClick={(event) => handleCellClick(event, row.employeeId, date)}>{editing ? <div className="attendance-cell-editor" onClick={(event) => event.stopPropagation()}>
               <SearchSelect disabled={saving} value={editStatus} onChange={(value) => updateGridStatus(row.employeeId, date, value)} options={statusOptions} />

@@ -31,7 +31,7 @@ import { getEntityAttachments, openAttachmentWithTicket, uploadEntityAttachment 
 import { getClients } from '../services/payrollService'
 import { getRecruitmentOpenPositions } from '../services/recruitmentService'
 import { getEmployeeManagerUsers, getWorkLocations } from '../services/settingsService'
-import { completeCandidateChecklistItem, convertCandidateToEmployee, createApplication, deleteApplication, deleteCandidate, deleteInterview, deleteOffer, generateOfferLetter, getApplications, getCandidate, getCandidates, getInterviews, getOffers, moveApplicationCandidateToGlobalTalentPool, moveApplicationsToGlobalTalentPool, overrideApplicationScore, saveCandidate, saveCandidateProfileSections, saveOffer, scoreApplication, sendInterviewInvite, updateOfferStatus, uploadCandidateResume } from '../services/recruitmentTalentService'
+import { completeCandidateChecklistItem, convertCandidateToEmployee, previewEmployeeConversion, type EmployeeConversionPreview, createApplication, deleteApplication, deleteCandidate, deleteInterview, deleteOffer, generateOfferLetter, getApplications, getCandidate, getCandidates, getInterviews, getOffers, moveApplicationCandidateToGlobalTalentPool, moveApplicationsToGlobalTalentPool, overrideApplicationScore, saveCandidate, saveCandidateProfileSections, saveOffer, scoreApplication, sendInterviewInvite, updateOfferStatus, uploadCandidateResume } from '../services/recruitmentTalentService'
 import { useAuthSession } from './AuthGate'
 import type { AttachmentFieldConfiguration, Client, ConvertCandidateToEmployeeRequest, EntityAttachment, RecruitmentApplicationScore, RecruitmentCandidate, RecruitmentCandidateApplication, RecruitmentCandidateCertification, RecruitmentCandidateDetail, RecruitmentCandidateEducation, RecruitmentCandidateExperience, RecruitmentCandidateChecklistItem, RecruitmentInterview, RecruitmentOffer, RecruitmentOpenPosition, SaveRecruitmentCandidate, WorkLocation, WorkflowApprover } from '../types/payroll'
 import { useToast } from './ToastProvider'
@@ -110,6 +110,8 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
   const [offerDraft, setOfferDraft] = useState<Partial<RecruitmentOffer> & { applicationId: number } | null>(null)
   const [offerStatusDraft, setOfferStatusDraft] = useState<{ row: RecruitmentOffer; status: 'Rejected' | 'Negotiation' | 'Withdrawn'; reason: string } | null>(null)
   const [checklistDraft, setChecklistDraft] = useState<{ item: RecruitmentCandidateChecklistItem; attachmentPublicId: string } | null>(null)
+  const [conversionPreview, setConversionPreview] = useState<EmployeeConversionPreview | null>(null)
+  const [conversionBusy, setConversionBusy] = useState(false)
   const [conversionDraft, setConversionDraft] = useState<{ applicationId: number; data: ConvertCandidateToEmployeeRequest } | null>(null)
   const [profileDraft, setProfileDraft] = useState<{ experience: RecruitmentCandidateExperience[]; education: RecruitmentCandidateEducation[]; certifications: RecruitmentCandidateCertification[] } | null>(null)
   const [scoreOverrideDraft, setScoreOverrideDraft] = useState<{ row: RecruitmentApplicationScore; score: number; reason: string } | null>(null)
@@ -277,16 +279,26 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
   const startConversion = (application: RecruitmentCandidateApplication) => {
     const position = positions.find(row => row.id === application.positionId)
     const offer = detail?.offers.find(row => row.applicationId === application.id && row.status === 'Accepted')
+    setConversionPreview(null)
     setConversionDraft({ applicationId: application.id, data: { ...conversion0, dateOfJoining: offer?.proposedJoiningDate?.slice(0, 10) || '', workEmail: detail?.candidate.email || application.candidateEmail || '', department: position?.department || '', designation: position?.positionTitle || application.positionTitle, annualCtc: offer?.offeredCtc || 0 } })
   }
   const saveConversion = async () => {
-    if (!conversionDraft) return
-    const response = await convertCandidateToEmployee(conversionDraft.applicationId, conversionDraft.data)
+    if (!conversionDraft || conversionBusy) return
+    if (!conversionPreview) {
+      setConversionBusy(true)
+      try { const response = await previewEmployeeConversion(conversionDraft.applicationId, conversionDraft.data); if (response.ok) setConversionPreview(response.data) }
+      finally { setConversionBusy(false) }
+      return
+    }
+    if (conversionPreview.identity.blockingReasons.length || (conversionPreview.identity.matchedEmployeeId && conversionDraft.data.existingEmployeeId !== conversionPreview.identity.matchedEmployeeId)) return
+    setConversionBusy(true)
+    let response
+    try { response = await convertCandidateToEmployee(conversionDraft.applicationId, conversionDraft.data) } finally { setConversionBusy(false) }
     if (!response.ok || !response.data) return
     notify(`${response.data.employeeCode} employee profile created.`, 'success')
     setConversionDraft(null); await load(); await refreshDetail()
   }
-  const patchConversion = (patch: Partial<ConvertCandidateToEmployeeRequest>) => setConversionDraft(current => current ? ({ ...current, data: { ...current.data, ...patch } }) : current)
+  const patchConversion = (patch: Partial<ConvertCandidateToEmployeeRequest>) => { setConversionPreview(null); setConversionDraft(current => current ? ({ ...current, data: { ...current.data, ...patch } }) : current) }
   const saveProfileSections = async () => {
     if (!profileDraft || !detail?.candidate.id) return
     const response = await saveCandidateProfileSections(detail.candidate.id, profileDraft)
@@ -498,7 +510,12 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
       {!!checklistDraft.item.attachmentAttributeId && !checklistDocumentOptions.length && <p>Upload the configured document in Candidate documents first.</p>}
     </Form>}</Modal>
 
-    <RecruitmentEditorDrawer open={!!conversionDraft} eyebrow="Candidate conversion" title="Create employee" description="Review joining and organization details before creating the employee master record." onClose={() => setConversionDraft(null)} onSubmit={() => void saveConversion()} submitText="Create employee" width="min(820px, 96vw)">{conversionDraft && <Form layout="vertical" className="talent-form-grid">
+    <RecruitmentEditorDrawer open={!!conversionDraft} eyebrow="Candidate conversion" title="Create employee" description="Review joining and organization details before creating the employee master record." onClose={() => !conversionBusy && setConversionDraft(null)} submitLoading={conversionBusy} submitDisabled={!!conversionPreview && (!!conversionPreview.identity.blockingReasons.length || (!!conversionPreview.identity.matchedEmployeeId && conversionDraft?.data.existingEmployeeId !== conversionPreview.identity.matchedEmployeeId))} onSubmit={() => void saveConversion()} submitText={conversionBusy ? "Checking..." : conversionPreview ? "Confirm joining" : "Review transfer"} width="min(820px, 96vw)">{conversionDraft && <Form layout="vertical" className="talent-form-grid">
+      {conversionPreview && <div style={{ gridColumn: '1 / -1' }}><Alert showIcon type={conversionPreview.identity.blockingReasons.length ? 'error' : conversionPreview.identity.matchedEmployeeId ? 'warning' : 'success'} message={conversionPreview.identity.blockingReasons.join(' ') || (conversionPreview.identity.matchedEmployeeId ? 'Existing employee match: ' + conversionPreview.identity.matchedEmployeeCode + ' / ' + conversionPreview.identity.matchedEmployeeName : 'No existing employee match')} description="Existing filled values are preserved. Only blank mapped fields are filled. Required fields unavailable in the candidate form remain in Missing information." />
+        {conversionPreview.identity.matchedEmployeeId && !conversionPreview.identity.blockingReasons.length && conversionDraft.data.existingEmployeeId !== conversionPreview.identity.matchedEmployeeId && <Button onClick={() => patchConversion({ existingEmployeeId: conversionPreview.identity.matchedEmployeeId, employeeCode: conversionPreview.identity.matchedEmployeeCode || '' })}>Link existing employee</Button>}
+        {conversionDraft.data.existingEmployeeId && <Button onClick={() => patchConversion({ existingEmployeeId: null })}>Clear existing employee link</Button>}
+        <DataTable rows={[...conversionPreview.identity.changes, ...conversionPreview.customFields].map((field, index) => ({ ...field, id: index }))} columns={[{ key: 'label', label: 'Field' }, { key: 'oldValue', label: 'Existing value' }, { key: 'newValue', label: 'Candidate value' }, { key: 'result', label: 'Transfer', value: row => row.oldValue ? 'Keep existing' : 'Fill blank' }]} exportFileName="employee-transfer-review" emptyText="No mapped values to review." />
+      </div>}
       <Form.Item label="Employee code" required><Input value={conversionDraft.data.employeeCode} onChange={event => patchConversion({ employeeCode: event.target.value })} /></Form.Item>
       <Form.Item label="Date of joining" required><Input type="date" value={conversionDraft.data.dateOfJoining} onChange={event => patchConversion({ dateOfJoining: event.target.value })} /></Form.Item>
       <Form.Item label="Work email"><Input value={conversionDraft.data.workEmail} onChange={event => patchConversion({ workEmail: event.target.value })} /></Form.Item>

@@ -28,7 +28,7 @@ public class EmployeeProfileCompletionAccessTests
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         var communications = new CommunicationRepository(builder.Configuration, new EphemeralDataProtectionProvider(), [], NullLogger<CommunicationRepository>.Instance);
         builder.Services.AddSingleton(communications);
-        builder.Services.AddSingleton(new EmployeeProfileCompletionService(builder.Configuration, null!, null!, communications));
+        builder.Services.AddSingleton(new EmployeeProfileCompletionService(builder.Configuration, null!, null!, communications, null!));
         builder.Services.AddSingleton(new EssMssRepository(builder.Configuration));
         builder.Services.AddSingleton(new WorkflowRepository(builder.Configuration));
         var user = new AuthUser { Id = 1, ClientId = 20, EmployeeId = 10, Permissions = [] };

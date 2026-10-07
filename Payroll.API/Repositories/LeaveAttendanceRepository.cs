@@ -11,7 +11,7 @@ using System.Xml.Linq;
 
 namespace Payroll.API.Repositories;
 
-public class LeaveAttendanceRepository(IConfiguration configuration, EngineRuntimeMonitor? engineMonitor = null)
+public partial class LeaveAttendanceRepository(IConfiguration configuration, EngineRuntimeMonitor? engineMonitor = null)
 {
     public const string ManagedAttendanceScopeError = "One or more employees are outside the signed-in user's active attendance scope.";
     private static readonly ConcurrentDictionary<Guid, ClientImportJobStatus> LeaveTypeImportJobs = new();
@@ -358,6 +358,7 @@ CREATE TABLE IF NOT EXISTS leave_balance_import_errors (
         await connection.ExecuteAsync("UPDATE attendance_batch_jobs SET active_scope_key=NULL WHERE state NOT IN ('Queued','Processing')");
         await CreateIndexIfMissingAsync(connection, "attendance_batch_jobs", "UX_attendance_batch_jobs_active_scope", "CREATE UNIQUE INDEX UX_attendance_batch_jobs_active_scope ON attendance_batch_jobs (active_scope_key)");
         await EnsureClientScopeAsync(connection);
+        await InitializeShiftsAsync(connection);
     }
 
     public async Task<LeaveAttendanceSetup> GetAsync(int clientId)
@@ -458,21 +459,7 @@ leave_encashment_salary_component_id = @LeaveEncashmentSalaryComponentId
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        var settings = await connection.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId,
-check_in_time AS CheckInTime,
-check_out_time AS CheckOutTime,
-working_hours_calculation AS WorkingHoursCalculation,
-minimum_hours_for_half_day AS MinimumHoursForHalfDay,
-minimum_hours_for_full_day AS MinimumHoursForFullDay,
-maximum_hours_allowed_for_full_day AS MaximumHoursAllowedForFullDay,
-allow_regularization_requests AS AllowRegularizationRequests,
-regularization_window AS RegularizationWindow,
-past_days_allowed AS PastDaysAllowed,
-restrict_regularization_requests_per_month AS RestrictRegularizationRequestsPerMonth,
-max_regularization_requests_per_month AS MaxRegularizationRequestsPerMonth,
-created_at AS CreatedAt,
-updated_at AS UpdatedAt
-FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { ClientId = clientId }) ?? new AttendanceSettings { ClientId = clientId };
+        var settings = await connection.QueryFirstOrDefaultAsync<AttendanceSettings>(AttendanceShiftResolver.SettingsSql, new { ClientId = clientId }) ?? new AttendanceSettings { ClientId = clientId };
         settings.Rules = (await AttendanceIntegrationRepository.ReadAsync(connection, null, clientId)).Rules;
         return settings;
     }
@@ -484,6 +471,8 @@ FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { ClientId = c
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await using var transaction = await connection.BeginTransactionAsync();
+        var shiftError = await ValidateShiftReferenceAsync(connection, transaction, request.ClientId, request.ShiftId);
+        if (shiftError is not null) return (null, shiftError);
         await AttendanceIntegrationRepository.EnsureRowAsync(connection, transaction, request.ClientId);
         var integration = await AttendanceIntegrationRepository.ReadAsync(connection, transaction, request.ClientId, true);
         await connection.ExecuteAsync(@"INSERT INTO attendance_settings (client_id, check_in_time, check_out_time, working_hours_calculation, minimum_hours_for_half_day, minimum_hours_for_full_day, maximum_hours_allowed_for_full_day, allow_regularization_requests, regularization_window, past_days_allowed, restrict_regularization_requests_per_month, max_regularization_requests_per_month)
@@ -502,6 +491,7 @@ restrict_regularization_requests_per_month=@RestrictRegularizationRequestsPerMon
 max_regularization_requests_per_month=@MaxRegularizationRequestsPerMonth
 ;", request, transaction);
         integration.Rules = request.Rules;
+        await connection.ExecuteAsync("UPDATE attendance_settings SET shift_id=@ShiftId WHERE client_id=@ClientId", request, transaction);
         await AttendanceIntegrationRepository.WriteAsync(connection, transaction, request.ClientId, integration);
         await transaction.CommitAsync();
         return (await GetAttendanceSettingsAsync(request.ClientId), null);
@@ -617,6 +607,7 @@ ORDER BY c.Name, w.Name, g.name;", new { ClientId = clientId, ReportingManagerUs
             var (groups, batchError) = await SaveAttendanceGroupBatchAsync(new SaveAttendanceGroupBatchRequest
             {
                 PolicyBatchId = request.PolicyBatchId,
+                ShiftId = request.ShiftId,
                 ClientId = request.ClientId,
                 Name = request.Name,
                 WorkLocationIds = request.WorkLocationId > 0 ? [request.WorkLocationId] : [],
@@ -640,6 +631,8 @@ ORDER BY c.Name, w.Name, g.name;", new { ClientId = clientId, ReportingManagerUs
         await using var transaction = await connection.BeginTransactionAsync();
         var id = request.Id;
         var payload = CleanAttendanceGroupRequest(request);
+        var shiftError = await ValidateShiftReferenceAsync(connection, transaction, request.ClientId, request.ShiftId);
+        if (shiftError is not null) return (null, shiftError);
         if (id == 0)
         {
             id = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO attendance_groups (client_id, policy_batch_id, name, work_location_id, department, designation, work_week, attendance_cycle_start_day, attendance_cycle_end_day, payroll_report_generation_day, is_active)
@@ -651,6 +644,7 @@ VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designa
             if (updated == 0) return (null, "Attendance group was not found for the selected client.");
         }
         var employeeIds = (request.EmployeeIds ?? new List<int>()).Distinct().ToArray();
+        await connection.ExecuteAsync("UPDATE attendance_groups SET shift_id=@ShiftId WHERE id=@Id AND client_id=@ClientId", new { request.ShiftId, Id = id, request.ClientId }, transaction);
         await connection.ExecuteAsync("DELETE FROM attendance_group_employees WHERE attendance_group_id=@Id", new { Id = id }, transaction);
         await connection.ExecuteAsync("INSERT INTO attendance_group_employees (attendance_group_id, employee_id) VALUES (@GroupId, @EmployeeId)", employeeIds.Select(employeeId => new { GroupId = id, EmployeeId = employeeId }), transaction);
         await transaction.CommitAsync();
@@ -702,6 +696,8 @@ WHERE IsActive=TRUE AND ClientId=@ClientId AND WorkLocationId IN @LocationIds", 
         if (duplicateError is not null) return ([], duplicateError);
 
         await using var transaction = await connection.BeginTransactionAsync();
+        var shiftError = await ValidateShiftReferenceAsync(connection, transaction, request.ClientId, request.ShiftId);
+        if (shiftError is not null) return ([], shiftError);
         await connection.ExecuteAsync("DELETE FROM attendance_groups WHERE client_id=@ClientId AND policy_batch_id=@PolicyBatchId", new { request.ClientId, PolicyBatchId = batchId }, transaction);
         var existingNames = await connection.QueryAsync<string>(@"SELECT name FROM attendance_groups
 WHERE client_id=@ClientId AND (@PolicyBatchId='' OR COALESCE(policy_batch_id, '')<>@PolicyBatchId)", new { request.ClientId, PolicyBatchId = batchId }, transaction);
@@ -726,6 +722,7 @@ VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designa
                     request.IsActive
                 }, transaction);
             await connection.ExecuteAsync("INSERT INTO attendance_group_employees (attendance_group_id, employee_id) VALUES (@GroupId, @EmployeeId)", employeeIds.Distinct().Select(employeeId => new { GroupId = groupId, EmployeeId = employeeId }), transaction);
+            await connection.ExecuteAsync("UPDATE attendance_groups SET shift_id=@ShiftId WHERE id=@Id AND client_id=@ClientId", new { request.ShiftId, Id = groupId, request.ClientId }, transaction);
             await transaction.CommitAsync();
         }
         catch
@@ -751,13 +748,8 @@ VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designa
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         var clientName = await connection.ExecuteScalarAsync<string?>("SELECT Name FROM clients WHERE Id=@ClientId LIMIT 1", new { ClientId = clientId }) ?? string.Empty;
-        var settings = await connection.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId,
-check_in_time AS CheckInTime, check_out_time AS CheckOutTime, working_hours_calculation AS WorkingHoursCalculation,
-minimum_hours_for_half_day AS MinimumHoursForHalfDay, minimum_hours_for_full_day AS MinimumHoursForFullDay, maximum_hours_allowed_for_full_day AS MaximumHoursAllowedForFullDay,
-allow_regularization_requests AS AllowRegularizationRequests, regularization_window AS RegularizationWindow, past_days_allowed AS PastDaysAllowed,
-restrict_regularization_requests_per_month AS RestrictRegularizationRequestsPerMonth, max_regularization_requests_per_month AS MaxRegularizationRequestsPerMonth,
-created_at AS CreatedAt, updated_at AS UpdatedAt
-FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { ClientId = clientId }) ?? new AttendanceSettings { ClientId = clientId };
+        var shiftResolver = await AttendanceShiftResolver.LoadAsync(connection, null, clientId, reportingManagerUserId: reportingManagerUserId);
+        var settings = shiftResolver.Settings;
         var preferences = await GetPreferencesAsync(connection, clientId, workLocationId);
         var schedule = new ClientAttendanceSchedule
         {
@@ -802,6 +794,8 @@ WHERE b.client_id=@ClientId
             ClientName = clientName,
             AccessScope = reportingManagerUserId.HasValue ? "DirectReports" : "Client",
             Settings = settings,
+            Shifts = shiftResolver.Shifts.ToList(),
+            EmployeeShiftIds = shiftResolver.EmployeeShiftIds,
             Schedule = schedule,
             Preferences = preferences,
             Holidays = holidays,
@@ -909,24 +903,26 @@ ORDER BY d.employee_id, d.attendance_date;", new { ClientId = clientId, MonthSta
         await connection.OpenAsync();
         var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE Id=@EmployeeId AND ClientId=@ClientId AND IsActive=TRUE", new { request.EmployeeId, request.ClientId });
         if (exists == 0) return (null, "Employee was not found for the selected client.");
-        var settings = await connection.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId,
-check_in_time AS CheckInTime, check_out_time AS CheckOutTime, minimum_hours_for_half_day AS MinimumHoursForHalfDay,
-minimum_hours_for_full_day AS MinimumHoursForFullDay, maximum_hours_allowed_for_full_day AS MaximumHoursAllowedForFullDay
-FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { request.ClientId }) ?? new AttendanceSettings { ClientId = request.ClientId };
+        var shiftResolver = await AttendanceShiftResolver.LoadAsync(connection, null, request.ClientId, employeeId: request.EmployeeId);
         var activeLeaveTypes = (await connection.QueryAsync<AttendanceLeaveRule>(@"SELECT lt.id AS Id, lt.code AS Code, lt.name AS Name, lt.type AS Type, p.allow_negative_leave_balance AS AllowNegativeLeaveBalance
 FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id=lt.id
 WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
             .ToDictionary(row => row.Code, row => row, StringComparer.OrdinalIgnoreCase);
-        var invalidStatus = request.Rows.FirstOrDefault(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes) is null);
+        var invalidStatus = request.Rows.FirstOrDefault(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes, shiftResolver.Settings.Rules.AllowManualHalfDay) is null);
         if (invalidStatus is not null) return (null, $"Attendance status '{invalidStatus.Status}' is not valid.");
         var rows = request.Rows.Where(row => row.AttendanceDate.ToString("yyyy-MM") == request.Month).Select(row =>
         {
-            var status = NormalizeAttendanceStatus(row.Status, activeLeaveTypes)!;
+            var status = NormalizeAttendanceStatus(row.Status, activeLeaveTypes, shiftResolver.Settings.Rules.AllowManualHalfDay)!;
             var checkIn = status == "Present" ? row.CheckInTime : null;
             var checkOut = status == "Present" ? row.CheckOutTime : null;
-            var totalHours = status == "Present" ? CalculateHours(checkIn, checkOut, row.TotalHours) : 0m;
-            var payableValue = ResolvePayableValue(status, row.PayableValue, totalHours, checkIn.HasValue && checkOut.HasValue, settings, activeLeaveTypes);
-            return new { request.ClientId, request.EmployeeId, AttendanceDate = row.AttendanceDate.Date, Status = status, PayableValue = payableValue, CheckInTime = checkIn, CheckOutTime = checkOut, TotalHours = totalHours, Remarks = row.Remarks ?? string.Empty };
+            var rowSettings = shiftResolver.Resolve(request.EmployeeId, row.AttendanceDate);
+            var shiftResult = AttendancePunchCalculator.CalculateManualHalfDay(status, rowSettings)
+                ?? (status == "Present" ? AttendancePunchCalculator.CalculateReview(checkIn, checkOut, row.AttendanceDate, rowSettings) : null);
+            var totalHours = status == "Present" ? shiftResult?.Hours ?? CalculateHours(checkIn, checkOut, row.TotalHours) : 0m;
+            var payableValue = shiftResult?.Payable ?? ResolvePayableValue(status, row.PayableValue, totalHours, checkIn.HasValue && checkOut.HasValue, rowSettings, activeLeaveTypes);
+            if (status == AttendancePunchCalculator.ManualHalfDayStatus) status = "Present";
+            else if (shiftResult is { Payable: 0 }) status = "A";
+            return new { request.ClientId, request.EmployeeId, AttendanceDate = row.AttendanceDate.Date, Status = status, PayableValue = payableValue, CheckInTime = checkIn, CheckOutTime = checkOut, TotalHours = totalHours, Remarks = ShiftRowRemarks(row.Remarks, rowSettings, shiftResult) };
         }).ToList();
         var balanceError = await ValidateLeaveBalancesAsync(connection, request.ClientId, request.EmployeeId, request.Month, rows.Select(row => new AttendanceSaveRow(row.Status, row.PayableValue)), activeLeaveTypes);
         if (balanceError is not null) return (null, balanceError);
@@ -945,10 +941,7 @@ ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_valu
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        var settings = await connection.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId,
-check_in_time AS CheckInTime, check_out_time AS CheckOutTime, minimum_hours_for_half_day AS MinimumHoursForHalfDay,
-minimum_hours_for_full_day AS MinimumHoursForFullDay, maximum_hours_allowed_for_full_day AS MaximumHoursAllowedForFullDay
-FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { request.ClientId }) ?? new AttendanceSettings { ClientId = request.ClientId };
+        var shiftResolver = await AttendanceShiftResolver.LoadAsync(connection, null, request.ClientId);
         var activeLeaveTypes = (await connection.QueryAsync<AttendanceLeaveRule>(@"SELECT lt.id AS Id, lt.code AS Code, lt.name AS Name, lt.type AS Type, p.allow_negative_leave_balance AS AllowNegativeLeaveBalance
 FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id=lt.id
 WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
@@ -963,16 +956,21 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
         var rows = new List<object>();
         foreach (var group in groupedRows)
         {
-            var invalidStatus = group.FirstOrDefault(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes) is null);
+            var invalidStatus = group.FirstOrDefault(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes, shiftResolver.Settings.Rules.AllowManualHalfDay) is null);
             if (invalidStatus is not null) return (null, $"Attendance status '{invalidStatus.Status}' is not valid.");
             var employeeRows = group.Select(row =>
             {
-                var status = NormalizeAttendanceStatus(row.Status, activeLeaveTypes)!;
+                var status = NormalizeAttendanceStatus(row.Status, activeLeaveTypes, shiftResolver.Settings.Rules.AllowManualHalfDay)!;
                 var checkIn = status == "Present" ? row.CheckInTime : null;
                 var checkOut = status == "Present" ? row.CheckOutTime : null;
-                var totalHours = status == "Present" ? CalculateHours(checkIn, checkOut, row.TotalHours) : 0m;
-                var payableValue = ResolvePayableValue(status, row.PayableValue, totalHours, checkIn.HasValue && checkOut.HasValue, settings, activeLeaveTypes);
-                return new { request.ClientId, EmployeeId = group.Key, AttendanceDate = row.AttendanceDate.Date, Status = status, PayableValue = payableValue, CheckInTime = checkIn, CheckOutTime = checkOut, TotalHours = totalHours, Remarks = row.Remarks ?? string.Empty };
+                var rowSettings = shiftResolver.Resolve(group.Key, row.AttendanceDate);
+                var shiftResult = AttendancePunchCalculator.CalculateManualHalfDay(status, rowSettings)
+                    ?? (status == "Present" ? AttendancePunchCalculator.CalculateReview(checkIn, checkOut, row.AttendanceDate, rowSettings) : null);
+                var totalHours = status == "Present" ? shiftResult?.Hours ?? CalculateHours(checkIn, checkOut, row.TotalHours) : 0m;
+                var payableValue = shiftResult?.Payable ?? ResolvePayableValue(status, row.PayableValue, totalHours, checkIn.HasValue && checkOut.HasValue, rowSettings, activeLeaveTypes);
+                if (status == AttendancePunchCalculator.ManualHalfDayStatus) status = "Present";
+                else if (shiftResult is { Payable: 0 }) status = "A";
+                return new { request.ClientId, EmployeeId = group.Key, AttendanceDate = row.AttendanceDate.Date, Status = status, PayableValue = payableValue, CheckInTime = checkIn, CheckOutTime = checkOut, TotalHours = totalHours, Remarks = ShiftRowRemarks(row.Remarks, rowSettings, shiftResult) };
             }).ToList();
             var balanceError = await ValidateLeaveBalancesAsync(connection, request.ClientId, group.Key, request.Month, employeeRows.Select(row => new AttendanceSaveRow(row.Status, row.PayableValue)), activeLeaveTypes);
             if (balanceError is not null) return (null, balanceError);
@@ -2097,10 +2095,7 @@ total_hours AS TotalHours, COALESCE(remarks, '') AS Remarks, is_valid AS IsValid
 FROM attendance_batch_job_rows WHERE job_id=@JobId ORDER BY `row_number`;", new { claim.JobId })).ToList();
         if (stagedRows.Count == 0) throw new InvalidOperationException("No attendance rows were staged for this job.");
 
-        var settings = await connection.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId,
-check_in_time AS CheckInTime, check_out_time AS CheckOutTime, minimum_hours_for_half_day AS MinimumHoursForHalfDay,
-minimum_hours_for_full_day AS MinimumHoursForFullDay, maximum_hours_allowed_for_full_day AS MaximumHoursAllowedForFullDay
-FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { job.ClientId }) ?? new AttendanceSettings { ClientId = job.ClientId };
+        var shiftResolver = await AttendanceShiftResolver.LoadAsync(connection, null, job.ClientId);
         var activeLeaveTypes = (await connection.QueryAsync<AttendanceLeaveRule>(@"SELECT lt.id AS Id, lt.code AS Code, lt.name AS Name, lt.type AS Type, p.allow_negative_leave_balance AS AllowNegativeLeaveBalance
 FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id=lt.id
 WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { job.ClientId }))
@@ -2117,25 +2112,28 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { job.ClientId }))
         var normalizedRows = new List<AttendanceBatchStagedRow>();
         foreach (var group in groupedRows)
         {
-            var invalidStatus = group.FirstOrDefault(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes) is null);
+            var invalidStatus = group.FirstOrDefault(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes, shiftResolver.Settings.Rules.AllowManualHalfDay) is null);
             if (invalidStatus is not null) throw new InvalidOperationException($"Attendance status '{invalidStatus.Status}' is not valid.");
             normalizedRows.AddRange(group.Select(row =>
             {
-                var status = NormalizeAttendanceStatus(row.Status, activeLeaveTypes)!;
+                var status = NormalizeAttendanceStatus(row.Status, activeLeaveTypes, shiftResolver.Settings.Rules.AllowManualHalfDay)!;
                 var checkIn = status == "Present" ? row.CheckInTime : null;
                 var checkOut = status == "Present" ? row.CheckOutTime : null;
-                var totalHours = status == "Present" ? CalculateHours(checkIn, checkOut, row.TotalHours) : 0m;
+                var rowSettings = shiftResolver.Resolve(group.Key, row.AttendanceDate);
+                var shiftResult = AttendancePunchCalculator.CalculateManualHalfDay(status, rowSettings)
+                    ?? (status == "Present" ? AttendancePunchCalculator.CalculateReview(checkIn, checkOut, row.AttendanceDate, rowSettings) : null);
+                var totalHours = status == "Present" ? shiftResult?.Hours ?? CalculateHours(checkIn, checkOut, row.TotalHours) : 0m;
                 return new AttendanceBatchStagedRow
                 {
                     RowNumber = row.RowNumber,
                     EmployeeId = row.EmployeeId,
                     AttendanceDate = row.AttendanceDate.Date,
-                    Status = status,
-                    PayableValue = ResolvePayableValue(status, row.PayableValue, totalHours, checkIn.HasValue && checkOut.HasValue, settings, activeLeaveTypes),
+                    Status = status == AttendancePunchCalculator.ManualHalfDayStatus ? "Present" : shiftResult is { Payable: 0 } ? "A" : status,
+                    PayableValue = shiftResult?.Payable ?? ResolvePayableValue(status, row.PayableValue, totalHours, checkIn.HasValue && checkOut.HasValue, rowSettings, activeLeaveTypes),
                     CheckInTime = checkIn,
                     CheckOutTime = checkOut,
                     TotalHours = totalHours,
-                    Remarks = row.Remarks ?? string.Empty,
+                    Remarks = ShiftRowRemarks(row.Remarks, rowSettings, shiftResult),
                     IsValid = true,
                     ShouldRollup = row.ShouldRollup
                 };
@@ -2372,9 +2370,10 @@ payable_days=VALUES(payable_days), lop_days=VALUES(lop_days), source_type='Date-
         return (new DateTime(startMonth.Year, startMonth.Month, safeStartDay), new DateTime(endMonth.Year, endMonth.Month, safeEndDay));
     }
 
-    private static string? NormalizeAttendanceStatus(string? status, IReadOnlyDictionary<string, AttendanceLeaveRule> leaveTypes)
+    private static string? NormalizeAttendanceStatus(string? status, IReadOnlyDictionary<string, AttendanceLeaveRule> leaveTypes, bool allowManualHalfDay = false)
     {
         var text = (status ?? string.Empty).Trim();
+        if (text.Equals(AttendancePunchCalculator.ManualHalfDayStatus, StringComparison.OrdinalIgnoreCase)) return allowManualHalfDay ? AttendancePunchCalculator.ManualHalfDayStatus : null;
         if (string.IsNullOrWhiteSpace(text) || string.Equals(text, "P", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "Present", StringComparison.OrdinalIgnoreCase)) return "Present";
         if (string.Equals(text, "A", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "Absent", StringComparison.OrdinalIgnoreCase)) return "A";
         if (string.Equals(text, "WO", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "Weekly Off", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "Week Off", StringComparison.OrdinalIgnoreCase)) return "WO";
@@ -2830,6 +2829,7 @@ g.department AS Department, g.designation AS Designation, g.work_week AS WorkWee
 g.attendance_cycle_start_day AS AttendanceCycleStartDay,
 g.attendance_cycle_end_day AS AttendanceCycleEndDay,
 g.payroll_report_generation_day AS PayrollReportGenerationDay,
+g.shift_id AS ShiftId, COALESCE((SELECT s.shift_name FROM attendance_shifts s WHERE s.id=g.shift_id AND s.client_id=g.client_id),'') AS ShiftName,
 g.is_active AS IsActive, g.created_at AS CreatedAt, g.updated_at AS UpdatedAt,
 COUNT(DISTINCT e.Id) AS EmployeeCount,
 COALESCE(GROUP_CONCAT(DISTINCT CONCAT(e.FirstName, ' ', e.LastName, ' (', e.EmployeeCode, ')') ORDER BY e.FirstName, e.LastName SEPARATOR ', '), '') AS EmployeeNames

@@ -51,9 +51,9 @@ public partial class EssMssRepository
                 results.Add(existing.EmployeeId == employee.Id && existing.Action == action && existing.CapturedAt == local ? new(punch.PunchId, "Duplicate") : Reject("Punch id was already used for different data."));
                 continue;
             }
-            var settings = await GetAttendanceSettingsAsync(db, tx, device.ClientId);
-            if (settings.Id == 0) { results.Add(Reject("Save attendance shift and hours settings before importing punches.")); continue; }
-            var date = AttendancePunchCalculator.AttendanceDate(local, settings);
+            var shiftResolver = await AttendanceShiftResolver.LoadAsync(db, tx, device.ClientId, employee.Id);
+            var (date, settings) = shiftResolver.ResolvePunch(employee.Id, local);
+            if (settings.Id == 0 && settings.Shift is null) { results.Add(Reject("Save attendance shift and hours settings before importing punches.")); continue; }
             if (await IsLeavePeriodLockedAsync(db, tx, device.ClientId, employee.Id, date, date))
             { results.Add(Reject("Attendance belongs to a submitted or completed payroll period.")); continue; }
             var daily = await db.QueryFirstOrDefaultAsync<MachineDaily>("SELECT status Status,COALESCE(remarks,'') Remarks FROM employee_daily_attendance WHERE client_id=@ClientId AND employee_id=@EmployeeId AND attendance_date=@Date FOR UPDATE", new { device.ClientId, EmployeeId = employee.Id, Date = date }, tx);
@@ -62,19 +62,18 @@ public partial class EssMssRepository
             await db.ExecuteAsync(@"INSERT INTO employee_attendance_punches
 (client_id,employee_id,client_request_id,action,captured_at,latitude,longitude,accuracy_meters,validation_status,decision,reason,device_id,network_type,app_version,camera_capture_confirmed,biometric_confirmed)
 VALUES(@ClientId,@EmployeeId,@Key,@Action,@At,0,0,0,'RegisteredMachine','Accepted','',@DeviceId,'Machine','machine-v1',FALSE,FALSE)", new { device.ClientId, EmployeeId = employee.Id, Key = key, Action = action, At = local, device.DeviceId }, tx);
-            var calculated = await ProjectRecordedPunchesAsync(db, tx, device.ClientId, employee.Id, date, settings, integration.Rules, "Machine attendance:");
+            var calculated = await ProjectRecordedPunchesAsync(db, tx, device.ClientId, employee.Id, date, settings, integration.Rules, "Machine attendance:", shiftResolver.Bounds(employee.Id, date));
             await tx.CommitAsync();
             results.Add(new(punch.PunchId, "Accepted", AttendanceDate: date, TotalHours: calculated.Hours, PayableValue: calculated.Payable, Remarks: calculated.Remarks));
         }
         return results;
     }
 
-    private static async Task<AttendancePunchCalculator.Result> ProjectRecordedPunchesAsync(MySqlConnection db, MySqlTransaction tx, int clientId, int employeeId, DateTime date, AttendanceSettings settings, AttendanceRules rules, string source)
+    private static async Task<AttendancePunchCalculator.Result> ProjectRecordedPunchesAsync(MySqlConnection db, MySqlTransaction tx, int clientId, int employeeId, DateTime date, AttendanceSettings settings, AttendanceRules rules, string source, (DateTime Start, DateTime End) bounds)
     {
-        var bounds = AttendancePunchCalculator.Bounds(date, settings);
         var raw = await db.QueryAsync<AttendancePunchCalculator.Punch>("SELECT action Action,captured_at At FROM employee_attendance_punches WHERE client_id=@ClientId AND employee_id=@EmployeeId AND captured_at>=@Start AND captured_at<@End AND decision IN ('Accepted','AcceptedWithReason','SubmittedWithReason') ORDER BY captured_at,id", new { ClientId = clientId, EmployeeId = employeeId, bounds.Start, bounds.End }, tx);
         var calculated = AttendancePunchCalculator.Calculate(raw, date, settings, rules);
-        var remarks = source + " " + (calculated.Remarks.Length > 0 ? calculated.Remarks : "Complete");
+        var remarks = source + " " + (settings.Shift is { } shift ? shift.ShiftCode + ": " : "") + (calculated.Remarks.Length > 0 ? calculated.Remarks : "Complete");
         await db.ExecuteAsync(@"INSERT INTO employee_daily_attendance(client_id,employee_id,attendance_date,status,payable_value,check_in_time,check_out_time,total_hours,remarks)
 VALUES(@ClientId,@EmployeeId,@Date,@Status,@Payable,@CheckIn,@CheckOut,@Hours,@Remarks)
 ON DUPLICATE KEY UPDATE status=VALUES(status),payable_value=VALUES(payable_value),check_in_time=VALUES(check_in_time),check_out_time=VALUES(check_out_time),total_hours=VALUES(total_hours),remarks=VALUES(remarks)", new { ClientId = clientId, EmployeeId = employeeId, Date = date, Status = calculated.Payable > 0 ? "Present" : "A", calculated.Payable, calculated.CheckIn, calculated.CheckOut, calculated.Hours, Remarks = remarks }, tx);

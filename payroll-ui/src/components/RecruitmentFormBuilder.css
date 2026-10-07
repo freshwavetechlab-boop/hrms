@@ -279,6 +279,10 @@
   box-shadow: 0 6px 20px rgba(31, 42, 68, .04);
 }
 
+.employee-field-builder :is(.form-builder-settings-card, .form-builder-design-surface) {
+  flex-shrink: 0;
+}
+
 .recruitment-form-builder .form-builder-version-toolbar {
   display: flex;
   align-items: center;
@@ -695,6 +699,14 @@
     grid-column: span 12 !important;
   }
 }
+
+.employee-field-configuration-drawer .ant-drawer-body { display: flex; min-height: 0; overflow: hidden; }
+.employee-fields-crud { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; gap: 12px; }
+.employee-fields-toolbar { flex-shrink: 0; }
+.employee-fields-toolbar .ant-select { min-width: 180px; max-width: 100%; }
+.employee-core-fields { flex-shrink: 0; color: var(--muted, #64748b); font-size: 13px; }
+.employee-core-fields summary { cursor: pointer; margin-bottom: 4px; }
+.employee-fields-crud > .ant-smart-table { flex: 1; min-height: 0; }
 
 @media (max-width: 900px) {
   .recruitment-form-builder .form-builder-layout {

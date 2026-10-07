@@ -31,10 +31,10 @@ type RecordFilter<T> = { key: string; label: string; value: (row: T) => string; 
 type QuickFilter<T> = { key: string; label: string; tone: string; matches: (row: T) => boolean }
 
 // The same rows, column renderers and action handlers drive both views.
-export default function RecruitmentRecordList<T extends { id: number }>({ rows, columns, title, subtitle, filters, quickFilters = [], actions, selection, rowSelection, selectionGroup, exportFileName, emptyText = 'No records match these filters.', view: requestedView, searchValue, onSearchChange, remoteSearch = false, loading = false, actionsWidth, searchPlaceholder = 'Search by name, job or reference', hiddenCardColumns = [], cardSummaryColumns, cardExtra, selectAllDescription }: {
+export default function RecruitmentRecordList<T extends { id: number }>({ rows, columns, title, subtitle, filters, quickFilters = [], actions, selection, rowSelection, selectionGroup, exportFileName, onExcelExport, emptyText = 'No records match these filters.', view: requestedView, searchValue, onSearchChange, remoteSearch = false, loading = false, actionsWidth, searchPlaceholder = 'Search by name, job or reference', hiddenCardColumns = [], cardSummaryColumns, cardExtra, selectAllDescription }: {
   rows: T[]; columns: Column<T>[]; title: (row: T) => string; subtitle?: (row: T) => string
   filters: RecordFilter<T>[]; quickFilters?: QuickFilter<T>[]; actions?: (row: T) => ReactNode
-  selection?: (row: T) => ReactNode; rowSelection?: TableRowSelection<T>; exportFileName?: string; emptyText?: string
+  onExcelExport?: (rows: T[]) => void; selection?: (row: T) => ReactNode; rowSelection?: TableRowSelection<T>; exportFileName?: string; emptyText?: string
   selectionGroup?: (row: T) => string | number
   view?: RecruitmentView; searchValue?: string; onSearchChange?: (value: string) => void; remoteSearch?: boolean; loading?: boolean; actionsWidth?: number; searchPlaceholder?: string
   hiddenCardColumns?: string[]
@@ -86,7 +86,7 @@ export default function RecruitmentRecordList<T extends { id: number }>({ rows, 
           {rowSelection && <Tooltip title={multipleGroups ? 'Filter to one job or select one candidate first.' : selectAllDescription || 'Select all matching candidates for this job'}><Checkbox disabled={!selectable.length || Boolean(multipleGroups)} checked={!!selectable.length && selectedCount === selectable.length} indeterminate={selectedCount > 0 && selectedCount < selectable.length} onChange={event => selectAll(event.target.checked)}>Select all</Checkbox></Tooltip>}
           {!sharedView && !requestedView && <Segmented options={['Cards', 'Table']} value={view} onChange={value => setView(String(value))} />}
         </div>
-        {view === 'Table' ? <DataTable rows={visible} columns={columns} actions={actions} rowSelection={rowSelection} exportFileName={exportFileName} emptyText={emptyText} hideSearch fillHeight loading={loading} actionsWidth={actionsWidth} /> : <>
+        {view === 'Table' ? <DataTable rows={visible} columns={columns} actions={actions} rowSelection={rowSelection} exportFileName={exportFileName} onExcelExport={onExcelExport} emptyText={emptyText} hideSearch fillHeight loading={loading} actionsWidth={actionsWidth} /> : <>
           <div className="candidate-application-list">
             {visible.slice((currentPage - 1) * 10, currentPage * 10).map(row => <article className="candidate-application-card recruitment-record-card" key={row.id}>
               <Avatar size={38}>{title(row).split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase()}</Avatar>

@@ -11,7 +11,7 @@ using System.Xml.Linq;
 
 namespace Payroll.API.Repositories;
 
-public class EmployeeRepository(IConfiguration configuration, AuthRepository authRepository, NotificationRepository notificationRepository)
+public partial class EmployeeRepository(IConfiguration configuration, AuthRepository authRepository, NotificationRepository notificationRepository)
 {
     private const string InsertImportMode = "insert";
     private const string UpdateImportMode = "update";
@@ -23,7 +23,7 @@ public class EmployeeRepository(IConfiguration configuration, AuthRepository aut
     private static readonly string[] It0000ImportHeaders = ["Date Of Joining", "Active"];
     private static readonly string[] It0001ImportHeaders = ["Work Email", "Department", "Designation", "Grade", "Employee Type", "Employee Category", "Work Location Id", "Work Location", "Reporting Manager User Id", "Reporting Manager Email", "Portal Access"];
     private static readonly string[] It0002ImportHeaders = ["First Name", "Last Name", "Gender", "Date Of Birth", "Mobile", "PAN", "Aadhaar", "UAN Number", "ESIC Number"];
-    private static readonly string[] It0006ImportHeaders = ["Address", "Correspondence Address", "Permanent Address"];
+    private static readonly string[] It0006ImportHeaders = ["Address", "Correspondence Address", "Permanent Address", "City", "District", "State"];
     private static readonly string[] It0008ImportHeaders = ["Salary Template Id", "Salary Template", "Annual CTC", "Salary Json"];
     private static readonly string[] It0009ImportHeaders = ["Bank Name", "Bank Account No", "IFSC", "Payment Mode"];
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
@@ -43,37 +43,53 @@ ORDER BY u.DisplayName,u.Email", new { ClientId = clientId });
     public async Task<int> SaveAsync(Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db);
-        return await SaveWithOpenConnectionAsync(db, employee, changedBy, infotypeCode, changeReason);
+        await EnsureDefaultTaxProfileTableAsync(db);
+        await using var tx = await db.BeginTransactionAsync();
+        await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId FOR UPDATE", new { employee.ClientId }, tx);
+        if (employee.Id > 0 && await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM employees WHERE Id=@Id FOR UPDATE", new { employee.Id }, tx) != employee.ClientId)
+            throw new InvalidOperationException("Employee does not belong to the selected client. Use the employee transfer action to change its client.");
+        var identity = (await PreviewRecruitmentAsync(employee, db, tx)).Rows.Single();
+        if (identity.BlockingReasons.Count > 0) throw new InvalidOperationException(string.Join(" ", identity.BlockingReasons));
+        if (identity.MatchedEmployeeId.HasValue && identity.MatchedEmployeeId != employee.Id)
+            throw new InvalidOperationException($"This person matches employee {identity.MatchedEmployeeCode}. Edit the existing employee instead of creating a duplicate.");
+        var id = await SaveWithOpenConnectionAsync(db, employee, changedBy, infotypeCode, changeReason, tx);
+        await tx.CommitAsync();
+        return id;
     }
 
-    private static async Task<int> SaveWithOpenConnectionAsync(MySqlConnection db, Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null)
+    private static async Task<int> SaveWithOpenConnectionAsync(MySqlConnection db, Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null, MySqlTransaction? tx = null)
     {
         var wasNew = employee.Id == 0;
-        var before = employee.Id > 0 ? await LoadEmployeeAsync(db, employee.Id) : null;
+        var before = employee.Id > 0 ? await LoadEmployeeAsync(db, employee.Id, tx) : null;
         var actionType = wasNew ? "Hire" : "Master Update";
-        if (employee.Id == 0) employee.Id = (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId,EmployeeCode,FirstName,LastName,Gender,DateOfJoining,WorkEmail,Department,Designation,Grade,WorkLocationId,ReportingManagerId,ReportingManagerUserId,PortalAccess,SalaryStructureId,AnnualCtc,SalaryJson,PersonalJson,PaymentJson,IsActive) VALUES (@ClientId,@EmployeeCode,@FirstName,@LastName,@Gender,@DateOfJoining,@WorkEmail,@Department,@Designation,@Grade,@WorkLocationId,@ReportingManagerId,@ReportingManagerUserId,@PortalAccess,@SalaryStructureId,@AnnualCtc,@SalaryJson,@PersonalJson,@PaymentJson,@IsActive); SELECT LAST_INSERT_ID();", employee);
-        else await db.ExecuteAsync(@"UPDATE employees SET ClientId=@ClientId,EmployeeCode=@EmployeeCode,FirstName=@FirstName,LastName=@LastName,Gender=@Gender,DateOfJoining=@DateOfJoining,WorkEmail=@WorkEmail,Department=@Department,Designation=@Designation,Grade=@Grade,WorkLocationId=@WorkLocationId,ReportingManagerId=@ReportingManagerId,ReportingManagerUserId=@ReportingManagerUserId,PortalAccess=@PortalAccess,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,IsActive=@IsActive WHERE Id=@Id", employee);
-        if (wasNew) await EnsureDefaultTaxProfileAsync(db, employee.Id, employee.ClientId);
-        await PayrollDataTableStore.SyncEmployeeTablesAsync(db, employee);
-        await db.ExecuteAsync("UPDATE employees SET SalaryJson=@SalaryJson,PersonalJson=@PersonalJson,PaymentJson=@PaymentJson WHERE Id=@Id", employee);
-        var after = await LoadEmployeeAsync(db, employee.Id) ?? employee;
+        if (employee.Id == 0) employee.Id = (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId,EmployeeCode,FirstName,LastName,Gender,DateOfJoining,WorkEmail,Department,Designation,Grade,WorkLocationId,ReportingManagerId,ReportingManagerUserId,PortalAccess,SalaryStructureId,AnnualCtc,SalaryJson,PersonalJson,PaymentJson,IsActive) VALUES (@ClientId,@EmployeeCode,@FirstName,@LastName,@Gender,@DateOfJoining,@WorkEmail,@Department,@Designation,@Grade,@WorkLocationId,@ReportingManagerId,@ReportingManagerUserId,@PortalAccess,@SalaryStructureId,@AnnualCtc,@SalaryJson,@PersonalJson,@PaymentJson,@IsActive); SELECT LAST_INSERT_ID();", employee, tx);
+        else await db.ExecuteAsync(@"UPDATE employees SET ClientId=@ClientId,EmployeeCode=@EmployeeCode,FirstName=@FirstName,LastName=@LastName,Gender=@Gender,DateOfJoining=@DateOfJoining,WorkEmail=@WorkEmail,Department=@Department,Designation=@Designation,Grade=@Grade,WorkLocationId=@WorkLocationId,ReportingManagerId=@ReportingManagerId,ReportingManagerUserId=@ReportingManagerUserId,PortalAccess=@PortalAccess,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,IsActive=@IsActive WHERE Id=@Id", employee, tx);
+        if (wasNew) await EnsureDefaultTaxProfileAsync(db, employee.Id, employee.ClientId, tx);
+        await PayrollDataTableStore.SyncEmployeeTablesAsync(db, employee, tx);
+        await db.ExecuteAsync("UPDATE employees SET SalaryJson=@SalaryJson,PersonalJson=@PersonalJson,PaymentJson=@PaymentJson WHERE Id=@Id", employee, tx);
+        var after = await LoadEmployeeAsync(db, employee.Id, tx) ?? employee;
         var reason = string.IsNullOrWhiteSpace(changeReason) ? wasNew ? "Employee hired" : "Infotype updated" : changeReason.Trim();
-        await WriteCurrentInfotypesAsync(db, after, actionType, EffectiveDate(after), reason, changedBy, before, wasNew ? null : NormalizeInfotypeCodes(infotypeCode));
-        await SyncAttendancePolicyMappingsAsync(db, after, before);
+        await WriteCurrentInfotypesAsync(db, after, actionType, EffectiveDate(after), reason, changedBy, before, wasNew ? null : NormalizeInfotypeCodes(infotypeCode), tx);
+        await SyncAttendancePolicyMappingsAsync(db, after, before, tx);
         return employee.Id;
     }
 
-    private static async Task EnsureDefaultTaxProfileAsync(MySqlConnection db, int employeeId, int clientId)
+    private static async Task EnsureDefaultTaxProfileAsync(MySqlConnection db, int employeeId, int clientId, MySqlTransaction? tx = null)
+    {
+        if (tx is null) await EnsureDefaultTaxProfileTableAsync(db);
+        await db.ExecuteAsync(@"INSERT INTO employee_tax_regime_selections (employee_id,client_id,financial_year,regime,status)
+VALUES (@EmployeeId,@ClientId,@FinancialYear,'New','Draft')
+ON DUPLICATE KEY UPDATE client_id=@ClientId",
+            new { EmployeeId = employeeId, ClientId = clientId, FinancialYear = CurrentFinancialYear() }, tx);
+    }
+
+    private static async Task EnsureDefaultTaxProfileTableAsync(MySqlConnection db)
     {
         await db.ExecuteAsync(@"CREATE TABLE IF NOT EXISTS employee_tax_regime_selections (
 id INT PRIMARY KEY AUTO_INCREMENT,
 employee_id INT NOT NULL, client_id INT NOT NULL DEFAULT 0, financial_year VARCHAR(10) NOT NULL, regime VARCHAR(20) NOT NULL DEFAULT 'New',
 status VARCHAR(30) NOT NULL DEFAULT 'Draft', submitted_at DATETIME NULL, approved_at DATETIME NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 UNIQUE KEY UX_employee_tax_regime (employee_id, financial_year));");
-        await db.ExecuteAsync(@"INSERT INTO employee_tax_regime_selections (employee_id,client_id,financial_year,regime,status)
-VALUES (@EmployeeId,@ClientId,@FinancialYear,'New','Draft')
-ON DUPLICATE KEY UPDATE client_id=@ClientId",
-            new { EmployeeId = employeeId, ClientId = clientId, FinancialYear = CurrentFinancialYear() });
     }
 
     private static string CurrentFinancialYear()
@@ -292,7 +308,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         return (workbook, null);
     }
 
-    private async Task<EmployeeImportPreflightResult> BuildImportPreflightAsync(int clientId, EmployeeImportWorkbook workbook, string importMode)
+    private async Task<EmployeeImportPreflightResult> BuildImportPreflightAsync(int clientId, EmployeeImportWorkbook workbook, string importMode, MySqlConnection? activeDb = null, MySqlTransaction? tx = null, bool validateConfigured = true)
     {
         var token = Guid.NewGuid();
         var expiresAt = DateTime.UtcNow.Add(ImportReviewLifetime);
@@ -307,12 +323,14 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         if (HasDataSheet(workbook, "0001 Org Assignment", "0002 Personal Data", "0006 Addresses", "0008 Basic Pay", "0009 Bank Details"))
             return new EmployeeImportPreflightResult(token, totalRows, true, false, [], expiresAt);
 
-        await using var db = Connection();
-        await db.OpenAsync();
-        var existing = (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE ClientId=@clientId", new { clientId })).ToList();
-        await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, existing);
+        await using var ownedDb = activeDb is null ? Connection() : null;
+        var db = activeDb ?? ownedDb!;
+        if (activeDb is null) await db.OpenAsync();
+        var existing = (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE ClientId=@clientId", new { clientId }, tx)).ToList();
+        await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, existing, tx);
         var byId = existing.ToDictionary(employee => employee.Id);
         var byCode = BuildIdentityMap(existing, employee => NormalizeCode(employee.EmployeeCode));
+        var byEmail = BuildIdentityMap(existing, employee => employee.WorkEmail.Trim().ToLowerInvariant());
         var byMobile = BuildIdentityMap(existing, employee => NormalizeMobile(employee.PersonalDetails?.Mobile));
         var byAadhaar = BuildIdentityMap(existing, employee => NormalizeAadhaar(employee.PersonalDetails?.AadhaarNumber));
         var byPan = BuildIdentityMap(existing, employee => NormalizePan(employee.PersonalDetails?.PanNumber));
@@ -382,6 +400,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             }
 
             var identifierCandidates = new Dictionary<int, (Employee Employee, List<string> Reasons)>();
+            AddIdentifierMatches(identifierCandidates, LookupIdentity(byEmail, Cell(source, map, "Work Email").Trim().ToLowerInvariant()), "Work email");
             AddIdentifierMatches(identifierCandidates, LookupIdentity(byMobile, NormalizeMobile(Cell(source, map, "Mobile"))), "Mobile");
             AddIdentifierMatches(identifierCandidates, LookupIdentity(byAadhaar, NormalizeAadhaar(Cell(source, map, "Aadhaar"))), "Aadhaar");
             AddIdentifierMatches(identifierCandidates, LookupIdentity(byPan, NormalizePan(Cell(source, map, "PAN"))), "PAN");
@@ -477,6 +496,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                 identityEvidence,
                 canResolveConflict));
             TrackWorkbookIdentifier(workbookIdentifiers, "Mobile", NormalizeMobile(Cell(source, map, "Mobile")), resultRows.Count - 1);
+            TrackWorkbookIdentifier(workbookIdentifiers, "Work email", Cell(source, map, "Work Email").Trim().ToLowerInvariant(), resultRows.Count - 1);
             TrackWorkbookIdentifier(workbookIdentifiers, "Aadhaar", NormalizeAadhaar(Cell(source, map, "Aadhaar")), resultRows.Count - 1);
             TrackWorkbookIdentifier(workbookIdentifiers, "PAN", NormalizePan(Cell(source, map, "PAN")), resultRows.Count - 1);
             TrackWorkbookIdentifier(workbookIdentifiers, "Bank Account", NormalizeBankAccount(Cell(source, map, "Bank Account No")), resultRows.Count - 1);
@@ -495,6 +515,29 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
                 resultRows[rowIndex] = row with { MatchStatus = "Blocked", BlockingReasons = blockingReasons, CanResolveConflict = false };
+            }
+        }
+
+        if (validateConfigured)
+        {
+            var forms = await EmployeeAttributeRepository.ExchangeFormsAsync(db, clientId, tx);
+            var columns = EmployeeAttributeRepository.Columns(forms).ToDictionary(column => column.Code, StringComparer.OrdinalIgnoreCase);
+            var customHeaders = rows[0].Select((header, index) => (Code: EmployeeAttributeRepository.HeaderKey(header), Index: index)).Where(column => column.Code.Length > 0).ToList();
+            for (var index = 0; index < resultRows.Count; index++)
+            {
+                var item = resultRows[index]; var source = rows[item.RowNumber - 1];
+                var input = customHeaders.Select(header => new EmployeeFieldInput(header.Code, header.Index < source.Count ? source[header.Index] : "")).ToList();
+                var errors = new List<string>();
+                if (customHeaders.Any(header => !columns.ContainsKey(header.Code))) errors.Add("A configured field is no longer active. Download the latest template.");
+                if (customHeaders.GroupBy(header => header.Code).Any(group => group.Count() > 1)) errors.Add("A configured field header is duplicated.");
+                foreach (var value in input.Where(value => columns.ContainsKey(value.Code) && !string.IsNullOrWhiteSpace(value.Value)))
+                    try { EmployeeAttributeRepository.ParseCell(columns[value.Code].Field, value.Value); }
+                    catch (InvalidOperationException error) { errors.Add(error.Message); }
+                if (!item.MatchedEmployeeId.HasValue)
+                    foreach (var required in columns.Values.Where(column => column.Field.IsRequired))
+                        if (!input.Any(value => value.Code == required.Code && !string.IsNullOrWhiteSpace(value.Value))) errors.Add(required.Field.Label + " is required.");
+                var changes = errors.Count > 0 || input.Count == 0 ? [] : await EmployeeAttributeRepository.TransferChangesAsync(db, item.MatchedEmployeeId ?? 0, clientId, forms, input.Where(value => !string.IsNullOrWhiteSpace(value.Value)).ToList(), tx);
+                resultRows[index] = item with { Changes = [..item.Changes, ..changes.Where(change => change.OldValue != change.NewValue)], BlockingReasons = [..item.BlockingReasons, ..errors], MatchStatus = errors.Count > 0 ? "Blocked" : item.MatchStatus, CanResolveConflict = errors.Count == 0 && item.CanResolveConflict };
             }
         }
 
@@ -1025,6 +1068,11 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         references.AddRange(new[] { new[] { "Gender", "", "Male", "", "" }, new[] { "Gender", "", "Female", "", "" }, new[] { "Gender", "", "Other", "", "" } });
         references.AddRange(new[] { new[] { "Payment Mode", "", "Bank Transfer", "", "" }, new[] { "Payment Mode", "", "Cheque", "", "" }, new[] { "Payment Mode", "", "Cash", "", "" } });
         references.AddRange(new[] { new[] { "Boolean", "", "TRUE", "", "Allowed values: TRUE/FALSE, YES/NO, 1/0, Active/Inactive" }, new[] { "Date Format", "", "yyyy-MM-dd", "", "Example: 2026-04-01" } });
+        var configured = EmployeeAttributeRepository.Columns(await EmployeeAttributeRepository.ExchangeFormsAsync(db, clientId));
+        employeeHeaders = employeeHeaders.Concat(configured.Select(column => column.Header)).ToArray();
+        employeeExample = employeeExample.Concat(configured.Select(_ => "")).ToArray();
+        instructions.AddRange(configured.Select(column => new[] { column.Header, column.Field.IsRequired ? "New employees" : "No", column.Field.HelpText, $"{column.Field.FieldTypeCode}; keep the CUSTOM marker. Blank cells preserve existing data." }));
+        references.AddRange(configured.SelectMany(column => column.Field.Options.Where(option => option.IsActive).Select(option => new[] { column.Header, option.OptionCode, option.OptionLabel, "", "Use this option code; separate multiple codes with a semicolon." })));
         return BuildXlsx(("Employees", new[] { employeeHeaders, employeeExample }), ("Instructions", instructions), ("References", references));
     }
 
@@ -1053,6 +1101,8 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             var existingById = existing.ToDictionary(x => x.Id);
             var existingByCode = existing.Where(x => !string.IsNullOrWhiteSpace(x.EmployeeCode)).GroupBy(x => x.EmployeeCode, StringComparer.OrdinalIgnoreCase).ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
             var existingByEmail = existing.Where(x => !string.IsNullOrWhiteSpace(x.WorkEmail)).GroupBy(x => x.WorkEmail, StringComparer.OrdinalIgnoreCase).ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+            var customForms = await EmployeeAttributeRepository.ExchangeFormsAsync(db, clientId);
+            var customColumns = EmployeeAttributeRepository.Columns(customForms).ToDictionary(column => column.Code, StringComparer.OrdinalIgnoreCase);
             var drafts = new Dictionary<string, EmployeeImportDraft>(StringComparer.OrdinalIgnoreCase);
             var errors = new List<string>();
 
@@ -1303,7 +1353,10 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                 var writesAddress = HasAnyHeader(map, It0006ImportHeaders);
                 var writesPay = HasAnyHeader(map, It0008ImportHeaders);
                 var writesBank = HasAnyHeader(map, It0009ImportHeaders);
-                if (!writesActions && !writesOrg && !writesPersonal && !writesAddress && !writesPay && !writesBank) { errors.Add("Employees: no supported employee field headers were supplied."); return; }
+                var customHeaders = rows[0].Select((header, index) => (Code: EmployeeAttributeRepository.HeaderKey(header), Index: index)).Where(column => column.Code.Length > 0).ToList();
+                if (customHeaders.GroupBy(column => column.Code).Any(group => group.Count() > 1)) errors.Add("Employees: a configured field header is duplicated.");
+                if (customHeaders.Any(column => !customColumns.ContainsKey(column.Code))) errors.Add("Employees: a configured field is no longer active. Download the latest template.");
+                if (!writesActions && !writesOrg && !writesPersonal && !writesAddress && !writesPay && !writesBank && customHeaders.Count == 0) { errors.Add("Employees: no supported employee field headers were supplied."); return; }
                 var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var seenIds = new HashSet<int>();
                 for (var i = 1; i < rows.Count; i++)
@@ -1321,6 +1374,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                     if (string.IsNullOrWhiteSpace(code) && !employeeId.HasValue) { errors.Add($"Employees row {rowNumber}: Employee Code or Employee ID is required."); continue; }
                     if (!string.IsNullOrWhiteSpace(code) && !seenCodes.Add(code)) { errors.Add($"Employees row {rowNumber}: Employee Code \"{code}\" is duplicated in this sheet."); continue; }
                     var draft = DraftFor(code, rowNumber, "Employees", employeeId); if (draft is null) continue;
+                    draft.CustomValues.AddRange(customHeaders.Select(column => new EmployeeFieldInput(column.Code, column.Index < row.Count ? row[column.Index] : "")));
                     var employee = draft.Employee;
                     var personal = employee.PersonalDetails ?? new EmployeePersonalDetails(); employee.PersonalDetails = personal;
                     var reason = Cell(row, map, "Change Reason");
@@ -1362,6 +1416,9 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                         SetIfAny(value => personal.Address = value, Cell(row, map, "Address"));
                         SetIfAny(value => personal.CorrespondenceAddress = value, Cell(row, map, "Correspondence Address"));
                         SetIfAny(value => personal.PermanentAddress = value, Cell(row, map, "Permanent Address"));
+                        SetIfAny(value => personal.City = value, Cell(row, map, "City"));
+                        SetIfAny(value => personal.District = value, Cell(row, map, "District"));
+                        SetIfAny(value => personal.State = value, Cell(row, map, "State"));
                         Mark(draft, "0006", reason);
                     }
                     if (writesPay)
@@ -1369,7 +1426,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                         var template = HasAnyHeader(map, "Salary Template Id", "Salary Template") ? ResolveSalaryTemplate(Cell(row, map, "Salary Template Id"), Cell(row, map, "Salary Template"), salaryTemplateById, salaryTemplateByName, errors, "Employees", rowNumber) : null;
                         if (template is not null) employee.SalaryStructureId = template.Id;
                         if (HasHeader(map, "Annual CTC")) { var ctcText = Cell(row, map, "Annual CTC"); if (!string.IsNullOrWhiteSpace(ctcText)) { if (decimal.TryParse(ctcText, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var ctc)) employee.AnnualCtc = ctc; else errors.Add($"Employees row {rowNumber}: Annual CTC must be numeric."); } else if (template is not null && decimal.TryParse(template.AnnualCtc, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var templateCtc) && employee.AnnualCtc <= 0) employee.AnnualCtc = templateCtc; }
-                        if (HasHeader(map, "Salary Json")) { var salaryJson = Cell(row, map, "Salary Json"); if (!string.IsNullOrWhiteSpace(salaryJson)) { if (JsonObjectOk(salaryJson)) employee.SalaryJson = salaryJson; else errors.Add($"Employees row {rowNumber}: Salary Json must be a valid JSON object."); } }
+                        if (HasHeader(map, "Salary Json")) { var salaryJson = Cell(row, map, "Salary Json"); if (!string.IsNullOrWhiteSpace(salaryJson)) { if (TrySalaryMap(salaryJson, out var salary)) { employee.SalaryJson = salaryJson; employee.SalaryComponents = salary; } else errors.Add($"Employees row {rowNumber}: Salary Json must contain numeric component amounts."); } }
                         Mark(draft, "0008", reason);
                     }
                     if (writesBank)
@@ -1401,6 +1458,22 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             }
             if (errors.Count > 0) return new EmployeeImportResult(totalRows, 0, 0, errors);
 
+            await using (var validation = await db.BeginTransactionAsync())
+            {
+                foreach (var draft in drafts.Values)
+                {
+                    if (draft.Employee.Id == 0)
+                    {
+                        foreach (var required in customColumns.Values.Where(column => column.Field.IsRequired))
+                            if (!draft.CustomValues.Any(value => value.Code == required.Code && !string.IsNullOrWhiteSpace(value.Value))) errors.Add($"Employees row {draft.FirstRow}: {required.Field.Label} is required.");
+                    }
+                    var error = await EmployeeAttributeRepository.SaveExchangeAsync(db, validation, draft.Employee.Id, clientId, customForms, draft.CustomValues, "BULK_UPLOAD", "", 0, allowIncomplete: draft.Employee.Id > 0, validateOnly: true);
+                    if (error.Length > 0) errors.Add($"Employees row {draft.FirstRow}: {error}");
+                }
+                await validation.RollbackAsync();
+            }
+            if (errors.Count > 0) return new EmployeeImportResult(totalRows, 0, 0, errors);
+
             // Plan first; no master records are created for an invalid workbook.
             var newDrops = validDrops.SelectMany(group => group.Value.Where(value => !originalDrops.TryGetValue(group.Key, out var values) || !values.Contains(value)).Select(value => (Type: group.Key, Value: value))).ToList();
             var newLocations = locationsByName.Values.SelectMany(x => x).Where(x => x.Id < 0).ToList();
@@ -1424,6 +1497,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                 await transaction.CommitAsync();
             }
 
+            await EnsureDefaultTaxProfileTableAsync(db);
             var inserted = 0; var updated = 0; var completed = 0;
             var savedEmployees = new List<Employee>();
             foreach (var draft in drafts.Values.OrderBy(x => x.FirstRow))
@@ -1431,7 +1505,17 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                 var isNew = draft.Employee.Id == 0;
                 if (isNew && draft.Employee.IsActive && !string.IsNullOrWhiteSpace(draft.Employee.EmployeeCode))
                     draft.Employee.PortalAccess = true;
-                await SaveWithOpenConnectionAsync(db, draft.Employee, "Bulk Upload", isNew ? null : string.Join(',', draft.Infotypes.OrderBy(x => x)), draft.ChangeReason);
+                await using (var tx = await db.BeginTransactionAsync())
+                {
+                    await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@clientId FOR UPDATE", new { clientId }, tx);
+                    var identity = (await PreviewRecruitmentAsync(draft.Employee, db, tx)).Rows.Single();
+                    if (identity.BlockingReasons.Count > 0 || identity.MatchedEmployeeId.HasValue && identity.MatchedEmployeeId != draft.Employee.Id)
+                        throw new InvalidOperationException($"Employees row {draft.FirstRow}: identity changed or conflicts with an existing employee. Review the upload again.");
+                    await SaveWithOpenConnectionAsync(db, draft.Employee, "Bulk Upload", isNew ? null : string.Join(',', draft.Infotypes.OrderBy(x => x)), draft.ChangeReason, tx);
+                    var error = await EmployeeAttributeRepository.SaveExchangeAsync(db, tx, draft.Employee.Id, clientId, customForms, draft.CustomValues, "BULK_UPLOAD", draft.Employee.EmployeeCode, 0, allowIncomplete: !isNew);
+                    if (error.Length > 0) throw new InvalidOperationException($"Employees row {draft.FirstRow}: {error}");
+                    await tx.CommitAsync();
+                }
                 if (draft.Employee.IsActive && draft.Employee.PortalAccess) savedEmployees.Add(draft.Employee);
                 if (isNew) inserted++; else updated++;
                 completed++;
@@ -1441,6 +1525,13 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             return new EmployeeImportResult(totalRows, inserted, updated, []);
         }
         catch (Exception ex) { return new EmployeeImportResult(0, 0, 0, [$"Import failed: {ex.Message}"]); }
+    }
+
+    internal static bool TrySalaryMap(string json, out Dictionary<string, decimal> salary)
+    {
+        salary = [];
+        try { salary = JsonSerializer.Deserialize<Dictionary<string, decimal>>(json) ?? []; return json.TrimStart().StartsWith('{'); }
+        catch (JsonException) { return false; }
     }
 
     static void SetJob(Guid jobId, Func<EmployeeImportJobStatus, EmployeeImportJobStatus> update) => ImportJobs.AddOrUpdate(jobId, _ => update(new EmployeeImportJobStatus(jobId, "Processing", 0, 0, 0, 0, [])), (_, current) => update(current));
@@ -1673,12 +1764,12 @@ CREATE TABLE IF NOT EXISTS employee_audit_trail (
         await EnsureTableColumnAsync(db, "employee_it0001_org_assignment", "ReportingManagerUserId", "INT NULL AFTER ReportingManagerId");
     }
 
-    static async Task<Employee?> LoadEmployeeAsync(MySqlConnection db, int id)
+    static async Task<Employee?> LoadEmployeeAsync(MySqlConnection db, int id, MySqlTransaction? tx = null)
     {
-        var employee = await db.QueryFirstOrDefaultAsync<Employee>("SELECT * FROM employees WHERE Id=@id", new { id });
+        var employee = await db.QueryFirstOrDefaultAsync<Employee>("SELECT * FROM employees WHERE Id=@id", new { id }, tx);
         if (employee is null) return null;
         var rows = new List<Employee> { employee };
-        await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, rows);
+        await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, rows, tx);
         return rows[0];
     }
 
@@ -1696,7 +1787,7 @@ CREATE TABLE IF NOT EXISTS employee_audit_trail (
     static DateTime EffectiveDate(Employee employee) =>
         DateTime.TryParse(employee.DateOfJoining, out var date) ? date.Date : DateTime.Today;
 
-    static async Task WriteCurrentInfotypesAsync(MySqlConnection db, Employee employee, string actionType, DateTime effectiveDate, string reason, string changedBy, Employee? before, HashSet<string>? onlyInfotypeCodes = null)
+    static async Task WriteCurrentInfotypesAsync(MySqlConnection db, Employee employee, string actionType, DateTime effectiveDate, string reason, string changedBy, Employee? before, HashSet<string>? onlyInfotypeCodes = null, MySqlTransaction? tx = null)
     {
         effectiveDate = effectiveDate.Date;
         var beforeSnapshots = before is null ? new Dictionary<string, string>() : InfotypeSnapshots(before).ToDictionary(item => item.InfotypeCode, item => item.DataJson);
@@ -1704,19 +1795,19 @@ CREATE TABLE IF NOT EXISTS employee_audit_trail (
         foreach (var item in infotypes)
         {
             if (beforeSnapshots.TryGetValue(item.InfotypeCode, out var oldJson) && oldJson == item.DataJson) continue;
-            await WritePhysicalInfotypeAsync(db, employee, item.InfotypeCode, actionType, effectiveDate, reason, changedBy);
+            await WritePhysicalInfotypeAsync(db, employee, item.InfotypeCode, actionType, effectiveDate, reason, changedBy, tx);
         }
-        await WriteAuditRowsAsync(db, employee, before, actionType, effectiveDate, changedBy ?? "", onlyInfotypeCodes);
+        await WriteAuditRowsAsync(db, employee, before, actionType, effectiveDate, changedBy ?? "", onlyInfotypeCodes, tx);
     }
 
-    static async Task SyncAttendancePolicyMappingsAsync(MySqlConnection db, Employee employee, Employee? before)
+    static async Task SyncAttendancePolicyMappingsAsync(MySqlConnection db, Employee employee, Employee? before, MySqlTransaction? tx = null)
     {
         var clientIds = new[] { employee.ClientId, before?.ClientId ?? employee.ClientId }.Where(id => id > 0).Distinct().ToArray();
         foreach (var clientId in clientIds)
         {
             await db.ExecuteAsync(@"DELETE age FROM attendance_group_employees age
 JOIN attendance_groups g ON g.id=age.attendance_group_id
-WHERE age.employee_id=@EmployeeId AND g.client_id=@ClientId", new { EmployeeId = employee.Id, ClientId = clientId });
+WHERE age.employee_id=@EmployeeId AND g.client_id=@ClientId", new { EmployeeId = employee.Id, ClientId = clientId }, tx);
         }
 
         if (!employee.IsActive || employee.Id <= 0 || employee.ClientId <= 0 || employee.WorkLocationId <= 0 || string.IsNullOrWhiteSpace(employee.Department) || string.IsNullOrWhiteSpace(employee.Designation))
@@ -1736,7 +1827,7 @@ WHERE g.client_id=@ClientId
             employee.WorkLocationId,
             Department = employee.Department.Trim(),
             Designation = employee.Designation.Trim()
-        });
+        }, tx);
     }
 
     internal static async Task WritePhysicalInfotypeAsync(MySqlConnection db, Employee employee, string infotypeCode, string actionType, DateTime effectiveDate, string reason, string changedBy, MySqlTransaction? tx = null)
@@ -1792,7 +1883,7 @@ WHERE EmployeeId=@EmployeeId AND Status='Active' AND EffectiveFrom<=@EffectiveFr
         yield return ("0009", "Bank Details", JsonSerializer.Serialize(employee.PaymentDetails));
     }
 
-    static async Task WriteAuditRowsAsync(MySqlConnection db, Employee after, Employee? before, string actionType, DateTime effectiveDate, string changedBy, HashSet<string>? onlyInfotypeCodes = null)
+    static async Task WriteAuditRowsAsync(MySqlConnection db, Employee after, Employee? before, string actionType, DateTime effectiveDate, string changedBy, HashSet<string>? onlyInfotypeCodes = null, MySqlTransaction? tx = null)
     {
         effectiveDate = effectiveDate.Date;
         var oldValues = before is null ? new Dictionary<string, string>() : AuditValues(before);
@@ -1802,7 +1893,7 @@ WHERE EmployeeId=@EmployeeId AND Status='Active' AND EffectiveFrom<=@EffectiveFr
             .ToList();
         if (rows.Count == 0) return;
         await db.ExecuteAsync(@"INSERT INTO employee_audit_trail (EmployeeId,EmployeeCode,ActionType,InfotypeCode,FieldName,OldValue,NewValue,EffectiveFrom,ChangedBy)
-VALUES (@Id,@EmployeeCode,@ActionType,@InfotypeCode,@FieldName,@OldValue,@NewValue,@EffectiveFrom,@ChangedBy)", rows);
+VALUES (@Id,@EmployeeCode,@ActionType,@InfotypeCode,@FieldName,@OldValue,@NewValue,@EffectiveFrom,@ChangedBy)", rows, tx);
     }
 
     static Dictionary<string, string> AuditValues(Employee employee) => new()
@@ -2090,6 +2181,7 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
         public int FirstRow { get; } = firstRow;
         public HashSet<string> Infotypes { get; } = new(StringComparer.OrdinalIgnoreCase);
         public string ChangeReason { get; set; } = "Bulk upload";
+        public List<EmployeeFieldInput> CustomValues { get; } = [];
     }
     private sealed class LocationRef
     {

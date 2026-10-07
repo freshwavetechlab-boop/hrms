@@ -45,8 +45,8 @@ const emptyLookups: RecruitmentOrchestrationLookups = {
   lookupSources: [], attachmentConfigurations: [], attachmentFieldConfigurations: [], workflows: [], forms: [], positions: [], atsProfiles: [],
 }
 
-export const getRecruitmentOrchestrationLookups = async (clientId = 0) => {
-  const response = await getJson<RecruitmentOrchestrationLookups>(`${internalBase}/lookups?clientId=${clientId}`, emptyLookups)
+export const getRecruitmentOrchestrationLookups = async (clientId = 0, base = internalBase) => {
+  const response = await getJson<RecruitmentOrchestrationLookups>(`${base}/lookups?clientId=${clientId}`, emptyLookups)
   return {
     ...response,
     workflows: (response.workflows ?? []).filter(row => row.isActive && (row.clientId == null || row.clientId === clientId)),
@@ -55,27 +55,27 @@ export const getRecruitmentOrchestrationLookups = async (clientId = 0) => {
   }
 }
 
-export const getRecruitmentForms = (clientId = 0) =>
-  getJson<DynamicFormDefinition[]>(`${internalBase}/forms?clientId=${clientId}`, [])
+export const getRecruitmentForms = (clientId = 0, base = internalBase) =>
+  getJson<DynamicFormDefinition[]>(`${base}/forms?clientId=${clientId}`, [])
 
-export const getRecruitmentForm = (id: number) =>
-  getJson<DynamicFormDefinition | null>(`${internalBase}/forms/${id}`, null)
+export const getRecruitmentForm = (id: number, base = internalBase) =>
+  getJson<DynamicFormDefinition | null>(`${base}/forms/${id}`, null)
 
-export const saveRecruitmentFormDefinition = (definition: SaveDynamicFormDefinition) =>
-  postJson(`${internalBase}/forms`, definition, null as DynamicFormDefinition | null, { successMessage: 'Form definition saved.' })
+export const saveRecruitmentFormDefinition = (definition: SaveDynamicFormDefinition, base = internalBase) =>
+  postJson(`${base}/forms`, definition, null as DynamicFormDefinition | null, { successMessage: base === internalBase ? 'Form definition saved.' : undefined })
 
 export const deleteRecruitmentFormDefinition = (id: number) =>
   deleteJson(`${internalBase}/forms/${id}`, null, { successMessage: 'Form definition deleted.' })
 
-export const saveRecruitmentFormVersion = (definitionId: number, version: DynamicFormVersion) =>
-  postJson(`${internalBase}/forms/${definitionId}/versions`, {
+export const saveRecruitmentFormVersion = (definitionId: number, version: DynamicFormVersion, base = internalBase) =>
+  postJson(`${base}/forms/${definitionId}/versions`, {
     id: version.id,
     formDefinitionId: definitionId,
     sections: version.sections,
-  }, null as DynamicFormVersion | null, { successMessage: 'Form draft saved.' })
+  }, null as DynamicFormVersion | null, { successMessage: base === internalBase ? 'Form draft saved.' : undefined })
 
-export const publishRecruitmentFormVersion = (versionId: number) =>
-  postJson(`${internalBase}/form-versions/${versionId}/publish`, {}, null as DynamicFormVersion | null, { successMessage: 'Form version published.' })
+export const publishRecruitmentFormVersion = (versionId: number, base = internalBase, definitionId?: number) =>
+  postJson(`${base}/form-versions/${versionId}/publish${definitionId ? `?definitionId=${definitionId}` : ""}`, {}, null as DynamicFormVersion | null, { successMessage: base === internalBase ? 'Form version published.' : undefined })
 
 export const loadInternalSelectOptions = (sourceCode: string, search: string, clientId: number) => {
   const query = new URLSearchParams({ clientId: String(clientId), search })

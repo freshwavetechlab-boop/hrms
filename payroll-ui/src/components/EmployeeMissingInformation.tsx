@@ -24,8 +24,8 @@ export function createEmployeeDocumentCheck() {
   }
 }
 
-export default function EmployeeMissingInformation({ employee, checkDocuments, onOpen }: {
-  employee: Employee; checkDocuments: ReturnType<typeof createEmployeeDocumentCheck>; onOpen: (infotype: EmployeeInformationIssue['infotype']) => void
+export default function EmployeeMissingInformation({ employee, checkDocuments, onOpen, additionalIssues = [] }: {
+  additionalIssues?: { infotype: string; label: string }[]; employee: Employee; checkDocuments: ReturnType<typeof createEmployeeDocumentCheck>; onOpen: (infotype: EmployeeInformationIssue['infotype']) => void
 }) {
   const [documents, setDocuments] = useState<EmployeeDocumentCheck | null>()
   const [retry, setRetry] = useState(0)
@@ -36,6 +36,11 @@ export default function EmployeeMissingInformation({ employee, checkDocuments, o
     return () => { active = false }
   }, [employee.id, employee.clientId, checkDocuments, retry])
   const issues = employeeMissingInformation(employee, documents)
+  for (const extra of additionalIssues) {
+    const issue = issues.find(issue => issue.infotype === extra.infotype)
+    if (issue) { if (!issue.fields.includes(extra.label)) issue.fields.push(extra.label) }
+    else issues.push({ infotype: extra.infotype as EmployeeInformationIssue['infotype'], label: 'Additional information', fields: [extra.label] })
+  }
   if (!issues.length && documents) return null
   return <div className={`employee-missing-information${issues.length ? '' : ' is-pending'}`} aria-label="Employee information status">
     {issues.length > 0 && <details><summary><ExclamationCircleOutlined /> Missing information <span>{issues.reduce((total, issue) => total + issue.fields.length, 0)}</span></summary>

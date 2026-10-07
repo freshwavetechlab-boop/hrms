@@ -268,13 +268,13 @@ ON DUPLICATE KEY UPDATE WorkWeek=@WorkWeek,SalaryDays=@SalaryDays,FixedDays=@Fix
                 client.PayScheduleJson = JsonSerializer.Serialize(ToDto(schedule), JsonOptions);
     }
 
-    public static async Task ApplyEmployeeTablesAsync(MySqlConnection connection, IEnumerable<Employee> employees)
+    public static async Task ApplyEmployeeTablesAsync(MySqlConnection connection, IEnumerable<Employee> employees, MySqlTransaction? tx = null)
     {
         var list = employees.ToList();
         if (list.Count == 0) return;
         var ids = list.Select(x => x.Id).ToArray();
-        var salaryRows = (await connection.QueryAsync<EmployeeSalaryComponentRow>("SELECT EmployeeId,ComponentId,Amount FROM employeesalarycomponents WHERE EmployeeId IN @ids", new { ids })).GroupBy(x => x.EmployeeId).ToDictionary(g => g.Key, g => g.ToList());
-        var personalRows = (await connection.QueryAsync<EmployeePersonalRow>("SELECT * FROM employeepersonaldetails WHERE EmployeeId IN @ids", new { ids })).ToDictionary(x => x.EmployeeId);
+        var salaryRows = (await connection.QueryAsync<EmployeeSalaryComponentRow>("SELECT EmployeeId,ComponentId,Amount FROM employeesalarycomponents WHERE EmployeeId IN @ids", new { ids }, tx)).GroupBy(x => x.EmployeeId).ToDictionary(g => g.Key, g => g.ToList());
+        var personalRows = (await connection.QueryAsync<EmployeePersonalRow>("SELECT * FROM employeepersonaldetails WHERE EmployeeId IN @ids", new { ids }, tx)).ToDictionary(x => x.EmployeeId);
         var paymentRows = (await connection.QueryAsync<EmployeePaymentRow>(@"
 SELECT
     base.EmployeeId,
@@ -297,7 +297,7 @@ LEFT JOIN (
         WHERE Status='Active' AND EmployeeId IN @ids
         GROUP BY EmployeeId
     ) latest ON latest.Id=t.Id
-) it9 ON it9.EmployeeId=base.EmployeeId", new { ids })).ToDictionary(x => x.EmployeeId);
+) it9 ON it9.EmployeeId=base.EmployeeId", new { ids }, tx)).ToDictionary(x => x.EmployeeId);
 
         foreach (var employee in list)
         {
@@ -331,15 +331,15 @@ LEFT JOIN (
         }
     }
 
-    public static async Task SyncEmployeeTablesAsync(MySqlConnection connection, Employee employee)
+    public static async Task SyncEmployeeTablesAsync(MySqlConnection connection, Employee employee, MySqlTransaction? tx = null)
     {
         if (employee.Id <= 0) return;
         var salaryRows = employee.SalaryComponents.Count > 0 ? employee.SalaryComponents : ParseDecimalMap(employee.SalaryJson);
         var personal = HasPersonalDetails(employee.PersonalDetails) ? employee.PersonalDetails : ToPersonalDetails(ParseRoot(employee.PersonalJson));
         var payment = HasPaymentDetails(employee.PaymentDetails) ? employee.PaymentDetails : ToPaymentDetails(ParseRoot(employee.PaymentJson));
-        await SaveEmployeeSalaryAsync(connection, employee.Id, salaryRows);
-        await SaveEmployeePersonalAsync(connection, employee.Id, personal);
-        await SaveEmployeePaymentAsync(connection, employee.Id, payment);
+        await SaveEmployeeSalaryAsync(connection, employee.Id, salaryRows, tx);
+        await SaveEmployeePersonalAsync(connection, employee.Id, personal, tx);
+        await SaveEmployeePaymentAsync(connection, employee.Id, payment, tx);
         employee.SalaryComponents = new Dictionary<string, decimal>(salaryRows, StringComparer.OrdinalIgnoreCase);
         employee.SalaryJson = JsonSerializer.Serialize(employee.SalaryComponents, JsonOptions);
         employee.PersonalDetails = personal;
@@ -437,19 +437,19 @@ ON DUPLICATE KEY UPDATE State=@State,SalaryFrom=@SalaryFrom,SalaryTo=@SalaryTo,D
             });
     }
 
-    private static async Task SaveEmployeeSalaryAsync(MySqlConnection connection, int employeeId, Dictionary<string, decimal> rows)
+    private static async Task SaveEmployeeSalaryAsync(MySqlConnection connection, int employeeId, Dictionary<string, decimal> rows, MySqlTransaction? tx = null)
     {
-        await connection.ExecuteAsync("DELETE FROM employeesalarycomponents WHERE EmployeeId=@employeeId", new { employeeId });
+        await connection.ExecuteAsync("DELETE FROM employeesalarycomponents WHERE EmployeeId=@employeeId", new { employeeId }, tx);
         foreach (var row in rows)
         {
-            var code = await connection.ExecuteScalarAsync<string?>("SELECT Code FROM salarycomponents WHERE Id=@Id OR Code=@Id LIMIT 1", new { Id = row.Key });
+            var code = await connection.ExecuteScalarAsync<string?>("SELECT Code FROM salarycomponents WHERE Id=@Id OR Code=@Id LIMIT 1", new { Id = row.Key }, tx);
             await connection.ExecuteAsync(@"INSERT INTO employeesalarycomponents (EmployeeId,ComponentId,ComponentCode,Amount)
 VALUES (@employeeId,@ComponentId,@ComponentCode,@Amount)
-ON DUPLICATE KEY UPDATE ComponentCode=@ComponentCode,Amount=@Amount", new { employeeId, ComponentId = row.Key, ComponentCode = code ?? row.Key, Amount = row.Value });
+ON DUPLICATE KEY UPDATE ComponentCode=@ComponentCode,Amount=@Amount", new { employeeId, ComponentId = row.Key, ComponentCode = code ?? row.Key, Amount = row.Value }, tx);
         }
     }
 
-    private static Task SaveEmployeePersonalAsync(MySqlConnection connection, int employeeId, EmployeePersonalDetails personal) =>
+    private static Task SaveEmployeePersonalAsync(MySqlConnection connection, int employeeId, EmployeePersonalDetails personal, MySqlTransaction? tx = null) =>
         connection.ExecuteAsync(@"INSERT INTO employeepersonaldetails (EmployeeId,DateOfBirth,Mobile,PanNumber,AadhaarNumber,UanNumber,EsicNumber,Address,CorrespondenceAddress,PermanentAddress,Source,SourceLocation,City,District,State,RawDesignation,OriginalEmployeeCode,DuplicateResolution,ExcelRow,EsicEmployee,PtLwfWorkmenComp,Tds,Recovery)
 VALUES (@EmployeeId,@DateOfBirth,@Mobile,@PanNumber,@AadhaarNumber,@UanNumber,@EsicNumber,@Address,@CorrespondenceAddress,@PermanentAddress,@Source,@SourceLocation,@City,@District,@State,@RawDesignation,@OriginalEmployeeCode,@DuplicateResolution,@ExcelRow,@EsicEmployee,@PtLwfWorkmenComp,@Tds,@Recovery)
 ON DUPLICATE KEY UPDATE DateOfBirth=@DateOfBirth,Mobile=@Mobile,PanNumber=@PanNumber,AadhaarNumber=@AadhaarNumber,UanNumber=@UanNumber,EsicNumber=@EsicNumber,Address=@Address,CorrespondenceAddress=@CorrespondenceAddress,PermanentAddress=@PermanentAddress,Source=@Source,SourceLocation=@SourceLocation,City=@City,District=@District,State=@State,RawDesignation=@RawDesignation,OriginalEmployeeCode=@OriginalEmployeeCode,DuplicateResolution=@DuplicateResolution,ExcelRow=@ExcelRow,EsicEmployee=@EsicEmployee,PtLwfWorkmenComp=@PtLwfWorkmenComp,Tds=@Tds,Recovery=@Recovery", new
@@ -477,12 +477,12 @@ ON DUPLICATE KEY UPDATE DateOfBirth=@DateOfBirth,Mobile=@Mobile,PanNumber=@PanNu
             personal.PtLwfWorkmenComp,
             personal.Tds,
             personal.Recovery
-        });
+        }, tx);
 
-    private static Task SaveEmployeePaymentAsync(MySqlConnection connection, int employeeId, EmployeePaymentDetails payment) =>
+    private static Task SaveEmployeePaymentAsync(MySqlConnection connection, int employeeId, EmployeePaymentDetails payment, MySqlTransaction? tx = null) =>
         connection.ExecuteAsync(@"INSERT INTO employeepaymentdetails (EmployeeId,BankName,BankAccountNo,IfscCode,PaymentMode)
 VALUES (@EmployeeId,@BankName,@BankAccountNo,@IfscCode,@PaymentMode)
-ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode=@IfscCode,PaymentMode=@PaymentMode", new { EmployeeId = employeeId, payment.BankName, payment.BankAccountNo, payment.IfscCode, payment.PaymentMode });
+ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode=@IfscCode,PaymentMode=@PaymentMode", new { EmployeeId = employeeId, payment.BankName, payment.BankAccountNo, payment.IfscCode, payment.PaymentMode }, tx);
 
     private static object ToDto(ComponentRow row) => new { row.Id, row.Code, row.ComponentType, componentRole = Clean(row.ComponentRole, DefaultComponentRole(row.Category)), statutoryType = Clean(row.StatutoryType, "None"), row.Category, row.Name, row.PayType, row.CalculationType, value = row.ValueText, row.Formula, row.BaseComponent, row.Taxable, row.Ctc, row.ProRata, row.Fbp, row.RestrictFbp, row.Epf, row.Esi, row.Recurring, row.Scheduled, row.InvestmentType, row.CorrectionOf, row.Active, priority = row.Priority.ToString(CultureInfo.InvariantCulture) };
     private static object ToDto(StructureRow row, List<StructureLineRow> lines) => new { row.Id, clientId = string.IsNullOrWhiteSpace(row.ClientRef) ? row.ClientId.ToString(CultureInfo.InvariantCulture) : row.ClientRef, row.Name, annualCtc = row.AnnualCtc.ToString(CultureInfo.InvariantCulture), lines = lines.Select(x => new { x.ComponentId, value = x.ValueText, x.CalculationType, x.Formula, x.BaseComponent, x.ProRataOverride, x.RoundingMode }), row.Active };

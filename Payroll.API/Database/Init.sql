@@ -381,8 +381,33 @@ CREATE TABLE IF NOT EXISTS leave_attendance_preferences (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS attendance_shifts (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    client_id INT NOT NULL,
+    shift_code VARCHAR(50) NOT NULL,
+    shift_name VARCHAR(180) NOT NULL,
+    shift_type VARCHAR(20) NOT NULL DEFAULT 'Fixed',
+    start_time TIME NULL,
+    end_time TIME NULL,
+    is_overnight BOOLEAN NOT NULL DEFAULT FALSE,
+    grace_minutes INT NOT NULL DEFAULT 0,
+    break_minutes INT NOT NULL DEFAULT 0,
+    minimum_full_day_hours DECIMAL(5,2) NOT NULL DEFAULT 8,
+    minimum_half_day_hours DECIMAL(5,2) NOT NULL DEFAULT 4,
+    effective_from DATE NOT NULL,
+    effective_to DATE NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY ux_attendance_shifts_client_code (client_id,shift_code),
+    UNIQUE KEY ux_attendance_shifts_id_client (id,client_id),
+    CONSTRAINT fk_attendance_shifts_client FOREIGN KEY (client_id) REFERENCES clients(Id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS attendance_settings (
     id INT PRIMARY KEY AUTO_INCREMENT,
+    client_id INT NOT NULL,
+    shift_id INT NULL,
     check_in_time TIME NOT NULL DEFAULT '09:00:00',
     check_out_time TIME NOT NULL DEFAULT '18:00:00',
     working_hours_calculation VARCHAR(80) NOT NULL DEFAULT 'First check-in and last check-out',
@@ -395,7 +420,9 @@ CREATE TABLE IF NOT EXISTS attendance_settings (
     restrict_regularization_requests_per_month BOOLEAN NOT NULL DEFAULT FALSE,
     max_regularization_requests_per_month INT NOT NULL DEFAULT 3,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY UX_attendance_client (client_id),
+    CONSTRAINT fk_attendance_settings_shift_client FOREIGN KEY (shift_id,client_id) REFERENCES attendance_shifts(id,client_id)
 );
 
 CREATE TABLE IF NOT EXISTS attendance_geo_fence_rules (
@@ -435,6 +462,7 @@ CREATE TABLE IF NOT EXISTS attendance_geo_fence_rule_employees (
 CREATE TABLE IF NOT EXISTS attendance_groups (
     id INT PRIMARY KEY AUTO_INCREMENT,
     client_id INT NOT NULL,
+    shift_id INT NULL,
     policy_batch_id CHAR(36) NULL,
     name VARCHAR(180) NOT NULL,
     work_location_id INT NOT NULL,
@@ -450,7 +478,8 @@ CREATE TABLE IF NOT EXISTS attendance_groups (
     UNIQUE KEY UX_attendance_groups_client_name (client_id, name),
     INDEX IX_attendance_groups_batch (policy_batch_id),
     INDEX IX_attendance_groups_client_location (client_id, work_location_id),
-    CONSTRAINT FK_attendance_groups_client FOREIGN KEY (client_id) REFERENCES clients(Id) ON DELETE CASCADE
+    CONSTRAINT FK_attendance_groups_client FOREIGN KEY (client_id) REFERENCES clients(Id) ON DELETE CASCADE,
+    CONSTRAINT fk_attendance_groups_shift_client FOREIGN KEY (shift_id,client_id) REFERENCES attendance_shifts(id,client_id)
 );
 
 CREATE TABLE IF NOT EXISTS attendance_group_employees (

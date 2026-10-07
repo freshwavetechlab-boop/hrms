@@ -406,6 +406,13 @@ DELETE FROM form_fields WHERE Id IN @Ids;", new { Ids = fieldIds }, tx);
         await db.OpenAsync();
         try
         {
+            if (request.Id > 0)
+            {
+                var old = await GetAsync(request.Id, user);
+                if (old?.ModuleCode == "EMPLOYEE" && old.CurrentPublishedVersionId.HasValue &&
+                    (old.FormCode != request.FormCode || old.PurposeCode != request.PurposeCode || old.ModuleCode != request.ModuleCode || old.ClientId != request.ClientId || request.EntityType != "EMPLOYEE"))
+                    return (null, "A published employee form keeps its client, code and Info Type. Create a new form to change them.");
+            }
             if (request.Id == 0)
             {
                 request.Id = await db.ExecuteScalarAsync<long>(@"INSERT INTO form_definitions (ClientId,ModuleCode,FormCode,FormName,PurposeCode,EntityType,Status,RequiresEmailVerification,CreatedByUserId)
@@ -432,6 +439,13 @@ WHERE Id=@Id AND ClientId=@ClientId", new { request.Id, request.ClientId, reques
         var definition = await db.QueryFirstOrDefaultAsync<DynamicFormDefinition>("SELECT * FROM form_definitions WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = request.FormDefinitionId, user.ClientId });
         if (definition is null) return (null, "Form definition was not found.");
         if (request.Sections.Count == 0) return (null, "Add at least one form section.");
+        if (definition.ModuleCode == "EMPLOYEE")
+        {
+            var old = await GetAsync(definition.Id, user);
+            var previous = old?.Versions.Where(version => version.Status is "Published" or "Retired").SelectMany(version => version.Sections).SelectMany(section => section.Fields);
+            var error = EmployeeAttributeRepository.ConfigurationError(request.Sections.SelectMany(section => section.Fields), previous);
+            if (error.Length > 0) return (null, error);
+        }
         await using var transaction = await db.BeginTransactionAsync();
         try
         {
@@ -543,11 +557,11 @@ VALUES (@FieldId,@RuleType,@ComparisonOperator,@CompareFieldId,@TextValue,@Integ
     {
         await using var db = Db();
         await db.OpenAsync();
-        var row = await db.QueryFirstOrDefaultAsync<PublishFormRow>(@"SELECT v.*,d.ClientId,d.PurposeCode FROM form_versions v JOIN form_definitions d ON d.Id=v.FormDefinitionId
+        var row = await db.QueryFirstOrDefaultAsync<PublishFormRow>(@"SELECT v.*,d.ClientId,d.PurposeCode,d.ModuleCode FROM form_versions v JOIN form_definitions d ON d.Id=v.FormDefinitionId
 WHERE v.Id=@Id AND v.Status='Draft' AND (@ClientId IS NULL OR d.ClientId=@ClientId)", new { Id = versionId, user.ClientId });
         if (row is null) return (null, "Only an accessible draft version can be published.");
         var fieldCount = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM form_fields WHERE FormVersionId=@Id AND IsActive=TRUE", new { Id = versionId });
-        if (fieldCount == 0) return (null, "Add at least one active field before publishing.");
+        if (fieldCount == 0 && row.ModuleCode != "EMPLOYEE") return (null, "Add at least one active field before publishing.");
         var invalidField = await db.ExecuteScalarAsync<string?>(@"SELECT f.Label FROM form_fields f JOIN form_field_types t ON t.Id=f.FieldTypeId
 WHERE f.FormVersionId=@Id AND f.IsActive=TRUE AND (
  (f.MinimumLength IS NOT NULL AND f.MaximumLength IS NOT NULL AND f.MinimumLength>f.MaximumLength)
@@ -2652,7 +2666,7 @@ WHERE ps.TokenHash=@TokenHash";
 
     private sealed class PostingSessionRow { public long PostingId { get; set; } public int ClientId { get; set; } public long PositionId { get; set; } public long? ApplicationFormVersionId { get; set; } public bool RequireEmailOtp { get; set; } = true; public string PositionTitle { get; set; } = "this role"; }
     private sealed class PublicVerificationRow { public long Id { get; set; } public string Email { get; set; } = ""; public string NormalizedEmail { get; set; } = ""; public string Phone { get; set; } = ""; public string NormalizedPhone { get; set; } = ""; public string CodeHash { get; set; } = ""; public int AttemptCount { get; set; } public int MaximumAttempts { get; set; } public DateTime ExpiresAtUtc { get; set; } public DateTime? ConsumedAtUtc { get; set; } }
-    private sealed class PublishFormRow : DynamicFormVersion { public int ClientId { get; set; } public string PurposeCode { get; set; } = ""; }
+    private sealed class PublishFormRow : DynamicFormVersion { public int ClientId { get; set; } public string PurposeCode { get; set; } = ""; public string ModuleCode { get; set; } = ""; }
     private sealed class PublicSessionRow { public long Id { get; set; } public long PostingId { get; set; } public long SubmissionId { get; set; } public long ExternalSubjectId { get; set; } public string Purpose { get; set; } = ""; public int MaximumUses { get; set; } public int UseCount { get; set; } public DateTime ExpiresAtUtc { get; set; } public DateTime? RevokedAtUtc { get; set; } public string SubmissionStatus { get; set; } = ""; }
     private sealed class PublicApplicationProcessingRow { public string ApplicationCode { get; set; } = ""; public string ResumeStatus { get; set; } = ""; public bool AutoRunAts { get; set; } public string AtsStatus { get; set; } = ""; }
     private sealed class TrackingSubjectRow { public long Id { get; set; } public int ClientId { get; set; } public long? CandidateId { get; set; } public string TrackingPinHash { get; set; } = ""; public int TrackingPinFailedAttempts { get; set; } public DateTime? TrackingPinLockedUntilUtc { get; set; } }

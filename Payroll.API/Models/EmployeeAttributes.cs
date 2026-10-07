@@ -1,5 +1,9 @@
 namespace Payroll.API.Models;
 
+public record EmployeeFieldColumn(string Code, string Header, string InfotypeCode, long FormDefinitionId, DynamicFormField Field);
+public record EmployeeFieldExchange(List<EmployeeAttributeForm> Forms, List<EmployeeFieldColumn> Fields, Dictionary<int, Dictionary<string, string>> Values);
+public record EmployeeFieldInput(string Code, string Value);
+
 public class EmployeeAttributeContext
 {
     public int EmployeeId { get; set; }

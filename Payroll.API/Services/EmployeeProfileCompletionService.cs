@@ -5,7 +5,7 @@ using Payroll.API.Repositories;
 
 namespace Payroll.API.Services;
 
-public class EmployeeProfileCompletionService(IConfiguration configuration, EmployeeRepository employees, AttachmentRepository attachments, CommunicationRepository communications)
+public class EmployeeProfileCompletionService(IConfiguration configuration, EmployeeRepository employees, AttachmentRepository attachments, CommunicationRepository communications, EmployeeAttributeRepository attributes)
 {
     public const string TemplateCode = "EMPLOYEE_MISSING_INFORMATION";
     public const string EssUrl = "https://gad-ess.frevo.co.in/";
@@ -23,12 +23,16 @@ FROM entity_attachments WHERE entity_type='EMPLOYEE' AND entity_id IN @Ids AND i
         {
             var configs = (await attachments.GetEffectiveConfigurationsAsync(group.Key, "EMPLOYEE", "EMPLOYEE_CREATE_EDIT"))
                 .Concat(await attachments.GetEffectiveConfigurationsAsync(group.Key, "EMPLOYEE", "EMPLOYEE_PROFILE")).ToList();
+            var additional = await attributes.ExchangeAsync(group.Key, user);
             foreach (var employee in group)
             {
                 var missing = MissingFields(employee, configs, files[employee.Id]);
+                var configuredMissing = additional.Fields.Where(column => column.Field.IsRequired && string.IsNullOrWhiteSpace(additional.Values.GetValueOrDefault(employee.Id)?.GetValueOrDefault(column.Code)))
+                    .Select(column => new EmployeeConfiguredMissingField(column.InfotypeCode, column.Field.Label)).ToList();
+                missing.AddRange(configuredMissing.Select(field => field.Label));
                 var reason = !employee.IsActive ? "Employee is inactive." : !employee.PortalAccess ? "Enable ESS portal access first." :
                     !System.Net.Mail.MailAddress.TryCreate(employee.WorkEmail, out _) ? "Add a valid work email first." : missing.Count == 0 ? "All required information is complete." : "";
-                result.Add(new EmployeeCompletionStatus(employee.Id, employee.ClientId, missing, reason.Length == 0, reason));
+                result.Add(new EmployeeCompletionStatus(employee.Id, employee.ClientId, missing, reason.Length == 0, reason, configuredMissing));
             }
         }
         return result;
@@ -81,6 +85,7 @@ FROM entity_attachments WHERE entity_type='EMPLOYEE' AND entity_id IN @Ids AND i
     }
 }
 
-public record EmployeeCompletionStatus(int EmployeeId, int ClientId, List<string> MissingFields, bool CanSendEmail, string DisabledReason);
+public record EmployeeConfiguredMissingField(string Infotype, string Label);
+public record EmployeeCompletionStatus(int EmployeeId, int ClientId, List<string> MissingFields, bool CanSendEmail, string DisabledReason, List<EmployeeConfiguredMissingField>? AdditionalMissing = null);
 public record EmployeeCompletionSettingsRequest(int ClientId, bool FirstEditEnabled);
 public record EmployeeCompletionMailRequest(int ClientId, List<int> EmployeeIds, string IdempotencyKey = "");

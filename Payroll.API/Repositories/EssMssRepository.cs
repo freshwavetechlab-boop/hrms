@@ -123,6 +123,7 @@ WHERE e.Id=@EmployeeId AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { E
             .Select(rule => rule.Name.Trim())
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Distinct(StringComparer.OrdinalIgnoreCase));
+        profile.AdditionalInformation = await EmployeeAttributeRepository.ProfileExchangeAsync(db, employeeId, profile.ClientId);
         return profile;
     }
 
@@ -143,6 +144,16 @@ WHERE e.Id=@EmployeeId AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { E
         var employee = await db.QueryFirstOrDefaultAsync<Employee>("SELECT * FROM employees WHERE Id=@EmployeeId AND IsActive=TRUE AND (@ClientId IS NULL OR ClientId=@ClientId) FOR UPDATE", new { EmployeeId = employeeId, ClientId = clientId }, tx);
         if (employee is null) return (null, "Employee profile was not found.");
         if (!(await ProfileEditAccessAsync(db, employeeId, tx)).CanEdit) return (null, "Your profile is locked. Request edit access and wait for approval.");
+        var forms = await EmployeeAttributeRepository.ExchangeFormsAsync(db, employee.ClientId, tx);
+        request.AdditionalFields ??= [];
+        var additionalError = await EmployeeAttributeRepository.SaveExchangeAsync(db, tx, employeeId, employee.ClientId, forms, request.AdditionalFields, "ESS_PROFILE", employeeId.ToString(), 0);
+        if (additionalError.Length > 0) return (null, additionalError);
+        foreach (var required in EmployeeAttributeRepository.Columns(forms).Where(column => column.Field.IsRequired))
+        {
+            var value = request.AdditionalFields.FirstOrDefault(value => value.Code == required.Code);
+            var stored = before?.AdditionalInformation?.Values.GetValueOrDefault(employeeId)?.GetValueOrDefault(required.Code);
+            if (string.IsNullOrWhiteSpace(value?.Value) && string.IsNullOrWhiteSpace(stored)) return (null, $"{required.Field.Label} is required.");
+        }
         var pan = Clean(request.PanNumber);
         var ifsc = Clean(request.IfscCode);
         var email = request.WorkEmail.Trim();
@@ -783,7 +794,7 @@ ORDER BY CreatedAt",new{instance.InstanceId})).ToList();
         await using var db = Connection();
         await db.OpenAsync();
         var row = await db.QueryFirstOrDefaultAsync<EssPayslipRow>(@"SELECT p.Id PayRunEmployeeId,p.PayRunId,p.EmployeeId,p.ClientId,p.EmployeeCode,p.EmployeeName,p.Department,p.PresentDays,p.PayableDays,p.GrossPay,p.StatutoryDeductions,p.OneTimeEarnings,p.OneTimeDeductions,p.NetPay,p.PaymentStatus,p.PaymentDate,p.DetailsJson,
-r.PayPeriod,r.PayDate,r.Status RunStatus,r.TotalWorkingDays,COALESCE(c.Name,'') ClientName,
+r.PayPeriod,r.PayDate,r.Status RunStatus,r.RunType,r.TotalWorkingDays,COALESCE(c.Name,'') ClientName,
 e.WorkEmail,e.Designation,e.DateOfJoining,COALESCE(w.Name,'') WorkLocation,
 COALESCE(pd.Address,'') Address,COALESCE(pd.PanNumber,'') PanNumber,COALESCE(pd.UanNumber,'') UanNumber,
 COALESCE(pay.BankName,'') BankName,COALESCE(pay.BankAccountNo,'') BankAccountNo,COALESCE(pay.IfscCode,'') IfscCode
@@ -808,7 +819,9 @@ LIMIT 1", new { row.ClientId }) ?? new EssPayslipTemplate();
 FROM payrunemployees p JOIN payruns r ON r.Id=p.PayRunId
 WHERE p.EmployeeId=@EmployeeId AND p.ClientId=@ClientId AND p.IsSkipped=FALSE AND r.PayPeriod<=@PayPeriod AND LEFT(r.PayPeriod,4)=LEFT(@PayPeriod,4) AND r.Status IN ('Approved','Partially Paid','Paid')", new { row.EmployeeId, row.ClientId, row.PayPeriod }) ?? new EssPayslipYtd() : new EssPayslipYtd();
 
-        var html = BuildPayslipHtml(organization, template, row, ytd);
+        var attendance = new PayRun { ClientId = row.ClientId, PayPeriod = row.PayPeriod, RunType = row.RunType, Employees = [new PayRunEmployee { EmployeeId = row.EmployeeId }] };
+        await PayRunRepository.ApplyLeaveBreakdownAsync(db, attendance);
+        var html = BuildPayslipHtml(organization, template, row, ytd, PayslipPresentation.LeaveDays(attendance.Employees[0].LeaveBreakdown));
         return new EssPayslipDocument { PayRunId = row.PayRunId, PayPeriod = row.PayPeriod, EmployeeCode = row.EmployeeCode, FileName = $"payslip-{SafeFile(row.EmployeeCode)}-{SafeFile(row.PayPeriod)}.html", Html = html };
     }
     public async Task<EssTaxPortal> GetTaxPortalAsync(int employeeId, int? clientId)
@@ -1049,9 +1062,11 @@ ON DUPLICATE KEY UPDATE balance_count=VALUES(balance_count);", new { row.ClientI
         var correctedHours = 0m;
         if (marksPresent && correction?.RegularizationKind == "MissPunch" && correction.CheckInTime is TimeSpan checkIn && correction.CheckOutTime is TimeSpan checkOut)
         {
-            var settings = await GetAttendanceSettingsAsync(db, tx, row.ClientId);
-            correctedHours = Math.Min(CalculatePunchHours(checkIn, checkOut), settings.MaximumHoursAllowedForFullDay);
-            payableValue = correctedHours >= settings.MinimumHoursForFullDay ? 1m : correctedHours >= settings.MinimumHoursForHalfDay ? .5m : 0m;
+            var resolver = await AttendanceShiftResolver.LoadAsync(db, tx, row.ClientId, row.EmployeeId);
+            var settings = resolver.Resolve(row.EmployeeId, row.FromDate);
+            var calculated = AttendancePunchCalculator.CalculateReview(checkIn, checkOut, row.FromDate, settings);
+            correctedHours = calculated?.Hours ?? Math.Min(CalculatePunchHours(checkIn, checkOut), settings.MaximumHoursAllowedForFullDay);
+            payableValue = calculated?.Payable ?? (correctedHours >= settings.MinimumHoursForFullDay ? 1m : correctedHours >= settings.MinimumHoursForHalfDay ? .5m : 0m);
         }
         var remarks = marksPresent
             ? $"Approved attendance regularization #{row.Id}: {row.Reason}".TrimEnd(' ', ':')
@@ -1507,9 +1522,11 @@ WHERE e.Id=@EmployeeId AND e.IsActive=TRUE AND (@ClientId IS NULL OR e.ClientId=
 
     private static async Task<EssAttendanceTodayState> GetAttendanceStateAsync(MySqlConnection db, System.Data.IDbTransaction? transaction, int clientId, int employeeId, DateTime attendanceDate, bool fromPunchTime = false)
     {
-        var settings = await GetAttendanceSettingsAsync(db, transaction, clientId);
-        if (fromPunchTime) attendanceDate = AttendancePunchCalculator.AttendanceDate(attendanceDate, settings);
-        var bounds = AttendancePunchCalculator.Bounds(attendanceDate, settings);
+        var resolver = await AttendanceShiftResolver.LoadAsync(db, transaction, clientId, employeeId);
+        var resolved = fromPunchTime ? resolver.ResolvePunch(employeeId, attendanceDate) : (attendanceDate.Date, resolver.Resolve(employeeId, attendanceDate));
+        attendanceDate = resolved.Item1;
+        var settings = resolved.Item2;
+        var bounds = resolver.Bounds(employeeId, attendanceDate);
         var daily = await db.QueryFirstOrDefaultAsync<AttendanceDailyStateRow>(@"SELECT status AS Status,COALESCE(remarks,'') Remarks, payable_value AS PayableValue, check_in_time AS CheckInTime,
 check_out_time AS CheckOutTime, total_hours AS TotalHours
 FROM employee_daily_attendance
@@ -1539,7 +1556,7 @@ WHERE client_id=@ClientId AND employee_id=@EmployeeId AND captured_at>=@DayStart
                         ? "CheckOut"
                         : "CheckIn";
         var totalHours = daily?.TotalHours ?? 0;
-        if (totalHours <= 0 && checkIn.HasValue && checkOut.HasValue)
+        if (settings.Shift is null && totalHours <= 0 && checkIn.HasValue && checkOut.HasValue)
             totalHours = CalculatePunchHours(checkIn.Value, checkOut.Value);
         return new EssAttendanceTodayState
         {
@@ -1559,20 +1576,12 @@ PayableValue = daily?.PayableValue ?? 0,
         };
     }
 
-    private static async Task<AttendanceSettings> GetAttendanceSettingsAsync(MySqlConnection db, System.Data.IDbTransaction? transaction, int clientId) =>
-        await db.QueryFirstOrDefaultAsync<AttendanceSettings>(@"SELECT id AS Id, client_id AS ClientId, check_in_time AS CheckInTime,
-check_out_time AS CheckOutTime, working_hours_calculation AS WorkingHoursCalculation,
-minimum_hours_for_half_day AS MinimumHoursForHalfDay, minimum_hours_for_full_day AS MinimumHoursForFullDay,
-maximum_hours_allowed_for_full_day AS MaximumHoursAllowedForFullDay
-FROM attendance_settings WHERE client_id=@ClientId LIMIT 1;", new { ClientId = clientId }, transaction)
-        ?? new AttendanceSettings { ClientId = clientId };
-
     private static async Task<EssAttendanceTodayState> ProjectAcceptedPunchAsync(MySqlConnection db, MySqlTransaction transaction, int clientId, int employeeId, string action, DateTime capturedAt)
     {
-        var settings = await GetAttendanceSettingsAsync(db, transaction, clientId);
-        var date = AttendancePunchCalculator.AttendanceDate(capturedAt, settings);
+        var resolver = await AttendanceShiftResolver.LoadAsync(db, transaction, clientId, employeeId);
+        var (date, settings) = resolver.ResolvePunch(employeeId, capturedAt);
         var rules = (await AttendanceIntegrationRepository.ReadAsync(db, transaction, clientId)).Rules;
-        await ProjectRecordedPunchesAsync(db, transaction, clientId, employeeId, date, settings, rules, "Mobile Punch:");
+        await ProjectRecordedPunchesAsync(db, transaction, clientId, employeeId, date, settings, rules, "Mobile Punch:", resolver.Bounds(employeeId, date));
         return await GetAttendanceStateAsync(db, transaction, clientId, employeeId, date);
     }
     private static async Task RollupMobileAttendanceAsync(MySqlConnection db, MySqlTransaction transaction, int clientId, int employeeId, DateTime attendanceDate)
@@ -2926,7 +2935,7 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND COLUMN_NAME = @Colum
 
     private static double ToRadians(double degrees) => degrees * Math.PI / 180;
 
-    private static string BuildPayslipHtml(Organization org, EssPayslipTemplate template, EssPayslipRow row, EssPayslipYtd ytd)
+    internal static string BuildPayslipHtml(Organization org, EssPayslipTemplate template, EssPayslipRow row, EssPayslipYtd ytd, decimal leaveDays = 0)
     {
         var lines = ParsePayslipLines(row.DetailsJson);
         var earnings = lines.Where(line => line.Amount > 0 && (line.Category.Equals("Earning", StringComparison.OrdinalIgnoreCase) || line.Category.Equals("Reimbursement", StringComparison.OrdinalIgnoreCase))).ToList();
@@ -2939,7 +2948,7 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND COLUMN_NAME = @Colum
         var theme = (template.Theme ?? "Classic").Trim().ToLowerInvariant();
         var showBank = template.ShowBank;
         var showClient = template.ShowClient;
-        return $@"<!doctype html><html><head><meta charset=""utf-8""><title>Payslip {Html(row.PayPeriod)} - {Html(row.EmployeeCode)}</title><style>{PayslipCss(theme)}</style></head><body><main class=""slip {Attr(theme)}""><header class=""slip-head""><div class=""logo"">{logo}</div><div><h1>{Html(companyName)}</h1><p>{Html(companyAddress)}</p>{(showClient ? $"<p>Client: {Html(row.ClientName)}</p>" : "")}</div></header><h2>Payslip - {Html(PeriodTitle(row.PayPeriod))}</h2><table class=""info""><thead><tr><th>Employee Details</th><th>Salary Details</th></tr></thead><tbody><tr><td>{Detail("Name", row.EmployeeName)}{Detail("Email Id", row.WorkEmail)}{Detail("Emp Code", row.EmployeeCode)}{Detail("Designation", row.Designation)}{Detail("Date of Joining", DateText(row.DateOfJoining))}{Detail("Address", row.Address)}{Detail("Location", row.WorkLocation)}{Detail("PAN", row.PanNumber)}{Detail("UAN", row.UanNumber)}{(showBank ? Detail("Bank", row.BankName) + Detail("Account #", row.BankAccountNo) + Detail("IFSC", row.IfscCode) : "")}</td><td>{Detail("Salary Period", PeriodRange(row.PayPeriod))}{Detail("Payable Days", Amount(row.PayableDays))}{Detail("Present Days", Amount(row.PresentDays))}{Detail("Working Days", row.TotalWorkingDays)}{Detail("Payment Status", row.PaymentStatus)}{Detail("Payment Date", DateText(row.PaymentDate))}</td></tr></tbody></table><table class=""salary""><thead><tr><th>Earnings</th><th>Rate</th><th>Actual</th><th>Deductions</th><th>Amount</th></tr></thead><tbody>{RenderRows(earnings, deductions)}<tr class=""total""><td>Earning Total</td><td class=""num"">{Amount(earnings.Sum(item => item.MonthlyAmount))}</td><td class=""num"">{Amount(row.GrossPay + row.OneTimeEarnings)}</td><td>Deduction Total</td><td class=""num"">{Amount(row.StatutoryDeductions + row.OneTimeDeductions)}</td></tr></tbody></table><table class=""net""><tbody><tr><td>Net Pay (INR) :</td><td class=""num"">{Amount(row.NetPay)}</td></tr></tbody></table>{(template.ShowYtd ? $@"<p class=""ytd"">YTD Gross: Rs {Amount(ytd.Gross)} | YTD Deductions: Rs {Amount(ytd.Deductions)} | YTD Net: Rs {Amount(ytd.NetPay)}</p>" : "")}<p class=""words"">{Html(AmountInWords(row.NetPay))}</p>{(!string.IsNullOrWhiteSpace(template.Note) ? $"<footer>{Html(template.Note)}</footer>" : "")}</main></body></html>";
+        return $@"<!doctype html><html><head><meta charset=""utf-8""><title>Payslip {Html(row.PayPeriod)} - {Html(row.EmployeeCode)}</title><style>{PayslipCss(theme)}</style></head><body><main class=""slip {Attr(theme)}""><header class=""slip-head""><div class=""logo"">{logo}</div><div><h1>{Html(companyName)}</h1><p>{Html(companyAddress)}</p>{(showClient ? $"<p>Client: {Html(row.ClientName)}</p>" : "")}</div></header><h2>Payslip - {Html(PeriodTitle(row.PayPeriod))}</h2><table class=""info""><thead><tr><th>Employee Details</th><th>Salary Details</th></tr></thead><tbody><tr><td>{Detail("Name", row.EmployeeName)}{Detail("Email Id", row.WorkEmail)}{Detail("Emp Code", row.EmployeeCode)}{Detail("Designation", row.Designation)}{Detail("Date of Joining", DateText(row.DateOfJoining))}{Detail("Address", row.Address)}{Detail("Location", row.WorkLocation)}{Detail("PAN", row.PanNumber)}{Detail("UAN", row.UanNumber)}{(showBank ? Detail("Bank", row.BankName) + Detail("Account #", PayslipPresentation.AccountNumber(row.BankAccountNo)) + Detail("IFSC", row.IfscCode) : "")}</td><td>{Detail("Salary Period", PeriodRange(row.PayPeriod))}{Detail("Payable Days", Amount(row.PayableDays))}{Detail("Present Days", Amount(row.PresentDays))}{Detail("Working Days", row.TotalWorkingDays)}{Detail("Leaves", Amount(leaveDays))}{Detail("LOP", Amount(Math.Max(0, row.TotalWorkingDays - row.PayableDays)))}{Detail("Payment Status", row.PaymentStatus)}{Detail("Payment Date", DateText(row.PaymentDate))}</td></tr></tbody></table><table class=""salary""><thead><tr><th>Earnings</th><th>Rate</th><th>Actual</th><th>Deductions</th><th>Amount</th></tr></thead><tbody>{RenderRows(earnings, deductions)}<tr class=""total""><td>Earning Total</td><td class=""num"">{Amount(earnings.Sum(item => item.MonthlyAmount))}</td><td class=""num"">{Amount(row.GrossPay + row.OneTimeEarnings)}</td><td>Deduction Total</td><td class=""num"">{Amount(row.StatutoryDeductions + row.OneTimeDeductions)}</td></tr></tbody></table><table class=""net""><tbody><tr><td>Net Pay (INR) :</td><td class=""num"">{Amount(row.NetPay)}</td></tr></tbody></table>{(template.ShowYtd ? $@"<p class=""ytd"">YTD Gross: Rs {Amount(ytd.Gross)} | YTD Deductions: Rs {Amount(ytd.Deductions)} | YTD Net: Rs {Amount(ytd.NetPay)}</p>" : "")}<p class=""words"">{Html(AmountInWords(row.NetPay))}</p>{(!string.IsNullOrWhiteSpace(template.Note) ? $"<footer>{Html(template.Note)}</footer>" : "")}</main></body></html>";
     }
 
     private static List<EssPayslipLine> ParsePayslipLines(string json)
@@ -3032,6 +3041,7 @@ CREATE TABLE IF NOT EXISTS ess_profile_update_audit (
     private static string SafeFile(string value) => new(value.Select(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '-').ToArray());
     private static string Amount(decimal value) => value.ToString("N2", System.Globalization.CultureInfo.GetCultureInfo("en-IN"));
     private static string DateText(DateTime? value) => value.HasValue ? value.Value.ToString("dd-MMM-yyyy", System.Globalization.CultureInfo.InvariantCulture) : "-";
+    private static string DateText(string? value) => DateTime.TryParse(value, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AllowWhiteSpaces, out var date) ? DateText(date) : "-";
     private static string PeriodRange(string payPeriod) => DateTime.TryParse($"{payPeriod}-01", out var start) ? $"{DateText(start)} - {DateText(start.AddMonths(1).AddDays(-1))}" : payPeriod;
     private static string PeriodTitle(string payPeriod) => DateTime.TryParse($"{payPeriod}-01", out var start) ? start.ToString("MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture) : payPeriod;
     private static string DateText(DateTime value) => value.ToString("dd-MMM-yyyy", System.Globalization.CultureInfo.InvariantCulture);
@@ -3052,7 +3062,7 @@ CREATE TABLE IF NOT EXISTS ess_profile_update_audit (
     private sealed class EssLeaveSelection { public int Id { get; set; } public int ClientId { get; set; } public string Name { get; set; } = ""; public string Code { get; set; } = ""; public string Type { get; set; } = "Paid"; public decimal Balance { get; set; } public bool AllowNegativeLeaveBalance { get; set; } public bool AllowHalfDay { get; set; } = true; public string AttendanceAction { get; set; } = "Mark as leave"; }
     private sealed class ApprovedLeaveRequestRow { public long Id { get; set; } public int EmployeeId { get; set; } public int ClientId { get; set; } public int LeaveTypeId { get; set; } public DateTime FromDate { get; set; } public DateTime ToDate { get; set; } public string DayType { get; set; } = "Full Day"; public decimal Days { get; set; } public string Reason { get; set; } = ""; public string LeaveCode { get; set; } = ""; public string LeaveTypeKind { get; set; } = "Paid"; public string AttendanceAction { get; set; } = "Mark as leave"; }
     private sealed class LeaveWorkflowReconciliationRow { public long Id { get; set; } public string Status { get; set; } = ""; }
-    private sealed class EssPayslipTemplate { public long Id { get; set; } public int ClientId { get; set; } public string Name { get; set; } = "Standard Payslip"; public string Theme { get; set; } = "Classic"; public bool ShowLogo { get; set; } = true; public bool ShowClient { get; set; } = true; public bool ShowYtd { get; set; } = true; public bool ShowBank { get; set; } = true; public string Note { get; set; } = "This is a system generated payslip."; public bool Active { get; set; } = true; }
-    private sealed class EssPayslipYtd { public decimal Gross { get; set; } public decimal Deductions { get; set; } public decimal NetPay { get; set; } }
-    private sealed class EssPayslipRow { public int PayRunEmployeeId { get; set; } public int PayRunId { get; set; } public int EmployeeId { get; set; } public int ClientId { get; set; } public string EmployeeCode { get; set; } = ""; public string EmployeeName { get; set; } = ""; public string Department { get; set; } = ""; public decimal PresentDays { get; set; } public decimal PayableDays { get; set; } public decimal GrossPay { get; set; } public decimal StatutoryDeductions { get; set; } public decimal OneTimeEarnings { get; set; } public decimal OneTimeDeductions { get; set; } public decimal NetPay { get; set; } public string PaymentStatus { get; set; } = ""; public DateTime? PaymentDate { get; set; } public string DetailsJson { get; set; } = ""; public string PayPeriod { get; set; } = ""; public DateTime PayDate { get; set; } public string RunStatus { get; set; } = ""; public int TotalWorkingDays { get; set; } public string ClientName { get; set; } = ""; public string WorkEmail { get; set; } = ""; public string Designation { get; set; } = ""; public DateTime? DateOfJoining { get; set; } public string WorkLocation { get; set; } = ""; public string Address { get; set; } = ""; public string PanNumber { get; set; } = ""; public string UanNumber { get; set; } = ""; public string BankName { get; set; } = ""; public string BankAccountNo { get; set; } = ""; public string IfscCode { get; set; } = ""; }
+    internal sealed class EssPayslipTemplate { public long Id { get; set; } public int ClientId { get; set; } public string Name { get; set; } = "Standard Payslip"; public string Theme { get; set; } = "Classic"; public bool ShowLogo { get; set; } = true; public bool ShowClient { get; set; } = true; public bool ShowYtd { get; set; } = true; public bool ShowBank { get; set; } = true; public string Note { get; set; } = "This is a system generated payslip."; public bool Active { get; set; } = true; }
+    internal sealed class EssPayslipYtd { public decimal Gross { get; set; } public decimal Deductions { get; set; } public decimal NetPay { get; set; } }
+    internal sealed class EssPayslipRow { public int PayRunEmployeeId { get; set; } public int PayRunId { get; set; } public int EmployeeId { get; set; } public int ClientId { get; set; } public string EmployeeCode { get; set; } = ""; public string EmployeeName { get; set; } = ""; public string Department { get; set; } = ""; public decimal PresentDays { get; set; } public decimal PayableDays { get; set; } public decimal GrossPay { get; set; } public decimal StatutoryDeductions { get; set; } public decimal OneTimeEarnings { get; set; } public decimal OneTimeDeductions { get; set; } public decimal NetPay { get; set; } public string PaymentStatus { get; set; } = ""; public DateTime? PaymentDate { get; set; } public string DetailsJson { get; set; } = ""; public string PayPeriod { get; set; } = ""; public DateTime PayDate { get; set; } public string RunType { get; set; } = "Regular"; public string RunStatus { get; set; } = ""; public int TotalWorkingDays { get; set; } public string ClientName { get; set; } = ""; public string WorkEmail { get; set; } = ""; public string Designation { get; set; } = ""; public string DateOfJoining { get; set; } = ""; public string WorkLocation { get; set; } = ""; public string Address { get; set; } = ""; public string PanNumber { get; set; } = ""; public string UanNumber { get; set; } = ""; public string BankName { get; set; } = ""; public string BankAccountNo { get; set; } = ""; public string IfscCode { get; set; } = ""; }
 }

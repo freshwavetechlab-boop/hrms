@@ -13,7 +13,7 @@ import { getEmployeeCompletion, previewEmployeeCompletion, saveEmployeeCompletio
 import CommunicationRichEditor from './CommunicationRichEditor'
 
 type Batch = { request: CompletionMail; preview: EmployeeCommunicationPreview; queued: boolean }
-export function useEmployeeProfileCompletion(rows: Employee[], clients: Client[], clientId: number, revision: number) {
+export function useEmployeeProfileCompletion(rows: Employee[], clients: Client[], clientId: number, revision: number, onConfigure?: (clientId: number) => void) {
   const session = useAuthSession(), toast = useToast()
   const canSend = !!session?.user.permissions.includes('employee.communication.send')
   const canManage = !!session?.user.permissions.includes('employees.manage')
@@ -102,6 +102,7 @@ export function useEmployeeProfileCompletion(rows: Employee[], clients: Client[]
   }
   const rowSelection: TableRowSelection<Employee> | undefined = canSend ? { selectedRowKeys: selectedIds, onChange: keys => setSelection(keys.map(Number)), getCheckboxProps: row => ({ disabled: !eligible(row), title: eligible(row) ? 'Select employee for reminder' : disabledReason(row) }) } : undefined
   return {
+    additionalMissing: (row: Employee) => byId.get(row.id)?.additionalMissing ?? [],
     rowSelection,
     selection: canSend ? (row: Employee) => <Checkbox checked={selectedIds.includes(row.id)} disabled={!eligible(row)} onChange={event => setSelection(event.target.checked ? [...new Set([...selectedIds, row.id])] : selectedIds.filter(id => id !== row.id))}>Select</Checkbox> : undefined,
     mailAction: (row: Employee, compact = false) => canSend && <Tooltip title={eligible(row) ? 'Preview the saved template with this employee\'s details' : disabledReason(row)}><span><Button className="employee-reminder-button" aria-label="Send link to fill missing details" size="small" icon={<MailOutlined />} disabled={!eligible(row) || previewing} onClick={() => void preview([row])}>{compact ? 'Send ESS link' : 'Send link to fill missing details'}</Button></span></Tooltip>,
@@ -109,9 +110,10 @@ export function useEmployeeProfileCompletion(rows: Employee[], clients: Client[]
     manageButton: canManage && <Button icon={<SettingOutlined />} onClick={() => { setManageClient(clientId || session?.user.clientId || 0); setManageOpen(true) }}>Manage</Button>,
     statusNotice: statusError && <Alert type="warning" showIcon message={statusError} action={<Button size="small" onClick={() => setRefresh(value => value + 1)}>Retry</Button>} />,
     dialogs: <>
-      <Drawer title="Manage employee profile completion" open={manageOpen} width="min(720px, 96vw)" onClose={() => !saving && setManageOpen(false)}>
+      <Drawer title="Manage employee master" open={manageOpen} width="min(720px, 96vw)" onClose={() => !saving && setManageOpen(false)}>
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           {!session?.user.clientId && <Select aria-label="Profile completion client" placeholder="Select client" style={{ width: '100%' }} value={manageClient || undefined} options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={setManageClient} />}
+          {onConfigure && <Button disabled={!manageClient} onClick={() => { setManageOpen(false); onConfigure(manageClient) }}>Configure fields</Button>}
           {manageLoading && <Spin />}
           {setup && <>
             <Space><Switch aria-label="Allow first profile edit" checked={setup.firstEditEnabled} disabled={saving} onChange={value => setSetup({ ...setup, firstEditEnabled: value })} /><strong>Allow first profile save without approval</strong></Space>

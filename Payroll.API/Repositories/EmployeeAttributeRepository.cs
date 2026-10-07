@@ -7,7 +7,7 @@ using Payroll.API.Models;
 
 namespace Payroll.API.Repositories;
 
-public sealed class EmployeeAttributeRepository(IConfiguration configuration)
+public sealed partial class EmployeeAttributeRepository(IConfiguration configuration)
 {
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
 

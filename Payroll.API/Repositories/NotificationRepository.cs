@@ -11,7 +11,7 @@ using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
-public class NotificationRepository(IConfiguration configuration, AttachmentRepository attachmentRepository, NotificationAutomationRepository automation, ILogger<NotificationRepository> logger, EngineRuntimeMonitor? engineMonitor = null)
+public partial class NotificationRepository(IConfiguration configuration, AttachmentRepository attachmentRepository, NotificationAutomationRepository automation, ILogger<NotificationRepository> logger, EngineRuntimeMonitor? engineMonitor = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private bool DeliverySuppressed => configuration.GetValue<bool>("OutboundDelivery:Suppressed");
@@ -603,6 +603,8 @@ LIMIT 1", new { evt.ResourceId });
         if (message.To.Count == 0 && message.Cc.Count == 0 && message.Bcc.Count == 0) throw new InvalidOperationException("No recipients found.");
         message.Subject = row.Subject;
         var builder = new BodyBuilder { HtmlBody = row.BodyHtml, TextBody = StripHtml(row.BodyHtml) };
+        if (row.EventCode == "PAYSLIP.SEND")
+            builder.Attachments.Add($"payslip-{row.ResourceId}.html", System.Text.Encoding.UTF8.GetBytes(row.BodyHtml), new ContentType("text", "html"));
         var openHandles = new List<AttachmentFileHandle>();
         try
         {
@@ -693,12 +695,23 @@ WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=@TableName AND CONSTRAINT_NAME
     private static bool Safe(string value) => Regex.IsMatch(value ?? "", @"^[A-Za-z_][A-Za-z0-9_]*$");
 
     private static Task EnsureDefaultsAsync(MySqlConnection db) => db.ExecuteAsync(@"INSERT INTO notification_templates (Code,Name,SubjectTemplate,BodyTemplate,IsHtml,IsActive) VALUES
+('PAYSLIP_SEND_DEFAULT','Payslip email','Payslip {{payPeriod}} - {{clientName}} - {{employeeCode}}','<p>Hello {{employeeName}},</p><p>Your payslip for {{payPeriod}} is below and attached as a printable HTML document.</p>{{payslipHtml}}',TRUE,TRUE),
 ('PAYRUN_LOCKED_DEFAULT','Payroll locked notification','Payroll {{resourceId}} is locked','<p>Payroll request <b>{{resourceId}}</b> has been submitted by {{requestedBy}}.</p><p>Event: {{eventCode}}</p>',TRUE,TRUE),
 ('LEAVE_REQUEST_DEFAULT','Leave request notification','Leave request {{resourceId}} submitted','<p>Leave request <b>{{resourceId}}</b> has been submitted by {{requestedBy}}.</p>',TRUE,TRUE),
 ('ESS_WELCOME_DEFAULT','ESS welcome onboarding','Welcome to Frevo One HR','<p>Hello {{employeeName}},</p><p>Your ESS portal login has been created.</p><p><b>Portal:</b> <a href=""{{essPortalUrl}"">{{essPortalUrl}}</a><br/><b>Login ID:</b> {{loginId}}<br/><b>Temporary password:</b> {{temporaryPassword}}</p><p>You will be asked to change this password on first login.</p>',TRUE,TRUE),
 ('EXPENSE_CLAIM_SUBMIT_DEFAULT','Expense claim submission','Expense claim {{resourceId}} submitted','<p>Expense claim <b>{{resourceId}}</b> has been submitted by {{requestedBy}}.</p><p>Use My Tasks to review the request.</p>',TRUE,TRUE),
 ('EXPENSE_CLAIM_ACTION_DEFAULT','Expense claim workflow action','Expense claim {{resourceId}} updated','<p>Expense claim <b>{{resourceId}}</b> has been updated.</p><p>Event: {{eventCode}}</p>',TRUE,TRUE)
 ON DUPLICATE KEY UPDATE Name=VALUES(Name);
+
+INSERT INTO notification_rules (Name,EventCode,ClientId,TemplateId,IsEnabled,ConditionJson)
+SELECT 'Payslip email to employee','PAYSLIP.SEND',NULL,t.Id,TRUE,'{}'
+FROM notification_templates t WHERE t.Code='PAYSLIP_SEND_DEFAULT'
+AND NOT EXISTS (SELECT 1 FROM notification_rules r WHERE r.EventCode='PAYSLIP.SEND');
+
+INSERT INTO notification_recipients (RuleId,RecipientType,SourceType,SourceValue,TableName,MatchColumn,MatchValueSource,EmailColumn,IsActive)
+SELECT r.Id,'To','PayloadEmail','employeeEmail','','','resourceId','',TRUE
+FROM notification_rules r WHERE r.EventCode='PAYSLIP.SEND' AND r.Name='Payslip email to employee'
+AND NOT EXISTS (SELECT 1 FROM notification_recipients x WHERE x.RuleId=r.Id);
 
 UPDATE notification_templates
 SET BodyTemplate=REPLACE(BodyTemplate,'{{employeeEmail}}','{{loginId}}')

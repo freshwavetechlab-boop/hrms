@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useEmployeeProfileCompletion } from '../components/EmployeeProfileCompletionControls'
 import EmployeeMissingInformation, { createEmployeeDocumentCheck } from '../components/EmployeeMissingInformation'
 import { useLocation, useSearchParams } from 'react-router-dom'
-import { Button, Segmented, Space, Tabs, Tag } from 'antd'
+import { Alert, Button, Drawer, Segmented, Space, Tabs, Tag } from 'antd'
 import RecruitmentRecordList from '../components/RecruitmentRecordList'
 import { PageHeaderPortal } from '../components/layout/AppPageHeader'
 import { RecruitmentViewContext, useSessionPreference, type RecruitmentView } from '../hooks/useRecruitmentPreferences'
@@ -17,7 +17,7 @@ import SearchSelect, { selectOptions } from '../components/SearchSelect'
 import { useToast } from '../components/ToastProvider'
 import { employee0, setup0 } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
-import { deleteEmployee as removeEmployee, downloadEmployeeImportTemplate, getDropdowns, getEmployeeDeletePreview, getEmployeeImportJob, getEmployeeInfotypes, getEmployeeManagerUsers, getSetup, getWorkLocations, preflightEmployeeImport, processEmployeeAction, saveEmployee as persistEmployee, startEmployeeImport, type EmployeeImportDecision, type EmployeeImportPreflight } from '../services/settingsService'
+import { deleteEmployee as removeEmployee, getDropdowns, getEmployeeDeletePreview, getEmployeeImportJob, getEmployeeInfotypes, getEmployeeManagerUsers, getSetup, getWorkLocations, preflightEmployeeImport, processEmployeeAction, saveEmployee as persistEmployee, startEmployeeImport, type EmployeeImportDecision, type EmployeeImportPreflight } from '../services/settingsService'
 import type { Client, Component, Drop, Employee, EmployeeActionRequest, EmployeeInfotypeRecord, EmployeePaymentDetails, EmployeePersonalDetails, Setup, Structure, WorkLocation, WorkflowApprover } from '../types/payroll'
 import { calculateSalaryJson, calculateSalaryTotals, canOverrideSalaryComponent, money } from '../utils/salary'
 import { parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules, type ImportPreviewSheet } from '../utils/importPreview'
@@ -28,7 +28,8 @@ import EmployeeDynamicFields from '../components/EmployeeDynamicFields'
 import EntityAttachmentPanel from '../components/EntityAttachmentPanel'
 import SmartBulkUploadMapper from '../components/SmartBulkUploadMapper'
 import EmployeeImportReviewModal from '../components/EmployeeImportReviewModal'
-import { employeeBulkImportDefinition } from '../config/bulkImportDefinitions'
+import RecruitmentFormBuilder from '../components/RecruitmentFormBuilder'
+import { emptyEmployeeFields, getEmployeeFields, employeeImportDefinition, employeeFieldValue as employeeImportFieldValue, exportCompleteEmployees, type EmployeeFieldExchange } from '../utils/employeeFields'
 import type { BulkImportOperation, PreparedBulkImport } from '../utils/smartBulkImport'
 import { getEmployeeActivity360 } from '../services/recruitmentTalentService'
 import type { PersonActivityEvent } from '../types/payroll'
@@ -67,12 +68,26 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const [changeReason, setChangeReason] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
   const [documentRevision, setDocumentRevision] = useState(0)
+  const [fieldClient, setFieldClient] = useState(0)
+  const [fieldExchange, setFieldExchange] = useState<EmployeeFieldExchange>(emptyEmployeeFields)
+  const [fieldError, setFieldError] = useState('')
   const [searchParams, setSearchParams] = useSearchParams()
   const route = useLocation()
   const fromDashboard = searchParams.get('source') === 'workforce'
   const [savedClient, setClientFilter] = useSessionPreference('employees.ui:' + session?.user.id + ':client', 0)
   useEffect(() => { const id = Number(searchParams.get('clientId')); if (!fromDashboard && clients.some(client => client.id === id) && (!clientScoped || id === scopedClientId)) setClientFilter(id) }, [searchParams, clients, clientScoped, scopedClientId, fromDashboard])
   const clientFilter = clientScoped ? scopedClientId : fromDashboard ? Number(searchParams.get('clientId') || 0) : savedClient
+  useEffect(() => {
+    let active = true; setFieldExchange(emptyEmployeeFields); setFieldError('')
+    if (clientFilter) void getEmployeeFields(clientFilter).then(data => { if (active) setFieldExchange(data) }).catch(error => { if (active) setFieldError(error.message) })
+    return () => { active = false }
+  }, [clientFilter, documentRevision])
+  const bulkDefinition = useMemo(() => employeeImportDefinition(fieldExchange), [fieldExchange])
+  const exportEmployees = async (rows: Employee[]) => {
+    if (!clientFilter) { notify('Select a client before exporting complete employee data.', 'warning'); return }
+    try { exportCompleteEmployees(rows, await getEmployeeFields(clientFilter), locations, managerUsers, setup.salaryStructures) }
+    catch (error) { notify(error instanceof Error ? error.message : 'Employee export failed.', 'error') }
+  }
   const [upload, setUpload] = useState<{ open: boolean; state: BulkUploadState; percent: number; summary: BulkUploadSummary }>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
   const [bulkMapperOpen, setBulkMapperOpen] = useState(false)
   const [preview, setPreview] = useState<BulkUploadPreviewState>(emptyBulkUploadPreview)
@@ -179,11 +194,17 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   }
   const downloadTemplate = async (operation?: BulkImportOperation, selectedFieldCodes?: string[]) => {
     if (!clientFilter) { setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: ['Select a client before downloading employee template.'] } }); return }
-    if (operation && selectedFieldCodes?.length) {
-      const selected = employeeBulkImportDefinition.fields.filter(field => selectedFieldCodes.includes(field.code) || field.required)
-      const headers = [...(operation === 'update' ? ['Employee ID'] : []), ...selected.map(field => field.header)]
+    operation ??= 'insert'
+    if (operation) {
+      const exchange = await getEmployeeFields(clientFilter).catch(error => { notify(error.message, 'error'); return null })
+      if (!exchange) return
+      const definition = employeeImportDefinition(exchange)
+      selectedFieldCodes ??= definition.fields.map(field => field.code)
+      const selectedCodes = selectedFieldCodes
+      const selected = definition.fields.filter(field => selectedCodes.includes(field.code) || field.required && !(field.requiredForNew && operation === 'update'))
+      const headers = selected.map(field => field.header)
       const rows = operation === 'update'
-        ? employees.filter(row => row.clientId === clientFilter).map(row => [String(row.id), ...selected.map(field => employeeImportFieldValue(row, field.code, locations, managerUsers, setup.salaryStructures))])
+        ? employees.filter(row => row.clientId === clientFilter).map(row => selected.map(field => exchange.values[row.id]?.[field.code] ?? employeeImportFieldValue(row, field.code, locations, managerUsers, setup.salaryStructures)))
         : []
       const instructions = [
         ['Mode', operation],
@@ -195,10 +216,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
       notify(`${operation === 'update' ? 'Update' : 'Insert'} template downloaded with ${selected.length} selected field(s).`, 'info')
       return
     }
-    const response = await downloadEmployeeImportTemplate(clientFilter)
-    if (!response.ok || !response.data) { setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: [response.error || 'Unable to download employee template.'] } }); return }
-    saveBlob(response.data, 'employee-import-template.xlsx')
-    notify('Employee import template downloaded.', 'info')
+
   }
   const runEmployeeImport = async (file: File, importClientId = clientFilter, operation: BulkImportOperation = 'upsert', reviewToken = '', decisions: EmployeeImportDecision[] = []) => {
     setUpload({ open: true, state: 'uploading', percent: 1, summary: { totalRows: 0 } })
@@ -299,13 +317,15 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const visibleEmployees = useMemo(() => employees.filter(row => row.isActive && (!clientFilter || row.clientId === clientFilter) && (!fromDashboard || matchesWorkforce(row, searchParams, locations))), [employees, clientFilter, fromDashboard, searchParams, locations])
 
   return <section className={`employee-master${view === 'master' ? ' employee-record-page' : ''}`}>
-    {view === 'master' ? <EmployeeDirectory documentRevision={documentRevision} clientScoped={clientScoped} clients={clients} locations={locations} employees={visibleEmployees} clientFilter={clientFilter} setClientFilter={changeClientFilter} dashboardKey={fromDashboard ? route.key : ''} dashboardFilters={fromDashboard ? workforceFields.filter(key => searchParams.has(key)).map(key => searchParams.get(key)!).join(' / ') || 'All active employees' : ''} clearDashboard={() => { setClientFilter(clientFilter); setSearchParams({}) }} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onDownloadTemplate={downloadTemplate} onBulkUpload={openEmployeeBulkUpload} /> : <EmployeeOrgStructure clientScoped={clientScoped} clients={clients} locations={locations} employees={employees.filter(row => row.isActive)} clientFilter={clientFilter} setClientFilter={changeClientFilter} />}
+    {fieldError && <Alert type="error" showIcon message={fieldError} action={<Button onClick={() => setDocumentRevision(value => value + 1)}>Retry</Button>} />}
+    {view === 'master' ? <EmployeeDirectory fieldExchange={fieldExchange} configureFields={setFieldClient} onExcelExport={exportEmployees} documentRevision={documentRevision} clientScoped={clientScoped} clients={clients} locations={locations} employees={visibleEmployees} clientFilter={clientFilter} setClientFilter={changeClientFilter} dashboardKey={fromDashboard ? route.key : ''} dashboardFilters={fromDashboard ? workforceFields.filter(key => searchParams.has(key)).map(key => searchParams.get(key)!).join(' / ') || 'All active employees' : ''} clearDashboard={() => { setClientFilter(clientFilter); setSearchParams({}) }} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onDownloadTemplate={downloadTemplate} onBulkUpload={openEmployeeBulkUpload} /> : <EmployeeOrgStructure clientScoped={clientScoped} clients={clients} locations={locations} employees={employees.filter(row => row.isActive)} clientFilter={clientFilter} setClientFilter={changeClientFilter} />}
     {modalOpen && <div className="employee-modal-backdrop" onClick={closeModal}>
       <section className="employee-modal" role="dialog" aria-modal="true" aria-label="Employee details" onClick={event => event.stopPropagation()}>
         <EmployeePanel clientScoped={clientScoped} employee={employee} setEmployee={row => setEmployee(normalizeEmployeeSalary(row, salaryOverrides))} employeeInfotype={employeeInfotype} setEmployeeInfotype={value => { setEmployeeInfotype(value as EmployeeInfotypeCode); setChangeReason('') }} changeReason={changeReason} setChangeReason={setChangeReason} clients={clients} locations={locations} managerUsers={managerUsers} templates={setup.salaryStructures} salaryComponents={setup.salaryComponents} deps={deps} desigs={desigs} grades={grades} skillCategories={skillCategories} employmentTypes={employmentTypes} applyClient={applyClient} applyStructure={applyStructure} applyCtc={applyCtc} structureComponents={structureComponents} employeeSalary={employeeSalary} salaryOverrides={salaryOverrides} empLine={empLine} empMonthly={empMonthly} saveEmployee={saveEmployee} closeModal={closeModal} infotypes={infotypes} runEmployeeAction={runEmployeeAction} />
       </section>
     </div>}
-    <SmartBulkUploadMapper open={bulkMapperOpen} definition={employeeBulkImportDefinition} clientCode={clients.find(client => client.id === clientFilter)?.code ?? ''} existingEmployeeCodes={employees.filter(row => row.clientId === clientFilter).map(row => row.employeeCode)} onCancel={() => setBulkMapperOpen(false)} onPrepared={reviewMappedEmployeeUpload} onTemplateFile={reviewTemplateEmployeeUpload} onDownloadTemplate={downloadTemplate} />
+    <SmartBulkUploadMapper open={bulkMapperOpen} definition={bulkDefinition} clientCode={clients.find(client => client.id === clientFilter)?.code ?? ''} existingEmployeeCodes={employees.filter(row => row.clientId === clientFilter).map(row => row.employeeCode)} onCancel={() => setBulkMapperOpen(false)} onPrepared={reviewMappedEmployeeUpload} onTemplateFile={reviewTemplateEmployeeUpload} onDownloadTemplate={downloadTemplate} />
+    <Drawer rootClassName="employee-field-configuration-drawer" title="Configure employee fields" open={fieldClient > 0} width="min(1200px, 98vw)" onClose={() => { setFieldClient(0); setDocumentRevision(value => value + 1) }} destroyOnClose><RecruitmentFormBuilder employeeMode initialClientId={fieldClient} clientScopeManaged onSaved={() => setDocumentRevision(value => value + 1)} /></Drawer>
     <BulkUploadProgressModal open={upload.open} title="Employee bulk upload" state={upload.state} percent={upload.percent} summary={upload.summary} onClose={() => setUpload(current => ({ ...current, open: false }))} />
     <BulkUploadPreviewModal preview={preview} importing={previewImporting} uniqueFields={[["Employee Code"]]} onCancel={() => { setPreview(emptyBulkUploadPreview); setMappedPreviewColumns({}); setPreviewConfirm(null); setEmployeePreviewSource(null) }} onConfirm={draft => void confirmEmployeePreview(draft)} onResolveDuplicates={(mode, sheetName) => void resolveEmployeeDuplicates(mode, sheetName)} />
     <EmployeeImportReviewModal key={importReview?.review.reviewToken ?? 'closed'} open={Boolean(importReview)} fileName={importReview?.file.name ?? ''} operation={importReview?.operation ?? 'upsert'} review={importReview?.review ?? null} busy={importReviewBusy} onCancel={() => setImportReview(null)} onConfirm={decisions => void confirmEmployeeImportReview(decisions)} />
@@ -644,9 +664,9 @@ function previewDate(value: string) {
   return value
 }
 
-function EmployeeDirectory(p: { documentRevision: number; clientScoped: boolean; clients: Client[]; locations: WorkLocation[]; employees: Employee[]; clientFilter: number; setClientFilter: (id: number) => void; dashboardKey: string; dashboardFilters: string; clearDashboard: () => void; onNew: () => void; onEdit: (employee: Employee, infotype?: EmployeeInfotypeCode) => void; onDelete: (employee: Employee) => void; onDownloadTemplate: () => void; onBulkUpload: () => void }) {
+function EmployeeDirectory(p: { fieldExchange: EmployeeFieldExchange; configureFields: (clientId: number) => void; onExcelExport: (rows: Employee[]) => void; documentRevision: number; clientScoped: boolean; clients: Client[]; locations: WorkLocation[]; employees: Employee[]; clientFilter: number; setClientFilter: (id: number) => void; dashboardKey: string; dashboardFilters: string; clearDashboard: () => void; onNew: () => void; onEdit: (employee: Employee, infotype?: EmployeeInfotypeCode) => void; onDelete: (employee: Employee) => void; onDownloadTemplate: () => void; onBulkUpload: () => void }) {
   const session = useAuthSession()
-  const completion = useEmployeeProfileCompletion(p.employees, p.clients, p.clientFilter, p.documentRevision)
+  const completion = useEmployeeProfileCompletion(p.employees, p.clients, p.clientFilter, p.documentRevision, p.configureFields)
   const scope = session?.user.id + ':' + p.clientFilter
   const [view, setView] = useSessionPreference<RecruitmentView>('employees.ui:' + scope + ':view:v2', 'Table')
   const [savedSearch, setSearch] = useSessionPreference('employees.ui:' + scope + ':search', '')
@@ -668,6 +688,7 @@ function EmployeeDirectory(p: { documentRevision: number; clientScoped: boolean;
       { key: 'workEmail', label: 'Work email' },
       { key: 'status', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive' }
     ]
+  columns.push(...p.fieldExchange.fields.map(field => ({ key: field.code, label: field.field.label, value: (row: Employee) => p.fieldExchange.values[row.id]?.[field.code] || '' })))
   columns.splice(7, 0, { key: 'employmentType', label: 'Employee type', value: row => workforceValue(row, 'employmentType') })
   return <RecruitmentViewContext.Provider value={{ view, scope, namespace: 'employees.ui' }}>
     <PageHeaderPortal slot="employees-client-controls">{!p.clientScoped && <SearchSelect testId="employee-client-filter" value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={selectOptions(p.clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} />}</PageHeaderPortal>
@@ -677,7 +698,7 @@ function EmployeeDirectory(p: { documentRevision: number; clientScoped: boolean;
       {completion.statusNotice}
       {p.dashboardFilters && <div className="employee-dashboard-scope"><Tag color="blue">Dashboard: {p.dashboardFilters}</Tag><Button size="small" onClick={p.clearDashboard}>Clear dashboard filter</Button></div>}
       <div className="recruitment-workspace-surface"><div className="recruitment-workspace-content">
-        <RecruitmentRecordList rowSelection={completion.rowSelection} selection={completion.selection} selectAllDescription="Select all matching employees with missing information, email and ESS access" cardExtra={row => <EmployeeMissingInformation employee={row} checkDocuments={checkDocuments} onOpen={infotype => p.onEdit(row, infotype)} />} key={scope + ':' + p.dashboardKey} rows={p.employees} columns={columns} title={row => (row.firstName + ' ' + row.lastName).trim() || row.employeeCode} subtitle={row => row.employeeCode + ' / ' + (row.designation || 'Designation not mapped')} exportFileName="employees" searchPlaceholder="Search by employee name, code, department or email" searchValue={p.dashboardKey ? dashboardSearch : savedSearch} onSearchChange={p.dashboardKey ? setDashboardSearch : setSearch} hiddenCardColumns={['employeeName', 'employeeCode', 'designation']} cardSummaryColumns={['workLocationName', 'department', 'employmentType', 'skillCategory']}
+        <RecruitmentRecordList rowSelection={completion.rowSelection} selection={completion.selection} selectAllDescription="Select all matching employees with missing information, email and ESS access" cardExtra={row => <EmployeeMissingInformation additionalIssues={[...completion.additionalMissing(row), ...p.fieldExchange.fields.filter(field => field.field.isRequired && !p.fieldExchange.values[row.id]?.[field.code]).map(field => ({ infotype: field.infotypeCode, label: field.field.label }))]} employee={row} checkDocuments={checkDocuments} onOpen={infotype => p.onEdit(row, infotype)} />} key={scope + ':' + p.dashboardKey} rows={p.employees} columns={columns} title={row => (row.firstName + ' ' + row.lastName).trim() || row.employeeCode} subtitle={row => row.employeeCode + ' / ' + (row.designation || 'Designation not mapped')} exportFileName="employees" onExcelExport={p.onExcelExport} searchPlaceholder="Search by employee name, code, department or email" searchValue={p.dashboardKey ? dashboardSearch : savedSearch} onSearchChange={p.dashboardKey ? setDashboardSearch : setSearch} hiddenCardColumns={['employeeName', 'employeeCode', 'designation']} cardSummaryColumns={['workLocationName', 'department', 'employmentType', 'skillCategory']}
           filters={['location', 'department', 'designation', 'employmentType', 'skillCategory'].map(key => ({ key, label: ({ location: 'Work location', department: 'Department', designation: 'Designation', employmentType: 'Employee type', skillCategory: 'Employee category' } as Record<string, string>)[key], value: (row: Employee) => workforceValue(row, key as typeof workforceFields[number], p.locations) }))}
           actions={row => <span className="row-actions">{completion.mailAction(row, view === 'Table')}<Button size="small" onClick={() => p.onEdit(row)}>{canManage ? 'Edit' : 'View'}</Button>{canManage && <Button size="small" danger onClick={() => p.onDelete(row)}>Delete</Button>}</span>} />
       </div></div>
@@ -834,45 +855,6 @@ function clientNameFor(clients: Client[], id: number) {
 
 function workLocationName(locations: WorkLocation[], id: number) {
   return locations.find(location => location.id === id)?.name || '-'
-}
-
-function employeeImportFieldValue(row: Employee, code: string, locations: WorkLocation[], users: WorkflowApprover[], templates: Structure[]) {
-  const personal = row.personalDetails ?? personal0
-  const payment = row.paymentDetails ?? payment0
-  switch (code) {
-    case 'EmployeeCode': return row.employeeCode
-    case 'FirstName': return row.firstName
-    case 'LastName': return row.lastName
-    case 'Gender': return row.gender
-    case 'DateOfJoining': return row.dateOfJoining
-    case 'DateOfBirth': return personal.dateOfBirth || ''
-    case 'WorkEmail': return row.workEmail
-    case 'Mobile': return personal.mobile || ''
-    case 'Department': return row.department
-    case 'Designation': return row.designation
-    case 'Grade': return row.grade
-    case 'EmploymentType': return personal.employmentType || ''
-    case 'EmployeeCategory': return personal.skillCategory || ''
-    case 'WorkLocation': return locations.find(location => location.id === row.workLocationId)?.name || ''
-    case 'ReportingManagerEmail': return users.find(user => user.id === row.reportingManagerUserId)?.email || ''
-    case 'PortalAccess': return row.portalAccess ? 'TRUE' : 'FALSE'
-    case 'Active': return row.isActive ? 'TRUE' : 'FALSE'
-    case 'SalaryTemplate': return templates.find(template => String(template.id) === String(row.salaryStructureId))?.name || ''
-    case 'AnnualCtc': return String(row.annualCtc || '')
-    case 'Pan': return personal.panNumber || ''
-    case 'Aadhaar': return personal.aadhaarNumber || ''
-    case 'UanNumber': return personal.uanNumber || ''
-    case 'EsicNumber': return personal.esicNumber || ''
-    case 'Address': return personal.address || ''
-    case 'CorrespondenceAddress': return personal.correspondenceAddress || ''
-    case 'PermanentAddress': return personal.permanentAddress || ''
-    case 'BankName': return payment.bankName || ''
-    case 'BankAccountNo': return payment.bankAccountNo || ''
-    case 'Ifsc': return payment.ifscCode || ''
-    case 'PaymentMode': return payment.paymentMode || ''
-    case 'ChangeReason': return ''
-    default: return ''
-  }
 }
 
 function normalizeEmployeeDetails(row: Employee): Employee {

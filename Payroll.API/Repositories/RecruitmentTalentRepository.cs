@@ -2554,7 +2554,7 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         if (candidate.EmployeeId.HasValue)
         {
             var existing = await db.QueryFirstOrDefaultAsync<Employee>("SELECT * FROM employees WHERE Id=@Id", new { Id = candidate.EmployeeId });
-            return (existing, existing is null ? "Candidate is linked to a missing employee record." : "");
+            return existing?.ClientId == application.ClientId ? (existing, "") : (null, "Candidate is linked to a missing employee or a different client.");
         }
         var acceptedOffer = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_offers WHERE ApplicationId=@Id AND Status='Accepted'", new { Id = applicationId });
         if (acceptedOffer == 0) return (null, "Accept the candidate offer before converting the profile to an employee.");
@@ -2565,11 +2565,51 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         }
         var pendingMandatory = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidate_checklist_items WHERE ApplicationId=@Id AND Mandatory=TRUE AND Status<>'Completed'", new { Id = applicationId });
         if (pendingMandatory > 0) return (null, $"Complete {pendingMandatory} mandatory pre-onboarding checklist item(s) before employee creation.");
-        var duplicateCode = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE ClientId=@ClientId AND EmployeeCode=@EmployeeCode", new { application.ClientId, request.EmployeeCode });
-        if (duplicateCode > 0) return (null, "Employee code already exists for this client.");
+        var employee = await BuildConversionEmployeeAsync(db, application, candidate, request);
+        if (request.WorkLocationId > 0 && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM worklocations WHERE Id=@Id AND ClientId=@ClientId AND IsActive=TRUE", new { Id = request.WorkLocationId, application.ClientId }) == 0)
+            return (null, "Work location does not belong to this client.");
+        await EmployeeRepository.PrepareRecruitmentSaveAsync(db);
+        await using var tx = await db.BeginTransactionAsync();
+        await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId FOR UPDATE", new { application.ClientId }, tx);
+        var linkedId = await db.ExecuteScalarAsync<int?>("SELECT EmployeeId FROM recruitment_candidates WHERE Id=@Id FOR UPDATE", new { candidate.Id }, tx);
+        if (linkedId.HasValue)
+        {
+            var linked = await EmployeeRepository.LoadRecruitmentEmployeeAsync(db, linkedId.Value, tx);
+            return linked?.ClientId == application.ClientId ? (linked, "") : (null, "Candidate employee link does not belong to this client.");
+        }
+        var identity = (await employees.PreviewRecruitmentAsync(employee, db, tx)).Rows.Single();
+        if (identity.BlockingReasons.Count > 0) return (null, string.Join(" ", identity.BlockingReasons));
+        if (identity.MatchedEmployeeId.HasValue && request.ExistingEmployeeId != identity.MatchedEmployeeId)
+            return (null, "This candidate matches an existing employee. Review the match and choose Link existing employee.");
+        if (request.ExistingEmployeeId.HasValue)
+        {
+            if (identity.MatchedEmployeeId != request.ExistingEmployeeId) return (null, "The selected employee does not match this candidate in this client.");
+            var existing = await EmployeeRepository.LoadRecruitmentEmployeeAsync(db, request.ExistingEmployeeId.Value, tx);
+            if (existing is null || existing.ClientId != application.ClientId) return (null, "Employee was not found in this client.");
+            if (!existing.IsActive) return (null, "Rehire the inactive employee from Employee Master before linking this candidate.");
+            employee = FillEmployeeBlanks(existing, employee);
+        }
+        var forms = await EmployeeAttributeRepository.ExchangeFormsAsync(db, application.ClientId, tx);
+        List<EmployeeFieldInput> values;
+        try { values = await EmployeeAttributeRepository.CandidateValuesAsync(db, application.ClientId, candidate.Id, application.Id, forms, tx); }
+        catch (InvalidOperationException exception) { return (null, exception.Message); }
+        employee.Id = await EmployeeRepository.SaveRecruitmentEmployeeAsync(db, tx, employee, user, application.ApplicationCode);
+        var error = await EmployeeAttributeRepository.SaveExchangeAsync(db, tx, employee.Id, application.ClientId, forms, values, "RECRUITMENT", application.ApplicationCode, user.Id, allowIncomplete: true, fillBlanksOnly: true);
+        if (error.Length > 0) return (null, error);
+        await db.ExecuteAsync("UPDATE recruitment_candidates SET EmployeeId=@EmployeeId,ProfileStatus='Joined',UpdatedAt=UTC_TIMESTAMP() WHERE Id=@CandidateId; UPDATE recruitment_candidate_applications SET CurrentStage='Joined',CurrentStatus='Joined',JoinedEmployeeId=@EmployeeId,LastStageChangedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@ApplicationId; UPDATE person_activity_events SET EmployeeId=@EmployeeId WHERE CandidateId=@CandidateId AND EmployeeId IS NULL;", new { EmployeeId = employee.Id, CandidateId = candidate.Id, ApplicationId = applicationId }, tx);
+        await db.ExecuteAsync("INSERT INTO recruitment_application_stage_history (ApplicationId,FromStage,ToStage,Reason,ChangedByUserId) VALUES (@Id,@From,'Joined','Converted to employee',@UserId)", new { Id = applicationId, From = application.CurrentStage, UserId = user.Id }, tx);
+        await AddPositionTimelineAsync(db, application.PositionId, "Joined", $"{candidate.FirstName} {candidate.LastName} joined", employee.EmployeeCode, user.Id, tx);
+        await WriteActivityAsync(db, application.ClientId, candidate.Id, employee.Id, "RECRUITMENT", "CANDIDATE_CONVERTED", "Candidate converted to employee", $"{employee.EmployeeCode} - {employee.FirstName} {employee.LastName}", "Employee", employee.Id.ToString(), user, transaction: tx);
+        await RefreshPositionCountersAsync(db, application.PositionId, tx);
+        await tx.CommitAsync();
+        return (employee, "");
+    }
+
+    private static async Task<Employee> BuildConversionEmployeeAsync(MySqlConnection db, RecruitmentCandidateApplication application, RecruitmentCandidate candidate, ConvertCandidateToEmployeeRequest request)
+    {
         var position = await db.QueryFirstAsync<RecruitmentOpenPosition>("SELECT * FROM recruitment_open_positions WHERE Id=@Id", new { Id = application.PositionId });
-        var personal = JsonSerializer.Serialize(new EmployeePersonalDetails { Mobile = candidate.Phone, Source = "Recruitment", SourceLocation = candidate.CurrentLocation });
-        var employee = new Employee
+        var personal = new EmployeePersonalDetails { Mobile = candidate.Phone, Source = "Recruitment", SourceLocation = candidate.CurrentLocation };
+        return new Employee
         {
             ClientId = application.ClientId,
             EmployeeCode = request.EmployeeCode.Trim(),
@@ -2586,20 +2626,13 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
             ReportingManagerUserId = request.ReportingManagerUserId,
             PortalAccess = request.PortalAccess,
             SalaryStructureId = request.SalaryStructureId,
-            AnnualCtc = request.AnnualCtc > 0 ? request.AnnualCtc : await LatestOfferCtcAsync(db, applicationId),
+            AnnualCtc = request.AnnualCtc > 0 ? request.AnnualCtc : await LatestOfferCtcAsync(db, application.Id),
             SalaryJson = "{}",
-            PersonalJson = personal,
+            PersonalDetails = personal,
+            PersonalJson = JsonSerializer.Serialize(personal),
             PaymentJson = "{}",
             IsActive = true
         };
-        employee.Id = await employees.SaveAsync(employee, user.DisplayName, null, $"Joined from recruitment application {application.ApplicationCode}");
-        if (employee.Id <= 0) return (null, "Employee profile could not be created. Recruitment status was not changed.");
-        await db.ExecuteAsync("UPDATE recruitment_candidates SET EmployeeId=@EmployeeId,ProfileStatus='Joined',UpdatedAt=UTC_TIMESTAMP() WHERE Id=@CandidateId; UPDATE recruitment_candidate_applications SET CurrentStage='Joined',CurrentStatus='Joined',JoinedEmployeeId=@EmployeeId,LastStageChangedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@ApplicationId; UPDATE person_activity_events SET EmployeeId=@EmployeeId WHERE CandidateId=@CandidateId AND EmployeeId IS NULL;", new { EmployeeId = employee.Id, CandidateId = candidate.Id, ApplicationId = applicationId });
-        await db.ExecuteAsync("INSERT INTO recruitment_application_stage_history (ApplicationId,FromStage,ToStage,Reason,ChangedByUserId) VALUES (@Id,@From,'Joined','Converted to employee',@UserId)", new { Id = applicationId, From = application.CurrentStage, UserId = user.Id });
-        await AddPositionTimelineAsync(db, position.Id, "Joined", $"{candidate.FirstName} {candidate.LastName} joined", employee.EmployeeCode, user.Id);
-        await WriteActivityAsync(db, application.ClientId, candidate.Id, employee.Id, "RECRUITMENT", "CANDIDATE_CONVERTED", "Candidate converted to employee", $"{employee.EmployeeCode} - {employee.FirstName} {employee.LastName}", "Employee", employee.Id.ToString(), user);
-        await RefreshPositionCountersAsync(db, position.Id);
-        return (employee, "");
     }
 
     public async Task<IEnumerable<PersonActivityEvent>> GetEmployee360Async(int employeeId, AuthUser user)
@@ -4385,9 +4418,9 @@ VALUES (@CandidateId,@Qualification,@Institution,'',@CompletionYear,'',@DisplayO
             await db.ExecuteAsync(@"INSERT INTO recruitment_candidate_checklist_items (ApplicationId,CandidateId,ChecklistConfigurationId,ChecklistName,Stage,Mandatory,AttachmentAttributeId,RequiresVerification,DueDate,Status,DisplayOrder) VALUES (@ApplicationId,@CandidateId,@Id,@DocumentName,@Stage,@Mandatory,@AttachmentAttributeId,@RequiresVerification,DATE_ADD(UTC_DATE(),INTERVAL @DueOffsetDays DAY),'Pending',@DisplayOrder) ON DUPLICATE KEY UPDATE Mandatory=VALUES(Mandatory),AttachmentAttributeId=VALUES(AttachmentAttributeId),RequiresVerification=VALUES(RequiresVerification),DueDate=VALUES(DueDate),DisplayOrder=VALUES(DisplayOrder)", new { ApplicationId = application.Id, application.CandidateId, row.Id, row.DocumentName, row.Stage, row.Mandatory, row.AttachmentAttributeId, row.RequiresVerification, row.DueOffsetDays, row.DisplayOrder });
     }
 
-    private static async Task RefreshPositionCountersAsync(MySqlConnection db, long positionId)
+    private static async Task RefreshPositionCountersAsync(MySqlConnection db, long positionId, MySqlTransaction? tx = null)
     {
-        await db.ExecuteAsync(@"UPDATE recruitment_open_positions p SET CandidateCount=(SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.PositionId=p.Id AND a.ApplicationType='Application'),InterviewCount=(SELECT COUNT(*) FROM recruitment_interviews i JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId WHERE a.PositionId=p.Id AND a.ApplicationType='Application'),OfferCount=(SELECT COUNT(*) FROM recruitment_offers o JOIN recruitment_candidate_applications a ON a.Id=o.ApplicationId WHERE a.PositionId=p.Id AND a.ApplicationType='Application'),JoinedCount=(SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.PositionId=p.Id AND a.ApplicationType='Application' AND a.CurrentStage='Joined'),FilledPositions=LEAST(ApprovedPositions,(SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.PositionId=p.Id AND a.ApplicationType='Application' AND a.CurrentStage='Joined')),RemainingPositions=GREATEST(0,ApprovedPositions-CancelledPositions-OnHoldPositions-(SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.PositionId=p.Id AND a.ApplicationType='Application' AND a.CurrentStage='Joined')),Status=CASE WHEN (SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.PositionId=p.Id AND a.ApplicationType='Application' AND a.CurrentStage='Joined')>=ApprovedPositions THEN 'Filled' WHEN (SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.PositionId=p.Id AND a.ApplicationType='Application' AND a.CurrentStage='Joined')>0 THEN 'Partially Filled' ELSE Status END,UpdatedAt=UTC_TIMESTAMP() WHERE p.Id=@Id", new { Id = positionId });
+        await db.ExecuteAsync(@"UPDATE recruitment_open_positions p SET CandidateCount=(SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.PositionId=p.Id AND a.ApplicationType='Application'),InterviewCount=(SELECT COUNT(*) FROM recruitment_interviews i JOIN recruitment_candidate_applications a ON a.Id=i.ApplicationId WHERE a.PositionId=p.Id AND a.ApplicationType='Application'),OfferCount=(SELECT COUNT(*) FROM recruitment_offers o JOIN recruitment_candidate_applications a ON a.Id=o.ApplicationId WHERE a.PositionId=p.Id AND a.ApplicationType='Application'),JoinedCount=(SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.PositionId=p.Id AND a.ApplicationType='Application' AND a.CurrentStage='Joined'),FilledPositions=LEAST(ApprovedPositions,(SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.PositionId=p.Id AND a.ApplicationType='Application' AND a.CurrentStage='Joined')),RemainingPositions=GREATEST(0,ApprovedPositions-CancelledPositions-OnHoldPositions-(SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.PositionId=p.Id AND a.ApplicationType='Application' AND a.CurrentStage='Joined')),Status=CASE WHEN (SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.PositionId=p.Id AND a.ApplicationType='Application' AND a.CurrentStage='Joined')>=ApprovedPositions THEN 'Filled' WHEN (SELECT COUNT(*) FROM recruitment_candidate_applications a WHERE a.PositionId=p.Id AND a.ApplicationType='Application' AND a.CurrentStage='Joined')>0 THEN 'Partially Filled' ELSE Status END,UpdatedAt=UTC_TIMESTAMP() WHERE p.Id=@Id", new { Id = positionId }, tx);
     }
 
     private static async Task<decimal> LatestOfferCtcAsync(MySqlConnection db, long applicationId) => await db.ExecuteScalarAsync<decimal?>("SELECT OfferedCtc FROM recruitment_offers WHERE ApplicationId=@Id AND Status IN ('Accepted','Released','Pending Candidate') ORDER BY UpdatedAt DESC LIMIT 1", new { Id = applicationId }) ?? 0;
@@ -4419,8 +4452,8 @@ WHERE ClientId IN (0,@ClientId)
 ORDER BY (ClientId=@ClientId) DESC,Id DESC LIMIT 1", new { ClientId = clientId })
         ?? new RecruitmentFeatureSettings();
 
-    private static Task AddPositionTimelineAsync(MySqlConnection db, long positionId, string eventType, string title, string details, int? userId) =>
-        db.ExecuteAsync("INSERT INTO recruitment_position_timeline (PositionId,EventType,EventTitle,EventDetails,ActorUserId) VALUES (@PositionId,@EventType,@Title,@Details,@UserId)", new { PositionId = positionId, EventType = eventType, Title = title, Details = details ?? "", UserId = userId });
+    private static Task AddPositionTimelineAsync(MySqlConnection db, long positionId, string eventType, string title, string details, int? userId, MySqlTransaction? tx = null) =>
+        db.ExecuteAsync("INSERT INTO recruitment_position_timeline (PositionId,EventType,EventTitle,EventDetails,ActorUserId) VALUES (@PositionId,@EventType,@Title,@Details,@UserId)", new { PositionId = positionId, EventType = eventType, Title = title, Details = details ?? "", UserId = userId }, tx);
 
     public async Task ApplyNegotiationSlaExtensionForApplicationAsync(long applicationId, string reason, AuthUser user)
     {
@@ -4509,8 +4542,8 @@ WHERE instance.ApplicationId=@ApplicationId AND instance.Status IN ('Active','Pa
     private static Task WriteRecruitmentAuditAsync(MySqlConnection db, string entityType, long entityId, string action, int userId, object payload) =>
         db.ExecuteAsync("INSERT INTO recruitment_audit (EntityType,EntityId,Action,NewValueJson,ChangedByUserId) VALUES (@EntityType,@EntityId,@Action,@Json,@UserId)", new { EntityType = entityType, EntityId = entityId, Action = action, Json = JsonSerializer.Serialize(payload), UserId = userId });
 
-    private static Task WriteActivityAsync(MySqlConnection db, int clientId, long? candidateId, int? employeeId, string module, string eventType, string title, string summary, string resourceType, string resourceId, AuthUser user, string metadataJson = "{}") =>
-        db.ExecuteAsync(@"INSERT INTO person_activity_events (ClientId,CandidateId,EmployeeId,ModuleCode,EventType,EventTitle,EventSummary,ResourceType,ResourceId,ActorUserId,Visibility,IsSensitive,MetadataJson,OccurredAt) VALUES (@ClientId,@CandidateId,@EmployeeId,@Module,@EventType,@Title,@Summary,@ResourceType,@ResourceId,@UserId,'HR',FALSE,@MetadataJson,UTC_TIMESTAMP())", new { ClientId = clientId, CandidateId = candidateId, EmployeeId = employeeId, Module = module, EventType = eventType, Title = title, Summary = summary ?? "", ResourceType = resourceType, ResourceId = resourceId, UserId = user.Id, MetadataJson = ValidJson(metadataJson, "{}") });
+    private static Task WriteActivityAsync(MySqlConnection db, int clientId, long? candidateId, int? employeeId, string module, string eventType, string title, string summary, string resourceType, string resourceId, AuthUser user, string metadataJson = "{}", MySqlTransaction? transaction = null) =>
+        db.ExecuteAsync(@"INSERT INTO person_activity_events (ClientId,CandidateId,EmployeeId,ModuleCode,EventType,EventTitle,EventSummary,ResourceType,ResourceId,ActorUserId,Visibility,IsSensitive,MetadataJson,OccurredAt) VALUES (@ClientId,@CandidateId,@EmployeeId,@Module,@EventType,@Title,@Summary,@ResourceType,@ResourceId,@UserId,'HR',FALSE,@MetadataJson,UTC_TIMESTAMP())", new { ClientId = clientId, CandidateId = candidateId, EmployeeId = employeeId, Module = module, EventType = eventType, Title = title, Summary = summary ?? "", ResourceType = resourceType, ResourceId = resourceId, UserId = user.Id, MetadataJson = ValidJson(metadataJson, "{}") }, transaction);
 
     private static bool CanAccessClient(AuthUser user, int clientId) => user.ClientId is null || user.ClientId == clientId;
     private static async Task<bool> CanAccessCandidateAsync(MySqlConnection db, AuthUser user, RecruitmentCandidate candidate)

@@ -1,4 +1,4 @@
-import type { AttendanceBatchJobStatus, AttendanceGroup, AttendanceReviewContext, AttendanceSettings, EmployeeDailyAttendance, EmployeeMonthlyAttendance, GeoFenceEmployeeOption, GeoFenceRule, GeoFenceScope, Holiday, LeaveAttendancePreferences, LeaveAttendanceSetup, LeaveBalanceImportMapping, LeaveBalanceImportPreview, LeaveBalanceImportResult, LeaveType, SetupStatus } from '../types/payroll'
+import type { AttendanceShift, AttendanceBatchJobStatus, AttendanceGroup, AttendanceReviewContext, AttendanceSettings, EmployeeDailyAttendance, EmployeeMonthlyAttendance, GeoFenceEmployeeOption, GeoFenceRule, GeoFenceScope, Holiday, LeaveAttendancePreferences, LeaveAttendanceSetup, LeaveBalanceImportMapping, LeaveBalanceImportPreview, LeaveBalanceImportResult, LeaveType, SetupStatus } from '../types/payroll'
 import { apiUrl, deleteJson, getBlob, getJson, getJsonResult, postForm, postFormWithProgress, postJson, putJson } from './apiClient'
 import type { BulkImportStatus } from './settingsService'
 
@@ -19,6 +19,10 @@ export const getAttendanceSettings = (clientId: number) => getJson<AttendanceSet
 export async function saveAttendanceSettings(settings: AttendanceSettings) {
   return postJson('/api/leave-attendance/attendance-settings', settings, attendanceFallback)
 }
+export const getAttendanceShifts = (clientId: number) => getJson<AttendanceShift[]>("/api/leave-attendance/shifts?clientId=" + clientId, [])
+export const saveAttendanceShift = (shift: AttendanceShift) => shift.id ? putJson('/api/leave-attendance/shifts/' + shift.id, shift, null as AttendanceShift | null) : postJson('/api/leave-attendance/shifts', shift, null as AttendanceShift | null)
+export const deactivateAttendanceShift = (id: number, clientId: number) => deleteJson('/api/leave-attendance/shifts/' + id + '?clientId=' + clientId, null)
+
 export const getGeoFenceRules = (clientId: number, scopeType?: GeoFenceScope) => getJson<GeoFenceRule[]>(`/api/leave-attendance/geo-fences?${new URLSearchParams({ clientId: String(clientId), ...(scopeType ? { scopeType } : {}) })}`, [])
 export const getGeoFenceEmployees = (clientId: number, workLocationId: number) => getJson<GeoFenceEmployeeOption[]>(`/api/leave-attendance/geo-fences/employees?${new URLSearchParams({ clientId: String(clientId), workLocationId: String(workLocationId) })}`, [])
 export const getApplicableGeoFenceRule = (clientId: number, employeeId: number, onDate?: string) => getJson<GeoFenceRule | null>(`/api/leave-attendance/geo-fences/applicable?${new URLSearchParams({ clientId: String(clientId), employeeId: String(employeeId), ...(onDate ? { onDate } : {}) })}`, null)
@@ -33,7 +37,7 @@ export const getAttendanceGroups = (clientId = 0) => getJson<AttendanceGroup[]>(
 export async function saveAttendanceGroup(group: AttendanceGroup) {
   return postJson('/api/leave-attendance/groups', group, null as AttendanceGroup | null)
 }
-export async function saveAttendanceGroupBatch(group: Pick<AttendanceGroup, 'policyBatchId' | 'clientId' | 'name' | 'workWeek' | 'attendanceCycleStartDay' | 'attendanceCycleEndDay' | 'payrollReportGenerationDay' | 'isActive' | 'employeeIds'> & { workLocationIds: number[]; departments: string[]; designations: string[] }) {
+export async function saveAttendanceGroupBatch(group: Pick<AttendanceGroup, 'shiftId' | 'policyBatchId' | 'clientId' | 'name' | 'workWeek' | 'attendanceCycleStartDay' | 'attendanceCycleEndDay' | 'payrollReportGenerationDay' | 'isActive' | 'employeeIds'> & { workLocationIds: number[]; departments: string[]; designations: string[] }) {
   return postJson('/api/leave-attendance/groups/batch', group, [] as AttendanceGroup[])
 }
 export async function deleteAttendanceGroup(clientId: number, id: number) {

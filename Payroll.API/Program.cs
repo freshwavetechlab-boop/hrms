@@ -195,6 +195,13 @@ if (args.Contains("--migrate-recruitment-journey"))
     return;
 }
 
+if (args.Contains("--migrate-attendance-shifts"))
+{
+    await app.Services.GetRequiredService<LeaveAttendanceRepository>().InitializeShiftsAsync();
+    app.Logger.LogInformation("Attendance shift schema upgrade completed.");
+    return;
+}
+
 var migrateDatabaseOnly = args.Any(arg =>
     arg.Equals("--migrate", StringComparison.OrdinalIgnoreCase) ||
     arg.Equals("--migrate-database", StringComparison.OrdinalIgnoreCase));
@@ -1104,6 +1111,7 @@ app.MapGet("/api/ess/leave/balances", async (EssMssRepository repository, HttpCo
 .WithOpenApi();
 
 app.MapEmployeeProfileCompletion();
+app.MapEmployeeFields();
 
 app.MapGet("/api/ess/profile", async (EssMssRepository repository, HttpContext context) =>
 {
@@ -2161,6 +2169,12 @@ app.MapPost("/api/recruitment/applications/{applicationId:long}/convert-to-emplo
     if (row is not null)
         await ApplyRecruitmentDecisionAsync(applicationId, "Joined", user, pipelines, pipelineActions, candidateActions, hiringCases);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/applications/{applicationId:long}/employee-preview", async (RecruitmentTalentRepository repository, long applicationId, ConvertCandidateToEmployeeRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "employees.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (item, error) = await repository.PreviewEmployeeConversionAsync(applicationId, request, CurrentUser(context));
+    return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
 });
 app.MapGet("/api/employees/{employeeId:int}/activity-360", async (RecruitmentTalentRepository repository, int employeeId, HttpContext context) =>
 {
@@ -3671,6 +3685,33 @@ app.MapPost("/api/leave-attendance/attendance-settings", async (LeaveAttendanceR
 .WithName("SaveAttendanceSettings")
 .WithOpenApi();
 
+app.MapGet("/api/leave-attendance/shifts", async (LeaveAttendanceRepository repository, int clientId, HttpContext context) =>
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." })
+    : !CanAccessClient(context, clientId) || !(HasClientSettingsManagement(context, clientId) || HasAttendanceManagement(context)) ? Results.StatusCode(403)
+    : Results.Ok(await repository.GetShiftsAsync(clientId)))
+.WithName("GetAttendanceShifts").WithOpenApi();
+
+app.MapPost("/api/leave-attendance/shifts", async (LeaveAttendanceRepository repository, AttendanceShift request, HttpContext context) =>
+{
+    if (!HasClientSettingsManagement(context, request.ClientId)) return Results.StatusCode(403);
+    var (shift, error) = await repository.SaveShiftAsync(request);
+    return shift is null ? Results.BadRequest(new { error }) : Results.Ok(shift);
+}).WithName("CreateAttendanceShift").WithOpenApi();
+
+app.MapPut("/api/leave-attendance/shifts/{id:int}", async (LeaveAttendanceRepository repository, int id, AttendanceShift request, HttpContext context) =>
+{
+    if (!HasClientSettingsManagement(context, request.ClientId)) return Results.StatusCode(403);
+    if (id <= 0) return Results.BadRequest(new { error = "Invalid shift id." });
+    var (shift, error) = await repository.SaveShiftAsync(request, id);
+    return shift is null ? Results.BadRequest(new { error }) : Results.Ok(shift);
+}).WithName("UpdateAttendanceShift").WithOpenApi();
+
+app.MapDelete("/api/leave-attendance/shifts/{id:int}", async (LeaveAttendanceRepository repository, int id, int clientId, HttpContext context) =>
+{
+    if (!HasClientSettingsManagement(context, clientId)) return Results.StatusCode(403);
+    return await repository.DeactivateShiftAsync(id, clientId) ? Results.NoContent() : Results.NotFound();
+}).WithName("DeactivateAttendanceShift").WithOpenApi();
+
 app.MapGet("/api/leave-attendance/geo-fences", async (LeaveAttendanceRepository repository, int clientId, string? scopeType, HttpContext context) =>
     clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !HasClientSettingsManagement(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetGeoFenceRulesAsync(clientId, scopeType)))
 .WithName("GetGeoFenceRules")
@@ -4170,8 +4211,12 @@ app.MapPost("/api/employees", async (EmployeeRepository repository, Employee emp
     employee.SalaryJson = string.IsNullOrWhiteSpace(employee.SalaryJson) ? "{}" : employee.SalaryJson;
     employee.PersonalJson = string.IsNullOrWhiteSpace(employee.PersonalJson) ? "{}" : employee.PersonalJson;
     employee.PaymentJson = string.IsNullOrWhiteSpace(employee.PaymentJson) ? "{}" : employee.PaymentJson;
-    var id = await repository.SaveAsync(employee, CurrentUser(context).Email, infotypeCode, changeReason);
-    return Results.Ok(new { id });
+    try
+    {
+        var id = await repository.SaveAsync(employee, CurrentUser(context).Email, infotypeCode, changeReason);
+        return Results.Ok(new { id });
+    }
+    catch (InvalidOperationException exception) { return Results.BadRequest(new { error = exception.Message }); }
 })
 .WithName("SaveEmployee")
 .WithOpenApi();
@@ -4335,6 +4380,55 @@ app.MapGet("/api/pay-runs/{id:int}", async (PayRunRepository repository, int id,
 })
 .WithName("GetPayRun")
 .WithOpenApi();
+
+app.MapGet("/api/pay-runs/{id:int}/payslips/{employeeId:int}", async (PayRunRepository repository, EssMssRepository payslips, int id, int employeeId, HttpContext context) =>
+{
+    if (!CanViewPayslipRegister(context)) return Results.StatusCode(403);
+    var run = await repository.GetAsync(id);
+    if (run is null) return Results.NotFound();
+    if (!CanAccessClient(context, run.ClientId)) return Results.StatusCode(403);
+    var document = await payslips.GetPayslipDocumentAsync(employeeId, run.ClientId, id);
+    return document is null ? Results.NotFound() : Results.Ok(document);
+}).WithName("GetRegisterPayslip").WithOpenApi();
+
+app.MapPost("/api/pay-runs/{id:int}/payslips/send", async (PayRunRepository repository, EssMssRepository payslips, NotificationRepository notifications, int id, SendPayslipsRequest request, HttpContext context) =>
+{
+    if (!CanSendPayslips(context)) return Results.StatusCode(403);
+    var run = await repository.GetAsync(id);
+    if (run is null) return Results.NotFound();
+    if (!CanAccessClient(context, run.ClientId)) return Results.StatusCode(403);
+    if (!new[] { "Approved", "Partially Paid", "Paid" }.Contains(run.Status))
+        return Results.BadRequest(new { error = "Only approved payslips can be sent." });
+    var ids = (request.EmployeeIds ?? []).Distinct().ToArray();
+    if (ids.Length == 0 || ids.Length > 1000) return Results.BadRequest(new { error = "Select between 1 and 1000 employees." });
+    var eligible = run.Employees.Where(employee => !employee.IsSkipped).ToDictionary(employee => employee.EmployeeId);
+    if (ids.Any(employeeId => !eligible.ContainsKey(employeeId)))
+        return Results.BadRequest(new { error = "Every selected employee must belong to this approved pay run and must not be skipped." });
+    var emails = await payslips.GetPayslipRecipientEmailsAsync(run.ClientId, ids);
+    var user = CurrentUser(context);
+    var result = new PayslipDeliveryResult();
+    foreach (var employeeId in ids)
+    {
+        var employee = eligible[employeeId];
+        var item = new PayslipDeliveryItem { EmployeeId = employeeId, EmployeeCode = employee.EmployeeCode };
+        result.Items.Add(item);
+        if (!emails.TryGetValue(employeeId, out var email) || !MimeKit.MailboxAddress.TryParse(email, out _))
+        {
+            item.Message = "Add a valid Work Email in Employee Master before sending this payslip.";
+            continue;
+        }
+        var document = await payslips.GetPayslipDocumentAsync(employeeId, run.ClientId, id);
+        if (document is null) { item.Message = "This payslip is no longer available for delivery."; continue; }
+        var evt = new NotificationEvent
+        {
+            EventCode = "PAYSLIP.SEND", ResourceType = "PayRunEmployee", ResourceId = employee.Id.ToString(), ClientId = run.ClientId,
+            ActorUserId = user.Id, ActorName = user.DisplayName, ActorEmail = user.Email,
+            PayloadJson = System.Text.Json.JsonSerializer.Serialize(new { employeeId, employeeEmail = email, employee.EmployeeName, employee.EmployeeCode, run.ClientName, run.PayPeriod, payRunId = id })
+        };
+        (item.Status, item.Message) = await notifications.QueuePayslipAsync(evt, document.Html);
+    }
+    return Results.Ok(result);
+}).WithName("SendRegisterPayslips").WithOpenApi();
 
 app.MapGet("/api/pay-runs/{id:int}/diagnostics", async (PayRunRepository repository, int id, HttpContext context) =>
 {
@@ -4594,6 +4688,11 @@ static AuthUser CurrentUser(HttpContext context) =>
 
 static bool HasPermission(HttpContext context, string permission) =>
     CurrentUser(context).Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
+
+static bool CanSendPayslips(HttpContext context) =>
+    HasPermission(context, "payroll.run") || HasPermission(context, "payroll.approve") || HasPermission(context, "payroll.payments");
+
+static bool CanViewPayslipRegister(HttpContext context) => CanSendPayslips(context) || HasPermission(context, "reports.view");
 
 static bool CanViewApiCatalog(HttpContext context) => HasPermission(context, "workflow.manage") || HasPermission(context, "settings.manage") || HasPermission(context, "client.settings.manage");
 

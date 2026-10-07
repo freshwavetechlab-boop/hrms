@@ -1,6 +1,6 @@
 ﻿import { getJsonResult, postJson, putJson } from './apiClient'
 import type { CommunicationTemplate, EmployeeCommunicationCampaign, EmployeeCommunicationPreview } from '../types/employeeCommunication'
-export type EmployeeCompletionStatus = { employeeId: number; clientId: number; missingFields: string[]; canSendEmail: boolean; disabledReason: string }
+export type EmployeeCompletionStatus = { employeeId: number; clientId: number; missingFields: string[]; canSendEmail: boolean; disabledReason: string; additionalMissing?: { infotype: string; label: string }[] }
 export type CompletionSetup = { firstEditEnabled: boolean; template: CommunicationTemplate }
 export type CompletionMail = { clientId: number; employeeIds: number[]; idempotencyKey: string }
 const root = '/api/employees/profile-completion'

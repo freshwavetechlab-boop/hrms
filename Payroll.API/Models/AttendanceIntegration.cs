@@ -21,6 +21,7 @@ public record AttendanceConfigurationGap(string Key, int ClientId, string Client
 
 public class AttendanceRules
 {
+    public bool AllowManualHalfDay { get; set; }
     public int? LateGraceMinutes { get; set; }
     public int? EarlyGraceMinutes { get; set; }
     // null means not configured; zero explicitly disables requests of that kind.

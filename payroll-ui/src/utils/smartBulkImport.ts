@@ -10,6 +10,7 @@ export type BulkImportFieldDefinition = {
   group: string
   type: BulkImportFieldType
   required?: boolean
+  requiredForNew?: boolean
   description?: string
   aliases?: string[]
   defaultValue?: string
@@ -84,11 +85,11 @@ export function normalizeBulkImportHeader(value: string) {
 }
 
 export function autoMapBulkImportColumns(sheet: ImportPreviewSheet, definition: BulkImportDefinition): BulkImportMapping {
-  const source = sheet.headers.map((header, index) => ({ index, normalized: normalizeBulkImportHeader(header) }))
+  const source = sheet.headers.map((header, index) => ({ index, normalized: normalizeBulkImportHeader(header.match(/\[(CUSTOM:[A-Z0-9_]+:[A-Z0-9_]+:[A-Z0-9_]+)\]\s*$/i)?.[1] || header) }))
   const used = new Set<number>()
   const result: BulkImportMapping = {}
   for (const field of definition.fields) {
-    const candidates = [field.header, field.label, field.code, ...(field.aliases ?? [])].map(normalizeBulkImportHeader).filter(Boolean)
+    const candidates = [field.header, ...(!field.code.startsWith('CUSTOM:') ? [field.label] : []), field.code, ...(field.aliases ?? [])].map(normalizeBulkImportHeader).filter(Boolean)
     const match = source.find(column => !used.has(column.index) && candidates.includes(column.normalized))
     if (!match) continue
     result[field.code] = match.index

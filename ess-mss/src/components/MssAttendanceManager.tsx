@@ -1,3 +1,4 @@
+import { calculateReviewShift, resolveAttendanceShift } from '../../../shared/attendanceShift'
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { Button, Card, Input, Space, Typography } from 'antd'
@@ -297,13 +298,15 @@ export default function ManualAttendanceManager({ clientId, reviewMonth = '', on
   const holidayFor = (row: EmployeeMonthlyAttendance, date: string) => reviewContext.holidays.find((holiday) =>
     isoDate(holiday.startDate) <= date && isoDate(holiday.endDate) >= date && (holiday.allLocations || !holiday.workLocationIds.length || holiday.workLocationIds.includes(row.workLocationId)))
   const defaultStatusFor = (row: EmployeeMonthlyAttendance, date: string) => holidayFor(row, date) ? 'H' : isWorkingDate(row, date) ? '' : 'WO'
-  const totalHoursFor = (row: EmployeeDailyAttendance) => toNumber(row.totalHours) || hoursBetween(row.checkInTime, row.checkOutTime)
+  const totalHoursFor = (row: EmployeeDailyAttendance) => resolveAttendanceShift(reviewContext, row.employeeId, row.attendanceDate) ? toNumber(row.totalHours) : toNumber(row.totalHours) || hoursBetween(row.checkInTime, row.checkOutTime)
   const makeRow = (employeeId: number, date: string, status: DailyStatus, existing?: EmployeeDailyAttendance, patch: RowPatch = {}): EmployeeDailyAttendance => {
     const normalized = normalizeStatus(status)
-    const checkIn = normalized === 'Present' ? apiTime(patch.checkInTime !== undefined ? patch.checkInTime : existing?.checkInTime || settings.checkInTime) : null
-    const checkOut = normalized === 'Present' ? apiTime(patch.checkOutTime !== undefined ? patch.checkOutTime : existing?.checkOutTime || settings.checkOutTime) : null
-    const hours = normalized === 'Present' ? hoursBetween(checkIn, checkOut) : 0
-    const payableValue = patch.payableValue ?? payableForStatus(normalized, hours, Boolean(checkIn && checkOut))
+    const shift = resolveAttendanceShift(reviewContext, employeeId, date)
+    const checkIn = normalized === 'Present' ? apiTime(patch.checkInTime !== undefined ? patch.checkInTime : existing?.checkInTime || shift?.startTime || settings.checkInTime) : null
+    const checkOut = normalized === 'Present' ? apiTime(patch.checkOutTime !== undefined ? patch.checkOutTime : existing?.checkOutTime || shift?.endTime || settings.checkOutTime) : null
+    const calculated = normalized === 'Present' ? calculateReviewShift(reviewContext, employeeId, date, checkIn, checkOut) : null
+    const hours = normalized === 'Present' ? calculated?.hours ?? hoursBetween(checkIn, checkOut) : 0
+    const payableValue = calculated?.payable ?? patch.payableValue ?? payableForStatus(normalized, hours, Boolean(checkIn && checkOut))
     return { id: existing?.id ?? 0, clientId, employeeId, attendanceDate: date, status: normalized, payableValue: Math.max(0, Math.min(1, payableValue)), checkInTime: checkIn, checkOutTime: checkOut, totalHours: hours, remarks: existing?.remarks || '' }
   }
   const cellText = (status: string, payableValue: number) => status === 'Present' ? payableValue === 0.5 ? 'P.5' : 'P' : payableValue === 0.5 ? `${status}.5` : status
@@ -313,14 +316,15 @@ export default function ManualAttendanceManager({ clientId, reviewMonth = '', on
     const status = row ? normalizeStatus(row.status) : defaultStatusFor(employee, date)
     const holiday = holidayFor(employee, date)
     if (!status) return { text: '-', cls: 'missing', title: 'Missing', status: '', row: undefined as EmployeeDailyAttendance | undefined, hoursText: '' }
+    const shift = resolveAttendanceShift(reviewContext, employee.employeeId, date)
     const hours = row ? totalHoursFor(row) : 0
     const payable = row ? toNumber(row.payableValue) : 0
     const leave = leaveTypeByCode.get(status.toLowerCase())
     const cls = status === 'Present'
-      ? hours > 0 && hours < settings.minimumHoursForHalfDay ? 'short' : hours > 0 && hours < settings.minimumHoursForFullDay ? 'half' : payable === 0.5 ? 'half' : payable === 0 ? 'short' : 'present'
+      ? hours > 0 && hours < (shift?.minimumHalfDayHours ?? settings.minimumHoursForHalfDay) ? 'short' : hours > 0 && hours < (shift?.minimumFullDayHours ?? settings.minimumHoursForFullDay) ? 'half' : payable === 0.5 ? 'half' : payable === 0 ? 'short' : 'present'
       : status === 'WO' ? 'weekoff' : status === 'H' ? 'holiday' : status === 'A' ? 'absent' : leave?.type === 'Paid' ? 'paid' : 'absent'
     const hoursText = status === 'Present' && hours > 0 ? `${hours.toFixed(hours % 1 ? 1 : 0)}h` : ''
-    return { text: cellText(status, payable), cls, title: holiday?.name || leave?.name || status, status, row, hoursText }
+    return { text: shift && status === 'Present' && payable === 0 ? 'A' : cellText(status, payable), cls, title: holiday?.name || leave?.name || status, status, row, hoursText }
   }
   const missingCountFor = (employee: EmployeeMonthlyAttendance) => datesForEmployee(employee).filter((date) => !dailyByEmployee.get(employee.employeeId)?.has(date) && !defaultStatusFor(employee, date)).length
   const rowTone = (row: EmployeeMonthlyAttendance) => reviewStatus(row) === 'Ready' ? 'ready' : reviewStatus(row) === 'Missing attendance' ? 'warn' : 'danger'
