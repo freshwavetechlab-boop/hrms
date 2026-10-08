@@ -48,7 +48,53 @@ public sealed partial class ExcelPayslipRepository(IConfiguration configuration,
     {
         await using var db = Db(); await db.OpenAsync();
         if (!await SupportedAsync(db, clientId)) return [];
-        return ReadTemplates(await PayrollDataTableStore.GetSetupJsonAsync(db), clientId);
+        return await ReadTemplatesAsync(db, clientId);
+    }
+
+    private static async Task<IReadOnlyList<ExcelPayslipTemplate>> ReadTemplatesAsync(MySqlConnection db, int clientId, MySqlTransaction? tx = null)
+    {
+        // Mapping only needs this client's labels. Keep the legacy JSON component fallback,
+        // but do not load every client's salary setup and unrelated statutory/payslip settings.
+        using var result = await db.QueryMultipleAsync(@"
+SELECT CAST(s.Id AS CHAR) AS Id,
+COALESCE(NULLIF(TRIM(s.ClientRef),''),CAST(s.ClientId AS CHAR)) AS ClientRef,
+s.Name,l.ComponentId,CAST(c.Id AS CHAR) AS MasterId,c.Code,c.Name AS ComponentName,c.Category
+FROM salarystructures s
+LEFT JOIN salarystructurelines l ON l.StructureId=s.Id
+LEFT JOIN salarycomponents c ON BINARY CAST(c.Id AS CHAR)=BINARY l.ComponentId AND c.Active=TRUE
+WHERE s.Active=TRUE AND CAST(SUBSTRING_INDEX(COALESCE(NULLIF(TRIM(s.ClientRef),''),CAST(s.ClientId AS CHAR)),':',1) AS SIGNED)=@ClientId
+ORDER BY s.Id,l.SortOrder,l.Id;
+SELECT CAST(JSON_EXTRACT(SetupJson,'$.salaryComponents') AS CHAR) FROM payrollsetups
+WHERE NOT EXISTS (SELECT 1 FROM salarycomponents) ORDER BY Id LIMIT 1;", new { ClientId = clientId }, tx);
+        var rows = (await result.ReadAsync<TemplateMappingRow>()).ToArray();
+        var legacyComponents = await result.ReadFirstOrDefaultAsync<string?>();
+        return ReadTemplateMappings(rows, legacyComponents, clientId);
+    }
+
+    internal static IReadOnlyList<ExcelPayslipTemplate> ReadTemplateMappings(IEnumerable<TemplateMappingRow> rows, string? legacyComponents, int clientId)
+    {
+        var mapped = rows.ToArray();
+        var structures = mapped.GroupBy(r => r.Id, StringComparer.Ordinal).Select(g => new
+        {
+            id = g.Key, clientId = g.First().ClientRef, name = g.First().Name,
+            lines = g.Where(r => r.ComponentId is not null).Select(r => new { componentId = r.ComponentId })
+        });
+        var components = legacyComponents is null ? JsonSerializer.SerializeToElement(mapped.Where(r => r.MasterId is not null)
+            .Select(r => new { id = r.MasterId, code = r.Code, name = r.ComponentName, category = r.Category }), JsonOptions)
+            : JsonSerializer.Deserialize<JsonElement>(legacyComponents, JsonOptions);
+        return ReadTemplates(JsonSerializer.Serialize(new { salaryStructures = structures, salaryComponents = components }, JsonOptions), clientId);
+    }
+
+    internal sealed class TemplateMappingRow
+    {
+        public string Id { get; set; } = "";
+        public string ClientRef { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string? ComponentId { get; set; }
+        public string? MasterId { get; set; }
+        public string Code { get; set; } = "";
+        public string ComponentName { get; set; } = "";
+        public string Category { get; set; } = "";
     }
 
     internal static IReadOnlyList<ExcelPayslipTemplate> ReadTemplates(string setupJson, int clientId)
@@ -89,6 +135,11 @@ public sealed partial class ExcelPayslipRepository(IConfiguration configuration,
     {
         await using var db = Db(); await db.OpenAsync();
         if (!await SupportedAsync(db, clientId)) return [];
+        return await ReadBatchSummariesAsync(db, clientId);
+    }
+
+    private static async Task<IReadOnlyList<ExcelPayslipBatchSummary>> ReadBatchSummariesAsync(MySqlConnection db, int clientId)
+    {
         return (await db.QueryAsync<ExcelPayslipBatchSummary>(@"SELECT
 id AS Id,client_id AS ClientId,
 COALESCE(JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.clientName')),'') AS ClientName,
@@ -125,18 +176,55 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         if (error is not null) return (null, error);
         // Clone before normalizing warnings/metadata so callers cannot modify an accepted snapshot in memory.
         var batch = JsonSerializer.Deserialize<ExcelPayslipBatch>(JsonSerializer.Serialize(request, JsonOptions), JsonOptions)!;
+        var calculationSource = batch.CalculationSource;
+        batch.CalculationSource = null;
+        if (calculationSource is not null)
+        {
+            var sourceError = ExcelPayslipCalculationService.ValidateSource(calculationSource, batch);
+            if (sourceError is not null) return (null, sourceError);
+            if (Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(calculationSource, JsonOptions)) > 16 * 1024 * 1024)
+                return (null, "Calculation source exceeds 16 MiB. Save a smaller worksheet.");
+        }
         batch.Id = Guid.NewGuid().ToString("N"); batch.ClientId = clientId;
         batch.ClientName = ""; batch.SalaryTemplateName = ""; batch.SalaryTemplateId = batch.SalaryTemplateId?.Trim() ?? "";
         batch.CreatedAtUtc = DateTime.UtcNow; batch.CreatedBy = Limit(actor, 190);
         foreach (var row in batch.Rows) row.Warnings = RowWarnings(row);
         if (Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(batch, JsonOptions)) > MaximumBatchBytes) return (null, "The batch is too large. Save a smaller selection of source rows (maximum 8 MiB).");
         await using var db = Db(); await db.OpenAsync(); await using var tx = await db.BeginTransactionAsync();
-        var client = await db.QueryFirstOrDefaultAsync<Client>("SELECT Id,Name,IsActive FROM clients WHERE Id=@ClientId", new { ClientId = clientId }, tx);
+        // Reuse the per-client transaction lock used for delivery; no master records are changed.
+        // All saves take the lock so a supplied code cannot race an auto-assigned code.
+        var client = await db.QueryFirstOrDefaultAsync<Client>("SELECT Id,Name,Code,IsActive FROM clients WHERE Id=@ClientId FOR UPDATE", new { ClientId = clientId }, tx);
         if (client is null || !IsSupportedClient(client)) return (null, "Select an active client.");
-        batch.ClientName = client.Name;
-        if (!string.IsNullOrWhiteSpace(batch.SalaryTemplateId))
+        var historicalCodes = batch.Rows.Any(row => string.IsNullOrWhiteSpace(row.EmployeeCode))
+            ? await db.QueryAsync<string>(@"SELECT DISTINCT codes.employee_code
+FROM excel_payslip_batches batches
+CROSS JOIN JSON_TABLE(batches.batch_json,'$.rows[*]' COLUMNS(employee_code VARCHAR(80) PATH '$.employeeCode' NULL ON EMPTY)) codes
+WHERE batches.client_id=@ClientId AND codes.employee_code IS NOT NULL AND TRIM(codes.employee_code)<>''", new { ClientId = clientId }, tx)
+            : [];
+        var masterEmployees = batch.Rows.Any(row => string.IsNullOrWhiteSpace(row.EmployeeCode))
+            ? await ReadEmployeeCodeMatchesAsync(db, clientId, tx)
+            : [];
+        try { AssignEmployeeCodes(batch, calculationSource, client.Code, historicalCodes, masterEmployees); }
+        catch (InvalidOperationException codeError) { return (null, codeError.Message); }
+        if (calculationSource is not null)
         {
-            var template = ReadTemplates(await PayrollDataTableStore.GetSetupJsonAsync(db, tx), clientId).SingleOrDefault(t => t.Id == batch.SalaryTemplateId);
+            var sourceError = ExcelPayslipCalculationService.ValidateSource(calculationSource, batch);
+            if (sourceError is not null) return (null, sourceError);
+            if (Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(calculationSource, JsonOptions)) > 16 * 1024 * 1024)
+                return (null, "Calculation source exceeds 16 MiB. Save a smaller worksheet.");
+        }
+        ExcelPayslipBatch? calculationParent = null;
+        if (!string.IsNullOrEmpty(calculationSource?.SourceBatchId))
+        {
+            calculationParent = await ReadBatchAsync(db, clientId, calculationSource.SourceBatchId, tx);
+            if (calculationParent is null) return (null, "The calculation source batch does not belong to this client.");
+            if (batch.SalaryTemplateId != calculationParent.SalaryTemplateId) return (null, "Keep the source batch's saved component mapping when calculating another month.");
+        }
+        batch.ClientName = client.Name;
+        if (calculationParent is not null) batch.SalaryTemplateName = calculationParent.SalaryTemplateName;
+        else if (!string.IsNullOrWhiteSpace(batch.SalaryTemplateId))
+        {
+            var template = (await ReadTemplatesAsync(db, clientId, tx)).SingleOrDefault(t => t.Id == batch.SalaryTemplateId);
             if (template is null) return (null, "Select an active salary template belonging to this client.");
             batch.SalaryTemplateName = template.Name;
         }
@@ -145,6 +233,9 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         var json = JsonSerializer.Serialize(batch, JsonOptions);
         if (Encoding.UTF8.GetByteCount(json) > MaximumBatchBytes) return (null, "The batch is too large. Save a smaller selection of source rows (maximum 8 MiB).");
         await db.ExecuteAsync("INSERT INTO excel_payslip_batches(client_id,id,batch_json,send_state_json,created_at) VALUES(@ClientId,@Id,CAST(@Json AS JSON),JSON_OBJECT(),@CreatedAtUtc)", new { ClientId = clientId, batch.Id, Json = json, batch.CreatedAtUtc }, tx);
+        if (calculationSource is not null)
+            await db.ExecuteAsync("INSERT INTO excel_payslip_calculation_sources(client_id,batch_id,source_json,created_at) VALUES(@ClientId,@Id,CAST(@Json AS JSON),@CreatedAtUtc)",
+                new { ClientId = clientId, batch.Id, Json = JsonSerializer.Serialize(calculationSource, JsonOptions), batch.CreatedAtUtc }, tx);
         await tx.CommitAsync(); return (batch, null);
     }
 
@@ -167,7 +258,7 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         if (!await SupportedAsync(db, clientId, tx)) return (false, "Select an active client.");
         if (profile.TryGetProperty("salaryTemplateId", out var selectedTemplate) && !string.IsNullOrWhiteSpace(selectedTemplate.GetString()))
         {
-            var templates = ReadTemplates(await PayrollDataTableStore.GetSetupJsonAsync(db, tx), clientId);
+            var templates = await ReadTemplatesAsync(db, clientId, tx);
             if (!templates.Any(t => t.Id == selectedTemplate.GetString()!.Trim())) return (false, "The mapping profile salary template must belong to this client and be active.");
         }
         await db.ExecuteAsync("INSERT INTO modulesettings(client_id,ModuleCode,IsEnabled,SettingsJson) VALUES(@ClientId,@Code,TRUE,JSON_OBJECT()) ON DUPLICATE KEY UPDATE ModuleCode=VALUES(ModuleCode)", new { ClientId = clientId, Code = ProfileCode }, tx);
@@ -276,12 +367,8 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
 
     public async Task<(ExcelPayslipDeliveryResult? Item, string? Error)> SendAsync(int clientId, string batchId, SendExcelPayslipsRequest request, string actor)
     {
-        if (!Guid.TryParse(request.RequestId, out var requestGuid)) return (null, "Supply a unique request ID for this send action.");
-        if (request.Mode is not ("Individual" or "Combined")) return (null, "Choose individual or combined delivery.");
-        if (request.EmailOverrides is null || request.EmailOverrides.Count > 1000) return (null, "Email overrides are invalid.");
-        if (!TextValid(request.Email ?? "", 254) || request.EmailOverrides.Values.Any(v => !TextValid(v ?? "", 254))) return (null, "Recipient emails exceed their allowed lengths.");
-        if (request.Mode == "Individual" && request.RowIds?.Count > 25) return (null, "Send individual payslips in groups of up to 25 rows.");
-        if (!Guid.TryParseExact(batchId, "N", out _)) return (null, "The saved batch was not found.");
+        if (ValidateSendRequest(batchId, request, 25) is string requestError) return (null, requestError);
+        var requestGuid = Guid.Parse(request.RequestId);
         await using var db = Db(); await db.OpenAsync(); await using var tx = await db.BeginTransactionAsync();
         if (!await SupportedAsync(db, clientId, tx)) return (null, "Select an active client.");
         // Serialize sends within a client, retaining request-ID uniqueness across its batches.
@@ -293,7 +380,6 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         var (selected, error) = SelectRows(batch, request); if (error is not null) return (null, error);
         if (request.EmailOverrides.Keys.Any(id => !selected.Any(r => r.Id == id))) return (null, "Email overrides must refer only to selected source rows.");
         if (request.Mode == "Combined" && !TryEmail(request.Email, out _)) return (null, "Enter one valid recipient email for the combined PDF.");
-        var reviewed = request.Mode == "Individual" ? ReviewIndividualRecipients(selected, request.EmailOverrides) : new ExcelPayslipDeliveryResult();
         var fingerprint = SendFingerprint(batchId, request);
         var requestId = requestGuid.ToString("N");
         var previousJson = state.Requests.TryGetValue(requestId, out var receipt) ? receipt.GetRawText() :
@@ -301,37 +387,22 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
                 new { ClientId = clientId, Id = batchId, Path = "$.requests.\"" + requestId + "\"" }, tx);
         var existingResult = RestoreSendRequest(previousJson, fingerprint);
         if (existingResult.Item is not null || existingResult.Error is not null) return existingResult;
-        // Email is optional for saving/exporting. Invalid recipients never reach SMTP or a write.
-        if (request.Mode == "Individual" && reviewed.Items.All(item => item.Status == "Error"))
-        {
-            return (reviewed, null);
-        }
-        var readyError = await notifications.ExcelPayslipDeliveryReadyAsync(db, tx);
-        if (readyError is not null) return (null, readyError);
-        var result = new ExcelPayslipDeliveryResult();
-        if (request.Mode == "Combined")
-        {
-            TryEmail(request.Email, out var email);
-            var pdf = pdfService.Create(batch, selected, request.IncludeSeal, request.AmountDecimalPlaces);
-            if (NotificationRepository.ValidateExcelPayslipPdf(pdf) is string pdfError) return (null, pdfError);
-            var delivery = await notifications.QueueExcelPayslipPdfAsync(db, tx, batch, selected, email, pdf, requestId, actor, request.IncludeSeal, request.AmountDecimalPlaces);
-            state.Deliveries.Add(delivery.Id, delivery);
-            result.Items.AddRange(selected.Select(r => DeliveryItem(r, email, "Queued", "Combined PDF queued to the specified recipient.")));
-        }
-        else
-        {
-            foreach (var row in selected)
+        // The locked batch's persisted history protects against new request IDs and reopened browser sessions too.
+        var statuses = BuildDeliveryStatuses(batch, state, await ReadDeliveryQueueAsync(db, clientId, state, tx));
+        var reviewed = ReviewDeliverySelection(selected, request, statuses);
+        var dispatched = await DispatchDeliverySelectionAsync(selected, request, reviewed,
+            () => notifications.ExcelPayslipDeliveryReadyAsync(db, tx), async (rows, email) =>
             {
-                var recipient = reviewed.Items.Single(item => item.RowId == row.Id);
-                if (recipient.Status == "Error") { result.Items.Add(recipient); continue; }
-                var email = recipient.Email;
-                var pdf = pdfService.Create(batch, [row], request.IncludeSeal, request.AmountDecimalPlaces);
-                if (NotificationRepository.ValidateExcelPayslipPdf(pdf) is string pdfError) return (null, pdfError);
-                var delivery = await notifications.QueueExcelPayslipPdfAsync(db, tx, batch, [row], email, pdf, requestId, actor, request.IncludeSeal, request.AmountDecimalPlaces);
+                var pdf = pdfService.Create(batch, rows, request.IncludeSeal, request.AmountDecimalPlaces);
+                if (NotificationRepository.ValidateExcelPayslipPdf(pdf) is string pdfError) return pdfError;
+                var delivery = await notifications.QueueExcelPayslipPdfAsync(db, tx, batch, rows, email, pdf, requestId, actor, request.IncludeSeal, request.AmountDecimalPlaces);
                 state.Deliveries.Add(delivery.Id, delivery);
-                result.Items.Add(DeliveryItem(row, email, "Queued", "Individual PDF queued to this recipient."));
-            }
-        }
+                return null;
+            });
+        if (dispatched.Item is null) return dispatched;
+        var result = dispatched.Item;
+        // Missing recipients and previously handled rows neither queue mail nor alter saved snapshots/receipts.
+        if (result.Items.All(item => item.Status != "Queued")) return (result, null);
         var manifest = new SendManifest { Fingerprint = fingerprint, CreatedBy = Limit(actor, 190), CreatedAtUtc = DateTime.UtcNow, Result = result };
         state.Requests.Add(requestId, JsonSerializer.SerializeToElement(manifest, JsonOptions));
         await db.ExecuteAsync("UPDATE excel_payslip_batches SET send_state_json=CAST(@Json AS JSON) WHERE client_id=@ClientId AND id=@Id", new { ClientId = clientId, Id = batchId, Json = JsonSerializer.Serialize(state, JsonOptions) }, tx);

@@ -13,6 +13,7 @@ import FrevoPilot from './components/FrevoPilot'
 import SecurityPanel from './components/SecurityPanel'
 import { appSettingsMenus, leaveAttendanceMenus, org0, reportingMenus, securityMenus, settingsMenus, workflowMenus } from './data/payrollDefaults'
 import DashboardPage, { type DashboardView } from './pages/DashboardPage'
+import ExcelPayslipDashboard from './pages/ExcelPayslipDashboard'
 import EmployeePage, { type EmployeePageView } from './pages/EmployeePage'
 import EmployeeCommunicationPage from './pages/EmployeeCommunicationPage'
 import LeaveAttendancePage from './pages/LeaveAttendancePage'
@@ -57,6 +58,7 @@ const productLogo = '/assets/FrevoOneLogo.png'
 const productMark = '/favicon.svg'
 const dashboardViews: DashboardView[] = ['overview', 'workforce', 'payroll', 'attendance', 'approvals']
 const fallbackDashboardAccess = [{ code: 'overview', name: 'Overview Dashboard', description: 'Combined HR, payroll, attendance and approval summary.', route: '/dashboard', sortOrder: 10 }]
+const excelDashboardAccess = { code: 'excel-payslips', name: 'Excel Dashboard', description: 'Excel Payslips batches, salary totals and monthly trends.', route: '/dashboard/excel-payslips', sortOrder: 60 }
 type RecruitmentNavigationLeaf = { view: RecruitmentPageView; label: string; icon: IconName; query?: string }
 type RecruitmentNavigationItem = RecruitmentNavigationLeaf | { key: string; label: string; icon: IconName; children: RecruitmentNavigationItem[] }
 const recruitmentNavigation: Array<{
@@ -339,6 +341,7 @@ export default function SettingsApp() {
   const initialReportingTab = routeParts[0] === 'reports' ? fromSlug(reportingMenus, routeParts.at(-1), 'Payroll Reports')
     : savedReportingTab && reportingMenus.includes(savedReportingTab) ? savedReportingTab : 'Payroll Reports'
   const dashboardView = routeParts[0] === 'dashboard' && dashboardViews.includes(routeParts[1] as DashboardView) ? routeParts[1] as DashboardView : 'overview'
+  const isExcelDashboard = routeParts[0] === 'dashboard' && routeParts[1] === 'excel-payslips' && hasAnyPermission('reports.view')
   const [requestNavigation, setRequestNavigation] = useState<RecruitmentRequestNavigation | null>(null)
   const recruitmentView = routeParts[0] === 'recruitment' ? fromSlug(recruitmentViews, routeParts[1], 'Dashboard') : 'Dashboard'
   const recruitmentQuery = new URLSearchParams(routeLocation.search)
@@ -394,8 +397,12 @@ export default function SettingsApp() {
   const [shellOrg, setShellOrg] = useState<Org>(org0)
   const [scopedClient, setScopedClient] = useState<Client | null>(null)
   const activeModule = visibleModules.find(module => module.code === mainModule) ?? modules[0]
-  const dashboardAccess = [...(currentUser?.dashboardAccess?.length ? currentUser.dashboardAccess : fallbackDashboardAccess)].sort((left, right) => left.sortOrder - right.sortOrder)
-  const activeDashboard = dashboardAccess.find(item => item.code === dashboardView) ?? dashboardAccess[0]
+  const dashboardAccess = [...(currentUser?.dashboardAccess?.length ? currentUser.dashboardAccess : fallbackDashboardAccess)]
+    .filter(item => item.code !== excelDashboardAccess.code || hasAnyPermission('reports.view'))
+  if (hasAnyPermission('reports.view') && !dashboardAccess.some(item => item.code === excelDashboardAccess.code)) dashboardAccess.push(excelDashboardAccess)
+  if (!dashboardAccess.length) dashboardAccess.push(...fallbackDashboardAccess)
+  dashboardAccess.sort((left, right) => left.sortOrder - right.sortOrder)
+  const activeDashboard = dashboardAccess.find(item => item.code === (isExcelDashboard ? excelDashboardAccess.code : dashboardView)) ?? dashboardAccess[0]
   const dashboardMenu: MenuProps = {
     items: dashboardAccess.map(item => ({ key: item.code, label: <div className="dashboard-switch-item"><strong>{item.name}</strong><small>{item.description}</small></div> })),
     selectedKeys: [activeDashboard.code],
@@ -810,7 +817,7 @@ export default function SettingsApp() {
     if (isProfile && currentUser) return <MyProfilePage user={currentUser} />
     if (showMyTasks) return <WorkflowTasks />
     if (!canAccessModule(mainModule)) return <DashboardPage view={dashboardView} />
-    if (mainModule === 'Dashboard') return <DashboardPage view={dashboardView} />
+    if (mainModule === 'Dashboard') return isExcelDashboard ? <ExcelPayslipDashboard /> : <DashboardPage view={dashboardView} />
     if (mainModule === 'Security') return clientScopedAdmin
       ? <SecurityPanel initialTab={securityTab === 'Audit' ? 'Users' : securityTab} />
       : securityAppSettingsTab === 'ESS Settings' ? <EssSettings /> : securityAppSettingsTab === 'Storage Servers' ? <AttachmentSettings mode="storage" /> : securityAppSettingsTab === 'Engine Monitor' && isSuperAdmin ? <EngineMonitoring /> : <SecurityPanel initialTab={securityTab} />

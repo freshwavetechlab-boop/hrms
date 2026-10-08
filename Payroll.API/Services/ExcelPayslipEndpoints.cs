@@ -22,7 +22,9 @@ public static class ExcelPayslipEndpoints
                 && context.Request.Path.Value!.EndsWith("/pdf", StringComparison.OrdinalIgnoreCase);
             if (!HttpMethods.IsGet(context.Request.Method) && !isExport && !canManage(context))
                 return Results.StatusCode(403);
-            if (!context.Request.Path.Value!.EndsWith("/clients", StringComparison.OrdinalIgnoreCase))
+            var isOwnJobFeed = HttpMethods.IsGet(context.Request.Method)
+                && context.Request.Path.Equals(new PathString("/api/excel-payslips/mail-jobs"));
+            if (!context.Request.Path.Value!.EndsWith("/clients", StringComparison.OrdinalIgnoreCase) && !isOwnJobFeed)
             {
                 if (!int.TryParse(context.Request.Query["clientId"], out var clientId) || clientId <= 0)
                     return Results.BadRequest(new { error = "Select an active client." });
@@ -40,6 +42,33 @@ public static class ExcelPayslipEndpoints
                 .Where(client => canAccessClient(context, client.Id))))
             .WithName("GetExcelPayslipClients").WithOpenApi();
 
+        routes.MapGet("/mail-jobs", async (ExcelPayslipRepository repository, HttpContext context) =>
+        {
+            var user = currentUser(context);
+            return Results.Ok(await repository.GetOwnMailJobsAsync(user.Id, user.ClientId, clientId => canAccessClient(context, clientId)));
+        }).WithName("GetMyExcelPayslipMailJobs").WithOpenApi();
+
+        routes.MapGet("/batches/{id}/mail-jobs", async (ExcelPayslipRepository repository, int clientId, string id) =>
+        {
+            var jobs = await repository.GetBatchMailJobsAsync(clientId, id);
+            return jobs is null ? Results.NotFound(new { error = "Payslip batch not found." }) : Results.Ok(jobs);
+        }).WithName("GetExcelPayslipBatchMailJobs").WithOpenApi();
+
+        routes.MapPost("/batches/{id}/send-job", async (ExcelPayslipRepository repository, int clientId, string id,
+            SendExcelPayslipsRequest request, HttpContext context) =>
+        {
+            var user = currentUser(context);
+            var (item, error) = await repository.SubmitMailJobAsync(clientId, id, request, user.Id, user.Email);
+            return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+        }).WithName("QueueExcelPayslipMailJob").WithOpenApi();
+
+        routes.MapPost("/batches/{id}/mail-jobs/{jobId}/dismiss", async (ExcelPayslipRepository repository, int clientId,
+            string id, string jobId, HttpContext context) =>
+        {
+            var error = await repository.DismissMailJobAsync(clientId, id, jobId, currentUser(context).Id);
+            return error is null ? Results.Ok(new { ok = true }) : Results.BadRequest(new { error });
+        }).WithName("DismissExcelPayslipMailJob").WithOpenApi();
+
         routes.MapGet("/profile", async (ExcelPayslipRepository repository, int clientId, string headerSignature) =>
             !ValidSignature(headerSignature) ? Results.BadRequest(new { error = "Invalid worksheet header signature." })
                 : Results.Ok(await repository.GetProfileAsync(clientId, headerSignature)))
@@ -47,6 +76,12 @@ public static class ExcelPayslipEndpoints
 
         routes.MapGet("/templates", async (ExcelPayslipRepository repository, int clientId) => Results.Ok(await repository.GetTemplatesAsync(clientId)))
             .WithName("GetExcelPayslipSalaryTemplates").WithOpenApi();
+
+        routes.MapGet("/dashboard", async (ExcelPayslipRepository repository, int clientId, string? batchId) =>
+        {
+            var dashboard = await repository.GetDashboardAsync(clientId, batchId);
+            return dashboard is null ? Results.NotFound(new { error = "The selected batch was not found for this client." }) : Results.Ok(dashboard);
+        }).WithName("GetExcelPayslipDashboard").WithOpenApi();
 
         routes.MapPut("/profile", async (ExcelPayslipRepository repository, int clientId, string headerSignature, JsonElement request, HttpContext context) =>
         {
@@ -63,12 +98,39 @@ public static class ExcelPayslipEndpoints
             var batch = await repository.GetAsync(clientId, id);
             return batch is null ? Results.NotFound(new { error = "Payslip batch not found." }) : Results.Ok(batch);
         }).WithName("GetExcelPayslipBatch").WithOpenApi();
+        routes.MapGet("/batches/{id}/delivery-status", async (ExcelPayslipRepository repository, int clientId, string id) =>
+        {
+            var status = await repository.GetDeliveryStatusAsync(clientId, id);
+            return status is null ? Results.NotFound(new { error = "Payslip batch not found." }) : Results.Ok(status);
+        }).WithName("GetExcelPayslipDeliveryStatus").WithOpenApi();
         routes.MapPost("/batches", async (ExcelPayslipRepository repository, int clientId, ExcelPayslipBatch request, HttpContext context) =>
         {
             if (!canManage(context)) return Results.StatusCode(403);
             var (item, error) = await repository.SaveAsync(clientId, request, currentUser(context).Email);
             return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
         }).WithName("CreateExcelPayslipBatch").WithOpenApi();
+
+        routes.MapGet("/batches/{id}/calculation", async (ExcelPayslipRepository repository, int clientId, string id) =>
+        {
+            var source = await repository.GetCalculationSourceAsync(clientId, id);
+            return source is null ? Results.NotFound(new { error = "This batch has no saved formulas. Import the original salary workbook again to save its calculation source." }) : Results.Ok(source);
+        }).WithName("GetExcelPayslipCalculationSource").WithOpenApi();
+
+        routes.MapPost("/batches/{id}/calculate", async (ExcelPayslipRepository repository, int clientId, string id, ExcelPayslipCalculateRequest request) =>
+        {
+            var batch = await repository.GetAsync(clientId, id);
+            var source = await repository.GetCalculationSourceAsync(clientId, id);
+            if (batch is null || source is null) return Results.NotFound(new { error = "Saved batch or calculation source was not found for this client." });
+            return Results.Ok(ExcelPayslipCalculationService.Calculate(source, batch, request));
+        }).WithName("PreviewExcelPayslipCalculation").WithOpenApi();
+
+        routes.MapGet("/batches/{id}/variance", async (ExcelPayslipRepository repository, int clientId, string id, string previousBatchId) =>
+        {
+            var current = await repository.GetAsync(clientId, id);
+            var previous = await repository.GetAsync(clientId, previousBatchId);
+            if (current is null || previous is null) return Results.NotFound(new { error = "Select saved batches belonging to this client." });
+            return Results.Ok(ExcelPayslipVarianceService.Compare(current, previous));
+        }).WithName("CompareExcelPayslipsWithPreviousMonth").WithOpenApi();
 
         routes.MapPost("/batches/{id}/pdf", async (ExcelPayslipRepository repository, ExcelPayslipPdfService pdf,
             int clientId, string id, ExcelPayslipSelection request) =>

@@ -76,7 +76,8 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   const classificationFilters = classifications.clientId === clientId ? classifications : { employmentType: '', skillCategory: '' }
   const showClassifications = ['employee-master', 'tenure', 'new-joiners'].includes(activeReport.code || '')
   const [employeeExportGroups, setEmployeeExportGroups] = useState<EmployeeExportGroup[]>(['table'])
-  const [employeeDataReady, setEmployeeDataReady] = useState(false), [employeeLookupReady, setEmployeeLookupReady] = useState(false)
+  const [employeeDataReady, setEmployeeDataReady] = useState(false), [employeeLookupReady, setEmployeeLookupReady] = useState(false), [setupReady, setSetupReady] = useState(false), [payRunsReady, setPayRunsReady] = useState(false)
+  const [filterScope, setFilterScope] = useState('')
   const [reportLoading, setReportLoading] = useState(false), [reportError, setReportError] = useState(''), [reportReloadKey, setReportReloadKey] = useState(0)
   const [payRunId, setPayRunId] = useState(0), [employeeId, setEmployeeId] = useState(0), [componentCode, setComponentCode] = useState('')
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7)), [fromDate, setFromDate] = useState(`${new Date().toISOString().slice(0, 7)}-01`), [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10))
@@ -90,6 +91,8 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   const showEmployee = !!activeReport.code && employeeCodes.includes(activeReport.code)
   const showComponent = activeReport.code === 'component-ledger'
   const isEmployeeMaster = activeReport.code === 'employee-master' && activeReport.name === 'Employee Master Report'
+  const needsEmployees = showEmployee || showClassifications || isEmployeeMaster
+  const needsSetup = showComponent || isEmployeeMaster
   const [fieldExchange, setFieldExchange] = useState<EmployeeFieldExchange>(emptyEmployeeFields)
   const [fieldsReady, setFieldsReady] = useState(false)
   const [fieldsError, setFieldsError] = useState('')
@@ -98,7 +101,7 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
     if (isEmployeeMaster && clientId) void getEmployeeFields(clientId).then(data => { if (active) { setFieldExchange(data); setFieldsReady(true) } }).catch(error => { if (active) setFieldsError(error.message) })
     return () => { active = false }
   }, [isEmployeeMaster, clientId, reportReloadKey])
-  const employeeExportReady = employeeDataReady && employeeLookupReady && fieldsReady
+  const employeeExportReady = employeeDataReady && employeeLookupReady && setupReady && fieldsReady
   const clientPayRuns = useMemo(() => payRuns.filter(run => run.clientId === clientId).sort((a, b) => b.id - a.id), [clientId, payRuns])
   const clientEmployees = useMemo(() => employees.filter(employee => employee.clientId === clientId && employee.isActive), [clientId, employees])
   const componentOptions = useMemo(() => [
@@ -110,29 +113,53 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
     ...components.filter(component => component.active).map(component => ({ value: component.code, label: `${component.code} - ${component.name}` }))
   ], [components])
   useEffect(() => {
-    void Promise.all([getClients(), getPayRuns(), getEmployees(), getSetup(setup0)]).then(([clientRows, runRows, employeeRows, setup]) => {
-      const active = clientRows.filter(x => x.isActive)
-      setClients(active)
-      setClientId(current => clientScoped ? scopedClientId : current || active[0]?.id || 0)
-      setPayRuns(runRows)
-      setEmployees(employeeRows)
-      setComponents(setup.salaryComponents ?? [])
-      setSalaryStructures(setup.salaryStructures ?? [])
-      setEmployeeDataReady(true)
+    let active = true
+    void getClients(true).then(clientRows => {
+      if (!active) return
+      const available = clientRows.filter(x => x.isActive)
+      setClients(available)
+      setClientId(current => clientScoped ? scopedClientId : available.some(client => client.id === current) ? current : available[0]?.id || 0)
     })
+    return () => { active = false }
   }, [clientScoped, scopedClientId])
   useEffect(() => {
+    let active = true
+    setPayRunsReady(false)
+    if (showPayRun) void getPayRuns().then(rows => { if (active) { setPayRuns(rows); setPayRunsReady(true) } })
+    return () => { active = false }
+  }, [showPayRun, clientScoped, scopedClientId])
+  useEffect(() => {
+    let active = true
+    setEmployeeDataReady(false)
+    if (needsEmployees) void getEmployees().then(rows => { if (active) { setEmployees(rows); setEmployeeDataReady(true) } })
+    return () => { active = false }
+  }, [needsEmployees, clientScoped, scopedClientId])
+  useEffect(() => {
+    let active = true
+    setSetupReady(false)
+    if (needsSetup) void getSetup(setup0).then(setup => {
+      if (!active) return
+      setComponents(setup.salaryComponents ?? []); setSalaryStructures(setup.salaryStructures ?? []); setSetupReady(true)
+    })
+    return () => { active = false }
+  }, [needsSetup, clientScoped, scopedClientId])
+  useEffect(() => {
     if (!isEmployeeMaster) { setEmployeeLookupReady(false); return }
+    let active = true
     setEmployeeLookupReady(false)
     void Promise.all([getWorkLocations(), getEmployeeManagerUsers()]).then(([locationRows, managerRows]) => {
+      if (!active) return
       setLocations(locationRows)
       setManagerUsers(managerRows)
       setEmployeeLookupReady(true)
     })
+    return () => { active = false }
   }, [isEmployeeMaster])
   useEffect(() => {
+    if (showPayRun && !payRunsReady) return
     setEmployeeId(0)
     setComponentCode('')
+    setFilterScope(`${clientId}:${activeReport.code}`)
     if (!showPayRun) {
       setPayRunId(0)
       return
@@ -140,11 +167,12 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
     const latestRun = clientPayRuns[0]
     setPayRunId(latestRun?.id ?? 0)
     if (latestRun?.payPeriod) setMonth(latestRun.payPeriod)
-  }, [activeReport.code, clientId, showPayRun, clientPayRuns])
+  }, [activeReport.code, clientId, showPayRun, clientPayRuns, payRunsReady])
   useEffect(() => {
     setResult({ title: '', columns: [], rows: [] })
     setReportError('')
     if (!clientId || !activeReport.code) { setReportLoading(false); return }
+    if (filterScope !== `${clientId}:${activeReport.code}` || (showPayRun && !payRunsReady)) { setReportLoading(true); return }
     let cancelled = false
     setReportLoading(true)
     void runReportResult(activeReport.code, clientId, {
@@ -163,7 +191,7 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
       else setReportError(response.status ? `The report service returned status ${response.status}. Please retry or contact the administrator if it continues.` : 'The report service could not be reached. Check the local API and retry.')
     }).finally(() => { if (!cancelled) setReportLoading(false) })
     return () => { cancelled = true }
-  }, [clientId, activeReport, month, fromDate, toDate, payRunId, employeeId, componentCode, showMonth, showPeriod, showPayRun, showEmployee, showComponent, reportReloadKey, showClassifications, classificationFilters.employmentType, classificationFilters.skillCategory])
+  }, [clientId, activeReport, month, fromDate, toDate, payRunId, employeeId, componentCode, showMonth, showPeriod, showPayRun, showEmployee, showComponent, reportReloadKey, showClassifications, classificationFilters.employmentType, classificationFilters.skillCategory, filterScope, payRunsReady])
   const employeeByCode = useMemo(() => new Map(employees.filter(employee => employee.clientId === clientId).map(employee => [employee.employeeCode.toLowerCase(), employee])), [employees, clientId])
   const employeeForRow = (row: ReportRow) => employeeByCode.get(String(row['Employee Code'] ?? '').toLowerCase())
   const reportColumns: Column<ReportRow>[] = [...result.columns.map(column => ({ key: column, label: column })), ...(isEmployeeMaster ? fieldExchange.fields.map(field => ({ key: field.code, label: field.field.label, value: (row: ReportRow) => fieldExchange.values[employeeForRow(row)?.id || 0]?.[field.code] || '' })) : [])]

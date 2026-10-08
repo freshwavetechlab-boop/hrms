@@ -37,16 +37,26 @@ public sealed class ExcelPayslipAccessTests
         var signature = new string('a', 64);
         var routes = new[]
         {
+            (HttpMethod.Get, "/dashboard"),
+            (HttpMethod.Get, "/dashboard?batchId=0123456789abcdef0123456789abcdef"),
             (HttpMethod.Get, "/templates"),
             (HttpMethod.Get, $"/profile?headerSignature={signature}"),
             (HttpMethod.Put, $"/profile?headerSignature={signature}"),
             (HttpMethod.Get, "/batches"),
             (HttpMethod.Post, "/batches"),
             (HttpMethod.Get, "/batches/0123456789abcdef0123456789abcdef"),
+            (HttpMethod.Get, "/batches/0123456789abcdef0123456789abcdef/delivery-status"),
+            (HttpMethod.Get, "/batches/0123456789abcdef0123456789abcdef/mail-jobs"),
+            (HttpMethod.Post, "/batches/0123456789abcdef0123456789abcdef/send-job"),
+            (HttpMethod.Post, "/batches/0123456789abcdef0123456789abcdef/mail-jobs/fedcba9876543210fedcba9876543210/dismiss"),
+            (HttpMethod.Get, "/batches/0123456789abcdef0123456789abcdef/calculation"),
+            (HttpMethod.Post, "/batches/0123456789abcdef0123456789abcdef/calculate"),
+            (HttpMethod.Get, "/batches/0123456789abcdef0123456789abcdef/variance?previousBatchId=fedcba9876543210fedcba9876543210"),
             (HttpMethod.Post, "/batches/0123456789abcdef0123456789abcdef/pdf"),
             (HttpMethod.Post, "/batches/0123456789abcdef0123456789abcdef/send")
         };
         Assert.Equal(HttpStatusCode.Forbidden, (await http.GetAsync("/api/excel-payslips/clients")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await http.GetAsync("/api/excel-payslips/mail-jobs")).StatusCode);
         foreach (var (method, path) in routes) await Expect(method, path, "20", HttpStatusCode.Forbidden);
         canRead = canManage = true;
         foreach (var (method, path) in routes) await Expect(method, path, "21", HttpStatusCode.Forbidden);

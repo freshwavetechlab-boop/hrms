@@ -65,6 +65,44 @@ public sealed class ExcelPayslipTests
     }
 
     [Fact]
+    public void ScopedTemplateProjectionKeepsLineOrderExactIdsAndClientReferences()
+    {
+        var rows = new ExcelPayslipRepository.TemplateMappingRow[]
+        {
+            new() { Id = "9007199254740993", ClientRef = "11:Example", Name = "Z template", ComponentId = "201", MasterId = "201", Code = "PF", ComponentName = "PF", Category = "Deduction" },
+            new() { Id = "9007199254740993", ClientRef = "11:Example", Name = "Z template", ComponentId = "101", MasterId = "101", Code = "BASIC", ComponentName = "Basic", Category = "Earning" },
+            new() { Id = "9007199254740993", ClientRef = "11:Example", Name = "Z template", ComponentId = "0101" }, // Not numeric-coerced to component 101.
+            new() { Id = "1", ClientRef = "11", Name = "A empty template" },
+            new() { Id = "2", ClientRef = "12:Other", Name = "Other client", ComponentId = "101", MasterId = "101", Code = "BASIC", ComponentName = "Basic", Category = "Earning" }
+        };
+        var templates = ExcelPayslipRepository.ReadTemplateMappings(rows, null, 11);
+        Assert.Equal(new[] { "1", "9007199254740993" }, templates.Select(t => t.Id));
+        Assert.Empty(templates[0].Components);
+        Assert.Equal(new[] { "201", "101" }, templates[1].Components.Select(c => c.Id));
+        Assert.Equal(new[] { "Deduction", "Earning" }, templates[1].Components.Select(c => c.Category));
+    }
+
+    [Fact]
+    public void ScopedTemplateProjectionUsesLegacyComponentsWithoutLoadingUnrelatedSetup()
+    {
+        var rows = new ExcelPayslipRepository.TemplateMappingRow[]
+        {
+            new() { Id = "1", ClientRef = "11:Example", Name = "Legacy", ComponentId = "101" },
+            new() { Id = "1", ClientRef = "11:Example", Name = "Legacy", ComponentId = "102" },
+            new() { Id = "1", ClientRef = "11:Example", Name = "Legacy", ComponentId = "103" }
+        };
+        const string legacy = """
+        [{"id":"101","code":"TRAVEL","name":"Travel","category":"Reimbursement"},
+         {"id":"102","code":"OLD","name":"Old","category":"Earning","active":false},
+         {"id":"103","code":"ER","name":"Employer","category":"Benefit"}]
+        """;
+        var template = Assert.Single(ExcelPayslipRepository.ReadTemplateMappings(rows, legacy, 11));
+        Assert.Equal(new[] { "Earning", "Employer" }, template.Components.Select(c => c.Category));
+        Assert.Empty(ExcelPayslipRepository.ReadTemplateMappings([], legacy, 11));
+        Assert.Empty(ExcelPayslipRepository.ReadTemplateMappings(rows, "null", 11));
+    }
+
+    [Fact]
     public void SourceFinalValuesAndTextIdentifiersArePreservedWithoutEmployerDeductions()
     {
         var batch = Batch(); var row = batch.Rows[0];

@@ -4065,8 +4065,8 @@ app.MapPost("/api/leave-attendance/import-balances/finalize", async (LeaveBalanc
 .WithName("FinalizeLeaveBalanceImport")
 .WithOpenApi();
 
-app.MapGet("/api/clients", async (OrganizationRepository repository, HttpContext context) =>
-    Results.Ok(await repository.GetClientsAsync(CurrentUser(context).ClientId)))
+app.MapGet("/api/clients", async (OrganizationRepository repository, bool? lookup, HttpContext context) =>
+    Results.Ok(await repository.GetClientsAsync(CurrentUser(context).ClientId, lookup == true)))
 .WithName("GetClients")
 .WithOpenApi();
 

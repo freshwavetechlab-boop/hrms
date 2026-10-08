@@ -329,7 +329,8 @@ ORDER BY r.Name;", new { ClientId = clientId, AssignableRoleCodes = ClientAssign
         new("workforce", "Workforce Dashboard", "Employee strength, ESS adoption and workforce movement.", "/dashboard/workforce", 20, ["dashboard.workforce.view", "employees.view", "employees.manage", "security.manage"]),
         new("payroll", "Payroll Dashboard", "Pay run status, payroll cost and recent run activity.", "/dashboard/payroll", 30, ["dashboard.payroll.view", "payroll.run", "payroll.approve", "payroll.payments", "security.manage"]),
         new("attendance", "Attendance Dashboard", "Attendance readiness, exceptions and leave blockers.", "/dashboard/attendance", 40, ["dashboard.attendance.view", "leave.manage", "attendance.manage", "settings.manage", "security.manage"]),
-        new("approvals", "Approvals Dashboard", "Pending workflow tasks and approval workload.", "/dashboard/approvals", 50, ["dashboard.approvals.view", "workflow.manage", "payroll.approve", "security.manage"])
+        new("approvals", "Approvals Dashboard", "Pending workflow tasks and approval workload.", "/dashboard/approvals", 50, ["dashboard.approvals.view", "workflow.manage", "payroll.approve", "security.manage"]),
+        new("excel-payslips", "Excel Dashboard", "Excel Payslips batches, salary totals and monthly trends.", "/dashboard/excel-payslips", 60, ["reports.view"])
     ];
 
     private static List<DashboardAccessItem> BuildDashboardAccess(IEnumerable<string> permissions)

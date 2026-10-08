@@ -1,7 +1,7 @@
 import type { Client, Employee, PayRun, PayRunDiagnostics, PayrollAdjustment, RunEmployee } from '../types/payroll'
 import { deleteJson, getJson, postEmpty, postJson, putJson } from './apiClient'
 
-export const getClients = async () => (await getJson<Client[]>('/api/clients', []))
+export const getClients = async (lookup = false) => (await getJson<Client[]>(`/api/clients${lookup ? '?lookup=true' : ''}`, []))
   .map(client => ({ ...client, id: Number(client.id) }))
   .filter(client => client.isActive && Number.isSafeInteger(client.id) && client.id > 0)
 export const getEmployees = () => getJson<Employee[]>('/api/employees', [])

@@ -391,11 +391,14 @@ WHERE Id = @Id;";
         await PayrollDataTableStore.SaveSetupJsonAsync(connection, setupJson);
     }
 
-    public async Task<IEnumerable<Client>> GetClientsAsync(int? clientId = null)
+    public async Task<IEnumerable<Client>> GetClientsAsync(int? clientId = null, bool lookup = false)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await PrepareDatabaseAsync(connection);
+        // Report selectors need identities, not embedded logos and payroll settings.
+        if (lookup)
+            return await connection.QueryAsync<Client>("SELECT Id,Name,Code,IsActive FROM clients WHERE (@ClientId IS NULL OR Id=@ClientId) ORDER BY Name", new { ClientId = clientId });
         var clients = (await connection.QueryAsync<Client>("SELECT * FROM clients WHERE (@ClientId IS NULL OR Id=@ClientId) ORDER BY Name", new { ClientId = clientId })).ToList();
         await PayrollDataTableStore.ApplyClientPaySchedulesAsync(connection, clients);
         return clients;

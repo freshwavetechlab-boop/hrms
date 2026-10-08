@@ -9,6 +9,7 @@ internal sealed class ExcelPayslipSendState
 {
     public Dictionary<string, JsonElement> Requests { get; set; } = [];
     public Dictionary<string, NotificationRepository.ExcelPayslipMailDocument> Deliveries { get; set; } = [];
+    public Dictionary<string, ExcelPayslipMailJobRecord> Jobs { get; set; } = [];
 }
 
 public sealed partial class ExcelPayslipRepository

@@ -296,9 +296,9 @@ export function DashboardChartCard({ spec }: { spec: DashboardChartSpec }) {
   </article>
 }
 
-export function DashboardActionQueue({ title, subtitle, items, emptyText }: { title: string; subtitle: string; items: DashboardQueueItem[]; emptyText: string }) {
+export function DashboardActionQueue({ title, subtitle, items, emptyText, countLabel }: { title: string; subtitle: string; items: DashboardQueueItem[]; emptyText: string; countLabel?: string }) {
   return <section className="dashboard-section-card dashboard-action-card" aria-label={title}>
-    <header className="dashboard-section-heading"><div><h3>{title}</h3><p>{subtitle}</p></div><span>{items.length} open</span></header>
+    <header className="dashboard-section-heading"><div><h3>{title}</h3><p>{subtitle}</p></div><span>{countLabel ?? `${items.length} open`}</span></header>
     {items.length ? <div className="dashboard-engine-action-list">{items.map(item => <article key={item.id}>
       <span className={`dashboard-action-icon priority-${item.priority.toLowerCase()}`}>{item.icon}</span>
       <div><strong>{item.title}</strong><p>{item.meta}</p><small>{[item.owner, item.age].filter(Boolean).join(' · ')}</small></div>

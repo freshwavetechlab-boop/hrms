@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Button, Drawer, Space, Spin, Tag } from 'antd'
 import { getClients, getPayRun, getPayRuns } from '../services/payrollService'
 import { getRegisterPayslip, sendRegisterPayslips, type PayslipDeliveryItem, type PayslipDocument } from '../services/payslipService'
@@ -21,6 +21,7 @@ export default function PayslipRegister() {
   const canSend = session?.user.permissions.some(permission => ['payroll.run', 'payroll.approve', 'payroll.payments'].includes(permission)) ?? false
   const [clients, setClients] = useState<Client[]>([])
   const [runs, setRuns] = useState<PayRun[]>([])
+  const [runsReady, setRunsReady] = useState(false)
   const [clientId, setClientId] = useSessionPreference(`payslips.client:${session?.user.id}`, 0)
   const [runId, setRunId] = useSessionPreference(`payslips.run:${session?.user.id}:${clientId}`, 0)
   const [selectedIds, setSelectedIds] = useSessionPreference<number[]>(`payslips.selection:${session?.user.id}:${clientId}:${runId}`, [])
@@ -38,13 +39,14 @@ export default function PayslipRegister() {
 
   useEffect(() => {
     let active = true
-    void Promise.all([getClients(), getPayRuns()]).then(([clientRows, runRows]) => {
+    setRunsReady(false)
+    void getClients(true).then(clientRows => {
       if (!active) return
       const available = clientRows.filter(row => row.isActive)
       setClients(available)
       setClientId(current => clientScoped ? scopedClientId : available.some(client => client.id === current) ? current : available[0]?.id ?? 0)
-      setRuns(runRows)
     })
+    void getPayRuns().then(runRows => { if (active) { setRuns(runRows); setRunsReady(true) } })
     return () => { active = false }
     // Preference setters are recreated by the shared hook; fetch only when user scope changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -55,6 +57,7 @@ export default function PayslipRegister() {
   const validSelection = selectedIds.filter(id => rows.some(row => row.employeeId === id))
 
   useEffect(() => {
+    if (!runsReady) return
     let active = true
     const available = clientRuns.some(item => item.id === runId) ? runId : clientRuns[0]?.id ?? 0
     previewSequence.current += 1
@@ -70,7 +73,7 @@ export default function PayslipRegister() {
     })
     return () => { active = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- The request scope is keyed by clientRuns/runId.
-  }, [clientRuns, runId])
+  }, [clientRuns, runId, runsReady])
 
   const preview = async (row: RunEmployee) => {
     if (!run || run.clientId !== clientId || run.id !== runId) return

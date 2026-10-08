@@ -55,6 +55,9 @@ public sealed class ExcelPayslipRow
 // Independent source snapshot: these identifiers never reference employee or pay-run records.
 public sealed class ExcelPayslipBatch
 {
+    // Accepted on save, stored separately from the payslip snapshot and never used by PDF/mail rendering.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ExcelPayslipCalculationSource? CalculationSource { get; set; }
     public string Id { get; set; } = "";
     public int ClientId { get; set; }
     public string ClientName { get; set; } = "";

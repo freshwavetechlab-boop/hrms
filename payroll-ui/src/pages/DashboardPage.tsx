@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined, ReloadOutlined, TeamOutlined, WalletOutlined } from '@ant-design/icons'
-import { Button, Empty, Space, Tag } from 'antd'
+import { ArrowRightOutlined, CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined, ReloadOutlined, TeamOutlined, WalletOutlined } from '@ant-design/icons'
+import { Button, Drawer, Empty, Space, Tag } from 'antd'
 import type { DashboardChartPoint, DashboardSnapshot } from '../types/payroll'
 import { getDashboard } from '../services/dashboardService'
 import { workforcePath, type WorkforceField } from '../utils/employeeWorkforce'
@@ -40,6 +40,7 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
   const [dashboard, setDashboard] = useState<DashboardSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   const [revision, setRevision] = useState(0)
+  const [classification, setClassification] = useState<'employmentType' | 'skillCategory' | null>(null)
 
   useEffect(() => {
     let active = true
@@ -59,6 +60,11 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
   const canSee = (section: string) => dashboard?.sections.includes(section) && (view === 'overview' || view === section)
   const attendanceReady = metrics?.activeEmployees ? Math.round(metrics.attendanceRecorded / metrics.activeEmployees * 100) : 0
   const selectedClient = dashboard?.clients.find(client => client.id === clientId)
+  const classificationGroups = [
+    { key: 'employmentType', label: 'Employee type', data: dashboard?.employmentTypeHeadcount ?? [] },
+    { key: 'skillCategory', label: 'Employee category', data: dashboard?.skillCategoryHeadcount ?? [] },
+  ] as const
+  const selectedClassification = classificationGroups.find(group => group.key === classification)
   const clientName = clientId === 0 ? 'All clients' : selectedClient?.name ?? 'Selected client'
   const isRru = selectedClient?.code?.toUpperCase() === 'RRU' || selectedClient?.name?.toLowerCase().includes('rashtriya raksha university')
   const period = formatMonth(dashboard?.month ?? '')
@@ -130,12 +136,23 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
     <PageHeaderPortal slot="dashboard-page-controls"><Space wrap><Tag icon={<CalendarOutlined />}>{period}</Tag><Button aria-label="Refresh dashboard" icon={<ReloadOutlined spin={loading} />} disabled={loading} onClick={() => setRevision(value => value + 1)}>Refresh</Button></Space></PageHeaderPortal>
     <DashboardEngine loading={loading}>
       {kpis.length > 0 ? <DashboardKpiGrid items={kpis} label="HR and payroll metrics" /> : <Empty description="No dashboard sections are assigned for this view." />}
-      {canSee('workforce') && <DashboardSectionCard title="Employee type & category" subtitle="Active employees by classification. Select a count to open the matching employee list.">
-        <div className="dashboard-classifications">{([{ key: 'employmentType', label: 'Employee type', data: dashboard?.employmentTypeHeadcount }, { key: 'skillCategory', label: 'Employee category', data: dashboard?.skillCategoryHeadcount }] as const).map(group => <section key={group.key}>
-          <h4>{group.label}</h4><div className="employee-classification-counts">{(group.data || []).map(point => <button key={point.label} type="button" disabled={!canOpenEmployees} onClick={() => openWorkforce({ [group.key]: point.label })}><span>{point.label}</span><strong>{count.format(point.value)}</strong></button>)}</div>
-          {!group.data?.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No active employees in this group." />}
-        </section>)}</div>
-      </DashboardSectionCard>}
+      {(canSee('workforce') || actions.length > 0) && <div className={`dashboard-overview-panels${canSee('workforce') && actions.length > 0 ? ' has-actions' : ''}`}>
+        {canSee('workforce') && <DashboardSectionCard title="Workforce profile" subtitle="Active employees by type and category.">
+          <div className="dashboard-classifications">{classificationGroups.map(group => {
+            const total = group.data.reduce((sum, point) => sum + point.value, 0)
+            const visible = [...group.data].sort((a, b) => b.value - a.value).slice(0, group.key === 'employmentType' ? 3 : 6)
+            return <section key={group.key} className={`dashboard-classification-group ${group.key}`} aria-label={group.label}>
+              <header><h4>{group.label}<span>{group.data.length}</span></h4><Button type="link" size="small" onClick={() => setClassification(group.key)}>View all<ArrowRightOutlined /></Button></header>
+              <div className="dashboard-classification-list">{visible.map(point => <button key={point.label} type="button" disabled={!canOpenEmployees} onClick={() => openWorkforce({ [group.key]: point.label })} aria-label={`${point.label}: ${count.format(point.value)} employees`}>
+                <span className="dashboard-classification-label" title={point.label}>{point.label}</span><strong>{count.format(point.value)}</strong>
+                <span className="dashboard-classification-track" aria-hidden="true"><i style={{ width: `${total ? point.value / total * 100 : 0}%` }} /></span><small>{total ? (point.value / total * 100).toFixed(1) : '0'}%</small>
+              </button>)}</div>
+              {!group.data.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No active employees in this group." />}
+            </section>
+          })}</div>
+        </DashboardSectionCard>}
+        {actions.length > 0 && <DashboardActionQueue title="Action queue" countLabel={`${actions.length} areas`} subtitle="Attendance, approvals and payroll follow-ups." items={actions} emptyText="No pending actions." />}
+      </div>}
       {canSee('workforce') && isRru && dashboard?.selectedClientId === clientId && <DashboardSectionCard title="RRU Workforce Overview" subtitle="Campus-wise staffing, gender and skill-category distribution.">
         <DashboardKpiGrid label="RRU workforce metrics" items={[
           { key: 'total', label: 'Total staff', value: count.format(metrics?.activeEmployees ?? 0), helper: 'Active employee records', icon: <TeamOutlined />, onClick: workforceAction() },
@@ -148,7 +165,6 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
         ]} />
       </DashboardSectionCard>}
       {charts.length > 0 && <DashboardChartGrid label="HR and payroll analytics">{charts.map(spec => <DashboardChartCard key={spec.id} spec={spec} />)}</DashboardChartGrid>}
-      {actions.length > 0 && <DashboardActionQueue title="Action Queue" subtitle="Items that can block HR and payroll closure." items={actions} emptyText="No pending actions." />}
       {canSee('payroll') && <>
         <DashboardSectionCard title="Payroll Status" subtitle="Current month run health by status.">
           <DataTable rows={statuses} getRowId={row => row.status} exportFileName="payroll-status" emptyText="No runs yet." columns={[
@@ -172,5 +188,11 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
         </DashboardSectionCard>
       </>}
     </DashboardEngine>
+    <Drawer title={selectedClassification?.label} open={!!classification && !!canSee('workforce')} width="min(720px, 96vw)" onClose={() => setClassification(null)}>
+      <DataTable rows={selectedClassification?.data ?? []} loading={loading} title={selectedClassification?.label} getRowId={row => row.label} exportFileName={`workforce-${classification}`} columns={[
+        { key: 'label', label: selectedClassification?.label || 'Classification', wrap: true },
+        { key: 'value', label: 'Active employees', render: row => <Button type="link" disabled={!canOpenEmployees} onClick={() => { if (classification) openWorkforce({ [classification]: row.label }) }}>{count.format(row.value)}</Button> },
+      ]} />
+    </Drawer>
   </section>
 }

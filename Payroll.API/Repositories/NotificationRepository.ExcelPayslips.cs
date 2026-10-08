@@ -51,8 +51,14 @@ SELECT LAST_INSERT_ID();", new
     internal static ExcelPayslipMailDocument PrepareExcelPayslipMail(ExcelPayslipBatch batch, IReadOnlyList<ExcelPayslipRow> rows,
         string email, byte[] pdf, string requestId, string actor, bool includeSeal, int amountDecimalPlaces)
     {
-        if (!ExcelPayslipRepository.TryEmail(email, out var recipient)) throw new InvalidOperationException("A single valid email recipient is required.");
         if (ValidateExcelPayslipPdf(pdf) is string error) throw new InvalidOperationException(error);
+        return PrepareExcelPayslipMailMetadata(batch, rows, email, requestId, actor, includeSeal, amountDecimalPlaces);
+    }
+
+    internal static ExcelPayslipMailDocument PrepareExcelPayslipMailMetadata(ExcelPayslipBatch batch, IReadOnlyList<ExcelPayslipRow> rows,
+        string email, string requestId, string actor, bool includeSeal, int amountDecimalPlaces, string? batchHash = null)
+    {
+        if (!ExcelPayslipRepository.TryEmail(email, out var recipient)) throw new InvalidOperationException("A single valid email recipient is required.");
         var selection = ExcelPayslipRepository.SelectRows(batch, new() { RowIds = rows.Select(r => r.Id).ToList(), AmountDecimalPlaces = amountDecimalPlaces, AcknowledgeWarnings = true });
         if (selection.Error is not null) throw new InvalidOperationException(selection.Error);
         var individual = rows.Count == 1;
@@ -68,9 +74,36 @@ SELECT LAST_INSERT_ID();", new
             Subject = $"{clientName} payslip{(individual ? "" : "s")} - {batch.Month}",
             BodyHtml = $"<p>{WebUtility.HtmlEncode(description)} for {WebUtility.HtmlEncode(batch.Month)} {(individual ? "is" : "are")} attached as a PDF.</p><p>GA DIGITAL WEB WORD PVT. LTD.</p>",
             FileName = individual ? $"{filePrefix}-payslip-{batch.Month}-row-{rows[0].SourceRow}.pdf" : $"{filePrefix}-payslips-{batch.Month}-{rows.Count}.pdf",
-            IncludeSeal = includeSeal, AmountDecimalPlaces = amountDecimalPlaces, BatchSha256 = ExcelPayslipBatchHash(batch),
+            IncludeSeal = includeSeal, AmountDecimalPlaces = amountDecimalPlaces, BatchSha256 = batchHash ?? ExcelPayslipBatchHash(batch),
             CreatedAtUtc = DateTime.UtcNow, CreatedBy = actor.Length <= 190 ? actor : actor[..190]
         };
+    }
+
+    // All recipients are accepted in one transaction; the existing worker renders PDFs and sends later.
+    internal static async Task QueueExcelPayslipDocumentsAsync(MySqlConnection db, MySqlTransaction tx,
+        ExcelPayslipBatch batch, IReadOnlyList<ExcelPayslipMailDocument> documents)
+    {
+        if (documents.Count == 0) return;
+        if (documents.Count > 1000 || documents.Any(document => document.ClientId != batch.ClientId || document.BatchId != batch.Id))
+            throw new InvalidOperationException("The queued payslip documents do not match this batch.");
+        var parameters = new DynamicParameters(new { batch.ClientId, EventCode = ExcelPayslipEvent });
+        var values = new List<string>();
+        for (var index = 0; index < documents.Count; index++)
+        {
+            var document = documents[index];
+            parameters.Add("Resource" + index, batch.Id + ":" + document.Id);
+            parameters.Add("To" + index, JsonSerializer.Serialize(new[] { document.Email }));
+            parameters.Add("Subject" + index, document.Subject); parameters.Add("Body" + index, document.BodyHtml);
+            values.Add($"(NULL,@EventCode,'ExcelPayslipBatch',@Resource{index},@ClientId,@To{index},'[]','[]',@Subject{index},@Body{index},'Pending')");
+        }
+        var firstId = await db.ExecuteScalarAsync<long>("INSERT INTO notification_queue(RuleId,EventCode,ResourceType,ResourceId,ClientId,ToJson,CcJson,BccJson,Subject,BodyHtml,Status) VALUES "
+            + string.Join(',', values) + "; SELECT LAST_INSERT_ID();", parameters, tx);
+        // Do not assume contiguous auto-increment IDs (multi-primary servers may use another increment).
+        var queued = (await db.QueryAsync<(long Id, string ResourceId)>(@"SELECT Id,ResourceId FROM notification_queue
+WHERE Id>=@FirstId AND ClientId=@ClientId AND EventCode=@EventCode AND ResourceType='ExcelPayslipBatch' AND ResourceId IN @Resources",
+            new { FirstId = firstId, batch.ClientId, EventCode = ExcelPayslipEvent, Resources = documents.Select(document => batch.Id + ":" + document.Id).ToArray() }, tx))
+            .ToDictionary(item => item.ResourceId, item => item.Id, StringComparer.Ordinal);
+        foreach (var document in documents) document.QueueId = queued[batch.Id + ":" + document.Id];
     }
 
     private async Task AttachExcelPayslipPdfAsync(MySqlConnection db, NotificationQueueItem row, BodyBuilder builder)
@@ -104,7 +137,7 @@ CAST(send_state_json AS CHAR) AS SendStateJson FROM excel_payslip_batches WHERE 
         builder.Attachments.Add(document.FileName, pdf, new ContentType("application", "pdf"));
     }
 
-    private static string ExcelPayslipBatchHash(ExcelPayslipBatch batch) => Convert.ToHexString(SHA256.HashData(
+    internal static string ExcelPayslipBatchHash(ExcelPayslipBatch batch) => Convert.ToHexString(SHA256.HashData(
         Encoding.UTF8.GetBytes(JsonSerializer.Serialize(batch, ExcelPayslipRepository.JsonOptions))));
 
     private sealed class ExcelPayslipMailSource
