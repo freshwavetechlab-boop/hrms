@@ -86,7 +86,7 @@ WHERE e.ClientId=@ClientId", new { ClientId = clientId }, tx)).ToArray();
             MasterEmployeeIdentity? employee = matched.SingleOrDefault();
             if (employee is null)
             {
-                if (locationMatches.Length > 1) throw Review("Name and work location match multiple Employee Master records.");
+                if (locationMatches.Length > 1) continue; // Let the allocator generate a code instead of guessing a master identity.
                 employee = locationMatches.SingleOrDefault();
             }
             if (employee is null) continue; // Name alone never claims a master employee's code.

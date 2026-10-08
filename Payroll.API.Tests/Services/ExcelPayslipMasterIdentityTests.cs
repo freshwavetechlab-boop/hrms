@@ -62,14 +62,28 @@ public sealed class ExcelPayslipMasterIdentityTests
         Assert.Equal("PLRS040", moved.Rows[0].EmployeeCode);
     }
 
-    [Fact]
-    public void DuplicateNameLocationRequiresReviewInsteadOfGuessing()
+    [Theory]
+    [InlineData("PLRS010", "PLRS024", "PLRS025")]
+    [InlineData("PLRS030", "PLRS031", "PLRS032")]
+    public void DuplicateNameLocationAllocatesAfterHighestClientCodeAndPersistsCodesInSource(string historicalCode, string firstCode, string secondCode)
     {
         var batch = Batch();
-        var error = Assert.Throws<InvalidOperationException>(() => ExcelPayslipRepository.AssignEmployeeCodes(batch, null, "PLRS", [],
-            [Employee(), Employee(2, code: "PLRS041")]));
-        Assert.Contains("row 3", error.Message); Assert.Contains("multiple Employee Master", error.Message);
-        Assert.Equal("", batch.Rows[0].EmployeeCode);
+        batch.Rows[0].Id = "row-94"; batch.Rows[0].SourceRow = 94;
+        var second = Batch().Rows[0]; second.Id = "row-95"; second.SourceRow = 95; batch.Rows.Add(second);
+        var source = new ExcelPayslipCalculationSource
+        {
+            HeaderRow = 2, ColumnCount = 2,
+            Columns = [new() { ColumnIndex = 0, Kind = "employeeCode" }],
+            Rows = batch.Rows.Select(row => new ExcelPayslipCalculationSourceRow
+            {
+                SourceRow = row.SourceRow, Cells = [new() { Value = "" }, new() { Value = "1000", FormulaText = "10*100" }]
+            }).ToList()
+        };
+        ExcelPayslipRepository.AssignEmployeeCodes(batch, source, "PLRS", [historicalCode],
+            [Employee(code: "PLRS022"), Employee(2, code: "PLRS023")]);
+        Assert.Equal(new[] { firstCode, secondCode }, batch.Rows.Select(row => row.EmployeeCode));
+        Assert.Equal(new[] { firstCode, secondCode }, source.Rows.Select(row => row.Cells[0]!.Value));
+        Assert.All(source.Rows, row => { Assert.Equal("10*100", row.Cells[1]!.FormulaText); Assert.Equal("1000", row.Cells[1]!.Value); });
     }
 
     [Fact]
