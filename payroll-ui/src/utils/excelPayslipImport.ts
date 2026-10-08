@@ -4,7 +4,7 @@ export type PayslipColumnKind = 'employeeName' | 'employeeCode' | 'email' | 'inf
 export type PayslipColumn = { columnIndex: number; sourceHeader: string; label: string; kind: PayslipColumnKind; componentId?: string }
 export type PayslipCell = { value: string; formula?: boolean; formulaText?: string; calculationError?: string; error?: string; missingCachedValue?: boolean }
 export type PayslipSourceRow = { sourceRow: number; cells: PayslipCell[] }
-export type PayslipTemplateMetadata = { version: 1; clientId: number; sourceBatchId: string; month: string; headerRow: number; columns: PayslipColumn[]; excludedSourceRows: number[]; salaryTemplateId?: string; warnings: string[] }
+export type PayslipTemplateMetadata = { version: 1; clientId: number; sourceBatchId: string; month: string; headerRow: number; columns: PayslipColumn[]; excludedSourceRows: number[]; salaryTemplateId?: string; simpleLayout?: boolean; warnings: string[] }
 export type PayslipSheet = { name: string; rows: PayslipSourceRow[]; columnCount: number; dateSystem?: '1900' | '1904'; template?: PayslipTemplateMetadata }
 export const payslipTemplateMarker = 'Frevo Excel Payslip Template v1'
 export type PayslipImportIssue = { sourceRow: number; column: string; message: string }
@@ -54,6 +54,13 @@ export async function payslipHeaderSignature(headers: string[]) {
   const data = new TextEncoder().encode(JSON.stringify(headers.map((header, index) => [index, header.trim().replace(/\s+/g, ' ')])))
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)), byte => byte.toString(16).padStart(2, '0')).join('')
 }
+export function isPayslipPhoneLabel(label: string) {
+  const key = label.normalize('NFKC').replace(/\s+\([A-Z]{1,3}\)$/, '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  return /^(?:(?:employee|emp|personal|work|official|primary)?(?:(?:mobile|phone|telephone)(?:no|number)?|contact(?:no|number)))$/.test(key)
+}
+export function payslipPhoneValue(row: Pick<ExcelPayslipRow, 'information'>) {
+  return row.information.find(item => isPayslipPhoneLabel(item.label) && item.value.trim())?.value.trim() || ''
+}
 export function defaultPayslipMapping(headers: string[]): PayslipColumn[] {
   const norm = (value: string) => value.normalize('NFKC').toLowerCase().replace(/\b(?:inr|rs)\b\.?/g, '').replace(/[^a-z0-9]/g, '')
   const keys = headers.map(norm)
@@ -66,6 +73,7 @@ export function defaultPayslipMapping(headers: string[]): PayslipColumn[] {
   const billingSheet = ctcIndex >= 0 && keys.some(key => /^(?:invoice|invoiceamount|totalinvoice|servicecharge|sc\d|i?gst)/.test(key))
   const suggest = (key: string, sourceHeader: string, columnIndex: number): PayslipColumnKind => {
     if (/^(?:(?:employee|emp|staff|worker|personnel)(?:code|id|number|no)|codeofemployee)$/.test(key)) return 'employeeCode'
+    if (isPayslipPhoneLabel(sourceHeader)) return 'info'
     if (plrs && columnIndex < 30) return plrsKinds[columnIndex] || 'ignore'
     if (/^(?:(?:employees?|emp|staff|worker|person|candidate)(?:full)?name|nameof(?:the)?(?:employee|person|staff|worker)|fullname|name)$/.test(key)) return 'employeeName'
     if (/^(?:(?:employee|emp|personal|official|work)?email(?:address|id)?)$/.test(key)) return 'email'
@@ -245,9 +253,10 @@ export function restorePayslipTemplateMetadata(sheets: PayslipSheet[]): PayslipS
   if (!metadata) return sheets
   const serialized = metadata.rows.slice(1).map(row => row.cells[0]?.value || '').join('')
   if (serialized.length > 1024 * 1024) throw new Error('Payslip template metadata is too large.')
-  let saved: { version: number; clientId: number; sourceBatchId: string; sheetName: string; notesSheetName?: string; month: string; headerRow: number; columns: PayslipColumn[]; headers: string[]; excludedRows?: { sourceRow: number; values: string[] }[]; salaryTemplateId?: string; warnings?: string[] }
+  let saved: { version: number; clientId: number; sourceBatchId: string; sheetName: string; notesSheetName?: string; month: string; headerRow: number; columns: PayslipColumn[]; headers: string[]; excludedRows?: { sourceRow: number; values: string[] }[]; salaryTemplateId?: string; simpleLayout?: boolean; warnings?: string[] }
   try { saved = JSON.parse(serialized) } catch { throw new Error('Payslip template metadata is invalid. Import the original workbook instead.') }
   if (!saved || saved.version !== 1 || !Number.isInteger(saved.clientId) || saved.clientId < 1 || typeof saved.sourceBatchId !== 'string' || typeof saved.sheetName !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(saved.month) || !Number.isInteger(saved.headerRow) || saved.headerRow < 1 || saved.headerRow > 100000 || !Array.isArray(saved.headers) || saved.headers.length > 512 || saved.headers.some(header => typeof header !== 'string') || !Array.isArray(saved.columns) || saved.columns.length > 512) throw new Error('Payslip template metadata is invalid. Import the original workbook instead.')
+  if (saved.simpleLayout !== undefined && typeof saved.simpleLayout !== 'boolean') throw new Error('Payslip template layout option is invalid. Import the original workbook instead.')
   const sheet = sheets.find(item => item.name === saved.sheetName)
   if (!sheet) throw new Error('The exported salary worksheet was renamed or removed. Restore its original sheet name before importing.')
   const warnings = (Array.isArray(saved.warnings) ? saved.warnings : []).filter(value => typeof value === 'string').slice(0, 1000)
@@ -262,7 +271,7 @@ export function restorePayslipTemplateMetadata(sheets: PayslipSheet[]): PayslipS
     if (Number.isInteger(excluded?.sourceRow) && Array.isArray(excluded?.values) && excluded.values.every(value => typeof value === 'string') && row && row.cells.length === excluded.values.length && excluded.values.every((value, index) => (row.cells[index]?.value || '') === value) && positionsMatch) excludedSourceRows.push(excluded.sourceRow)
     else if (!warnings.includes('Previously excluded rows changed position or values. Review employee rows and exclusions before saving.')) warnings.unshift('Previously excluded rows changed position or values. Review employee rows and exclusions before saving.')
   }
-  sheet.template = { version: 1, clientId: saved.clientId, sourceBatchId: saved.sourceBatchId, month: saved.month, headerRow: saved.headerRow, columns, excludedSourceRows, salaryTemplateId: typeof saved.salaryTemplateId === 'string' ? saved.salaryTemplateId : undefined, warnings }
+  sheet.template = { version: 1, clientId: saved.clientId, sourceBatchId: saved.sourceBatchId, month: saved.month, headerRow: saved.headerRow, columns, excludedSourceRows, salaryTemplateId: typeof saved.salaryTemplateId === 'string' ? saved.salaryTemplateId : undefined, ...(saved.simpleLayout === true ? { simpleLayout: true } : {}), warnings }
   return sheets.filter(item => item !== metadata && item.name !== saved.notesSheetName)
 }
 

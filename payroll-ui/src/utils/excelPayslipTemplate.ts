@@ -1,5 +1,5 @@
 import type { ExcelPayslipBatch, ExcelPayslipCalculationSource } from '../services/excelPayslipService'
-import { excelColumnLetter, parsePayslipAmount, payslipTemplateMarker, type PayslipCell, type PayslipColumn } from './excelPayslipImport'
+import { excelColumnLetter, isPayslipPhoneLabel, parsePayslipAmount, payslipTemplateMarker, type PayslipCell, type PayslipColumn, type PayslipSheet, type PayslipTemplateMetadata } from './excelPayslipImport'
 import { buildXlsxBlob, type XlsxCell, type XlsxSheet } from './xlsx'
 
 const identifier = /(?:\b(?:uan|pan|aadhaar|aadhar|adhaar|ifsc|phone|mobile|passport)\b|account|\b(?:code|identifier|identity|id)\b|\b(?:pf|esi|esic)\s*(?:no\b|number\b))/i
@@ -28,7 +28,7 @@ function unavailableFormulaDependency(formula: string, sheetName: string): strin
 function sourceCell(cell: PayslipCell | undefined, column: PayslipColumn | undefined, reference: string, sheetName: string, warnings: string[]): XlsxCell {
   if (!cell) return ''
   const value = cell.value ?? '', numeric = parsePayslipAmount(value)
-  const text = ['employeeCode', 'employeeName', 'email'].includes(column?.kind || '') || (column?.kind === 'info' && identifier.test(`${column.label} ${column.sourceHeader}`)) || /^0\d+$/.test(value) || /^\d{16,}$/.test(value)
+  const text = ['employeeCode', 'employeeName', 'email'].includes(column?.kind || '') || (column?.kind === 'info' && (identifier.test(`${column.label} ${column.sourceHeader}`) || isPayslipPhoneLabel(column.label) || isPayslipPhoneLabel(column.sourceHeader))) || /^0\d+$/.test(value) || /^\d{16,}$/.test(value)
   const type = cell.error ? 'error' : numeric !== null && !text ? 'number' : 'text'
   const data: Exclude<XlsxCell, string | number> = { value: type === 'number' ? String(numeric) : value, type }
   if (cell.formulaText || cell.formula || cell.calculationError) {
@@ -44,10 +44,10 @@ function sourceCell(cell: PayslipCell | undefined, column: PayslipColumn | undef
   return data
 }
 
-export function buildExcelPayslipTemplate(batch: ExcelPayslipBatch, source: ExcelPayslipCalculationSource) {
-  if (!source?.rows.length || !source.columns.length) throw new Error('This batch has no saved worksheet. Import the original salary workbook once before exporting an editable template.')
+export function buildEditablePayslipSheet(batch: ExcelPayslipBatch, source: ExcelPayslipCalculationSource): PayslipSheet & { template: PayslipTemplateMetadata } {
+  if (!source?.rows.length || !source.columns.length) throw new Error('This batch has no saved worksheet. Import the original salary workbook once before editing its mapping or exporting a template.')
   if (!source.rows.some(row => row.sourceRow === source.headerRow)) throw new Error('The saved worksheet header is missing. Import the original workbook again.')
-  const warnings: string[] = [], columns = source.columns.map(column => ({ ...column })), codeColumns = columns.filter(column => column.kind === 'employeeCode')
+  const columns = source.columns.map(column => ({ ...column })), codeColumns = columns.filter(column => column.kind === 'employeeCode')
   if (codeColumns.length > 1) throw new Error('Employee code mapping is ambiguous. Correct the original import before exporting a template.')
   const savedWidth = source.rows.reduce((width, row) => Math.max(width, row.cells.length), source.columnCount), codeIndex = codeColumns[0]?.columnIndex ?? savedWidth
   const columnCount = Math.max(savedWidth, codeIndex + 1)
@@ -55,27 +55,37 @@ export function buildExcelPayslipTemplate(batch: ExcelPayslipBatch, source: Exce
   if (!codeColumns.length) columns.push({ columnIndex: codeIndex, sourceHeader: 'Employee Code', label: 'Employee code', kind: 'employeeCode' })
   const employeeRows = new Map(batch.rows.map(row => [row.sourceRow, row]))
   const rows = [...source.rows].sort((left, right) => left.sourceRow - right.sourceRow).map(row => {
-    const cells = Array.from({ length: columnCount }, (_, index) => row.cells[index] ? { ...row.cells[index] } : { value: '' })
+    const cells = Array.from({ length: columnCount }, (_, index) => {
+      const cell = row.cells[index]
+      return cell ? { ...cell, value: cell.value ?? '', ...(cell.formulaText || cell.calculationError ? { formula: true } : {}) } : { value: '' }
+    })
     if (row.sourceRow === source.headerRow && !codeColumns.length) cells[codeIndex] = { value: 'Employee Code' }
     const employee = employeeRows.get(row.sourceRow)
     if (employee) cells[codeIndex] = { value: employee.employeeCode || cells[codeIndex].value || '' }
     return { sourceRow: row.sourceRow, cells }
   })
+  return {
+    name: source.sheetName || batch.sheetName || 'Salary', rows, columnCount, dateSystem: source.dateSystem === '1904' ? '1904' : '1900',
+    template: { version: 1, clientId: batch.clientId, sourceBatchId: batch.id, month: batch.month, headerRow: source.headerRow, columns, excludedSourceRows: [...source.excludedSourceRows], salaryTemplateId: batch.salaryTemplateId, ...(batch.simpleLayout === true ? { simpleLayout: true } : {}), warnings: [] },
+  }
+}
+
+export function buildExcelPayslipTemplate(batch: ExcelPayslipBatch, source: ExcelPayslipCalculationSource) {
+  const sheet = buildEditablePayslipSheet(batch, source), { rows, name } = sheet, { columns, headerRow, excludedSourceRows } = sheet.template, warnings: string[] = []
   const columnByIndex = new Map(columns.map(column => [column.columnIndex, column]))
-  const exportedRows = rows.map(row => row.cells.map((cell, index) => sourceCell(cell, row.sourceRow > source.headerRow ? columnByIndex.get(index) : undefined, `${excelColumnLetter(index)}${row.sourceRow}`, source.sheetName, warnings)))
-  const name = source.sheetName || batch.sheetName || 'Salary'
+  const exportedRows = rows.map(row => row.cells.map((cell, index) => sourceCell(cell, row.sourceRow > headerRow ? columnByIndex.get(index) : undefined, `${excelColumnLetter(index)}${row.sourceRow}`, name, warnings)))
   const uniqueName = (label: string) => name.toLowerCase() === label.toLowerCase() ? `${label} 2` : label
   const notesSheetName = uniqueName('Template notes')
   const metadata = {
     version: 1, clientId: batch.clientId, sourceBatchId: batch.id, sheetName: name, notesSheetName,
-    month: batch.month, headerRow: source.headerRow, salaryTemplateId: batch.salaryTemplateId,
-    headers: rows.find(row => row.sourceRow === source.headerRow)!.cells.map(cell => cell.value.trim()), columns,
-    excludedRows: rows.filter(row => source.excludedSourceRows.includes(row.sourceRow)).map(row => ({ sourceRow: row.sourceRow, values: row.cells.map(cell => cell.value) })),
+    month: batch.month, headerRow, salaryTemplateId: batch.salaryTemplateId, ...(sheet.template.simpleLayout ? { simpleLayout: true } : {}),
+    headers: rows.find(row => row.sourceRow === headerRow)!.cells.map(cell => cell.value.trim()), columns,
+    excludedRows: rows.filter(row => excludedSourceRows.includes(row.sourceRow)).map(row => ({ sourceRow: row.sourceRow, values: row.cells.map(cell => cell.value) })),
     warnings: warnings.length > 100 ? [...warnings.slice(0, 100), `${warnings.length - 100} additional formula notes are in the exported Template notes worksheet.`] : warnings,
   }
   const serialized = JSON.stringify(metadata)
   const sheets: XlsxSheet[] = [
-    { name, rows: exportedRows, rowNumbers: rows.map(row => row.sourceRow), dateSystem: source.dateSystem === '1904' ? '1904' : '1900' },
+    { name, rows: exportedRows, rowNumbers: rows.map(row => row.sourceRow), dateSystem: sheet.dateSystem },
     { name: notesSheetName, rows: [
       ['Excel Payslips — editable salary template'], ['Client', batch.clientName || String(batch.clientId)], ['Source month', batch.month], ['Source batch', batch.id],
       ['Keep employee codes unchanged for existing employees. Leave the code blank only for a new employee; Save batch will assign one.'],

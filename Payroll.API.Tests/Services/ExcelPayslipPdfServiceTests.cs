@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using PdfSharp.Pdf;
 using PdfSharp.Pdf.Advanced;
@@ -63,6 +64,19 @@ public class ExcelPayslipPdfServiceTests
         using var pdf = PdfReader.Open(new MemoryStream(new ExcelPayslipPdfService().Create(Batch(row), [row], false)), PdfDocumentOpenMode.Import);
         Assert.Single(ImageIds(pdf.Pages[0]));
         Assert.Equal(1, pdf.PageCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UnsignedNoticeReplacesSignatureOnlyWhenSealIsExcluded(bool includeSeal)
+    {
+        var row = Sample();
+        using var pdf = PdfReader.Open(new MemoryStream(new ExcelPayslipPdfService().Create(Batch(row), [row], includeSeal)), PdfDocumentOpenMode.Import);
+        var content = Encoding.Latin1.GetString(pdf.Pages[0].Contents.CreateSingleContent().Stream.UnfilteredValue);
+        Assert.Equal(!includeSeal, content.Contains("This is a system-generated payslip and does not require a signature."));
+        Assert.Equal(includeSeal, content.Contains("Employer Signature"));
+        Assert.Equal(includeSeal ? 2 : 1, ImageIds(pdf.Pages[0]).Length);
     }
 
     [Fact]

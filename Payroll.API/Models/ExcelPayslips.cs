@@ -67,6 +67,8 @@ public sealed class ExcelPayslipBatch
     public string SourceFileName { get; set; } = "";
     public string SheetName { get; set; } = "";
     public int HeaderRow { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool SimpleLayout { get; set; }
     public List<ExcelPayslipRow> Rows { get; set; } = [];
     public DateTime CreatedAtUtc { get; set; }
     public string CreatedBy { get; set; } = "";

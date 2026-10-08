@@ -8,7 +8,7 @@ export type ExcelPayslipRow = {
   information: ExcelPayslipText[]; earnings: ExcelPayslipAmount[]; deductions: ExcelPayslipAmount[]; employerContributions: ExcelPayslipAmount[]
   netPay: number; declaredGross: number | null; declaredDeductions: number | null; warnings: string[]
 }
-export type ExcelPayslipBatchInput = { month: string; sourceFileName: string; sheetName: string; headerRow: number; salaryTemplateId?: string; salaryTemplateName?: string; rows: ExcelPayslipRow[]; calculationSource?: ExcelPayslipCalculationSource | null }
+export type ExcelPayslipBatchInput = { month: string; sourceFileName: string; sheetName: string; headerRow: number; simpleLayout?: boolean; salaryTemplateId?: string; salaryTemplateName?: string; rows: ExcelPayslipRow[]; calculationSource?: ExcelPayslipCalculationSource | null }
 export type ExcelPayslipBatch = ExcelPayslipBatchInput & { id: string; clientId: number; clientName?: string; createdAtUtc: string; createdBy: string }
 export type ExcelPayslipSummary = Omit<ExcelPayslipBatch, 'rows'> & { rowCount: number }
 export type ExcelPayslipProfile = { headerSignature: string; columns: PayslipColumn[]; salaryTemplateId?: string }

@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import ts from 'typescript'
 
 const compiled = ts.transpileModule(readFileSync(new URL('../src/utils/excelPayslipImport.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
-const { parsePayslipCsv, defaultPayslipMapping, buildExcelPayslipRows, buildPayslipCalculationSource, translatePayslipSharedFormula, resolvePayslipSharedFormulas, payslipHeaders, payslipHeaderSignature, parsePayslipAmount, inferPayslipMonth, formatExcelPayslipAmount } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
+const { parsePayslipCsv, defaultPayslipMapping, buildExcelPayslipRows, buildPayslipCalculationSource, translatePayslipSharedFormula, resolvePayslipSharedFormulas, payslipHeaders, payslipHeaderSignature, parsePayslipAmount, inferPayslipMonth, formatExcelPayslipAmount, payslipPhoneValue } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
 const parse = text => { const sheet = parsePayslipCsv(text); const columns = defaultPayslipMapping(payslipHeaders(sheet, 1)); return { sheet, columns, result: buildExcelPayslipRows(sheet, 1, columns) } }
 
 test('CSV preserves text identifiers, duplicate employee names, signed/zero amounts and quoted multiline information', () => {
@@ -59,6 +59,7 @@ test('PLRS preset retains physical blank and duplicate headings; S.no and invoic
   assert.equal(mapping[13].kind, 'netPay')
   assert.equal(mapping[14].kind, 'info', 'bonus is excluded from workbook net pay')
   assert.equal(mapping[20].kind, 'ignore')
+  assert.equal(mapping[23].kind, 'info', 'the original PLRS Mobile column is retained')
   assert.notEqual(mapping[1].label, mapping[5].label)
   assert.equal(mapping[28].kind, 'ignore')
   const expanded = defaultPayslipMapping([...headers, 'Basic', 'HRA', 'Email', 'Employee Code'])
@@ -78,6 +79,25 @@ test('natural-language identity and take-home headings map by meaning rather tha
   }
   for (const [expected, labels] of Object.entries(aliases)) for (const label of labels)
     assert.equal(defaultPayslipMapping([label])[0].kind, expected, label)
+})
+
+test('phone aliases are information and keep country prefixes, leading zeros and blank values', () => {
+  for (const label of ['Phone', 'Phone No.', 'Phone Number', 'Mobile', 'Mobile No.', 'Mobile Number', 'Contact No.', 'Contact Number', 'Employee Mobile Number', 'Personal Phone', 'Telephone Number']) {
+    const { result, columns } = parse(`Employee Name,Basic,Net Pay,${label}\nA,100,100,+919876543210\nB,100,100,09876543210\nC,100,100,`)
+    assert.deepEqual(result.issues, [], label)
+    assert.equal(columns[3].kind, 'info', label)
+    assert.deepEqual(result.rows.map(payslipPhoneValue), ['+919876543210', '09876543210', ''], label)
+    assert.deepEqual(result.rows.map(row => row.information[0].value), ['+919876543210', '09876543210', ''], label)
+  }
+  assert.equal(defaultPayslipMapping(['Emergency Contact Number'])[0].kind, 'ignore', 'an emergency contact is not the employee phone')
+})
+
+test('phone table value uses the first nonempty matching information field, including duplicate column labels', () => {
+  const { result } = parse('Employee Name,Basic,Net Pay,Mobile,Mobile,Contact Number\nA,100,100,,+91 98765 43210,09876543210\nB,100,100,,,')
+  assert.deepEqual(result.issues, [])
+  assert.deepEqual(result.rows[0].information.map(item => item.label), ['Mobile (D)', 'Mobile (E)', 'Contact Number'])
+  assert.deepEqual(result.rows.map(payslipPhoneValue), ['+91 98765 43210', ''])
+  assert.equal(payslipPhoneValue({ information: [{ label: 'Bank Account Number', value: '1234567890' }] }), '')
 })
 
 test('common earning and deduction labels are recognized without assigning unknown fields', () => {
@@ -139,6 +159,7 @@ test('the 43-column dummy salary layout maps correctly after columns are inserte
   assert.equal(headers.length, 43)
   const mapping = defaultPayslipMapping(headers), byHeader = Object.fromEntries(mapping.map(column => [column.sourceHeader, column.kind]))
   assert.equal(byHeader['Name of the person'], 'employeeName'); assert.equal(byHeader['Employee Code'], 'employeeCode'); assert.equal(byHeader.Email, 'email')
+  assert.equal(byHeader.Mobile, 'info', 'inserted UAN/Email columns do not hide the phone')
   assert.equal(byHeader.Wages, 'grossTotal'); assert.equal(byHeader['Total Deductions'], 'deductionTotal'); assert.equal(byHeader['Net Pay'], 'netPay')
   assert.deepEqual(mapping.filter(column => column.kind === 'earning').map(column => column.sourceHeader), ['Basic', 'HRA', 'Conveyance Allowance', 'Special Allowance', 'Incentive'])
   assert.deepEqual(mapping.filter(column => column.kind === 'deduction').map(column => column.sourceHeader), ['EPF@12%', 'ESIC@0.75%', 'Salary Advance', 'Other Deduction'])

@@ -8,7 +8,7 @@ using Payroll.API.Models;
 namespace Payroll.API.Services;
 
 /// <summary>Renders only the supplied Excel snapshot. It never loads or calculates payroll.</summary>
-public sealed class ExcelPayslipPdfService
+public sealed partial class ExcelPayslipPdfService
 {
     private const double Left = 28, Top = 30, Width = 539, BodyTop = 128, Bottom = 800;
     private static readonly object FontLock = new();
@@ -26,7 +26,9 @@ public sealed class ExcelPayslipPdfService
         if (rows.Count == 0) throw new InvalidOperationException("Select at least one Excel payslip row.");
         EnsureFonts();
         using var measure = XGraphics.CreateMeasureContext(new XSize(595.28, 841.89), XGraphicsUnit.Point, XPageDirection.Downwards);
-        foreach (var row in rows) MakePlan(measure, batch, row);
+        foreach (var row in rows)
+            if (batch.SimpleLayout) MakeSimplePlan(measure, batch, row);
+            else MakePlan(measure, batch, row);
     }
 
     public byte[] Create(ExcelPayslipBatch batch, IReadOnlyList<ExcelPayslipRow> rows, bool includeSeal = true, int amountDecimalPlaces = 0)
@@ -48,7 +50,8 @@ public sealed class ExcelPayslipPdfService
             var page = document.AddPage();
             page.Size = PdfSharp.PageSize.A4;
             using var gfx = XGraphics.FromPdfPage(page);
-            DrawPage(gfx, batch, row, logo, seal, amountDecimalPlaces);
+            if (batch.SimpleLayout) DrawSimplePage(gfx, batch, row, seal, amountDecimalPlaces);
+            else DrawPage(gfx, batch, row, logo, seal, amountDecimalPlaces);
         }
         using var output = new MemoryStream();
         document.Save(output, false);
@@ -206,8 +209,14 @@ public sealed class ExcelPayslipPdfService
             }
         }
         var signatureX = Left + Width / 2 + 34;
-        if (seal is not null) Image(gfx, seal, signatureX, y, Width / 2 - 68, 123);
-        Text(gfx, "Employer Signature", normal, signatureX, y + 126, Width / 2 - 68, 17, centered: true);
+        if (seal is not null)
+        {
+            Image(gfx, seal, signatureX, y, Width / 2 - 68, 123);
+            Text(gfx, "Employer Signature", normal, signatureX, y + 126, Width / 2 - 68, 17, centered: true);
+        }
+        else
+            gfx.DrawString("This is a system-generated payslip and does not require a signature.", Font(8), XBrushes.Gray,
+                new XRect(Left, Bottom + 8, Width, 18), XStringFormats.TopCenter);
 
         void MoneyHeader(string label, double x, double top)
         {

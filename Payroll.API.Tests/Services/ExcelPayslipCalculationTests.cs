@@ -49,6 +49,22 @@ public sealed class ExcelPayslipCalculationTests
         Assert.Null(ExcelPayslipCalculationService.ValidateSource(result.CalculationSource, result));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SimpleLayoutIsInheritedByAnotherMonthAndLegacySerializationStaysUnchanged(bool simpleLayout)
+    {
+        var (source, batch, request) = Example();
+        batch.SimpleLayout = simpleLayout;
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var serialized = JsonSerializer.Serialize(batch, options);
+        Assert.Equal(simpleLayout, serialized.Contains("\"simpleLayout\":true", StringComparison.Ordinal));
+        if (!simpleLayout) Assert.DoesNotContain("simpleLayout", serialized, StringComparison.Ordinal);
+        var result = ExcelPayslipCalculationService.Calculate(source, batch, request);
+        Assert.Equal(simpleLayout, result.SimpleLayout);
+        Assert.Equal(serialized, JsonSerializer.Serialize(batch, options));
+    }
+
     [Fact]
     public void APreviousMonthOrExplicitZeroAttendanceIsAllowedAndStaticOverridesArePreserved()
     {

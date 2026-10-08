@@ -11,9 +11,9 @@ function load(name) {
   new Function('exports', 'require', code)(exports, path => load(path.replace('./', '')))
   return exports
 }
-const { buildExcelPayslipTemplate } = load('excelPayslipTemplate')
+const { buildExcelPayslipTemplate, buildEditablePayslipSheet } = load('excelPayslipTemplate')
 const { buildXlsxBlob } = load('xlsx')
-const { restorePayslipTemplateMetadata, buildExcelPayslipRows, defaultPayslipMapping, payslipTemplateMarker } = load('excelPayslipImport')
+const { restorePayslipTemplateMetadata, buildExcelPayslipRows, buildPayslipCalculationSource, defaultPayslipMapping, payslipTemplateMarker, payslipPhoneValue } = load('excelPayslipImport')
 const decodeXml = value => value.replace(/&(?:amp|lt|gt|quot|apos);/g, code => ({ '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'" })[code])
 async function entries(blob) {
   const data = new Uint8Array(await blob.arrayBuffer()), view = new DataView(data.buffer), entries = new Map()
@@ -48,6 +48,86 @@ async function exportParts(batch, source) {
   return { ...result, files, metadata: JSON.parse(chunks.slice(1).join('')) }
 }
 
+test('editing saved mapping clones the sheet and restores context, exclusions and permanent employee codes', () => {
+  const { source, batch } = fixture(); source.dateSystem = '1904'
+  const original = JSON.stringify({ source, batch })
+  const sheet = buildEditablePayslipSheet(batch, source)
+  assert.equal(sheet.name, 'Salary'); assert.equal(sheet.dateSystem, '1904'); assert.equal(sheet.columnCount, 9)
+  assert.deepEqual(sheet.template, { version: 1, clientId: 20, sourceBatchId: batch.id, month: '2026-09', headerRow: 3, columns: source.columns, excludedSourceRows: [7], salaryTemplateId: 'template-1', warnings: [] })
+  assert.equal(sheet.rows[2].cells[8].value, 'PLRS001')
+  assert.equal(sheet.rows[2].cells[5].formulaText, 'D5/$D$1*E5')
+  assert.equal(sheet.rows[2].cells[5].formula, true)
+  assert.equal(sheet.rows[2].cells[7].value, '13200')
+  const preview = buildExcelPayslipRows(sheet, sheet.template.headerRow, sheet.template.columns, sheet.template.excludedSourceRows)
+  assert.deepEqual(preview.issues, []); assert.equal(preview.rows[0].employeeCode, 'PLRS001'); assert.equal(preview.rows[0].netPay, 13200)
+  sheet.rows[2].cells[5].value = '5'; sheet.template.columns[5].label = 'Changed'; sheet.template.excludedSourceRows.push(5)
+  assert.equal(JSON.stringify({ source, batch }), original, 'editing/cancelling must not mutate the saved snapshot')
+})
+
+test('simple salary slip is opt-in and survives edit mapping and workbook export/import', async () => {
+  for (const simpleLayout of [undefined, false, true]) {
+    const { source, batch } = fixture()
+    if (simpleLayout !== undefined) batch.simpleLayout = simpleLayout
+    const editable = buildEditablePayslipSheet(batch, source)
+    assert.equal(editable.template.simpleLayout === true, simpleLayout === true)
+    const { metadata } = await exportParts(batch, source)
+    assert.equal(metadata.simpleLayout === true, simpleLayout === true)
+    const [restored] = restorePayslipTemplateMetadata([{ ...source, name: source.sheetName }, metadataSheet(metadata)])
+    assert.equal(restored.template.simpleLayout === true, simpleLayout === true)
+    assert.equal(restored.template.clientId, batch.clientId)
+    assert.equal(restored.template.month, batch.month)
+    assert.deepEqual(restored.template.columns, source.columns)
+    const invalid = { ...metadata, simpleLayout: 'true' }
+    assert.throws(() => restorePayslipTemplateMetadata([{ ...source, name: source.sheetName }, metadataSheet(invalid)]), /layout option is invalid/)
+  }
+})
+
+test('editing ignored phone mapping reuses saved cells without freezing or discarding formula/error provenance', () => {
+  const { source, batch } = fixture()
+  source.columnCount = 12
+  for (const [index, label] of [[9, 'Mobile'], [10, 'External lookup'], [11, 'Missing expression']]) {
+    source.columns.push({ columnIndex: index, sourceHeader: label, label, kind: 'ignore' })
+    source.rows[1].cells[index] = { value: label }
+  }
+  source.rows[2].cells[9] = { value: '+919876543210' }
+  source.rows[2].cells[10] = { value: '', formulaText: 'Other!A1', error: '#REF!', missingCachedValue: true, calculationError: 'Another worksheet is unavailable.' }
+  source.rows[2].cells[11] = { value: '9', formula: true }
+  const sheet = buildEditablePayslipSheet(batch, source)
+  sheet.template.columns[9].kind = 'info'
+  const preview = buildExcelPayslipRows(sheet, sheet.template.headerRow, sheet.template.columns, sheet.template.excludedSourceRows)
+  assert.deepEqual(preview.issues, []); assert.equal(payslipPhoneValue(preview.rows[0]), '+919876543210')
+  assert.equal(preview.rows[0].netPay, 13200)
+  const reconstructed = buildPayslipCalculationSource(sheet, sheet.template.headerRow, sheet.template.columns, sheet.template.excludedSourceRows)
+  assert.equal(reconstructed.rows[2].cells[5].formulaText, 'D5/$D$1*E5')
+  assert.equal(reconstructed.rows[2].cells[10].formulaText, 'Other!A1')
+  assert.equal(reconstructed.rows[2].cells[10].calculationError, 'Another worksheet is unavailable.')
+  assert.equal(reconstructed.rows[2].cells[10].error, '#REF!'); assert.equal(reconstructed.rows[2].cells[10].missingCachedValue, true)
+  assert.match(reconstructed.rows[2].cells[11].calculationError, /Formula expression is missing/)
+  assert.equal(source.columns[9].kind, 'ignore')
+})
+
+test('editing and template export share appended code-column preparation without shifting source formulas', async () => {
+  const { source, batch } = fixture(); source.columns.pop(); source.columnCount = 8; source.rows.forEach(row => row.cells.splice(8))
+  const original = JSON.stringify(source), sheet = buildEditablePayslipSheet(batch, source)
+  assert.equal(sheet.columnCount, 9); assert.equal(sheet.template.columns.at(-1).kind, 'employeeCode')
+  assert.equal(sheet.rows[1].cells[8].value, 'Employee Code'); assert.equal(sheet.rows[2].cells[8].value, 'PLRS001')
+  assert.equal(sheet.rows[2].cells[5].formulaText, 'D5/$D$1*E5'); assert.equal(sheet.rows[2].cells[7].formulaText, 'F5-G5')
+  const { metadata } = await exportParts(batch, source)
+  assert.deepEqual(metadata.columns, sheet.template.columns)
+  assert.equal(JSON.stringify(source), original)
+})
+
+test('editable sheet handles sparse/null cells and rejects unusable saved sources with existing limits', () => {
+  const { source, batch } = fixture()
+  source.rows[0].cells[2] = null; delete source.rows[0].cells[3]
+  const sheet = buildEditablePayslipSheet(batch, source)
+  assert.deepEqual(sheet.rows[0].cells[2], { value: '' }); assert.deepEqual(sheet.rows[0].cells[3], { value: '' })
+  assert.throws(() => buildEditablePayslipSheet(batch, { ...source, rows: [] }), /no saved worksheet/)
+  assert.throws(() => buildEditablePayslipSheet(batch, { ...source, headerRow: 2 }), /header is missing/)
+  assert.throws(() => buildEditablePayslipSheet(batch, { ...source, columns: [...source.columns, { columnIndex: 9, sourceHeader: 'Other code', label: 'Other code', kind: 'employeeCode' }] }), /ambiguous/)
+  assert.throws(() => buildEditablePayslipSheet(batch, { ...source, columnCount: 512, columns: source.columns.filter(column => column.kind !== 'employeeCode') }), /512-column limit/)
+})
+
 test('export keeps salary cell references, formula caches, precise amounts and persistent employee codes', async () => {
   const { source, batch } = fixture()
   source.rows[2].cells[5].value = '14129.499999999998'
@@ -69,6 +149,24 @@ test('identifier info stays text while attendance, rate and info PF amounts rema
   assert.match(salary, /<c r="D5"><v>30000<\/v>/)
   assert.match(salary, /<c r="E5"><v>15<\/v>/)
   assert.match(salary, /<c r="G5"><v>1800<\/v>/)
+})
+
+test('phone and contact-number template columns stay text and restore their information mapping', async () => {
+  for (const [label, value] of [['Mobile', '09876543210'], ['Contact Number', '+919876543210'], ['Employee Phone No.', '+91 98765 43210']]) {
+    const { source, batch } = fixture()
+    source.columnCount = 10
+    source.columns.push({ ...defaultPayslipMapping([label])[0], columnIndex: 9 })
+    source.rows[1].cells.push({ value: label })
+    source.rows[2].cells.push({ value })
+    const { files, metadata } = await exportParts(batch, source), salary = files.get('xl/worksheets/sheet1.xml')
+    assert.ok(salary.includes(`<c r="J5" t="inlineStr"><is><t xml:space="preserve">${value}</t>`), label)
+    const sheet = { ...source, name: source.sheetName }
+    const [restored] = restorePayslipTemplateMetadata([sheet, { name: metadata.notesSheetName, rows: [], columnCount: 1 }, metadataSheet(metadata)])
+    const result = buildExcelPayslipRows(restored, source.headerRow, restored.template.columns, restored.template.excludedSourceRows)
+    assert.deepEqual(result.issues, [], label)
+    assert.equal(payslipPhoneValue(result.rows[0]), value, label)
+    assert.equal(result.rows[0].netPay, 13200, 'phone is never a salary amount')
+  }
 })
 
 test('missing code column is appended without moving formulas; legacy blank codes remain blank', async () => {
