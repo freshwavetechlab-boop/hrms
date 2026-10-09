@@ -205,6 +205,16 @@ public class RecruitmentProcessDocument
     public DateTime UpdatedAtUtc { get; set; }
 }
 
+public class RecruitmentMomReadiness
+{
+    public string Action { get; set; } = "Prepare";
+    public string Message { get; set; } = "";
+    public bool CanGenerate { get; set; }
+    public bool CanSign { get; set; }
+    public int SelectedCandidateCount { get; set; }
+    public List<string> PendingSigners { get; set; } = [];
+}
+
 public class SaveRecruitmentProcessDocument
 {
     public long Id { get; set; }

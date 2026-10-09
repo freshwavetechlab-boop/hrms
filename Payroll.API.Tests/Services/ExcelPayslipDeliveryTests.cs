@@ -22,7 +22,7 @@ public sealed class ExcelPayslipDeliveryTests
         Delivery(ExcelPayslipBatch batch, ExcelPayslipSendState state, string status = "Pending", params ExcelPayslipRow[] rows)
     {
         var document = NotificationRepository.PrepareExcelPayslipMail(batch, rows.Length == 0 ? [batch.Rows[0]] : rows,
-            "recipient@example.test", Encoding.ASCII.GetBytes("%PDF-1.4\nfixture"), Guid.NewGuid().ToString("N"), "tester", false, 0);
+            "recipient@example.test", Encoding.ASCII.GetBytes("%PDF-1.4\nfixture"), Guid.NewGuid().ToString("N"), "tester", false, 0, ExcelPayslipTests.MailTemplate);
         document.QueueId = state.Deliveries.Count + 1;
         state.Deliveries.Add(document.Id, document);
         return (document, new()
@@ -41,6 +41,8 @@ public sealed class ExcelPayslipDeliveryTests
     [Theory]
     [InlineData("Pending", "Queued")]
     [InlineData("Retry", "Queued")]
+    [InlineData("ExcelPending", "Queued")]
+    [InlineData("ExcelRetry", "Queued")]
     [InlineData("Processing", "Queued")]
     [InlineData("Sending", "Queued")]
     [InlineData("Sent", "Sent")]

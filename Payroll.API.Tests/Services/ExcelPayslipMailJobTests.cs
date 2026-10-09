@@ -26,7 +26,7 @@ public sealed class ExcelPayslipMailJobTests
     {
         var review = ExcelPayslipRepository.ReviewDeliverySelection(batch.Rows, request,
             ExcelPayslipRepository.BuildDeliveryStatuses(batch, state ?? new(), []));
-        var documents = ExcelPayslipRepository.PrepareMailJobDocuments(batch, batch.Rows, request, review, request.RequestId, "operator");
+        var documents = ExcelPayslipRepository.PrepareMailJobDocuments(batch, batch.Rows, request, review, request.RequestId, "operator", ExcelPayslipTests.MailTemplate);
         for (var index = 0; index < documents.Count; index++) documents[index].QueueId = index + 1;
         var job = ExcelPayslipRepository.CreateMailJobRecord(batch, request.RequestId, 7, "operator", batch.Rows, review, documents);
         var queues = documents.Select(document => new ExcelPayslipRepository.ExcelPayslipQueueStatus
@@ -59,7 +59,7 @@ public sealed class ExcelPayslipMailJobTests
     public void CombinedJobCountsPayslipsNotQueueItemsAndOnlyContainsFreshSubset()
     {
         var batch = Batch(); var state = new ExcelPayslipSendState();
-        var old = NotificationRepository.PrepareExcelPayslipMailMetadata(batch, [batch.Rows[0]], "old@example.test", "old", "operator", false, 0);
+        var old = NotificationRepository.PrepareExcelPayslipMailMetadata(batch, [batch.Rows[0]], "old@example.test", "old", "operator", false, 0, ExcelPayslipTests.MailTemplate);
         old.QueueId = 50; state.Deliveries[old.Id] = old;
         var (job, queues, documents, _) = Prepare(batch, Request(batch, "Combined"), state);
         Assert.Equal(batch.Rows.Skip(1).Select(row => row.Id), Assert.Single(documents).RowIds);
@@ -109,6 +109,19 @@ public sealed class ExcelPayslipMailJobTests
         var summary = ExcelPayslipRepository.BuildMailJobSummary(prepared.Job, []);
         Assert.Equal(3, summary.MissingEmail); Assert.Equal(0, summary.Sent); Assert.True(summary.IsComplete);
         Assert.Equal("Needs attention", summary.Status);
+    }
+
+    [Theory]
+    [InlineData("ExcelPending")]
+    [InlineData("ExcelRetry")]
+    public void CurrentRendererQueueStatesRemainQueuedAndDoNotPermitDuplicateMail(string status)
+    {
+        var batch = Batch(1); var prepared = Prepare(batch, Request(batch));
+        prepared.Queues[0].Status = status;
+        var summary = ExcelPayslipRepository.BuildMailJobSummary(prepared.Job, prepared.Queues);
+        Assert.Equal(1, summary.Queued); Assert.Equal(0, summary.Sent); Assert.False(summary.IsComplete);
+        var state = new ExcelPayslipSendState { Deliveries = prepared.Documents.ToDictionary(document => document.Id) };
+        Assert.False(Assert.Single(ExcelPayslipRepository.BuildDeliveryStatuses(batch, state, prepared.Queues).Items).CanSend);
     }
 
     [Theory]

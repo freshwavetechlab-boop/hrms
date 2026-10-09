@@ -15,6 +15,8 @@ export type ExcelPayslipProfile = { headerSignature: string; columns: PayslipCol
 export type ExcelPayslipTemplate = { id: string; name: string; components: { id: string; code: string; name: string; category: 'Earning' | 'Deduction' | 'Employer' | 'Information' }[] }
 export type ExcelPayslipPdfRequest = { rowIds: string[]; includeSeal: boolean; acknowledgeWarnings: boolean; amountDecimalPlaces: 0 | 2 }
 export type ExcelPayslipSendRequest = ExcelPayslipPdfRequest & { mode: 'Individual' | 'Combined'; email: string; emailOverrides: Record<string, string>; requestId: string }
+export type ExcelPayslipEmailRequest = { rowIds: string[]; email: string; requestId: string }
+export const requestExcelPayslipEmailIds = (clientId: number, id: string, request: ExcelPayslipEmailRequest) => postJson<ExcelPayslipEmailRequest, { queueId: number; email: string; employeeCount: number; status: string } | null>(`${batchPath(id)}/email-request?clientId=${clientId}`, request, null, { toast: false })
 export type ExcelPayslipDelivery = { rowId: string; employeeName: string; email: string; status: 'Queued' | 'Already queued' | 'Skipped' | 'Error'; message: string }
 export type ExcelPayslipEmailStatus = { rowId: string; status: 'Pending' | 'Queued' | 'Sent' | 'Failed' | 'Unknown'; email: string; queuedAtUtc: string | null; sentAtUtc: string | null; message: string; canSend: boolean }
 export type ExcelPayslipMailJob = {

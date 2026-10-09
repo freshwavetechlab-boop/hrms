@@ -85,11 +85,11 @@ public class ExcelPayslipSimplePdfTests
         var text = Content(pdf.Pages[0]);
         foreach (var expected in new[] { "Salary Slip", "Employee Name", "Department", "Selected Client", "UAN", "Esic No", "Designation", "Account No",
             "IFSC Code", "Income", "Deductions", "Rate (Monthly)", "Earn Salary", "PF@12%", "ESIC@0.75%", "Deduction", "In Hand Salary",
-            "PF@13%: 2,004", "15,414", "1,850", "116", "1,965", "13,449" })
+            "PF@13%: 2,004", "15,414", "1,850", "116", "1,965", "13,449",
+            "GA DIGITAL WEB WORD (P) LTD", "HARGOBIND ENCLAVE", "DELHI-110092" })
             Assert.Contains(expected, text);
         foreach (var hidden in new[] { "HIDDEN-CODE-001", "Sample Tehsil", "Phone", "9999900001", "Bonus", "UAN (E)", "UAN (AB)",
-            "Total Earnings", "Employer Contributions", "ESIC@3.25%", "Rupees", "Employer Signature", "Rate/Day",
-            "GA DIGITAL WEB WORD", "HARGOBIND ENCLAVE", "DELHI-110092" })
+            "Total Earnings", "Employer Contributions", "ESIC@3.25%", "Rupees", "Employer Signature", "Rate/Day" })
             Assert.DoesNotContain(hidden, text);
         Assert.Equal(15413.999999999998m, ExcelPayslipPdfService.TotalsFor(row).Gross); // Rate is informational, never a second earning.
         Assert.Equal(before, JsonSerializer.Serialize(batch));
@@ -160,12 +160,13 @@ public class ExcelPayslipSimplePdfTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void SignatureChoiceIncludesOnlySealOrUnsignedNoticeWithoutBrandLogo(bool includeSeal)
+    public void BrandingIsAlwaysIncludedWhileSignatureChoiceControlsSealAndUnsignedNotice(bool includeSeal)
     {
         var row = Sample();
         using var pdf = Read(new ExcelPayslipPdfService().Create(Batch(row), [row], includeSeal));
         Assert.Equal(!includeSeal, Content(pdf.Pages[0]).Contains(UnsignedNotice));
-        Assert.Equal(includeSeal ? 1 : 0, pdf.Pages[0].Elements.GetDictionary("/Resources")!.Elements.GetDictionary("/XObject")?.Elements.Count ?? 0);
+        Assert.Contains("GA DIGITAL WEB WORD (P) LTD", Content(pdf.Pages[0]));
+        Assert.Equal(includeSeal ? 2 : 1, pdf.Pages[0].Elements.GetDictionary("/Resources")!.Elements.GetDictionary("/XObject")?.Elements.Count ?? 0);
     }
 
     [Fact]

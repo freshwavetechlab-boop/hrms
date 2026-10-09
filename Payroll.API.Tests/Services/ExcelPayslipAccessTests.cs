@@ -48,6 +48,7 @@ public sealed class ExcelPayslipAccessTests
             (HttpMethod.Get, "/batches/0123456789abcdef0123456789abcdef/delivery-status"),
             (HttpMethod.Get, "/batches/0123456789abcdef0123456789abcdef/mail-jobs"),
             (HttpMethod.Post, "/batches/0123456789abcdef0123456789abcdef/send-job"),
+            (HttpMethod.Post, "/batches/0123456789abcdef0123456789abcdef/email-request"),
             (HttpMethod.Post, "/batches/0123456789abcdef0123456789abcdef/mail-jobs/fedcba9876543210fedcba9876543210/dismiss"),
             (HttpMethod.Get, "/batches/0123456789abcdef0123456789abcdef/calculation"),
             (HttpMethod.Post, "/batches/0123456789abcdef0123456789abcdef/calculate"),

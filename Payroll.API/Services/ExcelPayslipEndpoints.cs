@@ -62,6 +62,11 @@ public static class ExcelPayslipEndpoints
             return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
         }).WithName("QueueExcelPayslipMailJob").WithOpenApi();
 
+        routes.MapPost("/batches/{id}/email-request", async (ExcelPayslipRepository repository, int clientId, string id,
+            ExcelPayslipEmailRequest request, HttpContext context) =>
+            Results.Ok(await repository.RequestEmailIdsAsync(clientId, id, request, currentUser(context).Email)))
+            .WithName("RequestExcelPayslipEmailIds").WithOpenApi();
+
         routes.MapPost("/batches/{id}/mail-jobs/{jobId}/dismiss", async (ExcelPayslipRepository repository, int clientId,
             string id, string jobId, HttpContext context) =>
         {

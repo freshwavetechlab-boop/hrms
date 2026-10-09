@@ -9,6 +9,11 @@ namespace Payroll.API.Tests.Services;
 
 public sealed class ExcelPayslipTests
 {
+    internal static NotificationTemplate MailTemplate => new()
+    {
+        Code = NotificationRepository.ExcelPayslipTemplateCode, SubjectTemplate = "{{clientName}} payslip - {{month}}",
+        BodyTemplate = "<p>Payslip for {{employeeName}} for {{month}} is attached as a PDF.</p>", IsHtml = true, IsActive = true
+    };
     private static ExcelPayslipBatch Batch() => new()
     {
         Id = "0123456789abcdef0123456789abcdef", ClientId = 11, ClientName = "Example Client", Month = "2026-09",
@@ -253,7 +258,7 @@ public sealed class ExcelPayslipTests
         var selected = batch.Rows.ToArray();
         batch.Rows.Add(new() { Id = "sheet1:7", SourceRow = 7, EmployeeName = "Not selected", NetPay = 0 });
         var pdf = Encoding.ASCII.GetBytes("%PDF-1.4\nexample\n%%EOF");
-        var document = NotificationRepository.PrepareExcelPayslipMail(batch, selected, "person@example.test", pdf, Guid.NewGuid().ToString(), "operator@example.test", false, 2);
+        var document = NotificationRepository.PrepareExcelPayslipMail(batch, selected, "person@example.test", pdf, Guid.NewGuid().ToString(), "operator@example.test", false, 2, MailTemplate);
         Assert.StartsWith("Example Client payslip", document.Subject); Assert.StartsWith("Example-Client-payslip", document.FileName);
         Assert.Contains("&lt;script&gt;", document.BodyHtml); Assert.DoesNotContain("<script>", document.BodyHtml);
         Assert.DoesNotContain("href", document.BodyHtml);
@@ -285,7 +290,7 @@ public sealed class ExcelPayslipTests
     public void DeliveryDescriptorCannotBeReusedForAnotherRecipientOrQueue(string change)
     {
         var batch = Batch(); var pdf = Encoding.ASCII.GetBytes("%PDF-1.4\nexample\n%%EOF");
-        var document = NotificationRepository.PrepareExcelPayslipMail(batch, batch.Rows, "person@example.test", pdf, Guid.NewGuid().ToString(), "operator", true, 0);
+        var document = NotificationRepository.PrepareExcelPayslipMail(batch, batch.Rows, "person@example.test", pdf, Guid.NewGuid().ToString(), "operator", true, 0, MailTemplate);
         var queue = Queue(document);
         switch (change)
         {
@@ -313,7 +318,7 @@ public sealed class ExcelPayslipTests
     public void RegenerationRejectsChangedSourceOrInvalidSavedSelection(string change)
     {
         var batch = Batch(); var pdf = Encoding.ASCII.GetBytes("%PDF-1.4\nexample\n%%EOF");
-        var document = NotificationRepository.PrepareExcelPayslipMail(batch, batch.Rows, "person@example.test", pdf, Guid.NewGuid().ToString(), "operator", true, 0);
+        var document = NotificationRepository.PrepareExcelPayslipMail(batch, batch.Rows, "person@example.test", pdf, Guid.NewGuid().ToString(), "operator", true, 0, MailTemplate);
         var queue = Queue(document);
         switch (change)
         {
@@ -336,7 +341,7 @@ public sealed class ExcelPayslipTests
     public void StoredDeliveryRequiresExplicitRenderOptions(string missingProperty)
     {
         var batch = Batch(); var pdf = Encoding.ASCII.GetBytes("%PDF-1.4\nexample\n%%EOF");
-        var document = NotificationRepository.PrepareExcelPayslipMail(batch, batch.Rows, "person@example.test", pdf, Guid.NewGuid().ToString(), "operator", true, 0);
+        var document = NotificationRepository.PrepareExcelPayslipMail(batch, batch.Rows, "person@example.test", pdf, Guid.NewGuid().ToString(), "operator", true, 0, MailTemplate);
         var json = JsonSerializer.SerializeToNode(document, ExcelPayslipRepository.JsonOptions)!;
         json.AsObject().Remove(missingProperty);
         Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<NotificationRepository.ExcelPayslipMailDocument>(json.ToJsonString(), ExcelPayslipRepository.JsonOptions));

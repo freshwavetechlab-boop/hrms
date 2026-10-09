@@ -34,6 +34,7 @@ playwright-e2e/
 .codex-validation/local-production/
 .codex-validation/recruitment-workflows/
 .codex-validation/recruitment-test-build/
+.codex-validation/mom-standard/
 Payroll.API/App_Data/
 Payroll.API/.codex-*/
 

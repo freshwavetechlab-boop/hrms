@@ -105,6 +105,15 @@ public sealed class SendExcelPayslipsRequest : ExcelPayslipSelection
     public string RequestId { get; set; } = "";
 }
 
+public sealed class ExcelPayslipEmailRequest
+{
+    public List<string> RowIds { get; set; } = [];
+    public string Email { get; set; } = "";
+    public string RequestId { get; set; } = "";
+}
+
+public sealed record ExcelPayslipEmailRequestResult(long QueueId, string Email, int EmployeeCount, string Status);
+
 public sealed class ExcelPayslipDeliveryItem
 {
     public string RowId { get; set; } = "";

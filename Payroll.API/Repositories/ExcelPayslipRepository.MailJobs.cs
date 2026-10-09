@@ -67,8 +67,10 @@ public sealed partial class ExcelPayslipRepository
         var reviewed = ReviewDeliverySelection(selected, request, statuses);
         if (reviewed.Items.Any(item => item.Status == "Ready") && await notifications.ExcelPayslipDeliveryReadyAsync(db, tx) is string readyError)
             return (null, readyError);
+        var mailTemplate = reviewed.Items.Any(item => item.Status == "Ready")
+            ? await NotificationRepository.ReadExcelPayslipTemplateAsync(db, tx) : null;
         // PDF rendering is deliberately absent from submission; the existing durable worker performs it.
-        var documents = PrepareMailJobDocuments(batch, selected, request, reviewed, requestId, actor);
+        var documents = PrepareMailJobDocuments(batch, selected, request, reviewed, requestId, actor, mailTemplate);
         await NotificationRepository.QueueExcelPayslipDocumentsAsync(db, tx, batch, documents);
         foreach (var document in documents) state.Deliveries.Add(document.Id, document);
         foreach (var item in reviewed.Items.Where(item => item.Status == "Ready"))
@@ -85,7 +87,7 @@ public sealed partial class ExcelPayslipRepository
         await tx.CommitAsync();
         var queued = documents.Select(document => new ExcelPayslipQueueStatus { Id = document.QueueId, ClientId = clientId,
             EventCode = NotificationRepository.ExcelPayslipEvent, ResourceType = "ExcelPayslipBatch", ResourceId = batchId + ":" + document.Id,
-            Status = "Pending", CreatedAt = job.CreatedAtUtc });
+            Status = NotificationRepository.ExcelPayslipPendingStatus, CreatedAt = job.CreatedAtUtc });
         return (new() { Job = BuildMailJobSummary(job, queued), Items = reviewed.Items }, null);
     }
 
@@ -100,7 +102,7 @@ public sealed partial class ExcelPayslipRepository
     }
 
     internal static List<NotificationRepository.ExcelPayslipMailDocument> PrepareMailJobDocuments(ExcelPayslipBatch batch,
-        IReadOnlyList<ExcelPayslipRow> selected, SendExcelPayslipsRequest request, ExcelPayslipDeliveryResult reviewed, string requestId, string actor)
+        IReadOnlyList<ExcelPayslipRow> selected, SendExcelPayslipsRequest request, ExcelPayslipDeliveryResult reviewed, string requestId, string actor, NotificationTemplate? template)
     {
         var ready = reviewed.Items.Where(item => item.Status == "Ready").ToDictionary(item => item.RowId, StringComparer.Ordinal);
         var pending = selected.Where(row => ready.ContainsKey(row.Id)).ToArray();
@@ -109,7 +111,7 @@ public sealed partial class ExcelPayslipRepository
         var groups = request.Mode == "Combined" ? new[] { pending } : pending.Select(row => new[] { row });
         return groups.Select(rows => NotificationRepository.PrepareExcelPayslipMailMetadata(batch, rows,
             request.Mode == "Combined" ? request.Email : ready[rows[0].Id].Email, requestId, actor,
-            request.IncludeSeal, request.AmountDecimalPlaces, hash)).ToList();
+            request.IncludeSeal, request.AmountDecimalPlaces, template!, hash)).ToList();
     }
 
     internal static ExcelPayslipMailJobRecord CreateMailJobRecord(ExcelPayslipBatch batch, string id, int actorUserId, string actor,
@@ -143,7 +145,7 @@ public sealed partial class ExcelPayslipRepository
             { summary.Sent += delivery.RowCount; continue; }
             switch (queue.Status.ToUpperInvariant())
             {
-                case "PENDING": case "RETRY": summary.Queued += delivery.RowCount; break;
+                case "PENDING": case "RETRY": case "EXCELPENDING": case "EXCELRETRY": summary.Queued += delivery.RowCount; break;
                 case "PROCESSING": case "SENDING":
                     summary.Queued += delivery.RowCount; processing = true;
                     // There is no processing lease timestamp. This is a review signal, never permission to resend.

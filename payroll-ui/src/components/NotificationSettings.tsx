@@ -20,6 +20,7 @@ import {
 } from '@ant-design/icons'
 import { Alert, Button, Card, Col, Divider, Drawer, Empty, Form, Input, InputNumber, Row, Select, Space, Switch, Tabs, Tag, Tooltip } from 'antd'
 import DataTable from './DataTable'
+import CommunicationRichEditor from './CommunicationRichEditor'
 import RecruitmentMailTriggerSettings from './RecruitmentMailTriggerSettings'
 import SearchSelect from './SearchSelect'
 import { getJson } from '../services/apiClient'
@@ -42,6 +43,8 @@ import type {
 import { getNotificationSetup, retryNotification, saveNotificationRule, saveNotificationSmtp, saveNotificationTemplate, sendNotificationTest } from '../services/notificationService'
 import type { Client, NotificationParameterMapping, NotificationRecipient, NotificationRule, NotificationSetup, NotificationSmtpSetting, NotificationTemplate } from '../types/payroll'
 import './NotificationSettings.css'
+
+const queueStatus = (status: string) => status === 'ExcelPending' ? 'Pending' : status === 'ExcelRetry' ? 'Retry' : status
 
 type Activity = { id: number; activityCode: string; displayName: string; moduleCode: string; resourceType: string; description: string; isActive: boolean }
 type ProviderChannel = Exclude<CommunicationChannel, 'Email'>
@@ -224,7 +227,11 @@ export default function NotificationSettings() {
   const activityOptions = activities.map(item => ({ value: item.activityCode, label: `${item.displayName} - ${item.moduleCode}` }))
   const selectedActivity = activities.find(item => item.activityCode === rule.eventCode)
   const selectedTemplate = setup.templates.find(item => item.id === rule.templateId)
-  const templateHints = useMemo(() => ['{{eventCode}}', '{{resourceType}}', '{{resourceId}}', '{{clientId}}', '{{requestedBy}}', '{{requestedByEmail}}', '{{now}}'], [])
+  const templateHints = useMemo(() => template.code === 'EXCEL_PAYSLIP_SEND_DEFAULT'
+    ? ['{{recipientName}}', '{{employeeName}}', '{{employeeCode}}', '{{clientName}}', '{{monthLabel}}', '{{month}}', '{{payslipCount}}', '{{recipientEmail}}', '{{requestedBy}}']
+    : template.code === 'EXCEL_PAYSLIP_EMAIL_REQUEST_DEFAULT'
+      ? ['{{clientName}}', '{{monthLabel}}', '{{month}}', '{{employeeCount}}', '{{employeeTable}}', '{{recipientEmail}}', '{{requestedBy}}']
+    : ['{{eventCode}}', '{{resourceType}}', '{{resourceId}}', '{{clientId}}', '{{requestedBy}}', '{{requestedByEmail}}', '{{now}}'], [template.code])
   const smsProvider = providers.find(item => item.channel === 'Sms')
   const whatsAppProvider = providers.find(item => item.channel === 'WhatsApp')
   const emailStatus = smtp.deliveryPaused
@@ -396,7 +403,7 @@ export default function NotificationSettings() {
           { key: 'eventCode', label: 'Event' },
           { key: 'resourceId', label: 'Resource', value: row => `${row.resourceType} #${row.resourceId}` },
           { key: 'subject', label: 'Subject' },
-          { key: 'status', label: 'Status', render: row => <Tag color={row.status === 'Sent' ? 'green' : row.status === 'Failed' ? 'red' : 'blue'}>{row.status}</Tag> },
+          { key: 'status', label: 'Status', value: row => queueStatus(row.status), render: row => <Tag color={row.status === 'Sent' ? 'green' : row.status === 'Failed' ? 'red' : 'blue'}>{queueStatus(row.status)}</Tag> },
           { key: 'errorMessage', label: 'Error' }
         ]} actions={row => row.status !== 'Sent' ? <Button size="small" onClick={() => void retryNotification(row.id).then(load)}>Retry</Button> : null} />
         <Divider />
@@ -517,12 +524,16 @@ export default function NotificationSettings() {
       </Form>
     </Drawer>
 
-    <Drawer className="settings-master-drawer notification-template-drawer" title={template.id ? 'Edit email template' : 'Add email template'} open={templateOpen} width={780} onClose={() => setTemplateOpen(false)} destroyOnClose footer={<Space><Button onClick={() => setTemplateOpen(false)}>Cancel</Button><Button type="primary" onClick={() => void saveTemplate()}>{template.id ? 'Update template' : 'Save template'}</Button></Space>}>
+    <Drawer className="settings-master-drawer notification-template-drawer" title={template.id ? 'Edit email template' : 'Add email template'} open={templateOpen} width="min(780px, 96vw)" onClose={() => setTemplateOpen(false)} destroyOnClose footer={<Space><Button onClick={() => setTemplateOpen(false)}>Cancel</Button><Button type="primary" onClick={() => void saveTemplate()}>{template.id ? 'Update template' : 'Save template'}</Button></Space>}>
       <Form className="settings-quick-form notification-form notification-template-form" component={false} layout="vertical" requiredMark={false}>
         <Form.Item label="Template code"><Input value={template.code} onChange={event => setTemplate({ ...template, code: event.target.value.toUpperCase() })} placeholder="PAYRUN_LOCKED" /></Form.Item>
         <Form.Item label="Template name"><Input value={template.name} onChange={event => setTemplate({ ...template, name: event.target.value })} placeholder="Payroll locked notification" /></Form.Item>
         <Form.Item label="Subject"><Input value={template.subjectTemplate} onChange={event => setTemplate({ ...template, subjectTemplate: event.target.value })} placeholder="Payroll {{resourceId}} is locked" /></Form.Item>
-        <Form.Item label="Body" className="wide"><Input.TextArea rows={10} value={template.bodyTemplate} onChange={event => setTemplate({ ...template, bodyTemplate: event.target.value })} /></Form.Item>
+        {template.code === 'EXCEL_PAYSLIP_SEND_DEFAULT' && <Alert className="wide" type="info" showIcon message="Excel payslip email" description="Used for individual and batch emails. The salary-slip PDF is attached automatically; PNG/JPEG/GIF images added here are embedded in the email." />}
+        {template.code === 'EXCEL_PAYSLIP_EMAIL_REQUEST_DEFAULT' && <Alert className="wide" type="info" showIcon message="Missing email IDs request" description="Use {{employeeTable}} for employee codes, names and work locations. This request includes no payslip PDF and leaves employee payslips unsent. Uploaded logos are embedded in the email." />}
+        <Form.Item label="Body" className="wide">{template.isHtml
+          ? <CommunicationRichEditor value={template.bodyTemplate} onChange={bodyTemplate => setTemplate(current => ({ ...current, bodyTemplate }))} />
+          : <Input.TextArea rows={10} value={template.bodyTemplate} onChange={event => setTemplate({ ...template, bodyTemplate: event.target.value })} />}</Form.Item>
         <Form.Item label="Basic tokens" className="wide"><Space wrap>{templateHints.map(item => <Button size="small" key={item} onClick={() => setTemplate({ ...template, bodyTemplate: `${template.bodyTemplate}${item}` })}>{item}</Button>)}</Space></Form.Item>
         <Form.Item label="HTML"><Switch checked={template.isHtml} onChange={value => setTemplate({ ...template, isHtml: value })} /></Form.Item>
         <Form.Item label="Active"><Switch checked={template.isActive} onChange={value => setTemplate({ ...template, isActive: value })} /></Form.Item>

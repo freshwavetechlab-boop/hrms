@@ -10,9 +10,14 @@ JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=inte
 WHERE applicationRow.ClientId=documentRow.ClientId AND interviewRow.Status='Completed' AND interviewRow.Result='Selected'
 AND interviewRow.Id=COALESCE(documentRow.InterviewId,(SELECT MAX(latest.Id) FROM recruitment_interviews latest WHERE latest.ApplicationId=applicationRow.Id))
 AND ((documentRow.ApplicationId IS NOT NULL AND applicationRow.Id=documentRow.ApplicationId)
- OR (documentRow.ApplicationId IS NULL AND EXISTS(SELECT 1 FROM recruitment_profile_submission_batch_items item
- JOIN recruitment_profile_submission_batches batch ON batch.Id=item.BatchId
- WHERE item.ApplicationId=applicationRow.Id AND batch.HiringCaseId=documentRow.HiringCaseId AND batch.Status IN ('Approved','Forwarded'))))";
+ OR (documentRow.ApplicationId IS NULL AND EXISTS(SELECT 1 FROM recruitment_position_pipeline_instances hiring
+ WHERE hiring.Id=documentRow.HiringCaseId AND hiring.PositionId=applicationRow.PositionId
+ AND hiring.ClientId=applicationRow.ClientId AND hiring.Status<>'Superseded')))
+AND applicationRow.ApplicationType='Application'
+AND applicationRow.CurrentStage NOT LIKE '%Reject%' AND applicationRow.CurrentStage NOT LIKE '%Withdraw%'
+AND NOT EXISTS(SELECT 1 FROM recruitment_offers offerRow WHERE offerRow.Id=(
+ SELECT latestOffer.Id FROM recruitment_offers latestOffer WHERE latestOffer.ApplicationId=applicationRow.Id
+ ORDER BY latestOffer.UpdatedAt DESC,latestOffer.Id DESC LIMIT 1) AND offerRow.Status IN ('Rejected','Withdrawn','Expired'))";
 
     internal const string DefaultMembersSql = @"SELECT DISTINCT panel.PanelUserId FROM recruitment_stage_default_panel_members panel
 WHERE panel.PipelineStageId=documentRow.PipelineStageId AND panel.IsRequired=TRUE";

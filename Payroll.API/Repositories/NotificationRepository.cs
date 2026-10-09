@@ -382,16 +382,17 @@ SELECT LAST_INSERT_ID();", new
         var smtp = await db.QueryFirstOrDefaultAsync<NotificationSmtpSetting>("SELECT * FROM notification_smtp_settings WHERE Id=1") ?? new NotificationSmtpSetting();
         if (!smtp.IsEnabled || smtp.DeliveryPaused) return 0;
         var rows = (await db.QueryAsync<NotificationQueueItem>(@"SELECT * FROM notification_queue
-WHERE Status IN ('Pending','Retry') AND RetryCount < 5
+WHERE (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@EmailRequestEvent) AND Status IN (@ExcelPending,@ExcelRetry))) AND RetryCount < 5
   AND (@QueueId IS NULL OR Id=@QueueId)
-ORDER BY CreatedAt LIMIT 20", new { QueueId = queueId })).ToList();
+ORDER BY CreatedAt LIMIT 20", new { QueueId = queueId, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, ExcelPending = ExcelPayslipPendingStatus, ExcelRetry = ExcelPayslipRetryStatus })).ToList();
         var count = 0;
         foreach (var row in rows)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var claimed = await db.ExecuteAsync(@"UPDATE notification_queue
 SET Status='Processing'
-WHERE Id=@Id AND Status IN ('Pending','Retry') AND RetryCount < 5", new { row.Id });
+WHERE Id=@Id AND (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@EmailRequestEvent) AND Status IN (@ExcelPending,@ExcelRetry))) AND RetryCount < 5",
+                new { row.Id, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, ExcelPending = ExcelPayslipPendingStatus, ExcelRetry = ExcelPayslipRetryStatus });
             if (claimed == 0) continue;
 
             try
@@ -403,7 +404,7 @@ WHERE Id=@Id AND Status IN ('Pending','Retry') AND RetryCount < 5", new { row.Id
             }
             catch (Exception exception)
             {
-                var status = row.RetryCount + 1 >= 5 ? "Failed" : "Retry";
+                var status = row.RetryCount + 1 >= 5 ? "Failed" : row.EventCode is ExcelPayslipEvent or ExcelPayslipEmailRequestEvent ? ExcelPayslipRetryStatus : "Retry";
                 await db.ExecuteAsync("UPDATE notification_queue SET Status=@Status,RetryCount=RetryCount+1,ErrorMessage=@Error WHERE Id=@Id", new { row.Id, Status = status, Error = exception.Message });
                 await WriteLogsAsync(db, row, status, exception.Message);
                 logger.LogWarning(exception, "Queued notification {QueueId} failed.", row.Id);
@@ -416,7 +417,8 @@ WHERE Id=@Id AND Status IN ('Pending','Retry') AND RetryCount < 5", new { row.Id
     {
         await using var db = Db();
         await db.OpenAsync();
-        await db.ExecuteAsync("UPDATE notification_queue SET Status='Pending',RetryCount=0,ErrorMessage='',SentAt=NULL WHERE Id=@Id", new { Id = id });
+        await db.ExecuteAsync("UPDATE notification_queue SET Status=CASE WHEN EventCode IN (@ExcelEvent,@EmailRequestEvent) THEN @ExcelPending ELSE 'Pending' END,RetryCount=0,ErrorMessage='',SentAt=NULL WHERE Id=@Id",
+            new { Id = id, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, ExcelPending = ExcelPayslipPendingStatus });
     }
 
     public async Task<int> RetryAndProcessAsync(long id, CancellationToken cancellationToken)
@@ -607,6 +609,8 @@ LIMIT 1", new { evt.ResourceId });
             builder.Attachments.Add($"payslip-{row.ResourceId}.html", System.Text.Encoding.UTF8.GetBytes(row.BodyHtml), new ContentType("text", "html"));
         if (row.EventCode == ExcelPayslipEvent)
             await AttachExcelPayslipPdfAsync(db, row, builder);
+        else if (row.EventCode == ExcelPayslipEmailRequestEvent)
+            EmbedExcelPayslipImages(builder);
         var openHandles = new List<AttachmentFileHandle>();
         try
         {

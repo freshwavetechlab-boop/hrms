@@ -52,17 +52,18 @@ public sealed partial class ExcelPayslipPdfService
                 Math.Max(28, Math.Max(index < income.Count ? MoneyHeight(income[index]) : 0,
                     index < deductions.Count ? MoneyHeight(deductions[index]) : 0))).ToArray();
             var footerHeight = Math.Max(126, employer.Sum(field => Height(field.Label + ": " + field.Value, Width / 2 - 14, true)));
-            if (Top + 25 + infoHeights.Sum() + 14 + 52 + moneyHeights.Sum() + 28 + 30 + footerHeight <= Bottom)
+            if (Top + HeaderHeight + 25 + infoHeights.Sum() + 14 + 52 + moneyHeights.Sum() + 28 + 30 + footerHeight <= Bottom)
                 return new(size, information, infoHeights, income, deductions, moneyHeights, employer, footerHeight);
         }
         throw new InvalidOperationException($"Excel row {row.SourceRow} has too much text to fit legibly on one simple salary slip. Shorten visible labels or reduce mapped components.");
     }
 
-    private static void DrawSimplePage(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, XImage? seal, int decimals)
+    private static void DrawSimplePage(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, XImage logo, XImage? seal, int decimals)
     {
         var plan = MakeSimplePlan(gfx, batch, row, decimals);
         var bold = Font(plan.Size, true);
-        var y = Top;
+        DrawBrandingHeader(gfx, logo);
+        var y = Top + HeaderHeight;
         Box(Left, Width - 185, 25, "Salary Slip", centered: true, fill: Pink);
         Box(Left + Width - 185, 54, 25, "Month", fill: Pink);
         Box(Left + Width - 131, 131, 25, MonthLabel(batch.Month), fill: Pink);

@@ -1903,16 +1903,9 @@ WHERE Id=@Id AND (@ClientScope IS NULL OR ClientId=@ClientScope)", new { request
         return (await db.QueryFirstOrDefaultAsync<RecruitmentProcessDocument>("SELECT * FROM recruitment_process_documents WHERE Id=@Id", new { Id = id }), "");
     }
 
-    public async Task<(RecruitmentProcessDocument? Row, string Error)> GenerateProcessDocumentAsync(
-        long id,
-        AuthUser user,
-        string ipAddress,
-        string userAgent,
-        CancellationToken cancellationToken)
+    private static async Task<ProcessDocumentGenerationContext?> ReadGenerationContextAsync(MySqlConnection db, long id, AuthUser user)
     {
-        await using var db = Db();
-        await db.OpenAsync(cancellationToken);
-        var context = await db.QueryFirstOrDefaultAsync<ProcessDocumentGenerationContext>(@"SELECT documentRow.*,
+        return await db.QueryFirstOrDefaultAsync<ProcessDocumentGenerationContext>(@"SELECT documentRow.*,
 templateRow.ClientId TemplateClientId,templateRow.TemplateType,templateRow.SubjectTemplate,templateRow.BodyTemplate,templateRow.IsActive TemplateIsActive,
 COALESCE(clientRow.Name,'') ClientName,COALESCE(workOrder.WorkOrderNumber,'') WorkOrderNumber,
 workOrder.ReceivedAtUtc WorkOrderReceivedAt,COALESCE(applicationRow.PositionId,hiringCase.PositionId) PositionId,
@@ -1922,7 +1915,7 @@ COALESCE(stageRow.StageName,'') StageName,COALESCE(candidateRow.FirstName,'') Ca
 COALESCE(candidateRow.LastName,'') CandidateLastName,COALESCE(candidateRow.Email,'') CandidateEmail,
 interviewRow.ScheduledStart InterviewDate,applicationRow.AgreedCtc
 FROM recruitment_process_documents documentRow
-JOIN recruitment_templates templateRow ON templateRow.Id=documentRow.TemplateId
+LEFT JOIN recruitment_templates templateRow ON templateRow.Id=documentRow.TemplateId
 LEFT JOIN clients clientRow ON clientRow.Id=documentRow.ClientId
 LEFT JOIN recruitment_position_pipeline_instances hiringCase ON hiringCase.Id=documentRow.HiringCaseId
 LEFT JOIN recruitment_work_orders workOrder ON workOrder.Id=hiringCase.WorkOrderId
@@ -1933,7 +1926,19 @@ LEFT JOIN recruitment_open_positions positionRow ON positionRow.Id=COALESCE(appl
 LEFT JOIN recruitment_pipeline_stages stageRow ON stageRow.Id=documentRow.PipelineStageId
 LEFT JOIN recruitment_interviews interviewRow ON interviewRow.Id=documentRow.InterviewId
 WHERE documentRow.Id=@Id AND (@ClientId IS NULL OR documentRow.ClientId=@ClientId)", new { Id = id, user.ClientId });
-        if (context is null) return (null, "Process document or its configured template was not found.");
+    }
+
+    public async Task<(RecruitmentProcessDocument? Row, string Error)> GenerateProcessDocumentAsync(
+        long id,
+        AuthUser user,
+        string ipAddress,
+        string userAgent,
+        CancellationToken cancellationToken)
+    {
+        await using var db = Db();
+        await db.OpenAsync(cancellationToken);
+        var context = await ReadGenerationContextAsync(db, id, user);
+        if (context is null) return (null, "Process document was not found.");
         if (context.Status.Equals("Signed", StringComparison.OrdinalIgnoreCase)) return (null, "A signed process document cannot be regenerated.");
         if (IsMoM(context.DocumentType) && (context.ApplicationId.HasValue || context.InterviewId.HasValue))
             return (null, "Prepare a combined job MoM from MoM & Negotiation. Candidate-specific MoMs are retained only as history.");
@@ -1943,10 +1948,15 @@ WHERE documentRow.Id=@Id AND (@ClientId IS NULL OR documentRow.ClientId=@ClientI
             return (null, "This candidate MoM is already prepared. Revise and reconfirm terms to create another version.");
         if (context.TermsVersion.HasValue && !await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM recruitment_candidate_applications WHERE Id=@ApplicationId AND TermsVersion=@TermsVersion AND TermsConfirmedAtUtc IS NOT NULL)", context))
             return (null, "Candidate terms changed. Prepare MoM again from the current agreed terms.");
-        if (!context.TemplateIsActive || (context.TemplateClientId != 0 && context.TemplateClientId != context.ClientId))
+        if (context.TemplateId is null && IsMoM(context.DocumentType))
+        {
+            context.SubjectTemplate = RecruitmentJobMom.DefaultSubject;
+            context.BodyTemplate = RecruitmentJobMom.DefaultBody;
+        }
+        else if (!context.TemplateIsActive || (context.TemplateClientId != 0 && context.TemplateClientId != context.ClientId))
             return (null, "The configured process-document template is inactive or belongs to another client.");
         var configured = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_stage_process_document_requirements
-WHERE PipelineStageId=@StageId AND DocumentType=@DocumentType AND TemplateId=@TemplateId", new { StageId = context.PipelineStageId, context.DocumentType, TemplateId = context.TemplateId });
+WHERE PipelineStageId=@StageId AND DocumentType=@DocumentType AND TemplateId <=> @TemplateId", new { StageId = context.PipelineStageId, context.DocumentType, TemplateId = context.TemplateId });
         if (configured == 0) return (null, "The process-document template no longer matches the published pipeline stage.");
 
         var culture = CultureInfo.GetCultureInfo("en-IN");
@@ -2064,36 +2074,24 @@ VALUES ('RecruitmentProcessDocument',@Id,'Job MoM prepared',@MomSnapshotJson,@Us
         ProcessDocumentGenerationContext context,
         CultureInfo culture)
     {
+        (Dictionary<string, string>?, string) Block(string action, string error)
+        {
+            context.PreparationAction = action;
+            return (null, error);
+        }
         if (context.HiringCaseId is null or <= 0 || context.PositionId is null or <= 0)
-            return (null, "Selection-committee MoM generation requires a hiring case linked to its exact open position.");
-        var candidates = (await db.QueryAsync<SelectionCommitteeCandidate>(@"SELECT DISTINCT applicationRow.Id ApplicationId,
-CONCAT(candidateRow.FirstName,' ',candidateRow.LastName) CandidateName,
-interviewRow.Id InterviewId,interviewRow.ScheduledStart,interviewRow.Status InterviewStatus,
-interviewRow.Result,interviewRow.OverallScore,interviewRow.RoundConfigurationId,
-applicationRow.AgreedCtc,applicationRow.TermsVersion,applicationRow.TermsConfirmedAtUtc
-FROM recruitment_candidate_applications applicationRow
-LEFT JOIN recruitment_profile_submission_batch_items batchItem ON batchItem.ApplicationId=applicationRow.Id
-LEFT JOIN recruitment_profile_submission_batches batch ON batch.Id=batchItem.BatchId
-JOIN recruitment_candidates candidateRow ON candidateRow.Id=applicationRow.CandidateId
-LEFT JOIN recruitment_interviews interviewRow ON interviewRow.Id=(SELECT candidateInterview.Id FROM recruitment_interviews candidateInterview
-WHERE candidateInterview.ApplicationId=applicationRow.Id
-ORDER BY candidateInterview.Id DESC LIMIT 1)
-WHERE ((@ApplicationId IS NOT NULL AND applicationRow.Id=@ApplicationId) OR (@ApplicationId IS NULL AND batch.HiringCaseId=@HiringCaseId AND batch.Status IN ('Approved','Forwarded')))
-AND applicationRow.PositionId=@PositionId AND applicationRow.ClientId=@ClientId
-AND interviewRow.Status='Completed' AND interviewRow.Result='Selected'
-AND applicationRow.CurrentStage NOT LIKE '%Reject%' AND applicationRow.CurrentStage NOT LIKE '%Withdraw%'
-AND NOT EXISTS (SELECT 1 FROM recruitment_offers offerRow WHERE offerRow.Id=(
- SELECT latestOffer.Id FROM recruitment_offers latestOffer WHERE latestOffer.ApplicationId=applicationRow.Id
- ORDER BY latestOffer.UpdatedAt DESC,latestOffer.Id DESC LIMIT 1) AND offerRow.Status IN ('Rejected','Withdrawn','Expired'))
-ORDER BY CandidateName", new { context.ApplicationId, HiringCaseId = context.HiringCaseId.Value, PositionId = context.PositionId.Value, context.ClientId })).ToList();
+            return Block("Job", "Link this hiring journey to its open position before preparing MoM.");
+        var candidates = (await db.QueryAsync<SelectionCommitteeCandidate>(RecruitmentJobMom.SelectedCandidatesSql,
+            new { context.ApplicationId, context.HiringCaseId, context.PositionId, context.ClientId })).ToList();
+        context.SelectedCandidateCount = candidates.Count;
         if (candidates.Count == 0)
-            return (null, "MoM needs interview-selected candidates in an approved profile batch. Confirm agreed terms before panel signing.");
+            return Block("Interview", "Complete final interview selection for this job in Interview Tracker before preparing MoM.");
         var required = await RequiredHiringCohortAsync(db, context.PositionId.Value);
         if (context.ApplicationId is null && !HasRequiredHiringCohort(required, candidates.Count))
-            return (null, $"MoM needs {required} interview-selected candidates; {candidates.Count} are ready. Other candidates can continue their own journey.");
+            return Block("Interview", $"MoM needs {required} interview-selected candidates; {candidates.Count} are ready. Complete the remaining selections in Interview Tracker.");
 
         var unconfirmed = candidates.Where(row => row.TermsConfirmedAtUtc is null || row.AgreedCtc is not > 0).Select(row => row.CandidateName).ToArray();
-        if (IsMoM(context.DocumentType) && unconfirmed.Length > 0) return (null, "Confirm individual agreed terms before preparing the job MoM: " + string.Join(", ", unconfirmed) + ".");
+        if (IsMoM(context.DocumentType) && unconfirmed.Length > 0) return Block("Terms", "Confirm agreed terms in Negotiation & approvals for: " + string.Join(", ", unconfirmed) + ".");
         var interviewIds = candidates.Select(row => row.InterviewId!.Value).Distinct().ToArray();
         var missingFeedback = (await db.QueryAsync<string>(@"SELECT CONCAT(candidateRow.FirstName,' ',candidateRow.LastName)
 FROM recruitment_interviews interviewRow
@@ -2105,7 +2103,7 @@ WHERE interviewRow.Id IN @Ids AND EXISTS (
   WHERE panel.InterviewId=interviewRow.Id AND feedback.Id IS NULL
 )", new { Ids = interviewIds })).ToArray();
         if (missingFeedback.Length > 0)
-            return (null, $"Every assigned panel member must submit their own feedback before MoM generation: {string.Join(", ", missingFeedback)}.");
+            return Block("Interview", $"Panel feedback is pending in Interview Tracker for: {string.Join(", ", missingFeedback)}. Each assigned member must submit their feedback.");
 
         var panelMembers = (await db.QueryAsync<SelectionCommitteePanelMember>(@"SELECT panel.PanelUserId,
 COALESCE(userRow.DisplayName,userRow.Email,'Panel member') PanelName,panel.PanelRole,
@@ -2121,6 +2119,8 @@ ORDER BY CASE WHEN LOWER(panel.PanelRole) LIKE '%chair%' THEN 0 WHEN LOWER(panel
             panelMembers = (await db.QueryAsync<SelectionCommitteePanelMember>(@"SELECT panel.PanelUserId,COALESCE(u.DisplayName,u.Email) PanelName,panel.PanelRole
 FROM recruitment_stage_default_panel_members panel JOIN authusers u ON u.Id=panel.PanelUserId
 WHERE panel.PipelineStageId=@PipelineStageId AND panel.IsRequired=TRUE", context)).ToList();
+        if (IsMoM(context.DocumentType) && panelMembers.Count == 0)
+            return Block("Interview", "Assign the selection committee in Interview Tracker before preparing MoM. Those panel members will sign using their own logins.");
         context.MomSnapshotJson = JsonSerializer.Serialize(new {
             Candidates = candidates.Select(row => new { row.ApplicationId, row.TermsVersion, row.InterviewId }),
             PanelMembers = panelMembers.Select(row => row.PanelUserId).Distinct().Select(id => new { UserId = id })
@@ -2142,7 +2142,7 @@ GROUP BY feedback.InterviewId,score.InterviewStageCompetencyId", new { Ids = int
         if (competencies.Count > 0)
         {
             var missingScores = candidates.Where(candidate => competencies.Any(competency => !scoreLookup.ContainsKey((candidate.InterviewId!.Value, competency.StageCompetencyId)))).Select(candidate => candidate.CandidateName).ToArray();
-            if (missingScores.Length > 0) return (null, $"Complete every configured score component before Annexure generation: {string.Join(", ", missingScores)}.");
+            if (missingScores.Length > 0) return Block("Interview", $"Complete the configured interview scores for: {string.Join(", ", missingScores)}.");
         }
 
         var waitingList = candidates.Where(row => row.Result.Equals("On Hold", StringComparison.OrdinalIgnoreCase) || row.Result.Equals("Waiting List", StringComparison.OrdinalIgnoreCase))
@@ -2670,6 +2670,8 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
         public string CandidateLastName { get; set; } = "";
         public string CandidateEmail { get; set; } = "";
         public string? MomSnapshotJson { get; set; }
+        public string PreparationAction { get; set; } = "Prepare";
+        public int SelectedCandidateCount { get; set; }
         public DateTime? InterviewDate { get; set; }
         public decimal? AgreedCtc { get; set; }
     }

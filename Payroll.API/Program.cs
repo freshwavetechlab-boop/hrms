@@ -1646,6 +1646,13 @@ app.MapPost("/api/recruitment/process-documents/{id:long}/signatures", async (Re
     }
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
+app.MapGet("/api/recruitment/process-documents/{id:long}/readiness", async (RecruitmentCaseRepository repository, long id, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!RecruitmentPermissions.Has(user, "recruitment.document.view", "recruitment.document.manage", "recruitment.document.sign", "recruitment.interview.panel")) return Results.StatusCode(403);
+    var row = await repository.GetMomReadinessAsync(id, user);
+    return row is null ? Results.NotFound() : Results.Ok(row);
+});
 app.MapPost("/api/recruitment/process-documents/{id:long}/generate", async (RecruitmentCaseRepository repository, long id, HttpContext context, CancellationToken cancellationToken) =>
 {
     if (!HasPermission(context, "recruitment.document.manage") && !HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);

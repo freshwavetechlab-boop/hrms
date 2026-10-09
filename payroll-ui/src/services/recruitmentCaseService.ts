@@ -1,4 +1,4 @@
-import { deleteJson, getJson, postJson } from './apiClient'
+import { deleteJson, getJson, getJsonResult, postJson } from './apiClient'
 import { currentRecruitmentHiringCases } from './recruitmentJobVersions'
 import type { RecruitmentHiringCase, RecruitmentProcessDocument, RecruitmentProcessDocumentSignature, RecruitmentProfileSubmissionBatch, RecruitmentWorkOrder, SaveRecruitmentProcessDocument, SaveRecruitmentProcessDocumentSignature, SaveRecruitmentWorkOrder } from '../types/recruitmentCases'
 import type { RecruitmentPipelineTransition } from '../types/recruitmentOrchestration'
@@ -57,6 +57,18 @@ export const saveRecruitmentProcessDocument = (request: SaveRecruitmentProcessDo
 
 export const generateRecruitmentProcessDocument = (id: number) =>
   postJson(`/api/recruitment/process-documents/${id}/generate`, {}, null as RecruitmentProcessDocument | null, { successMessage: 'Process document generated and stored securely.' })
+
+export type RecruitmentMomReadiness = {
+  action: string
+  message: string
+  canGenerate: boolean
+  canSign: boolean
+  selectedCandidateCount: number
+  pendingSigners: string[]
+}
+
+export const getRecruitmentMomReadiness = (id: number) =>
+  getJsonResult<RecruitmentMomReadiness | null>(`/api/recruitment/process-documents/${id}/readiness`, null, { loader: false })
 
 export const getRecruitmentProcessDocumentSignatures = (id: number) =>
   getJson<RecruitmentProcessDocumentSignature[]>(`/api/recruitment/process-documents/${id}/signatures`, [])

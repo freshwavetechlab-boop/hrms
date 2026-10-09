@@ -72,7 +72,7 @@ FROM notification_queue queue WHERE queue.ClientId IN @ClientIds AND queue.Id IN
             if (queue is not null && (queue.ClientId != batch.ClientId || queue.EventCode != NotificationRepository.ExcelPayslipEvent
                 || queue.ResourceType != "ExcelPayslipBatch" || queue.ResourceId != batch.Id + ":" + document.Id)) queue = null;
             var status = queue is null ? "Unknown" : queue.Status.Equals("Sent", StringComparison.OrdinalIgnoreCase) || queue.SentAt.HasValue || queue.LastSentAt.HasValue ? "Sent"
-                : queue.Status.ToUpperInvariant() switch { "PENDING" or "RETRY" or "PROCESSING" or "SENDING" => "Queued", "FAILED" => "Failed", _ => "Unknown" };
+                : queue.Status.ToUpperInvariant() switch { "PENDING" or "RETRY" or "EXCELPENDING" or "EXCELRETRY" or "PROCESSING" or "SENDING" => "Queued", "FAILED" => "Failed", _ => "Unknown" };
             var message = status switch
             {
                 "Sent" => "Already sent to the shown recipient. A new send will skip this payslip.",

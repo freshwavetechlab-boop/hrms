@@ -10,7 +10,7 @@ namespace Payroll.API.Services;
 /// <summary>Renders only the supplied Excel snapshot. It never loads or calculates payroll.</summary>
 public sealed partial class ExcelPayslipPdfService
 {
-    private const double Left = 28, Top = 30, Width = 539, BodyTop = 128, Bottom = 800;
+    private const double Left = 28, Top = 30, Width = 539, HeaderHeight = 69, BodyTop = 128, Bottom = 800;
     private static readonly object FontLock = new();
     private static readonly CultureInfo AmountCulture = CultureInfo.GetCultureInfo("en-IN");
     private static readonly XBrush Pink = new XSolidBrush(XColor.FromArgb(249, 225, 228));
@@ -50,7 +50,7 @@ public sealed partial class ExcelPayslipPdfService
             var page = document.AddPage();
             page.Size = PdfSharp.PageSize.A4;
             using var gfx = XGraphics.FromPdfPage(page);
-            if (batch.SimpleLayout) DrawSimplePage(gfx, batch, row, seal, amountDecimalPlaces);
+            if (batch.SimpleLayout) DrawSimplePage(gfx, batch, row, logo, seal, amountDecimalPlaces);
             else DrawPage(gfx, batch, row, logo, seal, amountDecimalPlaces);
         }
         using var output = new MemoryStream();
@@ -149,14 +149,19 @@ public sealed partial class ExcelPayslipPdfService
         throw new InvalidOperationException($"Excel row {row.SourceRow} has too much text to fit legibly on one payslip page. Shorten mapped labels or reduce the information fields.");
     }
 
+    private static void DrawBrandingHeader(XGraphics gfx, XImage logo)
+    {
+        gfx.DrawRectangle(Border, Left, Top, Width, HeaderHeight);
+        Image(gfx, logo, Left + 10, Top + 8, 67, 50);
+        Text(gfx, "GA DIGITAL WEB WORD (P) LTD", Font(16, true), Left + 85, Top + 12, Width - 98, 22, centered: true);
+        Text(gfx, "NO.1, HARGOBIND ENCLAVE, VIKAS MARG EXTN., DELHI-110092", Font(8), Left + 84, Top + 39, Width - 96, 20, centered: true);
+    }
+
     private static void DrawPage(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, XImage logo, XImage? seal, int amountDecimalPlaces)
     {
         var plan = MakePlan(gfx, batch, row, amountDecimalPlaces);
         var normal = Font(plan.Size); var bold = Font(plan.Size, true);
-        gfx.DrawRectangle(Border, Left, Top, Width, 69);
-        Image(gfx, logo, Left + 10, Top + 8, 67, 50);
-        Text(gfx, "GA DIGITAL WEB WORD (P) LTD", Font(16, true), Left + 85, Top + 12, Width - 98, 22, centered: true);
-        Text(gfx, "NO.1, HARGOBIND ENCLAVE, VIKAS MARG EXTN., DELHI-110092", Font(8), Left + 84, Top + 39, Width - 96, 20, centered: true);
+        DrawBrandingHeader(gfx, logo);
         gfx.DrawRectangle(Border, Pink, Left, 99, Width, 25);
         Text(gfx, $"SALARY SLIP - {MonthLabel(batch.Month)}", Font(11, true), Left + 6, 104, Width - 12, 17, centered: true);
         var y = BodyTop;

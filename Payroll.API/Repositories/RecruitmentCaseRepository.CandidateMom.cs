@@ -11,6 +11,22 @@ public sealed partial class RecruitmentCaseRepository
     {
         if (!IsMoM(document.DocumentType)) return "";
         if (document.WorkflowInstanceId is > 0) return "";
+        var workflowId = await ResolveMomApprovalWorkflowAsync(db, tx, document);
+        if (workflowId is not > 0) return "HR Division approval is not configured for this job. Configure it and retry the final panel signature.";
+        var signatures = (await db.QueryAsync<RecruitmentProcessDocumentSignature>(
+            "SELECT * FROM recruitment_process_document_signatures WHERE ProcessDocumentId=@Id AND CandidateId IS NULL", new { document.Id }, tx)).ToList();
+        var workflow = await workflows.StartInTransactionAsync(db, tx, new StartWorkflowRequest {
+            WorkflowId = workflowId.Value, ResourceType = "RecruitmentPipelineTransition", ResourceId = $"MOM:{document.Id}",
+            PayloadJson = JsonSerializer.Serialize(new { hiringCaseId = document.HiringCaseId, documentId = document.Id,
+                PanelSignatures = signatures, SignedAtUtc = DateTime.UtcNow, document.BodySnapshot })
+        }, user.Id);
+        if (workflow is null) return "The HR approval task could not start. Retry the final panel signature.";
+        await db.ExecuteAsync("UPDATE recruitment_process_documents SET WorkflowInstanceId=@WorkflowId WHERE Id=@Id", new { document.Id, WorkflowId = workflow.Id }, tx);
+        return "";
+    }
+
+    private static async Task<int?> ResolveMomApprovalWorkflowAsync(MySqlConnector.MySqlConnection db, MySqlConnector.MySqlTransaction? tx, RecruitmentProcessDocument document)
+    {
         var workflowId = await db.ExecuteScalarAsync<int?>(@"SELECT stage.ApprovalWorkflowId
 FROM recruitment_position_pipeline_instances flow JOIN recruitment_pipeline_stages stage ON stage.PipelineVersionId=flow.PipelineVersionId
 JOIN workflowmasters w ON w.Id=stage.ApprovalWorkflowId AND w.IsActive=TRUE AND (w.ClientId IS NULL OR w.ClientId=@ClientId)
@@ -27,17 +43,7 @@ JOIN workflowmasters w ON w.Id=stage.ApprovalWorkflowId AND w.IsActive=TRUE AND 
 WHERE d.Id=@Id", document, tx)).ToArray();
             if (mapped.Length == 1) workflowId = mapped[0];
         }
-        if (workflowId is not > 0) return "HR Division approval is not configured for this job. Configure it and retry the final panel signature.";
-        var signatures = (await db.QueryAsync<RecruitmentProcessDocumentSignature>(
-            "SELECT * FROM recruitment_process_document_signatures WHERE ProcessDocumentId=@Id AND CandidateId IS NULL", new { document.Id }, tx)).ToList();
-        var workflow = await workflows.StartInTransactionAsync(db, tx, new StartWorkflowRequest {
-            WorkflowId = workflowId.Value, ResourceType = "RecruitmentPipelineTransition", ResourceId = $"MOM:{document.Id}",
-            PayloadJson = JsonSerializer.Serialize(new { hiringCaseId = document.HiringCaseId, documentId = document.Id,
-                PanelSignatures = signatures, SignedAtUtc = DateTime.UtcNow, document.BodySnapshot })
-        }, user.Id);
-        if (workflow is null) return "The HR approval task could not start. Retry the final panel signature.";
-        await db.ExecuteAsync("UPDATE recruitment_process_documents SET WorkflowInstanceId=@WorkflowId WHERE Id=@Id", new { document.Id, WorkflowId = workflow.Id }, tx);
-        return "";
+        return workflowId;
     }
 
     public async Task<IReadOnlyList<long>> SyncJobMomApprovalAsync(long documentId, long workflowInstanceId, string status)

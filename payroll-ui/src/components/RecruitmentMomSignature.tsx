@@ -5,7 +5,7 @@ import { getRecruitmentProcessDocumentSignatures, saveRecruitmentProcessDocument
 import type { RecruitmentProcessDocument, RecruitmentProcessDocumentSignature } from '../types/recruitmentCases'
 import './RecruitmentWorkOrderWorkspace.css'
 
-export default function RecruitmentMomSignature({ document, onClose, onSaved }: { document: RecruitmentProcessDocument; onClose: () => void; onSaved: () => Promise<void> }) {
+export default function RecruitmentMomSignature({ document, onClose, onSaved, readOnly = false }: { document: RecruitmentProcessDocument; onClose: () => void; onSaved: () => Promise<void>; readOnly?: boolean }) {
   const session = useAuthSession()
   const [documentSignatures, setDocumentSignatures] = useState<RecruitmentProcessDocumentSignature[]>([])
   const [signatureMethod, setSignatureMethod] = useState<'Typed' | 'Drawn' | 'Image'>('Typed')
@@ -14,7 +14,7 @@ export default function RecruitmentMomSignature({ document, onClose, onSaved }: 
   const [signatureSaving, setSignatureSaving] = useState(false)
   useEffect(() => { void getRecruitmentProcessDocumentSignatures(document.id).then(setDocumentSignatures) }, [document.id])
   const captureSignature = async () => {
-    if (!document) return
+    if (!document || readOnly) return
     if (signerName.trim().length < 2) return void message.error("Enter the signer's full name.")
     if (signatureMethod !== 'Typed' && !signatureDataUrl) return void message.error('Draw or upload the signature first.')
     setSignatureSaving(true)
@@ -42,10 +42,10 @@ export default function RecruitmentMomSignature({ document, onClose, onSaved }: 
       centered
       bodyStyle={{ maxHeight: '65dvh', overflowY: 'auto' }}
       open
-      title="Sign job MoM"
+      title={readOnly ? 'Job MoM & panel signatures' : 'Sign job MoM'}
       okText="Capture signature"
       confirmLoading={signatureSaving}
-      okButtonProps={{ disabled: document.status === 'Signed' || signerName.trim().length < 2 || (signatureMethod !== 'Typed' && !signatureDataUrl) }}
+      okButtonProps={{ style: readOnly ? { display: 'none' } : undefined, disabled: readOnly || document.status === 'Signed' || signerName.trim().length < 2 || (signatureMethod !== 'Typed' && !signatureDataUrl) }}
       onOk={() => void captureSignature()}
       onCancel={() => { if (!signatureSaving) onClose() }}
       cancelButtonProps={{ disabled: signatureSaving }}
@@ -54,14 +54,14 @@ export default function RecruitmentMomSignature({ document, onClose, onSaved }: 
       <Alert showIcon type="info" message="Audited electronic signature" description="Your signed-in user, method and timestamp are stored with this MoM. This combined MoM belongs to the job. Every assigned panel member signs using their own login. The final required signature sends agreed terms to HR Division for approval." />
       <Tag>{document.signatureCount}/{document.requiredSignatureCount} panel signatures</Tag>
       {document.bodySnapshot && <pre style={{ whiteSpace: 'pre-wrap', maxHeight: 300, overflow: 'auto' }}>{document.bodySnapshot}</pre>}
-      <Form component="div" layout="vertical" className="mom-signature-form">
+      {!readOnly && <Form component="div" layout="vertical" className="mom-signature-form">
         <Form.Item label="Signer name" required><Input value={signerName} onChange={event => setSignerName(event.target.value)} /></Form.Item>
         <Form.Item label="Signature method" required><Select value={signatureMethod} options={['Typed', 'Drawn', 'Image'].map(value => ({ value, label: value === 'Image' ? 'Upload PNG/JPG' : value }))} onChange={value => { setSignatureMethod(value); setSignatureDataUrl('') }} /></Form.Item>
         {signatureMethod === 'Typed' && <div className="mom-typed-signature" aria-label="Typed signature preview">{signerName || 'Your signature'}</div>}
         {signatureMethod === 'Drawn' && <SignaturePad onChange={setSignatureDataUrl} />}
         {signatureMethod === 'Image' && <div className="mom-signature-upload"><input type="file" accept="image/png,image/jpeg" onChange={event => uploadSignatureImage(event.target.files?.[0])} />{signatureDataUrl && <img src={signatureDataUrl} alt="Uploaded signature preview" />}</div>}
-        {!!documentSignatures.length && <div className="mom-signature-list"><b>Captured signatures</b>{documentSignatures.map(row => <div key={row.id}><span>{row.signerName} · {row.signerRole}</span><Tag color="green">{row.signatureMethod} · {new Date(row.signedAtUtc).toLocaleString()}</Tag></div>)}</div>}
-      </Form>
+      </Form>}
+      {!!documentSignatures.length && <div className="mom-signature-list"><b>Captured signatures</b>{documentSignatures.map(row => <div key={row.id}><span>{row.signerName} · {row.signerRole}</span><Tag color="green">{row.signatureMethod} · {new Date(row.signedAtUtc).toLocaleString()}</Tag></div>)}</div>}
     </Modal>)
 }
 
