@@ -1,4 +1,4 @@
-import { Children, isValidElement, useCallback, useMemo, useState, type Key, type ReactNode } from 'react'
+import { Children, isValidElement, useCallback, useMemo, useState, type CSSProperties, type Key, type ReactNode } from 'react'
 import { DownOutlined, FileExcelOutlined, FileOutlined, FilePdfOutlined, FileTextOutlined, FileWordOutlined } from '@ant-design/icons'
 import { Button, Dropdown, Empty, Input, Pagination, Table } from 'antd'
 import type { ColumnsType, TablePaginationConfig, TableRowSelection } from 'antd/es/table/interface'
@@ -93,6 +93,7 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
   const [exportFormat, setExportFormat] = useState<ExportFormat>('excel')
   const [cardPage, setCardPage] = useState(1)
   const pageSizeOptions = props.pageSizeOptions ?? [10, 25, 50, 100]
+  const [tablePageSize, setTablePageSize] = useState(pageSizeOptions[0])
   const actionsWidth = props.actionsWidth ?? 170
   const selectionWidth = props.rowSelection ? columnWidthInPixels(props.rowSelection.columnWidth, 32) : 0
   const tableScrollX = Math.ceil(Math.max(640, columns.reduce((total, column) => total + resolvedColumnWidth(column), selectionWidth) + (actions || onEdit ? actionsWidth : 0)))
@@ -125,7 +126,11 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
     return actions || onEdit ? [...mapped, { key: '__actions', title: 'Actions', fixed: 'right' as const, width: actionsWidth, render: (_: unknown, row: T) => <div className="ant-table-row-actions">{actions ? actions(row) : <Button size="small" onClick={() => onEdit?.(row)}>Edit</Button>}</div> }] : mapped
   }, [columns, rows, actions, onEdit, valueOf, actionsWidth])
 
-  const pagination: TablePaginationConfig = { defaultPageSize: pageSizeOptions[0], pageSizeOptions: pageSizeOptions.map(String), showSizeChanger: true, showTotal: (total, range) => `${range[0]}-${range[1]} of ${total}` }
+  const rowHeight = 48
+  const tableBodyHeight = props.scrollY ?? Math.max(rowHeight * Math.max(1, tablePageSize), 360)
+  const tableStyle = { '--data-table-body-min-height': typeof tableBodyHeight === 'number' ? `${tableBodyHeight}px` : String(tableBodyHeight) } as CSSProperties
+  const tableVerticalScroll = props.fillHeight || props.scrollY !== undefined ? tableBodyHeight : undefined
+  const pagination: TablePaginationConfig = { pageSize: tablePageSize, pageSizeOptions: pageSizeOptions.map(String), showSizeChanger: true, showTotal: (total, range) => `${range[0]}-${range[1]} of ${total}` }
   const clear = () => { setQuery(''); setDirtyTable(false); setVisibleTableState(null); setTableKey(value => value + 1) }
   const exportValueOf = (row: T, column: Column<T>) => {
     if (column.exportValue) return column.exportValue(row)
@@ -195,7 +200,7 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
     onClick: ({ key }) => { setExportFormat(key as ExportFormat); downloadExport(key as ExportFormat) }
   }
 
-  return <div className={`ant-smart-table${props.fillHeight ? ' table-fill-height' : ''}`}>
+  return <div className={`ant-smart-table${props.fillHeight ? ' table-fill-height' : ''}`} style={tableStyle}>
     <div className="ant-table-toolbar">
       <div className="ant-table-summary">{title && <strong>{title}</strong>}<span>{data.length} of {rows.length} rows</span></div>
       <div className="ant-table-actions">
@@ -233,8 +238,12 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
       pagination={pagination}
       rowSelection={props.rowSelection ? { ...props.rowSelection, selectedRowKeys: props.rowSelection.selectedRowKeys?.map(String) } : undefined}
       tableLayout="fixed"
-      scroll={{ x: tableScrollX, y: props.fillHeight ? '100%' : props.scrollY }}
-      onChange={(_, __, ___, extra) => { setDirtyTable(true); setVisibleTableState({ source: data, rows: extra.currentDataSource as T[] }) }}
+      scroll={tableVerticalScroll === undefined ? { x: tableScrollX } : { x: tableScrollX, y: tableVerticalScroll }}
+      onChange={(paginationState, __, ___, extra) => {
+        if (paginationState.pageSize && paginationState.pageSize !== tablePageSize) setTablePageSize(paginationState.pageSize)
+        setDirtyTable(true)
+        setVisibleTableState({ source: data, rows: extra.currentDataSource as T[] })
+      }}
     />}
   </div>
 }

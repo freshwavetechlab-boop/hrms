@@ -425,13 +425,21 @@ body.portal-shell-mounted {
   display: flex;
   flex-direction: column;
   width: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #bdc9d6 transparent;
 }
 
 .hrms-topbar {
-  position: relative;
+  position: sticky;
+  top: 0;
   z-index: 20;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -517,27 +525,22 @@ body.portal-shell-mounted {
 }
 
 .hrms-content {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   width: 100%;
   min-width: 0;
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  min-height: auto;
+  overflow: visible;
   padding: 12px 20px 18px;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: #bdc9d6 transparent;
 }
 
-.hrms-content::-webkit-scrollbar,
+.hrms-main::-webkit-scrollbar,
 .hrms-sidebar > nav::-webkit-scrollbar,
 .hrms-page-body :is(.ant-table-content, .ant-table-body)::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-.hrms-content::-webkit-scrollbar-thumb,
+.hrms-main::-webkit-scrollbar-thumb,
 .hrms-sidebar > nav::-webkit-scrollbar-thumb,
 .hrms-page-body :is(.ant-table-content, .ant-table-body)::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
@@ -1160,35 +1163,6 @@ body.portal-shell-mounted .ant-select-dropdown {
   font-size: 11px;
 }
 
-.hrms-footer {
-  display: flex;
-  flex: 0 0 38px;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 7px;
-  height: 38px;
-  padding: 0 24px;
-  border-top: 1px solid var(--hrms-soft-line);
-  background: #fff;
-  color: #788497;
-  font-size: 10px;
-}
-
-.hrms-footer img,
-.hrms-footer b {
-  width: 22px;
-  height: 22px;
-  object-fit: contain;
-}
-
-.hrms-footer b {
-  display: grid;
-  place-items: center;
-  border-radius: 6px;
-  background: var(--hrms-soft-blue);
-  color: var(--hrms-brand);
-}
-
 .hrms-sidebar-scrim {
   display: none;
 }
@@ -1348,8 +1322,7 @@ body.portal-shell-mounted .ant-select-dropdown {
   }
 
   .hrms-topbar .search-shortcut,
-  .hrms-topbar .dashboard-switcher,
-  .hrms-footer {
+  .hrms-topbar .dashboard-switcher {
     display: none;
   }
 

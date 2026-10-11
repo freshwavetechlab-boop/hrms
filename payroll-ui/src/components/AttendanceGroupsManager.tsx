@@ -91,7 +91,9 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
     return matchingEmployees.filter(employee => `${fullName(employee)} ${employee.employeeCode} ${employee.department} ${employee.designation}`.toLowerCase().includes(query))
   }, [employeeQuery, matchingEmployees])
   const matchingIds = useMemo(() => matchingEmployees.map(employee => employee.id), [matchingEmployees])
-  const selectedMatchingCount = form.employeeIds.filter(id => matchingIds.includes(id)).length
+  const matchingIdSet = useMemo(() => new Set(matchingIds), [matchingIds])
+  const scopedEmployeeIds = useMemo(() => form.employeeIds.filter(id => matchingIdSet.has(id)), [form.employeeIds, matchingIdSet])
+  const selectedMatchingCount = scopedEmployeeIds.length
   const monthDays = daysInPreviewMonth(previewMonth)
   const dayOptions = useMemo(() => Array.from({ length: monthDays }, (_, index) => index + 1), [monthDays])
   const buffer = bufferDays(form.attendanceCycleEndDay, form.payrollReportGenerationDay, monthDays)
@@ -202,8 +204,7 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
     if (!form.workWeek) next.push('Select a weekly off pattern.')
     if (cyclePreview.days > monthDays) next.push(`Attendance cycle cannot exceed ${monthDays} days for ${previewMonth}.`)
     if (buffer < 3 || buffer > 7) next.push('Payroll report generation day must be 3 to 7 days after attendance cycle end day.')
-    if (!form.employeeIds.length) next.push('Select at least one employee.')
-    if (form.employeeIds.some(id => !matchingIds.includes(id))) next.push('Selected employees must match the selected client and selected filters.')
+    if (!scopedEmployeeIds.length) next.push('Select at least one employee for the selected client and filters.')
     setErrors(next)
     if (next.length) onMessage(next.join(' '))
     return next.length === 0
@@ -225,7 +226,7 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
       attendanceCycleEndDay: form.attendanceCycleEndDay,
       payrollReportGenerationDay: form.payrollReportGenerationDay,
       isActive: form.isActive,
-      employeeIds: form.employeeIds.filter(id => matchingIds.includes(id))
+      employeeIds: scopedEmployeeIds
     })
     setSaving(false)
     if (response.ok) {

@@ -1,6 +1,6 @@
-.excel-payslips { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; height: 100%; gap: 12px; }
+.excel-payslips { display: grid; align-content: start; min-width: 0; width: 100%; gap: 12px; }
 .excel-payslips > .ant-alert, .excel-payslip-summary { flex-shrink: 0; }
-.excel-payslips > .ant-smart-table { flex: 1; min-height: 0; min-width: 0; }
+.excel-payslips > .ant-smart-table { min-width: 0; }
 .excel-payslip-summary { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
 .excel-payslip-summary > .ant-space { min-width: 0; overflow-wrap: anywhere; }
 .excel-payslip-email-tabs { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; min-width: 0; }

@@ -7,6 +7,7 @@ import AppIcon from './components/AppIcon'
 import type { IconName } from './components/AppIcon'
 import AppPageHeader from './components/layout/AppPageHeader'
 import AttachmentSettings from './components/AttachmentSettings'
+import ClientConfigCheck from './components/ClientConfigCheck'
 import EssSettings from './components/EssSettings'
 import EngineMonitoring from './components/EngineMonitoring'
 import FrevoPilot from './components/FrevoPilot'
@@ -139,6 +140,7 @@ const surfaceDescriptions: Record<string, string> = {
   'Work Locations': 'Maintain client locations used across employee, attendance and payroll processes.',
   'Dropdown Masters': 'Govern reusable master values used by forms and business processes.',
   Attachments: 'Configure secure document categories, storage behavior and verification requirements.',
+  'Client Config Check': 'Run a client-wise readiness audit across payroll, attendance, billing, travel, recruitment and notifications.',
   'Tax Engine': 'Configure income-tax rules, slabs and calculation behavior for payroll.',
   'Statutory Setup': 'Maintain provident fund, insurance and statutory payroll configuration.',
   'Client Billing Configuration': 'Define payroll billing rules, rates and client charge behavior.',
@@ -259,6 +261,7 @@ const generalSettingsIcons: Partial<Record<SettingsTab, IconName>> = {
   'Work Locations': 'location',
   'Dropdown Masters': 'dropdown',
   Attachments: 'paperclip',
+  'Client Config Check': 'shield',
   'Client Billing Configuration': 'billing',
   'Travel & Expense Policies': 'money',
   Notifications: 'notification',
@@ -746,6 +749,7 @@ export default function SettingsApp() {
     if (mainModule === 'Settings') {
       if (clientScopedAdmin) return <>
         {tasks}
+        {menuLink('/settings/client-config-check', 'Client Config Check', settingsSection === 'General' && tab === 'Client Config Check', () => setTab('Client Config Check'), 'Readiness', 'shield')}
         {menuLink('/settings/salary-templates', 'Salary Templates', settingsSection === 'General' && tab === 'Salary Templates', () => setTab('Salary Templates'), 'Client-wise', 'template')}
         {menuLink('/settings/payslip-templates', 'Payslip Templates', settingsSection === 'General' && tab === 'Payslip Templates', () => setTab('Payslip Templates'), 'Client-wise', 'payslip')}
         {menuLink('/settings/work-locations', 'Work Locations', settingsSection === 'General' && tab === 'Work Locations', () => setTab('Work Locations'), undefined, 'location')}
@@ -833,7 +837,9 @@ export default function SettingsApp() {
     if (mainModule === 'Workflows') return <WorkflowPage activeMenu={hasAnyPermission('workflow.manage') ? workflowTab : 'API Catalog'} />
     return settingsSection === 'LeaveAttendance'
       ? <LeaveAttendancePage activeMenu={leaveAttendanceTab} onSelectMenu={setLeaveAttendanceSettingsTab} />
-      : <SettingsPage tab={clientScopedAdmin && !['Salary Templates', 'Payslip Templates', 'Work Locations'].includes(tab) ? 'Salary Templates' : tab} onMessage={() => undefined} />
+      : tab === 'Client Config Check'
+        ? <ClientConfigCheck />
+        : <SettingsPage tab={clientScopedAdmin && !['Client Config Check', 'Salary Templates', 'Payslip Templates', 'Work Locations'].includes(tab) ? 'Salary Templates' : tab} onMessage={() => undefined} />
   }
 
   const shellClassName = ['hrms-shell', navOpen ? '' : 'rail-collapsed', appDrawerOpen ? 'drawer-open' : '', mobileShell && navOpen ? 'mobile-nav-open' : ''].filter(Boolean).join(' ')
@@ -878,10 +884,6 @@ export default function SettingsApp() {
       <div className="hrms-content">
         <div className="hrms-page-body">{renderPage()}</div>
       </div>
-      <footer className="hrms-footer">
-        {shellOrg.logoDataUrl ? <img src={shellOrg.logoDataUrl} alt="Organization logo" /> : <b>{(shellOrg.name || 'O').slice(0, 1).toUpperCase()}</b>}
-        <span>{shellOrg.name || 'Organization'}</span>
-      </footer>
     </main>
     {appDrawerOpen && <div className="drawer-scrim" onClick={() => setAppDrawerOpen(false)} />}
     <aside className="module-drawer" aria-hidden={!appDrawerOpen}>

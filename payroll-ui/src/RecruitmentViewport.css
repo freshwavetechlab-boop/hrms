@@ -136,7 +136,7 @@
   display: flex; flex-direction: column; flex: 1; min-height: 0;
 }
 .table-fill-height .ant-table-header { flex-shrink: 0; }
-.table-fill-height :is(.ant-table-body, .ant-table-content) { flex: 1; min-height: 0; max-height: none !important; overflow: auto !important; overscroll-behavior: contain; }
+.table-fill-height :is(.ant-table-body, .ant-table-content) { flex: 1; min-height: var(--data-table-body-min-height, 480px); overflow: auto !important; overscroll-behavior: contain; }
 .table-fill-height > .shared-record-cards { flex: 1; min-height: 0; overflow: auto; align-content: start; }
 .table-fill-height .ant-pagination { flex-shrink: 0; }
 .recruitment-viewport .candidate-applications-main > .table-fill-height { padding: 8px; }

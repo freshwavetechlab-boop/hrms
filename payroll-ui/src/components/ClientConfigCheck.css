@@ -1,0 +1,138 @@
+.client-config-check {
+  display: grid;
+  gap: 14px;
+}
+
+.config-check-hero {
+  border-radius: 14px;
+}
+
+.config-check-hero .ant-card-body {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.config-check-hero h2 {
+  margin: 6px 0 4px;
+  color: #111827;
+  font-size: 1.45rem;
+}
+
+.config-check-hero p {
+  max-width: 760px;
+  margin: 0;
+  color: #667085;
+  font-size: .8rem;
+}
+
+.config-check-client {
+  min-width: min(360px, 72vw);
+}
+
+.config-score-card .ant-card-body {
+  min-height: 178px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.config-score-card strong {
+  color: #172136;
+  font-size: .9rem;
+}
+
+.config-score-card span {
+  color: #667085;
+  font-size: .72rem;
+}
+
+.config-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.config-summary-grid article {
+  min-height: 84px;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  border: 1px solid #e5e8f0;
+  border-radius: 12px;
+  background: #fff;
+  padding: 11px;
+}
+
+.config-summary-grid strong {
+  color: #172136;
+  font-size: .78rem;
+}
+
+.config-summary-grid span {
+  color: #667085;
+  font-size: .68rem;
+}
+
+.config-check-note {
+  border-radius: 12px;
+}
+
+.config-check-list {
+  display: grid;
+  gap: 12px;
+}
+
+.config-check-card {
+  border-radius: 14px;
+}
+
+.config-check-card.complete {
+  border-color: #b7ebc6;
+}
+
+.config-check-card.attention {
+  border-color: #ffe58f;
+}
+
+.config-check-card.missing {
+  border-color: #ffccc7;
+}
+
+.config-check-card h4 {
+  margin: 0 0 8px;
+  color: #475569;
+  font-size: .72rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.config-check-card ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #344054;
+  font-size: .75rem;
+  line-height: 1.55;
+}
+
+.config-check-card li + li {
+  margin-top: 4px;
+}
+
+.config-check-card ul.missing {
+  color: #9f1239;
+}
+
+@media (max-width: 760px) {
+  .config-check-hero .ant-card-body {
+    display: grid;
+  }
+
+  .config-check-client,
+  .config-check-hero .ant-btn {
+    width: 100%;
+  }
+}
