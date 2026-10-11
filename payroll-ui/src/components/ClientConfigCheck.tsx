@@ -45,6 +45,7 @@ const emptyNotification: NotificationSetup = { smtp: { id: 1, isEnabled: false, 
 const number = (value: number) => value.toLocaleString('en-IN')
 const yesNo = (value: boolean) => value ? 'Yes' : 'No'
 const active = <T extends { isActive?: boolean }>(rows: T[]) => rows.filter(row => row.isActive !== false)
+const activeConfig = <T extends { active?: boolean }>(rows: T[]) => rows.filter(row => row.active !== false)
 const refId = (value: string | number | null | undefined) => Number(value || 0)
 const unique = (rows: string[]) => Array.from(new Set(rows.filter(Boolean)))
 const statusColor = (status: CheckItem['status']) => status === 'Complete' ? 'success' : status === 'Attention' ? 'warning' : 'error'
@@ -82,9 +83,9 @@ export default function ClientConfigCheck() {
     ])
     const activeClients = clients.filter(row => row.isActive)
     const nextClientId = preferredClientId || activeClients[0]?.id || 0
-    const [shifts, attendanceGroups, attendanceSettings, leaveTypes, holidays] = nextClientId
+    const [shifts, attendanceGroups, attendanceSettings, leaveTypes, holidays]: [AttendanceShift[], AttendanceGroup[], AttendanceSettings | null, LeaveType[], Holiday[]] = nextClientId
       ? await Promise.all([getAttendanceShifts(nextClientId), getAttendanceGroups(nextClientId), getAttendanceSettings(nextClientId).catch(() => null), getLeaveTypes(nextClientId), getHolidays(nextClientId, todayYear)])
-      : [[], [], null, [], []] as const
+      : [[], [], null, [], []]
     setClientId(nextClientId)
     setState({ setup, clients: activeClients, employees, locations, drops, shifts, attendanceGroups, attendanceSettings, leaveTypes, holidays, billingModule, billingRows, billingAdvanced, travel, recruitment, notifications, jobs })
     setLoading(false)
@@ -104,9 +105,9 @@ export default function ClientConfigCheck() {
     const client = state.clients.find(row => row.id === clientId)
     const employees = state.employees.filter(row => row.clientId === clientId && row.isActive)
     const locations = active(state.locations).filter(row => row.clientId === clientId)
-    const structures = active(state.setup.salaryStructures).filter(row => refId(row.clientId) === clientId)
-    const payslips = active(state.setup.payslipTemplates).filter(row => refId(row.clientId) === clientId)
-    const components = active(state.setup.salaryComponents)
+    const structures = activeConfig(state.setup.salaryStructures).filter(row => refId(row.clientId) === clientId)
+    const payslips = activeConfig(state.setup.payslipTemplates).filter(row => refId(row.clientId) === clientId)
+    const components = activeConfig(state.setup.salaryComponents)
     const assignedStructureIds = new Set(employees.map(row => refId(row.salaryStructureId)).filter(Boolean))
     const unassignedSalary = employees.filter(row => !refId(row.salaryStructureId)).length
     const missingLocation = employees.filter(row => !row.workLocationId).length
