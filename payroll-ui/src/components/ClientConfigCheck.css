@@ -1,138 +1,106 @@
 .client-config-check {
   display: grid;
-  gap: 14px;
-}
-
-.config-check-hero {
-  border-radius: 14px;
-}
-
-.config-check-hero .ant-card-body {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
   gap: 18px;
+  min-width: 0;
 }
 
-.config-check-hero h2 {
-  margin: 6px 0 4px;
-  color: #111827;
-  font-size: 1.45rem;
+.client-config-check .config-check-toolbar,
+.client-config-check .config-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
-.config-check-hero p {
-  max-width: 760px;
+.config-check-toolbar small {
+  display: block;
+  margin-top: 4px;
+  color: #667085;
+}
+.config-check-client { width: 360px; max-width: 100%; }
+
+.client-config-check .config-payroll-minimum,
+.client-config-check .config-check-section {
+  display: block;
+  height: auto;
+  min-height: 0;
+  padding: 16px 0;
   margin: 0;
-  color: #667085;
-  font-size: .8rem;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #e5e8f0;
+  border-radius: 0;
+  scroll-margin-top: 90px;
 }
+.client-config-check h3 { margin: 0; font-size: 16px; }
+.config-section-heading { margin-bottom: 16px; }
+.client-config-check h4 { margin: 0 0 8px; font-size: 14px; color: #475467; }
+.client-config-check p { margin: 6px 0; line-height: 1.6; }
+.client-config-check ul,
+.client-config-check ol { margin: 10px 0; padding-left: 20px; line-height: 1.65; }
+.client-config-check li + li { margin-top: 8px; }
+.client-config-check li { overflow-wrap: anywhere; }
+.config-payroll-minimum > p { color: #475467; }
+.config-blocker-list { color: #b42318; }
 
-.config-check-client {
-  min-width: min(360px, 72vw);
-}
-
-.config-score-card .ant-card-body {
-  min-height: 178px;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 8px;
-  text-align: center;
-}
-
-.config-score-card strong {
-  color: #172136;
-  font-size: .9rem;
-}
-
-.config-score-card span {
-  color: #667085;
-  font-size: .72rem;
-}
-
+.config-check-totals { display: flex; gap: 24px; flex-wrap: wrap; }
+.config-check-totals strong { font-size: 20px; margin-right: 4px; }
 .config-summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 10px;
 }
-
-.config-summary-grid article {
-  min-height: 84px;
+.client-config-check .config-summary-grid > button {
   display: grid;
   align-content: start;
+  justify-items: start;
   gap: 6px;
+  padding: 12px;
   border: 1px solid #e5e8f0;
-  border-radius: 12px;
+  border-radius: 8px;
   background: #fff;
-  padding: 11px;
+  color: inherit;
+  text-decoration: none;
+  text-align: left;
+  font: inherit;
+  white-space: normal;
+  height: auto;
+  min-width: 0;
+  box-shadow: none;
+  cursor: pointer;
 }
-
-.config-summary-grid strong {
-  color: #172136;
-  font-size: .78rem;
-}
-
-.config-summary-grid span {
-  color: #667085;
-  font-size: .68rem;
-}
-
-.config-check-note {
-  border-radius: 12px;
-}
-
-.config-check-list {
-  display: grid;
-  gap: 12px;
-}
-
-.config-check-card {
-  border-radius: 14px;
-}
-
-.config-check-card.complete {
-  border-color: #b7ebc6;
-}
-
-.config-check-card.attention {
-  border-color: #ffe58f;
-}
-
-.config-check-card.missing {
-  border-color: #ffccc7;
-}
-
-.config-check-card h4 {
-  margin: 0 0 8px;
-  color: #475569;
-  font-size: .72rem;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-}
-
-.config-check-card ul {
-  margin: 0;
-  padding-left: 18px;
-  color: #344054;
-  font-size: .75rem;
-  line-height: 1.55;
-}
-
-.config-check-card li + li {
-  margin-top: 4px;
-}
-
-.config-check-card ul.missing {
-  color: #9f1239;
-}
+.client-config-check .config-summary-grid > button:hover { border-color: #8b9fbc; }
+.config-summary-grid > button > span:last-child { font-size: 12px; color: #667085; }
+.config-check-tabs { min-width: 0; scroll-margin-top: 90px; }
+.config-check-tabs .ant-tabs-content-holder { min-width: 0; }
+.config-check-tabs .ant-collapse-item { border-bottom: 1px solid #e5e8f0; }
+.client-config-check .config-check-tabs .ant-collapse-header { align-items: center; padding: 16px 0; }
+.client-config-check .config-check-tabs .ant-collapse-content-box { padding: 0; }
+.client-config-check .config-check-tabs .config-check-section { padding-top: 0; border-bottom: 0; }
+.config-accordion-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.config-tab-count { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; background: #fef0c7; color: #854a0e; font-size: 12px; line-height: 20px; }
+.config-minimum-accordion { margin-top: 16px; }
+.client-config-check .config-coverage-link { padding: 0; height: auto; white-space: normal; text-align: left; }
+.client-config-check .config-findings { list-style: none; padding: 0; margin: 0; }
+.config-findings li { padding: 0 0 12px; border-bottom: 1px solid #eaecf0; }
+.config-findings strong { display: block; margin-top: 4px; }
+.config-findings p { color: #475467; }
+.client-config-check .ant-tag { white-space: normal; margin-inline-end: 0; }
+.employee-coverage { min-width: 0; }
+.employee-coverage .ant-table-wrapper { width: 100%; min-width: 0; }
+.employee-coverage .ant-table-cell p { font-size: 13px; color: #667085; }
+.employee-coverage .coverage-count { padding: 0 8px; min-width: 32px; font-weight: 600; }
+.employee-coverage .coverage-count.covered:not(:disabled) { color: #15803d; }
+.employee-coverage .coverage-count.uncovered:not(:disabled) { color: #b42318; }
+.employee-coverage .coverage-count.review:not(:disabled) { color: #986000; }
+.coverage-employee-dialog { min-width: 0; }
+.coverage-employee-dialog > p { margin: 0 0 12px; }
+.coverage-modal .ant-segmented-item-label { white-space: normal; height: auto; line-height: 1.4; padding: 8px; }
 
 @media (max-width: 760px) {
-  .config-check-hero .ant-card-body {
-    display: grid;
-  }
-
-  .config-check-client,
-  .config-check-hero .ant-btn {
-    width: 100%;
-  }
+  .coverage-modal .ant-segmented-item-label { font-size: 12px; padding: 8px 3px; overflow-wrap: normal; word-break: normal; }
+  .config-check-toolbar > .ant-space { width: 100%; }
+  .config-check-toolbar > .ant-space > .ant-space-item:first-child { flex: 1; min-width: 0; }
+  .config-check-client { width: 100%; }
 }

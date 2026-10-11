@@ -17,6 +17,7 @@ const emptyGroup: AttendanceGroup = { id: 0, clientId: 0, clientName: '', policy
 const emptyForm: AttendancePolicyForm = { ...emptyGroup, workLocationIds: [], departments: [], designations: [] }
 const unique = (items: string[]) => Array.from(new Set(items.map(item => item.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b))
 const scopeOptions = (items: string[]) => unique(items).filter(item => item.toLowerCase() !== 'all')
+const matchesScope = (values: string[], value: string) => !values.length || values.some(item => item.trim().toLowerCase() === (value || '').trim().toLowerCase())
 const fullName = (employee: Employee) => `${employee.firstName} ${employee.lastName}`.trim() || employee.employeeCode
 const bufferDays = (endDay: number, reportDay: number, monthDays: number) => reportDay >= endDay ? reportDay - endDay : reportDay + monthDays - endDay
 const currentMonth = () => {
@@ -75,16 +76,16 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
   const clientLocations = useMemo(() => locations.filter(location => location.isActive && (!form.clientId || location.clientId === form.clientId)), [locations, form.clientId])
   const locationEmployees = useMemo(() => activeEmployees.filter(employee => employee.clientId === form.clientId && (!form.workLocationIds.length || form.workLocationIds.includes(employee.workLocationId))), [activeEmployees, form.clientId, form.workLocationIds])
   const departments = useMemo(() => scopeOptions([...dropdowns.filter(item => item.type === 'Department' && item.isActive).map(item => item.value), ...locationEmployees.map(employee => employee.department), ...form.departments]), [dropdowns, locationEmployees, form.departments])
-  const departmentEmployees = useMemo(() => locationEmployees.filter(employee => !form.departments.length || form.departments.includes(employee.department)), [locationEmployees, form.departments])
+  const departmentEmployees = useMemo(() => locationEmployees.filter(employee => matchesScope(form.departments, employee.department)), [locationEmployees, form.departments])
   const designations = useMemo(() => scopeOptions([...dropdowns.filter(item => item.type === 'Designation' && item.isActive).map(item => item.value), ...departmentEmployees.map(employee => employee.designation), ...form.designations]), [dropdowns, departmentEmployees, form.designations])
   const workWeeks = useMemo(() => workWeekOptionsFromDrops(dropdowns, form.workWeek), [dropdowns, form.workWeek])
   const mappedEmployeePolicyById = useMemo(() => {
     const currentBatch = form.policyBatchId || ''
     const mapped = new Map<number, string>()
-    groups.filter(group => group.isActive && (!currentBatch || (group.policyBatchId || '') !== currentBatch)).forEach(group => group.employeeIds.forEach(employeeId => mapped.set(employeeId, group.name)))
+    groups.filter(group => group.isActive && group.id !== form.id && (!currentBatch || (group.policyBatchId || '') !== currentBatch)).forEach(group => group.employeeIds.forEach(employeeId => mapped.set(employeeId, group.name)))
     return mapped
-  }, [groups, form.policyBatchId])
-  const matchingEmployees = useMemo(() => locationEmployees.filter(employee => (!form.departments.length || form.departments.includes(employee.department)) && (!form.designations.length || form.designations.includes(employee.designation)) && !mappedEmployeePolicyById.has(employee.id)), [locationEmployees, form.departments, form.designations, mappedEmployeePolicyById])
+  }, [groups, form.policyBatchId, form.id])
+  const matchingEmployees = useMemo(() => locationEmployees.filter(employee => matchesScope(form.departments, employee.department) && matchesScope(form.designations, employee.designation) && !mappedEmployeePolicyById.has(employee.id)), [locationEmployees, form.departments, form.designations, mappedEmployeePolicyById])
   const visibleMatchingEmployees = useMemo(() => {
     const query = employeeQuery.trim().toLowerCase()
     if (!query) return matchingEmployees
@@ -99,7 +100,7 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
   const buffer = bufferDays(form.attendanceCycleEndDay, form.payrollReportGenerationDay, monthDays)
   const cyclePreview = useMemo(() => cyclePreviewFor(previewMonth, form.attendanceCycleStartDay, form.attendanceCycleEndDay), [previewMonth, form.attendanceCycleStartDay, form.attendanceCycleEndDay])
 
-  const employeeIdsFor = (group: AttendancePolicyForm, sourceEmployees = activeEmployees) => sourceEmployees.filter(employee => employee.clientId === group.clientId && (!group.workLocationIds.length || group.workLocationIds.includes(employee.workLocationId)) && (!group.departments.length || group.departments.includes(employee.department)) && (!group.designations.length || group.designations.includes(employee.designation)) && !mappedEmployeePolicyById.has(employee.id)).map(employee => employee.id)
+  const employeeIdsFor = (group: AttendancePolicyForm, sourceEmployees = activeEmployees) => sourceEmployees.filter(employee => employee.clientId === group.clientId && (!group.workLocationIds.length || group.workLocationIds.includes(employee.workLocationId)) && matchesScope(group.departments, employee.department) && matchesScope(group.designations, employee.designation) && !mappedEmployeePolicyById.has(employee.id)).map(employee => employee.id)
   const defaultFor = (clientRows = clients, locationRows = locations, employeeRows = activeEmployees) => {
     const clientId = fixedClientId || clientRows.find(client => client.isActive)?.id || 0
     const next = { ...emptyForm, clientId, workLocationId: 0, workLocationIds: [] }
@@ -158,13 +159,13 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
       const next = { ...current, ...patch, ...(patch.clientId !== undefined && patch.clientId !== current.clientId ? { shiftId: null } : {}) }
       const scopedEmployees = activeEmployees.filter(employee => employee.clientId === next.clientId && (!next.workLocationIds.length || next.workLocationIds.includes(employee.workLocationId)))
       const keepDepartments = (items: string[]) => {
-        const available = new Set(scopedEmployees.map(employee => employee.department).filter(Boolean))
-        const kept = items.filter(item => available.has(item))
+        const available = scopedEmployees.map(employee => employee.department).filter(Boolean)
+        const kept = items.filter(item => available.length > 0 && matchesScope(available, item))
         return kept.length ? kept : items
       }
       const keepDesignations = (items: string[], departmentsForScope: string[]) => {
-        const available = new Set(scopedEmployees.filter(employee => !departmentsForScope.length || departmentsForScope.includes(employee.department)).map(employee => employee.designation).filter(Boolean))
-        const kept = items.filter(item => available.has(item))
+        const available = scopedEmployees.filter(employee => matchesScope(departmentsForScope, employee.department)).map(employee => employee.designation).filter(Boolean)
+        const kept = items.filter(item => available.length > 0 && matchesScope(available, item))
         return kept.length ? kept : items
       }
       const normalized = patch.workLocationIds !== undefined ? (() => {

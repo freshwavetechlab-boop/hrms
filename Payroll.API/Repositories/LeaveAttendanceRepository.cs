@@ -662,25 +662,26 @@ VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designa
         var allLocations = (await connection.QueryAsync<(int Id, string Name)>(@"SELECT Id, Name FROM worklocations
 WHERE ClientId=@ClientId AND IsActive=TRUE", new { request.ClientId })).ToDictionary(item => item.Id, item => item.Name);
         var requestedLocationIds = request.WorkLocationIds.Where(id => id > 0).Distinct().ToArray();
-        var locationIds = requestedLocationIds.Length == 0 ? allLocations.Keys.ToArray() : requestedLocationIds;
-        var locations = allLocations.Where(item => locationIds.Contains(item.Key)).ToDictionary(item => item.Key, item => item.Value);
-        if (locations.Count != locationIds.Length) return ([], "One or more selected work locations do not belong to this client.");
+        if (requestedLocationIds.Any(id => !allLocations.ContainsKey(id)))
+            return ([], "One or more selected work locations do not belong to this client.");
 
         var requestedDepartments = request.Departments.Select(item => item.Trim()).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var requestedDesignations = request.Designations.Select(item => item.Trim()).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var requestedEmployeeIds = request.EmployeeIds.Distinct().ToArray();
 
-        var scopedEmployees = (await connection.QueryAsync<(int Id, int WorkLocationId, string Department, string Designation)>(@"SELECT Id, WorkLocationId, Department, Designation FROM employees
-WHERE IsActive=TRUE AND ClientId=@ClientId AND WorkLocationId IN @LocationIds", new { request.ClientId, LocationIds = locationIds })).ToList();
-        var departments = requestedDepartments.Length == 0 ? scopedEmployees.Select(employee => employee.Department.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() : requestedDepartments;
-        var departmentEmployees = scopedEmployees.Where(employee => departments.Contains(employee.Department, StringComparer.OrdinalIgnoreCase)).ToList();
-        var designations = requestedDesignations.Length == 0 ? departmentEmployees.Select(employee => employee.Designation.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() : requestedDesignations;
-        var matchingEmployees = departmentEmployees.Where(employee => designations.Contains(employee.Designation, StringComparer.OrdinalIgnoreCase)).ToList();
+        // Empty filters mean all active employees in this client, including unassigned locations.
+        var scopedEmployees = (await connection.QueryAsync<(int Id, int WorkLocationId, string Department, string Designation)>(@"SELECT Id, COALESCE(WorkLocationId,0), COALESCE(Department,''), COALESCE(Designation,'') FROM employees
+WHERE IsActive=TRUE AND ClientId=@ClientId", new { request.ClientId })).ToList();
+        var matchingEmployees = scopedEmployees.Where(employee => MatchesAttendancePolicyScope(
+            employee.WorkLocationId, employee.Department, employee.Designation,
+            requestedLocationIds, requestedDepartments, requestedDesignations)).ToList();
         var employeeIds = requestedEmployeeIds.Length == 0 ? matchingEmployees.Select(employee => employee.Id).Distinct().ToArray() : requestedEmployeeIds;
 
         if (employeeIds.Length == 0) return ([], "Select at least one employee.");
-        if (matchingEmployees.Where(employee => employeeIds.Contains(employee.Id)).Select(employee => employee.Id).Distinct().Count() != employeeIds.Length)
-            return ([], "Selected employees must match the selected client and selected filters.");
+        var matchingIds = matchingEmployees.Select(employee => employee.Id).ToHashSet();
+        var rejectedIds = employeeIds.Where(id => !matchingIds.Contains(id)).ToArray();
+        if (rejectedIds.Length > 0)
+            return ([], $"{rejectedIds.Length} selected employee(s) are inactive, belong to another client, or no longer match the selected filters (IDs: {string.Join(", ", rejectedIds.Take(10))}). Refresh the policy and select employees again.");
 
         var selectedEmployees = matchingEmployees.Where(employee => employeeIds.Contains(employee.Id)).ToList();
         if (selectedEmployees.Count == 0) return ([], "No selected employees match the selected policy scope.");
@@ -1949,6 +1950,12 @@ AND Id IN @EmployeeIds", new { request.ClientId, request.WorkLocationId, Departm
             ? null
             : "Selected employees must belong to the selected client, work location, department and designation.";
     }
+
+    internal static bool MatchesAttendancePolicyScope(int workLocationId, string? department, string? designation,
+        int[] locationIds, string[] departments, string[] designations) =>
+        (locationIds.Length == 0 || locationIds.Contains(workLocationId)) &&
+        (departments.Length == 0 || departments.Any(value => string.Equals(value.Trim(), department?.Trim() ?? "", StringComparison.OrdinalIgnoreCase))) &&
+        (designations.Length == 0 || designations.Any(value => string.Equals(value.Trim(), designation?.Trim() ?? "", StringComparison.OrdinalIgnoreCase)));
 
     private async Task<string?> ValidateAttendanceGroupBatchAsync(SaveAttendanceGroupBatchRequest request)
     {
