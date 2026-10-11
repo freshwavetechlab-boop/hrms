@@ -505,17 +505,19 @@ SET posting.RequireEmailOtp=definitionRow.RequiresEmailVerification");
     {
         await using var db = Db();
         await db.OpenAsync();
-        return await db.QueryAsync<RecruitmentJobDescriptionVersion>(@"SELECT j.* FROM recruitment_job_description_versions j
+        var rows = await db.QueryAsync<RecruitmentJobDescriptionVersion>(@"SELECT j.*,r.JobLocation FROM recruitment_job_description_versions j
 JOIN recruitment_requisitions r ON r.Id=j.RequisitionId
 WHERE j.RequisitionId=@RequisitionId AND (@ClientId IS NULL OR r.ClientId=@ClientId)
 ORDER BY j.VersionNumber DESC", new { RequisitionId = requisitionId, user.ClientId });
+        return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
     }
 
     public async Task<RecruitmentJobDescriptionVersion?> GetJobDescriptionVersionAsync(long id, AuthUser? user = null)
     {
         await using var db = Db();
         await db.OpenAsync();
-        return await LoadJobDescriptionAsync(db, id, user?.ClientId);
+        var row = await LoadJobDescriptionAsync(db, id, user?.ClientId);
+        return row is not null && (user is null || await RecruitmentAccessScope.CanAccessLocationAsync(db, user, row.ClientId, row.JobLocation)) ? row : null;
     }
 
     public async Task<(RecruitmentJobDescriptionVersion? Row, string Error)> EnsureApprovedRequisitionLaunchAsync(long requisitionId, AuthUser user, bool approveDraft)
@@ -577,8 +579,10 @@ WHERE RequisitionId=@Id ORDER BY VersionNumber DESC,Id DESC LIMIT 1", new { Id =
 
         await using var db = Db();
         await db.OpenAsync();
-        var clientId = await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM recruitment_requisitions WHERE Id=@Id", new { Id = request.RequisitionId });
+        var source = await db.QueryFirstOrDefaultAsync<RecruitmentRequisition>("SELECT ClientId,JobLocation FROM recruitment_requisitions WHERE Id=@Id", new { Id = request.RequisitionId });
+        int? clientId = source?.ClientId;
         if (clientId is null || (user.ClientId is not null && user.ClientId != clientId)) return (null, "Recruitment requisition was not found.");
+        if (!await RecruitmentAccessScope.CanAccessLocationAsync(db, user, clientId.Value, source!.JobLocation)) return (null, "Recruitment requisition was not found.");
         var proofConfigurationError = await ValidateJobDescriptionCandidateProofConfigurationsAsync(db, request, clientId.Value);
         if (proofConfigurationError.Length > 0) return (null, proofConfigurationError);
 
@@ -614,6 +618,7 @@ Status='Draft',WorkflowInstanceId=NULL,ApprovedByUserId=NULL,ApprovedAtUtc=NULL,
         await db.OpenAsync();
         var row = await LoadJobDescriptionAsync(db, id, user.ClientId);
         if (row is null || (user.ClientId is not null && user.ClientId != row.ClientId)) return (null, "Job description was not found.");
+        if (!await RecruitmentAccessScope.CanAccessLocationAsync(db, user, row.ClientId, row.JobLocation)) return (null, "Job description was not found.");
         if (!row.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase) && !row.Status.Equals("Sent Back", StringComparison.OrdinalIgnoreCase)) return (null, "Only a draft or sent-back job description can be submitted.");
         var requisitionStatus = await db.ExecuteScalarAsync<string>("SELECT Status FROM recruitment_requisitions WHERE Id=@Id", new { Id = row.RequisitionId });
         if (!string.Equals(requisitionStatus, "Approved", StringComparison.OrdinalIgnoreCase)) return (null, "Approve the hiring request before submitting its job description.");
@@ -679,14 +684,16 @@ ApprovedAtUtc=CASE WHEN @Status='Approved' THEN UTC_TIMESTAMP() ELSE NULL END,Up
         var scope = user.ClientId ?? (clientId is > 0 ? clientId : null);
         await using var db = Db();
         await db.OpenAsync();
-        return await db.QueryAsync<RecruitmentJobPosting>(JobPostingSelect + " WHERE (@ClientId IS NULL OR p.ClientId=@ClientId) ORDER BY p.CreatedAtUtc DESC", new { ClientId = scope });
+        var rows = await db.QueryAsync<RecruitmentJobPosting>(JobPostingSelect + " WHERE (@ClientId IS NULL OR p.ClientId=@ClientId) ORDER BY p.CreatedAtUtc DESC", new { ClientId = scope });
+        return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
     }
 
     public async Task<RecruitmentJobPosting?> GetJobPostingAsync(long id, AuthUser user)
     {
         await using var db = Db();
         await db.OpenAsync();
-        return await GetJobPostingAsync(db, id, user.ClientId);
+        var row = await GetJobPostingAsync(db, id, user.ClientId);
+        return row is not null && await RecruitmentAccessScope.CanAccessLocationAsync(db, user, row.ClientId, row.JobLocation) ? row : null;
     }
 
     public async Task<string> GetCandidateProofValidationErrorAsync(long postingId)
@@ -709,11 +716,12 @@ ApprovedAtUtc=CASE WHEN @Status='Approved' THEN UTC_TIMESTAMP() ELSE NULL END,Up
         if (request.MaximumApplications is <= 0) return (null, "Maximum applications must be greater than zero when specified.");
         await using var db = Db();
         await db.OpenAsync();
-        var source = await db.QueryFirstOrDefaultAsync<PostingSourceRow>(@"SELECT p.ClientId,p.RequisitionId,p.PositionTitle,j.Status JobDescriptionStatus,j.RequisitionId JobDescriptionRequisitionId
+        var source = await db.QueryFirstOrDefaultAsync<PostingSourceRow>(@"SELECT p.ClientId,p.RequisitionId,p.PositionTitle,p.JobLocation,j.Status JobDescriptionStatus,j.RequisitionId JobDescriptionRequisitionId
 FROM recruitment_open_positions p JOIN recruitment_job_description_versions j ON j.Id=@JobDescriptionVersionId WHERE p.Id=@PositionId",
             new { request.PositionId, request.JobDescriptionVersionId });
         if (source is null || source.RequisitionId != source.JobDescriptionRequisitionId || !source.JobDescriptionStatus.Equals("Approved", StringComparison.OrdinalIgnoreCase)) return (null, "Select an approved job-description version for this position.");
         if (user.ClientId is not null && user.ClientId != source.ClientId) return (null, "Open position was not found.");
+        if (!await RecruitmentAccessScope.CanAccessLocationAsync(db, user, source.ClientId, source.JobLocation)) return (null, "Open position was not found.");
         if (request.ApplicationFormVersionId is null)
             request.ApplicationFormVersionId = await ResolveUniquePublishedApplicationFormVersionAsync(db, source.ClientId);
         if (request.ApplicationFormVersionId is > 0)
@@ -759,6 +767,7 @@ WHERE Id=@Id AND ClientId=@ClientId AND PositionId=@PositionId AND Status IN ('D
         await db.OpenAsync();
         var posting = await GetJobPostingAsync(db, id, user.ClientId);
         if (posting is null) return (null, "Job posting was not found.");
+        if (!await RecruitmentAccessScope.CanAccessLocationAsync(db, user, posting.ClientId, posting.JobLocation)) return (null, "Job posting was not found.");
         if (posting.Status is not ("Draft" or "Closed")) return (null, "Only a draft or closed job posting can be published.");
         if (posting.ClosesAtUtc is not null && posting.ClosesAtUtc <= DateTime.UtcNow) return (null, "Posting close time must be in the future.");
         if (posting.ApplicationFormVersionId is null)
@@ -793,6 +802,8 @@ WHERE PositionId=@PositionId AND Id<>@Id AND Status='Published'", posting, publi
     {
         await using var db = Db();
         await db.OpenAsync();
+        var posting = await GetJobPostingAsync(db, id, user.ClientId);
+        if (posting is null || !await RecruitmentAccessScope.CanAccessLocationAsync(db, user, posting.ClientId, posting.JobLocation)) return false;
         return await db.ExecuteAsync("UPDATE recruitment_job_postings SET Status='Closed',UpdatedAtUtc=UTC_TIMESTAMP() WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, user.ClientId }) > 0;
     }
 
@@ -807,6 +818,7 @@ WHERE PositionId=@PositionId AND Id<>@Id AND Status='Published'", posting, publi
         await db.OpenAsync();
         var target = await GetJobPostingAsync(db, id, user.ClientId);
         if (target is null) return (null, "Job posting was not found.");
+        if (!await RecruitmentAccessScope.CanAccessLocationAsync(db, user, target.ClientId, target.JobLocation)) return (null, "Job posting was not found.");
         await using var tx = await db.BeginTransactionAsync();
         // All published URLs for one opening share operational intake policy. Drafts
         // and closed/history rows stay independent. Serialize by opening, not by URL.
@@ -1274,6 +1286,8 @@ AND (@ScopeType='Hybrid' OR assignedVersion.ScopeType='Hybrid' OR assignedVersio
     {
         await using var db = Db();
         await db.OpenAsync();
+        var position = await db.QueryFirstOrDefaultAsync<RecruitmentOpenPosition>("SELECT ClientId,JobLocation FROM recruitment_open_positions WHERE Id=@Id", new { Id = positionId });
+        if (position is null || !await RecruitmentAccessScope.CanAccessLocationAsync(db, user, position.ClientId, position.JobLocation)) return null;
         return await db.QueryFirstOrDefaultAsync<RecruitmentPositionPipelineAssignment>(@"SELECT a.* FROM recruitment_position_pipeline_assignments a
 JOIN recruitment_open_positions p ON p.Id=a.PositionId
 JOIN recruitment_pipeline_versions v ON v.Id=a.PipelineVersionId AND v.ScopeType IN ('Position','Hybrid')
@@ -1478,7 +1492,9 @@ CASE WHEN hiringCase.Id IS NOT NULL AND workOrder.Status='Draft' THEN 'Active' E
 line.PositionName,line.PayBandLevelCode,line.Division,
 hiringCase.Id HiringCaseId,hiringCase.PipelineVersionId,hiringCase.CurrentStageInstanceId,
 COALESCE(hiringCase.Status,line.Status,'Not Started') Status,stage.Id CurrentStageId,stage.StageName CurrentStageName,
-COALESCE(stageInstance.EnteredAtUtc,workOrder.ReceivedAtUtc) EnteredAtUtc,stageInstance.DueAtUtc,COALESCE(hiringCase.OverallDueAtUtc,workOrder.DueAtUtc) OverallDueAtUtc,
+COALESCE(stageInstance.EnteredAtUtc,workOrder.ReceivedAtUtc) EnteredAtUtc,stageInstance.DueAtUtc,
+" + RecruitmentHiringSla.DueFor("hiringCase", "stageInstance", "stage", "workOrder.DueAtUtc") + @" OverallDueAtUtc,
+" + RecruitmentHiringSla.PausedFor("stageInstance", "stage") + @" OverallSlaPaused,hiringCase.CompletedAtUtc,
 CASE WHEN stageInstance.Id IS NULL THEN GREATEST(0,TIMESTAMPDIFF(SECOND,workOrder.ReceivedAtUtc,UTC_TIMESTAMP(6)))
  ELSE GREATEST(0,TIMESTAMPDIFF(SECOND,stageInstance.EnteredAtUtc,UTC_TIMESTAMP(6))-stageInstance.PausedDurationSeconds-
       COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pauseRow.PausedAtUtc,UTC_TIMESTAMP(6))) FROM recruitment_position_stage_pause_periods pauseRow WHERE pauseRow.PositionStageInstanceId=stageInstance.Id AND pauseRow.ResumedAtUtc IS NULL),0)) END ActiveDurationSeconds,
@@ -1488,13 +1504,7 @@ COALESCE(stage.AllowPause,FALSE) AllowPause,COALESCE(stage.IsTerminal,FALSE) IsT
 COALESCE((SELECT advanceRequest.Status FROM recruitment_hiring_case_advance_requests advanceRequest
  WHERE advanceRequest.HiringCaseId=hiringCase.Id AND advanceRequest.PositionStageInstanceId=stageInstance.Id
    AND advanceRequest.Status='Pending Approval' ORDER BY advanceRequest.Id DESC LIMIT 1),'') AdvanceStatus,
-CASE WHEN EXISTS(SELECT 1 FROM recruitment_position_stage_instances stageHistory
-                  WHERE stageHistory.PositionPipelineInstanceId=hiringCase.Id
-                    AND stageHistory.EnteredAtUtc IS NOT NULL AND stageHistory.DueAtUtc IS NOT NULL
-                    AND COALESCE(stageHistory.CompletedAtUtc,UTC_TIMESTAMP(6))>stageHistory.DueAtUtc)
-       OR (hiringCase.OverallDueAtUtc IS NOT NULL
-           AND COALESCE(hiringCase.CompletedAtUtc,UTC_TIMESTAMP(6))>hiringCase.OverallDueAtUtc)
-     THEN TRUE ELSE FALSE END IsSlaBreached,
+" + RecruitmentHiringSla.BreachedFor("hiringCase", RecruitmentHiringSla.DueFor("hiringCase", "stageInstance", "stage", "workOrder.DueAtUtc")) + @" IsSlaBreached,
 requisition.Id RequisitionId,COALESCE(requisition.RfrNumber,'') RequisitionNumber,
 COALESCE(requisition.Status,'Not Started') RequisitionStatus,
 positionRow.Id PositionId,COALESCE(positionRow.PositionCode,'') PositionCode,
@@ -2740,7 +2750,7 @@ VALUES (@ConfigId,@CompetencyId,@WeightPercent,@MinimumScore,@DisplayOrder)", ne
 
     private static async Task<RecruitmentJobDescriptionVersion?> LoadJobDescriptionAsync(MySqlConnection db, long id, int? clientId)
     {
-        var row = await db.QueryFirstOrDefaultAsync<RecruitmentJobDescriptionVersion>("SELECT * FROM recruitment_job_description_versions WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, ClientId = clientId });
+        var row = await db.QueryFirstOrDefaultAsync<RecruitmentJobDescriptionVersion>("SELECT j.*,r.JobLocation FROM recruitment_job_description_versions j JOIN recruitment_requisitions r ON r.Id=j.RequisitionId WHERE j.Id=@Id AND (@ClientId IS NULL OR j.ClientId=@ClientId)", new { Id = id, ClientId = clientId });
         if (row is null) return null;
         row.Responsibilities = (await db.QueryAsync<RecruitmentJdResponsibility>("SELECT * FROM recruitment_jd_responsibilities WHERE JobDescriptionVersionId=@Id ORDER BY DisplayOrder,Id", new { Id = id })).ToList();
         row.Skills = (await db.QueryAsync<RecruitmentJdSkillRequirement>("SELECT * FROM recruitment_jd_skill_requirements WHERE JobDescriptionVersionId=@Id ORDER BY IsRequired DESC,DisplayOrder,Id", new { Id = id })).ToList();
@@ -3286,7 +3296,7 @@ ORDER BY stageRow.PipelineVersionId,stageRow.DisplayOrder,stageRow.Id")).ToList(
         if (exists > 0) await db.ExecuteAsync($"ALTER TABLE `{table}` DROP COLUMN `{column}`");
     }
 
-    private const string JobPostingSelect = @"SELECT p.*,o.PositionCode,o.PositionTitle,COALESCE(c.Name,'') ClientName,
+    private const string JobPostingSelect = @"SELECT p.*,o.PositionCode,o.PositionTitle,o.JobLocation,COALESCE(c.Name,'') ClientName,
 (SELECT COUNT(*) FROM recruitment_candidate_applications candidateApplication
  WHERE candidateApplication.PositionId=p.PositionId AND candidateApplication.ApplicationType='Application') ApplicationCount,
 '' PublicPortalBaseUrl,
@@ -3302,7 +3312,7 @@ LEFT JOIN clients c ON c.Id=p.ClientId";
     private sealed class CandidateProofRequirementRow { public long Id { get; set; } public string CertificationName { get; set; } = ""; public bool IsMandatory { get; set; } public long CandidateProofAttachmentFieldConfigurationId { get; set; } }
     private sealed class CandidateProofFormRoute { public string RouteKey { get; set; } = ""; public long FormVersionId { get; set; } public string RouteLabel { get; set; } = ""; public bool SubmissionRequired { get; set; } }
     private sealed class CandidateProofFormBinding { public long FormVersionId { get; set; } public long ConfigurationId { get; set; } public bool IsRequired { get; set; } public int FieldCount { get; set; } }
-    private sealed class PostingSourceRow { public int ClientId { get; set; } public long RequisitionId { get; set; } public string PositionTitle { get; set; } = ""; public string JobDescriptionStatus { get; set; } = ""; public long JobDescriptionRequisitionId { get; set; } }
+    private sealed class PostingSourceRow { public int ClientId { get; set; } public long RequisitionId { get; set; } public string PositionTitle { get; set; } = ""; public string JobLocation { get; set; } = ""; public string JobDescriptionStatus { get; set; } = ""; public long JobDescriptionRequisitionId { get; set; } }
     private sealed class AssignmentSourceRow { public int ClientId { get; set; } public string Status { get; set; } = ""; public string ScopeType { get; set; } = ""; public int PipelineClientId { get; set; } }
     private sealed class ApplicationSourceRow { public long Id { get; set; } public long PositionId { get; set; } public int ClientId { get; set; } public long? JobPostingId { get; set; } }
     private sealed class PositionBoardRow { public long PositionId { get; set; } public string PositionCode { get; set; } = ""; public string PositionTitle { get; set; } = ""; public int ClientId { get; set; } }

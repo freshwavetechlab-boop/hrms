@@ -152,7 +152,7 @@ export default function RecruitmentDashboardOverview({
   onNavigate: (path: string) => void
 }) {
   const session = useAuthSession()
-  const { manage, positions: canReadPositions, cases: canReadCases } = recruitmentDashboardAccess(session?.user.permissions || [])
+  const { manage, positions: canReadPositions, cases: canReadCases, requisitions: canReadRequisitions, applications: canReadApplications, interviews: canReadInterviews, offers: canReadOffers, postings: canReadPostings } = recruitmentDashboardAccess(session?.user.permissions || [])
   const [data, setData] = useState<RecruitmentDashboardData>(emptyData)
   const [filters, setFilters] = useState<DashboardFilters>(initialFilters)
   const [loading, setLoading] = useState(true)
@@ -165,12 +165,12 @@ export default function RecruitmentDashboardOverview({
     else setLoading(true)
     try {
       const [requisitions, positions, allApplications, allInterviews, allOffers, postings, hiringCases] = await Promise.all([
-        manage ? getRecruitmentRequisitions(selectedClientId ? { clientId: selectedClientId } : {}) : Promise.resolve([]),
+        canReadRequisitions ? getRecruitmentRequisitions(selectedClientId ? { clientId: selectedClientId } : {}) : Promise.resolve([]),
         canReadPositions ? getRecruitmentOpenPositions(selectedClientId) : Promise.resolve([]),
-        manage ? getApplications() : Promise.resolve([]),
-        manage ? getInterviews() : Promise.resolve([]),
-        manage ? getOffers() : Promise.resolve([]),
-        manage ? getRecruitmentJobPostings(selectedClientId) : Promise.resolve([]),
+        canReadApplications ? getApplications() : Promise.resolve([]),
+        canReadInterviews ? getInterviews() : Promise.resolve([]),
+        canReadOffers ? getOffers() : Promise.resolve([]),
+        canReadPostings ? getRecruitmentJobPostings(selectedClientId) : Promise.resolve([]),
         canReadCases ? getRecruitmentHiringCases(selectedClientId) : Promise.resolve([]),
       ])
       const applications = selectedClientId ? allApplications.filter(row => row.clientId === selectedClientId) : allApplications
@@ -190,7 +190,7 @@ export default function RecruitmentDashboardOverview({
       setLoading(false)
       setRefreshing(false)
     }
-  }, [selectedClientId, manage, canReadPositions, canReadCases])
+  }, [selectedClientId, canReadPositions, canReadCases, canReadRequisitions, canReadApplications, canReadInterviews, canReadOffers, canReadPostings])
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0)
@@ -432,10 +432,19 @@ export default function RecruitmentDashboardOverview({
   const metricVisible = (key: string) => {
     if (['vacancies', 'filled', 'time'].includes(key)) return canReadPositions
     if (key === 'sla') return canReadCases
+    if (['requests', 'approvals'].includes(key)) return canReadRequisitions
+    if (['applications', 'shortlisted'].includes(key)) return canReadApplications
+    if (['offers', 'joining'].includes(key)) return canReadOffers
     return manage
   }
   const visibleKpis = kpis.filter(item => metricVisible(item.key)).map(item => item.key === 'time' && !manage ? { ...item, onClick: () => onNavigate('/recruitment/open-positions') } : item.key === 'sla' && !manage ? { ...item, onClick: undefined } : item)
-  const visibleCharts = charts.filter(chart => ['ta-department-demand', 'ta-scope-demand'].includes(chart.id) ? canReadPositions : manage)
+  const visibleCharts = charts.filter(chart => {
+    if (['ta-department-demand', 'ta-scope-demand'].includes(chart.id)) return canReadPositions
+    if (['ta-priority-demand', 'ta-approval-ageing'].includes(chart.id)) return canReadRequisitions
+    if (chart.id === 'ta-ats-distribution') return canReadApplications
+    if (chart.id === 'ta-joining-forecast') return canReadOffers
+    return canReadApplications && canReadOffers
+  })
 
   const filterDefinitions = [
     { key: 'client', label: 'Client', value: selectedClientId || 'all', allowClear: false, disabled: !canChooseClient, searchable: true, options: [{ value: 'all', label: 'All accessible clients' }, ...clients.map(row => ({ value: row.id, label: `${row.code} · ${row.name}` }))] },

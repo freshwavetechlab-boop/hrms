@@ -110,6 +110,7 @@ export type RecruitmentHiringCase = {
   pipelineName: string
   slaAnchorAtUtc: string
   overallDueAtUtc?: string | null
+  overallSlaPaused?: boolean
   currentStageInstanceId?: number | null
   currentStageName: string
   currentStakeholderCode: string

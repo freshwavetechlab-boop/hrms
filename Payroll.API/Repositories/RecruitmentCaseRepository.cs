@@ -906,8 +906,7 @@ PositionId=COALESCE(@PositionId,PositionId) WHERE WorkOrderLineId=@LineId OR Req
         row.Stages = (await db.QueryAsync<RecruitmentHiringCaseStage>(@"SELECT instance.*,stage.StageCode,stage.StageName,stage.DisplayOrder,stage.StakeholderCode,stage.TargetOffsetMinutes,
 stage.AllowPause,stage.PauseBehavior,stage.RequiresApproval,stage.ApprovalWorkflowId,stage.IsTerminal,
 EXISTS(SELECT 1 FROM recruitment_position_stage_pause_periods pauseRow WHERE pauseRow.PositionStageInstanceId=instance.Id AND pauseRow.ResumedAtUtc IS NULL) IsPaused,
-(instance.EnteredAtUtc IS NOT NULL AND instance.DueAtUtc IS NOT NULL
- AND COALESCE(instance.CompletedAtUtc,UTC_TIMESTAMP(6))>instance.DueAtUtc) IsSlaBreached,
+" + RecruitmentHiringSla.StageBreachedFor("instance", "stage") + @" IsSlaBreached,
 CASE WHEN instance.EnteredAtUtc IS NULL THEN 0 ELSE GREATEST(0,TIMESTAMPDIFF(SECOND,instance.EnteredAtUtc,COALESCE(instance.CompletedAtUtc,UTC_TIMESTAMP(6)))-instance.PausedDurationSeconds-
 COALESCE((SELECT SUM(TIMESTAMPDIFF(SECOND,pauseRow.PausedAtUtc,UTC_TIMESTAMP(6))) FROM recruitment_position_stage_pause_periods pauseRow WHERE pauseRow.PositionStageInstanceId=instance.Id AND pauseRow.ResumedAtUtc IS NULL),0)) END ActiveDurationSeconds
 FROM recruitment_position_stage_instances instance
@@ -1907,7 +1906,7 @@ WHERE Id=@Id AND (@ClientScope IS NULL OR ClientId=@ClientScope)", new { request
     {
         return await db.QueryFirstOrDefaultAsync<ProcessDocumentGenerationContext>(@"SELECT documentRow.*,
 templateRow.ClientId TemplateClientId,templateRow.TemplateType,templateRow.SubjectTemplate,templateRow.BodyTemplate,templateRow.IsActive TemplateIsActive,
-COALESCE(clientRow.Name,'') ClientName,COALESCE(workOrder.WorkOrderNumber,'') WorkOrderNumber,
+COALESCE(clientRow.Name,'') ClientName,COALESCE(workOrder.WorkOrderNumber,'') WorkOrderNumber,COALESCE(hiringCase.Status,'') JobStatus,
 workOrder.ReceivedAtUtc WorkOrderReceivedAt,COALESCE(applicationRow.PositionId,hiringCase.PositionId) PositionId,
 COALESCE(workOrderLine.PositionName,positionRow.PositionTitle,'') PositionName,COALESCE(workOrderLine.PayBandLevelCode,'') PayBandLevelCode,
 COALESCE(workOrderLine.Location,'') Location,COALESCE(workOrderLine.Division,'') Division,
@@ -2072,7 +2071,7 @@ VALUES ('RecruitmentProcessDocument',@Id,'Job MoM prepared',@MomSnapshotJson,@Us
     private static async Task<(Dictionary<string, string>? Values, string Error)> SelectionCommitteeTemplateValuesAsync(
         MySqlConnection db,
         ProcessDocumentGenerationContext context,
-        CultureInfo culture)
+        CultureInfo culture, bool checksOnly = false)
     {
         (Dictionary<string, string>?, string) Block(string action, string error)
         {
@@ -2081,27 +2080,17 @@ VALUES ('RecruitmentProcessDocument',@Id,'Job MoM prepared',@MomSnapshotJson,@Us
         }
         if (context.HiringCaseId is null or <= 0 || context.PositionId is null or <= 0)
             return Block("Job", "Link this hiring journey to its open position before preparing MoM.");
-        var candidates = (await db.QueryAsync<SelectionCommitteeCandidate>(RecruitmentJobMom.SelectedCandidatesSql,
-            new { context.ApplicationId, context.HiringCaseId, context.PositionId, context.ClientId })).ToList();
-        context.SelectedCandidateCount = candidates.Count;
+        var candidates = await ReadMomCandidatesAsync(db, context);
         if (candidates.Count == 0)
             return Block("Interview", "Complete final interview selection for this job in Interview Tracker before preparing MoM.");
-        var required = await RequiredHiringCohortAsync(db, context.PositionId.Value);
+        var required = context.RequiredCandidateCount;
         if (context.ApplicationId is null && !HasRequiredHiringCohort(required, candidates.Count))
             return Block("Interview", $"MoM needs {required} interview-selected candidates; {candidates.Count} are ready. Complete the remaining selections in Interview Tracker.");
 
         var unconfirmed = candidates.Where(row => row.TermsConfirmedAtUtc is null || row.AgreedCtc is not > 0).Select(row => row.CandidateName).ToArray();
         if (IsMoM(context.DocumentType) && unconfirmed.Length > 0) return Block("Terms", "Confirm agreed terms in Negotiation & approvals for: " + string.Join(", ", unconfirmed) + ".");
         var interviewIds = candidates.Select(row => row.InterviewId!.Value).Distinct().ToArray();
-        var missingFeedback = (await db.QueryAsync<string>(@"SELECT CONCAT(candidateRow.FirstName,' ',candidateRow.LastName)
-FROM recruitment_interviews interviewRow
-JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=interviewRow.ApplicationId
-JOIN recruitment_candidates candidateRow ON candidateRow.Id=applicationRow.CandidateId
-WHERE interviewRow.Id IN @Ids AND EXISTS (
-  SELECT 1 FROM recruitment_interview_panel_members panel
-  LEFT JOIN recruitment_interview_feedback feedback ON feedback.InterviewId=panel.InterviewId AND feedback.PanelUserId=panel.PanelUserId
-  WHERE panel.InterviewId=interviewRow.Id AND feedback.Id IS NULL
-)", new { Ids = interviewIds })).ToArray();
+        var missingFeedback = context.CandidateChecks.Where(row => row.InterviewSelected && row.PendingFeedbackFrom.Count > 0).Select(row => row.CandidateName).ToArray();
         if (missingFeedback.Length > 0)
             return Block("Interview", $"Panel feedback is pending in Interview Tracker for: {string.Join(", ", missingFeedback)}. Each assigned member must submit their feedback.");
 
@@ -2141,9 +2130,12 @@ GROUP BY feedback.InterviewId,score.InterviewStageCompetencyId", new { Ids = int
         var scoreLookup = scoreRows.ToDictionary(row => (row.InterviewId, row.InterviewStageCompetencyId), row => row.AwardedScore);
         if (competencies.Count > 0)
         {
-            var missingScores = candidates.Where(candidate => competencies.Any(competency => !scoreLookup.ContainsKey((candidate.InterviewId!.Value, competency.StageCompetencyId)))).Select(candidate => candidate.CandidateName).ToArray();
-            if (missingScores.Length > 0) return Block("Interview", $"Complete the configured interview scores for: {string.Join(", ", missingScores)}.");
+            var missingScores = candidates.Where(candidate => competencies.Any(competency => !scoreLookup.ContainsKey((candidate.InterviewId!.Value, competency.StageCompetencyId)))).ToArray();
+            foreach (var row in context.CandidateChecks) row.ScoresPending = missingScores.Any(candidate => candidate.ApplicationId == row.ApplicationId);
+            if (missingScores.Length > 0) return Block("Interview", $"Complete the configured interview scores for: {string.Join(", ", missingScores.Select(row => row.CandidateName))}.");
         }
+
+        if (checksOnly) return (null, "");
 
         var waitingList = candidates.Where(row => row.Result.Equals("On Hold", StringComparison.OrdinalIgnoreCase) || row.Result.Equals("Waiting List", StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(row => row.OverallScore).ThenBy(row => row.CandidateName).Select((row, index) => new { row.InterviewId, Rank = index + 1 }).ToDictionary(row => row.InterviewId!.Value, row => row.Rank);
@@ -2427,8 +2419,14 @@ JOIN authusers userRow ON userRow.Id=positionRow.RecruiterUserId AND userRow.IsA
     }
 
     private static Task<IEnumerable<RecruitmentHiringCase>> HiringCaseRowsAsync(MySqlConnection db, int? clientId, long? id) =>
-        db.QueryAsync<RecruitmentHiringCase>("SELECT " + HistoricalHiringCaseSql + @" IsHistorical,hiringCase.*,client.Name ClientName,workOrder.WorkOrderNumber,line.PositionName,line.PayBandLevelCode,line.Division,line.Location,
+        db.QueryAsync<RecruitmentHiringCase>("SELECT " + HistoricalHiringCaseSql + @" IsHistorical,
+hiringCase.Id,hiringCase.ClientId,hiringCase.WorkOrderId,hiringCase.WorkOrderLineId,hiringCase.RequisitionId,hiringCase.PositionId,
+hiringCase.PipelineVersionId,hiringCase.SlaAnchorAtUtc,hiringCase.CurrentStageInstanceId,hiringCase.Status,
+hiringCase.StartedAtUtc,hiringCase.CompletedAtUtc,hiringCase.UpdatedAtUtc,
+client.Name ClientName,workOrder.WorkOrderNumber,line.PositionName,line.PayBandLevelCode,line.Division,line.Location,
 definition.PipelineName,stage.StageName CurrentStageName,stage.StakeholderCode CurrentStakeholderCode,
+" + RecruitmentHiringSla.DueFor("hiringCase", "currentStage", "stage", "workOrder.DueAtUtc") + @" OverallDueAtUtc,
+" + RecruitmentHiringSla.PausedFor("currentStage", "stage") + @" OverallSlaPaused,
 (hiringCase.PositionId IS NOT NULL AND hiringCase.RequisitionId IS NOT NULL AND hiringCase.Status IN ('Active','Candidate Flow')
  AND EXISTS(SELECT 1 FROM recruitment_pipeline_stages momStage
  WHERE momStage.PipelineVersionId=hiringCase.PipelineVersionId AND momStage.CardScope='Position' AND momStage.IsActive=TRUE
@@ -2652,6 +2650,10 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
 
     private sealed class ProcessDocumentGenerationContext : RecruitmentProcessDocument
     {
+        public string JobStatus { get; set; } = "";
+        public int RequiredCandidateCount { get; set; }
+        public List<RecruitmentMomCandidateCheck> CandidateChecks { get; set; } = [];
+        public bool CandidateChecksLoaded { get; set; }
         public int TemplateClientId { get; set; }
         public string TemplateType { get; set; } = "";
         public string SubjectTemplate { get; set; } = "";

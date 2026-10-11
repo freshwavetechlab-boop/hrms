@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Alert, Button, Form, Input, Modal, Select, Tag, message } from 'antd'
 import { useAuthSession } from './AuthGate'
-import { getRecruitmentProcessDocumentSignatures, saveRecruitmentProcessDocumentSignature } from '../services/recruitmentCaseService'
+import { getRecruitmentProcessDocumentSignatures, saveRecruitmentProcessDocumentSignature, type RecruitmentMomReadiness } from '../services/recruitmentCaseService'
+import RecruitmentMomDetails, { RecruitmentMomVersion } from './RecruitmentMomDetails'
 import type { RecruitmentProcessDocument, RecruitmentProcessDocumentSignature } from '../types/recruitmentCases'
 import './RecruitmentWorkOrderWorkspace.css'
 
-export default function RecruitmentMomSignature({ document, onClose, onSaved, readOnly = false }: { document: RecruitmentProcessDocument; onClose: () => void; onSaved: () => Promise<void>; readOnly?: boolean }) {
+export default function RecruitmentMomSignature({ document, readiness, onClose, onSaved, readOnly = false }: { document: RecruitmentProcessDocument; readiness?: RecruitmentMomReadiness | null; onClose: () => void; onSaved: () => Promise<void>; readOnly?: boolean }) {
   const session = useAuthSession()
   const [documentSignatures, setDocumentSignatures] = useState<RecruitmentProcessDocumentSignature[]>([])
   const [signatureMethod, setSignatureMethod] = useState<'Typed' | 'Drawn' | 'Image'>('Typed')
@@ -52,6 +53,8 @@ export default function RecruitmentMomSignature({ document, onClose, onSaved, re
       destroyOnClose
     >
       <Alert showIcon type="info" message="Audited electronic signature" description="Your signed-in user, method and timestamp are stored with this MoM. This combined MoM belongs to the job. Every assigned panel member signs using their own login. The final required signature sends agreed terms to HR Division for approval." />
+      <RecruitmentMomDetails readiness={readiness} includeCandidates={false} />
+      <RecruitmentMomVersion document={document} />
       <Tag>{document.signatureCount}/{document.requiredSignatureCount} panel signatures</Tag>
       {document.bodySnapshot && <pre style={{ whiteSpace: 'pre-wrap', maxHeight: 300, overflow: 'auto' }}>{document.bodySnapshot}</pre>}
       {!readOnly && <Form component="div" layout="vertical" className="mom-signature-form">

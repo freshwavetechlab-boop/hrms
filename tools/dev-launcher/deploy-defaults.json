@@ -1,0 +1,7 @@
+{
+  "Apps": [
+    { "name": "hrms:admin", "url": "http://coolify.frevo.co.in:8000/project/sw5ntfpjwglrj6nxjn9t2neu/environment/mu0aaci9l3qiix6b7nl1abma/application/yr98x3ssk23c9xkuek2765oe" },
+    { "name": "hrms:API", "url": "http://coolify.frevo.co.in:8000/project/sw5ntfpjwglrj6nxjn9t2neu/environment/mu0aaci9l3qiix6b7nl1abma/application/zz53yqlqtvfaqnl830uaf213l" },
+    { "name": "hrms:ess-mss", "url": "http://coolify.frevo.co.in:8000/project/sw5ntfpjwglrj6nxjn9t2neu/environment/mu0aaci9l3qiix6b7nl1abma/application/vzu57wt32wmkks3n9fzvz866" }
+  ]
+}

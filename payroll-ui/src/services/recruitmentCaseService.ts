@@ -58,17 +58,36 @@ export const saveRecruitmentProcessDocument = (request: SaveRecruitmentProcessDo
 export const generateRecruitmentProcessDocument = (id: number) =>
   postJson(`/api/recruitment/process-documents/${id}/generate`, {}, null as RecruitmentProcessDocument | null, { successMessage: 'Process document generated and stored securely.' })
 
+export type RecruitmentMomWorkOwner = {
+  applicationId: number; interviewId?: number | null; userId: number; name: string; email: string
+  designation: string; role: string; stageName: string; task: string; route: string
+}
+export type RecruitmentMomPing = { id: number; title: string; detail: string; route: string }
 export type RecruitmentMomReadiness = {
+  jobName: string
+  jobStatus: string
+  workOrderNumber: string
+  positionId?: number | null
+  requiredCandidateCount: number
+  candidateChecks: { applicationId: number; candidateName: string; interviewStatus: string; interviewSelected: boolean; termsConfirmed: boolean; scoresPending: boolean; pendingFeedbackFrom: string[]; pendingWorkOwners?: RecruitmentMomWorkOwner[] }[]
+  panelMembers: { userId: number; name: string; isSigned: boolean }[]
   action: string
   message: string
   canGenerate: boolean
   canSign: boolean
+  canPing?: boolean
   selectedCandidateCount: number
   pendingSigners: string[]
 }
 
 export const getRecruitmentMomReadiness = (id: number) =>
   getJsonResult<RecruitmentMomReadiness | null>(`/api/recruitment/process-documents/${id}/readiness`, null, { loader: false })
+
+export const pingRecruitmentMomWork = (id: number, owner: RecruitmentMomWorkOwner) =>
+  postJson(`/api/recruitment/process-documents/${id}/ping`, { applicationId: owner.applicationId, userId: owner.userId, task: owner.task }, { ok: false }, { loader: false, successMessage: `Reminder sent to ${owner.name}.` })
+
+export const getRecruitmentMomPings = () =>
+  getJsonResult<RecruitmentMomPing[]>('/api/recruitment/mom-pings', [], { loader: false, toast: false })
 
 export const getRecruitmentProcessDocumentSignatures = (id: number) =>
   getJson<RecruitmentProcessDocumentSignature[]>(`/api/recruitment/process-documents/${id}/signatures`, [])

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons'
 import { getCurrentUser, login as authenticate, logout as endSession } from '../services/authService'
 import type { AuthUser } from '../types/payroll'
+import { recruitmentLoginPath } from '../utils/recruitmentDashboardAccess'
 import { useToast } from './ToastProvider'
 
 const productLogo = '/assets/FrevoOneLogo.png'
@@ -48,7 +49,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     localStorage.removeItem('payroll.auth.user')
     setUser(response.data.user)
     toast('Signed in successfully.', 'success')
-    navigate('/dashboard', { replace: true })
+    navigate(recruitmentLoginPath(response.data.user.permissions), { replace: true })
   }
 
   const logout = async () => {

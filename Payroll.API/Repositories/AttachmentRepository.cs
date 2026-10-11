@@ -306,7 +306,33 @@ WHERE NOT EXISTS (
     SELECT 1 FROM attachment_field_configurations
     WHERE client_id=0 AND module_code='RECRUITMENT' AND form_code='HIRING_REQUEST' AND field_key='HIRING_REQUEST_SOURCE'
 );", new { WorkOrderAttributeId = workOrderAttributeId, ProcessDocumentAttributeId = processDocumentAttributeId, RequestSourceAttributeId = requestSourceAttributeId });
+        await EnsureMomSupportingAttachmentsAsync(db);
     }
+
+    // Configuration-only setup for deployments that keep automatic migrations disabled.
+    public async Task InitializeMomSupportingAttachmentsAsync()
+    {
+        await using var db = Connection();
+        await db.OpenAsync();
+        await EnsureMomSupportingAttachmentsAsync(db);
+    }
+
+    // Supporting files share storage, validation and access controls, but are not final MoM copies.
+    private static Task EnsureMomSupportingAttachmentsAsync(MySqlConnection db) => db.ExecuteAsync(@"
+INSERT INTO attachment_attributes(client_id,attribute_code,attribute_name,description,data_classification,is_active)
+SELECT 0,'RECRUITMENT_PROCESS_SUPPORT','MoM supporting attachment','Additional records accompanying a job MoM.','Restricted',TRUE
+WHERE NOT EXISTS (SELECT 1 FROM attachment_attributes WHERE client_id=0 AND attribute_code='RECRUITMENT_PROCESS_SUPPORT');
+INSERT INTO attachment_field_configurations
+(client_id,attachment_attribute_id,module_code,form_code,section_code,field_key,field_label,help_text,is_required,allow_multiple,minimum_file_count,maximum_file_count,
+ allowed_extensions_json,allowed_mime_types_json,maximum_file_size_bytes,maximum_total_size_bytes,owner_can_view,owner_can_upload,owner_can_replace,owner_can_delete,
+ requires_verification,versioning_enabled,requirement_scope,display_order,is_active)
+SELECT 0,attribute.id,'RECRUITMENT','PROCESS_SUPPORT','SUPPORTING','MOM_SUPPORTING_FILES','Supporting files',
+ 'Optional supporting records. These files do not replace MoM or its panel signatures.',FALSE,TRUE,0,10,
+ '[""pdf"",""docx"",""xlsx"",""jpg"",""jpeg"",""png""]',
+ '[""application/pdf"",""application/vnd.openxmlformats-officedocument.wordprocessingml.document"",""application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"",""image/jpeg"",""image/png""]',
+ 10485760,52428800,TRUE,FALSE,FALSE,FALSE,FALSE,TRUE,'AllEntities',10,TRUE
+FROM attachment_attributes attribute WHERE attribute.client_id=0 AND attribute.attribute_code='RECRUITMENT_PROCESS_SUPPORT'
+AND NOT EXISTS (SELECT 1 FROM attachment_field_configurations WHERE client_id=0 AND module_code='RECRUITMENT' AND form_code='PROCESS_SUPPORT' AND field_key='MOM_SUPPORTING_FILES');");
 
     public static IReadOnlyList<AttachmentTargetOption> Targets { get; } =
     [
@@ -319,7 +345,8 @@ WHERE NOT EXISTS (
         new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "PRE_ONBOARDING", FormName = "Pre-Onboarding", EntityType = "CANDIDATE" },
         new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "WORK_ORDER", FormName = "Client Work Order and JD Annexure", EntityType = "RECRUITMENT_WORK_ORDER" },
         new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "HIRING_REQUEST", FormName = "Hiring Request Source", EntityType = "RECRUITMENT_REQUISITION" },
-        new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "PROCESS_DOCUMENT", FormName = "MoM, Score Annexure and HR Proposal", EntityType = "RECRUITMENT_PROCESS_DOCUMENT" }
+        new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "PROCESS_DOCUMENT", FormName = "MoM, Score Annexure and HR Proposal", EntityType = "RECRUITMENT_PROCESS_DOCUMENT" },
+        new() { ModuleCode = "RECRUITMENT", ModuleName = "Recruitment", FormCode = "PROCESS_SUPPORT", FormName = "MoM supporting attachments", EntityType = "RECRUITMENT_PROCESS_SUPPORT" }
     ];
 
     public async Task<IEnumerable<AttachmentAttribute>> GetAttributesAsync(int? clientId = null)
@@ -1537,7 +1564,7 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
             return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM recruitment_work_orders WHERE Id=@Id", new { Id = entityId });
         if (entityType == "RECRUITMENT_REQUISITION")
             return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM recruitment_requisitions WHERE Id=@Id", new { Id = entityId });
-        if (entityType == "RECRUITMENT_PROCESS_DOCUMENT")
+        if (entityType is "RECRUITMENT_PROCESS_DOCUMENT" or "RECRUITMENT_PROCESS_SUPPORT")
             return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM recruitment_process_documents WHERE Id=@Id", new { Id = entityId });
         if (entityType == "EMPLOYEE_COMMUNICATION_DRAFT")
             return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM employee_communication_drafts WHERE Id=@Id", new { Id = entityId });
@@ -1558,7 +1585,7 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
             return HasAnyPermission(user, "employee.communication.view", "employee.communication.send", "settings.manage", "security.manage");
         if (entityType == "RECRUITMENT_WORK_ORDER")
             return HasAnyPermission(user, "recruitment.work-order.view", "recruitment.work-order.manage", "attachment.recruitment.view", "recruitment.manage", "settings.manage", "security.manage");
-        if (entityType == "RECRUITMENT_PROCESS_DOCUMENT")
+        if (entityType is "RECRUITMENT_PROCESS_DOCUMENT" or "RECRUITMENT_PROCESS_SUPPORT")
             return HasAnyPermission(user, "recruitment.document.view", "recruitment.document.manage", "recruitment.document.sign", "attachment.recruitment.view", "recruitment.manage", "settings.manage", "security.manage");
         return entityType == "EMPLOYEE"
             ? HasAnyPermission(user, "attachment.employee.view", "employees.view", "employees.manage", "settings.manage", "security.manage")
@@ -1616,7 +1643,7 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
             return await IsEntityOwnerAsync(user, entityType, entityId);
         if (entityType == "RECRUITMENT_WORK_ORDER")
             return HasAnyPermission(user, "recruitment.work-order.manage", "attachment.recruitment.upload", "recruitment.manage", "settings.manage", "security.manage");
-        if (entityType == "RECRUITMENT_PROCESS_DOCUMENT")
+        if (entityType is "RECRUITMENT_PROCESS_DOCUMENT" or "RECRUITMENT_PROCESS_SUPPORT")
             return HasAnyPermission(user, "recruitment.document.manage", "attachment.recruitment.upload", "recruitment.manage", "settings.manage", "security.manage");
         return entityType == "EMPLOYEE"
             ? HasAnyPermission(user, "attachment.employee.upload", "employees.manage", "settings.manage", "security.manage")
@@ -1630,7 +1657,7 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
             return HasAnyPermission(user, "employee.communication.send", "settings.manage", "security.manage");
         if (entityType == "RECRUITMENT_WORK_ORDER")
             return HasAnyPermission(user, "recruitment.work-order.manage", "attachment.recruitment.verify", "recruitment.manage", "security.manage");
-        if (entityType == "RECRUITMENT_PROCESS_DOCUMENT")
+        if (entityType is "RECRUITMENT_PROCESS_DOCUMENT" or "RECRUITMENT_PROCESS_SUPPORT")
             return HasAnyPermission(user, "recruitment.document.sign", "attachment.recruitment.verify", "recruitment.manage", "security.manage");
         return entityType == "EMPLOYEE"
             ? HasAnyPermission(user, "attachment.employee.verify", "employees.manage", "security.manage")

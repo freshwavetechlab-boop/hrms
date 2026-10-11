@@ -78,6 +78,7 @@ public class SaveRecruitmentWorkOrderLine
 
 public class RecruitmentHiringCase
 {
+    public bool OverallSlaPaused { get; set; }
     public bool IsPostInterviewStage { get; set; }
     public bool IsHistorical { get; set; }
     public long Id { get; set; }
@@ -207,12 +208,74 @@ public class RecruitmentProcessDocument
 
 public class RecruitmentMomReadiness
 {
+    public string JobName { get; set; } = "";
+    public string JobStatus { get; set; } = "";
+    public string WorkOrderNumber { get; set; } = "";
+    public long? PositionId { get; set; }
+    public int RequiredCandidateCount { get; set; }
+    public List<RecruitmentMomCandidateCheck> CandidateChecks { get; set; } = [];
+    public List<RecruitmentMomPanelMember> PanelMembers { get; set; } = [];
     public string Action { get; set; } = "Prepare";
     public string Message { get; set; } = "";
     public bool CanGenerate { get; set; }
     public bool CanSign { get; set; }
+    public bool CanPing { get; set; }
     public int SelectedCandidateCount { get; set; }
     public List<string> PendingSigners { get; set; } = [];
+}
+
+public class RecruitmentMomCandidateCheck
+{
+    public long ApplicationId { get; set; }
+    public string CandidateName { get; set; } = "";
+    public string InterviewStatus { get; set; } = "";
+    public bool InterviewSelected { get; set; }
+    public bool TermsConfirmed { get; set; }
+    public bool ScoresPending { get; set; }
+    public List<string> PendingFeedbackFrom { get; set; } = [];
+    public List<RecruitmentMomWorkOwner> PendingWorkOwners { get; set; } = [];
+}
+
+public class RecruitmentMomWorkOwner
+{
+    public int ClientId { get; set; }
+    public long ApplicationId { get; set; }
+    public long? InterviewId { get; set; }
+    public int UserId { get; set; }
+    public string Name { get; set; } = "";
+    public string Email { get; set; } = "";
+    public string Designation { get; set; } = "";
+    public string Role { get; set; } = "";
+    public string StageName { get; set; } = "";
+    public string Task { get; set; } = "";
+    public string Route { get; set; } = "";
+}
+
+public class RecruitmentMomPingRequest
+{
+    public long ApplicationId { get; set; }
+    public int UserId { get; set; }
+    public string Task { get; set; } = "";
+}
+
+public class RecruitmentMomPing
+{
+    public long Id { get; set; }
+    public long DocumentId { get; set; }
+    public long ApplicationId { get; set; }
+    public long? InterviewId { get; set; }
+    public int UserId { get; set; }
+    public string Task { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string Detail { get; set; } = "";
+    public string Route { get; set; } = "";
+}
+
+public class RecruitmentMomPanelMember
+{
+    public int UserId { get; set; }
+    public string Name { get; set; } = "";
+    public bool IsSigned { get; set; }
 }
 
 public class SaveRecruitmentProcessDocument

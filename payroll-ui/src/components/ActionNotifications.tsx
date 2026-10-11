@@ -7,6 +7,7 @@ import { useAuthSession } from './AuthGate'
 import type { RecruitmentInterview } from '../types/payroll'
 import { getAttendanceGaps } from '../services/attendanceIntegrationService'
 import { dismissExcelPayslipMailJob, getExcelPayslipMailJobs, type ExcelPayslipMailJob } from '../services/excelPayslipService'
+import { getRecruitmentMomPings } from '../services/recruitmentCaseService'
 
 type ActionItem = { key: string; title: string; detail: string; route: string; mailJob?: ExcelPayslipMailJob }
 type PendingTask = { id: number; stageName: string; resourceType: string; resourceId: string }
@@ -32,14 +33,16 @@ export default function ActionNotifications() {
     if (!session) { setItems([]); setJobFeed({ scope: jobScope, items: [] }); setLoading(false); return }
     setLoading(true)
     const canConfigure = session.user.permissions.some(p => ['settings.manage', 'client.settings.manage', 'attendance.manage', 'workflow.manage', 'employees.manage'].includes(p))
-    const [tasks, interviews, configuration, mailJobs] = await Promise.all([
+    const [tasks, interviews, configuration, mailJobs, momPings] = await Promise.all([
       getJsonResult<PendingTask[]>('/api/workflows/tasks/pending', [], { loader: false, toast: false }),
       getJsonResult<RecruitmentInterview[]>('/api/recruitment/interviews', [], { loader: false, toast: false }),
       canConfigure ? getAttendanceGaps(session.user.clientId || undefined) : Promise.resolve(null),
       canSeeMailJobs ? getExcelPayslipMailJobs() : Promise.resolve(null),
+      getRecruitmentMomPings(),
     ])
     if (attempt !== generation.current) return
     const next: ActionItem[] = (tasks.data || []).map(task => ({ key: `approval:${task.id}`, title: task.stageName || 'Approval required', detail: `${task.resourceType} · ${task.resourceId}`, route: '/tasks' }))
+    for (const ping of momPings.data || []) next.push({ key: `mom-ping:${ping.id}`, title: ping.title, detail: ping.detail, route: ping.route })
     const gaps = (configuration?.data || []).filter(gap => (!session.user.clientId || gap.clientId === session.user.clientId) && gap.requiredPermissions?.some(p => session.user.permissions.includes(p)))
     if (gaps.length) {
       const clients = new Set(gaps.map(gap => gap.clientId)).size
@@ -56,7 +59,7 @@ export default function ActionNotifications() {
     const jobsValid = Boolean(mailJobs?.ok && validMailJobs(receivedJobs))
     if (jobsValid) setJobFeed({ scope: jobScope, items: receivedJobs! })
     else if (!canSeeMailJobs) setJobFeed({ scope: jobScope, items: [] })
-    setError(!tasks.ok || (interviews && !interviews.ok) || (configuration && !configuration.ok) || (mailJobs && !jobsValid) ? 'Some notifications could not be refreshed. Any displayed mail progress is the last known status; retry to check the latest.' : '')
+    setError(!tasks.ok || !momPings.ok || (interviews && !interviews.ok) || (configuration && !configuration.ok) || (mailJobs && !jobsValid) ? 'Some notifications could not be refreshed. Any displayed mail progress is the last known status; retry to check the latest.' : '')
     setLoading(false)
   }, [session?.user.id, session?.user.clientId, session?.user.permissions.join('|')])
 

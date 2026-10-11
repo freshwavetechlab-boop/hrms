@@ -1,0 +1,7 @@
+{
+  "name": "frevo-hrms-launcher",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test deploy.test.mjs" },
+  "dependencies": { "playwright": "1.64.0" }
+}

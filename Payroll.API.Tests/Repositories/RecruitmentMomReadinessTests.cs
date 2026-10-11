@@ -21,9 +21,18 @@ public sealed partial class RecruitmentRevisionRegressionTests
         Assert.Equal("Generate", ready!.Action);
         Assert.True(ready.CanGenerate);
         Assert.Equal(1, ready.SelectedCandidateCount);
+        Assert.Equal("Engineer", ready.JobName);
+        Assert.Equal("Active", ready.JobStatus);
+        Assert.Equal(1, ready.RequiredCandidateCount);
+        Assert.Contains(ready.CandidateChecks, row => row.ApplicationId == 100 && row.InterviewSelected && row.TermsConfirmed);
+        Assert.DoesNotContain(ready.CandidateChecks, row => row.ApplicationId is 101 or 102 or 103);
+        Assert.False(Assert.Single(ready.CandidateChecks, row => row.ApplicationId == 104).InterviewSelected);
+        Assert.Equal(new[] { "First Panel", "Second Panel" }, ready.PanelMembers.Select(row => row.Name));
         Assert.Null(await repository.GetMomReadinessAsync(1, new AuthUser { Id = 1, ClientId = 30, Permissions = ["recruitment.document.manage"] }));
         var viewer = await repository.GetMomReadinessAsync(1, new AuthUser { Id = 4, ClientId = 20, Permissions = ["recruitment.document.view"] });
         Assert.False(viewer!.CanGenerate);
+        Assert.False(viewer.CanPing);
+        Assert.True(ready.CanPing);
         Assert.Null(await repository.GetMomReadinessAsync(1, new AuthUser { Id = 4, ClientId = 20, Permissions = ["recruitment.interview.panel"] }));
 
         await db.ExecuteAsync("UPDATE recruitment_candidate_applications SET TermsConfirmedAtUtc=NULL WHERE Id=100");
@@ -31,6 +40,7 @@ public sealed partial class RecruitmentRevisionRegressionTests
         Assert.Equal("Terms", terms!.Action);
         Assert.Contains("Selected Candidate", terms.Message);
         Assert.False(terms.CanGenerate);
+        Assert.False(Assert.Single(terms.CandidateChecks, row => row.ApplicationId == 100).TermsConfirmed);
         var generation = await repository.GenerateProcessDocumentAsync(1, coordinator, "", "", default);
         Assert.Null(generation.Row);
         Assert.Contains("Confirm agreed terms", generation.Error);
@@ -39,9 +49,18 @@ public sealed partial class RecruitmentRevisionRegressionTests
         var feedback = await repository.GetMomReadinessAsync(1, coordinator);
         Assert.Equal("Interview", feedback!.Action);
         Assert.Contains("feedback", feedback.Message);
+        Assert.Equal(new[] { "Second Panel" }, Assert.Single(feedback.CandidateChecks, row => row.ApplicationId == 100).PendingFeedbackFrom);
+        var owner = Assert.Single(Assert.Single(feedback.CandidateChecks, row => row.ApplicationId == 100).PendingWorkOwners);
+        Assert.Equal(3, owner.UserId);
+        Assert.Equal("Second Panel", owner.Name);
+        Assert.Equal("second@example.test", owner.Email);
+        Assert.Equal("Interview assessment", owner.StageName);
+        Assert.Equal("Panelist", owner.Role);
         await db.ExecuteAsync("INSERT INTO recruitment_interview_feedback VALUES(2,1,3)");
         await db.ExecuteAsync("UPDATE recruitment_interviews SET Status='Scheduled' WHERE Id=1");
-        Assert.Equal("Interview", (await repository.GetMomReadinessAsync(1, coordinator))!.Action);
+        var scheduled = await repository.GetMomReadinessAsync(1, coordinator);
+        Assert.Equal("Interview", scheduled!.Action);
+        Assert.False(Assert.Single(scheduled.CandidateChecks, row => row.ApplicationId == 100).InterviewSelected);
         await db.ExecuteAsync("UPDATE recruitment_interviews SET Status='Completed' WHERE Id=1; INSERT INTO recruitment_offers VALUES(1,100,'Rejected',UTC_TIMESTAMP())");
         Assert.Equal("Interview", (await repository.GetMomReadinessAsync(1, coordinator))!.Action);
         await db.ExecuteAsync("DELETE FROM recruitment_offers; UPDATE recruitment_open_positions SET NumberOfPositions=2 WHERE Id=10");
@@ -97,6 +116,8 @@ INSERT INTO recruitment_pipeline_stages(Id,StageName,StageType,PipelineVersionId
         ready = await repository.GetMomReadinessAsync(1, panel);
         Assert.False(ready!.CanSign);
         Assert.Equal(new[] { "Second Panel" }, ready.PendingSigners);
+        Assert.True(Assert.Single(ready.PanelMembers, row => row.UserId == 2).IsSigned);
+        Assert.False(Assert.Single(ready.PanelMembers, row => row.UserId == 3).IsSigned);
         await db.ExecuteAsync("INSERT INTO recruitment_process_document_signatures VALUES(2,1,3,NULL); UPDATE recruitment_process_documents SET Status='Signed',WorkflowInstanceId=8; INSERT INTO workflowinstances VALUES(8,'RecruitmentPipelineTransition','MOM:1','Pending')");
         Assert.Equal("Approval", (await repository.GetMomReadinessAsync(1, observer))!.Action);
         await db.ExecuteAsync("UPDATE workflowinstances SET Status='Approved'");
@@ -175,5 +196,13 @@ INSERT INTO recruitment_candidate_applications(Id,PositionId,ClientId,CandidateI
 INSERT INTO recruitment_interviews VALUES(1,100,'Completed','Selected',UTC_TIMESTAMP(),90,NULL),(2,101,'Completed','Selected',UTC_TIMESTAMP(),90,NULL),(3,102,'Completed','Selected',UTC_TIMESTAMP(),90,NULL),(4,103,'Completed','Selected',UTC_TIMESTAMP(),90,NULL),(5,104,'Completed','Selected',UTC_TIMESTAMP(),90,NULL),(6,104,'Scheduled','Pending',UTC_TIMESTAMP(),0,NULL);
 INSERT INTO recruitment_interview_panel_members VALUES(1,2,'Chair'),(1,3,'Panelist');
 INSERT INTO recruitment_interview_feedback VALUES(1,1,2),(2,1,3);
+ALTER TABLE recruitment_candidate_applications ADD RecruiterUserId INT NULL;
+ALTER TABLE recruitment_open_positions ADD RecruiterUserId INT NULL;
+ALTER TABLE recruitment_interviews ADD DecisionApproverUserId INT NULL;
+ALTER TABLE recruitment_audit ADD ChangedByUserId INT NULL, ADD ChangedOn DATETIME DEFAULT CURRENT_TIMESTAMP;
+CREATE TABLE recruitment_interview_stage_configurations(Id BIGINT PRIMARY KEY,PipelineStageId BIGINT);
+INSERT INTO recruitment_pipeline_stages VALUES(999,'Interview assessment','Interview',1,TRUE,999,NULL);
+INSERT INTO recruitment_interview_stage_configurations VALUES(1,999);
+UPDATE recruitment_interviews SET RoundConfigurationId=1 WHERE Id=1;
 """;
 }

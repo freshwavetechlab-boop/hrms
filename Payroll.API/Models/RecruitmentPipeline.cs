@@ -7,6 +7,8 @@ public class RecruitmentJobDescriptionVersion
     public long Id { get; set; }
     public long RequisitionId { get; set; }
     public int ClientId { get; set; }
+    [JsonIgnore]
+    public string JobLocation { get; set; } = "";
     public int VersionNumber { get; set; }
     public string Title { get; set; } = "";
     public string Summary { get; set; } = "";
@@ -103,6 +105,8 @@ public class RecruitmentJdBenefit
 
 public class RecruitmentJobPosting
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string JobLocation { get; set; } = "";
     [System.Text.Json.Serialization.JsonIgnore]
     public bool AtsCatchUpRequired { get; set; }
     public long Id { get; set; }
@@ -559,6 +563,8 @@ public class RecruitmentPipelineWorkspaceLane
 
 public class RecruitmentPipelineDemandCard
 {
+    public DateTime? CompletedAtUtc { get; set; }
+    public bool OverallSlaPaused { get; set; }
     public RecruitmentHiringProgressView? HiringProgress { get; set; }
     public int RequiredCandidateCount { get; set; }
     public int InPanelCount { get; set; }

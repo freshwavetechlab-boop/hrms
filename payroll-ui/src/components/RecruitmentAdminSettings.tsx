@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Drawer, Form, Input, Popconfirm, Select, Space, Tooltip, message } from 'antd'
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import DataTable from './DataTable'
@@ -72,11 +72,31 @@ export default function RecruitmentHiringTemplateManager({ initialClientId = 0, 
   const [formError, setFormError] = useState('')
   const [savingConfiguration, setSavingConfiguration] = useState(false)
   const [template, setTemplate] = useState(template0)
+  const [templateHint, setTemplateHint] = useState('')
+  const openedTemplate = useRef('')
   const load = async () => setSetup(await getRecruitmentAdminSetup())
   useEffect(() => { void Promise.all([getRecruitmentAdminSetup(), getClients()]).then(([a, b]) => { setSetup(a); setClients(b) }) }, [])
   const scopedClients = initialClientId ? clients.filter(client => client.id === initialClientId) : clients
   const clientOptions = selectOptions(scopedClients.map(c => ({ value: c.id, label: c.name })), 'Select client', 0)
   const visibleTemplates = initialClientId ? setup.templates.filter(row => row.clientId === initialClientId) : setup.templates
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search)
+    const id = Number(query.get('templateId') || 0)
+    const createMom = query.get('newTemplate') === 'MoM'
+    const key = `${initialClientId}:${id}:${createMom}`
+    if (openedTemplate.current === key || (!id && !createMom)) return
+    if (id) {
+      const row = setup.templates.find(item => item.id === id && (!initialClientId || item.clientId === initialClientId || item.clientId === 0))
+      if (!row) return
+      setTemplate(row.clientId === 0 && initialClientId ? { ...row, id: 0, clientId: initialClientId, templateCode: `${row.templateCode}_${initialClientId}` } : row)
+      setTemplateHint(row.clientId === 0 ? 'Save a client template, then assign it to the MoM requirement in Pipeline design. Prepared and signed MoM versions retain their saved content.' : 'Changes apply when preparing a new MoM version. Prepared and signed versions retain their saved content.')
+    } else {
+      setTemplate({ ...template0, clientId: initialClientId, templateType: 'MoM', templateCode: 'JOB_MOM', templateName: 'Job selection MoM', isHtml: false, subjectTemplate: 'Minutes of Meeting — {{positionName}}', bodyTemplate: selectionCommitteeMomTemplate })
+      setTemplateHint('This job uses the standard MoM. Save your custom template, then select it in the MoM document requirement under Pipeline design. Existing MoM versions retain their content.')
+    }
+    openedTemplate.current = key
+    setDrawer('template')
+  }, [initialClientId, setup.templates])
   useEffect(() => { setFormError('') }, [drawer])
   const save = async () => {
     const error = validateTemplate(template)
@@ -85,7 +105,7 @@ export default function RecruitmentHiringTemplateManager({ initialClientId = 0, 
     setSavingConfiguration(true)
     try {
       const response = await saveRecruitmentTemplate(template)
-      if (response.ok) { setDrawer(''); await load(); onSaved?.() }
+      if (response.ok) { setDrawer(''); setTemplateHint(''); await load(); onSaved?.() }
       else setFormError(response.error || 'The configuration could not be saved. Review the highlighted details and try again.')
     } finally { setSavingConfiguration(false) }
   }
@@ -95,9 +115,10 @@ export default function RecruitmentHiringTemplateManager({ initialClientId = 0, 
   }
   return <section className="recruitment-admin" data-testid="hiring-template-manager">
     <div className="recruitment-admin-content"><GridTable kind="templates" remove={remove} title="Hiring templates" text="Reusable stage automation, offer, interview and process-document templates for this client." action="Add template" rows={visibleTemplates} add={() => { setTemplate({ ...template0, clientId: initialClientId }); setDrawer('template') }} edit={row => { setTemplate(row); setDrawer('template') }} columns={[{ key: 'clientName', label: 'Client' }, { key: 'templateType', label: 'Type' }, { key: 'templateCode', label: 'Code' }, { key: 'templateName', label: 'Template' }, { key: 'isActive', label: 'Status', render: (r: any) => r.isActive ? 'Active' : 'Inactive' }]} /></div>
-    <Drawer className="settings-master-drawer recruitment-admin-drawer" title={drawerTitle(drawer)} open={!!drawer} width={840} onClose={() => !savingConfiguration && setDrawer('')} destroyOnClose
+    <Drawer className="settings-master-drawer recruitment-admin-drawer" title={drawerTitle(drawer)} open={!!drawer} width={840} onClose={() => { if (!savingConfiguration) { setDrawer(''); setTemplateHint('') } }} destroyOnClose
       footer={<div className="recruitment-admin-drawer-footer"><Button disabled={savingConfiguration} onClick={() => setDrawer('')}>Cancel</Button><Button type="primary" loading={savingConfiguration} onClick={() => void save()}>{drawerSubmitText(drawer)}</Button></div>}>
       <Form component="div" layout="vertical" className="settings-quick-form recruitment-admin-form">
+        {templateHint && <Alert showIcon type="info" message={templateHint} />}
         {formError && <Alert className="recruitment-form-error" showIcon closable type="error" message="Complete the required details" description={formError} onClose={() => setFormError('')} />}
         {drawer === 'template' && <><CommonClient value={template.clientId} set={clientId => setTemplate({ ...template, clientId })} options={clientOptions} disabled={initialClientId > 0} /><Form.Item label="Template type"><Select value={template.templateType} onChange={v => setTemplate({ ...template, templateType: v })} options={['Job Description', 'Interview Feedback', 'Offer Letter', 'Process Document', 'MoM', 'Score Annexure', 'HR Proposal', 'Joining Intimation', 'Candidate Pack', 'Rejection Letter', 'Consultant Email', 'Interview Invitation', 'Reminder', 'Offer Approval', 'Joining Instructions'].map(v => ({ value: v, label: v }))} /></Form.Item><Form.Item label="Code"><Input value={template.templateCode} onChange={e => setTemplate({ ...template, templateCode: e.target.value.toUpperCase().replace(/\s+/g, '_') })} /></Form.Item><Form.Item label="Name"><Input value={template.templateName} onChange={e => setTemplate({ ...template, templateName: e.target.value })} /></Form.Item><Form.Item label="Subject"><Input value={template.subjectTemplate} onChange={e => setTemplate({ ...template, subjectTemplate: e.target.value })} /></Form.Item><Form.Item label="Body" extra={template.templateType === 'Offer Letter' ? 'Supported placeholders: {{candidateName}}, {{candidateFirstName}}, {{positionTitle}}, {{clientName}}, {{currency}}, {{formattedCtc}}, {{joiningDate}}, {{expiryDate}}, {{offerDate}}, {{offerNumber}}, {{remarks}}.' : ['Process Document', 'MoM', 'Score Annexure', 'HR Proposal', 'Joining Intimation', 'Candidate Pack'].includes(template.templateType) ? 'Use {{name}} or #NAME#. Selection MoM also supports: approvalDate, shortlistedCount, presentCount, panelMembersList, candidateAttendanceTable, candidateResultTable, scoreAnnexureTable and panelSignatureBlock.' : undefined}><Input.TextArea rows={8} value={template.bodyTemplate} onChange={e => setTemplate({ ...template, bodyTemplate: e.target.value })} /></Form.Item></>}
         {drawer === 'template' && template.templateType === 'MoM' && <Alert showIcon type="info" message="Selection committee MoM" description="Use the normalized shortlist, panel roles, interview result and score data; candidate rows are never stored in the template." action={<Space><Button size="small" onClick={() => setTemplate({ ...template, bodyTemplate: selectionCommitteeMomTemplate })}>Insert generic layout</Button><Button size="small" type="primary" onClick={() => setTemplate({ ...template, bodyTemplate: uidaiSelectionCommitteeMomTemplate })}>Insert UIDAI layout</Button></Space>} />}

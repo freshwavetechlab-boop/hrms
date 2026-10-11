@@ -1,3 +1,4 @@
+import { recruitmentDuration, recruitmentJobSla } from '../utils/recruitmentSla'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import { useRecruitmentView, useRecruitmentPipelineDisplay } from '../hooks/useRecruitmentPreferences'
 import RecruitmentHiringProgress from './RecruitmentHiringProgress'
@@ -43,7 +44,7 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
   const navigate = useNavigate()
   const hasClientScope = initialClientId > 0
   const canManagePipeline = Boolean(session?.user.permissions.some(permission =>
-    permission === 'settings.manage' || permission === 'recruitment.manage'))
+    permission === 'settings.manage' || permission === 'recruitment.manage' || permission === 'recruitment.configuration.manage'))
   const canOperateHiringJourney = Boolean(session?.user.permissions.some(permission =>
     permission === 'settings.manage' || permission === 'recruitment.manage' || permission === 'recruitment.hiring-case.manage'))
   const [view, setView] = useState<PipelineView>(initialView)
@@ -323,10 +324,11 @@ function JourneyCandidateCard({ card, clockNow, workspaceSyncedAt, onOpen }: { c
 
 function DemandCard({ card, clientId, clockNow, workspaceSyncedAt, onChanged }: { card: RecruitmentPipelineDemandCard; clientId: number; clockNow: number; workspaceSyncedAt: number; onChanged: () => void }) {
   const sla = demandSla(card, clockNow, workspaceSyncedAt)
-  return <Card size="small" className={`demand-card ${card.isSlaBreached ? 'is-breached' : ''}`} data-testid={`pipeline-demand-${card.workOrderLineId}`}>
+  const jobSla = recruitmentJobSla(card, clockNow, workspaceSyncedAt)
+  return <Card size="small" className={`demand-card ${jobSla.breached ? 'is-breached' : ''}`} data-testid={`pipeline-demand-${card.workOrderLineId}`}>
     <div className="demand-card-heading">
       <div><strong title={card.positionName}>{card.positionName}</strong><span>{card.workOrderNumber}{card.payBandLevelCode ? ` · ${card.payBandLevelCode}` : ''}</span></div>
-      <div className="demand-card-statuses">{card.hiringCaseId && <Tag color={card.isSlaBreached ? 'error' : 'success'}>{card.isSlaBreached ? 'Business SLA breach' : 'SLA on track'}</Tag>}</div>
+      <div className="demand-card-statuses">{card.hiringCaseId && <Tag color={!card.overallDueAtUtc ? 'default' : jobSla.breached ? 'error' : 'success'}>{jobSla.label}</Tag>}</div>
     </div>
     <div className="demand-card-context">
       {card.division && <span><ApartmentOutlined /> {card.division}</span>}
@@ -475,18 +477,7 @@ function statusColor(value: string) {
 }
 function demandSla(card: RecruitmentPipelineDemandCard, now: number, syncedAt: number) {
   if (!card.hiringCaseId) return card.hasWorkOrder ? 'Starts after request save' : 'Awaiting work-order link'
-  if (['Completed', 'Cancelled', 'Rejected', 'Withdrawn'].includes(card.status))
-    return `${card.status} · ${card.isSlaBreached ? 'Business SLA breached' : 'SLA on track'}`
-  const due = card.overallDueAtUtc || card.dueAtUtc
-  if (!due) {
-    const running = !card.isPaused && card.status === 'Active'
-    const elapsed = Math.max(0, card.activeDurationSeconds || 0) + (running ? Math.max(0, Math.floor((now - syncedAt) / 1000)) : 0)
-    return card.isPaused ? `Paused at ${formatDurationClock(elapsed)}` : formatDurationClock(elapsed)
-  }
-  const referenceNow = card.isPaused ? syncedAt : now
-  const remaining = Math.round((new Date(due).getTime() - referenceNow) / 1000)
-  if (remaining < 0) return `${formatDurationClock(Math.abs(remaining))} overdue`
-  return card.isPaused ? `Paused · ${formatDurationClock(remaining)} left` : `${formatDurationClock(remaining)} left`
+  return `Overall SLA: ${recruitmentJobSla(card, now, syncedAt).text}`
 }
 function candidateSla(card: RecruitmentPipelineBoardCard, now: number, syncedAt: number) {
   const elapsed = Math.max(0, card.elapsedSeconds || 0) + (card.stageStatus !== 'Paused' ? Math.max(0, Math.floor((now - syncedAt) / 1000)) : 0)
@@ -496,14 +487,8 @@ function candidateSla(card: RecruitmentPipelineBoardCard, now: number, syncedAt:
   if (card.isSlaBreached || seconds < 0) return `${formatDurationClock(Math.abs(seconds))} overdue`
   return `${formatDurationClock(seconds)} remaining`
 }
-function formatDurationClock(seconds: number) {
-  const total = Math.max(0, Math.floor(seconds))
-  const days = Math.floor(total / 86400)
-  const hours = Math.floor((total % 86400) / 3600)
-  const minutes = Math.floor((total % 3600) / 60)
-  const remainingSeconds = total % 60
-  return `${days ? `${days}d ` : ''}${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`
-}
+const formatDurationClock = recruitmentDuration
+
 function durationText(minutes: number) {
   if (!minutes) return 'Untimed'
   if (minutes >= 1440) return `${Math.ceil(minutes / 1440)}d`

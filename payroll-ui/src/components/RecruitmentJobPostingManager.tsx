@@ -53,6 +53,8 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
   const session = useAuthSession()
   const notify = useToast()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
+  const canPublish = Boolean(session?.user.permissions.some(permission => ['recruitment.manage', 'settings.manage', 'recruitment.publish'].includes(permission)))
+  const canAddCandidate = Boolean(session?.user.permissions.some(permission => ['recruitment.manage', 'settings.manage', 'recruitment.candidate.manage'].includes(permission)))
   const canViewAllClients = session?.user.clientId == null
   const [clients, setClients] = useState<Client[]>([])
   const [clientId, setClientId] = useState(initialClientId || session?.user.clientId || 0)
@@ -130,7 +132,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
     Closed: currentPostings.filter(row => row.status === 'Closed').length,
   }), [currentPostings])
   const selectedPosition = positions.find(row => row.id === editor?.positionId)
-  const readOnly = !!editor?.id && !editableStatuses.has(editor.status)
+  const readOnly = !canPublish || (!!editor?.id && !editableStatuses.has(editor.status))
   const publicUrl = normalizePublicCareerUrl(editor?.publicUrl, editor?.publicSlug)
   const applicationFormOptions = useMemo(() => {
     const rows = lookups.forms.filter(row => row.status?.toLowerCase() === 'active' && formDefinitionBelongsToClient(row, editorClientId))
@@ -411,9 +413,9 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
                     <PostingStatus status={row.status} />
                   </Space>
                   <Space wrap>
-                  <Button icon={<EditOutlined />} onClick={event => { event.stopPropagation(); void choosePosting(row) }}>{row.status === 'Draft' ? 'Edit' : 'View'}</Button>
-                  {row.status === 'Draft' && <Button type="primary" icon={<RocketOutlined />} loading={quickPublishingId === row.id} onClick={event => { event.stopPropagation(); void publishFromCard(row) }}>Publish</Button>}
-                  {row.status === 'Published' && <Button type="primary" icon={<UserAddOutlined />} onClick={event => { event.stopPropagation(); navigate(`/recruitment/applications?clientId=${row.clientId}&upload=single&positionId=${row.positionId}&jobPostingId=${row.id}`) }}>Add candidate</Button>}
+                  <Button icon={<EditOutlined />} onClick={event => { event.stopPropagation(); void choosePosting(row) }}>{canPublish && row.status === 'Draft' ? 'Edit' : 'View'}</Button>
+                  {canPublish && row.status === 'Draft' && <Button type="primary" icon={<RocketOutlined />} loading={quickPublishingId === row.id} onClick={event => { event.stopPropagation(); void publishFromCard(row) }}>Publish</Button>}
+                  {canAddCandidate && row.status === 'Published' && <Button type="primary" icon={<UserAddOutlined />} onClick={event => { event.stopPropagation(); navigate(`/recruitment/applications?clientId=${row.clientId}&upload=single&positionId=${row.positionId}&jobPostingId=${row.id}`) }}>Add candidate</Button>}
                 </Space></div>)
 
   return <section className="orchestration-shell posting-manager">
@@ -491,19 +493,19 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
               <Space wrap>
                 {publicUrl && <Button icon={<CopyOutlined />} disabled={actionBusy} onClick={() => void copyLink()}>Copy public link</Button>}
                 {editor.status === 'Published' && publicUrl && <Button icon={<GlobalOutlined />} href={publicUrl} target="_blank" rel="noreferrer">Open public page</Button>}
-                {editor.status === 'Published' && <Button danger icon={<CloseCircleOutlined />} disabled={actionBusy} onClick={unpublishPosting}>Unpublish</Button>}
-                {(editor.status === 'Draft' || editor.status === 'Closed') && <Button data-testid="job-posting-publish-button" type="primary" icon={<RocketOutlined />} loading={actionBusy && confirmationAction === 'publish'} disabled={actionBusy} onClick={publish}>Publish</Button>}
+                {canPublish && editor.status === 'Published' && <Button danger icon={<CloseCircleOutlined />} disabled={actionBusy} onClick={unpublishPosting}>Unpublish</Button>}
+                {canPublish && (editor.status === 'Draft' || editor.status === 'Closed') && <Button data-testid="job-posting-publish-button" type="primary" icon={<RocketOutlined />} loading={actionBusy && confirmationAction === 'publish'} disabled={actionBusy} onClick={publish}>Publish</Button>}
                 {canDelete && editor.id > 0 && <Popconfirm title="Delete this job posting?" description="Delete linked applications first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteRecruitmentJobPosting(editor.id); if (response.ok) { setEditor(null); await loadClient(clientId) } }}><Button danger icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}
               </Space>
             </div>
             {actionFeedback && <Alert data-testid="job-posting-action-feedback" style={{ marginBottom: 12 }} closable showIcon type={actionFeedback.type} message={actionFeedback.message} description={actionFeedback.description} onClose={() => setActionFeedback(null)} />}
-            {readOnly && <Alert className="jd-readonly-alert" type="info" showIcon message="Published details are locked" description="Close this posting and create a new posting if the approved JD, form or schedule must change." />}
+            {editor.id > 0 && !editableStatuses.has(editor.status) && <Alert className="jd-readonly-alert" type="info" showIcon message="Published details are locked" description="Close this posting and create a new posting if the approved JD, form or schedule must change." />}
             <div className="posting-automation-settings">
               <div className="posting-automation-heading"><strong>Application automation</strong><span>These settings apply only to candidates received for this job.</span></div>
-              <AutomationToggle label="Auto run ATS" description="Score each parsed resume automatically and send ATS-qualified candidates to interview scheduling." checked={editor.autoRunAts} busy={actionBusy} onChange={value => void updateAutomationSetting('autoRunAts', value)} />
-              <AutomationToggle label="Enable Resume Parsing" description="Extract candidate details from uploaded resumes. Files are still stored when this is off." checked={editor.enableResumeParsing} busy={actionBusy} onChange={value => void updateAutomationSetting('enableResumeParsing', value)} />
-              <AutomationToggle label="Enable AI Parsing" description="Enhance local resume extraction with the configured AI provider." checked={editor.enableAiParsing} busy={actionBusy} disabled={!editor.enableResumeParsing} onChange={value => void updateAutomationSetting('enableAiParsing', value)} />
-              <AutomationToggle label="Email OTP Verification" description="Require candidates to verify their email before opening the public application form." checked={editor.requireEmailOtp} busy={actionBusy} onChange={value => void updateAutomationSetting('requireEmailOtp', value)} />
+              <AutomationToggle disabled={!canPublish} label="Auto run ATS" description="Score each parsed resume automatically and send ATS-qualified candidates to interview scheduling." checked={editor.autoRunAts} busy={actionBusy} onChange={value => void updateAutomationSetting('autoRunAts', value)} />
+              <AutomationToggle disabled={!canPublish} label="Enable Resume Parsing" description="Extract candidate details from uploaded resumes. Files are still stored when this is off." checked={editor.enableResumeParsing} busy={actionBusy} onChange={value => void updateAutomationSetting('enableResumeParsing', value)} />
+              <AutomationToggle label="Enable AI Parsing" description="Enhance local resume extraction with the configured AI provider." checked={editor.enableAiParsing} busy={actionBusy} disabled={!canPublish || !editor.enableResumeParsing} onChange={value => void updateAutomationSetting('enableAiParsing', value)} />
+              <AutomationToggle disabled={!canPublish} label="Email OTP Verification" description="Require candidates to verify their email before opening the public application form." checked={editor.requireEmailOtp} busy={actionBusy} onChange={value => void updateAutomationSetting('requireEmailOtp', value)} />
             </div>
             {publicUrl && <div className="public-link-banner"><GlobalOutlined /><div><Typography.Text type="secondary">{editor.status === 'Published' ? 'Live public candidate URL' : 'Public candidate URL preview'}</Typography.Text><Typography.Link href={publicUrl} target="_blank" rel="noreferrer">{publicUrl} <LinkOutlined /></Typography.Link>{editor.status !== 'Published' && <Typography.Text type="secondary">This URL starts accepting applications only after the posting is published and open.</Typography.Text>}</div></div>}
           </Card>

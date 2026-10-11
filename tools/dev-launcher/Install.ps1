@@ -8,9 +8,12 @@ foreach ($relative in @('payroll-ui/package.json', 'Payroll.API/Payroll.API.cspr
     if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot $relative))) { throw "Project root does not contain $relative" }
 }
 New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
-foreach ($name in @('Launcher.ps1', 'Worker.ps1', 'ProcessHelpers.ps1')) {
+foreach ($name in @('Launcher.ps1', 'Worker.ps1', 'ProcessHelpers.ps1', 'Deploy.ps1', 'deploy.mjs', 'deploy-core.mjs', 'deploy-defaults.json', 'package.json', 'package-lock.json')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $InstallDirectory $name) -Force
 }
+$npmPath = (Get-Command npm.cmd -ErrorAction Stop).Source
+& $npmPath --prefix $InstallDirectory ci --ignore-scripts --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) { throw 'Deployment dependencies could not be installed. Check npm output.' }
 $settingsFile = Join-Path $InstallDirectory 'settings.json'
 if (-not (Test-Path -LiteralPath $settingsFile)) {
     @{

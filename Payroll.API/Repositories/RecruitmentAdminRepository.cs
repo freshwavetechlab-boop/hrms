@@ -8,6 +8,28 @@ namespace Payroll.API.Repositories;
 public class RecruitmentAdminRepository(IConfiguration configuration)
 {
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
+    private static readonly Dictionary<string, (string Table, string AuditEntity)> ConfigurationTables = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["settings"] = ("recruitment_settings", "RecruitmentSetting"),
+        ["masters"] = ("recruitment_master_values", "RecruitmentMaster"),
+        ["partners"] = ("recruitment_partners", "RecruitmentPartner"),
+        ["assignment-rules"] = ("recruitment_assignment_rules", "RecruitmentAssignmentRule"),
+        ["sla-rules"] = ("recruitment_sla_rules", "RecruitmentSlaRule"),
+        ["document-checklist"] = ("recruitment_document_checklist", "RecruitmentDocumentChecklist"),
+        ["approval-mappings"] = ("recruitment_approval_mappings", "RecruitmentApprovalMapping"),
+        ["templates"] = ("recruitment_templates", "RecruitmentTemplate")
+    };
+
+    public async Task<bool> CanManageConfigurationRecordAsync(string kind, int id, int clientId, AuthUser user)
+    {
+        if (!Payroll.API.Services.RecruitmentPermissions.CanConfigure(user) || !ConfigurationTables.TryGetValue(kind, out var definition)) return false;
+        if (user.ClientId is null) return true;
+        if (clientId != user.ClientId || id < 0) return false;
+        if (id == 0) return true;
+        await using var db = Connection();
+        await db.OpenAsync();
+        return await db.ExecuteScalarAsync<bool>($"SELECT EXISTS(SELECT 1 FROM `{definition.Table}` WHERE Id=@Id AND ClientId=@ClientId)", new { Id = id, ClientId = user.ClientId });
+    }
 
     public async Task InitializeAsync()
     {
@@ -17,12 +39,12 @@ public class RecruitmentAdminRepository(IConfiguration configuration)
         await SeedMastersAsync(db);
     }
 
-    public async Task<RecruitmentAdminSetup> GetAsync()
+    public async Task<RecruitmentAdminSetup> GetAsync(int? clientId = null)
     {
         await using var db = Connection();
         await db.OpenAsync();
         await EnsureTablesAsync(db);
-        return new RecruitmentAdminSetup
+        var setup = new RecruitmentAdminSetup
         {
             Settings = await db.QueryAsync<RecruitmentSetting>(@"SELECT s.*,COALESCE(c.Name,'') ClientName FROM recruitment_settings s LEFT JOIN clients c ON c.Id=s.ClientId ORDER BY c.Name,s.Id"),
             Masters = await db.QueryAsync<RecruitmentMasterValue>(@"SELECT m.*,COALESCE(c.Name,'Global') ClientName FROM recruitment_master_values m LEFT JOIN clients c ON c.Id=m.ClientId ORDER BY m.MasterType,m.SortOrder,m.Name"),
@@ -33,6 +55,19 @@ public class RecruitmentAdminRepository(IConfiguration configuration)
             DocumentChecklist = await db.QueryAsync<RecruitmentDocumentChecklist>(@"SELECT d.*,COALESCE(c.Name,'') ClientName FROM recruitment_document_checklist d LEFT JOIN clients c ON c.Id=d.ClientId ORDER BY c.Name,d.HiringType,d.DocumentName"),
             ApprovalMappings = await db.QueryAsync<RecruitmentApprovalMapping>(@"SELECT a.*,COALESCE(c.Name,'') ClientName,COALESCE(w.Name,'') WorkflowName FROM recruitment_approval_mappings a LEFT JOIN clients c ON c.Id=a.ClientId LEFT JOIN workflowmasters w ON w.Id=a.WorkflowId ORDER BY c.Name,a.ProcessCode"),
             Templates = await db.QueryAsync<RecruitmentTemplate>(@"SELECT t.*,COALESCE(c.Name,'') ClientName FROM recruitment_templates t LEFT JOIN clients c ON c.Id=t.ClientId ORDER BY c.Name,t.TemplateType,t.TemplateName")
+        };
+        if (clientId is null) return setup;
+        return new RecruitmentAdminSetup
+        {
+            Settings = setup.Settings.Where(row => row.ClientId == clientId),
+            Masters = setup.Masters.Where(row => row.ClientId == 0 || row.ClientId == clientId),
+            Consultants = setup.Consultants.Where(row => row.ClientId == clientId),
+            Vendors = setup.Vendors.Where(row => row.ClientId == clientId),
+            AssignmentRules = setup.AssignmentRules.Where(row => row.ClientId == clientId),
+            SlaRules = setup.SlaRules.Where(row => row.ClientId == clientId),
+            DocumentChecklist = setup.DocumentChecklist.Where(row => row.ClientId == clientId),
+            ApprovalMappings = setup.ApprovalMappings.Where(row => row.ClientId == clientId),
+            Templates = setup.Templates.Where(row => row.ClientId == 0 || row.ClientId == clientId)
         };
     }
 
@@ -60,18 +95,7 @@ SELECT LAST_INSERT_ID();", row);
 
     public async Task<(bool Ok, string Error)> DeleteAsync(string kind, int id, AuthUser user)
     {
-        var definitions = new Dictionary<string, (string Table, string AuditEntity)>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["settings"] = ("recruitment_settings", "RecruitmentSetting"),
-            ["masters"] = ("recruitment_master_values", "RecruitmentMaster"),
-            ["partners"] = ("recruitment_partners", "RecruitmentPartner"),
-            ["assignment-rules"] = ("recruitment_assignment_rules", "RecruitmentAssignmentRule"),
-            ["sla-rules"] = ("recruitment_sla_rules", "RecruitmentSlaRule"),
-            ["document-checklist"] = ("recruitment_document_checklist", "RecruitmentDocumentChecklist"),
-            ["approval-mappings"] = ("recruitment_approval_mappings", "RecruitmentApprovalMapping"),
-            ["templates"] = ("recruitment_templates", "RecruitmentTemplate")
-        };
-        if (!definitions.TryGetValue(kind, out var definition)) return (false, "Unsupported recruitment configuration type.");
+        if (!ConfigurationTables.TryGetValue(kind, out var definition)) return (false, "Unsupported recruitment configuration type.");
         await using var db = Connection();
         await db.OpenAsync();
         await EnsureTablesAsync(db);

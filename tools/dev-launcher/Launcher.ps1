@@ -1,6 +1,7 @@
 param(
     [string]$DataDirectory = $PSScriptRoot,
-    [switch]$NoWindow
+    [switch]$NoWindow,
+    [string]$PreviewPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -100,7 +101,7 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'Frevo HRMS Launcher'
-$form.ClientSize = New-Object System.Drawing.Size(690, 555)
+$form.ClientSize = New-Object System.Drawing.Size(690, 603)
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
@@ -288,6 +289,18 @@ Add-Label $form 'Closing this window keeps your apps running.' 21 494 472 21 | O
 $note = Add-Label $form 'API uses existing appsettings. Automatic migrations are off.' 21 517 490 21
 $note.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#627088')
 Add-Button $form 'Open logs' 543 498 126 { Start-Process explorer.exe -ArgumentList "`"$logsDirectory`"" } | Out-Null
+Add-Button $form 'Deploy' 20 554 126 {
+    try {
+        if (-not (Test-ProjectFolder 'api' $locations.api)) { throw 'Choose the Payroll.API folder first.' }
+        $projectRoot = Split-Path $locations.api -Parent
+        $deployPath = Join-Path $PSScriptRoot 'Deploy.ps1'
+        Start-Process -FilePath "$PSHOME\powershell.exe" -ArgumentList @(
+            '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+            '-File', "`"$deployPath`"", '-ProjectRoot', "`"$projectRoot`"", '-DataDirectory', "`"$DataDirectory`""
+        ) -WorkingDirectory $DataDirectory -WindowStyle Hidden | Out-Null
+    } catch { Show-Error $_.Exception.Message }
+} $true | Out-Null
+Add-Label $form 'Git commit + push, then confirm Coolify redeploy.' 159 562 510 25 | Out-Null
 
 Refresh-Locations
 Refresh-Status
@@ -295,5 +308,15 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 2000
 $timer.Add_Tick({ Refresh-Status })
 $timer.Start()
-try { [System.Windows.Forms.Application]::Run($form) }
+try {
+    if ($PreviewPath) {
+        $form.Show()
+        $form.Refresh()
+        [System.Windows.Forms.Application]::DoEvents()
+        $form.PerformLayout()
+        $bitmap = New-Object System.Drawing.Bitmap($form.Width, $form.Height)
+        try { $form.DrawToBitmap($bitmap, (New-Object System.Drawing.Rectangle(0, 0, $form.Width, $form.Height))); $bitmap.Save($PreviewPath) }
+        finally { $bitmap.Dispose() }
+    } else { [System.Windows.Forms.Application]::Run($form) }
+}
 finally { $timer.Dispose(); $tooltip.Dispose(); $form.Dispose() }

@@ -1,4 +1,5 @@
 import RecruitmentMomActions from './RecruitmentMomActions'
+import { RecruitmentMomVersion } from './RecruitmentMomDetails'
 import { useEffect, useState } from 'react'
 import { Alert, Button, Empty, Space, Tag } from 'antd'
 import EntityAttachmentPanel from './EntityAttachmentPanel'
@@ -51,7 +52,7 @@ export default function RecruitmentProcessDocumentPanel({ clientId, pipelineStag
       const isMom = ['MOM', 'SIGNED_MOM'].includes(requirement.documentType)
       return <article key={requirement.id} data-testid={`process-document-${applicationId || hiringCaseId}-${requirement.documentType}`}>
         <header><div><b>{requirement.documentType.replaceAll('_', ' ')}</b><span>{requirement.isRequired ? 'Required' : 'Optional'}{requirement.requiresSignature ? ' · final signature required' : ''}</span></div><Space>
-          {document ? <Tag color={document.status === 'Signed' ? 'green' : 'blue'}>v{document.versionNumber} · {document.status}</Tag> : !isMom && <Button loading={busy} onClick={() => void prepare(requirement)}>Prepare</Button>}
+          {document ? isMom ? <RecruitmentMomVersion document={document} /> : <Tag color={document.status === 'Signed' ? 'green' : 'blue'}>v{document.versionNumber} · {document.status}</Tag> : !isMom && <Button loading={busy} onClick={() => void prepare(requirement)}>Prepare</Button>}
           {document && !isMom && requirement.templateId && document.status !== 'Signed' && <Button loading={busy} onClick={() => void generate(document)}>{document.attachmentPublicId ? 'Regenerate PDF' : 'Generate PDF'}</Button>}
           {document && !isMom && requirement.requiresSignature && document.status !== 'Signed' && document.hasFinalSignedAttachment && <Button loading={busy} onClick={() => void sign(document)}>Mark signed</Button>}
           {document && !isMom && requirement.requiresSignature && document.status !== 'Signed' && !document.hasFinalSignedAttachment && <Tag color="orange">Upload signed final</Tag>}

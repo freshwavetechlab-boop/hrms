@@ -11,6 +11,7 @@ import EssSettings from './components/EssSettings'
 import EngineMonitoring from './components/EngineMonitoring'
 import FrevoPilot from './components/FrevoPilot'
 import SecurityPanel from './components/SecurityPanel'
+import { recruitmentDashboardAccess } from './utils/recruitmentDashboardAccess'
 import { appSettingsMenus, leaveAttendanceMenus, org0, reportingMenus, securityMenus, settingsMenus, workflowMenus } from './data/payrollDefaults'
 import DashboardPage, { type DashboardView } from './pages/DashboardPage'
 import ExcelPayslipDashboard from './pages/ExcelPayslipDashboard'
@@ -59,6 +60,7 @@ const productMark = '/favicon.svg'
 const dashboardViews: DashboardView[] = ['overview', 'workforce', 'payroll', 'attendance', 'approvals']
 const fallbackDashboardAccess = [{ code: 'overview', name: 'Overview Dashboard', description: 'Combined HR, payroll, attendance and approval summary.', route: '/dashboard', sortOrder: 10 }]
 const excelDashboardAccess = { code: 'excel-payslips', name: 'Excel Dashboard', description: 'Excel Payslips batches, salary totals and monthly trends.', route: '/dashboard/excel-payslips', sortOrder: 60 }
+const talentDashboardAccess = { code: 'recruitment', name: 'Talent Acquisition Dashboard', description: 'Hiring demand, candidates, interviews and recruitment SLA.', route: '/recruitment/dashboard', sortOrder: 70 }
 type RecruitmentNavigationLeaf = { view: RecruitmentPageView; label: string; icon: IconName; query?: string }
 type RecruitmentNavigationItem = RecruitmentNavigationLeaf | { key: string; label: string; icon: IconName; children: RecruitmentNavigationItem[] }
 const recruitmentNavigation: Array<{
@@ -99,8 +101,8 @@ const recruitmentNavigation: Array<{
           { view: 'Interview Queue', label: 'Schedule Interviews', icon: 'candidate' },
           { view: 'Interviews', label: 'Interview Tracker', icon: 'onboarding' },
           { key: 'mom-negotiation', label: 'MoM & Negotiation', icon: 'document', children: [
-            { view: 'MoM & Negotiation', label: 'MoM & stage documents', icon: 'document' },
             { view: 'MoM & Negotiation', label: 'Negotiation & approvals', icon: 'document', query: 'section=negotiation' },
+            { view: 'MoM & Negotiation', label: 'MoM & stage documents', icon: 'document' },
           ] },
           { view: 'Offers & Pre-Onboarding', label: 'Offers & Pre-boarding', icon: 'document' },
         ],
@@ -400,9 +402,11 @@ export default function SettingsApp() {
   const dashboardAccess = [...(currentUser?.dashboardAccess?.length ? currentUser.dashboardAccess : fallbackDashboardAccess)]
     .filter(item => item.code !== excelDashboardAccess.code || hasAnyPermission('reports.view'))
   if (hasAnyPermission('reports.view') && !dashboardAccess.some(item => item.code === excelDashboardAccess.code)) dashboardAccess.push(excelDashboardAccess)
+  const talentAccess = recruitmentDashboardAccess(currentUser?.permissions || [])
+  if ((talentAccess.positions || talentAccess.cases || talentAccess.requisitions || talentAccess.applications || talentAccess.interviews || talentAccess.offers) && !dashboardAccess.some(item => item.code === talentDashboardAccess.code)) dashboardAccess.push(talentDashboardAccess)
   if (!dashboardAccess.length) dashboardAccess.push(...fallbackDashboardAccess)
   dashboardAccess.sort((left, right) => left.sortOrder - right.sortOrder)
-  const activeDashboard = dashboardAccess.find(item => item.code === (isExcelDashboard ? excelDashboardAccess.code : dashboardView)) ?? dashboardAccess[0]
+  const activeDashboard = dashboardAccess.find(item => item.code === (mainModule === 'TalentAcquisition' ? talentDashboardAccess.code : isExcelDashboard ? excelDashboardAccess.code : dashboardView)) ?? dashboardAccess[0]
   const dashboardMenu: MenuProps = {
     items: dashboardAccess.map(item => ({ key: item.code, label: <div className="dashboard-switch-item"><strong>{item.name}</strong><small>{item.description}</small></div> })),
     selectedKeys: [activeDashboard.code],
@@ -410,7 +414,7 @@ export default function SettingsApp() {
       const item = dashboardAccess.find(option => option.code === key)
       if (!item) return
       setShowMyTasks(false)
-      setMainModule('Dashboard')
+      setMainModule(item.code === talentDashboardAccess.code ? 'TalentAcquisition' : 'Dashboard')
       navigate(item.route || '/dashboard')
     }
   }

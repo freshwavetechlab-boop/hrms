@@ -1,5 +1,7 @@
+import { recruitmentDuration, recruitmentJobSla } from '../utils/recruitmentSla'
 import RecruitmentMomSignature from './RecruitmentMomSignature'
 import RecruitmentMomActions from './RecruitmentMomActions'
+import { RecruitmentMomVersion } from './RecruitmentMomDetails'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import RecruitmentWorkOrderFields from './RecruitmentWorkOrderFields'
 import RecruitmentBatchCandidateEditor from './RecruitmentBatchCandidateEditor'
@@ -28,12 +30,9 @@ type PublishedPipelineSla = { id: number; pipelineName: string; versionNumber: n
 const blankWorkOrder = (clientId = 0): WorkOrderDraft => ({ id: 0, clientId, workOrderNumber: '', receivedAtUtc: new Date().toISOString().slice(0, 16), receivedFrom: '', subject: '', remarks: '', status: 'Active', overallSlaMinutes: 0, lines: [] })
 const dateTimeText = (value?: string | null) => value ? new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'Not set'
 const durationText = (minutes?: number | null) => minutes == null ? 'No target' : minutes === 0 ? 'Day 0' : `${(minutes / 1440).toFixed(minutes % 1440 ? 1 : 0)} days`
-const formatStageDuration = (seconds = 0) => { const total = Math.max(0, Math.floor(seconds)); const days = Math.floor(total / 86400); const hours = Math.floor((total % 86400) / 3600); const minutes = Math.floor((total % 3600) / 60); const remainingSeconds = total % 60; return `${days ? `${days}d ` : ''}${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}` }
-const remainingDuration = (dueAt: string | null | undefined, now: number) => {
-  if (!dueAt) return 'No overall due date'
-  const seconds = Math.round((new Date(dueAt).getTime() - now) / 1000)
-  return seconds < 0 ? `${formatStageDuration(Math.abs(seconds))} overdue` : `${formatStageDuration(seconds)} left`
-}
+const formatStageDuration = recruitmentDuration
+const remainingDuration = (job: RecruitmentHiringCase, now: number, syncedAt = now) => recruitmentJobSla(job, now, syncedAt).text
+
 const statusColor = (status: string) => status === 'Completed' ? 'green' : status === 'Active' ? 'blue' : status === 'On Hold' ? 'orange' : ['Cancelled', 'Rejected'].includes(status) ? 'red' : 'default'
 
 export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, clientScopeManaged = false, displayMode = 'pipeline', postInterview = false }: { initialClientId?: number; clientScopeManaged?: boolean; displayMode?: RecruitmentPipelineDisplayMode; postInterview?: boolean }) {
@@ -44,6 +43,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   const [clientId, setClientId] = useState(initialClientId)
   const [workOrders, setWorkOrders] = useState<RecruitmentWorkOrder[]>([])
   const [cases, setCases] = useState<RecruitmentHiringCase[]>([])
+  const [casesSyncedAt, setCasesSyncedAt] = useState(Date.now())
   const [draft, setDraft] = useState<WorkOrderDraft>(() => blankWorkOrder(initialClientId))
   const [editorOpen, setEditorOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -78,7 +78,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
 
   const load = async () => {
     const [orders, hiringCases] = await Promise.all([getRecruitmentWorkOrders(clientId), getRecruitmentHiringCases(clientId, true)])
-    setWorkOrders(orders); setCases(hiringCases)
+    setWorkOrders(orders); setCases(hiringCases); setCasesSyncedAt(Date.now())
   }
   useEffect(() => { void getClients().then(setClients) }, [])
   useEffect(() => { setClientId(initialClientId) }, [initialClientId])
@@ -307,7 +307,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     const rejectedByDivision = isDivisionRejectionOutcome(stage.outcomeCode)
     return {
       color: rejectedByDivision ? 'red' : stage.isSlaBreached ? 'orange' : stage.status === 'Completed' ? 'green' : stage.status === 'Active' ? 'blue' : 'gray',
-      children: <article className={stage.status === 'Active' ? 'active' : ''} data-testid={`hiring-stage-log-${stage.id}`}><div><Tag>{stage.stakeholderCode || 'No stakeholder'}</Tag><b>{stage.stageName}</b><span>{durationText(stage.targetOffsetMinutes)} target</span></div><p>{stage.status}{stage.outcomeCode ? ` · ${stage.outcomeCode}` : ''} · <b>{formatStageDuration(liveStageSeconds(stage))}</b> active time · due {dateTimeText(stage.dueAtUtc)}{stage.isPaused ? ' · SLA paused' : ''}</p>{rejectedByDivision && <Tag color="red">Rejected by Division</Tag>}{stage.isSlaBreached && <Tag color="orange">Business SLA breach</Tag>}{stage.pauseHistory.map(pauseRow => <small key={pauseRow.id}>Paused by {pauseRow.pausedByName} on {dateTimeText(pauseRow.pausedAtUtc)} — {pauseRow.reason}{pauseRow.resumedAtUtc ? ` · resumed ${dateTimeText(pauseRow.resumedAtUtc)}` : ' · still paused'}</small>)}</article>,
+      children: <article className={stage.status === 'Active' ? 'active' : ''} data-testid={`hiring-stage-log-${stage.id}`}><div><Tag>{stage.stakeholderCode || 'No stakeholder'}</Tag><b>{stage.stageName}</b><span>{durationText(stage.targetOffsetMinutes)} target</span></div><p>{stage.status}{stage.outcomeCode ? ` · ${stage.outcomeCode}` : ''} · <b>{formatStageDuration(liveStageSeconds(stage))}</b> active time · due {dateTimeText(stage.dueAtUtc)}{stage.isPaused ? ' · SLA paused' : ''}</p>{rejectedByDivision && <Tag color="red">Rejected by Division</Tag>}{stage.isSlaBreached && <Tag color="orange">Stage SLA breached</Tag>}{stage.pauseHistory.map(pauseRow => <small key={pauseRow.id}>Paused by {pauseRow.pausedByName} on {dateTimeText(pauseRow.pausedAtUtc)} — {pauseRow.reason}{pauseRow.resumedAtUtc ? ` · resumed ${dateTimeText(pauseRow.resumedAtUtc)}` : ' · still paused'}</small>)}</article>,
     }
   }) ?? []
   const caseEventItems = (selectedCase?.events ?? []).map(event => ({
@@ -384,7 +384,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
           { key: 'pipelineName', label: 'Pipeline', width: '190px' },
           { key: 'currentStageName', label: 'Current stage', width: '180px', render: row => row.currentStageName || 'Completed' },
           { key: 'currentStakeholderCode', label: 'Stakeholder', width: '160px', render: row => row.currentStakeholderCode || 'Unassigned' },
-          { key: 'overallDueAtUtc', label: 'Overall due', width: '170px', render: row => <div className="pipeline-table-candidate"><span>{dateTimeText(row.overallDueAtUtc)}</span>{row.status === 'Active' && <small><ClockCircleOutlined /> {remainingDuration(row.overallDueAtUtc, clockNow)}</small>}</div> },
+          { key: 'overallDueAtUtc', label: 'Overall due', width: '170px', render: row => <div className="pipeline-table-candidate"><span>{dateTimeText(row.overallDueAtUtc)}</span>{row.status === 'Active' && <small><ClockCircleOutlined /> {remainingDuration(row, clockNow, casesSyncedAt)}</small>}</div> },
           { key: 'status', label: 'Status', width: '110px', render: row => <Tag color={statusColor(row.status)}>{row.status}</Tag> },
 
         ]} /> },
@@ -428,7 +428,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
         {caseActionError && <Alert data-testid="hiring-case-action-error" showIcon closable type="error" message="Action could not be completed" description={caseActionError} onClose={() => setCaseActionError('')} />}
         {moveBlockedReason && selectedCase.advanceStatus !== 'Pending Approval' && <Alert data-testid="hiring-case-action-guidance" showIcon type="warning" message="Next action needed" description={moveBlockedReason} />}
         {selectedCase.advanceStatus === 'Pending Approval' && <Alert data-testid="hiring-case-approval-pending" showIcon type="info" message="Stage movement awaiting approval" description={selectedCase.advanceMessage || 'The configured approver can action this request from global My Tasks.'} />}
-        <div className="case-live-timers" data-testid="hiring-case-live-timers"><div><span>Current stage active time</span><b><ClockCircleOutlined /> {formatStageDuration(activeStageSeconds)}</b><small>{activeStage?.isPaused ? 'Paused — inactive time is excluded' : activeStage ? 'Live timer' : 'Journey completed'}</small></div><div><span>Overall SLA</span><b>{remainingDuration(selectedCase.overallDueAtUtc, clockNow)}</b><small>Anchored at {dateTimeText(selectedCase.slaAnchorAtUtc)}</small></div><Button icon={<HistoryOutlined />} onClick={() => setStageLogOpen(true)}>View stage history</Button></div>
+        <div className="case-live-timers" data-testid="hiring-case-live-timers"><div><span>Current stage active time</span><b><ClockCircleOutlined /> {formatStageDuration(activeStageSeconds)}</b><small>{activeStage?.isPaused ? 'Paused — inactive time is excluded' : activeStage ? 'Live timer' : 'Journey completed'}</small></div><div><span>Overall SLA</span><b>{remainingDuration(selectedCase, clockNow, caseSyncedAt)}</b><Tag color={!selectedCase.overallDueAtUtc ? 'default' : recruitmentJobSla(selectedCase, clockNow, caseSyncedAt).breached ? 'red' : 'green'}>{recruitmentJobSla(selectedCase, clockNow, caseSyncedAt).label}</Tag><small>Anchored at {dateTimeText(selectedCase.slaAnchorAtUtc)}</small></div><Button icon={<HistoryOutlined />} onClick={() => setStageLogOpen(true)}>View stage history</Button></div>
         <Card title="Documents for this stage" extra={<Tag color="purple">Stage requirements</Tag>}>
           <p className="work-order-document-guidance">Prepare one combined MoM for this job with its selected candidates and agreed terms. All assigned panel members sign the same MoM. Use a new version when terms change or HR returns it.</p>
           {!documentRequirements.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="This stage has no process-document requirement." />}
@@ -436,13 +436,13 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
             const latest = processDocuments.filter(row => row.pipelineStageId === requirement.pipelineStageId && row.documentType === requirement.documentType).slice(0, 1)
             return (latest.length ? latest : [undefined]).map(document => <div className="work-order-document" key={document?.id || requirement.id} data-testid={`hiring-document-${requirement.documentType}`}>
               <header className="work-order-document-header"><div><b><FileProtectOutlined /> {requirement.documentType.replaceAll('_', ' ')}{document?.applicationId ? ` - ${candidateApplications.find(row => row.id === document.applicationId)?.candidateName || `Application #${document.applicationId}`}` : ''}</b><span>{requirement.isRequired ? 'Required' : 'Optional'}{requirement.requiresSignature ? ' · signature required' : ''}</span></div><Space wrap className="work-order-document-actions">
-              {!document ? !['MOM', 'SIGNED_MOM'].includes(requirement.documentType) && <Button data-testid={`hiring-document-create-${requirement.documentType}`} loading={documentSaving} onClick={() => void prepareProcessDocument(requirement.documentType, requirement.templateId, requirement.pipelineStageId)}>Prepare</Button> : <Tag color={document.status === 'Signed' ? 'green' : 'blue'}>v{document.versionNumber} · {document.status}</Tag>}
+              {!document ? !['MOM', 'SIGNED_MOM'].includes(requirement.documentType) && <Button data-testid={`hiring-document-create-${requirement.documentType}`} loading={documentSaving} onClick={() => void prepareProcessDocument(requirement.documentType, requirement.templateId, requirement.pipelineStageId)}>Prepare</Button> : ['MOM', 'SIGNED_MOM'].includes(requirement.documentType) ? <RecruitmentMomVersion document={document} /> : <Tag color={document.status === 'Signed' ? 'green' : 'blue'}>v{document.versionNumber} · {document.status}</Tag>}
               {document && !['MOM', 'SIGNED_MOM'].includes(document.documentType) && requirement.templateId && document.status !== 'Signed' && <Button loading={documentSaving} onClick={() => void generateProcessDocument(document)}>{document.attachmentPublicId ? 'Regenerate PDF' : 'Generate PDF'}</Button>}
               {document && !['MOM', 'SIGNED_MOM'].includes(document.documentType) && requirement.requiresSignature && document.status !== 'Signed' && currentCohortDocument(document) && <Button data-testid={`hiring-document-sign-${requirement.documentType}`} onClick={() => void openSignature(document)}>Sign document</Button>}
               {document && !['MOM', 'SIGNED_MOM'].includes(document.documentType) && requirement.requiresSignature && document.status !== 'Signed' && (document.capturedSignaturesComplete || (!['MOM', 'SIGNED_MOM'].includes(document.documentType) && document.hasFinalSignedAttachment)) && <Button type="primary" onClick={() => void markProcessDocumentSigned(document)}>Finalize signed</Button>}
               {document && requirement.requiresSignature && document.status !== 'Signed' && <Tag color={document.capturedSignaturesComplete ? 'green' : 'orange'}>{document.signatureCount || 0}/{document.requiredSignatureCount ?? 0} signatures</Tag>}
               </Space></header>
-              {['MOM', 'SIGNED_MOM'].includes(requirement.documentType) && <RecruitmentMomActions document={document} clientId={selectedCase.clientId} hiringCaseId={selectedCase.id} pipelineStageId={requirement.pipelineStageId} documentType={requirement.documentType} templateId={requirement.templateId} onChanged={() => viewCase(selectedCase)} />}
+              {['MOM', 'SIGNED_MOM'].includes(requirement.documentType) && <RecruitmentMomActions document={document} clientId={selectedCase.clientId} hiringCaseId={selectedCase.id} pipelineStageId={requirement.pipelineStageId} documentType={requirement.documentType} templateId={requirement.templateId} job={{ jobName: selectedCase.positionName, jobStatus: selectedCase.status, workOrderNumber: selectedCase.workOrderNumber }} onChanged={() => viewCase(selectedCase)} />}
               {document && <EntityAttachmentPanel entityType="RECRUITMENT_PROCESS_DOCUMENT" entityId={document.id} clientId={selectedCase.clientId} moduleCode="RECRUITMENT" formCodes={['PROCESS_DOCUMENT']} title="Document file" description="Private, versioned storage with secure preview and download." singleFieldLabel={requirement.documentType.replaceAll('_', ' ')} singleFieldHelp={requirement.requiresSignature ? 'A PDF upload does not replace the required panel signatures.' : 'Upload the source document for this requirement. Use Generate PDF only when a template is configured.'} onChanged={() => void viewCase(selectedCase)} />}
             </div>)
           })}

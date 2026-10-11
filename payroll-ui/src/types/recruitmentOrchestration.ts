@@ -554,6 +554,8 @@ export type RecruitmentPipelineDemandCard = {
   enteredAtUtc?: string | null
   dueAtUtc?: string | null
   overallDueAtUtc?: string | null
+  overallSlaPaused?: boolean
+  completedAtUtc?: string | null
   activeDurationSeconds: number
   pausedDurationSeconds: number
   isPaused: boolean
