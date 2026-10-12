@@ -31,7 +31,8 @@ public sealed partial class ExcelPayslipPdfService
             else MakePlan(measure, batch, row);
     }
 
-    public byte[] Create(ExcelPayslipBatch batch, IReadOnlyList<ExcelPayslipRow> rows, bool includeSeal = true, int amountDecimalPlaces = 0)
+    public byte[] Create(ExcelPayslipBatch batch, IReadOnlyList<ExcelPayslipRow> rows, bool includeSeal = true, int amountDecimalPlaces = 0,
+        ExcelPayslipCalculationSource? calculationSource = null)
     {
         ArgumentNullException.ThrowIfNull(batch);
         ArgumentNullException.ThrowIfNull(rows);
@@ -50,7 +51,7 @@ public sealed partial class ExcelPayslipPdfService
             var page = document.AddPage();
             page.Size = PdfSharp.PageSize.A4;
             using var gfx = XGraphics.FromPdfPage(page);
-            if (batch.SimpleLayout) DrawSimplePage(gfx, batch, row, logo, seal, amountDecimalPlaces);
+            if (batch.SimpleLayout) DrawSimplePage(gfx, batch, row, logo, seal, amountDecimalPlaces, calculationSource);
             else DrawPage(gfx, batch, row, logo, seal, amountDecimalPlaces);
         }
         using var output = new MemoryStream();

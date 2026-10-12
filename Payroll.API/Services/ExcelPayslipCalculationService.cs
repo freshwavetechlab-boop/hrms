@@ -199,7 +199,7 @@ public static class ExcelPayslipCalculationService
         for (var n = columnIndex + 1; n > 0; n = (n - 1) / 26) letters = (char)('A' + (n - 1) % 26) + letters;
         return letters + row.ToString(CultureInfo.InvariantCulture);
     }
-    private static (int Column, int Row) ParseAddress(string address)
+    internal static (int Column, int Row) ParseAddress(string address)
     {
         var match = AddressPattern.Match(address);
         if (!match.Success) throw new InvalidOperationException($"Unsupported cell reference: {address}.");

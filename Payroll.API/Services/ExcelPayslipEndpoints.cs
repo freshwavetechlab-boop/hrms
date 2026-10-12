@@ -144,7 +144,8 @@ public static class ExcelPayslipEndpoints
             if (batch is null) return Results.NotFound(new { error = "Payslip batch not found." });
             var (rows, error) = ExcelPayslipRepository.SelectRows(batch, request);
             if (error is not null) return Results.BadRequest(new { error });
-            return Results.File(pdf.Create(batch, rows, request.IncludeSeal, request.AmountDecimalPlaces), "application/pdf", $"payslips-{batch.Month}.pdf");
+            var source = batch.SimpleLayout ? await repository.GetCalculationSourceAsync(clientId, id) : null;
+            return Results.File(pdf.Create(batch, rows, request.IncludeSeal, request.AmountDecimalPlaces, source), "application/pdf", $"payslips-{batch.Month}.pdf");
         }).WithName("ExportExcelPayslipPdf").WithOpenApi();
 
         routes.MapPost("/batches/{id}/send", async (ExcelPayslipRepository repository, int clientId, string id,

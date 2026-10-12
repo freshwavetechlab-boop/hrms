@@ -85,11 +85,13 @@ public class ExcelPayslipSimplePdfTests
         var text = Content(pdf.Pages[0]);
         foreach (var expected in new[] { "Salary Slip", "Employee Name", "Department", "Selected Client", "UAN", "Esic No", "Designation", "Account No",
             "IFSC Code", "Income", "Deductions", "Rate (Monthly)", "Earn Salary", "PF@12%", "ESIC@0.75%", "Deduction", "In Hand Salary",
-            "PF@13%: 2,004", "15,414", "1,850", "116", "1,965", "13,449",
+            "Employer Contributions", "Employer EPF (13%)", "Employer ESIC (3.25%)", "Total Employer Contributions",
+            "2,004", "501", "2,505", "Paid by the employer; does not reduce your In Hand Salary.",
+            "15,414", "1,850", "116", "1,965", "13,449",
             "GA DIGITAL WEB WORD (P) LTD", "HARGOBIND ENCLAVE", "DELHI-110092" })
             Assert.Contains(expected, text);
         foreach (var hidden in new[] { "HIDDEN-CODE-001", "Sample Tehsil", "Phone", "9999900001", "Bonus", "UAN (E)", "UAN (AB)",
-            "Total Earnings", "Employer Contributions", "ESIC@3.25%", "Rupees", "Employer Signature", "Rate/Day" })
+            "Total Earnings", "PF@13%:", "ESIC@3.25%", "Rupees", "Employer Signature", "Rate/Day" })
             Assert.DoesNotContain(hidden, text);
         Assert.Equal(15413.999999999998m, ExcelPayslipPdfService.TotalsFor(row).Gross); // Rate is informational, never a second earning.
         Assert.Equal(before, JsonSerializer.Serialize(batch));
@@ -99,7 +101,7 @@ public class ExcelPayslipSimplePdfTests
     }
 
     [Fact]
-    public void EarningsAndDeductionsRemainVisibleAndReferenceFooterPrintsOnlyEmployerPf()
+    public void EarningsAndDeductionsRemainVisibleAndFooterListsSavedEmployerContributions()
     {
         var row = Sample();
         row.Earnings.Add(new() { Label = "Arrears", Amount = -123.45m });
@@ -107,11 +109,11 @@ public class ExcelPayslipSimplePdfTests
         row.EmployerContributions.Add(new() { Label = "Insurance", Amount = 89.12m });
         using var pdf = Read(new ExcelPayslipPdfService().Create(Batch(row), [row], false, 2));
         var text = Content(pdf.Pages[0]);
-        foreach (var expected in new[] { "Arrears", "-123.45", "Recovery", "56.78", "PF@13%: 2,003.82" })
+        foreach (var expected in new[] { "Arrears", "-123.45", "Recovery", "56.78", "Employer EPF (13%)", "2,003.82",
+            "Employer ESIC (3.25%)", "500.96", "Insurance", "89.12", "Total Employer Contributions", "2,593.90" })
             Assert.Contains(expected, text);
         Assert.DoesNotContain("Bonus", text);
         Assert.DoesNotContain("ESIC@3.25%", text);
-        Assert.DoesNotContain("Insurance", text);
         Assert.Equal(500.95499999999998m, row.EmployerContributions[1].Amount);
         Assert.Equal(89.12m, row.EmployerContributions[2].Amount);
     }
@@ -207,6 +209,77 @@ public class ExcelPayslipSimplePdfTests
     }
 
     private static PdfDocument Read(byte[] bytes) => PdfReader.Open(new MemoryStream(bytes), PdfDocumentOpenMode.Import);
+
+    private static ExcelPayslipCalculationSource RateSource(decimal days = 30, string attendance = "30", string formula = "K6/$L$4*L6") => new()
+    {
+        Columns = [new() { ColumnIndex = 10, Kind = "info", Label = "Rate (Monthly)" },
+            new() { ColumnIndex = 11, Kind = "info", Label = "Attendance" },
+            new() { ColumnIndex = 12, Kind = "earning", Label = "Earn Salary" }],
+        Rows = [new() { SourceRow = 4, Cells = Enumerable.Range(0, 12).Select(i =>
+                (ExcelPayslipCalculationCell?)new ExcelPayslipCalculationCell { Value = i == 11 ? days.ToString(System.Globalization.CultureInfo.InvariantCulture) : "" }).ToList() },
+            new() { SourceRow = 6, Cells = Enumerable.Range(0, 13).Select(i =>
+                (ExcelPayslipCalculationCell?)new ExcelPayslipCalculationCell { Value = i == 10 ? "15414" : i == 11 ? attendance : "",
+                    FormulaText = i == 12 ? formula : null }).ToList() }]
+    };
+
+    [Theory]
+    [InlineData(30, "30", "513.80")]
+    [InlineData(31, "15", "497.23")]
+    [InlineData(28, "0", "550.50")]
+    public void DailyRateUsesSavedCalculationDaysRatherThanAttendance(int days, string attendance, string expected)
+    {
+        var row = Sample(); var source = RateSource(days, attendance);
+        var before = JsonSerializer.Serialize(source);
+        var rates = ExcelPayslipPdfService.SimpleRates(row, source, 2);
+        Assert.Equal("Rate/Day", Assert.Single(rates).Label);
+        Assert.Equal(expected, rates[0].Value);
+        Assert.Equal(before, JsonSerializer.Serialize(source));
+    }
+
+    [Theory]
+    [InlineData("K6/30*L6")]
+    [InlineData("=(K6/$L$4)*L6")]
+    [InlineData("$K$6 / $L$4 * $L$6")]
+    public void EquivalentDirectSalaryFormulasSupplyDailyRate(string formula)
+    {
+        Assert.Equal("513.80", Assert.Single(ExcelPayslipPdfService.SimpleRates(Sample(), RateSource(formula: formula), 2)).Value);
+    }
+
+    [Theory]
+    [InlineData(0, "K6/$L$4*L6")]
+    [InlineData(32, "K6/$L$4*L6")]
+    [InlineData(30, "K6/($L$4*L6)")]
+    [InlineData(30, "K7/$L$4*L6")]
+    [InlineData(30, "K6/$L$4*L7")]
+    public void UnverifiedDivisorKeepsHonestMonthlyLabel(int days, string formula)
+    {
+        var rate = Assert.Single(ExcelPayslipPdfService.SimpleRates(Sample(), RateSource(days, formula: formula), 2));
+        Assert.Equal("Rate (Monthly)", rate.Label);
+        Assert.Equal("15,414.00", rate.Value);
+    }
+
+    [Fact]
+    public void ExistingDailyRateIsNotDividedAgain()
+    {
+        var row = Sample(); row.Information[^1] = new() { Label = "Rate per day", Value = "513.8" };
+        var rate = Assert.Single(ExcelPayslipPdfService.SimpleRates(row, RateSource(), 2));
+        Assert.Equal("Rate/Day", rate.Label); Assert.Equal("513.80", rate.Value);
+    }
+
+    [Fact]
+    public void PdfShowsDailyRateAndPreservesSourceFinancialAmounts()
+    {
+        var row = Sample(); var batch = Batch(row); var source = RateSource();
+        var before = JsonSerializer.Serialize(batch);
+        using var pdf = Read(new ExcelPayslipPdfService().Create(batch, [row], false, 2, source));
+        var text = Content(pdf.Pages[0]);
+        Assert.Contains("Rate/Day", text); Assert.Contains("513.80", text);
+        Assert.DoesNotContain("Rate (Monthly)", text);
+        Assert.Contains("15,414.00", text); Assert.Contains("13,448.72", text);
+        Assert.Equal(before, JsonSerializer.Serialize(batch)); Assert.Single(pdf.Pages);
+        using var whole = Read(new ExcelPayslipPdfService().Create(batch, [row], false, 0, source));
+        Assert.Contains("514", Content(whole.Pages[0]));
+    }
     private static string Content(PdfPage page) => Encoding.Latin1.GetString(page.Contents.CreateSingleContent().Stream.UnfilteredValue)
         .Replace("\\(", "(").Replace("\\)", ")");
 }

@@ -8,11 +8,27 @@ namespace Payroll.API.Services;
 public sealed partial class ExcelPayslipPdfService
 {
     private static readonly XBrush SimpleBand = new XSolidBrush(XColor.FromArgb(211, 145, 145));
+    private const string EmployerNote = "Paid by the employer; does not reduce your In Hand Salary.";
+    private const double EmployerWidth = Width * .65;
     internal sealed record SimpleField(string Label, string Value);
     private sealed record SimplePlan(double Size, IReadOnlyList<SimpleField> Information, double[] InformationHeights,
         IReadOnlyList<SimpleField> Income, IReadOnlyList<SimpleField> Deductions, double[] MoneyHeights,
-        IReadOnlyList<SimpleField> Employer, double FooterHeight);
+        IReadOnlyList<SimpleField> Employer, double[] EmployerHeights, decimal EmployerTotal,
+        double EmployerTotalHeight, double FooterHeight, double FooterNoteHeight);
     private static string FieldKey(string label) => Regex.Replace(label.ToLowerInvariant(), "[^a-z0-9]", "");
+
+    private static string EmployerLabel(string label)
+    {
+        var key = FieldKey(label);
+        var name = key.StartsWith("pf", StringComparison.Ordinal) || key.StartsWith("epf", StringComparison.Ordinal)
+            || key.StartsWith("employerpf", StringComparison.Ordinal) || key.StartsWith("employerepf", StringComparison.Ordinal)
+            || key.Contains("providentfund", StringComparison.Ordinal) ? "Employer EPF"
+            : key.StartsWith("esi", StringComparison.Ordinal) || key.StartsWith("employeresi", StringComparison.Ordinal)
+                ? "Employer ESIC" : null;
+        if (name is null) return label;
+        var percentage = Regex.Match(label, @"\d+(?:\.\d+)?\s*%");
+        return percentage.Success ? $"{name} ({percentage.Value})" : name;
+    }
 
     internal static IReadOnlyList<SimpleField> SimpleInformation(ExcelPayslipBatch batch, ExcelPayslipRow row)
     {
@@ -29,18 +45,85 @@ public sealed partial class ExcelPayslipPdfService
         ];
     }
 
-    private static SimplePlan MakeSimplePlan(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, int decimals = 2)
+    internal static IReadOnlyList<SimpleField> SimpleRates(ExcelPayslipRow row, ExcelPayslipCalculationSource? source, int decimals)
+    {
+        return row.Information.Where(item => FieldKey(item.Label) is "rate" or "ratemonthly" or "monthlyrate" or "rateday" or "rateperday" or "dailyrate")
+            .Select(item =>
+            {
+                var key = FieldKey(item.Label);
+                var daily = key is "rateday" or "rateperday" or "dailyrate";
+                var numeric = decimal.TryParse(item.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var rate);
+                if (!daily && numeric && TryRateDays(source, row, item.Label, rate, out var days))
+                {
+                    rate /= days;
+                    daily = true;
+                }
+                var label = daily ? "Rate/Day" : key is "ratemonthly" or "monthlyrate" ? "Rate (Monthly)" : "Rate";
+                return new SimpleField(label, numeric ? Amount(rate, decimals) : item.Value);
+            }).ToArray();
+    }
+
+    // Recognize the saved monthly-rate / calculation-days * attendance formula.
+    // Do not guess calendar days or divide by attendance (which may be partial or zero).
+    private static bool TryRateDays(ExcelPayslipCalculationSource? source, ExcelPayslipRow row, string label, decimal rate, out decimal days)
+    {
+        days = 0;
+        if (source is null) return false;
+        var rateColumns = source.Columns.Where(c => c.Kind == "info" && c.Label == label).ToArray();
+        if (rateColumns.Length != 1) return false;
+        var rateAddress = ExcelPayslipCalculationService.Address(rateColumns[0].ColumnIndex, row.SourceRow);
+        var sourceRow = source.Rows.FirstOrDefault(r => r.SourceRow == row.SourceRow);
+        if (sourceRow is null) return false;
+        ExcelPayslipCalculationCell? Cell(int column, int number) => source.Rows.FirstOrDefault(r => r.SourceRow == number)?.Cells.ElementAtOrDefault(column);
+        bool Number(ExcelPayslipCalculationCell? cell, out decimal value)
+        {
+            value = 0;
+            return cell is { Error: null, CalculationError: null, MissingCachedValue: false }
+                && decimal.TryParse(cell.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out value);
+        }
+        bool Address(string reference, out (int Column, int Row) address)
+        {
+            address = default;
+            try { address = ExcelPayslipCalculationService.ParseAddress(reference); return true; }
+            catch (InvalidOperationException) { return false; }
+            catch (OverflowException) { return false; }
+        }
+        if (!Number(Cell(rateColumns[0].ColumnIndex, row.SourceRow), out var savedRate) || savedRate != rate) return false;
+        var divisors = new List<decimal>();
+        foreach (var column in source.Columns.Where(c => c.Kind == "earning"))
+        {
+            var formula = sourceRow.Cells.ElementAtOrDefault(column.ColumnIndex)?.FormulaText;
+            if (string.IsNullOrWhiteSpace(formula)) continue;
+            var match = Regex.Match(formula,
+                @"^\s*=?\s*(?<open>\()?\s*(?<rate>\$?[A-Z]{1,3}\$?[1-9][0-9]*)\s*/\s*(?<days>\$?[A-Z]{1,3}\$?[1-9][0-9]*|[0-9]+(?:\.[0-9]+)?)\s*(?(open)\))\s*\*\s*(?<attendance>\$?[A-Z]{1,3}\$?[1-9][0-9]*)\s*$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (!match.Success || match.Groups["rate"].Value.Replace("$", "").ToUpperInvariant() != rateAddress) continue;
+            if (!Address(match.Groups["attendance"].Value, out var attendance)) continue;
+            if (attendance.Row != row.SourceRow || !source.Columns.Any(c => c.ColumnIndex == attendance.Column && c.Kind == "info")) continue;
+            var divisor = match.Groups["days"].Value;
+            decimal value;
+            if (!decimal.TryParse(divisor, NumberStyles.Number, CultureInfo.InvariantCulture, out value))
+            {
+                if (!Address(divisor, out var address)) continue;
+                if (!Number(Cell(address.Column, address.Row), out value)) continue;
+            }
+            if (value is > 0 and <= 31) divisors.Add(value);
+        }
+        if (divisors.Count == 0 || divisors.Distinct().Count() != 1) return false;
+        days = divisors[0];
+        return true;
+    }
+
+    private static SimplePlan MakeSimplePlan(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, int decimals = 2,
+        ExcelPayslipCalculationSource? calculationSource = null)
     {
         var information = SimpleInformation(batch, row);
-        var income = row.Information.Where(item => FieldKey(item.Label) is "rate" or "ratemonthly" or "monthlyrate" or "rateday" or "rateperday" or "dailyrate")
-            .Select(item => new SimpleField(FieldKey(item.Label) switch { "ratemonthly" or "monthlyrate" => "Rate (Monthly)", "rateday" or "rateperday" or "dailyrate" => "Rate/Day", _ => "Rate" },
-                decimal.TryParse(item.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var rate) ? Amount(rate, decimals) : item.Value)).ToList();
+        var income = SimpleRates(row, calculationSource, decimals).ToList();
         income.AddRange(row.Earnings.Where(item => item.Amount != 0).Select(item => new SimpleField(FieldKey(item.Label) is "wages" or "earnedwages" ? "Earn Salary" : item.Label, Amount(item.Amount, decimals))));
         var deductions = row.Deductions.Where(item => item.Amount != 0).Select(item => new SimpleField(item.Label, Amount(item.Amount, decimals))).ToList();
-        var employer = row.EmployerContributions.Where(item => item.Amount != 0 &&
-            (FieldKey(item.Label).StartsWith("pf", StringComparison.Ordinal) || FieldKey(item.Label).StartsWith("epf", StringComparison.Ordinal) ||
-             FieldKey(item.Label).StartsWith("employerpf", StringComparison.Ordinal) || FieldKey(item.Label).Contains("providentfund", StringComparison.Ordinal)))
-            .Select(item => new SimpleField(item.Label, Amount(item.Amount, decimals))).ToList();
+        var employerAmounts = row.EmployerContributions.Where(item => item.Amount != 0).ToList();
+        var employer = employerAmounts.Select(item => new SimpleField(EmployerLabel(item.Label), Amount(item.Amount, decimals))).ToList();
+        var employerTotal = employerAmounts.Sum(item => item.Amount);
         for (var size = 11d; size >= 7; size -= .5)
         {
             double Height(string text, double width, bool bold = false) => Math.Max(1, Wrap(gfx, text, Font(size, bold), width).Count) * size * 1.36 + 12;
@@ -51,16 +134,21 @@ public sealed partial class ExcelPayslipPdfService
             var moneyHeights = Enumerable.Range(0, Math.Max(4, Math.Max(income.Count, deductions.Count))).Select(index =>
                 Math.Max(28, Math.Max(index < income.Count ? MoneyHeight(income[index]) : 0,
                     index < deductions.Count ? MoneyHeight(deductions[index]) : 0))).ToArray();
-            var footerHeight = Math.Max(126, employer.Sum(field => Height(field.Label + ": " + field.Value, Width / 2 - 14, true)));
-            if (Top + HeaderHeight + 25 + infoHeights.Sum() + 14 + 52 + moneyHeights.Sum() + 28 + 30 + footerHeight <= Bottom)
-                return new(size, information, infoHeights, income, deductions, moneyHeights, employer, footerHeight);
+            var employerHeights = employer.Select(field => Math.Max(28, Height(field.Label, EmployerWidth - 103, true))).ToArray();
+            var employerTotalHeight = Math.Max(28, Height("Total Employer Contributions", EmployerWidth - 103, true));
+            var footerHeight = Math.Max(76, 26 + employerHeights.Sum() + employerTotalHeight);
+            var noteHeight = Wrap(gfx, EmployerNote, Font(8), Width - 14).Count * 8 * 1.36 + 12;
+            if (Top + HeaderHeight + 25 + infoHeights.Sum() + 14 + 52 + moneyHeights.Sum() + 28 + 30 + footerHeight + noteHeight + 26 <= Bottom)
+                return new(size, information, infoHeights, income, deductions, moneyHeights, employer, employerHeights,
+                    employerTotal, employerTotalHeight, footerHeight, noteHeight);
         }
         throw new InvalidOperationException($"Excel row {row.SourceRow} has too much text to fit legibly on one simple salary slip. Shorten visible labels or reduce mapped components.");
     }
 
-    private static void DrawSimplePage(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, XImage logo, XImage? seal, int decimals)
+    private static void DrawSimplePage(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, XImage logo, XImage? seal, int decimals,
+        ExcelPayslipCalculationSource? calculationSource)
     {
-        var plan = MakeSimplePlan(gfx, batch, row, decimals);
+        var plan = MakeSimplePlan(gfx, batch, row, decimals, calculationSource);
         var bold = Font(plan.Size, true);
         DrawBrandingHeader(gfx, logo);
         var y = Top + HeaderHeight;
@@ -85,7 +173,7 @@ public sealed partial class ExcelPayslipPdfService
         {
             var x = Left + side * Width / 2;
             Box(x, Width / 2 - 89, 26, "Particulars", fill: Pink);
-            Box(x + Width / 2 - 89, 89, 26, "Amount", fill: Pink);
+            Box(x + Width / 2 - 89, 89, 26, "Amount", centered: true, fill: Pink);
         }
         y += 26;
         for (var index = 0; index < plan.MoneyHeights.Length; index++)
@@ -100,17 +188,32 @@ public sealed partial class ExcelPayslipPdfService
         Box(Left, Width - 140, 30, "In Hand Salary", centered: true, fill: SimpleBand);
         Box(Left + Width - 140, 140, 30, "");
         Money(gfx, row.NetPay, bold, Left + Width - 133, y + 5, 126, 20, decimals); y += 30;
-        Box(Left, Width / 2, plan.FooterHeight, ""); Box(Left + Width / 2, Width / 2, plan.FooterHeight, "");
-        var employerY = y;
-        foreach (var field in plan.Employer)
+        var footerY = y;
+        Box(Left, EmployerWidth, plan.FooterHeight, "");
+        Box(Left + EmployerWidth, Width - EmployerWidth, plan.FooterHeight, "");
+        Box(Left, EmployerWidth - 89, 26, "Employer Contributions", fill: Pink);
+        Box(Left + EmployerWidth - 89, 89, 26, "Amount", centered: true, fill: Pink); y += 26;
+        for (var index = 0; index < plan.Employer.Count; index++)
         {
-            var text = field.Label + ": " + field.Value;
-            var height = Wrap(gfx, text, bold, Width / 2 - 14).Count * plan.Size * 1.36 + 12;
-            Text(gfx, text, bold, Left + 7, employerY + 6, Width / 2 - 14, height - 12); employerY += height;
+            EmployerCells(plan.Employer[index], plan.EmployerHeights[index]);
+            y += plan.EmployerHeights[index];
         }
-        if (seal is not null) Image(gfx, seal, Left + Width / 2 + 47, y + 8, Width / 2 - 94, plan.FooterHeight - 16);
-        else gfx.DrawString("This is a system-generated payslip and does not require a signature.", Font(8), XBrushes.Gray,
-            new XRect(Left, y + plan.FooterHeight + 8, Width, 18), XStringFormats.TopCenter);
+        EmployerCells(new("Total Employer Contributions", Amount(plan.EmployerTotal, decimals)), plan.EmployerTotalHeight, Pink);
+        if (seal is not null) Image(gfx, seal, Left + EmployerWidth + 12, footerY + 8, Width - EmployerWidth - 24, plan.FooterHeight - 16);
+        y = footerY + plan.FooterHeight;
+        Box(Left, Width, plan.FooterNoteHeight, "", fill: Pale);
+        Text(gfx, EmployerNote, Font(8), Left + 7, y + 6, Width - 14, plan.FooterNoteHeight - 12);
+        y += plan.FooterNoteHeight;
+        if (seal is null) gfx.DrawString("This is a system-generated payslip and does not require a signature.", Font(8), XBrushes.Gray,
+            new XRect(Left, y + 8, Width, 18), XStringFormats.TopCenter);
+
+        void EmployerCells(SimpleField field, double height, XBrush? fill = null)
+        {
+            Box(Left, EmployerWidth - 89, height, field.Label, fill: fill);
+            Box(Left + EmployerWidth - 89, 89, height, "", fill: fill);
+            if (decimal.TryParse(field.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var value))
+                Money(gfx, value, bold, Left + EmployerWidth - 82, y + 5, 75, height - 10, decimals);
+        }
 
         void Box(double x, double width, double height, string text, bool centered = false, XBrush? fill = null)
         {

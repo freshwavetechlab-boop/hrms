@@ -177,10 +177,12 @@ CAST(send_state_json AS CHAR) AS SendStateJson FROM excel_payslip_batches WHERE 
         var state = stored is null ? null : JsonSerializer.Deserialize<ExcelPayslipSendState>(stored.SendStateJson, ExcelPayslipRepository.JsonOptions);
         if (batch is null || state?.Deliveries is null || !state.Deliveries.TryGetValue(ids[1], out var document) || document is null)
             throw new InvalidOperationException("The queued Excel payslip batch or delivery information is unavailable.");
-        AttachExcelPayslipPdf(builder, row, document, batch);
+        var source = batch.SimpleLayout ? await ExcelPayslipRepository.ReadCalculationSourceAsync(db, clientId, batch.Id) : null;
+        AttachExcelPayslipPdf(builder, row, document, batch, source);
     }
 
-    internal static void AttachExcelPayslipPdf(BodyBuilder builder, NotificationQueueItem row, ExcelPayslipMailDocument document, ExcelPayslipBatch batch)
+    internal static void AttachExcelPayslipPdf(BodyBuilder builder, NotificationQueueItem row, ExcelPayslipMailDocument document, ExcelPayslipBatch batch,
+        ExcelPayslipCalculationSource? calculationSource = null)
     {
         var recipients = ReadEmailArray(row.ToJson);
         if (row.EventCode != ExcelPayslipEvent || row.ResourceType != "ExcelPayslipBatch" || document.QueueId != row.Id || document.ClientId != row.ClientId
@@ -191,7 +193,7 @@ CAST(send_state_json AS CHAR) AS SendStateJson FROM excel_payslip_batches WHERE 
         if (!ExcelPayslipBatchHash(batch).Equals(document.BatchSha256, StringComparison.Ordinal)) throw new InvalidOperationException("The saved payslip batch failed its integrity check.");
         var (selected, selectionError) = ExcelPayslipRepository.SelectRows(batch, new() { RowIds = document.RowIds, AmountDecimalPlaces = document.AmountDecimalPlaces, AcknowledgeWarnings = true });
         if (selectionError is not null) throw new InvalidOperationException(selectionError);
-        var pdf = new ExcelPayslipPdfService().Create(batch, selected, document.IncludeSeal, document.AmountDecimalPlaces);
+        var pdf = new ExcelPayslipPdfService().Create(batch, selected, document.IncludeSeal, document.AmountDecimalPlaces, calculationSource);
         if (ValidateExcelPayslipPdf(pdf) is string error) throw new InvalidOperationException(error);
         builder.Attachments.Add(document.FileName, pdf, new ContentType("application", "pdf"));
         EmbedExcelPayslipImages(builder);
