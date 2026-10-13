@@ -391,15 +391,17 @@ WHERE batches.client_id=@ClientId AND codes.employee_code IS NOT NULL AND TRIM(c
         var statuses = BuildDeliveryStatuses(batch, state, await ReadDeliveryQueueAsync(db, clientId, state, tx));
         var reviewed = ReviewDeliverySelection(selected, request, statuses);
         NotificationTemplate? mailTemplate = null;
+        ExcelPayslipCalculationSource? pdfSource = null;
         var dispatched = await DispatchDeliverySelectionAsync(selected, request, reviewed,
             async () =>
             {
                 if (await notifications.ExcelPayslipDeliveryReadyAsync(db, tx) is string readyError) return readyError;
                 mailTemplate = await NotificationRepository.ReadExcelPayslipTemplateAsync(db, tx);
+                if (batch.SimpleLayout) pdfSource = await ReadCalculationSourceAsync(db, clientId, batchId, tx);
                 return null;
             }, async (rows, email) =>
             {
-                var pdf = pdfService.Create(batch, rows, request.IncludeSeal, request.AmountDecimalPlaces);
+                var pdf = pdfService.Create(batch, rows, request.IncludeSeal, request.AmountDecimalPlaces, pdfSource);
                 if (NotificationRepository.ValidateExcelPayslipPdf(pdf) is string pdfError) return pdfError;
                 var delivery = await notifications.QueueExcelPayslipPdfAsync(db, tx, batch, rows, email, pdf, requestId, actor, request.IncludeSeal, request.AmountDecimalPlaces, mailTemplate!);
                 state.Deliveries.Add(delivery.Id, delivery);
