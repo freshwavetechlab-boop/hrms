@@ -143,6 +143,9 @@ builder.Services.AddSingleton<LocalEmbedder>();
 builder.Services.AddSingleton<RecruitmentSemanticScoringService>();
 builder.Services.AddSingleton<RecruitmentDocumentRagService>();
 builder.Services.AddSingleton<RecruitmentAiScoringService>();
+builder.Services.AddSingleton<PayrollAdvisorService>();
+builder.Services.AddSingleton<PayrollAdvisorRepository>();
+builder.Services.AddHostedService<PayrollAdvisorWorker>();
 builder.Services.AddSingleton<PortableIntegrationCredentialProtector>();
 builder.Services.AddSingleton<TemplatePdfService>();
 builder.Services.AddSingleton<BrandedOfferPdfService>();
@@ -3256,7 +3259,8 @@ app.MapGet("/api/reports/{code}", async (ReportingRepository repository, string 
     if (!HasPermission(context, "reports.view")) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (!CanAccessClient(context, clientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
-    return Results.Ok(await repository.RunAsync(code, new ReportFilter { ClientId = clientId, EmploymentType = string.IsNullOrWhiteSpace(employmentType) ? null : employmentType.Trim(), EmployeeCategory = string.IsNullOrWhiteSpace(employeeCategory) ? null : employeeCategory.Trim(), ActiveOnly = activeOnly == true, Department = department, WorkLocationId = workLocationId, FromDate = fromDate, ToDate = toDate, Month = month, PayRunId = payRunId, EmployeeId = employeeId, ComponentCode = componentCode }));
+    try { return Results.Ok(await repository.RunAsync(code, new ReportFilter { ClientId = clientId, EmploymentType = string.IsNullOrWhiteSpace(employmentType) ? null : employmentType.Trim(), EmployeeCategory = string.IsNullOrWhiteSpace(employeeCategory) ? null : employeeCategory.Trim(), ActiveOnly = activeOnly == true, Department = department, WorkLocationId = workLocationId, FromDate = fromDate, ToDate = toDate, Month = month, PayRunId = payRunId, EmployeeId = employeeId, ComponentCode = componentCode })); }
+    catch (InvalidOperationException exception) { return Results.BadRequest(new { error = exception.Message }); }
 })
 .WithName("RunReport")
 .WithOpenApi();
@@ -3334,6 +3338,8 @@ app.MapGet("/api/setup", async (SettingsRepository repository, HttpContext conte
 
 app.MapPost("/api/setup", async (SettingsRepository repository, JsonElement setup, HttpContext context) =>
 {
+    try
+    {
     if (HasPermission(context, "settings.manage"))
         await repository.SaveAsync(setup.GetRawText());
     else if (CurrentUser(context).ClientId is int clientId && HasPermission(context, "client.settings.manage"))
@@ -3341,6 +3347,8 @@ app.MapPost("/api/setup", async (SettingsRepository repository, JsonElement setu
     else
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     return Results.Ok(setup);
+    }
+    catch (InvalidOperationException exception) { return Results.BadRequest(new { error = exception.Message }); }
 })
 .WithName("SavePayrollSetup")
 .WithOpenApi();
@@ -3603,6 +3611,8 @@ app.MapDelete("/api/recruitment-admin/ai-scoring/{clientId:int}", async (Recruit
 });
 
 app.MapLocalLlmRecovery();
+app.MapPayrollAdvisor();
+app.MapPayrollCalculation();
 app.MapGet("/api/integrations/ai", async (RecruitmentAiScoringService service, HttpContext context) =>
     HasPermission(context, "settings.manage") ? Results.Ok(await service.GetGlobalPoolAsync(CurrentUser(context))) : Results.StatusCode(403));
 app.MapPost("/api/integrations/ai", async (RecruitmentAiScoringService service, SaveRecruitmentAiScoringSettings request, HttpContext context) =>
@@ -3642,7 +3652,13 @@ app.MapPost("/api/tax-engine/slabs", async (TaxEngineRepository repository, TaxS
 app.MapPost("/api/tax-engine/surcharges", async (TaxEngineRepository repository, TaxSurcharge request, HttpContext context) => HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.SaveSurchargeAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
 app.MapPost("/api/tax-engine/final-adjustments", async (TaxEngineRepository repository, TaxFinalAdjustment request, HttpContext context) => HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.SaveFinalAdjustmentAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
 app.MapPost("/api/tax-engine/sections", async (TaxEngineRepository repository, TaxDeclarationSection request, HttpContext context) => HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.SaveSectionAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
-app.MapPost("/api/tax-engine/compute", async (TaxEngineRepository repository, TaxComputationRequest request, HttpContext context) => HasPermission(context, "payroll.run") || HasPermission(context, "settings.manage") ? Results.Ok(await repository.ComputeAsync(request)) : Results.StatusCode(403));
+app.MapPost("/api/tax-engine/compute", async (TaxEngineRepository repository, TaxComputationRequest request, HttpContext context) =>
+{
+    if (!(HasPermission(context, "payroll.run") || HasPermission(context, "settings.manage")) || !CanAccessClient(context, request.ClientId)) return Results.StatusCode(403);
+    if (request.PayRunId is > 0) return Results.BadRequest(new { error = "Payroll-linked tax snapshots can only be created by the payroll engine." });
+    try { return Results.Ok(await repository.ComputeAsync(request)); }
+    catch (Exception exception) when (exception is InvalidOperationException or FormatException) { return Results.BadRequest(new { error = exception.Message }); }
+});
 app.MapGet("/api/tax-engine/employee-profiles/{employeeId:int}", async (TaxEngineRepository repository, int employeeId, string? financialYear, HttpContext context) => HasPermission(context, "payroll.run") || HasPermission(context, "settings.manage") ? await repository.GetEmployeeTaxProfileAsync(employeeId, financialYear ?? "") is { } profile ? Results.Ok(profile) : Results.NotFound(new { error = "Employee tax profile not found." }) : Results.StatusCode(403));
 app.MapPost("/api/tax-engine/employee-profiles", async (TaxEngineRepository repository, EmployeeTaxProfile request, HttpContext context) =>
 {
@@ -3762,6 +3778,9 @@ app.MapPost("/api/leave-attendance/attendance-settings", async (LeaveAttendanceR
 .WithName("SaveAttendanceSettings")
 .WithOpenApi();
 
+app.MapAttendanceRoster((context, clientId) => clientId > 0 && CanAccessClient(context, clientId) && (HasAttendanceManagement(context) || HasClientSettingsManagement(context, clientId)),
+    (context, clientId) => clientId > 0 && CanAccessClient(context, clientId) && (HasPermission(context, "attendance.manage") || HasClientSettingsManagement(context, clientId)));
+
 app.MapGet("/api/leave-attendance/shifts", async (LeaveAttendanceRepository repository, int clientId, HttpContext context) =>
     clientId <= 0 ? Results.BadRequest(new { error = "Select a client." })
     : !CanAccessClient(context, clientId) || !(HasClientSettingsManagement(context, clientId) || HasAttendanceManagement(context)) ? Results.StatusCode(403)
@@ -3786,7 +3805,7 @@ app.MapPut("/api/leave-attendance/shifts/{id:int}", async (LeaveAttendanceReposi
 app.MapDelete("/api/leave-attendance/shifts/{id:int}", async (LeaveAttendanceRepository repository, int id, int clientId, HttpContext context) =>
 {
     if (!HasClientSettingsManagement(context, clientId)) return Results.StatusCode(403);
-    return await repository.DeactivateShiftAsync(id, clientId) ? Results.NoContent() : Results.NotFound();
+    return await repository.DeactivateShiftAsync(id, clientId) ? Results.NoContent() : Results.BadRequest(new { error = "Shift is missing or used by a punch-based policy/roster. Referenced shifts are protected; create a new version for future assignments." });
 }).WithName("DeactivateAttendanceShift").WithOpenApi();
 
 app.MapGet("/api/leave-attendance/geo-fences", async (LeaveAttendanceRepository repository, int clientId, string? scopeType, HttpContext context) =>
@@ -4612,8 +4631,12 @@ app.MapPost("/api/pay-runs/{id:int}/submit", async (PayRunRepository repository,
     var existing = await repository.GetAsync(id);
     if (existing is null) return Results.NotFound(new { error = "Pay run not found." });
     if (!CanAccessClient(context, existing.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
-    var payRun = await repository.SubmitForApprovalAsync(id);
-    return payRun is null ? Results.BadRequest(new { error = "Only draft pay runs can be locked and sent for approval." }) : Results.Ok(payRun);
+    try
+    {
+        var payRun = await repository.SubmitForApprovalAsync(id);
+        return payRun is null ? Results.BadRequest(new { error = "Only draft pay runs can be locked and sent for approval." }) : Results.Ok(payRun);
+    }
+    catch (InvalidOperationException exception) { return Results.BadRequest(new { error = exception.Message }); }
 })
 .WithName("SubmitPayRunForApproval")
 .WithOpenApi();
@@ -4627,10 +4650,14 @@ app.MapPost("/api/pay-runs/{id:int}/approve", async (PayRunRepository repository
     if (!CanAccessClient(context, existing.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var workflowId = await workflows.GetDefaultIdForActivityAsync("PAYRUN.SUBMIT", existing.ClientId);
     var state = await workflows.GetResourceStateAsync("PayRun", id.ToString());
-    if (workflowId is not null && existing.Status == "Pending Approval" && state?.CurrentState == "Pending")
-        return Results.BadRequest(new { error = "This payroll is under workflow approval. Approve it from My Tasks." });
-    var payRun = await repository.ApproveAsync(id);
-    return payRun is null ? Results.BadRequest(new { error = "Only draft or pending approval pay runs can be approved." }) : Results.Ok(payRun);
+    if (workflowId is not null && (existing.Status != "Pending Approval" || state?.CurrentState != "Approved"))
+        return Results.BadRequest(new { error = "This payroll requires workflow approval. Submit it, then complete approval from My Tasks." });
+    try
+    {
+        var payRun = await repository.ApproveAsync(id);
+        return payRun is null ? Results.BadRequest(new { error = "Submit a draft pay run before approving it." }) : Results.Ok(payRun);
+    }
+    catch (InvalidOperationException exception) { return Results.BadRequest(new { error = exception.Message }); }
 })
 .WithName("ApprovePayRun")
 .WithOpenApi();

@@ -19,7 +19,8 @@ import { employee0, setup0 } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
 import { deleteEmployee as removeEmployee, getDropdowns, getEmployeeDeletePreview, getEmployeeImportJob, getEmployeeInfotypes, getEmployeeManagerUsers, getSetup, getWorkLocations, preflightEmployeeImport, processEmployeeAction, saveEmployee as persistEmployee, startEmployeeImport, type EmployeeImportDecision, type EmployeeImportPreflight } from '../services/settingsService'
 import type { Client, Component, Drop, Employee, EmployeeActionRequest, EmployeeInfotypeRecord, EmployeePaymentDetails, EmployeePersonalDetails, Setup, Structure, WorkLocation, WorkflowApprover } from '../types/payroll'
-import { calculateSalaryJson, calculateSalaryTotals, canOverrideSalaryComponent, money } from '../utils/salary'
+import { calculateSalaryDetails, calculateSalaryJson, calculateSalaryTotals, canOverrideSalaryComponent, hasDailyRateComponents, money } from '../utils/salary'
+import SalaryFieldHelp from '../components/SalaryFieldHelp'
 import { parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules, type ImportPreviewSheet } from '../utils/importPreview'
 import { buildXlsxBlob } from '../utils/xlsx'
 import { safeJsonRecord } from '../shared/json'
@@ -101,7 +102,8 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const chosenStructure = setup.salaryStructures.find(item => String(item.id) === employee.salaryStructureId) ?? clientStructure
   const rawEmployeeSalary = salaryRecord(employee)
   const structureLineIds = chosenStructure?.lines.map(line => line.componentId) ?? []
-  const employeeSalary = chosenStructure && employee.annualCtc ? safeJsonRecord(calculateSalaryJson(employee.annualCtc, setup.salaryComponents, chosenStructure, salaryOverrides)) : rawEmployeeSalary
+  const dailyRateSalary = hasDailyRateComponents(setup.salaryComponents, chosenStructure)
+  const employeeSalary = chosenStructure && (employee.annualCtc || dailyRateSalary) ? safeJsonRecord(calculateSalaryJson(employee.annualCtc, setup.salaryComponents, chosenStructure, salaryOverrides)) : rawEmployeeSalary
   const structureComponents = setup.salaryComponents.filter(component => component.active && structureLineIds.includes(String(component.id))).sort((a, b) => structureLineIds.indexOf(String(a.id)) - structureLineIds.indexOf(String(b.id)) || Number(a.priority) - Number(b.priority))
   const masterValues = (type: string) => [...new Set(drops.filter(item => item.type === type && item.isActive && (!item.clientId || item.clientId === employee.clientId)).map(item => item.value))]
   const deps = masterValues('Department'), desigs = masterValues('Designation')
@@ -122,20 +124,21 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const calcSalary = (ctc: number, salaryStructure = chosenStructure, overrides: Record<string, string | number> = {}) => calculateSalaryJson(ctc, setup.salaryComponents, salaryStructure, overrides)
   const withSalary = (row: Employee, salaryJson: string): Employee => ({ ...row, salaryJson, salaryComponents: numberRecord(salaryJson) })
   const inferSalaryOverrides = (row: Employee, salaryStructure?: Structure) => {
-    if (!salaryStructure || !row.annualCtc) return {}
+    if (!salaryStructure || (!row.annualCtc && !hasDailyRateComponents(setup.salaryComponents, salaryStructure))) return {}
     const stored = salaryRecord(row)
-    const baseline = safeJsonRecord(calcSalary(row.annualCtc, salaryStructure))
+    const dailyRates = Object.fromEntries(Object.entries(stored).filter(([id]) => setup.salaryComponents.some(component => String(component.id) === id && component.calculationType === 'Daily Rate')))
+    const baseline = safeJsonRecord(calcSalary(row.annualCtc, salaryStructure, dailyRates))
     const componentById = new Map(setup.salaryComponents.map(component => [String(component.id), component]))
     return Object.fromEntries(Object.entries(stored).filter(([componentId, value]) => {
       const component = componentById.get(componentId)
       if (!component || !canOverrideSalaryComponent(component)) return false
-      return Math.abs(Number(value || 0) - Number(baseline[componentId] || 0)) > 0.009
+      return component.calculationType === 'Daily Rate' || Math.abs(Number(value || 0) - Number(baseline[componentId] || 0)) > 0.009
     }))
   }
   const normalizeEmployeeSalary = (row: Employee, overrides?: Record<string, string | number>) => {
     row = normalizeEmployeeDetails(row)
     const salaryStructure = setup.salaryStructures.find(item => String(item.id) === row.salaryStructureId) ?? templatesForClient(setup.salaryStructures, row.clientId)[0]
-    if (!salaryStructure || !row.annualCtc) return row
+    if (!salaryStructure || (!row.annualCtc && !hasDailyRateComponents(setup.salaryComponents, salaryStructure))) return row
     const normalized = String(row.salaryStructureId) === String(salaryStructure.id) ? row : { ...row, salaryStructureId: String(salaryStructure.id) }
     return withSalary(normalized, calcSalary(row.annualCtc, salaryStructure, overrides ?? inferSalaryOverrides(row, salaryStructure)))
   }
@@ -144,7 +147,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     setSalaryOverrides(nextOverrides)
     setEmployee(withSalary(employee, calcSalary(employee.annualCtc, chosenStructure, nextOverrides)))
   }
-  const empMonthly = (component: Component) => Number(employeeSalary[String(component.id)] || 0)
+  const empMonthly = (component: Component) => Number(employeeSalary[String(component.id)] || 0) * (component.calculationType === 'Daily Rate' ? 30 : 1)
   const applyStructure = (id: string) => { const selectedId = id.split(':')[0]; const selectedStructure = setup.salaryStructures.find(item => String(item.id) === selectedId); const ctc = Number(selectedStructure?.annualCtc || employee.annualCtc || 0); setSalaryOverrides({}); setEmployee(withSalary({ ...employee, salaryStructureId: selectedId, annualCtc: ctc }, calcSalary(ctc, selectedStructure))) }
   const applyCtc = (ctc: number) => setEmployee(withSalary({ ...employee, salaryStructureId: chosenStructure ? String(chosenStructure.id) : employee.salaryStructureId, annualCtc: ctc }, calcSalary(ctc, chosenStructure, salaryOverrides)))
   const applyClient = (value: string) => { const clientId = Number(value.split(':')[0] || 0); const selectedStructure = templatesForClient(setup.salaryStructures, clientId)[0]; const ctc = Number(selectedStructure?.annualCtc || employee.annualCtc || 0); setSalaryOverrides({}); setEmployee(withSalary({ ...employee, clientId, salaryStructureId: selectedStructure ? String(selectedStructure.id) : '', annualCtc: ctc }, selectedStructure ? calcSalary(ctc, selectedStructure) : '{}')) }
@@ -161,6 +164,10 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const editEmployee = (row: Employee, infotype: EmployeeInfotypeCode = '0001') => { const normalized = normalizeEmployeeDetails(row); const salaryStructure = setup.salaryStructures.find(item => String(item.id) === normalized.salaryStructureId) ?? templatesForClient(setup.salaryStructures, normalized.clientId)[0]; const overrides = inferSalaryOverrides(normalized, salaryStructure); setSalaryOverrides(overrides); setEmployee(normalizeEmployeeSalary(normalized, overrides)); setEmployeeInfotype(infotype); setChangeReason(''); setModalOpen(true); void loadEmployeeHistory(row.id) }
   const closeModal = () => { setDocumentRevision(value => value + 1); setModalOpen(false); setEmployee(employee0); setSalaryOverrides({}); setEmployeeInfotype('0001'); setChangeReason(''); setInfotypes([]) }
   const saveEmployee = async () => {
+    if (chosenStructure && (employee.annualCtc || dailyRateSalary)) {
+      const invalid = calculateSalaryDetails(employee.annualCtc, setup.salaryComponents, chosenStructure, salaryOverrides).find(row => row.error || !Number.isFinite(row.monthly))
+      if (invalid) { notify(`Salary calculation needs correction: ${invalid.component.code}: ${invalid.error || 'Invalid amount'}`, 'error'); return }
+    }
     const isNew = !employee.id
     const response = await persistEmployee(toEmployeePayload(normalizeEmployeeSalary(employee, salaryOverrides)), employeeInfotype, changeReason)
     if (!response.ok) { notify(response.error || 'Unable to save employee.', 'error'); return }
@@ -708,6 +715,7 @@ function EmployeeDirectory(p: { fieldExchange: EmployeeFieldExchange; configureF
 }
 
 function EmployeePanel(p: { clientScoped: boolean; employee: Employee; setEmployee: (employee: Employee) => void; employeeInfotype: EmployeeInfotypeCode; setEmployeeInfotype: (code: string) => void; changeReason: string; setChangeReason: (value: string) => void; clients: Client[]; locations: WorkLocation[]; managerUsers: WorkflowApprover[]; templates: Structure[]; salaryComponents: Component[]; deps: string[]; desigs: string[]; grades: string[]; skillCategories: string[]; employmentTypes: string[]; applyClient: (value: string) => void; applyStructure: (value: string) => void; applyCtc: (value: number) => void; structureComponents: Component[]; employeeSalary: Record<string, string>; salaryOverrides: Record<string, string>; empLine: (id: string, value: string) => void; empMonthly: (component: Component) => number; saveEmployee: () => void; closeModal: () => void; infotypes: EmployeeInfotypeRecord[]; runEmployeeAction: (request: EmployeeActionRequest) => Promise<void> }) {
+  const hasDailyRates = p.structureComponents.some(component => component.calculationType === 'Daily Rate')
   const personal = p.employee.personalDetails, payment = p.employee.paymentDetails
   const salaryRows = p.structureComponents.map(component => ({ component, monthly: p.empMonthly(component), annual: p.empMonthly(component) * 12 }))
   const totals = calculateSalaryTotals(salaryRows.map(row => ({ line: { componentId: String(row.component.id), value: '' }, ...row })))
@@ -727,15 +735,15 @@ function EmployeePanel(p: { clientScoped: boolean; employee: Employee; setEmploy
     {p.employeeInfotype === '0006' && <div className="grid"><F l="Address" w><input value={personal.address || ''} onChange={event => setPersonal('address', event.target.value)} /></F><F l="Correspondence Address" w><input value={personal.correspondenceAddress || ''} onChange={event => setPersonal('correspondenceAddress', event.target.value)} /></F><label className="employee-same-address"><input type="checkbox" checked={!!personal.correspondenceAddress && personal.permanentAddress === personal.correspondenceAddress} onChange={event => copyCorrespondence(event.target.checked)} />Same as correspondence address</label><F l="Permanent Address" w><input value={personal.permanentAddress || ''} onChange={event => setPersonal('permanentAddress', event.target.value)} /></F></div>}
     {p.employeeInfotype === '0008' && <div className="employee-salary-panel">
       <div className="employee-salary-controls"><F l="Salary template"><Sel v={p.employee.salaryStructureId} set={p.applyStructure} a={templatesForClient(p.templates, p.employee.clientId).map(item => `${item.id}:${item.name}`)} /></F><F l="Annual CTC"><input value={p.employee.annualCtc} onChange={event => p.applyCtc(Number(event.target.value.replace(/\D/g, '')))} /></F></div>
-      <div className="employee-salary-summary"><article><span>Monthly gross</span><b>{money(totals.gross)}</b></article><article><span>Deductions</span><b>{money(totals.deductions)}</b></article><article><span>Monthly net</span><b>{money(totals.net)}</b></article><article><span>Annual CTC</span><b>{money(p.employee.annualCtc)}</b></article></div>
+      <div className="employee-salary-summary"><article><span>{hasDailyRates ? '30-day gross equivalent' : 'Monthly gross'}</span><b>{money(totals.gross)}</b></article><article><span>{hasDailyRates ? '30-day deduction equivalent' : 'Deductions'}</span><b>{money(totals.deductions)}</b></article><article><span>{hasDailyRates ? '30-day net equivalent' : 'Monthly net'}</span><b>{money(totals.net)}</b></article><article><span>Annual CTC</span><b>{money(p.employee.annualCtc)}</b></article></div>
       <div className="employee-salary-table">
-        <div className="employee-salary-row employee-salary-head"><span>Component</span><span>Name</span><span>Monthly</span><span>Annual</span><span>Override</span></div>
+        <div className="employee-salary-row employee-salary-head"><span>Component</span><span>Name</span><span>{hasDailyRates ? '30-day equivalent' : 'Monthly'}</span><span>{hasDailyRates ? 'Annual equivalent' : 'Annual'}</span><span>Employee amount / rate<SalaryFieldHelp label="Employee amount / rate" text="Monthly components store a monthly amount. Daily Rate components store the amount per day, not a monthly salary. Equivalents shown assume 30 days; actual pay uses attendance payable days. Annual CTC is optional for daily rates." example="For daily wages enter 700. Payroll with 22 payable days pays Rs 15,400; do not enter 21,000 as the daily rate." /></span></div>
         {salaryRows.length ? salaryRows.map(({ component, monthly, annual }) => <div className="employee-salary-row" key={component.id}>
           <div className="employee-salary-code"><span className={`salary-badge ${badgeClass(component.category)}`}>{component.category}</span><b title={component.code}>{component.code}</b></div>
           <strong title={component.name}>{component.name}</strong>
           <output>{money(monthly)}</output>
           <output>{money(annual)}</output>
-          <input inputMode="decimal" value={p.salaryOverrides[String(component.id)] ?? p.employeeSalary[String(component.id)] ?? ''} readOnly={!canOverrideSalaryComponent(component)} title={canOverrideSalaryComponent(component) ? 'Employee-specific override' : 'Calculated from salary component master and template'} onChange={event => p.empLine(String(component.id), event.target.value.replace(/[^\d.-]/g, ''))} aria-label={`${component.name} override`} />
+          <div><input inputMode="decimal" value={p.salaryOverrides[String(component.id)] ?? p.employeeSalary[String(component.id)] ?? ''} readOnly={!canOverrideSalaryComponent(component)} title={component.calculationType === 'Daily Rate' ? 'Rate per payable day' : canOverrideSalaryComponent(component) ? 'Employee-specific monthly override' : 'Calculated from salary component master and template'} onChange={event => p.empLine(String(component.id), event.target.value.replace(/[^\d.-]/g, ''))} aria-label={`${component.name} override`} />{component.calculationType === 'Daily Rate' && <small>Rs / payable day</small>}</div>
         </div>) : <p className="employee-salary-empty">Select a client and salary template, then enter Annual CTC to calculate the salary breakup.</p>}
       </div>
     </div>}

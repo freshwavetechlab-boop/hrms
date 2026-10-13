@@ -2,6 +2,13 @@ namespace Payroll.API.Models;
 
 public class AttendanceShift
 {
+    public AttendanceShiftRules Rules { get; set; } = new();
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string RulesJson
+    {
+        get => System.Text.Json.JsonSerializer.Serialize(Rules);
+        set => Rules = string.IsNullOrWhiteSpace(value) ? new() : System.Text.Json.JsonSerializer.Deserialize<AttendanceShiftRules>(value) ?? new();
+    }
     public int Id { get; set; }
     public int ClientId { get; set; }
     public string ShiftCode { get; set; } = "";

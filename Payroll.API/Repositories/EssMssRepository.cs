@@ -1428,6 +1428,10 @@ SELECT LAST_INSERT_ID();", new
         if (capturedAt > AttendanceNow().AddMinutes(10))
             return Block("InvalidCapturedAt", "The device attendance time is ahead of the server time.", "CorrectDeviceTime");
 
+        var shiftResolver = await AttendanceShiftResolver.LoadAsync(db, transaction, clientId, employeeId);
+        var shiftSettings = shiftResolver.ResolvePunch(employeeId, capturedAt).Settings;
+        if (shiftSettings.ResolutionError is not null)
+            return Block("ShiftConfigurationRequired", shiftSettings.ResolutionError, "ContactHR");
         var state = await GetAttendanceStateAsync(db, transaction, clientId, employeeId, capturedAt, true);
         if (await IsLeavePeriodLockedAsync(db, transaction, clientId, employeeId, state.AttendanceDate, state.AttendanceDate))
             return Block("PayrollPeriodLocked", "Attendance belongs to a submitted or completed payroll period.", "ContactHR");

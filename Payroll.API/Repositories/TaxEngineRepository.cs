@@ -268,40 +268,48 @@ tds_deducted_till_date DECIMAL(14,2) NOT NULL DEFAULT 0, remaining_tax DECIMAL(1
         return (await GetAsync()).FinalAdjustments.First(x => x.Id == id);
     }
 
-    public async Task<TaxComputationResult?> ComputeAsync(TaxComputationRequest request)
+    public async Task<TaxComputationResult?> ComputeAsync(TaxComputationRequest request, MySqlConnection? connection = null, MySqlTransaction? transaction = null, bool persistSnapshot = true)
     {
-        await using var db = Connection(); await db.OpenAsync();
+        await using var ownedConnection = connection is null ? Connection() : null;
+        var db = connection ?? ownedConnection!;
+        if (ownedConnection is not null) await db.OpenAsync();
+        if (await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE Id=@EmployeeId AND ClientId=@ClientId", new { request.EmployeeId, request.ClientId }, transaction) != 1)
+            throw new InvalidOperationException("The employee does not belong to the selected client.");
         var fy = string.IsNullOrWhiteSpace(request.FinancialYear) ? CurrentFinancialYear() : request.FinancialYear;
-        var version = await db.QueryFirstOrDefaultAsync<TaxRuleVersion>(@"SELECT id Id,financial_year FinancialYear,version_number VersionNumber,effective_from EffectiveFrom,effective_to EffectiveTo,active Active,source Source,notes Notes FROM tax_rule_versions WHERE financial_year=@Fy AND active=TRUE ORDER BY effective_from DESC,id DESC LIMIT 1", new { Fy = fy });
+        var asOf = string.IsNullOrWhiteSpace(request.PayPeriod) ? DateTime.Today : DateTime.ParseExact(request.PayPeriod + "-01", "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+        var version = await db.QueryFirstOrDefaultAsync<TaxRuleVersion>(@"SELECT id Id,financial_year FinancialYear,version_number VersionNumber,effective_from EffectiveFrom,effective_to EffectiveTo,active Active,source Source,notes Notes FROM tax_rule_versions WHERE financial_year=@Fy AND active=TRUE AND is_published=TRUE AND effective_from<=@AsOf AND (effective_to IS NULL OR effective_to>=@AsOf) ORDER BY effective_from DESC,id DESC LIMIT 1", new { Fy = fy, AsOf = asOf }, transaction);
         if (version is null) return null;
-        var selectedRegime = await db.ExecuteScalarAsync<string?>(@"SELECT regime FROM employee_tax_regime_selections WHERE employee_id=@EmployeeId AND financial_year=@Fy", new { request.EmployeeId, Fy = fy });
-        var clientSetting = await db.QueryFirstOrDefaultAsync<ClientTaxComputationSetting>(@"SELECT default_regime DefaultRegime, poi_processing_month PoiProcessingMonth FROM tax_client_settings WHERE client_id=@ClientId AND financial_year=@Fy AND active=TRUE LIMIT 1", new { request.ClientId, Fy = fy });
+        var selectedRegime = await db.ExecuteScalarAsync<string?>(@"SELECT regime FROM employee_tax_regime_selections WHERE employee_id=@EmployeeId AND financial_year=@Fy", new { request.EmployeeId, Fy = fy }, transaction);
+        var clientSetting = await db.QueryFirstOrDefaultAsync<ClientTaxComputationSetting>(@"SELECT default_regime DefaultRegime, poi_processing_month PoiProcessingMonth FROM tax_client_settings WHERE client_id=@ClientId AND financial_year=@Fy AND active=TRUE LIMIT 1", new { request.ClientId, Fy = fy }, transaction);
         var regime = string.IsNullOrWhiteSpace(selectedRegime) ? clientSetting?.DefaultRegime ?? "New" : selectedRegime;
-        var standardDeduction = await db.ExecuteScalarAsync<decimal?>(@"SELECT amount FROM tax_standard_deductions WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND active=TRUE AND (regime=@Regime OR regime='Both') ORDER BY CASE WHEN regime=@Regime THEN 0 ELSE 1 END LIMIT 1", new { Fy = fy, RuleVersionId = version.Id, Regime = regime }) ?? 0;
+        var standardDeduction = await db.ExecuteScalarAsync<decimal?>(@"SELECT amount FROM tax_standard_deductions WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND active=TRUE AND (regime=@Regime OR regime='Both') ORDER BY CASE WHEN regime=@Regime THEN 0 ELSE 1 END LIMIT 1", new { Fy = fy, RuleVersionId = version.Id, Regime = regime }, transaction) ?? 0;
         var deductionSource = ShouldUsePoi(request.PayPeriod, clientSetting?.PoiProcessingMonth) ? "POI" : "Planned";
-        var approvedDeductions = regime == "Old" ? await CalculateEmployeeTaxDeductionsAsync(db, request.EmployeeId, fy, deductionSource) : 0;
+        var approvedDeductions = regime == "Old" ? await CalculateEmployeeTaxDeductionsAsync(db, request.EmployeeId, fy, deductionSource, transaction) : 0;
         var taxableIncome = Math.Max(0, request.AnnualGrossSalary - standardDeduction - approvedDeductions);
-        var slabs = (await db.QueryAsync<TaxSlab>(@"SELECT id Id,rule_version_id RuleVersionId,financial_year FinancialYear,regime Regime,income_from IncomeFrom,income_to IncomeTo,rate_percent RatePercent,effective_from EffectiveFrom,effective_to EffectiveTo,active Active,source Source,notes Notes FROM tax_slabs WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND regime=@Regime AND active=TRUE ORDER BY income_from", new { Fy = fy, RuleVersionId = version.Id, Regime = regime })).ToList();
+        var slabs = (await db.QueryAsync<TaxSlab>(@"SELECT id Id,rule_version_id RuleVersionId,financial_year FinancialYear,regime Regime,income_from IncomeFrom,income_to IncomeTo,rate_percent RatePercent,effective_from EffectiveFrom,effective_to EffectiveTo,active Active,source Source,notes Notes FROM tax_slabs WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND regime=@Regime AND active=TRUE AND effective_from<=@AsOf AND (effective_to IS NULL OR effective_to>=@AsOf) ORDER BY income_from", new { Fy = fy, RuleVersionId = version.Id, Regime = regime, AsOf = asOf }, transaction)).ToList();
+        if (slabs.Count == 0) throw new InvalidOperationException($"No effective tax slabs for {fy}, regime {regime}, period {request.PayPeriod}.");
         var slabTax = slabs.Sum(slab => TaxForSlab(taxableIncome, slab));
-        var rebateRule = await db.QueryFirstOrDefaultAsync<TaxRebateRule>(@"SELECT id Id,rule_version_id RuleVersionId,financial_year FinancialYear,regime Regime,income_limit IncomeLimit,rebate_amount RebateAmount,active Active,source Source FROM tax_rebate_rules WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND active=TRUE AND (regime=@Regime OR regime='Both') ORDER BY CASE WHEN regime=@Regime THEN 0 ELSE 1 END LIMIT 1", new { Fy = fy, RuleVersionId = version.Id, Regime = regime });
+        var rebateRule = await db.QueryFirstOrDefaultAsync<TaxRebateRule>(@"SELECT id Id,rule_version_id RuleVersionId,financial_year FinancialYear,regime Regime,income_limit IncomeLimit,rebate_amount RebateAmount,active Active,source Source FROM tax_rebate_rules WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND active=TRUE AND (regime=@Regime OR regime='Both') ORDER BY CASE WHEN regime=@Regime THEN 0 ELSE 1 END LIMIT 1", new { Fy = fy, RuleVersionId = version.Id, Regime = regime }, transaction);
         var rebate = rebateRule is not null && taxableIncome <= rebateRule.IncomeLimit ? Math.Min(slabTax, rebateRule.RebateAmount) : 0;
         var taxAfterRebate = Math.Max(0, slabTax - rebate);
-        var surchargeRule = await db.QueryFirstOrDefaultAsync<TaxSurcharge>(@"SELECT id Id,rule_version_id RuleVersionId,financial_year FinancialYear,income_from IncomeFrom,income_to IncomeTo,surcharge_percent SurchargePercent,active Active,source Source,notes Notes FROM tax_surcharges WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND active=TRUE AND @Income>=income_from AND (income_to IS NULL OR @Income<=income_to) ORDER BY income_from DESC LIMIT 1", new { Fy = fy, RuleVersionId = version.Id, Income = taxableIncome });
+        var surchargeRule = await db.QueryFirstOrDefaultAsync<TaxSurcharge>(@"SELECT id Id,rule_version_id RuleVersionId,financial_year FinancialYear,income_from IncomeFrom,income_to IncomeTo,surcharge_percent SurchargePercent,active Active,source Source,notes Notes FROM tax_surcharges WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND active=TRUE AND @Income>=income_from AND (income_to IS NULL OR @Income<=income_to) ORDER BY income_from DESC LIMIT 1", new { Fy = fy, RuleVersionId = version.Id, Income = taxableIncome }, transaction);
         var surcharge = surchargeRule is null ? 0 : taxAfterRebate * surchargeRule.SurchargePercent / 100m;
-        var adjustments = (await db.QueryAsync<TaxFinalAdjustment>(@"SELECT id Id,rule_version_id RuleVersionId,financial_year FinancialYear,label Label,value_type ValueType,value Value,apply_order ApplyOrder,active Active,source Source,notes Notes FROM tax_final_adjustments WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND active=TRUE ORDER BY apply_order,label", new { Fy = fy, RuleVersionId = version.Id })).ToList();
+        var adjustments = (await db.QueryAsync<TaxFinalAdjustment>(@"SELECT id Id,rule_version_id RuleVersionId,financial_year FinancialYear,label Label,value_type ValueType,value Value,apply_order ApplyOrder,active Active,source Source,notes Notes FROM tax_final_adjustments WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND active=TRUE ORDER BY apply_order,label", new { Fy = fy, RuleVersionId = version.Id }, transaction)).ToList();
         var cess = adjustments.Sum(item => item.ValueType == "Percent" ? (taxAfterRebate + surcharge) * item.Value / 100m : item.Value);
         var annualTax = Math.Round(taxAfterRebate + surcharge + cess, 0, MidpointRounding.AwayFromZero);
         var remaining = Math.Max(0, annualTax - request.TdsAlreadyDeducted);
         var monthly = Math.Round(remaining / RemainingFinancialYearMonths(request.PayPeriod, fy), 0, MidpointRounding.AwayFromZero);
         var result = new TaxComputationResult { FinancialYear = fy, RuleVersionId = version.Id, Regime = regime, GrossSalary = request.AnnualGrossSalary, StandardDeduction = standardDeduction, ApprovedDeductions = approvedDeductions, TaxableIncome = taxableIncome, SlabTax = slabTax, Rebate = rebate, Surcharge = surcharge, Cess = cess, AnnualTax = annualTax, TdsAlreadyDeducted = request.TdsAlreadyDeducted, RemainingTax = remaining, MonthlyTds = monthly };
         result.SnapshotJson = System.Text.Json.JsonSerializer.Serialize(new { request, result, deductionSource, ruleVersion = version, slabs, rebateRule, surchargeRule, adjustments, calculatedAt = DateTime.UtcNow });
-        await EnsureSnapshotColumnsAsync(db);
-        var financialYearId = await db.ExecuteScalarAsync<int?>("SELECT id FROM tax_financial_years WHERE code=@Fy", new { Fy = fy });
-        var regimeId = await db.ExecuteScalarAsync<int?>("SELECT id FROM tax_regimes WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND code=@Regime", new { Fy = fy, RuleVersionId = version.Id, Regime = regime });
+        if (!persistSnapshot) return result;
+        var financialYearId = await db.ExecuteScalarAsync<int?>("SELECT id FROM tax_financial_years WHERE code=@Fy", new { Fy = fy }, transaction);
+        var regimeId = await db.ExecuteScalarAsync<int?>("SELECT id FROM tax_regimes WHERE financial_year=@Fy AND rule_version_id=@RuleVersionId AND code=@Regime", new { Fy = fy, RuleVersionId = version.Id, Regime = regime }, transaction);
+        if (request.PayRunId is > 0)
+            await db.ExecuteAsync("DELETE FROM tax_computation_snapshots WHERE pay_run_id=@PayRunId AND employee_id=@EmployeeId", new { request.PayRunId, request.EmployeeId }, transaction);
         var ruleBreakup = System.Text.Json.JsonSerializer.Serialize(new { ruleVersion = version, slabs, rebateRule, surchargeRule, adjustments });
         await db.ExecuteAsync(@"INSERT INTO tax_computation_snapshots (employee_id,client_id,financial_year,financial_year_id,pay_period,pay_run_id,rule_version_id,regime_id,regime,gross_salary,exemptions_amount,deductions_amount,taxable_income,tax_before_rebate,rebate_amount,tax_after_rebate,surcharge_amount,cess_amount,total_annual_tax,tds_deducted_till_date,remaining_tax,annual_tax,monthly_tds,snapshot_json,rule_breakup_json,declaration_json,proof_json)
 VALUES (@EmployeeId,@ClientId,@FinancialYear,@FinancialYearId,@PayPeriod,@PayRunId,@RuleVersionId,@RegimeId,@Regime,@GrossSalary,0,@ApprovedDeductions,@TaxableIncome,@SlabTax,@Rebate,@TaxAfterRebate,@Surcharge,@Cess,@AnnualTax,@TdsAlreadyDeducted,@RemainingTax,@AnnualTax,@MonthlyTds,@SnapshotJson,@RuleBreakupJson,@DeclarationJson,@ProofJson)",
-            new { request.EmployeeId, request.ClientId, result.FinancialYear, FinancialYearId = financialYearId, request.PayPeriod, request.PayRunId, result.RuleVersionId, RegimeId = regimeId, result.Regime, result.GrossSalary, result.ApprovedDeductions, result.TaxableIncome, result.SlabTax, result.Rebate, TaxAfterRebate = taxAfterRebate, result.Surcharge, result.Cess, result.AnnualTax, result.TdsAlreadyDeducted, result.RemainingTax, result.MonthlyTds, result.SnapshotJson, RuleBreakupJson = ruleBreakup, DeclarationJson = "{}", ProofJson = "{}" });
+            new { request.EmployeeId, request.ClientId, result.FinancialYear, FinancialYearId = financialYearId, request.PayPeriod, request.PayRunId, result.RuleVersionId, RegimeId = regimeId, result.Regime, result.GrossSalary, result.ApprovedDeductions, result.TaxableIncome, result.SlabTax, result.Rebate, TaxAfterRebate = taxAfterRebate, result.Surcharge, result.Cess, result.AnnualTax, result.TdsAlreadyDeducted, result.RemainingTax, result.MonthlyTds, result.SnapshotJson, RuleBreakupJson = ruleBreakup, DeclarationJson = "{}", ProofJson = "{}" }, transaction);
         return result;
     }
 
@@ -370,7 +378,7 @@ ON DUPLICATE KEY UPDATE declared_amount=@DeclaredAmount,planned_amount=@Planned,
         return await GetEmployeeTaxProfileAsync(profile.EmployeeId, fy);
     }
 
-    private static async Task<decimal> CalculateEmployeeTaxDeductionsAsync(MySqlConnection db, int employeeId, string financialYear, string source)
+    private static async Task<decimal> CalculateEmployeeTaxDeductionsAsync(MySqlConnection db, int employeeId, string financialYear, string source, MySqlTransaction? transaction = null)
     {
         if (source == "POI")
             return await db.ExecuteScalarAsync<decimal?>(@"
@@ -383,7 +391,7 @@ WHERE h.employee_id=@EmployeeId
   AND h.activity_code='POI'
   AND h.status='Approved'
   AND l.status='Approved'
-  AND s.active=TRUE", new { EmployeeId = employeeId, Fy = financialYear }) ?? 0;
+   AND s.active=TRUE", new { EmployeeId = employeeId, Fy = financialYear }, transaction) ?? 0;
 
         return await db.ExecuteScalarAsync<decimal?>(@"
 SELECT COALESCE(SUM(CASE WHEN s.limit_amount IS NULL THEN COALESCE(l.approved_amount,l.amount,0) ELSE LEAST(COALESCE(l.approved_amount,l.amount,0),s.limit_amount) END),0)
@@ -395,7 +403,7 @@ WHERE h.employee_id=@EmployeeId
   AND h.activity_code='IT_DECLARATION'
   AND h.status IN ('Approved','Submitted')
   AND l.status IN ('Approved','Submitted')
-  AND s.active=TRUE", new { EmployeeId = employeeId, Fy = financialYear }) ?? 0;
+   AND s.active=TRUE", new { EmployeeId = employeeId, Fy = financialYear }, transaction) ?? 0;
     }
 
     private static bool ShouldUsePoi(string payPeriod, string? poiProcessingMonth) =>

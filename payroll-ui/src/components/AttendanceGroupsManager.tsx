@@ -8,13 +8,13 @@ import type { AttendanceGroup, AttendanceWorkWeek, Client, Drop, Employee, WorkL
 import RecruitmentRecordList from './RecruitmentRecordList'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import SearchSelect, { selectOptions } from './SearchSelect'
-import AttendanceShiftSelect from './AttendanceShiftSelect'
+import AttendancePolicyShiftFields from './AttendancePolicyShiftFields'
 
 type AttendancePolicyForm = AttendanceGroup & { workLocationIds: number[]; departments: string[]; designations: string[] }
 type AttendancePolicyRow = AttendanceGroup & { rows: AttendanceGroup[]; locationCount: number; departmentCount: number; designationCount: number }
 
 const emptyGroup: AttendanceGroup = { id: 0, clientId: 0, clientName: '', policyBatchId: '', name: '', workLocationId: 0, workLocationName: '', department: '', designation: '', workWeek: '', attendanceCycleStartDay: 1, attendanceCycleEndDay: 25, payrollReportGenerationDay: 28, isActive: true, employeeIds: [], employeeNames: '', employeeCount: 0 }
-const emptyForm: AttendancePolicyForm = { ...emptyGroup, workLocationIds: [], departments: [], designations: [] }
+const emptyForm: AttendancePolicyForm = { ...emptyGroup, attendanceMode: 'Punch', allowedShiftIds: [], workLocationIds: [], departments: [], designations: [] }
 const unique = (items: string[]) => Array.from(new Set(items.map(item => item.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b))
 const scopeOptions = (items: string[]) => unique(items).filter(item => item.toLowerCase() !== 'all')
 const matchesScope = (values: string[], value: string) => !values.length || values.some(item => item.trim().toLowerCase() === (value || '').trim().toLowerCase())
@@ -156,7 +156,7 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
   const applyScope = (patch: Partial<AttendancePolicyForm>) => {
     setErrors([])
     setForm(current => {
-      const next = { ...current, ...patch, ...(patch.clientId !== undefined && patch.clientId !== current.clientId ? { shiftId: null } : {}) }
+      const next = { ...current, ...patch, ...(patch.clientId !== undefined && patch.clientId !== current.clientId ? { shiftId: null, allowedShiftIds: [] } : {}) }
       const scopedEmployees = activeEmployees.filter(employee => employee.clientId === next.clientId && (!next.workLocationIds.length || next.workLocationIds.includes(employee.workLocationId)))
       const keepDepartments = (items: string[]) => {
         const available = scopedEmployees.map(employee => employee.department).filter(Boolean)
@@ -206,6 +206,8 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
     if (cyclePreview.days > monthDays) next.push(`Attendance cycle cannot exceed ${monthDays} days for ${previewMonth}.`)
     if (buffer < 3 || buffer > 7) next.push('Payroll report generation day must be 3 to 7 days after attendance cycle end day.')
     if (!scopedEmployeeIds.length) next.push('Select at least one employee for the selected client and filters.')
+    if (form.attendanceMode === 'Punch' && !form.allowedShiftIds?.length) next.push('Select at least one allowed shift for punch-based attendance.')
+    if (form.attendanceMode === 'Punch' && form.shiftId && !form.allowedShiftIds?.includes(form.shiftId)) next.push('Default shift must belong to the allowed list.')
     setErrors(next)
     if (next.length) onMessage(next.join(' '))
     return next.length === 0
@@ -218,6 +220,8 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
       policyBatchId: form.policyBatchId,
       clientId: form.clientId,
       shiftId: form.shiftId ?? null,
+      attendanceMode: form.attendanceMode ?? 'Legacy',
+      allowedShiftIds: form.allowedShiftIds ?? [],
       name: form.name,
       workLocationIds: form.workLocationIds,
       departments: form.departments,
@@ -247,6 +251,8 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
     setForm({
       ...emptyForm,
       ...group,
+      attendanceMode: group.attendanceMode ?? 'Legacy',
+      allowedShiftIds: group.allowedShiftIds ?? (group.shiftId ? [group.shiftId] : []),
       workLocationIds: Array.from(new Set(rows.map(row => row.workLocationId).filter(Boolean))),
       departments: unique(rows.map(row => row.department).filter(item => item && item.toLowerCase() !== 'all')),
       designations: unique(rows.map(row => row.designation).filter(item => item && item.toLowerCase() !== 'all')),
@@ -280,7 +286,8 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
             { key: 'designation', label: 'Designation', value: row => row.designation || '-' },
             { key: 'cycle', label: 'Attendance cycle', value: row => `${row.attendanceCycleStartDay} - ${row.attendanceCycleEndDay}` },
             { key: 'workWeek', label: 'Off pattern' },
-            { key: 'shiftName', label: 'Shift', value: row => row.shiftName || 'Client default / existing rules' },
+            { key: 'attendanceMode', label: 'Mode', value: row => row.attendanceMode === 'Punch' ? 'Punch-based' : row.attendanceMode === 'Monthly' ? 'Monthly totals' : 'Legacy' },
+            { key: 'shiftName', label: 'Default shift', value: row => row.attendanceMode === 'Monthly' ? 'Not applicable' : row.shiftName || (row.attendanceMode === 'Punch' ? 'Roster required' : 'Client default / existing rules') },
             { key: 'employeeCount', label: 'Employees' },
             { key: 'isActive', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive' }
           ]} actions={row => <Space size={6}><Button htmlType="button" size="small" type="primary" onClick={() => edit(row)}>Edit</Button><Button htmlType="button" size="small" danger onClick={() => void remove(row)}>Delete</Button></Space>} />
@@ -288,8 +295,8 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
     <Drawer className="settings-master-drawer attendance-policy-master-drawer" title={<div className="settings-drawer-title"><span>Attendance policy</span><h3>{form.id ? 'Edit attendance policy' : 'Add attendance policy'}</h3><p>Define client, location, employee scope, weekly off, cycle, and payroll report day.</p></div>} open={drawerOpen} width={760} onClose={() => setDrawerOpen(false)} destroyOnClose>
       <Form className="attendance-group-form settings-quick-form" component="div" layout="vertical" requiredMark={false}>
         <Form.Item label="Policy name" required><Input value={form.name} onChange={event => set('name', event.target.value)} placeholder="Consultants - RECL Site A" /></Form.Item>
-        <Form.Item label="Assigned shift" extra="Applies to employees selected below. Leave blank to use the client default."><AttendanceShiftSelect clientId={form.clientId} value={form.shiftId} onChange={value => set('shiftId', value)} /></Form.Item>
         {!fixedClientId && <Form.Item label="Client" required><SearchSelect value={form.clientId} onChange={value => applyScope({ clientId: Number(value), id: 0 })} options={clients.map(client => ({ value: client.id, label: client.name }))} /></Form.Item>}
+        <AttendancePolicyShiftFields value={form} allowLegacy={!!form.id || !!form.policyBatchId} onChange={patch => setForm(current => ({ ...current, ...patch }))} />
         <Form.Item label="Work Location" extra="Leave blank for all work locations."><Select mode="multiple" className="app-search-select attendance-policy-multi" popupClassName="app-search-select-dropdown" showSearch value={form.workLocationIds.map(String)} optionFilterProp="label" onChange={values => applyScope({ workLocationIds: values.map(Number), id: 0 })} options={clientLocations.map(location => ({ value: String(location.id), label: `${location.name} - ${location.city || location.state || 'Location'}` }))} /></Form.Item>
         <Row gutter={12}>
           <Col xs={24} md={12}><Form.Item label="Department" extra="Leave blank for all departments."><Select mode="multiple" className="app-search-select attendance-policy-multi" popupClassName="app-search-select-dropdown" showSearch value={form.departments} optionFilterProp="label" onChange={values => applyScope({ departments: values, id: 0 })} options={departments.map(item => ({ value: item, label: item }))} /></Form.Item></Col>

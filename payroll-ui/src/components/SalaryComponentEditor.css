@@ -1,0 +1,31 @@
+.salary-component-editor .ant-drawer-body{padding:0 20px 20px}
+.salary-editor-section{padding:18px 0;border-bottom:1px solid #e4e7ed}
+.salary-editor-section h3{font-size:15px;margin:0 0 14px;letter-spacing:0}
+.salary-editor-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.salary-editor-field{min-width:0;display:flex;flex-direction:column;gap:6px}
+.salary-editor-grid .wide{grid-column:1/-1}
+.salary-editor-label{display:flex;align-items:center;gap:5px;font-size:13px;font-weight:600;letter-spacing:0}
+.salary-editor-field .ant-select{width:100%;min-width:0}
+.salary-editor-field .ant-checkbox-wrapper{min-height:32px;align-items:center}
+.salary-field-help-button.ant-btn{width:24px;height:24px;min-width:24px;padding:0;color:#6554c0}
+.salary-field-help-content{width:min(330px,calc(100vw - 64px));font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.salary-field-help-content p{margin:0 0 10px}
+.salary-field-help-scroll{max-height:min(460px,55vh);overflow-y:auto;overscroll-behavior:contain;padding-right:8px;margin-bottom:10px}
+.salary-field-help-options{margin:0}.salary-field-help-options>div{border-top:1px solid #e4e7ed;padding:10px 0}.salary-field-help-options dt{font-weight:700}.salary-field-help-options dd{margin:4px 0 0}.salary-field-help-options dd p{margin:6px 0 0;color:#4b5563}
+.salary-editor-footer{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.salary-component-editor .ant-collapse{margin-top:16px}
+.salary-component-editor .ant-alert{margin-top:12px}
+.salary-editor-formula{display:flex;gap:8px;align-items:flex-start;min-width:0}
+.salary-editor-formula code{flex:1;min-width:0;white-space:normal;overflow-wrap:anywhere;padding:8px;background:#f4f6f8;border-radius:4px}
+.salary-slab-editor{display:grid;gap:8px}
+.salary-slab-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) 32px;gap:6px}
+.salary-guide-trigger{display:flex;justify-content:flex-end;padding-top:12px}.salary-guide-body{display:grid;gap:14px;padding-top:20px}.salary-guide-body h4{margin:0;font-size:14px}.salary-guide-options{display:flex;flex-direction:column;gap:12px}.salary-guide-options .ant-radio-wrapper{white-space:normal}
+.salary-setup-guide .ant-modal-body{max-height:calc(100dvh - 240px);overflow-y:auto;overscroll-behavior:contain;padding-right:6px}
+.salary-setup-guide .salary-guide-body{min-width:0}.salary-guide-body h3{font-size:16px;margin:0;letter-spacing:0}
+.salary-guide-token{display:flex;gap:8px;min-width:0}.salary-guide-token .ant-select{flex:1;min-width:0}
+.salary-guide-reference{max-height:160px;overflow:auto;border:1px solid #e4e7ed;border-radius:4px;padding:8px;font-size:13px}
+.salary-guide-reference>div{display:flex;justify-content:space-between;gap:12px;padding:4px;overflow-wrap:anywhere}
+.salary-guide-review>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);gap:12px;padding:10px 8px;border-bottom:1px solid #e4e7ed;font-size:13px;overflow-wrap:anywhere;white-space:pre-wrap}
+.salary-guide-review-head{background:#f4f6f8;font-weight:600}.salary-guide-review .is-changed{background:#edf8f2;border-left:3px solid #26855c}
+@media(max-width:600px){.salary-setup-guide{top:16px}.salary-setup-guide .ant-modal-body{max-height:calc(100dvh - 180px)}.salary-setup-guide .ant-steps{display:none}.salary-guide-review>div{gap:6px;padding:8px 4px;font-size:12px}.salary-setup-guide .ant-modal-content{padding:16px}.salary-guide-body{padding-top:12px}}
+@media(max-width:600px){.salary-editor-grid{grid-template-columns:minmax(0,1fr)}.salary-component-editor .ant-drawer-body{padding:0 14px 14px}.salary-editor-formula{flex-direction:column}}

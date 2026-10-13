@@ -608,6 +608,8 @@ ORDER BY c.Name, w.Name, g.name;", new { ClientId = clientId, ReportingManagerUs
             {
                 PolicyBatchId = request.PolicyBatchId,
                 ShiftId = request.ShiftId,
+                AttendanceMode = request.AttendanceMode,
+                AllowedShiftIds = request.AllowedShiftIds,
                 ClientId = request.ClientId,
                 Name = request.Name,
                 WorkLocationIds = request.WorkLocationId > 0 ? [request.WorkLocationId] : [],
@@ -631,8 +633,11 @@ ORDER BY c.Name, w.Name, g.name;", new { ClientId = clientId, ReportingManagerUs
         await using var transaction = await connection.BeginTransactionAsync();
         var id = request.Id;
         var payload = CleanAttendanceGroupRequest(request);
+        await connection.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId FOR UPDATE", request, transaction);
         var shiftError = await ValidateShiftReferenceAsync(connection, transaction, request.ClientId, request.ShiftId);
         if (shiftError is not null) return (null, shiftError);
+        var policyShiftError = await ValidatePolicyShiftsAsync(connection, transaction, request.ClientId, request, request.ShiftId);
+        if (policyShiftError is not null) return (null, policyShiftError);
         if (id == 0)
         {
             id = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO attendance_groups (client_id, policy_batch_id, name, work_location_id, department, designation, work_week, attendance_cycle_start_day, attendance_cycle_end_day, payroll_report_generation_day, is_active)
@@ -645,8 +650,11 @@ VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designa
         }
         var employeeIds = (request.EmployeeIds ?? new List<int>()).Distinct().ToArray();
         await connection.ExecuteAsync("UPDATE attendance_groups SET shift_id=@ShiftId WHERE id=@Id AND client_id=@ClientId", new { request.ShiftId, Id = id, request.ClientId }, transaction);
+        await SavePolicyShiftsAsync(connection, transaction, request.ClientId, id, request);
         await connection.ExecuteAsync("DELETE FROM attendance_group_employees WHERE attendance_group_id=@Id", new { Id = id }, transaction);
         await connection.ExecuteAsync("INSERT INTO attendance_group_employees (attendance_group_id, employee_id) VALUES (@GroupId, @EmployeeId)", employeeIds.Select(employeeId => new { GroupId = id, EmployeeId = employeeId }), transaction);
+        var rosterError = await ValidateRosterCoverageAsync(connection, transaction, request.ClientId);
+        if (rosterError is not null) return (null, rosterError);
         await transaction.CommitAsync();
         return (await GetAttendanceGroupAsync(id, request.ClientId), null);
     }
@@ -697,8 +705,11 @@ WHERE IsActive=TRUE AND ClientId=@ClientId", new { request.ClientId })).ToList()
         if (duplicateError is not null) return ([], duplicateError);
 
         await using var transaction = await connection.BeginTransactionAsync();
+        await connection.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId FOR UPDATE", request, transaction);
         var shiftError = await ValidateShiftReferenceAsync(connection, transaction, request.ClientId, request.ShiftId);
         if (shiftError is not null) return ([], shiftError);
+        var policyShiftError = await ValidatePolicyShiftsAsync(connection, transaction, request.ClientId, request, request.ShiftId);
+        if (policyShiftError is not null) return ([], policyShiftError);
         await connection.ExecuteAsync("DELETE FROM attendance_groups WHERE client_id=@ClientId AND policy_batch_id=@PolicyBatchId", new { request.ClientId, PolicyBatchId = batchId }, transaction);
         var existingNames = await connection.QueryAsync<string>(@"SELECT name FROM attendance_groups
 WHERE client_id=@ClientId AND (@PolicyBatchId='' OR COALESCE(policy_batch_id, '')<>@PolicyBatchId)", new { request.ClientId, PolicyBatchId = batchId }, transaction);
@@ -724,6 +735,9 @@ VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designa
                 }, transaction);
             await connection.ExecuteAsync("INSERT INTO attendance_group_employees (attendance_group_id, employee_id) VALUES (@GroupId, @EmployeeId)", employeeIds.Distinct().Select(employeeId => new { GroupId = groupId, EmployeeId = employeeId }), transaction);
             await connection.ExecuteAsync("UPDATE attendance_groups SET shift_id=@ShiftId WHERE id=@Id AND client_id=@ClientId", new { request.ShiftId, Id = groupId, request.ClientId }, transaction);
+            await SavePolicyShiftsAsync(connection, transaction, request.ClientId, groupId, request);
+            var rosterError = await ValidateRosterCoverageAsync(connection, transaction, request.ClientId);
+            if (rosterError is not null) return ([], rosterError);
             await transaction.CommitAsync();
         }
         catch
@@ -739,7 +753,12 @@ VALUES (@ClientId, @PolicyBatchId, @Name, @WorkLocationId, @Department, @Designa
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        return await connection.ExecuteAsync("DELETE FROM attendance_groups WHERE id=@Id AND client_id=@ClientId", new { Id = id, ClientId = clientId }) > 0;
+        await using var transaction = await connection.BeginTransactionAsync();
+        await connection.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId FOR UPDATE", new { ClientId = clientId }, transaction);
+        var deleted = await connection.ExecuteAsync("DELETE FROM attendance_groups WHERE id=@Id AND client_id=@ClientId", new { Id = id, ClientId = clientId }, transaction);
+        if (await ValidateRosterCoverageAsync(connection, transaction, clientId) is not null) return false;
+        await transaction.CommitAsync();
+        return deleted > 0;
     }
 
     public async Task<AttendanceReviewContext> GetAttendanceReviewContextAsync(int clientId, string month, int? workLocationId = null, int? reportingManagerUserId = null)
@@ -796,6 +815,8 @@ WHERE b.client_id=@ClientId
             AccessScope = reportingManagerUserId.HasValue ? "DirectReports" : "Client",
             Settings = settings,
             Shifts = shiftResolver.Shifts.ToList(),
+            ShiftAssignments = shiftResolver.Assignments.ToList(),
+            ShiftPolicies = shiftResolver.Policies.ToList(),
             EmployeeShiftIds = shiftResolver.EmployeeShiftIds,
             Schedule = schedule,
             Preferences = preferences,
@@ -915,6 +936,9 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
             .ToDictionary(row => row.Code, row => row, StringComparer.OrdinalIgnoreCase);
         var invalidStatus = request.Rows.FirstOrDefault(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes, shiftResolver.Settings.Rules.AllowManualHalfDay) is null);
         if (invalidStatus is not null) return (null, $"Attendance status '{invalidStatus.Status}' is not valid.");
+        var shiftValidation = request.Rows.Where(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes, shiftResolver.Settings.Rules.AllowManualHalfDay) == "Present")
+            .Select(row => AttendancePunchCalculator.ReviewError(row.CheckInTime, row.CheckOutTime, shiftResolver.Resolve(request.EmployeeId, row.AttendanceDate))).FirstOrDefault(message => message is not null);
+        if (shiftValidation is not null) return (null, shiftValidation);
         var rows = request.Rows.Where(row => row.AttendanceDate.ToString("yyyy-MM") == request.Month).Select(row =>
         {
             var status = NormalizeAttendanceStatus(row.Status, activeLeaveTypes, shiftResolver.Settings.Rules.AllowManualHalfDay)!;
@@ -970,6 +994,9 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
         {
             var invalidStatus = group.FirstOrDefault(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes, shiftResolver.Settings.Rules.AllowManualHalfDay) is null);
             if (invalidStatus is not null) return (null, $"Attendance status '{invalidStatus.Status}' is not valid.");
+            var shiftValidation = group.Where(row => NormalizeAttendanceStatus(row.Status, activeLeaveTypes, shiftResolver.Settings.Rules.AllowManualHalfDay) == "Present")
+                .Select(row => AttendancePunchCalculator.ReviewError(row.CheckInTime, row.CheckOutTime, shiftResolver.Resolve(group.Key, row.AttendanceDate))).FirstOrDefault(message => message is not null);
+            if (shiftValidation is not null) return (null, shiftValidation);
             var employeeRows = group.Select(row =>
             {
                 var status = NormalizeAttendanceStatus(row.Status, activeLeaveTypes, shiftResolver.Settings.Rules.AllowManualHalfDay)!;
@@ -2862,6 +2889,7 @@ g.attendance_cycle_start_day AS AttendanceCycleStartDay,
 g.attendance_cycle_end_day AS AttendanceCycleEndDay,
 g.payroll_report_generation_day AS PayrollReportGenerationDay,
 g.shift_id AS ShiftId, COALESCE((SELECT s.shift_name FROM attendance_shifts s WHERE s.id=g.shift_id AND s.client_id=g.client_id),'') AS ShiftName,
+g.attendance_mode AS AttendanceMode,COALESCE(g.allowed_shift_ids_json,'[]') AS AllowedShiftIdsJson,
 g.is_active AS IsActive, g.created_at AS CreatedAt, g.updated_at AS UpdatedAt,
 COUNT(DISTINCT e.Id) AS EmployeeCount,
 COALESCE(GROUP_CONCAT(DISTINCT CONCAT(e.FirstName, ' ', e.LastName, ' (', e.EmployeeCode, ')') ORDER BY e.FirstName, e.LastName SEPARATOR ', '), '') AS EmployeeNames

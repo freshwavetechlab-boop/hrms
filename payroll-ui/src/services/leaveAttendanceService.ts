@@ -37,7 +37,7 @@ export const getAttendanceGroups = (clientId = 0) => getJson<AttendanceGroup[]>(
 export async function saveAttendanceGroup(group: AttendanceGroup) {
   return postJson('/api/leave-attendance/groups', group, null as AttendanceGroup | null)
 }
-export async function saveAttendanceGroupBatch(group: Pick<AttendanceGroup, 'shiftId' | 'policyBatchId' | 'clientId' | 'name' | 'workWeek' | 'attendanceCycleStartDay' | 'attendanceCycleEndDay' | 'payrollReportGenerationDay' | 'isActive' | 'employeeIds'> & { workLocationIds: number[]; departments: string[]; designations: string[] }) {
+export async function saveAttendanceGroupBatch(group: Pick<AttendanceGroup, 'attendanceMode' | 'allowedShiftIds' | 'shiftId' | 'policyBatchId' | 'clientId' | 'name' | 'workWeek' | 'attendanceCycleStartDay' | 'attendanceCycleEndDay' | 'payrollReportGenerationDay' | 'isActive' | 'employeeIds'> & { workLocationIds: number[]; departments: string[]; designations: string[] }) {
   return postJson('/api/leave-attendance/groups/batch', group, [] as AttendanceGroup[])
 }
 export async function deleteAttendanceGroup(clientId: number, id: number) {

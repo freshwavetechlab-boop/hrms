@@ -50,13 +50,16 @@
 .salary-simulate-button.ant-btn{border-color:#c7d2fe!important;background:#eef2ff!important;color:#4338ca!important;font-weight:800!important}
 .salary-calculation-player{display:grid;gap:12px;border:1px solid #e5e8f0;border-radius:12px;background:#fff;padding:14px}
 .salary-player-modal{position:relative;width:min(1120px,100%);max-height:calc(100vh - 40px);overflow:auto;padding:18px;box-shadow:0 24px 70px rgba(15,23,42,.28)}
+.salary-player-modal>*{min-width:0}
+.salary-player-head>div:first-child{min-width:0;flex:1}
+.salary-player-modal .salary-player-days{flex-shrink:0;margin-right:44px}
 .salary-player-kicker{display:block;margin-bottom:4px;color:#6546e8;font-size:.68rem;font-weight:900;letter-spacing:.08em;text-transform:uppercase}
 .salary-player-head{display:flex;justify-content:space-between;gap:14px;align-items:end;border-bottom:1px solid #edf0f6;padding-bottom:12px}
 .salary-player-head h3{margin:0;color:#172136;font-size:1rem}
 .salary-player-head p{margin:3px 0 0;color:#667085;font-size:.76rem}
 .salary-player-days{display:grid;grid-template-columns:repeat(2,120px);gap:9px}
 .salary-player-days label{display:grid;gap:4px;color:#465067;font-size:.68rem;font-weight:900}
-.salary-player-days input{height:34px;border:1px solid #dfe3ed;border-radius:9px;padding:0 10px;font:inherit;text-align:right}
+.salary-player-days input{width:100%;min-width:0;height:34px;border:1px solid #dfe3ed;border-radius:9px;padding:0 10px;font:inherit;text-align:right}
 .salary-player-summary{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:10px}
 .salary-player-summary article{padding:10px;border:1px solid #e5e8f0;border-radius:10px;background:#fafbfc}
 .salary-player-summary span{display:block;color:#667085;font-size:.66rem;font-weight:900;text-transform:uppercase;letter-spacing:.04em}
@@ -72,6 +75,7 @@
 .salary-player-row code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:8px;background:#f5f3ff;color:#4338ca;padding:6px 8px;font-size:.72rem}
 .salary-player-row output{text-align:right;color:#172136;font-size:.76rem;font-weight:900;font-variant-numeric:tabular-nums}
 .salary-player-empty{margin:0;padding:14px;color:#667085;font-size:.78rem}
+@media(max-width:720px){.salary-player-modal .salary-player-days{margin-right:0}.salary-player-head>div:first-child{padding-right:36px}}
 .salary-formula-builder{display:grid;gap:12px;background:#fff}
 .formula-modal-backdrop{position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:20px;background:rgba(15,23,42,.48);backdrop-filter:blur(2px)}
 .formula-modal{position:relative;width:min(980px,100%);max-height:calc(100vh - 40px);overflow:auto;border:1px solid #e5e8f0;border-radius:14px;background:#fff;padding:18px;box-shadow:0 24px 70px rgba(15,23,42,.28)}

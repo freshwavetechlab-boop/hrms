@@ -47,7 +47,7 @@ const catalogue = {
   'Onboarding Reports': [{ name: 'Joining Tracker' }, { name: 'Documentation Status' }, { name: 'Induction Completion' }, { name: 'Pending Onboarding Tasks' }],
   'Separation Reports': [{ name: 'Resignation Report' }, { name: 'Attrition Report' }, { name: 'Full & Final Tracker' }, { name: 'Notice Period Tracker' }],
   'Compliance Reports': [{ name: 'PF Report', code: 'pf-register' }, { name: 'PF ECR Report', code: 'pf-ecr-report' }, { name: 'ESI Report', code: 'esi-register' }, { name: 'PT Report', code: 'pt-register' }, { name: 'Statutory Deduction Summary', code: 'statutory-summary' }],
-  'Tax Reports': [{ name: 'TDS Register', code: 'tds-register' }, { name: 'Employee Tax Projection' }, { name: 'Form 16 Register' }, { name: 'Tax Liability Report', code: 'tds-register' }],
+  'Tax Reports': [{ name: 'TDS Register', code: 'tds-register' }, { name: 'Employee Tax Projection' }, { name: 'Form 16 Preparation Register', code: 'form16-register' }, { name: 'Tax Liability Report', code: 'tds-register' }],
   'Loan & Advance Reports': [{ name: 'Loan Register' }, { name: 'Loan Outstanding Report' }, { name: 'EMI Recovery Report' }, { name: 'Salary Advance Report' }],
   'Cost Center Reports': [{ name: 'Cost Center Salary Cost' }, { name: 'Cost Center Headcount' }, { name: 'Cost Center Variance' }, { name: 'Cost Allocation Report' }],
   'Department Reports': [{ name: 'Department Headcount', code: 'headcount' }, { name: 'Department Payroll Cost', code: 'headcount' }, { name: 'Department Attrition' }, { name: 'Department Attendance' }],
@@ -84,9 +84,9 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   const periodCodes = ['daily-attendance', 'attendance-trend', 'leave-utilization', 'leave-approval-status']
   const monthCodes = ['monthly-attendance', 'attendance-exception', 'salary-register', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary', 'client-billing-report', 'payroll-cost-report', 'monthly-advice-report', 'bank-transfer-report']
   const payRunCodes = ['salary-register', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary', 'client-billing-report', 'payroll-cost-report', 'monthly-advice-report', 'bank-transfer-report']
-  const employeeCodes = ['salary-register', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary']
+  const employeeCodes = ['salary-register', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary', 'form16-register']
   const showPeriod = !!activeReport.code && periodCodes.includes(activeReport.code)
-  const showMonth = !!activeReport.code && monthCodes.includes(activeReport.code)
+  const showMonth = !!activeReport.code && (monthCodes.includes(activeReport.code) || activeReport.code === 'form16-register')
   const showPayRun = !!activeReport.code && payRunCodes.includes(activeReport.code)
   const showEmployee = !!activeReport.code && employeeCodes.includes(activeReport.code)
   const showComponent = activeReport.code === 'component-ledger'
@@ -352,6 +352,7 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
         {showPeriod && <label className="report-client"><span>To date</span><input type="date" value={toDate} onChange={e => setToDate(e.target.value)} /></label>}
       </div>}
     </div>
+    {activeReport.code === 'form16-register' && <Alert type="warning" showIcon message="Preparation register only; not an issued Form 16 certificate. Amounts cover finalized payroll in the financial year containing the selected month. Challan and certificate reconciliation remains required." />}
     {activeReport.code ? <div className="card report-result">{reportError
       ? <div className="report-load-state"><Alert showIcon type="error" message="Report could not be loaded" description={reportError} action={<Button onClick={() => setReportReloadKey(value => value + 1)}>Retry</Button>} /></div>
       : reportLoading

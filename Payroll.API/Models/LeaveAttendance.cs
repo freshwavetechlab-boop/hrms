@@ -60,6 +60,8 @@ public class SaveLeaveAttendancePreferencesRequest
 
 public class AttendanceSettings
 {
+    public string? ResolutionError { get; set; }
+    public bool RequiresPunches { get; set; }
     public int? ShiftId { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public AttendanceShift? Shift { get; set; }
@@ -122,7 +124,7 @@ public class GeoFenceEmployeeOption
     public string Designation { get; set; } = string.Empty;
 }
 
-public class AttendanceGroup
+public class AttendanceGroup : AttendancePolicyShiftConfig
 {
     public int? ShiftId { get; set; }
     public string ShiftName { get; set; } = string.Empty;
@@ -149,7 +151,7 @@ public class AttendanceGroup
 
 public class SaveAttendanceGroupRequest : AttendanceGroup { }
 
-public class SaveAttendanceGroupBatchRequest
+public class SaveAttendanceGroupBatchRequest : AttendancePolicyShiftConfig
 {
     public int? ShiftId { get; set; }
     public string PolicyBatchId { get; set; } = string.Empty;
@@ -264,6 +266,8 @@ public class EmployeeLeaveBalanceSummary
 public class AttendanceReviewContext
 {
     public List<AttendanceShift> Shifts { get; set; } = [];
+    public List<AttendanceShiftAssignment> ShiftAssignments { get; set; } = [];
+    public List<EmployeeShiftPolicy> ShiftPolicies { get; set; } = [];
     public IReadOnlyDictionary<int, int> EmployeeShiftIds { get; set; } = new Dictionary<int, int>();
     public int ClientId { get; set; }
     public string ClientName { get; set; } = string.Empty;

@@ -1,0 +1,14 @@
+.settings-master-drawer .settings-quick-form.attendance-roster-form {
+  display: block !important;
+  min-height: 0 !important;
+}
+
+.settings-master-drawer .settings-quick-form.attendance-roster-form .ant-form-item {
+  margin-bottom: 14px !important;
+}
+
+.attendance-roster-form .ant-table-wrapper,
+.attendance-roster-form .ant-space-compact {
+  min-width: 0;
+  max-width: 100%;
+}

@@ -53,6 +53,7 @@ public partial class EssMssRepository
             }
             var shiftResolver = await AttendanceShiftResolver.LoadAsync(db, tx, device.ClientId, employee.Id);
             var (date, settings) = shiftResolver.ResolvePunch(employee.Id, local);
+            if (settings.ResolutionError is not null) { results.Add(Reject(settings.ResolutionError)); continue; }
             if (settings.Id == 0 && settings.Shift is null) { results.Add(Reject("Save attendance shift and hours settings before importing punches.")); continue; }
             if (await IsLeavePeriodLockedAsync(db, tx, device.ClientId, employee.Id, date, date))
             { results.Add(Reject("Attendance belongs to a submitted or completed payroll period.")); continue; }

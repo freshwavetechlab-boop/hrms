@@ -1,0 +1,37 @@
+/* These forms are portalled outside .hrms-page-body. Use the same shell controls. */
+.salary-form-controls input.ant-input,
+.salary-form-controls textarea.ant-input,
+.salary-form-controls .ant-select .ant-select-selector {
+  border: 1px solid var(--hrms-line, #dbe3ec);
+  border-radius: 8px;
+  background: var(--hrms-panel, #fff);
+  color: var(--hrms-ink, #172136);
+  font-family: 'DM Sans', Inter, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0;
+  box-shadow: none;
+}
+.salary-form-controls input.ant-input { height: 36px; min-height: 36px; padding: 6px 11px; }
+.salary-form-controls textarea.ant-input { padding: 8px 11px; }
+.salary-form-controls .ant-select-single { height: 36px; }
+.salary-form-controls .ant-select-single .ant-select-selector { height: 36px; padding: 0 11px; }
+.salary-form-controls .ant-select-single .ant-select-selection-item,
+.salary-form-controls .ant-select-single .ant-select-selection-placeholder { line-height: 34px; }
+.salary-form-controls input.ant-input:hover,
+.salary-form-controls textarea.ant-input:hover,
+.salary-form-controls .ant-select:hover .ant-select-selector { border-color: var(--hrms-brand, #0b6fad); }
+.salary-form-controls input.ant-input:focus,
+.salary-form-controls textarea.ant-input:focus,
+.salary-form-controls .ant-select-focused .ant-select-selector {
+  border-color: var(--hrms-brand, #0b6fad);
+  box-shadow: 0 0 0 2px rgb(11 111 173 / 10%);
+}
+.salary-form-controls input.ant-input[readonly],
+.salary-form-controls input.ant-input:disabled { background: var(--hrms-canvas, #f5f8fc); }
+.salary-form-controls .ant-select-selection-search-input,
+.salary-form-controls .ant-select-selection-search-input:focus {
+  min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none;
+}
+.salary-form-controls .ant-radio-button-wrapper > span:first-child,
+.salary-form-controls .ant-checkbox-wrapper > span:first-child { margin-bottom: 0; }

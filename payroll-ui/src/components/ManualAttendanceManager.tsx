@@ -1,4 +1,4 @@
-import { calculateReviewShift, resolveAttendanceShift, manualHalfDayAttendance, manualHalfDayStatus } from '../shared/attendanceShift'
+import { calculateReviewShift, resolveAttendanceShift, manualHalfDayAttendance, manualHalfDayStatus, hasExplicitAttendancePolicy } from '../shared/attendanceShift'
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { Button, Card, Input, Space, Typography } from 'antd'
@@ -305,8 +305,9 @@ export default function ManualAttendanceManager({ clientId, group = null, review
     const manual = manualHalfDayAttendance(normalized, patch)
     if (manual) return { id: existing?.id ?? 0, clientId, employeeId, attendanceDate: date, ...manual, remarks: existing?.remarks || '' }
     const shift = resolveAttendanceShift(reviewContext, employeeId, date)
-    const checkIn = normalized === 'Present' ? apiTime(patch.checkInTime !== undefined ? patch.checkInTime : existing?.checkInTime || shift?.startTime || settings.checkInTime) : null
-    const checkOut = normalized === 'Present' ? apiTime(patch.checkOutTime !== undefined ? patch.checkOutTime : existing?.checkOutTime || shift?.endTime || settings.checkOutTime) : null
+    const explicit = hasExplicitAttendancePolicy(reviewContext, employeeId)
+    const checkIn = normalized === 'Present' ? apiTime(patch.checkInTime !== undefined ? patch.checkInTime : existing?.checkInTime || (explicit ? null : shift?.startTime || settings.checkInTime)) : null
+    const checkOut = normalized === 'Present' ? apiTime(patch.checkOutTime !== undefined ? patch.checkOutTime : existing?.checkOutTime || (explicit ? null : shift?.endTime || settings.checkOutTime)) : null
     const calculated = normalized === 'Present' ? calculateReviewShift(reviewContext, employeeId, date, checkIn, checkOut) : null
     const hours = normalized === 'Present' ? calculated?.hours ?? hoursBetween(checkIn, checkOut) : 0
     // A saved weekly off already includes the server's dated entitlement rule.

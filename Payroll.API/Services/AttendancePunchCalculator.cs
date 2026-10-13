@@ -15,6 +15,7 @@ public static class AttendancePunchCalculator
 
     public static DateTime AttendanceDate(DateTime local, AttendanceSettings settings)
     {
+        if (settings.Shift?.Rules.DayBoundary is TimeSpan boundary) return local.TimeOfDay < boundary ? local.Date.AddDays(-1) : local.Date;
         if (settings.Shift is { IsOvernight: false } || settings.CheckOutTime >= settings.CheckInTime) return local.Date;
         // Overnight shifts belong to their start date. Split the gap between shifts.
         var cutoff = settings.CheckOutTime + (settings.CheckInTime - settings.CheckOutTime) / 2;
@@ -23,6 +24,7 @@ public static class AttendancePunchCalculator
 
     public static (DateTime Start, DateTime End) Bounds(DateTime date, AttendanceSettings settings)
     {
+        if (settings.Shift?.Rules.DayBoundary is TimeSpan boundary) return (date.Date + boundary, date.Date.AddDays(1) + boundary);
         if (settings.Shift is { IsOvernight: false } || settings.CheckOutTime >= settings.CheckInTime) return (date.Date, date.Date.AddDays(1));
         var cutoff = settings.CheckOutTime + (settings.CheckInTime - settings.CheckOutTime) / 2;
         return (date.Date + cutoff, date.Date.AddDays(1) + cutoff);
@@ -30,6 +32,7 @@ public static class AttendancePunchCalculator
 
     public static Result Calculate(IEnumerable<Punch> source, DateTime date, AttendanceSettings settings, AttendanceRules rules)
     {
+        if (settings.ResolutionError is not null) throw new InvalidOperationException(settings.ResolutionError);
         var punches = source.OrderBy(p => p.At).ToArray();
         DateTime? firstIn = null, lastOut = null, open = null;
         decimal pairedHours = 0;
@@ -44,7 +47,7 @@ public static class AttendancePunchCalculator
         var incomplete = open is not null || missingIn || firstIn is null || lastOut is null;
         var hours = settings.WorkingHoursCalculation == "Every valid check-in and check-out" ? pairedHours
             : firstIn is not null && lastOut is not null ? WorkingHours(firstIn.Value, lastOut.Value, date, settings) : 0;
-        if (settings.Shift is { } configured) hours -= configured.BreakMinutes / 60m;
+        if (settings.Shift is { } configured && configured.Rules.BreakMode == "Fixed") hours -= configured.BreakMinutes / 60m;
         hours = Math.Round(Math.Clamp(hours, 0, settings.MaximumHoursAllowedForFullDay), 2);
         var payable = incomplete ? 0 : hours >= settings.MinimumHoursForFullDay ? 1m : hours >= settings.MinimumHoursForHalfDay ? .5m : 0m;
         var flags = new List<string>();
@@ -66,6 +69,8 @@ public static class AttendancePunchCalculator
     {
         if (settings.Shift?.ShiftType == "Fixed")
         {
+            if (settings.Shift.Rules.Segments.Count > 0)
+                return settings.Shift.Rules.Segments.Sum(segment => Math.Max(0, (decimal)((end < date.Date.AddMinutes(segment.EndMinute) ? end : date.Date.AddMinutes(segment.EndMinute)) - (start > date.Date.AddMinutes(segment.StartMinute) ? start : date.Date.AddMinutes(segment.StartMinute))).TotalHours));
             var shiftStart = date.Date + settings.CheckInTime;
             var shiftEnd = date.Date + settings.CheckOutTime + (settings.Shift.IsOvernight ? TimeSpan.FromDays(1) : TimeSpan.Zero);
             start = start < shiftStart ? shiftStart : start; end = end > shiftEnd ? shiftEnd : end;
@@ -73,12 +78,17 @@ public static class AttendancePunchCalculator
         return Math.Max(0, (decimal)(end - start).TotalHours);
     }
 
+    public static string? ReviewError(TimeSpan? checkIn, TimeSpan? checkOut, AttendanceSettings settings) => settings.ResolutionError
+        ?? (settings.RequiresPunches && (checkIn is null || checkOut is null) ? "Punch-based attendance requires IN and OUT times. Use a regularization request to correct missing punches." : null);
+
     public static Result? CalculateReview(TimeSpan? checkIn, TimeSpan? checkOut, DateTime date, AttendanceSettings settings)
     {
+        if (ReviewError(checkIn, checkOut, settings) is string error) throw new InvalidOperationException(error);
         if (settings.Shift is null || checkIn is null || checkOut is null) return null;
         var start = date.Date + checkIn.Value;
+        if (settings.Shift.Rules.DayBoundary is TimeSpan boundary && checkIn < boundary) start = start.AddDays(1);
         if (settings.Shift.IsOvernight && checkIn.Value < settings.CheckOutTime + (settings.CheckInTime - settings.CheckOutTime) / 2) start = start.AddDays(1);
-        var end = start.Date + checkOut.Value + (settings.Shift.IsOvernight && checkOut < checkIn ? TimeSpan.FromDays(1) : TimeSpan.Zero);
+        var end = start.Date + checkOut.Value + ((settings.Shift.IsOvernight || settings.Shift.Rules.DayBoundary.HasValue) && checkOut < checkIn ? TimeSpan.FromDays(1) : TimeSpan.Zero);
         return Calculate([new("CheckIn", start), new("CheckOut", end)], date, settings, settings.Rules);
     }
 }

@@ -13,6 +13,13 @@ public class ReportingRepository(IConfiguration configuration)
         filter.Month = string.IsNullOrWhiteSpace(filter.Month) ? DateTime.Today.ToString("yyyy-MM") : filter.Month;
         filter.FromDate = string.IsNullOrWhiteSpace(filter.FromDate) ? $"{filter.Month}-01" : filter.FromDate;
         filter.ToDate = string.IsNullOrWhiteSpace(filter.ToDate) ? DateTime.Parse($"{filter.Month}-01").AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd") : filter.ToDate;
+        if (code == "form16-register")
+        {
+            var month = DateTime.ParseExact(filter.Month + "-01", "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            var start = new DateTime(month.Month >= 4 ? month.Year : month.Year - 1, 4, 1);
+            filter.FromDate = start.ToString("yyyy-MM");
+            filter.ToDate = start.AddYears(1).ToString("yyyy-MM");
+        }
         if (code == "client-billing-report" || code == "payroll-cost-report")
             return await RunClientBillingReportAsync(db, filter);
         var monthlyAdviceSql = @"SELECT p.EmployeeCode AS `Emp Code`,
@@ -28,6 +35,7 @@ LEFT JOIN employeepersonaldetails pd ON pd.EmployeeId=p.EmployeeId
 LEFT JOIN employeepaymentdetails pay ON pay.EmployeeId=p.EmployeeId
 WHERE p.ClientId=@ClientId AND (@PayRunId IS NULL OR r.Id=@PayRunId) AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month) AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId) AND p.IsSkipped=FALSE
 AND LOWER(COALESCE(pay.PaymentMode,''))='bank transfer'
+AND r.Status IN ('Approved','Partially Paid','Paid')
 ORDER BY p.EmployeeCode";
         var pfRegisterSql = @"SELECT x.`Pay Period`,
 x.`Employee Code`,
@@ -52,6 +60,7 @@ FROM payrunemployees p
 JOIN payruns r ON r.Id=p.PayRunId
 LEFT JOIN payrunemployeelines l ON l.PayRunEmployeeId=p.Id
 WHERE p.ClientId=@ClientId AND (@PayRunId IS NULL OR r.Id=@PayRunId) AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month) AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId) AND p.IsSkipped=FALSE
+AND r.Status IN ('Approved','Partially Paid','Paid')
 GROUP BY r.PayPeriod,p.EmployeeCode,p.EmployeeName,p.Department
 ) x
 WHERE x.`Employee PF` <> 0 OR x.VPF <> 0 OR x.EPS <> 0 OR x.`Employer PF Actual` <> 0
@@ -85,11 +94,11 @@ LEFT JOIN (
 JOIN (
     SELECT l.PayRunEmployeeId,
     SUM(CASE WHEN COALESCE(l.Category,'') IN ('Earning','Reimbursement') THEN l.Amount ELSE 0 END) AS GrossWages,
-    LEAST(15000, SUM(CASE WHEN UPPER(TRIM(l.ComponentCode))='BASIC' THEN l.Amount ELSE 0 END)) AS EpfWages,
+    CASE WHEN COUNT(CASE WHEN UPPER(TRIM(l.ComponentCode))='BASIC' THEN 1 END)>0 THEN LEAST(15000, SUM(CASE WHEN UPPER(TRIM(l.ComponentCode))='BASIC' THEN l.Amount ELSE 0 END)) END AS EpfWages,
     CASE WHEN SUM(CASE WHEN COALESCE(l.StatutoryType,'')='EPS' OR UPPER(TRIM(l.ComponentCode))='EPS' THEN l.Amount ELSE 0 END) > 0
         THEN LEAST(15000, ROUND(SUM(CASE WHEN COALESCE(l.StatutoryType,'')='EPS' OR UPPER(TRIM(l.ComponentCode))='EPS' THEN l.Amount ELSE 0 END) / 0.0833, 0))
         ELSE 0 END AS EpsWages,
-    LEAST(15000, SUM(CASE WHEN UPPER(TRIM(l.ComponentCode))='BASIC' THEN l.Amount ELSE 0 END)) AS EdliWages,
+    CASE WHEN COUNT(CASE WHEN UPPER(TRIM(l.ComponentCode))='BASIC' THEN 1 END)>0 THEN LEAST(15000, SUM(CASE WHEN UPPER(TRIM(l.ComponentCode))='BASIC' THEN l.Amount ELSE 0 END)) END AS EdliWages,
     SUM(CASE WHEN COALESCE(l.StatutoryType,'')='PF Employee' OR UPPER(TRIM(l.ComponentCode)) IN ('PF','EPF') THEN l.Amount ELSE 0 END) AS EmployeePf,
     SUM(CASE WHEN COALESCE(l.StatutoryType,'')='EPS' OR UPPER(TRIM(l.ComponentCode))='EPS' THEN l.Amount ELSE 0 END) AS EpsContribution,
     SUM(CASE WHEN COALESCE(l.StatutoryType,'')='PF Employer' OR UPPER(TRIM(l.ComponentCode)) IN ('EPF_ER','EPF_ER_BAL','PF_ER','PF_EMPLOYER') THEN l.Amount ELSE 0 END) AS EmployerPfActual
@@ -102,6 +111,7 @@ AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month)
 AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId)
 AND p.IsSkipped=FALSE
 AND (x.EmployeePf <> 0 OR x.EpsContribution <> 0 OR x.EmployerPfActual <> 0)
+AND r.Status IN ('Approved','Partially Paid','Paid')
 ORDER BY p.EmployeeCode";
         var esiRegisterSql = @"SELECT r.PayPeriod AS `Pay Period`,
 p.EmployeeCode AS `Employee Code`,
@@ -113,6 +123,7 @@ FROM payrunemployees p
 JOIN payruns r ON r.Id=p.PayRunId
 LEFT JOIN payrunemployeelines l ON l.PayRunEmployeeId=p.Id
 WHERE p.ClientId=@ClientId AND (@PayRunId IS NULL OR r.Id=@PayRunId) AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month) AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId) AND p.IsSkipped=FALSE
+AND r.Status IN ('Approved','Partially Paid','Paid')
 GROUP BY r.PayPeriod,p.EmployeeCode,p.EmployeeName,p.Department
 HAVING `Employee ESI` <> 0 OR `Employer ESI` <> 0
 ORDER BY p.EmployeeCode";
@@ -131,6 +142,7 @@ LEFT JOIN employeepersonaldetails ep ON ep.EmployeeId=p.EmployeeId
 LEFT JOIN worklocations w ON w.Id=e.WorkLocationId
 LEFT JOIN organizations o ON 1=1
 WHERE r.ClientId=@ClientId AND (@PayRunId IS NULL OR r.Id=@PayRunId) AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month) AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId) AND (COALESCE(l.StatutoryType,'')='Professional Tax' OR UPPER(TRIM(l.ComponentCode)) IN ('PT','PT_LWF_WC')) AND l.Amount > 0
+AND r.Status IN ('Approved','Partially Paid','Paid') AND p.IsSkipped=FALSE
 GROUP BY r.PayPeriod,p.EmployeeCode,p.EmployeeName,p.Department,ep.State,w.State,o.ProfessionalTaxNumber
 ORDER BY p.EmployeeCode";
         var statutorySummarySql = @"SELECT x.`Pay Period`,
@@ -183,6 +195,7 @@ AND (@PayRunId IS NULL OR r.Id=@PayRunId)
 AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month)
 AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId)
 AND p.IsSkipped=FALSE
+AND r.Status IN ('Approved','Partially Paid','Paid')
 ) x
 WHERE x.`Statutory Group` <> ''
 GROUP BY x.`Pay Period`,x.`Pay Run Id`,x.`Employee Code`,x.Employee,x.Department,x.`Statutory Group`,x.`Statutory Type`,x.`Component Code`,x.Component
@@ -242,12 +255,23 @@ SUM(CASE WHEN l.StatutoryType='TDS' OR l.ComponentCode='TDS' THEN l.Amount ELSE 
 FROM payrunemployees p
 JOIN payruns r ON r.Id=p.PayRunId
 LEFT JOIN payrunemployeelines l ON l.PayRunEmployeeId=p.Id
-LEFT JOIN tax_computation_snapshots t ON t.pay_run_id=r.Id AND t.employee_id=p.EmployeeId
+LEFT JOIN tax_computation_snapshots t ON t.id=(SELECT MAX(saved.id) FROM tax_computation_snapshots saved WHERE saved.pay_run_id=r.Id AND saved.employee_id=p.EmployeeId)
 WHERE p.ClientId=@ClientId AND (@PayRunId IS NULL OR r.Id=@PayRunId) AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month) AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId) AND p.IsSkipped=FALSE
+AND r.Status IN ('Approved','Partially Paid','Paid')
 GROUP BY r.PayPeriod,p.EmployeeCode,p.EmployeeName,p.Department,t.regime,t.taxable_income,t.total_annual_tax,t.remaining_tax
 HAVING TDS <> 0 OR `Annual Tax` <> 0
 ORDER BY p.EmployeeCode",
             "statutory-summary" => statutorySummarySql,
+            "form16-register" => @"SELECT p.EmployeeCode AS `Employee Code`, p.EmployeeName AS Employee,
+COALESCE(pd.PanNumber,'') AS PAN, @FromDate AS `FY Starting Month`, COUNT(DISTINCT r.PayPeriod) AS `Processed Months`,
+SUM(p.GrossPay+p.OneTimeEarnings) AS `Payroll Earnings`, SUM(COALESCE(t.Tds,0)) AS `TDS Deducted`,
+CASE WHEN NULLIF(TRIM(pd.PanNumber),'') IS NULL THEN 'PAN missing' ELSE 'Review against challans and issued certificate' END AS `Preparation Status`
+FROM payrunemployees p JOIN payruns r ON r.Id=p.PayRunId
+LEFT JOIN employeepersonaldetails pd ON pd.EmployeeId=p.EmployeeId
+LEFT JOIN (SELECT PayRunEmployeeId,SUM(Amount) Tds FROM payrunemployeelines WHERE StatutoryType='TDS' OR ComponentCode='TDS' GROUP BY PayRunEmployeeId) t ON t.PayRunEmployeeId=p.Id
+WHERE p.ClientId=@ClientId AND r.Status IN ('Approved','Partially Paid','Paid') AND p.IsSkipped=FALSE
+AND r.PayPeriod>=@FromDate AND r.PayPeriod<@ToDate AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId)
+GROUP BY p.EmployeeId,p.EmployeeCode,p.EmployeeName,pd.PanNumber ORDER BY p.EmployeeCode",
             "employee-master" => $@"SELECT c.Name AS Client,
 e.EmployeeCode AS `Employee Code`, {EmployeeClassification.Columns}, CONCAT(e.FirstName,' ',e.LastName) AS Employee,
 e.WorkEmail AS `Work Email`, e.Department, e.Designation, w.Name AS Location,
@@ -329,6 +353,8 @@ ORDER BY r.CreatedAt DESC",
         if (sql is null)
             return new ReportResult { Title = code, Columns = [], Rows = [] };
         var rows = (await db.QueryAsync(sql, filter)).Select(row => ((IDictionary<string, object>)row).ToDictionary(x => x.Key, x => (object?)x.Value)).ToList();
+        if (code == "pf-ecr-report" && rows.Any(row => row.GetValueOrDefault("EPF Wages") is null or DBNull || row.GetValueOrDefault("EDLI Wages") is null or DBNull))
+            throw new InvalidOperationException("PF wage basis is unavailable in this payroll snapshot. Configure the dated PF policy and recalculate an unpaid draft, or reconcile the historical ECR manually. A custom wage code cannot safely be treated as BASIC.");
         return new ReportResult { Title = code, Columns = rows.FirstOrDefault()?.Keys.ToList() ?? [], Rows = rows };
     }
 

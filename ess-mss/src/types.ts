@@ -1,4 +1,4 @@
-import type { AttendanceShift } from './shared/attendanceShift'
+import type { AttendanceShift, AttendanceShiftAssignment, EmployeeShiftPolicy } from './shared/attendanceShift'
 export type User = {
   id: number
   email: string
@@ -65,7 +65,7 @@ export type LeaveAttendancePreferences = { id: number; clientId: number; workLoc
 export type ClientAttendanceSchedule = { workWeek: string; salaryDays: string; fixedDays: string; payDay: string; firstPayPeriod: string }
 export type ManagedAttendanceHoliday = { id: number; clientId: number; name: string; holidayType: 'Holiday' | 'Restricted Holiday'; startDate: string; endDate: string; description: string; allLocations: boolean; workLocationIds: number[]; workLocations: string }
 export type EmployeeLeaveBalanceSummary = { employeeId: number; leaveTypeId: number; leaveTypeCode: string; leaveTypeName: string; balance: number; balanceDate: string; allowNegativeLeaveBalance: boolean }
-export type AttendanceReviewContext = { shifts?: AttendanceShift[]; employeeShiftIds?: Record<string, number>; clientId?: number; clientName?: string; accessScope?: 'Client' | 'DirectReports'; settings: AttendanceSettings; schedule: ClientAttendanceSchedule; preferences: LeaveAttendancePreferences; holidays: ManagedAttendanceHoliday[]; leaveBalances: EmployeeLeaveBalanceSummary[] }
+export type AttendanceReviewContext = { shiftAssignments?: AttendanceShiftAssignment[]; shiftPolicies?: EmployeeShiftPolicy[]; shifts?: AttendanceShift[]; employeeShiftIds?: Record<string, number>; clientId?: number; clientName?: string; accessScope?: 'Client' | 'DirectReports'; settings: AttendanceSettings; schedule: ClientAttendanceSchedule; preferences: LeaveAttendancePreferences; holidays: ManagedAttendanceHoliday[]; leaveBalances: EmployeeLeaveBalanceSummary[] }
 export type LeaveType = { id: number; clientId: number; name: string; code: string; type: 'Paid' | 'Unpaid'; allowNegativeLeaveBalance: boolean; allowHalfDay: boolean; attendanceAction: 'Mark as leave' | 'Mark as present'; isActive: boolean }
 export type AttendanceSummary = { presentDays: number; payableDays: number; totalWorkingDays: number }
 export type Holiday = { name: string; startDate: string; endDate: string }

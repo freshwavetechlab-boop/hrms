@@ -87,7 +87,7 @@ public sealed class PfPolicyRepository(IConfiguration configuration)
         var baseId = Text(baseComponent, "id"); var baseLine = templateLines[baseId];
         var baseFormula = FirstText(Text(baseLine, "formula"), Text(baseLine, "value"), Text(baseComponent, "formula"), Text(baseComponent, "value"));
         var baseProRata = FirstText(Text(baseLine, "proRataOverride"), Text(baseComponent, "proRata"));
-        if (!baseProRata.Equals("true", StringComparison.OrdinalIgnoreCase) || baseFormula.Contains("PAYABLE_DAYS", StringComparison.OrdinalIgnoreCase) || baseFormula.Contains("PRESENT_DAYS", StringComparison.OrdinalIgnoreCase) || baseFormula.Contains("_EARNED", StringComparison.OrdinalIgnoreCase)) return (null, "PF base must be a monthly earning prorated once by payroll, not an already earned/day-based formula.");
+        if ((!baseProRata.Equals("true", StringComparison.OrdinalIgnoreCase) && Text(baseComponent, "calculationType") != "Daily Rate") || baseFormula.Contains("PAYABLE_DAYS", StringComparison.OrdinalIgnoreCase) || baseFormula.Contains("PRESENT_DAYS", StringComparison.OrdinalIgnoreCase) || baseFormula.Contains("_EARNED", StringComparison.OrdinalIgnoreCase)) return (null, "PF base must be a monthly earning prorated once, or a Daily Rate earning, not an already earned/day-based formula.");
         var basePriority = int.TryParse(Text(baseComponent, "priority"), out var bp) ? bp : 999;
         var mapped = new List<PfContributionRule>();
         foreach (var requested in request.Contributions)

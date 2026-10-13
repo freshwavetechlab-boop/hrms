@@ -379,6 +379,14 @@ WHERE table_schema = DATABASE() AND table_name = @TableName AND column_name = @C
 
     private static async Task SaveComponentsAsync(MySqlConnection connection, List<ComponentDto> rows)
     {
+        var existing = (await connection.QueryAsync<ComponentRow>("SELECT Id,CalculationType FROM salarycomponents")).ToDictionary(row => row.Id);
+        foreach (var row in rows)
+        {
+            if (existing.TryGetValue(row.Id, out var previous) && (previous.CalculationType == "Daily Rate") != (row.CalculationType == "Daily Rate"))
+                throw new InvalidOperationException("Existing salary components cannot be converted between monthly and daily rates. Create a separate component to preserve employee salary amounts.");
+            if (row.CalculationType == "Daily Rate" && (row.Category != "Earning" || !decimal.TryParse(row.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var rate) || rate <= 0))
+                throw new InvalidOperationException("A Daily Rate component must be an earning with a positive numeric daily rate.");
+        }
         var ids = rows.Where(x => x.Id > 0).Select(x => x.Id).Distinct().ToArray();
         if (ids.Length > 0) await connection.ExecuteAsync("DELETE FROM salarycomponents WHERE Id NOT IN @ids", new { ids }); else await connection.ExecuteAsync("DELETE FROM salarycomponents");
         foreach (var row in rows.Where(x => x.Id > 0))

@@ -1,0 +1,6 @@
+// Browser fixtures only. Engine arithmetic is covered by PayrollSimulationTests.
+export const cors = { 'access-control-allow-origin':'http://localhost:5173', 'access-control-allow-credentials':'true', 'access-control-allow-headers':'Content-Type, Authorization', 'access-control-allow-methods':'GET, POST, OPTIONS' }
+export function catalogueFixture(request) {
+  const system=['CTC','MONTHLY_CTC','ANNUAL_CTC','GROSS','GROSS_EARNED','PAYROLL_DAYS','TOTAL_DAYS','WORKING_DAYS','PAYABLE_DAYS','PRESENT_DAYS','LOP_DAYS','EARNINGS_BEFORE_THIS','FIXED_EARNINGS','FIXED_EARNINGS_BEFORE_THIS','EARNED_EARNINGS_BEFORE_THIS','MONTHLY_EARNINGS_BEFORE_THIS'].map(token=>({token,meaning:`Engine value ${token}`,source:'Payroll engine',unit:'Amount',example:'Fixture example',availability:'Supported',legacy:token==='GROSS'}))
+  return [...system,...request.components.filter(c=>c.active && c.id!==request.excludeComponentId).flatMap(c=>['','_MONTHLY','_EARNED'].map(suffix=>({token:c.code+suffix,componentId:c.id,meaning:c.name,source:'Salary component',unit:'Amount',example:'18000 at 15/30 = 9000',availability:request.includedComponentIds && !request.includedComponentIds.includes(c.id)?'Missing from this template':'Included in this template',legacy:false}))) ]
+}
