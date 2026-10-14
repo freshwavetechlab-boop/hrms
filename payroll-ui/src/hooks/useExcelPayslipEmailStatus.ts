@@ -19,7 +19,7 @@ export function useExcelPayslipEmailStatus(clientId: number, batch: ExcelPayslip
       const items = result.data?.items
       const validItems = Array.isArray(items) && items.length === activeBatch.rows.length && items.every(item =>
         item && typeof item.rowId === 'string' && typeof item.email === 'string' && typeof item.message === 'string'
-        && ['Pending', 'Queued', 'Sent', 'Failed', 'Unknown'].includes(item.status)
+        && ['Pending', 'Queued', 'Sent', 'Failed', 'Unknown', 'Bounced', 'Deferred', 'Delivered'].includes(item.status)
         && item.canSend === (item.status === 'Pending'))
       const ids = new Set(validItems ? items.map(item => item.rowId) : [])
       if (result.ok && validItems && ids.size === items.length && activeBatch.rows.every(row => ids.has(row.id))) {

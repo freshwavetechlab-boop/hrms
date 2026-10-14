@@ -288,9 +288,9 @@ VALUES (@CandidateCode,@ClientId,@FirstName,@LastName,@Email,@NormalizedEmail,@P
         var candidate = await CandidateByIdAsync(db, candidateId);
         if (candidate is null || !await CanAccessCandidateAsync(db, user, candidate)) return (null, "Candidate was not found.");
 
-        var noticePeriodDays = Math.Max(0, request.NoticePeriodDays ?? candidate.NoticePeriodDays ?? 0);
-        var currentCtc = Math.Max(0, request.CurrentCtc ?? candidate.CurrentCtc ?? 0);
-        var expectedCtc = Math.Max(0, request.ExpectedCtc ?? candidate.ExpectedCtc ?? 0);
+        var noticePeriodDays = request.NoticePeriodDays ?? candidate.NoticePeriodDays;
+        var currentCtc = request.CurrentCtc ?? candidate.CurrentCtc;
+        var expectedCtc = request.ExpectedCtc ?? candidate.ExpectedCtc;
         await db.ExecuteAsync(@"UPDATE recruitment_candidates SET NoticePeriodDays=@NoticePeriodDays,
 CurrentCtc=@CurrentCtc,ExpectedCtc=@ExpectedCtc,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id",
             new { Id = candidateId, NoticePeriodDays = noticePeriodDays, CurrentCtc = currentCtc, ExpectedCtc = expectedCtc });
@@ -755,9 +755,9 @@ ORDER BY attachment.id DESC LIMIT 1", new { ClientId = clientId, FileHash = file
                         CurrentTitle = parse.Facts.CurrentTitle,
                         CurrentLocation = Truncate(string.IsNullOrWhiteSpace(parse.Facts.CurrentLocation) ? parse.Facts.ResidentialAddress : parse.Facts.CurrentLocation, 180),
                         TotalExperienceMonths = parse.Facts.TotalExperienceMonths ?? 0,
-                        NoticePeriodDays = request.DraftReviewed ? Math.Max(0, request.DraftNoticePeriodDays ?? 0) : 0,
-                        CurrentCtc = request.DraftReviewed ? Math.Max(0, request.DraftCurrentCtc ?? 0) : 0,
-                        ExpectedCtc = request.DraftReviewed ? Math.Max(0, request.DraftExpectedCtc ?? 0) : 0,
+                        NoticePeriodDays = request.DraftReviewed && request.DraftNoticePeriodDays.HasValue ? Math.Max(0, request.DraftNoticePeriodDays.Value) : (int?)null,
+                        CurrentCtc = request.DraftReviewed && request.DraftCurrentCtc.HasValue ? Math.Max(0, request.DraftCurrentCtc.Value) : (decimal?)null,
+                        ExpectedCtc = request.DraftReviewed && request.DraftExpectedCtc.HasValue ? Math.Max(0, request.DraftExpectedCtc.Value) : (decimal?)null,
                         HighestQualification = parse.Facts.HighestQualification,
                         SourceType = string.IsNullOrWhiteSpace(request.SourceType) ? "Direct Sourcing" : request.SourceType.Trim(),
                         ProfileStatus = "Active",
@@ -781,7 +781,9 @@ ORDER BY attachment.id DESC LIMIT 1", new { ClientId = clientId, FileHash = file
 FirstName=@FirstName,LastName=@LastName,Email=@Email,NormalizedEmail=@NormalizedEmail,
 Phone=@Phone,NormalizedPhone=@NormalizedPhone,CurrentLocation=@CurrentLocation,
 TotalExperienceMonths=@TotalExperienceMonths,CurrentCompany=@CurrentCompany,
-CurrentTitle=@CurrentTitle,HighestQualification=@HighestQualification,UpdatedAt=UTC_TIMESTAMP()
+CurrentTitle=@CurrentTitle,HighestQualification=@HighestQualification,
+NoticePeriodDays=COALESCE(@NoticePeriodDays,NoticePeriodDays),CurrentCtc=COALESCE(@CurrentCtc,CurrentCtc),
+ExpectedCtc=COALESCE(@ExpectedCtc,ExpectedCtc),UpdatedAt=UTC_TIMESTAMP()
 WHERE Id=@Id", new
                     {
                         Id = candidateId.Value,
@@ -796,9 +798,9 @@ WHERE Id=@Id", new
                         CurrentCompany = Truncate(request.DraftCurrentCompany.Trim(), 180),
                         CurrentTitle = Truncate(request.DraftCurrentTitle.Trim(), 180),
                         HighestQualification = Truncate(request.DraftHighestQualification.Trim(), 250),
-                        NoticePeriodDays = Math.Max(0, request.DraftNoticePeriodDays ?? 0),
-                        CurrentCtc = Math.Max(0, request.DraftCurrentCtc ?? 0),
-                        ExpectedCtc = Math.Max(0, request.DraftExpectedCtc ?? 0)
+                        NoticePeriodDays = request.DraftNoticePeriodDays.HasValue ? Math.Max(0, request.DraftNoticePeriodDays.Value) : (int?)null,
+                        CurrentCtc = request.DraftCurrentCtc.HasValue ? Math.Max(0, request.DraftCurrentCtc.Value) : (decimal?)null,
+                        ExpectedCtc = request.DraftExpectedCtc.HasValue ? Math.Max(0, request.DraftExpectedCtc.Value) : (decimal?)null
                     });
                 }
 

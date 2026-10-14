@@ -1,8 +1,14 @@
 import type { NotificationAutomationCatalog, NotificationRule, NotificationSetup, NotificationSmtpSetting, NotificationStakeholderPreview, NotificationTemplate, RecruitmentMailTrigger } from '../types/payroll'
 import { deleteJson, getJson, postEmpty, postJson } from './apiClient'
+import type { NotificationIncomingMail } from '../types/payroll'
+
+export const getIncomingMail = () => getJson<NotificationIncomingMail[]>('/api/notifications/incoming', [], { loader: false })
+export const getIncomingMailDetail = (id: number) => getJson<NotificationIncomingMail | null>(`/api/notifications/incoming/${id}`, null)
+export const runImapAction = (action: 'test' | 'sync') => postJson(`/api/notifications/imap/${action}`, {}, { message: '', count: 0 }, { loader: false, toast: 'error-only' })
+export const reconcileMailDelivery = (since: string) => postJson(`/api/notifications/imap/reconcile-delivery?since=${encodeURIComponent(since)}`, {}, { examined: 0, updated: 0, unmatched: 0, skipped: 0 }, { loader: false, toast: 'error-only', timeoutMs: 180000 })
 
 export const getNotificationSetup = () => getJson<NotificationSetup>('/api/notifications/setup', { smtp: { id: 1, isEnabled: false, deliveryPaused: false, host: '', port: 587, userName: '', password: '', enableSsl: true, fromEmail: '', fromName: '' }, templates: [], rules: [], queue: [], logs: [] })
-export const saveNotificationSmtp = (smtp: NotificationSmtpSetting) => postJson('/api/notifications/smtp', smtp, smtp, { successMessage: 'SMTP settings saved.' })
+export const saveNotificationSmtp = (smtp: NotificationSmtpSetting) => postJson('/api/notifications/smtp', smtp, smtp, { successMessage: 'Email settings saved.' })
 export const saveNotificationTemplate = (template: NotificationTemplate) => postJson('/api/notifications/templates', template, template, { successMessage: 'Email template saved.' })
 export const saveNotificationRule = (rule: NotificationRule) => postJson('/api/notifications/rules', rule, rule, { successMessage: 'Notification rule saved.' })
 export const retryNotification = (id: number) => postEmpty(`/api/notifications/queue/${id}/retry`, null, { successMessage: 'Notification queued for retry.' })

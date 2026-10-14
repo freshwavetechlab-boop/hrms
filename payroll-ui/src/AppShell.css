@@ -429,12 +429,7 @@ body.portal-shell-mounted {
   max-height: 100dvh;
   min-width: 0;
   min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: #bdc9d6 transparent;
+  overflow: hidden;
 }
 
 .hrms-topbar {
@@ -525,22 +520,27 @@ body.portal-shell-mounted {
 }
 
 .hrms-content {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   width: 100%;
   min-width: 0;
-  min-height: auto;
-  overflow: visible;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #bdc9d6 transparent;
   padding: 12px 20px 18px;
 }
 
-.hrms-main::-webkit-scrollbar,
+.hrms-content::-webkit-scrollbar,
 .hrms-sidebar > nav::-webkit-scrollbar,
 .hrms-page-body :is(.ant-table-content, .ant-table-body)::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-.hrms-main::-webkit-scrollbar-thumb,
+.hrms-content::-webkit-scrollbar-thumb,
 .hrms-sidebar > nav::-webkit-scrollbar-thumb,
 .hrms-page-body :is(.ant-table-content, .ant-table-body)::-webkit-scrollbar-thumb {
   border: 2px solid transparent;

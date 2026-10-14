@@ -22,6 +22,7 @@ import { Alert, Button, Card, Col, Divider, Drawer, Empty, Form, Input, InputNum
 import DataTable from './DataTable'
 import CommunicationRichEditor from './CommunicationRichEditor'
 import RecruitmentMailTriggerSettings from './RecruitmentMailTriggerSettings'
+import NotificationIncomingMailPanel, { NotificationImapFields } from './NotificationIncomingMail'
 import SearchSelect from './SearchSelect'
 import { getJson } from '../services/apiClient'
 import { getClients } from '../services/payrollService'
@@ -211,7 +212,7 @@ export default function NotificationSettings() {
         getCommunicationTemplates()
       ])
       setSetup(notificationSetup)
-      setSmtp(notificationSetup.smtp ?? smtp0)
+      setSmtp({ imapEnabled: false, imapHost: 'imap.hostinger.com', imapPort: 993, imapFolder: 'INBOX', ...(notificationSetup.smtp ?? smtp0) })
       setClients(clientRows)
       setActivities(activityRows.filter(item => item.isActive))
       setProviders(providerRows)
@@ -244,7 +245,10 @@ export default function NotificationSettings() {
   const updateParameter = (index: number, changes: Partial<NotificationParameterMapping>) => setRule(current => ({ ...current, parameters: current.parameters.map((item, position) => position === index ? { ...item, ...changes } : item) }))
   const openRule = (row?: NotificationRule) => { setRule(row ? { ...row, recipients: row.recipients.length ? row.recipients : [recipient0()], parameters: row.parameters ?? [] } : { ...rule0, recipients: [recipient0()], parameters: [] }); setRuleOpen(true) }
   const openTemplate = (row?: NotificationTemplate) => { setTemplate(row ? { ...row } : template0); setTemplateOpen(true) }
-  const saveSmtp = async () => { const response = await saveNotificationSmtp(smtp); if (response.ok) void load() }
+  const saveSmtp = async () => {
+    const response = await saveNotificationSmtp(smtp)
+    if (response.ok) { setSmtp(response.data); setSetup(previous => ({ ...previous, smtp: response.data })) }
+  }
   const saveTemplate = async () => { const response = await saveNotificationTemplate(template); if (response.ok) { setTemplate(template0); setTemplateOpen(false); void load() } }
   const saveRule = async () => { const response = await saveNotificationRule(rule); if (response.ok) { setRule(rule0); setRuleOpen(false); void load() } }
   const testRule = async () => { if (!rule.id || !testEmail) return; const response = await sendNotificationTest(rule.id, testEmail); if (response.ok) void load() }
@@ -392,6 +396,11 @@ export default function NotificationSettings() {
       key: 'recruitment-triggers',
       label: <span><MailOutlined /> Recruitment Mail Triggers</span>,
       children: <RecruitmentMailTriggerSettings />
+    },
+    {
+      key: 'incoming',
+      label: <span><MailOutlined /> Incoming mail</span>,
+      children: <NotificationIncomingMailPanel smtp={smtp} onSynced={() => setSmtp(previous => ({ ...previous, imapLastSyncAt: new Date().toISOString(), imapLastError: '' }))} />
     },
     {
       key: 'delivery',
@@ -612,7 +621,8 @@ function ChannelConfiguration(props: {
           <Col xs={24} md={8}><Form.Item label="From email"><Input value={props.smtp.fromEmail} onChange={event => props.setSmtp({ ...props.smtp, fromEmail: event.target.value })} /></Form.Item></Col>
           <Col xs={24} md={8}><Form.Item label="From name"><Input value={props.smtp.fromName} onChange={event => props.setSmtp({ ...props.smtp, fromName: event.target.value })} /></Form.Item></Col>
         </Row>
-        <div className="communication-config-footer"><p><SafetyCertificateOutlined /> When SMTP is disabled or paused, existing emails remain queued without consuming retries.</p><Button type="primary" onClick={() => void props.saveSmtp()}>Save SMTP</Button></div>
+        <NotificationImapFields smtp={props.smtp} setSmtp={props.setSmtp} />
+        <div className="communication-config-footer"><p><SafetyCertificateOutlined /> When SMTP is disabled or paused, existing emails remain queued without consuming retries. Incoming mail remains independent.</p><Button type="primary" onClick={() => void props.saveSmtp()}>Save email settings</Button></div>
       </div>
     </Card>
 

@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS notification_queue_attachments (
         await db.ExecuteAsync(@"INSERT INTO notification_smtp_settings (Id,IsEnabled,DeliveryPaused,Host,Port,UserName,Password,EnableSsl,FromEmail,FromName)
 VALUES (1,FALSE,FALSE,'',587,'','',TRUE,'','')
 ON DUPLICATE KEY UPDATE Id=Id;");
+        await InitializeImapAsync();
         await EnsureDefaultsAsync(db);
     }
 
@@ -168,9 +169,11 @@ FROM notification_rules r LEFT JOIN clients c ON c.Id=r.ClientId LEFT JOIN notif
         await using var db = Db();
         await db.OpenAsync();
         await EnsureColumnAsync(db, "notification_smtp_settings", "DeliveryPaused", "BOOLEAN NOT NULL DEFAULT FALSE AFTER IsEnabled");
-        await db.ExecuteAsync(@"INSERT INTO notification_smtp_settings (Id,IsEnabled,DeliveryPaused,Host,Port,UserName,Password,EnableSsl,FromEmail,FromName)
-VALUES (1,@IsEnabled,@DeliveryPaused,@Host,@Port,@UserName,@Password,@EnableSsl,@FromEmail,@FromName)
-ON DUPLICATE KEY UPDATE IsEnabled=@IsEnabled,DeliveryPaused=@DeliveryPaused,Host=@Host,Port=@Port,UserName=@UserName,Password=@Password,EnableSsl=@EnableSsl,FromEmail=@FromEmail,FromName=@FromName", NormalizeSmtp(request));
+        if (request.ImapEnabled) ValidateImap(request);
+        await db.ExecuteAsync(@"INSERT INTO notification_smtp_settings (Id,IsEnabled,DeliveryPaused,Host,Port,UserName,Password,EnableSsl,FromEmail,FromName,ImapEnabled,ImapHost,ImapPort,ImapFolder)
+VALUES (1,@IsEnabled,@DeliveryPaused,@Host,@Port,@UserName,@Password,@EnableSsl,@FromEmail,@FromName,@ImapEnabled,@ImapHost,@ImapPort,@ImapFolder)
+ON DUPLICATE KEY UPDATE IsEnabled=@IsEnabled,DeliveryPaused=@DeliveryPaused,Host=@Host,Port=@Port,UserName=@UserName,Password=@Password,EnableSsl=@EnableSsl,FromEmail=@FromEmail,FromName=@FromName,
+ImapEnabled=@ImapEnabled,ImapHost=@ImapHost,ImapPort=@ImapPort,ImapFolder=@ImapFolder,ImapLastSyncAt=NULL", NormalizeSmtp(request));
         return await db.QuerySingleAsync<NotificationSmtpSetting>("SELECT * FROM notification_smtp_settings WHERE Id=1");
     }
 
@@ -288,9 +291,9 @@ SELECT LAST_INSERT_ID();", new
         var row = await db.QueryFirstAsync<NotificationQueueItem>("SELECT * FROM notification_queue WHERE Id=@Id", new { Id = queueId });
         try
         {
-            await SendAsync(db, smtp, row, cancellationToken);
+            var messageId = await SendAsync(db, smtp, row, cancellationToken);
             await db.ExecuteAsync("UPDATE notification_queue SET Status='Sent',SentAt=UTC_TIMESTAMP(),ErrorMessage='' WHERE Id=@Id", new { Id = queueId });
-            await WriteLogsAsync(db, row, "Sent", "");
+            await WriteLogsAsync(db, row, "Sent", "", messageId);
             return (true, "");
         }
         catch (Exception exception)
@@ -397,9 +400,9 @@ WHERE Id=@Id AND (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@E
 
             try
             {
-                await SendAsync(db, smtp, row, cancellationToken);
+                var messageId = await SendAsync(db, smtp, row, cancellationToken);
                 await db.ExecuteAsync("UPDATE notification_queue SET Status='Sent',SentAt=UTC_TIMESTAMP(),ErrorMessage='' WHERE Id=@Id", new { row.Id });
-                await WriteLogsAsync(db, row, "Sent", "");
+                await WriteLogsAsync(db, row, "Sent", "", messageId);
                 count++;
             }
             catch (Exception exception)
@@ -594,10 +597,11 @@ LIMIT 1", new { evt.ResourceId });
         catch { return null; }
     }
 
-    private async Task SendAsync(MySqlConnection db, NotificationSmtpSetting smtp, NotificationQueueItem row, CancellationToken cancellationToken)
+    private async Task<string> SendAsync(MySqlConnection db, NotificationSmtpSetting smtp, NotificationQueueItem row, CancellationToken cancellationToken)
     {
         using var observation = engineMonitor?.Observe("notifications",new EngineActivityContext("Deliver queued email", "Task",row.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)));
         var message = new MimeMessage();
+        message.MessageId = MimeKit.Utils.MimeUtils.GenerateMessageId();
         message.From.Add(new MailboxAddress(string.IsNullOrWhiteSpace(smtp.FromName) ? smtp.FromEmail : smtp.FromName, smtp.FromEmail));
         foreach (var email in ReadEmailArray(row.ToJson)) message.To.Add(MailboxAddress.Parse(email));
         foreach (var email in ReadEmailArray(row.CcJson)) message.Cc.Add(MailboxAddress.Parse(email));
@@ -644,16 +648,17 @@ WHERE QueueId=@QueueId ORDER BY Id", new { QueueId = row.Id })).ToList();
             foreach (var handle in openHandles) await handle.DisposeAsync();
         }
         if(observation is not null) observation.Succeeded = true;
+        return message.MessageId;
     }
 
     private static string StripHtml(string html) =>
         WebUtility.HtmlDecode(Regex.Replace(html ?? "", "<[^>]+>", " ")).Trim();
 
-    private static async Task WriteLogsAsync(MySqlConnection db, NotificationQueueItem row, string status, string error)
+    private static async Task WriteLogsAsync(MySqlConnection db, NotificationQueueItem row, string status, string error, string messageId = "")
     {
         foreach (var email in ReadEmailArray(row.ToJson).Concat(ReadEmailArray(row.CcJson)).Concat(ReadEmailArray(row.BccJson)).Distinct(StringComparer.OrdinalIgnoreCase))
-            await db.ExecuteAsync(@"INSERT INTO notification_logs (QueueId,EventCode,ResourceType,ResourceId,Recipient,Status,ErrorMessage)
-VALUES (@QueueId,@EventCode,@ResourceType,@ResourceId,@Recipient,@Status,@Error)", new { QueueId = row.Id, row.EventCode, row.ResourceType, row.ResourceId, Recipient = email, Status = status, Error = error });
+            await db.ExecuteAsync(@"INSERT INTO notification_logs (QueueId,EventCode,ResourceType,ResourceId,Recipient,Status,ErrorMessage,ProviderMessageId)
+VALUES (@QueueId,@EventCode,@ResourceType,@ResourceId,@Recipient,@Status,@Error,@messageId)", new { QueueId = row.Id, row.EventCode, row.ResourceType, row.ResourceId, Recipient = email, Status = status, Error = error, messageId });
     }
 
     private static List<string> ReadEmailArray(string json)
@@ -678,7 +683,11 @@ VALUES (@QueueId,@EventCode,@ResourceType,@ResourceId,@Recipient,@Status,@Error)
         Password = row.Password,
         EnableSsl = row.EnableSsl,
         FromEmail = row.FromEmail.Trim(),
-        FromName = row.FromName.Trim()
+        FromName = row.FromName.Trim(),
+        ImapEnabled = row.ImapEnabled,
+        ImapHost = row.ImapHost.Trim(),
+        ImapPort = row.ImapPort,
+        ImapFolder = row.ImapFolder.Trim()
     };
 
     private static async Task EnsureColumnAsync(MySqlConnection connection, string tableName, string columnName, string definition)

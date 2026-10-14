@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS recruitment_jd_qualification_requirements (
 CREATE TABLE IF NOT EXISTS recruitment_jd_certification_requirements (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
     JobDescriptionVersionId BIGINT NOT NULL,
-    CertificationName VARCHAR(180) NOT NULL,
+    CertificationName TEXT NOT NULL,
     IsMandatory BOOLEAN NOT NULL DEFAULT FALSE,
     CandidateProofAttachmentFieldConfigurationId BIGINT NULL,
     DisplayOrder INT NOT NULL DEFAULT 100,
@@ -479,6 +479,8 @@ JOIN form_versions versionRow ON versionRow.Id=posting.ApplicationFormVersionId
 JOIN form_definitions definitionRow ON definitionRow.Id=versionRow.FormDefinitionId
 SET posting.RequireEmailOtp=definitionRow.RequiresEmailVerification");
         await EnsureColumnAsync(db, "recruitment_jd_certification_requirements", "CandidateProofAttachmentFieldConfigurationId", "BIGINT NULL AFTER IsMandatory");
+        if (await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_jd_certification_requirements' AND column_name='CertificationName' AND data_type='varchar' AND character_maximum_length<=180") > 0)
+            await db.ExecuteAsync("ALTER TABLE recruitment_jd_certification_requirements MODIFY COLUMN CertificationName TEXT NOT NULL");
         await EnsureColumnAsync(db, "recruitment_candidate_applications", "PipelineInstanceId", "BIGINT NULL");
         await EnsureColumnAsync(db, "recruitment_candidate_applications", "CurrentPipelineStageInstanceId", "BIGINT NULL");
         await EnsureColumnAsync(db, "recruitment_candidate_applications", "JobPostingId", "BIGINT NULL");

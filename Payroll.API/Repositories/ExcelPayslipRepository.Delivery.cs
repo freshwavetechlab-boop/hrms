@@ -35,6 +35,8 @@ WHERE batch.client_id=@ClientId AND batch.id=@Id", new { ClientId = clientId, Id
         public DateTime CreatedAt { get; set; }
         public DateTime? SentAt { get; set; }
         public DateTime? LastSentAt { get; set; }
+        public string DeliveryStatus { get; set; } = "";
+        public string DeliveryError { get; set; } = "";
     }
 
     private static async Task<IReadOnlyList<ExcelPayslipQueueStatus>> ReadDeliveryQueueAsync(MySqlConnection db, int clientId,
@@ -48,13 +50,26 @@ WHERE batch.client_id=@ClientId AND batch.id=@Id", new { ClientId = clientId, Id
         long[] ids, MySqlTransaction? tx = null)
     {
         if (ids.Length == 0) return [];
-        return (await db.QueryAsync<ExcelPayslipQueueStatus>(@"SELECT queue.Id,queue.ClientId,queue.EventCode,queue.ResourceType,queue.ResourceId,
+        var rows = (await db.QueryAsync<ExcelPayslipQueueStatus>(@"SELECT queue.Id,queue.ClientId,queue.EventCode,queue.ResourceType,queue.ResourceId,
 queue.Status,queue.CreatedAt,queue.SentAt,
 (SELECT MAX(log.CreatedAt) FROM notification_logs log WHERE log.QueueId=queue.Id AND log.Status='Sent'
  AND log.EventCode=queue.EventCode AND log.ResourceType=queue.ResourceType AND log.ResourceId=queue.ResourceId) AS LastSentAt
 FROM notification_queue queue WHERE queue.ClientId IN @ClientIds AND queue.Id IN @Ids
  AND queue.EventCode='EXCEL_PAYSLIP.SEND' AND queue.ResourceType='ExcelPayslipBatch'",
             new { ClientIds = clientIds, Ids = ids }, tx)).ToArray();
+        var logs = (await db.QueryAsync<NotificationLog>(@"SELECT * FROM notification_logs WHERE QueueId IN @Ids
+ AND EventCode='EXCEL_PAYSLIP.SEND' AND Status IN ('Sent','Bounced','Deferred','Delivered') ORDER BY CreatedAt DESC,Id DESC", new { Ids = ids }, tx))
+            .GroupBy(log => log.QueueId).ToDictionary(group => group.Key, group => group.ToArray());
+        foreach (var row in rows)
+        {
+            if (!logs.TryGetValue(row.Id, out var history)) continue;
+            var lastSent = history.FirstOrDefault(log => log.Status == "Sent");
+            var outcome = history.FirstOrDefault(log => log.Status != "Sent" && log.ResourceId == row.ResourceId
+                && log.ResourceType == row.ResourceType && lastSent is not null && log.CreatedAt >= lastSent.CreatedAt
+                && (lastSent.ProviderMessageId.Length == 0 || log.ProviderMessageId == lastSent.ProviderMessageId));
+            if (outcome is not null) { row.DeliveryStatus = outcome.Status; row.DeliveryError = outcome.ErrorMessage; }
+        }
+        return rows;
     }
 
     internal static ExcelPayslipDeliveryStatuses BuildDeliveryStatuses(ExcelPayslipBatch batch, ExcelPayslipSendState state,
@@ -71,14 +86,18 @@ FROM notification_queue queue WHERE queue.ClientId IN @ClientIds AND queue.Id IN
             var queue = valid ? queues.GetValueOrDefault(document.QueueId) : null;
             if (queue is not null && (queue.ClientId != batch.ClientId || queue.EventCode != NotificationRepository.ExcelPayslipEvent
                 || queue.ResourceType != "ExcelPayslipBatch" || queue.ResourceId != batch.Id + ":" + document.Id)) queue = null;
-            var status = queue is null ? "Unknown" : queue.Status.Equals("Sent", StringComparison.OrdinalIgnoreCase) || queue.SentAt.HasValue || queue.LastSentAt.HasValue ? "Sent"
+            var status = queue is null ? "Unknown" : queue.DeliveryStatus is "Bounced" or "Deferred" or "Delivered" ? queue.DeliveryStatus
+                : queue.Status.Equals("Sent", StringComparison.OrdinalIgnoreCase) || queue.SentAt.HasValue || queue.LastSentAt.HasValue ? "Sent"
                 : queue.Status.ToUpperInvariant() switch { "PENDING" or "RETRY" or "EXCELPENDING" or "EXCELRETRY" or "PROCESSING" or "SENDING" => "Queued", "FAILED" => "Failed", _ => "Unknown" };
             var message = status switch
             {
-                "Sent" => "Already sent to the shown recipient. A new send will skip this payslip.",
+                "Sent" => "SMTP accepted the message. Recipient delivery is not confirmed; no delivery report has been received.",
+                "Bounced" => "Not delivered: " + queue!.DeliveryError,
+                "Deferred" => "Delivery delayed: " + queue!.DeliveryError,
+                "Delivered" => "Recipient server confirmed delivery. " + queue!.DeliveryError,
                 "Queued" => "Already queued or being retried. A new send will skip this payslip.",
-                "Failed" => "Delivery failed. Review or retry the existing item in Settings > Notifications; a new email will not be created.",
-                _ => "A previous send is recorded, but its delivery status cannot be verified. Review Settings > Notifications before retrying."
+                "Failed" => "Delivery failed. Review the existing item in Security > Apps > Notifications; a new email will not be created.",
+                _ => "A previous send is recorded, but its delivery status cannot be verified. Review Security > Apps > Notifications before retrying."
             };
             foreach (var rowId in document.RowIds.Where(rowIds.Contains).Distinct(StringComparer.Ordinal))
             {
@@ -104,7 +123,7 @@ FROM notification_queue queue WHERE queue.ClientId IN @ClientIds AND queue.Id IN
                     Message = "A previous send is recorded, but delivery details are unavailable. Review Settings > Notifications before retrying." }];
             }
         }
-        static int Priority(string status) => status switch { "Sent" => 4, "Queued" => 3, "Unknown" => 2, _ => 1 };
+        static int Priority(string status) => status switch { "Delivered" => 6, "Bounced" or "Deferred" => 5, "Sent" => 4, "Queued" => 3, "Unknown" => 2, _ => 1 };
         return new() { Items = batch.Rows.Select(row => history.TryGetValue(row.Id, out var items)
             ? items.OrderByDescending(item => Priority(item.Status)).ThenByDescending(item => item.QueuedAtUtc).First()
             : new ExcelPayslipRowDeliveryStatus { RowId = row.Id, Email = row.Email,

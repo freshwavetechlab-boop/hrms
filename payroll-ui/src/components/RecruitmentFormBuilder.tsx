@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent as ReactDragEvent, type WheelEvent as ReactWheelEvent } from 'react'
+import { useEffect, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import dayjs from 'dayjs'
 import {
   AppstoreAddOutlined, ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, EditOutlined, FileAddOutlined, HolderOutlined, PlusOutlined,
@@ -413,14 +413,6 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     else if (event.clientY > bounds.bottom - edgeSize) canvas.scrollBy({ top: 22 })
   }
 
-  const scrollWithMouse = (event: ReactWheelEvent<HTMLDivElement>) => {
-    const region = event.currentTarget
-    if (region.scrollHeight <= region.clientHeight || event.deltaY === 0) return
-    region.scrollTop += event.deltaY
-    event.preventDefault()
-    event.stopPropagation()
-  }
-
   const dropOnSection = (event: ReactDragEvent, targetSectionId: number, targetSectionIndex: number) => {
     event.preventDefault()
     event.stopPropagation()
@@ -548,10 +540,10 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
             options={version.sections.map(section => ({ value: section.id, label: section.sectionLabel }))}
           />
           {definition.moduleCode === 'RECRUITMENT' && <Button block data-testid="form-builder-add-standard-resume" type="dashed" disabled={readOnly || !selectedSection} onClick={addStandardResumeField} icon={<FileAddOutlined />}>Standard Resume / CV</Button>}
-          <div ref={paletteScrollRef} className="field-palette" onWheel={scrollWithMouse}>{fieldTypes.map(item => <Button data-testid={`form-builder-add-${item.value.toLowerCase()}`} disabled={readOnly || !selectedSection} draggable={!readOnly && Boolean(version.sections.length)} key={item.value} onClick={() => addField(item.value)} onDragStart={event => startDrag(event, { kind: 'palette', fieldTypeCode: item.value })} onDragEnd={finishDrag} icon={item.value === 'UPLOAD' ? <FileAddOutlined /> : <HolderOutlined />}>{item.label}</Button>)}</div>
+          <div ref={paletteScrollRef} className="field-palette">{fieldTypes.map(item => <Button data-testid={`form-builder-add-${item.value.toLowerCase()}`} disabled={readOnly || !selectedSection} draggable={!readOnly && Boolean(version.sections.length)} key={item.value} onClick={() => addField(item.value)} onDragStart={event => startDrag(event, { kind: 'palette', fieldTypeCode: item.value })} onDragEnd={finishDrag} icon={item.value === 'UPLOAD' ? <FileAddOutlined /> : <HolderOutlined />}>{item.label}</Button>)}</div>
         </Card>}
       </aside>
-      {selectingFormId !== null ? <Card data-testid="form-builder-selection-loading" className="form-builder-start-card" loading aria-busy="true" aria-label="Loading selected form" /> : !definition || !version ? <Card className="form-builder-start-card"><Empty description="Select a form from the left or create a new one." /></Card> : <div ref={canvasScrollRef} className="form-builder-canvas" onDragOver={autoScrollCanvas} onWheel={scrollWithMouse}>
+      {selectingFormId !== null ? <Card data-testid="form-builder-selection-loading" className="form-builder-start-card" loading aria-busy="true" aria-label="Loading selected form" /> : !definition || !version ? <Card className="form-builder-start-card"><Empty description="Select a form from the left or create a new one." /></Card> : <div ref={canvasScrollRef} className="form-builder-canvas" onDragOver={autoScrollCanvas}>
         <Card size="small" className="form-builder-settings-card"><div className="orchestration-toolbar form-builder-version-toolbar"><Space wrap><Tag color={version.status === 'Published' ? 'green' : version.status === 'Retired' ? 'default' : 'gold'}>v{version.versionNumber} · {version.status}</Tag><Switch disabled={readOnly} checked={definition.status === 'Active'} onChange={active => patchDefinition({ status: active ? 'Active' : 'Inactive' })} checkedChildren="Active" unCheckedChildren="Inactive" /></Space></div>
           <div className="form-builder-meta"><Form.Item label="Form name" required><Input data-testid="form-builder-name" disabled={readOnly} value={definition.formName} onChange={event => patchDefinition({ formName: event.target.value })} /></Form.Item><Form.Item label="Form code" required><Input data-testid="form-builder-code" disabled={readOnly || (employeeMode && !!definition.currentPublishedVersionId)} value={definition.formCode} onChange={event => patchDefinition({ formCode: code(event.target.value) })} /></Form.Item><Form.Item label="Use this form for" extra="Employee forms appear automatically in the matching Employee infotype after publishing."><Select data-testid="form-builder-module" disabled={readOnly || employeeMode} value={definition.moduleCode || 'RECRUITMENT'} onChange={chooseModule} options={employeeMode ? [{ value: 'EMPLOYEE', label: 'Employee additional fields' }] : [{ value: 'RECRUITMENT', label: 'Recruitment / Candidate' }, { value: 'EMPLOYEE', label: 'Employee additional fields' }]} /></Form.Item>{definition.moduleCode === 'EMPLOYEE' && <Form.Item label="Employee infotype"><Select data-testid="form-builder-employee-infotype" disabled={readOnly || (employeeMode && !!definition.currentPublishedVersionId)} value={employeeInfotype} onChange={value => patchDefinition({ purposeCode: `EMPLOYEE_INFOTYPE_${value}`, entityType: 'EMPLOYEE' })} options={[{ value: '0001', label: '0001 - Organizational Assignment' }, { value: '0002', label: '0002 - Personal Data' }, { value: '0006', label: '0006 - Addresses' }, { value: '0008', label: '0008 - Basic Pay' }, { value: '0009', label: '0009 - Bank Details' }]} /></Form.Item>}<Form.Item label="Purpose code"><Input data-testid="form-builder-purpose" disabled={readOnly || employeeMode} value={definition.purposeCode} onChange={event => patchDefinition({ purposeCode: code(event.target.value) })} /></Form.Item><Form.Item label="Entity type"><Input data-testid="form-builder-entity" disabled={readOnly || employeeMode} value={definition.entityType} onChange={event => patchDefinition({ entityType: code(event.target.value) })} /></Form.Item></div>
         </Card>

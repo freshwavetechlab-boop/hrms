@@ -312,7 +312,7 @@ export default function ClientConfigCheck() {
           recruitmentSetting?.recruitmentEnabled && recruitmentRules.length === 0 ? gap('Configure recruiter assignment rules if automatic routing is needed.', 'Recruitment requests may need manual assignment. Existing employee payroll is unaffected.') : ''
         ].filter(Boolean), !recruitmentSetting?.recruitmentEnabled
       ),
-      item('notifications', 'Notifications & Jobs', '/settings/notifications',
+      item('notifications', 'Notifications & Jobs', '/security/apps/notifications',
         [
           `SMTP enabled: ${yesNo(Boolean(state.notifications.smtp.isEnabled))}; paused: ${yesNo(Boolean(state.notifications.smtp.deliveryPaused))}.`,
           `${state.notifications.templates.filter(row => row.isActive).length} active template(s), ${notificationRules.length} enabled rule(s) for global/client scope.`,

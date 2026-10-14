@@ -126,3 +126,11 @@
   .communication-provider-drawer .ant-drawer-footer .ant-space,
   .communication-template-drawer .ant-drawer-footer .ant-space { width: 100%; display: grid; }
 }
+
+/* Wrap Apps tools rather than clipping destinations in a narrow workspace. */
+.notification-settings .communication-workspace-card > .ant-card-body > .ant-tabs > .ant-tabs-nav .ant-tabs-nav-wrap { overflow: visible; white-space: normal; }
+.notification-settings .communication-workspace-card > .ant-card-body > .ant-tabs > .ant-tabs-nav .ant-tabs-nav-list { transform: none !important; flex-wrap: wrap; gap: 0 20px; width: 100%; }
+.notification-settings .communication-workspace-card > .ant-card-body > .ant-tabs > .ant-tabs-nav .ant-tabs-tab { margin: 0; border-bottom: 2px solid transparent; }
+.notification-settings .communication-workspace-card > .ant-card-body > .ant-tabs > .ant-tabs-nav .ant-tabs-tab-active { border-bottom-color: var(--color-primary, #0877b8); }
+.notification-settings .communication-workspace-card > .ant-card-body > .ant-tabs > .ant-tabs-nav .ant-tabs-ink-bar { display: none; }
+.notification-settings .communication-workspace-card > .ant-card-body > .ant-tabs > .ant-tabs-nav .ant-tabs-nav-operations { display: none; }

@@ -12,6 +12,29 @@ public class NotificationSmtpSetting
     public bool EnableSsl { get; set; } = true;
     public string FromEmail { get; set; } = "";
     public string FromName { get; set; } = "";
+    public bool ImapEnabled { get; set; }
+    public string ImapHost { get; set; } = "imap.hostinger.com";
+    public int ImapPort { get; set; } = 993;
+    public string ImapFolder { get; set; } = "INBOX";
+    public string ImapMailboxKey { get; set; } = "";
+    public uint ImapUidValidity { get; set; }
+    public uint ImapLastUid { get; set; }
+    public DateTime? ImapLastSyncAt { get; set; }
+    public string ImapLastError { get; set; } = "";
+}
+
+public sealed class NotificationIncomingMail
+{
+    public long Id { get; set; }
+    public string MessageId { get; set; } = "";
+    public string Sender { get; set; } = "";
+    public string Subject { get; set; } = "";
+    public string BodyText { get; set; } = "";
+    public DateTime ReceivedAt { get; set; }
+    public DateTime ProcessedAt { get; set; }
+    public long? QueueId { get; set; }
+    public int? ClientId { get; set; }
+    public string Status { get; set; } = "Received";
 }
 
 public class NotificationTemplate

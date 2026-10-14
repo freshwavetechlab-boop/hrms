@@ -8,11 +8,10 @@
 }
 .posting-manager .job-list-toolbar { grid-template-columns: minmax(160px, 1fr) auto minmax(180px, 230px); }
 .posting-manager .job-application-card .candidate-card-title .ant-tag { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
-@media (min-width: 1101px) and (max-width: 1450px) {
-  .posting-manager .job-application-card { grid-template-columns: auto minmax(0, 1fr); }
-  .posting-manager .job-application-card .candidate-card-actions { grid-column: 1 / -1; align-items: flex-start; max-width: none; }
-}
-.posting-manager .job-application-card { width: 100%; }
+.posting-manager .job-application-card { width: 100%; grid-template-columns: 38px minmax(0, 1fr) minmax(220px, 260px); gap: 6px 12px; padding: 12px; }
+.posting-manager .job-application-card > .ant-avatar { width: 38px; height: 38px; }
+.posting-manager .job-application-card .candidate-application-copy { gap: 4px; }
+.posting-manager .job-application-card .candidate-card-title h3 { font-size: 14px; }
 .posting-manager .job-application-card .job-card-facts { gap: 5px; }
 .posting-manager .job-application-card .job-card-facts .ant-tag {
   padding: 1px 6px;
@@ -20,20 +19,35 @@
   border-radius: 6px;
 }
 .posting-manager .job-application-card .job-card-metrics {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 18px;
-  margin: 5px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-column: 3;
+  grid-row: 1;
+  align-content: start;
+  gap: 6px;
+  margin: 0;
 }
 .posting-manager .job-application-card .job-card-metric {
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: 2px 5px;
+  grid-template-columns: 18px 65px minmax(0, 1fr);
+  grid-template-rows: auto;
+  gap: 5px;
   padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
 }
-.posting-manager .job-application-card .candidate-card-actions { max-width: 250px; }
+.posting-manager .job-application-card .job-card-metric > .anticon { grid-row: auto; }
+.posting-manager .job-application-card .job-card-metric strong { font-size: 12px; }
+.posting-manager .job-application-card .candidate-card-actions { grid-column: 2 / -1; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; max-width: none; }
+.posting-manager .job-card-readiness { margin: 0; color: #59677d; font-size: 11px; line-height: 1.4; }
+.posting-manager .job-card-details > summary { cursor: pointer; color: #58627a; font-size: 11px; }
+.posting-manager .job-card-details[open] > summary { margin-bottom: 6px; }
+.posting-manager .job-card-details .recruitment-hiring-progress > p { display: none; }
+.posting-manager .job-card-details small { display: block; margin-top: 5px; }
+@container recruitment-workspace (max-width: 640px) {
+  .posting-manager .job-application-card { grid-template-columns: 38px minmax(0, 1fr); }
+  .posting-manager .job-application-card .job-card-metrics { grid-column: 2; grid-row: auto; }
+}
 @media (max-width: 720px) {
   .posting-manager .job-application-card .candidate-card-actions { max-width: none; }
   .posting-manager .job-list-toolbar { grid-template-columns: minmax(0, 1fr); }

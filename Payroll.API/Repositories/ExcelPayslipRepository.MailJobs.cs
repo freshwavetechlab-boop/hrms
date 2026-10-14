@@ -141,6 +141,8 @@ public sealed partial class ExcelPayslipRepository
             if (queue is null || queue.ClientId != job.ClientId || queue.EventCode != NotificationRepository.ExcelPayslipEvent
                 || queue.ResourceType != "ExcelPayslipBatch" || queue.ResourceId != job.BatchId + ":" + delivery.Id)
             { summary.Unknown += delivery.RowCount; continue; }
+            if (queue.DeliveryStatus == "Bounced") { summary.Failed += delivery.RowCount; continue; }
+            if (queue.DeliveryStatus == "Deferred") { summary.Unknown += delivery.RowCount; continue; }
             if (queue.Status.Equals("Sent", StringComparison.OrdinalIgnoreCase) || queue.SentAt.HasValue || queue.LastSentAt.HasValue)
             { summary.Sent += delivery.RowCount; continue; }
             switch (queue.Status.ToUpperInvariant())
@@ -163,7 +165,7 @@ public sealed partial class ExcelPayslipRepository
         summary.Status = attention ? "Needs attention" : summary.IsComplete ? "Completed" : processing ? "Processing" : "Queued";
         summary.Message = needsReview ? "An older queue item is still processing. Review Settings > Notifications before retrying; delivery may already have occurred."
             : summary.Unknown > 0 ? "Some delivery states cannot be verified. Review Settings > Notifications before retrying."
-            : summary.Failed > 0 ? "Some deliveries failed. Review or retry their existing items in Settings > Notifications."
+            : summary.Failed > 0 ? "Some deliveries failed or bounced. Check each recipient's delivery details before correcting or retrying."
             : summary.MissingEmail > 0 ? "Rows without a valid recipient were not queued. Add their email addresses and start a new send action."
             : summary.IsComplete ? "Email processing finished. Sent and previously handled rows are shown separately."
             : "Email delivery continues in the background. You may leave this page.";

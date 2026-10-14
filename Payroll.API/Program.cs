@@ -221,6 +221,13 @@ if (args.Contains("--migrate-attendance-shifts"))
     return;
 }
 
+if (args.Contains("--migrate-notification-imap"))
+{
+    await app.Services.GetRequiredService<NotificationRepository>().InitializeImapAsync();
+    app.Logger.LogInformation("Incoming mail schema upgrade completed. SMTP credentials and outgoing queues unchanged.");
+    return;
+}
+
 var migrateDatabaseOnly = args.Any(arg =>
     arg.Equals("--migrate", StringComparison.OrdinalIgnoreCase) ||
     arg.Equals("--migrate-database", StringComparison.OrdinalIgnoreCase));
@@ -3010,9 +3017,41 @@ app.MapPost("/api/admin/database/migrate", async (HttpContext context) =>
 .WithOpenApi();
 
 app.MapGet("/api/notifications/setup", async (NotificationRepository repository, HttpContext context) =>
-    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetSetupAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden));
+    HasPermission(context, "settings.manage") && CurrentUser(context).ClientId is null ? Results.Ok(await repository.GetSetupAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden));
 app.MapPost("/api/notifications/smtp", async (NotificationRepository repository, NotificationSmtpSetting request, HttpContext context) =>
-    HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveSmtpAsync(request)) : Results.StatusCode(StatusCodes.Status403Forbidden));
+{
+    if (!HasPermission(context, "settings.manage") || CurrentUser(context).ClientId is not null) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try { return Results.Ok(await repository.SaveSmtpAsync(request)); }
+    catch (InvalidOperationException exception) { return Results.BadRequest(new { error = exception.Message }); }
+});
+app.MapGet("/api/notifications/incoming", async (NotificationRepository repository, HttpContext context) =>
+    HasPermission(context, "settings.manage") && CurrentUser(context).ClientId is null ? Results.Ok(await repository.ListIncomingMailAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden));
+app.MapGet("/api/notifications/incoming/{id:long}", async (NotificationRepository repository, long id, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") || CurrentUser(context).ClientId is not null) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var mail = await repository.GetIncomingMailAsync(id);
+    return mail is null ? Results.NotFound() : Results.Ok(mail);
+});
+app.MapPost("/api/notifications/imap/{action}", async (NotificationRepository repository, string action, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") || CurrentUser(context).ClientId is not null) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (action is not ("test" or "sync")) return Results.NotFound();
+    try
+    {
+        if (action == "test") return Results.Ok(new { message = "IMAP connected successfully. Mailbox opened read-only.", count = await repository.TestImapAsync(context.RequestAborted) });
+        return Results.Ok(new { message = "Incoming mail sync completed.", count = await repository.SyncIncomingMailAsync(context.RequestAborted, true) });
+    }
+    catch (Exception exception) when (exception is not OperationCanceledException)
+    {
+        return Results.BadRequest(new { error = "IMAP connection or sync failed. Check the saved host, folder and SMTP credentials.", detail = exception is InvalidOperationException ? exception.Message : null });
+    }
+});
+app.MapPost("/api/notifications/imap/reconcile-delivery", async (NotificationRepository repository, DateTime since, bool? dryRun, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage") || CurrentUser(context).ClientId is not null) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try { return Results.Ok(await repository.ReconcileDeliveryReportsAsync(since, context.RequestAborted, !dryRun.GetValueOrDefault())); }
+    catch (InvalidOperationException exception) { return Results.BadRequest(new { error = exception.Message }); }
+});
 app.MapPost("/api/notifications/templates", async (NotificationRepository repository, NotificationTemplate request, HttpContext context) =>
 {
     if (!HasPermission(context, "settings.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);

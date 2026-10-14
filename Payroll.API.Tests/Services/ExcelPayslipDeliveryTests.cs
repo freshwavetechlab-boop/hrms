@@ -193,4 +193,18 @@ public sealed class ExcelPayslipDeliveryTests
         Assert.Equal("Sent", result.Items[0].Status);
         Assert.All(result.Items.Skip(1), item => { Assert.Equal("Pending", item.Status); Assert.True(item.CanSend); });
     }
+    [Theory]
+    [InlineData("Bounced")]
+    [InlineData("Deferred")]
+    [InlineData("Delivered")]
+    public void RecipientDeliveryOutcomeOverridesSmtpSentHistory(string outcome)
+    {
+        var batch = Batch(); var state = new ExcelPayslipSendState();
+        var (_, queue) = Delivery(batch, state, "Sent");
+        queue.DeliveryStatus = outcome; queue.DeliveryError = "5.1.1: mailbox not found";
+        var item = ExcelPayslipRepository.BuildDeliveryStatuses(batch, state, [queue]).Items[0];
+        Assert.Equal(outcome, item.Status);
+        Assert.Contains(queue.DeliveryError, item.Message);
+        Assert.False(item.CanSend);
+    }
 }

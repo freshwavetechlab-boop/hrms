@@ -18,7 +18,7 @@ export type ExcelPayslipSendRequest = ExcelPayslipPdfRequest & { mode: 'Individu
 export type ExcelPayslipEmailRequest = { rowIds: string[]; email: string; requestId: string }
 export const requestExcelPayslipEmailIds = (clientId: number, id: string, request: ExcelPayslipEmailRequest) => postJson<ExcelPayslipEmailRequest, { queueId: number; email: string; employeeCount: number; status: string } | null>(`${batchPath(id)}/email-request?clientId=${clientId}`, request, null, { toast: false })
 export type ExcelPayslipDelivery = { rowId: string; employeeName: string; email: string; status: 'Queued' | 'Already queued' | 'Skipped' | 'Error'; message: string }
-export type ExcelPayslipEmailStatus = { rowId: string; status: 'Pending' | 'Queued' | 'Sent' | 'Failed' | 'Unknown'; email: string; queuedAtUtc: string | null; sentAtUtc: string | null; message: string; canSend: boolean }
+export type ExcelPayslipEmailStatus = { rowId: string; status: 'Pending' | 'Queued' | 'Sent' | 'Failed' | 'Unknown' | 'Bounced' | 'Deferred' | 'Delivered'; email: string; queuedAtUtc: string | null; sentAtUtc: string | null; message: string; canSend: boolean }
 export type ExcelPayslipMailJob = {
   id: string; clientId: number; clientName: string; batchId: string; month: string; sourceFileName: string
   createdAtUtc: string; createdBy: string; status: 'Queued' | 'Processing' | 'Completed' | 'Needs attention'

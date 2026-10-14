@@ -456,20 +456,25 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
             ]} /> : <div className="candidate-application-list job-application-list">{!visiblePostings.length && <Empty description="No matching jobs." />}{visiblePostings.map(row => {
               const position = positions.find(item => item.id === row.positionId)
               return <article key={row.id} className="candidate-application-card job-application-card" role="button" tabIndex={0} onClick={() => void choosePosting(row)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') void choosePosting(row) }}>
-                <Avatar size={46}>{(row.publicTitle || row.positionTitle || 'J').trim().charAt(0).toUpperCase()}</Avatar>
+                <Avatar size={38}>{(row.publicTitle || row.positionTitle || 'J').trim().charAt(0).toUpperCase()}</Avatar>
                 <div className="candidate-application-copy">
                   <div className="candidate-card-title"><h3>{row.publicTitle || row.positionTitle}</h3><Tag color="blue">ID: {row.positionCode || row.id}</Tag></div>
-                <div className="job-card-facts"><Tag>{position?.employmentType || 'Employment type not set'}</Tag><Tag color="cyan"><UserAddOutlined /> Total candidates: {position?.candidateCount ?? row.applicationCount}</Tag><Tag>Required: {position?.requiredCandidateCount ?? position?.numberOfPositions ?? '—'}</Tag><Tag color="blue">In panel: {position?.inPanelCount ?? 0}</Tag><Tag color="green">Selected: {position?.selectedCandidateCount ?? 0}</Tag>{row.autoRunAts && <Tag color="purple"><RocketOutlined /> Auto ATS</Tag>}{position?.pipelineStageName && <Tooltip title={position.pipelineStatus || 'Current vacancy pipeline stage'}><Tag color={recruitmentStageColor(position.pipelineStageType || '', position.pipelineStageName)}><BranchesOutlined /> {position.pipelineStageName}</Tag></Tooltip>}</div>
-                <RecruitmentHiringProgress progress={position?.hiringProgress} />
+                <div className="job-card-facts"><Tag color="cyan"><UserAddOutlined /> Total candidates: {position?.candidateCount ?? row.applicationCount}</Tag><Tag>Required: {position?.requiredCandidateCount ?? position?.numberOfPositions ?? '—'}</Tag><Tag color="blue">In panel: {position?.inPanelCount ?? 0}</Tag><Tag color="green">Selected: {position?.selectedCandidateCount ?? 0}</Tag>{position?.pipelineStageName && <Tooltip title={position.pipelineStatus || 'Current vacancy pipeline stage'}><Tag color={recruitmentStageColor(position.pipelineStageType || '', position.pipelineStageName)}><BranchesOutlined /> {position.pipelineStageName}</Tag></Tooltip>}</div>
+                {position?.hiringProgress?.pendingReason && <p className="job-card-readiness">{position.hiringProgress.pendingReason}</p>}
+                <details className="job-card-details" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
+                  <summary>More details</summary>
+                  <div className="job-card-facts"><Tag>{position?.employmentType || 'Employment type not set'}</Tag>{row.autoRunAts && <Tag color="purple"><RocketOutlined /> Auto ATS</Tag>}</div>
+                  <JobFact icon={<LaptopOutlined />} label="Work mode" value={formatWorkMode(position?.requisitionWorkMode || position?.workMode)} />
+                  <RecruitmentHiringProgress progress={position?.hiringProgress} />
+                  <small>Updated {row.updatedAtUtc ? dayjs(row.updatedAtUtc).format('DD MMM YYYY') : '—'}</small>
+                </details>
+                {clientId === 0 && <Typography.Text type="secondary">{row.clientName || `Client #${row.clientId}`}</Typography.Text>}
+                </div>
                 <div className="job-card-metrics candidate-card-contact">
                   <JobFact icon={<FieldTimeOutlined />} label="Experience" value={position?.requisitionExperienceRange || position?.experienceRange || 'Not specified'} />
                   <JobFact icon={<DollarOutlined />} label="CTC" value={formatCtc(position)} />
-                  <JobFact icon={<LaptopOutlined />} label="Work mode" value={formatWorkMode(position?.requisitionWorkMode || position?.workMode)} />
                   <JobFact icon={<EnvironmentOutlined />} label="Location" value={position?.requisitionJobLocation || position?.jobLocation || 'Not specified'} />
                   <JobFact icon={<TeamOutlined />} label="Vacancies" value={position ? `${position.remainingPositions ?? 0} open / ${position.numberOfPositions || position.requisitionNumberOfOpenings || 0} total` : 'Not specified'} />
-                </div>
-                {clientId === 0 && <Typography.Text type="secondary">{row.clientName || `Client #${row.clientId}`}</Typography.Text>}
-                <small>Updated {row.updatedAtUtc ? dayjs(row.updatedAtUtc).format('DD MMM YYYY') : '—'}</small>
                 </div>
                 {postingActions(row)}
               </article>

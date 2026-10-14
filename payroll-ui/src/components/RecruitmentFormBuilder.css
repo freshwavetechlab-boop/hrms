@@ -3,6 +3,22 @@
   min-width: 0;
 }
 
+.recruitment-viewport .recruitment-form-builder {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.recruitment-viewport .recruitment-form-builder .form-builder-page-toolbar { flex-shrink: 0; }
+.recruitment-viewport .recruitment-form-builder .form-builder-layout {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+}
+
 .recruitment-form-builder .form-builder-page-toolbar {
   min-width: 0;
   padding: 2px 0 4px;
@@ -262,7 +278,11 @@
 .recruitment-form-builder .form-builder-canvas {
   min-width: 0;
   min-height: 0;
+  width: 100%;
   height: 100%;
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 14px;
   overflow-x: hidden;
   overflow-y: auto;
@@ -319,6 +339,7 @@
 
 .recruitment-form-builder .form-builder-design-surface {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   gap: 12px;
   padding: 14px;
@@ -778,5 +799,37 @@
 
   .recruitment-form-field-drawer .field-property-grid .wide {
     grid-column: auto;
+  }
+}
+
+@container recruitment-workspace (max-width: 900px) {
+  .recruitment-viewport .recruitment-form-builder .form-builder-layout {
+    display: block;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .recruitment-viewport .recruitment-form-builder .form-builder-side-rail {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    height: auto;
+    max-height: none;
+    overflow: visible;
+    margin-bottom: 12px;
+  }
+  .recruitment-viewport .recruitment-form-builder :is(.form-builder-library, .form-builder-palette-card) { height: auto; max-height: none; }
+  .recruitment-viewport .recruitment-form-builder .field-palette { max-height: 240px; }
+  .recruitment-viewport .recruitment-form-builder .form-builder-canvas { height: auto; overflow: visible; padding-right: 0; }
+}
+
+@container recruitment-workspace (max-width: 540px) {
+  .recruitment-viewport .recruitment-form-builder .form-builder-side-rail { grid-template-columns: minmax(0, 1fr); }
+  .recruitment-viewport .recruitment-form-builder .form-builder-canvas-actions {
+    display: flex !important;
+    min-width: 0;
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    margin-left: 0;
+    overflow: visible;
   }
 }

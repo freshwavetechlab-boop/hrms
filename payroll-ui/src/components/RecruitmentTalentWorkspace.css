@@ -48,3 +48,30 @@
   .recruitment-record-workspace .candidate-applications-layout { grid-template-columns: minmax(0, 1fr); }
   .recruitment-record-workspace .candidate-application-list { max-height: 55dvh; }
 }
+.candidate-terms-badges{display:flex;max-width:100%;margin:8px 0}.candidate-terms-badges .ant-tag{margin-inline-end:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.candidate-applications-workspace .candidate-application-card{grid-template-columns:46px minmax(0,1fr)}.candidate-applications-workspace .candidate-card-actions{grid-column:2;min-width:0;align-items:center;flex-direction:row;flex-wrap:wrap}
+
+.candidate-applications-workspace .application-candidate-card {
+  grid-template-columns: 38px minmax(0, 1fr) minmax(210px, 240px);
+  gap: 8px 12px;
+  padding: 12px;
+}
+.application-candidate-card > .ant-avatar { width: 38px; height: 38px; }
+.application-candidate-card .candidate-application-copy { gap: 4px; }
+.application-candidate-card .candidate-card-title h3 { font-size: 14px; }
+.application-candidate-card > .candidate-terms-badges {
+  grid-column: 3;
+  grid-row: 1;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  margin: 0;
+}
+.candidate-applications-workspace .application-candidate-card > .candidate-card-actions { grid-column: 2 / -1; gap: 6px; }
+.candidate-card-details > summary { cursor: pointer; color: #58627a; font-size: 11px; }
+.candidate-card-details[open] > summary { margin-bottom: 6px; }
+.candidate-card-details small { display: block; margin-top: 4px; }
+@container recruitment-workspace (max-width: 640px) {
+  .candidate-applications-workspace .application-candidate-card { grid-template-columns: 38px minmax(0, 1fr); }
+  .application-candidate-card > .candidate-terms-badges { grid-column: 2; grid-row: auto; flex-direction: row; flex-wrap: wrap; }
+}

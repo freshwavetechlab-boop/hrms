@@ -209,7 +209,7 @@ export default function MailAutomationProvider({ enabled }: { enabled: boolean }
 
       <section className="mail-automation-state"><div><SettingOutlined /><span><b>Automation enabled</b><small>Disabling keeps the rule saved without queueing new mail.</small></span></div><Switch checked={isEnabled} onChange={setIsEnabled} /></section>
       {message && <Alert showIcon type={message.type} message={message.text} />}
-      <Button type="link" className="mail-template-link" onClick={() => { window.location.href = '/settings/notifications' }}>Manage or create email templates</Button>
+      <Button type="link" className="mail-template-link" onClick={() => { window.location.href = '/security/apps/notifications' }}>Manage or create email templates</Button>
     </div>}
   </Drawer>
 }

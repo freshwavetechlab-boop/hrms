@@ -17,6 +17,7 @@ export type Column<T> = {
   filterable?: boolean
   width?: string | number
   wrap?: boolean
+  cardHidden?: boolean
 }
 
 type DataTableProps<T> = {
@@ -216,7 +217,7 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
     {props.view === 'Cards' ? <>
       <div className="shared-record-cards" aria-busy={props.loading}>
         {data.slice((Math.min(cardPage, Math.max(1, Math.ceil(data.length / 10))) - 1) * 10, Math.min(cardPage, Math.max(1, Math.ceil(data.length / 10))) * 10).map((row, index) => <article key={String(props.getRowId ? props.getRowId(row, rows.indexOf(row)) : (row as Record<string, unknown>).id ?? index)}>
-          <dl>{columns.map(column => <div key={String(column.key)}><dt>{column.label}</dt><dd>{column.render ? column.render(row) : text(valueOf(row, column)) || '—'}</dd></div>)}</dl>
+          <dl>{columns.filter(column => !column.cardHidden).map(column => <div key={String(column.key)}><dt>{column.label}</dt><dd>{column.render ? column.render(row) : text(valueOf(row, column)) || '—'}</dd></div>)}</dl>
           {(actions || onEdit) && <footer>{actions ? actions(row) : <Button onClick={() => onEdit?.(row)}>Edit</Button>}</footer>}
         </article>)}
         {!data.length && <Empty description={emptyText} />}

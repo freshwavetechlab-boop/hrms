@@ -25,6 +25,10 @@ public sealed class RecruitmentProfileReadinessTests
         Assert.False(Supplies("CUSTOM_DECLARATION", "CHECKBOX"));
         row.ExpectedCtc = null;
         Assert.False(Supplies("EXPECTED_CTC", "NUMBER"));
+        row.CurrentCtc = null;
+        row.NoticePeriodDays = null;
+        Assert.False(Supplies("CURRENT_CTC", "NUMBER"));
+        Assert.False(Supplies("NOTICE_PERIOD_DAYS", "NUMBER"));
     }
 
     [Theory]
