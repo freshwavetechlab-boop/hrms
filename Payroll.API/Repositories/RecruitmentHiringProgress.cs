@@ -35,7 +35,7 @@ internal static class RecruitmentHiringProgress
 COALESCE(stage.StageName,a.CurrentStage,'') CandidateStageName,COALESCE(stage.StageType,'') CandidateStageType,
 COALESCE(CASE WHEN interview.Status='No Show' THEN 'No Show' ELSE interview.Result END,'') LatestInterviewResult,
 COALESCE(interview.Status IN ('Scheduled','Rescheduled','Completed'),FALSE) HasInterview,
-COALESCE(interview.Status='Completed' AND interview.Result='Selected',FALSE) HasCompletedInterviewDecision,
+COALESCE(interview.Status='Completed' AND interview.Result='Selected' AND " + RecruitmentInterviewRounds.CompleteFor("a") + @",FALSE) HasCompletedInterviewDecision,
 COALESCE(offerRow.Status,'') LatestOfferStatus,a.TermsConfirmedAtUtc IS NOT NULL TermsConfirmed,
 EXISTS(SELECT 1 FROM recruitment_process_documents d
  WHERE " + RecruitmentJobMom.CoversApplication("d", "a") + " AND " + RecruitmentJobMom.CurrentFor("d") + @" AND d.Status='Signed' AND d.DocumentType='MOM' AND a.TermsConfirmedAtUtc IS NOT NULL AND " + RecruitmentPanelSignatures.CompleteFor("d") + @") CandidateMomSigned,
@@ -201,6 +201,7 @@ GREATEST(0,COALESCE({positionAlias}.NumberOfPositions,0)-COALESCE({positionAlias
  FROM recruitment_interviews roundRow WHERE roundRow.ApplicationId=progressApplication.Id)
  WHERE progressApplication.PositionId={positionAlias}.Id AND progressApplication.ApplicationType='Application'
  AND latestInterview.Status='Completed' AND latestInterview.Result='Selected'
+ AND {RecruitmentInterviewRounds.CompleteFor("progressApplication")}
  AND progressApplication.CurrentStage NOT IN ('Rejected','Withdrawn','Offer Rejected')
  AND COALESCE((SELECT latestOffer.Status FROM recruitment_offers latestOffer WHERE latestOffer.ApplicationId=progressApplication.Id
  ORDER BY latestOffer.UpdatedAt DESC,latestOffer.Id DESC LIMIT 1),'') NOT IN ('Rejected','Withdrawn','Expired')) SelectedCandidateCount,

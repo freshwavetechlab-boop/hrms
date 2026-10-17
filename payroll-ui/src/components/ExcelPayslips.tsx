@@ -5,7 +5,7 @@ import { CloseOutlined, DownOutlined, DownloadOutlined, EditOutlined, FilePdfOut
 import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
 import { useExcelPayslipEmailStatus } from '../hooks/useExcelPayslipEmailStatus'
 import { useExcelPayslipMailJobs } from '../hooks/useExcelPayslipMailJobs'
-import { buildExcelPayslipRows, buildPayslipCalculationSource, defaultPayslipMapping, excelColumnLetter, formatExcelPayslipAmount, inferPayslipMonth, parseExcelPayslipFile, payslipColumnKinds, payslipHeaders, payslipHeaderSignature, payslipPhoneValue, type PayslipColumn, type PayslipColumnKind, type PayslipSheet } from '../utils/excelPayslipImport'
+import { buildExcelPayslipRows, buildPayslipCalculationSource, defaultPayslipMapping, excelColumnLetter, formatExcelPayslipAmount, inferPayslipMonth, isPayslipAmountKind, parseExcelPayslipFile, payslipColumnKinds, payslipHeaders, payslipHeaderSignature, payslipPhoneValue, type PayslipColumn, type PayslipColumnKind, type PayslipSheet } from '../utils/excelPayslipImport'
 import ExcelPayslipMonthTools from './ExcelPayslipMonthTools'
 import ExcelPayslipMailProgress from './ExcelPayslipMailProgress'
 import { buildEditablePayslipSheet, downloadExcelPayslipTemplate } from '../utils/excelPayslipTemplate'
@@ -13,6 +13,7 @@ import { getExcelPayslipBatch, getExcelPayslipCalculation, getExcelPayslipClient
 import { useAuthSession } from './AuthGate'
 import DataTable from './DataTable'
 import FileDropZone from './FileDropZone'
+import ExcelPayrollSetup from './ExcelPayrollSetup'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import './ExcelPayslips.css'
 
@@ -34,6 +35,8 @@ export default function ExcelPayslips() {
   const linkedMailJobId = searchParams.get('mailJobId') || ''
   const shellClientContext = Boolean(session?.user.clientId && !session.user.permissions.includes('security.manage'))
   const canManage = Boolean(session?.user.permissions.some(permission => ['payroll.run', 'payroll.approve', 'payroll.payments'].includes(permission)))
+  const canConfigurePayroll = ['settings.manage', 'employees.manage', 'payroll.run'].every(permission => session?.user.permissions.includes(permission))
+  const [setupRows, setSetupRows] = useState<string[] | null>(null)
   const [compactActions, setCompactActions] = useState(() => window.matchMedia('(max-width: 900px)').matches)
   useEffect(() => { const media = window.matchMedia('(max-width: 900px)'); const update = () => setCompactActions(media.matches); media.addEventListener('change', update); return () => media.removeEventListener('change', update) }, [])
   const [clients, setClients] = useState<{ id: number; name: string }[]>([])
@@ -99,7 +102,7 @@ export default function ExcelPayslips() {
   const closeBatch = () => {
     if (busy) return
     ++batchSequence.current
-    setBatch(null); setLastBatchId(''); setSelectedIds([]); setPreferredMailJob('')
+    setBatch(null); setLastBatchId(''); setSelectedIds([]); setPreferredMailJob(''); setSetupRows(null)
     setReview(null); setAction(null); setMonthTools(null); setImportOpen(false); setLoading(false); setNotice(''); setError('')
     const next = new URLSearchParams(searchParams); next.delete('batchId'); next.delete('mailJobId')
     setSearchParams(next, { replace: true })
@@ -134,6 +137,7 @@ export default function ExcelPayslips() {
     const token = ++scope.current
     void Promise.resolve().then(async () => {
       if (token !== scope.current) return
+      setSetupRows(null)
       const batchToken = ++batchSequence.current
       setBatch(null); setHistory([]); setTemplates([]); setTemplatesReady(false); setTemplatesError(''); setTemplatesLoading(false); setAction(null); setImportOpen(false); setReview(null); setHistoryOpen(false); setMonthTools(null); setError(''); setNotice(''); setSheets([])
       setLoading(false); setBusy(false); setHistoryLoading(false); setExportWarnings([]); setMailTab('All'); setEditingBatchId(''); setSimpleLayout(false)
@@ -177,7 +181,7 @@ export default function ExcelPayslips() {
     const sequence = ++profileSequence.current
     void Promise.resolve().then(async () => {
       if (!active) return
-      setColumns(defaultPayslipMapping(headers)); setSignature(''); setExcludedRows([]); setMappingNotice(''); setTemplateId('')
+      setColumns(defaultPayslipMapping(headers, sheet, headerRow)); setSignature(''); setExcludedRows([]); setMappingNotice(''); setTemplateId('')
       if (!headers.length || !clientId) return
       setProfileLoading(true)
       try {
@@ -360,11 +364,13 @@ export default function ExcelPayslips() {
   }
 
   return <section className="excel-payslips recruitment-viewport" aria-label="Excel payslips workspace">
+    {batch?.clientId === clientId && setupRows && <ExcelPayrollSetup key={`setup:${clientId}:${batch.id}:${[...setupRows].sort().join(',')}`} clientId={clientId} batch={batch} rowIds={setupRows} onClose={() => setSetupRows(null)} onApplied={result => { setTemplatesReady(false); setNotice(`Payroll setup saved: ${result.createdCount} employees created, ${result.updatedCount} updated. Verify Employee simulation before running payroll.`) }} />}
     {batch?.clientId === clientId && <ExcelPayslipMonthTools key={`month-tools:${clientId}:${batch.id}`} clientId={clientId} batch={batch} history={history} canManage={canManage} open={monthTools} onClose={() => setMonthTools(null)} onBusy={setBusy} onSaved={saved => { setBatch(saved); setHistory(current => [batchSummary(saved), ...current]); rememberBatch(saved.id); setSelectedIds([]); setNotice(`${saved.month} payslips saved as a new batch.`) }} />}
     <PageHeaderPortal slot="excel-payslips-client-controls">{!shellClientContext && (clients.length === 1 ? <span className="scoped-client-chip">{clients[0].name}</span> : <Select aria-label="Excel payslips client" showSearch optionFilterProp="label" value={clientId || undefined} loading={clientsLoading} disabled={busy || clientsLoading} placeholder="Search or select client" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={chooseClient} style={{ width: 240, maxWidth: '100%' }} />)}</PageHeaderPortal>
     <PageHeaderPortal slot="excel-payslips-view-controls"><Segmented aria-label="Excel payslips view" options={['Table', 'Cards']} value={view} onChange={value => setView(value as 'Table' | 'Cards')} /></PageHeaderPortal>
     <PageHeaderPortal slot="excel-payslips-page-controls"><Space wrap className="excel-payslip-header-actions">
       <Tooltip title="Batch history"><Button aria-label="Batch history" icon={<HistoryOutlined />} disabled={!clientId || busy} onClick={() => setHistoryOpen(true)}><span className="excel-payslip-action-label">Batch history</span></Button></Tooltip>
+      {canConfigurePayroll && <Tooltip title="Select saved employee rows to review and configure regular payroll"><Button aria-label="Configure payroll" disabled={!validSelection.length || busy || loading} onClick={() => setSetupRows([...validSelection])}>Configure payroll{validSelection.length ? ` (${validSelection.length})` : ''}</Button></Tooltip>}
       {canManage && <Tooltip title="Import spreadsheet"><Button aria-label="Import spreadsheet" type="primary" icon={<UploadOutlined />} disabled={!clientId || loading || busy} onClick={() => { setEditingBatchId(''); setSheets([]); setFileName(''); setSimpleLayout(false); setImportOpen(true); setImportError(''); setExportWarnings([]) }}><span className="excel-payslip-action-label">Import spreadsheet</span></Button></Tooltip>}
       <Tooltip title={validSelection.length ? `PDF selected (${validSelection.length})` : 'PDF all'}><Button aria-label={validSelection.length ? `PDF selected (${validSelection.length})` : 'PDF all'} icon={<FilePdfOutlined />} disabled={!rows.length || busy} onClick={() => beginAction('download', validSelection.length ? validSelection : rows.map(row => row.id))}><span className="excel-payslip-action-label">{validSelection.length ? `PDF selected (${validSelection.length})` : 'PDF all'}</span></Button></Tooltip>
       {canManage && <Tooltip title={validSelection.length ? `Email selected (${emailTargets.length})` : `Email batch (${emailTargets.length})`}><Button aria-label={validSelection.length ? `Email selected (${emailTargets.length})` : `Email batch (${emailTargets.length})`} icon={<SendOutlined />} disabled={!emailTargets.length || busy} onClick={() => beginAction('send', emailTargets)}><span className="excel-payslip-action-label">{validSelection.length ? `Email selected (${emailTargets.length})` : `Email batch (${emailTargets.length})`}</span></Button></Tooltip>}
@@ -419,13 +425,14 @@ export default function ExcelPayslips() {
         {sheet && <><div className="excel-payslip-form-grid"><Form.Item label="Worksheet"><Select aria-label="Payslip worksheet" disabled={!!editingBatchId} value={sheetName} options={sheets.map(item => ({ value: item.name, label: item.name }))} onChange={value => { const next = sheets.find(item => item.name === value)!; setSheetName(value); setMonth(next.template?.month || inferPayslipMonth(next)); setSimpleLayout(next.template?.simpleLayout === true) }} /></Form.Item><Form.Item label="Header row"><InputNumber aria-label="Payslip header row" disabled={!!editingBatchId} min={1} max={100000} value={headerRow} onChange={value => setHeaderRow(value || 1)} /></Form.Item><Form.Item label="Salary month" required><Input aria-label="Payslip salary month" disabled={!!editingBatchId} type="month" value={month} onChange={event => setMonth(event.target.value)} /></Form.Item></div>
           <Form.Item label="Client salary template"><Select aria-label="Payslip salary template" loading={templatesLoading} disabled={!templatesReady} value={templateId || ''} options={[{ value: '', label: 'Manual mapping' }, ...templates.map(item => ({ value: String(item.id), label: item.name }))]} onChange={value => { setTemplateId(value); setColumns(current => current.map(column => ({ ...column, componentId: undefined }))) }} /></Form.Item>
           <Form.Item extra="Use the compact salary slip format for this batch."><Checkbox checked={simpleLayout} onChange={event => setSimpleLayout(event.target.checked)}>Simple salary slip</Checkbox></Form.Item>
-          <Alert type="info" showIcon message="Common salary headings are mapped automatically. Review or change any mapping below." description="Saved mappings take priority. Amounts stay as stated in Excel; gross totals and employer contributions are kept separate from earnings. Blank employee codes are assigned on Save batch: reuse a clear Employee Master match or generate a new code. Serial numbers are not employee codes." action={<Button size="small" disabled={profileLoading} onClick={() => { setColumns(defaultPayslipMapping(headers)); setTemplateId(''); setMappingNotice('Suggested mapping applied. Review before saving. Your saved mapping has not been changed.'); }}>Use suggested mapping</Button>} />
+          <Alert type="info" showIcon message="Common salary headings are mapped automatically. Review or change any mapping below." description="Saved mappings take priority. Amounts stay as stated in Excel; gross totals and employer contributions stay separate from earnings. Blank monetary cells block saving unless Treat blanks as zero is explicitly approved for that column. Original source cells remain unchanged. Blank employee codes are assigned on Save batch; serial numbers are not employee codes." action={<Button size="small" disabled={profileLoading} onClick={() => { setColumns(defaultPayslipMapping(headers, sheet, headerRow)); setTemplateId(''); setMappingNotice('Suggested mapping applied. Review before saving. Your saved mapping has not been changed.'); }}>Use suggested mapping</Button>} />
           <div className="excel-payslip-mapping"><DataTable rows={columns} loading={profileLoading} title="Column mapping" getRowId={column => column.columnIndex} hideSearch exportDisabled pageSizeOptions={[10, 25, 50]} columns={[
             { key: 'sourceHeader', label: 'Source column', width: 210, render: column => <><strong>{excelColumnLetter(column.columnIndex)}</strong> · {column.sourceHeader || '(blank heading)'}</> },
             { key: 'sample', label: 'First employee value', width: 170, value: column => sheet.rows.find(row => row.sourceRow > headerRow && row.cells.some(cell => cell?.value))?.cells[column.columnIndex]?.value || '' },
             { key: 'componentId', label: 'Template component', width: 240, filterable: false, sortable: false, render: column => <Select aria-label={`Column ${excelColumnLetter(column.columnIndex)} template component`} value={column.componentId || ''} disabled={!template || profileLoading} showSearch optionFilterProp="label" options={[{ value: '', label: 'Manual / not mapped' }, ...(template?.components || []).map(component => ({ value: String(component.id), label: `${component.code} · ${component.name} (${component.category})` }))]} onChange={value => { const component = template?.components.find(item => String(item.id) === value); patchColumn(column.columnIndex, component ? { componentId: value, label: component.name, kind: categoryKind(component.category) } : { componentId: undefined }) }} style={{ width: '100%' }} /> },
-            { key: 'kind', label: 'Use as', width: 205, filterable: false, sortable: false, render: column => <Select aria-label={`Column ${excelColumnLetter(column.columnIndex)} use as`} value={column.kind} disabled={profileLoading} options={payslipColumnKinds} onChange={kind => patchColumn(column.columnIndex, { kind, componentId: undefined })} style={{ width: '100%' }} /> },
+            { key: 'kind', label: 'Use as', width: 205, filterable: false, sortable: false, render: column => <Select aria-label={`Column ${excelColumnLetter(column.columnIndex)} use as`} value={column.kind} disabled={profileLoading} options={payslipColumnKinds} onChange={kind => patchColumn(column.columnIndex, { kind, componentId: undefined, blankAsZero: isPayslipAmountKind(kind) ? column.blankAsZero : undefined })} style={{ width: '100%' }} /> },
             { key: 'label', label: 'Payslip label', width: 205, filterable: false, sortable: false, render: column => <Input aria-label={`Column ${excelColumnLetter(column.columnIndex)} label`} value={column.label} maxLength={80} disabled={profileLoading} onChange={event => patchColumn(column.columnIndex, { label: event.target.value })} /> },
+            { key: 'blankAsZero', label: 'Blank amounts', width: 220, filterable: false, sortable: false, render: column => <Checkbox aria-label={`Column ${excelColumnLetter(column.columnIndex)} blanks as zero`} checked={column.blankAsZero === true} disabled={profileLoading || !isPayslipAmountKind(column.kind)} onChange={event => patchColumn(column.columnIndex, { blankAsZero: event.target.checked })}>Treat blanks as zero</Checkbox> },
           ]} /></div>
           <Divider />
           <Space wrap><Tag color="blue">{imported.rows.length} employee rows</Tag><Tag>{imported.excludedRows.length} blank-name / total / excluded rows</Tag><Tag color={imported.issues.length ? 'red' : 'green'}>{imported.issues.length} import issues</Tag></Space>

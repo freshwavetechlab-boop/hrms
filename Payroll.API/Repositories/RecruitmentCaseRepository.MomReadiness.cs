@@ -93,12 +93,12 @@ WHERE PipelineStageId=@PipelineStageId AND DocumentType=@DocumentType AND Templa
         var rows = (await db.QueryAsync<SelectionCommitteeCandidate>(RecruitmentJobMom.CandidatesSql + " ORDER BY CandidateName,applicationRow.Id",
             new { context.ApplicationId, context.HiringCaseId, context.PositionId, context.ClientId })).ToList();
         var selected = rows.Where(row => string.Equals(row.InterviewStatus, "Completed", StringComparison.OrdinalIgnoreCase)
-            && string.Equals(row.Result, "Selected", StringComparison.OrdinalIgnoreCase)).ToList();
+            && string.Equals(row.Result, "Selected", StringComparison.OrdinalIgnoreCase) && row.InterviewRoundsComplete).ToList();
         context.SelectedCandidateCount = selected.Count;
         context.RequiredCandidateCount = await RequiredHiringCohortAsync(db, context.PositionId!.Value);
         context.CandidateChecks = rows.Select(row => new RecruitmentMomCandidateCheck {
             ApplicationId = row.ApplicationId, CandidateName = row.CandidateName,
-            InterviewSelected = selected.Contains(row), InterviewStatus = row.InterviewId is null ? "Not scheduled" : JoinNonEmpty(row.InterviewStatus, row.Result),
+            InterviewSelected = selected.Contains(row), InterviewStatus = row.InterviewId is null ? "Not scheduled" : !row.InterviewRoundsComplete ? "Interview rounds pending" : JoinNonEmpty(row.InterviewStatus, row.Result),
             TermsConfirmed = row.TermsConfirmedAtUtc is not null && row.AgreedCtc is > 0
         }).ToList();
         context.CandidateChecksLoaded = true;

@@ -291,7 +291,9 @@ WHERE batches.client_id=@ClientId AND codes.employee_code IS NOT NULL AND TRIM(c
             if (!column.TryGetProperty("sourceHeader", out var header) || header.ValueKind != JsonValueKind.String || !TextValid(header.GetString(), 512)
                 || !column.TryGetProperty("label", out var label) || label.ValueKind != JsonValueKind.String || !TextValid(label.GetString(), 80, kind.GetString() != "ignore")) return "Mapping columns need a sourceHeader (up to 512 characters) and label (up to 80 characters).";
             if (column.TryGetProperty("componentId", out var component) && (component.ValueKind != JsonValueKind.String || !TextValid(component.GetString(), 100))) return "An optional mapping componentId must be a string of up to 100 characters.";
-            if (column.EnumerateObject().Any(p => p.Name is not ("columnIndex" or "sourceHeader" or "label" or "kind" or "componentId"))) return "Mapping columns may contain display mappings only; formulas and other fields are not supported.";
+            if (column.TryGetProperty("blankAsZero", out var blankPolicy) && (blankPolicy.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                || blankPolicy.ValueKind == JsonValueKind.True && kind.GetString() is not ("earning" or "deduction" or "employer" or "netPay" or "grossTotal" or "deductionTotal"))) return "Blank as zero requires a boolean choice on a monetary column.";
+            if (column.EnumerateObject().Any(p => p.Name is not ("columnIndex" or "sourceHeader" or "label" or "kind" or "componentId" or "blankAsZero"))) return "Mapping columns may contain display mappings only; formulas and other fields are not supported.";
         }
         return null;
     }

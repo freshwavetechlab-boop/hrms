@@ -110,6 +110,7 @@ export const saveRecruitmentPipelineVersion = (definitionId: number, version: Re
     scopeType: version.scopeType ?? 'Application',
     slaMode: version.slaMode ?? 'StageEntry',
     overallSlaMinutes: version.overallSlaMinutes ?? 0,
+      allRejectedRollback: version.allRejectedRollback ?? { enabled: false, targetStageCode: '' },
     stages: version.stages,
     transitions: version.transitions,
   }, null as RecruitmentPipelineVersion | null, { successMessage: 'Pipeline draft saved.' })

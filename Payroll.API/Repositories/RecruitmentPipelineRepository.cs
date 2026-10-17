@@ -982,6 +982,8 @@ Description=@Description,IsActive=@IsActive,UpdatedAtUtc=UTC_TIMESTAMP() WHERE I
         var version = await db.QueryFirstOrDefaultAsync<RecruitmentPipelineVersion>(@"SELECT v.* FROM recruitment_pipeline_versions v
 JOIN recruitment_pipeline_definitions d ON d.Id=v.PipelineDefinitionId WHERE v.Id=@Id AND (@ClientId IS NULL OR d.ClientId=@ClientId)", new { Id = id, user.ClientId });
         if (version is null) return null;
+        var clientId = await db.ExecuteScalarAsync<int>("SELECT ClientId FROM recruitment_pipeline_definitions WHERE Id=@Id", new { Id = version.PipelineDefinitionId });
+        version.AllRejectedRollback = await RecruitmentRollbackRules.ReadAsync(db, clientId, version.Id);
         version.Stages = (await db.QueryAsync<RecruitmentPipelineStage>("SELECT * FROM recruitment_pipeline_stages WHERE PipelineVersionId=@Id ORDER BY DisplayOrder,Id", new { Id = id })).ToList();
         version.Transitions = (await db.QueryAsync<RecruitmentPipelineTransition>(@"SELECT t.*,f.StageCode FromStageCode,n.StageCode ToStageCode
 FROM recruitment_pipeline_transitions t JOIN recruitment_pipeline_stages f ON f.Id=t.FromStageId JOIN recruitment_pipeline_stages n ON n.Id=t.ToStageId
@@ -1084,6 +1086,10 @@ FROM recruitment_pipeline_definitions WHERE Id=@Id AND (@ClientId IS NULL OR Cli
         request.SlaMode = Canonical(new[] { "StageEntry", "CumulativeFromAnchor" }, request.SlaMode, "StageEntry");
         request.OverallSlaMinutes = Math.Max(0, request.OverallSlaMinutes);
         NormalizeStageCardScopes(request);
+        request.AllRejectedRollback ??= new();
+        request.AllRejectedRollback.TargetStageCode = (request.AllRejectedRollback.TargetStageCode ?? "").Trim().ToUpperInvariant();
+        var rollbackValidation = RecruitmentRollbackRules.Validate(request.AllRejectedRollback, request.Stages);
+        if (rollbackValidation.Length > 0) return (null, rollbackValidation);
         var validation = ValidatePipelineDraft(request);
         if (validation.Length > 0) return (null, validation);
         await using var db = Db();
@@ -1226,6 +1232,16 @@ VALUES (@PipelineVersionId,@FromStageId,@ToStageId,@OutcomeCode,@ActionLabel,@Ap
 VALUES (@TransitionId,@RuleType,@ComparisonOperator,@TextValue,@IntegerValue,@DecimalValue,@BooleanValue,@IsMandatory,@ErrorMessage,@DisplayOrder)",
                     new { TransitionId = transitionId, RuleType = rule.RuleType.Trim().ToUpperInvariant(), ComparisonOperator = rule.ComparisonOperator.Trim().ToUpperInvariant(), rule.TextValue, rule.IntegerValue, rule.DecimalValue, rule.BooleanValue, rule.IsMandatory, rule.ErrorMessage, rule.DisplayOrder }, tx);
         }
+        var previousRollback = await RecruitmentRollbackRules.ReadAsync(db, definition.ClientId, versionId, tx);
+        var rollbackJson = JsonSerializer.Serialize(request.AllRejectedRollback);
+        await db.ExecuteAsync(@"INSERT INTO modulesettings(client_id,ModuleCode,IsEnabled,SettingsJson)
+VALUES(@ClientId,@Key,TRUE,@Json)
+ON DUPLICATE KEY UPDATE SettingsJson=@Json,IsEnabled=TRUE,UpdatedAt=UTC_TIMESTAMP()",
+            new { definition.ClientId, Key = RecruitmentRollbackRules.Key(versionId), Json = rollbackJson }, tx);
+        if (JsonSerializer.Serialize(previousRollback) != rollbackJson)
+            await db.ExecuteAsync(@"INSERT INTO recruitment_audit(EntityType,EntityId,Action,OldValueJson,NewValueJson,ChangedByUserId)
+VALUES('RecruitmentPipelineRollbackRule',@VersionId,'Configure all-candidate rollback',@Before,@After,@UserId)",
+                new { VersionId = versionId, Before = JsonSerializer.Serialize(previousRollback), After = rollbackJson, UserId = user.Id }, tx);
         await tx.CommitAsync();
         return (await GetPipelineVersionAsync(versionId, user), "");
     }
@@ -1235,6 +1251,8 @@ VALUES (@TransitionId,@RuleType,@ComparisonOperator,@TextValue,@IntegerValue,@De
         var version = await GetPipelineVersionAsync(id, user);
         if (version is null) return (null, "Pipeline version was not found.");
         if (!version.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase)) return (null, "Only a draft pipeline version can be published.");
+        var rollbackValidation = RecruitmentRollbackRules.Validate(version.AllRejectedRollback, version.Stages);
+        if (rollbackValidation.Length > 0) return (null, rollbackValidation);
         var validation = ValidatePipelineDraft(new SaveRecruitmentPipelineVersion { Id = version.Id, PipelineDefinitionId = version.PipelineDefinitionId, ScopeType = version.ScopeType, SlaMode = version.SlaMode, OverallSlaMinutes = version.OverallSlaMinutes, Stages = version.Stages, Transitions = version.Transitions });
         if (validation.Length > 0) return (null, validation);
         await using var db = Db();
@@ -1693,6 +1711,7 @@ ORDER BY stageRow.PipelineVersionId,stageRow.DisplayOrder,stageRow.Id", new { Ve
                 continue;
             }
             var candidateProgress = progressCandidates.Where(row => row.PositionId == card.PositionId).ToList();
+            card.InterviewRoundsApplicationId = candidateProgress.FirstOrDefault()?.ApplicationId;
             if (!card.HiringCaseId.HasValue)
             {
                 var initialLane = RecruitmentHiringProgress.SupportedInitialStage(workspace.Lanes
@@ -1979,6 +1998,9 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id", new { ApplicationId = app
         };
         if (expectedStageTypes.Length > 0 && available.Any() && !expectedStageTypes.Contains(available[0].FromStageType, StringComparer.OrdinalIgnoreCase))
             return (null, "");
+        if (normalized.Equals("Selected",StringComparison.OrdinalIgnoreCase)
+            && !await db.ExecuteScalarAsync<bool>("SELECT " + RecruitmentInterviewRounds.CompleteFor("a","currentFlow.CurrentStageInstanceId") + " FROM recruitment_candidate_applications a JOIN recruitment_application_pipeline_instances currentFlow ON currentFlow.ApplicationId=a.Id WHERE a.Id=@Id",new { Id=applicationId }))
+            return (null,"Round result saved. Complete the remaining configured interview rounds before moving this candidate.");
         var eligible = available.Where(row => rejection
             ? row.ToStageType.Equals("Rejected", StringComparison.OrdinalIgnoreCase) || row.OutcomeCode.Contains("REJECT", StringComparison.OrdinalIgnoreCase)
             : !row.ToStageType.Equals("Rejected", StringComparison.OrdinalIgnoreCase)
@@ -2032,7 +2054,7 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id", new { Id = applicationId,
         await using var db = Db();
         await db.OpenAsync();
         return await db.QueryAsync<RecruitmentApplicationStageTimelineItem>(@"SELECT instance.Id,instance.ApplicationPipelineInstanceId,
-instance.ApplicationId,instance.PipelineStageId,stageRow.StageCode,stageRow.StageName,stageRow.StageType,
+instance.ApplicationId,instance.PipelineStageId,stageRow.StageCode,stageRow.StageName,stageRow.StageType,stageRow.DisplayOrder,
 instance.Status,instance.OutcomeCode,instance.EnteredAtUtc,instance.DueAtUtc,instance.ExitedAtUtc,
 CASE WHEN instance.ExitedAtUtc IS NULL
   THEN GREATEST(0,TIMESTAMPDIFF(SECOND,instance.EnteredAtUtc,UTC_TIMESTAMP())-instance.PausedDurationSeconds-
@@ -2188,6 +2210,10 @@ DueAtUtc=CASE WHEN @ShiftDue=TRUE AND DueAtUtc IS NOT NULL THEN TIMESTAMPADD(SEC
     {
         await using var db = Db();
         await db.OpenAsync();
+        var roundJob = await db.QueryFirstOrDefaultAsync<RecruitmentCandidateApplication>(@"SELECT a.ClientId,a.PositionId FROM recruitment_pipeline_transition_requests r
+JOIN recruitment_candidate_applications a ON a.Id=r.ApplicationId WHERE r.Id=@Id",new { Id=requestId });
+        if (roundJob is null) return (null,"Transition request was not found.");
+        await using var roundLease = await RecruitmentInterviewRounds.LockAsync(db,roundJob.ClientId,roundJob.PositionId);
         await using var tx = await db.BeginTransactionAsync();
         var request = await db.QueryFirstOrDefaultAsync<ApplyTransitionRow>(@"SELECT r.*,t.FromStageId,t.ToStageId,t.OutcomeCode,
 f.StageName FromStageName,f.StageType FromStageType,n.StageName ToStageName,n.SlaDurationMinutes,n.IsTerminal,n.StageType ToStageType
@@ -2205,6 +2231,8 @@ FROM recruitment_application_stage_instances s JOIN recruitment_application_pipe
 JOIN recruitment_pipeline_stages stageDefinition ON stageDefinition.Id=s.PipelineStageId
 WHERE s.Id=@Id AND p.CurrentStageInstanceId=s.Id AND s.Status IN ('Active','Paused') FOR UPDATE", new { Id = request.StageInstanceId }, tx);
         if (current is null || current.PipelineStageId != request.FromStageId) return (null, "Application has already left the requested stage.");
+        var roundsError = await InterviewRoundsTransitionErrorAsync(db,request.ApplicationId,request.TransitionId,tx);
+        if (roundsError.Length>0) return (null,roundsError);
 
         if (current.Status.Equals("Paused", StringComparison.OrdinalIgnoreCase))
         {
@@ -2258,6 +2286,12 @@ DecidedAtUtc=COALESCE(DecidedAtUtc,UTC_TIMESTAMP()),AppliedAtUtc=UTC_TIMESTAMP()
 
     private static async Task<string> ValidateTransitionRulesAsync(MySqlConnection db, long applicationId, long transitionId)
     {
+        var roundsError=await InterviewRoundsTransitionErrorAsync(db,applicationId,transitionId);
+        if (roundsError.Length>0) return roundsError;
+        var interviewStageInstanceId=await db.ExecuteScalarAsync<long?>(@"SELECT visit.Id
+FROM recruitment_application_pipeline_instances flow JOIN recruitment_application_stage_instances visit ON visit.Id=flow.CurrentStageInstanceId
+JOIN recruitment_pipeline_stages definition ON definition.Id=visit.PipelineStageId AND definition.StageType='Interview'
+WHERE flow.ApplicationId=@ApplicationId",new { ApplicationId=applicationId });
         var rules = await db.QueryAsync<RecruitmentPipelineTransitionRule>("SELECT * FROM recruitment_pipeline_transition_rules WHERE TransitionId=@Id ORDER BY DisplayOrder,Id", new { Id = transitionId });
         foreach (var rule in rules)
         {
@@ -2283,19 +2317,24 @@ WHERE ApplicationId=@Id AND IsCurrent=TRUE ORDER BY ScoredAt DESC,Id DESC LIMIT 
                     break;
                 case "INTERVIEW_RESULT":
                     var result = await db.ExecuteScalarAsync<string?>(@"SELECT Result FROM recruitment_interviews WHERE ApplicationId=@Id
-AND Status='Completed' ORDER BY ScheduledStart DESC,Id DESC LIMIT 1", new { Id = applicationId });
+AND (@StageId IS NULL OR PipelineStageInstanceId=@StageId)
+AND Status='Completed' ORDER BY ScheduledStart DESC,Id DESC LIMIT 1", new { Id = applicationId,StageId=interviewStageInstanceId });
                     passed = result is not null && Compare(result, rule.TextValue ?? "Passed", rule.ComparisonOperator);
                     break;
                 case "INTERVIEW_SCORE":
                     var score = await db.ExecuteScalarAsync<decimal?>(@"SELECT OverallScore FROM recruitment_interviews WHERE ApplicationId=@Id
-AND Status='Completed' ORDER BY ScheduledStart DESC,Id DESC LIMIT 1", new { Id = applicationId });
+AND (@StageId IS NULL OR PipelineStageInstanceId=@StageId)
+AND Status='Completed' ORDER BY ScheduledStart DESC,Id DESC LIMIT 1", new { Id = applicationId,StageId=interviewStageInstanceId });
                     passed = score is not null && Compare(score.Value, rule.DecimalValue ?? (decimal)(rule.IntegerValue ?? 0), rule.ComparisonOperator);
                     break;
                 case "PANEL_FEEDBACK_COMPLETE":
                     var missingFeedback = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_interview_panel_members pm
 JOIN recruitment_interviews i ON i.Id=pm.InterviewId
 LEFT JOIN recruitment_interview_feedback f ON f.InterviewId=pm.InterviewId AND f.PanelUserId=pm.PanelUserId
-WHERE i.ApplicationId=@Id AND i.Status<>'Cancelled' AND f.Id IS NULL", new { Id = applicationId });
+WHERE i.ApplicationId=@Id AND (@StageId IS NULL OR i.PipelineStageInstanceId=@StageId) AND i.Status NOT IN ('Cancelled','No Show')
+AND i.Id=(SELECT MAX(attempt.Id) FROM recruitment_interviews attempt WHERE attempt.ApplicationId=i.ApplicationId
+AND attempt.PipelineStageInstanceId <=> i.PipelineStageInstanceId AND BINARY attempt.RoundCode=BINARY i.RoundCode)
+AND f.Id IS NULL", new { Id = applicationId,StageId=interviewStageInstanceId });
                     passed = Compare(missingFeedback == 0, rule.BooleanValue ?? true, rule.ComparisonOperator);
                     break;
                 default:
@@ -2305,6 +2344,18 @@ WHERE i.ApplicationId=@Id AND i.Status<>'Cancelled' AND f.Id IS NULL", new { Id 
             if (!passed && rule.IsMandatory) return string.IsNullOrWhiteSpace(rule.ErrorMessage) ? $"Transition rule {rule.RuleType} is not satisfied." : rule.ErrorMessage;
         }
         return "";
+    }
+
+    private static async Task<string> InterviewRoundsTransitionErrorAsync(MySqlConnection db,long applicationId,long transitionId,MySqlTransaction? tx=null)
+    {
+        var incomplete=await db.ExecuteScalarAsync<bool>(@"SELECT EXISTS(SELECT 1 FROM recruitment_candidate_applications a
+JOIN recruitment_pipeline_transitions t ON t.Id=@TransitionId
+JOIN recruitment_pipeline_stages source ON source.Id=t.FromStageId AND source.StageType='Interview'
+JOIN recruitment_pipeline_stages target ON target.Id=t.ToStageId
+JOIN recruitment_application_pipeline_instances currentFlow ON currentFlow.ApplicationId=a.Id
+WHERE a.Id=@ApplicationId AND target.StageType NOT IN ('Rejected','Withdrawn') AND t.OutcomeCode NOT LIKE '%REJECT%' AND t.OutcomeCode NOT LIKE '%WITHDRAW%'
+AND NOT " + RecruitmentInterviewRounds.CompleteFor("a","currentFlow.CurrentStageInstanceId") + ")",new { ApplicationId=applicationId,TransitionId=transitionId },tx);
+        return incomplete ? "Complete every configured interview round before moving this candidate to the next stage." : "";
     }
 
     private static async Task<string> ValidateStageExitRequirementsAsync(MySqlConnection db, long applicationId, long stageId, long transitionId)

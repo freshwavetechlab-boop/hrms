@@ -10,6 +10,7 @@ import { getInterviewFeedback, getInterviewSchedulingContext, saveInterview, sav
 import type { RecruitmentCandidateApplication, RecruitmentInterview, RecruitmentInterviewFeedback, RecruitmentInterviewSchedulingContext, RecruitmentOpenPosition, SaveRecruitmentInterviewFeedbackCompetencyScore, WorkflowApprover } from '../types/payroll'
 import SearchSelect, { selectOptions } from './SearchSelect'
 import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
+import RecruitmentInterviewRounds from './RecruitmentInterviewRounds'
 import { useAuthSession } from './AuthGate'
 import { useToast } from './ToastProvider'
 import './RecruitmentInterviewEditor.css'
@@ -139,6 +140,7 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, initialStar
   const [sendInvite, setSendInvite] = useState(!interview?.id)
   const [candidateMode, setCandidateMode] = useState<'existing' | 'new'>('existing')
   const [newCandidate, setNewCandidate] = useState({ fullName: '', email: '', phone: '', positionId: 0 })
+  const [roundsRevision, setRoundsRevision] = useState(0)
 
   useEffect(() => {
     if (!open) return
@@ -179,7 +181,7 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, initialStar
       }
     }).finally(() => { if (active) setContextLoading(false) })
     return () => { active = false }
-  }, [open, interview?.id, draft.applicationId, standalone])
+  }, [open, interview?.id, draft.applicationId, standalone, roundsRevision])
 
   const selectedApplication = applications.find(row => row.id === draft.applicationId)
   const eligiblePanelUsers = useMemo(() => panelUsers.filter(user => !selectedApplication || user.clientId == null || user.clientId === selectedApplication.clientId), [panelUsers, selectedApplication])
@@ -194,7 +196,8 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, initialStar
   const destinationValid = recordingDecision || (internalDelivery ? internalAvailable : !sendInvite || Boolean(draft.locationOrLink.trim()))
   const hasNewCandidate = candidateMode === 'new' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newCandidate.email.trim())
   const hasTarget = candidateMode === 'new' ? hasNewCandidate : draft.applicationId > 0
-  const canSave = !savingApprover && savedInterview?.status !== 'Completed' && decisionReady && (canSchedule || canRecordDecision) && hasTarget && Boolean(draft.decisionApproverUserId) && rangeValid && completionValid && destinationValid && draft.panelUserIds.length >= minimumPanelCount && !contextLoading && (Boolean(interview?.id) || standalone || context !== null)
+  const roundAvailable = Boolean(interview?.id) || !context?.roundPlan || context.roundPlan.rounds.some(round => round.canSchedule)
+  const canSave = roundAvailable && !savingApprover && savedInterview?.status !== 'Completed' && decisionReady && (canSchedule || canRecordDecision) && hasTarget && Boolean(draft.decisionApproverUserId) && rangeValid && completionValid && destinationValid && draft.panelUserIds.length >= minimumPanelCount && !contextLoading && (Boolean(interview?.id) || standalone || context !== null)
 
   const saveApprover = async () => {
     if (!savedInterview?.id || !canSchedule || !approverChanged || savedInterview.status === 'Completed' || saving || savingApprover) return
@@ -307,6 +310,8 @@ function ScheduleEditor({ open, interview, initialApplicationId = 0, initialStar
       </Form>
 
       {!standalone && draft.applicationId > 0 && !contextLoading && !context && !interview?.id && <Alert type="warning" showIcon message="Interview cannot be scheduled from the application's current stage" description="Move the application to a configured Interview pipeline stage and ensure that stage has an interview-round configuration." />}
+      {!standalone && draft.applicationId > 0 && <RecruitmentInterviewRounds key={draft.applicationId} applicationId={draft.applicationId} onChanged={() => setRoundsRevision(value => value + 1)} />}
+      {!roundAvailable && <Alert type="info" showIcon message={context?.roundPlan?.complete ? 'All configured rounds have cleared.' : 'Complete the active round before scheduling the next round.'} />}
       {recordingDecision && !approverChanged && !canRecordDecision && <Alert type="warning" showIcon message="Final decision is not available to you yet" description="The saved approver must record the decision after the required panel feedback is complete." />}
       {!completionValid && <Alert type="warning" showIcon message="Select a final result before marking this interview completed." />}
       {context?.settingsMissing && <Alert showIcon type="warning" message="Complete round name, interview type, date/time, panel and decision approver for this candidate." description="This job has no round defaults. The entered details are saved on this interview; all panel feedback is required before a final decision." />}

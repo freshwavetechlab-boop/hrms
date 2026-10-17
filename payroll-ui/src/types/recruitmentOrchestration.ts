@@ -270,6 +270,7 @@ export type SaveRecruitmentPipelineDefinition = Pick<RecruitmentPipelineDefiniti
   'id' | 'clientId' | 'pipelineCode' | 'pipelineName' | 'description' | 'isActive'>
 
 export type RecruitmentPipelineVersion = {
+  allRejectedRollback?: { enabled: boolean; targetStageCode: string }
   runtimeUpdate?: { applicationsUpdated: number; hiringJourneysUpdated: number; waiting: string[] } | null
   id: number
   pipelineDefinitionId: number
@@ -521,6 +522,7 @@ export type RecruitmentPipelineBoardCard = {
 }
 
 export type RecruitmentPipelineDemandCard = {
+  interviewRoundsApplicationId?: number | null
   hiringProgress?: HiringProgress
   cardType: 'Demand'
   clientId: number
@@ -621,6 +623,7 @@ export type RecruitmentApplicationStageInstance = {
 }
 
 export type RecruitmentApplicationStageTimelineItem = RecruitmentApplicationStageInstance & {
+  displayOrder?: number
   stageType: string
   reason: string
   changedByName: string

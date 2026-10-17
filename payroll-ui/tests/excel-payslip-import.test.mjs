@@ -8,6 +8,66 @@ const compiled = ts.transpileModule(readFileSync(new URL('../src/utils/excelPays
 const { parsePayslipCsv, defaultPayslipMapping, buildExcelPayslipRows, buildPayslipCalculationSource, translatePayslipSharedFormula, resolvePayslipSharedFormulas, payslipHeaders, payslipHeaderSignature, parsePayslipAmount, inferPayslipMonth, formatExcelPayslipAmount, payslipPhoneValue } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
 const parse = text => { const sheet = parsePayslipCsv(text); const columns = defaultPayslipMapping(payslipHeaders(sheet, 1)); return { sheet, columns, result: buildExcelPayslipRows(sheet, 1, columns) } }
 
+test('reviewed NHDC financial cases map earned counterparts and retain monthly inputs and billing separately', () => {
+  const { sheet, headerRow } = JSON.parse(readFileSync(new URL('./fixtures/nhdc-salary-import.json', import.meta.url), 'utf8'))
+  // The full workbook also contains this same-row Other Allowance reference.
+  // Keep it as mapping context without adding a sixth employee to the import.
+  const context = Array.from({ length: 40 }, () => ({ value: '' }))
+  context[2] = { value: 'Formula context' }; context[9] = { value: '5000' }
+  context[18] = { value: '5000', formula: true, formulaText: 'J7' }
+  const columns = defaultPayslipMapping(payslipHeaders(sheet, headerRow), { ...sheet, rows: [...sheet.rows, { sourceRow: 7, cells: context }] }, headerRow)
+  const kinds = indices => indices.map(index => columns[index].kind)
+  assert.deepEqual(kinds([5, 6, 7, 8, 9]), Array(5).fill('info'), 'monthly amounts must not become a second set of earnings')
+  assert.deepEqual(kinds([14, 15, 16, 17, 18, 20, 26]), Array(7).fill('earning'))
+  assert.deepEqual(kinds([22, 23, 24, 27]), Array(4).fill('deduction'))
+  assert.deepEqual(kinds([29, 30, 31, 32]), Array(4).fill('employer'))
+  assert.deepEqual(kinds([33, 34, 35, 36, 37, 38, 39]), Array(7).fill('ignore'))
+  assert.equal(columns[28].kind, 'netPay'); assert.equal(columns[25].kind, 'deductionTotal')
+  assert.ok(columns.every(column => column.blankAsZero === undefined), 'suggestions never approve blank normalization')
+  assert.ok(buildExcelPayslipRows(sheet, headerRow, columns).issues.some(issue => issue.message.includes('blank amounts are not zero')))
+  for (const column of columns) if (['earning', 'deduction', 'employer'].includes(column.kind)) column.blankAsZero = true
+  const before = JSON.stringify(sheet)
+  const result = buildExcelPayslipRows(sheet, headerRow, columns)
+  assert.deepEqual(result.issues, [])
+  const byRow = new Map(result.rows.map(row => [row.sourceRow, row]))
+  assert.equal(byRow.get(3).netPay, 0, 'zero attendance is a real source result')
+  assert.equal(byRow.get(3).information.find(item => item.label === 'Special Allowance').value, '3000')
+  assert.equal(byRow.get(86).netPay, 18043.516, 'historical PF billing claims never reduce employee net')
+  assert.equal(byRow.get(19).earnings.reduce((sum, item) => sum + item.amount, 0), 167680, 'TADA is added once')
+  assert.equal(byRow.get(19).netPay, 158980)
+  assert.equal(byRow.get(26).netPay, 70000)
+  assert.equal(byRow.get(42).netPay, 40030, 'the per-row 12-day divisor stays intact')
+  const source = buildPayslipCalculationSource(sheet, headerRow, columns)
+  assert.equal(source.columns[26].blankAsZero, true)
+  assert.equal(source.rows.find(row => row.sourceRow === 3).cells[26].value, '', 'approved zero does not replace the raw blank')
+  assert.equal(JSON.stringify(sheet), before)
+})
+
+test('blank-as-zero approval does not hide errors, malformed numbers or formulas without saved results', () => {
+  const { sheet, columns } = parse('Employee Name,Basic,Recovery,Net Pay\nA,100,,100\nB,0,0,0')
+  columns[2].blankAsZero = true
+  assert.deepEqual(buildExcelPayslipRows(sheet, 1, columns).issues, [])
+  assert.equal(buildExcelPayslipRows(sheet, 1, columns).rows[0].deductions[0].amount, 0)
+  for (const cell of [{ value: '#REF!', error: '#REF!' }, { value: '', missingCachedValue: true, formula: true }, { value: '', formulaText: 'D2', formula: true }, { value: 'unknown' }, { value: '', calculationError: 'Missing formula' }]) {
+    sheet.rows[1].cells[2] = cell
+    assert.equal(buildExcelPayslipRows(sheet, 1, columns).issues.length, 1)
+  }
+  sheet.rows[1].cells[2] = { value: '' }; columns[2].blankAsZero = false
+  assert.equal(buildExcelPayslipRows(sheet, 1, columns).issues.length, 1)
+  columns[0].blankAsZero = true
+  assert.match(buildExcelPayslipRows(sheet, 1, columns).issues[0].message, /monetary column/)
+})
+
+test('earned header matching requires a monthly earning counterpart and duplicate formulas ignore totals', () => {
+  const { sheet } = parse('Employee Name,Basic,ER BASIC,exp allowance,exp allowance,Net Pay\nA,100,50,20,10,60\nGrand Total,100,50,20,10,60')
+  sheet.rows[1].cells[4] = { value: '10', formula: true, formulaText: 'D2/30*15' }
+  sheet.rows[2].cells[4] = { value: '10', formula: true, formulaText: 'SUM(E2:E2)' }
+  const columns = defaultPayslipMapping(payslipHeaders(sheet, 1), sheet, 1)
+  assert.deepEqual(columns.slice(1, 5).map(column => column.kind), ['info', 'earning', 'info', 'earning'])
+  assert.equal(defaultPayslipMapping(['Employer PF', 'ER PF'])[1].kind, 'employer')
+  assert.equal(defaultPayslipMapping(['ER BASIC'])[0].kind, 'ignore', 'an unmatched abbreviation is not assumed to mean earned')
+})
+
 test('CSV preserves text identifiers, duplicate employee names, signed/zero amounts and quoted multiline information', () => {
   const { result } = parse('Employee Name,Employee Code,Basic,Net Pay,Email,Address\r\nSame name,000017,0,0,,"Line one\nLine two"\r\nSame name,000018,-12.5,-12.5,,"Street, town"')
   assert.equal(result.rows.length, 2)

@@ -64,6 +64,25 @@ test('editing saved mapping clones the sheet and restores context, exclusions an
   assert.equal(JSON.stringify({ source, batch }), original, 'editing/cancelling must not mutate the saved snapshot')
 })
 
+test('explicit blank-as-zero policy survives worksheet edits and exported mapping without changing raw blanks', async () => {
+  const { source, batch } = fixture()
+  source.columns[6].blankAsZero = true
+  source.rows[2].cells[6] = { value: '' }
+  source.rows[2].cells[7] = { value: '15000', formulaText: 'F5-G5' }
+  const editable = buildEditablePayslipSheet(batch, source)
+  assert.equal(editable.template.columns[6].blankAsZero, true)
+  const { metadata } = await exportParts(batch, source)
+  const [restored] = restorePayslipTemplateMetadata([{ ...source, name: source.sheetName }, metadataSheet(metadata)])
+  assert.equal(restored.template.columns[6].blankAsZero, true)
+  assert.equal(restored.rows[2].cells[6].value, '')
+  const preview = buildExcelPayslipRows(restored, source.headerRow, restored.template.columns, [7])
+  assert.deepEqual(preview.issues, []); assert.equal(preview.rows[0].deductions[0].amount, 0)
+  const invalid = structuredClone(metadata); invalid.columns[6].blankAsZero = 'true'
+  const [review] = restorePayslipTemplateMetadata([{ ...source, name: source.sheetName }, metadataSheet(invalid)])
+  assert.match(review.template.warnings[0], /Review every column mapping/)
+  assert.ok(review.template.columns.every(column => !column.blankAsZero))
+})
+
 test('simple salary slip is opt-in and survives edit mapping and workbook export/import', async () => {
   for (const simpleLayout of [undefined, false, true]) {
     const { source, batch } = fixture()

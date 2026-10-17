@@ -119,6 +119,7 @@ builder.Services.AddSingleton<EmployeeRepository>();
 builder.Services.AddSingleton<EmployeeAttributeRepository>();
 builder.Services.AddSingleton<PayRunRepository>();
 builder.Services.AddSingleton<ExcelPayslipRepository>();
+builder.Services.AddSingleton<ExcelPayrollSetupRepository>();
 builder.Services.AddSingleton<ExcelPayslipPdfService>();
 builder.Services.AddSingleton<AuthRepository>();
 builder.Services.AddSingleton<LeaveAttendanceRepository>();
@@ -145,7 +146,8 @@ builder.Services.AddSingleton<RecruitmentDocumentRagService>();
 builder.Services.AddSingleton<RecruitmentAiScoringService>();
 builder.Services.AddSingleton<PayrollAdvisorService>();
 builder.Services.AddSingleton<PayrollAdvisorRepository>();
-builder.Services.AddHostedService<PayrollAdvisorWorker>();
+if (builder.Configuration.GetValue("BackgroundWorkers:Enabled", true))
+    builder.Services.AddHostedService<PayrollAdvisorWorker>();
 builder.Services.AddSingleton<PortableIntegrationCredentialProtector>();
 builder.Services.AddSingleton<TemplatePdfService>();
 builder.Services.AddSingleton<BrandedOfferPdfService>();
@@ -218,6 +220,13 @@ if (args.Contains("--migrate-attendance-shifts"))
 {
     await app.Services.GetRequiredService<LeaveAttendanceRepository>().InitializeShiftsAsync();
     app.Logger.LogInformation("Attendance shift schema upgrade completed.");
+    return;
+}
+
+if (args.Contains("--migrate-excel-payroll-setup"))
+{
+    await app.Services.GetRequiredService<ExcelPayrollSetupRepository>().MigrateAsync();
+    app.Logger.LogInformation("Excel payroll setup draft/import receipt schema created. No employee, salary, attendance or payroll business records changed.");
     return;
 }
 
@@ -2051,6 +2060,22 @@ app.MapGet("/api/recruitment/interviews/scheduling-context/{applicationId:long}"
     var (row, error) = await repository.GetInterviewSchedulingContextAsync(applicationId, CurrentUser(context), standalone == true);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
+app.MapGet("/api/recruitment/interviews/rounds/{applicationId:long}", async (RecruitmentTalentRepository repository, long applicationId, HttpContext context) =>
+{
+    if (CurrentUser(context).Id <= 0) return Results.StatusCode(403);
+    try {
+        var (row,error)=await repository.GetInterviewRoundsAsync(applicationId,CurrentUser(context));
+        return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+    } catch (InvalidOperationException issue) { return Results.BadRequest(new { error=issue.Message }); }
+});
+app.MapPost("/api/recruitment/interviews/rounds/{applicationId:long}", async (RecruitmentTalentRepository repository, long applicationId, SaveRecruitmentInterviewRounds request, HttpContext context) =>
+{
+    if (!HasPermission(context,"recruitment.interview.schedule") && !HasPermission(context,"recruitment.manage") && !HasPermission(context,"settings.manage")) return Results.StatusCode(403);
+    try {
+        var (row,error)=await repository.SaveInterviewRoundsAsync(applicationId,request,CurrentUser(context));
+        return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+    } catch (InvalidOperationException issue) { return Results.BadRequest(new { error=issue.Message }); }
+});
 app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentCaseRepository hiringCases, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, InternalInterviewRepository internalInterviews, SaveRecruitmentInterview request, HttpContext context) =>
 {
     // Repository permits non-schedulers only their assigned final decision, never schedule edits.
@@ -2058,7 +2083,10 @@ app.MapPost("/api/recruitment/interviews", async (RecruitmentTalentRepository re
     var user = CurrentUser(context);
     var isNew = request.Id <= 0;
     var previous = isNew ? null : (await repository.GetInterviewsAsync(user, request.ApplicationId)).FirstOrDefault(row => row.Id == request.Id);
-    var (row, error) = await repository.SaveInterviewAsync(request, user);
+    RecruitmentInterview? row;
+    string error;
+    try { (row,error)=await repository.SaveInterviewAsync(request,user); }
+    catch (InvalidOperationException issue) { return Results.BadRequest(new { error=issue.Message }); }
     if (row is { ApplicationId: > 0, IsStandalone: true } && RecruitmentPermissions.Has(user, "recruitment.interview.schedule"))
         row.PipelineTransitionMessage = await pipelines.EnterDirectInterviewAsync(row.ApplicationId, user);
     if (row is not null && previous?.LocationOrLink == InternalInterviewPolicy.InternalDestination
@@ -4502,6 +4530,7 @@ app.MapGet("/api/employees/import-jobs/{jobId:guid}", (EmployeeRepository reposi
 .WithOpenApi();
 
 ExcelPayslipEndpoints.Map(app, CanViewPayslipRegister, CanSendPayslips, CanAccessClient, CurrentUser);
+app.MapExcelPayrollSetup();
 
 app.MapGet("/api/pay-runs", async (PayRunRepository repository, HttpContext context) =>
     HasPermission(context, "payroll.run") || HasPermission(context, "payroll.approve") || HasPermission(context, "payroll.payments")

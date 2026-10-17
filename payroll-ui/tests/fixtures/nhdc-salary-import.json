@@ -1,0 +1,934 @@
+{
+  "description": "Anonymized five-case financial/formula regression fixture from reviewed NHDC September 2026 source. Original identities and bank data omitted.",
+  "sheet": {
+    "name": "Salary",
+    "columnCount": 40,
+    "rows": [
+      {
+        "sourceRow": 2,
+        "cells": [
+          {
+            "value": "SL NO"
+          },
+          {
+            "value": "EMP ID"
+          },
+          {
+            "value": "NAME"
+          },
+          {
+            "value": "DESIGNATION"
+          },
+          {
+            "value": "LOCATION"
+          },
+          {
+            "value": "BASIC"
+          },
+          {
+            "value": "HRA"
+          },
+          {
+            "value": "Special Allowance"
+          },
+          {
+            "value": "exp allowance"
+          },
+          {
+            "value": "other allowance"
+          },
+          {
+            "value": "GROSS"
+          },
+          {
+            "value": "MONTH"
+          },
+          {
+            "value": "WORKING DAY"
+          },
+          {
+            "value": "OTA"
+          },
+          {
+            "value": "ER BASIC"
+          },
+          {
+            "value": "ER HRA"
+          },
+          {
+            "value": "ER Special Allowance"
+          },
+          {
+            "value": "exp allowance"
+          },
+          {
+            "value": "other allowance"
+          },
+          {
+            "value": "Earned Gross"
+          },
+          {
+            "value": "Bonus"
+          },
+          {
+            "value": "final Salary"
+          },
+          {
+            "value": "EPF @ 12%"
+          },
+          {
+            "value": "ESIC @ .75%"
+          },
+          {
+            "value": "P TAX"
+          },
+          {
+            "value": "TOTAL DEDUCTION"
+          },
+          {
+            "value": "TADA"
+          },
+          {
+            "value": "RECOVERY"
+          },
+          {
+            "value": "IN HAND SALARY"
+          },
+          {
+            "value": "EPF EMPLOYER CONTRIBUTION @12%"
+          },
+          {
+            "value": "EPF ADMIN CHARGES@0.50%"
+          },
+          {
+            "value": "EPF EDLIS CHARGES@0.50%"
+          },
+          {
+            "value": "ESIC @ 3.25%"
+          },
+          {
+            "value": "TOTAL BILLING"
+          },
+          {
+            "value": "LESS APRIL MONTH PF EXCESS CLAIM"
+          },
+          {
+            "value": "LESS MAY MONTH PF EXCESS CLAIM"
+          },
+          {
+            "value": "LESS JUNE MONTH EXCESS PF CLAIM"
+          },
+          {
+            "value": "LESS JULY MONTH  PF EXCESS CLAIM"
+          },
+          {
+            "value": "LESS AUGUST MONTH PF EXCESS CLAIM"
+          },
+          {
+            "value": "TOTAL BILLING"
+          }
+        ]
+      },
+      {
+        "sourceRow": 3,
+        "cells": [
+          {
+            "value": "1"
+          },
+          {
+            "value": "TEST-3"
+          },
+          {
+            "value": "Employee 3"
+          },
+          {
+            "value": "Test designation"
+          },
+          {
+            "value": "Test location"
+          },
+          {
+            "value": "26210"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "3000"
+          },
+          {
+            "value": "1250"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "30460",
+            "formula": true,
+            "formulaText": "SUM(F3:J3)"
+          },
+          {
+            "value": "30"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IFERROR(VLOOKUP(B3,Attendance!$A:$D,4,FALSE),0)"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "F3/L3*M3"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "G3/L3*M3"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "H3/L3*M3"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "I3/L3*M3"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "SUM(O3:S3)"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IF(F3<=21000,ROUNDUP(O3*8.33%,0),0)"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "T3+U3"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "O3*12%"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IF(F3<=21000,F3*0.75%,0)"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "SUM(W3:Y3)"
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "V3-Z3+AA3-AB3"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "O3*12%"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "O3*0.5%"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IF(O3>25000,25000*0.5%,O3*0.5%)"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IF(F3<=21000,F3*3.25%,0)"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "V3+AA3+AD3+AE3+AF3+AG3"
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "AH3-AI3-AJ3-AK3-AL3-AM3"
+          }
+        ]
+      },
+      {
+        "sourceRow": 86,
+        "cells": [
+          {
+            "value": "71"
+          },
+          {
+            "value": "TEST-86"
+          },
+          {
+            "value": "Employee 86"
+          },
+          {
+            "value": "Test designation"
+          },
+          {
+            "value": "Test location"
+          },
+          {
+            "value": "18020"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "1000"
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "19020",
+            "formula": true,
+            "formulaText": "SUM(F86:J86)"
+          },
+          {
+            "value": "30"
+          },
+          {
+            "value": "30",
+            "formula": true,
+            "formulaText": "IFERROR(VLOOKUP(B86,Attendance!$A:$D,4,FALSE),0)"
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": "18020",
+            "formula": true,
+            "formulaText": "F86/L86*M86"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "G86/L86*M86"
+          },
+          {
+            "value": "1000.0000000000001",
+            "formula": true,
+            "formulaText": "H86/L86*M86"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "I86/L86*M86"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "19020",
+            "formula": true,
+            "formulaText": "SUM(O86:S86)"
+          },
+          {
+            "value": "1501.066",
+            "formula": true,
+            "formulaText": "O86*8.33%"
+          },
+          {
+            "value": "20521.066",
+            "formula": true,
+            "formulaText": "T86+U86"
+          },
+          {
+            "value": "2162.4",
+            "formula": true,
+            "formulaText": "O86*12%"
+          },
+          {
+            "value": "135.15",
+            "formula": true,
+            "formulaText": "IF(F86<=21000,F86*0.75%,0)"
+          },
+          {
+            "value": "180"
+          },
+          {
+            "value": "2477.55",
+            "formula": true,
+            "formulaText": "SUM(W86:Y86)"
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": "18043.516",
+            "formula": true,
+            "formulaText": "V86-Z86+AA86-AB86"
+          },
+          {
+            "value": "2162.4",
+            "formula": true,
+            "formulaText": "O86*12%"
+          },
+          {
+            "value": "90.10000000000001",
+            "formula": true,
+            "formulaText": "O86*0.5%"
+          },
+          {
+            "value": "90.10000000000001",
+            "formula": true,
+            "formulaText": "IF(O86>25000,25000*0.5%,O86*0.5%)"
+          },
+          {
+            "value": "585.65",
+            "formula": true,
+            "formulaText": "IF(F86<=21000,F86*3.25%,0)"
+          },
+          {
+            "value": "23449.316",
+            "formula": true,
+            "formulaText": "V86+AA86+AD86+AE86+AF86+AG86"
+          },
+          {
+            "value": "118"
+          },
+          {
+            "value": "210"
+          },
+          {
+            "value": "209"
+          },
+          {
+            "value": "209"
+          },
+          {
+            "value": "209"
+          },
+          {
+            "value": "22494.316",
+            "formula": true,
+            "formulaText": "AH86-AI86-AJ86-AK86-AL86-AM86"
+          }
+        ]
+      },
+      {
+        "sourceRow": 26,
+        "cells": [
+          {
+            "value": "24"
+          },
+          {
+            "value": "TEST-26"
+          },
+          {
+            "value": "Employee 26"
+          },
+          {
+            "value": "Test designation"
+          },
+          {
+            "value": "Test location"
+          },
+          {
+            "value": "28450"
+          },
+          {
+            "value": "11380"
+          },
+          {
+            "value": "35170"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "75000",
+            "formula": true,
+            "formulaText": "SUM(F26:J26)"
+          },
+          {
+            "value": "30"
+          },
+          {
+            "value": "28",
+            "formula": true,
+            "formulaText": "IFERROR(VLOOKUP(B26,Attendance!$A:$D,4,FALSE),0)"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "26553.333333333336",
+            "formula": true,
+            "formulaText": "F26/L26*M26"
+          },
+          {
+            "value": "10621.333333333332",
+            "formula": true,
+            "formulaText": "G26/L26*M26"
+          },
+          {
+            "value": "32825.33333333333",
+            "formula": true,
+            "formulaText": "H26/L26*M26"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "I26/L26*M26"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "70000",
+            "formula": true,
+            "formulaText": "SUM(O26:S26)"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IF(F26<=21000,ROUNDUP(O26*8.33%,0),0)"
+          },
+          {
+            "value": "70000",
+            "formula": true,
+            "formulaText": "T26+U26"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IF(F26<=21000,F26*0.75%,0)"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "SUM(W26:Y26)"
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": "70000",
+            "formula": true,
+            "formulaText": "V26-Z26+AA26-AB26"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IF(F26<=21000,F26*3.25%,0)"
+          },
+          {
+            "value": "70000",
+            "formula": true,
+            "formulaText": "V26+AA26+AD26+AE26+AF26+AG26"
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": "70000",
+            "formula": true,
+            "formulaText": "AH26-AI26-AJ26-AK26-AL26-AM26"
+          }
+        ]
+      },
+      {
+        "sourceRow": 19,
+        "cells": [
+          {
+            "value": "17"
+          },
+          {
+            "value": "TEST-19"
+          },
+          {
+            "value": "Employee 19"
+          },
+          {
+            "value": "Test designation"
+          },
+          {
+            "value": "Test location"
+          },
+          {
+            "value": "72500"
+          },
+          {
+            "value": "29000"
+          },
+          {
+            "value": "43500"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "145000",
+            "formula": true,
+            "formulaText": "SUM(F19:J19)"
+          },
+          {
+            "value": "30"
+          },
+          {
+            "value": "30",
+            "formula": true,
+            "formulaText": "IFERROR(VLOOKUP(B19,Attendance!$A:$D,4,FALSE),0)"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "72500",
+            "formula": true,
+            "formulaText": "F19/L19*M19"
+          },
+          {
+            "value": "29000",
+            "formula": true,
+            "formulaText": "G19/L19*M19"
+          },
+          {
+            "value": "43500",
+            "formula": true,
+            "formulaText": "H19/L19*M19"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "I19/L19*M19"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "145000",
+            "formula": true,
+            "formulaText": "SUM(O19:S19)"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IF(F19<=21000,ROUNDUP(O19*8.33%,0),0)"
+          },
+          {
+            "value": "145000",
+            "formula": true,
+            "formulaText": "T19+U19"
+          },
+          {
+            "value": "8700",
+            "formula": true,
+            "formulaText": "O19*12%"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IF(F19<=21000,F19*0.75%,0)"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "8700",
+            "formula": true,
+            "formulaText": "SUM(W19:Y19)"
+          },
+          {
+            "value": "22680"
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": "158980",
+            "formula": true,
+            "formulaText": "V19-Z19+AA19-AB19"
+          },
+          {
+            "value": "8700",
+            "formula": true,
+            "formulaText": "O19*12%"
+          },
+          {
+            "value": "362.5",
+            "formula": true,
+            "formulaText": "O19*0.5%"
+          },
+          {
+            "value": "125",
+            "formula": true,
+            "formulaText": "IF(O19>25000,25000*0.5%,O19*0.5%)"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IF(F19<=21000,F19*3.25%,0)"
+          },
+          {
+            "value": "176867.5",
+            "formula": true,
+            "formulaText": "V19+AA19+AD19+AE19+AF19+AG19"
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": "176867.5",
+            "formula": true,
+            "formulaText": "AH19-AI19-AJ19-AK19-AL19-AM19"
+          }
+        ]
+      },
+      {
+        "sourceRow": 42,
+        "cells": [
+          {
+            "value": "40"
+          },
+          {
+            "value": "TEST-42"
+          },
+          {
+            "value": "Employee 42"
+          },
+          {
+            "value": "Test designation"
+          },
+          {
+            "value": "Test location"
+          },
+          {
+            "value": "28450"
+          },
+          {
+            "value": "11380"
+          },
+          {
+            "value": "200"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "40030",
+            "formula": true,
+            "formulaText": "SUM(F42:J42)"
+          },
+          {
+            "value": "12"
+          },
+          {
+            "value": "12",
+            "formula": true,
+            "formulaText": "IFERROR(VLOOKUP(B42,Attendance!$A:$D,4,FALSE),0)"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "28450",
+            "formula": true,
+            "formulaText": "F42/L42*M42"
+          },
+          {
+            "value": "11380",
+            "formula": true,
+            "formulaText": "G42/L42*M42"
+          },
+          {
+            "value": "200",
+            "formula": true,
+            "formulaText": "H42/L42*M42"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "I42/L42*M42"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "40030",
+            "formula": true,
+            "formulaText": "SUM(O42:S42)"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IF(F42<=21000,ROUNDUP(O42*8.33%,0),0)"
+          },
+          {
+            "value": "40030",
+            "formula": true,
+            "formulaText": "T42+U42"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IF(F42<=21000,F42*0.75%,0)"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "SUM(W42:Y42)"
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": "40030",
+            "formula": true,
+            "formulaText": "V42-Z42+AA42-AB42"
+          },
+          {
+            "value": "0"
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": "0",
+            "formula": true,
+            "formulaText": "IF(F42<=21000,F42*3.25%,0)"
+          },
+          {
+            "value": "40030",
+            "formula": true,
+            "formulaText": "V42+AA42+AD42+AE42+AF42+AG42"
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": "40030",
+            "formula": true,
+            "formulaText": "AH42-AI42-AJ42-AK42-AL42-AM42"
+          }
+        ]
+      }
+    ]
+  },
+  "headerRow": 2
+}

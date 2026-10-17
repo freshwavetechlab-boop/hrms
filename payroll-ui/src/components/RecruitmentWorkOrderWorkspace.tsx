@@ -1,3 +1,4 @@
+import RecruitmentJourneyPath from './RecruitmentJourneyPath'
 import { recruitmentDuration, recruitmentJobSla } from '../utils/recruitmentSla'
 import RecruitmentMomSignature from './RecruitmentMomSignature'
 import RecruitmentMomActions from './RecruitmentMomActions'
@@ -303,13 +304,6 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
   const selectedCaseMovingBack = selectedCaseOutcome.startsWith('MOVE_BACK_TO_')
   const liveStageSeconds = (stage: RecruitmentHiringCase['stages'][number]) => stage.activeDurationSeconds + (stage.status === 'Active' && !stage.isPaused ? Math.max(0, Math.floor((clockNow - caseSyncedAt) / 1000)) : 0)
   const activeStageSeconds = activeStage ? liveStageSeconds(activeStage) : 0
-  const stageTimelineItems = selectedCase?.stages.map(stage => {
-    const rejectedByDivision = isDivisionRejectionOutcome(stage.outcomeCode)
-    return {
-      color: rejectedByDivision ? 'red' : stage.isSlaBreached ? 'orange' : stage.status === 'Completed' ? 'green' : stage.status === 'Active' ? 'blue' : 'gray',
-      children: <article className={stage.status === 'Active' ? 'active' : ''} data-testid={`hiring-stage-log-${stage.id}`}><div><Tag>{stage.stakeholderCode || 'No stakeholder'}</Tag><b>{stage.stageName}</b><span>{durationText(stage.targetOffsetMinutes)} target</span></div><p>{stage.status}{stage.outcomeCode ? ` · ${stage.outcomeCode}` : ''} · <b>{formatStageDuration(liveStageSeconds(stage))}</b> active time · due {dateTimeText(stage.dueAtUtc)}{stage.isPaused ? ' · SLA paused' : ''}</p>{rejectedByDivision && <Tag color="red">Rejected by Division</Tag>}{stage.isSlaBreached && <Tag color="orange">Stage SLA breached</Tag>}{stage.pauseHistory.map(pauseRow => <small key={pauseRow.id}>Paused by {pauseRow.pausedByName} on {dateTimeText(pauseRow.pausedAtUtc)} — {pauseRow.reason}{pauseRow.resumedAtUtc ? ` · resumed ${dateTimeText(pauseRow.resumedAtUtc)}` : ' · still paused'}</small>)}</article>,
-    }
-  }) ?? []
   const caseEventItems = (selectedCase?.events ?? []).map(event => ({
     color: event.eventType === 'RejectedByDivision' ? 'red' : event.eventType === 'ProfilesReworkStarted' ? 'orange' : 'blue',
     children: <div><b>{event.eventTitle}</b><p>{event.eventDetails || 'No additional note.'}</p><small>{dateTimeText(event.createdAtUtc)} · {event.actorName || 'System'}</small></div>,
@@ -476,8 +470,16 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
 
     <Modal className="stage-time-log-modal" width={820} open={stageLogOpen && !!selectedCase} title={selectedCase ? `Stage time log · ${selectedCase.positionName}` : 'Stage time log'} footer={null} onCancel={() => setStageLogOpen(false)} destroyOnClose>
       <p className="stage-time-log-help">Active time excludes every recorded pause. Completed stages stay fixed; the current stage updates live.</p>
-      <Timeline className="case-timeline stage-time-log" items={stageTimelineItems} />
-      {!!caseEventItems.length && <><Divider orientation="left">Process audit events</Divider><Timeline className="case-event-log" items={caseEventItems} /></>}
+      <RecruitmentJourneyPath visits={selectedCase?.stages ?? []} renderDetails={stage => <div data-testid={`hiring-stage-log-${stage.id}`}>
+        <p><b>{formatStageDuration(liveStageSeconds(stage))}</b> active · {stage.pausedDurationSeconds > 0 ? `${formatStageDuration(stage.pausedDurationSeconds)} paused · ` : ''}Due {dateTimeText(stage.dueAtUtc)}</p>
+        {stage.completedAtUtc && <small>Completed {dateTimeText(stage.completedAtUtc)}</small>}
+        {stage.outcomeCode && <Tag color={isDivisionRejectionOutcome(stage.outcomeCode) ? 'red' : 'default'}>{stage.outcomeCode.replaceAll('_', ' ')}</Tag>}
+        {stage.stakeholderCode && <Tag>{stage.stakeholderCode}</Tag>}<Tag>{durationText(stage.targetOffsetMinutes)} target</Tag>{stage.isPaused && <Tag color="gold">SLA paused</Tag>}{stage.isSlaBreached && <Tag color="orange">Stage SLA breached</Tag>}
+        {(selectedCase?.events ?? []).filter(event => event.positionStageInstanceId === stage.id && ['ProfilesReworkStarted', 'StageEntered', 'Entered', 'CaseStarted', 'StageMoved', 'StageMovedBack', 'AdminStageMove'].includes(event.eventType)).map(event => <small key={event.id}>{event.eventDetails} · {event.actorName || 'System'}</small>)}
+        {stage.pauseHistory.map(pause => <small key={pause.id}>Paused by {pause.pausedByName} on {dateTimeText(pause.pausedAtUtc)} · {pause.reason}{pause.resumedAtUtc ? ` · resumed ${dateTimeText(pause.resumedAtUtc)}${pause.resumedByName ? ` by ${pause.resumedByName}` : ''}` : ' · still paused'}</small>)}
+      </div>} />
+      {selectedCase?.stages.some(stage => stage.status === 'Pending' && !stage.enteredAtUtc) && <details className="recruitment-journey-audit"><summary>Upcoming stages</summary>{selectedCase.stages.filter(stage => stage.status === 'Pending' && !stage.enteredAtUtc).map(stage => <p key={stage.id}>{stage.stageName} · {durationText(stage.targetOffsetMinutes)} target</p>)}</details>}
+      {!!caseEventItems.length && <details className="recruitment-journey-audit"><summary>Process audit events ({caseEventItems.length})</summary><Timeline className="case-event-log" items={caseEventItems} /></details>}
     </Modal>
 
     <Modal

@@ -72,7 +72,8 @@ export default function RecruitmentBatchInterviewEditor({ open, applications, pa
         await moveToInterview(row.application)
         const context = await getInterviewSchedulingContext(row.application.id)
         if (!context) throw new Error('Interview scheduling context is unavailable')
-        if (row.application.interviewSettingsMissing && (!row.roundCode?.trim() || !row.interviewType?.trim())) throw new Error('enter the missing round name and interview type in this row')
+        if (context.roundPlan && !context.roundPlan.rounds.some(round => round.canSchedule)) throw new Error(context.roundPlan.complete ? 'all configured interview rounds have already cleared' : 'complete the active interview round first')
+        if (row.application.interviewSettingsMissing && !context.roundPlan && (!row.roundCode?.trim() || !row.interviewType?.trim())) throw new Error('enter the missing round name and interview type in this row')
         const rowPanel = row.panelUserIds ?? panelUserIds
         if (rowPanel.length < Math.max(1, context.minimumPanelCount || 1)) throw new Error(`requires at least ${context.minimumPanelCount} panel member(s)`)
         const duration = Math.max(row.durationMinutes ?? durationMinutes, context.defaultDurationMinutes || 1)

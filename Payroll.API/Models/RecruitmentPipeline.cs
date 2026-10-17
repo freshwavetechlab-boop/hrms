@@ -219,6 +219,7 @@ public class SaveRecruitmentPipelineDefinition
 
 public class RecruitmentPipelineVersion
 {
+    public RecruitmentAllRejectedRollback AllRejectedRollback { get; set; } = new();
     public RecruitmentPipelineRevisionSync? RuntimeUpdate { get; set; }
     public long Id { get; set; }
     public long PipelineDefinitionId { get; set; }
@@ -239,6 +240,7 @@ public sealed record RecruitmentPipelineRevisionSync(int ApplicationsUpdated, in
 
 public class SaveRecruitmentPipelineVersion
 {
+    public RecruitmentAllRejectedRollback AllRejectedRollback { get; set; } = new();
     public long Id { get; set; }
     public long PipelineDefinitionId { get; set; }
     public string ScopeType { get; set; } = "Application";
@@ -500,9 +502,16 @@ public class RecruitmentApplicationStageInstance
 
 public class RecruitmentApplicationStageTimelineItem : RecruitmentApplicationStageInstance
 {
+    public int DisplayOrder { get; set; }
     public string StageType { get; set; } = "";
     public string Reason { get; set; } = "";
     public string ChangedByName { get; set; } = "";
+}
+
+public sealed class RecruitmentAllRejectedRollback
+{
+    public bool Enabled { get; set; }
+    public string TargetStageCode { get; set; } = "";
 }
 
 public class RecruitmentPipelineBoard
@@ -563,6 +572,7 @@ public class RecruitmentPipelineWorkspaceLane
 
 public class RecruitmentPipelineDemandCard
 {
+    public long? InterviewRoundsApplicationId { get; set; }
     public DateTime? CompletedAtUtc { get; set; }
     public bool OverallSlaPaused { get; set; }
     public RecruitmentHiringProgressView? HiringProgress { get; set; }

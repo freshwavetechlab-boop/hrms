@@ -1,10 +1,12 @@
+import RecruitmentJourneyPath from './RecruitmentJourneyPath'
 import RecruitmentNegotiationAction from './RecruitmentNegotiationAction'
+import RecruitmentInterviewRounds from './RecruitmentInterviewRounds'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
   CalendarOutlined, ClockCircleOutlined, DeleteOutlined, FileProtectOutlined, PauseCircleOutlined, PlayCircleOutlined,
   HistoryOutlined, RollbackOutlined, SearchOutlined, UserOutlined,
 } from '@ant-design/icons'
-import { Badge, Button, Card, Checkbox, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Tag, Timeline, message } from 'antd'
+import { Badge, Button, Card, Checkbox, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Tag, message } from 'antd'
 import { useAuthSession } from './AuthGate'
 import { getRecruitmentOpenPositions } from '../services/recruitmentService'
 import { deleteApplication } from '../services/recruitmentTalentService'
@@ -91,6 +93,7 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
   const [historyCard, setHistoryCard] = useState<RecruitmentPipelineBoardCard | null>(null)
   const [historyRows, setHistoryRows] = useState<RecruitmentApplicationStageTimelineItem[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
+  const historyRequest = useRef(0)
   const [loading, setLoading] = useState(false)
   const boardRequest = useRef(0)
   const targetsRequest = useRef(0)
@@ -297,9 +300,10 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
     if (response.ok) await loadBoard()
   }
   const openHistory = async (card: RecruitmentPipelineBoardCard) => {
+    const request = ++historyRequest.current
     setHistoryCard(card); setHistoryRows([]); setHistoryLoading(true)
-    try { setHistoryRows(await getRecruitmentApplicationStageHistory(card.applicationId)) }
-    finally { setHistoryLoading(false) }
+    try { const rows = await getRecruitmentApplicationStageHistory(card.applicationId); if (request === historyRequest.current) setHistoryRows(rows) }
+    finally { if (request === historyRequest.current) setHistoryLoading(false) }
   }
   const hasAssignedPipeline = Boolean(board?.pipelineVersionId && board.lanes.length) || (!positionId && !postingId && templateLanes.length > 0)
   const templatePipeline = clientPipelineLanes.find(lane => lane.cardScope === 'Application')
@@ -370,11 +374,8 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
     <Drawer open={!!documentDraft} width="min(900px, 96vw)" title={documentDraft ? `${documentDraft.card.candidateName} · ${documentDraft.lane.stageName} documents` : 'Stage documents'} onClose={() => setDocumentDraft(null)}>
       {documentDraft && board && <RecruitmentProcessDocumentPanel clientId={board.clientId} applicationId={documentDraft.card.applicationId} pipelineStageId={documentDraft.lane.stageId} requirements={documentDraft.lane.processDocumentRequirements ?? []} title="Candidate MoM, score annexure, proposal and joining documents" />}
     </Drawer>
-    <Drawer data-testid="candidate-stage-history" open={!!historyCard} width="min(620px, 96vw)" title={historyCard ? `${historyCard.candidateName} · stage history` : 'Stage history'} onClose={() => setHistoryCard(null)}>
-      {historyLoading ? <Card loading /> : !historyRows.length ? <Empty description="No stage history recorded." /> : <Timeline items={historyRows.map(row => ({
-        color: row.stageType === 'Rejected' ? 'red' : row.isSlaBreached ? 'orange' : row.status === 'Active' ? 'blue' : 'green',
-        children: <div className="pipeline-history-item"><Space wrap><strong>{row.stageName}</strong><Tag>{row.status}</Tag>{row.outcomeCode && <Tag color={row.stageType === 'Rejected' ? 'red' : 'blue'}>{row.outcomeCode}</Tag>}</Space><p>{new Date(row.enteredAtUtc).toLocaleString('en-IN')} · {formatClock(row.activeDurationSeconds * 1000)} active{row.pausedDurationSeconds > 0 ? ` · ${formatClock(row.pausedDurationSeconds * 1000)} paused` : ''}</p>{row.reason && <p>{row.reason}</p>}<small>Recorded by {row.changedByName || 'System'}</small></div>,
-      }))} />}
+    <Drawer data-testid="candidate-stage-history" open={!!historyCard} width="min(860px, 96vw)" title={historyCard ? `${historyCard.candidateName} · stage history` : 'Stage history'} onClose={() => { historyRequest.current += 1; setHistoryCard(null) }}>
+      {historyLoading ? <Card loading /> : !historyRows.length ? <Empty description="No stage history recorded." /> : <RecruitmentJourneyPath visits={historyRows} renderDetails={row => <div><p>{formatClock(row.activeDurationSeconds * 1000)} active{row.pausedDurationSeconds > 0 ? ` · ${formatClock(row.pausedDurationSeconds * 1000)} paused` : ''}</p>{row.outcomeCode && <Tag>{row.outcomeCode.replaceAll('_', ' ')}</Tag>}{row.isSlaBreached && <Tag color="orange">Stage SLA breached</Tag>}{row.reason && <p>{row.reason}</p>}{row.exitedAtUtc && <small>Exited {new Date(row.exitedAtUtc).toLocaleString('en-IN')}</small>}<small>Recorded by {row.changedByName || 'System'}</small></div>} />}
     </Drawer>
   </section>
 }
@@ -399,6 +400,7 @@ function CandidateCard({ lane, card, elapsedSinceLoad, transitions, recoverySele
   const sla = slaState(lane, card, elapsedSinceLoad)
   const liveElapsed = card.elapsedSeconds + (card.stageStatus === 'Paused' ? 0 : elapsedSinceLoad)
   return <Card size="small" className="pipeline-card" data-testid={`pipeline-candidate-${card.applicationId}`}>
+    {lane.stageType === 'Interview' && <RecruitmentInterviewRounds applicationId={card.applicationId} editable={false} onSchedule={onSchedule} />}
     {card.positionTitle && <div data-testid="candidate-job" style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', marginBottom: 8 }}><strong>{card.positionTitle}</strong>{card.positionCode && <div>{card.positionCode}</div>}</div>}
     <div className={`pipeline-card-name ${onRecoverySelected ? 'has-selection' : ''}`}>{onRecoverySelected && <Checkbox aria-label={`Select ${card.candidateName} for return`} checked={recoverySelected} onChange={event => onRecoverySelected(event.target.checked)} />}<strong title={card.candidateName}>{card.candidateName}</strong>{card.atsScore == null ? <Tag>ATS pending</Tag> : <Tag color={card.atsScore >= 60 ? 'green' : 'orange'}>ATS {card.atsScore.toFixed(1)}</Tag>}{card.interviewScore != null && <Tag color={card.interviewScore >= 60 ? 'green' : 'orange'}>Interview {card.interviewScore.toFixed(1)}</Tag>}</div>
     <div className="pipeline-card-meta"><span><UserOutlined /> {card.applicationCode}</span><span className="pipeline-card-email" title={card.candidateEmail}>{card.candidateEmail}</span>{lane.stageType === 'Rejected' && card.rejectedFromStageName && <span><RollbackOutlined /> Rejected after {card.rejectedFromStageName}{card.rejectedAtUtc ? ` · ${new Date(card.rejectedAtUtc).toLocaleString('en-IN')}` : ''}</span>}<span data-testid="stage-elapsed-clock"><ClockCircleOutlined /> In stage {formatClock(liveElapsed * 1000)}</span>{card.pausedDurationSeconds > 0 && <span>Paused total: {formatClock(card.pausedDurationSeconds * 1000)}</span>}<span>Status: {card.stageStatus}</span>{card.pendingBlockingActionCount > 0 && <Tag color="gold">{card.pendingBlockingActionCount} required action pending</Tag>}{card.failedActionCount > 0 && <Tag color="error">{card.failedActionCount} automation failed</Tag>}</div>

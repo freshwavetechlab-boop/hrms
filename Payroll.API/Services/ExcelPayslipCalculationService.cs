@@ -30,7 +30,7 @@ public static class ExcelPayslipCalculationService
             || source.Rows.Select(r => r.SourceRow).Distinct().Count() != source.Rows.Count || source.Rows.Sum(r => (long)r.Cells.Count) > 150000)
             return "Calculation source exceeds its row/cell limits or contains duplicate rows.";
         if (source.Columns.Count is < 1 or > 512 || source.Columns.Any(c => c is null || c.ColumnIndex < 0 || c.ColumnIndex >= source.ColumnCount || !Kinds.Contains(c.Kind)
-                || string.IsNullOrWhiteSpace(c.Label) || c.Label.Length > 80 || c.SourceHeader is null || c.SourceHeader.Length > 512)
+                || string.IsNullOrWhiteSpace(c.Label) || c.Label.Length > 80 || c.SourceHeader is null || c.SourceHeader.Length > 512 || c.BlankAsZero && !AmountKinds.Contains(c.Kind))
             || source.Columns.Select(c => c.ColumnIndex).Distinct().Count() != source.Columns.Count)
             return "Calculation column mapping is invalid.";
         if (source.Columns.Count(c => c.Kind == "employeeName") != 1 || source.Columns.Count(c => c.Kind == "netPay") != 1
@@ -51,7 +51,8 @@ public static class ExcelPayslipCalculationService
             foreach (var column in source.Columns.Where(c => c.Kind != "ignore"))
             {
                 var cell = column.ColumnIndex < saved.Cells.Count ? saved.Cells[column.ColumnIndex] : null;
-                if ((cell is null && AmountKinds.Contains(column.Kind)) || cell?.Error is not null || cell?.MissingCachedValue == true)
+                var reviewedBlank = column.BlankAsZero && PlainBlank(cell);
+                if ((cell is null && AmountKinds.Contains(column.Kind) && !reviewedBlank) || cell?.Error is not null || cell?.MissingCachedValue == true)
                     return $"Source row {row.SourceRow}, {column.Label} has no usable saved value.";
                 var value = cell?.Value ?? "";
                 var text = value.Trim();
@@ -61,7 +62,8 @@ public static class ExcelPayslipCalculationService
                     || (column.Kind == "email" && text != row.Email)) return $"Source row {row.SourceRow} does not match its employee details.";
                 if (column.Kind == "info" && (position >= row.Information.Count || row.Information[position].Label != column.Label || row.Information[position].Value != value))
                     return $"Source row {row.SourceRow}, {column.Label} does not match its saved information.";
-                if (AmountKinds.Contains(column.Kind) && (!TryNumber(value, out var amount) || !MatchesAmount(row, column, amount, position)))
+                var amount = 0m;
+                if (AmountKinds.Contains(column.Kind) && ((!reviewedBlank && !TryNumber(value, out amount)) || !MatchesAmount(row, column, amount, position)))
                     return $"Source row {row.SourceRow}, {column.Label} does not match its saved amount.";
             }
             foreach (var kind in new[] { "earning", "deduction", "employer" })
@@ -88,6 +90,8 @@ public static class ExcelPayslipCalculationService
         => position < components.Count && components[position].Label == label && SameNumber(components[position].Amount, amount);
     private static bool IsIdentityInformation(ExcelPayslipCalculationColumn column)
         => column.Kind == "info" && Regex.IsMatch(column.SourceHeader + " " + column.Label, @"account|bank|uan|aadh?aar|aadhar|adhaar|ifsc|mobile|phone|esic|\bpan\b|employee\s*(?:code|id)|identifier", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static bool PlainBlank(ExcelPayslipCalculationCell? cell) => cell is null || string.IsNullOrWhiteSpace(cell.Value)
+        && string.IsNullOrWhiteSpace(cell.FormulaText) && cell.Error is null && !cell.MissingCachedValue && cell.CalculationError is null;
 
     public static ExcelPayslipBatch Calculate(ExcelPayslipCalculationSource source, ExcelPayslipBatch batch, ExcelPayslipCalculateRequest request)
     {
@@ -139,7 +143,9 @@ public static class ExcelPayslipCalculationService
         foreach (var input in request.Overrides) SetInput(input.Key, input.Value);
 
         var attendanceAddresses = batch.Rows.Select(row => Address(request.AttendanceColumnIndex, row.SourceRow)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var evaluator = new CellEvaluator(cells, source.SheetName, attendanceAddresses);
+        var reviewedBlankInputs = batch.Rows.SelectMany(row => source.Columns.Where(column => column.BlankAsZero && AmountKinds.Contains(column.Kind))
+            .Select(column => Address(column.ColumnIndex, row.SourceRow))).Where(address => PlainBlank(cells.GetValueOrDefault(address))).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var evaluator = new CellEvaluator(cells, source.SheetName, attendanceAddresses, reviewedBlankInputs);
         foreach (var row in result.Rows)
         {
             var attendanceDrivesSalary = false;
@@ -210,7 +216,7 @@ public static class ExcelPayslipCalculationService
     }
     private static string NormalizeAddress(string address) { var (column, row) = ParseAddress(address); return Address(column, row); }
 
-    private sealed class CellEvaluator(Dictionary<string, ExcelPayslipCalculationCell> cells, string sheet, HashSet<string> attendanceInputs)
+    private sealed class CellEvaluator(Dictionary<string, ExcelPayslipCalculationCell> cells, string sheet, HashSet<string> attendanceInputs, HashSet<string> reviewedBlankInputs)
     {
         private readonly Dictionary<string, decimal> cache = new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> active = new(StringComparer.OrdinalIgnoreCase);
@@ -238,6 +244,7 @@ public static class ExcelPayslipCalculationService
             stack.Push(address);
             try
             {
+                if (reviewedBlankInputs.Contains(address)) return cache[address] = 0;
                 if (!cells.TryGetValue(address, out var cell)) throw new InvalidOperationException($"Required input {address} is missing.");
                 if (!string.IsNullOrWhiteSpace(cell.CalculationError)) throw new InvalidOperationException($"Saved formula cannot be recalculated: {cell.CalculationError}");
                 decimal value;
@@ -262,7 +269,7 @@ public static class ExcelPayslipCalculationService
                 yield return Read(address);
             }
         }
-        public void UpdateCachedValues() { foreach (var value in cache) { cells[value.Key].Value = value.Value.ToString("G29", CultureInfo.InvariantCulture); cells[value.Key].Error = null; cells[value.Key].MissingCachedValue = false; } }
+        public void UpdateCachedValues() { foreach (var value in cache) { if (reviewedBlankInputs.Contains(value.Key)) continue; cells[value.Key].Value = value.Value.ToString("G29", CultureInfo.InvariantCulture); cells[value.Key].Error = null; cells[value.Key].MissingCachedValue = false; } }
     }
 
     private sealed record Node(Func<decimal> Value, Func<IEnumerable<decimal>>? Range = null);

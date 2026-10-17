@@ -188,6 +188,7 @@ CREATE TABLE recruitment_stage_ats_configurations(PipelineStageId BIGINT,Scoring
             var owner = new MySqlConnection(connection.ConnectionString); await owner.OpenAsync();
             await owner.ExecuteAsync($"CREATE DATABASE `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
             connection.Database = name; var db = new MySqlConnection(connection.ConnectionString); await db.OpenAsync();
+            await db.ExecuteAsync("CREATE TABLE modulesettings(client_id INT,ModuleCode VARCHAR(80),IsEnabled BOOLEAN,SettingsJson JSON)");
             return new(owner, db, name, connection.ConnectionString);
         }
         public async ValueTask DisposeAsync()

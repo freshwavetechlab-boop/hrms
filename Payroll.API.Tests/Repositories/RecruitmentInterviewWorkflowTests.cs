@@ -40,9 +40,9 @@ public sealed partial class RecruitmentRevisionRegressionTests
         Assert.False(await Ready()); // Selection & HR Review, completed interview.
         await db.ExecuteAsync("UPDATE recruitment_application_stage_instances SET PipelineStageId=4 WHERE Id=51");
         Assert.False(await Ready()); // Same round remains completed, despite renamed stage.
-        await db.ExecuteAsync("INSERT INTO recruitment_application_stage_instances VALUES(52,4,'Active'); UPDATE recruitment_application_pipeline_instances SET CurrentStageInstanceId=52");
+        await db.ExecuteAsync("INSERT INTO recruitment_application_stage_instances(Id,PipelineStageId,Status) VALUES(52,4,'Active'); UPDATE recruitment_application_pipeline_instances SET CurrentStageInstanceId=52");
         Assert.True(await Ready()); // A genuinely configured next round is schedulable.
-        await db.ExecuteAsync("INSERT INTO recruitment_interviews VALUES(2,100,'Scheduled','Pending',52)");
+        await db.ExecuteAsync("INSERT INTO recruitment_interviews(Id,ApplicationId,Status,Result,PipelineStageInstanceId) VALUES(2,100,'Scheduled','Pending',52)");
         Assert.False(await Ready());
         var counts = await db.QuerySingleAsync<RecruitmentOpenPosition>("SELECT " + RecruitmentHiringProgress.SelectFor("p") + " p.Id FROM recruitment_open_positions p WHERE p.Id=10");
         Assert.Equal(4, counts.RequiredCandidateCount); Assert.Equal(1, counts.InPanelCount); Assert.Equal(0, counts.SelectedCandidateCount);
@@ -98,14 +98,15 @@ CREATE TABLE recruitment_open_positions(Id BIGINT PRIMARY KEY,NumberOfPositions 
 CREATE TABLE recruitment_candidate_applications(Id BIGINT PRIMARY KEY,PositionId BIGINT,ClientId INT,JobPostingId BIGINT NULL,ApplicationType VARCHAR(40) DEFAULT 'Application',CurrentStage VARCHAR(100),JoinedEmployeeId INT NULL);
 CREATE TABLE recruitment_pipeline_versions(Id BIGINT PRIMARY KEY,SlaMode VARCHAR(40));
 CREATE TABLE recruitment_pipeline_stages(Id BIGINT PRIMARY KEY,PipelineVersionId BIGINT DEFAULT 1,StageCode VARCHAR(80),StageName VARCHAR(100),StageType VARCHAR(40),CardScope VARCHAR(40),DisplayOrder INT,SlaDurationMinutes INT DEFAULT 60,TargetOffsetMinutes INT NULL,IsInitial BOOLEAN DEFAULT FALSE,IsTerminal BOOLEAN DEFAULT FALSE,IsActive BOOLEAN DEFAULT TRUE,RequiresApproval BOOLEAN DEFAULT FALSE);
-CREATE TABLE recruitment_application_pipeline_instances(Id BIGINT PRIMARY KEY,ApplicationId BIGINT,CurrentStageInstanceId BIGINT,Status VARCHAR(40) DEFAULT 'Active');
-CREATE TABLE recruitment_application_stage_instances(Id BIGINT PRIMARY KEY,PipelineStageId BIGINT,Status VARCHAR(40));
+CREATE TABLE recruitment_application_pipeline_instances(Id BIGINT PRIMARY KEY,ApplicationId BIGINT,CurrentStageInstanceId BIGINT,Status VARCHAR(40) DEFAULT 'Active',PipelineVersionId BIGINT DEFAULT 1);
+CREATE TABLE recruitment_application_stage_instances(Id BIGINT PRIMARY KEY,PipelineStageId BIGINT,Status VARCHAR(40),ApplicationPipelineInstanceId BIGINT DEFAULT 1);
+CREATE TABLE IF NOT EXISTS modulesettings(client_id INT,ModuleCode VARCHAR(80),IsEnabled BOOLEAN,SettingsJson JSON);
 CREATE TABLE recruitment_position_pipeline_instances(Id BIGINT PRIMARY KEY,PositionId BIGINT,ClientId INT,PipelineVersionId BIGINT,CurrentStageInstanceId BIGINT,Status VARCHAR(40),SlaAnchorAtUtc DATETIME,CompletedAtUtc DATETIME NULL);
 CREATE TABLE recruitment_position_stage_instances(Id BIGINT PRIMARY KEY AUTO_INCREMENT,PositionPipelineInstanceId BIGINT,PipelineStageId BIGINT,Status VARCHAR(40),OutcomeCode VARCHAR(80) DEFAULT '',EnteredAtUtc DATETIME NULL,DueAtUtc DATETIME NULL,CompletedAtUtc DATETIME NULL,PausedDurationSeconds BIGINT DEFAULT 0);
 CREATE TABLE recruitment_position_stage_pause_periods(Id BIGINT PRIMARY KEY,PositionStageInstanceId BIGINT,PausedAtUtc DATETIME,ResumedAtUtc DATETIME NULL,ResumedByUserId INT NULL,DurationSeconds BIGINT DEFAULT 0);
 CREATE TABLE recruitment_position_stage_events(Id BIGINT PRIMARY KEY AUTO_INCREMENT,PositionPipelineInstanceId BIGINT,PositionStageInstanceId BIGINT,EventType VARCHAR(80),EventTitle VARCHAR(200),EventDetails TEXT,ActorUserId INT,CreatedAtUtc DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6));
 CREATE TABLE recruitment_hiring_case_advance_requests(HiringCaseId BIGINT,PositionStageInstanceId BIGINT,Status VARCHAR(40),DecidedAtUtc DATETIME NULL);
-CREATE TABLE recruitment_interviews(Id BIGINT PRIMARY KEY,ApplicationId BIGINT,Status VARCHAR(40),Result VARCHAR(40),PipelineStageInstanceId BIGINT);
+CREATE TABLE recruitment_interviews(Id BIGINT PRIMARY KEY,ApplicationId BIGINT,Status VARCHAR(40),Result VARCHAR(40),PipelineStageInstanceId BIGINT,RoundCode VARCHAR(80) DEFAULT 'Round 1');
 CREATE TABLE recruitment_interview_stage_configurations(Id BIGINT PRIMARY KEY,PipelineStageId BIGINT);
 CREATE TABLE recruitment_offers(Id BIGINT PRIMARY KEY,ApplicationId BIGINT,Status VARCHAR(40),UpdatedAt DATETIME);
 CREATE TABLE recruitment_stage_process_document_requirements(PipelineStageId BIGINT,IsRequired BOOLEAN,DocumentType VARCHAR(40));
@@ -115,9 +116,9 @@ INSERT INTO recruitment_candidate_applications(Id,PositionId,ClientId,CurrentSta
 INSERT INTO recruitment_pipeline_versions VALUES(1,'CumulativeFromAnchor');
 INSERT INTO recruitment_pipeline_stages(Id,StageCode,StageName,StageType,CardScope,DisplayOrder,TargetOffsetMinutes) VALUES(1,'SHARING_PROFILES','Sharing of Profiles for Interview','Screening','Position',1,60),(2,'SIGNING_MOM','Signing of MOM','Approval','Position',3,180),(3,'HR_REVIEW','Selection & HR Review','HR','Application',6,NULL),(4,'INTERVIEW','Interview / Panel Assessment','Interview','Application',5,NULL);
 INSERT INTO recruitment_application_pipeline_instances(Id,ApplicationId,CurrentStageInstanceId) VALUES(1,100,51);
-INSERT INTO recruitment_application_stage_instances VALUES(51,3,'Active');
+INSERT INTO recruitment_application_stage_instances(Id,PipelineStageId,Status) VALUES(51,3,'Active');
 INSERT INTO recruitment_interview_stage_configurations VALUES(1,4);
-INSERT INTO recruitment_interviews VALUES(1,100,'Completed','Selected',51);
+INSERT INTO recruitment_interviews(Id,ApplicationId,Status,Result,PipelineStageInstanceId) VALUES(1,100,'Completed','Selected',51);
 INSERT INTO recruitment_position_pipeline_instances VALUES(5,10,20,1,61,'Active','2026-09-01',NULL);
 INSERT INTO recruitment_position_stage_instances(Id,PositionPipelineInstanceId,PipelineStageId,Status) VALUES(61,5,2,'Active');
 INSERT INTO recruitment_hiring_case_advance_requests VALUES(5,61,'Pending Approval',NULL);

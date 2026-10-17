@@ -1695,6 +1695,20 @@ JOIN recruitment_interview_feedback feedbackRow ON feedbackRow.Id=scoreRow.Inter
             context.Competencies = pipeline.RoundConfigurationId.HasValue ? (await InterviewCompetenciesAsync(db, pipeline.RoundConfigurationId.Value)).Select(ToStageCompetency).ToList() : [];
             context.DefaultPanelUserIds = (await db.QueryAsync<int>(@"SELECT PanelUserId FROM recruitment_stage_default_panel_members
 WHERE PipelineStageId=@PipelineStageId ORDER BY DisplayOrder,Id", new { pipeline.PipelineStageId })).ToList();
+            var scope = await RoundScopeAsync(db, applicationId, pipeline.PipelineStageId);
+            var rounds = scope is null ? null : await ReadRoundsAsync(db, scope);
+            if (rounds is not null)
+            {
+                var states = RecruitmentInterviewRounds.States(rounds.Rounds, await RoundAttemptsAsync(db, scope!));
+                context.RoundPlan = new RecruitmentInterviewRoundPlan { ApplicationId=applicationId,PositionId=scope!.PositionId,StageName=scope.StageName,
+                    Revision=rounds.Revision,IsConfigured=true,CanConfigure=true,Rounds=states };
+                var next = states.FirstOrDefault(r => r.CanSchedule);
+                context.RoundCode = next?.Name ?? "";
+                context.InterviewType = next?.InterviewType ?? pipeline.InterviewType;
+                context.NextAttemptNumber = next is null ? 1 : await db.ExecuteScalarAsync<int>(@"SELECT COALESCE(MAX(AttemptNumber),0)+1 FROM recruitment_interviews
+WHERE ApplicationId=@ApplicationId AND PipelineStageInstanceId=@StageInstanceId AND RoundCode=@RoundCode",
+                    new { ApplicationId=applicationId,StageInstanceId=pipeline.PipelineStageInstanceId,RoundCode=next.Name });
+            }
         }
         return (context, "");
     }
@@ -1723,6 +1737,7 @@ WHERE PipelineStageId=@PipelineStageId ORDER BY DisplayOrder,Id", new { pipeline
         var application = request.ApplicationId > 0 ? await ApplicationByIdAsync(db, request.ApplicationId, user) : new RecruitmentCandidateApplication { ClientId = user.ClientId ?? request.DirectClientId };
         if (application is null) return (null, "Application was not found.");
         var applicationStage = application.CurrentStage ?? "";
+        await using var roundLease = await RecruitmentInterviewRounds.LockAsync(db, application.ClientId, application.PositionId);
         var existingDecision = request.Id > 0
             ? (await InterviewRowsAsync(db, user, request.ApplicationId, null, IsPanelScoped(user) ? user.Id : null)).FirstOrDefault(row => row.Id == request.Id) : null;
         if (request.Id > 0 && existingDecision is null) return (null, "Interview was not found.");
@@ -1770,7 +1785,11 @@ WHERE ur.UserId=u.Id AND permission.Code IN ('recruitment.interview.panel','recr
             if (!validApprover) return (null, "Choose an active decision approver in this client/central administration with interview access.");
         }
         if (request.Id <= 0 && ((applicationStage is "Rejected" or "Withdrawn" or "Joined") || applicationStage.StartsWith("Offer", StringComparison.OrdinalIgnoreCase))) return (null, $"An interview cannot be scheduled for an application in {applicationStage} stage.");
-        var pipeline = request.IsStandalone ? null : await InterviewPipelineContextAsync(db, request.ApplicationId, request.Id > 0 ? request.Id : null);
+        var plannedScope = request.ApplicationId > 0 ? await RoundScopeAsync(db,request.ApplicationId) : null;
+        var plannedRounds = plannedScope is null ? null : await ReadRoundsAsync(db,plannedScope);
+        if (request.IsStandalone && plannedRounds is not null && request.Id <= 0)
+            return (null,"This job has configured interview rounds. Use Schedule Interviews so the round result stays linked to its pipeline.");
+        var pipeline = request.IsStandalone && existingDecision?.PipelineStageInstanceId is null ? null : await InterviewPipelineContextAsync(db, request.ApplicationId, request.Id > 0 ? request.Id : null);
         if (pipeline is { HasPipelineInstance: true } && !string.Equals(pipeline.StageType, "Interview", StringComparison.OrdinalIgnoreCase))
             return (null, $"Interview scheduling is available when the application reaches an Interview pipeline stage. Current stage: {pipeline.PipelineStageName}.");
         if (pipeline is { HasPipelineInstance: true, RoundConfigurationId: null } && (string.IsNullOrWhiteSpace(request.RoundCode) || string.IsNullOrWhiteSpace(request.InterviewType)))
@@ -1778,7 +1797,19 @@ WHERE ur.UserId=u.Id AND permission.Code IN ('recruitment.interview.panel','recr
         var isPipelineManaged = pipeline is { HasPipelineInstance: true };
         if (isPipelineManaged)
         {
-            if (pipeline!.RoundConfigurationId.HasValue)
+            var scope = await RoundScopeAsync(db,request.ApplicationId,pipeline!.PipelineStageId);
+            var rounds = scope is null ? null : await ReadRoundsAsync(db,scope);
+            if (rounds is not null)
+            {
+                var definition = rounds.Rounds.FirstOrDefault(r => r.Name.Equals(request.RoundCode,StringComparison.OrdinalIgnoreCase));
+                if (definition is null) return (null,"Select the next configured interview round for this job.");
+                if (existingDecision is not null && existingDecision.RoundCode != definition.Name)
+                    return (null,"An existing interview cannot be moved to another round.");
+                if (request.Id <= 0 && !RecruitmentInterviewRounds.States(rounds.Rounds,await RoundAttemptsAsync(db,scope!)).Any(r => r.Name==definition.Name && r.CanSchedule))
+                    return (null,"Complete the previous round and resolve any active schedule before scheduling this round.");
+                request.RoundCode=definition.Name;request.InterviewType=definition.InterviewType;
+            }
+            else if (pipeline.RoundConfigurationId.HasValue)
             {
                 request.RoundCode = pipeline.PipelineStageName;
                 request.InterviewType = pipeline.InterviewType;
@@ -1809,7 +1840,7 @@ AND i.ScheduledStart<@ScheduledEnd AND i.ScheduledEnd>@ScheduledStart ORDER BY i
         long id;
         if (request.Id <= 0)
         {
-            var attempt = isPipelineManaged ? await db.ExecuteScalarAsync<int>("SELECT COALESCE(MAX(AttemptNumber),0)+1 FROM recruitment_interviews WHERE ApplicationId=@ApplicationId AND RoundConfigurationId=@RoundConfigurationId", new { ApplicationId = request.ApplicationId, RoundConfigurationId = pipeline!.RoundConfigurationId }) : 1;
+            var attempt = isPipelineManaged ? await db.ExecuteScalarAsync<int>("SELECT COALESCE(MAX(AttemptNumber),0)+1 FROM recruitment_interviews WHERE ApplicationId=@ApplicationId AND PipelineStageInstanceId=@StageId AND RoundConfigurationId <=> @RoundConfigurationId AND RoundCode=@RoundCode", new { ApplicationId = request.ApplicationId, StageId=pipeline!.PipelineStageInstanceId,RoundConfigurationId = pipeline.RoundConfigurationId,request.RoundCode }) : 1;
             id = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_interviews (DirectEmail,DirectName,DirectClientId,IsStandalone,DecisionApproverUserId,ApplicationId,RoundCode,InterviewType,ScheduledStart,ScheduledEnd,Mode,LocationOrLink,Status,Result,OverallFeedback,OverallScore,CreatedByUserId,PipelineStageInstanceId,RoundConfigurationId,TimeZoneId,AttemptNumber,RescheduleCount) VALUES (@DirectEmail,@DirectName,@DirectClientId,@IsStandalone,@DecisionApproverUserId,@ApplicationId,@RoundCode,@InterviewType,@ScheduledStart,@ScheduledEnd,@Mode,@LocationOrLink,@Status,@Result,@OverallFeedback,0,@UserId,@PipelineStageInstanceId,@RoundConfigurationId,@TimeZoneId,@AttemptNumber,0);SELECT LAST_INSERT_ID();", new { request.DirectEmail, request.DirectName, request.DirectClientId, request.IsStandalone, request.DecisionApproverUserId, request.ApplicationId, request.RoundCode, request.InterviewType, request.ScheduledStart, request.ScheduledEnd, request.Mode, request.LocationOrLink, request.Status, request.Result, request.OverallFeedback, UserId = user.Id, PipelineStageInstanceId = pipeline?.PipelineStageInstanceId, RoundConfigurationId = pipeline?.RoundConfigurationId, TimeZoneId = string.IsNullOrWhiteSpace(request.TimeZoneId) ? "Asia/Kolkata" : request.TimeZoneId, AttemptNumber = attempt });
         }
         else
@@ -3571,13 +3602,15 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
  WHERE si.ApplicationId=a.Id AND (stage.StageType IN ('Interview','HR','Approval','Offer','Documents','PreOnboarding','Joining','Completed')
  OR (stage.StageCode IN ('PROFILE_REVIEW_SHORTLISTING','PROFILE_REVIEW_AND_SHORTLISTING','SHARING_PROFILES','PROFILE_SHARING') AND si.Status='Completed'))))))";
 
-    internal const string InterviewReadySql = @"CASE WHEN EXISTS(SELECT 1 FROM recruitment_application_pipeline_instances pi WHERE pi.ApplicationId=a.Id)
+    internal static readonly string InterviewReadySql = @"CASE WHEN EXISTS(SELECT 1 FROM recruitment_application_pipeline_instances pi WHERE pi.ApplicationId=a.Id)
 THEN EXISTS(SELECT 1 FROM recruitment_application_pipeline_instances pi
  JOIN recruitment_application_stage_instances si ON si.Id=pi.CurrentStageInstanceId AND si.Status='Active'
  JOIN recruitment_pipeline_stages stage ON stage.Id=si.PipelineStageId AND stage.StageType='Interview'
 
  WHERE pi.ApplicationId=a.Id AND pi.Status='Active' AND NOT EXISTS(SELECT 1 FROM recruitment_interviews scheduled
- WHERE scheduled.ApplicationId=a.Id AND scheduled.PipelineStageInstanceId=si.Id AND scheduled.Status IN ('Scheduled','Rescheduled','Completed')))
+ WHERE scheduled.ApplicationId=a.Id AND scheduled.PipelineStageInstanceId=si.Id AND scheduled.Status IN ('Scheduled','Rescheduled'))
+ AND (NOT EXISTS(SELECT 1 FROM recruitment_interviews finished WHERE finished.ApplicationId=a.Id AND finished.PipelineStageInstanceId=si.Id AND finished.Status='Completed')
+ OR NOT " + RecruitmentInterviewRounds.CompleteFor("a","si.Id") + @"))
 ELSE a.CurrentStage IN ('Shortlisted','Interview') AND NOT EXISTS(SELECT 1 FROM recruitment_interviews scheduled
  WHERE scheduled.ApplicationId=a.Id AND scheduled.Status IN ('Scheduled','Rescheduled','Completed')) END";
 

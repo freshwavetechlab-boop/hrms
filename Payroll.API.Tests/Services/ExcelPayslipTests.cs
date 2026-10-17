@@ -196,6 +196,19 @@ public sealed class ExcelPayslipTests
     }
 
     [Theory]
+    [InlineData("true", "deduction", true)]
+    [InlineData("false", "info", true)]
+    [InlineData("\"true\"", "deduction", false)]
+    [InlineData("null", "deduction", false)]
+    [InlineData("true", "employeeCode", false)]
+    public void BlankNormalizationProfilesRequireAnExplicitBooleanMonetaryChoice(string policyJson, string kind, bool accepted)
+    {
+        var json = "{\"headerSignature\":\"" + new string('a', 64) + "\",\"columns\":[{\"columnIndex\":0,\"sourceHeader\":\"Recovery\",\"label\":\"Recovery\",\"kind\":\"" + kind + "\",\"blankAsZero\":" + policyJson + "}]}";
+        using var profile = JsonDocument.Parse(json);
+        Assert.Equal(accepted, ExcelPayslipRepository.ValidateProfile(profile.RootElement) is null);
+    }
+
+    [Theory]
     [InlineData("{}")]
     [InlineData("[{\"columnIndex\":\"1\",\"sourceHeader\":\"Wages\",\"label\":\"Wages\",\"kind\":\"earning\"}]")]
     [InlineData("[{\"columnIndex\":-1,\"sourceHeader\":\"Wages\",\"label\":\"Wages\",\"kind\":\"earning\"}]")]

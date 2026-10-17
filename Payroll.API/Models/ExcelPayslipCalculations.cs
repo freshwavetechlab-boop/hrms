@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Payroll.API.Models;
 
 // This is an independent Excel snapshot, never an employee or payroll-master record.
@@ -22,6 +24,8 @@ public sealed class ExcelPayslipCalculationColumn
     public string Label { get; set; } = "";
     public string Kind { get; set; } = "ignore";
     public string? ComponentId { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool BlankAsZero { get; set; }
 }
 
 public sealed class ExcelPayslipCalculationSourceRow

@@ -2,6 +2,7 @@ import { recruitmentDuration, recruitmentJobSla } from '../utils/recruitmentSla'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import { useRecruitmentView, useRecruitmentPipelineDisplay } from '../hooks/useRecruitmentPreferences'
 import RecruitmentHiringProgress from './RecruitmentHiringProgress'
+import RecruitmentInterviewRounds from './RecruitmentInterviewRounds'
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
 import {
   ApartmentOutlined, ArrowLeftOutlined, ArrowRightOutlined, BranchesOutlined, ClockCircleOutlined, DeploymentUnitOutlined, HistoryOutlined,
@@ -315,6 +316,7 @@ function DemandLane({ clientId, title, color, cards, applications, helper, conte
 function JourneyCandidateCard({ card, clockNow, workspaceSyncedAt, onOpen }: { card: RecruitmentPipelineBoardCard; clockNow: number; workspaceSyncedAt: number; onOpen: () => void }) {
   const sla = candidateSla(card, clockNow, workspaceSyncedAt)
   return <Card size="small" className={`journey-candidate-card ${card.isSlaBreached ? 'is-breached' : ''}`} data-testid={`journey-candidate-${card.applicationId}`}>
+    <RecruitmentInterviewRounds applicationId={card.applicationId} editable={false} />
     <div className="journey-candidate-heading"><div><strong title={card.candidateName}>{card.candidateName}</strong><span>{card.applicationCode}</span></div><Space size={4} wrap>{card.atsScore == null ? <Tag>ATS pending</Tag> : <Tag color={card.atsScore >= 60 ? 'green' : 'orange'}>ATS {card.atsScore.toFixed(1)}</Tag>}{card.interviewScore != null && <Tag color={card.interviewScore >= 60 ? 'green' : 'orange'}>Interview {card.interviewScore.toFixed(1)}</Tag>}</Space></div>
     <div data-testid="candidate-job" style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', marginBlock: 8 }}><strong>{card.positionTitle || 'Job details unavailable'}</strong>{card.positionCode && <div>{card.positionCode}</div>}</div>
     <div className="journey-candidate-meta"><span><TeamOutlined /> Candidate</span>{card.candidateEmail && <span title={card.candidateEmail}>{card.candidateEmail}</span>}{card.rejectedFromStageName && <span><BranchesOutlined /> Rejected after {card.rejectedFromStageName}</span>}<span><ClockCircleOutlined /> {sla}</span></div>
@@ -337,6 +339,7 @@ function DemandCard({ card, clientId, clockNow, workspaceSyncedAt, onChanged }: 
       <span className="demand-live-sla" data-testid={`demand-sla-timer-${card.workOrderLineId}`}><ClockCircleOutlined /> {sla}</span>
     </div>
     <RecruitmentHiringProgress progress={card.hiringProgress} />
+    {card.interviewRoundsApplicationId && /interview|panel/i.test(card.currentStageName || '') && <RecruitmentInterviewRounds applicationId={card.interviewRoundsApplicationId} editable={false} jobOnly />}
     <details className="demand-supporting-details"><summary>Documents & status</summary><div className="demand-milestones" aria-label="Hiring milestones">
       <Milestone label="Work order" status={card.workOrderStatus} />
       <Milestone label="Request" status={card.requisitionStatus} />

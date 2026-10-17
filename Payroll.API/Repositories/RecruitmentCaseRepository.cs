@@ -1139,6 +1139,8 @@ WHERE PositionId=@PositionId AND Status<>'Superseded'", new { application.Positi
             && (RecruitmentHiringProgress.ProfilesReady(candidate) || candidate.HasInterview)).ToList();
         var requiredCandidates = await RequiredHiringCohortAsync(db, application.PositionId);
         if (requiredCandidates <= 0) return "";
+        if (RecruitmentRollbackRules.AllRejected(candidates))
+            return await ReturnHiringCaseForAllRejectedAsync(db, application.PositionId, user.Id);
         if (continuingCandidates.Count == 0)
             return "Auto move paused: not enough continuing candidates for the vacancies.";
 
@@ -1220,6 +1222,8 @@ ORDER BY hiringCase.Id DESC LIMIT 1", new { PositionId = positionId });
                     || candidate.IsJoined || candidate.LatestOfferStatus.Length > 0)).ToList();
             var requiredCandidates = await RequiredHiringCohortAsync(db, positionId);
             if (requiredCandidates <= 0) return "";
+            if (RecruitmentRollbackRules.AllRejected(candidates))
+                return await ReturnHiringCaseForAllRejectedAsync(db, positionId, user.Id);
             if (!HasRequiredHiringCohort(requiredCandidates, continuing.Count))
                 return "Auto move paused: not enough continuing candidates for the vacancies.";
             var key = $"{current.StageCode} {current.StageName} {current.StageType}".ToUpperInvariant();
@@ -1291,18 +1295,18 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id",
     private static Task<int> RequiredHiringCohortAsync(MySqlConnection db, long positionId) =>
         db.ExecuteScalarAsync<int>("SELECT GREATEST(0,NumberOfPositions-CancelledPositions-OnHoldPositions) FROM recruitment_open_positions WHERE Id=@Id", new { Id = positionId });
 
-    private static async Task<string> ReturnHiringCaseToProfileSharingAsync(MySqlConnection db, long positionId, int candidateCount, int actorUserId, int requiredCount = 0, IReadOnlyList<RecruitmentHiringProgress.Candidate>? candidates = null)
+    private static async Task<string> ReturnHiringCaseForAllRejectedAsync(MySqlConnection db, long positionId, int actorUserId)
     {
         await using var transaction = await db.BeginTransactionAsync();
         var hiringCase = await db.QueryFirstOrDefaultAsync<ProfileReworkCaseSource>(@"SELECT
-hiringCase.Id HiringCaseId,hiringCase.PipelineVersionId,hiringCase.SlaAnchorAtUtc,
+hiringCase.Id HiringCaseId,hiringCase.ClientId,hiringCase.PipelineVersionId,hiringCase.SlaAnchorAtUtc,
 hiringCase.CurrentStageInstanceId,currentStage.PipelineStageId CurrentPipelineStageId,
 currentStageRow.StageName CurrentStageName,version.SlaMode
 FROM recruitment_position_pipeline_instances hiringCase
-JOIN recruitment_position_stage_instances currentStage ON currentStage.Id=hiringCase.CurrentStageInstanceId AND currentStage.Status='Active'
+JOIN recruitment_position_stage_instances currentStage ON currentStage.Id=hiringCase.CurrentStageInstanceId AND currentStage.Status IN ('Active','Completed')
 JOIN recruitment_pipeline_stages currentStageRow ON currentStageRow.Id=currentStage.PipelineStageId
 JOIN recruitment_pipeline_versions version ON version.Id=hiringCase.PipelineVersionId
-WHERE hiringCase.PositionId=@PositionId AND hiringCase.Status='Active'
+WHERE hiringCase.PositionId=@PositionId AND hiringCase.Status IN ('Active','Candidate Flow') AND currentStageRow.IsTerminal=FALSE
 ORDER BY hiringCase.Id DESC LIMIT 1 FOR UPDATE", new { PositionId = positionId }, transaction);
         if (hiringCase is null)
         {
@@ -1310,17 +1314,16 @@ ORDER BY hiringCase.Id DESC LIMIT 1 FOR UPDATE", new { PositionId = positionId }
             return "";
         }
 
+        var rule = await RecruitmentRollbackRules.ReadAsync(db, hiringCase.ClientId, hiringCase.PipelineVersionId, transaction);
+        if (!rule.Enabled) return "";
         var stages = (await db.QueryAsync<StageDefinition>(@"SELECT Id,StageCode,StageName,StageType,CardScope,DisplayOrder,
 SlaDurationMinutes,TargetOffsetMinutes,IsInitial,IsTerminal
 FROM recruitment_pipeline_stages
 WHERE PipelineVersionId=@PipelineVersionId AND CardScope='Position' AND IsActive=TRUE
+ AND IsTerminal=FALSE AND StageType NOT IN ('Rejected','Withdrawn')
  AND DisplayOrder<(SELECT DisplayOrder FROM recruitment_pipeline_stages WHERE Id=@CurrentPipelineStageId)
 ORDER BY DisplayOrder DESC,Id DESC", new { hiringCase.PipelineVersionId, hiringCase.CurrentPipelineStageId }, transaction)).ToList();
-        // Retain the furthest earlier stage supported by enough remaining candidates.
-        // Documents and approvals are still enforced when advancing again.
-        var supported = RecruitmentHiringProgress.SupportedRollbackStage(stages.Select(stage => new RecruitmentHiringProgress.PositionStage
-        { Id = stage.Id, StageCode = stage.StageCode, StageName = stage.StageName, StageType = stage.StageType, DisplayOrder = stage.DisplayOrder }), requiredCount, candidates ?? []);
-        var target = stages.FirstOrDefault(stage => stage.Id == supported?.Id);
+        var target = stages.FirstOrDefault(stage => stage.StageCode.Equals(rule.TargetStageCode, StringComparison.OrdinalIgnoreCase));
         if (target is null)
         {
             await transaction.RollbackAsync();
@@ -1330,6 +1333,18 @@ ORDER BY DisplayOrder DESC,Id DESC", new { hiringCase.PipelineVersionId, hiringC
         var currentOrder = await db.ExecuteScalarAsync<int>("SELECT DisplayOrder FROM recruitment_pipeline_stages WHERE Id=@Id", new { Id = hiringCase.CurrentPipelineStageId }, transaction);
         if (hiringCase.CurrentPipelineStageId == target.Id || currentOrder <= target.DisplayOrder)
             return ""; // Never skip earlier work or repeatedly reset the sourcing-stage clock.
+
+        // Recheck the entire client/job cohort under locks; a scoped user's visible
+        // subset or a concurrent interview/offer update must not trigger a rollback.
+        var ids = (await db.QueryAsync<long>(@"SELECT Id FROM recruitment_candidate_applications
+WHERE PositionId=@PositionId AND ClientId=@ClientId AND ApplicationType='Application' ORDER BY Id FOR UPDATE",
+            new { PositionId = positionId, hiringCase.ClientId }, transaction)).ToArray();
+        if (ids.Length == 0) return "";
+        await db.QueryAsync<long>("SELECT Id FROM recruitment_interviews WHERE ApplicationId IN @Ids ORDER BY Id FOR UPDATE", new { Ids = ids }, transaction);
+        await db.QueryAsync<long>("SELECT Id FROM recruitment_offers WHERE ApplicationId IN @Ids ORDER BY Id FOR UPDATE", new { Ids = ids }, transaction);
+        var candidates = (await db.QueryAsync<RecruitmentHiringProgress.Candidate>(RecruitmentRollbackRules.CohortSql,
+            new { PositionId = positionId, hiringCase.ClientId }, transaction)).ToList();
+        if (ids.Length != candidates.Count || !RecruitmentRollbackRules.AllRejected(candidates)) return "";
 
         var openPauses = (await db.QueryAsync<PauseSource>(@"SELECT Id,PausedAtUtc
 FROM recruitment_position_stage_pause_periods
@@ -1345,51 +1360,30 @@ SET ResumedByUserId=@UserId,ResumedAtUtc=UTC_TIMESTAMP(6),DurationSeconds=@Secon
 SET PausedDurationSeconds=PausedDurationSeconds+@Seconds WHERE Id=@Id",
                 new { Id = hiringCase.CurrentStageInstanceId, Seconds = pausedSeconds }, transaction);
 
-        long targetInstanceId;
-        if (hiringCase.CurrentPipelineStageId == target.Id)
-        {
-            targetInstanceId = hiringCase.CurrentStageInstanceId;
-        }
-        else
-        {
-            await db.ExecuteAsync(@"UPDATE recruitment_position_stage_instances
-SET Status='Completed',OutcomeCode=@Outcome,CompletedAtUtc=UTC_TIMESTAMP(6)
-WHERE Id=@Id", new { Id = hiringCase.CurrentStageInstanceId, Outcome = requiredCount > 0 ? "VACANCY_SHORTFALL" : "ALL_PROFILES_REJECTED" }, transaction);
-            await db.ExecuteAsync(@"UPDATE recruitment_hiring_case_advance_requests
+        await db.ExecuteAsync(@"UPDATE recruitment_position_stage_instances
+SET OutcomeCode=CASE WHEN Status='Active' THEN 'ALL_PROFILES_REJECTED' ELSE OutcomeCode END,
+Status='Completed',CompletedAtUtc=COALESCE(CompletedAtUtc,UTC_TIMESTAMP(6)) WHERE Id=@Id",
+            new { Id = hiringCase.CurrentStageInstanceId }, transaction);
+        await db.ExecuteAsync(@"UPDATE recruitment_hiring_case_advance_requests
 SET Status='Superseded',DecidedAtUtc=UTC_TIMESTAMP(6)
 WHERE HiringCaseId=@CaseId AND PositionStageInstanceId=@StageInstanceId AND Status='Pending Approval'",
-                new { CaseId = hiringCase.HiringCaseId, StageInstanceId = hiringCase.CurrentStageInstanceId }, transaction);
-
-            targetInstanceId = await db.ExecuteScalarAsync<long?>(@"SELECT Id FROM recruitment_position_stage_instances
-WHERE PositionPipelineInstanceId=@CaseId AND PipelineStageId=@StageId AND Status='Pending'
-ORDER BY Id DESC LIMIT 1 FOR UPDATE", new { CaseId = hiringCase.HiringCaseId, StageId = target.Id }, transaction) ?? 0;
-            if (targetInstanceId <= 0)
-            {
-                DateTime? dueAt = hiringCase.SlaMode.Equals("CumulativeFromAnchor", StringComparison.OrdinalIgnoreCase)
-                    && target.TargetOffsetMinutes.HasValue
-                    ? hiringCase.SlaAnchorAtUtc.AddMinutes(target.TargetOffsetMinutes.Value)
-                    : target.SlaDurationMinutes > 0 ? DateTime.UtcNow.AddMinutes(target.SlaDurationMinutes) : null;
-                targetInstanceId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_position_stage_instances
+            new { CaseId = hiringCase.HiringCaseId, StageInstanceId = hiringCase.CurrentStageInstanceId }, transaction);
+        // A return always creates a new visit; completed visits retain their clocks.
+        await db.ExecuteAsync(@"UPDATE recruitment_position_stage_instances SET Status='Superseded'
+WHERE PositionPipelineInstanceId=@CaseId AND PipelineStageId=@StageId AND Status='Pending' AND EnteredAtUtc IS NULL",
+            new { CaseId = hiringCase.HiringCaseId, StageId = target.Id }, transaction);
+        DateTime? dueAt = hiringCase.SlaMode.Equals("CumulativeFromAnchor", StringComparison.OrdinalIgnoreCase) && target.TargetOffsetMinutes.HasValue
+            ? hiringCase.SlaAnchorAtUtc.AddMinutes(target.TargetOffsetMinutes.Value)
+            : target.SlaDurationMinutes > 0 ? DateTime.UtcNow.AddMinutes(target.SlaDurationMinutes) : null;
+        var targetInstanceId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_position_stage_instances
 (PositionPipelineInstanceId,PipelineStageId,Status,EnteredAtUtc,DueAtUtc)
 VALUES (@CaseId,@StageId,'Active',UTC_TIMESTAMP(6),@DueAtUtc);SELECT LAST_INSERT_ID();",
-                    new { CaseId = hiringCase.HiringCaseId, StageId = target.Id, DueAtUtc = dueAt }, transaction);
-            }
-            else
-            {
-                await db.ExecuteAsync(@"UPDATE recruitment_position_stage_instances
-SET Status='Active',OutcomeCode='',EnteredAtUtc=UTC_TIMESTAMP(6),CompletedAtUtc=NULL
-WHERE Id=@Id", new { Id = targetInstanceId }, transaction);
-            }
-            await db.ExecuteAsync(@"UPDATE recruitment_position_pipeline_instances
-SET Status='Active',CurrentStageInstanceId=@StageInstanceId,CompletedAtUtc=NULL
-WHERE Id=@CaseId", new { CaseId = hiringCase.HiringCaseId, StageInstanceId = targetInstanceId }, transaction);
-        }
+            new { CaseId = hiringCase.HiringCaseId, StageId = target.Id, DueAtUtc = dueAt }, transaction);
+        await db.ExecuteAsync(@"UPDATE recruitment_position_pipeline_instances
+SET Status='Active',CurrentStageInstanceId=@StageInstanceId,CompletedAtUtc=NULL WHERE Id=@CaseId",
+            new { CaseId = hiringCase.HiringCaseId, StageInstanceId = targetInstanceId }, transaction);
 
-        var details = requiredCount > 0
-            ? $"{candidateCount} stage-ready continuing candidates for {requiredCount} required positions. Returned to {target.StageName} for the shortfall; candidate decisions/documents and the original cumulative SLA anchor remain unchanged."
-            : hiringCase.CurrentPipelineStageId == target.Id
-            ? $"All {candidateCount} linked candidates were rejected or withdrawn. Profile sourcing continues in {target.StageName}; the original cumulative SLA anchor and due date remain unchanged."
-            : $"All {candidateCount} linked candidates were rejected or withdrawn. Returned from {hiringCase.CurrentStageName} to {target.StageName}; the original cumulative SLA anchor and due date remain unchanged.";
+        var details = $"All {candidates.Count} linked candidates were rejected, withdrawn, no-show or had an unsuccessful offer. Automatically returned from {hiringCase.CurrentStageName} to {target.StageName} under the published rollback rule; candidate decisions/documents and the original cumulative SLA anchor remain unchanged.";
         await db.ExecuteAsync(@"INSERT INTO recruitment_position_stage_events
 (PositionPipelineInstanceId,PositionStageInstanceId,EventType,EventTitle,EventDetails,ActorUserId)
 VALUES (@CaseId,@StageInstanceId,'ProfilesReworkStarted','Profiles returned for sourcing',@Details,@UserId)",
@@ -2680,6 +2674,7 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
 
     private sealed class SelectionCommitteeCandidate
     {
+        public bool InterviewRoundsComplete { get; set; }
         public decimal? AgreedCtc { get; set; }
         public int TermsVersion { get; set; }
         public DateTime? TermsConfirmedAtUtc { get; set; }
@@ -2765,6 +2760,7 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
 
     private sealed class ProfileReworkCaseSource
     {
+        public int ClientId { get; set; }
         public long HiringCaseId { get; set; }
         public long PipelineVersionId { get; set; }
         public DateTime SlaAnchorAtUtc { get; set; }

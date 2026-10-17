@@ -34,6 +34,52 @@ public sealed class ExcelPayslipCalculationTests
     private static ExcelPayslipCalculationCell Cell(string value, string? formula = null) => new() { Value = value, FormulaText = formula };
     private static ExcelPayslipCalculationColumn Column(int index, string label, string kind) => new() { ColumnIndex = index, Label = label, SourceHeader = label, Kind = kind };
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReviewedMonetaryBlanksAreZeroWithoutReplacingTheirSourceOrWeakeningOtherDependencies(bool sparse)
+    {
+        var (source, batch, request) = Example();
+        source.Columns[4].BlankAsZero = true;
+        source.Rows[1].Cells[4] = sparse ? null : Cell("");
+        batch.Rows[0].Deductions[0].Amount = 0;
+        source.Rows[1].Cells[6]!.Value = "17865"; batch.Rows[0].NetPay = 17865;
+        var original = JsonSerializer.Serialize(source);
+        Assert.Null(ExcelPayslipCalculationService.ValidateSource(source, batch));
+        var result = ExcelPayslipCalculationService.Calculate(source, batch, request);
+        Assert.Equal(0, result.Rows[0].Deductions[0].Amount);
+        Assert.Equal(8932.5m, result.Rows[0].NetPay);
+        Assert.Equal(original, JsonSerializer.Serialize(source));
+        Assert.True(result.CalculationSource!.Columns[4].BlankAsZero);
+        if (sparse) Assert.Null(result.CalculationSource.Rows[1].Cells[4]);
+        else Assert.Equal("", result.CalculationSource.Rows[1].Cells[4]!.Value);
+        Assert.Null(ExcelPayslipCalculationService.ValidateSource(result.CalculationSource, result));
+        source.Columns[4].BlankAsZero = false;
+        Assert.NotNull(ExcelPayslipCalculationService.ValidateSource(source, batch));
+        source.Columns[4].BlankAsZero = true;
+        source.Rows[1].Cells[6]!.FormulaText = "D3-E3-F3+J99";
+        Assert.Contains("missing", Assert.Throws<InvalidOperationException>(() => ExcelPayslipCalculationService.Calculate(source, batch, request)).Message);
+    }
+
+    [Fact]
+    public void ReviewedBlankPolicyNeverMasksFormulaCachesErrorsOrIdentifiers()
+    {
+        var (source, batch, _) = Example(); source.Columns[4].BlankAsZero = true;
+        batch.Rows[0].Deductions[0].Amount = 0;
+        foreach (var cell in new ExcelPayslipCalculationCell[] {
+            new() { Value = "", FormulaText = "D3*12%", MissingCachedValue = true },
+            new() { Value = "", FormulaText = "D3*12%" },
+            new() { Value = "", Error = "#REF!" },
+            new() { Value = "", CalculationError = "Formula expression is missing" },
+            new() { Value = "not a number" } })
+        {
+            source.Rows[1].Cells[4] = cell;
+            Assert.NotNull(ExcelPayslipCalculationService.ValidateSource(source, batch));
+        }
+        source.Rows[1].Cells[4] = Cell(""); source.Columns[0].BlankAsZero = true;
+        Assert.Contains("mapping", ExcelPayslipCalculationService.ValidateSource(source, batch));
+    }
+
     [Fact]
     public void PlrsArithmeticHalfDaysAndContributionsRecalculateWithoutChangingTheOriginal()
     {

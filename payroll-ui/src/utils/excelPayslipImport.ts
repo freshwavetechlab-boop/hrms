@@ -1,7 +1,7 @@
 import type { ExcelPayslipRow } from '../services/excelPayslipService'
 
 export type PayslipColumnKind = 'employeeName' | 'employeeCode' | 'email' | 'info' | 'earning' | 'deduction' | 'employer' | 'netPay' | 'grossTotal' | 'deductionTotal' | 'ignore'
-export type PayslipColumn = { columnIndex: number; sourceHeader: string; label: string; kind: PayslipColumnKind; componentId?: string }
+export type PayslipColumn = { columnIndex: number; sourceHeader: string; label: string; kind: PayslipColumnKind; componentId?: string; blankAsZero?: boolean }
 export type PayslipCell = { value: string; formula?: boolean; formulaText?: string; calculationError?: string; error?: string; missingCachedValue?: boolean }
 export type PayslipSourceRow = { sourceRow: number; cells: PayslipCell[] }
 export type PayslipTemplateMetadata = { version: 1; clientId: number; sourceBatchId: string; month: string; headerRow: number; columns: PayslipColumn[]; excludedSourceRows: number[]; salaryTemplateId?: string; simpleLayout?: boolean; warnings: string[] }
@@ -28,6 +28,7 @@ export function buildPayslipCalculationSource(sheet: PayslipSheet, headerRow: nu
 
 const decoder = new TextDecoder()
 const numericKinds = new Set<PayslipColumnKind>(['earning', 'deduction', 'employer', 'netPay', 'grossTotal', 'deductionTotal'])
+export const isPayslipAmountKind = (kind: PayslipColumnKind) => numericKinds.has(kind)
 const oneColumnKinds: PayslipColumnKind[] = ['employeeName', 'employeeCode', 'email', 'netPay', 'grossTotal', 'deductionTotal']
 // Excel displays numbers at 15 significant digits. Normalize only the display copy,
 // so a binary cache value such as 14129.499999999998 displays as 14,130 at zero decimals.
@@ -61,7 +62,7 @@ export function isPayslipPhoneLabel(label: string) {
 export function payslipPhoneValue(row: Pick<ExcelPayslipRow, 'information'>) {
   return row.information.find(item => isPayslipPhoneLabel(item.label) && item.value.trim())?.value.trim() || ''
 }
-export function defaultPayslipMapping(headers: string[]): PayslipColumn[] {
+export function defaultPayslipMapping(headers: string[], sheet?: PayslipSheet, headerRow = 1): PayslipColumn[] {
   const norm = (value: string) => value.normalize('NFKC').toLowerCase().replace(/\b(?:inr|rs)\b\.?/g, '').replace(/[^a-z0-9]/g, '')
   const keys = headers.map(norm)
   const plrs = norm(headers[3] || '') === 'nameoftheperson' && norm(headers[10] || '') === 'wages' && norm(headers[13] || '') === 'netpay'
@@ -84,10 +85,11 @@ export function defaultPayslipMapping(headers: string[]): PayslipColumn[] {
     // Identifiers, attendance and rates must never be treated as monetary deductions.
     if (/^(?:uan(?:number|no|reference)?|(?:pf|epf|esi|esic)(?:account)?(?:number|no|id)|(?:bank)?account(?:number|no)|bankname|ifsccode|ifsc)$/.test(key)
       || /^(?:department|designation|designationmanpowercategory|worklocation|location(?:name.*)?|branch|attendance|(?:total)?(?:working|worked|paid|payable|present|attended|month)days|days(?:worked|paid|attended)|rate|(?:monthly|daily|hourly|wage|salary|basic|overtime)rate|rate(?:per)?(?:day|hour)|rateof.*|.*(?:rate|percentage))$/.test(key)) return 'info'
-    if (/^(?:ot|overtime|lop|lossofpay)$/.test(key)) return 'info' // May be hours/days, not amounts.
+    if (/^(?:ot|ota|overtime|lop|lossofpay|month|workingday)$/.test(key)) return 'info' // May be hours/days, not amounts.
     // Billing-side bonus in these sheets is outside the stated take-home salary.
     if (billingSheet && /^bonus/.test(key) && columnIndex > netIndex && columnIndex < ctcIndex) return 'info'
-    if (/^(?:ctc|costtocompany|invoice.*|.*gst.*|servicecharges?.*|sc\d.*)$/.test(key)) return 'ignore'
+    if (/^(?:ctc|costtocompany|invoice.*|.*billing.*|less.*(?:epf|pf).*claims?|.*gst.*|servicecharges?.*|sc\d.*)$/.test(key)) return 'ignore'
+    if (/^(?:epf|pf).*(?:admin(?:istration)?|edli|edlis).*charges?/.test(key)) return 'employer'
 
     const employer = /employer|company|ershare|ercontribution/.test(key) || /^(?:er)(?:pf|epf|esi|esic|nps)/.test(key) || /(?:pf|epf|esi|esic|nps)er$/.test(key)
     const employee = /employee|eeshare|eecontribution/.test(key) || /^(?:ee)(?:pf|epf|esi|esic|nps)/.test(key)
@@ -95,22 +97,55 @@ export function defaultPayslipMapping(headers: string[]): PayslipColumn[] {
     if (/^(?:epf|pf|providentfund|esi|esic|nps|professionaltax|pt|tds|incometax|lwf|labourwelfarefund)$/.test(contribution)) {
       // Bare percentages are configuration inputs; explicit PF/ESI amounts stay editable.
       if (/%/.test(sourceHeader) && !/\d/.test(sourceHeader)) return 'info'
-      const rate = Number(sourceHeader.match(/(\d+(?:\.\d+)?)\s*%/)?.[1])
+      const rate = Number(sourceHeader.match(/(\d+(?:\.\d+)?|\.\d+)\s*%/)?.[1])
       if (employer || (!employee && ((/^(?:epf|pf)$/.test(contribution) && rate === 13) || (/^esi[c]?$/.test(contribution) && rate === 3.25)))) return 'employer'
       if (/%/.test(sourceHeader) && !employee && ![12, 0.75].includes(rate)) return 'info'
       return 'deduction'
     }
     if (employer && /pension|gratuity|insurance|admincharges/.test(key)) return 'employer'
-    if (/^(?:(?:salary|loan)advance|advance(?:recovery|deduction)?|loan(?:recovery|deduction|instalments?|installments?|emi)|recovery(?:ifany)?|otherdeductions?|medicaldeduction|professionaltax|incometax|tds|pt|lwf|lop(?:deduction|amount)?|lossofpay)$/.test(key)) return 'deduction'
-    if (/^(?:basic(?:pay|salary|wages)?|earnedbasic|hra|houserentallowance|da|dearnessallowance|conveyance(?:allowance)?|specialallowance|medicalallowance|otherallowances?|allowance|incentives?|bonus(?:\d+)?|overtime(?:pay|amount)?|ot(?:pay|amount)?|(?:salary)?arrears?|leaveencashment|shiftallowance|transport(?:allowance)?|travelallowance|lta|foodallowance|washingallowance|uniformallowance)$/.test(key)) return 'earning'
+    if (/^(?:(?:salary|loan)advance|advance(?:recovery|deduction)?|loan(?:recovery|deduction|instalments?|installments?|emi)|recovery(?:ifany)?|otherdeductions?|medicaldeduction|professionaltax|incometax|tds|ptax|pt|lwf|lop(?:deduction|amount)?|lossofpay)$/.test(key)) return 'deduction'
+    if (/^(?:basic(?:pay|salary|wages)?|earnedbasic|hra|houserentallowance|da|dearnessallowance|conveyance(?:allowance)?|specialallowance|medicalallowance|exp(?:ense)?allowance|otherallowances?|allowance|incentives?|bonus(?:\d+)?|overtime(?:pay|amount)?|ot(?:pay|amount)?|(?:salary)?arrears?|leaveencashment|shiftallowance|transport(?:allowance)?|travelallowance|tada|lta|foodallowance|washingallowance|uniformallowance)$/.test(key)) return 'earning'
     return 'ignore'
   }
-  const columns = headers.map((sourceHeader, columnIndex) => {
+  const columns: PayslipColumn[] = headers.map((sourceHeader, columnIndex) => {
     const kind = suggest(keys[columnIndex], sourceHeader, columnIndex)
     const duplicate = sourceHeader && headers.filter(header => header === sourceHeader).length > 1
     const label = plrs && columnIndex === 8 ? 'Monthly rate' : plrs && columnIndex === 14 ? 'Bonus (as stated)' : `${sourceHeader || 'Column'}${duplicate || !sourceHeader ? ` (${excelColumnLetter(columnIndex)})` : ''}`
     return { columnIndex, sourceHeader, label, kind }
   })
+  // An explicit earned counterpart is the payslip amount; retain its monthly
+  // input as information. ER is interpreted only with a matching earning header.
+  let earnedCounterparts = false
+  for (const column of columns) {
+    const base = column.sourceHeader.replace(/^(?:ER[\s_-]+|Earned[\s_-]*)/i, '')
+    if (base === column.sourceHeader || suggest(norm(base), base, column.columnIndex) !== 'earning') continue
+    const inputs = columns.filter(input => input !== column && keys[input.columnIndex] === norm(base))
+    if (!inputs.length) continue
+    column.kind = 'earning'; inputs.forEach(input => { input.kind = 'info' }); earnedCounterparts = true
+  }
+  // Repeated headings can also represent monthly/earned pairs. Require the
+  // earned formulas to reference the other column on the same employee row.
+  if (sheet) for (const column of columns) {
+    if (column.kind !== 'earning') continue
+    for (const input of columns.filter(input => input !== column && keys[input.columnIndex] === keys[column.columnIndex])) {
+      const nameIndex = columns.find(item => item.kind === 'employeeName')?.columnIndex
+      const formulas = sheet.rows.filter(row => row.sourceRow > headerRow && row.cells[column.columnIndex]?.formulaText
+        && (nameIndex === undefined || row.cells[nameIndex]?.value.trim() && !/^(grand\s*)?totals?(?:\s|:|$)/i.test(row.cells[nameIndex].value.trim())))
+      if (!formulas.length || !formulas.every(row => {
+        const expression = row.cells[column.columnIndex].formulaText!.replace(/"(?:[^"]|"")*"/g, '""')
+        return !row.cells[input.columnIndex]?.formulaText && new RegExp(`(^|[^A-Z0-9_!])\\$?${excelColumnLetter(input.columnIndex)}\\$?${row.sourceRow}(?![0-9])`, 'i').test(expression)
+      })) continue
+      input.kind = 'info'; column.kind = 'earning'; earnedCounterparts = true
+    }
+  }
+  if (earnedCounterparts) {
+    const grossIndex = keys.indexOf('finalsalary') >= 0 ? keys.indexOf('finalsalary') : keys.indexOf('earnedgross')
+    if (grossIndex >= 0) {
+      columns.filter(column => column.kind === 'grossTotal').forEach(column => { column.kind = 'info' })
+      columns[grossIndex].kind = 'grossTotal'
+      if (keys.indexOf('earnedgross') >= 0 && keys.indexOf('earnedgross') !== grossIndex) columns[keys.indexOf('earnedgross')].kind = 'info'
+    }
+  }
   const wages = columns.filter(column => /^(?:wages|salary|earned(?:salary|wages))$/.test(keys[column.columnIndex]))
   const itemized = columns.some(column => column.kind === 'earning' && !wages.includes(column))
   const gross = columns.filter(column => column.kind === 'grossTotal')
@@ -149,6 +184,7 @@ export function buildExcelPayslipRows(sheet: PayslipSheet, headerRow: number, co
   for (const column of columns) {
     if (column.kind !== 'ignore' && !column.label.trim()) issue(headerRow, excelColumnLetter(column.columnIndex), 'Enter a payslip label.')
     if (column.label.length > 80) issue(headerRow, excelColumnLetter(column.columnIndex), 'Shorten the payslip label to 80 characters or fewer.')
+    if (column.blankAsZero !== undefined && (typeof column.blankAsZero !== 'boolean' || column.blankAsZero && !numericKinds.has(column.kind))) issue(headerRow, excelColumnLetter(column.columnIndex), 'Blank as zero requires a reviewed monetary column.')
   }
   if (issues.length) return { rows, issues, excludedRows, excludedDetails }
   const nameColumn = columns.find(column => column.kind === 'employeeName')!
@@ -168,7 +204,8 @@ export function buildExcelPayslipRows(sheet: PayslipSheet, headerRow: number, co
         continue
       }
       if (numericKinds.has(column.kind)) {
-        const amount = parsePayslipAmount(value)
+        const reviewedBlank = column.blankAsZero === true && !value.trim() && !cell?.formula && !cell?.formulaText && !cell?.calculationError
+        const amount = reviewedBlank ? 0 : parsePayslipAmount(value)
         if (amount === null) { issue(source.sourceRow, letter, 'A saved numeric amount is required; blank amounts are not zero.'); continue }
         if (column.kind === 'earning') row.earnings.push({ label, amount })
         if (column.kind === 'deduction') row.deductions.push({ label, amount })
@@ -261,8 +298,8 @@ export function restorePayslipTemplateMetadata(sheets: PayslipSheet[]): PayslipS
   if (!sheet) throw new Error('The exported salary worksheet was renamed or removed. Restore its original sheet name before importing.')
   const warnings = (Array.isArray(saved.warnings) ? saved.warnings : []).filter(value => typeof value === 'string').slice(0, 1000)
   const headers = payslipHeaders(sheet, saved.headerRow), positionsMatch = saved.headers.every((header, index) => headers[index] === header)
-  const defaults = defaultPayslipMapping(headers)
-  const validColumns = saved.columns.every(column => column && Number.isInteger(column.columnIndex) && column.columnIndex >= 0 && column.columnIndex < saved.headers.length && typeof column.sourceHeader === 'string' && typeof column.label === 'string' && column.label.length <= 80 && payslipColumnKinds.some(kind => kind.value === column.kind) && (column.componentId == null || typeof column.componentId === 'string')) && new Set(saved.columns.map(column => column.columnIndex)).size === saved.columns.length
+  const defaults = defaultPayslipMapping(headers, sheet, saved.headerRow)
+  const validColumns = saved.columns.every(column => column && Number.isInteger(column.columnIndex) && column.columnIndex >= 0 && column.columnIndex < saved.headers.length && typeof column.sourceHeader === 'string' && typeof column.label === 'string' && column.label.length <= 80 && payslipColumnKinds.some(kind => kind.value === column.kind) && (column.componentId == null || typeof column.componentId === 'string') && (column.blankAsZero === undefined || typeof column.blankAsZero === 'boolean' && (!column.blankAsZero || numericKinds.has(column.kind)))) && new Set(saved.columns.map(column => column.columnIndex)).size === saved.columns.length
   const columns = positionsMatch && validColumns ? defaults.map(column => { const previous = saved.columns.find(item => item.columnIndex === column.columnIndex); return previous ? { ...previous, sourceHeader: column.sourceHeader } : column }) : defaults
   if (!positionsMatch || !validColumns) warnings.unshift('Column headings or positions changed. Review every column mapping before saving; previous mappings were not applied.')
   const excludedSourceRows: number[] = []

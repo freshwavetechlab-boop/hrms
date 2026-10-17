@@ -24,6 +24,7 @@ import RecruitmentInterviewEditor from './RecruitmentInterviewEditor'
 import { getInternalInterviewCapabilities } from '../services/internalInterviewService'
 import InternalInterviewDashboard from './InternalInterviewDashboard'
 import RecruitmentBatchInterviewEditor from './RecruitmentBatchInterviewEditor'
+import RecruitmentInterviewRounds from './RecruitmentInterviewRounds'
 import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
 import RecruitmentGlobalTalentPool from './RecruitmentGlobalTalentPool'
 import RecruitmentInternalCandidateForm from './RecruitmentInternalCandidateForm'
@@ -455,6 +456,8 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
     {mode === 'interviewQueue' && <section className="interview-operations-workspace">
       <PageHeaderPortal slot="recruitment-page-controls"><Space wrap><NewInterviewMenu onSelect={(startNow) => setInterviewDraft({ applicationId: 0, standalone: true, startNow })} /><Button type="primary" icon={<CalendarOutlined />} disabled={!selectedBatchApplications.length} onClick={() => setBatchInterviewOpen(true)}>Schedule selected ({selectedBatchApplications.length})</Button></Space></PageHeaderPortal>
       <RecruitmentRecordList rows={interviewReadyApplications} title={row => row.candidateName} subtitle={row => row.positionTitle} exportFileName="interview-queue"
+        hiddenCardColumns={['interviewRounds']}
+        cardExtra={row => <RecruitmentInterviewRounds applicationId={row.id} onChanged={() => void refreshInterviewData()} onSchedule={canScheduleInterviews ? () => setInterviewDraft({ applicationId: row.id }) : undefined} />}
         emptyText="No ATS-qualified candidates match these filters." selectionGroup={row => row.positionId}
         filters={[{ key: 'job', label: 'Job role', value: row => row.positionTitle }, { key: 'stage', label: 'Candidate stage', value: row => row.currentStage }, { key: 'recruiter', label: 'Recruiter', value: row => row.recruiterName || '' }]}
         quickFilters={[{ key: 'selected', label: 'Selected to schedule', tone: 'purple', matches: row => batchInterviewApplicationIds.includes(row.id) }, { key: 'interview', label: 'Interview stage', tone: 'blue', matches: row => /interview/i.test(row.currentStage) }]}
@@ -464,6 +467,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
           { key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Job' }, { key: 'applicationCode', label: 'Application' }, { key: 'positionCode', label: 'Job reference' },
           { key: 'atsScore', label: 'ATS', render: row => row.atsScore == null ? <Tag>Pending</Tag> : <Tag color={row.atsScore >= (row.atsShortlistThreshold || 60) ? 'green' : 'orange'}>{row.atsScore.toFixed(1)}</Tag> },
           { key: 'currentStage', label: 'Candidate stage', render: row => <Tag color={/interview/i.test(row.currentStage) ? 'blue' : 'purple'}>{row.currentStage}</Tag> },
+          { key: 'interviewRounds', label: 'Interview rounds', render: row => <RecruitmentInterviewRounds applicationId={row.id} onChanged={() => void refreshInterviewData()} onSchedule={canScheduleInterviews ? () => setInterviewDraft({ applicationId: row.id }) : undefined} /> },
         ]}
       />
     </section>}

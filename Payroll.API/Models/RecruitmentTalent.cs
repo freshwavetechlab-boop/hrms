@@ -550,6 +550,7 @@ public class RecruitmentInterviewInvitation
 
 public class RecruitmentInterviewSchedulingContext
 {
+    public RecruitmentInterviewRoundPlan? RoundPlan { get; set; }
     public bool SettingsMissing { get; set; }
     public long ApplicationId { get; set; }
     public bool IsPipelineManaged { get; set; }

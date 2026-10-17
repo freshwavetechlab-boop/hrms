@@ -57,7 +57,7 @@ ORDER BY u.DisplayName,u.Email", new { ClientId = clientId });
         return id;
     }
 
-    private static async Task<int> SaveWithOpenConnectionAsync(MySqlConnection db, Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null, MySqlTransaction? tx = null)
+    private static async Task<int> SaveWithOpenConnectionAsync(MySqlConnection db, Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null, MySqlTransaction? tx = null, DateTime? effectiveDate = null, bool synchronizeAttendancePolicies = true)
     {
         var wasNew = employee.Id == 0;
         var before = employee.Id > 0 ? await LoadEmployeeAsync(db, employee.Id, tx) : null;
@@ -69,8 +69,8 @@ ORDER BY u.DisplayName,u.Email", new { ClientId = clientId });
         await db.ExecuteAsync("UPDATE employees SET SalaryJson=@SalaryJson,PersonalJson=@PersonalJson,PaymentJson=@PaymentJson WHERE Id=@Id", employee, tx);
         var after = await LoadEmployeeAsync(db, employee.Id, tx) ?? employee;
         var reason = string.IsNullOrWhiteSpace(changeReason) ? wasNew ? "Employee hired" : "Infotype updated" : changeReason.Trim();
-        await WriteCurrentInfotypesAsync(db, after, actionType, EffectiveDate(after), reason, changedBy, before, wasNew ? null : NormalizeInfotypeCodes(infotypeCode), tx);
-        await SyncAttendancePolicyMappingsAsync(db, after, before, tx);
+        await WriteCurrentInfotypesAsync(db, after, actionType, effectiveDate ?? EffectiveDate(after), reason, changedBy, before, wasNew ? null : NormalizeInfotypeCodes(infotypeCode), tx);
+        if (synchronizeAttendancePolicies) await SyncAttendancePolicyMappingsAsync(db, after, before, tx);
         return employee.Id;
     }
 
@@ -1803,6 +1803,8 @@ CREATE TABLE IF NOT EXISTS employee_audit_trail (
     static async Task SyncAttendancePolicyMappingsAsync(MySqlConnection db, Employee employee, Employee? before, MySqlTransaction? tx = null)
     {
         var clientIds = new[] { employee.ClientId, before?.ClientId ?? employee.ClientId }.Where(id => id > 0).Distinct().ToArray();
+        var importedCohorts = await ReadExcelPayrollPolicyCohortsAsync(db, tx, clientIds);
+        var importedGroupIds = importedCohorts.Where(c => c.ClientId == employee.ClientId).Select(c => c.GroupId).Distinct().ToArray();
         foreach (var clientId in clientIds)
         {
             await db.ExecuteAsync(@"DELETE age FROM attendance_group_employees age
@@ -1810,8 +1812,18 @@ JOIN attendance_groups g ON g.id=age.attendance_group_id
 WHERE age.employee_id=@EmployeeId AND g.client_id=@ClientId", new { EmployeeId = employee.Id, ClientId = clientId }, tx);
         }
 
-        if (!employee.IsActive || employee.Id <= 0 || employee.ClientId <= 0 || employee.WorkLocationId <= 0 || string.IsNullOrWhiteSpace(employee.Department) || string.IsNullOrWhiteSpace(employee.Designation))
+        if (!employee.IsActive || employee.Id <= 0 || employee.ClientId <= 0)
             return;
+
+        // Reviewed Excel policies have an explicit source cohort. Their All/0 display scope
+        // must never enroll a different employee through ordinary master auto-mapping.
+        var selectedImportedGroups = SelectedExcelPayrollPolicyGroups(employee, importedCohorts);
+        if (selectedImportedGroups.Length > 0)
+            await db.ExecuteAsync(@"INSERT IGNORE INTO attendance_group_employees(attendance_group_id,employee_id)
+SELECT id,@EmployeeId FROM attendance_groups WHERE client_id=@ClientId AND is_active=TRUE AND id IN @GroupIds",
+                new { EmployeeId = employee.Id, employee.ClientId, GroupIds = selectedImportedGroups }, tx);
+
+        if (employee.WorkLocationId <= 0 || string.IsNullOrWhiteSpace(employee.Department) || string.IsNullOrWhiteSpace(employee.Designation)) return;
 
         await db.ExecuteAsync(@"INSERT IGNORE INTO attendance_group_employees (attendance_group_id, employee_id)
 SELECT g.id, @EmployeeId
@@ -1820,11 +1832,13 @@ WHERE g.client_id=@ClientId
   AND (g.work_location_id=0 OR g.work_location_id=@WorkLocationId)
   AND (g.department='' OR g.department='All' OR g.department=@Department)
   AND (g.designation='' OR g.designation='All' OR g.designation=@Designation)
+  AND g.id NOT IN @ImportedGroupIds
   AND g.is_active=TRUE", new
         {
             EmployeeId = employee.Id,
             employee.ClientId,
             employee.WorkLocationId,
+            ImportedGroupIds = importedGroupIds,
             Department = employee.Department.Trim(),
             Designation = employee.Designation.Trim()
         }, tx);
