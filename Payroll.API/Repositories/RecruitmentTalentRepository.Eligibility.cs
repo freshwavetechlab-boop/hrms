@@ -41,18 +41,37 @@ WHERE applicationRow.Id IN @Ids", new { Ids = ids })).ToList();
     {
         if (rows.Count == 0) return;
         var reviewReasons = await MandatoryApplicationReviewAsync(db, rows.Select(x => x.Id).ToArray());
-        var evidence = (await db.QueryAsync<ApplicationEligibilitySkill>(@"SELECT score.ApplicationId,skill.MatchStatus
+        var evidence = (await db.QueryAsync<ApplicationEligibilitySkill>(@"SELECT score.ApplicationId,skill.*
 FROM recruitment_application_scores score
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=score.ApplicationId AND applicationRow.ResumeId=score.ResumeId
 JOIN recruitment_application_score_skill_matches skill ON skill.ApplicationScoreId=score.Id AND skill.SkillType='Required'
 WHERE score.IsCurrent=TRUE AND score.ApplicationId IN @Ids", new { Ids = rows.Select(x => x.Id).ToArray() }))
-            .GroupBy(x => x.ApplicationId).ToDictionary(x => x.Key, x => x.Select(y => y.MatchStatus).ToArray());
+            .GroupBy(x => x.ApplicationId).ToDictionary(x => x.Key, x => x.Cast<RecruitmentApplicationScoreSkillMatch>().ToArray());
+        var scoreIdentities = (await db.QueryAsync<ReviewScoreIdentity>(@"SELECT score.ApplicationId,score.ResumeId,score.PositionSnapshotHash,
+(snapshot.JobDescriptionVersionId <=> COALESCE(posting.JobDescriptionVersionId,positionRow.ApprovedJobDescriptionVersionId)
+ AND snapshot.ExperienceRange=positionRow.ExperienceRange) SnapshotStillCurrent
+FROM recruitment_application_scores score JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=score.ApplicationId AND applicationRow.ResumeId=score.ResumeId
+JOIN recruitment_open_positions positionRow ON positionRow.Id=applicationRow.PositionId
+LEFT JOIN recruitment_job_postings posting ON posting.Id=applicationRow.JobPostingId AND posting.PositionId=applicationRow.PositionId
+LEFT JOIN recruitment_application_score_position_snapshots snapshot ON snapshot.ApplicationScoreId=score.Id
+WHERE score.IsCurrent=TRUE AND score.ApplicationId IN @Ids", new { Ids = rows.Select(x => x.Id).ToArray() })).ToDictionary(x => x.ApplicationId);
+        var manualEvidence = await ReadManualEligibilityEvidenceAsync(db, rows.Select(x => x.Id).ToArray());
         foreach (var row in rows)
         {
+            var skills = evidence.GetValueOrDefault(row.Id) ?? [];
+            var identity = scoreIdentities.GetValueOrDefault(row.Id);
+            var hash = identity is null ? "" : RecruitmentEligibilityReviewPolicy.ContextHash(identity.ResumeId, identity.PositionSnapshotHash, skills);
+            var reviews = identity?.SnapshotStillCurrent == true ? ValidManualReviews(manualEvidence, row.Id, identity.ResumeId, hash) : [];
+            var mandatory = reviewReasons.GetValueOrDefault(row.Id) ?? [];
+            var statuses = skills.Select(skill => RecruitmentEligibilityReviewPolicy.SkillStatus(skill, reviews)).ToList();
+            if (mandatory.Any(reason => reviews.GetValueOrDefault(RecruitmentEligibilityReviewPolicy.RequirementKey("requirement", reason))?.Decision == "NotMet")) statuses.Add(RecruitmentEligibilityReviewPolicy.ConfirmedNotMet);
+            var pending = RecruitmentEligibilityReviewPolicy.PendingReasons(skills, mandatory, reviews).ToList();
+            if (identity?.SnapshotStillCurrent == false) pending.Add("The job description changed. Refresh ATS before reviewing its requirements.");
+            row.CandidateExperienceMonths = RecruitmentEligibilityReviewPolicy.Experience(reviews, row.CandidateExperienceMonths);
             var assessment = RecruitmentEligibility.Assess(row.CandidateExperienceMonths, row.RequiredExperienceRange,
-                evidence.GetValueOrDefault(row.Id), row.ScoreStatus, row.AtsScore.HasValue, reviewReasons.GetValueOrDefault(row.Id));
+                statuses, skills.Length > 0 || mandatory.Count > 0 || reviews.Count > 0 ? "" : row.ScoreStatus, row.AtsScore.HasValue, pending);
             row.EligibilityStatus = assessment.Status;
-            row.EligibilityReasons = assessment.Reasons.ToList();
+            row.EligibilityReasons = assessment.Reasons.Where(reason => reason != "Mandatory eligibility evidence needs recruiter verification." || pending.Count == 0).ToList();
             if (assessment.Status is "Ineligible" or "NeedsReview") row.ScoreStatus = assessment.Status;
         }
     }
@@ -74,22 +93,37 @@ WHERE score.Id IN @Ids", new { Ids = scores.Select(x => x.Id).ToArray() })).ToDi
             Id = score.Id, JobDescriptionVersionId = score.PositionSnapshot?.JobDescriptionVersionId,
             ResumeText = facts.GetValueOrDefault(score.Id)?.ResumeText ?? "", QualificationEvidence = facts.GetValueOrDefault(score.Id)?.QualificationEvidence ?? ""
         }).ToList());
+        var manualEvidence = await ReadManualEligibilityEvidenceAsync(db, scores.Select(x => x.ApplicationId).Distinct().ToArray());
         foreach (var score in scores)
         {
-            var assessment = RecruitmentEligibility.Assess(facts.GetValueOrDefault(score.Id)?.ExperienceMonths,
+            var skills = score.SkillMatches.Where(x => x.SkillType == "Required").ToArray();
+            var hash = RecruitmentEligibilityReviewPolicy.ContextHash(score.ResumeId, score.PositionSnapshotHash, skills);
+            var manual = ValidManualReviews(manualEvidence, score.ApplicationId, score.ResumeId, hash, score.IsCurrent ? null : score.ScoredAt);
+            var mandatory = reviews.GetValueOrDefault(score.Id) ?? [];
+            var statuses = skills.Select(skill => RecruitmentEligibilityReviewPolicy.SkillStatus(skill, manual)).ToList();
+            if (mandatory.Any(reason => manual.GetValueOrDefault(RecruitmentEligibilityReviewPolicy.RequirementKey("requirement", reason))?.Decision == "NotMet")) statuses.Add(RecruitmentEligibilityReviewPolicy.ConfirmedNotMet);
+            var pending = RecruitmentEligibilityReviewPolicy.PendingReasons(skills, mandatory, manual);
+            var assessment = RecruitmentEligibility.Assess(RecruitmentEligibilityReviewPolicy.Experience(manual, facts.GetValueOrDefault(score.Id)?.ExperienceMonths),
                 score.PositionSnapshot?.ExperienceRange,
-                score.SkillMatches.Where(x => x.SkillType == "Required").Select(x => x.MatchStatus), score.ScoreStatus,
-                additionalReviewReasons: reviews.GetValueOrDefault(score.Id));
+                statuses, skills.Length > 0 || mandatory.Count > 0 || manual.Count > 0 ? "" : score.ScoreStatus,
+                additionalReviewReasons: pending);
             score.EligibilityStatus = assessment.Status;
-            score.EligibilityReasons = assessment.Reasons.ToList();
+            score.EligibilityReasons = assessment.Reasons.Where(reason => reason != "Mandatory eligibility evidence needs recruiter verification." || pending.Count == 0).ToList();
             if (assessment.Status is "Ineligible" or "NeedsReview") score.ScoreStatus = assessment.Status;
         }
     }
 
-    private sealed class ApplicationEligibilitySkill
+    private sealed class ApplicationEligibilitySkill : RecruitmentApplicationScoreSkillMatch
     {
         public long ApplicationId { get; set; }
-        public string MatchStatus { get; set; } = "";
+    }
+
+    private sealed class ReviewScoreIdentity
+    {
+        public long ApplicationId { get; set; }
+        public long ResumeId { get; set; }
+        public string PositionSnapshotHash { get; set; } = "";
+        public bool SnapshotStillCurrent { get; set; }
     }
 
     private sealed class ScoreEligibilityFacts

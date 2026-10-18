@@ -11,7 +11,7 @@ export default function RecruitmentEligibilityBadge({ row, showScore = false, sh
   return <span className="recruitment-eligibility" data-eligibility={state.status}>
     <Space size={4} wrap>
       <Tooltip title={state.reason || undefined}><Tag color={state.color} tabIndex={state.reason ? 0 : undefined}>{state.label}</Tag></Tooltip>
-      {showScore && state.showScore && score != null && <Tag color="blue">{score.toFixed(1)} / 100</Tag>}
+      {showScore && state.showScore && score != null && <Tag color={state.provisional ? 'gold' : 'blue'}>{state.provisional ? 'Provisional ATS ' : ''}{score.toFixed(1)} / 100</Tag>}
     </Space>
     {showReason && state.reason && <Typography.Text type={state.status === 'ineligible' ? 'danger' : 'secondary'} style={{ display: 'block', whiteSpace: 'normal', fontSize: 12 }}>{state.reason}</Typography.Text>}
   </span>

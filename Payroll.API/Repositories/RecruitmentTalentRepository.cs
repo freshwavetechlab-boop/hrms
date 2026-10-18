@@ -3448,8 +3448,31 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
             Id = applicationId, JobDescriptionVersionId = data.JobDescriptionVersionId,
             ResumeText = data.ResumeText, QualificationEvidence = data.HighestQualification
         }]);
+        var reviewSnapshotHash = await db.ExecuteScalarAsync<string>(@"SELECT SHA2(CONCAT_WS('|',@JobDescriptionVersionId,@PositionCode,@PositionTitle,@PositionCategory,@RequiredSkills,@PreferredSkills,@ExperienceRange,@Qualification,@Certifications,@JobLocation),256)",
+            new { data.JobDescriptionVersionId, data.PositionCode, PositionTitle = scoringPositionTitle, data.PositionCategory,
+                RequiredSkills = requiredSkillsSnapshot, PreferredSkills = preferredSkillsSnapshot, ExperienceRange = experienceRange,
+                Qualification = qualificationRequirement, Certifications = certificationRequirement, data.JobLocation });
+        var reviewSkills = requiredMatches.Select(ToReviewSkill).ToArray();
+        var reviewHash = RecruitmentEligibilityReviewPolicy.ContextHash(data.EffectiveResumeId, reviewSnapshotHash ?? "", reviewSkills);
+        var manualReviews = ValidManualReviews(await ReadManualEligibilityEvidenceAsync(db, [applicationId]), applicationId, data.EffectiveResumeId, reviewHash);
+        var reviewedExperience = RecruitmentEligibilityReviewPolicy.Experience(manualReviews, data.HasExperienceEvidence ? data.TotalExperienceMonths : null);
+        if (reviewedExperience.HasValue) { data.TotalExperienceMonths = reviewedExperience.Value; data.HasExperienceEvidence = true; }
+        requiredMatches = requiredMatches.Select(skill =>
+        {
+            var status = RecruitmentEligibilityReviewPolicy.SkillStatus(ToReviewSkill(skill), manualReviews);
+            if (manualReviews.TryGetValue(RecruitmentEligibilityReviewPolicy.SkillKey(ToReviewSkill(skill)), out var review)
+                && review.Decision is "Verified" or "NotMet" && skill.MatchStatus != "InsufficientExperience")
+                return skill with { MatchStatus = status, MatchMethod = RecruitmentEligibilityReviewPolicy.EvidenceType,
+                    HasSkillEvidence = review.Decision == "Verified", IsRequirementMet = review.Decision == "Verified",
+                    EvidenceExcerpt = review.Note, Confidence = 1m, MatchedTerm = review.Decision == "Verified" ? skill.SkillName : "" };
+            return skill;
+        }).ToList();
+        var mandatoryReasons = mandatoryReviews.GetValueOrDefault(applicationId) ?? [];
+        var reviewedStatuses = requiredMatches.Select(match => match.MatchStatus).ToList();
+        if (mandatoryReasons.Any(reason => manualReviews.GetValueOrDefault(RecruitmentEligibilityReviewPolicy.RequirementKey("requirement", reason))?.Decision == "NotMet"))
+            reviewedStatuses.Add(RecruitmentEligibilityReviewPolicy.ConfirmedNotMet);
         var eligibility = RecruitmentEligibility.Assess(data.HasExperienceEvidence ? data.TotalExperienceMonths : null,
-            experienceRange, requiredMatches.Select(match => match.MatchStatus), additionalReviewReasons: mandatoryReviews.GetValueOrDefault(applicationId));
+            experienceRange, reviewedStatuses, additionalReviewReasons: RecruitmentEligibilityReviewPolicy.PendingReasons(reviewSkills, mandatoryReasons, manualReviews));
         var eligibilityStatus = eligibility.Status == "Ineligible" ? RecruitmentAtsEligibilityStatus.Ineligible
             : eligibility.Status == "NeedsReview" ? RecruitmentAtsEligibilityStatus.NeedsReview : RecruitmentAtsEligibilityStatus.Eligible;
         var requiredRatio = SkillRequirementRatio(requiredMatches);
@@ -3457,6 +3480,9 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
         var experienceRatio = ExperienceRatio(data.TotalExperienceMonths, experienceRange);
         var qualificationRatio = TextCriterionScore(resumeSearch, qualificationRequirement, data.HighestQualification);
         var certificationRatio = TextCriterionScore(resumeSearch, certificationRequirement, "");
+        var reviewedRequirements = mandatoryReasons.Where(reason => manualReviews.GetValueOrDefault(RecruitmentEligibilityReviewPolicy.RequirementKey("requirement", reason))?.Decision == "Verified").ToArray();
+        if (reviewedRequirements.Any(reason => !reason.StartsWith("Mandatory certification")) && !mandatoryReasons.Except(reviewedRequirements).Any(reason => !reason.StartsWith("Mandatory certification"))) qualificationRatio = 1m;
+        if (reviewedRequirements.Any(reason => reason.StartsWith("Mandatory certification")) && !mandatoryReasons.Except(reviewedRequirements).Any(reason => reason.StartsWith("Mandatory certification"))) certificationRatio = 1m;
         var roleRatio = TokenSimilarity(data.CurrentTitle, scoringPositionTitle);
         var roleSemantic = SemanticComparison.Empty;
         var qualificationSemantic = SemanticComparison.Empty;
@@ -5182,6 +5208,13 @@ CREATE TABLE IF NOT EXISTS person_activity_events (
         decimal SemanticSimilarity,
         string[] DurationTerms,
         decimal? SkillSpecificYears);
+
+    private static RecruitmentApplicationScoreSkillMatch ToReviewSkill(CalculatedSkillMatch skill) => new()
+    {
+        SkillType = skill.SkillType, SkillName = skill.SkillName, MatchStatus = skill.MatchStatus,
+        MatchMethod = skill.MatchMethod, MinimumYears = skill.MinimumYears, MinimumProficiency = skill.MinimumProficiency,
+        EvidenceExcerpt = skill.EvidenceExcerpt
+    };
 
     private sealed class InterviewPipelineContextRow
     {

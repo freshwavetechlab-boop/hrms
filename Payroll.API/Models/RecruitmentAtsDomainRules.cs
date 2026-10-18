@@ -33,6 +33,7 @@ public static class RecruitmentAtsDomainRules
     {
         var statuses = matchStatuses.Select(value => (value ?? "").Trim()).ToArray();
         if (statuses.Any(value => value.Equals(Missing, StringComparison.OrdinalIgnoreCase)
+            || value.Equals(RecruitmentEligibilityReviewPolicy.ConfirmedNotMet, StringComparison.OrdinalIgnoreCase)
             || value.Equals(InsufficientExperience, StringComparison.OrdinalIgnoreCase)))
             return RecruitmentAtsEligibilityStatus.Ineligible;
         if (statuses.Any(value => !value.Equals(Matched, StringComparison.OrdinalIgnoreCase)))

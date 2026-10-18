@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import RecruitmentEligibilityBadge from './RecruitmentEligibilityBadge'
+import RecruitmentEligibilityReviewButton from './RecruitmentEligibilityReviewButton'
 import { recruitmentEligibility } from '../utils/recruitmentEligibility'
-import { Button, Drawer, Empty, Progress, Select, Space, Table, Tag, Typography, type TableColumnsType } from 'antd'
+import { Alert, Button, Drawer, Empty, Progress, Select, Space, Table, Tag, Typography, type TableColumnsType } from 'antd'
 import {
   AimOutlined, CheckCircleOutlined, ClockCircleOutlined, EyeOutlined, FileSearchOutlined,
   InfoCircleOutlined, SafetyCertificateOutlined, WarningOutlined,
@@ -13,6 +14,7 @@ type Props = {
   scores: RecruitmentApplicationScore[]
   applications: RecruitmentCandidateApplication[]
   onOverride?: (score: RecruitmentApplicationScore) => void
+  onReviewed?: () => void | Promise<void>
   display?: 'drawer' | 'inline'
 }
 
@@ -23,7 +25,7 @@ const statusClass = (status: string) => status === 'Matched' ? 'is-matched' : st
 const confidencePercent = (value: number) => Math.max(0, Math.min(100, Math.round(Number(value || 0) * 100)))
 const scorePercent = (value: number) => Math.max(0, Math.min(100, Math.round(Number(value || 0))))
 
-export default function RecruitmentAtsScoreDetails({ scores, applications, onOverride, display = 'drawer' }: Props) {
+export default function RecruitmentAtsScoreDetails({ scores, applications, onOverride, onReviewed, display = 'drawer' }: Props) {
   const [selected, setSelected] = useState<RecruitmentApplicationScore | null>(null)
   const applicationsById = useMemo(() => new Map(applications.map(row => [row.id, row])), [applications])
   const orderedScores = useMemo(() => scores.slice().sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent) || new Date(b.scoredAt).getTime() - new Date(a.scoredAt).getTime()), [scores])
@@ -56,6 +58,7 @@ export default function RecruitmentAtsScoreDetails({ scores, applications, onOve
         <Typography.Text strong>Assessment history</Typography.Text>
         <Select aria-label="Assessment version" value={inlineScore.id} onChange={id => setSelected(orderedScores.find(row => row.id === id) || null)} options={orderedScores.map(row => ({ value: row.id, label: `${row.isCurrent ? 'Current' : 'Previous'} · ${new Date(row.scoredAt).toLocaleString('en-IN')} · ${recruitmentEligibility(row).showScore ? effectiveScore(row).toFixed(1) + " / 100" : recruitmentEligibility(row).label}` }))} />
         {inlineScore.isCurrent && onOverride && <Button onClick={() => onOverride(inlineScore)}>Override</Button>}
+        {inlineScore.isCurrent && <RecruitmentEligibilityReviewButton applicationId={inlineScore.applicationId} onChanged={async () => { await onReviewed?.(); setSelected(null) }} />}
       </Space>
       <ScoreEvidence score={inlineScore} application={applicationsById.get(inlineScore.applicationId)} />
     </>}
@@ -71,15 +74,16 @@ export default function RecruitmentAtsScoreDetails({ scores, applications, onOve
         ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No ATS score has been generated for this candidate." />
         : <>
           <div className="ats-score-latest">
+            <RecruitmentEligibilityReviewButton applicationId={latest.applicationId} onChanged={async () => { await onReviewed?.(); setSelected(null) }} />
             {recruitmentEligibility(latest).showScore
-              ? <Progress type="circle" size={72} percent={scorePercent(effectiveScore(latest))} strokeColor={scoreColor(effectiveScore(latest), latest.shortlistThreshold)} format={() => <b>{effectiveScore(latest).toFixed(1)}</b>} />
+              ? <Progress type="circle" size={72} percent={scorePercent(effectiveScore(latest))} strokeColor={recruitmentEligibility(latest).provisional ? '#d97706' : scoreColor(effectiveScore(latest), latest.shortlistThreshold)} format={() => <b>{effectiveScore(latest).toFixed(1)}</b>} />
               : <RecruitmentEligibilityBadge row={latest} showReason />}
             <div className="ats-score-latest-copy">
               <span>Current assessment</span>
               <b>{latestApplication?.positionTitle ?? latest.positionSnapshot?.positionTitle ?? 'Application score'}</b>
               <small>{latestApplication?.applicationCode ?? `Application #${latest.applicationId}`} · scored {new Date(latest.scoredAt).toLocaleDateString('en-IN')}</small>
             </div>
-            <div className="ats-score-latest-tags">{recruitmentEligibility(latest).showScore && <Tag color={effectiveScore(latest) >= latest.shortlistThreshold ? 'green' : 'orange'}>{effectiveScore(latest) >= latest.shortlistThreshold ? 'Threshold reached' : 'Recruiter review'}</Tag>}<Tag color="blue">Threshold {latest.shortlistThreshold.toFixed(0)}%</Tag></div>
+            <div className="ats-score-latest-tags">{recruitmentEligibility(latest).isEligible && <Tag color={effectiveScore(latest) >= latest.shortlistThreshold ? 'green' : 'orange'}>{effectiveScore(latest) >= latest.shortlistThreshold ? 'Threshold reached' : 'Recruiter review'}</Tag>}<Tag color="blue">Threshold {latest.shortlistThreshold.toFixed(0)}%</Tag></div>
           </div>
           <div className="ats-score-history" data-testid="ats-score-history"><Table<RecruitmentApplicationScore> size="small" pagination={orderedScores.length > 6 ? { pageSize: 6 } : false} rowKey="id" dataSource={orderedScores} columns={scoreColumns} scroll={{ x: 940 }} /></div>
         </>}
@@ -117,19 +121,20 @@ function ScoreEvidence({ score, application }: { score: RecruitmentApplicationSc
         <Typography.Text>{application?.applicationCode ?? `Application #${score.applicationId}`} · Profile v{score.profileVersionNumber || 1} · {new Date(score.scoredAt).toLocaleString('en-IN')}</Typography.Text>
         <Space wrap className="ats-report-tags">
           <RecruitmentEligibilityBadge row={score} />
-          {recruitmentEligibility(score).showScore && <Tag color={value >= score.shortlistThreshold ? 'green' : 'orange'}>{verdict}</Tag>}
+          {recruitmentEligibility(score).isEligible && <Tag color={value >= score.shortlistThreshold ? 'green' : 'orange'}>{verdict}</Tag>}
           <Tag color="blue">Threshold {score.shortlistThreshold.toFixed(0)}%</Tag>
           <Tag color="purple">{score.scoringMethod || 'Rule based'}</Tag>
-          {score.humanReviewRequired && <Tag color="gold">Human review required</Tag>}
+          {score.humanReviewRequired && <Tag color="gold">{recruitmentEligibility(score).isEligible ? 'Pipeline confirmation required' : 'Eligibility evidence review required'}</Tag>}
         </Space>
       </div>
       <div className="ats-report-score">
         {recruitmentEligibility(score).showScore
-          ? <><Progress type="circle" size={126} strokeWidth={8} percent={scorePercent(value)} strokeColor={scoreColor(value, score.shortlistThreshold)} format={() => <span><b>{value.toFixed(1)}</b><small>out of 100</small></span>} /><strong>Overall score</strong></>
+          ? <><Progress type="circle" size={126} strokeWidth={8} percent={scorePercent(value)} strokeColor={recruitmentEligibility(score).provisional ? '#d97706' : scoreColor(value, score.shortlistThreshold)} format={() => <span><b>{value.toFixed(1)}</b><small>out of 100</small></span>} /><strong>{recruitmentEligibility(score).provisional ? 'Provisional score — eligibility pending' : 'Overall score'}</strong></>
           : <RecruitmentEligibilityBadge row={score} showReason />}
       </div>
     </section>
 
+    {recruitmentEligibility(score).provisional && <Alert type="warning" showIcon message="Eligibility review is pending — this ATS score is provisional" description={<ul>{score.eligibilityReasons?.map(reason => <li key={reason}>{reason}</li>)}</ul>} />}
     <section className="ats-report-section is-blue">
       <header><span><AimOutlined /></span><div><h3>Role fitness assessment</h3><p>Alignment with the configured job profile and shortlist policy.</p></div></header>
       <div className="ats-report-callout">

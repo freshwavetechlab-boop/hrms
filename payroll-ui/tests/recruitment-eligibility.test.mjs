@@ -15,10 +15,12 @@ test('A high score and an override cannot hide a mandatory eligibility failure',
   }
 })
 
-test('Unverified requirements display Needs review instead of a score', () => {
+test('Unverified requirements show a clearly provisional score without making the candidate eligible', () => {
   const result = recruitmentEligibility({ eligibilityStatus: 'NeedsReview', totalScore: 91 })
   assert.equal(result.label, 'Needs review')
-  assert.equal(result.showScore, false)
+  assert.equal(result.showScore, true)
+  assert.equal(result.provisional, true)
+  assert.equal(result.isEligible, false)
 })
 
 test('Eligible and ATS cutoff are separate: low-scoring candidates can meet mandatory criteria', () => {
@@ -33,9 +35,9 @@ test('An explicit pending assessment never displays a stale weighted score', () 
   assert.equal(result.showScore, false)
 })
 
-test('Legacy API statuses also hide scores for ineligible and review records', () => {
+test('Legacy API statuses hide ineligible scores and mark review scores as provisional', () => {
   assert.equal(recruitmentEligibility({ scoreStatus: 'Ineligible', atsScore: 90 }).showScore, false)
-  assert.equal(recruitmentEligibility({ scoreStatus: 'NeedsReview', totalScore: 92 }).showScore, false)
+  assert.equal(recruitmentEligibility({ scoreStatus: 'NeedsReview', totalScore: 92 }).provisional, true)
   assert.equal(recruitmentEligibility({ scoreStatus: 'Completed', atsScore: 72 }).label, 'Eligible')
 })
 

@@ -24,7 +24,7 @@ public static class RecruitmentMandatoryEvidence
                 _ when name.StartsWith("bachelor") => @"\b(?:bachelor|bachelors|btech|b tech|b e|bsc|b sc|bcom|b com|bba|bca|llb|l l b)\b",
                 _ => @"\b" + Regex.Escape(name) + @"\b"
             };
-            if (!Matches(text, pattern)) reasons.Add($"Mandatory qualification '{qualification.Name}' is not established by the resume/profile.");
+            if (!Matches(text, pattern)) reasons.Add($"Mandatory qualification '{qualification.Name}{(string.IsNullOrWhiteSpace(qualification.Specialization) ? "" : " (" + qualification.Specialization + ")")}' is not established by the resume/profile.");
             else if (!string.IsNullOrWhiteSpace(qualification.Specialization)
                 && !Normalize(qualification.Specialization).StartsWith("relevant discipline")
                 && !Matches(text, @"\b" + Regex.Escape(Normalize(qualification.Specialization)) + @"\b"))

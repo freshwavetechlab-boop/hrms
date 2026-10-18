@@ -46,7 +46,8 @@ public static class RecruitmentEligibility
         var gate = RecruitmentAtsDomainRules.EvaluateMustHaveGate(statuses.Select(status =>
             status.Equals(RecruitmentAtsDomainRules.Missing, StringComparison.OrdinalIgnoreCase) ? RecruitmentAtsDomainRules.NeedsReview : status));
         if (gate == RecruitmentAtsEligibilityStatus.Ineligible)
-            reasons.Add("One or more mandatory skill requirements are not met. Review the supporting evidence.");
+            reasons.Add(statuses.Contains(RecruitmentEligibilityReviewPolicy.ConfirmedNotMet)
+                ? "A recruiter-confirmed mandatory requirement is not met." : "One or more mandatory skill requirements are not met. Review the supporting evidence.");
         else if (scoreStatus.Equals(RecruitmentAtsDomainRules.Ineligible, StringComparison.OrdinalIgnoreCase) && reasons.Count == 0
             && !statuses.Any(status => status.Equals(RecruitmentAtsDomainRules.Missing, StringComparison.OrdinalIgnoreCase)))
             reasons.Add("The recorded assessment contains an unmet mandatory requirement. Review the supporting evidence.");

@@ -8,6 +8,7 @@ import DataTable from './DataTable'
 import RecruitmentAtsAdmin from './RecruitmentAtsAdmin'
 import RecruitmentAtsScoreDetails from './RecruitmentAtsScoreDetails'
 import RecruitmentEligibilityBadge from './RecruitmentEligibilityBadge'
+import RecruitmentEligibilityReviewButton from './RecruitmentEligibilityReviewButton'
 import { recruitmentEligibility } from '../utils/recruitmentEligibility'
 import RecruitmentGlobalTalentPool from './RecruitmentGlobalTalentPool'
 import RecruitmentResumeIntake, { type RecruitmentResumeIntakeMode } from './RecruitmentResumeIntake'
@@ -268,6 +269,7 @@ export default function RecruitmentAtsWorkspace({ initialClientId = 0, clientSco
           {loading && !applications.length ? <div className="ats-workbench-loading"><Spin /><span>Loading applications…</span></div> : <DataTable<RecruitmentCandidateApplication> view={recordView}
             rows={rows} hideSearch exportFileName="ats-screening-applications" emptyText="No applications match this view. Add resumes or search the resume bank."
             actions={row => <Space size={4} wrap>
+              <RecruitmentEligibilityReviewButton applicationId={row.id} disabled={!row.resumeId} onChanged={load} />
               <Button size="small" icon={<EyeOutlined />} onClick={() => void openEvidence(row)}>Evidence</Button>
               <Button size="small" loading={scoringId === row.id} disabled={!row.resumeId || Boolean(scoringId && scoringId !== row.id)} onClick={() => void recalculate(row)}>Score</Button>
               <Button size="small" icon={<UploadOutlined />} onClick={() => launchIntake('single', row)}>Resume</Button>
@@ -294,7 +296,7 @@ export default function RecruitmentAtsWorkspace({ initialClientId = 0, clientSco
           {detailApplications.length > 1 && <div className="ats-detail-application-select"><Typography.Text strong>Application</Typography.Text><Select aria-label="Candidate application" placeholder="Choose the application to review" value={selectedApplication?.id} onChange={id => { setSelection({ candidateId: detail.candidate.id, applicationId: id }); setDetailTab('evidence') }} options={detailApplications.map(row => ({ value: row.id, label: `${row.applicationCode} · ${row.positionTitle}` }))} /></div>}
           {selectedApplication && <div className="ats-selected-application"><strong>{selectedApplication.positionTitle}</strong><span>{selectedApplication.applicationCode} · {selectedApplication.clientName}</span></div>}
           <Tabs activeKey={detailTab} onChange={setDetailTab} items={[
-            { key: 'evidence', label: <span><RobotOutlined /> ATS evidence</span>, children: selectedApplication ? <RecruitmentAtsScoreDetails key={selectedApplication.id} display="inline" scores={selectedScores} applications={[selectedApplication]} /> : <Alert type="info" showIcon message={detailApplications.length > 1 ? 'Choose an application to view the correct job assessment.' : 'This resume is not linked to a job in the current view.'} description="Use Resume bank to choose an approved job and run ATS or select the candidate directly." /> },
+            { key: 'evidence', label: <span><RobotOutlined /> ATS evidence</span>, children: selectedApplication ? <RecruitmentAtsScoreDetails onReviewed={async () => { await load(); await openCandidate(detail.candidate.id, selectedApplication.id) }} key={selectedApplication.id} display="inline" scores={selectedScores} applications={[selectedApplication]} /> : <Alert type="info" showIcon message={detailApplications.length > 1 ? 'Choose an application to view the correct job assessment.' : 'This resume is not linked to a job in the current view.'} description="Use Resume bank to choose an approved job and run ATS or select the candidate directly." /> },
             { key: 'resume', label: <span><FileSearchOutlined /> Original resume</span>, children: <div className="ats-resume-panel">{!selectedResume ? <Empty description="No resume is linked to this application." /> : <><div className="ats-resume-heading"><strong>{selectedResume.originalFileName}</strong><Button icon={<DownloadOutlined />} onClick={() => void openAttachmentWithTicket(selectedResume.attachmentPublicId, 'Download')}>Download</Button></div>{previewLoading ? <div className="ats-workbench-loading"><Spin /><span>Opening secure resume…</span></div> : preview && /^(application\/pdf|text\/plain|image\/(png|jpeg|gif|webp))/.test(preview.type) ? <iframe data-testid="ats-resume-preview" src={preview.url} title={selectedResume.originalFileName} /> : <Alert type="info" showIcon message="Download the original file to view this format." />}</>}</div> },
           ]} />
         </>}

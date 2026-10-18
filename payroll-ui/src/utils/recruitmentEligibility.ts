@@ -17,7 +17,9 @@ export function recruitmentEligibility(row: RecruitmentEligibilityRecord) {
     status,
     label: status === 'ineligible' ? 'Not eligible' : status === 'review' ? 'Needs review' : status === 'eligible' ? 'Eligible' : 'Not assessed',
     color: status === 'ineligible' ? 'red' : status === 'review' ? 'gold' : status === 'eligible' ? 'green' : 'default',
-    showScore: status === 'eligible',
+    showScore: status === 'eligible' || status === 'review',
+    isEligible: status === 'eligible',
+    provisional: status === 'review',
     reason: (row.eligibilityReasons || []).join(' '),
   } as const
 }

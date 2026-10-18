@@ -1,0 +1,10 @@
+.eligibility-review-content { display:flex; flex-direction:column; gap:16px; min-width:0; }
+.eligibility-review-heading,.eligibility-review-item-title,.eligibility-review-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.eligibility-review-heading h4 { margin:0; }
+.eligibility-review-experience,.eligibility-review-item { display:flex; flex-direction:column; gap:10px; padding:16px; border:1px solid var(--border,#e9e7fc); border-radius:12px; min-width:0; overflow-wrap:anywhere; }
+.eligibility-review-experience h5 { margin:0; }
+.eligibility-review-experience .eligibility-review-time-input { display:flex; flex-direction:column; gap:4px; }
+.eligibility-review-item .ant-select { width:100%; }
+.recruitment-eligibility-review ul { margin:8px 0; padding-left:20px; }
+.recruitment-eligibility-review .ant-alert-description { overflow-wrap:anywhere; }
+@media(max-width:600px) { .eligibility-review-footer .ant-space { width:100%; justify-content:flex-end; } .eligibility-review-experience,.eligibility-review-item { padding:12px; } }

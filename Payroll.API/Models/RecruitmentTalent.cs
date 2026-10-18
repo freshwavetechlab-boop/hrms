@@ -340,6 +340,7 @@ public class RecruitmentAtsScoringCriterion
 
 public class RecruitmentApplicationScore
 {
+    public string PositionSnapshotHash { get; set; } = "";
     public string EligibilityStatus { get; set; } = "";
     public List<string> EligibilityReasons { get; set; } = [];
     public long Id { get; set; }

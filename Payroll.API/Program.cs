@@ -1966,6 +1966,19 @@ app.MapDelete("/api/recruitment/applications/{id:long}", async (RecruitmentTalen
         context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
     return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
+app.MapGet("/api/recruitment/applications/{id:long}/eligibility-review", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
+{
+    if (!RecruitmentPermissions.Has(CurrentUser(context), "recruitment.candidate.view", "recruitment.manage", "settings.manage")) return Results.StatusCode(403);
+    context.Response.Headers.CacheControl = "no-store";
+    var row = await repository.GetEligibilityReviewAsync(id, CurrentUser(context));
+    return row is null ? Results.NotFound() : Results.Ok(row);
+});
+app.MapPost("/api/recruitment/applications/{id:long}/eligibility-review", async (RecruitmentTalentRepository repository, long id, SaveRecruitmentEligibilityReview request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var (row, error) = await repository.SaveEligibilityReviewAsync(id, request, CurrentUser(context), context.RequestAborted);
+    return row is null ? Results.BadRequest(new { error }) : Results.Ok(new { review = row, scoringError = error });
+});
 app.MapPost("/api/recruitment/applications/{id:long}/stage", async (RecruitmentTalentRepository repository, RecruitmentCaseRepository hiringCases, long id, ChangeCandidateStageRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
