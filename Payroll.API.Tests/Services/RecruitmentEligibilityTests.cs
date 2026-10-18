@@ -47,7 +47,8 @@ public class RecruitmentEligibilityTests
     public void UnverifiedRequiredSkillsNeverBecomeEligibleFromTheWeightedScore()
     {
         Assert.Equal("NeedsReview", RecruitmentEligibility.Assess(240, "10+ years", ["NeedsReview"]).Status);
-        Assert.Equal("Ineligible", RecruitmentEligibility.Assess(240, "10+ years", ["Missing"]).Status);
+        Assert.Equal("NeedsReview", RecruitmentEligibility.Assess(240, "10+ years", ["Missing"]).Status);
+        Assert.Equal("NeedsReview", RecruitmentEligibility.Assess(240, "10+ years", ["Missing"], "Ineligible").Status);
         Assert.Equal("Ineligible", RecruitmentEligibility.Assess(240, "10+ years", ["InsufficientExperience"]).Status);
     }
 

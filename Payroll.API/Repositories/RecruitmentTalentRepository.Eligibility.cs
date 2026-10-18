@@ -40,6 +40,7 @@ WHERE applicationRow.Id IN @Ids", new { Ids = ids })).ToList();
     private static async Task ApplyApplicationEligibilityAsync(MySqlConnection db, IReadOnlyCollection<RecruitmentCandidateApplication> rows)
     {
         if (rows.Count == 0) return;
+        var reviewReasons = await MandatoryApplicationReviewAsync(db, rows.Select(x => x.Id).ToArray());
         var evidence = (await db.QueryAsync<ApplicationEligibilitySkill>(@"SELECT score.ApplicationId,skill.MatchStatus
 FROM recruitment_application_scores score
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=score.ApplicationId AND applicationRow.ResumeId=score.ResumeId
@@ -49,7 +50,7 @@ WHERE score.IsCurrent=TRUE AND score.ApplicationId IN @Ids", new { Ids = rows.Se
         foreach (var row in rows)
         {
             var assessment = RecruitmentEligibility.Assess(row.CandidateExperienceMonths, row.RequiredExperienceRange,
-                evidence.GetValueOrDefault(row.Id), row.ScoreStatus, row.AtsScore.HasValue);
+                evidence.GetValueOrDefault(row.Id), row.ScoreStatus, row.AtsScore.HasValue, reviewReasons.GetValueOrDefault(row.Id));
             row.EligibilityStatus = assessment.Status;
             row.EligibilityReasons = assessment.Reasons.ToList();
             if (assessment.Status is "Ineligible" or "NeedsReview") row.ScoreStatus = assessment.Status;
@@ -60,18 +61,25 @@ WHERE score.IsCurrent=TRUE AND score.ApplicationId IN @Ids", new { Ids = rows.Se
     {
         if (scores.Count == 0) return;
         var facts = (await db.QueryAsync<ScoreEligibilityFacts>(@"SELECT score.Id,
-COALESCE(facts.TotalExperienceMonths,CASE WHEN score.IsCurrent=TRUE THEN NULLIF(candidate.TotalExperienceMonths,0) END) ExperienceMonths
+COALESCE(facts.TotalExperienceMonths,CASE WHEN score.IsCurrent=TRUE THEN NULLIF(candidate.TotalExperienceMonths,0) END) ExperienceMonths,
+COALESCE(resume.ParsedText,'') ResumeText,CASE WHEN score.IsCurrent=TRUE THEN candidate.HighestQualification ELSE '' END QualificationEvidence
 FROM recruitment_application_scores score
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=score.ApplicationId
 JOIN recruitment_candidates candidate ON candidate.Id=applicationRow.CandidateId
 LEFT JOIN recruitment_candidate_resumes resume ON resume.Id=score.ResumeId AND resume.CandidateId=candidate.Id
 LEFT JOIN recruitment_resume_parse_facts facts ON facts.ResumeId=resume.Id
 WHERE score.Id IN @Ids", new { Ids = scores.Select(x => x.Id).ToArray() })).ToDictionary(x => x.Id);
+        var reviews = await MandatoryReviewAsync(db, scores.Select(score => new MandatoryEvidenceContext
+        {
+            Id = score.Id, JobDescriptionVersionId = score.PositionSnapshot?.JobDescriptionVersionId,
+            ResumeText = facts.GetValueOrDefault(score.Id)?.ResumeText ?? "", QualificationEvidence = facts.GetValueOrDefault(score.Id)?.QualificationEvidence ?? ""
+        }).ToList());
         foreach (var score in scores)
         {
             var assessment = RecruitmentEligibility.Assess(facts.GetValueOrDefault(score.Id)?.ExperienceMonths,
                 score.PositionSnapshot?.ExperienceRange,
-                score.SkillMatches.Where(x => x.SkillType == "Required").Select(x => x.MatchStatus), score.ScoreStatus);
+                score.SkillMatches.Where(x => x.SkillType == "Required").Select(x => x.MatchStatus), score.ScoreStatus,
+                additionalReviewReasons: reviews.GetValueOrDefault(score.Id));
             score.EligibilityStatus = assessment.Status;
             score.EligibilityReasons = assessment.Reasons.ToList();
             if (assessment.Status is "Ineligible" or "NeedsReview") score.ScoreStatus = assessment.Status;
@@ -88,5 +96,7 @@ WHERE score.Id IN @Ids", new { Ids = scores.Select(x => x.Id).ToArray() })).ToDi
     {
         public long Id { get; set; }
         public int? ExperienceMonths { get; set; }
+        public string ResumeText { get; set; } = "";
+        public string QualificationEvidence { get; set; } = "";
     }
 }

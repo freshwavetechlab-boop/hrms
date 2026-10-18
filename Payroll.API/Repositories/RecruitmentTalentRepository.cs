@@ -3443,8 +3443,13 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
         }
         requiredMatches = requiredMatches.Select(match => EvaluateSkillRequirement(data.ResumeText, match)).ToList();
         preferredMatches = preferredMatches.Select(match => EvaluateSkillRequirement(data.ResumeText, match)).ToList();
+        var mandatoryReviews = await MandatoryReviewAsync(db, [new MandatoryEvidenceContext
+        {
+            Id = applicationId, JobDescriptionVersionId = data.JobDescriptionVersionId,
+            ResumeText = data.ResumeText, QualificationEvidence = data.HighestQualification
+        }]);
         var eligibility = RecruitmentEligibility.Assess(data.HasExperienceEvidence ? data.TotalExperienceMonths : null,
-            experienceRange, requiredMatches.Select(match => match.MatchStatus));
+            experienceRange, requiredMatches.Select(match => match.MatchStatus), additionalReviewReasons: mandatoryReviews.GetValueOrDefault(applicationId));
         var eligibilityStatus = eligibility.Status == "Ineligible" ? RecruitmentAtsEligibilityStatus.Ineligible
             : eligibility.Status == "NeedsReview" ? RecruitmentAtsEligibilityStatus.NeedsReview : RecruitmentAtsEligibilityStatus.Eligible;
         var requiredRatio = SkillRequirementRatio(requiredMatches);

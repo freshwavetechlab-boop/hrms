@@ -41,10 +41,14 @@ public static class RecruitmentEligibility
             else if (experienceMonths < minimum) reasons.Add($"Minimum total experience is {Duration(minimum.Value)}; resume shows {Duration(experienceMonths.Value)}.");
         }
 
-        var gate = RecruitmentAtsDomainRules.EvaluateMustHaveGate(mustHaveStatuses ?? []);
+        var statuses = (mustHaveStatuses ?? []).ToArray();
+        // No keyword match is missing evidence, not proof that the candidate lacks the skill.
+        var gate = RecruitmentAtsDomainRules.EvaluateMustHaveGate(statuses.Select(status =>
+            status.Equals(RecruitmentAtsDomainRules.Missing, StringComparison.OrdinalIgnoreCase) ? RecruitmentAtsDomainRules.NeedsReview : status));
         if (gate == RecruitmentAtsEligibilityStatus.Ineligible)
             reasons.Add("One or more mandatory skill requirements are not met. Review the supporting evidence.");
-        else if (scoreStatus.Equals(RecruitmentAtsDomainRules.Ineligible, StringComparison.OrdinalIgnoreCase) && reasons.Count == 0)
+        else if (scoreStatus.Equals(RecruitmentAtsDomainRules.Ineligible, StringComparison.OrdinalIgnoreCase) && reasons.Count == 0
+            && !statuses.Any(status => status.Equals(RecruitmentAtsDomainRules.Missing, StringComparison.OrdinalIgnoreCase)))
             reasons.Add("The recorded assessment contains an unmet mandatory requirement. Review the supporting evidence.");
         else if (gate == RecruitmentAtsEligibilityStatus.NeedsReview || scoreStatus.Equals(RecruitmentAtsDomainRules.NeedsReview, StringComparison.OrdinalIgnoreCase))
             review.Add("Mandatory eligibility evidence needs recruiter verification.");

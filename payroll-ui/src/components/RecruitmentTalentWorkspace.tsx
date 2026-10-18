@@ -351,7 +351,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
     return rows.sort((left, right) => applicationSort === 'oldest'
       ? new Date(left.appliedAt).getTime() - new Date(right.appliedAt).getTime()
       : applicationSort === 'score'
-        ? (right.atsScore ?? -1) - (left.atsScore ?? -1)
+        ? (recruitmentEligibility(right).showScore ? right.atsScore ?? -1 : -1) - (recruitmentEligibility(left).showScore ? left.atsScore ?? -1 : -1)
         : new Date(right.appliedAt).getTime() - new Date(left.appliedAt).getTime())
   }, [recordView, applicationPositionId, applicationQuickFilter, applicationEligibility, applicationScoreBand, applicationSearch, applicationSort, applicationSource, applicationStage, intakeApplications])
   const applicationMetrics: Array<{ key: ApplicationQuickFilter; label: string; count: number; tone: string }> = [
