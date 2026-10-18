@@ -508,6 +508,8 @@ export type RecruitmentPipelineBoardCard = {
   rejectedFromStageName?: string
   rejectedAtUtc?: string | null
   atsScore?: number | null
+  eligibilityStatus?: string
+  eligibilityReasons?: string[]
   interviewScore?: number | null
   enteredAtUtc: string
   dueAtUtc?: string | null

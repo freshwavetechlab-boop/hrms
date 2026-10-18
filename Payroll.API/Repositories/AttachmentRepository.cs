@@ -1071,7 +1071,7 @@ AND (@OwnerOnly=FALSE OR f.owner_can_view=TRUE)
 ORDER BY f.display_order,a.uploaded_at_utc DESC;", new { ClientId = clientId.Value, EntityType = entityType, EntityId = entityId, OwnerOnly = ownerOnly });
     }
 
-    public async Task<(EntityAttachment? Attachment, string? Error)> UploadAsync(AttachmentUploadMetadata metadata, IFormFile file, AuthUser user, string ipAddress, string userAgent, CancellationToken cancellationToken)
+    public async Task<(EntityAttachment? Attachment, string? Error)> UploadAsync(AttachmentUploadMetadata metadata, IFormFile file, AuthUser user, string ipAddress, string userAgent, CancellationToken cancellationToken, bool restoreMissingContent = false)
     {
         metadata.EntityType = NormalizeCode(metadata.EntityType ?? "");
         metadata.DocumentNumber = metadata.DocumentNumber?.Trim() ?? "";
@@ -1120,7 +1120,21 @@ ORDER BY id DESC LIMIT 1", new
                 FieldId = configurationRow.Id,
                 inspection.Sha256Hash
             });
-            if (duplicateId.HasValue) return (await GetAttachmentByIdAsync(duplicateId.Value), null);
+            if (duplicateId.HasValue)
+            {
+                var duplicate = await GetAttachmentByIdAsync(duplicateId.Value);
+                if (!restoreMissingContent || duplicate is null) return (duplicate, null);
+                // Recovery must not deduplicate against metadata whose original bytes were lost.
+                var duplicateServer = await GetStorageServerAsync(duplicate.StorageServerId, true);
+                if (duplicateServer is null || !duplicateServer.IsActive || !duplicateServer.IsReadEnabled)
+                    return (null, "The existing attachment storage could not be checked.");
+                try
+                {
+                    await using var existingFile = await storageService.OpenReadAsync(duplicateServer, duplicate.StorageKey, cancellationToken);
+                    return (duplicate, null);
+                }
+                catch (FileNotFoundException) { /* Write a new version through the configured write storage. */ }
+            }
         }
 
         var publicId = Guid.NewGuid();

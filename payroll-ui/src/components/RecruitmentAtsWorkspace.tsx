@@ -1,12 +1,14 @@
-import { useRecruitmentView } from '../hooks/useRecruitmentPreferences'
+import { useRecruitmentPreference, useRecruitmentView } from '../hooks/useRecruitmentPreferences'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Badge, Button, Card, Drawer, Dropdown, Empty, Input, Modal, Popconfirm, Progress, Select, Space, Spin, Tabs, Tag, Typography } from 'antd'
+import { Alert, Badge, Button, Card, Drawer, Dropdown, Empty, Input, Modal, Popconfirm, Select, Space, Spin, Tabs, Tag, Typography } from 'antd'
 import { ArrowLeftOutlined, DeleteOutlined, DownloadOutlined, EyeOutlined, FileAddOutlined, FileSearchOutlined, FolderOpenOutlined, MoreOutlined, ReloadOutlined, RobotOutlined, SettingOutlined, UploadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useAuthSession } from './AuthGate'
 import DataTable from './DataTable'
 import RecruitmentAtsAdmin from './RecruitmentAtsAdmin'
 import RecruitmentAtsScoreDetails from './RecruitmentAtsScoreDetails'
+import RecruitmentEligibilityBadge from './RecruitmentEligibilityBadge'
+import { recruitmentEligibility } from '../utils/recruitmentEligibility'
 import RecruitmentGlobalTalentPool from './RecruitmentGlobalTalentPool'
 import RecruitmentResumeIntake, { type RecruitmentResumeIntakeMode } from './RecruitmentResumeIntake'
 import RecruitmentSeedPackModal from './RecruitmentSeedPackModal'
@@ -44,6 +46,7 @@ export default function RecruitmentAtsWorkspace({ initialClientId = 0, clientSco
   const [clientId, setClientId] = useState(initialClientId)
   const [positionId, setPositionId] = useState(initialPositionId)
   const [stage, setStage] = useState('')
+  const [eligibility, setEligibility] = useRecruitmentPreference(`ats.eligibility:${initialClientId}:${initialPositionId}`, '')
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [scoringId, setScoringId] = useState(0)
@@ -124,9 +127,10 @@ export default function RecruitmentAtsWorkspace({ initialClientId = 0, clientSco
   const stages = useMemo(() => Array.from(new Set(scopedApplications.map(row => row.currentStage).filter(Boolean))).sort(), [scopedApplications])
   const rows = useMemo(() => scopedApplications.filter(row => {
     if (stage && row.currentStage !== stage) return false
+    if (eligibility && recruitmentEligibility(row).status !== eligibility) return false
     if (!query.trim()) return true
     return `${row.applicationCode} ${row.candidateName} ${row.candidateEmail} ${row.candidatePhone} ${row.positionCode} ${row.positionTitle}`.toLowerCase().includes(query.trim().toLowerCase())
-  }), [scopedApplications, stage, query])
+  }), [scopedApplications, stage, eligibility, query])
   const selectedApplication = detail?.applications.find(row => row.id === selection?.applicationId)
   const detailApplications = useMemo(() => (detail?.applications || []).filter(row => (!clientId || row.clientId === clientId) && (!positionId || row.positionId === positionId)), [detail, clientId, positionId])
   const selectedScores = useMemo(() => (detail?.scores || []).filter(row => row.applicationId === selectedApplication?.id), [detail, selectedApplication?.id])
@@ -249,7 +253,7 @@ export default function RecruitmentAtsWorkspace({ initialClientId = 0, clientSco
         { key: 'upload', label: 'Add resumes', icon: <UploadOutlined />, description: 'Upload one or multiple files' },
         { key: 'pool', label: 'Resume bank', icon: <FolderOpenOutlined />, description: 'Search existing talent' },
       ]} activeKey={view} onChange={changeView}
-      sidebar={view === 'applications' && selection ? <div className="ats-candidate-list" aria-label="Candidate applications"><div className="ats-candidate-list-heading"><strong>Applications</strong><Badge count={rows.length} showZero color="#5b4ce6" /></div>{rows.map(row => <button type="button" key={row.id} data-testid={`ats-candidate-application-${row.id}`} className={selection.applicationId === row.id ? 'is-active' : ''} onClick={() => void openEvidence(row)} aria-current={selection.applicationId === row.id ? 'true' : undefined}><strong>{row.candidateName}</strong><span>{row.positionTitle}</span><small>{row.currentStage} · {row.atsScore == null ? row.scoreStatus || 'Not scored' : `${row.atsScore.toFixed(1)} / 100`}</small></button>)}</div> : undefined}>
+      sidebar={view === 'applications' && selection ? <div className="ats-candidate-list" aria-label="Candidate applications"><div className="ats-candidate-list-heading"><strong>Applications</strong><Badge count={rows.length} showZero color="#5b4ce6" /></div>{rows.map(row => <button type="button" key={row.id} data-testid={`ats-candidate-application-${row.id}`} className={selection.applicationId === row.id ? 'is-active' : ''} onClick={() => void openEvidence(row)} aria-current={selection.applicationId === row.id ? 'true' : undefined}><strong>{row.candidateName}</strong><span>{row.positionTitle}</span><small>{row.currentStage} · {recruitmentEligibility(row).showScore && row.atsScore != null ? `${row.atsScore.toFixed(1)} / 100` : recruitmentEligibility(row).label}</small></button>)}</div> : undefined}>
       {intake && <div className="ats-upload-content" hidden={view !== 'upload'}><div className="ats-detail-toolbar"><Button icon={<ArrowLeftOutlined />} onClick={() => setView('applications')}>Applications</Button><Typography.Text strong>Add resumes</Typography.Text></div>{!intake.positionId ? <Alert type="info" showIcon message="Choose a job above to add resumes." description="The approved job context will be filled automatically. To store resumes without a job, open Resume bank." /> : <RecruitmentResumeIntake key={`${intake.clientId}-${intake.positionId}-${intake.jobPostingId || 0}`} open embedded initialMode={intake.mode} initialClientId={intake.clientId} initialPositionId={intake.positionId} initialJobPostingId={intake.jobPostingId} contextClients={clients} contextPositions={positions} onChangeJob={() => document.querySelector<HTMLInputElement>('[data-testid="ats-job-context"] input')?.focus()} onPendingChange={setIntakeDirty} onBusyChange={setIntakeBusy} onClose={() => setView('applications')} onCompleted={async () => { await load() }} />}</div>}
 
       {view === 'pool' && <RecruitmentGlobalTalentPool key={`${clientId}-${positionId}`} initialPositionId={positionId} clientId={clientId} contextPositions={positions} embeddedPreview onViewCandidate={id => openCandidate(id)} onChanged={load} />}
@@ -258,6 +262,7 @@ export default function RecruitmentAtsWorkspace({ initialClientId = 0, clientSco
         <div className="ats-application-filters">
           <Input.Search value={query} allowClear placeholder="Candidate, email, application or position" onChange={event => setQuery(event.target.value)} />
           <Select aria-label="Application stage" value={stage || undefined} placeholder="All pipeline stages" allowClear options={stages.map(value => ({ value, label: value }))} onChange={value => setStage(value || '')} />
+          <Select aria-label="ATS eligibility" value={eligibility || undefined} placeholder="All eligibility states" allowClear options={[{ value: 'eligible', label: 'Eligible' }, { value: 'ineligible', label: 'Not eligible' }, { value: 'review', label: 'Needs review' }, { value: 'pending', label: 'Not assessed' }]} onChange={value => setEligibility(value || '')} />
         </div>
         <div data-testid="ats-applications-table">
           {loading && !applications.length ? <div className="ats-workbench-loading"><Spin /><span>Loading applications…</span></div> : <DataTable<RecruitmentCandidateApplication> view={recordView}
@@ -273,7 +278,8 @@ export default function RecruitmentAtsWorkspace({ initialClientId = 0, clientSco
               { key: 'applicationCode', label: 'Application', width: '150px', render: row => <div className="ats-primary-cell"><b>{row.applicationCode}</b><span>{new Date(row.appliedAt).toLocaleDateString('en-IN')}</span></div> },
               { key: 'positionTitle', label: 'Job / JD context', width: '220px', render: row => <div className="ats-primary-cell"><b>{row.positionTitle}</b><span>{row.positionCode} · {row.clientName}</span></div>, value: row => row.positionTitle },
               { key: 'currentStage', label: 'Pipeline stage', width: '155px', render: row => <Tag color="blue">{row.currentStage}</Tag> },
-              { key: 'atsScore', label: 'ATS score', width: '155px', value: row => row.atsScore ?? '', render: row => row.atsScore == null ? <Tag color="orange">{row.scoreStatus || 'Not scored'}</Tag> : <div className="ats-score-cell"><Progress percent={Math.max(0, Math.min(100, row.atsScore))} size="small" showInfo={false} /><b>{row.atsScore.toFixed(1)}</b></div> },
+              { key: 'eligibilityStatus', label: 'Eligibility', width: '170px', value: row => recruitmentEligibility(row).label, render: row => <RecruitmentEligibilityBadge row={row} /> },
+              { key: 'atsScore', label: 'ATS score', width: '180px', value: row => recruitmentEligibility(row).showScore ? row.atsScore ?? '' : recruitmentEligibility(row).label, render: row => <RecruitmentEligibilityBadge row={row} showScore showReason /> },
               { key: 'sourceType', label: 'Source', width: '145px' },
               { key: 'recruiterName', label: 'Recruiter', width: '170px', render: row => row.recruiterName || '-' },
             ]} />}

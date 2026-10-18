@@ -1,3 +1,4 @@
+import RecruitmentEligibilityBadge from './RecruitmentEligibilityBadge'
 import { useEffect, useMemo, useState } from 'react'
 import {
   Alert, Button, Card, Col, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Progress, Radio, Row,
@@ -579,7 +580,7 @@ function ResumeIntakeResults({ result, talentPoolOnly = false, onEditCandidate }
         { key: 'currentCtc', label: 'Current CTC (LPA)', width: '165px', render: row => <InlineIntakeNumber candidate={row.candidate} field="currentCtc" label="Current CTC" max={1000000000} scale={100000} unit="LPA" />, exportValue: row => row.candidate?.currentCtc ? Number((row.candidate.currentCtc / 100000).toFixed(2)) : '' },
         { key: 'expectedCtc', label: 'Expected CTC (LPA)', width: '165px', render: row => <InlineIntakeNumber candidate={row.candidate} field="expectedCtc" label="Expected CTC" max={1000000000} scale={100000} unit="LPA" />, exportValue: row => row.candidate?.expectedCtc ? Number((row.candidate.expectedCtc / 100000).toFixed(2)) : '' },
         { key: 'detectedAddress', label: 'Residential address', width: '230px', render: row => row.detectedAddress || row.candidate?.currentLocation || '-' },
-        { key: 'ats', label: 'ATS score', width: '130px', render: row => talentPoolOnly ? <Tag>Run later</Tag> : row.application?.atsScore == null ? <Tag>{row.application?.scoreStatus || 'Not scored'}</Tag> : <Tag color={row.application.atsScore >= 60 ? 'green' : 'orange'}>{row.application.atsScore.toFixed(1)} / 100</Tag>, exportValue: row => talentPoolOnly ? 'Run later' : row.application?.atsScore ?? row.application?.scoreStatus ?? '' },
+        { key: 'ats', label: 'ATS score', width: '130px', render: row => talentPoolOnly ? <Tag>Run later</Tag> : <RecruitmentEligibilityBadge row={row.application || {}} showScore showReason />, exportValue: row => talentPoolOnly ? 'Run later' : row.application?.atsScore ?? row.application?.scoreStatus ?? '' },
         { key: 'stage', label: talentPoolOnly ? 'Bucket' : 'Pipeline stage', width: '150px', render: row => talentPoolOnly ? 'Resume Bank' : row.application?.currentStage || '-' },
         { key: 'error', label: 'Review note', width: '260px', render: row => row.error || 'Ready for recruiter review' },
       ]}

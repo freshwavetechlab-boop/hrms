@@ -1492,6 +1492,7 @@ JOIN recruitment_application_pipeline_instances pi ON pi.Id=s.ApplicationPipelin
 WHERE a.PositionId=@PositionId AND pi.PipelineVersionId=@PipelineVersionId AND s.Status IN ('Active','Paused')
 AND (@JobPostingId IS NULL OR a.JobPostingId=@JobPostingId)
 ORDER BY s.EnteredAtUtc", new { PositionId = positionId, assignment.PipelineVersionId, JobPostingId = jobPostingId })).ToList();
+        await RecruitmentTalentRepository.ApplyBoardEligibilityAsync(db, cards.Select(x => x.Card).ToList());
         foreach (var lane in board.Lanes)
             lane.Applications = cards.Where(x => x.StageId == lane.StageId).Select(x => x.Card).ToList();
         return board;
@@ -1770,6 +1771,7 @@ WHERE stageInstance.Status IN ('Active','Paused')
   AND (@JobPostingId IS NULL OR applicationRow.JobPostingId=@JobPostingId)
 ORDER BY stageInstance.EnteredAtUtc",
             new { ClientId = effectiveClientId, PositionId = positionId is > 0 ? positionId : null, JobPostingId = jobPostingId is > 0 ? jobPostingId : null })).ToList();
+        await RecruitmentTalentRepository.ApplyBoardEligibilityAsync(db, candidateCards.Cast<RecruitmentPipelineBoardCard>().ToList());
         foreach (var candidate in candidateCards)
         {
             var lane = workspace.Lanes.FirstOrDefault(row => row.PipelineVersionId == candidate.PipelineVersionId && row.StageId == candidate.StageId);
@@ -2091,6 +2093,25 @@ LEFT JOIN recruitment_application_scores score ON score.Id=(SELECT s.Id FROM rec
 WHERE a.Id=@Id AND pi.Status='Active'", new { Id = applicationId });
         if (row is null || (user.ClientId is not null && user.ClientId != row.ClientId)) return (null, "The application's current stage has no ATS automation configuration.");
         if (row.CurrentScore is null) return (null, "ATS score is not available yet.");
+        var experience = await db.QuerySingleAsync<(int? Months, string Requirement)>(@"SELECT
+COALESCE(facts.TotalExperienceMonths,NULLIF(candidate.TotalExperienceMonths,0)),positionRow.ExperienceRange
+FROM recruitment_candidate_applications applicationRow
+JOIN recruitment_candidates candidate ON candidate.Id=applicationRow.CandidateId
+JOIN recruitment_open_positions positionRow ON positionRow.Id=applicationRow.PositionId
+LEFT JOIN recruitment_candidate_resumes resume ON resume.Id=applicationRow.ResumeId AND resume.CandidateId=candidate.Id
+LEFT JOIN recruitment_resume_parse_facts facts ON facts.ResumeId=resume.Id WHERE applicationRow.Id=@Id", new { Id = applicationId });
+        var mandatorySkills = await db.QueryAsync<string>(@"SELECT skill.MatchStatus
+FROM recruitment_application_scores score
+JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=score.ApplicationId AND applicationRow.ResumeId=score.ResumeId
+JOIN recruitment_application_score_skill_matches skill ON skill.ApplicationScoreId=score.Id AND skill.SkillType='Required'
+WHERE score.ApplicationId=@Id AND score.IsCurrent=TRUE", new { Id = applicationId });
+        var experienceEligibility = RecruitmentEligibility.Assess(experience.Months, experience.Requirement, mandatorySkills, row.CurrentScoreStatus);
+        if (!experienceEligibility.IsEligible)
+            return (new RecruitmentPipelineTransitionResult
+            {
+                ApplicationId = applicationId, Status = "Manual Review",
+                Message = string.Join(" ", experienceEligibility.Reasons)
+            }, "");
         var scoreStatus = RecruitmentAtsDomainRules.EffectiveScoreStatus(row.CurrentScore, row.MinimumAdvanceScore, row.CurrentScoreStatus.Trim());
         atsOverridden |= row.CurrentScoreOverridden;
         if (AtsNeedsHumanReview(scoreStatus, row.RequireHumanConfirmation && !row.JobAutoRunAts, humanConfirmed, atsOverridden))

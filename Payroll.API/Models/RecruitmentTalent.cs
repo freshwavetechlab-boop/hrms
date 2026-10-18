@@ -186,6 +186,10 @@ public class RecruitmentCandidateApplication
     public int? JoinedEmployeeId { get; set; }
     public decimal? AtsScore { get; set; }
     public decimal AtsShortlistThreshold { get; set; } = 60;
+    public string EligibilityStatus { get; set; } = "";
+    public List<string> EligibilityReasons { get; set; } = [];
+    public int? CandidateExperienceMonths { get; set; }
+    public string RequiredExperienceRange { get; set; } = "";
     public string ScoreStatus { get; set; } = "Not Scored";
     public bool AtsOverridden { get; set; }
     public bool AutoRunAts { get; set; }
@@ -336,6 +340,8 @@ public class RecruitmentAtsScoringCriterion
 
 public class RecruitmentApplicationScore
 {
+    public string EligibilityStatus { get; set; } = "";
+    public List<string> EligibilityReasons { get; set; } = [];
     public long Id { get; set; }
     public long ApplicationId { get; set; }
     public long ResumeId { get; set; }

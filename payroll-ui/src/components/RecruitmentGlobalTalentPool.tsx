@@ -1,3 +1,4 @@
+import RecruitmentEligibilityBadge from './RecruitmentEligibilityBadge'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import RecruitmentRecordList from './RecruitmentRecordList'
 import { useRecruitmentView, useRecruitmentPreference } from '../hooks/useRecruitmentPreferences'
@@ -228,7 +229,7 @@ export default function RecruitmentGlobalTalentPool({ onViewCandidate, onChanged
   const matchColumns: Column<RecruitmentCandidateApplication>[] = [
     { key: 'candidate', label: 'Candidate', width: '250px', render: row => <div className="resume-result-person"><b>{row.candidateName}</b><span>{row.candidateCode} · {row.candidateEmail || row.candidatePhone}</span></div>, value: row => row.candidateName },
     { key: 'positionTitle', label: 'Matched role', width: '230px', render: row => <div className="resume-result-person"><b>{row.positionTitle}</b><span>{row.positionCode} · {row.clientName}</span></div> },
-    { key: 'atsScore', label: 'ATS score', width: '130px', render: row => row.atsScore == null ? <Tag color="orange">{row.scoreStatus || 'Queued'}</Tag> : <Tag color={row.atsScore >= 60 ? 'green' : 'orange'}>{row.atsScore.toFixed(1)} / 100</Tag> },
+    { key: 'atsScore', label: 'ATS score', width: '130px', render: row => <RecruitmentEligibilityBadge row={row} showScore showReason /> },
     { key: 'currentStatus', label: 'Bucket', width: '120px', render: row => <Tag color={row.currentStatus === 'Selected' ? 'purple' : 'blue'}>{row.currentStatus}</Tag> },
   ]
 
@@ -358,7 +359,7 @@ export default function RecruitmentGlobalTalentPool({ onViewCandidate, onChanged
         </Card>
 
         {actionMatch && <Card data-testid="talent-pool-decision-result" size="small" className="talent-pool-decision-result" title="Decision result">
-          <div><Tag color={actionMatch.currentStatus === 'Selected' ? 'purple' : 'blue'}>{actionMatch.currentStatus}</Tag>{actionSkippedAts && <Tag color="cyan">ATS skipped for this decision</Tag>}{actionMatch.atsScore == null ? !actionSkippedAts && <Tag>Not scored</Tag> : <Tag color={actionMatch.atsScore >= 60 ? 'green' : 'orange'}>{actionSkippedAts ? 'Previous ATS: ' : ''}{actionMatch.atsScore.toFixed(1)} / 100</Tag>}</div>
+          <div><Tag color={actionMatch.currentStatus === 'Selected' ? 'purple' : 'blue'}>{actionMatch.currentStatus}</Tag>{actionSkippedAts && <Tag color="cyan">ATS skipped for this decision</Tag>}{!actionSkippedAts && <RecruitmentEligibilityBadge row={actionMatch} showScore showReason />}</div>
           <Typography.Text strong>{actionMatch.positionTitle}</Typography.Text>
           <Typography.Text type="secondary">{actionMatch.clientName} · {actionMatch.positionCode}</Typography.Text>
           <Space wrap>

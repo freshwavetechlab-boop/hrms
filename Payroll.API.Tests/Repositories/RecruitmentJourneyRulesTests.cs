@@ -8,21 +8,16 @@ namespace Payroll.API.Tests.Repositories;
 public class RecruitmentJourneyRulesTests
 {
     [Theory]
-    [InlineData(80.97, "Ineligible", "Completed")]
-    [InlineData(76.91, "Ineligible", "Completed")]
-    [InlineData(75, "NeedsReview", "Completed")]
+    [InlineData(80.97, "Ineligible", "Ineligible")]
+    [InlineData(76.91, "Ineligible", "Ineligible")]
+    [InlineData(75, "NeedsReview", "NeedsReview")]
     [InlineData(74.99, "Ineligible", "Ineligible")]
     [InlineData(74.99, "NeedsReview", "NeedsReview")]
     [InlineData(80, "CompletedWithAiFallback", "CompletedWithAiFallback")]
-    public void Passing_cutoff_qualifies_legacy_scores_without_discarding_evidence(double score, string storedStatus, string expectedStatus)
+    public void Passing_cutoff_never_clears_mandatory_eligibility_failures(double score, string storedStatus, string expectedStatus)
     {
         var effectiveStatus = RecruitmentAtsDomainRules.EffectiveScoreStatus((decimal)score, 75, storedStatus);
         Assert.Equal(expectedStatus, effectiveStatus);
-        if (score >= 75)
-        {
-            Assert.False(RecruitmentPipelineRepository.AtsNeedsHumanReview(effectiveStatus, false, false, false));
-            Assert.True(RecruitmentPipelineRepository.AtsNeedsHumanReview(effectiveStatus, true, false, false));
-        }
         Assert.Equal(RecruitmentAtsEligibilityStatus.Ineligible, RecruitmentAtsDomainRules.EvaluateMustHaveGate(["Missing"]));
     }
 

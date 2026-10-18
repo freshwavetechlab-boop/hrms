@@ -1,3 +1,4 @@
+import RecruitmentEligibilityBadge from './RecruitmentEligibilityBadge'
 import { recruitmentDuration, recruitmentJobSla } from '../utils/recruitmentSla'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import { useRecruitmentView, useRecruitmentPipelineDisplay } from '../hooks/useRecruitmentPreferences'
@@ -317,7 +318,7 @@ function JourneyCandidateCard({ card, clockNow, workspaceSyncedAt, onOpen }: { c
   const sla = candidateSla(card, clockNow, workspaceSyncedAt)
   return <Card size="small" className={`journey-candidate-card ${card.isSlaBreached ? 'is-breached' : ''}`} data-testid={`journey-candidate-${card.applicationId}`}>
     <RecruitmentInterviewRounds applicationId={card.applicationId} editable={false} />
-    <div className="journey-candidate-heading"><div><strong title={card.candidateName}>{card.candidateName}</strong><span>{card.applicationCode}</span></div><Space size={4} wrap>{card.atsScore == null ? <Tag>ATS pending</Tag> : <Tag color={card.atsScore >= 60 ? 'green' : 'orange'}>ATS {card.atsScore.toFixed(1)}</Tag>}{card.interviewScore != null && <Tag color={card.interviewScore >= 60 ? 'green' : 'orange'}>Interview {card.interviewScore.toFixed(1)}</Tag>}</Space></div>
+    <div className="journey-candidate-heading"><div><strong title={card.candidateName}>{card.candidateName}</strong><span>{card.applicationCode}</span></div><Space size={4} wrap><RecruitmentEligibilityBadge row={card} showScore />{card.interviewScore != null && <Tag color={card.interviewScore >= 60 ? 'green' : 'orange'}>Interview {card.interviewScore.toFixed(1)}</Tag>}</Space></div>
     <div data-testid="candidate-job" style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', marginBlock: 8 }}><strong>{card.positionTitle || 'Job details unavailable'}</strong>{card.positionCode && <div>{card.positionCode}</div>}</div>
     <div className="journey-candidate-meta"><span><TeamOutlined /> Candidate</span>{card.candidateEmail && <span title={card.candidateEmail}>{card.candidateEmail}</span>}{card.rejectedFromStageName && <span><BranchesOutlined /> Rejected after {card.rejectedFromStageName}</span>}<span><ClockCircleOutlined /> {sla}</span></div>
     <div className="journey-candidate-footer"><Tag color={statusColor(card.stageStatus)}>{card.stageStatus}</Tag><Button size="small" type="link" onClick={onOpen}>Manage candidate</Button></div>

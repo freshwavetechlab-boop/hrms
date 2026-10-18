@@ -1218,8 +1218,9 @@ FROM recruitment_candidate_applications WHERE Id=@Id AND ApplicationType='Talent
         return (await ApplicationByIdAsync(db, applicationId, user), "");
     }
 
-    private static Task<IEnumerable<RecruitmentCandidateApplication>> TalentPoolMatchesAsync(MySqlConnection db, long? positionId, string status) =>
-        db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT a.*,c.CandidateCode,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,
+    private static async Task<IEnumerable<RecruitmentCandidateApplication>> TalentPoolMatchesAsync(MySqlConnection db, long? positionId, string status)
+    {
+        var rows = (await db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT a.*,c.CandidateCode,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,
 c.Email CandidateEmail,c.Phone CandidatePhone,p.PositionCode,p.PositionTitle,cl.Name ClientName,
 COALESCE(u.DisplayName,u.Email,'') RecruiterName,COALESCE(s.OverrideScore,s.TotalScore) AtsScore,
 COALESCE(s.ScoreStatus,'Not Scored') ScoreStatus
@@ -1231,7 +1232,18 @@ LEFT JOIN authusers u ON u.Id=a.RecruiterUserId
 LEFT JOIN recruitment_application_scores s ON s.ApplicationId=a.Id AND s.IsCurrent=TRUE
 WHERE a.ApplicationType='TalentPoolMatch' AND (@PositionId IS NULL OR a.PositionId=@PositionId)
  AND (@Status='' OR a.CurrentStatus=@Status)
-ORDER BY COALESCE(s.OverrideScore,s.TotalScore) DESC,a.UpdatedAt DESC", new { PositionId = positionId, Status = status?.Trim() ?? "" });
+ORDER BY COALESCE(s.OverrideScore,s.TotalScore) DESC,a.UpdatedAt DESC", new { PositionId = positionId, Status = status?.Trim() ?? "" })).ToList();
+        var assessments = await ApplicationEligibilityByIdAsync(db, rows.Select(x => x.Id).ToArray());
+        foreach (var row in rows)
+        {
+            if (!assessments.TryGetValue(row.Id, out var assessment)) continue;
+            row.AtsScore = assessment.AtsScore;
+            row.ScoreStatus = assessment.ScoreStatus;
+            row.EligibilityStatus = assessment.EligibilityStatus;
+            row.EligibilityReasons = assessment.EligibilityReasons;
+        }
+        return rows;
+    }
 
     public async Task<(EntityAttachment? Attachment, RecruitmentCandidateResume? Resume, string Error)> UploadReferralResumeAsync(long referralId, CandidateResumeUploadRequest request, AuthUser user, string ipAddress, string userAgent, CancellationToken cancellationToken)
     {
@@ -3106,9 +3118,17 @@ ORDER BY ClientId=@ClientId DESC,Id LIMIT 1", new { Email = normalizedEmail, Pho
         EntityAttachment attachment,
         ResumeParseResult parse,
         AuthUser user,
-        bool suppressAutoScoring = false)
+        bool suppressAutoScoring = false,
+        long? recoveryApplicationId = null,
+        long? expectedResumeId = null)
     {
         await using var transaction = await db.BeginTransactionAsync();
+        if (recoveryApplicationId.HasValue)
+        {
+            var current = await db.QuerySingleOrDefaultAsync<long?>(@"SELECT ResumeId FROM recruitment_candidate_applications
+WHERE Id=@Id AND CandidateId=@CandidateId FOR UPDATE", new { Id = recoveryApplicationId.Value, CandidateId = candidate.Id }, transaction);
+            if (current != expectedResumeId) throw new InvalidOperationException("The application's resume changed during recovery.");
+        }
         var conflictingOwner = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidate_resumes WHERE AttachmentPublicId=@PublicId AND CandidateId<>@CandidateId", new { PublicId = attachment.PublicId.ToString(), CandidateId = candidate.Id }, transaction);
         if (conflictingOwner > 0) throw new InvalidOperationException("The selected resume document is already linked to another candidate profile.");
         await db.ExecuteAsync("UPDATE recruitment_candidate_resumes SET IsPrimary=FALSE WHERE CandidateId=@CandidateId", new { CandidateId = candidate.Id }, transaction);
@@ -3123,6 +3143,15 @@ ORDER BY ClientId=@ClientId DESC,Id LIMIT 1", new { Email = normalizedEmail, Pho
             await ExtractCandidateSkillsAsync(db, candidate, id, parse.Text, transaction, parse.Facts.Skills);
             await ApplyParsedContactAsync(db, candidate, parse.Facts, transaction);
             await ApplyParsedProfileSectionsAsync(db, candidate.Id, parse.Facts, transaction);
+        }
+        if (recoveryApplicationId.HasValue)
+        {
+            await db.ExecuteAsync(@"UPDATE recruitment_candidate_applications SET ResumeId=@ResumeId,UpdatedAt=UTC_TIMESTAMP()
+WHERE Id=@Id AND CandidateId=@CandidateId", new { ResumeId = id, Id = recoveryApplicationId.Value, CandidateId = candidate.Id }, transaction);
+            await db.ExecuteAsync("UPDATE recruitment_application_scores SET IsCurrent=FALSE WHERE ApplicationId=@Id AND IsCurrent=TRUE",
+                new { Id = recoveryApplicationId.Value }, transaction);
+            await db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_jobs SET Status='Cancelled',LastError='Resume recovered from email; reassessment required.',UpdatedAt=UTC_TIMESTAMP()
+WHERE ApplicationId=@Id AND Status IN ('Queued','Retry','Processing')", new { Id = recoveryApplicationId.Value }, transaction);
         }
         await transaction.CommitAsync();
         await WriteActivityAsync(db, candidate.ClientId, candidate.Id, candidate.EmployeeId, "RECRUITMENT", "RESUME_UPLOADED", parse.Status == "Disabled" ? "Resume uploaded" : "Resume uploaded and parsed", $"{attachment.OriginalFileName} / {parse.Status}", "CandidateResume", id.ToString(), user);
@@ -3288,7 +3317,7 @@ UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = jobId });
         var delayMinutes = Math.Min(15, Math.Max(1, job.AttemptCount * job.AttemptCount));
         return db.ExecuteAsync(@"UPDATE recruitment_ats_scoring_jobs SET Status=@Status,
 AvailableAt=DATE_ADD(UTC_TIMESTAMP(),INTERVAL @Delay MINUTE),CompletedAt=IF(@Status='Failed',UTC_TIMESTAMP(),NULL),
-LastError=@Error,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new
+LastError=@Error,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id AND Status='Processing'", new
         {
             job.Id,
             Status = status,
@@ -3299,8 +3328,22 @@ LastError=@Error,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new
 
     private async Task<(RecruitmentApplicationScore? Row, string Error)> ScoreApplicationInternalAsync(MySqlConnection db, long applicationId, AuthUser user, bool force, EngineRuntimeMonitor.Observation observation)
     {
+        if (await RecruitmentApplicationResumeGuard.AcquireAsync(db, applicationId, CancellationToken.None) != 1)
+            return (null, "The application's resume is being updated. ATS will retry after it finishes.");
+        try { return await ScoreApplicationWithResumeLockAsync(db, applicationId, user, force, observation); }
+        finally
+        {
+            try { await RecruitmentApplicationResumeGuard.ReleaseAsync(db, applicationId); }
+            catch (Exception exception) { logger.LogWarning("ATS resume lock release failed ({Type}); its dedicated session will close.", exception.GetType().Name); }
+        }
+    }
+
+    private async Task<(RecruitmentApplicationScore? Row, string Error)> ScoreApplicationWithResumeLockAsync(MySqlConnection db, long applicationId, AuthUser user, bool force, EngineRuntimeMonitor.Observation observation)
+    {
         var data = await db.QueryFirstOrDefaultAsync<ScoringRow>(@"SELECT a.Id ApplicationId,a.CandidateId,a.PositionId,a.ClientId,a.ApplicationType,
-a.ResumeId ApplicationResumeId,a.CurrentStage,c.CurrentTitle,c.TotalExperienceMonths,c.CurrentLocation,c.NoticePeriodDays,
+a.ResumeId ApplicationResumeId,a.CurrentStage,c.CurrentTitle,
+COALESCE(resumeFacts.TotalExperienceMonths,NULLIF(c.TotalExperienceMonths,0),0) TotalExperienceMonths,
+(resumeFacts.TotalExperienceMonths IS NOT NULL OR c.TotalExperienceMonths>0) HasExperienceEvidence,c.CurrentLocation,c.NoticePeriodDays,
 c.HighestQualification,p.PositionCode,p.PositionTitle,p.PositionCategory,p.RequiredSkills,p.PreferredSkills,p.ExperienceRange,
 p.JobLocation,r.Qualification,r.Certifications,jd.Id JobDescriptionVersionId,COALESCE(jd.VersionNumber,0) JobDescriptionVersionNumber,
 COALESCE(NULLIF(jd.Title,''),p.PositionTitle) ScoringPositionTitle,cr.Id EffectiveResumeId,COALESCE(cr.ParsedText,'') ResumeText,
@@ -3313,6 +3356,7 @@ LEFT JOIN recruitment_job_postings posting ON posting.Id=COALESCE(a.JobPostingId
 LEFT JOIN recruitment_job_description_versions jd ON jd.Id=COALESCE(posting.JobDescriptionVersionId,p.ApprovedJobDescriptionVersionId)
 LEFT JOIN recruitment_candidate_resumes cr ON cr.CandidateId=a.CandidateId AND cr.Id=COALESCE(a.ResumeId,
  (SELECT x.Id FROM recruitment_candidate_resumes x WHERE x.CandidateId=a.CandidateId AND x.IsPrimary=TRUE ORDER BY x.CreatedAt DESC,x.Id DESC LIMIT 1))
+LEFT JOIN recruitment_resume_parse_facts resumeFacts ON resumeFacts.ResumeId=cr.Id
 WHERE a.Id=@Id", new { Id = applicationId });
         if (data is null || !CanAccessClient(user, data.ClientId)) return (null, "Application was not found.");
         if ((data.CurrentStage is "Rejected" or "Withdrawn" or "Joined") || data.CurrentStage.StartsWith("Offer", StringComparison.OrdinalIgnoreCase)) return (null, $"ATS score cannot be recalculated after the application reaches {data.CurrentStage} stage.");
@@ -3399,7 +3443,10 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
         }
         requiredMatches = requiredMatches.Select(match => EvaluateSkillRequirement(data.ResumeText, match)).ToList();
         preferredMatches = preferredMatches.Select(match => EvaluateSkillRequirement(data.ResumeText, match)).ToList();
-        var eligibilityStatus = RecruitmentAtsDomainRules.EvaluateMustHaveGate(requiredMatches.Select(match => match.MatchStatus));
+        var eligibility = RecruitmentEligibility.Assess(data.HasExperienceEvidence ? data.TotalExperienceMonths : null,
+            experienceRange, requiredMatches.Select(match => match.MatchStatus));
+        var eligibilityStatus = eligibility.Status == "Ineligible" ? RecruitmentAtsEligibilityStatus.Ineligible
+            : eligibility.Status == "NeedsReview" ? RecruitmentAtsEligibilityStatus.NeedsReview : RecruitmentAtsEligibilityStatus.Eligible;
         var requiredRatio = SkillRequirementRatio(requiredMatches);
         var preferredRatio = SkillRequirementRatio(preferredMatches);
         var experienceRatio = ExperienceRatio(data.TotalExperienceMonths, experienceRange);
@@ -3503,11 +3550,10 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
             ? Math.Clamp(Round(criteria.Sum(criterion => aiAnalysis.Criteria.GetValueOrDefault(criterion.CriterionCode, localRatios.GetValueOrDefault(criterion.CriterionCode)) * criterion.Weight)), 0, 100)
             : null;
         var total = Math.Clamp(Round(components.Sum(row => row.AwardedScore)), 0, 100);
-        if (total >= profile.MinimumShortlistScore) eligibilityStatus = RecruitmentAtsEligibilityStatus.Eligible;
         var recommendation = eligibilityStatus switch
         {
-            RecruitmentAtsEligibilityStatus.Ineligible => "Ineligible - must-have requirements not met",
-            RecruitmentAtsEligibilityStatus.NeedsReview => "Needs review - must-have skill duration is not verified",
+            RecruitmentAtsEligibilityStatus.Ineligible => "Not eligible - mandatory requirements not met",
+            RecruitmentAtsEligibilityStatus.NeedsReview => "Needs review - mandatory eligibility evidence is incomplete",
             _ => total >= profile.MinimumShortlistScore ? "Eligible - ATS cutoff met" : "Below shortlist threshold"
         };
         var humanReviewRequired = (pipelineSelection?.RequireHumanConfirmation ?? true)
@@ -3518,7 +3564,7 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
                 ? "Hybrid ATS used deterministic rules and local semantic vectors"
                 : "Deterministic ATS rules were used";
         var fallbackNote = profile.EnableAiScoring && !aiAnalysis.Applied ? $" External AI was not applied ({aiAnalysis.Status}); local scoring was retained." : "";
-        var gateSummary = RequiredSkillSummary(requiredMatches);
+        var gateSummary = string.Join(". ", eligibility.Reasons.Append(RequiredSkillSummary(requiredMatches)).Where(value => !string.IsNullOrWhiteSpace(value)));
         var explanationText = Truncate(eligibilityStatus switch
         {
             RecruitmentAtsEligibilityStatus.Ineligible => $"{recommendation}. {gateSummary}. {methodLabel}.{fallbackNote}",
@@ -3616,16 +3662,17 @@ ELSE a.CurrentStage IN ('Shortlisted','Interview') AND NOT EXISTS(SELECT 1 FROM 
 
     private static async Task<IEnumerable<RecruitmentCandidateApplication>> ApplicationsAsync(MySqlConnection db, AuthUser user, long? positionId = null, long? candidateId = null, string stage = "", long? applicationId = null)
     {
-        var rows = await db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT a.*,c.CandidateCode,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,c.Email CandidateEmail,c.Phone CandidatePhone,p.PositionCode,p.PositionTitle,p.JobLocation,cl.Name ClientName,COALESCE(u.DisplayName,u.Email,'') RecruiterName,COALESCE(s.OverrideScore,s.TotalScore) AtsScore,COALESCE(s.ShortlistThreshold,60) AtsShortlistThreshold,COALESCE(s.ScoreStatus,'Not Scored') ScoreStatus,(s.OverrideScore IS NOT NULL) AtsOverridden,COALESCE(posting.AutoRunAts,FALSE) AutoRunAts,(c.ClientId=@GlobalClientId) IsInGlobalTalentPool,EXISTS(SELECT 1 FROM recruitment_candidate_resumes availableResume JOIN entity_attachments availableAttachment ON availableAttachment.public_id=CAST(availableResume.AttachmentPublicId AS CHAR(36)) AND availableAttachment.is_current=TRUE AND availableAttachment.is_deleted=FALSE WHERE availableResume.Id=a.ResumeId AND availableResume.CandidateId=a.CandidateId) ResumeAvailable,
+        var rows = await db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT a.*,c.CandidateCode,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,c.Email CandidateEmail,c.Phone CandidatePhone,p.PositionCode,p.PositionTitle,p.JobLocation,p.ExperienceRange RequiredExperienceRange,COALESCE(applicationFacts.TotalExperienceMonths,NULLIF(c.TotalExperienceMonths,0)) CandidateExperienceMonths,cl.Name ClientName,COALESCE(u.DisplayName,u.Email,'') RecruiterName,COALESCE(s.OverrideScore,s.TotalScore) AtsScore,COALESCE(s.ShortlistThreshold,60) AtsShortlistThreshold,COALESCE(s.ScoreStatus,'Not Scored') ScoreStatus,(s.OverrideScore IS NOT NULL) AtsOverridden,COALESCE(posting.AutoRunAts,FALSE) AutoRunAts,(c.ClientId=@GlobalClientId) IsInGlobalTalentPool,EXISTS(SELECT 1 FROM recruitment_candidate_resumes availableResume JOIN entity_attachments availableAttachment ON availableAttachment.public_id=CAST(availableResume.AttachmentPublicId AS CHAR(36)) AND availableAttachment.is_current=TRUE AND availableAttachment.is_deleted=FALSE WHERE availableResume.Id=a.ResumeId AND availableResume.CandidateId=a.CandidateId) ResumeAvailable,
 (SELECT job.Status FROM recruitment_ats_scoring_jobs job WHERE job.ApplicationId=a.Id ORDER BY job.Id DESC LIMIT 1) AtsJobStatus,
 (SELECT job.LastError FROM recruitment_ats_scoring_jobs job WHERE job.ApplicationId=a.Id ORDER BY job.Id DESC LIMIT 1) AtsJobError,
 " + GlobalPoolEligibilitySql + @" CanMoveToGlobalTalentPool,
 " + InterviewReadySql + @" IsInterviewReady,
 EXISTS(SELECT 1 FROM recruitment_application_pipeline_instances flow JOIN recruitment_application_stage_instances stage ON stage.Id=flow.CurrentStageInstanceId JOIN recruitment_pipeline_stages definition ON definition.Id=stage.PipelineStageId AND definition.StageType='Interview' WHERE flow.ApplicationId=a.Id AND NOT EXISTS(SELECT 1 FROM recruitment_interview_stage_configurations config WHERE config.PipelineStageId=definition.Id)) InterviewSettingsMissing
-FROM recruitment_candidate_applications a JOIN recruitment_candidates c ON c.Id=a.CandidateId JOIN recruitment_open_positions p ON p.Id=a.PositionId LEFT JOIN clients cl ON cl.Id=a.ClientId LEFT JOIN authusers u ON u.Id=a.RecruiterUserId LEFT JOIN recruitment_application_scores s ON s.ApplicationId=a.Id AND s.IsCurrent=TRUE LEFT JOIN recruitment_job_postings posting ON posting.Id=a.JobPostingId
+FROM recruitment_candidate_applications a JOIN recruitment_candidates c ON c.Id=a.CandidateId JOIN recruitment_open_positions p ON p.Id=a.PositionId LEFT JOIN clients cl ON cl.Id=a.ClientId LEFT JOIN authusers u ON u.Id=a.RecruiterUserId LEFT JOIN recruitment_candidate_resumes applicationResume ON applicationResume.Id=a.ResumeId AND applicationResume.CandidateId=c.Id LEFT JOIN recruitment_resume_parse_facts applicationFacts ON applicationFacts.ResumeId=applicationResume.Id LEFT JOIN recruitment_application_scores s ON s.ApplicationId=a.Id AND s.IsCurrent=TRUE AND (a.ResumeId IS NULL OR s.ResumeId=a.ResumeId) LEFT JOIN recruitment_job_postings posting ON posting.Id=a.JobPostingId
 WHERE a.ApplicationType='Application' AND (@ApplicationId IS NULL OR a.Id=@ApplicationId) AND (@ClientId IS NULL OR a.ClientId=@ClientId) AND (@PositionId IS NULL OR a.PositionId=@PositionId) AND (@CandidateId IS NULL OR a.CandidateId=@CandidateId) AND (@Stage='' OR a.CurrentStage=@Stage) ORDER BY a.UpdatedAt DESC", new { ClientId = user.ClientId, PositionId = positionId, CandidateId = candidateId, Stage = stage ?? "", ApplicationId = applicationId, GlobalClientId = GlobalTalentPoolClientId });
         foreach (var row in rows)
             row.ScoreStatus = RecruitmentAtsDomainRules.EffectiveScoreStatus(row.AtsScore, row.AtsShortlistThreshold, row.ScoreStatus);
+        await ApplyApplicationEligibilityAsync(db, rows.ToList());
         return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
     }
 
@@ -4035,6 +4082,7 @@ WHERE applicationRow.CandidateId=@CandidateId AND (@ClientId IS NULL OR applicat
             score.MissingSkillsJson = JsonSerializer.Serialize(score.SkillMatches.Where(row => row.MatchStatus == "Missing").Select(row => row.SkillName).Distinct(StringComparer.OrdinalIgnoreCase));
             score.ExplanationJson = JsonSerializer.Serialize(new { summary = score.Recommendation, threshold = score.ShortlistThreshold, note = score.ExplanationText });
         }
+        await ApplyScoreEligibilityAsync(db, scores);
     }
 
     private static (List<RecruitmentAtsScoringCriterion> Criteria, string Error) NormalizeScoringCriteria(RecruitmentAtsScoringProfile profile)
@@ -4624,11 +4672,9 @@ WHERE instance.ApplicationId=@ApplicationId AND instance.Status IN ('Active','Pa
     }
     private static decimal ExperienceRatio(int months, string range)
     {
-        var numbers = Regex.Matches(range ?? "", @"\d+").Select(match => int.Parse(match.Value, CultureInfo.InvariantCulture)).ToList();
-        if (numbers.Count == 0) return 1;
-        var minimumMonths = numbers[0] * 12;
-        if (minimumMonths <= 0) return 1;
-        return Math.Clamp((decimal)months / minimumMonths, 0, 1);
+        var minimumMonths = RecruitmentEligibility.MinimumExperienceMonths(range);
+        if (!minimumMonths.HasValue) return 0;
+        return minimumMonths <= 0 ? 1 : Math.Clamp((decimal)months / minimumMonths.Value, 0, 1);
     }
     private static decimal TokenSimilarity(string left, string right)
     {
@@ -5336,6 +5382,7 @@ CREATE TABLE IF NOT EXISTS person_activity_events (
         public string ParsingError { get; set; } = "";
         public string CurrentTitle { get; set; } = "";
         public int TotalExperienceMonths { get; set; }
+        public bool HasExperienceEvidence { get; set; }
         public string CurrentLocation { get; set; } = "";
         public int? NoticePeriodDays { get; set; }
         public string HighestQualification { get; set; } = "";

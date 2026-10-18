@@ -1870,6 +1870,21 @@ app.MapPost("/api/recruitment/candidates/{candidateId:long}/resume", async (Recr
     var (attachment, resume, error) = await repository.UploadResumeAsync(candidateId, request, CurrentUser(context), context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
     return attachment is null ? Results.BadRequest(new { error }) : Results.Ok(new { attachment, resume });
 }).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(30L * 1024 * 1024));
+app.MapPost("/api/recruitment/applications/{applicationId:long}/resume-recovery", async (
+    RecruitmentTalentRepository repository, long applicationId, [FromForm] RecruitmentResumeRecoveryRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    try
+    {
+        var (row, error) = await repository.RecoverApplicationResumeAsync(applicationId, request, CurrentUser(context),
+            context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+        return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+    }
+    catch (InvalidOperationException exception) when (exception.Message == "The application's resume changed during recovery.")
+    {
+        return Results.Conflict(new { error = exception.Message });
+    }
+}).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(12L * 1024 * 1024));
 app.MapPost("/api/recruitment/resume-intake", async (RecruitmentTalentRepository talent, RecruitmentPipelineRepository pipelines, RecruitmentPipelineActionService actions, RecruitmentCandidateActionRepository candidateActions, [FromForm] RecruitmentResumeIntakeRequest request, HttpContext context) =>
 {
     // Intake creates/updates talent profiles, applications, ATS scores and pipeline state.
