@@ -16,7 +16,7 @@ public sealed class ResumeParsingService(
     private const int MaxExtractedBytes = 20 * 1024 * 1024;
     private const int MaxExtractedCharacters = 2_000_000;
     private const int MaxBuiltInPdfBytes = 2 * 1024 * 1024;
-    private const string ParserVersion = "2.5";
+    private const string ParserVersion = "2.6";
     private static readonly SemaphoreSlim OcrGate = new(2, 2);
     private static readonly Regex EmailPattern = new(@"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // Horizontal separators only: dates/IDs on the following line are not part of a phone.
@@ -877,6 +877,15 @@ public sealed class ResumeParsingService(
             .Select(match => decimal.TryParse(match.Groups["years"].Value, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var years) ? years : -1)
             .Where(years => years is >= 0 and <= 60)
             .ToList();
+        // A skill-specific duration must not hide an explicit, longer overall career duration.
+        foreach (Match match in Regex.Matches(text,
+            @"\b(?:overall|total(?:\s+(?:professional|work|industry|career))?(?:\s+experience)?|career\s+experience)\s*[,:(-]?\s*(?:of\s+|is\s+)?(?<years>\d{1,2}(?:\.\d{1,2})?)\s*\+?\s*(?:years?|yrs?)\b",
+            RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100)))
+        {
+            if (decimal.TryParse(match.Groups["years"].Value, System.Globalization.NumberStyles.Number,
+                System.Globalization.CultureInfo.InvariantCulture, out var years) && years is >= 0 and <= 60)
+                values.Add(years);
+        }
         if (values.Count > 0) return (int)Math.Round(values.Max() * 12m, MidpointRounding.AwayFromZero);
         var ranges = experience
             .Where(row => row.StartDate.HasValue)

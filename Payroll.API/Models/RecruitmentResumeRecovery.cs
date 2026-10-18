@@ -10,6 +10,7 @@ public sealed class RecruitmentResumeRecoveryRequest
     public DateTimeOffset ReceivedAt { get; set; }
     public string Sha256 { get; set; } = "";
     public bool Reassess { get; set; } = true;
+    public bool ReparseExisting { get; set; }
     public IFormFile? File { get; set; }
 }
 

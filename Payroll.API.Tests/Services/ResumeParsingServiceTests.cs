@@ -10,6 +10,18 @@ public sealed class ResumeParsingServiceTests
 {
     private static readonly CancellationToken NoCancellation = CancellationToken.None;
 
+    [Theory]
+    [InlineData("Overall, 12 years in corporate and cybersecurity professional with 9.5+ years of experience leading security operations.", 144)]
+    [InlineData("Total experience: 15 years, including 4 years of experience in cloud security.", 180)]
+    [InlineData("Total work experience of 11 years. Specialist with 3 years of experience in SOC operations.", 132)]
+    public async Task OverallCareerExperienceIsNotReplacedByAShorterSpecialistDuration(string summary, int expectedMonths)
+    {
+        var text = "TEST CANDIDATE\ntest@example.test\nSUMMARY\n" + summary + "\nSKILLS\nSecurity operations and incident response.\nEDUCATION\nBachelor of Technology";
+        var bytes = CreateDocx(text);
+        var result = await CreateParser().ParseAsync(new MemoryStream(bytes), "resume.docx", bytes.Length, NoCancellation);
+        Assert.Equal(expectedMonths, result.Facts.TotalExperienceMonths);
+    }
+
     [Fact]
     public async Task Docx_ArjunSharma_ExtractsAtsIdentityExperienceAndSectionsWithoutAi()
     {

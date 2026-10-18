@@ -69,9 +69,10 @@ attachment.public_id PublicId,attachment.storage_key StorageKey,attachment.sha25
 FROM recruitment_candidate_resumes resume JOIN entity_attachments attachment ON attachment.public_id=resume.AttachmentPublicId
 WHERE resume.Id=@ResumeId AND resume.CandidateId=@CandidateId", new { ResumeId = application.ResumeId, application.CandidateId });
         if (original is null) return (null, "The application's recorded resume attachment was not found.");
+        EntityAttachment? availableAttachment = null;
         if (!original.IsDeleted)
         {
-            var (_, originalServer, accessError) = await attachments.GetForContentAsync(original.PublicId, user, "PREVIEW", ipAddress, userAgent);
+            var (existingAttachment, originalServer, accessError) = await attachments.GetForContentAsync(original.PublicId, user, "PREVIEW", ipAddress, userAgent);
             if (originalServer is null) return (null, accessError ?? "The original storage could not be checked.");
             try
             {
@@ -81,7 +82,9 @@ WHERE resume.Id=@ResumeId AND resume.CandidateId=@CandidateId", new { ResumeId =
                 var storedDigest = Convert.ToHexString(await SHA256.HashDataAsync(file.Stream, cancellationToken));
                 if (!storedDigest.Equals(request.Sha256, StringComparison.OrdinalIgnoreCase))
                     return (null, "Stored content differs from its recorded hash. Review storage before recovery.");
-                return (new(application.Id, application.ApplicationCode, original.ResumeId, original.PublicId, true, "Existing"), "");
+                if (!request.ReparseExisting)
+                    return (new(application.Id, application.ApplicationCode, original.ResumeId, original.PublicId, true, "Existing"), "");
+                availableAttachment = existingAttachment;
             }
             catch (FileNotFoundException) { /* Only a missing original may be recovered. */ }
         }
@@ -89,7 +92,7 @@ WHERE resume.Id=@ResumeId AND resume.CandidateId=@CandidateId", new { ResumeId =
 
         // Preserve all prior versions and do not run pipeline automation.
         var parse = await resumeParser.ParseAsync(recoveryFile, cancellationToken);
-        var (attachment, uploadError) = await attachments.UploadAsync(new AttachmentUploadMetadata
+        var (attachment, uploadError) = availableAttachment is not null ? (availableAttachment, (string?)null) : await attachments.UploadAsync(new AttachmentUploadMetadata
         {
             FieldConfigurationId = request.FieldConfigurationId,
             EntityType = "CANDIDATE", EntityId = candidate.Id,
@@ -99,7 +102,8 @@ WHERE resume.Id=@ResumeId AND resume.CandidateId=@CandidateId", new { ResumeId =
         var resume = await RegisterResumeAsync(db, candidate, attachment, parse, user, suppressAutoScoring: true,
             recoveryApplicationId: application.Id, expectedResumeId: request.ExpectedResumeId);
         await WriteActivityAsync(db, application.ClientId, candidate.Id, candidate.EmployeeId, "RECRUITMENT",
-            "RESUME_RECOVERED_FROM_EMAIL", "Missing resume recovered from candidate reply",
+            availableAttachment is null ? "RESUME_RECOVERED_FROM_EMAIL" : "RECOVERED_RESUME_REPARSED",
+            availableAttachment is null ? "Missing resume recovered from candidate reply" : "Recovered resume reassessed from verified original bytes",
             $"{application.ApplicationCode}; source Message-ID {request.SourceMessageId}; sender {request.SenderEmail}; received {request.ReceivedAt.ToUniversalTime():O}; SHA-256 {request.Sha256}; previous resume {request.ExpectedResumeId}; new resume {resume.Id}. Previous assessment archived; pipeline stage preserved.",
             "RecruitmentApplication", application.Id.ToString(), user);
         var reassessmentError = "";
@@ -122,7 +126,7 @@ WHERE resume.Id=@ResumeId AND resume.CandidateId=@CandidateId", new { ResumeId =
                 reassessmentError = "Resume restored. ATS reassessment needs recruiter review.";
             }
         }
-        return (new(application.Id, application.ApplicationCode, resume.Id, attachment.PublicId, false, parse.Status,
+        return (new(application.Id, application.ApplicationCode, resume.Id, attachment.PublicId, availableAttachment is not null, parse.Status,
             eligibilityStatus, reassessmentError), "");
     }
 
