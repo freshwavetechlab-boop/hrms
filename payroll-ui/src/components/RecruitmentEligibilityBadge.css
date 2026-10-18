@@ -1,0 +1,7 @@
+.recruitment-eligibility { display: inline-flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 100%; vertical-align: middle; }
+.recruitment-eligibility-details { min-width: 0; font-size: 12px; }
+.recruitment-eligibility-details > summary { width: fit-content; color: #475467; cursor: pointer; }
+.recruitment-eligibility-details > summary:focus-visible { outline: 2px solid #1579c5; outline-offset: 3px; border-radius: 2px; }
+.recruitment-eligibility-reasons { margin: 8px 0 0; padding-inline-start: 18px; color: #475467; font-size: 12px; line-height: 1.6; white-space: normal; overflow-wrap: anywhere; }
+.recruitment-eligibility-reasons li + li { margin-top: 5px; }
+.recruitment-eligibility-reasons[data-eligibility="ineligible"] { color: var(--color-error, #cf1322); }
