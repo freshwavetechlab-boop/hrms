@@ -18,6 +18,8 @@ public partial class NotificationRepository
     internal const string ExcelPayslipEvent = "EXCEL_PAYSLIP.SEND";
     internal const string ExcelPayslipTemplateCode = "EXCEL_PAYSLIP_SEND_DEFAULT";
     internal const string ExcelPayslipEmailRequestEvent = "EXCEL_PAYSLIP.EMAIL_REQUEST";
+    // Older workers must not send these requests while silently dropping the optional PDF.
+    internal const string ExcelPayslipEmailRequestPdfEvent = "EXCEL_PAYSLIP.EMAIL_REQUEST_PDF";
     internal const string ExcelPayslipEmailRequestTemplateCode = "EXCEL_PAYSLIP_EMAIL_REQUEST_DEFAULT";
     // Earlier workers on a shared database must not render the old PDF or send data-URL logos.
     internal const string ExcelPayslipPendingStatus = "ExcelPending";
@@ -178,15 +180,20 @@ CAST(send_state_json AS CHAR) AS SendStateJson FROM excel_payslip_batches WHERE 
         if (batch is null || state?.Deliveries is null || !state.Deliveries.TryGetValue(ids[1], out var document) || document is null)
             throw new InvalidOperationException("The queued Excel payslip batch or delivery information is unavailable.");
         var source = batch.SimpleLayout ? await ExcelPayslipRepository.ReadCalculationSourceAsync(db, clientId, batch.Id) : null;
+        await ExcelPayslipRepository.AnnotateEmploymentAsync(db, batch);
         AttachExcelPayslipPdf(builder, row, document, batch, source);
     }
 
     internal static void AttachExcelPayslipPdf(BodyBuilder builder, NotificationQueueItem row, ExcelPayslipMailDocument document, ExcelPayslipBatch batch,
         ExcelPayslipCalculationSource? calculationSource = null)
+        => AttachVerifiedExcelPayslipPdf(builder, row, document, batch, calculationSource, ExcelPayslipEvent, "ExcelPayslipBatch", batch.Id + ":" + document.Id);
+
+    private static void AttachVerifiedExcelPayslipPdf(BodyBuilder builder, NotificationQueueItem row, ExcelPayslipMailDocument document,
+        ExcelPayslipBatch batch, ExcelPayslipCalculationSource? calculationSource, string expectedEvent, string expectedType, string expectedResource)
     {
         var recipients = ReadEmailArray(row.ToJson);
-        if (row.EventCode != ExcelPayslipEvent || row.ResourceType != "ExcelPayslipBatch" || document.QueueId != row.Id || document.ClientId != row.ClientId
-            || batch.ClientId != document.ClientId || batch.Id != document.BatchId || row.ResourceId != batch.Id + ":" + document.Id
+        if (row.EventCode != expectedEvent || row.ResourceType != expectedType || document.QueueId != row.Id || document.ClientId != row.ClientId
+            || batch.ClientId != document.ClientId || batch.Id != document.BatchId || row.ResourceId != expectedResource
             || !ExcelPayslipRepository.TryEmail(document.Email, out _) || recipients.Count != 1 || !string.Equals(recipients[0], document.Email, StringComparison.OrdinalIgnoreCase)
             || ReadEmailArray(row.CcJson).Count != 0 || ReadEmailArray(row.BccJson).Count != 0)
             throw new InvalidOperationException("The queued Excel payslip recipient or source does not match its saved delivery information.");
@@ -211,8 +218,15 @@ CAST(send_state_json AS CHAR) AS SendStateJson FROM excel_payslip_batches WHERE 
         }, RegexOptions.IgnoreCase);
     }
 
+    private static readonly JsonSerializerOptions ExcelPayslipHashJson = CreateExcelPayslipHashOptions();
+    private static JsonSerializerOptions CreateExcelPayslipHashOptions()
+    {
+        var resolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver();
+        resolver.Modifiers.Add(info => { if (info.Type == typeof(ExcelPayslipRow)) foreach (var property in info.Properties.Where(property => property.Name == "employment")) property.ShouldSerialize = (_, _) => false; });
+        return new(ExcelPayslipRepository.JsonOptions) { TypeInfoResolver = resolver };
+    }
     internal static string ExcelPayslipBatchHash(ExcelPayslipBatch batch) => Convert.ToHexString(SHA256.HashData(
-        Encoding.UTF8.GetBytes(JsonSerializer.Serialize(batch, ExcelPayslipRepository.JsonOptions))));
+        Encoding.UTF8.GetBytes(JsonSerializer.Serialize(batch, ExcelPayslipHashJson))));
 
     private sealed class ExcelPayslipMailSource
     {

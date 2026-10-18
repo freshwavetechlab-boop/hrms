@@ -251,7 +251,17 @@ public class AttachmentStorageService(
         // API_LOCAL is shared through the database, but its physical path belongs
         // to the API instance that is currently running. Never reuse a Linux
         // container path on a Windows development host (or vice versa).
-        var resolved = server.ServerCode.Equals("API_LOCAL", StringComparison.OrdinalIgnoreCase)
+        var isApiLocal = server.ServerCode.Equals("API_LOCAL", StringComparison.OrdinalIgnoreCase);
+        if (isApiLocal && !string.IsNullOrWhiteSpace(configuration["UPLOAD_DIR"]))
+        {
+            // A dedicated upload mount is an explicit API_LOCAL root override.
+            // Keep database keys relative; ResolveFilePath still confines every
+            // read/write/delete to this directory. Other servers and the data
+            // protection key directory retain their existing configuration.
+            return ResolveConfiguredPath("UPLOAD_DIR", Path.Combine("App_Data", "attachments"));
+        }
+
+        var resolved = isApiLocal
             ? ResolveConfiguredPath("AttachmentStorage:RootPath", Path.Combine("App_Data", "attachments"))
             : ResolvePath(server.BasePath, Path.Combine("App_Data", "attachments"));
         if (!server.StorageType.Equals("LocalFileSystem", StringComparison.OrdinalIgnoreCase)) return resolved;

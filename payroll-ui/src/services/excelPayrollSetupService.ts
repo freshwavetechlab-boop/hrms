@@ -10,13 +10,17 @@ export type PayrollSetupComponent = {
 }
 export type PayrollSetupRequest = {
   batchId: string; rowIds: string[]; templateName: string; effectiveFrom: string; payrollDaysColumnIndex: number; payableDaysColumnIndex: number
+  fixedPayrollDays?: number; sourceColumnRoles?: Record<number, string>
   presentDaysColumnIndex?: number; workWeek: string; attendanceCycleStartDay: number; attendanceCycleEndDay: number; payrollReportGenerationDay: number
-  defaultDepartment: string; defaultDesignation: string; defaultGrade: string; defaultWorkLocationId?: number; defaultWorkLocationName?: string
-  sourceWorkLocationColumnIndex?: number; createMissingWorkLocations?: boolean; components: PayrollSetupComponent[]
+  defaultDepartment: string; defaultDesignation: string; defaultGrade: string; defaultWorkLocationId?: number; defaultWorkLocationName?: string; defaultWorkLocationState?: string
+  sourceWorkLocationColumnIndex?: number; createMissingWorkLocations?: boolean; createMissingDropdownValues?: boolean; preserveExistingAttendancePolicies?: boolean; importAttendance?: boolean; components: PayrollSetupComponent[]
   employeeDecisions: { rowId: string; matchedEmployeeId?: number; allowCreate: boolean }[]; editableDefaults: Record<string, unknown>
 }
 export type PayrollSetupContext = {
+  defaults?: { workLocationState?: string; department: string; designation: string; grade: string; workWeek: string; attendanceCycleStartDay: number; attendanceCycleEndDay: number; payrollReportGenerationDay: number; attendanceSource: string; notes: string[] }
   migrationRequired?: boolean
+  appliedSetups?: string[][]
+  roster?: { rows: { rowId: string; sourceRow: number; employeeName: string; employeeCode: string; status: 'Existing' | 'New' | 'Review' | 'Applied'; employeeId: number | null; message: string }[]; missingEmployees: { employeeId: number; employeeCode: string; employeeName: string; workLocation: string }[] }
   source: ExcelPayslipCalculationSource
   components: (PayrollSetupComponent & { id: string })[]
   workWeeks: { value: string; label: string }[]; workLocations: { id: number; name: string }[]
@@ -32,10 +36,15 @@ export type PayrollSetupPreview = {
 }
 export type PayrollSetupResult = { importId: string; templateId: string; attendanceGroupId: number; employeeIds: number[]; createdCount: number; updatedCount: number; replayed: boolean }
 export type PayrollSetupVerification = { employeeId: number; data: SimulationResult | null; error: string; ok: boolean }
-export const verifyPayrollSetupEmployees = async (clientId: number, payPeriod: string, employeeIds: number[]): Promise<PayrollSetupVerification[]> => Promise.all(employeeIds.map(async employeeId => {
+export const verifyPayrollSetupEmployees = async (clientId: number, payPeriod: string, employeeIds: number[]): Promise<PayrollSetupVerification[]> => {
+  const results: PayrollSetupVerification[] = []
+  // Keep simulations bounded instead of issuing up to 100 concurrent DB workspaces.
+  for (let offset = 0; offset < employeeIds.length; offset += 4) results.push(...await Promise.all(employeeIds.slice(offset, offset + 4).map(async employeeId => {
   const result = await postJson('/api/payroll-calculation/simulate', { mode: 'Employee', clientId, employeeId, payPeriod, payrollDays: null, presentDays: null, payableDays: null, annualCtc: null, amountOverrides: {} }, null as SimulationResult | null, { toast: false, loader: false, timeoutMs: 120000 })
   return { employeeId, data: result.data, error: result.error, ok: result.ok }
-}))
+  })))
+  return results
+}
 const path = '/api/excel-payroll-setup'
 export const getPayrollSetupContext = (clientId: number, batchId: string, rowIds?: string[]) => getJsonResult<PayrollSetupContext | null>(`${path}/context?clientId=${clientId}&batchId=${encodeURIComponent(batchId)}${rowIds?.length ? `&rowIds=${encodeURIComponent(rowIds.join(','))}` : ''}`, null, { toast: false })
 export const previewPayrollSetup = (clientId: number, request: PayrollSetupRequest) => postJson<PayrollSetupRequest, PayrollSetupPreview | null>(`${path}/preview?clientId=${clientId}`, request, null, { toast: false, timeoutMs: 120000 })

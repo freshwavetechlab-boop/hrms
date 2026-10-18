@@ -1,6 +1,7 @@
 using Dapper;
 using MySqlConnector;
 using Payroll.API.Models;
+using Payroll.API.Services;
 using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.Security.Cryptography;
@@ -28,7 +29,7 @@ public partial class EmployeeRepository(IConfiguration configuration, AuthReposi
     private static readonly string[] It0009ImportHeaders = ["Bank Name", "Bank Account No", "IFSC", "Payment Mode"];
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
     public async Task InitializeAsync() { await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db); }
-    public async Task<IEnumerable<Employee>> GetAsync(int? clientId = null) { await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db); var rows = (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE (@ClientId IS NULL OR ClientId=@ClientId) ORDER BY FirstName, LastName", new { ClientId = clientId })).ToList(); await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, rows); return rows; }
+    public async Task<IEnumerable<Employee>> GetAsync(int? clientId = null) { await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db); var rows = (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE (@ClientId IS NULL OR ClientId=@ClientId) ORDER BY FirstName, LastName", new { ClientId = clientId })).ToList(); await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, rows); await ApplyEmploymentStatusAsync(db, rows); return rows; }
     public async Task<int?> GetClientIdAsync(int employeeId) { await using var db = Connection(); await db.OpenAsync(); return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM employees WHERE Id=@EmployeeId", new { EmployeeId = employeeId }); }
     public async Task<IEnumerable<WorkflowApprover>> GetManagerUsersAsync(int? clientId = null)
     {
@@ -61,6 +62,8 @@ ORDER BY u.DisplayName,u.Email", new { ClientId = clientId });
     {
         var wasNew = employee.Id == 0;
         var before = employee.Id > 0 ? await LoadEmployeeAsync(db, employee.Id, tx) : null;
+        if (!wasNew && employee.IsActive && await db.ExecuteScalarAsync<bool>("SELECT COALESCE(" + EmployeeEmploymentRules.LatestAction("e", "@Today") + ", 'Rehire') IN ('Resign','Retire','Terminate') FROM employees e WHERE e.Id=@Id AND e.ClientId=@ClientId", new { employee.Id, employee.ClientId, Today = EmployeeEmploymentRules.Today }, tx))
+            throw new InvalidOperationException("This employee has left. Use the Rehire action with an effective date instead of enabling Active in a master update.");
         var actionType = wasNew ? "Hire" : "Master Update";
         if (employee.Id == 0) employee.Id = (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId,EmployeeCode,FirstName,LastName,Gender,DateOfJoining,WorkEmail,Department,Designation,Grade,WorkLocationId,ReportingManagerId,ReportingManagerUserId,PortalAccess,SalaryStructureId,AnnualCtc,SalaryJson,PersonalJson,PaymentJson,IsActive) VALUES (@ClientId,@EmployeeCode,@FirstName,@LastName,@Gender,@DateOfJoining,@WorkEmail,@Department,@Designation,@Grade,@WorkLocationId,@ReportingManagerId,@ReportingManagerUserId,@PortalAccess,@SalaryStructureId,@AnnualCtc,@SalaryJson,@PersonalJson,@PaymentJson,@IsActive); SELECT LAST_INSERT_ID();", employee, tx);
         else await db.ExecuteAsync(@"UPDATE employees SET ClientId=@ClientId,EmployeeCode=@EmployeeCode,FirstName=@FirstName,LastName=@LastName,Gender=@Gender,DateOfJoining=@DateOfJoining,WorkEmail=@WorkEmail,Department=@Department,Designation=@Designation,Grade=@Grade,WorkLocationId=@WorkLocationId,ReportingManagerId=@ReportingManagerId,ReportingManagerUserId=@ReportingManagerUserId,PortalAccess=@PortalAccess,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,IsActive=@IsActive WHERE Id=@Id", employee, tx);
@@ -156,6 +159,18 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
     {
         if (request.EmployeeId <= 0) return (null, "Select an employee.");
         if (!EmployeeActions.Contains(request.ActionType)) return (null, "Select a valid employee action.");
+        if (request.ActionType == "Resign")
+        {
+            if (request.EffectiveDate.Year is < 1900 or >= 9999) return (null, "Enter a valid resignation effective date.");
+            var client = await GetClientIdAsync(request.EmployeeId);
+            if (client is null) return (null, "Employee not found.");
+            try
+            {
+                await MarkResignedAsync(new() { ClientId = client.Value, EmployeeIds = [request.EmployeeId], LastWorkingDate = request.EffectiveDate.Date.AddDays(-1).ToString("yyyy-MM-dd"), Reason = request.Reason }, changedBy);
+                return ((await GetAsync(client.Value)).Single(row => row.Id == request.EmployeeId), null);
+            }
+            catch (InvalidOperationException issue) { return (null, issue.Message); }
+        }
         await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db);
         var before = await LoadEmployeeAsync(db, request.EmployeeId);
         if (before is null) return (null, "Employee not found.");
@@ -1802,6 +1817,9 @@ CREATE TABLE IF NOT EXISTS employee_audit_trail (
 
     static async Task SyncAttendancePolicyMappingsAsync(MySqlConnection db, Employee employee, Employee? before, MySqlTransaction? tx = null)
     {
+        // Dated exits retain their previous policy membership for historical attendance.
+        if (!employee.IsActive && await db.ExecuteScalarAsync<bool>(@"SELECT EXISTS(SELECT 1 FROM employee_it0000_actions
+WHERE EmployeeId=@Id AND ClientId=@ClientId AND ActionType IN ('Resign','Retire','Terminate') AND Status IN ('Active','Historical'))", new { employee.Id, employee.ClientId }, tx)) return;
         var clientIds = new[] { employee.ClientId, before?.ClientId ?? employee.ClientId }.Where(id => id > 0).Distinct().ToArray();
         var importedCohorts = await ReadExcelPayrollPolicyCohortsAsync(db, tx, clientIds);
         var importedGroupIds = importedCohorts.Where(c => c.ClientId == employee.ClientId).Select(c => c.GroupId).Distinct().ToArray();

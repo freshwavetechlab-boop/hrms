@@ -116,9 +116,11 @@ builder.Services.AddSingleton<SettingsRepository>();
 builder.Services.AddSingleton<PfPolicyRepository>();
 builder.Services.AddSingleton<ClientBillingRepository>();
 builder.Services.AddSingleton<EmployeeRepository>();
+builder.Services.AddHostedService<EmployeeExitWorker>();
 builder.Services.AddSingleton<EmployeeAttributeRepository>();
 builder.Services.AddSingleton<PayRunRepository>();
 builder.Services.AddSingleton<ExcelPayslipRepository>();
+builder.Services.AddSingleton<ExcelPayslipMappingService>();
 builder.Services.AddSingleton<ExcelPayrollSetupRepository>();
 builder.Services.AddSingleton<ExcelPayslipPdfService>();
 builder.Services.AddSingleton<AuthRepository>();
@@ -579,7 +581,8 @@ app.MapGet("/api/attachment-storage-servers/{id:long}/files/{publicId:guid}/cont
         context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
     return attachment is null || server is null
         ? Results.NotFound(new { error })
-        : new AttachmentContentResult(storage, server, attachment, download != true);
+        : new AttachmentContentResult(storage, server, attachment, download != true,
+            ct => repository.ReadSavedResumeTextAsync(attachment, ct));
 })
 .WithName("ReadAttachmentStorageServerFile")
 .WithOpenApi();
@@ -925,7 +928,8 @@ app.MapGet("/api/attachments/{publicId:guid}/content", async (
         context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
     return attachment is null || server is null
         ? Results.NotFound(new { error })
-        : new AttachmentContentResult(storage, server, attachment, download != true);
+        : new AttachmentContentResult(storage, server, attachment, download != true,
+            ct => repository.ReadSavedResumeTextAsync(attachment, ct));
 })
 .WithName("ReadAttachmentContent")
 .WithOpenApi();
@@ -981,7 +985,8 @@ app.MapGet("/api/public/attachments/content", async (
         context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
     return attachment is null || server is null
         ? Results.NotFound()
-        : new AttachmentContentResult(storage, server, attachment, !purpose!.Equals("Download", StringComparison.OrdinalIgnoreCase));
+        : new AttachmentContentResult(storage, server, attachment, !purpose!.Equals("Download", StringComparison.OrdinalIgnoreCase),
+            ct => repository.ReadSavedResumeTextAsync(attachment, ct));
 })
 .WithName("ReadAttachmentByTicket")
 .WithOpenApi();
@@ -4424,6 +4429,22 @@ app.MapPost("/api/employees/actions", async (EmployeeRepository repository, Empl
 })
 .WithName("ProcessEmployeeAction")
 .WithOpenApi();
+
+app.MapPost("/api/employees/resignation-defaults", async (EmployeeRepository repository, EmployeeResignationDefaultsRequest request, HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    if (!HasPermission(context, "employees.manage") || !CanAccessClient(context, request.ClientId)) return Results.StatusCode(403);
+    try { return Results.Ok(await repository.ResignationDefaultsAsync(request)); }
+    catch (InvalidOperationException issue) { return Results.BadRequest(new { error = issue.Message }); }
+    catch (MySqlConnector.MySqlException) { return Results.Json(new { error = "Last payroll dates could not be loaded. Retry or enter reviewed dates manually." },statusCode:503); }
+}).WithName("EmployeeResignationDefaults");
+
+app.MapPost("/api/employees/mark-resigned", async (EmployeeRepository repository, BulkEmployeeResignationRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "employees.manage") || !CanAccessClient(context, request.ClientId)) return Results.StatusCode(403);
+    try { return Results.Ok(await repository.MarkResignedAsync(request, CurrentUser(context).Email)); }
+    catch (InvalidOperationException issue) { return Results.BadRequest(new { error = issue.Message }); }
+}).WithName("BulkMarkEmployeesResigned");
 
 app.MapDelete("/api/employees/{id:int}", async (EmployeeRepository repository, int id, HttpContext context) =>
 {

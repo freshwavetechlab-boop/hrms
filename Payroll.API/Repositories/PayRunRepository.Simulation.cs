@@ -126,7 +126,7 @@ public partial class PayRunRepository
         var result = new PayrollSimulationResult { Mode = "Employee", Coverage = "Saved salary assignment, attendance, eligible approved regular-period adjustments, dated PF, professional tax and projected TDS. What-if inputs are temporary; no payrun or tax snapshot is saved. Already-applied adjustments are excluded." };
         await using var db = CreateConnection(); await db.OpenAsync(token);
         await using var tx = await db.BeginTransactionAsync(IsolationLevel.RepeatableRead, isReadOnly: true, token);
-        var employee = await db.QuerySingleOrDefaultAsync<PayRunSourceEmployee>(new CommandDefinition("SELECT e.*, c.Name ClientName,COALESCE(w.State,'') WorkState FROM employees e JOIN clients c ON c.Id=e.ClientId LEFT JOIN worklocations w ON w.Id=e.WorkLocationId WHERE e.Id=@EmployeeId AND e.ClientId=@ClientId AND e.IsActive=TRUE", new { request.EmployeeId, request.ClientId }, tx, cancellationToken: token));
+        var employee = await db.QuerySingleOrDefaultAsync<PayRunSourceEmployee>(new CommandDefinition("SELECT e.*, c.Name ClientName,COALESCE(w.State,'') WorkState FROM employees e JOIN clients c ON c.Id=e.ClientId LEFT JOIN worklocations w ON w.Id=e.WorkLocationId WHERE e.Id=@EmployeeId AND e.ClientId=@ClientId AND " + EmployeeEmploymentRules.EligibleInMonth("e", "@PayPeriod"), new { request.EmployeeId, request.ClientId, request.PayPeriod }, tx, cancellationToken: token));
         if (employee is null) throw new InvalidOperationException("No active employee belongs to this client with the selected ID.");
         result.Employee = $"{employee.EmployeeCode} - {employee.FirstName} {employee.LastName}".Trim();
         await LoadEmployeeTablesAsync(db, tx, [employee], request.PayPeriod);
@@ -141,6 +141,9 @@ public partial class PayRunRepository
         var present = request.PresentDays ?? attendance?.PresentDays; var payable = request.PayableDays ?? attendance?.PayableDays;
         result.Inputs = [new("PAYROLL_DAYS", period, request.PayrollDays.HasValue ? "What-if" : "Attendance / policy", "Days"), new("PRESENT_DAYS", present, request.PresentDays.HasValue ? "What-if" : "Attendance result", "Days"), new("PAYABLE_DAYS", payable, request.PayableDays.HasValue ? "What-if" : "Attendance result", "Days"), new("ANNUAL_CTC", request.AnnualCtc ?? employee.AnnualCtc, request.AnnualCtc.HasValue ? "What-if" : "Effective employee salary (engine may fall back to salary/template target)", "Amount")];
         if (!CheckDays(result, period, present, payable)) return result;
+        var employmentError = await EmployeeAttendanceEligibility.ValidateMonthlyAsync(db, tx, request.ClientId, request.PayPeriod,
+            [(employee.Id, present!.Value, payable!.Value)], lockEmployees: false);
+        if (employmentError is not null) { result.Issues.Add(new("Error", "Employment dates", employmentError, "Use attendance within the last working / rehire dates.")); return result; }
         if (!string.IsNullOrWhiteSpace(attendance?.PolicyError)) { result.Issues.Add(new("Error", "Attendance policy", attendance.PolicyError, "Resolve attendance policy errors before relying on payroll.")); return result; }
         if (attendance is null) result.Issues.Add(new("Warning", "Attendance", "Using hypothetical days: no attendance record exists for this period.", "Record attendance before running actual payroll."));
         employee.SimulationAnnualCtc = request.AnnualCtc;

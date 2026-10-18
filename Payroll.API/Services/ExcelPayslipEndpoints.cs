@@ -67,6 +67,13 @@ public static class ExcelPayslipEndpoints
             Results.Ok(await repository.RequestEmailIdsAsync(clientId, id, request, currentUser(context).Email)))
             .WithName("RequestExcelPayslipEmailIds").WithOpenApi();
 
+        // A distinct route prevents an older API from accepting the checkbox while ignoring its PDF option.
+        routes.MapPost("/batches/{id}/email-request-pdf", async (ExcelPayslipRepository repository, int clientId, string id,
+            ExcelPayslipEmailRequest request, HttpContext context) =>
+            !request.AttachPayslips ? Results.BadRequest(new { error = "Select the salary PDF attachment option." })
+                : Results.Ok(await repository.RequestEmailIdsAsync(clientId, id, request, currentUser(context).Email)))
+            .WithName("RequestExcelPayslipEmailIdsWithPdf").WithOpenApi();
+
         routes.MapPost("/batches/{id}/mail-jobs/{jobId}/dismiss", async (ExcelPayslipRepository repository, int clientId,
             string id, string jobId, HttpContext context) =>
         {
@@ -81,6 +88,17 @@ public static class ExcelPayslipEndpoints
 
         routes.MapGet("/templates", async (ExcelPayslipRepository repository, int clientId) => Results.Ok(await repository.GetTemplatesAsync(clientId)))
             .WithName("GetExcelPayslipSalaryTemplates").WithOpenApi();
+
+        routes.MapPost("/suggest-mapping", async (ExcelPayslipRepository repository,
+            int clientId, ExcelPayslipMappingRequest request, HttpContext context) =>
+        {
+            if (context.Request.ContentLength > 256 * 1024) return Results.BadRequest(new { error = "Mapping evidence exceeds 256 KiB." });
+            ExcelPayslipMappingService.ValidateRequest(request);
+            var templates = await repository.GetTemplatesAsync(clientId);
+            var examples = await repository.GetMappingExamplesAsync(clientId, context.RequestAborted);
+            return Results.Ok(await context.RequestServices.GetRequiredService<ExcelPayslipMappingService>()
+                .SuggestAsync(request, templates, examples, context.RequestAborted));
+        }).WithName("SuggestExcelPayslipMapping").WithOpenApi();
 
         routes.MapGet("/dashboard", async (ExcelPayslipRepository repository, int clientId, string? batchId) =>
         {

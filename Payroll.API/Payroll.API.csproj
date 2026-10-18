@@ -10,7 +10,7 @@
     <PackageReference Include="Dapper" Version="2.1.79" />
     <PackageReference Include="PDFsharp" Version="6.2.2" />
     <PackageReference Include="ExcelDataReader" Version="3.8.0" />
-    <PackageReference Include="MailKit" Version="4.14.1" />
+    <PackageReference Include="MailKit" Version="4.16.0" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.28" />
     <PackageReference Include="MySqlConnector" Version="2.6.0" />
     <PackageReference Include="SmartComponents.LocalEmbeddings" Version="0.1.0-preview10148" />

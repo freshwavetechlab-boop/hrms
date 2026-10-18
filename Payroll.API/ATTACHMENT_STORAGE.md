@@ -30,6 +30,37 @@ AttachmentStorage__DownloadTokenLifetimeSeconds=120
 
 `App_Data` also contains the ASP.NET Data Protection keys used to encrypt remote file-server and Google Drive credentials. The directory must remain persistent when the container is redeployed. AI-provider credentials use their separate portable encryption format so the same configured database can be administered from local and production API instances.
 
+### Dedicated upload volume
+
+An existing dedicated volume mounted at `/app/hrms/uploads` can instead be selected with:
+
+```text
+UPLOAD_DIR=/app/hrms/uploads
+```
+
+`UPLOAD_DIR`, when nonblank, takes precedence over `AttachmentStorage__RootPath`
+for `API_LOCAL`. It is the complete attachment root, with `client-20` directly
+inside it; do not add another `attachments` directory. The dedicated root confines
+all local attachment reads, writes and deletes. Other storage servers retain their
+own paths and restrictions. Without `UPLOAD_DIR`, the existing root/data-root
+configuration is unchanged. This support requires the updated API build.
+
+Attachment keys in `entity_attachments.storage_key` stay relative, for example
+`client-20/form_submission/948/resume/2026/file.pdf`. The API combines the selected
+root with the same key; application/resume links and attachment IDs do not change.
+Do not prepend a physical mount path to those keys or rewrite `API_LOCAL.base_path`
+to redirect an instance: `API_LOCAL` resolves its root from that instance's settings.
+
+Before switching, back up both the current uploads and the destination volume,
+copy missing original files with their relative directories intact, and verify
+their stored size/hash. Merely changing the root does not recover missing bytes.
+Verify the running container's mount destination and both an existing application
+resume and a new upload. Preserve new uploads written during migration as well.
+
+`UPLOAD_DIR` does not relocate Data Protection keys or other `App_Data` contents.
+Keep their current directory backed up and persistent separately; changing the key
+directory without copying its existing keys can break encrypted storage credentials.
+
 ## Switching file servers
 
 Use **Security -> App Settings -> Storage Servers**:

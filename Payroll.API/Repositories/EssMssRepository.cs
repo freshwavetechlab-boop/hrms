@@ -1040,6 +1040,9 @@ JOIN leave_types lt ON lt.Id=r.LeaveTypeId
 LEFT JOIN leave_type_policies p ON p.leave_type_id=lt.Id
 WHERE r.Id=@RequestId", new { RequestId = requestId }, tx);
         if (row is null) return;
+        var employmentError = await EmployeeAttendanceEligibility.ValidateDatesAsync(db, tx, row.ClientId,
+            Enumerable.Range(0, Math.Max(0, (row.ToDate.Date - row.FromDate.Date).Days + 1)).Select(offset => (row.EmployeeId, row.FromDate.Date.AddDays(offset))));
+        if (employmentError is not null) throw new InvalidOperationException(employmentError);
         var lockedError = await WeeklyOffAttendanceService.ValidateChangesAsync(db, tx, row.ClientId,
             Enumerable.Range(0, Math.Max(0, (row.ToDate.Date - row.FromDate.Date).Days + 1))
                 .Select(offset => new WeeklyOffAttendanceDay(row.EmployeeId, row.FromDate.Date.AddDays(offset), "", 0)));
@@ -1433,6 +1436,8 @@ SELECT LAST_INSERT_ID();", new
         if (shiftSettings.ResolutionError is not null)
             return Block("ShiftConfigurationRequired", shiftSettings.ResolutionError, "ContactHR");
         var state = await GetAttendanceStateAsync(db, transaction, clientId, employeeId, capturedAt, true);
+        var employmentError = await EmployeeAttendanceEligibility.ValidateDatesAsync(db, transaction, clientId, [(employeeId, state.AttendanceDate)]);
+        if (employmentError is not null) return Block("EmploymentEnded", employmentError, "ContactHR");
         if (await IsLeavePeriodLockedAsync(db, transaction, clientId, employeeId, state.AttendanceDate, state.AttendanceDate))
             return Block("PayrollPeriodLocked", "Attendance belongs to a submitted or completed payroll period.", "ContactHR");
         if (state.ApprovalPending)
@@ -1537,7 +1542,7 @@ SELECT LAST_INSERT_ID();", new
         return await db.QueryFirstOrDefaultAsync<PunchIdentity>(@"SELECT e.Id AS EmployeeId, e.ClientId AS ClientId
 FROM employees e
 JOIN clients c ON c.Id=e.ClientId AND c.IsActive=TRUE
-WHERE e.Id=@EmployeeId AND e.IsActive=TRUE AND (@ClientId IS NULL OR e.ClientId=@ClientId)" + lockClause,
+WHERE e.Id=@EmployeeId AND (@ClientId IS NULL OR e.ClientId=@ClientId)" + lockClause,
             new { EmployeeId = employeeId, ClientId = clientId }, transaction);
     }
 

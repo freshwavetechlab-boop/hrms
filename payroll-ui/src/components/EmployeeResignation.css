@@ -1,0 +1,6 @@
+.employee-record-workspace .employee-exit-record,
+.excel-payslip-workspace .employee-exit-record { background:#fff5f5!important; border-color:#f1b5b5!important; }
+.employee-record-workspace tr.employee-exit-record>td,
+.excel-payslip-workspace tr.employee-exit-record>td { background:#fff5f5!important; }
+.employee-record-workspace .employee-exit-record .candidate-card-title h3 { color:#b42318; }
+.employee-resignation-modal { --data-table-body-min-height: 140px; }

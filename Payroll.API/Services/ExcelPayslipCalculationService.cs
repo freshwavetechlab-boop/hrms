@@ -75,10 +75,12 @@ public static class ExcelPayslipCalculationService
         return null;
     }
 
-    // XML retains the numeric cache spelling; the existing browser importer serializes an IEEE number.
-    // Accept only the same representable number, never a cent-sized approximation or a changed amount.
+    // Excel caches and browser JSON can differ in their final IEEE digits. Compare
+    // at Excel's 15 significant digits, retaining sub-paise precision rather than
+    // applying a monetary tolerance or rounding the stored source/amounts.
     private static bool SameNumber(decimal? saved, decimal amount) => saved.HasValue && (saved.Value == amount
-        || double.Parse(saved.Value.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture) == double.Parse(amount.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture));
+        || (double)saved.Value == (double)amount
+        || saved.Value.ToString("G15", CultureInfo.InvariantCulture) == amount.ToString("G15", CultureInfo.InvariantCulture));
     private static bool MatchesAmount(ExcelPayslipRow row, ExcelPayslipCalculationColumn column, decimal amount, int position) => column.Kind switch
     {
         "netPay" => SameNumber(row.NetPay, amount),

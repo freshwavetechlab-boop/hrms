@@ -247,7 +247,7 @@ SELECT * FROM payrunemployees WHERE PayRunId = @Id ORDER BY EmployeeName;", new 
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await using var transaction = await connection.BeginTransactionAsync();
-        var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id AND IsActive = TRUE", new { Id = request.ClientId }, transaction);
+        var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id AND IsActive = TRUE FOR UPDATE", new { Id = request.ClientId }, transaction);
         if (client is null) return null;
         var runType = string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
         request.AttendancePolicyBatchId = await ResolveAttendancePolicyBatchIdAsync(connection, transaction, request);
@@ -260,7 +260,7 @@ SELECT * FROM payrunemployees WHERE PayRunId = @Id ORDER BY EmployeeName;", new 
                 await transaction.RollbackAsync();
                 return await GetAsync(running.Id);
             }
-            var employees = (await connection.QueryAsync<PayRunSourceEmployee>("SELECT Id FROM employees WHERE IsActive = TRUE AND ClientId = @ClientId ORDER BY FirstName, LastName", new { request.ClientId }, transaction)).ToList();
+            var employees = (await connection.QueryAsync<PayRunSourceEmployee>("SELECT e.Id FROM employees e WHERE " + EmployeeEmploymentRules.EligibleInMonth("e", "@PayPeriod") + " AND e.ClientId=@ClientId ORDER BY e.FirstName,e.LastName FOR UPDATE", new { request.ClientId, request.PayPeriod }, transaction)).ToList();
             var scopedEmployeeIds = await NormalizeRegularEmployeeScopeAsync(connection, transaction, request, employees);
             if (scopedEmployeeIds.Count == 0)
             {
@@ -342,14 +342,14 @@ AND IS_FREE_LOCK(CONCAT('payroll:',MD5(DATABASE()),':',Id))=1", new { Minutes = 
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await using var transaction = await connection.BeginTransactionAsync();
-        var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id AND IsActive = TRUE", new { Id = request.ClientId }, transaction);
+        var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id AND IsActive = TRUE FOR UPDATE", new { Id = request.ClientId }, transaction);
         if (client is null) return null;
         var runType = string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
         request.AttendancePolicyBatchId = await ResolveAttendancePolicyBatchIdAsync(connection, transaction, request);
         var runName = string.IsNullOrWhiteSpace(request.RunName) ? (runType == "Regular" ? "Regular payroll" : "Off-cycle payroll") : request.RunName.Trim();
 
         var setupJson = await PayrollDataTableStore.GetSetupJsonAsync(connection, transaction);
-        var employees = (await connection.QueryAsync<PayRunSourceEmployee>("SELECT e.*, c.Name AS ClientName, COALESCE(w.State,'') AS WorkState FROM employees e LEFT JOIN clients c ON c.Id = e.ClientId LEFT JOIN worklocations w ON w.Id = e.WorkLocationId WHERE e.IsActive = TRUE AND e.ClientId = @ClientId ORDER BY e.FirstName, e.LastName", new { request.ClientId }, transaction)).ToList();
+        var employees = (await connection.QueryAsync<PayRunSourceEmployee>("SELECT e.*, c.Name AS ClientName, COALESCE(w.State,'') AS WorkState FROM employees e LEFT JOIN clients c ON c.Id = e.ClientId LEFT JOIN worklocations w ON w.Id = e.WorkLocationId WHERE " + EmployeeEmploymentRules.EligibleInMonth("e", "@PayPeriod") + " AND e.ClientId=@ClientId ORDER BY e.FirstName,e.LastName FOR UPDATE", new { request.ClientId, request.PayPeriod }, transaction)).ToList();
         await LoadEmployeeTablesAsync(connection, transaction, employees, request.PayPeriod);
         var attendance = (await GetPayRunAttendanceAsync(connection, transaction, request.ClientId, request.PayPeriod)).ToDictionary(row => row.EmployeeId);
 
@@ -383,6 +383,16 @@ AND IS_FREE_LOCK(CONCAT('payroll:',MD5(DATABASE()),':',Id))=1", new { Minutes = 
             await DeletePayRunAttemptAsync(connection, transaction, existing.Id);
         }
         var validationIssues = ValidatePayRunInputs(0, request, runType, employees.Where(employee => includedEmployeeIds.Contains(employee.Id)).ToList(), attendance, setupJson);
+        if (runType == "Regular")
+        {
+            var employmentError = await EmployeeAttendanceEligibility.ValidateMonthlyAsync(connection, transaction, request.ClientId, request.PayPeriod,
+                employees.Where(employee => includedEmployeeIds.Contains(employee.Id)).Select(employee => {
+                    var entry = attendance.GetValueOrDefault(employee.Id);
+                    var days = AttendanceWorkingDays(entry, request.TotalWorkingDays);
+                    return (employee.Id, entry is null ? (decimal)days : Math.Clamp(entry.PresentDays, 0, days), entry is null ? (decimal)days : Math.Clamp(entry.PayableDays, 0, days));
+                }));
+            if (employmentError is not null) validationIssues.Add(Issue(0, null, "", "Employment dates", "Critical", "Payroll Validation", employmentError, true));
+        }
         var hasBlockingIssues = validationIssues.Any(issue => issue.IsBlocking);
         var processingError = hasBlockingIssues ? Trunc(string.Join(" ", validationIssues.Where(issue => issue.IsBlocking).Take(3).Select(issue => issue.Message)), 1000) : "";
         var payRunId = (int)await connection.ExecuteScalarAsync<long>(@"
@@ -469,13 +479,13 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         if (payRun is null) return null;
         // Explicitly queued draft/failed attempts can calculate a new snapshot. Approved and paid runs cannot enter this path.
         await connection.ExecuteAsync("DELETE FROM tax_computation_snapshots WHERE pay_run_id=@PayRunId", new { PayRunId = payRunId }, transaction);
-        var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id AND IsActive = TRUE", new { Id = request.ClientId }, transaction);
+        var client = await connection.QueryFirstOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id = @Id AND IsActive = TRUE FOR UPDATE", new { Id = request.ClientId }, transaction);
         if (client is null) return null;
         await ClearPayRunDetailsAsync(connection, transaction, payRunId);
 
         var runType = string.Equals(request.RunType, "Off Cycle", StringComparison.OrdinalIgnoreCase) ? "Off Cycle" : "Regular";
         var setupJson = await PayrollDataTableStore.GetSetupJsonAsync(connection, transaction);
-        var employees = (await connection.QueryAsync<PayRunSourceEmployee>("SELECT e.*, c.Name AS ClientName, COALESCE(w.State,'') AS WorkState FROM employees e LEFT JOIN clients c ON c.Id = e.ClientId LEFT JOIN worklocations w ON w.Id = e.WorkLocationId WHERE e.IsActive = TRUE AND e.ClientId = @ClientId ORDER BY e.FirstName, e.LastName", new { request.ClientId }, transaction)).ToList();
+        var employees = (await connection.QueryAsync<PayRunSourceEmployee>("SELECT e.*, c.Name AS ClientName, COALESCE(w.State,'') AS WorkState FROM employees e LEFT JOIN clients c ON c.Id = e.ClientId LEFT JOIN worklocations w ON w.Id = e.WorkLocationId WHERE " + EmployeeEmploymentRules.EligibleInMonth("e", "@PayPeriod") + " AND e.ClientId=@ClientId ORDER BY e.FirstName,e.LastName FOR UPDATE", new { request.ClientId, request.PayPeriod }, transaction)).ToList();
         await LoadEmployeeTablesAsync(connection, transaction, employees, request.PayPeriod);
         var attendance = (await GetPayRunAttendanceAsync(connection, transaction, request.ClientId, request.PayPeriod)).ToDictionary(row => row.EmployeeId);
         var selectedAdjustmentIds = request.AdjustmentIds.Distinct().ToArray();
@@ -499,6 +509,16 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             validationIssues.Add(Issue(payRunId, null, "", "Run", "Critical", "Payroll Validation", "Off-cycle payroll needs at least one employee or approved adjustment.", true));
         if (runType == "Regular" && includedEmployeeIds.Count == 0)
             validationIssues.Add(Issue(payRunId, null, "", "Run", "Critical", "Payroll Validation", "All selected employees are already covered by another payroll run for this client and month.", true));
+        if (runType == "Regular")
+        {
+            var employmentError = await EmployeeAttendanceEligibility.ValidateMonthlyAsync(connection, transaction, request.ClientId, request.PayPeriod,
+                employees.Where(employee => includedEmployeeIds.Contains(employee.Id)).Select(employee => {
+                    var entry = attendance.GetValueOrDefault(employee.Id);
+                    var days = AttendanceWorkingDays(entry, request.TotalWorkingDays);
+                    return (employee.Id, entry is null ? (decimal)days : Math.Clamp(entry.PresentDays, 0, days), entry is null ? (decimal)days : Math.Clamp(entry.PayableDays, 0, days));
+                }));
+            if (employmentError is not null) validationIssues.Add(Issue(payRunId, null, "", "Employment dates", "Critical", "Payroll Validation", employmentError, true));
+        }
         var hasBlockingIssues = validationIssues.Any(issue => issue.IsBlocking);
         await WriteValidationIssuesAsync(connection, transaction, validationIssues);
         await WritePipelineStepLogsAsync(connection, transaction, payRunId, performedBy, validationIssues);
@@ -560,6 +580,8 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         if (request.IsSkipped && adjustments.Count > 0)
             throw new InvalidOperationException("This employee has applied adjustments. Recreate the draft with the correct employee selection before excluding them.");
         var presentDays = Math.Clamp(request.PresentDays, 0, payRun.TotalWorkingDays);
+        var employmentError = await EmployeeAttendanceEligibility.ValidateMonthlyAsync(connection, transaction, payRun.ClientId, payRun.PayPeriod, [(employeeId, presentDays, presentDays)]);
+        if (employmentError is not null) throw new InvalidOperationException(employmentError);
         var tds = Math.Max(0, request.ManualTds);
         await connection.ExecuteAsync("DELETE FROM tax_computation_snapshots WHERE pay_run_id=@PayRunId AND employee_id=@EmployeeId", new { PayRunId = payRunId, EmployeeId = employeeId }, transaction);
         // The editor sends aggregate one-time amounts; keep linked adjustments and apply only the difference as a manual amount.
@@ -602,7 +624,7 @@ ORDER BY a.PayPeriod DESC, a.CreatedAt DESC;", new { ClientId = clientId, PayPer
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        var employee = await connection.QueryFirstOrDefaultAsync<Employee>("SELECT * FROM employees WHERE Id = @Id AND ClientId = @ClientId AND IsActive = TRUE", new { Id = adjustment.EmployeeId, adjustment.ClientId });
+        var employee = await connection.QueryFirstOrDefaultAsync<Employee>("SELECT e.* FROM employees e WHERE e.Id=@Id AND e.ClientId=@ClientId AND " + EmployeeEmploymentRules.EligibleInMonth("e", "@PayPeriod"), new { Id = adjustment.EmployeeId, adjustment.ClientId, adjustment.PayPeriod });
         if (employee is null || adjustment.Amount <= 0 || string.IsNullOrWhiteSpace(adjustment.PayPeriod)) return null;
         adjustment.EmployeeName = $"{employee.FirstName} {employee.LastName}".Trim();
         adjustment.EmployeeCode = employee.EmployeeCode;
@@ -1862,7 +1884,7 @@ FROM employees e
 LEFT JOIN (SELECT membership.employee_id,MIN(g.id) AS group_id FROM attendance_group_employees membership
 JOIN attendance_groups g ON g.id=membership.attendance_group_id AND g.client_id=@ClientId AND g.is_active=TRUE GROUP BY membership.employee_id) current_group ON current_group.employee_id=e.Id
 LEFT JOIN attendance_groups g ON g.id=current_group.group_id
-WHERE e.ClientId=@ClientId AND e.IsActive=TRUE AND (@EmployeeId IS NULL OR e.Id=@EmployeeId)", new { ClientId = clientId, PayPeriod = payPeriod, EmployeeId = employeeId }, transaction)).ToList();
+WHERE e.ClientId=@ClientId AND " + EmployeeEmploymentRules.EligibleInMonth("e", "@PayPeriod") + " AND (@EmployeeId IS NULL OR e.Id=@EmployeeId)", new { ClientId = clientId, PayPeriod = payPeriod, EmployeeId = employeeId }, transaction)).ToList();
         if (cycles.Count == 0) return monthlyRows.Count > 0 ? monthlyRows : legacyDaily;
         var ranges = cycles.ToDictionary(c => c.EmployeeId, c => CycleRangeFor(payPeriod, (int)c.StartDay, (int)c.EndDay));
         var resolved = await WeeklyOffAttendanceService.ResolveAsync(connection, transaction, clientId, cycles.Select(c => c.EmployeeId).ToArray(), ranges.Values.Min(r => r.Start), ranges.Values.Max(r => r.End));

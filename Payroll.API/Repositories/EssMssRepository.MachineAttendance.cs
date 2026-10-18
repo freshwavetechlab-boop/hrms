@@ -42,7 +42,7 @@ public partial class EssMssRepository
             var integration = await AttendanceIntegrationRepository.ReadAsync(db, tx, device.ClientId, true);
             var current = integration.Devices.FirstOrDefault(d => d.DeviceId == device.DeviceId && d.IsActive && d.TokenHash == AttendanceIntegrationRepository.Hash(token) && d.TokenExpiresAt > DateTime.UtcNow);
             if (current is null) { results.Add(Reject("Device token expired or was revoked.")); continue; }
-            var employee = await db.QueryFirstOrDefaultAsync<MachineEmployee>("SELECT e.Id,e.ClientId,e.WorkLocationId FROM employees e JOIN clients c ON c.Id=e.ClientId AND c.IsActive=TRUE JOIN worklocations w ON w.Id=e.WorkLocationId AND w.ClientId=e.ClientId AND w.IsActive=TRUE WHERE e.EmployeeCode=@Code AND e.ClientId=@ClientId AND e.IsActive=TRUE FOR UPDATE", new { Code = punch.EmployeeCode.Trim(), device.ClientId }, tx);
+            var employee = await db.QueryFirstOrDefaultAsync<MachineEmployee>("SELECT e.Id,e.ClientId,e.WorkLocationId FROM employees e JOIN clients c ON c.Id=e.ClientId AND c.IsActive=TRUE JOIN worklocations w ON w.Id=e.WorkLocationId AND w.ClientId=e.ClientId AND w.IsActive=TRUE WHERE e.EmployeeCode=@Code AND e.ClientId=@ClientId FOR UPDATE", new { Code = punch.EmployeeCode.Trim(), device.ClientId }, tx);
             if (employee is null || employee.WorkLocationId != current.WorkLocationId) { results.Add(Reject("Employee is not active at the device's client and work location.")); continue; }
             var key = "machine:" + AttendanceIntegrationRepository.Hash(device.DeviceId + ":" + punch.PunchId.Trim());
             var existing = await db.QueryFirstOrDefaultAsync<MachineExisting>("SELECT employee_id EmployeeId,action Action,captured_at CapturedAt FROM employee_attendance_punches WHERE client_id=@ClientId AND client_request_id=@Key LIMIT 1", new { device.ClientId, Key = key }, tx);
@@ -53,6 +53,8 @@ public partial class EssMssRepository
             }
             var shiftResolver = await AttendanceShiftResolver.LoadAsync(db, tx, device.ClientId, employee.Id);
             var (date, settings) = shiftResolver.ResolvePunch(employee.Id, local);
+            var employmentError = await EmployeeAttendanceEligibility.ValidateDatesAsync(db, tx, device.ClientId, [(employee.Id, date)]);
+            if (employmentError is not null) { results.Add(Reject(employmentError)); continue; }
             if (settings.ResolutionError is not null) { results.Add(Reject(settings.ResolutionError)); continue; }
             if (settings.Id == 0 && settings.Shift is null) { results.Add(Reject("Save attendance shift and hours settings before importing punches.")); continue; }
             if (await IsLeavePeriodLockedAsync(db, tx, device.ClientId, employee.Id, date, date))

@@ -37,6 +37,8 @@ public sealed class ExcelPayslipAmount
 
 public sealed class ExcelPayslipRow
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ExcelPayslipEmployment? Employment { get; set; }
     public string Id { get; set; } = "";
     public int SourceRow { get; set; }
     public string EmployeeCode { get; set; } = "";
@@ -51,6 +53,8 @@ public sealed class ExcelPayslipRow
     public decimal? DeclaredDeductions { get; set; }
     public List<string> Warnings { get; set; } = [];
 }
+
+public sealed record ExcelPayslipEmployment(int? EmployeeId, string EmployeeCode, string Status, string? LastWorkingDate, bool BlockedForMonth, bool IdentityReviewRequired);
 
 // Independent source snapshot: these identifiers never reference employee or pay-run records.
 public sealed class ExcelPayslipBatch
@@ -105,14 +109,15 @@ public sealed class SendExcelPayslipsRequest : ExcelPayslipSelection
     public string RequestId { get; set; } = "";
 }
 
-public sealed class ExcelPayslipEmailRequest
+public sealed class ExcelPayslipEmailRequest : ExcelPayslipSelection
 {
-    public List<string> RowIds { get; set; } = [];
+    public ExcelPayslipEmailRequest() { IncludeSeal = false; }
+    public bool AttachPayslips { get; set; }
     public string Email { get; set; } = "";
     public string RequestId { get; set; } = "";
 }
 
-public sealed record ExcelPayslipEmailRequestResult(long QueueId, string Email, int EmployeeCount, string Status);
+public sealed record ExcelPayslipEmailRequestResult(long QueueId, string Email, int EmployeeCount, string Status, bool IncludesPayslips = false);
 
 public sealed class ExcelPayslipDeliveryItem
 {

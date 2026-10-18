@@ -1,10 +1,12 @@
 import { apiRequest, getJsonResult, postJson, readError, type ApiResult } from './apiClient'
 import type { PayslipColumn, PayslipSourceRow } from '../utils/excelPayslipImport'
+import type { PayslipMappingEvidence } from '../utils/excelPayslipMapping'
 
 export type ExcelPayslipText = { label: string; value: string }
 export type ExcelPayslipAmount = { label: string; amount: number }
 export type ExcelPayslipRow = {
   id: string; sourceRow: number; employeeCode: string; employeeName: string; email: string
+  employment?: { employeeId: number | null; employeeCode: string; status: string; lastWorkingDate: string | null; blockedForMonth: boolean; identityReviewRequired: boolean } | null
   information: ExcelPayslipText[]; earnings: ExcelPayslipAmount[]; deductions: ExcelPayslipAmount[]; employerContributions: ExcelPayslipAmount[]
   netPay: number; declaredGross: number | null; declaredDeductions: number | null; warnings: string[]
 }
@@ -12,11 +14,13 @@ export type ExcelPayslipBatchInput = { month: string; sourceFileName: string; sh
 export type ExcelPayslipBatch = ExcelPayslipBatchInput & { id: string; clientId: number; clientName?: string; createdAtUtc: string; createdBy: string }
 export type ExcelPayslipSummary = Omit<ExcelPayslipBatch, 'rows'> & { rowCount: number }
 export type ExcelPayslipProfile = { headerSignature: string; columns: PayslipColumn[]; salaryTemplateId?: string }
+export type ExcelPayslipMappingSuggestion = { columns: PayslipColumn[]; method: 'ai' | 'rules'; model: string; knowledgeVersion: string; references: { source: string; title: string }[]; reviewColumnIndexes: number[]; message: string }
+export const suggestExcelPayslipMapping = (clientId: number, request: { salaryTemplateId: string; columns: PayslipMappingEvidence[] }, signal: AbortSignal) => postJson<typeof request, ExcelPayslipMappingSuggestion | null>(`/api/excel-payslips/suggest-mapping?clientId=${clientId}`, request, null, { signal, loader: false, toast: false, timeoutMs: 70000 })
 export type ExcelPayslipTemplate = { id: string; name: string; components: { id: string; code: string; name: string; category: 'Earning' | 'Deduction' | 'Employer' | 'Information' }[] }
 export type ExcelPayslipPdfRequest = { rowIds: string[]; includeSeal: boolean; acknowledgeWarnings: boolean; amountDecimalPlaces: 0 | 2 }
 export type ExcelPayslipSendRequest = ExcelPayslipPdfRequest & { mode: 'Individual' | 'Combined'; email: string; emailOverrides: Record<string, string>; requestId: string }
-export type ExcelPayslipEmailRequest = { rowIds: string[]; email: string; requestId: string }
-export const requestExcelPayslipEmailIds = (clientId: number, id: string, request: ExcelPayslipEmailRequest) => postJson<ExcelPayslipEmailRequest, { queueId: number; email: string; employeeCount: number; status: string } | null>(`${batchPath(id)}/email-request?clientId=${clientId}`, request, null, { toast: false })
+export type ExcelPayslipEmailRequest = { rowIds: string[]; email: string; requestId: string; attachPayslips?: boolean; includeSeal?: boolean; amountDecimalPlaces?: 0 | 2; acknowledgeWarnings?: boolean }
+export const requestExcelPayslipEmailIds = (clientId: number, id: string, request: ExcelPayslipEmailRequest) => postJson<ExcelPayslipEmailRequest, { queueId: number; email: string; employeeCount: number; status: string; includesPayslips?: boolean } | null>(`${batchPath(id)}/${request.attachPayslips ? 'email-request-pdf' : 'email-request'}?clientId=${clientId}`, request, null, { toast: false })
 export type ExcelPayslipDelivery = { rowId: string; employeeName: string; email: string; status: 'Queued' | 'Already queued' | 'Skipped' | 'Error'; message: string }
 export type ExcelPayslipEmailStatus = { rowId: string; status: 'Pending' | 'Queued' | 'Sent' | 'Failed' | 'Unknown' | 'Bounced' | 'Deferred' | 'Delivered'; email: string; queuedAtUtc: string | null; sentAtUtc: string | null; message: string; canSend: boolean }
 export type ExcelPayslipMailJob = {
@@ -47,7 +51,7 @@ export const dismissExcelPayslipMailJob = (clientId: number, id: string, jobId: 
 export const getExcelPayslipCalculation = (clientId: number, id: string) => getJsonResult<ExcelPayslipCalculationSource | null>(`${batchPath(id)}/calculation?clientId=${clientId}`, null)
 export const calculateExcelPayslips = (clientId: number, id: string, request: ExcelPayslipCalculateRequest) => postJson<ExcelPayslipCalculateRequest, ExcelPayslipBatch | null>(`${batchPath(id)}/calculate?clientId=${clientId}`, request, null, { toast: false, timeoutMs: 120000 })
 export const getExcelPayslipVariance = (clientId: number, id: string, previousBatchId: string) => getJsonResult<ExcelPayslipVariance | null>(`${batchPath(id)}/variance?clientId=${clientId}&previousBatchId=${encodeURIComponent(previousBatchId)}`, null)
-export const getExcelPayslipProfile = (clientId: number, signature: string) => getJsonResult<ExcelPayslipProfile | null>(`${root}/profile?clientId=${clientId}&headerSignature=${encodeURIComponent(signature)}`, null)
+export const getExcelPayslipProfile = (clientId: number, signature: string, signal?: AbortSignal) => getJsonResult<ExcelPayslipProfile | null>(`${root}/profile?clientId=${clientId}&headerSignature=${encodeURIComponent(signature)}`, null, { signal, timeoutMs: 8000, loader: false, toast: false })
 export async function saveExcelPayslipProfile(clientId: number, profile: ExcelPayslipProfile): Promise<ApiResult<ExcelPayslipProfile | null>> {
   try {
     const response = await apiRequest(`${root}/profile?clientId=${clientId}&headerSignature=${encodeURIComponent(profile.headerSignature)}`, { method: 'PUT', body: JSON.stringify(profile) })

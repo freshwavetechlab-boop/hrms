@@ -54,7 +54,8 @@ export async function apiRequest(path: string, options: ApiOptions = {}) {
   if (legacyToken && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${legacyToken}`)
 
   try {
-    const response = await fetch(apiUrl(path), { ...options, headers, credentials: 'include', signal: options.signal ?? controller.signal })
+    const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal
+    const response = await fetch(apiUrl(path), { ...options, headers, credentials: 'include', signal })
     if (response.status === 401) {
       sessionStorage.removeItem(legacyTokenKey)
       localStorage.removeItem(legacyTokenKey)

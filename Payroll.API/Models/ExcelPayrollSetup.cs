@@ -9,6 +9,8 @@ public sealed class ExcelPayrollSetupRequest
     public string TemplateName { get; set; } = "";
     public string EffectiveFrom { get; set; } = "";
     public int PayrollDaysColumnIndex { get; set; } = -1;
+    public int? FixedPayrollDays { get; set; }
+    public Dictionary<int, string> SourceColumnRoles { get; set; } = [];
     public int PayableDaysColumnIndex { get; set; } = -1;
     public int? PresentDaysColumnIndex { get; set; }
     public string WorkWeek { get; set; } = "";
@@ -20,8 +22,12 @@ public sealed class ExcelPayrollSetupRequest
     public string DefaultGrade { get; set; } = "";
     public int? DefaultWorkLocationId { get; set; }
     public string DefaultWorkLocationName { get; set; } = "";
+    public string DefaultWorkLocationState { get; set; } = "";
     public int? SourceWorkLocationColumnIndex { get; set; }
     public bool CreateMissingWorkLocations { get; set; }
+    public bool CreateMissingDropdownValues { get; set; } = true;
+    public bool PreserveExistingAttendancePolicies { get; set; } = true;
+    public bool ImportAttendance { get; set; } = true;
     public List<ExcelPayrollSetupComponent> Components { get; set; } = [];
     public List<ExcelPayrollSetupEmployeeDecision> EmployeeDecisions { get; set; } = [];
     public JsonObject EditableDefaults { get; set; } = new();
@@ -114,6 +120,7 @@ public sealed class ExcelPayrollSetupPreview
 
 public sealed class ExcelPayrollSetupResult
 {
+    public List<ExcelPayrollAttendanceAssignment> AttendanceAssignments { get; set; } = [];
     public string ImportId { get; set; } = "";
     public string TemplateId { get; set; } = "";
     public List<string> TemplateIds { get; set; } = [];
@@ -123,3 +130,10 @@ public sealed class ExcelPayrollSetupResult
     public int UpdatedCount { get; set; }
     public bool Replayed { get; set; }
 }
+
+public sealed record ExcelPayrollAttendanceAssignment(int EmployeeId, int GroupId, bool IsSourceCohort);
+
+public sealed record ExcelPayrollRosterRow(string RowId, int SourceRow, string EmployeeName, string EmployeeCode,
+    string Status, int? EmployeeId, string Message);
+public sealed record ExcelPayrollMissingEmployee(int EmployeeId, string EmployeeCode, string EmployeeName, string WorkLocation);
+public sealed record ExcelPayrollRoster(IReadOnlyList<ExcelPayrollRosterRow> Rows, IReadOnlyList<ExcelPayrollMissingEmployee> MissingEmployees);

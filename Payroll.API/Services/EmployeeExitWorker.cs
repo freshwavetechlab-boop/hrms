@@ -1,0 +1,18 @@
+using Payroll.API.Repositories;
+
+namespace Payroll.API.Services;
+
+public sealed class EmployeeExitWorker(EmployeeRepository employees, ILogger<EmployeeExitWorker> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try { await employees.ApplyDueExitsAsync(stoppingToken); }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+            catch (Exception exception) { logger.LogError(exception, "Scheduled employee exits will retry."); }
+            if (!await timer.WaitForNextTickAsync(stoppingToken)) break;
+        }
+    }
+}

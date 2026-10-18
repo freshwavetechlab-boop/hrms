@@ -1235,6 +1235,23 @@ SELECT LAST_INSERT_ID();", new
         return (row, server, null);
     }
 
+    // Called only after normal attachment authorization, and only when the original cannot be read.
+    // Bind to the exact active attachment/candidate; never substitute another version's text.
+    public async Task<string?> ReadSavedResumeTextAsync(EntityAttachment attachment, CancellationToken cancellationToken)
+    {
+        if (!attachment.EntityType.Equals("CANDIDATE", StringComparison.OrdinalIgnoreCase)
+            || attachment.IsDeleted || !attachment.IsCurrent) return null;
+        await using var db = Connection();
+        await db.OpenAsync(cancellationToken);
+        return await db.QueryFirstOrDefaultAsync<string>(new CommandDefinition(@"SELECT resume.ParsedText
+FROM recruitment_candidate_resumes resume
+JOIN entity_attachments a ON a.public_id=CAST(resume.AttachmentPublicId AS CHAR(36))
+WHERE a.id=@Id AND a.public_id=@PublicId AND a.client_id=@ClientId
+ AND a.entity_type='CANDIDATE' AND a.entity_id=@EntityId AND resume.CandidateId=a.entity_id
+ AND a.is_current=TRUE AND a.is_deleted=FALSE AND CHAR_LENGTH(TRIM(resume.ParsedText))>0
+ORDER BY resume.Id DESC LIMIT 1", new { attachment.Id, PublicId = attachment.PublicId.ToString(), attachment.ClientId, attachment.EntityId }, cancellationToken: cancellationToken));
+    }
+
     public async Task<(EntityAttachment? Attachment, AttachmentFileHandle? Handle)> OpenForSystemDeliveryAsync(long attachmentId, CancellationToken cancellationToken)
     {
         var attachment = await GetAttachmentByIdAsync(attachmentId);

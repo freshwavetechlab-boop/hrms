@@ -42,14 +42,18 @@ CalculationType calculationType,ValueText value,Formula formula,BaseComponent ba
         var workLocations = await db.QueryAsync("SELECT Id id,Name name FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY Name", new { ClientId = clientId });
         var employeeRows = await db.QueryAsync(@"SELECT e.Id id,e.EmployeeCode employeeCode,TRIM(CONCAT(e.FirstName,' ',e.LastName)) employeeName,
 e.WorkLocationId workLocationId,COALESCE(w.Name,'') workLocation,e.Designation designation FROM employees e LEFT JOIN worklocations w ON w.Id=e.WorkLocationId
-WHERE e.ClientId=@ClientId AND e.IsActive=TRUE ORDER BY e.FirstName,e.LastName", new { ClientId = clientId });
+WHERE e.ClientId=@ClientId AND " + EmployeeEmploymentRules.EligibleInMonth("e", "@Month") + " ORDER BY e.FirstName,e.LastName", new { ClientId = clientId, Month = batch.Month });
         var ready = await HasReceiptTableAsync(db);
         var selectedHash = rowIds is { Count: > 0 } ? SelectionHash(rowIds) : "";
         var saved = ready ? await db.QueryFirstOrDefaultAsync<SavedSetup>(@"SELECT id ImportId,request_id RequestId,status Status,CAST(request_json AS CHAR) RequestJson,CAST(result_json AS CHAR) ResultJson
 FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@BatchId AND (@SelectionHash='' OR selection_hash=@SelectionHash) ORDER BY updated_at DESC,id DESC LIMIT 1", new { ClientId = clientId, BatchId = batchId, SelectionHash = selectedHash }) : null;
         var savedMetadata = saved is null ? null : JsonNode.Parse(saved.ResultJson)?.AsObject();
         var lastImport = saved is null ? null : new { saved.ImportId, saved.RequestId, saved.Status, savedRequest = JsonSerializer.Deserialize<ExcelPayrollSetupRequest>(saved.RequestJson, Json), result = JsonSerializer.Deserialize<ExcelPayrollSetupResult>(saved.ResultJson, Json), editableDefaultsDraft = savedMetadata?["editableDefaultsDraft"]?.DeepClone(), defaultsRevision = savedMetadata?["editableDefaultsRevision"]?.GetValue<int>() ?? 0 };
-        return new { batchId = batch.Id, month = batch.Month, source, components = componentRows, workWeeks, workLocations, employees = employeeRows, migrationRequired = !ready, lastImport };
+        var defaults = await ReadClientDefaultsAsync(db, clientId, batch.Month);
+        var roster = ClassifyRoster(batch,source,await ReadIdentitiesAsync(db,null,clientId,batch.Month),await AppliedSourceRowsAsync(db,null,clientId,batchId));
+        var appliedJson = ready ? await db.QueryAsync<string>("SELECT CAST(JSON_EXTRACT(request_json,'$.rowIds') AS CHAR) FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@BatchId AND status='Applied' ORDER BY updated_at DESC",new { ClientId=clientId,BatchId=batchId }) : [];
+        var appliedSetups=appliedJson.Select(value=>JsonSerializer.Deserialize<List<string>>(value,Json) ?? []).ToList();
+        return new { batchId = batch.Id, month = batch.Month, source, components = componentRows, workWeeks, workLocations, employees = employeeRows, defaults, migrationRequired = !ready, lastImport, roster, appliedSetups };
     }
 
     public async Task<object> SaveDraftAsync(int clientId, ExcelPayrollSetupDraftRequest draft, string actor)
@@ -101,12 +105,12 @@ VALUES(@Id,@ClientId,@BatchId,@RequestId,@SelectionHash,@Hash,'','Draft',CAST(@J
             throw new InvalidOperationException("Select an active client.");
         var requestHash = Hash(JsonSerializer.Serialize(apply.Request, Json));
         var selectionHash = SelectionHash(apply.Request.RowIds);
-        var receipt = await db.QueryFirstOrDefaultAsync<Receipt>(@"SELECT id Id,status Status,request_id RequestId,request_hash RequestHash,CAST(result_json AS CHAR) ResultJson
+        var receipt = await db.QueryFirstOrDefaultAsync<Receipt>(@"SELECT id Id,status Status,request_id RequestId,request_hash RequestHash,CAST(request_json AS CHAR) RequestJson,CAST(result_json AS CHAR) ResultJson
 FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND (request_id=@RequestId OR (batch_id=@BatchId AND selection_hash=@SelectionHash)) LIMIT 1 FOR UPDATE",
             new { ClientId = clientId, apply.RequestId, apply.Request.BatchId, SelectionHash = selectionHash }, tx);
         if (receipt is { Status: "Applied" })
         {
-            if (receipt.RequestHash != requestHash) throw new InvalidOperationException("This import request or selected source rows were already applied with different settings. Open the existing result; use a new source batch for a revised import.");
+            if (receipt.RequestHash != requestHash && !SameReviewedRequest(receipt.RequestJson,apply.Request)) throw new InvalidOperationException("This import request or selected source rows were already applied with different settings. Open the existing result; use a new source batch for a revised import.");
             var previous = JsonSerializer.Deserialize<ExcelPayrollSetupResult>(receipt.ResultJson, Json)!; previous.Replayed = true;
             await tx.CommitAsync(); return previous;
         }
@@ -120,10 +124,11 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND (request_id=@Requ
             throw new InvalidOperationException("Source or payroll configuration changed after preview. Refresh the preview before applying.");
         var result = new ExcelPayrollSetupResult { ImportId = receipt?.Id ?? Guid.NewGuid().ToString("N"), TemplateId = plan.Preview.TemplateId, TemplateIds = plan.Preview.TemplateIds.ToList() };
         await InsertMastersAsync(db, tx, clientId, apply.Request, plan);
+        await InsertReviewedDropdownsAsync(db, tx, clientId, apply.Request, plan);
         foreach (var name in plan.Rows.Where(r => r.NewWorkLocationName.Length > 0).Select(r => r.NewWorkLocationName).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             var locationId = (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO worklocations(ClientId,ClientName,Name,Address,City,State,PostalCode,GSTIN,IsPrimary,IsActive)
-SELECT Id,Name,@LocationName,'','','','','',FALSE,TRUE FROM clients WHERE Id=@ClientId; SELECT LAST_INSERT_ID();", new { ClientId = clientId, LocationName = name }, tx);
+SELECT Id,Name,@LocationName,'','',@State,'','',FALSE,TRUE FROM clients WHERE Id=@ClientId; SELECT LAST_INSERT_ID();", new { ClientId = clientId, LocationName = name, State = plan.Rows.First(row => row.NewWorkLocationName.Equals(name, StringComparison.OrdinalIgnoreCase)).NewWorkLocationState }, tx);
             foreach (var row in plan.Rows.Where(r => r.NewWorkLocationName.Equals(name, StringComparison.OrdinalIgnoreCase))) row.Employee.WorkLocationId = locationId;
         }
         foreach (var row in plan.Rows)
@@ -137,7 +142,7 @@ SELECT Id,Name,@LocationName,'','','','','',FALSE,TRUE FROM clients WHERE Id=@Cl
             row.Employee.Id = id; result.EmployeeIds.Add(id);
             if (isNew) result.CreatedCount++; else result.UpdatedCount++;
         }
-        result.AttendanceGroupId = await InsertAttendanceAsync(db, tx, clientId, apply.Request, plan, result.ImportId);
+        if (apply.Request.ImportAttendance) result.AttendanceGroupId = await InsertAttendanceAsync(db, tx, clientId, apply.Request, plan, result.ImportId, result);
         await InsertAdjustmentsAsync(db, tx, clientId, apply.Request, plan, result.ImportId);
         var receiptValues = new { Id = result.ImportId, ClientId = clientId, apply.Request.BatchId, apply.RequestId, SelectionHash = selectionHash, RequestHash = requestHash, apply.PlanHash,
             RequestJson = JsonSerializer.Serialize(apply.Request, Json), ResultJson = JsonSerializer.Serialize(result, Json), Actor = actor.Length > 190 ? actor[..190] : actor };
@@ -178,9 +183,11 @@ VALUES(@Id,@ClientId,@BatchId,@RequestId,@SelectionHash,@RequestHash,@PlanHash,'
         if (plan.EffectiveFrom > DateTime.ParseExact(batch.Month + "-01", "yyyy-MM-dd", CultureInfo.InvariantCulture).AddMonths(1).AddDays(-1))
             Error("The salary effective date must not be after the imported payroll period.");
         var sourceIndexes = request.Components.SelectMany(c => new[] { c.SourceColumnIndex, c.ExpectedColumnIndex }).Where(i => i.HasValue).Select(i => i!.Value)
-            .Concat(new[] { request.PayrollDaysColumnIndex, request.PayableDaysColumnIndex })
+            .Concat(request.FixedPayrollDays.HasValue ? [request.PayableDaysColumnIndex] : new[] { request.PayrollDaysColumnIndex, request.PayableDaysColumnIndex })
             .Concat(request.PresentDaysColumnIndex.HasValue ? [request.PresentDaysColumnIndex.Value] : []);
         if (sourceIndexes.Any(i => i < 0 || i >= source.ColumnCount)) Error("A reviewed source column is outside the saved worksheet.");
+        var appliedRows = await AppliedSourceRowsAsync(db,tx,clientId,request.BatchId);
+        foreach (var row in selected.Where(row=>appliedRows.Contains(row.Id))) Error("Master setup was already applied for this source row. Continue with the remaining rows; use a revised source batch for later changes.",row.Id);
         var setupJson = await PayrollDataTableStore.GetSetupJsonAsync(db, tx);
         var setup = JsonNode.Parse(setupJson)!.AsObject();
         var masters = (setup["salaryComponents"] as JsonArray ?? []).OfType<JsonObject>().ToList();
@@ -205,14 +212,16 @@ VALUES(@Id,@ClientId,@BatchId,@RequestId,@SelectionHash,@RequestHash,@PlanHash,'
             plan.Components.Add(new(component, id, existing is null));
         }
         var week = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM dropdownmasters WHERE Type='Work Week' AND Value=@Week AND IsActive=TRUE AND ClientId IN (0,@ClientId)", new { Week = request.WorkWeek.Trim(), ClientId = clientId }, tx);
-        if (week == 0) Error("Select an existing active work week.");
+        if (week == 0 && !request.CreateMissingDropdownValues) Error("Select an existing active work week or approve creating the reviewed dropdown value.");
+        if (week == 0 && request.CreateMissingDropdownValues && Normalize(request.WorkWeek) != "SUNDAYOFF")
+            Error("Choose a configured work week or the Sunday off default. A custom work-week calendar must be reviewed in Dropdown Masters before it can be reused.");
         var modeColumns = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='attendance_groups' AND column_name IN ('attendance_mode','allowed_shift_ids_json')", transaction: tx);
         if (modeColumns != 2) Error("The additive attendance scheduling schema upgrade is required for an explicit Monthly policy.");
         if (request.DefaultWorkLocationId is > 0 && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM worklocations WHERE Id=@Id AND ClientId=@ClientId AND IsActive=TRUE", new { Id = request.DefaultWorkLocationId, ClientId = clientId }, tx) == 0)
             Error("The default work location must be active and belong to this client.");
-        var identities = (await db.QueryAsync<Identity>(@"SELECT e.Id,e.ClientId,e.EmployeeCode,CONCAT(e.FirstName,' ',e.LastName) Name,e.IsActive,
+        var identities = (await db.QueryAsync<Identity>(@"SELECT e.Id,e.ClientId,e.EmployeeCode,CONCAT(e.FirstName,' ',e.LastName) Name,e.IsActive," + EmployeeEmploymentRules.EligibleInMonth("e", "@Month") + @" EligibleForMonth,
 COALESCE(p.PanNumber,'') Pan,COALESCE(p.AadhaarNumber,'') Aadhaar,COALESCE(p.UanNumber,'') Uan,COALESCE(w.Name,'') WorkLocation
-FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id LEFT JOIN worklocations w ON w.Id=e.WorkLocationId WHERE e.ClientId=@ClientId ORDER BY e.Id", new { ClientId = clientId }, tx)).ToList();
+FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id LEFT JOIN worklocations w ON w.Id=e.WorkLocationId WHERE e.ClientId=@ClientId ORDER BY e.Id", new { ClientId = clientId, Month = batch.Month }, tx)).ToList();
         var locations = (await db.QueryAsync<Location>("SELECT Id,Name FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY Id", new { ClientId = clientId }, tx)).ToList();
         var existingState = new List<object>();
         foreach (var row in selected)
@@ -220,14 +229,15 @@ FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id LEFT J
             var sourceRow = source.Rows.SingleOrDefault(r => r.SourceRow == row.SourceRow);
             if (sourceRow is null) { Error("The selected row has no authoritative source cells.", row.Id); continue; }
             var decision = request.EmployeeDecisions.SingleOrDefault(d => d.RowId == row.Id);
-            var identifierValues = ReadInformation(row);
+            var identifierValues = SourceInformation(row,source,request.SourceWorkLocationColumnIndex);
             var match = MatchIdentity(row, identifierValues, identities, decision, plan.Preview.Issues);
             Employee employee;
             if (match is not null)
             {
                 employee = (await EmployeeRepository.LoadRecruitmentEmployeeAsync(db, match.Id, tx))!;
                 existingState.Add(JsonSerializer.Serialize(employee, Json));
-                if (!employee.IsActive) Error("The matched employee is inactive; reactivation is a separate reviewed action.", row.Id);
+                if (!match.EligibleForMonth)
+                    Error("The matched employee is not employed in this salary month. Review their last working date; importing salary does not rehire them.", row.Id);
             }
             else
             {
@@ -235,13 +245,20 @@ FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id LEFT J
                 if (decision?.AllowCreate != true) Error("Review and explicitly allow creation of this unmatched employee.", row.Id);
             }
             var planned = new PlannedRow { RowId = row.Id, SourceRow = row.SourceRow, Employee = employee };
-            if (employee.Id == 0 && employee.WorkLocationId <= 0)
+            var sourceLocationName = request.SourceWorkLocationColumnIndex is int sourceLocationIndex ? ReadCellText(sourceRow, sourceLocationIndex)
+                : Info(identifierValues,"Work Location","Location","Place of Posting","Posting");
+            if (employee.Id == 0 && (employee.WorkLocationId <= 0 || sourceLocationName.Length > 0))
             {
-                var locationName = request.SourceWorkLocationColumnIndex is int locationColumn ? ReadCellText(sourceRow, locationColumn)
-                    : First(Info(identifierValues,"Work Location","Location","Place of Posting","Posting"),request.DefaultWorkLocationName.Trim());
+                employee.WorkLocationId = 0;
+                var locationName = First(sourceLocationName,request.DefaultWorkLocationName.Trim());
                 var location = locations.SingleOrDefault(l => Normalize(l.Name) == Normalize(locationName));
                 if (location is not null) employee.WorkLocationId = location.Id;
-                else if (locationName.Length > 0 && request.CreateMissingWorkLocations) planned.NewWorkLocationName = locationName;
+                else if (locationName.Length > 0 && request.CreateMissingWorkLocations)
+                {
+                    planned.NewWorkLocationName = locationName;
+                    planned.NewWorkLocationState = First(employee.PersonalDetails.State, request.DefaultWorkLocationState.Trim());
+                    if (planned.NewWorkLocationState.Length == 0) Error("Review the state for this new work location. It affects payroll and cannot be inferred from salary amounts.", row.Id);
+                }
                 else if (locationName.Length > 0) Error("The source work location does not exist. Review and explicitly allow creating it.", row.Id);
             }
             plan.Rows.Add(planned);
@@ -274,7 +291,9 @@ WHERE pe.EmployeeId=@Id AND pr.ClientId=@ClientId AND pr.PayPeriod=@Month AND pe
                     var approvedAdjustments = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM payrolladjustments WHERE ClientId=@ClientId AND EmployeeId=@Id AND PayPeriod=@Month AND Status='Approved'",new { ClientId=clientId,employee.Id,Month=batch.Month },tx);
                     if (approvedAdjustments > 0) Error("Approved payroll adjustments already exist for this employee and period. Review them before importing amounts that could be counted twice.",row.Id);
                     var groups = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM attendance_group_employees m JOIN attendance_groups g ON g.id=m.attendance_group_id WHERE m.employee_id=@Id AND g.client_id=@ClientId AND g.is_active=TRUE", new { employee.Id, ClientId = clientId }, tx);
-                    if (groups > 0) Error("The selected employee already belongs to an attendance policy. Review that policy before assigning a new Monthly import policy.", row.Id);
+                    if (groups > 1) Error("The selected employee belongs to multiple active attendance policies. Resolve the ambiguous membership before applying.", row.Id);
+                    else if (groups == 1 && !request.PreserveExistingAttendancePolicies) Error("This employee already has an attendance policy. Enable Preserve existing attendance policies to reuse it unchanged.", row.Id);
+                    else if (groups == 1) plan.Preview.Issues.Add(new("Info", "Existing attendance membership will be retained; reviewed monthly totals will be saved without replacing that policy.", row.Id));
                     var later = (await db.QueryAsync<EmployeeRepository.ExcelPayrollSalaryHistory>(@"SELECT Id,EffectiveFrom,Status,SalaryStructureId,AnnualCtc,CAST(SalaryJson AS CHAR) SalaryJson
 FROM employee_it0008_basic_pay WHERE EmployeeId=@Id AND EffectiveFrom>@Date ORDER BY EffectiveFrom,Id", new { employee.Id, Date = plan.EffectiveFrom }, tx)).ToList();
                     try
@@ -295,11 +314,14 @@ FROM employee_it0008_basic_pay WHERE EmployeeId=@Id AND EffectiveFrom>@Date ORDE
             if (templates.Any(t => Text(t,"id") == id)) Error("A proposed salary template variant already exists. Refresh the saved import result.");
         var policyJson = await db.ExecuteScalarAsync<string?>("SELECT CAST(SettingsJson AS CHAR) FROM modulesettings WHERE client_id=@ClientId AND ModuleCode='payroll'", new { ClientId = clientId }, tx);
         var attendanceJson = await db.ExecuteScalarAsync<string?>("SELECT JSON_EXTRACT(SettingsJson,'$.attendanceIntegration.WeeklyOffRuleVersions') FROM modulesettings WHERE client_id=@ClientId AND ModuleCode='leave_attendance'", new { ClientId = clientId }, tx);
-        if (!string.IsNullOrWhiteSpace(attendanceJson) && attendanceJson is not "null" and not "[]") Error("This client has published weekly-off rules. A monthly-total import cannot establish dated weekly-off entitlement.");
+        if (request.ImportAttendance && !string.IsNullOrWhiteSpace(attendanceJson) && attendanceJson is not "null" and not "[]") Error("This client has published weekly-off rules. A monthly-total import cannot establish dated weekly-off entitlement. Turn off Import source-month attendance to retain the existing attendance workflow and configure salary masters only.");
+        if (!request.ImportAttendance) plan.Preview.Issues.Add(new("Review","Source-month attendance and attendance-group membership will not be saved. Enter/review attendance through the regular module before running payroll."));
         plan.Preview.Issues.Add(new("Review", "After applying setup, run Employee simulation for every selected row before queuing regular payroll. Existing statutory and tax rules may change the draft arithmetic."));
         plan.Preview.Issues.Add(new("Info", "Leave, holiday and shift defaults are saved with this editable setup draft. No invented quota, holiday dates, leave balances or punch shifts will be activated; source monthly payable totals are retained."));
-        plan.Preview.Issues.Add(new("Info", "Known identity, organization and bank fields are copied for reviewed new employees. Other information remains in the authoritative source batch. Existing employee organization, personal and bank details are preserved; designation dropdown masters are not implicitly created."));
+        plan.Preview.Issues.Add(new("Info", "Known source fields are copied for reviewed new employees. Existing employee organization, personal and bank details are preserved. Approved missing department/designation/grade/work-week values are added for this client."));
         var existingIds = plan.Rows.Select(r => r.Employee.Id).Where(id => id > 0).Distinct().ToArray();
+        if (plan.Rows.Where(row => row.NewWorkLocationName.Length > 0).GroupBy(row => Normalize(row.NewWorkLocationName)).Any(group => group.Select(row => Normalize(row.NewWorkLocationState)).Distinct().Count() > 1))
+            Error("The same new location has conflicting states in the selected source rows. Review the source before applying.");
         var salaryHistory = existingIds.Length == 0 ? [] : (await db.QueryAsync(@"SELECT Id,EmployeeId,EffectiveFrom,EffectiveTo,Status,SalaryStructureId,AnnualCtc,CAST(SalaryJson AS CHAR) SalaryJson
 FROM employee_it0008_basic_pay WHERE EmployeeId IN @Ids ORDER BY EmployeeId,Id", new { Ids = existingIds }, tx)).ToList();
         var attendanceState = existingIds.Length == 0 ? [] : (await db.QueryAsync(@"SELECT id,employee_id,attendance_month,working_days,present_days,payable_days,lop_days,source_type,remarks
@@ -314,12 +336,18 @@ FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=
 FROM payruns pr JOIN payrunemployees pe ON pe.PayRunId=pr.Id WHERE pr.ClientId=@ClientId AND pe.EmployeeId IN @Ids AND pr.PayPeriod<=@Month ORDER BY pr.Id,pe.EmployeeId",
             new { ClientId = clientId, Ids = existingIds, Month = batch.Month }, tx)).ToList();
         var adjustmentsState = existingIds.Length == 0 ? [] : (await db.QueryAsync("SELECT * FROM payrolladjustments WHERE ClientId=@ClientId AND EmployeeId IN @Ids AND PayPeriod=@Month ORDER BY EmployeeId,Id",new { ClientId=clientId,Ids=existingIds,Month=batch.Month },tx)).ToList();
-        plan.Preview.PlanHash = Hash(JsonSerializer.Serialize(new { clientId, request, batch, source, setupJson, identities, locations, existingState, salaryHistory, attendanceState,
+        var membershipState = existingIds.Length == 0 ? [] : (await db.QueryAsync(@"SELECT m.employee_id,g.* FROM attendance_group_employees m JOIN attendance_groups g ON g.id=m.attendance_group_id WHERE g.client_id=@ClientId AND m.employee_id IN @Ids ORDER BY m.employee_id,g.id", new { ClientId = clientId, Ids = existingIds }, tx)).ToList();
+        plan.Preview.PlanHash = Hash(JsonSerializer.Serialize(new { clientId, request, batch, source, setupJson, identities, locations, existingState, salaryHistory, attendanceState, membershipState,
             policyJson, attendanceJson, taxSettings, taxVersions, selectedRegimes, payrollHistory,adjustmentsState }, Json));
         return plan;
     }
 
-    private sealed class Receipt { public string Id { get; set; } = ""; public string RequestId { get; set; } = ""; public string Status { get; set; } = ""; public string RequestHash { get; set; } = ""; public string ResultJson { get; set; } = ""; }
+    internal static bool SameReviewedRequest(string savedJson,ExcelPayrollSetupRequest current)
+    {
+        try { var saved=JsonSerializer.Deserialize<ExcelPayrollSetupRequest>(savedJson,Json); return saved is not null && JsonNode.DeepEquals(JsonSerializer.SerializeToNode(saved,Json),JsonSerializer.SerializeToNode(current,Json)); }
+        catch(JsonException) { return false; }
+    }
+    private sealed class Receipt { public string Id { get; set; } = ""; public string RequestId { get; set; } = ""; public string Status { get; set; } = ""; public string RequestHash { get; set; } = ""; public string RequestJson { get; set; } = "{}"; public string ResultJson { get; set; } = ""; }
     private sealed class SavedSetup { public string ImportId { get; set; } = ""; public string RequestId { get; set; } = ""; public string Status { get; set; } = ""; public string RequestJson { get; set; } = "{}"; public string ResultJson { get; set; } = "{}"; }
     private sealed class Plan
     {
@@ -339,6 +367,7 @@ FROM payruns pr JOIN payrunemployees pe ON pe.PayRunId=pr.Id WHERE pr.ClientId=@
         public Dictionary<string, decimal> SalaryInputs { get; set; } = [];
         public List<(ResolvedComponent Component, decimal Amount)> Adjustments { get; set; } = [];
         public string NewWorkLocationName { get; set; } = "";
+        public string NewWorkLocationState { get; set; } = "";
         public string TemplateId { get; set; } = "";
         public IReadOnlyList<ResolvedComponent> Components { get; set; } = [];
     }
@@ -346,6 +375,7 @@ FROM payruns pr JOIN payrunemployees pe ON pe.PayRunId=pr.Id WHERE pr.ClientId=@
     {
         public int Id { get; set; } public int ClientId { get; set; } public string EmployeeCode { get; set; } = "";
         public string Name { get; set; } = ""; public bool IsActive { get; set; }
+        public bool EligibleForMonth { get; set; }
         public string Pan { get; set; } = ""; public string Aadhaar { get; set; } = ""; public string Uan { get; set; } = "";
         public string WorkLocation { get; set; } = "";
     }

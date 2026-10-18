@@ -37,6 +37,55 @@ public sealed class AttachmentContentResultTests
     }
 
     [Theory]
+    [InlineData(true, "inline")]
+    [InlineData(false, "attachment")]
+    public async Task MissingResume_ExposesSavedTextWithoutPretendingToRestoreThePdf(bool preview, string disposition)
+    {
+        const string text = "Synthetic candidate\nExperience: résumé परीक्षण\n<script>untrusted resume text</script>";
+        var result = await ReadAsync(null, preview: preview, development: false, savedResumeText: text);
+        Assert.Equal(200, result.Context.Response.StatusCode);
+        Assert.Equal("text/plain; charset=utf-8", result.Context.Response.ContentType);
+        Assert.Equal("extracted-resume-text", result.Context.Response.Headers["X-Attachment-Recovery"]);
+        Assert.Equal((long)result.Bytes.Length, result.Context.Response.ContentLength);
+        Assert.StartsWith("RECOVERED RESUME TEXT - ORIGINAL FILE UNAVAILABLE", Encoding.UTF8.GetString(result.Bytes));
+        Assert.EndsWith(text, Encoding.UTF8.GetString(result.Bytes));
+        Assert.StartsWith(disposition + ";", result.Context.Response.Headers.ContentDisposition.ToString());
+        Assert.Contains("resume.recovered.txt", result.Context.Response.Headers.ContentDisposition.ToString());
+        Assert.Equal("private, no-store", result.Context.Response.Headers.CacheControl);
+    }
+
+    [Fact]
+    public async Task PresentOriginal_DoesNotReadOrSubstituteSavedText()
+    {
+        var bytes = Encoding.UTF8.GetBytes("%PDF-unchanged original");
+        var result = await ReadAsync(bytes, savedResumeText: "Must not be read", failRecoveryRead: true);
+        Assert.Equal(bytes, result.Bytes);
+        Assert.Equal("application/pdf", result.Context.Response.ContentType);
+        Assert.False(result.Context.Response.Headers.ContainsKey("X-Attachment-Recovery"));
+    }
+
+    [Theory]
+    [InlineData(null, "CANDIDATE")]
+    [InlineData("  ", "CANDIDATE")]
+    [InlineData("Unrelated private text", "EMPLOYEE")]
+    public async Task MissingAttachmentWithoutCandidateResumeText_Remains404(string? savedText, string entityType)
+    {
+        var result = await ReadAsync(null, development: false, savedResumeText: savedText, entityType: entityType);
+        Assert.Equal(404, result.Context.Response.StatusCode);
+        Assert.DoesNotContain("Unrelated private text", Encoding.UTF8.GetString(result.Bytes));
+    }
+
+    [Fact]
+    public async Task RemoteRecoveredText_IsNotMislabelledAsTheOriginalPdf()
+    {
+        var result = await ReadAsync(null, remoteAvailable: true, savedResumeText: "Saved resume text", remoteRecovered: true);
+        Assert.Equal("text/plain; charset=utf-8", result.Context.Response.ContentType);
+        Assert.Equal((long)result.Bytes.Length, result.Context.Response.ContentLength);
+        Assert.EndsWith("Saved resume text", Encoding.UTF8.GetString(result.Bytes));
+        Assert.Equal(1, result.RemoteRequests);
+    }
+
+    [Theory]
     [InlineData(false, true, "/api/public/attachments/content", 0)]
     [InlineData(true, true, "/api/attachments/file/content", 0)]
     [InlineData(true, false, "/api/public/attachments/content", 1)]
@@ -51,7 +100,8 @@ public sealed class AttachmentContentResultTests
 
     private static async Task<(DefaultHttpContext Context, byte[] Bytes, int RemoteRequests)> ReadAsync(byte[]? bytes,
         string fileName = "resume.pdf", string mime = "application/pdf", bool preview = true,
-        bool development = true, bool remoteAvailable = false, string route = "/api/public/attachments/content")
+        bool development = true, bool remoteAvailable = false, string route = "/api/public/attachments/content",
+        string? savedResumeText = null, bool failRecoveryRead = false, string entityType = "CANDIDATE", bool remoteRecovered = false)
     {
         var folder = Path.Combine(Path.GetTempPath(), "frevo-preview-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
@@ -60,7 +110,7 @@ public sealed class AttachmentContentResultTests
         {
             if (bytes is not null) await File.WriteAllBytesAsync(file, bytes);
             var settings = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["AttachmentStorage:RemoteReadBaseUrl"] = "https://production.example" }).Build();
-            var factory = new RemoteFileFactory(remoteAvailable);
+            var factory = new RemoteFileFactory(remoteAvailable, remoteRecovered);
             using var services = new ServiceCollection().AddSingleton<IConfiguration>(settings)
                 .AddSingleton<IHostEnvironment>(new Host { EnvironmentName = development ? "Development" : "Production" })
                 .AddSingleton<IHttpClientFactory>(factory).BuildServiceProvider();
@@ -73,7 +123,8 @@ public sealed class AttachmentContentResultTests
             var storage = new AttachmentStorageService(null!, null!, settings, null!);
             await new AttachmentContentResult(storage,
                 new AttachmentStorageServer { StorageType = "MountedFileSystem", BasePath = folder },
-                new EntityAttachment { StorageKey = "attachment", OriginalFileName = fileName, DetectedMimeType = mime, FileSizeBytes = bytes?.Length ?? 20 }, preview).ExecuteAsync(context);
+                new EntityAttachment { EntityType = entityType, StorageKey = "attachment", OriginalFileName = fileName, DetectedMimeType = mime, FileSizeBytes = bytes?.Length ?? 20 }, preview,
+                _ => failRecoveryRead ? throw new InvalidOperationException("Original reads must not query recovery text.") : Task.FromResult(savedResumeText)).ExecuteAsync(context);
             return (context, output.ToArray(), factory.Requests);
         }
         finally { File.Delete(file); Directory.Delete(folder); }
@@ -87,7 +138,7 @@ public sealed class AttachmentContentResultTests
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
 
-    private sealed class RemoteFileFactory(bool available) : HttpMessageHandler, IHttpClientFactory
+    private sealed class RemoteFileFactory(bool available, bool recovered = false) : HttpMessageHandler, IHttpClientFactory
     {
         public int Requests { get; private set; }
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false);
@@ -96,7 +147,9 @@ public sealed class AttachmentContentResultTests
             Requests++;
             Assert.Equal("https://production.example/api/public/attachments/content?token=unit-test-ticket", request.RequestUri!.AbsoluteUri);
             Assert.Null(request.Headers.Authorization);
-            return Task.FromResult(new HttpResponseMessage(available ? HttpStatusCode.OK : HttpStatusCode.NotFound) { Content = new ByteArrayContent(Encoding.UTF8.GetBytes("%PDF-remote original")) });
+            var response = new HttpResponseMessage(available ? HttpStatusCode.OK : HttpStatusCode.NotFound) { Content = new ByteArrayContent(Encoding.UTF8.GetBytes("%PDF-remote original")) };
+            if (recovered) response.Headers.Add("X-Attachment-Recovery", "extracted-resume-text");
+            return Task.FromResult(response);
         }
     }
 }

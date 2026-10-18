@@ -1,5 +1,6 @@
 using System.Text.Json;
 using MimeKit;
+using PdfSharp.Pdf.IO;
 using Payroll.API.Models;
 using Payroll.API.Repositories;
 
@@ -82,5 +83,95 @@ public sealed class ExcelPayslipEmailRequestTests
         template.BodyTemplate = "Dear Sir\n{{employeeTable}}";
         var content = NotificationRepository.PrepareExcelPayslipEmailRequest(batch, [batch.Rows[0]], "recipient@example.test", "operator", template);
         Assert.Contains("Dear Sir<br />TEST001 | Person &lt;One&gt; | Site &lt;02&gt;", content.BodyHtml);
+    }
+
+    [Fact]
+    public void SalaryAttachmentIsOptInAndRequiresFinancialWarningAcknowledgement()
+    {
+        var request = new ExcelPayslipEmailRequest();
+        Assert.False(request.AttachPayslips); Assert.False(request.IncludeSeal);
+        request.AttachPayslips = true;
+        Assert.Throws<InvalidOperationException>(() => ExcelPayslipRepository.SelectEmailRequestRows(Batch(), ["row-1"], request));
+        request.AcknowledgeWarnings = true;
+        Assert.Single(ExcelPayslipRepository.SelectEmailRequestRows(Batch(), ["row-1"], request));
+        request.AmountDecimalPlaces = 3;
+        Assert.Throws<InvalidOperationException>(() => ExcelPayslipRepository.SelectEmailRequestRows(Batch(), ["row-1"], request));
+    }
+
+    [Fact]
+    public void AttachmentOptionsAndSnapshotArePartOfRetryIdentityButLegacyRequestsKeepTheirFingerprint()
+    {
+        var rows = Batch().Rows;
+        var before = ExcelPayslipRepository.EmailRequestFingerprint("recipient@example.test", rows);
+        Assert.Equal(before, ExcelPayslipRepository.EmailRequestFingerprint("recipient@example.test", rows, new()));
+        var request = new ExcelPayslipEmailRequest { AttachPayslips = true, IncludeSeal = false, AmountDecimalPlaces = 0 };
+        var fingerprint = ExcelPayslipRepository.EmailRequestFingerprint("recipient@example.test", rows, request, "original");
+        Assert.NotEqual(before, fingerprint);
+        request.IncludeSeal = true; Assert.NotEqual(fingerprint, ExcelPayslipRepository.EmailRequestFingerprint("recipient@example.test", rows, request, "original"));
+        request.IncludeSeal = false; request.AmountDecimalPlaces = 2; Assert.NotEqual(fingerprint, ExcelPayslipRepository.EmailRequestFingerprint("recipient@example.test", rows, request, "original"));
+        request.AmountDecimalPlaces = 0; Assert.NotEqual(fingerprint, ExcelPayslipRepository.EmailRequestFingerprint("recipient@example.test", rows, request, "changed"));
+    }
+
+    [Fact]
+    public void RequestAttachesExactlyOneCombinedPdfForTwoMissingEmailEmployeesWithoutMarkingPersonalDeliverySent()
+    {
+        var batch = Batch();
+        batch.Rows.Add(new() { Id = "row-3", SourceRow = 3, EmployeeName = "Another missing email", Earnings = [new() { Label = "Basic", Amount = 10000 }], NetPay = 10000 });
+        var before = JsonSerializer.Serialize(batch);
+        var (document, queue) = Attachment(batch);
+        var builder = new BodyBuilder { HtmlBody = document.BodyHtml };
+        NotificationRepository.AttachExcelPayslipEmailRequestPdf(builder, queue, document, batch);
+        var attachment = Assert.IsType<MimePart>(Assert.Single(builder.Attachments));
+        Assert.Equal("application/pdf", attachment.ContentType.MimeType);
+        using var bytes = new MemoryStream(); attachment.Content.DecodeTo(bytes);
+        using var pdf = PdfReader.Open(new MemoryStream(bytes.ToArray()), PdfDocumentOpenMode.Import);
+        Assert.Equal(2, pdf.PageCount); Assert.DoesNotContain("row-2", document.RowIds);
+        Assert.Contains("{{employeeTable}}", Template().BodyTemplate); Assert.DoesNotContain("{{employeeTable}}", builder.HtmlBody);
+        Assert.DoesNotContain("Private earning", builder.HtmlBody); Assert.Equal(before, JsonSerializer.Serialize(batch));
+        var state = new ExcelPayslipSendState();
+        state.Requests[ExcelPayslipRepository.EmailRequestAttachmentKey(document.Id)] = JsonSerializer.SerializeToElement(document, ExcelPayslipRepository.JsonOptions);
+        var statuses = ExcelPayslipRepository.BuildDeliveryStatuses(batch, state, []);
+        Assert.All(statuses.Items, item => { Assert.Equal("Pending", item.Status); Assert.True(item.CanSend); });
+        Assert.DoesNotContain("pdfBase64", JsonSerializer.Serialize(state));
+    }
+
+    [Theory]
+    [InlineData("recipient")]
+    [InlineData("client")]
+    [InlineData("selection")]
+    [InlineData("snapshot")]
+    [InlineData("queue")]
+    [InlineData("resource")]
+    [InlineData("cc")]
+    [InlineData("employment")]
+    public void QueuedRequestPdfRejectsMismatchedRecipientsSourceAndOptions(string change)
+    {
+        var batch = Batch(); var (document, queue) = Attachment(batch);
+        switch (change)
+        {
+            case "recipient": queue.ToJson = "[\"other@example.test\"]"; break;
+            case "client": queue.ClientId++; break;
+            case "selection": document.RowIds = ["row-2"]; break;
+            case "snapshot": batch.Rows[0].NetPay++; break;
+            case "queue": document.QueueId++; break;
+            case "resource": document.IncludeSeal = true; break;
+            case "cc": queue.CcJson = "[\"other@example.test\"]"; break;
+            case "employment": batch.Rows[0].Employment = new(10, "TEST001", "Resigned", "2026-08-31", true, false); break;
+        }
+        var builder = new BodyBuilder();
+        Assert.Throws<InvalidOperationException>(() => NotificationRepository.AttachExcelPayslipEmailRequestPdf(builder, queue, document, batch));
+        Assert.Empty(builder.Attachments);
+    }
+
+    private static (NotificationRepository.ExcelPayslipMailDocument Document, NotificationQueueItem Queue) Attachment(ExcelPayslipBatch batch)
+    {
+        var request = new ExcelPayslipEmailRequest { AttachPayslips = true, IncludeSeal = false, AmountDecimalPlaces = 0, AcknowledgeWarnings = true,
+            RequestId = Guid.NewGuid().ToString("N"), RowIds = batch.Rows.Where(row => !row.Email.Contains('@')).Select(row => row.Id).ToList() };
+        var rows = ExcelPayslipRepository.SelectEmailRequestRows(batch, request.RowIds, request);
+        var document = NotificationRepository.PrepareExcelPayslipEmailRequestAttachment(batch, rows, "recipient@example.test", "operator", Template(), request);
+        document.QueueId = 123; document.Id = request.RequestId;
+        return (document, new() { Id = 123, ClientId = batch.ClientId, EventCode = NotificationRepository.ExcelPayslipEmailRequestPdfEvent,
+            ResourceType = "ExcelPayslipEmailRequest", ResourceId = batch.Id + ":" + document.Id + ":" + ExcelPayslipRepository.EmailRequestFingerprint(document.Email, rows, request, document.BatchSha256),
+            ToJson = "[\"recipient@example.test\"]", CcJson = "[]", BccJson = "[]" });
     }
 }

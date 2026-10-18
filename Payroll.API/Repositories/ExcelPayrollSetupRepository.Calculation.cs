@@ -16,10 +16,14 @@ public sealed partial class ExcelPayrollSetupRepository
         if (string.IsNullOrWhiteSpace(request.TemplateName) || request.TemplateName.Length > 160 || request.WorkWeek is null || request.WorkWeek.Length > 80
             || !DateTime.TryParseExact(request.EffectiveFrom, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
             throw new InvalidOperationException("Enter a template name, work week and explicit effective date (YYYY-MM-DD).");
-        if (request.PayrollDaysColumnIndex is < 0 or > 511 || request.PayableDaysColumnIndex is < 0 or > 511 || request.PresentDaysColumnIndex is < 0 or > 511
+        if ((request.FixedPayrollDays is null ? request.PayrollDaysColumnIndex is < 0 or > 511 : request.FixedPayrollDays is < 1 or > 31 || request.PayrollDaysColumnIndex != -1)
+            || request.PayableDaysColumnIndex is < 0 or > 511 || request.PresentDaysColumnIndex is < 0 or > 511
             || request.SourceWorkLocationColumnIndex is < 0 or > 511 || request.DefaultWorkLocationName is null || request.DefaultWorkLocationName.Length > 180)
             throw new InvalidOperationException("Choose valid source day/location columns.");
-        if (new[] { request.DefaultDepartment, request.DefaultDesignation, request.DefaultGrade }.Any(v => v is null || v.Length > 100)
+        if (request.SourceColumnRoles is null || request.SourceColumnRoles.Count > 512 || request.SourceColumnRoles.Any(p => p.Key is < 0 or > 511
+            || p.Value is not ("earning" or "deduction" or "employer" or "info" or "ignore" or "netPay" or "grossTotal" or "deductionTotal" or "employeeName" or "employeeCode" or "email")))
+            throw new InvalidOperationException("Review payroll source column classifications.");
+        if (new[] { request.DefaultDepartment, request.DefaultDesignation, request.DefaultGrade, request.DefaultWorkLocationState }.Any(v => v is null || v.Length > 100)
             || request.AttendanceCycleStartDay is < 1 or > 31 || request.AttendanceCycleEndDay is < 1 or > 31 || request.PayrollReportGenerationDay is < 1 or > 31)
             throw new InvalidOperationException("Use bounded employee defaults and calendar days between 1 and 31.");
         var cycle = request.AttendanceCycleStartDay == 1 ? request.AttendanceCycleEndDay : 32 - request.AttendanceCycleStartDay + request.AttendanceCycleEndDay;
@@ -76,7 +80,7 @@ public sealed partial class ExcelPayrollSetupRepository
         ExcelPayslipCalculationSourceRow source, ExcelPayslipRow row, IReadOnlySet<int>? blankAsZeroColumns = null)
     {
         components = ComponentsForRow(components, row.Id);
-        var payrollNumber = ReadNumber(source, request.PayrollDaysColumnIndex);
+        var payrollNumber = request.FixedPayrollDays is int fixedDays ? fixedDays : ReadNumber(source, request.PayrollDaysColumnIndex);
         if (payrollNumber is < 1 or > 31 || decimal.Truncate(payrollNumber) != payrollNumber) throw new InvalidOperationException("Payroll denominator must be a whole number between 1 and 31; it is read separately for each employee.");
         var days = (int)payrollNumber;
         var payable = ReadNumber(source, request.PayableDaysColumnIndex);

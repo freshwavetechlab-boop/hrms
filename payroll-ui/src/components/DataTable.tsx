@@ -1,6 +1,6 @@
 import { Children, isValidElement, useCallback, useMemo, useState, type CSSProperties, type Key, type ReactNode } from 'react'
 import { DownOutlined, FileExcelOutlined, FileOutlined, FilePdfOutlined, FileTextOutlined, FileWordOutlined } from '@ant-design/icons'
-import { Button, Dropdown, Empty, Input, Pagination, Table } from 'antd'
+import { Button, Checkbox, Dropdown, Empty, Input, Pagination, Table } from 'antd'
 import type { ColumnsType, TablePaginationConfig, TableRowSelection } from 'antd/es/table/interface'
 import type { MenuProps } from 'antd'
 import { jsPDF } from 'jspdf'
@@ -216,7 +216,13 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
     </div>
     {props.view === 'Cards' ? <>
       <div className="shared-record-cards" aria-busy={props.loading}>
-        {data.slice((Math.min(cardPage, Math.max(1, Math.ceil(data.length / 10))) - 1) * 10, Math.min(cardPage, Math.max(1, Math.ceil(data.length / 10))) * 10).map((row, index) => <article key={String(props.getRowId ? props.getRowId(row, rows.indexOf(row)) : (row as Record<string, unknown>).id ?? index)}>
+        {data.slice((Math.min(cardPage, Math.max(1, Math.ceil(data.length / 10))) - 1) * 10, Math.min(cardPage, Math.max(1, Math.ceil(data.length / 10))) * 10).map((row, index) => <article className={rowClassName?.(row)} key={String(props.getRowId ? props.getRowId(row, rows.indexOf(row)) : (row as Record<string, unknown>).id ?? index)}>
+          {props.rowSelection && <Checkbox aria-label={`Select record ${String(props.getRowId ? props.getRowId(row, rows.indexOf(row)) : (row as Record<string, unknown>).id ?? index)}`} {...props.rowSelection.getCheckboxProps?.(row)} checked={props.rowSelection.selectedRowKeys?.map(String).includes(String(props.getRowId ? props.getRowId(row, rows.indexOf(row)) : (row as Record<string, unknown>).id ?? index))} onChange={event => {
+            const key = String(props.getRowId ? props.getRowId(row, rows.indexOf(row)) : (row as Record<string, unknown>).id ?? index)
+            const keys = (props.rowSelection?.selectedRowKeys || []).map(String).filter(id => id !== key)
+            if (event.target.checked) keys.push(key)
+            props.rowSelection?.onChange?.(keys, rows.filter(item => keys.includes(String(props.getRowId ? props.getRowId(item, rows.indexOf(item)) : (item as Record<string, unknown>).id))), { type: 'single' })
+          }}>Select</Checkbox>}
           <dl>{columns.filter(column => !column.cardHidden).map(column => <div key={String(column.key)}><dt>{column.label}</dt><dd>{column.render ? column.render(row) : text(valueOf(row, column)) || '—'}</dd></div>)}</dl>
           {(actions || onEdit) && <footer>{actions ? actions(row) : <Button onClick={() => onEdit?.(row)}>Edit</Button>}</footer>}
         </article>)}

@@ -8,6 +8,14 @@ Open **Security → Apps → Notifications → Channels**. Email settings includ
 - **Incoming mail** lists the latest 200 imported messages and offers manual sync, refresh and message preview.
 - Background workers sync every minute in batches of up to 50 messages, independently of SMTP being disabled or paused. The first sync starts at the beginning of the folder; remaining history imports on subsequent syncs.
 
+## Outgoing copies in the mailbox Sent folder
+
+When incoming IMAP is enabled, direct and queued notifications also save the complete outgoing message to the sending account's Sent folder after SMTP accepts it. The existing IMAP host, port and SMTP username/password are reused; no additional database migration is needed. The server's Sent special folder is preferred (for example, `INBOX.Sent` on Hostinger), with existing conventional Sent folders used as a fallback. No mailbox folder is created.
+
+The copy retains the original Message-ID, recipient lists, HTML/plain content, inline images and attachments. A matching Message-ID already present in Sent is not appended again. This applies to newly sent notifications after the updated API is deployed/restarted; earlier messages are not backfilled.
+
+Saving the copy has a separate 30-second timeout. An IMAP failure leaves the email **Sent**, records a Sent-copy warning on the queue/log and in server logs, and never retries SMTP delivery for that archival failure. The copy is not automatically retried. Disabling incoming IMAP preserves SMTP-only delivery. SMTP acceptance and a mailbox Sent copy do not establish recipient delivery.
+
 ## Migration and startup
 
 Run from the repository root against the configured database:

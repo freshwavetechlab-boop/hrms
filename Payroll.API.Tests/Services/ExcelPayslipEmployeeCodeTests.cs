@@ -72,6 +72,82 @@ public sealed class ExcelPayslipEmployeeCodeTests
     }
 
     [Fact]
+    public void OneVerifiedEmployeeCanKeepSeparateLocationPayslipsAndTheirOriginalAmounts()
+    {
+        var batch = Batch("NH001", "NH001");
+        for (var i = 0; i < 2; i++)
+        {
+            batch.Rows[i].Information.AddRange([new() { Label = "UAN", Value = "101555921202" },
+                new() { Label = "Work location", Value = i == 0 ? "SO-Lada" : "SO TUTING" }]);
+            batch.Rows[i].NetPay = i == 0 ? 42749 : 33860;
+        }
+        var before = JsonSerializer.Serialize(batch);
+        ExcelPayslipRepository.AssignEmployeeCodes(batch, null, "NH", []);
+        Assert.Equal(before, JsonSerializer.Serialize(batch));
+        Assert.Equal(2, batch.Rows.Select(row => row.Id).Distinct().Count());
+        var blank = JsonSerializer.Deserialize<ExcelPayslipBatch>(before)!;
+        blank.Rows.ForEach(row => row.EmployeeCode = "");
+        ExcelPayslipRepository.AssignEmployeeCodes(blank, null, "NH", ["NH00009"]);
+        Assert.All(blank.Rows, row => Assert.Equal("NH00010", row.EmployeeCode));
+        foreach (var invalid in new[] { "same-location", "different-name", "different-uan", "no-identifier", "conflicting-pan" })
+        {
+            var copy = JsonSerializer.Deserialize<ExcelPayslipBatch>(before)!;
+            switch (invalid)
+            {
+                case "same-location": copy.Rows[1].Information[^1].Value = "SO-Lada"; break;
+                case "different-name": copy.Rows[1].EmployeeName = "Another Person"; break;
+                case "different-uan": copy.Rows[1].Information[^2].Value = "101555921203"; break;
+                case "no-identifier": copy.Rows.ForEach(row => row.Information.RemoveAt(row.Information.Count - 2)); break;
+                case "conflicting-pan":
+                    copy.Rows[0].Information.Add(new() { Label = "PAN", Value = "ABCDE1234F" });
+                    copy.Rows[1].Information.Add(new() { Label = "PAN", Value = "ABCDE1234G" }); break;
+            }
+            Assert.Throws<InvalidOperationException>(() => ExcelPayslipRepository.AssignEmployeeCodes(copy, null, "NH", []));
+        }
+    }
+
+    [Fact]
+    public void CopiedWorkLocationNeedsReviewedSourceUnitsAndValidCombinedAttendance()
+    {
+        var batch = Batch("NH001", "NH001");
+        for (var i = 0; i < 2; i++)
+        {
+            batch.Rows[i].Information = [new() { Label = "UAN", Value = "101123456789" },
+                new() { Label = "Work location", Value = "Previous location" },
+                new() { Label = "Payroll unit", Value = i == 0 ? "Region A" : "Region B" },
+                new() { Label = "Source workbook", Value = i == 0 ? "Region A.xlsx" : "Region B.xlsx" },
+                new() { Label = "Source Excel row", Value = "2" },
+                new() { Label = "Attendance", Value = i == 0 ? "11" : "15" },
+                new() { Label = "Reviewed source split", Value = "Confirmed" }];
+            batch.Rows[i].NetPay = i == 0 ? 33584 : 45796;
+        }
+        var before = JsonSerializer.Serialize(batch);
+        ExcelPayslipRepository.AssignEmployeeCodes(batch, null, "NH", []);
+        Assert.Equal(before, JsonSerializer.Serialize(batch));
+        var blank = JsonSerializer.Deserialize<ExcelPayslipBatch>(before)!;
+        blank.Rows.ForEach(r => r.EmployeeCode = "");
+        ExcelPayslipRepository.AssignEmployeeCodes(blank, null, "NH", ["NH00009"]);
+        Assert.All(blank.Rows, r => Assert.Equal("NH00010", r.EmployeeCode));
+        foreach (var invalid in new[] { "unreviewed", "same-unit", "same-workbook", "missing-reference", "over-month", "blank-days", "invalid-month", "conflicting-identity" })
+        {
+            var copy = JsonSerializer.Deserialize<ExcelPayslipBatch>(before)!;
+            ExcelPayslipText Field(string label) => copy.Rows[1].Information.Single(i => i.Label == label);
+            switch (invalid)
+            {
+                case "unreviewed": Field("Reviewed source split").Value = ""; break;
+                case "same-unit": Field("Payroll unit").Value = "Region A"; break;
+                case "same-workbook": Field("Source workbook").Value = "Region A.xlsx"; break;
+                case "missing-reference": Field("Source Excel row").Value = ""; break;
+                case "over-month": Field("Attendance").Value = "20"; break;
+                case "blank-days": Field("Attendance").Value = ""; break;
+                case "invalid-month": copy.Month = "2026-00"; break;
+                case "conflicting-identity": Field("UAN").Value = "101123456780"; break;
+            }
+            Assert.Throws<InvalidOperationException>(() => ExcelPayslipRepository.AssignEmployeeCodes(copy, null, "NH", []));
+        }
+    }
+
+    [Fact]
     public void AppendedCodeColumnPreservesFormulaAddressesAndSurvivesNextMonthCalculation()
     {
         var batch = Batch("", ""); var source = Source(batch);

@@ -2,6 +2,8 @@ namespace Payroll.API.Models;
 
 public class Employee
 {
+    public string EmploymentStatus { get; set; } = "";
+    public string? LastWorkingDate { get; set; }
     public int Id { get; set; }
     public int ClientId { get; set; }
     public string EmployeeCode { get; set; } = string.Empty;

@@ -8,6 +8,31 @@ const compiled = ts.transpileModule(readFileSync(new URL('../src/utils/excelPays
 const { parsePayslipCsv, defaultPayslipMapping, buildExcelPayslipRows, buildPayslipCalculationSource, translatePayslipSharedFormula, resolvePayslipSharedFormulas, payslipHeaders, payslipHeaderSignature, parsePayslipAmount, inferPayslipMonth, formatExcelPayslipAmount, payslipPhoneValue } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
 const parse = text => { const sheet = parsePayslipCsv(text); const columns = defaultPayslipMapping(payslipHeaders(sheet, 1)); return { sheet, columns, result: buildExcelPayslipRows(sheet, 1, columns) } }
 
+test('formula-based monthly inputs do not duplicate earned salary; common tax and allowance spellings stay categorized', () => {
+  const headers = ['Emp Name', 'CTC 01.07.2026', 'Increment @5%', 'BASIC', 'BASIC', 'Madical Allowance', 'Spacial Allowancce', 'Employee EPFO@12%', 'Income Tax', 'TDS', 'PF Admn. 0.50%', 'EDLI 0.5%', 'Field allowance (10%)Except Head Quarter', 'Communication Charges', 'Honorarium', 'TND', 'TNDW', 'NET Salary']
+  const cells = headers.map(() => ({ value: '0' }))
+  cells[0] = { value: 'Person' }; cells[1] = { value: '100000' }
+  cells[3] = { value: '45000', formula: true, formulaText: 'ROUND(B2*45%,0)' }
+  cells[4] = { value: '22500', formula: true, formulaText: 'ROUND(D2*Q2/P2,0)' }
+  const sheet = { name: 'Salary', columnCount: headers.length, rows: [{ sourceRow: 1, cells: headers.map(value => ({ value })) }, { sourceRow: 2, cells }] }
+  const columns = defaultPayslipMapping(headers, sheet, 1)
+  assert.deepEqual(columns.map(c => c.kind), ['employeeName', 'ignore', 'ignore', 'info', 'earning', 'earning', 'earning', 'deduction', 'deduction', 'deduction', 'employer', 'employer', 'earning', 'earning', 'earning', 'info', 'info', 'netPay'])
+  assert.ok(columns.every(c => c.blankAsZero === undefined), 'suggestions require explicit approval for blank monetary cells')
+})
+
+test('relocation rows keep two payslips for one code only with matching verified identity and different locations', () => {
+  const text = 'Employee Code,Employee Name,Work location,UAN,Basic,Net Pay\nNH001,Vijay Chouhan,SO-Lada,101555921202,42749,42749\nNH001,Vijay Chouhan,SO TUTING,101555921202,33860,33860'
+  const { result } = parse(text)
+  assert.deepEqual(result.issues, [])
+  assert.equal(result.rows.length, 2)
+  assert.deepEqual(result.rows.map(r => r.employeeCode), ['NH001', 'NH001'])
+  assert.deepEqual(result.rows.map(r => r.netPay), [42749, 33860])
+  assert.notEqual(result.rows[0].id, result.rows[1].id)
+  for (const changed of [text.replace('SO TUTING', 'SO-Lada'), text.replace('SO TUTING,101555921202', 'SO TUTING,101555921203'), text.replaceAll('101555921202', ''), text.replace('NH001,Vijay Chouhan,SO TUTING', 'NH001,Another Person,SO TUTING')]) {
+    assert.ok(parse(changed).result.issues.some(issue => issue.column === 'Employee code'))
+  }
+})
+
 test('reviewed NHDC financial cases map earned counterparts and retain monthly inputs and billing separately', () => {
   const { sheet, headerRow } = JSON.parse(readFileSync(new URL('./fixtures/nhdc-salary-import.json', import.meta.url), 'utf8'))
   // The full workbook also contains this same-row Other Allowance reference.

@@ -64,6 +64,7 @@ export function payslipPhoneValue(row: Pick<ExcelPayslipRow, 'information'>) {
 }
 export function defaultPayslipMapping(headers: string[], sheet?: PayslipSheet, headerRow = 1): PayslipColumn[] {
   const norm = (value: string) => value.normalize('NFKC').toLowerCase().replace(/\b(?:inr|rs)\b\.?/g, '').replace(/[^a-z0-9]/g, '')
+    .replace(/madical/g, 'medical').replace(/spacial/g, 'special').replace(/allowancce/g, 'allowance').replace(/epfo/g, 'epf')
   const keys = headers.map(norm)
   const plrs = norm(headers[3] || '') === 'nameoftheperson' && norm(headers[10] || '') === 'wages' && norm(headers[13] || '') === 'netpay'
   const plrsKinds: Record<number, PayslipColumnKind> = { 2: 'info', 3: 'employeeName', 7: 'info', 8: 'info', 9: 'info', 10: 'earning', 11: 'deduction', 12: 'deduction', 13: 'netPay', 14: 'info', 15: 'employer', 16: 'employer', 21: 'info', 22: 'info', 25: 'info', 26: 'info' }
@@ -85,11 +86,11 @@ export function defaultPayslipMapping(headers: string[], sheet?: PayslipSheet, h
     // Identifiers, attendance and rates must never be treated as monetary deductions.
     if (/^(?:uan(?:number|no|reference)?|(?:pf|epf|esi|esic)(?:account)?(?:number|no|id)|(?:bank)?account(?:number|no)|bankname|ifsccode|ifsc)$/.test(key)
       || /^(?:department|designation|designationmanpowercategory|worklocation|location(?:name.*)?|branch|attendance|(?:total)?(?:working|worked|paid|payable|present|attended|month)days|days(?:worked|paid|attended)|rate|(?:monthly|daily|hourly|wage|salary|basic|overtime)rate|rate(?:per)?(?:day|hour)|rateof.*|.*(?:rate|percentage))$/.test(key)) return 'info'
-    if (/^(?:ot|ota|overtime|lop|lossofpay|month|workingday)$/.test(key)) return 'info' // May be hours/days, not amounts.
+    if (/^(?:ot|ota|overtime|lop|lossofpay|month|workingday|tnd|tndw)$/.test(key)) return 'info' // May be hours/days, not amounts.
     // Billing-side bonus in these sheets is outside the stated take-home salary.
     if (billingSheet && /^bonus/.test(key) && columnIndex > netIndex && columnIndex < ctcIndex) return 'info'
     if (/^(?:ctc|costtocompany|invoice.*|.*billing.*|less.*(?:epf|pf).*claims?|.*gst.*|servicecharges?.*|sc\d.*)$/.test(key)) return 'ignore'
-    if (/^(?:epf|pf).*(?:admin(?:istration)?|edli|edlis).*charges?/.test(key)) return 'employer'
+    if (/^(?:(?:epf|pf).*(?:admin(?:istration)?|admn|edli|edlis).*|edli(?:s)?\d*)$/.test(key)) return 'employer'
 
     const employer = /employer|company|ershare|ercontribution/.test(key) || /^(?:er)(?:pf|epf|esi|esic|nps)/.test(key) || /(?:pf|epf|esi|esic|nps)er$/.test(key)
     const employee = /employee|eeshare|eecontribution/.test(key) || /^(?:ee)(?:pf|epf|esi|esic|nps)/.test(key)
@@ -104,7 +105,7 @@ export function defaultPayslipMapping(headers: string[], sheet?: PayslipSheet, h
     }
     if (employer && /pension|gratuity|insurance|admincharges/.test(key)) return 'employer'
     if (/^(?:(?:salary|loan)advance|advance(?:recovery|deduction)?|loan(?:recovery|deduction|instalments?|installments?|emi)|recovery(?:ifany)?|otherdeductions?|medicaldeduction|professionaltax|incometax|tds|ptax|pt|lwf|lop(?:deduction|amount)?|lossofpay)$/.test(key)) return 'deduction'
-    if (/^(?:basic(?:pay|salary|wages)?|earnedbasic|hra|houserentallowance|da|dearnessallowance|conveyance(?:allowance)?|specialallowance|medicalallowance|exp(?:ense)?allowance|otherallowances?|allowance|incentives?|bonus(?:\d+)?|overtime(?:pay|amount)?|ot(?:pay|amount)?|(?:salary)?arrears?|leaveencashment|shiftallowance|transport(?:allowance)?|travelallowance|tada|lta|foodallowance|washingallowance|uniformallowance)$/.test(key)) return 'earning'
+    if (/^(?:basic(?:pay|salary|wages)?|earnedbasic|hra|houserentallowance|da|dearnessallowance|conveyance(?:allowance)?|specialallowance|medicalallowance|exp(?:ense)?allowance|otherallowances?|allowance|incentives?|bonus(?:\d+)?|overtime(?:pay|amount)?|ot(?:pay|amount)?|(?:salary)?arrears?|leaveencashment|shiftallowance|transport(?:allowance)?|travelallowance|tada|lta|foodallowance|washingallowance|uniformallowance|hardshipallowance|honorarium|communicationcharges|fieldallowance.*)$/.test(key)) return 'earning'
     return 'ignore'
   }
   const columns: PayslipColumn[] = headers.map((sourceHeader, columnIndex) => {
@@ -126,16 +127,16 @@ export function defaultPayslipMapping(headers: string[], sheet?: PayslipSheet, h
   // Repeated headings can also represent monthly/earned pairs. Require the
   // earned formulas to reference the other column on the same employee row.
   if (sheet) for (const column of columns) {
-    if (column.kind !== 'earning') continue
+    if (!['earning', 'grossTotal'].includes(column.kind)) continue
     for (const input of columns.filter(input => input !== column && keys[input.columnIndex] === keys[column.columnIndex])) {
       const nameIndex = columns.find(item => item.kind === 'employeeName')?.columnIndex
       const formulas = sheet.rows.filter(row => row.sourceRow > headerRow && row.cells[column.columnIndex]?.formulaText
         && (nameIndex === undefined || row.cells[nameIndex]?.value.trim() && !/^(grand\s*)?totals?(?:\s|:|$)/i.test(row.cells[nameIndex].value.trim())))
       if (!formulas.length || !formulas.every(row => {
         const expression = row.cells[column.columnIndex].formulaText!.replace(/"(?:[^"]|"")*"/g, '""')
-        return !row.cells[input.columnIndex]?.formulaText && new RegExp(`(^|[^A-Z0-9_!])\\$?${excelColumnLetter(input.columnIndex)}\\$?${row.sourceRow}(?![0-9])`, 'i').test(expression)
+        return new RegExp(`(^|[^A-Z0-9_!])\\$?${excelColumnLetter(input.columnIndex)}\\$?${row.sourceRow}(?![0-9])`, 'i').test(expression)
       })) continue
-      input.kind = 'info'; column.kind = 'earning'; earnedCounterparts = true
+      input.kind = 'info'; earnedCounterparts = true
     }
   }
   if (earnedCounterparts) {
@@ -145,6 +146,29 @@ export function defaultPayslipMapping(headers: string[], sheet?: PayslipSheet, h
       columns[grossIndex].kind = 'grossTotal'
       if (keys.indexOf('earnedgross') >= 0 && keys.indexOf('earnedgross') !== grossIndex) columns[keys.indexOf('earnedgross')].kind = 'info'
     }
+  }
+  // Repeated monthly/earned blocks occur in many client salary sheets. A named
+  // payable-days boundary plus repeated BASIC is stronger evidence than position alone.
+  const payable = keys.findIndex(key => /^(?:tndw|daysworked|payabledays|workingday)$/.test(key))
+  const employerStart = columns.find(c => c.columnIndex > payable && c.kind === 'employer')?.columnIndex ?? -1
+  const repeatedBasic = columns.some(c => c.columnIndex < payable && keys[c.columnIndex] === 'basic')
+    && columns.some(c => c.columnIndex > payable && c.columnIndex < employerStart && keys[c.columnIndex] === 'basic')
+  if (payable >= 0 && employerStart > payable && repeatedBasic) {
+    for (const column of columns) {
+      const i = column.columnIndex, k = keys[i]
+      if (i < payable && ['earning', 'deduction', 'employer', 'grossTotal'].includes(column.kind)) column.kind = 'info'
+      if (i > payable && i < employerStart && /allowance|hardship|honorarium|arrear|conveyance|basic|^hra$|communication/.test(k)
+        && !/percentage|rate/.test(k)) column.kind = 'earning'
+      if (i > payable && i < employerStart && /recovery/.test(k)) column.kind = 'deduction'
+      if (column.kind === 'grossTotal' || column.kind === 'deductionTotal') column.kind = 'info'
+      // Recovery on the invoice side is not an employee deduction unless it is
+      // also present in the employee deduction block after the subtotal heading.
+      const deductionStart = keys.indexOf('totaldeduction')
+      if (column.kind === 'deduction' && /recovery/.test(k) && i >= employerStart && (deductionStart < 0 || i < deductionStart)) column.kind = 'ignore'
+    }
+    // Retain just the earned grand total as a control; intermediate gross fields remain info.
+    const total = columns.find(c => c.columnIndex > payable && c.columnIndex < employerStart && keys[c.columnIndex] === 'total')
+    if (total) total.kind = 'grossTotal'
   }
   const wages = columns.filter(column => /^(?:wages|salary|earned(?:salary|wages))$/.test(keys[column.columnIndex]))
   const itemized = columns.some(column => column.kind === 'earning' && !wages.includes(column))
@@ -170,6 +194,30 @@ export function inferPayslipMonth(sheet: PayslipSheet): string {
     return ''
   }
   return ''
+}
+
+export function isVerifiedPayslipLocationSplit(rows: ExcelPayslipRow[], month?: string) {
+  const normalize = (value: string) => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toUpperCase()
+  const label = (value: string) => normalize(value).replace(/[^A-Z0-9]/g, '')
+  if (rows.length < 2 || !rows[0].employeeName.trim() || new Set(rows.map(row => normalize(row.employeeName).replace(/^(?:(?:SHRI|SMT|MR|MRS|MS|DR)\.?\s+)+/, ''))).size !== 1) return false
+  const locations = rows.map(row => [...new Set(row.information.filter(item => /^(?:WORKLOCATION(?:NAME)?|LOCATION(?:NAME(?:TEHSILSUBTEHSIL)?)?|TEHSILSUBTEHSIL)$/.test(label(item.label))).map(item => normalize(item.value)).filter(Boolean))])
+  if (locations.some(values => values.length !== 1)) return false
+  let commonIdentifier = false
+  for (const kind of ['UAN', 'PAN', 'AADHAAR']) {
+    const pattern = kind === 'UAN' ? /^UAN(?:NO|NUMBER)?$/ : kind === 'PAN' ? /^PAN(?:NO|NUMBER)?$/ : /^(?:AADHAAR|AADHAR|ADHAAR)(?:NO|NUMBER)?$/
+    const values = rows.map(row => [...new Set(row.information.filter(item => pattern.test(label(item.label))).map(item => normalize(item.value).replace(/[\s-]/g, '')).filter(value => (kind === 'PAN' ? /^[A-Z]{5}[0-9]{4}[A-Z]$/ : /^[0-9]{12}$/).test(value) && value !== '000000000000'))])
+    if (values.some(items => items.length > 1) || new Set(values.flat()).size > 1) return false
+    commonIdentifier ||= values.every(items => items.length === 1)
+  }
+  if (!commonIdentifier) return false
+  if (new Set(locations.flat()).size === rows.length) return true
+  if (!month || !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return false
+  const single = (row: ExcelPayslipRow, key: string) => { const values = [...new Set(row.information.filter(i => label(i.label) === key).map(i => normalize(i.value)).filter(Boolean))]; return values.length === 1 ? values[0] : '' }
+  const units = rows.map(r => single(r, 'PAYROLLUNIT')), workbooks = rows.map(r => single(r, 'SOURCEWORKBOOK'))
+  if (units.some(v => !v) || new Set(units).size !== rows.length || workbooks.some(v => !v) || new Set(workbooks).size !== rows.length
+    || rows.some(r => single(r, 'REVIEWEDSOURCESPLIT') !== 'CONFIRMED' || !/^[1-9]\d*$/.test(single(r, 'SOURCEEXCELROW')))) return false
+  const days = rows.map(r => single(r, 'ATTENDANCE')).map(v => /^\d+(?:\.\d+)?$/.test(v) ? Number(v) : NaN)
+  return days.every(v => Number.isFinite(v) && v > 0) && days.reduce((sum, v) => sum + v, 0) <= new Date(Number(month.slice(0, 4)), Number(month.slice(5)), 0).getDate()
 }
 
 export function buildExcelPayslipRows(sheet: PayslipSheet, headerRow: number, columns: PayslipColumn[], excludedSourceRows: number[] = []): PayslipImportResult {
@@ -220,11 +268,12 @@ export function buildExcelPayslipRows(sheet: PayslipSheet, headerRow: number, co
     rows.push(row)
   }
   if (!rows.length) issue(headerRow, '', 'No employee rows found. Check the worksheet, header row and employee name mapping.')
-  const codeCounts = new Map<string, number>()
-  for (const row of rows) { const code = row.employeeCode.normalize('NFKC').trim().replace(/\s+/g, ' ').toUpperCase(); if (code) codeCounts.set(code, (codeCounts.get(code) || 0) + 1) }
+  const codeRows = new Map<string, ExcelPayslipRow[]>()
+  for (const row of rows) { const code = row.employeeCode.normalize('NFKC').trim().replace(/\s+/g, ' ').toUpperCase(); if (code) codeRows.set(code, [...(codeRows.get(code) || []), row]) }
   for (const row of rows) {
     const code = row.employeeCode.normalize('NFKC').trim().replace(/\s+/g, ' ').toUpperCase()
-    if (code && codeCounts.get(code)! > 1) issue(row.sourceRow, 'Employee code', `Employee code ${row.employeeCode} is repeated. Give each employee a unique permanent code.`)
+    const group = codeRows.get(code) || []
+    if (group.length > 1 && !isVerifiedPayslipLocationSplit(group, sheet.template?.month)) issue(row.sourceRow, 'Employee code', `Employee code ${row.employeeCode} is repeated. Separate slips require matching identity and distinct work locations, or reviewed source payroll units with valid split attendance. Review the source before saving.`)
   }
   return { rows, issues, excludedRows, excludedDetails }
 }
@@ -330,14 +379,14 @@ function referencePosition(reference: string) {
 
 // Shared-formula expressions occur only on their anchor cell in XLSX. Translate
 // reference tokens, never text literals, sheet qualifiers or workbook names.
-export function translatePayslipSharedFormula(expression: string, anchor: string, destination: string) {
+export function translatePayslipSharedFormula(expression: string, anchor: string, destination: string, relocateWorksheetRows = false) {
   const from = referencePosition(anchor), to = referencePosition(destination)
   if (!from || !to) throw new Error('Shared formula has an invalid cell reference.')
   const columnDelta = to.column - from.column, rowDelta = to.row - from.row
   const shift = (reference: string) => {
     const position = referencePosition(reference)
     if (!position) return reference
-    const column = position.column + (position.columnAbsolute ? 0 : columnDelta), row = position.row + (position.rowAbsolute ? 0 : rowDelta)
+    const column = position.column + (position.columnAbsolute ? 0 : columnDelta), row = position.row + (position.rowAbsolute && !relocateWorksheetRows ? 0 : rowDelta)
     return column < 1 || column > 16384 || row < 1 || row > 1048576 ? '#REF!' : `${position.columnAbsolute ? '$' : ''}${excelColumnLetter(column - 1)}${position.rowAbsolute ? '$' : ''}${row}`
   }
   let result = '', index = 0

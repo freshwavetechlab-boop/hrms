@@ -90,7 +90,7 @@ WHERE e.ClientId=@ClientId", new { ClientId = clientId }, tx)).ToArray();
                 employee = locationMatches.SingleOrDefault();
             }
             if (employee is null) continue; // Name alone never claims a master employee's code.
-            if (ExcelPayslipVarianceService.NormalizeText(row.EmployeeName) != ExcelPayslipVarianceService.NormalizeText(employee.EmployeeName)
+            if (ExcelPayslipRowIdentity.NormalizeName(row.EmployeeName) != ExcelPayslipRowIdentity.NormalizeName(employee.EmployeeName)
                 || locationMatches.Length > 0 && !locationMatches.Contains(employee)) throw Review("Name/location and identity fields point to different employees.");
             foreach (var item in rowIdentifiers)
             {

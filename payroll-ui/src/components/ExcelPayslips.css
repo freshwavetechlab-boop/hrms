@@ -60,6 +60,17 @@
 .excel-payslip-month-tools .file-drop-zone, .excel-payslip-month-tools .ant-smart-table { margin-block: 12px; }
 .excel-payslip-month-tools .ant-drawer-body { min-width: 0; }
 .excel-payslip-footer { display: flex; justify-content: flex-end; }
+.excel-payslip-warning-count.ant-btn { height: auto; min-height: 28px; padding: 0; border: 0; background: transparent; }
+.excel-payslip-warning-count .ant-tag { margin: 0; cursor: pointer; }
+.excel-payslip-warning-review .ant-alert,
+.excel-payslip-amount-editor .ant-alert,
+.excel-payslip-row-review .ant-alert { margin-block: 12px; }
+.excel-payslip-reconciliation { margin-block: 16px; }
+.excel-payslip-correction-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+.excel-payslip-correction-grid .ant-input-number { width: 100%; }
+@media (max-width: 600px) {
+  .excel-payslip-correction-grid { grid-template-columns: minmax(0, 1fr); }
+}
 .excel-payslip-amount { display: flex; justify-content: space-between; gap: 16px; }
 .excel-payslip-pdf { width: 100%; height: 65vh; min-height: 320px; border: 1px solid var(--hrms-line, #e5e8f0); margin-top: 16px; }
 .excel-payslip-history .ant-table-tbody > tr.excel-payslip-latest > td { background: var(--hrms-success-bg, #f0fdf4) !important; }

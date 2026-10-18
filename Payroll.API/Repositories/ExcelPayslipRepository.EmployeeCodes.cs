@@ -17,8 +17,17 @@ public sealed partial class ExcelPayslipRepository
         var missing = batch.Rows.Where(row => string.IsNullOrWhiteSpace(row.EmployeeCode)).ToArray();
         var masters = masterEmployees?.Where(employee => employee.ClientId == batch.ClientId).ToArray() ?? [];
         ReuseMasterEmployeeCodes(batch, masters);
+        var splitGroups = batch.Rows.GroupBy(row => ExcelPayslipRowIdentity.NormalizeName(row.EmployeeName))
+            .Where(group => ExcelPayslipRowIdentity.IsVerifiedLocationSplit(group, batch.Month)).Select(group => group.ToArray()).ToArray();
+        foreach (var group in splitGroups)
+        {
+            var codes = group.Select(row => row.EmployeeCode).Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (codes.Length == 1) foreach (var row in group.Where(row => string.IsNullOrWhiteSpace(row.EmployeeCode))) row.EmployeeCode = codes[0];
+        }
         var provided = batch.Rows.Where(row => !string.IsNullOrWhiteSpace(row.EmployeeCode)).ToArray();
-        var duplicate = provided.GroupBy(row => ExcelPayslipVarianceService.NormalizeText(row.EmployeeCode)).FirstOrDefault(group => group.Count() > 1);
+        var duplicate = provided.GroupBy(row => ExcelPayslipVarianceService.NormalizeText(row.EmployeeCode))
+            .FirstOrDefault(group => group.Count() > 1 && !ExcelPayslipRowIdentity.IsVerifiedLocationSplit(group, batch.Month));
         if (duplicate is not null)
             throw new InvalidOperationException($"Employee code {duplicate.First().EmployeeCode} appears more than once. Give each employee a unique code before saving.");
 
@@ -34,11 +43,14 @@ public sealed partial class ExcelPayslipRepository
             var next = suffixes.Select(suffix => BigInteger.Parse(suffix, CultureInfo.InvariantCulture)).DefaultIfEmpty(BigInteger.Zero).Max() + 1;
             foreach (var row in unassigned)
             {
+                if (!string.IsNullOrWhiteSpace(row.EmployeeCode)) continue;
                 string code;
                 do { code = prefix + next.ToString(CultureInfo.InvariantCulture).PadLeft(width, '0'); next++; }
                 while (!used.Add(code));
                 if (code.Length > 80) throw new InvalidOperationException("The generated employee code exceeds 80 characters. Map a shorter employee code in the workbook.");
                 row.EmployeeCode = code;
+                foreach (var peer in splitGroups.FirstOrDefault(group => group.Contains(row)) ?? [])
+                    if (string.IsNullOrWhiteSpace(peer.EmployeeCode)) peer.EmployeeCode = code;
             }
         }
         if (source is null) return;

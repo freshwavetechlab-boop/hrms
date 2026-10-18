@@ -54,7 +54,15 @@ public partial class EmployeeRepository
         return (await db.QueryAsync<ExcelPayrollPolicyCohort>(@"SELECT client_id ClientId,
 CAST(JSON_UNQUOTE(JSON_EXTRACT(result_json,'$.attendanceGroupId')) AS UNSIGNED) GroupId,
 COALESCE(CAST(JSON_EXTRACT(result_json,'$.employeeIds') AS CHAR),'[]') EmployeeIdsJson
-FROM excel_payroll_setup_imports WHERE client_id IN @ClientIds AND status='Applied' ORDER BY created_at,id", new { ClientIds = clientIds }, tx))
+FROM excel_payroll_setup_imports WHERE client_id IN @ClientIds AND status='Applied'
+AND COALESCE(JSON_LENGTH(JSON_EXTRACT(result_json,'$.attendanceAssignments')),0)=0
+UNION ALL
+SELECT receipt.client_id ClientId,assignment.GroupId,CAST(JSON_ARRAYAGG(assignment.EmployeeId) AS CHAR) EmployeeIdsJson
+FROM excel_payroll_setup_imports receipt
+JOIN JSON_TABLE(COALESCE(JSON_EXTRACT(receipt.result_json,'$.attendanceAssignments'),JSON_ARRAY()),'$[*]'
+COLUMNS(EmployeeId INT PATH '$.employeeId',GroupId INT PATH '$.groupId',IsSourceCohort INT PATH '$.isSourceCohort' DEFAULT '0' ON EMPTY)) assignment
+WHERE receipt.client_id IN @ClientIds AND receipt.status='Applied' AND assignment.IsSourceCohort=1
+GROUP BY receipt.id,receipt.client_id,assignment.GroupId", new { ClientIds = clientIds }, tx))
             .Where(c => c.GroupId > 0).ToList();
     }
 

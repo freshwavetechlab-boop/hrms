@@ -291,9 +291,9 @@ SELECT LAST_INSERT_ID();", new
         var row = await db.QueryFirstAsync<NotificationQueueItem>("SELECT * FROM notification_queue WHERE Id=@Id", new { Id = queueId });
         try
         {
-            var messageId = await SendAsync(db, smtp, row, cancellationToken);
-            await db.ExecuteAsync("UPDATE notification_queue SET Status='Sent',SentAt=UTC_TIMESTAMP(),ErrorMessage='' WHERE Id=@Id", new { Id = queueId });
-            await WriteLogsAsync(db, row, "Sent", "", messageId);
+            var delivery = await SendAsync(db, smtp, row, cancellationToken);
+            await db.ExecuteAsync("UPDATE notification_queue SET Status='Sent',SentAt=UTC_TIMESTAMP(),ErrorMessage=@Warning WHERE Id=@Id", new { Id = queueId, Warning = delivery.SentCopyWarning });
+            await WriteLogsAsync(db, row, "Sent", delivery.SentCopyWarning, delivery.MessageId);
             return (true, "");
         }
         catch (Exception exception)
@@ -385,29 +385,29 @@ SELECT LAST_INSERT_ID();", new
         var smtp = await db.QueryFirstOrDefaultAsync<NotificationSmtpSetting>("SELECT * FROM notification_smtp_settings WHERE Id=1") ?? new NotificationSmtpSetting();
         if (!smtp.IsEnabled || smtp.DeliveryPaused) return 0;
         var rows = (await db.QueryAsync<NotificationQueueItem>(@"SELECT * FROM notification_queue
-WHERE (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@EmailRequestEvent) AND Status IN (@ExcelPending,@ExcelRetry))) AND RetryCount < 5
+WHERE (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@EmailRequestEvent,@EmailRequestPdfEvent) AND Status IN (@ExcelPending,@ExcelRetry))) AND RetryCount < 5
   AND (@QueueId IS NULL OR Id=@QueueId)
-ORDER BY CreatedAt LIMIT 20", new { QueueId = queueId, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, ExcelPending = ExcelPayslipPendingStatus, ExcelRetry = ExcelPayslipRetryStatus })).ToList();
+ORDER BY CreatedAt LIMIT 20", new { QueueId = queueId, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, EmailRequestPdfEvent = ExcelPayslipEmailRequestPdfEvent, ExcelPending = ExcelPayslipPendingStatus, ExcelRetry = ExcelPayslipRetryStatus })).ToList();
         var count = 0;
         foreach (var row in rows)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var claimed = await db.ExecuteAsync(@"UPDATE notification_queue
 SET Status='Processing'
-WHERE Id=@Id AND (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@EmailRequestEvent) AND Status IN (@ExcelPending,@ExcelRetry))) AND RetryCount < 5",
-                new { row.Id, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, ExcelPending = ExcelPayslipPendingStatus, ExcelRetry = ExcelPayslipRetryStatus });
+WHERE Id=@Id AND (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@EmailRequestEvent,@EmailRequestPdfEvent) AND Status IN (@ExcelPending,@ExcelRetry))) AND RetryCount < 5",
+                new { row.Id, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, EmailRequestPdfEvent = ExcelPayslipEmailRequestPdfEvent, ExcelPending = ExcelPayslipPendingStatus, ExcelRetry = ExcelPayslipRetryStatus });
             if (claimed == 0) continue;
 
             try
             {
-                var messageId = await SendAsync(db, smtp, row, cancellationToken);
-                await db.ExecuteAsync("UPDATE notification_queue SET Status='Sent',SentAt=UTC_TIMESTAMP(),ErrorMessage='' WHERE Id=@Id", new { row.Id });
-                await WriteLogsAsync(db, row, "Sent", "", messageId);
+                var delivery = await SendAsync(db, smtp, row, cancellationToken);
+                await db.ExecuteAsync("UPDATE notification_queue SET Status='Sent',SentAt=UTC_TIMESTAMP(),ErrorMessage=@Warning WHERE Id=@Id", new { row.Id, Warning = delivery.SentCopyWarning });
+                await WriteLogsAsync(db, row, "Sent", delivery.SentCopyWarning, delivery.MessageId);
                 count++;
             }
             catch (Exception exception)
             {
-                var status = row.RetryCount + 1 >= 5 ? "Failed" : row.EventCode is ExcelPayslipEvent or ExcelPayslipEmailRequestEvent ? ExcelPayslipRetryStatus : "Retry";
+                var status = row.RetryCount + 1 >= 5 ? "Failed" : row.EventCode is ExcelPayslipEvent or ExcelPayslipEmailRequestEvent or ExcelPayslipEmailRequestPdfEvent ? ExcelPayslipRetryStatus : "Retry";
                 await db.ExecuteAsync("UPDATE notification_queue SET Status=@Status,RetryCount=RetryCount+1,ErrorMessage=@Error WHERE Id=@Id", new { row.Id, Status = status, Error = exception.Message });
                 await WriteLogsAsync(db, row, status, exception.Message);
                 logger.LogWarning(exception, "Queued notification {QueueId} failed.", row.Id);
@@ -420,8 +420,8 @@ WHERE Id=@Id AND (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@E
     {
         await using var db = Db();
         await db.OpenAsync();
-        await db.ExecuteAsync("UPDATE notification_queue SET Status=CASE WHEN EventCode IN (@ExcelEvent,@EmailRequestEvent) THEN @ExcelPending ELSE 'Pending' END,RetryCount=0,ErrorMessage='',SentAt=NULL WHERE Id=@Id",
-            new { Id = id, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, ExcelPending = ExcelPayslipPendingStatus });
+        await db.ExecuteAsync("UPDATE notification_queue SET Status=CASE WHEN EventCode IN (@ExcelEvent,@EmailRequestEvent,@EmailRequestPdfEvent) THEN @ExcelPending ELSE 'Pending' END,RetryCount=0,ErrorMessage='',SentAt=NULL WHERE Id=@Id",
+            new { Id = id, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, EmailRequestPdfEvent = ExcelPayslipEmailRequestPdfEvent, ExcelPending = ExcelPayslipPendingStatus });
     }
 
     public async Task<int> RetryAndProcessAsync(long id, CancellationToken cancellationToken)
@@ -597,7 +597,7 @@ LIMIT 1", new { evt.ResourceId });
         catch { return null; }
     }
 
-    private async Task<string> SendAsync(MySqlConnection db, NotificationSmtpSetting smtp, NotificationQueueItem row, CancellationToken cancellationToken)
+    private async Task<NotificationMailDeliveryResult> SendAsync(MySqlConnection db, NotificationSmtpSetting smtp, NotificationQueueItem row, CancellationToken cancellationToken)
     {
         using var observation = engineMonitor?.Observe("notifications",new EngineActivityContext("Deliver queued email", "Task",row.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)));
         var message = new MimeMessage();
@@ -613,6 +613,8 @@ LIMIT 1", new { evt.ResourceId });
             builder.Attachments.Add($"payslip-{row.ResourceId}.html", System.Text.Encoding.UTF8.GetBytes(row.BodyHtml), new ContentType("text", "html"));
         if (row.EventCode == ExcelPayslipEvent)
             await AttachExcelPayslipPdfAsync(db, row, builder);
+        else if (row.EventCode == ExcelPayslipEmailRequestPdfEvent)
+            await AttachExcelPayslipEmailRequestPdfAsync(db, row, builder);
         else if (row.EventCode == ExcelPayslipEmailRequestEvent)
             EmbedExcelPayslipImages(builder);
         var openHandles = new List<AttachmentFileHandle>();
@@ -640,15 +642,26 @@ WHERE QueueId=@QueueId ORDER BY Id", new { QueueId = row.Id })).ToList();
             await client.ConnectAsync(smtp.Host, smtp.Port, socketOptions, cancellationToken);
             if (!string.IsNullOrWhiteSpace(smtp.UserName))
                 await client.AuthenticateAsync(smtp.UserName, smtp.Password, cancellationToken);
-            await client.SendAsync(message, cancellationToken);
-            await client.DisconnectAsync(true, cancellationToken);
+            var delivery = await NotificationMailDelivery.SendAsync(smtp, message,
+                async token => { await client.SendAsync(message, token); }, cancellationToken);
+            if (delivery.SentCopyError is not null)
+                logger.LogWarning(delivery.SentCopyError, "Notification {QueueId} was sent, but its mailbox Sent copy could not be saved; delivery will not be retried for this error.", row.Id);
+            try { await client.DisconnectAsync(true, cancellationToken); }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "Notification {QueueId} was already accepted by SMTP; disconnect failed without changing its delivery status.", row.Id);
+            }
+            if(observation is not null) observation.Succeeded = true;
+            return delivery;
         }
         finally
         {
-            foreach (var handle in openHandles) await handle.DisposeAsync();
+            foreach (var handle in openHandles)
+            {
+                try { await handle.DisposeAsync(); }
+                catch (Exception exception) { logger.LogWarning(exception, "Notification {QueueId} attachment cleanup failed without changing its delivery outcome.", row.Id); }
+            }
         }
-        if(observation is not null) observation.Succeeded = true;
-        return message.MessageId;
     }
 
     private static string StripHtml(string html) =>

@@ -36,7 +36,7 @@ test('five actual financial cases propose monthly bases, earned tokens, per-row 
   const byCode = new Map(request.components.map(component => [component.code, component]))
   assert.equal(request.payrollDaysColumnIndex, 11); assert.equal(request.payableDaysColumnIndex, 12)
   assert.equal(request.sourceWorkLocationColumnIndex, 4)
-  assert.equal(request.createMissingWorkLocations, false)
+  assert.equal(request.createMissingWorkLocations, true)
   assert.equal(request.components.length, 15)
   assert.equal(byCode.get('BASIC').sourceColumnIndex, 5)
   assert.equal(byCode.get('BASIC').calculationType, 'Fixed Amount'); assert.equal(byCode.get('BASIC').proRata, true)
@@ -129,4 +129,52 @@ test('approved output blanks cannot hide a source error or approve a monthly-inp
   assert.equal(proposal.request.components.find(item => item.code === 'EPF_ADMIN').rowFormulas['row-42'], 'REVIEW_REQUIRED')
   assert.equal(proposal.request.components.find(item => item.code === 'EXP_ALLOWANCE').blankInputAsZero, false)
   assert.ok(proposal.notes.some(note => /source error/.test(note)))
+})
+
+
+test('client defaults prefill organization and attendance without changing source formulas or inventing leave entitlement', () => {
+  const { batch, context, rowIds } = fixture()
+  context.defaults = { department: 'Operations', designation: 'Unassigned', grade: 'G2', workWeek: 'Friday off', attendanceCycleStartDay: 5, attendanceCycleEndDay: 4, payrollReportGenerationDay: 8, attendanceSource: 'Existing client policy: Operations', notes: ['Reviewed policy'] }
+  const { request, notes } = proposeExcelPayrollSetup(batch, context, rowIds)
+  assert.equal(request.defaultDepartment, 'Operations'); assert.equal(request.defaultDesignation, 'Unassigned'); assert.equal(request.defaultGrade, 'G2')
+  assert.equal(request.workWeek, 'Friday off'); assert.equal(request.attendanceCycleStartDay, 5); assert.equal(request.attendanceCycleEndDay, 4); assert.equal(request.payrollReportGenerationDay, 8)
+  assert.equal(request.preserveExistingAttendancePolicies, true); assert.equal(request.createMissingDropdownValues, true)
+  assert.ok(notes.some(note => note.includes('Existing client policy')))
+  assert.equal(request.editableDefaults.leave.active, false)
+  assert.equal(request.components.find(component => component.code === 'PF').rowFormulas['row-3'], 'BASIC_EARNED*12%')
+})
+
+test('MNGL-style hidden base and earned columns become payroll components with a fixed divisor and dynamic PF/LWF formulas', () => {
+  const headers = ['Name', 'Work Location (City name e.g. Pune, Nasik etc)', 'Besic', 'DA', 'Attendance', 'Besic', 'DA', 'Total', 'Total Earning', 'TOTAL EPF', 'LWF Employee Share', 'NetPay/In Hand']
+  const formulas = { 5: 'C2/26*E2', 6: 'D2/26*E2', 7: 'F2+G2', 8: 'H2', 9: 'IF((F2+G2)>15000,(F2+G2)*12%,15000*12%)/26*14+IF((F2+G2)>25000,(F2+G2)*12%,25000*12%)/26*12', 10: 'IF(E2>0,(25/6),0)', 11: 'I2-J2-K2' }
+  const values = ['Example Person', 'Pune', '26000', '3900', '13', '13000', '1950', '14950', '14950', '2353.84615384615', '4.16666666666667', '12591.9871794872']
+  const source = { headerRow: 1, columnCount: headers.length, columns: headers.map((sourceHeader, columnIndex) => ({ sourceHeader, columnIndex, label: sourceHeader, kind: columnIndex === 0 ? 'employeeName' : columnIndex === 8 ? 'earning' : [9, 10].includes(columnIndex) ? 'deduction' : columnIndex === 11 ? 'netPay' : 'ignore' })), rows: [{ sourceRow: 1, cells: headers.map(value => ({ value })) }, { sourceRow: 2, cells: values.map((value, i) => ({ value, ...(formulas[i] ? { formulaText: formulas[i] } : {}) })) }], excludedSourceRows: [] }
+  const batch = { id: 'a'.repeat(32), clientId: 16, clientName: 'Test client', month: '2026-09', rows: [{ id: 'row-2', sourceRow: 2, employeeName: 'Example Person', employeeCode: 'MNGL050', information: [] }] }
+  const context = { source, components: [], employees: [], workWeeks: [], workLocations: [], roster: { rows: [{ rowId: 'row-2', status: 'Existing', employeeId: 1 }], missingEmployees: [] } }
+  source.rows.push({ sourceRow: 50, cells: [{ value: 'TOTAL' }, { value: '' }, { value: '26000', formulaText: 'SUM(C2:C49)' }, { value: '3900', formulaText: 'SUM(D2:D49)' }] })
+  const before = JSON.stringify(source)
+  const { request } = proposeExcelPayrollSetup(batch, context, ['row-2'])
+  assert.equal(request.fixedPayrollDays, 26); assert.equal(request.payrollDaysColumnIndex, -1)
+  assert.equal(request.sourceWorkLocationColumnIndex, 1)
+  assert.equal(request.components.length, 4, 'total earning must not duplicate granular earnings')
+  const byCode = new Map(request.components.map(c => [c.code, c]))
+  assert.equal(byCode.get('BASIC').sourceColumnIndex, 2)
+  assert.equal(byCode.get('DA').sourceColumnIndex, 3)
+  assert.match(byCode.get('PF').rowFormulas['row-2'], /MAX\(BASIC_EARNED\+DA_EARNED,15000\)/)
+  assert.match(byCode.get('PF').rowFormulas['row-2'], /MAX\(BASIC_EARNED\+DA_EARNED,25000\)/)
+  assert.match(byCode.get('LWF_EMPLOYEE_SHARE').rowFormulas['row-2'], /ROUNDUP\(PAYABLE_DAYS\)/)
+  assert.ok(request.components.every(c => !Object.values(c.rowFormulas || {}).includes('REVIEW_REQUIRED')))
+  assert.equal(request.employeeDecisions[0].matchedEmployeeId, 1)
+  assert.equal(JSON.stringify(source), before)
+  const remapped = proposeExcelPayrollSetup(batch, context, ['row-2'], { 10: 'ignore' })
+  assert.equal(remapped.request.components.length, 3)
+})
+
+test('component mapping, cohort template names and manual additions remain independent of the saved payslip', () => {
+  const { batch, context, rowIds } = fixture(), before = JSON.stringify(batch)
+  const first = proposeExcelPayrollSetup(batch, context, rowIds.slice(0, 2)).request
+  const next = proposeExcelPayrollSetup(batch, context, rowIds.slice(2)).request
+  assert.notEqual(first.templateName, next.templateName)
+  assert.deepEqual(first.employeeDecisions.map(row => row.allowCreate), [false, false])
+  assert.equal(JSON.stringify(batch), before)
 })

@@ -41,21 +41,37 @@ VALUES(@TemplateId,@ComponentId,@Value,@CalculationType,@Formula,@BaseComponent,
         }
     }
 
-    private static async Task<int> InsertAttendanceAsync(MySqlConnection db, MySqlTransaction tx, int clientId, ExcelPayrollSetupRequest request, Plan plan, string importId)
+    private static async Task<int> InsertAttendanceAsync(MySqlConnection db, MySqlTransaction tx, int clientId, ExcelPayrollSetupRequest request, Plan plan, string importId, ExcelPayrollSetupResult result)
     {
         var ids = plan.Rows.Select(r => r.Employee.Id).ToArray();
+        var employmentError = await EmployeeAttendanceEligibility.ValidateMonthlyAsync(db, tx, clientId, plan.Batch.Month,
+            plan.Rows.Select(row => (row.Employee.Id, row.Preview.PresentDays, row.Preview.PayableDays)));
+        if (employmentError is not null) throw new InvalidOperationException(employmentError);
         var error = await WeeklyOffAttendanceService.ValidateMonthlyChangesAsync(db, tx, clientId, ids, plan.Batch.Month);
         if (error is not null) throw new InvalidOperationException(error);
         var groupName = request.TemplateName.Trim() + " / " + plan.Batch.Month + " / Excel " + importId[..8];
         if (groupName.Length > 180) groupName = groupName[..180];
-        var groupId = (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO attendance_groups
+        var memberships = (await db.QueryAsync<(int EmployeeId, int GroupId, bool IsSourceCohort)>(@"SELECT m.employee_id EmployeeId,g.id GroupId,
+EXISTS(SELECT 1 FROM excel_payroll_setup_imports receipt WHERE receipt.client_id=g.client_id AND receipt.id=REPLACE(g.policy_batch_id,'-','') AND receipt.status='Applied') IsSourceCohort
+FROM attendance_group_employees m JOIN attendance_groups g ON g.id=m.attendance_group_id
+WHERE g.client_id=@ClientId AND g.is_active=TRUE AND m.employee_id IN @Ids", new { ClientId = clientId, Ids = ids }, tx)).ToLookup(row => row.EmployeeId);
+        if (ids.Any(id => memberships[id].Count() > 1) || !request.PreserveExistingAttendancePolicies && memberships.Any())
+            throw new InvalidOperationException("Review existing attendance memberships before applying this setup.");
+        var groupId = 0;
+        if (ids.Any(id => !memberships[id].Any())) groupId = (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO attendance_groups
 (client_id,policy_batch_id,name,work_location_id,department,designation,work_week,attendance_cycle_start_day,attendance_cycle_end_day,payroll_report_generation_day,is_active,shift_id,attendance_mode,allowed_shift_ids_json)
 VALUES(@ClientId,@BatchId,@Name,0,'All','All',@WorkWeek,@StartDay,@EndDay,@ReportDay,TRUE,NULL,'Monthly',JSON_ARRAY()); SELECT LAST_INSERT_ID();",
             new { ClientId = clientId, BatchId = Guid.Parse(importId).ToString(), Name = groupName, WorkWeek = request.WorkWeek.Trim(), StartDay = request.AttendanceCycleStartDay,
                 EndDay = request.AttendanceCycleEndDay, ReportDay = request.PayrollReportGenerationDay }, tx);
         foreach (var row in plan.Rows)
         {
-            await db.ExecuteAsync("INSERT INTO attendance_group_employees(attendance_group_id,employee_id) VALUES(@GroupId,@EmployeeId)", new { GroupId = groupId, EmployeeId = row.Employee.Id }, tx);
+            var assigned = memberships[row.Employee.Id].FirstOrDefault().GroupId;
+            if (assigned == 0)
+            {
+                assigned = groupId;
+                await db.ExecuteAsync("INSERT INTO attendance_group_employees(attendance_group_id,employee_id) VALUES(@GroupId,@EmployeeId)", new { GroupId = assigned, EmployeeId = row.Employee.Id }, tx);
+            }
+            result.AttendanceAssignments.Add(new(row.Employee.Id, assigned, assigned == groupId || memberships[row.Employee.Id].FirstOrDefault().IsSourceCohort));
             await db.ExecuteAsync(@"INSERT INTO employee_monthly_attendance(client_id,employee_id,attendance_month,working_days,present_days,payable_days,lop_days,source_type,remarks)
 VALUES(@ClientId,@EmployeeId,@Month,@Days,@Present,@Payable,@Lop,'Monthly',@Remarks)
 ON DUPLICATE KEY UPDATE working_days=VALUES(working_days),present_days=VALUES(present_days),payable_days=VALUES(payable_days),lop_days=VALUES(lop_days),source_type='Monthly',remarks=VALUES(remarks)",
@@ -63,7 +79,7 @@ ON DUPLICATE KEY UPDATE working_days=VALUES(working_days),present_days=VALUES(pr
                     Present = row.Preview.PresentDays, Payable = row.Preview.PayableDays, Lop = row.Preview.PayrollDays-row.Preview.PayableDays,
                     Remarks = $"Reviewed Excel source {request.BatchId}, row {row.SourceRow}, import {importId}." }, tx);
         }
-        return groupId;
+        return result.AttendanceAssignments.First().GroupId;
     }
 
     private static async Task InsertAdjustmentsAsync(MySqlConnection db, MySqlTransaction tx, int clientId, ExcelPayrollSetupRequest request, Plan plan, string importId)

@@ -81,6 +81,23 @@ public sealed class ExcelPayslipCalculationTests
     }
 
     [Fact]
+    public void CorrectedFormulaCacheCanBeSavedButRequiresReviewBeforeAnotherMonth()
+    {
+        var (source, batch, request) = Example();
+        source.Rows[1].Cells[6]!.Value = "15705.25";
+        source.Rows[1].Cells[6]!.CalculationError = "This formula amount was manually corrected for this batch. Re-import a reviewed salary formula before creating another month.";
+        batch.Rows[0].NetPay = 15705.25m;
+        var before = JsonSerializer.Serialize(new { source, batch });
+        Assert.Null(ExcelPayslipCalculationService.ValidateSource(source, batch));
+        var error = Assert.Throws<InvalidOperationException>(() => ExcelPayslipCalculationService.Calculate(source, batch, request));
+        Assert.Contains("manually corrected", error.Message);
+        Assert.Equal(before, JsonSerializer.Serialize(new { source, batch }));
+        source.Rows[1].Cells[6]!.CalculationError = null;
+        var reviewed = ExcelPayslipCalculationService.Calculate(source, batch, request);
+        Assert.Equal(7852.5m, reviewed.Rows[0].NetPay);
+    }
+
+    [Fact]
     public void PlrsArithmeticHalfDaysAndContributionsRecalculateWithoutChangingTheOriginal()
     {
         var (source, batch, request) = Example(); var original = JsonSerializer.Serialize(new { source, batch });
@@ -246,12 +263,35 @@ public sealed class ExcelPayslipCalculationTests
     }
 
     [Fact]
-    public void SourceCacheSpellingCanDifferOnlyAtTheSameIeeeNumber()
+    public void SourceCacheSpellingCanDifferOnlyBeyondExcelsSignificantDigits()
     {
         var (source, batch, _) = Example(); source.Rows[1].Cells[3]!.Value = "12.000000000000001"; batch.Rows[0].Earnings[0].Amount = 12.000000000000002m;
         Assert.Null(ExcelPayslipCalculationService.ValidateSource(source, batch));
         batch.Rows[0].Earnings[0].Amount = 12.00000001m;
         Assert.Contains("amount", ExcelPayslipCalculationService.ValidateSource(source, batch));
+    }
+
+    [Theory]
+    [InlineData("112.00961538461539", "112.0096153846154")]
+    [InlineData("24298.539999999994", "24298.53999999999")]
+    [InlineData("1000.0000000000001", "1000")]
+    [InlineData("21885.603851282049", "21885.60385128205")]
+    public void ExcelCacheAndBrowserAmountsKeepIntegrityAtFifteenSignificantDigits(string cache, string browser)
+    {
+        var (source, batch, request) = Example();
+        source.Rows[1].Cells[5]!.Value = cache;
+        batch.Rows[0].Deductions[1].Amount = decimal.Parse(browser, System.Globalization.CultureInfo.InvariantCulture);
+        var original = JsonSerializer.Serialize(new { source, batch });
+        Assert.Null(ExcelPayslipCalculationService.ValidateSource(source, batch));
+        request.Month = "2026-08"; request.Attendance[0].Days = 0;
+        var result = ExcelPayslipCalculationService.Calculate(source, batch, request);
+        Assert.Equal(0m, result.Rows[0].Deductions[1].Amount);
+        Assert.Equal(original, JsonSerializer.Serialize(new { source, batch }));
+        foreach (var change in new[] { 0.01m, 0.00000001m })
+        {
+            batch.Rows[0].Deductions[1].Amount += change;
+            Assert.Contains("saved amount", ExcelPayslipCalculationService.ValidateSource(source, batch));
+        }
     }
 
     [Fact]

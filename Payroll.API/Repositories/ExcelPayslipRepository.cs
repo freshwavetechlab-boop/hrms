@@ -167,7 +167,9 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
     {
         var json = await db.ExecuteScalarAsync<string?>("SELECT CAST(batch_json AS CHAR) FROM excel_payslip_batches WHERE client_id=@ClientId AND id=@Id", new { ClientId = clientId, Id = id }, tx);
         var batch = string.IsNullOrWhiteSpace(json) ? null : JsonSerializer.Deserialize<ExcelPayslipBatch>(json, JsonOptions);
-        return batch?.ClientId == clientId && batch.Id == id ? batch : null;
+        if (batch?.ClientId != clientId || batch.Id != id) return null;
+        await AnnotateEmploymentAsync(db, batch, tx);
+        return batch;
     }
 
     public async Task<(ExcelPayslipBatch? Item, string? Error)> SaveAsync(int clientId, ExcelPayslipBatch request, string actor)
@@ -176,6 +178,7 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         if (error is not null) return (null, error);
         // Clone before normalizing warnings/metadata so callers cannot modify an accepted snapshot in memory.
         var batch = JsonSerializer.Deserialize<ExcelPayslipBatch>(JsonSerializer.Serialize(request, JsonOptions), JsonOptions)!;
+        foreach (var row in batch.Rows) row.Employment = null;
         var calculationSource = batch.CalculationSource;
         batch.CalculationSource = null;
         if (calculationSource is not null)
@@ -236,7 +239,9 @@ WHERE batches.client_id=@ClientId AND codes.employee_code IS NOT NULL AND TRIM(c
         if (calculationSource is not null)
             await db.ExecuteAsync("INSERT INTO excel_payslip_calculation_sources(client_id,batch_id,source_json,created_at) VALUES(@ClientId,@Id,CAST(@Json AS JSON),@CreatedAtUtc)",
                 new { ClientId = clientId, batch.Id, Json = JsonSerializer.Serialize(calculationSource, JsonOptions), batch.CreatedAtUtc }, tx);
-        await tx.CommitAsync(); return (batch, null);
+        await AnnotateEmploymentAsync(db, batch, tx);
+        await tx.CommitAsync();
+        return (batch, null);
     }
 
     public async Task<JsonElement?> GetProfileAsync(int clientId, string signature)
@@ -244,11 +249,19 @@ WHERE batches.client_id=@ClientId AND codes.employee_code IS NOT NULL AND TRIM(c
         if (!ValidSignature(signature)) return null;
         await using var db = Db(); await db.OpenAsync();
         if (!await SupportedAsync(db, clientId)) return null;
-        var json = await db.ExecuteScalarAsync<string?>("SELECT CAST(SettingsJson AS CHAR) FROM modulesettings WHERE client_id=@ClientId AND ModuleCode=@Code", new { ClientId = clientId, Code = ProfileCode });
+        var json = await db.ExecuteScalarAsync<string?>("SELECT CAST(SettingsJson AS CHAR) FROM modulesettings WHERE client_id=@ClientId AND ModuleCode IN (@Code,@LegacyCode) ORDER BY ModuleCode=@Code DESC LIMIT 1",
+            new { ClientId = clientId, Code = MappingProfileStorageCode(clientId), LegacyCode = ProfileCode });
         if (string.IsNullOrWhiteSpace(json)) return null;
         using var document = JsonDocument.Parse(json);
         return document.RootElement.TryGetProperty(signature.ToLowerInvariant(), out var saved) ? saved.Clone() : null;
     }
+
+    // Older deployments retain a global ModuleCode unique index as well as the
+    // client/module index. Scope the private storage key without changing either
+    // index or another client's legacy mapping record.
+    internal static string MappingProfileStorageCode(int clientId) => clientId > 0
+        ? ProfileCode + ":" + clientId.ToString(CultureInfo.InvariantCulture)
+        : throw new InvalidOperationException("Select an active client.");
 
     public async Task<(bool Ok, string? Error)> SaveProfileAsync(int clientId, string signature, JsonElement profile)
     {
@@ -261,13 +274,17 @@ WHERE batches.client_id=@ClientId AND codes.employee_code IS NOT NULL AND TRIM(c
             var templates = await ReadTemplatesAsync(db, clientId, tx);
             if (!templates.Any(t => t.Id == selectedTemplate.GetString()!.Trim())) return (false, "The mapping profile salary template must belong to this client and be active.");
         }
-        await db.ExecuteAsync("INSERT INTO modulesettings(client_id,ModuleCode,IsEnabled,SettingsJson) VALUES(@ClientId,@Code,TRUE,JSON_OBJECT()) ON DUPLICATE KEY UPDATE ModuleCode=VALUES(ModuleCode)", new { ClientId = clientId, Code = ProfileCode }, tx);
-        var json = await db.ExecuteScalarAsync<string>("SELECT CAST(SettingsJson AS CHAR) FROM modulesettings WHERE client_id=@ClientId AND ModuleCode=@Code FOR UPDATE", new { ClientId = clientId, Code = ProfileCode }, tx);
+        var code = MappingProfileStorageCode(clientId);
+        var legacyJson = await db.ExecuteScalarAsync<string?>("SELECT CAST(SettingsJson AS CHAR) FROM modulesettings WHERE client_id=@ClientId AND ModuleCode=@Code", new { ClientId = clientId, Code = ProfileCode }, tx);
+        await db.ExecuteAsync("INSERT INTO modulesettings(client_id,ModuleCode,IsEnabled,SettingsJson) VALUES(@ClientId,@Code,TRUE,CAST(@InitialJson AS JSON)) ON DUPLICATE KEY UPDATE ModuleCode=VALUES(ModuleCode)",
+            new { ClientId = clientId, Code = code, InitialJson = string.IsNullOrWhiteSpace(legacyJson) ? "{}" : legacyJson }, tx);
+        var json = await db.ExecuteScalarAsync<string?>("SELECT CAST(SettingsJson AS CHAR) FROM modulesettings WHERE client_id=@ClientId AND ModuleCode=@Code FOR UPDATE", new { ClientId = clientId, Code = code }, tx);
+        if (string.IsNullOrWhiteSpace(json)) return (false, "The client mapping record could not be prepared. Retry after checking database configuration.");
         var profiles = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json, JsonOptions) ?? [];
         var key = signature.ToLowerInvariant();
         if (profiles.Count >= 50 && !profiles.ContainsKey(key)) return (false, "This client already has 50 mapping formats. Reuse an existing format.");
         profiles[key] = profile.Clone();
-        await db.ExecuteAsync("UPDATE modulesettings SET SettingsJson=CAST(@Json AS JSON) WHERE client_id=@ClientId AND ModuleCode=@Code", new { ClientId = clientId, Code = ProfileCode, Json = JsonSerializer.Serialize(profiles, JsonOptions) }, tx);
+        await db.ExecuteAsync("UPDATE modulesettings SET SettingsJson=CAST(@Json AS JSON) WHERE client_id=@ClientId AND ModuleCode=@Code", new { ClientId = clientId, Code = code, Json = JsonSerializer.Serialize(profiles, JsonOptions) }, tx);
         await tx.CommitAsync();
         return (true, null);
     }
@@ -344,6 +361,7 @@ WHERE batches.client_id=@ClientId AND codes.employee_code IS NOT NULL AND TRIM(c
         var selectedIds = request.RowIds.ToHashSet(StringComparer.Ordinal);
         var selected = batch.Rows.Where(r => selectedIds.Contains(r.Id)).ToArray();
         if (selected.Length != selectedIds.Count) return ([], "A selected row does not belong to this saved batch.");
+        if (selected.Any(row => row.Employment?.BlockedForMonth == true)) return ([], "A selected employee left before this salary month. Future payslip generation and delivery are unavailable; earlier saved payslips remain available.");
         if (!request.AcknowledgeWarnings && selected.Any(r => RowWarnings(r).Count > 0)) return ([], "Review and acknowledge the selected source-row warnings before export or sending.");
         return (selected, null);
     }

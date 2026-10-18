@@ -858,7 +858,7 @@ LEFT JOIN (
     GROUP BY age.employee_id
 ) employee_group ON employee_group.employee_id=e.Id
 LEFT JOIN attendance_groups g ON g.id=employee_group.group_id
-WHERE e.ClientId=@ClientId AND e.IsActive=TRUE
+WHERE e.ClientId=@ClientId AND " + EmployeeEmploymentRules.EligibleInMonth("e", "@Month") + @"
   AND (@ReportingManagerUserId IS NULL OR e.ReportingManagerUserId=@ReportingManagerUserId)
   AND (@WorkLocationId <= 0 OR e.WorkLocationId=@WorkLocationId)
 ORDER BY e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = clientId, Month = month, WorkLocationId = locationId, ReportingManagerUserId = reportingManagerUserId });
@@ -870,7 +870,9 @@ ORDER BY e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = clientId, M
         if (error is not null) return (null, error);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        var validEmployeeIds = (await connection.QueryAsync<int>("SELECT Id FROM employees WHERE ClientId=@ClientId AND IsActive=TRUE", new { request.ClientId })).ToHashSet();
+        var employmentError = await EmployeeAttendanceEligibility.ValidateMonthlyAsync(connection, null, request.ClientId, request.Month, request.Rows.Select(row => (row.EmployeeId, row.PresentDays, row.PayableDays)));
+        if (employmentError is not null) return (null, employmentError);
+        var validEmployeeIds = (await connection.QueryAsync<int>("SELECT e.Id FROM employees e WHERE e.ClientId=@ClientId AND " + EmployeeEmploymentRules.EligibleInMonth("e", "@Month"), new { request.ClientId, request.Month })).ToHashSet();
         var rows = request.Rows.Where(row => validEmployeeIds.Contains(row.EmployeeId)).Select(row =>
         {
             var working = Math.Max(0, row.WorkingDays);
@@ -879,6 +881,8 @@ ORDER BY e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = clientId, M
             return new { request.ClientId, request.Month, row.EmployeeId, WorkingDays = working, PresentDays = present, PayableDays = payable, LopDays = Math.Max(0, row.LopDays), Remarks = row.Remarks ?? string.Empty };
         }).ToList();
         await using var transaction = await connection.BeginTransactionAsync();
+        employmentError = await EmployeeAttendanceEligibility.ValidateMonthlyAsync(connection, transaction, request.ClientId, request.Month, rows.Select(row => (row.EmployeeId, row.PresentDays, row.PayableDays)));
+        if (employmentError is not null) return (null, employmentError);
         var lockedError = await WeeklyOffAttendanceService.ValidateMonthlyChangesAsync(connection, transaction, request.ClientId, rows.Select(row => row.EmployeeId).Distinct().ToArray(), request.Month);
         if (lockedError is not null) return (null, lockedError);
         await connection.ExecuteAsync(@"INSERT INTO employee_monthly_attendance (client_id, employee_id, attendance_month, working_days, present_days, payable_days, lop_days, source_type, remarks)
@@ -915,7 +919,7 @@ d.check_in_time AS CheckInTime, d.check_out_time AS CheckOutTime, d.total_hours 
 FROM employee_daily_attendance d
 JOIN employees e ON e.Id=d.employee_id AND e.ClientId=d.client_id
 WHERE d.client_id=@ClientId AND d.attendance_date>=@MonthStart AND d.attendance_date<@MonthEnd
-  AND e.IsActive=TRUE
+  AND " + EmployeeEmploymentRules.EligibleOn("e", "d.attendance_date", true) + @"
   AND (@ReportingManagerUserId IS NULL OR e.ReportingManagerUserId=@ReportingManagerUserId)
   AND (@WorkLocationId <= 0 OR e.WorkLocationId=@WorkLocationId)
 ORDER BY d.employee_id, d.attendance_date;", new { ClientId = clientId, MonthStart = monthStart, MonthEnd = monthEnd, WorkLocationId = locationId, ReportingManagerUserId = reportingManagerUserId });
@@ -927,7 +931,9 @@ ORDER BY d.employee_id, d.attendance_date;", new { ClientId = clientId, MonthSta
         if (error is not null) return (null, error);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE Id=@EmployeeId AND ClientId=@ClientId AND IsActive=TRUE", new { request.EmployeeId, request.ClientId });
+        var employmentError = await EmployeeAttendanceEligibility.ValidateDatesAsync(connection, null, request.ClientId, request.Rows.Select(row => (request.EmployeeId, row.AttendanceDate)));
+        if (employmentError is not null) return (null, employmentError);
+        var exists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE Id=@EmployeeId AND ClientId=@ClientId", new { request.EmployeeId, request.ClientId });
         if (exists == 0) return (null, "Employee was not found for the selected client.");
         var shiftResolver = await AttendanceShiftResolver.LoadAsync(connection, null, request.ClientId, employeeId: request.EmployeeId);
         var activeLeaveTypes = (await connection.QueryAsync<AttendanceLeaveRule>(@"SELECT lt.id AS Id, lt.code AS Code, lt.name AS Name, lt.type AS Type, p.allow_negative_leave_balance AS AllowNegativeLeaveBalance
@@ -956,6 +962,8 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
         var balanceError = await ValidateLeaveBalancesAsync(connection, request.ClientId, request.EmployeeId, request.Month, rows.Select(row => new AttendanceSaveRow(row.Status, row.PayableValue)), activeLeaveTypes);
         if (balanceError is not null) return (null, balanceError);
         await using var transaction = await connection.BeginTransactionAsync();
+        employmentError = await EmployeeAttendanceEligibility.ValidateDatesAsync(connection, transaction, request.ClientId, rows.Select(row => (request.EmployeeId, row.AttendanceDate)));
+        if (employmentError is not null) return (null, employmentError);
         var lockedError = await WeeklyOffAttendanceService.ValidateChangesAsync(connection, transaction, request.ClientId,
             rows.Select(row => new WeeklyOffAttendanceDay(request.EmployeeId, row.AttendanceDate, row.Status, row.PayableValue)));
         if (lockedError is not null) return (null, lockedError);
@@ -977,12 +985,14 @@ ON DUPLICATE KEY UPDATE status=VALUES(status), payable_value=VALUES(payable_valu
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
+        var employmentError = await EmployeeAttendanceEligibility.ValidateDatesAsync(connection, null, request.ClientId, request.Rows.Select(row => (row.EmployeeId, row.AttendanceDate)));
+        if (employmentError is not null) return (null, employmentError);
         var shiftResolver = await AttendanceShiftResolver.LoadAsync(connection, null, request.ClientId);
         var activeLeaveTypes = (await connection.QueryAsync<AttendanceLeaveRule>(@"SELECT lt.id AS Id, lt.code AS Code, lt.name AS Name, lt.type AS Type, p.allow_negative_leave_balance AS AllowNegativeLeaveBalance
 FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id=lt.id
 WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
             .ToDictionary(row => row.Code, row => row, StringComparer.OrdinalIgnoreCase);
-        var validEmployeeIds = (await connection.QueryAsync<int>("SELECT Id FROM employees WHERE ClientId=@ClientId AND IsActive=TRUE", new { request.ClientId })).ToHashSet();
+        var validEmployeeIds = (await connection.QueryAsync<int>("SELECT Id FROM employees WHERE ClientId=@ClientId", new { request.ClientId })).ToHashSet();
         var groupedRows = request.Rows
             .Where(row => validEmployeeIds.Contains(row.EmployeeId))
             .GroupBy(row => row.EmployeeId)
@@ -1017,6 +1027,8 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { request.ClientId }))
         }
 
         await using var transaction = await connection.BeginTransactionAsync();
+        employmentError = await EmployeeAttendanceEligibility.ValidateDatesAsync(connection, transaction, request.ClientId, request.Rows.Select(row => (row.EmployeeId, row.AttendanceDate)));
+        if (employmentError is not null) return (null, employmentError);
         var lockedError = await WeeklyOffAttendanceService.ValidateChangesAsync(connection, transaction, request.ClientId,
             request.Rows.Where(row => validEmployeeIds.Contains(row.EmployeeId)).Select(row => new WeeklyOffAttendanceDay(row.EmployeeId, row.AttendanceDate, row.Status, row.PayableValue)));
         if (lockedError is not null) return (null, lockedError);
@@ -2152,7 +2164,7 @@ FROM attendance_batch_job_rows WHERE job_id=@JobId ORDER BY `row_number`;", new 
 FROM leave_types lt JOIN leave_type_policies p ON p.leave_type_id=lt.id
 WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { job.ClientId }))
             .ToDictionary(row => row.Code, row => row, StringComparer.OrdinalIgnoreCase);
-        var validEmployeeIds = (await connection.QueryAsync<int>("SELECT Id FROM employees WHERE ClientId=@ClientId AND IsActive=TRUE", new { job.ClientId })).ToHashSet();
+        var validEmployeeIds = (await connection.QueryAsync<int>("SELECT Id FROM employees WHERE ClientId=@ClientId", new { job.ClientId })).ToHashSet();
         var invalidEmployeeRows = stagedRows.Count(row => !validEmployeeIds.Contains(row.EmployeeId));
         if (invalidEmployeeRows > 0)
             throw new InvalidOperationException($"{invalidEmployeeRows} attendance row(s) reference inactive employees or employees outside the selected client. No attendance was saved.");
@@ -2202,6 +2214,8 @@ WHERE lt.client_id=@ClientId AND lt.is_active=TRUE;", new { job.ClientId }))
 
         await UpdateAttendanceBatchJobStageAsync(connection, claim, "Calculating summaries", Math.Min(job.TotalRows, normalizedRows.Count));
         await using var transaction = await connection.BeginTransactionAsync();
+        var employmentError = await EmployeeAttendanceEligibility.ValidateDatesAsync(connection, transaction, job.ClientId, normalizedRows.Select(row => (row.EmployeeId, row.AttendanceDate)));
+        if (employmentError is not null) throw new InvalidOperationException(employmentError);
         var lockedError = await WeeklyOffAttendanceService.ValidateChangesAsync(connection, transaction, job.ClientId,
             normalizedRows.Select(row => new WeeklyOffAttendanceDay(row.EmployeeId, row.AttendanceDate, row.Status, row.PayableValue)));
         if (lockedError is not null) throw new InvalidOperationException(lockedError);

@@ -9,6 +9,15 @@ namespace Payroll.API.Tests.Services;
 
 public sealed class ExcelPayslipTests
 {
+    [Fact]
+    public void MappingStorageKeysDoNotCollideBetweenClientsOrWithLegacyGlobalKeys()
+    {
+        var keys = new[] { 1, 42, 49, int.MaxValue }.Select(ExcelPayslipRepository.MappingProfileStorageCode).ToArray();
+        Assert.Equal(keys.Length, keys.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.All(keys, key => { Assert.NotEqual("excel_payslip_profile", key); Assert.True(key.Length <= 80); });
+        Assert.Throws<InvalidOperationException>(() => ExcelPayslipRepository.MappingProfileStorageCode(0));
+    }
+
     internal static NotificationTemplate MailTemplate => new()
     {
         Code = NotificationRepository.ExcelPayslipTemplateCode, SubjectTemplate = "{{clientName}} payslip - {{month}}",

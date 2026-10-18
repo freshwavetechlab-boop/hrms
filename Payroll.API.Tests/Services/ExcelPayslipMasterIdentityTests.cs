@@ -142,6 +142,17 @@ public sealed class ExcelPayslipMasterIdentityTests
     }
 
     [Fact]
+    public void AVerifiedUanAllowsAnHonorificWithoutRenamingTheEmployee()
+    {
+        var batch = Batch("", information: [new() { Label = "UAN", Value = "123456789012" }]);
+        var master = Employee(); master.Uan = "123456789012";
+        batch.Rows[0].EmployeeName = "Shri " + master.EmployeeName;
+        ExcelPayslipRepository.AssignEmployeeCodes(batch, null, "PLRS", [], [master]);
+        Assert.Equal(master.EmployeeCode, batch.Rows[0].EmployeeCode);
+        Assert.StartsWith("Shri ", batch.Rows[0].EmployeeName);
+    }
+
+    [Fact]
     public void ReusedMasterCodeFillsExistingBlankSourceCellWithoutChangingFormulas()
     {
         var batch = Batch();
