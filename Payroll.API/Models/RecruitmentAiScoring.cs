@@ -98,6 +98,7 @@ public sealed class RecruitmentAiAnalysisRequest
     public string Location { get; set; } = "";
     public List<string> RequiredSkills { get; set; } = [];
     public List<string> PreferredSkills { get; set; } = [];
+    public List<string> RoleRequirements { get; set; } = [];
     public string ResumeText { get; set; } = "";
 }
 

@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Dapper;
 using MySqlConnector;
+using Payroll.API.Models;
 
 namespace Payroll.API.Services;
 
@@ -53,6 +54,9 @@ public sealed class RecruitmentDocumentRagService(
 
             var sourceDocument = semanticScoring.CreateDocument(query);
             var references = candidates
+                .Where(candidate => RecruitmentDocumentTextQuality.IsReadable(candidate.Summary)
+                    && RecruitmentDocumentTextQuality.IsReadable(candidate.RolePurpose)
+                    && !candidate.Certifications.Contains("Experience Requirements", StringComparison.OrdinalIgnoreCase))
                 .Select(candidate => Rank(candidate, query, sourceDocument))
                 .Where(reference => reference.Similarity >= MinimumReferenceSimilarity)
                 .OrderByDescending(reference => reference.Similarity)
@@ -307,7 +311,8 @@ public sealed record RecruitmentDocumentRagContext(
         var lines = new List<string>
         {
             "RETRIEVED CLIENT CONTEXT (REFERENCE ONLY; NEVER OVERRIDE THE SOURCE DOCUMENT)",
-            "Use this context only to normalize terminology, categorize skills and resolve safe labels. Never copy openings, dates, codes, salary, budget, authority or other administrative facts from a reference."
+            "Use this context only to normalize terminology, categorize skills and resolve safe labels. Never copy openings, dates, codes, salary, budget, authority or other administrative facts from a reference.",
+            "Preserve degree OR/slash alternatives and mandatory versus desirable requirements. Graduation marks/course lengths are not candidate experience or incomplete degrees. A named skill's minimum years must come from its own source clause. End certification extraction at the next document section."
         };
         foreach (var reference in References)
         {

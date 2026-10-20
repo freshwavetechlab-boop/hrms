@@ -16,7 +16,7 @@ public sealed class ResumeParsingService(
     private const int MaxExtractedBytes = 20 * 1024 * 1024;
     private const int MaxExtractedCharacters = 2_000_000;
     private const int MaxBuiltInPdfBytes = 2 * 1024 * 1024;
-    private const string ParserVersion = "2.6";
+    private const string ParserVersion = "2.7";
     private static readonly SemaphoreSlim OcrGate = new(2, 2);
     private static readonly Regex EmailPattern = new(@"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // Horizontal separators only: dates/IDs on the following line are not part of a phone.
@@ -32,7 +32,7 @@ public sealed class ResumeParsingService(
         (?<startMonth>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|0?[1-9]|1[0-2])?
         [\s./-]*(?<startYear>(?:19|20)\d{2})\s*(?:-|–|—|to|till|through)\s*
         (?:(?<present>present|current|now|till\s+date)|(?<endMonth>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|0?[1-9]|1[0-2])?[\s./-]*(?<endYear>(?:19|20)\d{2}))", RegexOptions.Compiled);
-    private static readonly Regex QualificationPattern = new(@"(?ix)\b(?:ph\.?\s*d|doctorate|m\.?\s*tech|m\.?\s*e\.?|m\.?\s*s\.?|m\.?\s*sc|mba|mca|m\.?\s*com|b\.?\s*tech|b\.?\s*e\.?|b\.?\s*sc|bca|b\.?\s*com|bba|bachelor(?:'s)?|master(?:'s)?|diploma|iti|12th|10th)\b", RegexOptions.Compiled);
+    private static readonly Regex QualificationPattern = new(@"(?ix)\b(?:ph\.?\s*d|doctorate|ll\.?\s*m|ll\.?\s*b|b\.?\s*a\.?\s*ll\.?\s*b|m\.?\s*tech|m\.\s*e\.?|(?-i:ME)|m\.\s*s\.?|(?-i:MS)|m\.?\s*sc|mba|mca|m\.?\s*com|b\.?\s*tech|b\.\s*e\.?|(?-i:BE)|b\.?\s*sc|bca|b\.?\s*com|bba|bachelor(?:'s)?|master(?:'s)?|diploma|iti|12th|10th)\b", RegexOptions.Compiled);
     private static readonly Regex FlexibleEmploymentDateRangePattern = new(@"(?ix)
         (?<startMonth>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|0?[1-9]|1[0-2])?
         [\s./-]*['\u2019]?(?<startYear>(?:(?:19|20)?\d{2}))\s*(?:-|\u2013|\u2014|to|till|through)\s*
@@ -872,20 +872,28 @@ public sealed class ResumeParsingService(
     private static int? ExtractTotalExperienceMonths(string text, IReadOnlyList<ResumeParsedExperience> experience)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
-        var values = Regex.Matches(text, @"(?<!\d)(?<years>\d{1,2}(?:\.\d{1,2})?)\s*\+?\s*(?:years?|yrs?)(?:\s+of)?\s+(?:relevant\s+|professional\s+|total\s+)?experience", RegexOptions.IgnoreCase)
+        var values = Regex.Matches(text, @"(?<!\d)(?<years>\d{1,2}(?:\.\d{1,2})?)\s*\+?\s*(?:years?|yrs?)(?:\s+of)?\s+(?:(?!age\b|old\b|degree\b|education\b|study\b)[\p{L}][\p{L}./-]*\s+){0,5}experience", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100))
             .Cast<Match>()
             .Select(match => decimal.TryParse(match.Groups["years"].Value, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var years) ? years : -1)
             .Where(years => years is >= 0 and <= 60)
             .ToList();
         // A skill-specific duration must not hide an explicit, longer overall career duration.
         foreach (Match match in Regex.Matches(text,
-            @"\b(?:overall|total(?:\s+(?:professional|work|industry|career))?(?:\s+experience)?|career\s+experience)\s*[,:(-]?\s*(?:of\s+|is\s+)?(?<years>\d{1,2}(?:\.\d{1,2})?)\s*\+?\s*(?:years?|yrs?)\b",
+            @"\b(?:(?:overall|total)(?:\s+(?:professional|work|industry|career))?(?:\s+experience)?|(?:professional|work|career)\s+(?:experience|ex\.?))\s*[,:(-]?\s*(?:of\s+|is\s+)?(?<years>\d{1,2}(?:\.\d{1,2})?)\s*\+?\s*(?:years?|yrs?)\b",
             RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100)))
         {
             if (decimal.TryParse(match.Groups["years"].Value, System.Globalization.NumberStyles.Number,
                 System.Globalization.CultureInfo.InvariantCulture, out var years) && years is >= 0 and <= 60)
                 values.Add(years);
         }
+        // Career summaries often say "with 20+ years building platforms" rather
+        // than the literal phrase "years of experience". Restrict this form to
+        // the opening summary and explicit work verbs, never ages/degree lengths.
+        foreach (Match match in Regex.Matches(text[..Math.Min(text.Length, 1800)],
+            @"\b(?:with|over)\s+(?<years>\d{1,2}(?:\.\d{1,2})?)\s*\+?\s*(?:years?|yrs?)\s+(?:of\s+)?(?:building|leading|owning|working|across|in\s+(?:technology|IT|software|corporate|banking|legal|litigation))\b",
+            RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100)))
+            if (decimal.TryParse(match.Groups["years"].Value, System.Globalization.NumberStyles.Number,
+                System.Globalization.CultureInfo.InvariantCulture, out var years) && years is >= 0 and <= 60) values.Add(years);
         if (values.Count > 0) return (int)Math.Round(values.Max() * 12m, MidpointRounding.AwayFromZero);
         var ranges = experience
             .Where(row => row.StartDate.HasValue)
@@ -1354,6 +1362,7 @@ public sealed class ResumeParsingService(
     {
         if (string.IsNullOrWhiteSpace(value)) return false;
         var sample = value.Length <= 20000 ? value : value[..20000];
+        if (!RecruitmentDocumentTextQuality.IsReadable(sample)) return false;
         var letters = sample.Count(char.IsLetter);
         var words = Regex.Matches(sample, @"\p{L}[\p{L}\p{M}.'+#-]{2,}").Count;
         return letters >= 40 && words >= 8 && letters >= sample.Length / 12;

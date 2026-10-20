@@ -1676,6 +1676,8 @@ JOIN recruitment_interview_feedback feedbackRow ON feedbackRow.Id=scoreRow.Inter
         await db.OpenAsync();
         var application = await ApplicationByIdAsync(db, applicationId, user);
         if (application is null) return (null, "Application was not found.");
+        var eligibilityError = RecruitmentEligibility.InterviewSchedulingBlockReason(application);
+        if (eligibilityError.Length > 0) return (null, eligibilityError);
         if (standalone)
         {
             if (IsPanelScoped(user)) return (null, "Scheduling permission is required.");
@@ -1749,6 +1751,11 @@ WHERE ApplicationId=@ApplicationId AND PipelineStageInstanceId=@StageInstanceId 
         var application = request.ApplicationId > 0 ? await ApplicationByIdAsync(db, request.ApplicationId, user) : new RecruitmentCandidateApplication { ClientId = user.ClientId ?? request.DirectClientId };
         if (application is null) return (null, "Application was not found.");
         var applicationStage = application.CurrentStage ?? "";
+        if (request.Id <= 0 && request.ApplicationId > 0)
+        {
+            var eligibilityError = RecruitmentEligibility.InterviewSchedulingBlockReason(application);
+            if (eligibilityError.Length > 0) return (null, eligibilityError);
+        }
         await using var roundLease = await RecruitmentInterviewRounds.LockAsync(db, application.ClientId, application.PositionId);
         var existingDecision = request.Id > 0
             ? (await InterviewRowsAsync(db, user, request.ApplicationId, null, IsPanelScoped(user) ? user.Id : null)).FirstOrDefault(row => row.Id == request.Id) : null;
@@ -3518,6 +3525,11 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
         var ratios = new Dictionary<string, decimal>(localRatios, StringComparer.OrdinalIgnoreCase);
         var aiSettings = profile.EnableAiScoring ? await aiScoring.GetAsync(user, data.ClientId) : new RecruitmentAiScoringSettings();
         var aiStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        var roleRequirements = profile.EnableAiScoring && data.JobDescriptionVersionId.HasValue
+            ? (await db.QueryAsync<string>(@"SELECT COALESCE(Summary,'') FROM recruitment_job_description_versions WHERE Id=@Id
+UNION ALL SELECT COALESCE(RolePurpose,'') FROM recruitment_job_description_versions WHERE Id=@Id
+UNION ALL SELECT ResponsibilityText FROM recruitment_jd_responsibilities WHERE JobDescriptionVersionId=@Id", new { Id = data.JobDescriptionVersionId.Value }))
+                .Where(value => !string.IsNullOrWhiteSpace(value) && RecruitmentDocumentTextQuality.IsReadable(value)).Distinct().ToList() : [];
         var aiAnalysis = profile.EnableAiScoring
             ? await aiScoring.AnalyzeAsync(data.ClientId, new RecruitmentAiAnalysisRequest
             {
@@ -3525,6 +3537,7 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
                 PositionCategory = data.PositionCategory,
                 RequiredSkills = required,
                 PreferredSkills = preferred,
+                RoleRequirements = roleRequirements,
                 ExperienceRange = experienceRange,
                 Qualification = qualificationRequirement,
                 Certifications = certificationRequirement,
@@ -3542,6 +3555,7 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
         // Generative analysis cannot override deterministic must-have or skill-duration evidence.
         // It may lower confidence, but it cannot award more skill credit than the verified bucket ratio.
         ratios["requiredSkills"] = Math.Min(ratios.GetValueOrDefault("requiredSkills"), requiredRatio);
+        ratios["experience"] = Math.Min(ratios.GetValueOrDefault("experience"), experienceRatio);
         if (preferredMatches.Any(match => match.MinimumYears > 0))
             ratios["preferredSkills"] = Math.Min(ratios.GetValueOrDefault("preferredSkills"), preferredRatio);
         var evidenceSummaries = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

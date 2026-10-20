@@ -1,9 +1,15 @@
 import type { RecruitmentCandidateApplication, RecruitmentInterview } from '../types/payroll'
+import { recruitmentEligibility } from '../utils/recruitmentEligibility'
 
 export function interviewReady(application: RecruitmentCandidateApplication, interviews: RecruitmentInterview[]) {
   if (application.applicationType !== 'Application' || !application.isInterviewReady) return false
-  if (application.atsScore == null || application.atsScore < (application.atsShortlistThreshold || 60)) return false
+  if (!hasInterviewEligibility(application)) return false
   return !interviews.some(row => row.applicationId === application.id && ['Scheduled', 'Rescheduled'].includes(row.status))
+}
+
+export function hasInterviewEligibility(application: RecruitmentCandidateApplication) {
+  return recruitmentEligibility(application).isEligible && application.atsScore != null
+    && application.atsScore >= (application.atsShortlistThreshold || 60)
 }
 
 export function panelRecommendationLabel(value: string) {

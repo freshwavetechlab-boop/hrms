@@ -12,6 +12,16 @@ public static class RecruitmentEligibility
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(100);
 
+    public static string InterviewSchedulingBlockReason(RecruitmentCandidateApplication application)
+    {
+        if (application.EligibilityStatus != "Eligible")
+            return "Interview scheduling requires verified eligibility. " + (application.EligibilityReasons.Count > 0
+                ? string.Join(" ", application.EligibilityReasons) : "Review the JD requirements and candidate evidence first.");
+        if (!application.AtsScore.HasValue || application.AtsScore < (application.AtsShortlistThreshold > 0 ? application.AtsShortlistThreshold : 60))
+            return "Interview scheduling requires an ATS score meeting this application's shortlist cutoff.";
+        return "";
+    }
+
     public static int? MinimumExperienceMonths(string? requirement)
     {
         if (string.IsNullOrWhiteSpace(requirement)) return 0;

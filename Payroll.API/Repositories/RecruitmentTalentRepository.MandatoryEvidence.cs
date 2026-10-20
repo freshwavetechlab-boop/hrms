@@ -28,12 +28,20 @@ WHERE applicationRow.Id IN @Ids", new { Ids = ids })).ToList();
         if (ids.Length == 0) return [];
         var qualifications = (await db.QueryAsync<MandatoryQualificationRow>(@"SELECT JobDescriptionVersionId,QualificationName,Specialization
 FROM recruitment_jd_qualification_requirements WHERE JobDescriptionVersionId IN @Ids AND IsMandatory=TRUE ORDER BY DisplayOrder,Id", new { Ids = ids })).ToLookup(x => x.JobDescriptionVersionId);
-        var certifications = (await db.QueryAsync<MandatoryCertificationRow>(@"SELECT JobDescriptionVersionId,CertificationName
-FROM recruitment_jd_certification_requirements WHERE JobDescriptionVersionId IN @Ids AND IsMandatory=TRUE ORDER BY DisplayOrder,Id", new { Ids = ids })).ToLookup(x => x.JobDescriptionVersionId);
+        var certifications = (await db.QueryAsync<MandatoryCertificationRow>(@"SELECT JobDescriptionVersionId,CertificationName,IsMandatory
+FROM recruitment_jd_certification_requirements WHERE JobDescriptionVersionId IN @Ids ORDER BY DisplayOrder,Id", new { Ids = ids })).ToLookup(x => x.JobDescriptionVersionId);
+        var summaries = (await db.QueryAsync<(long Id, string Summary, string RolePurpose)>(@"SELECT Id,COALESCE(Summary,''),COALESCE(RolePurpose,'')
+FROM recruitment_job_description_versions WHERE Id IN @Ids", new { Ids = ids })).ToDictionary(x => x.Id);
         return contexts.Where(x => x.JobDescriptionVersionId.HasValue).ToDictionary(x => x.Id, x =>
-            RecruitmentMandatoryEvidence.ReviewReasons(x.ResumeText, x.QualificationEvidence,
+            (IReadOnlyList<string>)RecruitmentMandatoryEvidence.ReviewReasons(x.ResumeText, x.QualificationEvidence,
                 qualifications[x.JobDescriptionVersionId!.Value].Select(q => (q.QualificationName, q.Specialization)).ToList(),
-                certifications[x.JobDescriptionVersionId.Value].Select(c => c.CertificationName).ToList()));
+                certifications[x.JobDescriptionVersionId.Value].Where(c => c.IsMandatory).Select(c => c.CertificationName).ToList())
+            .Concat(certifications[x.JobDescriptionVersionId.Value].Any(c => c.CertificationName.Contains("Experience Requirements", StringComparison.OrdinalIgnoreCase))
+                ? new[] { "The JD certification field contains an experience section. Review the original JD and its named-skill minimum years before shortlisting." } : [])
+            .Concat(summaries.TryGetValue(x.JobDescriptionVersionId.Value, out var document)
+                && (!RecruitmentDocumentTextQuality.IsReadable(document.Summary) || !RecruitmentDocumentTextQuality.IsReadable(document.RolePurpose))
+                    ? new[] { "The approved JD contains damaged extracted text. Review its original document and saved requirements before shortlisting." } : [])
+            .ToArray());
     }
 
     private sealed class MandatoryEvidenceContext
@@ -53,5 +61,6 @@ FROM recruitment_jd_certification_requirements WHERE JobDescriptionVersionId IN 
     {
         public long JobDescriptionVersionId { get; set; }
         public string CertificationName { get; set; } = "";
+        public bool IsMandatory { get; set; }
     }
 }

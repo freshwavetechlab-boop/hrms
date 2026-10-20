@@ -7,6 +7,7 @@ import { rankKnowledgeChunks, retrievalVersion } from './retrieval.mjs'
 
 const sources = [
   ['Payroll.API/FrevoPilot/docs/excel-payroll-mapping.md', 'Verified Excel payroll mapping patterns and master setup boundaries'],
+  ['Payroll.API/FrevoPilot/docs/recruitment-evidence-policy.md', 'ATS evidence, Qwen and recruitment RAG verification rules'],
   ['docs/analytics-business-rules.md', 'Verified HRMS analytics definitions and safeguards'],
   ['docs/api-catalog.md', 'HRMS API catalogue'],
   ['docs/enterprise-payroll-engine-audit.md', 'Payroll engine audit'],
@@ -43,8 +44,8 @@ export async function loadKnowledge() {
   const loaded = []
   for (const [path, title] of sources) {
     let absolute = join(repositoryRoot, path)
-    if (!existsSync(absolute) && path === 'Payroll.API/FrevoPilot/docs/excel-payroll-mapping.md')
-      absolute = join(dirname(fileURLToPath(import.meta.url)), '../docs/excel-payroll-mapping.md')
+    if (!existsSync(absolute) && path.startsWith('Payroll.API/FrevoPilot/docs/'))
+      absolute = join(dirname(fileURLToPath(import.meta.url)), '../docs/', path.slice('Payroll.API/FrevoPilot/docs/'.length))
     if (!existsSync(absolute)) continue
     try {
       const content = await readFile(absolute, 'utf8')

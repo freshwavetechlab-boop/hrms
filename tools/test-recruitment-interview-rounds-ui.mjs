@@ -58,7 +58,9 @@ await context.route('**/*', async route => {
     const next = plan.rounds.find(row => row.canSchedule)
     return reply({ applicationId: 100, isPipelineManaged: true, pipelineStageInstanceId: 51, roundConfigurationId: 1, pipelineStageName: plan.stageName, roundCode: next?.name || '', interviewType: next?.interviewType || 'Technical', defaultDurationMinutes: 60, minimumPanelCount: 1, minimumPassingScore: 60, scoreInputMode: 'PercentageWeighted', panelAggregationMethod: 'Average', feedbackRequired: true, calendarEnabled: true, allowReschedule: true, timeZoneId: 'Asia/Kolkata', nextAttemptNumber: 1, competencies: [], defaultPanelUserIds: [], roundPlan: plan })
   }
-  if (p === '/api/recruitment/applications') return reply([application])
+  if (p === '/api/recruitment/applications') return reply([application,
+    { ...application, id: 101, candidateName: 'Ineligible high-score candidate', eligibilityStatus: 'Ineligible', scoreStatus: 'Ineligible', atsScore: 99 },
+    { ...application, id: 102, candidateName: 'Unverified high-score candidate', eligibilityStatus: 'NeedsReview', scoreStatus: 'NeedsReview', atsScore: 99 }])
   if (p === '/api/recruitment/pipeline-workspace') return reply({ clientId: 20, unassignedDemandCards: [], lanes: [{ pipelineVersionId: 1, pipelineVersionNumber: 1, pipelineName: 'Synthetic hiring pipeline', stageId: 4, stageCode: 'INTERVIEW', stageName: plan.stageName, stageType: 'Interview', cardScope: 'Position', displayOrder: 1, applications: [], demandCards: [{ clientId: 20, workOrderId: 1, workOrderLineId: 1, workOrderNumber: 'WO-TEST', positionId: 10, positionName: 'Synthetic Architect', hiringCaseId: 5, candidateCount: 1, requiredCandidateCount: 1, inPanelCount: 0, selectedCandidateCount: 0, currentStageName: plan.stageName, currentStageId: 4, interviewRoundsApplicationId: 100, activeDurationSeconds: 0, pausedDurationSeconds: 0, status: 'Active' }] }] })
   if (p === '/api/recruitment/interviews') return reply([])
   if (p === '/api/clients') return reply([{ id: 20, name: 'Synthetic Client', code: 'TEST', isActive: true }])
@@ -70,6 +72,9 @@ try {
   await page.goto(origin + '/rounds-fixture')
   const rounds = () => page.locator('.candidate-application-card .recruitment-interview-rounds')
   await expect(rounds()).toHaveCount(1)
+  await expect(page.getByText('Ineligible high-score candidate', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('Unverified high-score candidate', { exact: true })).toHaveCount(0)
+  checks.push('Ineligible and unverified high-score candidates are excluded from interview scheduling')
   assert.equal(await rounds().getAttribute('open'), null)
   checks.push('Scheduling card starts collapsed and does not duplicate the round section')
   await rounds().locator('summary').click()
@@ -106,6 +111,8 @@ try {
   await page.getByRole('button', { name: 'Table fixture' }).click()
   const tableRounds = page.locator('tbody .recruitment-interview-rounds').first()
   await expect(tableRounds).toBeVisible()
+  await expect(page.getByText('Ineligible high-score candidate', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('Unverified high-score candidate', { exact: true })).toHaveCount(0)
   await tableRounds.locator('summary').click()
   await expect(tableRounds).toContainText('1/3 completed')
   checks.push('Table view uses the same expandable round component')

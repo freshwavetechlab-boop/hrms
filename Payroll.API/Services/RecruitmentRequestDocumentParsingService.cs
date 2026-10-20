@@ -16,6 +16,8 @@ public sealed class RecruitmentRequestDocumentParsingService(
         "business justification", "business need", "hiring justification", "reason for hiring", "hiring reason", "reason for recruitment",
         "number of positions", "no of positions", "openings", "vacancies", "band", "band/salary band", "salary band", "ctc", "location",
         "educational qualification", "educational qualifications", "qualification", "qualifications", "education", "experience",
+        "experience requirements", "required experience", "essential qualifications", "preferred qualifications", "education and qualifications",
+        "technical competencies", "selection criteria", "application process",
         "experience, educational qualification", "educational qualification, experience", "requirements", "technical skills",
         "technical & analytics skills", "key skills", "key skills & technical expertise", "job profile", "job profile/duties",
         "key responsibilities", "roles and responsibilities", "responsibilities", "preferred certifications", "certifications",
@@ -26,7 +28,8 @@ public sealed class RecruitmentRequestDocumentParsingService(
     {
         var parsed = await documentTextParser.ParseAsync(file, cancellationToken);
         var extractedText = Normalize(parsed.Text);
-        var textIsReliable = LooksLikeRecruitmentText(extractedText) && !HasDamagedProse(extractedText);
+        var textIsReliable = LooksLikeRecruitmentText(extractedText) && !HasDamagedProse(extractedText)
+            && RecruitmentDocumentTextQuality.IsReadable(extractedText);
         var text = textIsReliable ? extractedText : "";
         var draft = new SaveRecruitmentRequisition
         {
@@ -53,6 +56,8 @@ public sealed class RecruitmentRequestDocumentParsingService(
             "isReplacement", "budgetAvailable", "languages", "benefits", "currency", "workMode"
         };
         var warnings = new List<string>();
+        if (!RecruitmentDocumentTextQuality.IsReadable(extractedText))
+            warnings.Add("The document contains damaged extraction bytes. Review the original file or OCR before accepting requirements; unreadable text was not used as evidence.");
         if (HasDamagedProse(extractedText)) warnings.Add("The extracted text contains broken words/punctuation, possibly from OCR. Verify the source or upload a clearer document; damaged prose was not copied into business justification or role summary.");
         var fieldMetadata = new Dictionary<string, RecruitmentAiHiringFieldTrace>(StringComparer.OrdinalIgnoreCase)
         {
@@ -281,6 +286,8 @@ public sealed class RecruitmentRequestDocumentParsingService(
             warnings.Add($"{retrieval.References.Count} similar approved client reference(s) were retrieved for review; no source-document facts were replaced.");
 
         var localSkillRequirements = LocalSkillRequirements(draft.RequiredSkills, draft.PreferredSkills);
+        foreach (var requirement in localSkillRequirements.Where(row => row.IsRequired))
+            requirement.MinimumYears = Math.Max(requirement.MinimumYears, RequiredSkillYears(text, requirement.SkillName));
         var skillRequirements = MergeAndNormalizeSkillRequirements(
             ai.Status == "Completed" ? ai.SkillRequirements : [],
             localSkillRequirements, preserveSourceRequirements: LocalLlmProtocol.IsLocal(ai.Provider));
@@ -324,6 +331,8 @@ public sealed class RecruitmentRequestDocumentParsingService(
             originalFileName = draft.SourceDocumentName,
             parserName = parsed.ParserName,
             parserVersion = parsed.ParserVersion,
+            sourceText = text.Length <= 100_000 ? text : text[..100_000],
+            sourceTextTruncated = text.Length > 100_000,
             ai = new { applied = ai.Status == "Completed", ai.Provider, ai.Model, ai.Confidence, ai.Status, ai.Error },
             retrieval = new
             {
@@ -906,6 +915,29 @@ public sealed class RecruitmentRequestDocumentParsingService(
             && years is > 0 and <= 60 ? years : 0m;
     }
 
+    internal static decimal RequiredSkillYears(string text, string skill)
+    {
+        // A duration belongs to its named requirement, never every skill in the JD.
+        var terms = new[] { skill }.Concat(Regex.Matches(skill, @"\(([^)]+)\)")
+            .Select(match => match.Groups[1].Value)).Where(value => value.Length > 1).ToArray();
+        var years = 0m;
+        foreach (var clause in Regex.Split(text, @"[\r\n]+|(?<=[.!?])\s+"))
+        {
+            if (!Regex.IsMatch(clause, @"\b(?:minimum|at least|must|required|requires)\b", RegexOptions.IgnoreCase)
+                || Regex.IsMatch(clause, @"\b(?:preferred|desirable|optional)\b", RegexOptions.IgnoreCase)) continue;
+            var evidence = RecruitmentAtsDomainRules.FindSkillSpecificDuration(clause, terms);
+            if (evidence.IsEstablished) years = Math.Max(years, evidence.Years);
+            foreach (var term in terms)
+            {
+                var match = Regex.Match(clause, @"(?i)(?<years>\d{1,2}(?:\.\d{1,2})?)\s*\+?\s*years?\s+(?:must\s+be\s+)?in\s+(?:a\s+)?(?:dedicated\s+)?(?:[\p{L}-]+\s*/\s*)?"
+                    + @"(?<![\p{L}\p{N}])" + Regex.Escape(term) + @"(?![\p{L}\p{N}])", RegexOptions.None, TimeSpan.FromMilliseconds(100));
+                if (match.Success && decimal.TryParse(match.Groups["years"].Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var explicitYears)
+                    && explicitYears is > 0 and <= 60) years = Math.Max(years, explicitYears);
+            }
+        }
+        return years;
+    }
+
     private static string ExplicitProficiency(string value)
     {
         var match = Regex.Match(value, @"(?i)\b(expert|advanced|proficient|intermediate|familiar|basic|beginner)\b");
@@ -934,7 +966,7 @@ public sealed class RecruitmentRequestDocumentParsingService(
             var target = targets.FirstOrDefault(value => StartsWithHeading(line, value));
             if (target is null) continue;
             var values = new List<string>();
-            var remainder = Regex.Replace(line, $@"(?i)^\s*{Regex.Escape(target)}\s*[:\-–]?\s*", "").Trim();
+            var remainder = Regex.Replace(HeadingLine(line), $@"(?i)^\s*{Regex.Escape(target)}\s*[:\-–]?\s*", "").Trim();
             if (!string.IsNullOrWhiteSpace(remainder)) values.Add(remainder);
             for (var next = index + 1; next < lines.Length && values.Sum(value => value.Length) < 5000; next++)
             {
@@ -950,8 +982,9 @@ public sealed class RecruitmentRequestDocumentParsingService(
         return "";
     }
 
-    private static bool StartsWithHeading(string line, string heading) => Regex.IsMatch(line, $@"(?i)^\s*{Regex.Escape(heading)}(?:\s*[:\-–]|\s*$|\s+)");
-    private static bool IsHeading(string line) => Headings.Any(heading => StartsWithHeading(line, heading) && line.Length <= heading.Length + 80);
+    private static string HeadingLine(string line) => Regex.Replace(line, @"^\s*(?:\d+(?:\.\d+)*[.)]?|[A-Z][.)])\s+", "");
+    private static bool StartsWithHeading(string line, string heading) => Regex.IsMatch(HeadingLine(line), $@"(?i)^\s*{Regex.Escape(heading)}(?:\s*[:\-–]|\s*$|\s+)");
+    private static bool IsHeading(string line) => Headings.Any(heading => StartsWithHeading(line, heading) && HeadingLine(line).Length <= heading.Length + 80);
 
     private static string FirstUsefulParagraph(string text)
     {
