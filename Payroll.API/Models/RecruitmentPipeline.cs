@@ -632,6 +632,7 @@ public class RecruitmentPipelineBoardCard
     public string RejectedFromStageName { get; set; } = "";
     public DateTime? RejectedAtUtc { get; set; }
     public decimal? AtsScore { get; set; }
+    public decimal AtsShortlistThreshold { get; set; } = 60;
     public string EligibilityStatus { get; set; } = "";
     public List<string> EligibilityReasons { get; set; } = [];
     public decimal? InterviewScore { get; set; }

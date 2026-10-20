@@ -20,6 +20,16 @@ export function recruitmentEligibility(row: RecruitmentEligibilityRecord) {
     showScore: status === 'eligible' || status === 'review',
     isEligible: status === 'eligible',
     provisional: status === 'review',
+    hasException: (row.eligibilityReasons || []).some(reason => reason.startsWith('Approved eligibility exception:')),
     reason: (row.eligibilityReasons || []).join(' '),
   } as const
+}
+
+export function isRecruitmentPipelineCandidate(row: RecruitmentEligibilityRecord & {
+  currentStage?: string; currentStatus?: string; atsShortlistThreshold?: number
+}) {
+  return row.eligibilityStatus === 'Eligible' && row.atsScore != null
+    && row.atsScore >= (row.atsShortlistThreshold || 60)
+    && !/new|application|intake/i.test(row.currentStage || '')
+    && !/reject|withdraw/i.test(`${row.currentStage || ''} ${row.currentStatus || ''}`)
 }

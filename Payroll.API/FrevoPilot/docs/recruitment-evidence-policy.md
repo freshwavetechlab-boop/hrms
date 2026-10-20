@@ -6,6 +6,10 @@ The selected JD version defines job requirements. The candidate's selected resum
 
 Numeric ATS rank and mandatory eligibility are separate. New linked interviews require verified eligibility and the configured shortlist cutoff. High scores, score overrides, standalone linking and an Interview stage cannot bypass mandatory checks. Existing interview decisions and signed documents remain historical records.
 
+Recruitment administrators can explicitly approve an application-specific eligibility exception through Review eligibility. Each relaxed total-experience, named-skill, qualification or certification requirement needs its own recorded reason and approver. An exception does not create experience, a degree or a certificate, and does not award extra ATS component points. Ordinary evidence verification cannot waive known minimum durations. Exceptions are bound to the selected resume/JD requirement hash, can be withdrawn, and do not approve unrelated requirements or bypass the ATS cutoff. Neither an AI response nor an ATS score override can create an exception. Business exceptions must never become candidate-fact training labels.
+
+Applications separates Needs review and Not eligible from In pipeline. The active candidate pipeline board and forward transitions require eligibility (including explicit current exceptions) plus the shortlist cutoff. Excluded applications and their history remain in Applications; no automatic rejection, deletion or historical stage rewrite occurs.
+
 ## Experience and qualifications
 
 Read explicit professional/overall experience headings and decimal hands-on durations. Keep total career, named-skill and post-qualification experience distinct. Course duration, age and dates in education are not work experience. A replay differing from saved months needs review; never automatically overwrite a historical or manually reviewed fact.

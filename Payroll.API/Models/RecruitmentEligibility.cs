@@ -12,6 +12,9 @@ public static class RecruitmentEligibility
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(100);
 
+    public static bool CanEnterPipeline(string eligibilityStatus, decimal? score, decimal cutoff = 60) =>
+        eligibilityStatus == "Eligible" && score.HasValue && score >= (cutoff > 0 ? cutoff : 60);
+
     public static string InterviewSchedulingBlockReason(RecruitmentCandidateApplication application)
     {
         if (application.EligibilityStatus != "Eligible")
@@ -39,13 +42,13 @@ public static class RecruitmentEligibility
 
     public static RecruitmentEligibilityAssessment Assess(int? experienceMonths, string? experienceRequirement,
         IEnumerable<string>? mustHaveStatuses = null, string scoreStatus = "", bool hasAssessment = true,
-        IEnumerable<string>? additionalReviewReasons = null)
+        IEnumerable<string>? additionalReviewReasons = null, bool minimumExperienceWaived = false)
     {
         var reasons = new List<string>();
         var review = new List<string>();
         var minimum = MinimumExperienceMonths(experienceRequirement);
-        if (minimum is null) review.Add($"Experience requirement '{experienceRequirement}' needs recruiter verification.");
-        else if (minimum > 0)
+        if (minimum is null && !minimumExperienceWaived) review.Add($"Experience requirement '{experienceRequirement}' needs recruiter verification.");
+        else if (minimum > 0 && !minimumExperienceWaived)
         {
             if (!experienceMonths.HasValue || experienceMonths < 0) review.Add($"Minimum total experience is {Duration(minimum.Value)}; resume experience is not established.");
             else if (experienceMonths < minimum) reasons.Add($"Minimum total experience is {Duration(minimum.Value)}; resume shows {Duration(experienceMonths.Value)}.");
@@ -65,7 +68,7 @@ public static class RecruitmentEligibility
             review.Add("Mandatory eligibility evidence needs recruiter verification.");
         review.AddRange((additionalReviewReasons ?? []).Where(x => !string.IsNullOrWhiteSpace(x)));
         var status = reasons.Count > 0 ? "Ineligible" : review.Count > 0 ? "NeedsReview" : hasAssessment ? "Eligible" : "NotAssessed";
-        if (status == "Eligible" && minimum > 0 && experienceMonths.HasValue)
+        if (status == "Eligible" && minimum > 0 && experienceMonths.HasValue && !minimumExperienceWaived)
             reasons.Add($"Minimum total experience is {Duration(minimum.Value)}; resume shows {Duration(experienceMonths.Value)} and meets the minimum. Mandatory skill checks passed.");
         return new(status, reasons.Concat(review).Distinct().ToArray(), minimum);
     }

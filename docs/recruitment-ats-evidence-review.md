@@ -33,6 +33,16 @@ The updated repository was exercised read-only against all 221 connected applica
 
 Deploy/restart both API and UI to use these changes. No schema migration or server-model replacement is required. Existing data is not automatically reparsed or rescored. Review identified differences, reparse the original resume or use verified evidence, then intentionally reassess ATS. AI must be enabled on the intended ATS profile before that profile will use the configured provider pool; this review did not enable it or backfill scores.
 
+## Eligibility exceptions and pipeline counts, 20 October 2026
+
+Applications now counts Needs review and Not eligible separately. In pipeline requires current eligibility and the configured ATS cutoff, rather than merely a stage other than New/Rejected. Pipeline buttons and both candidate-board projections use that gate; new transitions and their application recheck it. Historical stage rows, interview decisions and rejected/withdrawn disposition operations remain intact.
+
+Review eligibility supports an explicit administrator-approved exception for each total-experience minimum, named mandatory skill (including its minimum duration), qualification or certification. Reasons, approver identity, time and the resume/JD requirement hash are stored in the existing score-evidence records. Withdrawing an exception restores the original check. Candidate facts and raw component scores are preserved; an exception is shown with an Eligibility exception badge. A score override alone cannot relax mandatory eligibility. Review/recalculate eligibility first, then apply an ATS score override if still needed. No schema migration is required.
+
+Read-only checks against the connected 221 applications returned 141 NeedsReview, 79 Ineligible and one Eligible; that eligible application met the cutoff. These are current saved-evidence assessments, not a new model accuracy measurement. The two previously reported applications expose their mandatory checks and experience-minimum exception item. No application, score, exception, stage or message was written during verification.
+
+Validation: 83 targeted backend tests, 14 frontend policy tests and 38 Playwright checks passed. Browser checks used mocked writes, included exception approval/revocation and existing interview rounds, and exercised desktop/tablet/mobile layouts. API and UI builds passed. Production exception saves and deployment were not performed.
+
 ## Repeat the read-only corpus audit
 
 From the repository root in PowerShell:

@@ -12,7 +12,7 @@ public sealed partial class RecruitmentTalentRepository
         var rows = (await db.QueryAsync<RecruitmentCandidateApplication>(@"SELECT applicationRow.Id,
 COALESCE(facts.TotalExperienceMonths,NULLIF(candidate.TotalExperienceMonths,0)) CandidateExperienceMonths,
 positionRow.ExperienceRange RequiredExperienceRange,COALESCE(score.OverrideScore,score.TotalScore) AtsScore,
-COALESCE(score.ScoreStatus,'Not Scored') ScoreStatus
+COALESCE(score.ScoreStatus,'Not Scored') ScoreStatus,COALESCE(score.ShortlistThreshold,60) AtsShortlistThreshold
 FROM recruitment_candidate_applications applicationRow
 JOIN recruitment_candidates candidate ON candidate.Id=applicationRow.CandidateId
 JOIN recruitment_open_positions positionRow ON positionRow.Id=applicationRow.PositionId
@@ -32,6 +32,7 @@ WHERE applicationRow.Id IN @Ids", new { Ids = ids })).ToList();
         {
             if (!assessments.TryGetValue(card.ApplicationId, out var row)) continue;
             card.AtsScore = row.AtsScore;
+            card.AtsShortlistThreshold = row.AtsShortlistThreshold;
             card.EligibilityStatus = row.EligibilityStatus;
             card.EligibilityReasons = row.EligibilityReasons;
         }
@@ -69,9 +70,11 @@ WHERE score.IsCurrent=TRUE AND score.ApplicationId IN @Ids", new { Ids = rows.Se
             if (identity?.SnapshotStillCurrent == false) pending.Add("The job description changed. Refresh ATS before reviewing its requirements.");
             row.CandidateExperienceMonths = RecruitmentEligibilityReviewPolicy.Experience(reviews, row.CandidateExperienceMonths);
             var assessment = RecruitmentEligibility.Assess(row.CandidateExperienceMonths, row.RequiredExperienceRange,
-                statuses, skills.Length > 0 || mandatory.Count > 0 || reviews.Count > 0 ? "" : row.ScoreStatus, row.AtsScore.HasValue, pending);
+                statuses, skills.Length > 0 || mandatory.Count > 0 || reviews.Count > 0 ? "" : row.ScoreStatus, row.AtsScore.HasValue, pending,
+                minimumExperienceWaived: RecruitmentEligibilityReviewPolicy.ExperienceMinimumWaived(reviews));
             row.EligibilityStatus = assessment.Status;
-            row.EligibilityReasons = assessment.Reasons.Where(reason => reason != "Mandatory eligibility evidence needs recruiter verification." || pending.Count == 0).ToList();
+            row.EligibilityReasons = assessment.Reasons.Where(reason => reason != "Mandatory eligibility evidence needs recruiter verification." || pending.Count == 0)
+                .Concat(RecruitmentEligibilityReviewPolicy.ExceptionReasons(reviews)).ToList();
             if (assessment.Status is "Ineligible" or "NeedsReview") row.ScoreStatus = assessment.Status;
         }
     }
@@ -106,9 +109,10 @@ WHERE score.Id IN @Ids", new { Ids = scores.Select(x => x.Id).ToArray() })).ToDi
             var assessment = RecruitmentEligibility.Assess(RecruitmentEligibilityReviewPolicy.Experience(manual, facts.GetValueOrDefault(score.Id)?.ExperienceMonths),
                 score.PositionSnapshot?.ExperienceRange,
                 statuses, skills.Length > 0 || mandatory.Count > 0 || manual.Count > 0 ? "" : score.ScoreStatus,
-                additionalReviewReasons: pending);
+                additionalReviewReasons: pending, minimumExperienceWaived: RecruitmentEligibilityReviewPolicy.ExperienceMinimumWaived(manual));
             score.EligibilityStatus = assessment.Status;
-            score.EligibilityReasons = assessment.Reasons.Where(reason => reason != "Mandatory eligibility evidence needs recruiter verification." || pending.Count == 0).ToList();
+            score.EligibilityReasons = assessment.Reasons.Where(reason => reason != "Mandatory eligibility evidence needs recruiter verification." || pending.Count == 0)
+                .Concat(RecruitmentEligibilityReviewPolicy.ExceptionReasons(manual)).ToList();
             if (assessment.Status is "Ineligible" or "NeedsReview") score.ScoreStatus = assessment.Status;
         }
     }

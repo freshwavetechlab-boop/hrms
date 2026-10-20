@@ -1494,7 +1494,8 @@ AND (@JobPostingId IS NULL OR a.JobPostingId=@JobPostingId)
 ORDER BY s.EnteredAtUtc", new { PositionId = positionId, assignment.PipelineVersionId, JobPostingId = jobPostingId })).ToList();
         await RecruitmentTalentRepository.ApplyBoardEligibilityAsync(db, cards.Select(x => x.Card).ToList());
         foreach (var lane in board.Lanes)
-            lane.Applications = cards.Where(x => x.StageId == lane.StageId).Select(x => x.Card).ToList();
+            lane.Applications = cards.Where(x => x.StageId == lane.StageId
+                && RecruitmentEligibility.CanEnterPipeline(x.Card.EligibilityStatus, x.Card.AtsScore, x.Card.AtsShortlistThreshold)).Select(x => x.Card).ToList();
         return board;
     }
 
@@ -1772,7 +1773,7 @@ WHERE stageInstance.Status IN ('Active','Paused')
 ORDER BY stageInstance.EnteredAtUtc",
             new { ClientId = effectiveClientId, PositionId = positionId is > 0 ? positionId : null, JobPostingId = jobPostingId is > 0 ? jobPostingId : null })).ToList();
         await RecruitmentTalentRepository.ApplyBoardEligibilityAsync(db, candidateCards.Cast<RecruitmentPipelineBoardCard>().ToList());
-        foreach (var candidate in candidateCards)
+        foreach (var candidate in candidateCards.Where(x => RecruitmentEligibility.CanEnterPipeline(x.EligibilityStatus, x.AtsScore, x.AtsShortlistThreshold)))
         {
             var lane = workspace.Lanes.FirstOrDefault(row => row.PipelineVersionId == candidate.PipelineVersionId && row.StageId == candidate.StageId);
             if (lane is not null) lane.Applications.Add(candidate);
@@ -1828,6 +1829,9 @@ WHERE a.Id=@ApplicationId", new { ApplicationId = applicationId, request.Transit
             || context.OutcomeCode.Contains("WITHDRAW", StringComparison.OrdinalIgnoreCase);
         if (!dispositionTransition)
         {
+            var eligibility = (await RecruitmentTalentRepository.ApplicationEligibilityByIdAsync(db, [applicationId])).GetValueOrDefault(applicationId);
+            if (eligibility is null || !RecruitmentEligibility.CanEnterPipeline(eligibility.EligibilityStatus, eligibility.AtsScore, eligibility.AtsShortlistThreshold))
+                return (null, "Review mandatory eligibility requirements or approve explicit exceptions, and meet the ATS cutoff before moving this candidate forward.");
             var stageRequirementError = await ValidateStageExitRequirementsAsync(db, applicationId, context.CurrentStageId, request.TransitionId);
             if (stageRequirementError.Length > 0) return (null, stageRequirementError);
             var ruleError = await ValidateTransitionRulesAsync(db, applicationId, request.TransitionId);
@@ -2219,10 +2223,11 @@ DueAtUtc=CASE WHEN @ShiftDue=TRUE AND DueAtUtc IS NOT NULL THEN TIMESTAMPADD(SEC
     {
         await using var db = Db();
         await db.OpenAsync();
-        var roundJob = await db.QueryFirstOrDefaultAsync<RecruitmentCandidateApplication>(@"SELECT a.ClientId,a.PositionId FROM recruitment_pipeline_transition_requests r
+        var roundJob = await db.QueryFirstOrDefaultAsync<RecruitmentCandidateApplication>(@"SELECT r.ApplicationId Id,a.ClientId,a.PositionId FROM recruitment_pipeline_transition_requests r
 JOIN recruitment_candidate_applications a ON a.Id=r.ApplicationId WHERE r.Id=@Id",new { Id=requestId });
         if (roundJob is null) return (null,"Transition request was not found.");
         await using var roundLease = await RecruitmentInterviewRounds.LockAsync(db,roundJob.ClientId,roundJob.PositionId);
+        var eligibility = (await RecruitmentTalentRepository.ApplicationEligibilityByIdAsync(db, [roundJob.Id])).GetValueOrDefault(roundJob.Id);
         await using var tx = await db.BeginTransactionAsync();
         var request = await db.QueryFirstOrDefaultAsync<ApplyTransitionRow>(@"SELECT r.*,t.FromStageId,t.ToStageId,t.OutcomeCode,
 f.StageName FromStageName,f.StageType FromStageType,n.StageName ToStageName,n.SlaDurationMinutes,n.IsTerminal,n.StageType ToStageType
@@ -2235,6 +2240,10 @@ WHERE r.Id=@Id FOR UPDATE", new { Id = requestId }, tx);
         if (request.AppliedAtUtc is not null)
             return (new RecruitmentPipelineTransitionResult { RequestId = request.Id, ApplicationId = request.ApplicationId, Status = "Applied", CurrentStageInstanceId = request.StageInstanceId, Message = "Transition was already applied." }, "");
         if (request.Status is not ("Approved" or "Pending Approval")) return (null, "Transition request is not approved.");
+        var disposition = request.ToStageType is "Rejected" or "Withdrawn"
+            || request.OutcomeCode.Contains("REJECT", StringComparison.OrdinalIgnoreCase) || request.OutcomeCode.Contains("WITHDRAW", StringComparison.OrdinalIgnoreCase);
+        if (!disposition && (eligibility is null || !RecruitmentEligibility.CanEnterPipeline(eligibility.EligibilityStatus, eligibility.AtsScore, eligibility.AtsShortlistThreshold)))
+            return (null, "Candidate eligibility or ATS cutoff no longer permits this transition. Review the current assessment before proceeding.");
         var current = await db.QueryFirstOrDefaultAsync<StageLockRow>(@"SELECT s.*,stageDefinition.PauseBehavior,p.CurrentStageInstanceId,p.Id PipelineInstanceId
 FROM recruitment_application_stage_instances s JOIN recruitment_application_pipeline_instances p ON p.Id=s.ApplicationPipelineInstanceId
 JOIN recruitment_pipeline_stages stageDefinition ON stageDefinition.Id=s.PipelineStageId

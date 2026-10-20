@@ -82,6 +82,7 @@ WHERE ApplicationId=@Id AND ResumeId=@ResumeId AND IsCurrent=TRUE ORDER BY Id DE
                 Key = key, Requirement = "Mandatory skill: " + skill.SkillName + (skill.MinimumYears > 0 ? $" — minimum {skill.MinimumYears:0.##} years" : ""),
                 Status = status == "Matched" ? "Met" : status is "InsufficientExperience" or "VerifiedNotMet" ? "NotMet" : "NeedsReview",
                 Evidence = skill.EvidenceExcerpt, CanReview = skill.MatchStatus != "InsufficientExperience" && !context.ScoreIsStale,
+                CanWaive = RecruitmentEligibilityReviewPolicy.CanApproveExceptions(user) && !context.ScoreIsStale,
                 Review = reviews.GetValueOrDefault(key)
             });
         }
@@ -90,8 +91,21 @@ WHERE ApplicationId=@Id AND ResumeId=@ResumeId AND IsCurrent=TRUE ORDER BY Id DE
             var key = RecruitmentEligibilityReviewPolicy.RequirementKey("requirement", reason);
             var review = reviews.GetValueOrDefault(key);
             context.Items.Add(new() { Key = key, Requirement = reason, Review = review,
-                Status = review?.Decision == "Verified" ? "Met" : review?.Decision == "NotMet" ? "NotMet" : "NeedsReview", CanReview = !context.ScoreIsStale });
+                Status = review?.Decision == "Verified" ? "Met" : review?.Decision == "NotMet" ? "NotMet" : "NeedsReview", CanReview = !context.ScoreIsStale,
+                CanWaive = RecruitmentEligibilityReviewPolicy.CanApproveExceptions(user) && !context.ScoreIsStale && RecruitmentEligibilityReviewPolicy.CanWaiveRequirement(reason) });
         }
+        var minimum = RecruitmentEligibility.MinimumExperienceMonths(app.RequiredExperienceRange);
+        if (minimum is null or > 0)
+            context.Items.Add(new()
+            {
+                Key = RecruitmentEligibilityReviewPolicy.ExperienceMinimumKey,
+                Requirement = "Minimum total experience: " + app.RequiredExperienceRange,
+                Status = !minimum.HasValue || !app.CandidateExperienceMonths.HasValue ? "NeedsReview"
+                    : app.CandidateExperienceMonths >= minimum ? "Met" : "NotMet",
+                Evidence = "Recorded experience and the JD minimum remain unchanged when an exception is approved.",
+                CanReview = false, CanWaive = RecruitmentEligibilityReviewPolicy.CanApproveExceptions(user) && !context.ScoreIsStale,
+                Review = reviews.GetValueOrDefault(RecruitmentEligibilityReviewPolicy.ExperienceMinimumKey)
+            });
         if (reviews.TryGetValue(RecruitmentEligibilityReviewPolicy.ExperienceKey, out var experience) && experience.Decision == "Verified")
         { context.VerifiedExperienceMonths = experience.VerifiedExperienceMonths; context.ExperienceEvidence = experience.Note; }
         return context;
@@ -102,6 +116,7 @@ WHERE ApplicationId=@Id AND ResumeId=@ResumeId AND IsCurrent=TRUE ORDER BY Id DE
     {
         request.Decisions ??= [];
         request.ExperienceEvidence ??= "";
+        if (!RecruitmentEligibilityReviewPolicy.CanApproveExceptions(user)) return (null, "Recruitment administration permission is required to save an eligibility review.");
         if (request.Decisions.Any(x => x is null)) return (null, "Select valid requirement decisions.");
         if (request.ExpectedResumeId <= 0 || request.Decisions.Count > 100) return (null, "Select the current resume and a bounded set of requirements.");
         if (request.ExperienceChanged && request.VerifiedExperienceMonths.HasValue
@@ -124,7 +139,7 @@ WHERE ApplicationId=@Id AND ResumeId=@ResumeId AND IsCurrent=TRUE ORDER BY Id DE
                 if (request.Decisions.Select(x => x.Key).Distinct().Count() != request.Decisions.Count) return (null, "A requirement was supplied more than once.");
                 foreach (var decision in request.Decisions)
                 {
-                    var error = RecruitmentEligibilityReviewPolicy.ValidateDecision(decision, context.Items.FirstOrDefault(x => x.Key == decision.Key));
+                    var error = RecruitmentEligibilityReviewPolicy.ValidateDecision(decision, context.Items.FirstOrDefault(x => x.Key == decision.Key), RecruitmentEligibilityReviewPolicy.CanApproveExceptions(user));
                     if (error.Length > 0) return (null, error);
                 }
                 var decisions = request.Decisions.ToList();
@@ -133,6 +148,7 @@ WHERE ApplicationId=@Id AND ResumeId=@ResumeId AND IsCurrent=TRUE ORDER BY Id DE
                     Note = request.VerifiedExperienceMonths.HasValue ? request.ExperienceEvidence.Trim() : "Reviewed total experience withdrawn; use source resume evidence." });
                 foreach (var decision in decisions)
                 {
+                    decision.Requirement = Truncate(context.Items.FirstOrDefault(x => x.Key == decision.Key)?.Requirement ?? "Verified total experience", 180);
                     decision.ReviewerUserId = user.Id; decision.ReviewerName = Truncate(user.DisplayName.Length > 0 ? user.DisplayName : user.Email, 100);
                     decision.ReviewedAtUtc = DateTime.UtcNow; decision.Note = (decision.Note ?? "").Trim();
                     if (decision.Key != RecruitmentEligibilityReviewPolicy.ExperienceKey) decision.VerifiedExperienceMonths = null;
@@ -148,7 +164,7 @@ VALUES (@ScoreId,'eligibilityReview',@Type,@Expected,@Actual,@Status,1)", new { 
                         Actual = item.Json, Status = item.Decision.Decision }, tx);
                 var app = await db.QuerySingleAsync<RecruitmentCandidateApplication>("SELECT * FROM recruitment_candidate_applications WHERE Id=@Id", new { Id = applicationId }, tx);
                 if (jsonRows.Count > 0) await WriteActivityAsync(db, app.ClientId, app.CandidateId, null, "RECRUITMENT", "ATS_ELIGIBILITY_REVIEWED",
-                    "Eligibility evidence reviewed", $"{jsonRows.Count} reviewed evidence item(s) saved for resume {context.ResumeId}. Pipeline stage preserved.",
+                    decisions.Any(x => x.Decision == "Waived") ? "Eligibility exception approved" : "Eligibility evidence reviewed", $"{jsonRows.Count} reviewed item(s), {decisions.Count(x => x.Decision == "Waived")} explicit exception(s) saved for resume {context.ResumeId}. Candidate facts and pipeline stage preserved.",
                     "RecruitmentApplication", app.Id.ToString(), user, transaction: tx);
                 await tx.CommitAsync(cancellationToken);
             }

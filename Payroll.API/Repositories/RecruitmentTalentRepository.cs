@@ -3475,11 +3475,14 @@ WHERE JobDescriptionVersionId=@Id AND IsMandatory=TRUE ORDER BY DisplayOrder,Id"
             return skill;
         }).ToList();
         var mandatoryReasons = mandatoryReviews.GetValueOrDefault(applicationId) ?? [];
-        var reviewedStatuses = requiredMatches.Select(match => match.MatchStatus).ToList();
+        // Exceptions clear only the eligibility gate. Original skill evidence and
+        // its calculated score remain intact; only verified facts change ratios.
+        var reviewedStatuses = requiredMatches.Select(match => RecruitmentEligibilityReviewPolicy.SkillStatus(ToReviewSkill(match), manualReviews)).ToList();
         if (mandatoryReasons.Any(reason => manualReviews.GetValueOrDefault(RecruitmentEligibilityReviewPolicy.RequirementKey("requirement", reason))?.Decision == "NotMet"))
             reviewedStatuses.Add(RecruitmentEligibilityReviewPolicy.ConfirmedNotMet);
         var eligibility = RecruitmentEligibility.Assess(data.HasExperienceEvidence ? data.TotalExperienceMonths : null,
-            experienceRange, reviewedStatuses, additionalReviewReasons: RecruitmentEligibilityReviewPolicy.PendingReasons(reviewSkills, mandatoryReasons, manualReviews));
+            experienceRange, reviewedStatuses, additionalReviewReasons: RecruitmentEligibilityReviewPolicy.PendingReasons(reviewSkills, mandatoryReasons, manualReviews),
+            minimumExperienceWaived: RecruitmentEligibilityReviewPolicy.ExperienceMinimumWaived(manualReviews));
         var eligibilityStatus = eligibility.Status == "Ineligible" ? RecruitmentAtsEligibilityStatus.Ineligible
             : eligibility.Status == "NeedsReview" ? RecruitmentAtsEligibilityStatus.NeedsReview : RecruitmentAtsEligibilityStatus.Eligible;
         var requiredRatio = SkillRequirementRatio(requiredMatches);
@@ -3560,7 +3563,7 @@ UNION ALL SELECT ResponsibilityText FROM recruitment_jd_responsibilities WHERE J
             ratios["preferredSkills"] = Math.Min(ratios.GetValueOrDefault("preferredSkills"), preferredRatio);
         var evidenceSummaries = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["requiredSkills"] = $"{SkillEvidenceSummary(requiredMatches)}; skill gaps are advisory when the ATS cutoff is met",
+            ["requiredSkills"] = $"{SkillEvidenceSummary(requiredMatches)}; mandatory gaps require verified evidence or an explicit administrator-approved eligibility exception, independently of the ATS cutoff",
             ["preferredSkills"] = SkillEvidenceSummary(preferredMatches),
             ["experience"] = $"{data.TotalExperienceMonths} months against requirement '{experienceRange}'",
             ["qualification"] = $"Candidate '{data.HighestQualification}' against '{qualificationRequirement}'",

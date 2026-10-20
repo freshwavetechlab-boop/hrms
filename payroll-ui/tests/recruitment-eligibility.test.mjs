@@ -4,7 +4,7 @@ import test from 'node:test'
 import ts from 'typescript'
 
 const source = fs.readFileSync(new URL('../src/utils/recruitmentEligibility.ts', import.meta.url), 'utf8')
-const { recruitmentEligibility } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText).toString('base64')}`)
+const { recruitmentEligibility, isRecruitmentPipelineCandidate } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText).toString('base64')}`)
 
 test('A high score and an override cannot hide a mandatory eligibility failure', () => {
   for (const score of [0, 75, 99, 100]) {
@@ -44,4 +44,22 @@ test('Legacy API statuses hide ineligible scores and mark review scores as provi
 test('Unscored records remain distinguishable from a valid zero score', () => {
   assert.equal(recruitmentEligibility({ atsScore: null }).status, 'pending')
   assert.equal(recruitmentEligibility({ atsScore: 0 }).status, 'eligible')
+})
+
+test('Pipeline counts exclude review, ineligible, pending, below-cutoff and disposition rows', () => {
+  const eligible = { eligibilityStatus: 'Eligible', atsScore: 80, atsShortlistThreshold: 75, currentStage: 'Interview / Panel Assessment' }
+  assert.equal(isRecruitmentPipelineCandidate(eligible), true)
+  for (const eligibilityStatus of ['NeedsReview', 'Ineligible', 'NotAssessed', undefined])
+    assert.equal(isRecruitmentPipelineCandidate({ ...eligible, eligibilityStatus }), false)
+  for (const currentStage of ['New', 'Application received', 'Rejected', 'Withdrawn'])
+    assert.equal(isRecruitmentPipelineCandidate({ ...eligible, currentStage }), false)
+  assert.equal(isRecruitmentPipelineCandidate({ ...eligible, atsScore: 74 }), false)
+  assert.equal(isRecruitmentPipelineCandidate({ ...eligible, atsScore: null }), false)
+})
+
+test('An approved exception is visible but never bypasses another unresolved requirement', () => {
+  const row = { eligibilityStatus: 'Eligible', atsScore: 80, eligibilityReasons: ['Approved eligibility exception: Minimum total experience — client approval.'] }
+  assert.equal(recruitmentEligibility(row).hasException, true)
+  assert.equal(isRecruitmentPipelineCandidate(row), true)
+  assert.equal(isRecruitmentPipelineCandidate({ ...row, eligibilityStatus: 'NeedsReview' }), false)
 })

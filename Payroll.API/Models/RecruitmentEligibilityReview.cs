@@ -9,6 +9,7 @@ public sealed class RecruitmentEligibilityReviewDecision
     public string Key { get; set; } = "";
     public string Decision { get; set; } = "Pending";
     public string Note { get; set; } = "";
+    public string Requirement { get; set; } = "";
     public int? VerifiedExperienceMonths { get; set; }
     public int ReviewerUserId { get; set; }
     public string ReviewerName { get; set; } = "";
@@ -34,6 +35,7 @@ public sealed class RecruitmentEligibilityReviewItem
     public string Status { get; set; } = "NeedsReview";
     public string Evidence { get; set; } = "";
     public bool CanReview { get; set; } = true;
+    public bool CanWaive { get; set; }
     public RecruitmentEligibilityReviewDecision? Review { get; set; }
 }
 
@@ -61,7 +63,19 @@ public static class RecruitmentEligibilityReviewPolicy
 {
     public const string EvidenceType = "HumanEligibilityReview";
     public const string ExperienceKey = "experience:total";
+    public const string ExperienceMinimumKey = "experience:minimum";
     public const string ConfirmedNotMet = "VerifiedNotMet";
+
+    public static bool CanApproveExceptions(AuthUser user) => user.Permissions.Any(x => x is "settings.manage" or "recruitment.manage");
+    public static bool ExperienceMinimumWaived(IReadOnlyDictionary<string, RecruitmentEligibilityReviewDecision> reviews) =>
+        reviews.TryGetValue(ExperienceMinimumKey, out var review) && review.Decision == "Waived";
+    public static bool CanWaiveRequirement(string reason) => reason.StartsWith("Mandatory qualification", StringComparison.Ordinal)
+        || reason.StartsWith("Combined qualification", StringComparison.Ordinal)
+        || reason.StartsWith("Qualification mode/discipline", StringComparison.Ordinal)
+        || reason.StartsWith("Mandatory certification", StringComparison.Ordinal);
+    public static IReadOnlyList<string> ExceptionReasons(IReadOnlyDictionary<string, RecruitmentEligibilityReviewDecision> reviews) =>
+        reviews.Values.Where(x => x.Decision == "Waived").Select(x =>
+            $"Approved eligibility exception: {x.Requirement} — {x.Note} (approved by {x.ReviewerName}).").ToArray();
 
     public static string RequirementKey(string category, string requirement) => category + ":" + Hash(requirement.Trim().ToLowerInvariant());
     public static string SkillKey(RecruitmentApplicationScoreSkillMatch skill) => RequirementKey("skill",
@@ -74,6 +88,7 @@ public static class RecruitmentEligibilityReviewPolicy
     public static string SkillStatus(RecruitmentApplicationScoreSkillMatch skill, IReadOnlyDictionary<string, RecruitmentEligibilityReviewDecision> reviews)
     {
         var key = SkillKey(skill);
+        if (reviews.TryGetValue(key, out var exception) && exception.Decision == "Waived") return RecruitmentAtsDomainRules.Matched;
         if (skill.MatchStatus == RecruitmentAtsDomainRules.InsufficientExperience) return skill.MatchStatus;
         if (reviews.TryGetValue(key, out var review))
         {
@@ -100,7 +115,7 @@ public static class RecruitmentEligibilityReviewPolicy
         {
             if (reviews.TryGetValue(RequirementKey("requirement", reason), out var review))
             {
-                if (review.Decision == "Verified") continue;
+                if (review.Decision is "Verified" or "Waived") continue;
                 if (review.Decision == "NotMet") { reasons.Add("Recruiter confirmed not met: " + reason); continue; }
             }
             reasons.Add(reason);
@@ -111,10 +126,12 @@ public static class RecruitmentEligibilityReviewPolicy
     public static int? Experience(IReadOnlyDictionary<string, RecruitmentEligibilityReviewDecision> reviews, int? parsedMonths) =>
         reviews.TryGetValue(ExperienceKey, out var review) && review.Decision == "Verified" ? review.VerifiedExperienceMonths : parsedMonths;
 
-    public static string ValidateDecision(RecruitmentEligibilityReviewDecision decision, RecruitmentEligibilityReviewItem? item)
+    public static string ValidateDecision(RecruitmentEligibilityReviewDecision decision, RecruitmentEligibilityReviewItem? item, bool canApproveExceptions = false)
     {
-        if (item is null || !item.CanReview) return "The selected requirement cannot be approved by this review. Refresh the assessment or correct its source evidence.";
-        if (decision.Decision is not ("Verified" or "NotMet" or "Pending")) return "Choose Meets requirement, Does not meet, or Needs review.";
+        if (item is null || (!item.CanReview && !item.CanWaive)) return "The selected requirement cannot be approved by this review. Refresh the assessment or correct its source evidence.";
+        if (decision.Decision == "Waived" && (!canApproveExceptions || !item.CanWaive)) return "An authorized recruitment administrator must approve this eligibility exception.";
+        if ((decision.Decision is "Verified" or "NotMet") && !item.CanReview) return "Correct the recorded evidence or explicitly approve an eligibility exception.";
+        if (decision.Decision is not ("Verified" or "NotMet" or "Pending" or "Waived")) return "Choose a valid evidence review or eligibility exception decision.";
         if ((decision.Note ?? "").Trim().Length > 400 || decision.Decision != "Pending" && (decision.Note ?? "").Trim().Length < 8)
             return "Add 8–400 characters of supporting evidence for each reviewed requirement.";
         return "";

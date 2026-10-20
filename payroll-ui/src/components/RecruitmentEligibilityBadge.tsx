@@ -20,6 +20,7 @@ export default function RecruitmentEligibilityBadge({ row, showScore = false, sh
   return <div className="recruitment-eligibility" data-eligibility={state.status}>
     <Space size={4} wrap>
       <Tooltip title={!showReason ? state.reason || undefined : undefined}><Tag color={state.color} tabIndex={!showReason && state.reason ? 0 : undefined}>{state.label}</Tag></Tooltip>
+      {state.hasException && <Tooltip title={state.reason}><Tag color="gold">Eligibility exception</Tag></Tooltip>}
       {showScore && state.showScore && score != null && <Tag color={state.provisional ? 'gold' : 'blue'}>{state.provisional ? 'Provisional ATS ' : ''}{score.toFixed(1)} / 100</Tag>}
     </Space>
     {showReason && state.reason && <details className="recruitment-eligibility-details">

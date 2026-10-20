@@ -1,6 +1,7 @@
 export type EligibilityReviewDecision = {
   key: string
-  decision: 'Verified' | 'NotMet' | 'Pending'
+  decision: 'Verified' | 'NotMet' | 'Pending' | 'Waived'
+  requirement?: string
   note: string
   verifiedExperienceMonths?: number | null
   reviewerUserId?: number
@@ -8,7 +9,7 @@ export type EligibilityReviewDecision = {
   reviewedAtUtc?: string
 }
 export type EligibilityReviewItem = {
-  key: string; requirement: string; status: string; evidence: string; canReview: boolean; review?: EligibilityReviewDecision | null
+  key: string; requirement: string; status: string; evidence: string; canReview: boolean; canWaive?: boolean; review?: EligibilityReviewDecision | null
 }
 export type EligibilityReviewContext = {
   applicationId: number; applicationCode: string; candidateName: string; resumeId: number; attachmentPublicId?: string | null

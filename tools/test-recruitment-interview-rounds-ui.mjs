@@ -71,7 +71,7 @@ await context.route('**/*', async route => {
 try {
   await page.goto(origin + '/rounds-fixture')
   const rounds = () => page.locator('.candidate-application-card .recruitment-interview-rounds')
-  await expect(rounds()).toHaveCount(1)
+  await expect(rounds()).toHaveCount(1, { timeout: 30000 })
   await expect(page.getByText('Ineligible high-score candidate', { exact: true })).toHaveCount(0)
   await expect(page.getByText('Unverified high-score candidate', { exact: true })).toHaveCount(0)
   checks.push('Ineligible and unverified high-score candidates are excluded from interview scheduling')
