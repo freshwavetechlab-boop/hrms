@@ -154,9 +154,10 @@ public sealed class ExcelPayslipDeliveryTests
     }
 
     [Fact]
-    public async Task CombinedPdfContainsOnlyFreshRowsAndLaterIndividualOverrideCannotResendAnIncludedRow()
+    public async Task CombinedPdfSkipsTheSameRecipientAndPriorIndividualDeliveryCannotBeRepeated()
     {
-        var batch = Batch(); var state = new ExcelPayslipSendState(); var (_, queue) = Delivery(batch, state, "Sent");
+        var batch = Batch(); var state = new ExcelPayslipSendState(); var (old, queue) = Delivery(batch, state, "Sent");
+        old.Email = "hr@example.test";
         var request = Request(batch, "Combined");
         var reviewed = ExcelPayslipRepository.ReviewDeliverySelection(batch.Rows, request, ExcelPayslipRepository.BuildDeliveryStatuses(batch, state, [queue]));
         var emitted = new List<string[]>();
@@ -176,7 +177,8 @@ public sealed class ExcelPayslipDeliveryTests
     [Fact]
     public async Task AllSkippedRowsNeverRunSmtpReadinessOrPdfQueueCallbacks()
     {
-        var batch = Batch(); var state = new ExcelPayslipSendState(); var (_, queue) = Delivery(batch, state, "Sent", batch.Rows.ToArray());
+        var batch = Batch(); var state = new ExcelPayslipSendState(); var (old, queue) = Delivery(batch, state, "Sent", batch.Rows.ToArray());
+        old.Email = "hr@example.test";
         var request = Request(batch, "Combined");
         var reviewed = ExcelPayslipRepository.ReviewDeliverySelection(batch.Rows, request, ExcelPayslipRepository.BuildDeliveryStatuses(batch, state, [queue]));
         var result = await ExcelPayslipRepository.DispatchDeliverySelectionAsync(batch.Rows, request, reviewed,

@@ -13,6 +13,13 @@ public sealed class ExcelPayslipMailJobSummary
     public string Status { get; set; } = "Queued";
     public int Total { get; set; }
     public int Sent { get; set; }
+    public string Mode { get; set; } = "";
+    public string Recipient { get; set; } = "";
+    public int TotalEmails { get; set; }
+    public int AcceptedEmails { get; set; }
+    public int SentCopySavedEmails { get; set; }
+    public int SentCopyUnverifiedEmails { get; set; }
+    public int DeliveredEmails { get; set; }
     public int Queued { get; set; }
     public int Failed { get; set; }
     public int MissingEmail { get; set; }

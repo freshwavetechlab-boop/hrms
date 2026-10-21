@@ -20,6 +20,7 @@ const html = `<!doctype html><html><head><meta name="viewport" content="width=de
 
 
 const originalId='0123456789abcdef0123456789abcdef',newId='1123456789abcdef0123456789abcdef'
+let bulk = false
 const headers=['Employee Name','Employee Code','Account No','Basic','PF','In Hand Salary','Raw error','Gross','Monthly base']
 const kinds=['employeeName','employeeCode','info','earning','deduction','netPay','ignore','grossTotal','ignore']
 const columns=headers.map((label,columnIndex)=>({columnIndex,sourceHeader:label,label,kind:kinds[columnIndex]}))
@@ -43,7 +44,7 @@ await context.route('**/*',async route=>{
   assert.equal(body.calculationSource.rows.find(r=>r.sourceRow===2).cells[5].value,'880.25');assert.equal(body.calculationSource.rows.find(r=>r.sourceRow===2).cells[5].formulaText,'ROUND(D2-E2,0)');assert.match(body.calculationSource.rows.find(r=>r.sourceRow===2).cells[5].calculationError,/manually corrected/)
   assert.equal(body.calculationSource.rows.find(r=>r.sourceRow===2).cells[3].formulaText,'I2*30');assert.deepEqual(body.calculationSource.excludedSourceRows,[5]);assert.equal(body.rows[0].information[0].value,'000012345')
   if(failSave){failSave=false;return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'Synthetic save unavailable; retry safely.'})})}
-  saved={...body,id:newId,clientId:42,clientName:'Synthetic',createdAtUtc:'2026-10-17T13:00:00Z',createdBy:'test',rows:body.rows.map((r,i)=>({...r,warnings:i===1?[rows[1].warnings[0]]:[]}))};storedSource=body.calculationSource
+  saved={...body,id:newId,clientId:42,clientName:'Synthetic',createdAtUtc:'2026-10-17T13:00:00Z',createdBy:'test',rows:body.rows.map((r,i)=>({...r,warnings:!bulk&&i===1?[rows[1].warnings[0]]:[]}))};storedSource=body.calculationSource
   return reply(saved)
  }
  if(q.method()!=='GET'){forbidden++;return route.fulfill({status:403,body:'{}'})}
@@ -70,6 +71,7 @@ try{
  checks.push('Clickable warning count and precise reconciliation; same-name employees remain distinct by source row')
  checks.push('Direct corrected save retains other employees, identifiers, excluded rows and untouched formulas; failed save retains edits')
  await page.reload();await expect(page.getByRole('button',{name:'1 payslips with warnings',exact:true})).toBeVisible();checks.push('Latest corrected version reopens after refresh; previous snapshot remains unchanged')
+ bulk=true;await page.setViewportSize({width:1366,height:900});await openOriginal();await warningDrawer.getByRole('button',{name:'Fix all warning rows',exact:true}).click();await editor.getByRole('spinbutton',{name:'Correct row 2 In Hand Salary',exact:true}).fill('880.25');await editor.getByRole('spinbutton',{name:'Correct row 3 Gross',exact:true}).fill('500');const beforeBulk=submissions.length;await expect(editor.locator('button').filter({hasText:'Save all corrections as new batch'})).toBeInViewport({ratio:1});await page.screenshot({path:path.join(output,'bulk-desktop.png'),fullPage:false});await page.setViewportSize({width:768,height:1024});await page.screenshot({path:path.join(output,'bulk-tablet.png'),fullPage:false});await page.setViewportSize({width:390,height:844});const bulkSave=editor.locator('button').filter({hasText:'Save all corrections as new batch'});await expect(bulkSave).toBeInViewport({ratio:1});await expect.poll(async()=>{const rect=await editor.boundingBox();return !!rect && rect.x>=0 && rect.x+rect.width<=390.5}).toBe(true);await page.screenshot({path:path.join(output,'bulk-mobile.png'),fullPage:false});await bulkSave.click();await expect(editor).toHaveCount(0);assert.equal(submissions.length,beforeBulk+1);assert.equal(submissions.at(-1).calculationSource.rows.find(r=>r.sourceRow===3).cells[7].value,'500');assert.deepEqual({original,source},before);checks.push('All warning employees can be edited together and saved once; originals, identifiers, formulas and untouched rows remain intact');bulk=false;
  readOnly=true;await openOriginal();await expect(warningDrawer.getByRole('button',{name:'Correct amounts',exact:true})).toHaveCount(0);await expect(warningDrawer.getByRole('button',{name:'Edit column mapping',exact:true})).toHaveCount(0);checks.push('Read-only users can inspect warnings without editing controls')
  readOnly=false;legacy=true;await openOriginal();await warningDrawer.getByRole('button',{name:'Correct amounts',exact:true}).first().click();await expect(warningDrawer.getByText('This batch has no saved worksheet. Import the original workbook.',{exact:true})).toBeVisible();await expect(editor).toHaveCount(0);checks.push('Legacy batches without source show an actionable import message')
  assert.equal(forbidden,0);assert.deepEqual(errors,[]);console.log(JSON.stringify({checks,realDatabaseWrites:0,realEmails:0,output},null,2));fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({checks,forbidden,errors,realDatabaseWrites:0,realEmails:0},null,2))

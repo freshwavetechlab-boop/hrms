@@ -424,6 +424,7 @@ WHERE batches.client_id=@ClientId AND codes.employee_code IS NOT NULL AND TRIM(c
                 var pdf = pdfService.Create(batch, rows, request.IncludeSeal, request.AmountDecimalPlaces, pdfSource);
                 if (NotificationRepository.ValidateExcelPayslipPdf(pdf) is string pdfError) return pdfError;
                 var delivery = await notifications.QueueExcelPayslipPdfAsync(db, tx, batch, rows, email, pdf, requestId, actor, request.IncludeSeal, request.AmountDecimalPlaces, mailTemplate!);
+                delivery.DeliveryMode = request.Mode;
                 state.Deliveries.Add(delivery.Id, delivery);
                 return null;
             });

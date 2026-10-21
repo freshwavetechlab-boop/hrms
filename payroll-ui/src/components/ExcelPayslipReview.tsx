@@ -24,12 +24,13 @@ export function PayslipReconciliation({ row }: { row: ExcelPayslipRow }) {
   </div>
 }
 
-export function ExcelPayslipWarnings({ rows, open, busy, canManage, error, onClose, onReview, onCorrect, onMapping }: {
+export function ExcelPayslipWarnings({ rows, open, busy, canManage, error, onClose, onReview, onCorrect, onMapping, onBulkCorrect }: {
   rows: ExcelPayslipRow[]; open: boolean; busy: boolean; canManage: boolean; error: string
   onClose: () => void; onReview: (row: ExcelPayslipRow) => void; onCorrect: (row: ExcelPayslipRow) => void; onMapping: () => void
+  onBulkCorrect?: () => void
 }) {
   const warnings = rows.filter(row => row.warnings.length)
-  return <Drawer title={`Payslip warnings (${warnings.length})`} open={open} onClose={onClose} width="min(1080px, 98vw)" className="excel-payslip-warning-review" footer={<Space wrap className="excel-payslip-footer"><Button onClick={onClose} disabled={busy}>Close</Button>{canManage && <Button onClick={onMapping} disabled={busy}>Edit column mapping</Button>}</Space>}>
+  return <Drawer title={`Payslip warnings (${warnings.length})`} open={open} onClose={onClose} width="min(1080px, 98vw)" className="excel-payslip-warning-review" footer={<Space wrap className="excel-payslip-footer"><Button onClick={onClose} disabled={busy}>Close</Button>{canManage && <><Button onClick={onMapping} disabled={busy}>Edit column mapping</Button>{onBulkCorrect && <Button type="primary" onClick={onBulkCorrect} disabled={busy || !warnings.length}>Fix all warning rows</Button>}</>}</Space>}>
     <Alert type="info" showIcon message="Review the reason before correcting salary" description="Details show the source amounts and differences. Corrections save the complete batch as a new version; the previous batch and its email history remain available." />
     {error && <Alert type="error" showIcon message={error} />}
     <DataTable title="Employees with warnings" rows={warnings} getRowId={row => row.id} exportFileName="payslip-warnings" emptyText="No warnings in this batch." columns={[

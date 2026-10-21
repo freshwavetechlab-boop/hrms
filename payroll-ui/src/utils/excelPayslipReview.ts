@@ -35,3 +35,14 @@ export function correctPayslipAmounts(sheet: PayslipSheet, sourceRow: number, co
   }
   return { changed, sheet: changed ? { ...sheet, rows: sheet.rows.map(row => row === source ? { ...row, cells } : row) } : sheet }
 }
+
+export function correctPayslipBatchAmounts(sheet: PayslipSheet, columns: PayslipColumn[], edits: Record<number, Record<number, string | null>>) {
+  let updated = sheet, changed = 0
+  for (const [key, values] of Object.entries(edits)) {
+    const row = Number(key)
+    if (!Number.isSafeInteger(row)) throw new Error('Choose an included employee source row.')
+    const result = correctPayslipAmounts(updated, row, columns, values)
+    updated = result.sheet; changed += result.changed
+  }
+  return { sheet: updated, changed }
+}

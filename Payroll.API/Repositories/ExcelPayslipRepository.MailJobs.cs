@@ -22,6 +22,8 @@ internal sealed class ExcelPayslipMailJobRecord
     public int MissingEmail { get; set; }
     public int Skipped { get; set; }
     public List<ExcelPayslipMailJobDelivery> Deliveries { get; set; } = [];
+    public string Mode { get; set; } = "";
+    public string Recipient { get; set; } = "";
 }
 
 internal sealed class ExcelPayslipMailJobDelivery
@@ -78,7 +80,7 @@ public sealed partial class ExcelPayslipRepository
             item.Status = "Queued";
             item.Message = request.Mode == "Combined" ? "Combined PDF queued to the specified recipient." : "Individual PDF queued to this recipient.";
         }
-        var job = CreateMailJobRecord(batch, requestId, actorUserId, actor, selected, reviewed, documents);
+        var job = CreateMailJobRecord(batch, requestId, actorUserId, actor, selected, reviewed, documents, request.Mode, request.Email);
         state.Jobs.Add(requestId, job);
         state.Requests.Add(requestId, JsonSerializer.SerializeToElement(new SendManifest
             { Fingerprint = fingerprint, CreatedBy = Limit(actor, 190), CreatedAtUtc = job.CreatedAtUtc, Result = reviewed }, JsonOptions));
@@ -109,19 +111,22 @@ public sealed partial class ExcelPayslipRepository
         if (pending.Length == 0) return [];
         var hash = NotificationRepository.ExcelPayslipBatchHash(batch);
         var groups = request.Mode == "Combined" ? new[] { pending } : pending.Select(row => new[] { row });
-        return groups.Select(rows => NotificationRepository.PrepareExcelPayslipMailMetadata(batch, rows,
+        return groups.Select(rows => { var document = NotificationRepository.PrepareExcelPayslipMailMetadata(batch, rows,
             request.Mode == "Combined" ? request.Email : ready[rows[0].Id].Email, requestId, actor,
-            request.IncludeSeal, request.AmountDecimalPlaces, template!, hash)).ToList();
+            request.IncludeSeal, request.AmountDecimalPlaces, template!, hash); document.DeliveryMode = request.Mode; return document; }).ToList();
     }
 
     internal static ExcelPayslipMailJobRecord CreateMailJobRecord(ExcelPayslipBatch batch, string id, int actorUserId, string actor,
-        IReadOnlyList<ExcelPayslipRow> selected, ExcelPayslipDeliveryResult result, IReadOnlyList<NotificationRepository.ExcelPayslipMailDocument> documents) => new()
+        IReadOnlyList<ExcelPayslipRow> selected, ExcelPayslipDeliveryResult result, IReadOnlyList<NotificationRepository.ExcelPayslipMailDocument> documents,
+        string mode = "", string recipient = "") => new()
     {
         Id = id, ActorUserId = actorUserId, ClientId = batch.ClientId, ClientName = batch.ClientName, BatchId = batch.Id,
         Month = batch.Month, SourceFileName = batch.SourceFileName, CreatedBy = Limit(actor, 190), CreatedAtUtc = DateTime.UtcNow,
         RowIds = selected.Select(row => row.Id).ToList(), MissingEmail = result.Items.Count(item => item.Status == "Error"),
         Skipped = result.Items.Count(item => item.Status == "Skipped"),
-        Deliveries = documents.Select(document => new ExcelPayslipMailJobDelivery { Id = document.Id, QueueId = document.QueueId, RowCount = document.RowIds.Count }).ToList()
+        Deliveries = documents.Select(document => new ExcelPayslipMailJobDelivery { Id = document.Id, QueueId = document.QueueId, RowCount = document.RowIds.Count }).ToList(),
+        Mode = mode.Length > 0 ? mode : documents.Any(x => DeliveryMode(x) == "Combined") ? "Combined" : "Individual",
+        Recipient = mode == "Combined" ? recipient.Trim() : ""
     };
 
     internal static bool OwnsMailJob(ExcelPayslipMailJobRecord job, int actorUserId, int clientId, string batchId) =>
@@ -133,7 +138,9 @@ public sealed partial class ExcelPayslipRepository
         var queues = rows.ToDictionary(row => row.Id);
         var summary = new ExcelPayslipMailJobSummary { Id = job.Id, ClientId = job.ClientId, ClientName = job.ClientName,
             BatchId = job.BatchId, Month = job.Month, SourceFileName = job.SourceFileName, CreatedAtUtc = job.CreatedAtUtc,
-            CreatedBy = job.CreatedBy, Total = job.RowIds.Count, MissingEmail = job.MissingEmail, Skipped = job.Skipped, DismissedAtUtc = job.DismissedAtUtc };
+            CreatedBy = job.CreatedBy, Total = job.RowIds.Count, MissingEmail = job.MissingEmail, Skipped = job.Skipped, DismissedAtUtc = job.DismissedAtUtc,
+            TotalEmails = job.Deliveries.Count, Mode = job.Mode.Length > 0 ? job.Mode : job.Deliveries.Count == 1 && job.Deliveries[0].RowCount > 1 ? "Combined" : "Individual",
+            Recipient = job.Recipient.Length > 0 ? job.Recipient : job.Deliveries.Count == 1 ? queues.GetValueOrDefault(job.Deliveries[0].QueueId)?.Recipient ?? "" : "" };
         var processing = false; var needsReview = false;
         foreach (var delivery in job.Deliveries)
         {
@@ -141,10 +148,16 @@ public sealed partial class ExcelPayslipRepository
             if (queue is null || queue.ClientId != job.ClientId || queue.EventCode != NotificationRepository.ExcelPayslipEvent
                 || queue.ResourceType != "ExcelPayslipBatch" || queue.ResourceId != job.BatchId + ":" + delivery.Id)
             { summary.Unknown += delivery.RowCount; continue; }
+            var accepted = queue.Status.Equals("Sent", StringComparison.OrdinalIgnoreCase) || queue.SentAt.HasValue || queue.LastSentAt.HasValue;
+            if (accepted)
+            {
+                summary.AcceptedEmails++;
+                if (queue.SentCopyStatus == "Saved") summary.SentCopySavedEmails++; else summary.SentCopyUnverifiedEmails++;
+                if (queue.DeliveryStatus == "Delivered") summary.DeliveredEmails++;
+            }
             if (queue.DeliveryStatus == "Bounced") { summary.Failed += delivery.RowCount; continue; }
             if (queue.DeliveryStatus == "Deferred") { summary.Unknown += delivery.RowCount; continue; }
-            if (queue.Status.Equals("Sent", StringComparison.OrdinalIgnoreCase) || queue.SentAt.HasValue || queue.LastSentAt.HasValue)
-            { summary.Sent += delivery.RowCount; continue; }
+            if (accepted) { summary.Sent += delivery.RowCount; continue; }
             switch (queue.Status.ToUpperInvariant())
             {
                 case "PENDING": case "RETRY": case "EXCELPENDING": case "EXCELRETRY": summary.Queued += delivery.RowCount; break;
@@ -161,13 +174,14 @@ public sealed partial class ExcelPayslipRepository
         summary.Completed = summary.Total - summary.Queued;
         summary.PercentComplete = summary.Total == 0 ? 100 : (int)Math.Floor(100m * summary.Completed / summary.Total);
         summary.IsComplete = summary.Queued == 0;
-        var attention = needsReview || summary.Failed + summary.MissingEmail + summary.Unknown > 0;
+        var attention = needsReview || summary.Failed + summary.MissingEmail + summary.Unknown + summary.SentCopyUnverifiedEmails > 0;
         summary.Status = attention ? "Needs attention" : summary.IsComplete ? "Completed" : processing ? "Processing" : "Queued";
         summary.Message = needsReview ? "An older queue item is still processing. Review Settings > Notifications before retrying; delivery may already have occurred."
             : summary.Unknown > 0 ? "Some delivery states cannot be verified. Review Settings > Notifications before retrying."
             : summary.Failed > 0 ? "Some deliveries failed or bounced. Check each recipient's delivery details before correcting or retrying."
             : summary.MissingEmail > 0 ? "Rows without a valid recipient were not queued. Add their email addresses and start a new send action."
-            : summary.IsComplete ? "Email processing finished. Sent and previously handled rows are shown separately."
+            : summary.SentCopyUnverifiedEmails > 0 ? "SMTP accepted the email, but its mailbox Sent copy is not verified. This is not a delivery failure; do not resend to repair the Sent folder."
+            : summary.IsComplete ? "Email processing finished. SMTP acceptance, mailbox Sent copies and recipient delivery confirmations are shown separately."
             : "Email delivery continues in the background. You may leave this page.";
         return summary;
     }

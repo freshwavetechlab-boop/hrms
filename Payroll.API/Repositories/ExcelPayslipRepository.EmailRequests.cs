@@ -9,7 +9,7 @@ namespace Payroll.API.Repositories;
 
 public sealed partial class ExcelPayslipRepository
 {
-    // Requests use the existing notification queue, never the payslip delivery history.
+    // Requests use the existing queue; attached PDFs share recipient coverage with ordinary coordinator copies.
     public async Task<ExcelPayslipEmailRequestResult> RequestEmailIdsAsync(int clientId, string batchId, ExcelPayslipEmailRequest request, string actor)
     {
         if (!Guid.TryParseExact(batchId, "N", out _) || !Guid.TryParse(request.RequestId, out var requestId))
@@ -22,21 +22,24 @@ public sealed partial class ExcelPayslipRepository
         await AnnotateEmploymentAsync(db, batch, tx);
         var selected = SelectEmailRequestRows(batch, request.RowIds, request);
         var prefix = batchId + ":" + requestId.ToString("N") + ":";
-        var resourceId = prefix + EmailRequestFingerprint(email, selected, request, request.AttachPayslips ? NotificationRepository.ExcelPayslipBatchHash(batch) : null);
+        var fingerprint = EmailRequestFingerprint(email, selected, request, request.AttachPayslips ? NotificationRepository.ExcelPayslipBatchHash(batch) : null);
+        var resourceId = prefix + fingerprint;
         var existing = await db.QuerySingleOrDefaultAsync<NotificationQueueItem>(@"SELECT * FROM notification_queue
-WHERE ClientId=@ClientId AND EventCode IN (@EventCode,@PdfEventCode) AND ResourceType='ExcelPayslipEmailRequest' AND ResourceId LIKE @Prefix",
+WHERE ClientId=@ClientId AND EventCode IN (@EventCode,@PdfEventCode) AND ResourceType='ExcelPayslipEmailRequest'
+ AND (ResourceId LIKE @Prefix OR (ResourceId LIKE @BatchPrefix AND RIGHT(ResourceId,32)=@Fingerprint)) ORDER BY Id DESC LIMIT 1",
             new { ClientId = clientId, EventCode = NotificationRepository.ExcelPayslipEmailRequestEvent,
-                PdfEventCode = NotificationRepository.ExcelPayslipEmailRequestPdfEvent, Prefix = prefix + "%" }, tx);
+                PdfEventCode = NotificationRepository.ExcelPayslipEmailRequestPdfEvent, Prefix = prefix + "%", BatchPrefix = batchId + ":%", Fingerprint = fingerprint }, tx);
         if (existing is not null)
         {
-            if (existing.ResourceId != resourceId) throw new InvalidOperationException("This request ID is already used for another selection or recipient.");
+            if (!existing.ResourceId.EndsWith(":" + fingerprint, StringComparison.Ordinal)) throw new InvalidOperationException("This request ID is already used for another selection or recipient.");
+            if (existing.Status == "Failed") throw new InvalidOperationException($"The existing email request #{existing.Id} failed. Retry that notification instead of creating a duplicate.");
             return new(existing.Id, email, selected.Count, existing.Status == "Sent" ? "Sent" : "Queued", request.AttachPayslips);
         }
         if (request.AttachPayslips)
         {
             var sendState = JsonSerializer.Deserialize<ExcelPayslipSendState>(stateJson ?? "{}", JsonOptions) ?? new();
             var statuses = BuildDeliveryStatuses(batch, sendState, await ReadDeliveryQueueAsync(db, clientId, sendState, tx));
-            if (selected.Any(row => statuses.Items.Any(item => item.RowId == row.Id && !item.CanSend)))
+            if (selected.Any(row => statuses.Items.Any(item => item.RowId == row.Id && !CanQueueDelivery(item, "Combined", email))))
                 throw new InvalidOperationException("A selected payslip is already queued or has prior delivery activity. Refresh email status and select only remaining unsent employees.");
         }
         if (await notifications.ExcelPayslipDeliveryReadyAsync(db, tx) is string readyError) throw new InvalidOperationException(readyError);
@@ -51,7 +54,7 @@ VALUES(NULL,@EventCode,'ExcelPayslipEmailRequest',@ResourceId,@ClientId,@ToJson,
         {
             var document = NotificationRepository.PrepareExcelPayslipEmailRequestAttachment(batch, selected, email, actor, template, request);
             document.Id = requestId.ToString("N"); document.QueueId = queueId;
-            // Namespaced receipt metadata survives existing writers, without entering employee delivery history.
+            // The namespaced receipt preserves coordinator coverage without marking employee email delivery.
             var state = JsonNode.Parse(stateJson ?? "{}") as JsonObject ?? throw new InvalidOperationException("The saved send state is invalid.");
             if (state["requests"] is null) state["requests"] = new JsonObject();
             if (state["requests"] is not JsonObject receipts) throw new InvalidOperationException("The saved request state is invalid.");

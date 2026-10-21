@@ -10,7 +10,7 @@ function load(name) {
   new Function('exports', 'require', code)(exports, path => load(path.replace('./', '')))
   return exports
 }
-const { correctPayslipAmounts, payslipReconciliation } = load('excelPayslipReview')
+const { correctPayslipAmounts, correctPayslipBatchAmounts, payslipReconciliation } = load('excelPayslipReview')
 const { buildExcelPayslipRows, buildPayslipCalculationSource } = load('excelPayslipImport')
 function fixture() {
   const headers = ['Employee Name', 'Account No', 'Basic', 'PF', 'Net Pay', 'Ignored raw']
@@ -22,6 +22,20 @@ function fixture() {
   ], template: { version: 1, clientId: 42, sourceBatchId: 'previous', month: '2026-09', headerRow: 1, columns, excludedSourceRows: [3], warnings: [] } }
   return { sheet, columns }
 }
+test('bulk review corrects only explicit cells across included rows and preserves the original snapshot', () => {
+  const { sheet, columns } = fixture()
+  sheet.template.excludedSourceRows = []
+  const original = structuredClone(sheet)
+  const corrected = correctPayslipBatchAmounts(sheet, columns, { 2: { 4: '880.25' }, 3: { 2: '600', 4: '600' } })
+  assert.equal(corrected.changed, 3)
+  assert.deepEqual(sheet, original)
+  const parsed = buildExcelPayslipRows(corrected.sheet, 1, columns)
+  assert.deepEqual(parsed.rows.map(row => row.netPay), [880.25, 600])
+  assert.deepEqual(parsed.rows.map(row => payslipReconciliation(row).difference), [0, 0])
+  assert.equal(corrected.sheet.rows[1].cells[1].value, '000123456')
+  assert.throws(() => correctPayslipBatchAmounts(sheet, columns, { 2: { 4: '880.25' }, 3: { 1: '123' } }), /Only mapped salary amounts/)
+  assert.deepEqual(sheet, original)
+})
 test('warning details expose the actual difference without rewriting a rounded source net', () => {
   const { sheet, columns } = fixture(), row = buildExcelPayslipRows(sheet, 1, columns, [3]).rows[0], before = structuredClone(row)
   const result = payslipReconciliation(row)

@@ -243,6 +243,9 @@ CAST(send_state_json AS CHAR) AS SendStateJson FROM excel_payslip_batches WHERE 
         public string RequestId { get; set; } = "";
         public List<string> RowIds { get; set; } = [];
         public string Email { get; set; } = "";
+        // Empty on older receipts: multi-row documents were combined; a
+        // single-row legacy delivery remains conservative individual history.
+        public string DeliveryMode { get; set; } = "";
         public string Subject { get; set; } = "";
         public string BodyHtml { get; set; } = "";
         public string FileName { get; set; } = "";

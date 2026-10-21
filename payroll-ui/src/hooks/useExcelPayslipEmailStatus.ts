@@ -24,7 +24,8 @@ export function useExcelPayslipEmailStatus(clientId: number, batch: ExcelPayslip
       const ids = new Set(validItems ? items.map(item => item.rowId) : [])
       if (result.ok && validItems && ids.size === items.length && activeBatch.rows.every(row => ids.has(row.id))) {
         setSnapshot({ key, items }); setError('')
-        if (items.some(item => item.status === 'Queued')) timer = setTimeout(() => void load(), 15000)
+        if (items.some(item => item.status === 'Queued' || item.recipientDeliveries?.some(delivery => delivery.status === 'Queued')))
+          timer = setTimeout(() => void load(), 15000)
       } else {
         setError(result.error || 'Unable to verify every payslip email status. Refresh before sending.')
       }

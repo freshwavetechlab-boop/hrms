@@ -22,12 +22,14 @@ export type ExcelPayslipSendRequest = ExcelPayslipPdfRequest & { mode: 'Individu
 export type ExcelPayslipEmailRequest = { rowIds: string[]; email: string; requestId: string; attachPayslips?: boolean; includeSeal?: boolean; amountDecimalPlaces?: 0 | 2; acknowledgeWarnings?: boolean }
 export const requestExcelPayslipEmailIds = (clientId: number, id: string, request: ExcelPayslipEmailRequest) => postJson<ExcelPayslipEmailRequest, { queueId: number; email: string; employeeCount: number; status: string; includesPayslips?: boolean } | null>(`${batchPath(id)}/${request.attachPayslips ? 'email-request-pdf' : 'email-request'}?clientId=${clientId}`, request, null, { toast: false })
 export type ExcelPayslipDelivery = { rowId: string; employeeName: string; email: string; status: 'Queued' | 'Already queued' | 'Skipped' | 'Error'; message: string }
-export type ExcelPayslipEmailStatus = { rowId: string; status: 'Pending' | 'Queued' | 'Sent' | 'Failed' | 'Unknown' | 'Bounced' | 'Deferred' | 'Delivered'; email: string; queuedAtUtc: string | null; sentAtUtc: string | null; message: string; canSend: boolean }
+export type ExcelPayslipRecipientDelivery = { mode: 'Individual' | 'Combined' | 'Unknown'; status: ExcelPayslipEmailStatus['status']; email: string; sentCopyStatus: string; queuedAtUtc: string | null; sentAtUtc: string | null; message: string }
+export type ExcelPayslipEmailStatus = { rowId: string; status: 'Pending' | 'Queued' | 'Sent' | 'Failed' | 'Unknown' | 'Bounced' | 'Deferred' | 'Delivered'; email: string; queuedAtUtc: string | null; sentAtUtc: string | null; message: string; canSend: boolean; sentCopyStatus?: string; recipientDeliveries?: ExcelPayslipRecipientDelivery[] }
 export type ExcelPayslipMailJob = {
   id: string; clientId: number; clientName: string; batchId: string; month: string; sourceFileName: string
   createdAtUtc: string; createdBy: string; status: 'Queued' | 'Processing' | 'Completed' | 'Needs attention'
   total: number; sent: number; queued: number; failed: number; missingEmail: number; skipped: number; unknown: number
   completed: number; percentComplete: number; isComplete: boolean; message: string; dismissedAtUtc: string | null
+  mode?: string; recipient?: string; totalEmails?: number; acceptedEmails?: number; sentCopySavedEmails?: number; sentCopyUnverifiedEmails?: number; deliveredEmails?: number
 }
 export type ExcelPayslipMailJobResult = { job: ExcelPayslipMailJob; items: ExcelPayslipDelivery[] }
 export type ExcelPayslipCalculationSource = { sheetName: string; headerRow: number; columnCount: number; dateSystem?: string; columns: PayslipColumn[]; rows: PayslipSourceRow[]; excludedSourceRows: number[]; sourceBatchId?: string; attendanceColumnIndex?: number | null; monthDaysCell?: string | null }

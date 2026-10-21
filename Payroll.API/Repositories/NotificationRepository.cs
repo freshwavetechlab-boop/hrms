@@ -294,6 +294,7 @@ SELECT LAST_INSERT_ID();", new
             var delivery = await SendAsync(db, smtp, row, cancellationToken);
             await db.ExecuteAsync("UPDATE notification_queue SET Status='Sent',SentAt=UTC_TIMESTAMP(),ErrorMessage=@Warning WHERE Id=@Id", new { Id = queueId, Warning = delivery.SentCopyWarning });
             await WriteLogsAsync(db, row, "Sent", delivery.SentCopyWarning, delivery.MessageId);
+            await WriteSentCopyReceiptAsync(db, row, delivery);
             return (true, "");
         }
         catch (Exception exception)
@@ -403,6 +404,7 @@ WHERE Id=@Id AND (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@E
                 var delivery = await SendAsync(db, smtp, row, cancellationToken);
                 await db.ExecuteAsync("UPDATE notification_queue SET Status='Sent',SentAt=UTC_TIMESTAMP(),ErrorMessage=@Warning WHERE Id=@Id", new { row.Id, Warning = delivery.SentCopyWarning });
                 await WriteLogsAsync(db, row, "Sent", delivery.SentCopyWarning, delivery.MessageId);
+                await WriteSentCopyReceiptAsync(db, row, delivery);
                 count++;
             }
             catch (Exception exception)
@@ -666,6 +668,13 @@ WHERE QueueId=@QueueId ORDER BY Id", new { QueueId = row.Id })).ToList();
 
     private static string StripHtml(string html) =>
         WebUtility.HtmlDecode(Regex.Replace(html ?? "", "<[^>]+>", " ")).Trim();
+
+    private async Task WriteSentCopyReceiptAsync(MySqlConnection db, NotificationQueueItem row, NotificationMailDeliveryResult delivery)
+    {
+        // Archival bookkeeping must never retry an already SMTP-accepted email.
+        try { await WriteLogsAsync(db, row, "SentCopy" + delivery.SentCopyStatus, delivery.SentCopyWarning, delivery.MessageId); }
+        catch (Exception exception) { logger.LogWarning(exception, "Sent-copy receipt for notification {QueueId} could not be recorded; SMTP delivery will not be repeated.", row.Id); }
+    }
 
     private static async Task WriteLogsAsync(MySqlConnection db, NotificationQueueItem row, string status, string error, string messageId = "")
     {

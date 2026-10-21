@@ -117,7 +117,7 @@ function validMailJobs(value: unknown): value is ExcelPayslipMailJob[] {
 }
 
 function MailJobProgress({ job }: { job: ExcelPayslipMailJob }) {
-  const detail = [`Sent ${job.sent}`, `Queued ${job.queued}`, ...(job.failed ? [`Failed ${job.failed}`] : []), ...(job.missingEmail ? [`Missing email ${job.missingEmail}`] : []), ...(job.skipped ? [`Skipped ${job.skipped}`] : []), ...(job.unknown ? [`Unknown ${job.unknown}`] : [])].join(' · ')
+  const detail = [`Emails SMTP accepted ${job.acceptedEmails ?? '?'} / ${job.totalEmails ?? '?'}`, `Sent copies saved ${job.sentCopySavedEmails ?? '?'}`, `${job.total} slips`, ...(job.mode === 'Combined' ? ['Coordinator copy'] : []), `Slips queued ${job.queued}`, ...(job.failed ? [`Failed ${job.failed}`] : []), ...(job.missingEmail ? [`Missing email ${job.missingEmail}`] : []), ...(job.sentCopyUnverifiedEmails ? [`Sent copy unverified ${job.sentCopyUnverifiedEmails}`] : []), ...(job.unknown ? [`Unknown ${job.unknown}`] : [])].join(' · ')
   return <div style={{ marginTop: 6 }}>
     <Tag color={job.status === 'Needs attention' ? 'orange' : job.isComplete ? 'green' : 'blue'}>{job.status}</Tag>
     <Typography.Text type="secondary">{job.completed} / {job.total} processed · {job.percentComplete}%</Typography.Text>

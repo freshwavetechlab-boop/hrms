@@ -59,13 +59,14 @@ public sealed class ExcelPayslipMailJobTests
     public void CombinedJobCountsPayslipsNotQueueItemsAndOnlyContainsFreshSubset()
     {
         var batch = Batch(); var state = new ExcelPayslipSendState();
-        var old = NotificationRepository.PrepareExcelPayslipMailMetadata(batch, [batch.Rows[0]], "old@example.test", "old", "operator", false, 0, ExcelPayslipTests.MailTemplate);
+        var old = NotificationRepository.PrepareExcelPayslipMailMetadata(batch, [batch.Rows[0]], "hr@example.test", "old", "operator", false, 0, ExcelPayslipTests.MailTemplate);
         old.QueueId = 50; state.Deliveries[old.Id] = old;
         var (job, queues, documents, _) = Prepare(batch, Request(batch, "Combined"), state);
         Assert.Equal(batch.Rows.Skip(1).Select(row => row.Id), Assert.Single(documents).RowIds);
         var pending = ExcelPayslipRepository.BuildMailJobSummary(job, queues);
         Assert.Equal(3, pending.Total); Assert.Equal(2, pending.Queued); Assert.Equal(1, pending.Skipped); Assert.Equal(33, pending.PercentComplete);
         queues[0].Status = "Sent";
+        queues[0].SentCopyStatus = "Saved";
         var complete = ExcelPayslipRepository.BuildMailJobSummary(job, queues);
         Assert.Equal(2, complete.Sent); Assert.Equal(1, complete.Skipped); Assert.Equal(3, complete.Completed);
         Assert.Equal(100, complete.PercentComplete); Assert.True(complete.IsComplete); Assert.Equal("Completed", complete.Status);
@@ -81,6 +82,7 @@ public sealed class ExcelPayslipMailJobTests
     public void ProgressUsesActualQueueStateRatherThanStoredQueuedReceipt(string state, string expected, int queued, int failed, int unknown)
     {
         var batch = Batch(1); var prepared = Prepare(batch, Request(batch)); prepared.Queues[0].Status = state;
+        if (state == "Sent") prepared.Queues[0].SentCopyStatus = "Saved";
         var summary = ExcelPayslipRepository.BuildMailJobSummary(prepared.Job, prepared.Queues);
         Assert.Equal(expected, summary.Status); Assert.Equal(queued, summary.Queued); Assert.Equal(failed, summary.Failed);
         Assert.Equal(unknown, summary.Unknown); Assert.Equal(state == "Sent" ? 1 : 0, summary.Sent); Assert.Equal(queued == 0, summary.IsComplete);

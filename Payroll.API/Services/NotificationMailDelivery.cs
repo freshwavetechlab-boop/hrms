@@ -8,7 +8,8 @@ using Payroll.API.Models;
 
 namespace Payroll.API.Services;
 
-internal sealed record NotificationMailDeliveryResult(string MessageId, string SentCopyWarning = "", Exception? SentCopyError = null);
+internal sealed record NotificationMailDeliveryResult(string MessageId, string SentCopyWarning = "", Exception? SentCopyError = null,
+    string SentCopyStatus = "Unknown");
 
 internal interface INotificationSentMailbox : IAsyncDisposable
 {
@@ -34,7 +35,7 @@ internal static class NotificationMailDelivery
 
         // SMTP acceptance is final for delivery. Archival errors must never trigger a delivery retry.
         var messageId = message.MessageId!;
-        if (!setting.ImapEnabled) return new(messageId);
+        if (!setting.ImapEnabled) return new(messageId, SentCopyStatus: "NotConfigured");
         try
         {
             if (string.IsNullOrWhiteSpace(setting.ImapHost) || setting.ImapPort is < 1 or > 65535
@@ -52,11 +53,11 @@ internal static class NotificationMailDelivery
                 if (!await mailbox.ContainsAsync(messageId, timeout.Token))
                     throw new IOException("The appended Sent copy could not be verified by Message-ID.");
             }
-            return new(messageId);
+            return new(messageId, SentCopyStatus: "Saved");
         }
         catch (Exception exception)
         {
-            return new(messageId, SentCopyFailureWarning, exception);
+            return new(messageId, SentCopyFailureWarning, exception, "Failed");
         }
     }
 

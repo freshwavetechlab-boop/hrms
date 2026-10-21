@@ -43,6 +43,7 @@ public sealed class NotificationMailDeliveryTests
         Assert.Equal(1, mailbox.Appends);
         Assert.Equal("original@example.test", result.MessageId);
         Assert.Empty(result.SentCopyWarning);
+        Assert.Equal("Saved", result.SentCopyStatus);
         using var copy = MimeMessage.Load(new MemoryStream(Assert.Single(mailbox.Messages.Values)));
         Assert.Equal(message.MessageId, copy.MessageId);
         Assert.Equal(message.Subject, copy.Subject);
@@ -87,6 +88,7 @@ public sealed class NotificationMailDeliveryTests
         Assert.Equal(1, sends);
         Assert.Equal(message.MessageId, result.MessageId);
         Assert.Equal(NotificationMailDelivery.SentCopyFailureWarning, result.SentCopyWarning);
+        Assert.Equal("Failed", result.SentCopyStatus);
         Assert.NotNull(result.SentCopyError);
     }
 
@@ -121,6 +123,7 @@ public sealed class NotificationMailDeliveryTests
         var result = await NotificationMailDelivery.SendAsync(Settings(false), message, _ => { sends++; return Task.CompletedTask; }, default,
             _ => { opened = true; return Task.FromResult<INotificationSentMailbox>(new MemoryMailbox()); });
         Assert.Equal(1, sends); Assert.False(opened); Assert.Empty(result.SentCopyWarning);
+        Assert.Equal("NotConfigured", result.SentCopyStatus);
     }
 
     [Fact]
