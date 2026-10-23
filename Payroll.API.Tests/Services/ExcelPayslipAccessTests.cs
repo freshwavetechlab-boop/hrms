@@ -41,6 +41,7 @@ public sealed class ExcelPayslipAccessTests
             (HttpMethod.Get, "/dashboard?batchId=0123456789abcdef0123456789abcdef"),
             (HttpMethod.Get, "/templates"),
             (HttpMethod.Post, "/suggest-mapping"),
+            (HttpMethod.Post, "/correction-preview"),
             (HttpMethod.Get, $"/profile?headerSignature={signature}"),
             (HttpMethod.Put, $"/profile?headerSignature={signature}"),
             (HttpMethod.Get, "/batches"),

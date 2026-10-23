@@ -243,7 +243,7 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
       rowClassName={row => rowClassName?.(row) ?? ''}
       locale={{ emptyText }}
       pagination={pagination}
-      rowSelection={props.rowSelection ? { ...props.rowSelection, selectedRowKeys: props.rowSelection.selectedRowKeys?.map(String) } : undefined}
+      rowSelection={props.rowSelection ? { preserveSelectedRowKeys: true, ...props.rowSelection, selectedRowKeys: props.rowSelection.selectedRowKeys?.map(String) } : undefined}
       tableLayout="fixed"
       scroll={tableVerticalScroll === undefined ? { x: tableScrollX } : { x: tableScrollX, y: tableVerticalScroll }}
       onChange={(paginationState, __, ___, extra) => {

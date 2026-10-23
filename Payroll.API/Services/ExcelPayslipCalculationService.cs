@@ -7,7 +7,7 @@ using Payroll.API.Repositories;
 namespace Payroll.API.Services;
 
 /// <summary>Bounded, independent calculation of saved Excel salary cells. No payroll rules or database access.</summary>
-public static class ExcelPayslipCalculationService
+public static partial class ExcelPayslipCalculationService
 {
     private const decimal Limit = 10_000_000_000m;
     private static readonly HashSet<string> AmountKinds = ["earning", "deduction", "employer", "netPay", "grossTotal", "deductionTotal"];
@@ -218,7 +218,7 @@ public static class ExcelPayslipCalculationService
     }
     private static string NormalizeAddress(string address) { var (column, row) = ParseAddress(address); return Address(column, row); }
 
-    private sealed class CellEvaluator(Dictionary<string, ExcelPayslipCalculationCell> cells, string sheet, HashSet<string> attendanceInputs, HashSet<string> reviewedBlankInputs)
+    private sealed class CellEvaluator(Dictionary<string, ExcelPayslipCalculationCell> cells, string sheet, HashSet<string> attendanceInputs, HashSet<string> reviewedBlankInputs, IReadOnlyDictionary<string, decimal>? fixedInputs = null)
     {
         private readonly Dictionary<string, decimal> cache = new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> active = new(StringComparer.OrdinalIgnoreCase);
@@ -246,6 +246,7 @@ public static class ExcelPayslipCalculationService
             stack.Push(address);
             try
             {
+                if (fixedInputs is not null && fixedInputs.TryGetValue(address, out var supplied)) return cache[address] = EnsureBounded(supplied);
                 if (reviewedBlankInputs.Contains(address)) return cache[address] = 0;
                 if (!cells.TryGetValue(address, out var cell)) throw new InvalidOperationException($"Required input {address} is missing.");
                 if (!string.IsNullOrWhiteSpace(cell.CalculationError)) throw new InvalidOperationException($"Saved formula cannot be recalculated: {cell.CalculationError}");

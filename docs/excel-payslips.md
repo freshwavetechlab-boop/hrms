@@ -1,5 +1,15 @@
 # Excel Payslips
 
+## Correcting amounts and keeping selections
+
+**Correct amounts** and **Fix all warning rows** default to **Recalculate linked Excel formulas**. Editing an earning/deduction recalculates its saved dependants, including net pay and raw billing totals. The preview uses the same bounded evaluator as month creation, resolves a unique raw/mapped formula copy in consolidated workbooks, and retains unrelated cached salary values. An actual blank referenced by arithmetic follows Excel's zero semantics; formula errors or missing caches are not silently filled. Unsupported dependencies block automatic saving. Turn recalculation off only when entering reviewed totals manually. An explicit formula override remains marked for review before reuse in another month. Preview performs no writes; saving still creates the complete corrected batch version, with separate delivery tracking.
+
+The shared table preserves selected row keys during search/filtering and pagination. Unchecking one visible employee changes only that selection; employees hidden by the search remain selected. An owning module can still clear selections explicitly when scope changes.
+
+For an amount already saved by the older cell-only editor, open **Correct amounts > Recalculate saved corrections**, review the updated In Hand Salary, then save the corrected batch. This also supports a saved zero without requiring the user to change it temporarily to another value.
+
+Verification: `ExcelPayslipCorrectionCalculationTests` covers allowance -1200 → 0 and +1200, raw/mapped mirrors, net and billing dependencies, blanks and unsupported formulas. `tools/test-excel-payslip-correction-calculation-ui.mjs` covers 171 selections narrowed to four search matches and the asynchronous correction preview/save, using intercepted APIs and no real email/database writes.
+
 ## Updating missing email IDs from an exported list
 
 Filter **Not sent** (or select the required rows), then use the table's **Export Excel**. The report includes Employee code, Location, Email, Batch ID and Payslip ID. Fill only Email, keep identity columns unchanged, and upload through **Import spreadsheet**: the exported list is recognized and opens an email-only preview. **More > Import email updates** also accepts this list directly. Blank emails are skipped; invalid, duplicate or mismatched rows block saving. Older code/location lists can be matched only when the saved payslip is unique; names alone cannot identify an employee. Re-export older lists that lack employee codes and stable IDs.

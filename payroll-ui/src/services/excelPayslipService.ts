@@ -63,6 +63,7 @@ export async function saveExcelPayslipProfile(clientId: number, profile: ExcelPa
   } catch (error) { return { ok: false, data: null, status: 0, error: error instanceof Error ? error.message : 'Unable to save mapping.' } }
 }
 export const saveExcelPayslipBatch = (clientId: number, batch: ExcelPayslipBatchInput) => postJson<ExcelPayslipBatchInput, ExcelPayslipBatch | null>(`${root}/batches?clientId=${clientId}`, batch, null, { toast: false })
+export const previewExcelPayslipCorrections = (clientId: number, batch: ExcelPayslipBatchInput & { clientId: number }, edits: { sourceRow: number; columnIndex: number; amount: number }[], signal: AbortSignal) => postJson<{ batch: typeof batch; edits: typeof edits }, ExcelPayslipCalculationSource | null>(`${root}/correction-preview?clientId=${clientId}`, { batch, edits }, null, { signal, loader: false, toast: false })
 export async function getExcelPayslipPdf(clientId: number, id: string, request: ExcelPayslipPdfRequest): Promise<ApiResult<Blob | null>> {
   try {
     const response = await apiRequest(`${batchPath(id)}/pdf?clientId=${clientId}`, { method: 'POST', body: JSON.stringify(request), timeoutMs: 120000 })

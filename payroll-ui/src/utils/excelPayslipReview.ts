@@ -24,7 +24,7 @@ export function correctPayslipAmounts(sheet: PayslipSheet, sourceRow: number, co
     const amount = value === null ? null : parsePayslipAmount(value)
     if (amount === null || Math.abs(amount) > 10000000000) throw new Error(`Enter a valid amount for ${column.label} (maximum 10,000,000,000).`)
     const old = parsePayslipAmount(source.cells[index]?.value || '')
-    if (old !== null && Number(old.toPrecision(15)) === Number(amount.toPrecision(15)) && !source.cells[index]?.error && !source.cells[index]?.missingCachedValue) continue
+    if (old !== null && Number(old.toPrecision(15)) === Number(amount.toPrecision(15)) && !source.cells[index]?.error && !source.cells[index]?.missingCachedValue && !source.cells[index]?.calculationError) continue
     const original = source.cells[index]
     const formula = original?.formula || original?.formulaText || original?.calculationError
     cells[index] = { value: value!.trim(), ...(formula ? {
@@ -45,4 +45,17 @@ export function correctPayslipBatchAmounts(sheet: PayslipSheet, columns: Payslip
     updated = result.sheet; changed += result.changed
   }
   return { sheet: updated, changed }
+}
+
+// Re-run a correction saved by the older cell-only editor, including a saved 0
+// whose input would otherwise not emit another onChange event.
+export function savedPayslipCorrectionInputs(sheet: PayslipSheet, columns: PayslipColumn[], sourceRows: number[]) {
+  const result: Record<number, Record<number, string | null>> = {}
+  for (const row of sheet.rows.filter(row => sourceRows.includes(row.sourceRow)))
+    for (const column of columns.filter(column => isPayslipAmountKind(column.kind))) {
+      const cell = row.cells[column.columnIndex]
+      if (cell?.calculationError?.includes('manually corrected') && parsePayslipAmount(cell.value) != null)
+        (result[row.sourceRow] ||= {})[column.columnIndex] = cell.value
+    }
+  return result
 }

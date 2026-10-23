@@ -108,6 +108,14 @@ public static class ExcelPayslipEndpoints
                 .SuggestAsync(request, templates, examples, context.RequestAborted));
         }).WithName("SuggestExcelPayslipMapping").WithOpenApi();
 
+        routes.MapPost("/correction-preview", (int clientId, ExcelPayslipCorrectionPreview request, HttpContext context) =>
+        {
+            if (context.Request.ContentLength > 24 * 1024 * 1024) return Results.BadRequest(new { error = "Correction source exceeds 24 MiB." });
+            if (ExcelPayslipRepository.ValidateBatch(request.Batch) is { } error) return Results.BadRequest(new { error });
+            if (request.Batch.ClientId != clientId) return Results.BadRequest(new { error = "The correction belongs to another client." });
+            return Results.Ok(ExcelPayslipCalculationService.RecalculateCorrections(request));
+        }).WithName("PreviewExcelPayslipCorrections").WithOpenApi();
+
         routes.MapGet("/dashboard", async (ExcelPayslipRepository repository, int clientId, string? batchId) =>
         {
             var dashboard = await repository.GetDashboardAsync(clientId, batchId);

@@ -58,3 +58,16 @@ public sealed class ExcelPayslipAttendanceInput
     public string RowId { get; set; } = "";
     public decimal Days { get; set; }
 }
+
+public sealed class ExcelPayslipCorrectionPreview
+{
+    public ExcelPayslipBatch Batch { get; set; } = new();
+    public List<ExcelPayslipCellCorrection> Edits { get; set; } = [];
+}
+
+public sealed class ExcelPayslipCellCorrection
+{
+    public int SourceRow { get; set; }
+    public int ColumnIndex { get; set; }
+    public decimal Amount { get; set; }
+}
