@@ -1,5 +1,13 @@
 # Excel Payslips
 
+## Updating missing email IDs from an exported list
+
+Filter **Not sent** (or select the required rows), then use the table's **Export Excel**. The report includes Employee code, Location, Email, Batch ID and Payslip ID. Fill only Email, keep identity columns unchanged, and upload through **Import spreadsheet**: the exported list is recognized and opens an email-only preview. **More > Import email updates** also accepts this list directly. Blank emails are skipped; invalid, duplicate or mismatched rows block saving. Older code/location lists can be matched only when the saved payslip is unique; names alone cannot identify an employee. Re-export older lists that lack employee codes and stable IDs.
+
+**Save email updates** changes contacts in the same batch, without creating a partial salary batch, changing payroll amounts/Employee Master, resetting delivery history or sending mail. Existing queued mails retain their original recipients. Saves are atomic and compare previous emails to reject concurrent edits; retrying an already applied update is a no-op. The existing batch JSON stores an `emailUpdateHistory` with actor, time, file and previous/new addresses. Mapped source email cells are kept consistent, and subsequent salary-template exports use the saved contacts. No table or migration is required; deploy/restart the updated API and frontend together.
+
+Validation: backend ExcelPayslip tests; `node --test tests/excel-payslip-email-updates.test.mjs tests/excel-payslip-template.test.mjs`; `tools/test-excel-payslip-email-updates-ui.mjs` with `HRMS_PLAYWRIGHT_MODULE` pointing to `playwright/test.mjs`. Browser verification intercepts API requests and uses synthetic data, with no real database writes or email sends.
+
 Open **Reports > Payroll Reports > Excel Payslips** (`/reports/payroll-reports?report=excel-payslips`). This workspace accepts salary amounts already calculated in a spreadsheet for any active client the operator is authorized to access.
 
 ## Import and mapping

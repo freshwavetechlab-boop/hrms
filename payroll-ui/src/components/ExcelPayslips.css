@@ -62,6 +62,7 @@
 .excel-payslip-footer { display: flex; justify-content: flex-end; }
 .excel-payslip-warning-count.ant-btn { height: auto; min-height: 28px; padding: 0; border: 0; background: transparent; }
 .excel-payslip-warning-count .ant-tag { margin: 0; cursor: pointer; }
+.excel-payslip-email-updates .ant-alert { margin-block: 12px; }
 .excel-payslip-warning-review .ant-alert,
 .excel-payslip-amount-editor .ant-alert,
 .excel-payslip-row-review .ant-alert { margin-block: 12px; }

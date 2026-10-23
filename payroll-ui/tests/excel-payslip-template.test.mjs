@@ -48,6 +48,17 @@ async function exportParts(batch, source) {
   return { ...result, files, metadata: JSON.parse(chunks.slice(1).join('')) }
 }
 
+test('email-only updates are retained when exporting/editing a source with no original email column', () => {
+  const { source, batch } = fixture(); batch.rows[0].email = 'updated@example.test'
+  const before = JSON.stringify(source), sheet = buildEditablePayslipSheet(batch, source)
+  const email = sheet.template.columns.find(c => c.kind === 'email')
+  assert.equal(email.columnIndex, 9); assert.equal(sheet.rows.find(r => r.sourceRow === 5).cells[email.columnIndex].value, 'updated@example.test')
+  assert.equal(sheet.rows.find(r => r.sourceRow === 5).cells[5].formulaText, 'D5/$D$1*E5'); assert.equal(JSON.stringify(source), before)
+  source.columns.push({ columnIndex: 9, sourceHeader: 'Email', label: 'Email', kind: 'email' }); source.columnCount = 10
+  source.rows[2].cells.push({ value: 'old@example.test' })
+  assert.equal(buildEditablePayslipSheet(batch, source).rows.find(r => r.sourceRow === 5).cells[9].value, 'updated@example.test')
+})
+
 test('editing saved mapping clones the sheet and restores context, exclusions and permanent employee codes', () => {
   const { source, batch } = fixture(); source.dateSystem = '1904'
   const original = JSON.stringify({ source, batch })

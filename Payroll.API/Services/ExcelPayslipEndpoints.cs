@@ -81,6 +81,14 @@ public static class ExcelPayslipEndpoints
             return error is null ? Results.Ok(new { ok = true }) : Results.BadRequest(new { error });
         }).WithName("DismissExcelPayslipMailJob").WithOpenApi();
 
+        routes.MapPost("/batches/{id}/email-updates", async (ExcelPayslipRepository repository, int clientId, string id,
+            ExcelPayslipEmailUpdates request, HttpContext context) =>
+        {
+            if (context.Request.ContentLength > 1024 * 1024) return Results.BadRequest(new { error = "The email update list exceeds 1 MiB." });
+            var (item, error) = await repository.UpdateEmailsAsync(clientId, id, request, currentUser(context).Email);
+            return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+        }).WithName("UpdateExcelPayslipEmails").WithOpenApi();
+
         routes.MapGet("/profile", async (ExcelPayslipRepository repository, int clientId, string headerSignature) =>
             !ValidSignature(headerSignature) ? Results.BadRequest(new { error = "Invalid worksheet header signature." })
                 : Results.Ok(await repository.GetProfileAsync(clientId, headerSignature)))

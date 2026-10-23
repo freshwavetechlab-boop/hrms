@@ -50,9 +50,14 @@ export function buildEditablePayslipSheet(batch: ExcelPayslipBatch, source: Exce
   const columns = source.columns.map(column => ({ ...column })), codeColumns = columns.filter(column => column.kind === 'employeeCode')
   if (codeColumns.length > 1) throw new Error('Employee code mapping is ambiguous. Correct the original import before exporting a template.')
   const savedWidth = source.rows.reduce((width, row) => Math.max(width, row.cells.length), source.columnCount), codeIndex = codeColumns[0]?.columnIndex ?? savedWidth
-  const columnCount = Math.max(savedWidth, codeIndex + 1)
+  const emailColumns = columns.filter(column => column.kind === 'email')
+  if (emailColumns.length > 1) throw new Error('Email mapping is ambiguous. Correct the original import before exporting a template.')
+  const addEmail = !emailColumns.length && batch.rows.some(row => row.email?.trim())
+  const emailIndex = emailColumns[0]?.columnIndex ?? Math.max(savedWidth, codeIndex + 1)
+  const columnCount = Math.max(savedWidth, codeIndex + 1, addEmail ? emailIndex + 1 : 0)
   if (columnCount > 512) throw new Error('The worksheet has no room for an employee code column within the supported 512-column limit.')
   if (!codeColumns.length) columns.push({ columnIndex: codeIndex, sourceHeader: 'Employee Code', label: 'Employee code', kind: 'employeeCode' })
+  if (addEmail) columns.push({ columnIndex: emailIndex, sourceHeader: 'Email', label: 'Email', kind: 'email' })
   const employeeRows = new Map(batch.rows.map(row => [row.sourceRow, row]))
   const rows = [...source.rows].sort((left, right) => left.sourceRow - right.sourceRow).map(row => {
     const cells = Array.from({ length: columnCount }, (_, index) => {
@@ -60,8 +65,10 @@ export function buildEditablePayslipSheet(batch: ExcelPayslipBatch, source: Exce
       return cell ? { ...cell, value: cell.value ?? '', ...(cell.formulaText || cell.calculationError ? { formula: true } : {}) } : { value: '' }
     })
     if (row.sourceRow === source.headerRow && !codeColumns.length) cells[codeIndex] = { value: 'Employee Code' }
+    if (row.sourceRow === source.headerRow && addEmail) cells[emailIndex] = { value: 'Email' }
     const employee = employeeRows.get(row.sourceRow)
     if (employee) cells[codeIndex] = { value: employee.employeeCode || cells[codeIndex].value || '' }
+    if (employee && employee.email != null && (addEmail || emailColumns.length)) cells[emailIndex] = { value: employee.email }
     return { sourceRow: row.sourceRow, cells }
   })
   return {

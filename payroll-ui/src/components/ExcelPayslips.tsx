@@ -9,6 +9,9 @@ import { buildExcelPayslipRows, buildPayslipCalculationSource, defaultPayslipMap
 import ExcelPayslipMonthTools from './ExcelPayslipMonthTools'
 import ExcelPayslipMailProgress from './ExcelPayslipMailProgress'
 import ExcelPayslipBulkAmountEditor from './ExcelPayslipBulkAmountEditor'
+import ExcelPayslipEmailUpdates from './ExcelPayslipEmailUpdates'
+import { isPayslipEmailList, payslipEmailExport, readPayslipEmailUpdates } from '../utils/excelPayslipEmailUpdates'
+import { downloadXlsx } from '../utils/xlsx'
 import { canQueuePayslipEmail, payslipSentCopyLabel } from '../utils/excelPayslipDelivery'
 import { buildEditablePayslipSheet, downloadExcelPayslipTemplate } from '../utils/excelPayslipTemplate'
 import { getExcelPayslipBatch, getExcelPayslipCalculation, getExcelPayslipClients, getExcelPayslipHistory, getExcelPayslipPdf, getExcelPayslipProfile, getExcelPayslipTemplates, saveExcelPayslipBatch, saveExcelPayslipProfile, startExcelPayslipMailJob, requestExcelPayslipEmailIds, type ExcelPayslipBatch, type ExcelPayslipCalculationSource, type ExcelPayslipDelivery, type ExcelPayslipMailJob, type ExcelPayslipRow, type ExcelPayslipSendRequest, type ExcelPayslipSummary, type ExcelPayslipTemplate } from '../services/excelPayslipService'
@@ -79,6 +82,8 @@ export default function ExcelPayslips() {
   const [exportWarnings, setExportWarnings] = useState<string[]>([])
   const [historyOpen, setHistoryOpen] = useState(false), [importOpen, setImportOpen] = useState(false)
   const [editingBatchId, setEditingBatchId] = useState('')
+  const [emailUpdatesBatch, setEmailUpdatesBatch] = useState('')
+  const [emailUpdatesDraft, setEmailUpdatesDraft] = useState<{ batchId: string; fileName: string; preview: ReturnType<typeof readPayslipEmailUpdates> }>()
   const [monthTools, setMonthTools] = useState<'calculate' | 'variance' | null>(null)
   const [sheets, setSheets] = useState<PayslipSheet[]>([]), [sheetName, setSheetName] = useState(''), [fileName, setFileName] = useState('')
   const [sourceParts, setSourceParts] = useState<PayslipWorkbookPart[]>([]), [reviewSourceSplits, setReviewSourceSplits] = useState(false)
@@ -251,6 +256,12 @@ export default function ExcelPayslips() {
     try {
       const parsed = await parseExcelPayslipFile(file)
       if (requestedScope !== scope.current) return
+      if (isPayslipEmailList(parsed)) {
+        if (!batch || batch.clientId !== clientId) throw new Error('Open the saved batch for this email list before uploading.')
+        const preview = readPayslipEmailUpdates(parsed, batch)
+        setEmailUpdatesDraft({ batchId: batch.id, fileName: file.name, preview }); setEmailUpdatesBatch(batch.id); setImportOpen(false)
+        return
+      }
       setSourceParts([]); setReviewSourceSplits(false)
       if (parsed.some(item => item.template && item.template.clientId !== clientId)) throw new Error('This salary template belongs to another client. Select its client before importing.')
       const proposed = suggestPayslipWorksheet(parsed)
@@ -512,6 +523,7 @@ export default function ExcelPayslips() {
       <Tooltip title={validSelection.length ? `PDF selected (${validSelection.length})` : 'PDF all'}><Button aria-label={validSelection.length ? `PDF selected (${validSelection.length})` : 'PDF all'} icon={<FilePdfOutlined />} disabled={busy || !(validSelection.length ? eligibleRows.some(row => validSelection.includes(row.id)) : eligibleRows.length)} onClick={() => beginAction('download', validSelection.length ? validSelection : eligibleRows.map(row => row.id))}><span className="excel-payslip-action-label">{validSelection.length ? `PDF selected (${validSelection.length})` : 'PDF all'}</span></Button></Tooltip>
       {canManage && <Tooltip title={validSelection.length ? `Email selected (${emailTargets.length})` : `Email batch (${emailTargets.length})`}><Button aria-label={validSelection.length ? `Email selected (${emailTargets.length})` : `Email batch (${emailTargets.length})`} icon={<SendOutlined />} disabled={!emailTargets.length || busy} onClick={() => beginAction('send', emailTargets)}><span className="excel-payslip-action-label">{validSelection.length ? `Email selected (${emailTargets.length})` : `Email batch (${emailTargets.length})`}</span></Button></Tooltip>}
       {batch?.clientId === clientId && <Dropdown menu={{ items: [
+        ...(canManage ? [{ key: 'email-updates', label: 'Import email updates', icon: <UploadOutlined />, disabled: busy || loading, onClick: () => { setEmailUpdatesDraft(undefined); setEmailUpdatesBatch(batch.id) } }] : []),
         { key: 'export-template', label: 'Export salary template', icon: <DownloadOutlined />, disabled: busy || loading, onClick: () => void exportTemplate() },
         ...(canManage ? [{ key: 'edit-mapping', label: 'Edit mapping', icon: <EditOutlined />, disabled: busy || loading, onClick: () => void editMapping() },
           { key: 'create-month', label: 'Create another month', disabled: busy || loading, onClick: () => setMonthTools('calculate') }] : []),
@@ -521,6 +533,9 @@ export default function ExcelPayslips() {
     {error && <Alert type="error" showIcon message={error} />}
     {!clientsLoading && linkedClientId > 0 && !clientId && <Alert type="error" showIcon message="This batch's client is not available in your access scope." action={<Button onClick={() => chooseClient(clients[0]?.id || 0)}>Choose an available client</Button>} />}
     {notice && <Alert type="success" showIcon closable message={notice} />}
+    {canManage && batch?.clientId === clientId && emailUpdatesBatch === batch.id && <ExcelPayslipEmailUpdates key={`${clientId}:${batch.id}`} batch={batch} initial={emailUpdatesDraft?.batchId === batch.id ? emailUpdatesDraft : undefined} onClose={() => setEmailUpdatesBatch('')} onBusy={setBusy} onSaved={(saved, changed) => {
+      setBatch(saved); setEmailUpdatesBatch(''); emailStatus.refresh(); setNotice(`${changed} email(s) saved in this batch. Salary and existing delivery history are unchanged. No mail was sent.`)
+    }} />}
     {rows.some(row => row.employment?.blockedForMonth) && <Alert type="info" showIcon message="Rows after employment ended are retained for source history. Their new payslip and email actions are disabled for this month." />}
     {!!exportWarnings.length && <Alert type="warning" showIcon closable message="Review the exported template" description={templateWarningSummary(exportWarnings)} afterClose={() => setExportWarnings([])} />}
     {batch?.clientId === clientId && progressVisible && <ExcelPayslipMailProgress jobs={mailJobs.jobs} selectedId={linkedMailJobId || preferredMailJob} onSelect={chooseMailJob} loading={mailJobs.loading} error={mailJobs.error} onRefresh={mailJobs.refresh} expanded={progressExpanded} onToggle={() => setProgressExpanded(value => !value)} onHide={() => setHiddenProgress(progressKey)} />}
@@ -552,7 +567,17 @@ export default function ExcelPayslips() {
       { key: 'email', cardHidden: true, label: 'Email', render: row => row.email || <span className="excel-payslip-muted">Optional · add when sending</span> },
       { key: 'phone', cardHidden: true, label: 'Phone', width: 155, value: payslipPhoneValue },
 
-    ]} actionsWidth={compactActions ? 88 : 240} actions={row => compactActions ? <Dropdown menu={{ items: [
+    ]} onExcelExport={exportRows => {
+      if (!batch) return
+      const selected = validSelection.length ? exportRows.filter(row => validSelection.includes(row.id)) : exportRows
+      if (!selected.length) { setError('No selected rows match the current table filters. Clear selection or filters and export again.'); return }
+      const report = payslipEmailExport(batch, selected)
+      report[0].push('Employment', 'Employee email status', 'Coordinator copy', 'Delivery details', 'Review')
+      selected.forEach((row, index) => { const status = emailStatus.statuses.get(row.id); report[index + 1].push(row.employment?.status || 'Not linked',
+        status ? `${mailLabels[status.status]} ${status.email}`.trim() : 'Checking', (status?.recipientDeliveries || []).filter(item => item.mode === 'Combined').map(item => `${item.email}: ${item.status}`).join('; '),
+        status?.message || '', row.warnings.join('; ') || 'No warnings') })
+      downloadXlsx(`excel-payslips-${batch.month}.xlsx`, [{ name: 'Records', rows: report }])
+    }} actionsWidth={compactActions ? 88 : 240} actions={row => compactActions ? <Dropdown menu={{ items: [
       { key: 'details', label: 'Details', disabled: busy, onClick: () => setReview(row) },
       { key: 'preview', label: 'Preview', disabled: busy || row.employment?.blockedForMonth, onClick: () => beginAction('preview', [row.id]) },
       ...(canManage ? [{ key: 'email', label: 'Email', disabled: busy || !canEmailRow(row.id), onClick: () => beginAction('send', [row.id]) }] : [])
