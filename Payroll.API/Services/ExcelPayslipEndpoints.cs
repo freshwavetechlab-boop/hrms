@@ -13,11 +13,16 @@ public static class ExcelPayslipEndpoints
         Func<HttpContext, AuthUser> currentUser)
     {
         var routes = app.MapGroup("/api/excel-payslips").WithTags("Excel Payslips");
+        bool CanDelete(HttpContext context) => canManage(context) && currentUser(context).Permissions.Contains("settings.manage", StringComparer.OrdinalIgnoreCase);
         routes.AddEndpointFilter(async (invocation, next) =>
         {
             var context = invocation.HttpContext;
             context.Response.Headers.CacheControl = "no-store";
             if (!canRead(context)) return Results.StatusCode(403);
+            if (context.GetEndpoint()?.Metadata.GetMetadata<OriginalWorkbookAccess>() is not null && !canManage(context))
+                return Results.StatusCode(403);
+            if (context.GetEndpoint()?.Metadata.GetMetadata<DeleteBatchAccess>() is not null && !CanDelete(context))
+                return Results.StatusCode(403);
             var isExport = HttpMethods.IsPost(context.Request.Method)
                 && context.Request.Path.Value!.EndsWith("/pdf", StringComparison.OrdinalIgnoreCase);
             if (!HttpMethods.IsGet(context.Request.Method) && !isExport && !canManage(context))
@@ -130,6 +135,46 @@ public static class ExcelPayslipEndpoints
             return ok ? Results.Ok(request) : Results.BadRequest(new { error });
         }).WithName("SaveExcelPayslipMapping").WithOpenApi();
 
+        routes.MapPost("/originals", async ([Microsoft.AspNetCore.Mvc.FromServices] AttachmentRepository attachments, int clientId, HttpContext context) =>
+        {
+            if (!canManage(context)) return Results.StatusCode(403);
+            if (!context.Request.HasFormContentType || context.Request.ContentLength > 26L * 1024 * 1024)
+                return Results.BadRequest(new { error = "Upload a workbook up to the attachment size limit." });
+            var limit = context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+            if (limit is { IsReadOnly: false }) limit.MaxRequestBodySize = 26L * 1024 * 1024;
+            var form = await context.Request.ReadFormAsync(context.RequestAborted);
+            if (form.Files.Count != 1) return Results.BadRequest(new { error = "Upload exactly one original workbook." });
+            return Results.Ok(await attachments.RetainExcelWorkbookAsync(clientId, form.Files[0], currentUser(context),
+                context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted));
+        }).WithMetadata(new OriginalWorkbookAccess()).WithName("RetainExcelPayslipOriginal");
+        routes.MapGet("/batches/{id}/originals", async (ExcelPayslipRepository repository, int clientId, string id, HttpContext context) =>
+            !canManage(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetOriginalsAsync(clientId, id)))
+            .WithMetadata(new OriginalWorkbookAccess()).WithName("GetExcelPayslipOriginals");
+        routes.MapGet("/batches/{id}/originals/{originalId}", async ([Microsoft.AspNetCore.Mvc.FromServices] AttachmentRepository attachments, [Microsoft.AspNetCore.Mvc.FromServices] AttachmentStorageService storage,
+            int clientId, string id, string originalId, HttpContext context) =>
+        {
+            if (!canManage(context)) return Results.StatusCode(403);
+            var file = await attachments.GetExcelWorkbookForContentAsync(clientId, originalId, id, currentUser(context),
+                context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString(), context.RequestAborted);
+            return file is null ? Results.NotFound() : (IResult)new AttachmentContentResult(storage, file.Value.Server, file.Value.Attachment, false);
+        }).WithMetadata(new OriginalWorkbookAccess()).WithName("DownloadExcelPayslipOriginal");
+        // A stronger existing settings permission is required in addition to normal payslip management.
+        routes.MapGet("/batches/{id}/delete-preview", async (ExcelPayslipRepository repository, int clientId, string id, HttpContext context) =>
+        {
+            if (!CanDelete(context)) return Results.StatusCode(403);
+            var preview = await repository.PreviewDeleteAsync(clientId, id);
+            return preview is null ? Results.NotFound() : Results.Ok(preview);
+        }).WithMetadata(new DeleteBatchAccess()).WithName("PreviewExcelPayslipDeletion");
+        routes.MapPost("/batches/{id}/delete", async (ExcelPayslipRepository repository, int clientId, string id, ExcelPayslipDeleteRequest request, HttpContext context) =>
+            !CanDelete(context) ? Results.StatusCode(403) : Results.Ok(await repository.DeleteBatchAsync(clientId, id, request, currentUser(context).Email)))
+            .WithMetadata(new DeleteBatchAccess()).WithName("DeleteUnusedExcelPayslipBatch");
+        routes.MapPost("/batches/{id}/cleanup-review", async (ExcelPayslipRepository repository, int clientId, string id, ExcelPayslipSupersessionRequest request, HttpContext context) =>
+            !CanDelete(context) ? Results.StatusCode(403) : Results.Ok(await repository.PreviewSupersessionAsync(clientId, id, request.KeeperBatchId)))
+            .WithMetadata(new DeleteBatchAccess()).WithName("ReviewExcelPayslipLegacyVersion");
+        routes.MapPost("/batches/{id}/cleanup-action", async (ExcelPayslipRepository repository, int clientId, string id, ExcelPayslipCleanupActionRequest request, HttpContext context) =>
+            !CanDelete(context) ? Results.StatusCode(403) : Results.Ok(await repository.ResolveCleanupAsync(clientId, id, request, currentUser(context).Email)))
+            .WithMetadata(new DeleteBatchAccess()).WithName("ResolveExcelPayslipCleanupBlocker");
+
         routes.MapGet("/batches", async (ExcelPayslipRepository repository, int clientId) => Results.Ok(await repository.ListAsync(clientId)))
             .WithName("ListExcelPayslipBatches").WithOpenApi();
         routes.MapGet("/batches/{id}", async (ExcelPayslipRepository repository, int clientId, string id) =>
@@ -192,4 +237,6 @@ public static class ExcelPayslipEndpoints
     }
 
     private static bool ValidSignature(string value) => Regex.IsMatch(value, "^[a-fA-F0-9]{64}$", RegexOptions.CultureInvariant);
+    private sealed record OriginalWorkbookAccess;
+    private sealed record DeleteBatchAccess;
 }

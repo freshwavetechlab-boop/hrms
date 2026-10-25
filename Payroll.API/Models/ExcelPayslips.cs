@@ -63,6 +63,12 @@ public sealed class ExcelPayslipBatch
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ExcelPayslipCalculationSource? CalculationSource { get; set; }
     public string Id { get; set; } = "";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int LifecycleVersion { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? ParentBatchId { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<ExcelPayslipOriginalReference>? OriginalWorkbooks { get; set; }
     public int ClientId { get; set; }
     public string ClientName { get; set; } = "";
     public string SalaryTemplateId { get; set; } = "";

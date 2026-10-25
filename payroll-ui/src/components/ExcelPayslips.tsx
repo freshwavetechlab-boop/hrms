@@ -1,3 +1,5 @@
+import ExcelPayslipBatchLifecycle from './ExcelPayslipBatchLifecycle'
+import { saveBatchWithOriginalWorkbooks, type RetainedWorkbookCache } from '../services/excelPayslipLifecycleService'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Alert, Button, Checkbox, Descriptions, Divider, Drawer, Dropdown, Empty, Form, Input, InputNumber, Segmented, Select, Space, Spin, Tag, Tooltip } from 'antd'
@@ -14,7 +16,7 @@ import { isPayslipEmailList, payslipEmailExport, readPayslipEmailUpdates } from 
 import { downloadXlsx } from '../utils/xlsx'
 import { canQueuePayslipEmail, payslipSentCopyLabel } from '../utils/excelPayslipDelivery'
 import { buildEditablePayslipSheet, downloadExcelPayslipTemplate } from '../utils/excelPayslipTemplate'
-import { getExcelPayslipBatch, getExcelPayslipCalculation, getExcelPayslipClients, getExcelPayslipHistory, getExcelPayslipPdf, getExcelPayslipProfile, getExcelPayslipTemplates, saveExcelPayslipBatch, saveExcelPayslipProfile, startExcelPayslipMailJob, requestExcelPayslipEmailIds, type ExcelPayslipBatch, type ExcelPayslipCalculationSource, type ExcelPayslipDelivery, type ExcelPayslipMailJob, type ExcelPayslipRow, type ExcelPayslipSendRequest, type ExcelPayslipSummary, type ExcelPayslipTemplate } from '../services/excelPayslipService'
+import { getExcelPayslipBatch, getExcelPayslipCalculation, getExcelPayslipClients, getExcelPayslipHistory, getExcelPayslipPdf, getExcelPayslipProfile, getExcelPayslipTemplates, saveExcelPayslipProfile, startExcelPayslipMailJob, requestExcelPayslipEmailIds, type ExcelPayslipBatch, type ExcelPayslipCalculationSource, type ExcelPayslipDelivery, type ExcelPayslipMailJob, type ExcelPayslipRow, type ExcelPayslipSendRequest, type ExcelPayslipSummary, type ExcelPayslipTemplate } from '../services/excelPayslipService'
 import { useAuthSession } from './AuthGate'
 import DataTable from './DataTable'
 import FileDropZone from './FileDropZone'
@@ -67,6 +69,8 @@ export default function ExcelPayslips() {
     return latest
   }, [history])
   const [batch, setBatch] = useState<ExcelPayslipBatch | null>(null)
+  const originalFiles = useRef<File[]>([])
+  const retainedOriginals = useRef<RetainedWorkbookCache>(new Map())
   const emailStatus = useExcelPayslipEmailStatus(clientId, batch)
   const mailJobs = useExcelPayslipMailJobs(clientId, batch?.clientId === clientId ? batch.id : '')
   const [preferredMailJob, setPreferredMailJob] = useSessionPreference(`excel-payslips:${session?.user.id}:${clientId}:${batch?.id}:mail-job`, '')
@@ -174,6 +178,7 @@ export default function ExcelPayslips() {
       setSetupRows(null)
       setWarningsOpen(false); setCorrection(null)
       const batchToken = ++batchSequence.current
+      originalFiles.current = []; retainedOriginals.current.clear()
       setBatch(null); setHistory([]); setTemplates([]); setTemplatesReady(false); setTemplatesError(''); setTemplatesLoading(false); setAction(null); setImportOpen(false); setReview(null); setHistoryOpen(false); setMonthTools(null); setError(''); setNotice(''); setSheets([])
       setLoading(false); setBusy(false); setHistoryLoading(false); setExportWarnings([]); setMailTab('All'); setEditingBatchId(''); setSimpleLayout(false); setSourceParts([]); setReviewSourceSplits(false)
       if (!clientId) return
@@ -252,6 +257,7 @@ export default function ExcelPayslips() {
   const upload = async (file: File) => {
     if (!canManage || busy) return
     const requestedScope = scope.current
+    originalFiles.current = []
     setBusy(true); setImportError(''); setMappingNotice('')
     try {
       const parsed = await parseExcelPayslipFile(file)
@@ -263,6 +269,7 @@ export default function ExcelPayslips() {
         return
       }
       setSourceParts([]); setReviewSourceSplits(false)
+      originalFiles.current = [file]
       if (parsed.some(item => item.template && item.template.clientId !== clientId)) throw new Error('This salary template belongs to another client. Select its client before importing.')
       const proposed = suggestPayslipWorksheet(parsed)
       const selected = parsed.find(item => item.template) || proposed?.sheet || parsed.find(item => item.name.toLowerCase() === 'calcultion') || parsed[0]
@@ -277,6 +284,7 @@ export default function ExcelPayslips() {
     const requestedScope = scope.current
     setBusy(true); setImportError(''); setMappingNotice('')
     try {
+      originalFiles.current = []
       const parts = []
       if (files.length > 50) throw new Error('Choose up to 50 salary workbooks.')
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new Error('Choose the salary month before combining location workbooks.')
@@ -293,6 +301,7 @@ export default function ExcelPayslips() {
         parts.push({ fileName: file.name, ...selected, columns })
       }
       const combined = consolidatePayslipWorkbooks(parts, clientId, month)
+      originalFiles.current = files
       setSourceParts(parts); setReviewSourceSplits(false)
       setSheets([combined]); setSheetName(combined.name); setHeaderRow(1); setFileName(`Combined salary - ${files.length} workbooks.xlsx`); setEditingBatchId(''); setSimpleLayout(true)
       setMappingNotice(`${files.length} salary workbooks combined for review. Source files and Excel rows are retained. Review blank amounts, duplicates and employee matching before saving.`)
@@ -353,7 +362,7 @@ export default function ExcelPayslips() {
     if (templateId && !template) { setImportError('Choose a currently available client salary template, or manual mapping.'); return false }
     const requestedScope = scope.current, requestedBatch = batchSequence.current
     setBusy(true); setImportError('')
-    const result = await saveExcelPayslipBatch(clientId, { month, sourceFileName: fileName, sheetName, headerRow, simpleLayout, salaryTemplateId: templateId || undefined, salaryTemplateName: template?.name, rows: preview.rows.map(row => ({ ...row, id: crypto.randomUUID() })), calculationSource: source ? { ...buildPayslipCalculationSource(source, headerRow, columns, preview.excludedRows), ...(editingBatchId ? editingCalculation.current : {}) } : undefined })
+    const result = await saveBatchWithOriginalWorkbooks(clientId, { parentBatchId: editingBatchId || undefined, month, sourceFileName: fileName, sheetName, headerRow, simpleLayout, salaryTemplateId: templateId || undefined, salaryTemplateName: template?.name, rows: preview.rows.map(row => ({ ...row, id: crypto.randomUUID() })), calculationSource: source ? { ...buildPayslipCalculationSource(source, headerRow, columns, preview.excludedRows), ...(editingBatchId ? editingCalculation.current : {}) } : undefined }, originalFiles.current, retainedOriginals.current, () => requestedScope === scope.current && requestedBatch === batchSequence.current)
     if (requestedScope !== scope.current || requestedBatch !== batchSequence.current) return false
     setBusy(false)
     if (!result.ok || !result.data) { setImportError(result.error || 'Unable to save this batch. Check batch history before retrying an interrupted request.'); return false }
@@ -407,6 +416,7 @@ export default function ExcelPayslips() {
       if (typeof correctSourceRow === 'number' && !editable.rows.some(row => row.sourceRow === correctSourceRow)) throw new Error('The saved employee source row is unavailable. Re-import the original workbook to correct it.')
       const { sourceBatchId, attendanceColumnIndex, monthDaysCell } = result.data
       editingCalculation.current = { sourceBatchId, attendanceColumnIndex, monthDaysCell }
+      originalFiles.current = []
       setSheets([editable]); setSheetName(editable.name); setHeaderRow(editable.template.headerRow)
       setMonth(selectedBatch.month); setFileName(selectedBatch.sourceFileName); setEditingBatchId(selectedBatch.id); setSimpleLayout(selectedBatch.simpleLayout === true)
       setImportError(''); setHistoryOpen(false); setImportOpen(true)
@@ -616,7 +626,7 @@ export default function ExcelPayslips() {
       </Form>
     </Drawer>
 
-    <Drawer title="Saved Excel payslip batches" className="excel-payslip-history" open={historyOpen} width="min(1040px, 96vw)" onClose={() => { if (!busy) setHistoryOpen(false) }}><DataTable rows={history} loading={historyLoading} getRowId={row => row.id} title="Batch history" emptyText="No saved batches for this client." rowClassName={row => latestByMonth.get(row.month) === row.id ? 'excel-payslip-latest' : ''} columns={[{ key: 'month', label: 'Salary month' }, { key: 'version', label: 'Version', width: 112, value: row => latestByMonth.get(row.month) === row.id ? 'Latest' : 'Previous', render: row => <Tag color={latestByMonth.get(row.month) === row.id ? 'green' : 'default'}>{latestByMonth.get(row.month) === row.id ? 'Latest' : 'Previous'}</Tag> }, { key: 'sourceFileName', label: 'Source file' }, { key: 'sheetName', label: 'Worksheet' }, { key: 'rowCount', label: 'Payslips' }, { key: 'createdAtUtc', label: 'Saved at', value: row => new Date(row.createdAtUtc).toLocaleString() }, { key: 'createdBy', label: 'Saved by' }]} actionsWidth={155} actions={row => <Space direction="vertical" size={4}>{row.id === batch?.id && <Tag color="blue">Viewing</Tag>}<Button size="small" disabled={busy} onClick={() => void openHistoryBatch(row.id)}>Open batch</Button>{canConfigurePayroll && <Button size="small" disabled={busy} onClick={() => void openHistoryBatch(row.id, false, true)}>Master setup</Button>}{canManage && <Button size="small" disabled={busy} onClick={() => void editMapping(row.id)}>Edit mapping</Button>}</Space>} /></Drawer>
+    <Drawer title="Saved Excel payslip batches" className="excel-payslip-history" open={historyOpen} width="min(1040px, 96vw)" onClose={() => { if (!busy) setHistoryOpen(false) }}><DataTable rows={history} loading={historyLoading} getRowId={row => row.id} title="Batch history" emptyText="No saved batches for this client." rowClassName={row => latestByMonth.get(row.month) === row.id ? 'excel-payslip-latest' : ''} columns={[{ key: 'month', label: 'Salary month' }, { key: 'version', label: 'Version', width: 112, value: row => latestByMonth.get(row.month) === row.id ? 'Latest' : 'Previous', render: row => <Tag color={latestByMonth.get(row.month) === row.id ? 'green' : 'default'}>{latestByMonth.get(row.month) === row.id ? 'Latest' : 'Previous'}</Tag> }, { key: 'sourceFileName', label: 'Source file' }, { key: 'sheetName', label: 'Worksheet' }, { key: 'rowCount', label: 'Payslips' }, { key: 'createdAtUtc', label: 'Saved at', value: row => new Date(row.createdAtUtc).toLocaleString() }, { key: 'createdBy', label: 'Saved by' }]} actionsWidth={155} actions={row => <Space direction="vertical" size={4}>{row.id === batch?.id && <Tag color="blue">Viewing</Tag>}<Button size="small" disabled={busy} onClick={() => void openHistoryBatch(row.id)}>Open batch</Button>{canConfigurePayroll && <Button size="small" disabled={busy} onClick={() => void openHistoryBatch(row.id, false, true)}>Master setup</Button>}{canManage && <Button size="small" disabled={busy} onClick={() => void editMapping(row.id)}>Edit mapping</Button>}{canManage && <ExcelPayslipBatchLifecycle key={`${clientId}:${row.id}`} clientId={clientId} batchId={row.id} canDelete={session?.user.permissions.includes('settings.manage') === true} disabled={busy} onInspectBatch={id => { void openHistoryBatch(id) }} onDeleted={() => { setHistory(current => current.filter(item => item.id !== row.id)); if (batch?.id === row.id) closeBatch(); setNotice('Unused batch permanently deleted. Original workbooks and audit receipt retained.') }} />}</Space>} /></Drawer>
     <Drawer title={review ? `${review.employeeName} · Source row ${review.sourceRow}` : 'Payslip details'} open={!!review} width="min(720px, 96vw)" className="excel-payslip-row-review" onClose={() => { if (!busy) setReview(null) }} closable={!busy} footer={<Space wrap className="excel-payslip-footer"><Button disabled={busy} onClick={() => setReview(null)}>Close</Button>{canManage && review && <Button type="primary" disabled={busy || mappingBusy} onClick={() => correctRow(review)}>Correct amounts</Button>}</Space>}>{review && <><Descriptions bordered column={1} size="small"><Descriptions.Item label="Source row">{review.sourceRow}</Descriptions.Item><Descriptions.Item label="Email">{review.email || 'Not supplied'}</Descriptions.Item><Descriptions.Item label="Delivery details">{emailStatus.statuses.get(review.id)?.message || 'Not yet checked'}</Descriptions.Item><Descriptions.Item label="Employee code">{review.employeeCode || (importOpen ? 'Auto on save' : 'Not supplied')}</Descriptions.Item>{review.information.map((item, index) => <Descriptions.Item key={index} label={item.label}>{item.value || '—'}</Descriptions.Item>)}</Descriptions><PayslipReconciliation row={review} />{[['Earnings', review.earnings], ['Deductions', review.deductions], ['Employer contributions', review.employerContributions]].map(([label, items]) => <div key={String(label)}><Divider orientation="left">{String(label)}</Divider>{(items as { label: string; amount: number }[]).map((item, index) => <p className="excel-payslip-amount" key={index}><span>{item.label}</span><strong>{amount(item.amount)}</strong></p>)}</div>)}<Divider /><p className="excel-payslip-amount"><strong>{(importOpen ? simpleLayout : batch?.simpleLayout) ? 'In Hand Salary' : 'Net pay as stated'}</strong><strong>{amount(review.netPay)}</strong></p>{review.warnings.map((warning, index) => <Alert key={index} type="warning" showIcon message={warning} />)}</>}</Drawer>
 
     {correction?.clientId === clientId && correction.sourceRows && <ExcelPayslipBulkAmountEditor key={`bulk:${clientId}:${editingBatchId}`} sheet={correction.sheet} columns={correction.columns} sourceRows={correction.sourceRows} busy={busy} ready={templatesReady && !mappingBusy} error={importError} onClose={() => setCorrection(null)} onSave={(edits, calculated) => { if (!canManage || busy || !templatesReady || mappingBusy) return; try { if (calculated) { void saveBatch(calculated); return } const changed = correctPayslipBatchAmounts(correction.sheet, correction.columns, edits); if (changed.changed) void saveBatch(changed.sheet) } catch (failure) { setImportError(failure instanceof Error ? failure.message : 'Unable to save corrections.') } }} />}

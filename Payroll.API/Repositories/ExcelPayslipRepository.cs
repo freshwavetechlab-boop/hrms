@@ -188,7 +188,7 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
             if (Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(calculationSource, JsonOptions)) > 16 * 1024 * 1024)
                 return (null, "Calculation source exceeds 16 MiB. Save a smaller worksheet.");
         }
-        batch.Id = Guid.NewGuid().ToString("N"); batch.ClientId = clientId;
+        batch.Id = Guid.NewGuid().ToString("N"); batch.ClientId = clientId; batch.LifecycleVersion = 1;
         batch.ClientName = ""; batch.SalaryTemplateName = ""; batch.SalaryTemplateId = batch.SalaryTemplateId?.Trim() ?? "";
         batch.CreatedAtUtc = DateTime.UtcNow; batch.CreatedBy = Limit(actor, 190);
         foreach (var row in batch.Rows) row.Warnings = RowWarnings(row);
@@ -216,6 +216,29 @@ WHERE batches.client_id=@ClientId AND codes.employee_code IS NOT NULL AND TRIM(c
             if (Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(calculationSource, JsonOptions)) > 16 * 1024 * 1024)
                 return (null, "Calculation source exceeds 16 MiB. Save a smaller worksheet.");
         }
+        var parentId = string.IsNullOrWhiteSpace(batch.ParentBatchId) ? calculationSource?.SourceBatchId : batch.ParentBatchId;
+        if (!string.IsNullOrWhiteSpace(parentId))
+        {
+            var parent = await ReadBatchAsync(db, clientId, parentId, tx);
+            if (parent is null) return (null, "The parent batch does not belong to this client.");
+            batch.ParentBatchId = parentId;
+            batch.OriginalWorkbooks = (await db.QueryAsync<ExcelPayslipOriginalReference>("SELECT original_id AS Id,original_file_name AS FileName FROM excel_payslip_batch_originals WHERE client_id=@ClientId AND batch_id=@Id", new { ClientId = clientId, Id = parentId }, tx)).ToList();
+        }
+        else
+        {
+            batch.ParentBatchId = null;
+            if (batch.OriginalWorkbooks is not { Count: > 0 and <= 50 }) return (null, "Retain the original workbook through attachment storage before saving a new import.");
+            batch.OriginalWorkbooks = batch.OriginalWorkbooks.DistinctBy(o => o.Id).ToList();
+            foreach (var original in batch.OriginalWorkbooks)
+            {
+                if (!Guid.TryParseExact(original.Id, "N", out _) || string.IsNullOrWhiteSpace(original.FileName) || original.FileName.Length > 255
+                    || original.FileName != Path.GetFileName(original.FileName.Replace('\\', '/'))
+                    || original.FileName.Any(char.IsControl)) return (null, "Invalid original workbook reference.");
+                var retained = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM excel_payslip_originals o JOIN entity_attachments a ON a.id=o.attachment_id
+WHERE o.client_id=@ClientId AND o.id=@Id AND a.is_deleted=FALSE", new { ClientId = clientId, original.Id }, tx);
+                if (retained != 1) return (null, "Original workbook was not found in this client's attachment storage.");
+            }
+        }
         ExcelPayslipBatch? calculationParent = null;
         if (!string.IsNullOrEmpty(calculationSource?.SourceBatchId))
         {
@@ -239,6 +262,9 @@ WHERE batches.client_id=@ClientId AND codes.employee_code IS NOT NULL AND TRIM(c
         if (calculationSource is not null)
             await db.ExecuteAsync("INSERT INTO excel_payslip_calculation_sources(client_id,batch_id,source_json,created_at) VALUES(@ClientId,@Id,CAST(@Json AS JSON),@CreatedAtUtc)",
                 new { ClientId = clientId, batch.Id, Json = JsonSerializer.Serialize(calculationSource, JsonOptions), batch.CreatedAtUtc }, tx);
+        foreach (var original in batch.OriginalWorkbooks ?? [])
+            await db.ExecuteAsync("INSERT INTO excel_payslip_batch_originals(client_id,batch_id,original_id,original_file_name) VALUES(@ClientId,@BatchId,@Id,@FileName)",
+                new { ClientId = clientId, BatchId = batch.Id, original.Id, original.FileName }, tx);
         await AnnotateEmploymentAsync(db, batch, tx);
         await tx.CommitAsync();
         return (batch, null);

@@ -10,7 +10,7 @@ using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
-public class AttachmentRepository(
+public partial class AttachmentRepository(
     IConfiguration configuration,
     IWebHostEnvironment environment,
     PortableIntegrationCredentialProtector credentialProtector,
@@ -1341,6 +1341,7 @@ WHERE token_hash=@TokenHash AND revoked_at_utc IS NULL AND expires_at_utc>UTC_TI
     {
         var row = await GetAccessRowAsync(publicId);
         if (row is null || row.IsDeleted) return (false, "Attachment was not found.");
+        if (row.EntityType == ExcelOriginalEntity) return (false, "Original payroll workbooks are retained for provenance. Batch deletion removes references only.");
         if (expectedStorageServerId.HasValue && row.StorageServerId != expectedStorageServerId.Value)
             return (false, "Attachment was not found on this storage server.");
         var allowed = storageAdministrator
@@ -1404,10 +1405,10 @@ rejection_reason=@Reason WHERE id=@Id", new { row.Id, Status = approve ? "Verifi
     private async Task<(AttachmentStorageServer? Server, string StorageKey, string? Error)> WriteWithFailoverAsync(
         IFormFile file,
         string requestedStorageKey,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool allowLocalFallback = true)
     {
         var servers = (await GetStorageServersAsync(true))
-            .Where(server => server.IsActive && server.IsWriteEnabled)
+            .Where(server => server.IsActive && server.IsWriteEnabled && (allowLocalFallback || !server.ServerCode.Equals("API_LOCAL", StringComparison.OrdinalIgnoreCase)))
             .OrderByDescending(server => server.IsDefaultWriteServer)
             .ThenBy(server => server.Priority)
             .ThenBy(server => server.ServerName)
@@ -1446,6 +1447,8 @@ rejection_reason=@Reason WHERE id=@Id", new { row.Id, Status = approve ? "Verifi
                 storageWriteReadiness[server.Id] = new StorageWriteReadiness(false, DateTime.UtcNow.AddMinutes(1));
             }
         }
+
+        if (!allowLocalFallback) return (null, "", "No configured global attachment server accepted the original workbook. The batch was not saved.");
 
         // API_LOCAL is a system-owned safety net. Repair a stale cross-environment
         // path (for example a Windows path restored into Linux production) and retry
@@ -1610,6 +1613,8 @@ JOIN recruitment_open_positions p ON p.Id=r.PositionId WHERE r.Id=@Id", new { Id
 
     private async Task<bool> CanReadEntityAsync(AuthUser user, string entityType, long entityId, int clientId)
     {
+        // Raw payroll sources require the scoped Excel payslip route, not generic recruitment attachment permissions.
+        if (entityType == ExcelOriginalEntity) return false;
         if (await IsEntityOwnerAsync(user, entityType, entityId)) return true;
         if (!await HasEntityClientAccessAsync(user, entityType, entityId, clientId)) return false;
         if (entityType == "EMPLOYEE_COMMUNICATION_DRAFT")
@@ -1669,6 +1674,7 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
 
     private async Task<bool> CanManageEntityAsync(AuthUser user, string entityType, long entityId, int clientId)
     {
+        if (entityType == ExcelOriginalEntity) return false;
         if (!await HasEntityClientAccessAsync(user, entityType, entityId, clientId)) return false;
         if (entityType == "EMPLOYEE_COMMUNICATION_DRAFT")
             return await IsEntityOwnerAsync(user, entityType, entityId);
