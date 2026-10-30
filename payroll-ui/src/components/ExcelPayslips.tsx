@@ -46,6 +46,7 @@ import EmployeeResignationAction from './EmployeeResignationAction'
 import { buildPayslipMappingEvidence } from '../utils/excelPayslipMapping'
 import { consolidatePayslipWorkbooks, suggestPayslipWorksheet, type PayslipWorkbookPart } from '../utils/excelPayslipConsolidation'
 import { suggestExcelPayslipMapping } from '../services/excelPayslipService'
+import { reviewExcelPayslipNegativeAmount } from '../services/excelPayslipService'
 import './EmployeeResignation.css'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import './ExcelPayslips.css'
@@ -526,6 +527,24 @@ export default function ExcelPayslips() {
     } catch (failure) { if (currentClient.current === requestedClient) setError(failure instanceof Error ? failure.message : 'Unable to export salary template.') }
     finally { inFlight.current = false; setBusy(false) }
   }
+  const reviewNegativeAmount = async (row: ExcelPayslipRow) => {
+    if (!canManage || !batch || batch.clientId !== clientId || importOpen || busy || inFlight.current) return
+    const requestedScope = scope.current, requestedBatch = batchSequence.current
+    inFlight.current = true; setBusy(true); setError(''); setNotice('')
+    try {
+      const result = await reviewExcelPayslipNegativeAmount(clientId, batch.id, row.id)
+      if (requestedScope !== scope.current || requestedBatch !== batchSequence.current) return
+      if (!result.ok || !result.data) throw new Error(result.error || 'Unable to save the negative amount review.')
+      setBatch(result.data)
+      setReview(current => current?.id === row.id ? result.data!.rows.find(item => item.id === row.id) || null : current)
+      setNotice(`${row.employeeName}: negative source amount reviewed. Salary amounts and formulas are unchanged.`)
+    } catch (failure) {
+      if (requestedScope === scope.current) setError(failure instanceof Error ? failure.message : 'Unable to save the review.')
+    } finally {
+      inFlight.current = false
+      if (requestedScope === scope.current) setBusy(false)
+    }
+  }
   const editMapping = async (id = batch?.id, correctSourceRow?: number | 'warnings') => {
     if (!canManage || !clientId || !id || busy || inFlight.current) return
     const requestedScope = scope.current, requestedBatch = batchSequence.current
@@ -648,7 +667,7 @@ export default function ExcelPayslips() {
   }
 
   return <section className="excel-payslips excel-payslip-workspace recruitment-viewport" aria-label="Excel payslips workspace">
-    <ExcelPayslipWarnings rows={rows} open={warningsOpen} busy={busy} canManage={canManage} error={error} onClose={() => { if (!busy) setWarningsOpen(false) }} onReview={setReview} onCorrect={correctRow} onMapping={() => void editMapping()} onBulkCorrect={() => void editMapping(batch?.id, 'warnings')} />
+    <ExcelPayslipWarnings rows={rows} open={warningsOpen} busy={busy} canManage={canManage} error={error} onClose={() => { if (!busy) setWarningsOpen(false) }} onReview={setReview} onCorrect={correctRow} onMapping={() => void editMapping()} onBulkCorrect={() => void editMapping(batch?.id, 'warnings')} onReviewNegative={row => void reviewNegativeAmount(row)} />
     {batch?.clientId === clientId && setupRows && <ExcelPayrollSetup key={`setup:${clientId}:${batch.id}:${[...setupRows].sort().join(',')}`} clientId={clientId} batch={batch} rowIds={setupRows} onClose={() => setSetupRows(null)} onApplied={result => { setTemplatesReady(false); setNotice(`Payroll setup saved: ${result.createdCount} employees created, ${result.updatedCount} updated. Verify Employee simulation before running payroll.`) }} />}
     {batch?.clientId === clientId && <ExcelPayslipMonthTools key={`month-tools:${clientId}:${batch.id}`} clientId={clientId} batch={batch} history={history} canManage={canManage} open={monthTools} onClose={() => setMonthTools(null)} onBusy={setBusy} onSaved={saved => { setBatch(saved); setHistory(current => [batchSummary(saved), ...current]); rememberBatch(saved.id); setSelectedIds([]); setNotice(`${saved.month} payslips saved as a new batch.`) }} />}
     <PageHeaderPortal slot="excel-payslips-client-controls"><Select aria-label="Excel payslips client" allowClear showSearch optionFilterProp="label" optionLabelProp="label" value={clientId || undefined} loading={clientsLoading} disabled={busy || clientsLoading} placeholder="Select client first" onChange={chooseClient} style={{ width: 240, maxWidth: '100%' }}>{clients.map(client => <Select.Option key={client.id} value={client.id} label={client.name} className={client.hasSavedBatch === true ? 'excel-payslip-client-has-batches' : 'excel-payslip-client-no-batches'}><ExcelPayslipClientOption name={client.name} hasSavedBatch={client.hasSavedBatch === true} /></Select.Option>)}</Select></PageHeaderPortal>

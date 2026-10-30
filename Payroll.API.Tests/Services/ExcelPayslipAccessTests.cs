@@ -45,6 +45,7 @@ public sealed class ExcelPayslipAccessTests
             (HttpMethod.Get, $"/profile?headerSignature={signature}"),
             (HttpMethod.Put, $"/profile?headerSignature={signature}"),
             (HttpMethod.Get, "/batches"),
+            (HttpMethod.Post, "/batches/0123456789abcdef0123456789abcdef/negative-amount-review"),
             (HttpMethod.Post, "/batches"),
             (HttpMethod.Get, "/batches/0123456789abcdef0123456789abcdef"),
             (HttpMethod.Get, "/batches/0123456789abcdef0123456789abcdef/delivery-status"),

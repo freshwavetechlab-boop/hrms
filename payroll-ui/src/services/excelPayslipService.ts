@@ -11,6 +11,7 @@ export type ExcelPayslipRow = {
   employment?: { employeeId: number | null; employeeCode: string; status: string; lastWorkingDate: string | null; blockedForMonth: boolean; identityReviewRequired: boolean } | null
   information: ExcelPayslipText[]; earnings: ExcelPayslipAmount[]; deductions: ExcelPayslipAmount[]; employerContributions: ExcelPayslipAmount[]
   netPay: number; declaredGross: number | null; declaredDeductions: number | null; warnings: string[]
+  negativeAmountReview?: { amountsHash: string; reviewedBy: string; reviewedAtUtc: string } | null
 }
 export type PayslipEmployeeCodeGeneration = { enabled: boolean; digits: number }
 export type PayslipEmployeeCodeOptions = { clientCode: string; digits: number; nextSequence: string }
@@ -62,6 +63,7 @@ export const getExcelPayslipDashboard = (clientId: number, batchId = '') => getJ
 export const getExcelPayslipTemplates = (clientId: number) => getJsonResult<ExcelPayslipTemplate[]>(`${root}/templates?clientId=${clientId}`, [])
 export const getExcelPayslipHistory = (clientId: number, includeConsolidated = false) => getJsonResult<ExcelPayslipSummary[]>(`${root}/batches?clientId=${clientId}${includeConsolidated ? '&includeConsolidated=true' : ''}`, [])
 export const getExcelPayslipBatch = (clientId: number, id: string) => getJsonResult<ExcelPayslipBatch | null>(`${batchPath(id)}?clientId=${clientId}`, null)
+export const reviewExcelPayslipNegativeAmount = (clientId: number, id: string, rowId: string) => postJson<{ rowId: string }, ExcelPayslipBatch | null>(`${batchPath(id)}/negative-amount-review?clientId=${clientId}`, { rowId }, null, { toast: false })
 export const getExcelPayslipDeliveryStatus = (clientId: number, id: string) => getJsonResult<{ items: ExcelPayslipEmailStatus[] }>(`${batchPath(id)}/delivery-status?clientId=${clientId}`, { items: [] })
 export const getExcelPayslipMailJobs = () => getJsonResult<{ items: ExcelPayslipMailJob[] }>(`${root}/mail-jobs`, { items: [] }, { loader: false, toast: false })
 export const getExcelPayslipBatchMailJobs = (clientId: number, id: string) => getJsonResult<{ items: ExcelPayslipMailJob[] }>(`${batchPath(id)}/mail-jobs?clientId=${clientId}`, { items: [] }, { loader: false, toast: false })

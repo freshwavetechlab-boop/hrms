@@ -3,7 +3,7 @@ import { Alert, Button, Checkbox, Collapse, Descriptions, Drawer, Form, InputNum
 import { usePayslipCorrectionPreview } from '../hooks/usePayslipCorrectionPreview'
 import DataTable from './DataTable'
 import { buildExcelPayslipRows, excelColumnLetter, formatExcelPayslipAmount, isPayslipAmountKind, parsePayslipAmount, type PayslipColumn, type PayslipSheet } from '../utils/excelPayslipImport'
-import { correctPayslipAmounts, payslipReconciliation, savedPayslipCorrectionInputs } from '../utils/excelPayslipReview'
+import { correctPayslipAmounts, negativePayslipAmountWarning, payslipReconciliation, savedPayslipCorrectionInputs } from '../utils/excelPayslipReview'
 import type { ExcelPayslipRow } from '../services/excelPayslipService'
 
 const preciseAmount = (value: number) => formatExcelPayslipAmount(value, 2)
@@ -25,21 +25,22 @@ export function PayslipReconciliation({ row }: { row: ExcelPayslipRow }) {
   </div>
 }
 
-export function ExcelPayslipWarnings({ rows, open, busy, canManage, error, onClose, onReview, onCorrect, onMapping, onBulkCorrect }: {
+export function ExcelPayslipWarnings({ rows, open, busy, canManage, error, onClose, onReview, onCorrect, onMapping, onBulkCorrect, onReviewNegative }: {
   rows: ExcelPayslipRow[]; open: boolean; busy: boolean; canManage: boolean; error: string
   onClose: () => void; onReview: (row: ExcelPayslipRow) => void; onCorrect: (row: ExcelPayslipRow) => void; onMapping: () => void
   onBulkCorrect?: () => void
+  onReviewNegative?: (row: ExcelPayslipRow) => void
 }) {
   const warnings = rows.filter(row => row.warnings.length)
   return <Drawer title={`Payslip warnings (${warnings.length})`} open={open} onClose={onClose} width="min(1080px, 98vw)" className="excel-payslip-warning-review" footer={<Space wrap className="excel-payslip-footer"><Button onClick={onClose} disabled={busy}>Close</Button>{canManage && <><Button onClick={onMapping} disabled={busy}>Edit column mapping</Button>{onBulkCorrect && <Button type="primary" onClick={onBulkCorrect} disabled={busy || !warnings.length}>Fix all warning rows</Button>}</>}</Space>}>
-    <Alert type="info" showIcon message="Review the reason before correcting salary" description="Details show the source amounts and differences. Corrections save the complete batch as a new version; the previous batch and its email history remain available." />
+    <Alert type="info" showIcon message="Review the reason before correcting salary" description="Details show the source amounts and differences. Marking a negative amount reviewed keeps all salary amounts unchanged and records who reviewed it. Corrections save the complete batch as a new version; the previous batch and its email history remain available." />
     {error && <Alert type="error" showIcon message={error} />}
     <DataTable title="Employees with warnings" rows={warnings} getRowId={row => row.id} exportFileName="payslip-warnings" emptyText="No warnings in this batch." columns={[
       { key: 'employeeName', label: 'Employee', width: 190, render: row => <><strong>{row.employeeName}</strong><div className="excel-payslip-muted">{row.employeeCode}</div></> },
       { key: 'source', label: 'Source', width: 210, value: row => `${sourceValue(row, 'source workbook') || ''} · Row ${sourceValue(row, 'source excel row') || row.sourceRow}`, wrap: true },
       { key: 'warnings', label: 'Issue', width: 320, value: row => row.warnings.join('; '), wrap: true },
       { key: 'difference', label: 'Net difference', width: 135, value: row => payslipReconciliation(row).difference, render: row => preciseAmount(payslipReconciliation(row).difference) }
-    ]} actionsWidth={210} actions={row => <Space wrap size={4}><Button size="small" onClick={() => onReview(row)} disabled={busy}>Details</Button>{canManage && <Button size="small" onClick={() => onCorrect(row)} disabled={busy}>Correct amounts</Button>}</Space>} />
+    ]} actionsWidth={240} actions={row => <Space wrap size={4}><Button size="small" onClick={() => onReview(row)} disabled={busy}>Details</Button>{canManage && <><Button size="small" onClick={() => onCorrect(row)} disabled={busy}>Correct amounts</Button>{onReviewNegative && row.warnings.includes(negativePayslipAmountWarning) && <Button size="small" onClick={() => onReviewNegative(row)} disabled={busy}>Mark negative amount reviewed</Button>}</>}</Space>} />
   </Drawer>
 }
 

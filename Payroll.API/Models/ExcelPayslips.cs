@@ -50,6 +50,8 @@ public sealed class ExcelPayslipAmount
 public sealed class ExcelPayslipRow
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ExcelPayslipNegativeAmountReview? NegativeAmountReview { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ExcelPayslipEmployment? Employment { get; set; }
     public string Id { get; set; } = "";
     public int SourceRow { get; set; }
@@ -65,6 +67,9 @@ public sealed class ExcelPayslipRow
     public decimal? DeclaredDeductions { get; set; }
     public List<string> Warnings { get; set; } = [];
 }
+
+public sealed record ExcelPayslipNegativeAmountReview(string AmountsHash, string ReviewedBy, DateTime ReviewedAtUtc);
+public sealed record ExcelPayslipNegativeAmountReviewRequest(string RowId);
 
 public sealed record ExcelPayslipEmployment(int? EmployeeId, string EmployeeCode, string Status, string? LastWorkingDate, bool BlockedForMonth, bool IdentityReviewRequired);
 

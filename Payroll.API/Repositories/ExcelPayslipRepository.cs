@@ -186,7 +186,12 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         if (error is not null) return (null, error);
         // Clone before normalizing warnings/metadata so callers cannot modify an accepted snapshot in memory.
         var batch = JsonSerializer.Deserialize<ExcelPayslipBatch>(JsonSerializer.Serialize(request, JsonOptions), JsonOptions)!;
-        foreach (var row in batch.Rows) row.Employment = null;
+        foreach (var row in batch.Rows)
+        {
+            row.Employment = null;
+            // A review belongs to one saved snapshot. Imports/corrections cannot supply or inherit it.
+            row.NegativeAmountReview = null;
+        }
         var calculationSource = batch.CalculationSource;
         batch.CalculationSource = null;
         if (calculationSource is not null)
@@ -387,7 +392,7 @@ WHERE o.client_id=@ClientId AND o.id IN @Ids AND a.is_deleted=FALSE FOR UPDATE",
         if (row.DeclaredGross.HasValue && Math.Abs(gross - row.DeclaredGross.Value) > .01m) warnings.Add("Mapped earnings do not match the source gross total. Source amounts are preserved.");
         if (row.DeclaredDeductions.HasValue && Math.Abs(deductions - row.DeclaredDeductions.Value) > .01m) warnings.Add("Mapped deductions do not match the source deduction total. Source amounts are preserved.");
         if (Math.Abs(gross - deductions - row.NetPay) > .01m) warnings.Add("Mapped earnings less deductions do not match source net pay. Source net pay is preserved.");
-        if (row.Earnings.Concat(row.Deductions).Concat(row.EmployerContributions).Any(a => a.Amount < 0) || row.NetPay < 0) warnings.Add("This source row contains a negative amount; review it before export or sending.");
+        if (HasNegativeAmounts(row) && !HasCurrentNegativeAmountReview(row)) warnings.Add(NegativeAmountWarning);
         return warnings;
     }
 

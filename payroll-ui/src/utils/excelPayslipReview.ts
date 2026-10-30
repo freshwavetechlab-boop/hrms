@@ -1,6 +1,8 @@
 import type { ExcelPayslipRow } from '../services/excelPayslipService'
 import { formatExcelPayslipAmount, isPayslipAmountKind, parsePayslipAmount, type PayslipColumn, type PayslipSheet } from './excelPayslipImport'
 
+export const negativePayslipAmountWarning = 'This source row contains a negative amount; review it before export or sending.'
+
 export function payslipReconciliation(row: ExcelPayslipRow) {
   const earnings = row.earnings.reduce((sum, item) => sum + item.amount, 0)
   const deductions = row.deductions.reduce((sum, item) => sum + item.amount, 0)
