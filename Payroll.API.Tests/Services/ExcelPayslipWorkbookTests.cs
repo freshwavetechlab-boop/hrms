@@ -20,6 +20,20 @@ public sealed class ExcelPayslipWorkbookTests
     };
     private static decimal Value(ExcelPayslipCalculationSource source)=>ExcelPayslipCalculationService.EvaluateCapturedCell(source,"C3").Value;
 
+    [Fact] public void CapturedWorkbookSupportsColumn1500InRootAndDependencySheets()
+    {
+        var s = Source("Attendance!BER2");
+        s.ColumnCount = 1500;
+        var dependency = s.DependencySheets[0]; dependency.ColumnCount = 1500;
+        while (dependency.Rows[0].Cells.Count < 1500) dependency.Rows[0].Cells.Add(null);
+        dependency.Rows[0].Cells[1499] = N("28");
+        Assert.Equal(28, Value(s));
+        dependency.ColumnCount = 1501;
+        Assert.Throws<InvalidOperationException>(() => Value(s));
+        dependency.ColumnCount = 1500; s.ColumnCount = 1501;
+        Assert.Throws<InvalidOperationException>(() => Value(s));
+    }
+
     [Fact] public void NhdcSameWorkbookLookupIferrorAndBonusUseCapturedInputsWithoutFlattening()
     {
         var s=Source("IFERROR(VLOOKUP(A3,Attendance!A:D,4,FALSE),0)");var before=JsonSerializer.Serialize(s);

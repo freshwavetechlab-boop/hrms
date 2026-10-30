@@ -119,6 +119,23 @@ public sealed partial class ExcelPayslipPdfService
     private sealed record Plan(double Size, IReadOnlyList<Cell> Information, double NameHeight, double[] InformationHeights,
         double[] MoneyHeights, double WordsHeight, double[] EmployerHeights, double TotalHeight);
 
+    internal static string InformationValue(ExcelPayslipText field, ExcelPayslipRow row, int amountDecimalPlaces)
+    {
+        var value = field.Value ?? "";
+        // Information also contains monthly salary inputs and non-cash bonus amounts.
+        // Format those for the PDF only; identifiers, attendance and unknown text stay literal.
+        string MoneyKey(string label) => FieldKey(System.Text.RegularExpressions.Regex.Replace(
+            System.Text.RegularExpressions.Regex.Replace(label.Trim(), @"\s*\([A-Za-z]{1,3}\)\s*$", ""),
+            @"@?\s*\d+(?:\.\d+)?\s*%", ""));
+        var key = MoneyKey(field.Label);
+        var monetary = key is "basic" or "basicpay" or "basicsalary" or "da" or "dearnessallowance"
+            or "hra" or "houserentallowance" or "bonus" or "uniformallowance" or "leaveallowance" or "leaveencashment"
+            or "rate" or "ratemonthly" or "monthlyrate" or "rateday" or "rateperday" or "dailyrate"
+            || key == "leave" && row.Earnings.Any(item => MoneyKey(item.Label) == "leave");
+        return monetary && decimal.TryParse(value, NumberStyles.Float | NumberStyles.AllowThousands,
+            CultureInfo.InvariantCulture, out var amount) ? Amount(amount, amountDecimalPlaces) : value;
+    }
+
     private static Plan MakePlan(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, int amountDecimalPlaces = 2)
     {
         var info = new List<Cell>();
@@ -128,7 +145,7 @@ public sealed partial class ExcelPayslipPdfService
         info.AddRange(row.Information.Where(x => !string.IsNullOrWhiteSpace(x.Label)
             && !x.Label.Equals("Employee Name", StringComparison.OrdinalIgnoreCase)
             && !(!string.IsNullOrWhiteSpace(row.EmployeeCode) && x.Label.Equals("Employee Code", StringComparison.OrdinalIgnoreCase)))
-            .Select(x => new Cell(x.Label, x.Value ?? "")));
+            .Select(x => new Cell(x.Label, InformationValue(x, row, amountDecimalPlaces))));
         for (var size = 9d; size >= 6.5; size -= .5)
         {
             var normal = Font(size); var bold = Font(size, true);

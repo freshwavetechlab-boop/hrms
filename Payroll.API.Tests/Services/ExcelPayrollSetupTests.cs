@@ -58,6 +58,18 @@ public class ExcelPayrollSetupTests
     private static ExcelPayslipCalculationSourceRow Source(params string[] values) => new() { SourceRow = 3, Cells = values.Select(v => (ExcelPayslipCalculationCell?)new ExcelPayslipCalculationCell { Value = v }).ToList() };
     private static ExcelPayslipRow Row(string id = "one", decimal net = 8800) => new() { Id = id, EmployeeCode = "SOURCE001", EmployeeName = "Example Employee", NetPay = net };
 
+    [Fact] public void PayrollSetupAcceptsSourceColumnsThrough1500AndRejects1501()
+    {
+        var r = Request();
+        r.PayrollDaysColumnIndex = 1499; r.PayableDaysColumnIndex = 1498;
+        r.PresentDaysColumnIndex = 1497; r.SourceWorkLocationColumnIndex = 1496;
+        r.Components[0].SourceColumnIndex = 1495; r.Components[0].ExpectedColumnIndex = 1494;
+        r.SourceColumnRoles = new() { [1499] = "info" };
+        ExcelPayrollSetupRepository.ValidateRequest(r);
+        r.Components[0].SourceColumnIndex = 1500;
+        Assert.Throws<InvalidOperationException>(() => ExcelPayrollSetupRepository.ValidateRequest(r));
+    }
+
     [Fact] public void MixedEmployeeDenominatorsUseTheSameNativeArithmetic()
     {
         var r = Request();

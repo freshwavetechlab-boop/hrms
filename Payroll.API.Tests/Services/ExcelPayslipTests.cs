@@ -198,8 +198,8 @@ public sealed class ExcelPayslipTests
         Assert.Null(ExcelPayslipRepository.ValidateProfile(valid.RootElement));
         using var absent = JsonDocument.Parse("{\"columns\":[]}");
         Assert.NotNull(ExcelPayslipRepository.ValidateProfile(absent.RootElement));
-        using var huge = JsonDocument.Parse(JsonSerializer.Serialize(new { headerSignature = signature, columns = new[] { new string('x', 65536) } }));
-        Assert.Contains("64 KiB", ExcelPayslipRepository.ValidateProfile(huge.RootElement));
+        using var huge = JsonDocument.Parse(JsonSerializer.Serialize(new { headerSignature = signature, columns = new[] { new string('x', 192 * 1024) } }));
+        Assert.Contains("192 KiB", ExcelPayslipRepository.ValidateProfile(huge.RootElement));
         using var invalidTemplate = JsonDocument.Parse(JsonSerializer.Serialize(new { headerSignature = signature, columns = Array.Empty<string>(), salaryTemplateId = new { id = "1" } }));
         Assert.NotNull(ExcelPayslipRepository.ValidateProfile(invalidTemplate.RootElement));
     }
@@ -251,7 +251,7 @@ public sealed class ExcelPayslipTests
     [InlineData("{}")]
     [InlineData("[{\"columnIndex\":\"1\",\"sourceHeader\":\"Wages\",\"label\":\"Wages\",\"kind\":\"earning\"}]")]
     [InlineData("[{\"columnIndex\":-1,\"sourceHeader\":\"Wages\",\"label\":\"Wages\",\"kind\":\"earning\"}]")]
-    [InlineData("[{\"columnIndex\":512,\"sourceHeader\":\"Wages\",\"label\":\"Wages\",\"kind\":\"earning\"}]")]
+    [InlineData("[{\"columnIndex\":1500,\"sourceHeader\":\"Wages\",\"label\":\"Wages\",\"kind\":\"earning\"}]")]
     [InlineData("[{\"columnIndex\":1,\"sourceHeader\":\"Wages\",\"label\":\"Wages\",\"kind\":\"formula\"}]")]
     [InlineData("[{\"columnIndex\":1,\"sourceHeader\":\"Wages\",\"label\":\"Wages\",\"kind\":\"earning\",\"formula\":\"BASIC*12%\"}]")]
     [InlineData("[{\"columnIndex\":1,\"sourceHeader\":\"A\",\"label\":\"A\",\"kind\":\"info\"},{\"columnIndex\":1,\"sourceHeader\":\"B\",\"label\":\"B\",\"kind\":\"info\"}]")]
@@ -259,6 +259,24 @@ public sealed class ExcelPayslipTests
     {
         using var profile = JsonDocument.Parse("{\"headerSignature\":\"" + new string('a', 64) + "\",\"columns\":" + columnsJson + "}");
         Assert.NotNull(ExcelPayslipRepository.ValidateProfile(profile.RootElement));
+    }
+
+    [Theory]
+    [InlineData(512)]
+    [InlineData(1499)]
+    public void MappingProfilesAcceptColumnsBeyondThePreviousLimit(int index)
+    {
+        using var profile = JsonDocument.Parse(JsonSerializer.Serialize(new { headerSignature = new string('a', 64),
+            columns = new[] { new { columnIndex = index, sourceHeader = "Wages", label = "Wages", kind = "earning" } } }));
+        Assert.Null(ExcelPayslipRepository.ValidateProfile(profile.RootElement));
+    }
+
+    [Fact]
+    public void Full1500ColumnMappingFitsTheProfileSizeLimit()
+    {
+        using var profile = JsonDocument.Parse(JsonSerializer.Serialize(new { headerSignature = new string('a', 64),
+            columns = Enumerable.Range(0, 1500).Select(index => new { columnIndex = index, sourceHeader = "Salary component", label = "Salary component", kind = "ignore" }) }));
+        Assert.Null(ExcelPayslipRepository.ValidateProfile(profile.RootElement));
     }
 
     [Theory]

@@ -9,6 +9,17 @@ const { buildExcelPayslipRows, isVerifiedPayslipLocationSplit } = await import(i
 const { consolidatePayslipWorkbooks, suggestPayslipWorksheet, reviewPayslipTableBoundary } = await import(dataUrl(compile('excelPayslipConsolidation').replace("'./excelPayslipImport'", JSON.stringify(importsUrl))))
 const headers = ['Employee Name', 'Attendance', 'Rate', 'Basic', 'PF', 'Net Pay', 'UAN']
 const kinds = ['employeeName', 'info', 'ignore', 'earning', 'deduction', 'netPay', 'info']
+
+test('transport salary table headers are selected after a merged title instead of sending the title to AI', () => {
+  const sheet = { name: 'billing', columnCount: 5, rows: [
+    { sourceRow: 1, cells: [{ value: 'TMT SALARY SHEET SEP' }] },
+    { sourceRow: 2, cells: ['ID NO', 'CONDUCTOR NAME', 'Basic', 'EPF 12%', 'net paid'].map(value => ({ value })) },
+    { sourceRow: 3, cells: ['888', 'Example Employee', '10000', '1200', '8800'].map(value => ({ value })) },
+  ] }
+  const selected = suggestPayslipWorksheet([sheet])
+  assert.equal(selected.sheet, sheet)
+  assert.equal(selected.headerRow, 2)
+})
 function part(fileName, name, headerRow = 1) {
   return { fileName, headerRow, columns: headers.map((sourceHeader, columnIndex) => ({ columnIndex, sourceHeader, label: sourceHeader, kind: kinds[columnIndex] })), sheet: { name: 'Salary', columnCount: headers.length, rows: [
     { sourceRow: headerRow, cells: headers.map(value => ({ value })) },

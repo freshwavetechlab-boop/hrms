@@ -18,11 +18,11 @@ public sealed partial class ExcelPayrollSetupRepository
         if (string.IsNullOrWhiteSpace(request.TemplateName) || request.TemplateName.Length > 160 || request.WorkWeek is null || request.WorkWeek.Length > 80
             || !DateTime.TryParseExact(request.EffectiveFrom, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
             throw new InvalidOperationException("Enter a template name, work week and explicit effective date (YYYY-MM-DD).");
-        if ((request.FixedPayrollDays is null ? request.PayrollDaysColumnIndex is < 0 or > 511 : request.FixedPayrollDays is < 1 or > 31 || request.PayrollDaysColumnIndex != -1)
-            || request.PayableDaysColumnIndex is < 0 or > 511 || request.PresentDaysColumnIndex is < 0 or > 511
-            || request.SourceWorkLocationColumnIndex is < 0 or > 511 || request.DefaultWorkLocationName is null || request.DefaultWorkLocationName.Length > 180)
+        if ((request.FixedPayrollDays is null ? request.PayrollDaysColumnIndex is < 0 or > 1499 : request.FixedPayrollDays is < 1 or > 31 || request.PayrollDaysColumnIndex != -1)
+            || request.PayableDaysColumnIndex is < 0 or > 1499 || request.PresentDaysColumnIndex is < 0 or > 1499
+            || request.SourceWorkLocationColumnIndex is < 0 or > 1499 || request.DefaultWorkLocationName is null || request.DefaultWorkLocationName.Length > 180)
             throw new InvalidOperationException("Choose valid source day/location columns.");
-        if (request.SourceColumnRoles is null || request.SourceColumnRoles.Count > 512 || request.SourceColumnRoles.Any(p => p.Key is < 0 or > 511
+        if (request.SourceColumnRoles is null || request.SourceColumnRoles.Count > 1500 || request.SourceColumnRoles.Any(p => p.Key is < 0 or > 1499
             || p.Value is not ("earning" or "deduction" or "employer" or "info" or "ignore" or "netPay" or "grossTotal" or "deductionTotal" or "employeeName" or "employeeCode" or "email")))
             throw new InvalidOperationException("Review payroll source column classifications.");
         if (new[] { request.DefaultDepartment, request.DefaultDesignation, request.DefaultGrade, request.DefaultWorkLocationState }.Any(v => v is null || v.Length > 100)
@@ -43,7 +43,7 @@ public sealed partial class ExcelPayrollSetupRepository
                 || string.IsNullOrWhiteSpace(c.Name) || c.Name.Length > 160 || c.Category is not ("Earning" or "Deduction" or "Benefit" or "Reimbursement")
                 || c.CalculationType is not ("Fixed Amount" or "Formula" or "Manual / Variable" or "Daily Rate" or "Residual / Balancing" or "Slab Based")
                 || new[] { c.Value, c.Formula, c.BaseComponent, c.ComponentRole, c.StatutoryType }.Any(v => v is null || v.Length > 1000)
-                || c.SourceColumnIndex is < 0 or > 511 || c.ExpectedColumnIndex is < 0 or > 511)
+                || c.SourceColumnIndex is < 0 or > 1499 || c.ExpectedColumnIndex is < 0 or > 1499)
                 throw new InvalidOperationException("Use valid component names, codes, classifications, formulas and source columns.");
             if (ResolvedPayType(c) is not ("Fixed Pay" or "Variable Pay") || c.IsPeriodAdjustment && ResolvedPayType(c) != "Variable Pay")
                 throw new InvalidOperationException($"{c.Code}: choose Fixed Pay or Variable Pay independently of source-month adjustments. A period adjustment requires Variable Pay.");
@@ -75,7 +75,7 @@ public sealed partial class ExcelPayrollSetupRepository
         ValidateTransferRequest(request);
         if (request.IdentityColumnReview is { } identityReview && (identityReview.Version != 1 || identityReview.Role != "UAN"
             || !identityReview.Reviewed || (identityReview.Reason?.Trim().Length ?? 0) is < 8 or > 1200
-            || identityReview.ColumnIndex is < 0 or > 511 || !Regex.IsMatch(identityReview.SourceHash ?? "", "^[a-fA-F0-9]{64}$")
+            || identityReview.ColumnIndex is < 0 or > 1499 || !Regex.IsMatch(identityReview.SourceHash ?? "", "^[a-fA-F0-9]{64}$")
             || !Regex.IsMatch(identityReview.SelectionFingerprint ?? "", "^[a-fA-F0-9]{64}$")
             || request.TransferReviewVersion != 1 || request.ImportAttendance || request.LocationAllocations is not null
             || request.EmployeeDecisions.Any(d=>d.AllowCreate)))

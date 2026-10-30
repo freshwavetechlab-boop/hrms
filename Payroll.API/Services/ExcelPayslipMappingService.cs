@@ -50,9 +50,9 @@ public sealed class ExcelPayslipMappingService(RecruitmentAiScoringService ai,
 
     internal static void ValidateRequest(ExcelPayslipMappingRequest request)
     {
-        if (request.Columns is null || request.Columns.Count is < 1 or > 512
+        if (request.Columns is null || request.Columns.Count is < 1 or > 1500
             || request.SalaryTemplateId is null || request.SalaryTemplateId.Length > 100)
-            throw new InvalidOperationException("Mapping requires 1 to 512 columns and a valid optional template.");
+            throw new InvalidOperationException("Mapping requires 1 to 1500 columns and a valid optional template.");
         if (!request.Columns.Select(c => c?.ColumnIndex).SequenceEqual(Enumerable.Range(0, request.Columns.Count).Select(i => (int?)i)))
             throw new InvalidOperationException("Mapping columns must have consecutive unique indexes starting at zero.");
         foreach (var c in request.Columns)
@@ -69,7 +69,7 @@ public sealed class ExcelPayslipMappingService(RecruitmentAiScoringService ai,
                     || d.Status == "supplied" && d.SheetIndex < 0
                     || d.Status != "supplied" && d.SheetIndex != -1
                     || d.ColumnIndexes is null || d.ColumnIndexes.Length is < 1 or > 128
-                    || d.ColumnIndexes.Any(i => i is < 0 or > 511)))
+                    || d.ColumnIndexes.Any(i => i is < 0 or > 1499)))
                 throw new InvalidOperationException("A mapping column contains invalid structural evidence.");
     }
 

@@ -150,11 +150,24 @@ public sealed class ExcelPayslipMappingTests
     [InlineData("missing", 1, "attendance", 3)]
     [InlineData("resolved-by-cache", -1, "attendance", 3)]
     [InlineData("missing", -1, "private@example.test", 3)]
-    [InlineData("missing", -1, "unknown", 512)]
+    [InlineData("missing", -1, "unknown", 1500)]
     public void DependencyMetadataCannotCarryUnboundedOrInventedResolution(string status, int sheet, string type, int column)
     {
         var request = Request();
         request.Columns[1].CrossSheetDependencies = [new() { SheetIndex = sheet, Status = status, SourceType = type, ColumnIndexes = [column] }];
+        Assert.Throws<InvalidOperationException>(() => ExcelPayslipMappingService.ValidateRequest(request));
+    }
+
+    [Fact]
+    public void MappingAccepts1500ColumnsAndFarDependenciesButRejects1501()
+    {
+        var request = Request();
+        for (var i = request.Columns.Count; i < 1500; i++)
+            request.Columns.Add(new() { ColumnIndex = i, SourceHeader = "Extra", Label = "Extra", Kind = "ignore" });
+        request.Columns[1].FormulaDependencies = [1499];
+        request.Columns[1].CrossSheetDependencies = [new() { SheetIndex = 0, Status = "supplied", SourceType = "attendance", ColumnIndexes = [1499] }];
+        ExcelPayslipMappingService.ValidateRequest(request);
+        request.Columns.Add(new() { ColumnIndex = 1500, SourceHeader = "Extra", Label = "Extra", Kind = "ignore" });
         Assert.Throws<InvalidOperationException>(() => ExcelPayslipMappingService.ValidateRequest(request));
     }
 

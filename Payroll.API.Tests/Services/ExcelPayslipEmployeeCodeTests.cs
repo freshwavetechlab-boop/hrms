@@ -244,7 +244,17 @@ public sealed class ExcelPayslipEmployeeCodeTests
     [Fact]
     public void FullWidthWorksheetRequiresAnExistingCodeColumn()
     {
-        var batch = Batch(""); var source = Source(batch); source.ColumnCount = 512;
-        Assert.Contains("512 columns", Assert.Throws<InvalidOperationException>(() => ExcelPayslipRepository.AssignEmployeeCodes(batch, source, "PLRS", [])).Message);
+        var batch = Batch(""); var source = Source(batch); source.ColumnCount = 1500;
+        Assert.Contains("1500 columns", Assert.Throws<InvalidOperationException>(() => ExcelPayslipRepository.AssignEmployeeCodes(batch, source, "PLRS", [])).Message);
+    }
+
+    [Fact]
+    public void EmployeeCodeCanBeAppendedAsColumn1500()
+    {
+        var batch = Batch(""); var source = Source(batch); source.ColumnCount = 1499;
+        ExcelPayslipRepository.AssignEmployeeCodes(batch, source, "PLRS", []);
+        Assert.Equal(1500, source.ColumnCount);
+        Assert.Equal(batch.Rows[0].EmployeeCode, source.Rows.Single(row => row.SourceRow == 3).Cells[1499]!.Value);
+        Assert.Null(ExcelPayslipCalculationService.ValidateSource(source, batch));
     }
 }

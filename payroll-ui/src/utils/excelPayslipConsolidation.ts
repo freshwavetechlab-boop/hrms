@@ -49,7 +49,7 @@ export function consolidatePayslipWorkbooks(parts: PayslipWorkbookPart[], client
   const trace = ['Source workbook', 'Source worksheet', 'Source Excel row', 'Payroll unit', ...(reviewSourceSplits ? ['Reviewed source split'] : [])].map(label => ({ columnIndex: rawWidth + fields.size, sourceHeader: label, label, kind: 'info' } as PayslipColumn))
   trace.forEach((c, i) => { c.columnIndex += i })
   const columns: PayslipColumn[] = [...Array.from({ length: rawWidth }, (_, columnIndex) => ({ columnIndex, sourceHeader: `Original ${excelColumnLetter(columnIndex)}`, label: `Original ${excelColumnLetter(columnIndex)}`, kind: 'ignore' as const })), ...fields.values(), ...trace]
-  if (columns.length > 512) throw new Error('Combined source exceeds 512 columns. Consolidate smaller groups.')
+  if (columns.length > 1500) throw new Error('Combined source exceeds 1500 columns. Consolidate smaller groups.')
   const rows: PayslipSheet['rows'] = [{ sourceRow: 1, cells: columns.map(c => ({ value: c.sourceHeader })) }], excluded: number[] = []
   let offset = 2, omittedOptionalErrors = 0
   const boundaryWarnings: string[] = []

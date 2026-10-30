@@ -37,9 +37,9 @@ export function buildPayslipMappingEvidence(sheet: PayslipSheet, headerRow: numb
       for (const match of expression.matchAll(refs)) {
         const target = (match.groups?.sheet || match.groups?.wholeSheet || '').replace(/^'|'$/g, '').replace(/''/g, "'")
         const first = index(match.groups?.first || match.groups!.wholeFirst), last = index(match.groups?.last || match.groups?.wholeLast || match.groups!.first)
-        if (last < first || first > 511) { dependencyEvidenceIncomplete = true; continue }
-        if (last > 511 || last - first + 1 > 128) dependencyEvidenceIncomplete = true
-        const referenced = Array.from({ length: Math.min(last - first + 1, 128, 512 - first) }, (_, i) => first + i)
+        if (last < first || first > 1499) { dependencyEvidenceIncomplete = true; continue }
+        if (last > 1499 || last - first + 1 > 128) dependencyEvidenceIncomplete = true
+        const referenced = Array.from({ length: Math.min(last - first + 1, 128, 1500 - first) }, (_, i) => first + i)
         if (!target || sameSheet(target, sheet.name)) {
           referenced.filter(i => i < columns.length).forEach(i => dependencies.add(i))
           continue

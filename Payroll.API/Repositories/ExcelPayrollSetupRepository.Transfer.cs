@@ -110,7 +110,7 @@ public sealed partial class ExcelPayrollSetupRepository
     {
         if (value.Length > 3) throw new InvalidOperationException("Source dependency exceeds supported worksheet columns.");
         var index = value.Aggregate(0, (v,c) => v * 26 + c - 'A' + 1) - 1;
-        if (index > 511) throw new InvalidOperationException("Source dependency exceeds supported worksheet columns.");
+        if (index > 1499) throw new InvalidOperationException("Source dependency exceeds supported worksheet columns.");
         return index;
     }
     private static string TransferLetter(int index) { var result = ""; for (var n = index + 1; n > 0; n = (n-1)/26) result = (char)('A'+(n-1)%26) + result; return result; }

@@ -52,7 +52,7 @@ public sealed partial class ExcelPayrollSetupRepository
             throw AppliedSourceConflict("Review one explicit existing employee and the same saved client/batch/period receipt.");
         if (batch.Rows is null || batch.Rows.Any(r => r is null) || source.Rows is null || source.Rows.Any(r => r is null)
             || source.Columns is null || source.Columns.Any(c => c is null || c.Label is null || c.SourceHeader is null || c.Kind is null)
-            || source.ColumnCount is < 1 or > 512 || source.Columns.Select(c => c.ColumnIndex).Distinct().Count() != source.Columns.Count
+            || source.ColumnCount is < 1 or > 1500 || source.Columns.Select(c => c.ColumnIndex).Distinct().Count() != source.Columns.Count
             || source.Columns.Any(c => c.ColumnIndex < 0 || c.ColumnIndex >= source.ColumnCount)
             || receipt.EmployeeIds is null || receipt.KeptRows is null || receipt.KeptRows.Any(r => r is null)
             || receipt.TransferRows is null || receipt.TransferRows.Any(r => r is null)

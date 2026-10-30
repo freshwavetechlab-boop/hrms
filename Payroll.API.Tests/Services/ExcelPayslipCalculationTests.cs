@@ -34,6 +34,38 @@ public sealed class ExcelPayslipCalculationTests
     private static ExcelPayslipCalculationCell Cell(string value, string? formula = null) => new() { Value = value, FormulaText = formula };
     private static ExcelPayslipCalculationColumn Column(int index, string label, string kind) => new() { ColumnIndex = index, Label = label, SourceHeader = label, Kind = kind };
 
+    [Fact]
+    public void BrowserRoundTripOfExcelCacheAtBinaryMidpointMatchesWithoutChangingSourceAmounts()
+    {
+        var (source, batch, _) = Example();
+        source.Rows[1].Cells[3]!.Value = "801.94153846153847";
+        batch.Rows[0].Earnings[0].Amount = 801.9415384615385m;
+        var before = JsonSerializer.Serialize(new { source, batch });
+        Assert.Null(ExcelPayslipCalculationService.ValidateSource(source, batch));
+        Assert.Equal(before, JsonSerializer.Serialize(new { source, batch }));
+        batch.Rows[0].Earnings[0].Amount += .000001m;
+        Assert.Contains("does not match", ExcelPayslipCalculationService.ValidateSource(source, batch));
+    }
+
+    [Fact]
+    public void Full1500ColumnSourceRecalculatesFarReferencesAndRejectsAnExtraColumn()
+    {
+        var (source, batch, request) = Example();
+        source.ColumnCount = 1500;
+        for (var i = source.Columns.Count; i < 1500; i++) source.Columns.Add(Column(i, "Extra", "ignore"));
+        while (source.Rows[1].Cells.Count < 1500) source.Rows[1].Cells.Add(null);
+        source.Rows[1].Cells[1499] = Cell("18000");
+        source.Rows[1].Cells[3]!.FormulaText = "BER3/$A$1*C3";
+        Assert.Null(ExcelPayslipCalculationService.ValidateSource(source, batch));
+        var result = ExcelPayslipCalculationService.Calculate(source, batch, request);
+        Assert.Equal(9000, result.Rows[0].Earnings[0].Amount);
+        Assert.Null(ExcelPayslipCalculationService.ValidateSource(result.CalculationSource!, result));
+        request.Overrides["BES3"] = 1;
+        Assert.Contains("supported worksheet range", Assert.Throws<InvalidOperationException>(() => ExcelPayslipCalculationService.Calculate(source, batch, request)).Message);
+        source.ColumnCount = 1501;
+        Assert.NotNull(ExcelPayslipCalculationService.ValidateSource(source, batch));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

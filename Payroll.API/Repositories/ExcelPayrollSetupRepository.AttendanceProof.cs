@@ -13,7 +13,7 @@ public sealed partial class ExcelPayrollSetupRepository
         if(review.BoundSourceInputs is null||review.BoundSourceInputs.Length>128||review.Mode is not("SourceSeed" or "VerifyExistingNative")||review.SourceHash is null||review.SourceHash.Length>64
             ||review.SourceMonth is null||review.SourceMonth.Length>7||review.CycleStart is null||review.CycleStart.Length>10||review.CycleEnd is null||review.CycleEnd.Length>10
             ||review.PayableMeaning is not("" or "AlreadyPayable" or "WorkedOnly")||review.PresentMeaning is not("" or "ActualWorked" or "NotMapped")
-            ||review.LwpColumnIndex is <0 or >511||review.LwpBasis is not("" or "PayrollDivisorMinusPayable"))throw new InvalidOperationException("Review bounded attendance column meanings, source period, cycle and proof mode.");
+            ||review.LwpColumnIndex is <0 or >1499||review.LwpBasis is not("" or "PayrollDivisorMinusPayable"))throw new InvalidOperationException("Review bounded attendance column meanings, source period, cycle and proof mode.");
     }
     internal static ExcelPayrollAttendanceProof ProveAttendanceInput(Plan plan,PlannedRow row,ExcelPayrollSetupRequest request,int clientId,string sourceHash,bool reviewedLocationAllocation=false) {
         var sourceRow=plan.Batch.Rows.Single(r=>r.Id==row.RowId);var review=request.AttendanceReview;

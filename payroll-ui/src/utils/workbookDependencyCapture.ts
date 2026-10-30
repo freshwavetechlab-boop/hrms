@@ -8,7 +8,7 @@ export type WorkbookCaptureFields = {captureVersion:number;workbookKey:string;co
 export type DependencyReference = {fromWorkbookKey:string;sheet:string;cell:string;reference:string;kind:'Cross-sheet'|'External';targetWorkbookKey?:string;targetSheet:string}
 const lower=(s:string)=>s.toLocaleLowerCase('en-US')
 const index=(letters:string)=>[...letters.replace(/\$/g,'').toUpperCase()].reduce((v,c)=>v*26+c.charCodeAt(0)-64,0)-1
-const pos=(address:string)=>{const m=/^\$?([A-Z]{1,3})\$?([1-9]\d{0,5})$/i.exec(address);if(!m)throw Error('Unsupported dependency address; review the worksheet range.');const column=index(m[1]),row=Number(m[2]);if(column>511||row>100000)throw Error('Dependency exceeds 512 columns / 100,000 rows.');return {column,row}}
+const pos=(address:string)=>{const m=/^\$?([A-Z]{1,3})\$?([1-9]\d{0,5})$/i.exec(address);if(!m)throw Error('Unsupported dependency address; review the worksheet range.');const column=index(m[1]),row=Number(m[2]);if(column>1499||row>100000)throw Error('Dependency exceeds 1500 columns / 100,000 rows.');return {column,row}}
 const id=(book:string,sheet:string)=>`${book}|${lower(sheet)}`
 export async function captureWorkbook(file:File):Promise<CapturedWorkbook> {
   if(file.size>32*1024*1024)throw Error('Workbook exceeds the 32 MiB capture limit; use a bounded source file.')

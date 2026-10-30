@@ -151,11 +151,29 @@ test('editable sheet handles sparse/null cells and rejects unusable saved source
   const { source, batch } = fixture()
   source.rows[0].cells[2] = null; delete source.rows[0].cells[3]
   const sheet = buildEditablePayslipSheet(batch, source)
-  assert.deepEqual(sheet.rows[0].cells[2], { value: '' }); assert.deepEqual(sheet.rows[0].cells[3], { value: '' })
+  assert.deepEqual(sheet.rows[0].cells[2], { value: '', dataType: 'Blank' }); assert.deepEqual(sheet.rows[0].cells[3], { value: '', dataType: 'Blank' })
   assert.throws(() => buildEditablePayslipSheet(batch, { ...source, rows: [] }), /no saved worksheet/)
   assert.throws(() => buildEditablePayslipSheet(batch, { ...source, headerRow: 2 }), /header is missing/)
   assert.throws(() => buildEditablePayslipSheet(batch, { ...source, columns: [...source.columns, { columnIndex: 9, sourceHeader: 'Other code', label: 'Other code', kind: 'employeeCode' }] }), /ambiguous/)
-  assert.throws(() => buildEditablePayslipSheet(batch, { ...source, columnCount: 512, columns: source.columns.filter(column => column.kind !== 'employeeCode') }), /512-column limit/)
+  const withoutCode = { ...source, columnCount: 1499, columns: source.columns.filter(column => column.kind !== 'employeeCode') }
+  const full = buildEditablePayslipSheet(batch, withoutCode)
+  assert.equal(full.columnCount, 1500)
+  assert.equal(full.rows.find(row => row.sourceRow === 5).cells[1499].value, 'PLRS001')
+  assert.throws(() => buildEditablePayslipSheet(batch, { ...withoutCode, columnCount: 1500 }), /1500-column limit/)
+})
+
+test('1500-column exported templates restore their mappings and retain the final column', () => {
+  const { source, batch } = fixture()
+  source.columnCount = 1500
+  for (let i = source.columns.length; i < 1500; i++) source.columns.push({ columnIndex: i, sourceHeader: `Extra ${i}`, label: `Extra ${i}`, kind: 'ignore' })
+  source.rows.find(row => row.sourceRow === source.headerRow).cells = source.columns.map(column => ({ value: column.sourceHeader }))
+  const sheet = buildEditablePayslipSheet(batch, source)
+  const headers = sheet.rows.find(row => row.sourceRow === sheet.template.headerRow).cells.map(cell => cell.value)
+  const metadata = { ...sheet.template, sheetName: sheet.name, headers }
+  const [restored] = restorePayslipTemplateMetadata([{ ...sheet, template: undefined }, metadataSheet(metadata)])
+  assert.equal(restored.template.columns.length, 1500)
+  assert.equal(restored.template.columns[1499].sourceHeader, 'Extra 1499')
+  assert.deepEqual(restored.template.warnings, [])
 })
 
 test('export keeps salary cell references, formula caches, precise amounts and persistent employee codes', async () => {

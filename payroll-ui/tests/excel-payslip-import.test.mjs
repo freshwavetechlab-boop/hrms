@@ -8,6 +8,18 @@ const compiled = ts.transpileModule(readFileSync(new URL('../src/utils/excelPays
 const { parsePayslipCsv, defaultPayslipMapping, buildExcelPayslipRows, buildPayslipCalculationSource, translatePayslipSharedFormula, resolvePayslipSharedFormulas, payslipHeaders, payslipHeaderSignature, parsePayslipAmount, inferPayslipMonth, formatExcelPayslipAmount, payslipPhoneValue } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
 const parse = text => { const sheet = parsePayslipCsv(text); const columns = defaultPayslipMapping(payslipHeaders(sheet, 1)); return { sheet, columns, result: buildExcelPayslipRows(sheet, 1, columns) } }
 
+test('transport salary headings identify employees and net paid without treating a bare ID number as an employee code', () => {
+  for (const name of ['CONDUCTOR NAME', 'Driver Name']) {
+    const { columns, result } = parse(`ID NO,${name},Basic,EPF 12%,net paid\n888,Example Employee,10000,1200,8800`)
+    assert.equal(columns[0].kind, 'ignore')
+    assert.equal(columns[1].kind, 'employeeName')
+    assert.equal(columns[4].kind, 'netPay')
+    assert.deepEqual(result.issues, [])
+    assert.equal(result.rows[0].netPay, 8800)
+    assert.equal(result.rows[0].employeeCode, '')
+  }
+})
+
 test('formula-based monthly inputs do not duplicate earned salary; common tax and allowance spellings stay categorized', () => {
   const headers = ['Emp Name', 'CTC 01.07.2026', 'Increment @5%', 'BASIC', 'BASIC', 'Madical Allowance', 'Spacial Allowancce', 'Employee EPFO@12%', 'Income Tax', 'TDS', 'PF Admn. 0.50%', 'EDLI 0.5%', 'Field allowance (10%)Except Head Quarter', 'Communication Charges', 'Honorarium', 'TND', 'TNDW', 'NET Salary']
   const cells = headers.map(() => ({ value: '0' }))
@@ -369,7 +381,7 @@ test('calculation source preserves unmapped errors, excluded rows and header con
   assert.equal(source.rows[0].cells[1].value, '30')
   assert.deepEqual(source.rows[2].cells[1], { value: '100', formulaText: 'B1*10/3' })
   assert.deepEqual(source.rows[2].cells[3], { value: '#REF!', formulaText: '#REF!+1', error: '#REF!' })
-  assert.deepEqual(source.rows[2].cells[4], { value: '' }, 'sparse cells become explicit blanks')
+  assert.deepEqual(source.rows[2].cells[4], { value: '', dataType: 'Blank' }, 'sparse cells become explicit blanks')
   assert.equal(source.rows[2].cells[5].value, '000123')
   source.rows[0].cells[1].value = '31'; source.columns[0].label = 'Changed'; source.excludedSourceRows.push(3)
   assert.equal(sheet.rows[0].cells[1].value, '30')
@@ -398,11 +410,53 @@ test('XLSX imports preserve cached values with default or prefixed XML namespace
       assert.equal(sheet.rows[1].cells[0].value, 'Example Person')
       assert.equal(sheet.rows[1].cells[1].value, '000017', 'zero-format identifier remains intact')
       assert.equal(sheet.rows[1].cells[2].value, '123.456')
-      assert.deepEqual(sheet.rows[1].cells[3], { value: '90.25', formula: true, formulaText: 'C2-33.206' })
+      assert.deepEqual(sheet.rows[1].cells[3], { value: '90.25', dataType: 'Number', formula: true, formulaText: 'C2-33.206' })
       assert.equal(sheet.rows[1].cells[4].value, 'Two parts')
       assert.equal(sheet.rows[1].cells[5].error, '#REF!')
       const imported = buildExcelPayslipRows(sheet, 1, defaultPayslipMapping(payslipHeaders(sheet, 1)))
       assert.deepEqual(imported.issues, []); assert.equal(imported.rows[0].netPay, 90.25)
+    })
+    await t.test('column 1500 imports intact and column 1501 is rejected', async () => {
+      const files = namespaceFixture(false)
+      const original = files['xl/worksheets/sheet1.xml']
+      files['xl/worksheets/sheet1.xml'] = original.replace('r="F2"', 'r="BER2"')
+      const [sheet] = await parseFixture(files)
+      assert.equal(sheet.columnCount, 1500)
+      assert.equal(sheet.rows[1].cells[1499].error, '#REF!')
+      files['xl/worksheets/sheet1.xml'] = original.replace('r="F2"', 'r="BES2"')
+      await assert.rejects(() => parseFixture(files), /supported column range \(1500\)/)
+    })
+    for (const prefixed of [false, true]) await t.test(`overflow formatting is ignored without changing table cells (${prefixed ? 'prefixed' : 'default'} XML)`, async () => {
+      const files = namespaceFixture(prefixed), prefix = prefixed ? 'x:' : ''
+      const [original] = await parseFixture(files)
+      files['xl/worksheets/sheet1.xml'] = files['xl/worksheets/sheet1.xml'].replace(`</${prefix}row>`,
+        `<${prefix}c r="BER1" s="1"/><${prefix}c r="BES1" s="1"/><${prefix}c r="XCO1" s="1" t="n"/></${prefix}row>`)
+      const [sheet] = await parseFixture(files)
+      assert.deepEqual(sheet, original, 'all values, positions, types, formulas, errors and caches inside the table are unchanged')
+    })
+    await t.test('supported trailing blanks and formula inputs keep their existing captured shape', async () => {
+      const files = namespaceFixture(false)
+      files['xl/worksheets/sheet1.xml'] = files['xl/worksheets/sheet1.xml'].replace('</row>', '<c r="BER1" s="1"/></row>')
+      const [sheet] = await parseFixture(files)
+      assert.equal(sheet.columnCount, 1500)
+      assert.deepEqual(sheet.rows[0].cells[1499], { value: '', dataType: 'Blank' })
+    })
+    await t.test('overflow cells containing zero, text, errors, booleans or any formula remain rejected', async () => {
+      for (const cell of [
+        '<c r="BES2"><v>0</v></c>', '<c r="BES2" t="b"><v>0</v></c>',
+        '<c r="BES2" t="s"><v>0</v></c>', '<c r="BES2" t="inlineStr"><is><t> </t></is></c>',
+        '<c r="BES2" t="e"><v>#REF!</v></c>', '<c r="BES2" t="e"/>',
+        '<c r="BES2"><f>A1</f></c>', '<c r="BES2"><f t="shared" si="1"/><v>0</v></c>',
+      ]) {
+        const files = namespaceFixture(false)
+        files['xl/worksheets/sheet1.xml'] = files['xl/worksheets/sheet1.xml'].replace('</sheetData>', `<row r="3">${cell}</row></sheetData>`)
+        await assert.rejects(() => parseFixture(files), /supported column range \(1500\)/)
+      }
+    })
+    await t.test('skipping overflow formatting never shifts a following cell without an address into range', async () => {
+      const files = namespaceFixture(false)
+      files['xl/worksheets/sheet1.xml'] = files['xl/worksheets/sheet1.xml'].replace('</row>', '<c r="XCO1" s="1"/><c><v>1</v></c></row>')
+      await assert.rejects(() => parseFixture(files), /supported column range \(1500\)/)
     })
     await t.test('external worksheet relationships remain blocked when package XML is prefixed', async () => {
       const files = namespaceFixture(true)

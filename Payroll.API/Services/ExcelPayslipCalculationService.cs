@@ -24,12 +24,12 @@ public static partial class ExcelPayslipCalculationService
             || (!string.IsNullOrEmpty(source.SourceBatchId) && !Guid.TryParseExact(source.SourceBatchId, "N", out _)))
             return "Calculation source lineage or excluded rows are invalid.";
         if (source.SheetName != batch.SheetName || source.HeaderRow != batch.HeaderRow || source.HeaderRow is < 1 or > 100000
-            || source.ColumnCount is < 1 or > 512 || source.DateSystem is not ("1900" or "1904"))
+            || source.ColumnCount is < 1 or > 1500 || source.DateSystem is not ("1900" or "1904"))
             return "The calculation worksheet or header does not match this batch.";
         if (source.Rows.Count is < 1 or > 100000 || source.Rows.Any(r => r is null || r.Cells is null || r.SourceRow is < 1 or > 100000 || r.Cells.Count > source.ColumnCount)
             || source.Rows.Select(r => r.SourceRow).Distinct().Count() != source.Rows.Count || source.Rows.Sum(r => (long)r.Cells.Count) > 150000)
             return "Calculation source exceeds its row/cell limits or contains duplicate rows.";
-        if (source.Columns.Count is < 1 or > 512 || source.Columns.Any(c => c is null || c.ColumnIndex < 0 || c.ColumnIndex >= source.ColumnCount || !Kinds.Contains(c.Kind)
+        if (source.Columns.Count is < 1 or > 1500 || source.Columns.Any(c => c is null || c.ColumnIndex < 0 || c.ColumnIndex >= source.ColumnCount || !Kinds.Contains(c.Kind)
                 || string.IsNullOrWhiteSpace(c.Label) || c.Label.Length > 80 || c.SourceHeader is null || c.SourceHeader.Length > 512 || c.BlankAsZero && !AmountKinds.Contains(c.Kind))
             || source.Columns.Select(c => c.ColumnIndex).Distinct().Count() != source.Columns.Count)
             return "Calculation column mapping is invalid.";
@@ -76,11 +76,12 @@ public static partial class ExcelPayslipCalculationService
         return null;
     }
 
-    // Excel caches and browser JSON can differ in their final IEEE digits. Compare
-    // at Excel's 15 significant digits, retaining sub-paise precision rather than
-    // applying a monetary tolerance or rounding the stored source/amounts.
+    // Excel caches and browser JSON can differ in their final IEEE digits. Parse
+    // decimal text to double directly: decimal-to-double casts can round twice
+    // at a binary midpoint. Keep the 15-digit fallback and preserve stored values.
     private static bool SameNumber(decimal? saved, decimal amount) => saved.HasValue && (saved.Value == amount
-        || (double)saved.Value == (double)amount
+        || double.Parse(saved.Value.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
+            == double.Parse(amount.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
         || saved.Value.ToString("G15", CultureInfo.InvariantCulture) == amount.ToString("G15", CultureInfo.InvariantCulture));
     private static bool MatchesAmount(ExcelPayslipRow row, ExcelPayslipCalculationColumn column, decimal amount, int position) => column.Kind switch
     {
@@ -216,7 +217,7 @@ public static partial class ExcelPayslipCalculationService
         if (!match.Success) throw new InvalidOperationException($"Unsupported cell reference: {address}.");
         var column = match.Groups[1].Value.ToUpperInvariant().Aggregate(0, (n, c) => n * 26 + c - 'A' + 1) - 1;
         var row = int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
-        if (column >= 512 || row > 100000) throw new InvalidOperationException("Cell reference exceeds the supported worksheet range.");
+        if (column >= 1500 || row > 100000) throw new InvalidOperationException("Cell reference exceeds the supported worksheet range.");
         return (column, row);
     }
     private static string NormalizeAddress(string address) { var (column, row) = ParseAddress(address); return Address(column, row); }

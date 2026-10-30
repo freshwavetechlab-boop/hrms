@@ -18,7 +18,7 @@ public sealed partial class ExcelPayslipRepository(IConfiguration configuration,
     internal const string BatchPrefix = "excel_payslip:";
     private const string ProfileCode = "excel_payslip_profile";
     private const int MaximumBatchBytes = 8 * 1024 * 1024;
-    private const int MaximumProfileBytes = 64 * 1024;
+    private const int MaximumProfileBytes = 192 * 1024;
     private const decimal MaximumAmount = 10000000000m;
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
 
@@ -331,14 +331,14 @@ WHERE o.client_id=@ClientId AND o.id IN @Ids AND a.is_deleted=FALSE FOR UPDATE",
         if (profile.ValueKind != JsonValueKind.Object || !profile.TryGetProperty("headerSignature", out var signature) || signature.ValueKind != JsonValueKind.String || !ValidSignature(signature.GetString())
             || !profile.TryGetProperty("columns", out var columns) || columns.ValueKind != JsonValueKind.Array)
             return "A mapping profile needs a headerSignature string and columns array.";
-        if (Encoding.UTF8.GetByteCount(profile.GetRawText()) > MaximumProfileBytes) return "Mapping profiles cannot exceed 64 KiB.";
+        if (Encoding.UTF8.GetByteCount(profile.GetRawText()) > MaximumProfileBytes) return "Mapping profiles cannot exceed 192 KiB.";
         if (profile.EnumerateObject().Any(p => p.Name is not ("headerSignature" or "columns" or "salaryTemplateId"))) return "The mapping profile contains unsupported fields.";
         if (profile.TryGetProperty("salaryTemplateId", out var template) && (template.ValueKind != JsonValueKind.String || (template.GetString()?.Length ?? 0) > 100)) return "The optional salary template ID must be a string of up to 100 characters.";
-        if (columns.GetArrayLength() > 512) return "Mapping profiles support up to 512 columns.";
+        if (columns.GetArrayLength() > 1500) return "Mapping profiles support up to 1500 columns.";
         var seen = new HashSet<int>();
         foreach (var column in columns.EnumerateArray())
         {
-            if (column.ValueKind != JsonValueKind.Object || !column.TryGetProperty("columnIndex", out var index) || index.ValueKind != JsonValueKind.Number || !index.TryGetInt32(out var number) || number is < 0 or > 511 || !seen.Add(number)) return "Each mapping column needs a distinct integer columnIndex between 0 and 511.";
+            if (column.ValueKind != JsonValueKind.Object || !column.TryGetProperty("columnIndex", out var index) || index.ValueKind != JsonValueKind.Number || !index.TryGetInt32(out var number) || number is < 0 or > 1499 || !seen.Add(number)) return "Each mapping column needs a distinct integer columnIndex between 0 and 1499.";
             if (!column.TryGetProperty("kind", out var kind) || kind.ValueKind != JsonValueKind.String || kind.GetString() is not ("employeeName" or "employeeCode" or "email" or "info" or "earning" or "deduction" or "employer" or "netPay" or "grossTotal" or "deductionTotal" or "ignore")) return "A mapping column has an unsupported kind.";
             if (!column.TryGetProperty("sourceHeader", out var header) || header.ValueKind != JsonValueKind.String || !TextValid(header.GetString(), 512)
                 || !column.TryGetProperty("label", out var label) || label.ValueKind != JsonValueKind.String || !TextValid(label.GetString(), 80, kind.GetString() != "ignore")) return "Mapping columns need a sourceHeader (up to 512 characters) and label (up to 80 characters).";

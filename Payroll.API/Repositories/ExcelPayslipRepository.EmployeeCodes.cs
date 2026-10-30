@@ -65,8 +65,8 @@ public sealed partial class ExcelPayslipRepository
         var appended = column is null;
         if (column is null)
         {
-            if (source.ColumnCount >= 512)
-                throw new InvalidOperationException("The worksheet already has 512 columns. Map an Employee Code column before saving.");
+            if (source.ColumnCount >= 1500)
+                throw new InvalidOperationException("The worksheet already has 1500 columns. Map an Employee Code column before saving.");
             column = new() { ColumnIndex = source.ColumnCount++, Kind = "employeeCode", Label = "Employee Code", SourceHeader = "Employee Code" };
             source.Columns.Add(column);
             var header = source.Rows.SingleOrDefault(row => row.SourceRow == source.HeaderRow);

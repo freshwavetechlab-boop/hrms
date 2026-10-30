@@ -5,6 +5,17 @@ import ts from 'typescript'
 const compiled = ts.transpileModule(readFileSync(new URL('../src/utils/excelPayslipMapping.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
 const { buildPayslipMappingEvidence } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
 
+test('mapping evidence retains column 1500 dependencies and flags column 1501', () => {
+  const columns = Array.from({ length: 1500 }, (_, columnIndex) => ({ columnIndex, sourceHeader: 'Basic', label: 'Basic', kind: columnIndex === 0 ? 'earning' : 'ignore' }))
+  const sheet = { name: 'Salary', columnCount: 1500, rows: [{ sourceRow: 2, cells: [{ value: '100', formulaText: 'BER2+Attendance!BER2' }] }] }
+  const [evidence] = buildPayslipMappingEvidence(sheet, 1, columns, '', [], [sheet, { name: 'Attendance', rows: [], columnCount: 1500 }]).columns
+  assert.deepEqual(evidence.formulaDependencies, [1499])
+  assert.deepEqual(evidence.crossSheetDependencies[0].columnIndexes, [1499])
+  assert.equal(evidence.dependencyEvidenceIncomplete, false)
+  sheet.rows[0].cells[0].formulaText = 'BES2'
+  assert.equal(buildPayslipMappingEvidence(sheet, 1, columns).columns[0].dependencyEvidenceIncomplete, true)
+})
+
 test('AI evidence retains local dependency ranges and functions without any row data or raw expressions', () => {
   const headers = ['Employee Name', 'BASIC', 'Special pay', 'Earned', 'TDS', 'Net pay', 'Email', 'UAN']
   const columns = headers.map((sourceHeader, columnIndex) => ({ sourceHeader, columnIndex, label: sourceHeader, kind: 'ignore', blankAsZero: true }))

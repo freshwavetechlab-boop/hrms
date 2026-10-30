@@ -172,6 +172,48 @@ public class ExcelPayslipPdfServiceTests
     }
 
     [Theory]
+    [InlineData(0, "965", "1,608", "1,158", "772", "1,052")]
+    [InlineData(2, "965.30", "1,608.19", "1,158.36", "772.24", "1,051.51")]
+    public void MonetaryInformationUsesSelectedPdfPrecisionWithoutChangingSourceOrIdentifiers(
+        int decimals, string hra, string monthlyBonus, string leave, string uniform, string bonus)
+    {
+        var row = Sample();
+        row.Earnings.Add(new() { Label = "Leave (S)", Amount = 757.3892307692307m });
+        row.Information = [
+            new() { Label = "Basic (E)", Value = "18320" },
+            new() { Label = "DA (F)", Value = "986" },
+            new() { Label = "HRA @ 5% (G)", Value = "965.30000000000007" },
+            new() { Label = "Bonus @ 8.33% (H)", Value = "1608.1897999999999" },
+            new() { Label = "Leave (I)", Value = "1158.3599999999999" },
+            new() { Label = "Uniform Allowance (J)", Value = "772.24" },
+            new() { Label = "Bonus @ 8.33% (R)", Value = "1051.5087153846152" },
+            new() { Label = "UAN", Value = "0010173176006" },
+            new() { Label = "Account No", Value = "0520441023009989" },
+            new() { Label = "Payble Days", Value = "17.5" },
+            new() { Label = "Reference", Value = "123.456789" },
+            new() { Label = "Bonus rate", Value = "8.33%" }
+        ];
+        var batch = Batch(row); var before = JsonSerializer.Serialize(batch);
+        var values = row.Information.Select(field => ExcelPayslipPdfService.InformationValue(field, row, decimals)).ToArray();
+        Assert.Equal(new[] { decimals == 0 ? "18,320" : "18,320.00", decimals == 0 ? "986" : "986.00",
+            hra, monthlyBonus, leave, uniform, bonus, "0010173176006", "0520441023009989", "17.5", "123.456789", "8.33%" }, values);
+        using var pdf = PdfReader.Open(new MemoryStream(new ExcelPayslipPdfService().Create(batch, [row], false, decimals)), PdfDocumentOpenMode.Import);
+        var content = Encoding.Latin1.GetString(pdf.Pages[0].Contents.CreateSingleContent().Stream.UnfilteredValue);
+        foreach (var expected in values) Assert.Contains(expected, content);
+        foreach (var index in new[] { 2, 3, 4, 6 }) Assert.DoesNotContain(row.Information[index].Value, content);
+        Assert.Equal(before, JsonSerializer.Serialize(batch));
+    }
+
+    [Theory]
+    [InlineData("Leave", "2.5")]
+    [InlineData("HRA @ 5% (G)", "Exempt")]
+    [InlineData("Account No", "001234.56")]
+    public void NonMonetaryOrNonnumericInformationRemainsLiteral(string label, string value)
+    {
+        Assert.Equal(value, ExcelPayslipPdfService.InformationValue(new() { Label = label, Value = value }, Sample(), 0));
+    }
+
+    [Theory]
     [InlineData(-1)]
     [InlineData(1)]
     [InlineData(3)]

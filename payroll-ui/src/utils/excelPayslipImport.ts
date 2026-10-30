@@ -103,7 +103,7 @@ export function defaultPayslipMapping(headers: string[], sheet?: PayslipSheet, h
   const keys = headers.map(norm)
   const plrs = norm(headers[3] || '') === 'nameoftheperson' && norm(headers[10] || '') === 'wages' && norm(headers[13] || '') === 'netpay'
   const plrsKinds: Record<number, PayslipColumnKind> = { 2: 'info', 3: 'employeeName', 7: 'info', 8: 'info', 9: 'info', 10: 'earning', 11: 'deduction', 12: 'deduction', 13: 'netPay', 14: 'info', 15: 'employer', 16: 'employer', 21: 'info', 22: 'info', 25: 'info', 26: 'info' }
-  const netPattern = /^(?:net(?:pay|salary|wages|payable|amount)(?:able|amount|payable)?|takehome(?:pay|salary)?|inhand(?:pay|salary)?|salaryinhand|amountpayable)$/
+  const netPattern = /^(?:net(?:pay|salary|wages|payable|amount)(?:able|amount|payable)?|netpaid(?:amount|salary)?|takehome(?:pay|salary)?|inhand(?:pay|salary)?|salaryinhand|amountpayable)$/
   const grossPattern = /^(?:gross(?:pay|salary|wages|total|earnings|amount)?|total(?:earnings|income|salary|gross|grosspay|grosssalary))$/
   const netIndex = keys.findIndex(key => netPattern.test(key))
   const ctcIndex = keys.findIndex(key => /^(?:ctc|costtocompany)$/.test(key))
@@ -112,7 +112,7 @@ export function defaultPayslipMapping(headers: string[], sheet?: PayslipSheet, h
     if (/^(?:(?:employee|emp|staff|worker|personnel)(?:code|id|number|no)|codeofemployee)$/.test(key)) return 'employeeCode'
     if (isPayslipPhoneLabel(sourceHeader)) return 'info'
     if (plrs && columnIndex < 30) return plrsKinds[columnIndex] || 'ignore'
-    if (/^(?:(?:employees?|emp|staff|worker|person|candidate)(?:full)?name|nameof(?:the)?(?:employee|person|staff|worker)|fullname|name)$/.test(key)) return 'employeeName'
+    if (/^(?:(?:employees?|emp|staff|worker|person|candidate|conductor|driver)(?:full)?name|nameof(?:the)?(?:employee|person|staff|worker)|fullname|name)$/.test(key)) return 'employeeName'
     if (/^(?:(?:employee|emp|personal|official|work)?email(?:address|id)?)$/.test(key)) return 'email'
     if (netPattern.test(key)) return 'netPay'
     if (grossPattern.test(key)) return 'grossTotal'
@@ -379,7 +379,7 @@ export function restorePayslipTemplateMetadata(sheets: PayslipSheet[]): PayslipS
   if (serialized.length > 1024 * 1024) throw new Error('Payslip template metadata is too large.')
   let saved: { version: number; clientId: number; sourceBatchId: string; sheetName: string; notesSheetName?: string; month: string; headerRow: number; columns: PayslipColumn[]; headers: string[]; excludedRows?: { sourceRow: number; values: string[] }[]; salaryTemplateId?: string; simpleLayout?: boolean; warnings?: string[] }
   try { saved = JSON.parse(serialized) } catch { throw new Error('Payslip template metadata is invalid. Import the original workbook instead.') }
-  if (!saved || saved.version !== 1 || !Number.isInteger(saved.clientId) || saved.clientId < 1 || typeof saved.sourceBatchId !== 'string' || typeof saved.sheetName !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(saved.month) || !Number.isInteger(saved.headerRow) || saved.headerRow < 1 || saved.headerRow > 100000 || !Array.isArray(saved.headers) || saved.headers.length > 512 || saved.headers.some(header => typeof header !== 'string') || !Array.isArray(saved.columns) || saved.columns.length > 512) throw new Error('Payslip template metadata is invalid. Import the original workbook instead.')
+  if (!saved || saved.version !== 1 || !Number.isInteger(saved.clientId) || saved.clientId < 1 || typeof saved.sourceBatchId !== 'string' || typeof saved.sheetName !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(saved.month) || !Number.isInteger(saved.headerRow) || saved.headerRow < 1 || saved.headerRow > 100000 || !Array.isArray(saved.headers) || saved.headers.length > 1500 || saved.headers.some(header => typeof header !== 'string') || !Array.isArray(saved.columns) || saved.columns.length > 1500) throw new Error('Payslip template metadata is invalid. Import the original workbook instead.')
   if (saved.simpleLayout !== undefined && typeof saved.simpleLayout !== 'boolean') throw new Error('Payslip template layout option is invalid. Import the original workbook instead.')
   const sheet = sheets.find(item => item.name === saved.sheetName)
   if (!sheet) throw new Error('The exported salary worksheet was renamed or removed. Restore its original sheet name before importing.')
@@ -503,16 +503,23 @@ export function resolvePayslipSharedFormulas(formulas: PayslipFormulaCell[]) {
 
 export function parsePayslipSheetXml(xml: string, shared: string[], name: string, zeroFormats: string[] = []): PayslipSheet {
   const document = xmlDocument(xml), rows: PayslipSourceRow[] = [], formulas: PayslipFormulaCell[] = []
-  let columnCount = 0
+  let columnCount = 0, contentColumnCount = 0, hasFormattingOverflow = false
   for (const row of Array.from(document.getElementsByTagNameNS('*', 'row'))) {
     const cells: PayslipCell[] = []
+    let nextColumnIndex = 0
     const sourceRow = Number(row.getAttribute('r')) || rows.length + 1
     if (sourceRow > 100000) throw new Error('Worksheet exceeds the supported row range (100,000).')
     for (const node of Array.from(row.getElementsByTagNameNS('*', 'c'))) {
       const reference = node.getAttribute('r') || '', letters = reference.match(/^[A-Z]+/i)?.[0] || ''
-      const index = letters ? Array.from(letters.toUpperCase()).reduce((total, char) => total * 26 + char.charCodeAt(0) - 64, 0) - 1 : cells.length
-      if (index >= 512) throw new Error('Worksheet exceeds the supported column range (512).')
+      const index = letters ? Array.from(letters.toUpperCase()).reduce((total, char) => total * 26 + char.charCodeAt(0) - 64, 0) - 1 : nextColumnIndex
+      nextColumnIndex = Math.max(nextColumnIndex, index + 1)
       const type = node.getAttribute('t'), valueNode = node.getElementsByTagNameNS('*', 'v')[0], formulaNode = node.getElementsByTagNameNS('*', 'f')[0], formula = !!formulaNode
+      const formattingOnly = !valueNode && !formulaNode && !node.getElementsByTagNameNS('*', 'is').length && (!type || type === 'n')
+      if (index >= 1500) {
+        if (formattingOnly) { hasFormattingOverflow = true; continue }
+        throw new Error('Worksheet exceeds the supported column range (1500).')
+      }
+      if (!formattingOnly) contentColumnCount = Math.max(contentColumnCount, index + 1)
       const raw = type === 'inlineStr' ? Array.from(node.getElementsByTagNameNS('*', 't')).map(item => item.textContent || '').join('') : valueNode?.textContent || ''
       let value = type === 's' ? shared[Number(raw)] || '' : raw
       const format = zeroFormats[Number(node.getAttribute('s') || 0)] || ''
@@ -522,6 +529,13 @@ export function parsePayslipSheetXml(xml: string, shared: string[], name: string
       columnCount = Math.max(columnCount, index + 1)
     }
     rows.push({ sourceRow, cells })
+  }
+  // Excel can save whole rows of formatting far beyond the salary table. Only
+  // trim that tail when it would exceed the limit; supported sheets keep their
+  // existing shape, and blank cells inside the table retain their positions.
+  if (hasFormattingOverflow) {
+    columnCount = contentColumnCount
+    for (const row of rows) row.cells.length = Math.min(row.cells.length, columnCount)
   }
   resolvePayslipSharedFormulas(formulas)
   for (const formula of formulas.filter(item => item.cell.calculationError && item.range)) {

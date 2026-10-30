@@ -55,7 +55,7 @@ export function buildEditablePayslipSheet(batch: ExcelPayslipBatch, source: Exce
   const addEmail = !emailColumns.length && batch.rows.some(row => row.email?.trim())
   const emailIndex = emailColumns[0]?.columnIndex ?? Math.max(savedWidth, codeIndex + 1)
   const columnCount = Math.max(savedWidth, codeIndex + 1, addEmail ? emailIndex + 1 : 0)
-  if (columnCount > 512) throw new Error('The worksheet has no room for an employee code column within the supported 512-column limit.')
+  if (columnCount > 1500) throw new Error('The worksheet has no room for an employee code column within the supported 1500-column limit.')
   if (!codeColumns.length) columns.push({ columnIndex: codeIndex, sourceHeader: 'Employee Code', label: 'Employee code', kind: 'employeeCode' })
   if (addEmail) columns.push({ columnIndex: emailIndex, sourceHeader: 'Email', label: 'Email', kind: 'email' })
   const employeeRows = new Map(batch.rows.map(row => [row.sourceRow, row]))
