@@ -52,6 +52,55 @@ public sealed class ExcelPayslipEmployeeCodeTests
     }
 
     [Theory]
+    [InlineData(3, "PLRS011")]
+    [InlineData(6, "PLRS000011")]
+    [InlineData(1, "PLRS11")]
+    public void SelectedPaddingPreservesSuppliedCodesAndUsesNextReservedCounter(int digits, string expected)
+    {
+        var batch = Batch("original-code", "");
+        batch.EmployeeCodeGeneration = new(true, digits);
+        var source = Source(batch, codeColumn: true);
+        ExcelPayslipRepository.AssignEmployeeCodes(batch, source, "plrs", ["PLRS00010", "OTHER99999"]);
+        Assert.Equal("original-code", batch.Rows[0].EmployeeCode);
+        Assert.Equal(expected, batch.Rows[1].EmployeeCode);
+        Assert.Equal(expected, source.Rows.Single(r => r.SourceRow == batch.Rows[1].SourceRow).Cells[4]!.Value);
+        Assert.Equal("B4*100", source.Rows[1].Cells[2]!.FormulaText);
+        Assert.All(batch.Rows, row => Assert.Equal(3000m, row.NetPay));
+    }
+
+    [Fact]
+    public void DisabledGenerationStillReusesVerifiedMasterButDoesNotAllocateAnUnmatchedCode()
+    {
+        var matched = Batch(""); matched.EmployeeCodeGeneration = new(false, 5);
+        matched.Rows[0].Information.Add(new() { Label="PAN",Value="ABCDE1234F" });
+        ExcelPayslipRepository.AssignEmployeeCodes(matched, null, "PLRS", [],
+            [new() { Id=2, ClientId=11, EmployeeCode="PLRS00018", EmployeeName="Same Name", Pan="ABCDE1234F" }]);
+        Assert.Equal("PLRS00018",matched.Rows[0].EmployeeCode);
+        var unmatched=Batch("kept-code",""); unmatched.EmployeeCodeGeneration=new(false,5);
+        Assert.Contains("Enable Generate blanks",Assert.Throws<InvalidOperationException>(()=>ExcelPayslipRepository.AssignEmployeeCodes(unmatched,null,"PLRS",[])).Message);
+        Assert.Equal("kept-code",unmatched.Rows[0].EmployeeCode);
+        Assert.Equal("",unmatched.Rows[1].EmployeeCode);
+    }
+
+    [Fact]
+    public void LongCounterStaysExactAndPaddingNeverTruncatesIt()
+    {
+        var batch=Batch(""); batch.EmployeeCodeGeneration=new(true,3);
+        ExcelPayslipRepository.AssignEmployeeCodes(batch,null,"PLRS",["PLRS9007199254740993"]);
+        Assert.Equal("PLRS9007199254740994",batch.Rows[0].EmployeeCode);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(13)]
+    public void InvalidRequestedPaddingIsRejectedBeforeSaving(int digits)
+    {
+        var batch=Batch(""); batch.EmployeeCodeGeneration=new(true,digits);
+        Assert.Contains("between 1 and 12",ExcelPayslipRepository.ValidateBatch(batch));
+        Assert.Equal("",batch.Rows[0].EmployeeCode);
+    }
+
+    [Theory]
     [InlineData("PLRS", "PLRS00001")]
     [InlineData("", "00001")]
     public void FirstImportUsesTheBulkImportDefaultWidth(string prefix, string expected)

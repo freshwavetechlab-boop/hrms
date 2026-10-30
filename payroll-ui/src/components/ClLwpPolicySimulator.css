@@ -1,0 +1,11 @@
+.cl-lwp-policy-simulator .ant-drawer-body{min-height:0;overflow:auto;padding:16px}
+.cl-lwp-simulator-content{display:flex;flex-direction:column;gap:12px;min-width:0}
+.cl-lwp-simulator-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 14px}
+.cl-lwp-simulator-content section[aria-label="CL LWP comparison result"]{display:flex;flex-direction:column;gap:10px}
+.cl-lwp-simulator-content details{border:1px solid var(--border-color,#d9dfe8);border-radius:8px;padding:10px}
+.cl-lwp-simulator-content summary{cursor:pointer;font-weight:600;margin-bottom:10px}
+@media(max-width:800px){.cl-lwp-simulator-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:520px){.cl-lwp-simulator-grid{grid-template-columns:1fr}.cl-lwp-policy-simulator .ant-drawer-body{padding:10px}}
+.cl-lwp-simulator-root .ant-drawer-content-wrapper{max-width:98vw}
+.cl-lwp-policy-simulator{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
+.cl-lwp-policy-simulator .ant-drawer-body,.cl-lwp-policy-simulator .ant-drawer-footer{min-width:0;max-width:100%;box-sizing:border-box}

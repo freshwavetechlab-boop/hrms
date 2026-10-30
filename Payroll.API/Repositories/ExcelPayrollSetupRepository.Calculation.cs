@@ -13,6 +13,8 @@ public sealed partial class ExcelPayrollSetupRepository
         if (request is null || !Guid.TryParseExact(request.BatchId, "N", out _) || request.RowIds is null || request.RowIds.Count is < 1 or > 100
             || request.RowIds.Any(string.IsNullOrWhiteSpace) || request.RowIds.Distinct().Count() != request.RowIds.Count)
             throw new InvalidOperationException("Select 1–100 unique employee rows from a saved salary batch.");
+        if(request.CorrectionOfImportId is not null&&!Guid.TryParseExact(request.CorrectionOfImportId,"N",out _))
+            throw new InvalidOperationException("Salary correction requires the exact prior Applied receipt ID.");
         if (string.IsNullOrWhiteSpace(request.TemplateName) || request.TemplateName.Length > 160 || request.WorkWeek is null || request.WorkWeek.Length > 80
             || !DateTime.TryParseExact(request.EffectiveFrom, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
             throw new InvalidOperationException("Enter a template name, work week and explicit effective date (YYYY-MM-DD).");
@@ -43,6 +45,8 @@ public sealed partial class ExcelPayrollSetupRepository
                 || new[] { c.Value, c.Formula, c.BaseComponent, c.ComponentRole, c.StatutoryType }.Any(v => v is null || v.Length > 1000)
                 || c.SourceColumnIndex is < 0 or > 511 || c.ExpectedColumnIndex is < 0 or > 511)
                 throw new InvalidOperationException("Use valid component names, codes, classifications, formulas and source columns.");
+            if (ResolvedPayType(c) is not ("Fixed Pay" or "Variable Pay") || c.IsPeriodAdjustment && ResolvedPayType(c) != "Variable Pay")
+                throw new InvalidOperationException($"{c.Code}: choose Fixed Pay or Variable Pay independently of source-month adjustments. A period adjustment requires Variable Pay.");
             if (c.SourceColumnIndex.HasValue && !c.IsPeriodAdjustment && c.CalculationType is not ("Fixed Amount" or "Daily Rate"))
                 throw new InvalidOperationException($"{c.Code}: monthly source inputs require Monthly amount or Daily rate. Formula output columns are comparison values only.");
             if (c.IsPeriodAdjustment && (c.SourceColumnIndex is null || c.Category == "Benefit"))
@@ -65,12 +69,37 @@ public sealed partial class ExcelPayrollSetupRepository
             || request.EmployeeDecisions.Any(d => d is null || !request.RowIds.Contains(d.RowId))
             || request.EmployeeDecisions.Select(d => d.RowId).Distinct().Count() != request.EmployeeDecisions.Count)
             throw new InvalidOperationException("Employee decisions must refer to unique selected source rows.");
+        if (request.PayrollDaysCell is null || request.PayrollDaysCell.Length > 12 || request.PayrollDaysCell.Length > 0 && !Regex.IsMatch(request.PayrollDaysCell, @"^\$?[A-Za-z]{1,3}\$?[1-9]\d{0,6}$")) throw new InvalidOperationException("Review one bounded captured header-divisor cell.");
+        ValidateTemplateScopeFields(request);
+        ValidateLocationAllocationFields(request);
+        ValidateTransferRequest(request);
+        if (request.IdentityColumnReview is { } identityReview && (identityReview.Version != 1 || identityReview.Role != "UAN"
+            || !identityReview.Reviewed || (identityReview.Reason?.Trim().Length ?? 0) is < 8 or > 1200
+            || identityReview.ColumnIndex is < 0 or > 511 || !Regex.IsMatch(identityReview.SourceHash ?? "", "^[a-fA-F0-9]{64}$")
+            || !Regex.IsMatch(identityReview.SelectionFingerprint ?? "", "^[a-fA-F0-9]{64}$")
+            || request.TransferReviewVersion != 1 || request.ImportAttendance || request.LocationAllocations is not null
+            || request.EmployeeDecisions.Any(d=>d.AllowCreate)))
+            throw new InvalidOperationException("Review the exact UAN source column for an existing-employee salary-only selection; no source or Master identifiers are changed.");
         if (request.EditableDefaults is null || JsonSerializer.SerializeToUtf8Bytes(request.EditableDefaults, Json).Length > 64000)
             throw new InvalidOperationException("Editable default configuration must be a JSON object of at most 64 KiB.");
         foreach (var component in request.Components)
+        {
             if (component.RowFormulas is null || component.RowFormulas.Count > request.RowIds.Count
                 || component.RowFormulas.Any(p => !request.RowIds.Contains(p.Key) || p.Value is null || p.Value.Length > 1000))
                 throw new InvalidOperationException("Formula variants must refer to selected rows and contain bounded native formulas.");
+            ValidateSourceProration(component);
+        }
+    }
+
+    // Transfer formulas must explicitly choose monthly or already-earned amounts. Never
+    // repair this by changing a shared component or silently removing its proration.
+    internal static void ValidateSourceProration(ExcelPayrollSetupComponent component)
+    {
+        if (component.IsPeriodAdjustment || component.CalculationType != "Formula" || !component.ProRata) return;
+        var formulas = new[] { component.Formula }.Concat(component.RowFormulas.Values);
+        if (formulas.Any(formula => Regex.IsMatch(formula,
+            @"\b(?:[A-Z][A-Z0-9_]*_EARNED|PAYABLE_DAYS|PRESENT_DAYS|LOP_DAYS|EARNED_EARNINGS_BEFORE_THIS)\b", RegexOptions.IgnoreCase)))
+            throw new InvalidOperationException($"{component.Code}: this formula already uses earned amounts or attendance days. Turn off 'Prorate using payable days', or review a genuinely monthly formula before transferring. No shared component or saved attendance has been changed.");
     }
 
     internal sealed record RowArithmetic(ExcelPayrollSetupPreviewRow Preview, Dictionary<string, decimal> Inputs,
@@ -80,6 +109,7 @@ public sealed partial class ExcelPayrollSetupRepository
         ExcelPayslipCalculationSourceRow source, ExcelPayslipRow row, IReadOnlySet<int>? blankAsZeroColumns = null)
     {
         components = ComponentsForRow(components, row.Id);
+        foreach (var component in components) ValidateSourceProration(component.Definition);
         var payrollNumber = request.FixedPayrollDays is int fixedDays ? fixedDays : ReadNumber(source, request.PayrollDaysColumnIndex);
         if (payrollNumber is < 1 or > 31 || decimal.Truncate(payrollNumber) != payrollNumber) throw new InvalidOperationException("Payroll denominator must be a whole number between 1 and 31; it is read separately for each employee.");
         var days = (int)payrollNumber;
@@ -102,15 +132,16 @@ public sealed partial class ExcelPayrollSetupRepository
         var annual = components.Where(c => !c.Definition.IsPeriodAdjustment && c.Definition.Category is "Earning" or "Reimbursement")
             .Sum(c => inputs.TryGetValue(c.Id, out var amount) ? c.Definition.CalculationType == "Daily Rate" ? amount * days : amount
                 : decimal.TryParse(c.Definition.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var fixedValue) ? fixedValue : 0) * 12m;
-        if (annual <= 0 && !components.Any(c => c.Definition.CalculationType == "Daily Rate"))
-            throw new InvalidOperationException("A positive full-month salary input is required; attendance zero is valid and does not make the monthly salary zero.");
         var snapshotComponents = components.Select(c => new PayrollReviewComponent(c.Id, c.Definition.Code.ToUpperInvariant(), c.Definition.Category,
             c.Definition.ComponentRole, c.Definition.StatutoryType, c.Definition.IsPeriodAdjustment ? "Manual / Variable" : c.Definition.CalculationType,
             c.Definition.Value, c.Definition.Formula, c.Definition.BaseComponent, c.Definition.ProRata, c.Definition.Taxable, true, c.Definition.Priority,
-            c.Definition.IsPeriodAdjustment ? "Variable Pay" : "Fixed Pay")).ToList();
+            ResolvedPayType(c.Definition))).ToList();
         var lines = components.Select(c => new PayrollReviewLine(c.Id, c.Definition.Value, c.Definition.Formula,
             c.Definition.IsPeriodAdjustment ? "Manual / Variable" : c.Definition.CalculationType, c.Definition.BaseComponent,
             c.Definition.IsPeriodAdjustment ? "false" : c.Definition.ProRata.ToString().ToLowerInvariant())).ToList();
+        annual = DeriveReviewedFormulaAnnualBasis(clientId, request, components, snapshotComponents, lines, inputs, days, annual);
+        if (annual <= 0 && !components.Any(c => c.Definition.CalculationType == "Daily Rate"))
+            throw new InvalidOperationException("A positive full-month salary input is required; attendance zero is valid and does not make the monthly salary zero. In Salary components and formulas, review Source input column for a recurring monthly amount or daily rate. An earned output/cache is not a monthly salary input. Review captured rate/day references and preserve the source formula and rounding before repreviewing; no salary amount is inferred.");
         var simulationRequest = new PayrollSimulationRequest
         {
             Mode = "Template", ClientId = clientId, TemplateId = "excel-draft", PayrollDays = days, PresentDays = present, PayableDays = payable,
@@ -140,17 +171,50 @@ public sealed partial class ExcelPayrollSetupRepository
                 var actual = c.Definition.IsPeriodAdjustment ? adjustments.Where(a => a.Component.Id == c.Id).Sum(a => a.Amount)
                     : calculated.Lines.Single(l => l.Code.Equals(c.Definition.Code, StringComparison.OrdinalIgnoreCase)).Earned;
                 decimal? expected = c.Definition.ExpectedColumnIndex is int index ? ReadNumber(source, index, blankAsZeroColumns?.Contains(index) == true) : null;
-                preview.Lines.Add(new(c.Definition.Code, expected, actual, expected is decimal e ? actual - e : null));
+                preview.Lines.Add(new(c.Definition.Code, expected, actual, expected is decimal e ? actual - e : null)
+                {
+                    UnroundedEarned = c.Definition.IsPeriodAdjustment ? null : calculated.Lines.Single(l => l.Code.Equals(c.Definition.Code, StringComparison.OrdinalIgnoreCase)).UnroundedEarned,
+                    Category = c.Definition.Category
+                });
                 if (expected is decimal expectedAmount && Math.Abs(actual - expectedAmount) > 0.01m)
                     issues.Add(new("Review", $"Source comparison differs by {(actual - expectedAmount).ToString("0.####", CultureInfo.InvariantCulture)}. Review the formula, classification and rounding.", row.Id, c.Definition.Code));
             }
             preview.Gross += adjustments.Where(a => a.Component.Definition.Category != "Deduction").Sum(a => a.Amount);
             preview.Deductions += adjustments.Where(a => a.Component.Definition.Category == "Deduction").Sum(a => a.Amount);
             preview.Net = Math.Max(0, preview.Gross!.Value - preview.Deductions!.Value);
+            var scenario = SourceWhatIfSimulation(simulationRequest, adjustments);
+            var baseline = PayRunRepository.SimulateTemplate(scenario);
+            if (baseline.Complete && baseline.Gross == preview.Gross && baseline.Deductions == preview.Deductions
+                && baseline.Benefits == preview.Benefits && baseline.Net == preview.Net
+                && baseline.Lines.Count == preview.Lines.Count && preview.Lines.All(line =>
+                    baseline.Lines.SingleOrDefault(l => l.Code == line.Code)?.Earned == line.CalculatedAmount))
+                preview.WhatIfSimulation = scenario;
             if (Math.Abs(preview.Net.Value - row.NetPay) > 0.01m)
                 issues.Add(new("Review", $"Net pay differs from saved Excel by {(preview.Net.Value-row.NetPay).ToString("0.####", CultureInfo.InvariantCulture)}. Do not queue payroll until the difference is understood.", row.Id, "NET_PAY"));
         }
         return new(preview, inputs, adjustments, issues);
+    }
+
+    internal static PayrollSimulationRequest SourceWhatIfSimulation(PayrollSimulationRequest source,
+        IReadOnlyList<(ResolvedComponent Component, decimal Amount)> adjustments)
+    {
+        var snapshot = source.Snapshot ?? throw new InvalidOperationException("Resolved source template is missing.");
+        var periodAmounts = adjustments.ToDictionary(a => a.Component.Id, a => a.Amount);
+        // The regular template calculator keeps approved transactions separate. In this temporary
+        // scenario only, explicitly supplied source-period amounts are fixed, unprorated inputs.
+        // Neither the stored template nor an approved adjustment is created/changed by this copy.
+        var components = snapshot.Components.Select(c => periodAmounts.ContainsKey(c.Id)
+            ? c with { CalculationType = "Fixed Amount", Formula = "", Value = "0", ProRata = false } : c).ToList();
+        var lines = snapshot.Lines.Select(l => periodAmounts.ContainsKey(l.ComponentId)
+            ? l with { CalculationType = "Fixed Amount", Formula = "", Value = "0", ProRataOverride = "false" } : l).ToList();
+        var overrides = new Dictionary<string, decimal>(source.AmountOverrides);
+        foreach (var (id, amount) in periodAmounts) overrides[id] = amount;
+        return new PayrollSimulationRequest {
+            Mode = "Template", ClientId = source.ClientId, TemplateId = "excel-what-if",
+            PayrollDays = source.PayrollDays, PresentDays = source.PresentDays, PayableDays = source.PayableDays,
+            AnnualCtc = source.AnnualCtc, AmountOverrides = overrides,
+            Snapshot = snapshot with { Components = components, Lines = lines }
+        };
     }
 
     internal static IReadOnlyList<ResolvedComponent> ComponentsForRow(IReadOnlyList<ResolvedComponent> components, string rowId) => components.Select(c =>
@@ -204,7 +268,9 @@ public sealed partial class ExcelPayrollSetupRepository
         }
         if (selected is not null)
         {
-            if (Normalize(selected.Name) != Normalize(row.EmployeeName)) Error("The source name differs from the matched employee. Resolve identity before importing salary.");
+            var anchoredName = code.Count == 1 && code[0].Id == selected.Id || strong.Count == 1 && strong[0].Id == selected.Id;
+            var sourceName = anchoredName ? Regex.Replace(row.EmployeeName.Trim(), @"^(?:Mr|Ms)\.?\s+", "", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) : row.EmployeeName;
+            if (Normalize(selected.Name) != Normalize(sourceName)) Error("The source name differs from the matched employee. Resolve identity before importing salary.");
             if (pan.Length > 0 && selected.Pan.Length > 0 && Normalize(pan) != Normalize(selected.Pan)
                 || aadhaar.Length > 0 && selected.Aadhaar.Length > 0 && Normalize(aadhaar) != Normalize(selected.Aadhaar)
                 || uan.Length > 0 && selected.Uan.Length > 0 && Normalize(uan) != Normalize(selected.Uan)) Error("A source identity field conflicts with the matched employee.");

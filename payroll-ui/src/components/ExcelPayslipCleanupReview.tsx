@@ -37,7 +37,7 @@ export default function ExcelPayslipCleanupReview({ clientId, preview, busy, set
     finally { setBusy(false) }
   }
   return <Space direction="vertical" size="middle" style={{ width: '100%', minWidth: 0 }}>
-    {preview.isLegacy && <>
+    {preview.isLegacy && !preview.canDiscardUnusedLegacy && <>
       <Divider orientation="left">Legacy version review</Divider>
       <Alert type={preview.legacyReviewValid ? 'success' : 'warning'} showIcon message={preview.legacyReviewStatus} />
       {!preview.legacyReviewValid && <>

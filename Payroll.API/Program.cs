@@ -991,11 +991,13 @@ app.MapGet("/api/public/attachments/content", async (
 .WithName("ReadAttachmentByTicket")
 .WithOpenApi();
 
-app.MapGet("/api/dashboard", async (DashboardRepository repository, int? clientId, HttpContext context) =>
+app.MapGet("/api/dashboard", async (DashboardRepository repository, int? clientId, string? month, HttpContext context) =>
 {
     var user = CurrentUser(context);
-    var effectiveClientId = user.ClientId ?? Math.Max(clientId.GetValueOrDefault(), 0);
-    return Results.Ok(await repository.GetAsync(effectiveClientId, user));
+    var effectiveClientId = DashboardRepository.ResolveClientId(user, clientId);
+    try { return Results.Ok(await repository.GetAsync(effectiveClientId, user, month)); }
+    catch (InvalidOperationException exception) when (exception.Message == "Select a valid dashboard month in yyyy-MM format.")
+    { return Results.BadRequest(new { error = exception.Message }); }
 })
 .WithName("GetDashboard")
 .WithOpenApi();
@@ -4658,6 +4660,92 @@ app.MapGet("/api/pay-runs/{id:int}/diagnostics", async (PayRunRepository reposit
 .WithName("GetPayRunDiagnostics")
 .WithOpenApi();
 
+// Restricted, explicitly selected draft processing; never starts the global queue.
+app.MapGet("/api/pay-runs/{id:int}/processing-preview", async (PayRunRepository repository, WorkflowRepository workflows,
+    int id, int clientId, string payPeriod, HttpContext context) =>
+{
+    if (!SelectedPayRunAuthorization.CanAccess(CurrentUser(context), clientId))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var preview = await repository.GetSelectedProcessingPreviewAsync(id, clientId, payPeriod);
+    if (preview is null) return Results.NotFound();
+    try
+    {
+        if (await WorkflowActionMiddleware.FindRuleAsync(workflows, "POST", $"/api/pay-runs/{id}/process-selected") is not null)
+            preview.Blockers.Add("A configured workflow applies to this action. Use that workflow; restricted processing cannot bypass it.");
+    }
+    catch
+    {
+        preview.Blockers.Add("Workflow isolation could not be verified. Refresh when the workflow service is available; no processing is permitted.");
+    }
+    preview.CanProcess = preview.Blockers.Count == 0;
+    return Results.Ok(preview);
+}).WithName("PreviewSelectedPayRunProcessing").WithOpenApi();
+
+app.MapPost("/api/pay-runs/{id:int}/process-selected", async (PayRunRepository repository, int id,
+    SelectedPayRunProcessingRequest request, HttpContext context) =>
+{
+    if (!SelectedPayRunAuthorization.CanAccess(CurrentUser(context), request.ClientId))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try
+    {
+        var run = await repository.ProcessSelectedRunAsync(id, request, CurrentUser(context).Email);
+        return run is null ? Results.NotFound() : Results.Ok(run);
+    }
+    catch (SelectedPayRunConflictException exception)
+    {
+        return Results.Conflict(new { error = exception.Message });
+    }
+}).WithMetadata(new RequireIsolatedPayrollProcessing()).WithName("ProcessSelectedPayRunDraft").WithOpenApi();
+
+// Held selected drafts stay outside the shared database worker's Queued pool.
+// Creation and calculation remain separate reviewed actions in Regular Run.
+app.MapPost("/api/pay-runs/selected-draft-source-review", async (PayRunRepository repository, WorkflowRepository workflows,
+    CreatePayRunRequest request, HttpContext context, CancellationToken token) =>
+{
+    if (!SelectedPayRunAuthorization.CanAccess(CurrentUser(context), request.ClientId) || !CanAccessClient(context, request.ClientId))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try
+    {
+        if (await WorkflowActionMiddleware.FindRuleAsync(workflows,"POST","/api/pay-runs") is not null
+            || await WorkflowActionMiddleware.FindRuleAsync(workflows,"POST","/api/pay-runs/selected-draft") is not null)
+            return Results.Conflict(new {error="A configured payroll creation workflow applies. Current-source review cannot bypass it."});
+        return Results.Ok(await repository.PreviewSelectedDraftSourceReviewAsync(request,token));
+    }
+    catch(SelectedPayRunConflictException error){return Results.Conflict(new{error=error.Message});}
+    catch(MySqlConnector.MySqlException){return Results.Json(new{error="Current-source review could not read one complete snapshot. No review or payroll was saved."},statusCode:503);}
+}).WithMetadata(new RequireIsolatedPayrollProcessing()).WithName("ReviewSelectedDraftExistingAppliedSource").WithOpenApi();
+
+app.MapPost("/api/pay-runs/selected-draft", async (PayRunRepository repository, WorkflowRepository workflows,
+    CreatePayRunRequest request, HttpContext context) =>
+{
+    if (!SelectedPayRunAuthorization.CanAccess(CurrentUser(context), request.ClientId) || !CanAccessClient(context, request.ClientId))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try
+    {
+        // A new route must not become an alternate path around the normal
+        // payroll creation workflow. The endpoint metadata also checks this route.
+        if (await WorkflowActionMiddleware.FindRuleAsync(workflows, "POST", "/api/pay-runs") is not null)
+            return Results.Conflict(new { error = "A configured workflow applies to Regular payroll creation. Use its reviewed workflow; selected draft creation cannot bypass it. No request was saved." });
+    }
+    catch
+    {
+        return Results.Conflict(new { error = "Regular payroll workflow isolation could not be verified. No request was saved." });
+    }
+    try
+    {
+        var run = await repository.CreateSelectedDraftAsync(request, CurrentUser(context).Email, CurrentUser(context).Id);
+        return run is null ? Results.NotFound() : Results.Created($"/api/pay-runs/{run.Id}", run);
+    }
+    catch (PayRunAttemptConflictException exception)
+    {
+        return Results.Conflict(new { error = exception.Message, existingPayRunId = exception.PayRunId, status = exception.RunStatus });
+    }
+    catch (SelectedPayRunConflictException exception)
+    {
+        return Results.Conflict(new { error = exception.Message });
+    }
+}).WithMetadata(new RequireIsolatedPayrollProcessing()).WithName("CreateSelectedPayRunDraft").WithOpenApi();
+
 app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "payroll.run"))
@@ -4671,6 +4759,10 @@ app.MapPost("/api/pay-runs", async (PayRunRepository repository, CreatePayRunReq
     {
         var payRun = await repository.QueueAsync(request, CurrentUser(context).Email);
         return payRun is null ? Results.Conflict(new { error = "An approved or pending payroll already exists for this period." }) : Results.Created($"/api/pay-runs/{payRun.Id}", payRun);
+    }
+    catch (PayRunAttemptConflictException exception)
+    {
+        return Results.Conflict(new { error = exception.Message, existingPayRunId = exception.PayRunId, status = exception.RunStatus });
     }
     catch (InvalidOperationException exception)
     {
@@ -4844,7 +4936,7 @@ app.MapGet("/api/pay-runs/{id:int}/export", async (PayRunRepository repository, 
             Csv(employee.EmployeeCode),
             Csv(employee.EmployeeName),
             Csv(employee.Department),
-            Csv(employee.PresentDays),
+            Csv(employee.PresentDays is decimal knownPresent ? knownPresent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "Not supplied"),
             Csv(employee.PayableDays),
             Csv(employee.GrossPay),
             Csv(employee.StatutoryDeductions),

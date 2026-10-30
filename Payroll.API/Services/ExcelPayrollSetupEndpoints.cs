@@ -18,7 +18,15 @@ public static class ExcelPayrollSetupEndpoints
             if (!int.TryParse(context.HttpContext.Request.Query["clientId"],out var clientId) || context.HttpContext.Items["User"] is not AuthUser user || !CanAccess(user,clientId)) return Results.StatusCode(403);
             try { return await next(context); }
             catch (InvalidOperationException e) { return Results.BadRequest(new { error = e.Message }); }
-            catch (MySqlConnector.MySqlException) { return Results.Json(new { error = "Payroll setup could not be completed. No partial setup has been committed. Refresh the preview and check database/schema availability." },statusCode:503); }
+            catch (MySqlConnector.MySqlException failure) {
+                // Never log SQL text/parameters or claim rollback from an uncertain transport/commit error.
+                var logger=context.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("ExcelPayrollSetup");
+                logger.LogWarning("Excel payroll setup database request failed. Method={Method}; MySqlNumber={MySqlNumber}; SqlState={SqlState}",context.HttpContext.Request.Method,failure.Number,failure.SqlState);
+                var message=HttpMethods.IsGet(context.HttpContext.Request.Method)
+                    ? "Unable to read payroll setup. Check database availability and the saved operation status before retrying a write."
+                    : "Payroll setup outcome could not be confirmed. Check the saved receipt before retrying; do not assume the operation failed or repeat payroll processing.";
+                return Results.Json(new { error=message },statusCode:503);
+            }
         });
         group.MapGet("/context", async (int clientId,string batchId,ExcelPayrollSetupRepository repository,HttpContext context) =>
             Results.Ok(await repository.ContextAsync(clientId,batchId,context.Request.Query["rowIds"].ToString().Split(',',StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))));

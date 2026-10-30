@@ -2,13 +2,48 @@ import type { ExcelPayslipRow } from '../services/excelPayslipService'
 
 export type PayslipColumnKind = 'employeeName' | 'employeeCode' | 'email' | 'info' | 'earning' | 'deduction' | 'employer' | 'netPay' | 'grossTotal' | 'deductionTotal' | 'ignore'
 export type PayslipColumn = { columnIndex: number; sourceHeader: string; label: string; kind: PayslipColumnKind; componentId?: string; blankAsZero?: boolean }
-export type PayslipCell = { value: string; formula?: boolean; formulaText?: string; calculationError?: string; error?: string; missingCachedValue?: boolean }
+export type PayslipCell = { value: string; dataType?: 'Number' | 'Text' | 'Boolean' | 'Blank'; formula?: boolean; formulaText?: string; calculationError?: string; error?: string; missingCachedValue?: boolean }
 export type PayslipSourceRow = { sourceRow: number; cells: PayslipCell[] }
 export type PayslipTemplateMetadata = { version: 1; clientId: number; sourceBatchId: string; month: string; headerRow: number; columns: PayslipColumn[]; excludedSourceRows: number[]; salaryTemplateId?: string; simpleLayout?: boolean; warnings: string[] }
 export type PayslipSheet = { name: string; rows: PayslipSourceRow[]; columnCount: number; dateSystem?: '1900' | '1904'; template?: PayslipTemplateMetadata }
 export const payslipTemplateMarker = 'Frevo Excel Payslip Template v1'
 export type PayslipImportIssue = { sourceRow: number; column: string; message: string }
 export type PayslipImportResult = { rows: ExcelPayslipRow[]; issues: PayslipImportIssue[]; excludedRows: number[]; excludedDetails: { sourceRow: number; reason: string; amounts: string }[] }
+
+export function isLiteralBlankPayslipCell(cell: PayslipCell | undefined) {
+  return !(cell?.value || '').trim() && !cell?.formula && !cell?.formulaText
+    && !cell?.calculationError && !cell?.error && !cell?.missingCachedValue
+}
+
+function isPayslipEsiIdentityColumn(column: PayslipColumn, columns: PayslipColumn[]) {
+  const key = (text: string) => text.toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (!/^(?:esi|esic)$/.test(key(column.sourceHeader))) return false
+  const neighbors = columns.filter(other => Math.abs(other.columnIndex - column.columnIndex) <= 2
+    && /^(?:uan(?:number|no)?|a{1,2}dha{1,2}r(?:number|no)?|ifsc(?:code)?|(?:bank)?accountnumber)$/.test(key(other.sourceHeader)))
+  return neighbors.length >= 2 && columns.some(other => other !== column && other.kind === 'deduction'
+    && /esi/.test(key(other.sourceHeader)) && /(?:0?\.75)\s*%|employee/i.test(other.sourceHeader))
+}
+
+// The operator's Use suggested mapping action applies this local blank policy.
+// Never let the model infer missing formula results, control totals or identities as zero.
+export function applySuggestedPayslipBlankAmounts(sheet: PayslipSheet, headerRow: number, columns: PayslipColumn[], excludedRows: number[] = []) {
+  const nameIndex = columns.find(column => column.kind === 'employeeName')?.columnIndex
+  const excluded = new Set(excludedRows)
+  const rows = nameIndex === undefined ? [] : sheet.rows.filter(row => row.sourceRow > headerRow && !excluded.has(row.sourceRow)
+    && row.cells.some(cell => cell?.value || cell?.formula)
+    && row.cells[nameIndex]?.value.trim() && !/^(grand\s*)?total(?:s|\s|:|$)/i.test(row.cells[nameIndex].value.trim()))
+  const zeroedColumns: { columnIndex: number; cellCount: number }[] = []
+  const next = columns.map(column => {
+    if (!['earning', 'deduction', 'employer'].includes(column.kind)
+      || /\b(?:UAN|PAN|AADH?AAR|IFSC|phone|mobile|account|employee\s*(?:id|code))\b/i.test(column.sourceHeader)
+      || isPayslipEsiIdentityColumn(column, columns)) return { ...column }
+    const count = rows.filter(row => isLiteralBlankPayslipCell(row.cells[column.columnIndex])).length
+    if (!count) return { ...column }
+    zeroedColumns.push({ columnIndex: column.columnIndex, cellCount: count })
+    return { ...column, blankAsZero: true }
+  })
+  return { columns: next, zeroedColumns, blankCellCount: zeroedColumns.reduce((sum, item) => sum + item.cellCount, 0) }
+}
 
 // Keep the complete sheet: unmapped cells, headers and excluded summary rows can
 // still be referenced by a salary formula. Cached imports remain independent.
@@ -18,7 +53,7 @@ export function buildPayslipCalculationSource(sheet: PayslipSheet, headerRow: nu
     columns: columns.map(column => ({ ...column })),
     rows: sheet.rows.map(row => ({ sourceRow: row.sourceRow, cells: Array.from({ length: row.cells.length }, (_, index) => {
       const cell = row.cells[index]
-      if (!cell) return { value: '' }
+      if (!cell) return { value: '', dataType: 'Blank' as const }
       const { formula, ...source } = cell
       return { ...source, ...(formula && !source.formulaText && !source.calculationError ? { calculationError: 'Formula expression is missing; its saved value cannot be recalculated.' } : {}) }
     }) })),
@@ -114,6 +149,9 @@ export function defaultPayslipMapping(headers: string[], sheet?: PayslipSheet, h
     const label = plrs && columnIndex === 8 ? 'Monthly rate' : plrs && columnIndex === 14 ? 'Bonus (as stated)' : `${sourceHeader || 'Column'}${duplicate || !sourceHeader ? ` (${excelColumnLetter(columnIndex)})` : ''}`
     return { columnIndex, sourceHeader, label, kind }
   })
+  // A bare ESIC beside UAN/bank identifiers is an identifier when a separate,
+  // explicitly labelled employee ESIC amount already exists in this sheet.
+  for (const column of columns) if (isPayslipEsiIdentityColumn(column, columns)) column.kind = 'info'
   // An explicit earned counterpart is the payslip amount; retain its monthly
   // input as information. ER is interpreted only with a matching earning header.
   let earnedCounterparts = false
@@ -252,7 +290,7 @@ export function buildExcelPayslipRows(sheet: PayslipSheet, headerRow: number, co
         continue
       }
       if (numericKinds.has(column.kind)) {
-        const reviewedBlank = column.blankAsZero === true && !value.trim() && !cell?.formula && !cell?.formulaText && !cell?.calculationError
+        const reviewedBlank = column.blankAsZero === true && isLiteralBlankPayslipCell(cell)
         const amount = reviewedBlank ? 0 : parsePayslipAmount(value)
         if (amount === null) { issue(source.sourceRow, letter, 'A saved numeric amount is required; blank amounts are not zero.'); continue }
         if (column.kind === 'earning') row.earnings.push({ label, amount })
@@ -288,13 +326,13 @@ export function parsePayslipAmount(value: string): number | null {
 export function parsePayslipCsv(text: string): PayslipSheet {
   const rows: PayslipSourceRow[] = []
   let cells: PayslipCell[] = [], value = '', quoted = false, physicalLine = 1, recordLine = 1
-  const finish = () => { cells.push({ value }); rows.push({ sourceRow: recordLine, cells }); cells = []; value = '' }
+  const finish = () => { cells.push({ value, dataType: 'Text' }); rows.push({ sourceRow: recordLine, cells }); cells = []; value = '' }
   const input = text.replace(/^\uFEFF/, '')
   for (let index = 0; index < input.length; index++) {
     const char = input[index]
     if (quoted && char === '"' && input[index + 1] === '"') { value += '"'; index++ }
     else if (char === '"' && (quoted || !value)) quoted = !quoted
-    else if (!quoted && char === ',') { cells.push({ value }); value = '' }
+    else if (!quoted && char === ',') { cells.push({ value, dataType: 'Text' }); value = '' }
     else if (char === '\r' || char === '\n') {
       const newline = char === '\r' && input[index + 1] === '\n' ? '\r\n' : char
       if (newline.length === 2) index++
@@ -479,7 +517,7 @@ export function parsePayslipSheetXml(xml: string, shared: string[], name: string
       let value = type === 's' ? shared[Number(raw)] || '' : raw
       const format = zeroFormats[Number(node.getAttribute('s') || 0)] || ''
       if ((!type || type === 'n') && /^0{2,}$/.test(format) && /^\d+$/.test(raw)) value = raw.padStart(format.length, '0')
-      cells[index] = { value, ...(formula ? { formula: true } : {}), ...(type === 'e' ? { error: raw || 'Unknown Excel error' } : {}), ...(formula && (!valueNode || raw === '') ? { missingCachedValue: true } : {}) }
+      cells[index] = { value, dataType: type === 's' || type === 'inlineStr' || type === 'str' ? 'Text' : type === 'b' ? 'Boolean' : type === 'e' ? undefined : !valueNode && !formula ? 'Blank' : 'Number', ...(formula ? { formula: true } : {}), ...(type === 'e' ? { error: raw || 'Unknown Excel error' } : {}), ...(formula && (!valueNode || raw === '') ? { missingCachedValue: true } : {}) }
       if (formulaNode) formulas.push({ reference: reference || `${excelColumnLetter(index)}${sourceRow}`, cell: cells[index], expression: formulaNode.textContent || '', type: formulaNode.getAttribute('t') || '', sharedIndex: formulaNode.getAttribute('si'), range: formulaNode.getAttribute('ref') })
       columnCount = Math.max(columnCount, index + 1)
     }

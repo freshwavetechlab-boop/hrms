@@ -158,7 +158,7 @@ public sealed class ExcelPayslipCalculationTests
 
     [Theory]
     [InlineData("D3+1", "Circular")]
-    [InlineData("VLOOKUP(B3,B3:C3,1,0)", "Unsupported function")]
+    [InlineData("VLOOKUP(B3,B3:C3,1,0)", "Lookup key")]
     [InlineData("Other!B3", "Cross-worksheet")]
     [InlineData("[1]Salary!B3", "Unsupported")]
     [InlineData("B3/0", "cannot be calculated")]
@@ -227,7 +227,7 @@ public sealed class ExcelPayslipCalculationTests
     }
 
     [Fact]
-    public void NumericInformationFormulasAlsoUpdateAndUnsupportedBonusFormulasFailClearly()
+    public void NumericInformationFormulasUpdateAndLegacyLookupTypesRequireReview()
     {
         var (source, batch, request) = Example();
         source.Columns[9] = Column(9, "Bonus", "info"); source.Rows[1].Cells[9] = Cell("180", "D3*1%");
@@ -236,7 +236,7 @@ public sealed class ExcelPayslipCalculationTests
         Assert.Equal("90", result.Rows[0].Information[2].Value);
         Assert.Null(ExcelPayslipCalculationService.ValidateSource(result.CalculationSource!, result));
         source.Rows[1].Cells[9]!.FormulaText = "VLOOKUP(B3,B3:C3,1,0)";
-        Assert.Contains("Unsupported function", Assert.Throws<InvalidOperationException>(() => ExcelPayslipCalculationService.Calculate(source, batch, request)).Message);
+        Assert.Contains("Lookup key", Assert.Throws<InvalidOperationException>(() => ExcelPayslipCalculationService.Calculate(source, batch, request)).Message);
     }
 
     [Theory]

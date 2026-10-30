@@ -218,6 +218,36 @@ public sealed class ExcelPayslipTests
     }
 
     [Theory]
+    [InlineData("null", true)]
+    [InlineData("\"\"", true)]
+    [InlineData("\"salary-basic\"", true)]
+    [InlineData("123", false)]
+    [InlineData("true", false)]
+    [InlineData("{}", false)]
+    [InlineData("[]", false)]
+    [InlineData("\"bad\\u0001value\"", false)]
+    public void OptionalMappingComponentAcceptsLegacyNullWithoutAcceptingOtherJsonTypes(string componentJson, bool accepted)
+    {
+        using var profile = JsonDocument.Parse("{\"headerSignature\":\"" + new string('a', 64) + "\",\"columns\":[{\"columnIndex\":0,\"sourceHeader\":\"BASIC+ DA=TOTAL\",\"label\":\"Total\",\"kind\":\"ignore\",\"componentId\":" + componentJson + "}]}");
+        Assert.Equal(accepted, ExcelPayslipRepository.ValidateProfile(profile.RootElement) is null);
+    }
+
+    [Fact]
+    public void SavedCalculationMappingOmitsAnUnassignedComponentAndRetainsBoundedAssignedIds()
+    {
+        var column = new ExcelPayslipCalculationColumn { ColumnIndex = 0, SourceHeader = "Basic", Label = "Basic", Kind = "earning" };
+        using var empty = JsonDocument.Parse(JsonSerializer.Serialize(column, ExcelPayslipRepository.JsonOptions));
+        Assert.False(empty.RootElement.TryGetProperty("componentId", out _));
+        foreach (var length in new[] { 100, 101 })
+        {
+            column.ComponentId = new string('a', length);
+            using var profile = JsonDocument.Parse(JsonSerializer.Serialize(new { headerSignature = new string('a', 64), columns = new[] { column } }, ExcelPayslipRepository.JsonOptions));
+            Assert.Equal(length == 100, ExcelPayslipRepository.ValidateProfile(profile.RootElement) is null);
+            Assert.Equal(column.ComponentId, profile.RootElement.GetProperty("columns")[0].GetProperty("componentId").GetString());
+        }
+    }
+
+    [Theory]
     [InlineData("{}")]
     [InlineData("[{\"columnIndex\":\"1\",\"sourceHeader\":\"Wages\",\"label\":\"Wages\",\"kind\":\"earning\"}]")]
     [InlineData("[{\"columnIndex\":-1,\"sourceHeader\":\"Wages\",\"label\":\"Wages\",\"kind\":\"earning\"}]")]

@@ -37,6 +37,9 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
   const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('security.manage')
   const [preferredClient, setClientId] = useSessionPreference('dashboard.ui:' + session?.user.id + ':' + scopedClientId + ':client', scopedClientId)
   const clientId = clientScoped ? scopedClientId : preferredClient
+  const currentMonth = new Date().toISOString().slice(0, 7)
+  const [preferredMonth, setMonth] = useSessionPreference('dashboard.ui:' + session?.user.id + ':' + clientId + ':month', currentMonth)
+  const month = /^(?!0000)\d{4}-(0[1-9]|1[0-2])$/.test(preferredMonth) ? preferredMonth : currentMonth
   const [dashboard, setDashboard] = useState<DashboardSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   const [revision, setRevision] = useState(0)
@@ -45,13 +48,13 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
   useEffect(() => {
     let active = true
     setLoading(true)
-    void getDashboard(clientId).then(data => {
+    void getDashboard(clientId, month).then(data => {
       if (!active) return
       setDashboard(data)
       if (!clientScoped && data.selectedClientId !== clientId) setClientId(data.selectedClientId)
     }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [clientId, clientScoped, revision])
+  }, [clientId, clientScoped, month, revision])
 
   const canOpenEmployees = !loading && ['employees.view', 'employees.manage'].some(permission => session?.user.permissions.includes(permission))
   const openWorkforce = (filters: Partial<Record<WorkforceField, string>> = {}) => navigate(workforcePath(clientId, filters))
@@ -67,7 +70,7 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
   const selectedClassification = classificationGroups.find(group => group.key === classification)
   const clientName = clientId === 0 ? 'All clients' : selectedClient?.name ?? 'Selected client'
   const isRru = selectedClient?.code?.toUpperCase() === 'RRU' || selectedClient?.name?.toLowerCase().includes('rashtriya raksha university')
-  const period = formatMonth(dashboard?.month ?? '')
+  const period = formatMonth(month)
   const statuses = dashboard?.payRunStatuses ?? []
   const kpis: DashboardKpi[] = []
   const charts: DashboardChartSpec[] = []
@@ -93,16 +96,16 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
     }
   }
   if (canSee('payroll')) {
-    kpis.push({ key: 'payroll', label: 'Net payroll', value: money.format(metrics?.currentMonthNetPay ?? 0), helper: count.format(metrics?.currentMonthPayRuns ?? 0) + ' run(s) this month', icon: <WalletOutlined />, tone: 'success' })
+    kpis.push({ key: 'payroll', label: 'Calculated net payroll', value: money.format(metrics?.currentMonthNetPay ?? 0), helper: count.format(metrics?.currentMonthPayRuns ?? 0) + ' run(s) · includes Draft; not disbursed', icon: <WalletOutlined />, tone: 'success' })
     const trend = dashboard?.payrollTrend ?? []
     charts.push({ id: 'hrms-payroll-trend', title: 'Payroll Cost Trend', subtitle: 'Latest net pay ' + money.format(trend.at(-1)?.netPay ?? 0) + ' / Peak ' + money.format(Math.max(0, ...trend.map(row => row.netPay))),
       labels: trend.map(row => formatMonth(row.month)), series: [{ label: 'Net pay', values: trend.map(row => row.netPay) }, { label: 'Payroll cost', values: trend.map(row => row.payrollCost), color: '#20a46b' }], kind: 'area', compatibleKinds: ['area', 'line', 'bar'], valueFormat: value => money.format(value) })
     action('payroll', 'blocking payroll validations', metrics?.payrollExceptions ?? 0, '/payroll/regular', <WalletOutlined />)
     if (view === 'payroll') {
-      chart('run-status', 'Run Status Mix', 'Current month payrun control status.', statuses.map(item => ({ label: item.status, value: item.count })), 'doughnut')
-      chart('payment-status', 'Employee Payment Status', 'Payment progress inside current month payruns.', dashboard?.payrollPaymentStatus, 'doughnut')
+      chart('run-status', 'Run Status Mix', 'Selected month calculated runs, including Draft.', statuses.map(item => ({ label: item.status, value: item.count })), 'doughnut')
+      chart('payment-status', 'Employee Payment Status', 'Payment labels inside selected month calculated runs.', dashboard?.payrollPaymentStatus, 'doughnut')
       const cost = dashboard?.payrollCostBreakup
-      chart('amounts', 'Payroll Amount Composition', 'Earnings, deductions and net pay comparison.', cost ? [
+      chart('amounts', 'Payroll Amount Composition', 'Selected month calculated earnings, deductions and net pay.', cost ? [
         { label: 'Gross earnings', value: cost.grossEarnings }, { label: 'Statutory deductions', value: cost.statutoryDeductions },
         { label: 'Other deductions', value: cost.otherDeductions }, { label: 'Net pay', value: cost.netPay },
       ] : [], 'horizontalBar', undefined, true)
@@ -111,7 +114,7 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
   }
   if (canSee('attendance')) {
     kpis.push({ key: 'attendance', label: 'Attendance ready', value: attendanceReady + '%', helper: count.format(metrics?.attendanceMissing ?? 0) + ' missing, ' + count.format(metrics?.attendanceIssues ?? 0) + ' issue(s)', icon: <CalendarOutlined />, tone: 'warning' })
-    chart('attendance-ready', 'Attendance Readiness', 'Current month attendance recording readiness.', dashboard?.attendanceMix, 'doughnut')
+    chart('attendance-ready', 'Attendance Readiness', 'Selected month attendance recording readiness.', dashboard?.attendanceMix, 'doughnut')
     chart('payability', 'Payable Exposure', 'Present and LOP day totals from attendance review.', dashboard?.attendancePayability)
     action('attendance', 'attendance exceptions', metrics?.attendanceIssues ?? 0, '/attendance', <CalendarOutlined />)
     if (view === 'attendance') {
@@ -133,7 +136,7 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
 
   return <section className={'hrms-dashboard dashboard-view-' + view}>
     <PageHeaderPortal slot="dashboard-client-controls">{!clientScoped && <SearchSelect testId="dashboard-client" value={clientId} onChange={value => setClientId(Number(value))} disabled={loading} options={[{ value: 0, label: 'All clients' }, ...(dashboard?.clients ?? []).map(client => ({ value: client.id, label: client.name }))]} />}</PageHeaderPortal>
-    <PageHeaderPortal slot="dashboard-page-controls"><Space wrap><Tag icon={<CalendarOutlined />}>{period}</Tag><Button aria-label="Refresh dashboard" icon={<ReloadOutlined spin={loading} />} disabled={loading} onClick={() => setRevision(value => value + 1)}>Refresh</Button></Space></PageHeaderPortal>
+    <PageHeaderPortal slot="dashboard-page-controls"><Space wrap><label className="dashboard-month-control"><CalendarOutlined /><span>Payroll / attendance month</span><input aria-label="Dashboard month" type="month" min="0001-01" max="9999-12" value={month} disabled={loading} onChange={event => { if (/^(?!0000)\d{4}-(0[1-9]|1[0-2])$/.test(event.target.value)) setMonth(event.target.value) }} /></label><Button aria-label="Refresh dashboard" icon={<ReloadOutlined spin={loading} />} disabled={loading} onClick={() => setRevision(value => value + 1)}>Refresh</Button></Space></PageHeaderPortal>
     <DashboardEngine loading={loading}>
       {kpis.length > 0 ? <DashboardKpiGrid items={kpis} label="HR and payroll metrics" /> : <Empty description="No dashboard sections are assigned for this view." />}
       {(canSee('workforce') || actions.length > 0) && <div className={`dashboard-overview-panels${canSee('workforce') && actions.length > 0 ? ' has-actions' : ''}`}>
@@ -166,18 +169,18 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
       </DashboardSectionCard>}
       {charts.length > 0 && <DashboardChartGrid label="HR and payroll analytics">{charts.map(spec => <DashboardChartCard key={spec.id} spec={spec} />)}</DashboardChartGrid>}
       {canSee('payroll') && <>
-        <DashboardSectionCard title="Payroll Status" subtitle="Current month run health by status.">
-          <DataTable rows={statuses} getRowId={row => row.status} exportFileName="payroll-status" emptyText="No runs yet." columns={[
+        <DashboardSectionCard title="Payroll Status" subtitle="Selected month calculated runs by status; includes Draft.">
+          <DataTable rows={statuses} getRowId={row => row.status} exportFileName={`payroll-status-${month}`} emptyText="No runs yet." columns={[
             { key: 'status', label: 'Status' }, { key: 'count', label: 'Pay runs', render: row => count.format(row.count) },
             { key: 'netPay', label: 'Net pay (INR)', render: row => money.format(row.netPay) },
           ]} />
         </DashboardSectionCard>
-        <DashboardSectionCard title="Recent Pay Runs" subtitle="Latest payroll activity for the selected client view.">
+        <DashboardSectionCard title="Recent Pay Runs" subtitle="Latest payroll activity in the selected month and client view.">
           <div className="dashboard-insight-strip" aria-label="Payroll status totals">{['Approved', 'Processing', 'Pending Approval'].map(status => {
             const item = statuses.find(row => row.status === status)
             return <article key={status}><WalletOutlined /><div><b>{count.format(item?.count ?? 0)}</b><span>{status} pay runs</span><span>{money.format(item?.netPay ?? 0)}</span></div></article>
           })}</div>
-          <DataTable rows={dashboard?.recentPayRuns ?? []} getRowId={row => row.id} exportFileName="recent-pay-runs" emptyText="No payroll activity found for this view." columns={[
+          <DataTable rows={dashboard?.recentPayRuns ?? []} getRowId={row => row.id} exportFileName={`recent-pay-runs-${month}`} emptyText="No payroll activity found for this view." columns={[
             { key: 'clientName', label: 'Client', width: 220 }, { key: 'payPeriod', label: 'Period' },
             { key: 'run', label: 'Run', value: row => row.runName || row.runType },
             { key: 'status', label: 'Status', render: row => <Tag color={row.status === 'Approved' ? 'green' : row.status === 'Processing' ? 'blue' : 'orange'}>{row.status}</Tag> },

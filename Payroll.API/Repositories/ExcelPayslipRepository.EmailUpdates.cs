@@ -16,6 +16,7 @@ public sealed partial class ExcelPayslipRepository
         await using var db = Db(); await db.OpenAsync(); await using var tx = await db.BeginTransactionAsync();
         // Same client lock and order as mail submission. Never reset delivery state or queued recipients.
         await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId FOR UPDATE", new { ClientId = clientId }, tx);
+        await RequireMutableConsolidationSnapshotAsync(db,tx,clientId,id);
         var json = await db.ExecuteScalarAsync<string?>("SELECT CAST(batch_json AS CHAR) FROM excel_payslip_batches WHERE client_id=@ClientId AND id=@Id FOR UPDATE", new { ClientId = clientId, Id = id }, tx);
         if (json is null) return (null, "The saved batch was not found for this client.");
         var source = await db.ExecuteScalarAsync<string?>("SELECT CAST(source_json AS CHAR) FROM excel_payslip_calculation_sources WHERE client_id=@ClientId AND batch_id=@Id FOR UPDATE", new { ClientId = clientId, Id = id }, tx);

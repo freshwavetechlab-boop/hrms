@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Dapper;
+using MySqlConnector;
 using Payroll.API.Models;
 using Payroll.API.Services;
 
@@ -64,9 +65,9 @@ public partial class PayRunRepository
         return result;
     }
 
-    private static bool CheckDays(PayrollSimulationResult result, int? days, decimal? present, decimal? payable)
+    private static bool CheckDays(PayrollSimulationResult result, int? days, decimal? present, decimal? payable,bool allowUnknownPresent=false)
     {
-        if (days is null || present is null || payable is null) result.Issues.Add(new("Error", "Attendance", "Payroll, present or payable days are missing. Missing attendance cannot mean zero or a full month.", "Supply all three inputs, or record attendance for the selected period."));
+        if (days is null || present is null&&!allowUnknownPresent || payable is null) result.Issues.Add(new("Error", "Attendance", "Payroll, present or payable days are missing. Missing attendance cannot mean zero or a full month.", "Supply reviewed attendance for the selected period. Unknown presence is supported only by an explicit reviewed payable-only source import."));
         else if (days is < 1 or > 31 || present < 0 || payable < 0 || present > days || payable > days) result.Issues.Add(new("Error", "Attendance", "Present and payable days must be between zero and payroll days.", "Correct the attendance inputs; fractions such as 22.5 are allowed."));
         return result.Complete;
     }
@@ -113,6 +114,27 @@ public partial class PayRunRepository
         return new(c.Code, c.Name, c.Category, formula, substituted, raw, monthly, earned, c.ProRata, source, "Engine: amounts to 2 decimals, midpoint-to-even, minimum zero. Formula ROUND functions and dated policies retain their own rounding.", refs);
     }
 
+    internal static PayrollAttendanceInputEvidence DescribeAttendanceInput(PayRunAttendance? attendance, PayrollSimulationRequest request)
+    {
+        var overridden = request.PayrollDays.HasValue || request.PresentDays.HasValue || request.PayableDays.HasValue;
+        if (attendance is null) return new("Missing native attendance", request.PayPeriod, null, null, null, null, null,
+            null, null, overridden, "", "No native attendance row was resolved. Any supplied days are temporary what-if inputs, not recorded attendance or leave entitlement.");
+        var explanation = attendance.InputSource switch
+        {
+            "Reviewed source payable-only" => "Reviewed saved-source payable days and salary divisor were supplied. Actual present/worked days were not supplied and remain unknown; no zero, paid leave, weekly off or calendar-day entitlement is inferred. Only salary formulas independent of actual presence may calculate.",
+            "Monthly snapshot" => "The regular engine selected the stored monthly working/present/payable totals. This does not establish who originally entered/imported them or infer CL. Daily weekly-off/holiday units were not loaded in this branch and remain unknown.",
+            "Legacy daily attendance" => "The regular calendar-month daily aggregate was used. Each stored WO/H row contributes one payable day in this legacy branch; present units come from Present rows. This is not proof of approved leave entitlement.",
+            "Dated daily attendance" => "The regular dated weekly-off resolver supplied this cycle's units. Policy validation errors must be resolved before relying on a payroll result.",
+            "Monthly snapshot validated against dated attendance" => "Stored monthly totals were checked against the regular dated attendance resolver. A validation error blocks payroll; the observation does not rewrite monthly attendance.",
+            _ => "Native day totals were resolved, but their input branch was not identified by this runtime. Refresh against the updated API; no source or CL allocation is guessed."
+        };
+        return new(attendance.InputSource, request.PayPeriod, attendance.WorkingDays, attendance.PresentDays, attendance.PayableDays,
+            attendance.WeeklyOffPayableUnits, attendance.HolidayPayableUnits,
+            attendance.PolicySnapshot?.PeriodStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            attendance.PolicySnapshot?.PeriodEnd.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), overridden,
+            attendance.PolicyError, explanation);
+    }
+
     public async Task<IReadOnlyList<object>> SimulationEmployeesAsync(int clientId, string? search, CancellationToken token)
     {
         await using var db = CreateConnection(); await db.OpenAsync(token);
@@ -123,44 +145,77 @@ public partial class PayRunRepository
     public async Task<PayrollSimulationResult> SimulateEmployeeAsync(PayrollSimulationRequest request, CancellationToken token)
     {
         ValidateSimulationRequest(request);
-        var result = new PayrollSimulationResult { Mode = "Employee", Coverage = "Saved salary assignment, attendance, eligible approved regular-period adjustments, dated PF, professional tax and projected TDS. What-if inputs are temporary; no payrun or tax snapshot is saved. Already-applied adjustments are excluded." };
         await using var db = CreateConnection(); await db.OpenAsync(token);
         await using var tx = await db.BeginTransactionAsync(IsolationLevel.RepeatableRead, isReadOnly: true, token);
+        var result=await SimulateEmployeeInTransactionAsync(db,tx,request,token);
+        await tx.RollbackAsync(token);
+        return result;
+    }
+
+    private sealed record EmployeeSimulationEvidence(object Employee, string SetupJson, object Attendance,
+        IReadOnlyList<PayrollAdjustment> Adjustments, IReadOnlyList<object> TaxInputs, string DetailsJson,object PolicyInputs);
+
+    // One calculation body for public read-only simulation and the held source
+    // witness. The caller owns its transaction, locks and no-save boundary.
+    private async Task<PayrollSimulationResult> SimulateEmployeeInTransactionAsync(MySqlConnection db, MySqlTransaction tx,
+        PayrollSimulationRequest request, CancellationToken token, Action<EmployeeSimulationEvidence>? capture=null)
+    {
+        ValidateSimulationRequest(request);
+        var result = new PayrollSimulationResult { Mode = "Employee", ClientId=request.ClientId,EmployeeId=request.EmployeeId,PayPeriod=request.PayPeriod,
+            Coverage = "Saved salary assignment, attendance, eligible approved regular-period adjustments, dated PF, professional tax and projected TDS. What-if inputs are temporary; no payrun or tax snapshot is saved. Already-applied adjustments are excluded." };
         var employee = await db.QuerySingleOrDefaultAsync<PayRunSourceEmployee>(new CommandDefinition("SELECT e.*, c.Name ClientName,COALESCE(w.State,'') WorkState FROM employees e JOIN clients c ON c.Id=e.ClientId LEFT JOIN worklocations w ON w.Id=e.WorkLocationId WHERE e.Id=@EmployeeId AND e.ClientId=@ClientId AND " + EmployeeEmploymentRules.EligibleInMonth("e", "@PayPeriod"), new { request.EmployeeId, request.ClientId, request.PayPeriod }, tx, cancellationToken: token));
         if (employee is null) throw new InvalidOperationException("No active employee belongs to this client with the selected ID.");
         result.Employee = $"{employee.EmployeeCode} - {employee.FirstName} {employee.LastName}".Trim();
         await LoadEmployeeTablesAsync(db, tx, [employee], request.PayPeriod);
+        result.LocationAllocations=employee.LocationParts;
+        if(employee.LocationParts is not null && (request.PayrollDays.HasValue||request.PresentDays.HasValue||request.PayableDays.HasValue||request.AnnualCtc.HasValue||request.AmountOverrides.Count>0))
+        {
+            result.Issues.Add(new("Error","Location allocation","Aggregate what-if overrides cannot redistribute reviewed location attendance/rate inputs.","Review the per-location assignment and allocation inputs, then simulate their saved native totals."));
+            return result;
+        }
         var json = await PayrollDataTableStore.GetSetupJsonAsync(db, tx); var setup = ReadPayrollSetup(json);
         var structure = setup.Structures.FirstOrDefault(s => s.Active && s.Id == employee.SalaryStructureId && s.ClientId.Split([';', ',', '|']).Any(v => v.Split(':')[0].Trim() == request.ClientId.ToString(CultureInfo.InvariantCulture)));
-        if (structure is null) { result.Issues.Add(new("Error", "Salary assignment", "Employee has no explicit active salary template for this client.", "Assign the intended salary template in Employee Master. Simulation will not guess a template.")); return result; }
-        result.TemplateId = structure.Id;
-        if (!string.IsNullOrWhiteSpace(request.TemplateId) && request.TemplateId != structure.Id) { result.Issues.Add(new("Error", "Salary assignment", "This employee is assigned to a different salary template for this period.", "Select an employee assigned to this template, or simulate their assigned template.")); return result; }
-        ValidateOverrides(structure, request.AmountOverrides);
+        if (structure is null && employee.LocationParts is null) { result.Issues.Add(new("Error", "Salary assignment", "Employee has no explicit active salary template for this client.", "Assign the intended salary template in Employee Master. Simulation will not guess a template.")); return result; }
+        var allocationTemplateIds=employee.LocationParts?.Parts.Select(part=>part.SalaryStructureId).Distinct().ToArray();
+        result.TemplateId = allocationTemplateIds is null ? structure!.Id : string.Join(";",allocationTemplateIds);
+        if (!string.IsNullOrWhiteSpace(request.TemplateId) && (allocationTemplateIds is null ? request.TemplateId!=structure!.Id : !allocationTemplateIds.Contains(request.TemplateId))) { result.Issues.Add(new("Error", "Salary assignment", "This employee is assigned to a different salary template for this period.", "Select an employee assigned to this template, or simulate their assigned template.")); return result; }
+        if(employee.LocationParts is null)ValidateOverrides(structure!, request.AmountOverrides);
         var attendance = (await GetPayRunAttendanceAsync(db, tx, request.ClientId, request.PayPeriod, employee.Id)).FirstOrDefault(a => a.EmployeeId == employee.Id);
+        result.AttendanceEvidence = DescribeAttendanceInput(attendance, request);
         var period = request.PayrollDays ?? (attendance?.WorkingDays > 0 ? (int?)Math.Ceiling(attendance.WorkingDays) : null);
         var present = request.PresentDays ?? attendance?.PresentDays; var payable = request.PayableDays ?? attendance?.PayableDays;
-        result.Inputs = [new("PAYROLL_DAYS", period, request.PayrollDays.HasValue ? "What-if" : "Attendance / policy", "Days"), new("PRESENT_DAYS", present, request.PresentDays.HasValue ? "What-if" : "Attendance result", "Days"), new("PAYABLE_DAYS", payable, request.PayableDays.HasValue ? "What-if" : "Attendance result", "Days"), new("ANNUAL_CTC", request.AnnualCtc ?? employee.AnnualCtc, request.AnnualCtc.HasValue ? "What-if" : "Effective employee salary (engine may fall back to salary/template target)", "Amount")];
-        if (!CheckDays(result, period, present, payable)) return result;
-        var employmentError = await EmployeeAttendanceEligibility.ValidateMonthlyAsync(db, tx, request.ClientId, request.PayPeriod,
-            [(employee.Id, present!.Value, payable!.Value)], lockEmployees: false);
+        result.Inputs = [new("PAYROLL_DAYS", period, request.PayrollDays.HasValue ? "What-if" : "Attendance / policy", "Days"), new("PRESENT_DAYS", present, request.PresentDays.HasValue ? "What-if" : present.HasValue ? "Attendance result" : "Actual presence not supplied", "Days"), new("PAYABLE_DAYS", payable, request.PayableDays.HasValue ? "What-if" : "Attendance result", "Days"), new("ANNUAL_CTC", request.AnnualCtc ?? employee.AnnualCtc, request.AnnualCtc.HasValue ? "What-if" : "Effective employee salary (engine may fall back to salary/template target)", "Amount")];
+        if (!CheckDays(result, period, present, payable,attendance?.PayableOnlyEvidence is not null)) return result;
+        var employmentError = await EmployeeAttendanceEligibility.ValidateMonthlyWithOptionalPresenceAsync(db, tx, request.ClientId, request.PayPeriod,
+            [(employee.Id, present, payable!.Value)], lockEmployees: false);
         if (employmentError is not null) { result.Issues.Add(new("Error", "Employment dates", employmentError, "Use attendance within the last working / rehire dates.")); return result; }
         if (!string.IsNullOrWhiteSpace(attendance?.PolicyError)) { result.Issues.Add(new("Error", "Attendance policy", attendance.PolicyError, "Resolve attendance policy errors before relying on payroll.")); return result; }
         if (attendance is null) result.Issues.Add(new("Warning", "Attendance", "Using hypothetical days: no attendance record exists for this period.", "Record attendance before running actual payroll."));
         employee.SimulationAnnualCtc = request.AnnualCtc;
         foreach (var item in request.AmountOverrides) employee.SalaryComponents[item.Key] = item.Value;
-        result.Issues.AddRange(InspectTemplate(setup.Components, structure, employee.SalaryComponents));
+        if(employee.LocationParts is null)result.Issues.AddRange(InspectTemplate(setup.Components, structure!, employee.SalaryComponents));
+        else foreach(var part in employee.LocationParts.Parts)
+        {
+            var assigned=setup.Structures.SingleOrDefault(item=>item.Id==part.SalaryStructureId&&item.Active);
+            if(assigned is null)result.Issues.Add(new("Error","Location assignment","A reviewed location salary template is missing or inactive.","Review the saved Settings template before simulation."));
+            else result.Issues.AddRange(InspectTemplate(setup.Components,assigned,part.SalaryInputs));
+        }
         if (!result.Complete) return result;
         try
         {
+            employee.PayableOnlyAttendance = attendance?.PayableOnlyEvidence;
             await LoadPfPolicyPeriodsAsync(db, tx, [employee], request.PayPeriod, json);
             if (employee.PfPolicyPeriod?.Versions.Count > 1 && (request.PayrollDays.HasValue || request.PresentDays.HasValue || request.PayableDays.HasValue)) throw new InvalidOperationException("Date-split PF uses daily attendance. Aggregate day overrides cannot represent this split; use recorded attendance.");
             employee.AttendancePolicySnapshot = attendance?.PolicySnapshot;
+            employee.PayableOnlyAttendance = attendance?.PayableOnlyEvidence;
             var adjustments = await GetApplicableAdjustmentsAsync(db, tx, request.ClientId, request.PayPeriod, "Regular", [], employee.Id);
-            var row = BuildEmployee(0, employee, json, request.PayPeriod, period!.Value, present!.Value, payable!.Value, adjustments, 0, 0, -1, false);
-            var tds = await CalculateMonthlyTdsAsync(db, tx, employee, row, request.PayPeriod, persistSnapshot: false);
-            if (tds.Calculated) row = BuildEmployee(0, employee, json, request.PayPeriod, period.Value, present.Value, payable.Value, adjustments, 0, 0, tds.Amount, false, tds.ComponentCode);
-            CalculateConfiguredSalary(employee, setup, period.Value, present.Value, payable.Value, result.Lines);
-            if (result.Lines.Count == 0 && structure.Lines.Count > 0) throw new InvalidOperationException("Employee salary target is missing. The legacy salary fallback cannot simulate the assigned template. Supply an annual target or correct the salary assignment.");
+            var row = BuildEmployee(0, employee, json, request.PayPeriod, period!.Value, present, payable!.Value, adjustments, 0, 0, -1, false);
+            var taxInputs=new List<object>();
+            var tds = await CalculateMonthlyTdsAsync(db, tx, employee, row, request.PayPeriod, persistSnapshot: false,
+                recordInputs:capture is null ? null : taxInputs.Add);
+            if (tds.Calculated) row = BuildEmployee(0, employee, json, request.PayPeriod, period.Value, present, payable.Value, adjustments, 0, 0, tds.Amount, false, tds.ComponentCode);
+            CalculateConfiguredSalary(employee, setup, period.Value, present, payable.Value, result.Lines);
+            if (result.Lines.Count == 0 && (structure?.Lines.Count > 0 || employee.LocationParts is not null)) throw new InvalidOperationException("Employee salary target is missing. The legacy salary fallback cannot simulate the assigned template. Supply an annual target or correct the salary assignment.");
             using var details = JsonDocument.Parse(row.DetailsJson);
             var final = new List<PayrollSimulationLine>();
             foreach (var line in details.RootElement.EnumerateArray().Where(l => Text(l, "Category") != "Summary"))
@@ -173,9 +228,10 @@ public partial class PayRunRepository
                 else final.Add(new(code, Text(line, "Name"), Text(line, "Category"), "", amount.ToString(CultureInfo.InvariantCulture), amount, monthly, amount, false, projectedTax ? "Projected TDS (published tax rules and prior approved payroll)" : adjustment ? "Approved period adjustment" : "Personal deduction / configured professional-tax policy", "Resolved by the same payroll calculation path", []));
             }
             result.Lines = final; result.Gross = row.GrossPay + row.OneTimeEarnings; result.Deductions = row.StatutoryDeductions + row.OneTimeDeductions; result.Net = row.NetPay; result.Benefits = final.Where(l => l.Category == "Benefit").Sum(l => l.Earned);
+            if(attendance is not null)capture?.Invoke(new(employee,json,attendance,adjustments,taxInputs,row.DetailsJson,
+                new{employee.PfPolicyPeriod,employee.AttendancePolicySnapshot,employee.PayableOnlyAttendance}));
         }
         catch (Exception e) when (e is InvalidOperationException or FormatException or OverflowException) { result.Lines.Clear(); result.Issues.Add(new("Error", "Calculation", e.Message, "Correct the indicated salary, attendance or policy input, then simulate again.")); }
-        await tx.RollbackAsync(token);
         return result;
     }
 }

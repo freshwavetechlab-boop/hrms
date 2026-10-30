@@ -1,0 +1,7 @@
+.excel-payroll-location-allocations,
+.excel-payroll-location-allocations section,
+.excel-payroll-location-allocations details { min-width: 0; max-width: 100%; }
+.excel-payroll-location-allocations summary,
+.excel-payroll-location-allocations p { overflow-wrap: anywhere; }
+.excel-payroll-location-allocations .ant-space { max-width: 100%; }
+.excel-payroll-location-allocations .ant-tag { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }

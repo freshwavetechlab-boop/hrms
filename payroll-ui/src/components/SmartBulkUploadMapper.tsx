@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from 'react'
-import { Alert, Button, Checkbox, Drawer, Empty, Input, InputNumber, Select, Space, Tag } from 'antd'
+import { Alert, Button, Checkbox, Drawer, Empty, Input, Select, Space, Tag } from 'antd'
 import { CloudUploadOutlined, DeleteOutlined, DownloadOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons'
 import { parseImportPreviewSheets, type ImportPreviewSheet } from '../utils/importPreview'
 import SmartBulkSourcePreview from './SmartBulkSourcePreview'
+import EmployeeCodeGeneration from './EmployeeCodeGeneration'
 import {
   autoMapBulkImportColumns,
   bulkImportMappingColor,
@@ -289,13 +290,9 @@ export default function SmartBulkUploadMapper(p: Props) {
             <div><span>Required missing</span><b className={missingRequired.length ? 'danger' : 'success'}>{missingRequired.length}</b></div>
           </section>
 
-          <section className="smart-bulk-smart-tools single" data-testid="smart-bulk-smart-tools">
-            <article className={generateEmployeeCodes ? 'active' : ''}>
-              <header><div><b>Missing Employee Code</b><span>Existing spreadsheet codes are preserved. Only blank codes are generated.</span></div><Checkbox data-testid="smart-bulk-generate-codes" disabled={operation === 'update' || !p.clientCode} checked={generateEmployeeCodes} onChange={event => setGenerateEmployeeCodes(event.target.checked)}>Generate blanks</Checkbox></header>
-              <div className="smart-bulk-tool-grid"><label><span>Client prefix</span><Input value={(p.clientCode ?? '').toUpperCase()} readOnly placeholder="Select a client" /></label><label><span>Sequence digits</span><InputNumber data-testid="smart-bulk-code-digits" min={1} max={12} precision={0} value={employeeCodeDigits} onChange={value => setEmployeeCodeDigits(Number(value || 1))} /></label><label><span>Next available</span><Input data-testid="smart-bulk-next-code" value={nextEmployeeCodePreview(p.clientCode ?? '', employeeCodeDigits, p.existingEmployeeCodes ?? [])} readOnly /></label></div>
-              {operation === 'update' && <small>Code generation is intentionally disabled in Update mode.</small>}
-            </article>
-          </section>
+          <EmployeeCodeGeneration enabled={generateEmployeeCodes} digits={employeeCodeDigits} clientCode={p.clientCode ?? ''} nextCode={nextEmployeeCodePreview(p.clientCode ?? '', employeeCodeDigits, p.existingEmployeeCodes ?? [])} generationDisabled={operation === 'update'} onEnabled={setGenerateEmployeeCodes} onDigits={setEmployeeCodeDigits}>
+            {operation === 'update' && <small>Code generation is intentionally disabled in Update mode.</small>}
+          </EmployeeCodeGeneration>
 
           <section className="smart-bulk-bucket" data-testid="smart-bulk-mapping-bucket">
             <header><div><b>Mapped pairs</b><span>Matching colours show which uploaded column feeds each HRMS field.</span></div><Button size="small" icon={<ReloadOutlined />} onClick={() => setMappings(autoMapBulkImportColumns(activeSheet, p.definition))}>Auto-map again</Button></header>

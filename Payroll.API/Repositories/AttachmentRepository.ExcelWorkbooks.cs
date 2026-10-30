@@ -8,6 +8,25 @@ namespace Payroll.API.Repositories;
 public partial class AttachmentRepository
 {
     internal const string ExcelOriginalEntity = "EXCEL_PAYSLIP_ORIGINAL";
+    internal static async Task<AttachmentFieldConfiguration> ResolveOriginalWorkbookFieldAsync(
+        Func<Task<AttachmentFieldConfiguration?>> read, Func<Task> seedMissing)
+    {
+        var existing=await read();
+        if(existing is not null)return existing;
+        await seedMissing();
+        return await read()??throw new InvalidOperationException("Original workbook attachment configuration is disabled or unavailable. Check its active dates and attachment settings; no batch was saved.");
+    }
+
+    // Configuration only, inside the authorized upload transaction. No DDL,
+    // storage provisioning or updates to an existing/disabled field are allowed.
+    private const string OriginalWorkbookRegistrationSql = @"
+INSERT IGNORE INTO attachment_attributes(client_id,attribute_code,attribute_name,data_classification)
+VALUES(0,'EXCEL_WORKBOOK','Original payroll workbook','Confidential');
+INSERT IGNORE INTO attachment_field_configurations(client_id,attachment_attribute_id,module_code,form_code,field_key,field_label,
+allowed_extensions_json,allowed_mime_types_json,maximum_file_size_bytes)
+SELECT 0,id,'PAYROLL','EXCEL_PAYSLIP_ORIGINAL','originalWorkbook','Original payroll workbook',
+'[""xlsx"",""xlsm"",""xls"",""csv""]','[""application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"",""application/vnd.ms-excel.sheet.macroEnabled.12"",""application/vnd.ms-excel"",""text/csv""]',26214400
+FROM attachment_attributes WHERE client_id=0 AND attribute_code='EXCEL_WORKBOOK';";
     internal static void ValidateWorkbookField(AttachmentFieldConfiguration field, IFormFile file, string mime)
     {
         if (!field.IsActive || field.AttachmentAttributeId <= 0) throw new InvalidOperationException("Original workbook attachment configuration is unavailable.");
@@ -78,11 +97,11 @@ public partial class AttachmentRepository
         await using var db = Connection(); await db.OpenAsync(cancellationToken); await using var tx = await db.BeginTransactionAsync(cancellationToken);
         var active = await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId AND IsActive=TRUE FOR UPDATE", new { ClientId = clientId }, tx);
         if (active == 0) throw new InvalidOperationException("Select an active client.");
-        var field = await db.QuerySingleOrDefaultAsync<AttachmentFieldConfiguration>($@"{ConfigurationSelect}
+        var field = await ResolveOriginalWorkbookFieldAsync(()=>db.QuerySingleOrDefaultAsync<AttachmentFieldConfiguration>($@"{ConfigurationSelect}
 WHERE f.client_id=0 AND f.module_code='PAYROLL' AND f.form_code='EXCEL_PAYSLIP_ORIGINAL' AND f.field_key='originalWorkbook'
 AND f.is_active=TRUE AND a.is_active=TRUE AND (f.effective_from_utc IS NULL OR f.effective_from_utc<=UTC_TIMESTAMP(6))
-AND (f.effective_until_utc IS NULL OR f.effective_until_utc>UTC_TIMESTAMP(6))", transaction: tx)
-            ?? throw new InvalidOperationException("Run the reviewed migration and enable the original workbook attachment field.");
+AND (f.effective_until_utc IS NULL OR f.effective_until_utc>UTC_TIMESTAMP(6))",transaction:tx),
+            async()=>{await db.ExecuteAsync(OriginalWorkbookRegistrationSql,transaction:tx);});
         ValidateWorkbookField(field, file, inspection.Mime);
         var existing = await db.QuerySingleOrDefaultAsync<ExcelPayslipOriginal>(@"SELECT o.id AS Id,a.original_file_name AS FileName,a.file_size_bytes AS SizeBytes,
 a.sha256_hash AS Sha256,a.uploaded_at_utc AS UploadedAtUtc FROM excel_payslip_originals o

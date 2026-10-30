@@ -189,11 +189,12 @@ export function inferEmployeeCodeDigits(prefix: string, existingCodes: string[],
   return widths.length ? Math.max(...widths) : fallback
 }
 
-export function nextEmployeeCodePreview(prefix: string, digits: number, existingCodes: string[]) {
+export function nextEmployeeCodePreview(prefix: string, digits: number, existingCodes: string[], minimumNextSequence?: string) {
   const normalizedPrefix = prefix.trim().toUpperCase()
   const width = clampDigits(digits)
   const { next } = employeeCodeSequence(normalizedPrefix, width, existingCodes)
-  return `${normalizedPrefix}${String(next).padStart(width, '0')}`
+  const reserved = minimumNextSequence && /^\d+$/.test(minimumNextSequence) ? BigInt(minimumNextSequence) : 0n
+  return `${normalizedPrefix}${String(next > reserved ? next : reserved).padStart(width, '0')}`
 }
 
 export function splitBulkImportName(value: string, strategy: BulkImportNameSplitStrategy) {
@@ -243,7 +244,7 @@ function buildEmployeeCodes(rows: string[][], sourceIndex: number | undefined, c
   return rows.map(row => {
     const provided = sourceIndex === undefined ? '' : (row[sourceIndex] ?? '').trim()
     if (provided) return ''
-    let candidate = ''
+    let candidate: string
     do candidate = `${prefix}${String(next++).padStart(digits, '0')}`
     while (used.has(candidate.toUpperCase()))
     used.add(candidate.toUpperCase())
@@ -255,9 +256,10 @@ function employeeCodeSequence(prefix: string, digits: number, existingCodes: str
   const expression = prefix ? new RegExp(`^${escapeRegExp(prefix)}(\\d+)$`, 'i') : /^(\d+)$/
   const maximum = existingCodes.reduce((value, code) => {
     const match = code.trim().match(expression)
-    return match ? Math.max(value, Number(match[1]) || 0) : value
-  }, 0)
-  return { next: maximum + 1, digits }
+    const suffix = match ? BigInt(match[1]) : 0n
+    return suffix > value ? suffix : value
+  }, 0n)
+  return { next: maximum + 1n, digits }
 }
 
 function clampDigits(value: number) {

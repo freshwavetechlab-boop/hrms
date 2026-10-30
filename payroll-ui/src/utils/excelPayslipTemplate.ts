@@ -62,13 +62,13 @@ export function buildEditablePayslipSheet(batch: ExcelPayslipBatch, source: Exce
   const rows = [...source.rows].sort((left, right) => left.sourceRow - right.sourceRow).map(row => {
     const cells = Array.from({ length: columnCount }, (_, index) => {
       const cell = row.cells[index]
-      return cell ? { ...cell, value: cell.value ?? '', ...(cell.formulaText || cell.calculationError ? { formula: true } : {}) } : { value: '' }
+      return cell ? { ...cell, value: cell.value ?? '', ...(cell.formulaText || cell.calculationError ? { formula: true } : {}) } : { value: '', dataType: 'Blank' as const }
     })
-    if (row.sourceRow === source.headerRow && !codeColumns.length) cells[codeIndex] = { value: 'Employee Code' }
-    if (row.sourceRow === source.headerRow && addEmail) cells[emailIndex] = { value: 'Email' }
+    if (row.sourceRow === source.headerRow && !codeColumns.length) cells[codeIndex] = { value: 'Employee Code', dataType: 'Text' }
+    if (row.sourceRow === source.headerRow && addEmail) cells[emailIndex] = { value: 'Email', dataType: 'Text' }
     const employee = employeeRows.get(row.sourceRow)
-    if (employee) cells[codeIndex] = { value: employee.employeeCode || cells[codeIndex].value || '' }
-    if (employee && employee.email != null && (addEmail || emailColumns.length)) cells[emailIndex] = { value: employee.email }
+    if (employee && employee.employeeCode && employee.employeeCode !== cells[codeIndex].value) cells[codeIndex] = { value: employee.employeeCode, dataType: 'Text' }
+    if (employee && employee.email != null && (addEmail || emailColumns.length)) cells[emailIndex] = employee.email === cells[emailIndex].value ? cells[emailIndex] : { value: employee.email, dataType: 'Text' }
     return { sourceRow: row.sourceRow, cells }
   })
   return {

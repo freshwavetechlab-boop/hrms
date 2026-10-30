@@ -101,6 +101,12 @@ const file = new File(['Employee,Net\nSynthetic Person,100\n'], 'synthetic.csv',
 }
 {
   const { service, calls } = fixture()
+  await service.deleteUnusedBatch(42, 'older-unused', 'fresh-token', 'older-unused', true)
+  assert.deepEqual(calls[0].body, { token: 'fresh-token', confirmBatchId: 'older-unused', discardUnusedLegacy: true })
+  checks.push('Unreviewed older-version disposal is transmitted only after explicit selection')
+}
+{
+  const { service, calls } = fixture()
   const request = { requestId: 'fixed-synthetic-action', action: 'discard-draft', token: 'fresh-preview-token', confirmBatchId: 'batch/one', objectId: 'draft-one', confirmObjectId: 'draft-one', keeperBatchId: '', acknowledged: true }
   await service.reviewLegacyVersion(42, 'batch/one', 'retained-batch')
   assert.equal(calls[0].url, '/api/excel-payslips/batches/batch%2Fone/cleanup-review?clientId=42')

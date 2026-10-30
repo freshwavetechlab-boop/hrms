@@ -1,0 +1,5 @@
+.ant-select-item-option.excel-payslip-client-has-batches { background-color: #edf9e8 !important; color: #135200; }
+.ant-select-item-option.excel-payslip-client-no-batches { background-color: #fff !important; color: #262626; }
+.ant-select-item-option.excel-payslip-client-has-batches.ant-select-item-option-active { background-color: #d9f7be !important; }
+.excel-payslip-client-option-label { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; white-space: normal; overflow-wrap: anywhere; }
+.excel-payslip-client-option-label .ant-tag { margin-inline-end: 0; font-size: 11px; line-height: 17px; }

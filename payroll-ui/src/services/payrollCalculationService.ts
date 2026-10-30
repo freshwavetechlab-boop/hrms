@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import type { Component, Structure } from '../types/payroll'
 import { getJsonResult, postJson } from './apiClient'
-import { reviewSnapshot } from './payrollAdvisorService'
+import { reviewSnapshot, type ReviewSnapshot } from './payrollAdvisorService'
 
 export type PayrollValue = { token: string; meaning: string; source: string; unit: string; example: string; availability: string; legacy: boolean; componentId?: string | null }
-export type SimulationLine = { code: string; name: string; category: string; formula: string; substituted: string; raw: number; monthly: number; earned: number; proRata: boolean; source: string; rounding: string; inputs: Record<string, number> }
-export type SimulationResult = { mode: string; templateId: string; employee: string; complete: boolean; coverage: string; issues: { severity: string; component: string; message: string; action: string }[]; inputs: { name: string; value: number | null; source: string; unit: string }[]; lines: SimulationLine[]; gross: number | null; deductions: number | null; benefits: number | null; net: number | null }
+export type SimulationLine = { code: string; name: string; category: string; formula: string; substituted: string; raw: number; monthly: number; earned: number; unroundedEarned?: number | null; proRata: boolean; source: string; rounding: string; inputs: Record<string, number> }
+export type AttendanceInputEvidence = { sourceKind: string; payPeriod: string; workingDays: number | null; presentDays: number | null; actualPresenceKnown?: boolean; payableDays: number | null; weeklyOffPayableUnits: number | null; holidayPayableUnits: number | null; cycleStart: string | null; cycleEnd: string | null; temporaryDayOverrides: boolean; policyValidationError: string; explanation: string }
+export type SimulationLocationAllocations = { version: number; clientId: number; employeeId: number; payPeriod: string; referenceAssignmentId?: string | null; parts: { partKey: string; assignmentId: string; workLocationId: number; salaryStructureId: string; payrollDays: number; presentDays: number; payableDays: number }[] }
+export type SimulationResult = { clientId?: number; employeeId?: number | null; payPeriod?: string; locationAllocations?: SimulationLocationAllocations | null; attendanceEvidence?: AttendanceInputEvidence | null; mode: string; templateId: string; employee: string; complete: boolean; coverage: string; issues: { severity: string; component: string; message: string; action: string }[]; inputs: { name: string; value: number | null; source: string; unit: string }[]; lines: SimulationLine[]; gross: number | null; deductions: number | null; benefits: number | null; net: number | null }
 export type SimulationEmployee = { id: number; code: string; name: string }
 const catalogueCache = new Map<string, PayrollValue[]>()
 export function usePayrollCatalogue(components: Component[], enabled = true, included?: string[], exclude?: string) {
@@ -31,6 +33,7 @@ export function usePayrollCatalogue(components: Component[], enabled = true, inc
 export const valueOptions = (values: PayrollValue[]) => values.map(v => ({ value: v.token, label: `${v.token} - ${v.meaning}`, disabled: v.availability.startsWith('Missing from') }))
 export const valueHints = (values: PayrollValue[]) => values.map(v => ({ label: v.token, meaning: `${v.meaning} Source: ${v.source}. ${v.availability}.`, example: v.example }))
 export const simulationEmployees = (clientId: number, search: string) => getJsonResult(`/api/payroll-calculation/employees?clientId=${clientId}&search=${encodeURIComponent(search)}`, [] as SimulationEmployee[], { toast: false, loader: false })
-export function simulateSalary(args: { mode: 'Template' | 'Employee'; clientId: number; employeeId?: number; template: Structure; components: Component[]; payPeriod: string; payrollDays: number | null; presentDays: number | null; payableDays: number | null; annualCtc: number | null; amountOverrides: Record<string, number> }) {
-  return postJson('/api/payroll-calculation/simulate', { ...args, template: undefined, components: undefined, templateId: String(args.template.id || ''), snapshot: args.mode === 'Template' ? reviewSnapshot(args.components, undefined, args.template, args.clientId) : undefined }, null as SimulationResult | null, { toast: false, loader: false, timeoutMs: 90000 })
+export type SourceSalaryScenario = { mode: 'Template'; clientId: number; templateId: string; snapshot: ReviewSnapshot; payrollDays: number; presentDays: number; payableDays: number; annualCtc: number; amountOverrides: Record<string, number> }
+export function simulateSalary(args: { mode: 'Template' | 'Employee'; clientId: number; employeeId?: number; template: Structure; components: Component[]; snapshot?: ReviewSnapshot; payPeriod: string; payrollDays: number | null; presentDays: number | null; payableDays: number | null; annualCtc: number | null; amountOverrides: Record<string, number> }) {
+  return postJson('/api/payroll-calculation/simulate', { ...args, template: undefined, components: undefined, templateId: String(args.template.id || ''), snapshot: args.mode === 'Template' ? args.snapshot ?? reviewSnapshot(args.components, undefined, args.template, args.clientId) : undefined }, null as SimulationResult | null, { toast: false, loader: false, timeoutMs: 90000 })
 }

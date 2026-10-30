@@ -183,7 +183,8 @@ public class EmployeeMonthlyAttendance
     public int? PayrollReportGenerationDay { get; set; }
     public string Month { get; set; } = string.Empty;
     public decimal WorkingDays { get; set; }
-    public decimal PresentDays { get; set; }
+    public decimal? PresentDays { get; set; }
+    public bool ActualPresenceKnown => PresentDays.HasValue;
     public decimal PayableDays { get; set; }
     public decimal LopDays { get; set; }
     public string SourceType { get; set; } = "Monthly";

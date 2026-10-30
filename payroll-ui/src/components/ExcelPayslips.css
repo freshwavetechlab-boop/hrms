@@ -1,4 +1,7 @@
 .excel-payslips { display: grid; align-content: start; min-width: 0; width: 100%; gap: 12px; }
+.excel-payslip-import-destinations { margin-bottom: 12px; }
+.excel-payslip-save-progress { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px; padding: 14px; margin-bottom: 12px; border: 1px solid #bae0ff; border-radius: 10px; background: #e6f4ff; color: #0958d9; box-shadow: 0 3px 12px #17213612; }
+.excel-payslip-import-destinations .ant-descriptions-item-content { overflow-wrap: anywhere; }
 .excel-payslips > .ant-alert, .excel-payslip-summary { flex-shrink: 0; }
 .excel-payslips > .ant-smart-table { min-width: 0; }
 .excel-payslip-summary { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
@@ -55,6 +58,26 @@
 .excel-payslip-form-grid .ant-input-number { width: 100%; }
 .excel-payslip-form-grid > * { min-width: 0; }
 .excel-payslip-mapping { min-width: 0; margin-top: 12px; }
+.excel-payslip-code-preview-tools { margin-block: 8px; font-size: 12px; }
+.excel-payslip-code-preview-tools > .ant-space-item { min-width: 0; }
+.excel-payslip-code-preview-tools > .ant-space-item > span { color: var(--hrms-muted, #667085); }
+.excel-code-preview-label { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.excel-code-no-match.ant-tag { background: #fff; color: var(--hrms-ink, #344054); }
+.excel-payslip-import .excel-code-existing-row > td { background: var(--hrms-danger-bg, #fff1f0) !important; }
+.excel-payslip-import .excel-code-new-row > td { background: #fff !important; }
+.excel-payslip-import .excel-code-pending-row > td { background: #f2f4f7 !important; }
+.smart-bulk-source-preview-table td.excel-code-existing-cell { background: var(--hrms-danger-bg, #fff1f0) !important; color: #b42318; }
+.smart-bulk-source-preview-table td.excel-code-new-cell { background: #fff !important; }
+.smart-bulk-source-preview-table td.excel-code-pending-cell { background: #f2f4f7 !important; }
+.excel-payslip-import .excel-code-review-row > td, .smart-bulk-source-preview-table td.excel-code-review-cell { background: #fff7e6 !important; }
+.smart-bulk-source-preview-table td :is(.excel-code-no-match, .ant-tag-red) { display: block; max-width: 100%; box-sizing: border-box; margin-top: 4px; white-space: normal; overflow-wrap: anywhere; }
+.excel-workbook-dependencies, .excel-payslip-import-options { min-width: 0; margin-block: 12px; }
+.excel-workbook-source-details, .excel-payslip-import-options { border: 1px solid var(--hrms-line, #e5e8f0); border-radius: 8px; padding: 10px 12px; }
+.excel-workbook-source-details { margin-top: 10px; }
+.excel-workbook-source-details summary, .excel-payslip-import-options summary { cursor: pointer; overflow-wrap: anywhere; }
+.excel-payslip-import-options[open] summary { margin-bottom: 12px; }
+.excel-workbook-dependencies label, .excel-workbook-dependencies strong { overflow-wrap: anywhere; }
+.excel-workbook-dependencies input[type=file] { display: block; max-width: 100%; margin-top: 6px; }
 .excel-payslip-muted { color: var(--hrms-text-muted, #667085); font-size: 12px; }
 .excel-payslip-month-tools .ant-alert, .excel-payslip-month-tools .ant-collapse,
 .excel-payslip-month-tools .file-drop-zone, .excel-payslip-month-tools .ant-smart-table { margin-block: 12px; }
@@ -79,4 +102,33 @@
 @media (max-width: 600px) {
   .excel-payslip-form-grid { grid-template-columns: 1fr; gap: 0; }
   .excel-payslip-import .ant-drawer-body, .excel-payslip-action .ant-drawer-body { padding: 16px 12px; }
+}
+.excel-payslip-attendance-caption { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; flex: 0 0 auto; font-size: 12px; color: var(--ant-color-text-secondary, #595959); }
+.excel-payslip-attendance-caption .ant-tag { margin-inline-end: 0; }
+.excel-payslip-attendance-value { display: inline-flex; flex-direction: column; gap: 2px; }
+.excel-payslip-attendance-value small { color: var(--ant-color-text-secondary, #595959); overflow-wrap: anywhere; }
+.excel-payslip-history-client { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+
+/* Keep the primary source list usable when the shell or side panel is short.
+   Extra history can scroll within this workspace instead of clipping row actions. */
+.excel-payslips.excel-payslip-workspace { overflow-y: auto; overscroll-behavior-y: contain; }
+.excel-payslips > .excel-payslip-consolidation-history { flex: 0 0 auto; gap: 4px !important; margin-bottom: 0; }
+.excel-payslip-consolidation-history .excel-payslip-consolidation-notice { padding: 6px 10px; margin-bottom: 0; }
+.excel-payslip-consolidation-notice .ant-alert-message { font-size: 12px; line-height: 18px; }
+.excel-payslip-consolidation-history > .ant-space-item > .ant-collapse > .ant-collapse-item > .ant-collapse-header { padding-block: 6px; }
+.excel-payslips > .ant-smart-table.table-fill-height { flex: 1 0 280px; min-height: 280px !important; }
+.excel-payslips > .ant-smart-table.table-fill-height .zoho-ant-table :is(.ant-table-body, .ant-table-content) { min-height: 96px !important; }
+.excel-payslips > .ant-smart-table > .ant-table-toolbar { display: flex !important; flex-direction: column !important; align-items: stretch !important; gap: 2px !important; margin-bottom: 0 !important; padding: 0; }
+.excel-payslips > .ant-smart-table > .ant-table-toolbar > .ant-table-summary { display: flex !important; flex-direction: row !important; align-items: baseline; flex-wrap: wrap; gap: 2px 8px !important; min-width: 0 !important; }
+.excel-payslips > .ant-smart-table > .ant-table-toolbar > .ant-table-actions { display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important; align-items: center !important; width: 100% !important; gap: 6px !important; min-width: 0; margin-left: 0 !important; }
+.excel-payslips > .ant-smart-table .ant-table-actions > .table-filter { flex: 0 1 200px !important; width: auto !important; min-width: 100px !important; max-width: 200px !important; }
+.excel-payslips > .ant-smart-table .ant-table-actions > .excel-payslip-table-tools { display: flex; flex: 1 1 160px !important; flex-wrap: nowrap !important; width: auto !important; min-width: 0; max-width: none; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; order: 0; }
+.excel-payslips > .ant-smart-table .excel-payslip-table-tools > .ant-space-item { flex: 0 0 auto; white-space: nowrap; }
+.excel-payslips > .ant-smart-table .ant-table-actions > .ant-btn,
+.excel-payslips > .ant-smart-table .ant-table-actions > .export-split-btn { flex: 0 0 auto !important; width: auto !important; }
+.excel-payslips > .ant-smart-table .ant-table-actions > .export-split-btn .ant-btn { width: auto !important; }
+@media (max-width: 480px) {
+  .excel-payslips > .ant-smart-table > .ant-table-toolbar > .ant-table-actions { flex-wrap: wrap !important; }
+  .excel-payslips > .ant-smart-table .ant-table-actions > .table-filter { flex: 1 1 100px !important; max-width: none !important; }
+  .excel-payslips > .ant-smart-table .ant-table-actions > .excel-payslip-table-tools { order: 2; flex-basis: 100% !important; width: 100% !important; }
 }

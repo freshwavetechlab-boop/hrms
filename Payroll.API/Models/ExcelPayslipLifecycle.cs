@@ -14,6 +14,7 @@ public sealed class ExcelPayslipDeletePreview
     public int NotificationLogs { get; set; }
     public int MasterSetupReceipts { get; set; }
     public int DerivedBatches { get; set; }
+    public int ConsolidationReferences { get; set; }
     public int OriginalLinks { get; set; }
     public int OtherBatchOriginalLinks { get; set; }
     public int LegacyStorageRecords { get; set; }
@@ -28,8 +29,9 @@ public sealed class ExcelPayslipDeletePreview
     public int CandidateCount { get; set; }
     public List<string> Blockers { get; set; } = [];
     public bool CanDelete => Blockers.Count == 0;
+    public bool CanDiscardUnusedLegacy { get; set; }
 }
-public sealed record ExcelPayslipDeleteRequest(string Token, string ConfirmBatchId);
+public sealed record ExcelPayslipDeleteRequest(string Token, string ConfirmBatchId, bool DiscardUnusedLegacy = false);
 public sealed record ExcelPayslipDeleteResult(bool Deleted, bool AlreadyDeleted);
 
 public sealed record ExcelPayslipOriginalReference(string Id, string FileName);

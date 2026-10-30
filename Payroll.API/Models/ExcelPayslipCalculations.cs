@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Payroll.API.Models;
 
 // This is an independent Excel snapshot, never an employee or payroll-master record.
-public sealed class ExcelPayslipCalculationSource
+public sealed partial class ExcelPayslipCalculationSource
 {
     public string SourceBatchId { get; set; } = "";
     public int? AttendanceColumnIndex { get; set; }
@@ -23,12 +23,13 @@ public sealed class ExcelPayslipCalculationColumn
     public string SourceHeader { get; set; } = "";
     public string Label { get; set; } = "";
     public string Kind { get; set; } = "ignore";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ComponentId { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool BlankAsZero { get; set; }
 }
 
-public sealed class ExcelPayslipCalculationSourceRow
+public sealed partial class ExcelPayslipCalculationSourceRow
 {
     public int SourceRow { get; set; }
     public List<ExcelPayslipCalculationCell?> Cells { get; set; } = [];
@@ -36,6 +37,7 @@ public sealed class ExcelPayslipCalculationSourceRow
 
 public sealed class ExcelPayslipCalculationCell
 {
+    public string DataType { get; set; } = "";
     public string Value { get; set; } = "";
     public string? FormulaText { get; set; }
     public string? CalculationError { get; set; }

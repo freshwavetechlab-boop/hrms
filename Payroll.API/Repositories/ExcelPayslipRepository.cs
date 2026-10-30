@@ -37,11 +37,19 @@ public sealed partial class ExcelPayslipRepository(IConfiguration configuration,
         return client is not null && IsSupportedClient(client);
     }
 
+    private sealed class PayslipClientPresence : Client
+    {
+        public bool HasSavedBatch { get; set; }
+    }
+
     public async Task<IReadOnlyList<ExcelPayslipClient>> ListClientsAsync(int? scopedClientId = null)
     {
         await using var db = Db(); await db.OpenAsync();
-        var clients = await db.QueryAsync<Client>("SELECT Id,Name,Code,IsActive FROM clients WHERE IsActive=TRUE AND (@ClientId IS NULL OR Id=@ClientId) ORDER BY Name", new { ClientId = scopedClientId });
-        return clients.Where(IsSupportedClient).Select(c => new ExcelPayslipClient { Id = c.Id, Name = c.Name }).ToArray();
+        // Presence is metadata only: any saved version counts, without reading salary/formula JSON.
+        var clients = await db.QueryAsync<PayslipClientPresence>(@"SELECT c.Id,c.Name,c.Code,c.IsActive,
+EXISTS(SELECT 1 FROM excel_payslip_batches b WHERE b.client_id=c.Id) AS HasSavedBatch
+FROM clients c WHERE c.IsActive=TRUE AND (@ClientId IS NULL OR c.Id=@ClientId) ORDER BY c.Name", new { ClientId = scopedClientId });
+        return clients.Where(IsSupportedClient).Select(c => new ExcelPayslipClient { Id = c.Id, Name = c.Name, HasSavedBatch = c.HasSavedBatch }).ToArray();
     }
 
     public async Task<IReadOnlyList<ExcelPayslipTemplate>> GetTemplatesAsync(int clientId)
@@ -131,11 +139,11 @@ WHERE NOT EXISTS (SELECT 1 FROM salarycomponents) ORDER BY Id LIMIT 1;", new { C
         return templates.OrderBy(t => t.Name, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
-    public async Task<IReadOnlyList<ExcelPayslipBatchSummary>> ListAsync(int clientId)
+    public async Task<IReadOnlyList<ExcelPayslipBatchSummary>> ListAsync(int clientId, bool includeConsolidated = false)
     {
         await using var db = Db(); await db.OpenAsync();
         if (!await SupportedAsync(db, clientId)) return [];
-        return await ReadBatchSummariesAsync(db, clientId);
+        return await FilterConsolidatedSummariesAsync(db,clientId,await ReadBatchSummariesAsync(db, clientId),includeConsolidated);
     }
 
     private static async Task<IReadOnlyList<ExcelPayslipBatchSummary>> ReadBatchSummariesAsync(MySqlConnection db, int clientId)
@@ -198,6 +206,8 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         // All saves take the lock so a supplied code cannot race an auto-assigned code.
         var client = await db.QueryFirstOrDefaultAsync<Client>("SELECT Id,Name,Code,IsActive FROM clients WHERE Id=@ClientId FOR UPDATE", new { ClientId = clientId }, tx);
         if (client is null || !IsSupportedClient(client)) return (null, "Select an active client.");
+        foreach(var retainedId in new[]{batch.ParentBatchId,calculationSource?.SourceBatchId}.Where(id=>!string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal))
+            await RequireCurrentConsolidationSourceAsync(db,tx,clientId,retainedId!);
         var historicalCodes = batch.Rows.Any(row => string.IsNullOrWhiteSpace(row.EmployeeCode))
             ? await db.QueryAsync<string>(@"SELECT DISTINCT codes.employee_code
 FROM excel_payslip_batches batches
@@ -216,29 +226,28 @@ WHERE batches.client_id=@ClientId AND codes.employee_code IS NOT NULL AND TRIM(c
             if (Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(calculationSource, JsonOptions)) > 16 * 1024 * 1024)
                 return (null, "Calculation source exceeds 16 MiB. Save a smaller worksheet.");
         }
+        var requestedOriginals = batch.OriginalWorkbooks ?? [];
+        if(requestedOriginals.Any(o=>o is null))return(null,"An original workbook reference is missing.");
         var parentId = string.IsNullOrWhiteSpace(batch.ParentBatchId) ? calculationSource?.SourceBatchId : batch.ParentBatchId;
         if (!string.IsNullOrWhiteSpace(parentId))
         {
             var parent = await ReadBatchAsync(db, clientId, parentId, tx);
             if (parent is null) return (null, "The parent batch does not belong to this client.");
             batch.ParentBatchId = parentId;
-            batch.OriginalWorkbooks = (await db.QueryAsync<ExcelPayslipOriginalReference>("SELECT original_id AS Id,original_file_name AS FileName FROM excel_payslip_batch_originals WHERE client_id=@ClientId AND batch_id=@Id", new { ClientId = clientId, Id = parentId }, tx)).ToList();
+            var inherited=(await db.QueryAsync<ExcelPayslipOriginalReference>("SELECT original_id AS Id,original_file_name AS FileName FROM excel_payslip_batch_originals WHERE client_id=@ClientId AND batch_id=@Id",new {ClientId=clientId,Id=parentId},tx)).ToList();
+            batch.OriginalWorkbooks=inherited.Concat(requestedOriginals).DistinctBy(o=>o.Id).ToList();
         }
-        else
-        {
-            batch.ParentBatchId = null;
-            if (batch.OriginalWorkbooks is not { Count: > 0 and <= 50 }) return (null, "Retain the original workbook through attachment storage before saving a new import.");
-            batch.OriginalWorkbooks = batch.OriginalWorkbooks.DistinctBy(o => o.Id).ToList();
-            foreach (var original in batch.OriginalWorkbooks)
-            {
-                if (!Guid.TryParseExact(original.Id, "N", out _) || string.IsNullOrWhiteSpace(original.FileName) || original.FileName.Length > 255
-                    || original.FileName != Path.GetFileName(original.FileName.Replace('\\', '/'))
-                    || original.FileName.Any(char.IsControl)) return (null, "Invalid original workbook reference.");
-                var retained = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM excel_payslip_originals o JOIN entity_attachments a ON a.id=o.attachment_id
-WHERE o.client_id=@ClientId AND o.id=@Id AND a.is_deleted=FALSE", new { ClientId = clientId, original.Id }, tx);
-                if (retained != 1) return (null, "Original workbook was not found in this client's attachment storage.");
-            }
+        else { batch.ParentBatchId=null;batch.OriginalWorkbooks=requestedOriginals.DistinctBy(o=>o.Id).ToList(); }
+        if(batch.OriginalWorkbooks.Count>50||batch.ParentBatchId is null&&batch.OriginalWorkbooks.Count==0)return(null,"Retain the original workbook through attachment storage before saving this import.");
+        foreach(var original in batch.OriginalWorkbooks) {
+            if(!Guid.TryParseExact(original.Id,"N",out _)||string.IsNullOrWhiteSpace(original.FileName)||original.FileName.Length>255
+                ||original.FileName!=Path.GetFileName(original.FileName.Replace('\\','/'))||original.FileName.Any(char.IsControl))return(null,"Invalid original workbook reference.");
         }
+        List<ExcelPayslipOriginal> availableOriginals=batch.OriginalWorkbooks.Count==0?[]:(await db.QueryAsync<ExcelPayslipOriginal>(@"SELECT o.id Id,'' FileName,0 SizeBytes,a.sha256_hash Sha256,a.uploaded_at_utc UploadedAtUtc
+FROM excel_payslip_originals o JOIN entity_attachments a ON a.id=o.attachment_id
+WHERE o.client_id=@ClientId AND o.id IN @Ids AND a.is_deleted=FALSE FOR UPDATE",new {ClientId=clientId,Ids=batch.OriginalWorkbooks.Select(o=>o.Id).ToArray()},tx)).ToList();
+        if(availableOriginals.Count!=batch.OriginalWorkbooks.Count)return(null,"An original workbook is unavailable in this client's attachment storage. No batch was saved.");
+        if(ValidateCapturedWorkbookBindings(calculationSource,availableOriginals) is string bindingError)return(null,bindingError);
         ExcelPayslipBatch? calculationParent = null;
         if (!string.IsNullOrEmpty(calculationSource?.SourceBatchId))
         {
@@ -333,7 +342,8 @@ WHERE o.client_id=@ClientId AND o.id=@Id AND a.is_deleted=FALSE", new { ClientId
             if (!column.TryGetProperty("kind", out var kind) || kind.ValueKind != JsonValueKind.String || kind.GetString() is not ("employeeName" or "employeeCode" or "email" or "info" or "earning" or "deduction" or "employer" or "netPay" or "grossTotal" or "deductionTotal" or "ignore")) return "A mapping column has an unsupported kind.";
             if (!column.TryGetProperty("sourceHeader", out var header) || header.ValueKind != JsonValueKind.String || !TextValid(header.GetString(), 512)
                 || !column.TryGetProperty("label", out var label) || label.ValueKind != JsonValueKind.String || !TextValid(label.GetString(), 80, kind.GetString() != "ignore")) return "Mapping columns need a sourceHeader (up to 512 characters) and label (up to 80 characters).";
-            if (column.TryGetProperty("componentId", out var component) && (component.ValueKind != JsonValueKind.String || !TextValid(component.GetString(), 100))) return "An optional mapping componentId must be a string of up to 100 characters.";
+            if (column.TryGetProperty("componentId", out var component) && component.ValueKind != JsonValueKind.Null
+                && (component.ValueKind != JsonValueKind.String || !TextValid(component.GetString(), 100))) return "An optional mapping componentId must be a string of up to 100 characters.";
             if (column.TryGetProperty("blankAsZero", out var blankPolicy) && (blankPolicy.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
                 || blankPolicy.ValueKind == JsonValueKind.True && kind.GetString() is not ("earning" or "deduction" or "employer" or "netPay" or "grossTotal" or "deductionTotal"))) return "Blank as zero requires a boolean choice on a monetary column.";
             if (column.EnumerateObject().Any(p => p.Name is not ("columnIndex" or "sourceHeader" or "label" or "kind" or "componentId" or "blankAsZero"))) return "Mapping columns may contain display mappings only; formulas and other fields are not supported.";
@@ -344,6 +354,7 @@ WHERE o.client_id=@ClientId AND o.id=@Id AND a.is_deleted=FALSE", new { ClientId
     internal static string? ValidateBatch(ExcelPayslipBatch? batch)
     {
         if (batch is null) return "Supply a payslip batch.";
+        if (batch.EmployeeCodeGeneration is { Digits: < 1 or > 12 }) return "Employee code sequence digits must be between 1 and 12.";
         if (!DateOnly.TryParseExact(batch.Month + "-01", "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _)) return "Select a valid salary month (yyyy-MM).";
         if (!TextValid(batch.SourceFileName, 255, true) || !TextValid(batch.SheetName, 100, true)) return "Supply a source filename and worksheet name within the allowed lengths.";
         if (!TextValid(batch.SalaryTemplateId ?? "", 100)) return "The optional salary template ID exceeds its allowed length.";

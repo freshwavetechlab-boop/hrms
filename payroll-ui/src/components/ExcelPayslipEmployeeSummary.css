@@ -1,0 +1,22 @@
+.excel-payslip-employee-summary { display: flex; flex: 1; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
+.excel-payslip-employee-summary > .ant-smart-table { flex: 1; min-height: 0; min-width: 0; }
+.excel-payslip-employee-summary > .ant-smart-table > .ant-table-toolbar { display: flex !important; flex-direction: column !important; align-items: stretch !important; gap: 2px !important; margin-bottom: 0 !important; padding: 0 !important; }
+.excel-payslip-employee-summary > .ant-smart-table > .ant-table-toolbar > .ant-table-summary { display: flex !important; flex-direction: row !important; flex-wrap: wrap !important; align-items: baseline; gap: 2px 8px !important; min-width: 0; font-size: 12px; line-height: 18px; }
+.excel-payslip-employee-summary > .ant-smart-table > .ant-table-toolbar > .ant-table-summary strong { font-size: 12px; line-height: 18px; }
+.excel-payslip-employee-summary > .ant-smart-table > .ant-table-toolbar > .ant-table-actions { display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important; align-items: center !important; justify-content: flex-start !important; width: 100% !important; min-width: 0; gap: 6px !important; }
+.excel-payslip-employee-summary > .ant-smart-table > .ant-table-toolbar > .ant-table-actions .table-filter { flex: 1 1 0 !important; width: auto !important; min-width: 0 !important; max-width: none !important; }
+.excel-payslip-employee-summary > .ant-smart-table > .ant-table-toolbar > .ant-table-actions > .ant-btn,
+.excel-payslip-employee-summary > .ant-smart-table > .ant-table-toolbar > .ant-table-actions > .export-split-btn { flex: 0 0 auto !important; width: auto !important; }
+.excel-payslip-employee-summary > .ant-smart-table > .ant-table-toolbar .export-split-btn .ant-btn { width: auto !important; }
+.excel-payslip-employee-summary .shared-record-cards .ant-space,
+.excel-payslip-employee-summary .shared-record-cards .ant-space-item { min-width: 0; max-width: 100%; }
+.excel-payslip-employee-summary .shared-record-cards .ant-tag { white-space: normal; overflow-wrap: anywhere; max-width: 100%; margin-inline-end: 0; }
+.excel-payslip-employee-parts .ant-drawer-body { min-width: 0; overflow: auto; }
+.excel-payslip-employee-parts .ant-alert { margin-bottom: 12px; }
+.excel-payslip-employee-parts .excel-payslip-attendance-value { display: inline-flex; flex-direction: column; gap: 2px; }
+.excel-payslip-employee-parts .excel-payslip-attendance-value small { color: var(--ant-color-text-secondary, #667085); }
+.excel-payslip-employee-part { border: 1px solid var(--ant-color-border, #d9d9d9); border-radius: 6px; padding: 12px; margin-bottom: 14px; min-width: 0; }
+.excel-payslip-employee-part-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.excel-payslip-employee-part .ant-descriptions-item-content { overflow-wrap: anywhere; }
+.excel-payslip-employee-part > .ant-smart-table { margin-top: 10px; min-width: 0; }
+@media (max-width: 600px) { .excel-payslip-employee-parts .ant-drawer-body { padding: 12px; } .excel-payslip-employee-part { padding: 10px; } }

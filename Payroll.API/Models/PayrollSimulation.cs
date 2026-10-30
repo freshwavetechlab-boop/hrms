@@ -18,11 +18,22 @@ public sealed class PayrollSimulationRequest
     public Dictionary<string, decimal> AmountOverrides { get; set; } = [];
 }
 public sealed record PayrollSimulationInput(string Name, decimal? Value, string Source, string Unit);
+public sealed record PayrollAttendanceInputEvidence(string SourceKind, string PayPeriod, decimal? WorkingDays,
+    decimal? PresentDays, decimal? PayableDays, decimal? WeeklyOffPayableUnits, decimal? HolidayPayableUnits,
+    string? CycleStart, string? CycleEnd, bool TemporaryDayOverrides, string PolicyValidationError, string Explanation)
+{
+    public bool ActualPresenceKnown => PresentDays.HasValue;
+}
 public sealed record PayrollSimulationIssue(string Severity, string Component, string Message, string Action);
-public sealed record PayrollSimulationLine(string Code, string Name, string Category, string Formula, string Substituted, decimal Raw, decimal Monthly, decimal Earned, bool ProRata, string Source, string Rounding, Dictionary<string, decimal> Inputs);
+public sealed record PayrollSimulationLine(string Code, string Name, string Category, string Formula, string Substituted, decimal Raw, decimal Monthly, decimal Earned, bool ProRata, string Source, string Rounding, Dictionary<string, decimal> Inputs) { public decimal? UnroundedEarned { get; init; } }
 public sealed class PayrollSimulationResult
 {
+    public int ClientId { get; set; }
+    public int? EmployeeId { get; set; }
+    public string PayPeriod { get; set; } = "";
+    public PayrollLocationPartPeriod? LocationAllocations { get; set; }
     public string Mode { get; set; } = "";
+    public PayrollAttendanceInputEvidence? AttendanceEvidence { get; set; }
     public string TemplateId { get; set; } = "";
     public string Employee { get; set; } = "";
     public bool Complete => Issues.All(i => i.Severity != "Error");

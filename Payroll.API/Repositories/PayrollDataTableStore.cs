@@ -1,3 +1,4 @@
+using System.Data;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -278,12 +279,13 @@ ON DUPLICATE KEY UPDATE WorkWeek=@WorkWeek,SalaryDays=@SalaryDays,FixedDays=@Fix
         var paymentRows = (await connection.QueryAsync<EmployeePaymentRow>(@"
 SELECT
     base.EmployeeId,
-    COALESCE(NULLIF(it9.BankName,''), base.BankName, '') BankName,
-    COALESCE(NULLIF(it9.BankAccountNo,''), base.BankAccountNo, '') BankAccountNo,
-    COALESCE(NULLIF(it9.IfscCode,''), base.IfscCode, '') IfscCode,
-    COALESCE(NULLIF(it9.PaymentMode,''), base.PaymentMode, '') PaymentMode
+    CASE WHEN base.HasCurrentPaymentRow=1 THEN base.BankName ELSE COALESCE(it9.BankName,'') END BankName,
+    CASE WHEN base.HasCurrentPaymentRow=1 THEN base.BankAccountNo ELSE COALESCE(it9.BankAccountNo,'') END BankAccountNo,
+    CASE WHEN base.HasCurrentPaymentRow=1 THEN base.IfscCode ELSE COALESCE(it9.IfscCode,'') END IfscCode,
+    CASE WHEN base.HasCurrentPaymentRow=1 THEN base.PaymentMode ELSE COALESCE(it9.PaymentMode,'') END PaymentMode
 FROM (
-    SELECT e.Id EmployeeId, COALESCE(p.BankName,'') BankName, COALESCE(p.BankAccountNo,'') BankAccountNo, COALESCE(p.IfscCode,'') IfscCode, COALESCE(p.PaymentMode,'') PaymentMode
+    SELECT e.Id EmployeeId, CASE WHEN p.EmployeeId IS NULL THEN 0 ELSE 1 END HasCurrentPaymentRow,
+        COALESCE(p.BankName,'') BankName, COALESCE(p.BankAccountNo,'') BankAccountNo, COALESCE(p.IfscCode,'') IfscCode, COALESCE(p.PaymentMode,'') PaymentMode
     FROM employees e
     LEFT JOIN employeepaymentdetails p ON p.EmployeeId=e.Id
     WHERE e.Id IN @ids
@@ -346,6 +348,46 @@ LEFT JOIN (
         employee.PersonalJson = ToPersonalJson(personal).ToJsonString(JsonOptions);
         employee.PaymentDetails = payment;
         employee.PaymentJson = ToPaymentJson(payment).ToJsonString(JsonOptions);
+    }
+
+    internal static async Task SyncEmployeePersonalOnlyAsync(MySqlConnection connection, Employee employee, MySqlTransaction tx)
+    {
+        if (employee.Id <= 0) throw new InvalidOperationException("Personal-data correction requires an existing employee.");
+        var personal = employee.PersonalDetails;
+        await SaveEmployeePersonalAsync(connection, employee.Id, personal, tx);
+        // Preserve source metadata/custom fields and unrelated address/org fields.
+        var root = ParseRoot(employee.PersonalJson);
+        Set(root, "dob", personal.DateOfBirth); Set(root, "dateOfBirth", personal.DateOfBirth);
+        Set(root, "mobile", personal.Mobile);
+        Set(root, "pan", personal.PanNumber); Set(root, "panNumber", personal.PanNumber);
+        Set(root, "aadhaar", personal.AadhaarNumber); Set(root, "aadhaarNumber", personal.AadhaarNumber);
+        Set(root, "uan", personal.UanNumber); Set(root, "uanNumber", personal.UanNumber);
+        Set(root, "esic", personal.EsicNumber); Set(root, "esicNumber", personal.EsicNumber);
+        employee.PersonalJson = root.ToJsonString(JsonOptions);
+    }
+
+    internal static async Task SyncEmployeePaymentOnlyAsync(MySqlConnection connection, Employee employee, MySqlTransaction tx)
+    {
+        if (employee.Id <= 0) throw new InvalidOperationException("Bank-data correction requires an existing employee.");
+        var payment = employee.PaymentDetails;
+        await SaveEmployeePaymentAsync(connection, employee.Id, payment, tx);
+        var root = ParseRoot(employee.PaymentJson);
+        Set(root, "bank", payment.BankName); Set(root, "bankName", payment.BankName);
+        Set(root, "account", payment.BankAccountNo); Set(root, "bankAccountNo", payment.BankAccountNo);
+        if (root.ContainsKey("accountNumber")) Set(root, "accountNumber", payment.BankAccountNo);
+        Set(root, "ifsc", payment.IfscCode); Set(root, "ifscCode", payment.IfscCode);
+        Set(root, "mode", payment.PaymentMode); Set(root, "paymentMode", payment.PaymentMode);
+        employee.PaymentJson = root.ToJsonString(JsonOptions);
+    }
+
+    // Salary configuration must never copy an effective personal/bank overlay
+    // back into its base tables. The caller owns the scoped transaction.
+    internal static async Task SyncEmployeeSalaryOnlyAsync(IDbConnection connection, Employee employee, IDbTransaction tx)
+    {
+        var salaryRows = employee.SalaryComponents.Count > 0 ? employee.SalaryComponents : ParseDecimalMap(employee.SalaryJson);
+        await SaveEmployeeSalaryAsync(connection, employee.Id, salaryRows, tx);
+        employee.SalaryComponents = new Dictionary<string, decimal>(salaryRows, StringComparer.OrdinalIgnoreCase);
+        employee.SalaryJson = JsonSerializer.Serialize(employee.SalaryComponents, JsonOptions);
     }
 
     public static async Task SyncPayRunEmployeeLinesAsync(MySqlConnection connection, MySqlTransaction? transaction, PayRunEmployee row)
@@ -445,7 +487,7 @@ ON DUPLICATE KEY UPDATE State=@State,SalaryFrom=@SalaryFrom,SalaryTo=@SalaryTo,D
             });
     }
 
-    private static async Task SaveEmployeeSalaryAsync(MySqlConnection connection, int employeeId, Dictionary<string, decimal> rows, MySqlTransaction? tx = null)
+    private static async Task SaveEmployeeSalaryAsync(IDbConnection connection, int employeeId, Dictionary<string, decimal> rows, IDbTransaction? tx = null)
     {
         await connection.ExecuteAsync("DELETE FROM employeesalarycomponents WHERE EmployeeId=@employeeId", new { employeeId }, tx);
         foreach (var row in rows)

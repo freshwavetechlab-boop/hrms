@@ -17,8 +17,8 @@ import '/src/index.css';import '/src/OrganizationSetup.css';import '/src/ModuleD
 ReactDOM.createRoot(document.getElementById('root')).render(<ConfigProvider theme={theme}><BrowserRouter><ToastProvider><AuthGate><div className="fixture-root"><Header title="Excel Payslips" description="" icon={null} breadcrumbs={[]} workspace="excel-payslips" /><main><Excel/></main></div></AuthGate></ToastProvider></BrowserRouter></ConfigProvider>);
 `)
 const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0}#root,.fixture-root{height:100dvh;min-height:0;display:flex;flex-direction:column}.fixture-root>main{flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden;padding:8px;box-sizing:border-box}.fixture-root>main>section{flex:1;min-height:0}</style></head><body><div id="root"></div><script type="module">import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plugin_react_preamble_installed__=true;await import('/${fixture}');</script></body></html>`
-const headers = ['Employee Name', 'Basic', 'Project reward', 'PF', 'TDS', 'Net Pay', 'Email', 'UAN']
-const csv = Buffer.from(headers.join(',') + '\nSynthetic Private Person,30000,2000,3600,1000,27400,private@example.test,101555921202')
+const headers = ['Employee Name', 'Basic', 'Project reward', 'PF', 'TDS', 'Net Pay', 'Email', 'UAN', 'Recovery']
+const csv = Buffer.from(headers.join(',') + '\nSynthetic Private Person,30000,2000,3600,1000,27400,private@example.test,101555921202,')
 const browser = await chromium.launch({ headless: process.env.HRMS_TEST_HEADLESS === '1' })
 const context = await browser.newContext({ viewport: { width: 1366, height: 900 } }), page = await context.newPage()
 const errors = [], checks = []; let mode = 'ai', mutations = 0, suggestions = 0
@@ -48,6 +48,8 @@ await context.route('**/*', async route => {
 })
 async function openImport() {
   await page.goto(origin + '/ai-mapping-fixture')
+  await page.getByRole('combobox', { name: 'Excel payslips client', exact: true }).click()
+  await page.locator('.ant-select-dropdown').getByText('Synthetic Client', { exact: true }).click()
   await page.getByRole('button', { name: 'Import spreadsheet', exact: true }).click()
   await page.locator('input[type="file"]').setInputFiles({ name: 'Synthetic.csv', mimeType: 'text/csv', buffer: csv })
   await page.getByRole('textbox', { name: 'Payslip salary month', exact: true }).fill('2026-09')
@@ -61,14 +63,15 @@ try {
   await expect(page.locator('.ant-select').filter({ has: page.getByRole('combobox', { name: 'Column C use as', exact: true }) })).toContainText('Earning')
   await expect(page.getByRole('textbox', { name: 'Column C label', exact: true })).toHaveValue('Project reward')
   await expect(page.getByRole('checkbox', { name: 'Column C blanks as zero', exact: true })).not.toBeChecked()
+  await expect(page.getByRole('checkbox', { name: 'Column I blanks as zero', exact: true })).toBeChecked()
   await expect(page.getByRole('button', { name: 'Save batch (1)', exact: true })).toBeEnabled()
   await page.screenshot({ path: path.join(output, 'review-ai-mapping.png'), fullPage: true })
-  checks.push('AI classifies an unfamiliar earning, flags it for review, keeps labels/source amounts and does not approve blank-as-zero')
+  checks.push('Suggested mapping classifies an unfamiliar earning, keeps source amounts and automatically approves only literal component blanks')
   for (const fallback of ['rules', 'failed']) {
     mode = fallback
     await page.getByRole('textbox', { name: 'Column B label', exact: true }).fill('Operator reviewed pay')
     await page.getByRole('button', { name: 'Use suggested mapping', exact: true }).click()
-    await expect(page.getByText(/AI.*temporarily unavailable.*current mapping is unchanged/)).toBeVisible()
+    await expect(page.getByText(/AI.*temporarily unavailable.*Current column roles and labels are unchanged/)).toBeVisible()
     await expect(page.getByRole('textbox', { name: 'Column B label', exact: true })).toHaveValue('Operator reviewed pay')
   }
   checks.push('Provider fallback and network failure preserve the current reviewed mapping')
@@ -81,7 +84,13 @@ try {
   await page.waitForTimeout(2100)
   await expect(page.getByRole('textbox', { name: 'Column B label', exact: true })).toHaveValue('Mapping after close')
   checks.push('Closing and reopening the drawer cancels stale AI suggestions')
-  assert.equal(mutations, 0); assert.equal(suggestions, 4); assert.deepEqual(errors, [])
+  mode = 'failed'; await openImport()
+  await expect(page.getByRole('checkbox', { name: 'Column I blanks as zero', exact: true })).not.toBeChecked()
+  await page.getByRole('button', { name: 'Use suggested mapping', exact: true }).click()
+  await expect(page.getByText(/AI.*temporarily unavailable.*Current column roles and labels are unchanged/)).toBeVisible()
+  await expect(page.getByRole('checkbox', { name: 'Column I blanks as zero', exact: true })).toBeChecked()
+  checks.push('A fresh import handles literal blanks even when the AI provider fails; no Save or Apply is sent')
+  assert.equal(mutations, 0); assert.equal(suggestions, 5); assert.deepEqual(errors, [])
   fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify({ checks, suggestions, mutations, errors }, null, 2))
   console.log(JSON.stringify({ checks, suggestions, mutations, output }, null, 2))
 } finally { await browser.close(); fs.rmSync(fixturePath, { force: true }) }

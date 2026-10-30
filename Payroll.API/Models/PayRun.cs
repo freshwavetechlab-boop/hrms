@@ -120,7 +120,8 @@ public class PayRunEmployee
     public string EmployeeCode { get; set; } = string.Empty;
     public string EmployeeName { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
-    public decimal PresentDays { get; set; }
+    public decimal? PresentDays { get; set; }
+    public bool ActualPresenceKnown => PresentDays.HasValue;
     public decimal PayableDays { get; set; }
     public decimal MonthlyGross { get; set; }
     public decimal GrossPay { get; set; }
@@ -169,6 +170,12 @@ public class CreatePayRunRequest
     public List<int> ExcludedEmployeeIds { get; set; } = [];
     public List<int> IncludedEmployeeIds { get; set; } = [];
     public List<int> AdjustmentIds { get; set; } = [];
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<SelectedPayRunAdjustmentReview>? SelectedAdjustmentReviews { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public SelectedSourceReviewAcknowledgement? AdjustmentSourceReviewAcknowledgement { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public SelectedSourceReviewAttestation? SourceReviewAttestation { get; set; }
 }
 
 public class UpdatePayRunEmployeeRequest

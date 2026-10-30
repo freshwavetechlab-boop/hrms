@@ -15,7 +15,7 @@ public sealed partial class ExcelPayrollSetupRepository
         return columns.Length == 1 ? columns[0].ColumnIndex : null;
     }
 
-    internal static Dictionary<string,string> SourceInformation(ExcelPayslipRow row, ExcelPayslipCalculationSource? source, int? locationColumn = null)
+    internal static Dictionary<string,string> SourceInformation(ExcelPayslipRow row, ExcelPayslipCalculationSource? source, int? locationColumn = null, int? reviewedUanColumn = null)
     {
         var information = ReadInformation(row);
         if (source is null) return information;
@@ -30,6 +30,12 @@ public sealed partial class ExcelPayrollSetupRepository
             information[key] = ReadCellText(cells, column.ColumnIndex);
         }
         var index = locationColumn ?? SourceLocationColumn(source);
+        if (reviewedUanColumn is int uanColumn)
+        {
+            if (!IsCanonicalIdentityLiteral(source, row.SourceRow, uanColumn) || !source.Columns.Any(c => c.ColumnIndex == uanColumn && IsUanSourceColumn(c)))
+                throw new InvalidOperationException("The reviewed UAN literal or source column is no longer valid.");
+            information["UAN"] = ReadCellText(cells, uanColumn);
+        }
         if (index is int location && ReadCellText(cells, location) is { Length: > 0 } name) information[Normalize("Work Location")] = name;
         if (!source.Columns.Any(column => Normalize(column.SourceHeader) is "DEPARTMENT" or "DEPT"))
         { information.Remove(Normalize("Department")); information.Remove(Normalize("Dept")); }
@@ -43,14 +49,14 @@ FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id LEFT J
 WHERE e.ClientId=@ClientId ORDER BY e.Id", new { ClientId=clientId, Month=month },tx)).ToList();
 
     internal static ExcelPayrollRoster ClassifyRoster(ExcelPayslipBatch batch, ExcelPayslipCalculationSource source,
-        IReadOnlyList<Identity> identities, IReadOnlySet<string> appliedRows)
+        IReadOnlyList<Identity> identities, IReadOnlySet<string> appliedRows, IReadOnlyDictionary<string,int>? reviewedColumns = null)
     {
         identities=identities.Where(e=>e.ClientId==batch.ClientId).ToList();
         var rows = new List<ExcelPayrollRosterRow>();
         foreach (var row in batch.Rows)
         {
             var issues = new List<ExcelPayrollSetupIssue>();
-            var match = MatchIdentity(row,SourceInformation(row,source),identities,null,issues);
+            var match = MatchIdentity(row,SourceInformation(row,source,reviewedUanColumn:ReviewedColumnForRow(reviewedColumns,row.Id)),identities,null,issues);
             var status = appliedRows.Contains(row.Id) ? "Applied" : issues.Count > 0 ? "Review" : match is null ? "New" : !match.EligibleForMonth ? "Review" : "Existing";
             rows.Add(new(row.Id,row.SourceRow,row.EmployeeName,match?.EmployeeCode ?? row.EmployeeCode,status,match?.Id,
                 appliedRows.Contains(row.Id) ? "Master setup already applied for this source row." : string.Join(" ",issues.Select(i=>i.Message)) is { Length:>0 } text ? text
@@ -74,7 +80,14 @@ WHERE e.ClientId=@ClientId ORDER BY e.Id", new { ClientId=clientId, Month=month 
     private static async Task<HashSet<string>> AppliedSourceRowsAsync(MySqlConnection db, MySqlTransaction? tx, int clientId, string batchId)
     {
         if (!await HasReceiptTableAsync(db,tx)) return [];
-        var raw = await db.QueryAsync<string>("SELECT CAST(JSON_EXTRACT(request_json,'$.rowIds') AS CHAR) FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@BatchId AND status='Applied'",new { ClientId=clientId,BatchId=batchId },tx);
-        return raw.SelectMany(value=>JsonSerializer.Deserialize<List<string>>(value,Json) ?? []).ToHashSet(StringComparer.Ordinal);
+        var raw = await db.QueryAsync<AppliedSetupRowSet>("SELECT CAST(JSON_EXTRACT(request_json,'$.rowIds') AS CHAR) RowsJson,CAST(result_json AS CHAR) ResultJson FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@BatchId AND status='Applied'",new { ClientId=clientId,BatchId=batchId },tx);
+        return raw.SelectMany(value=>AppliedReceiptRows(value.RowsJson,value.ResultJson)).ToHashSet(StringComparer.Ordinal);
     }
-}
+    private sealed class AppliedSetupRowSet { public string ImportId { get; set; } = ""; public string RowsJson { get; set; } = "[]"; public string ResultJson { get; set; } = "{}"; }
+    internal static HashSet<string> AppliedReceiptRows(string rowsJson,string resultJson)
+    {
+        var rows=JsonSerializer.Deserialize<List<string>>(rowsJson,Json) ?? [];
+        var result=JsonSerializer.Deserialize<ExcelPayrollSetupResult>(resultJson,Json) ?? new();
+        var kept=result.KeptRows.Select(r=>r.RowId).ToHashSet(StringComparer.Ordinal);
+        return rows.Where(r=>!kept.Contains(r)).ToHashSet(StringComparer.Ordinal);
+    }}

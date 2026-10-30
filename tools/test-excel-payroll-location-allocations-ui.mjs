@@ -1,0 +1,76 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+const repo = fileURLToPath(new URL('../', import.meta.url))
+const runtime = JSON.parse(fs.readFileSync(process.env.HRMS_PLAYWRIGHT_RUNTIME || 'C:/Users/APPC0024/Documents/Codex/2026-10-25/task/live-playwright-local/playwright-runtime-paths.json', 'utf8'))
+process.env.PLAYWRIGHT_BROWSERS_PATH ||= runtime.browserPath
+const { chromium, expect } = await import(pathToFileURL(runtime.module).href)
+const origin = process.env.HRMS_TEST_UI_URL || 'http://localhost:5173'
+assert.ok(['localhost', '127.0.0.1'].includes(new URL(origin).hostname))
+const output = process.env.HRMS_LOCATION_UI_RESULTS || 'C:/Users/APPC0024/Documents/Codex/2026-10-25/task/live-playwright-local/location-allocations-ui'
+fs.mkdirSync(output, { recursive: true })
+const filename = `.codex-location-allocations-${crypto.randomUUID()}.tsx`, fixturePath = path.join(repo, 'payroll-ui', filename)
+const batch = { id: 'a'.repeat(32), clientId: 33, month: '2026-09', clientName: 'Synthetic location client', rows: [17, 13].map((days, index) => ({ id: 'part-' + index, sourceRow: index + 53, employeeName: 'Synthetic person', employeeCode: 'SYN01', information: [{ label: 'PAN', value: 'AAAAA1111A' }, { label: 'Work Location', value: 'Recorded source office ' + index }, { label: 'State', value: index ? 'Tripura' : 'Sikkim' }, { label: 'Payroll unit', value: 'Original unit ' + index }, { label: 'Attendance', value: String(days) }], earnings: [{ label: 'Basic', amount: index ? 33860 : 42749 }], deductions: [], employerContributions: [], netPay: index ? 33860 : 42749, employment: { identityReviewRequired: true } })) }
+const master = { id: '101', code: 'BASIC', name: 'Settings Basic', taxable: false, priority: 0, payType: 'Fixed Pay', category: 'Earning', componentRole: 'Regular Earning', statutoryType: 'None' }
+const context = { locationAllocationSupported: true, locationAllocationImportDate: '2026-10-28', salaryTemplates: ['North', 'South'].map((name, index) => ({ id: 'settings-' + index, name: name + ' Settings template', clientId: 33, active: true, lines: [{ componentId: '101', value: '0', calculationType: 'Formula', formula: 'BASIC_MONTHLY*PAYABLE_DAYS/PAYROLL_DAYS', baseComponent: '', proRataOverride: 'false' }] })), workLocations: [{ id: 1, name: 'Master North office' }, { id: 2, name: 'Master South office' }], employees: [{ id: 100, employeeCode: 'MASTER001', employeeName: 'Verified synthetic Master' }], components: [master], source: { headerRow: 1, columns: ['Name', 'Basic', 'Attendance', 'Month days', 'Net'].map((sourceHeader, columnIndex) => ({ sourceHeader, label: sourceHeader, columnIndex, kind: ['employeeName', 'info', 'info', 'info', 'netPay'][columnIndex] })), rows: batch.rows.map((row, index) => ({ sourceRow: row.sourceRow, cells: [row.employeeName, String(1000 + index * 1000), String(index ? 13 : 17), '30', String(row.netPay)].map(value => ({ value })) })) } }
+context.salaryTemplates.push({ ...context.salaryTemplates[0], id: 'forbidden-template', clientId: 99, name: 'Other client forbidden template' })
+const request = { batchId: batch.id, rowIds: batch.rows.map(row => row.id), payrollDaysColumnIndex: 3, payableDaysColumnIndex: 2, components: [{ key: 'basic', ...master, existingComponentId: master.id, sourceColumnIndex: 1 }], employeeDecisions: batch.rows.map(row => ({ rowId: row.id, allowCreate: false })), attendanceReview: { payableMeaning: 'AlreadyPayable', presentMeaning: 'NotMapped' } }
+fs.writeFileSync(fixturePath, `import React from 'react';import ReactDOM from 'react-dom/client';import{Form}from'antd';import Review from'/src/components/ExcelPayrollLocationAllocations.tsx';import{isLocationAllocationReviewOnly}from'/src/utils/excelPayrollLocationAllocations.ts';import'/src/AppShell.css';import'/src/OrganizationSetup.css';import'/src/components/ExcelPayrollSetup.css';const batch=${JSON.stringify(batch)},context=${JSON.stringify(context)},initial=${JSON.stringify(request)};const original=JSON.stringify({batch,context,initial});function freeze(value){if(value&&typeof value==='object'){Object.freeze(value);Object.values(value).forEach(freeze)}}freeze(batch);freeze(context);freeze(initial);function Fixture(){const params=new URLSearchParams(location.search);const[request,setRequest]=React.useState({...initial,rowIds:params.has('partial')?['part-0']:initial.rowIds}),[preview,setPreview]=React.useState(null);const contextForCase=params.has('unsupported')?{...context,locationAllocationSupported:false}:context;function change(patch){setRequest(current=>({...current,...patch}));if(!isLocationAllocationReviewOnly(request.locationAllocations,patch.locationAllocations))setPreview(null)}function returnPreview(){const review=request.locationAllocations;if(!review)return;setPreview({locationAllocations:{...review,groups:review.groups.map(group=>({...group,parts:group.parts.map((part,index)=>({...part,sourceRow:53+index,partKey:'part-key-'+index,assignmentId:'assignment-'+index,workLocationName:context.workLocations.find(l=>l.id===part.workLocationId)?.name||'',payrollDays:30,presentDays:index?13:17,payableDays:index?13:17,annualCtc:12000,salaryInputs:{BASIC:1000+index*1000}}))}))}})}return <main className="hrms-page-body"><Form className="excel-payroll-setup" component="div" layout="vertical"><Review batch={batch} context={contextForCase} request={request} preview={preview} disabled={false} onChange={change}/></Form><button onClick={returnPreview}>Return synthetic allocation preview</button><button onClick={()=>{if(JSON.stringify({batch,context,initial})!==original)throw Error('Frozen originals changed')}}>Check source integrity</button><output data-testid="request">{JSON.stringify(request)}</output><output data-testid="preview">{preview?'Preview present':'No preview'}</output></main>}ReactDOM.createRoot(document.getElementById('root')).render(<Fixture/>);`)
+const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"/><style>body{margin:0;font-family:Arial}.hrms-page-body{padding:12px!important;max-width:100%;box-sizing:border-box;min-width:0}output{display:none}section{min-width:0}details{margin-block:12px}summary{overflow-wrap:anywhere}.ant-space{max-width:100%}.ant-tag{white-space:normal!important;overflow-wrap:anywhere;max-width:100%}</style></head><body><div id="root"></div><script type="module">import RefreshRuntime from'/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plugin_react_preamble_installed__=true;await import('/${filename}');</script></body></html>`
+const viteClient = 'const s=new Map();export function createHotContext(){return {data:{},accept(){},dispose(){},prune(){},on(){},off(){},send(){},invalidate(){}}}export function updateStyle(id,css){let e=s.get(id);if(!e){e=document.createElement("style");document.head.appendChild(e);s.set(id,e)}e.textContent=css}export function removeStyle(id){s.get(id)?.remove();s.delete(id)}export function injectQuery(url){return url}'
+const checks = [], audits = [], failures = [], browser = await chromium.launch({ headless: true })
+async function scenario(id, viewport, query = '') {
+  const context = await browser.newContext({ viewport, serviceWorkers: 'block' }), page = await context.newPage(), unexpected = [], errors = []
+  page.on('pageerror', error => errors.push(error.message)); await context.routeWebSocket('**/*', socket => socket.close())
+  await context.route('**/*', route => {
+    const url = new URL(route.request().url()), p = url.pathname
+    if (url.origin === 'https://fonts.googleapis.com') return route.fulfill({ contentType: 'text/css', body: '' })
+    if (p.startsWith('/api/') || url.origin !== origin) { unexpected.push(route.request().method() + ' ' + p); return route.abort('blockedbyclient') }
+    if (p === '/location-allocations-fixture') return route.fulfill({ contentType: 'text/html', body: html })
+    if (p === '/@vite/client') return route.fulfill({ contentType: 'application/javascript', body: viteClient })
+    if (p === '/favicon.ico') return route.fulfill({ status: 204, body: '' })
+    if (route.request().method() === 'GET' && (p === '/' + filename || ['/src/', '/node_modules/', '/@', '/assets/'].some(prefix => p.startsWith(prefix)))) return route.continue()
+    unexpected.push(route.request().method() + ' ' + p); return route.abort('blockedbyclient')
+  })
+  const read = async () => JSON.parse(await page.getByTestId('request').textContent())
+  const choose = async (label, text) => { await page.locator(`.ant-select[aria-label="${label}"] > .ant-select-selector`).click(); await page.locator('.ant-select-dropdown:visible .ant-select-item-option-content').getByText(text, { exact: true }).click() }
+  try {
+    await page.goto(origin + '/location-allocations-fixture' + query, { waitUntil: 'domcontentloaded' })
+    const toggle = page.getByRole('checkbox', { name: 'Use monthly location allocations', exact: true })
+    await expect(toggle).not.toBeChecked(); assert.equal((await read()).locationAllocations, undefined)
+    await expect(page.getByText('Payroll period: 2026-09', { exact: true })).toBeVisible(); await expect(page.getByText('Configuration import / effective date: 2026-10-28', { exact: true })).toBeVisible(); await expect(page.locator('input[type=date]')).toHaveCount(0)
+    if (query) { await expect(toggle).toBeDisabled(); await expect(page.getByText(query.includes('partial') ? 'Select every original part for this employee' : 'Monthly location allocation runtime is unavailable', { exact: true })).toBeVisible(); checks.push(id + ': incomplete-source-group/unsupported-runtime preserves absent optional block'); return }
+    await toggle.check(); let data = await read(); assert.deepEqual(data.locationAllocations.groups.map(group => [group.employeeId, group.parts.map(part => [part.rowId, part.workLocationId, part.templateId, part.componentScopes])]), [[0, [['part-0', 0, '', {}], ['part-1', 0, '', {}]]]])
+    checks.push(id + ': explicit opt-in retains saved payroll month and server import date without guessed employee/location/template/dates')
+    await choose('Master employee for SYN01', 'MASTER001 · Verified synthetic Master')
+    for (const [row, location, template] of [[53, 'Master North office', 'North Settings template'], [54, 'Master South office', 'South Settings template']]) {
+      await choose('Location Master for source row ' + row, location)
+      await page.getByRole('combobox', { name: 'Settings template for source row ' + row, exact: true }).click(); await expect(page.getByText('Other client forbidden template', { exact: true })).toHaveCount(0); await page.locator('.ant-select-dropdown:visible .ant-select-item-option-content').getByText(template, { exact: true }).click()
+      await choose('Component scope 101 source row ' + row, 'Source formula for each location part')
+    }
+    data = await read(); assert.equal(data.locationAllocations.groups[0].employeeId, 100); assert.ok(data.employeeDecisions.every(decision => decision.matchedEmployeeId === 100 && decision.allowCreate === false))
+    assert.deepEqual(data.locationAllocations.groups[0].parts.map(part => [part.workLocationId, part.templateId, part.componentScopes]), [[1, 'settings-0', { '101': 'SourceFormulaPerPart' }], [2, 'settings-1', { '101': 'SourceFormulaPerPart' }]])
+    await expect(page.getByText('Mapped source day units: 17 (C53)', { exact: true })).toBeVisible(); await expect(page.getByText('Mapped source day units: 13 (C54)', { exact: true })).toBeVisible(); await expect(page.getByText('Actual present input: Not mapped', { exact: true })).toHaveCount(2)
+    await expect(page.getByText('Recorded source state: Tripura', { exact: true })).toBeVisible()
+    checks.push(id + ': one explicit Master and existing client Settings/location IDs retain17/13 source units without inferring actual presence')
+    const ref = page.locator('.ant-select[aria-label="Monthly reference assignment for SYN01"]'); await expect(ref).toHaveClass(/ant-select-disabled/)
+    await page.getByRole('button', { name: 'Return synthetic allocation preview', exact: true }).click(); await choose('Monthly reference assignment for SYN01', 'Master South office · source row 54 · assignment-1')
+    await page.getByRole('checkbox', { name: 'Review location Settings applicability', exact: true }).check(); await page.getByRole('checkbox', { name: 'Review monthly location allocations', exact: true }).check(); data = await read(); assert.equal(data.locationAllocations.groups[0].referenceAssignmentId, 'assignment-1'); assert.ok(data.locationAllocations.reviewed && data.locationAllocations.reviewedSettingsApplicability)
+    await choose('Location Master for source row 54', 'Master North office'); data = await read(); assert.equal(data.locationAllocations.groups[0].referenceAssignmentId, undefined); assert.equal(data.locationAllocations.reviewed, false); assert.equal(data.locationAllocations.reviewedSettingsApplicability, false); await expect(page.getByTestId('preview')).toHaveText('No preview')
+    checks.push(id + ': preview reference selected explicitly; subsequent location edit clears reference, reviews and stale preview')
+    await choose('Settings template for source row 54', 'North Settings template'); assert.deepEqual((await read()).locationAllocations.groups[0].parts[1].componentScopes, {})
+    await page.getByRole('button', { name: 'Check source integrity', exact: true }).click(); assert.ok(!(await page.locator('body').innerText()).includes('AAAAA1111A'))
+    await expect(page.getByRole('button', { name: /Apply|Send|Email|PDF|Delete/ })).toHaveCount(0)
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Page must not overflow horizontally')
+    await page.screenshot({ path: path.join(output, id + '.png'), fullPage: true, animations: 'disabled' })
+    checks.push(id + ': template edit clears component scopes, originals stay immutable, no identity/private data/actions or date-range inference')
+  } catch (error) { await page.screenshot({ path: path.join(output, id + '-failure.png'), fullPage: true }).catch(() => {}); throw error }
+  finally { assert.deepEqual(unexpected, []); assert.deepEqual(errors, []); audits.push({ scenario: id, unexpected, errors, realApiCallsForwarded: 0, realBusinessWrites: 0 }); await context.close() }
+}
+try {
+  for (const [id, viewport, query] of [['desktop', { width: 1366, height: 900 }, ''], ['mobile', { width: 390, height: 844 }, ''], ['partial', { width: 1366, height: 900 }, '?partial=1'], ['unsupported', { width: 1366, height: 900 }, '?unsupported=1']]) {
+    try { await scenario(id, viewport, query) } catch (error) { failures.push({ scenario: id, error: error.stack }); break }
+  }
+} finally { await browser.close(); fs.unlinkSync(fixturePath); fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ checks, audits, failures, realApiCallsForwarded: 0, realBusinessWrites: 0 }, null, 2)); console.log(JSON.stringify({ scenarios: audits.length, checks: checks.length, failures, output, realApiCallsForwarded: 0, realBusinessWrites: 0 })) }
+if (failures.length) process.exitCode = 1

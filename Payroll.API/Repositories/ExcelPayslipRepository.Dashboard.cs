@@ -11,7 +11,9 @@ public sealed partial class ExcelPayslipRepository
             throw new InvalidOperationException("Select a valid saved batch.");
         await using var db = Db(); await db.OpenAsync();
         if (!await SupportedAsync(db, clientId)) return null;
-        var selection = SelectDashboardBatches(clientId, await ReadBatchSummariesAsync(db, clientId), batchId);
+        var summaries=await ReadBatchSummariesAsync(db,clientId);
+        // Explicit historical URLs remain readable; ordinary history/trend uses only the working version.
+        var selection = SelectDashboardBatches(clientId, await FilterConsolidatedSummariesAsync(db,clientId,summaries,batchId is not null), batchId);
         if (selection is null) return null;
         var result = new ExcelPayslipDashboard { ClientId = clientId, SelectedBatch = selection.SelectedBatch, History = selection.History };
         if (selection.SelectedBatch is null) return result;

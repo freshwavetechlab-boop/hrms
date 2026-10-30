@@ -15,6 +15,7 @@ public partial class EmployeeRepository
         public string SalaryStructureId { get; set; } = "";
         public decimal AnnualCtc { get; set; }
         public string SalaryJson { get; set; } = "{}";
+        public string ChangeReason { get; set; } = "";
     }
 
     internal static bool IsUnconfiguredExcelSalaryHistory(ExcelPayrollSalaryHistory row)
@@ -30,8 +31,27 @@ public partial class EmployeeRepository
         catch (JsonException) { return false; }
     }
 
-    internal static DateTime[] ExcelSalaryHistoryMarkers(IEnumerable<ExcelPayrollSalaryHistory> history, DateTime effectiveFrom)
+    internal static bool OwnsExcelSalaryHistory(ExcelPayrollSalaryHistory row, string reference) =>
+        !string.IsNullOrWhiteSpace(reference) && (row.ChangeReason == reference
+            || row.ChangeReason.StartsWith(reference + ";", StringComparison.Ordinal));
+
+    internal static DateTime[] ExcelSalaryHistoryMarkers(IEnumerable<ExcelPayrollSalaryHistory> history, DateTime effectiveFrom,
+        string? correctionOfReference = null)
     {
+        if (correctionOfReference is not null)
+        {
+            if (string.IsNullOrWhiteSpace(correctionOfReference))
+                throw new InvalidOperationException("The exact original source reference is required for salary correction.");
+            var affected = history.Where(row => row.EffectiveFrom.Date >= effectiveFrom.Date).ToArray();
+            if (affected.Any(row => !IsUnconfiguredExcelSalaryHistory(row) && !OwnsExcelSalaryHistory(row, correctionOfReference)))
+                throw new InvalidOperationException("A configured salary-history record is not owned by the reviewed original import. Retain it and review its effective dates before correction.");
+            // Period payroll selects history by effective date, including historical rows.
+            // Append corrected versions at the original source dates so an older later
+            // snapshot cannot win. Empty historical markers remain untouched.
+            return affected.Where(row => row.EffectiveFrom.Date > effectiveFrom.Date
+                    && (OwnsExcelSalaryHistory(row, correctionOfReference) || row.Status == "Active"))
+                .Select(row => row.EffectiveFrom.Date).Distinct().Order().ToArray();
+        }
         var later = history.Where(row => row.EffectiveFrom.Date > effectiveFrom.Date).ToList();
         if (later.Any(row => !IsUnconfiguredExcelSalaryHistory(row)))
             throw new InvalidOperationException("A later configured basic-pay record exists. Review salary history before importing an earlier salary setup.");
@@ -79,15 +99,15 @@ GROUP BY receipt.id,receipt.client_id,assignment.GroupId", new { ClientIds = cli
     // The caller owns the transaction, client lock, reviewed identity and source snapshot.
     // This deliberately does not provision logins, publish notifications or remap other policies.
     internal static async Task<int> SaveExcelPayrollSetupEmployeeAsync(MySqlConnection db, MySqlTransaction tx,
-        Employee employee, DateTime effectiveFrom, string actor, string reference)
+        Employee employee, DateTime effectiveFrom, string actor, string reference, string? correctionOfReference = null)
     {
         if (employee.ClientId <= 0 || string.IsNullOrWhiteSpace(employee.EmployeeCode) || string.IsNullOrWhiteSpace(employee.FirstName))
             throw new InvalidOperationException("A reviewed client, employee code and name are required.");
         if (employee.Id > 0 && await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM employees WHERE Id=@Id FOR UPDATE", new { employee.Id }, tx) != employee.ClientId)
             throw new InvalidOperationException("The reviewed employee does not belong to this client.");
-        var history = employee.Id <= 0 ? [] : (await db.QueryAsync<ExcelPayrollSalaryHistory>(@"SELECT Id,EffectiveFrom,Status,SalaryStructureId,AnnualCtc,CAST(SalaryJson AS CHAR) SalaryJson
+        var history = employee.Id <= 0 ? [] : (await db.QueryAsync<ExcelPayrollSalaryHistory>(@"SELECT Id,EffectiveFrom,Status,SalaryStructureId,AnnualCtc,CAST(SalaryJson AS CHAR) SalaryJson,COALESCE(ChangeReason,'') ChangeReason
 FROM employee_it0008_basic_pay WHERE EmployeeId=@Id ORDER BY EffectiveFrom,Id FOR UPDATE", new { employee.Id }, tx)).ToList();
-        var markers = ExcelSalaryHistoryMarkers(history, effectiveFrom);
+        var markers = ExcelSalaryHistoryMarkers(history, effectiveFrom, correctionOfReference);
         var superseded = history.Where(row => row.Status == "Active" && row.EffectiveFrom.Date >= effectiveFrom.Date).Select(row => row.Id).ToArray();
         if (superseded.Length > 0)
         {
@@ -97,10 +117,12 @@ FROM employee_it0008_basic_pay WHERE EmployeeId=@Id ORDER BY EffectiveFrom,Id FO
 WHERE EmployeeId=@EmployeeId AND Id IN @Ids AND Status='Active'", new { EmployeeId=employee.Id,Ids=superseded },tx);
         }
         var id = await SaveWithOpenConnectionAsync(db, employee, actor, employee.Id == 0 ? null : "0008", reference, tx,
-            effectiveDate: effectiveFrom.Date, synchronizeAttendancePolicies: false);
+            effectiveDate: effectiveFrom.Date, synchronizeAttendancePolicies: false, salaryOnly: employee.Id > 0);
         foreach (var marker in markers)
             await WritePhysicalInfotypeAsync(db, employee, "0008", "Master Update", marker,
-                $"{reference}; initial salary effective {effectiveFrom:yyyy-MM-dd}; retained empty setup marker {marker:yyyy-MM-dd}.", actor, tx);
+                correctionOfReference is null
+                    ? $"{reference}; initial salary effective {effectiveFrom:yyyy-MM-dd}; retained empty setup marker {marker:yyyy-MM-dd}."
+                    : $"{reference}; correction of {correctionOfReference}; retained source effective date {marker:yyyy-MM-dd}.", actor, tx);
         return id;
     }
 }

@@ -43,4 +43,8 @@ const fallbackDashboard: DashboardSnapshot = {
   approvalAging: []
 }
 
-export const getDashboard = (clientId = 0) => getJson<DashboardSnapshot>(`/api/dashboard?clientId=${clientId}`, fallbackDashboard)
+export const getDashboard = (clientId = 0, month?: string) => {
+  const query = new URLSearchParams({ clientId: String(clientId) })
+  if (month) query.set('month', month)
+  return getJson<DashboardSnapshot>(`/api/dashboard?${query}`, fallbackDashboard)
+}

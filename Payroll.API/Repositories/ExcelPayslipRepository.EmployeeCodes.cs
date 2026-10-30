@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 using System.Text.RegularExpressions;
+using Dapper;
 using Payroll.API.Models;
 using Payroll.API.Services;
 
@@ -34,12 +35,17 @@ public sealed partial class ExcelPayslipRepository
         var unassigned = missing.Where(row => string.IsNullOrWhiteSpace(row.EmployeeCode)).ToArray();
         if (unassigned.Length > 0)
         {
+            if (batch.EmployeeCodeGeneration is { Enabled: false })
+                throw new InvalidOperationException("Some employees still have no code after checking existing Master matches. Enable Generate blanks or map their existing Employee Code before saving.");
             var prefix = ExcelPayslipVarianceService.NormalizeText(clientCode);
+            if (batch.EmployeeCodeGeneration is not null && prefix.Length == 0)
+                throw new InvalidOperationException("Set this client's code before generating employee codes.");
             var used = historicalCodes.Concat(masters.Select(employee => employee.EmployeeCode)).Concat(provided.Select(row => row.EmployeeCode))
                 .Select(ExcelPayslipVarianceService.NormalizeText).Where(code => code.Length > 0).ToHashSet(StringComparer.Ordinal);
             var expression = new Regex("^" + Regex.Escape(prefix) + @"([0-9]+)$", RegexOptions.CultureInvariant);
             var suffixes = used.Select(code => expression.Match(code)).Where(match => match.Success).Select(match => match.Groups[1].Value).ToArray();
-            var width = Math.Clamp(suffixes.Length > 0 ? suffixes.Max(suffix => suffix.Length) : 5, 1, 12);
+            var width = batch.EmployeeCodeGeneration?.Digits ?? Math.Clamp(suffixes.Length > 0 ? suffixes.Max(suffix => suffix.Length) : 5, 1, 12);
+            if (width is < 1 or > 12) throw new InvalidOperationException("Employee code sequence digits must be between 1 and 12.");
             var next = suffixes.Select(suffix => BigInteger.Parse(suffix, CultureInfo.InvariantCulture)).DefaultIfEmpty(BigInteger.Zero).Max() + 1;
             foreach (var row in unassigned)
             {
@@ -76,5 +82,26 @@ public sealed partial class ExcelPayslipRepository
     {
         while (row.Cells.Count <= column) row.Cells.Add(null);
         row.Cells[column] = new() { Value = value };
+    }
+
+    // Scoped sequence metadata only: no employee identities or source amounts are returned.
+    public async Task<ExcelPayslipCodeOptions> GetEmployeeCodeOptionsAsync(int clientId)
+    {
+        await using var db = Db(); await db.OpenAsync();
+        await using var tx = await db.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, isReadOnly: true);
+        var client = await db.QueryFirstOrDefaultAsync<Client>("SELECT Id,Name,Code,IsActive FROM clients WHERE Id=@ClientId", new { ClientId = clientId }, tx);
+        if (client is null || !IsSupportedClient(client)) throw new InvalidOperationException("Select an active client.");
+        var codes = await db.QueryAsync<string>(@"SELECT EmployeeCode FROM employees WHERE ClientId=@ClientId
+UNION SELECT codes.employee_code FROM excel_payslip_batches batches
+CROSS JOIN JSON_TABLE(batches.batch_json,'$.rows[*]' COLUMNS(employee_code VARCHAR(80) PATH '$.employeeCode' NULL ON EMPTY)) codes
+WHERE batches.client_id=@ClientId AND codes.employee_code IS NOT NULL", new { ClientId = clientId }, tx);
+        var prefix = ExcelPayslipVarianceService.NormalizeText(client.Code);
+        var expression = new Regex("^" + Regex.Escape(prefix) + @"([0-9]+)$", RegexOptions.CultureInvariant);
+        var suffixes = codes.Select(ExcelPayslipVarianceService.NormalizeText).Select(code => expression.Match(code))
+            .Where(match => match.Success).Select(match => match.Groups[1].Value).ToArray();
+        var digits = Math.Clamp(suffixes.Length > 0 ? suffixes.Max(suffix => suffix.Length) : 5, 1, 12);
+        var next = suffixes.Select(suffix => BigInteger.Parse(suffix, CultureInfo.InvariantCulture)).DefaultIfEmpty(BigInteger.Zero).Max() + 1;
+        await tx.RollbackAsync();
+        return new(prefix, digits, next.ToString(CultureInfo.InvariantCulture));
     }
 }

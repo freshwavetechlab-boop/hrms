@@ -36,8 +36,9 @@ public static partial class ExcelPayslipCalculationService
         if (source.Columns.Count(c => c.Kind == "employeeName") != 1 || source.Columns.Count(c => c.Kind == "netPay") != 1
             || !source.Columns.Any(c => c.Kind == "earning") || new[] { "employeeCode", "email", "grossTotal", "deductionTotal" }.Any(k => source.Columns.Count(c => c.Kind == k) > 1))
             return "Map one employee name, one net pay and at least one earning column.";
-        if (source.Rows.SelectMany(r => r.Cells).Any(c => c is not null && (c.Value is null || c.Value.Length > 10000 || c.FormulaText?.Length > 4096 || c.Error?.Length > 100 || c.CalculationError?.Length > 500)))
+        if (source.Rows.SelectMany(r => r.Cells).Any(c => c is not null && (c.Value is null || c.Value.Length > 10000 || c.FormulaText?.Length > 4096 || c.Error?.Length > 100 || c.CalculationError?.Length > 500 || c.DataType is not ("" or "Number" or "Text" or "Boolean" or "Blank"))))
             return "A source cell exceeds its supported size.";
+        try { ValidateWorkbookDependencies(source); } catch (InvalidOperationException error) { return error.Message; }
         if (batch.Rows is null || batch.Rows.Count is < 1 or > 1000 || batch.Rows.Select(r => r.SourceRow).Distinct().Count() != batch.Rows.Count
             || batch.Rows.Select(r => r.Id).Distinct().Count() != batch.Rows.Count)
             return "Calculation requires unique batch rows.";
@@ -131,7 +132,7 @@ public static partial class ExcelPayslipCalculationService
             var (columnIndex, rowNumber) = ParseAddress(address);
             if (rowNumber > source.HeaderRow && source.Columns.Any(c => c.ColumnIndex == columnIndex && (c.Kind is "employeeName" or "employeeCode" or "email" || IsIdentityInformation(c))))
                 throw new InvalidOperationException($"{address} is an employee identity field and cannot be changed by calculation.");
-            EnsureBounded(value); cell.Value = value.ToString(CultureInfo.InvariantCulture);
+            EnsureBounded(value); cell.Value = value.ToString(CultureInfo.InvariantCulture); cell.DataType = "Number";
             cell.MissingCachedValue = false;
         }
         foreach (var attendance in request.Attendance)
@@ -148,6 +149,7 @@ public static partial class ExcelPayslipCalculationService
         var reviewedBlankInputs = batch.Rows.SelectMany(row => source.Columns.Where(column => column.BlankAsZero && AmountKinds.Contains(column.Kind))
             .Select(column => Address(column.ColumnIndex, row.SourceRow))).Where(address => PlainBlank(cells.GetValueOrDefault(address))).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var evaluator = new CellEvaluator(cells, source.SheetName, attendanceAddresses, reviewedBlankInputs);
+        evaluator.Configure(copy);
         foreach (var row in result.Rows)
         {
             var attendanceDrivesSalary = false;
@@ -191,6 +193,7 @@ public static partial class ExcelPayslipCalculationService
             foreach (var info in source.Columns.Where(column => column.Kind == "info"))
                 row.Information[infoIndex++].Value = cells.GetValueOrDefault(Address(info.ColumnIndex, row.SourceRow))?.Value ?? "";
         }
+        copy.LookupTraces = evaluator.Traces.ToList();
         result.CalculationSource = copy;
         return result;
     }
@@ -218,163 +221,14 @@ public static partial class ExcelPayslipCalculationService
     }
     private static string NormalizeAddress(string address) { var (column, row) = ParseAddress(address); return Address(column, row); }
 
-    private sealed class CellEvaluator(Dictionary<string, ExcelPayslipCalculationCell> cells, string sheet, HashSet<string> attendanceInputs, HashSet<string> reviewedBlankInputs, IReadOnlyDictionary<string, decimal>? fixedInputs = null)
+    // Compatibility facade for existing saved-sheet callers; all formula work uses the bounded workbook evaluator.
+    private sealed class CellEvaluator(Dictionary<string,ExcelPayslipCalculationCell> cells,string sheet,HashSet<string> attendanceInputs,HashSet<string> reviewedBlankInputs,IReadOnlyDictionary<string,decimal>? fixedInputs=null)
     {
-        private readonly Dictionary<string, decimal> cache = new(StringComparer.OrdinalIgnoreCase);
-        private readonly HashSet<string> active = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Stack<string> stack = new();
-        private readonly Dictionary<string, HashSet<string>> dependencies = new(StringComparer.OrdinalIgnoreCase);
-        private int operations;
-        public bool DependsOn(string address, string input) => dependencies.TryGetValue(address, out var values) && values.Contains(input);
-        private void CountWork() { if (++operations > 150000) throw new InvalidOperationException("Calculation dependency limit exceeded."); }
-        private void LinkToParent(string address) { if (stack.TryPeek(out var parent)) dependencies[parent].UnionWith(dependencies[address]); }
-        public decimal Read(string reference)
-        {
-            CountWork();
-            var bang = reference.LastIndexOf('!');
-            if (bang >= 0)
-            {
-                if (!reference[..bang].Trim('\'').Replace("''", "'").Equals(sheet, StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("Cross-worksheet and external references cannot be recalculated. Supply a self-contained salary worksheet.");
-                reference = reference[(bang + 1)..];
-            }
-            var address = NormalizeAddress(reference);
-            if (cache.TryGetValue(address, out var known)) { LinkToParent(address); return known; }
-            if (active.Count >= 128) throw new InvalidOperationException("Calculation dependency limit exceeded.");
-            if (!active.Add(address)) throw new InvalidOperationException($"Circular formula dependency at {address}.");
-            dependencies[address] = attendanceInputs.Contains(address) ? [address] : [];
-            stack.Push(address);
-            try
-            {
-                if (fixedInputs is not null && fixedInputs.TryGetValue(address, out var supplied)) return cache[address] = EnsureBounded(supplied);
-                if (reviewedBlankInputs.Contains(address)) return cache[address] = 0;
-                if (!cells.TryGetValue(address, out var cell)) throw new InvalidOperationException($"Required input {address} is missing.");
-                if (!string.IsNullOrWhiteSpace(cell.CalculationError)) throw new InvalidOperationException($"Saved formula cannot be recalculated: {cell.CalculationError}");
-                decimal value;
-                if (!string.IsNullOrWhiteSpace(cell.FormulaText)) value = new Formula(cell.FormulaText, this).Parse().Value();
-                else if (cell.Error is not null || !TryNumber(cell.Value, out value)) throw new InvalidOperationException($"Required input {address} is not a valid number.");
-                return cache[address] = EnsureBounded(value);
-            }
-            catch (Exception exception) when (exception is OverflowException or DivideByZeroException)
-            { throw new InvalidOperationException($"Formula at {address} cannot be calculated: {exception.Message}"); }
-            catch (InvalidOperationException exception) { throw new InvalidOperationException($"{address}: {exception.Message}"); }
-            finally { active.Remove(address); stack.Pop(); LinkToParent(address); }
-        }
-        public IEnumerable<decimal> Range(string first, string last)
-        {
-            var (c1, r1) = ParseAddress(first); var (c2, r2) = ParseAddress(last);
-            if (c2 < c1 || r2 < r1 || (long)(c2 - c1 + 1) * (r2 - r1 + 1) > 10000) throw new InvalidOperationException("Formula range is reversed or too large.");
-            for (var row = r1; row <= r2; row++) for (var col = c1; col <= c2; col++)
-            {
-                CountWork();
-                var address = Address(col, row);
-                if (!cells.TryGetValue(address, out var cell) || (string.IsNullOrWhiteSpace(cell.FormulaText) && cell.Error is null && !TryNumber(cell.Value, out _))) continue;
-                yield return Read(address);
-            }
-        }
-        public void UpdateCachedValues() { foreach (var value in cache) { if (reviewedBlankInputs.Contains(value.Key)) continue; cells[value.Key].Value = value.Value.ToString("G29", CultureInfo.InvariantCulture); cells[value.Key].Error = null; cells[value.Key].MissingCachedValue = false; } }
-    }
-
-    private sealed record Node(Func<decimal> Value, Func<IEnumerable<decimal>>? Range = null);
-    private sealed class Formula(string text, CellEvaluator cells)
-    {
-        private int index, depth, nodes;
-        private char Current => index < text.Length ? text[index] : '\0';
-        public Node Parse()
-        {
-            Match('='); var value = Compare(); Skip();
-            if (index != text.Length) throw new InvalidOperationException($"Unsupported formula syntax near character {index + 1}.");
-            return value;
-        }
-        private Node Compare()
-        {
-            var left = Sum(); Skip(); var start = index;
-            while (Current is '<' or '>' or '=') index++;
-            if (index == start) return left;
-            var operation = text[start..index]; var right = Sum();
-            if (operation is not ("=" or "<>" or "<" or ">" or "<=" or ">=")) throw new InvalidOperationException("Unsupported comparison.");
-            return new(() => (operation switch { "=" => left.Value() == right.Value(), "<>" => left.Value() != right.Value(), "<" => left.Value() < right.Value(), ">" => left.Value() > right.Value(), "<=" => left.Value() <= right.Value(), _ => left.Value() >= right.Value() }) ? 1m : 0m);
-        }
-        private Node Sum()
-        {
-            var node = Product();
-            while (true) { Skip(); var op = Current; if (op is not ('+' or '-')) return node; index++; var left = node; var right = Product(); node = new(() => op == '+' ? left.Value() + right.Value() : left.Value() - right.Value()); }
-        }
-        private Node Product()
-        {
-            var node = Atom();
-            while (true) { Skip(); var op = Current; if (op is not ('*' or '/')) return node; index++; var left = node; var right = Atom(); node = new(() => op == '*' ? left.Value() * right.Value() : left.Value() / right.Value()); }
-        }
-        private Node Atom()
-        {
-            if (++depth > 64 || ++nodes > 512) throw new InvalidOperationException("Formula nesting or size limit exceeded.");
-            try
-            {
-                Skip(); Node node;
-                if (Match('+')) node = Atom();
-                else if (Match('-')) { var value = Atom(); node = new(() => -value.Value()); }
-                else if (Match('(')) { node = Compare(); Require(')'); }
-                else if (char.IsDigit(Current) || Current == '.')
-                {
-                    var start = index;
-                    while (char.IsDigit(Current) || Current == '.') index++;
-                    if (Current is 'e' or 'E') { index++; if (Current is '+' or '-') index++; while (char.IsDigit(Current)) index++; }
-                    if (!decimal.TryParse(text[start..index], NumberStyles.Float, CultureInfo.InvariantCulture, out var number)) throw new InvalidOperationException("Invalid formula number.");
-                    node = new(() => number);
-                }
-                else
-                {
-                    var name = Identifier();
-                    if (Match('('))
-                    {
-                        var args = new List<Node>();
-                        if (!Match(')')) { do { if (args.Count >= 256) throw new InvalidOperationException("Too many formula arguments."); args.Add(Compare()); } while (Match(',')); Require(')'); }
-                        node = Function(name.ToUpperInvariant(), args);
-                    }
-                    else if (Match(':'))
-                    {
-                        var end = Identifier();
-                        node = new(() => throw new InvalidOperationException("Use cell ranges inside SUM, MIN or MAX."), () => cells.Range(name, end));
-                    }
-                    else if (name.Equals("TRUE", StringComparison.OrdinalIgnoreCase) || name.Equals("FALSE", StringComparison.OrdinalIgnoreCase)) node = new(() => name.Equals("TRUE", StringComparison.OrdinalIgnoreCase) ? 1m : 0m);
-                    else node = new(() => cells.Read(name));
-                }
-                while (Match('%')) { var previous = node; node = new(() => previous.Value() / 100m); }
-                return node;
-            }
-            finally { depth--; }
-        }
-        private static Node Function(string name, List<Node> args)
-        {
-            IEnumerable<decimal> Values() => args.SelectMany(arg => arg.Range?.Invoke() ?? [arg.Value()]);
-            if (name is "SUM" or "MIN" or "MAX") return new(() => { var values = Values().ToArray(); return name == "SUM" ? values.Sum() : values.Length == 0 ? 0 : name == "MIN" ? values.Min() : values.Max(); });
-            if (name == "IF" && args.Count == 3) return new(() => args[0].Value() != 0 ? args[1].Value() : args[2].Value());
-            if (name is "AND" or "OR" && args.Count > 0) return new(() => { var values = Values().ToArray(); return (name == "AND" ? values.All(v => v != 0) : values.Any(v => v != 0)) ? 1m : 0m; });
-            if (name == "ABS" && args.Count == 1) return new(() => Math.Abs(args[0].Value()));
-            if (name is "ROUND" or "ROUNDDOWN" or "ROUNDUP" && args.Count == 2) return new(() =>
-            {
-                var places = args[1].Value();
-                if (places != decimal.Truncate(places) || places is < -6 or > 8) throw new InvalidOperationException("Rounding precision must be between -6 and 8.");
-                var scale = (decimal)Math.Pow(10, (int)places); var value = args[0].Value() * scale;
-                return (name == "ROUND" ? Math.Round(value, 0, MidpointRounding.AwayFromZero) : name == "ROUNDDOWN" ? decimal.Truncate(value) : Math.Sign(value) * decimal.Ceiling(Math.Abs(value))) / scale;
-            });
-            throw new InvalidOperationException($"Unsupported function or argument count: {name}.");
-        }
-        private string Identifier()
-        {
-            Skip(); var start = index;
-            if (Current == '\'')
-            {
-                index++;
-                while (Current != '\0') { if (Current == '\'') { index++; if (Current != '\'') break; } index++; }
-                if (!Match('!')) throw new InvalidOperationException("Invalid worksheet reference.");
-            }
-            while (char.IsLetterOrDigit(Current) || Current is '$' or '_' or '.' or '!') index++;
-            if (start == index) throw new InvalidOperationException($"Unsupported formula token at character {index + 1}.");
-            return text[start..index];
-        }
-        private void Skip() { while (char.IsWhiteSpace(Current)) index++; }
-        private bool Match(char value) { Skip(); if (Current != value) return false; index++; return true; }
-        private void Require(char value) { if (!Match(value)) throw new InvalidOperationException($"Expected '{value}' in formula."); }
+        private WorkbookEvaluator workbook=new(cells,sheet,attendanceInputs,reviewedBlankInputs,fixedInputs);
+        public void Configure(ExcelPayslipCalculationSource source)=>workbook=new(cells,sheet,attendanceInputs,reviewedBlankInputs,fixedInputs,source);
+        public decimal Read(string reference) { try { return workbook.Read(reference); } catch (WorkbookError error) { throw new InvalidOperationException($"Formula at {reference} cannot be calculated: {error.Message}",error); } }
+        public bool DependsOn(string address,string input)=>workbook.DependsOn(address,input);
+        public void UpdateCachedValues()=>workbook.UpdateCachedValues();
+        public IReadOnlyList<ExcelPayslipLookupTrace> Traces=>workbook.Traces;
     }
 }

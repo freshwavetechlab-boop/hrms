@@ -1,4 +1,6 @@
 .hrms-dashboard { min-width: 0; container: hrms-dashboard / inline-size; }
+.dashboard-month-control { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%; color: #49556b; font-size: 12px; }
+.dashboard-month-control input { min-width: 130px; max-width: 100%; padding: 6px 8px; border: 1px solid #dbe2ed; border-radius: 7px; background: #fff; color: #26324a; font: inherit; }
 .hrms-dashboard .dashboard-engine { gap: 18px; }
 .hrms-dashboard .dashboard-kpi { min-height: 112px; grid-template-rows: auto; align-items: center; padding: 18px; gap: 12px; box-shadow: 0 3px 12px #192f4c05; }
 .hrms-dashboard .dashboard-kpi:disabled { opacity: 1; }

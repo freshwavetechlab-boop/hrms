@@ -25,6 +25,9 @@ public static class PayrollCalculationEndpoints
         group.MapGet("/employees", async (int clientId, string? search, HttpContext context, PayRunRepository repository) =>
             context.Items["User"] is AuthUser user && CanAccess(user, clientId, true)
                 ? Results.Ok(await repository.SimulationEmployeesAsync(clientId, search?.Length > 100 ? search[..100] : search, context.RequestAborted)) : Results.StatusCode(403));
+        group.MapGet("/template-snapshots",async (int clientId,HttpContext context,PayRunRepository repository) =>
+            context.Items["User"] is AuthUser user && CanAccess(user,clientId)
+                ? Results.Ok(await repository.SimulationTemplatesAsync(clientId,context.RequestAborted)) : Results.StatusCode(403));
         group.MapPost("/simulate", async (PayrollSimulationRequest request, HttpContext context, PayRunRepository repository) =>
         {
             if (context.Items["User"] is not AuthUser user || !CanAccess(user, request.ClientId, request.Mode == "Employee")) return Results.StatusCode(403);

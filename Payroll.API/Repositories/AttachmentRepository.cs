@@ -1402,17 +1402,18 @@ rejection_reason=@Reason WHERE id=@Id", new { row.Id, Status = approve ? "Verifi
         return null;
     }
 
+    // Use the configured global list and its default. Disabling automatic local
+    // repair must not exclude an already configured API_LOCAL storage server.
+    internal static List<AttachmentStorageServer> ConfiguredWriteServers(IEnumerable<AttachmentStorageServer> servers) => servers
+        .Where(server=>server.IsActive&&server.IsWriteEnabled)
+        .OrderByDescending(server=>server.IsDefaultWriteServer).ThenBy(server=>server.Priority).ThenBy(server=>server.ServerName).ToList();
+
     private async Task<(AttachmentStorageServer? Server, string StorageKey, string? Error)> WriteWithFailoverAsync(
         IFormFile file,
         string requestedStorageKey,
         CancellationToken cancellationToken, bool allowLocalFallback = true)
     {
-        var servers = (await GetStorageServersAsync(true))
-            .Where(server => server.IsActive && server.IsWriteEnabled && (allowLocalFallback || !server.ServerCode.Equals("API_LOCAL", StringComparison.OrdinalIgnoreCase)))
-            .OrderByDescending(server => server.IsDefaultWriteServer)
-            .ThenBy(server => server.Priority)
-            .ThenBy(server => server.ServerName)
-            .ToList();
+        var servers = ConfiguredWriteServers(await GetStorageServersAsync(true));
         var capacityBlocked = false;
         foreach (var server in servers)
         {

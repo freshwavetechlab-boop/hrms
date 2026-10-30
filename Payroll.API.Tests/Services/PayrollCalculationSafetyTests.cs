@@ -37,7 +37,7 @@ public class PayrollCalculationSafetyTests
     [InlineData("MIN(10,20")]
     [InlineData("10 +")]
     [InlineData("10 20")]
-    [InlineData("ROUND(10,2)")]
+    [InlineData("ROUND(10,99)")]
     [InlineData("BOGUS(10)")]
     [InlineData("")]
     public void InvalidFormulasFailInsteadOfPayingZero(string formula) => Assert.Throws<InvalidOperationException>(() => Calculate([Component("1", "WAGE", formula)]));

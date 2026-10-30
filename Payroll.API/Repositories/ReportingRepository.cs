@@ -297,7 +297,7 @@ JOIN employees e ON e.Id=a.employee_id
 WHERE a.client_id=@ClientId AND a.attendance_date BETWEEN @FromDate AND @ToDate
 AND (@Department IS NULL OR e.Department=@Department) AND (@WorkLocationId IS NULL OR e.WorkLocationId=@WorkLocationId)
 ORDER BY a.attendance_date,e.EmployeeCode",
-            "monthly-attendance" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, e.Department, a.attendance_month AS Month, a.working_days AS `Working Days`, a.present_days AS `Present Days`, a.payable_days AS `Payable Days`, a.lop_days AS `LOP Days`, a.source_type AS Source, COALESCE(a.remarks,'') AS Remarks
+            "monthly-attendance" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, e.Department, a.attendance_month AS Month, a.working_days AS `Working Days`, a.present_days AS `Present Days`, CASE WHEN a.present_days IS NULL THEN 'Not supplied' ELSE 'Recorded' END AS `Actual Presence`, a.payable_days AS `Payable Days`, a.lop_days AS `LOP Days`, a.source_type AS Source, COALESCE(a.remarks,'') AS Remarks
 FROM employee_monthly_attendance a
 JOIN employees e ON e.Id=a.employee_id
 WHERE a.client_id=@ClientId AND a.attendance_month=@Month
@@ -306,12 +306,13 @@ ORDER BY e.EmployeeCode",
             "attendance-exception" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, e.Department, @Month AS Month,
 CASE
     WHEN a.employee_id IS NULL THEN 'Missing monthly attendance'
+    WHEN a.present_days IS NULL THEN 'Actual presence not supplied; reviewed payable-only payroll input'
     WHEN a.working_days <= 0 AND a.present_days <= 0 AND a.payable_days <= 0 THEN 'Missing attendance values'
     WHEN a.payable_days > a.working_days OR a.present_days > a.working_days THEN 'Values exceed working days'
     WHEN ABS((a.present_days + a.lop_days) - a.working_days) > 0.01 THEN 'Present + LOP does not match working days'
     ELSE 'Ready'
 END AS Exception,
-COALESCE(a.working_days,0) AS `Working Days`, COALESCE(a.present_days,0) AS `Present Days`, COALESCE(a.payable_days,0) AS `Payable Days`, COALESCE(a.lop_days,0) AS `LOP Days`
+COALESCE(a.working_days,0) AS `Working Days`, a.present_days AS `Present Days`, COALESCE(a.payable_days,0) AS `Payable Days`, COALESCE(a.lop_days,0) AS `LOP Days`
 FROM employees e
 LEFT JOIN employee_monthly_attendance a ON a.employee_id=e.Id AND a.client_id=e.ClientId AND a.attendance_month=@Month
 WHERE e.ClientId=@ClientId AND e.IsActive=TRUE
@@ -463,6 +464,7 @@ ORDER BY CASE WHEN h.WorkLocationId IS NULL THEN 1 ELSE 0 END,h.Id,l.SortOrder,l
                 ["Employee"] = employee.EmployeeName,
                 ["Department"] = employee.Department,
                 ["Present Days"] = employee.PresentDays,
+                ["Actual Presence"] = employee.PresentDays.HasValue ? "Recorded" : "Not supplied",
                 ["Payable Days"] = employee.PayableDays
             };
 
@@ -502,6 +504,7 @@ ORDER BY CASE WHEN h.WorkLocationId IS NULL THEN 1 ELSE 0 END,h.Id,l.SortOrder,l
         "Employee",
         "Department",
         "Present Days",
+        "Actual Presence",
         "Payable Days"
     ];
 
@@ -517,6 +520,7 @@ ORDER BY CASE WHEN h.WorkLocationId IS NULL THEN 1 ELSE 0 END,h.Id,l.SortOrder,l
 
         foreach (var config in configs)
         {
+            EnsureBillingActualPresenceKnown(employee.PresentDays,config.RateCardType);
             var baseAmount = BaseAmountFor(config.RateCardType, employee, lines);
             var configuredAmount = config.RateType.Equals("Percentage", StringComparison.OrdinalIgnoreCase)
                 ? decimal.Round(baseAmount * config.Value / 100m, 2)
@@ -551,6 +555,7 @@ ORDER BY CASE WHEN h.WorkLocationId IS NULL THEN 1 ELSE 0 END,h.Id,l.SortOrder,l
 
         foreach (var rule in activeRules.Where(rule => !rule.LineType.Equals("Commission", StringComparison.OrdinalIgnoreCase)))
         {
+            EnsureBillingActualPresenceKnown(employee.PresentDays,rule.BaseType+" "+rule.LineType+" "+rule.MatchValue);
             var baseAmount = AdvancedBaseAmount(rule, employee, lines, beforeGst);
             var amount = AdvancedRuleAmount(rule, baseAmount);
             if (amount == 0 && rule.RateType.Equals("Actual", StringComparison.OrdinalIgnoreCase)) continue;
@@ -565,6 +570,7 @@ ORDER BY CASE WHEN h.WorkLocationId IS NULL THEN 1 ELSE 0 END,h.Id,l.SortOrder,l
 
         foreach (var rule in activeRules.Where(rule => rule.LineType.Equals("Commission", StringComparison.OrdinalIgnoreCase)))
         {
+            EnsureBillingActualPresenceKnown(employee.PresentDays,rule.BaseType+" "+rule.LineType+" "+rule.MatchValue);
             var baseAmount = rule.BaseType.Equals("Billable Salary", StringComparison.OrdinalIgnoreCase) ? billableSalaryBase : AdvancedBaseAmount(rule, employee, lines, beforeGst);
             var amount = AdvancedRuleAmount(rule, baseAmount);
             beforeGst += amount;
@@ -623,6 +629,13 @@ ORDER BY CASE WHEN h.WorkLocationId IS NULL THEN 1 ELSE 0 END,h.Id,l.SortOrder,l
         return employee.GrossPay + employee.OneTimeEarnings + employee.StatutoryDeductions;
     }
 
+    internal static void EnsureBillingActualPresenceKnown(decimal? actualPresent,string rateBasis)
+    {
+        if(actualPresent.HasValue)return;
+        if(System.Text.RegularExpressions.Regex.IsMatch(rateBasis??"",@"\b(?:PRESENT|WORKED)[ _-]*DAYS?\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            throw new InvalidOperationException("This billing rule depends on actual present/worked days, which were not supplied. Record verified actual attendance; payable-only source days cannot be used as a substitute.");
+    }
+
     private static decimal SumLines(List<BillingComponentLine> lines, string token) =>
         lines.Where(line => ContainsAny(line, token)).Sum(line => line.Amount);
 
@@ -655,7 +668,7 @@ ORDER BY CASE WHEN h.WorkLocationId IS NULL THEN 1 ELSE 0 END,h.Id,l.SortOrder,l
         _ => 9
     };
 
-    private sealed record BillingEmployeeRow(int PayRunId, string PayPeriod, string RunName, string Status, int PayRunEmployeeId, int EmployeeId, string EmployeeCode, string EmployeeName, string Department, decimal PresentDays, decimal PayableDays, decimal GrossPay, decimal StatutoryDeductions, decimal OneTimeEarnings, decimal OneTimeDeductions, decimal NetPay, string ClientName, long WorkLocationId, string WorkLocationName);
+    private sealed record BillingEmployeeRow(int PayRunId, string PayPeriod, string RunName, string Status, int PayRunEmployeeId, int EmployeeId, string EmployeeCode, string EmployeeName, string Department, decimal? PresentDays, decimal PayableDays, decimal GrossPay, decimal StatutoryDeductions, decimal OneTimeEarnings, decimal OneTimeDeductions, decimal NetPay, string ClientName, long WorkLocationId, string WorkLocationName);
     private sealed record BillingComponentLine(int PayRunEmployeeId, string ComponentCode, string Name, string Category, string ComponentRole, string StatutoryType, decimal Amount, int SortOrder);
     private sealed record BillingConfigRow(long Id, int ClientId, int? WorkLocationId, string RateCardType, string RateType, decimal Value, bool TaxInclusive, decimal GstRatePercent, DateTime EffectiveFrom, DateTime? EffectiveTo);
     private sealed record AdvancedBillingRuleRow(long HeaderId, int ClientId, int? WorkLocationId, string RuleName, decimal GstRatePercent, long LineId, string LineType, string MatchValue, string BillingTreatment, string BaseType, string RateType, decimal RateValue, bool TaxApplicable, bool CommissionApplicable, string DisplayGroup, int SortOrder);

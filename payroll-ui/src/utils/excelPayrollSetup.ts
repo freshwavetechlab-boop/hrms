@@ -2,6 +2,7 @@ import type { ExcelPayslipBatch, ExcelPayslipCalculationSource, ExcelPayslipRow 
 import type { PayrollSetupComponent, PayrollSetupContext, PayrollSetupRequest } from '../services/excelPayrollSetupService'
 import { excelColumnLetter, parsePayslipAmount } from './excelPayslipImport'
 import { payslipAttendanceBasis } from './excelPayslipAttendance'
+import { sharedPayrollDivisor } from './payrollSourceEvidence'
 import { payrollSourceColumns } from './excelPayrollColumns'
 
 const normalized = (text: string) => text.normalize('NFKC').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
@@ -30,6 +31,28 @@ const sourceCell = (source: ExcelPayslipCalculationSource, row: number, column: 
 const expression = (text: string) => text.replace(/^=/, '').replace(/\$/g, '').replace(/\s+/g, '').toUpperCase()
 const identityText = (text: string) => text.normalize('NFKC').trim().toUpperCase().replace(/[^\p{L}\p{N}]/gu, '')
 const employeeName = (text: string) => identityText(text.normalize('NFKC').trim().replace(/^(?:MR|MS|MRS)\.?\s+/i, ''))
+
+// These properties are read from the shared component by regular payroll.
+// Template-level formula and attendance overrides must not invent replacements.
+export function payrollSetupMasterPriority(value: number | string | undefined): number | null {
+  if (typeof value !== 'number' && (typeof value !== 'string' || !/^-?\d+$/.test(value.trim()))) return null
+  const priority = typeof value === 'number' ? value : Number(value.trim())
+  return Number.isSafeInteger(priority) ? priority : null
+}
+
+export function selectExcelPayrollMaster(component: PayrollSetupComponent, master?: PayrollSetupContext['components'][number]): PayrollSetupComponent {
+  if (!master) return { ...component, existingComponentId: undefined }
+  return { ...component, existingComponentId: master.id, code: master.code, name: master.name,
+    category: master.category, componentRole: master.componentRole, statutoryType: master.statutoryType,
+    taxable: master.taxable, priority: payrollSetupMasterPriority(master.priority) ?? Number.NaN, payType: master.payType }
+}
+
+export function restoreExcelPayrollMasterMetadata(request: PayrollSetupRequest, context: PayrollSetupContext): PayrollSetupRequest {
+  return { ...request, components: request.components.map(component => {
+    const master = component.existingComponentId ? context.components.find(item => item.id === component.existingComponentId) : undefined
+    return master ? selectExcelPayrollMaster(component, master) : component
+  }) }
+}
 
 function functionArgs(text: string, start: number) {
   const args: string[] = []; let depth = 0, from = start
@@ -124,7 +147,10 @@ export function proposeExcelPayrollSetup(batch: ExcelPayslipBatch, context: Payr
     const matching = source.columns.filter(c => ['info', 'ignore'].includes(c.kind) && componentCode(c.sourceHeader) === code
       && !/^(ER|EARNED)/.test(normalized(c.sourceHeader))
       && !/employee|\bemp\b|\buan\b|\bpan\b|aadh?aar|bank|account|ifsc|phone|mobile|identifier|qualification|(?:birth|joining)\s*date/i.test(c.sourceHeader))
-    if (matching.length === 1) inputToCode.set(matching[0].columnIndex, code)
+    if (matching.length === 1 && rows.every(row => {
+      const cell = sourceCell(source, row.sourceRow, matching[0].columnIndex)
+      return cell && !cell.formulaText?.trim() && !cell.error && !cell.calculationError && !cell.missingCachedValue && numeric(cell.value) !== undefined
+    })) inputToCode.set(matching[0].columnIndex, code)
     else if (!matching.length && /^(?:BASIC|BESIC|DA|HRA|SPECIALALLOWANCE|EXPALLOWANCE|OTHERALLOWANCE|CITYALLOWANCE|CONVEYANCEALLOWANCE)$/.test(normalized(column.sourceHeader))
       && rows.every(row => { const cell = sourceCell(source, row.sourceRow, column.columnIndex); return !cell?.formulaText && numeric(cell?.value) !== undefined })) {
       inputToCode.set(column.columnIndex, code); selfMonthly.add(code)
@@ -208,7 +234,7 @@ export function proposeExcelPayrollSetup(batch: ExcelPayslipBatch, context: Payr
     components.push({ key: `column-${column.columnIndex}`, existingComponentId: master?.id, code, name: master?.name || column.label,
       category, componentRole: role, statutoryType: statutory, calculationType: periodAdjustment ? 'Manual / Variable' : dailyRates.has(code) ? 'Daily Rate' : input !== undefined ? 'Fixed Amount' : 'Formula',
       value: '0', formula: input !== undefined || periodAdjustment ? '' : Object.values(rowFormulas).find(value => value && value !== '0') || '0', baseComponent: '',
-      proRata: input !== undefined, taxable: category === 'Earning', priority: 100 + column.columnIndex * 10, sourceColumnIndex: input ?? (periodAdjustment ? column.columnIndex : undefined),
+      proRata: input !== undefined, taxable: master ? master.taxable : category === 'Earning', priority: master ? payrollSetupMasterPriority(master.priority) ?? Number.NaN : 100 + column.columnIndex * 10, payType: master ? master.payType : periodAdjustment ? 'Variable Pay' : 'Fixed Pay', sourceColumnIndex: input ?? (periodAdjustment ? column.columnIndex : undefined),
       expectedColumnIndex: selfMonthly.has(code) ? undefined : column.columnIndex, isPeriodAdjustment: periodAdjustment, exemptWhenSourceZero: false, blankInputAsZero: false, ...(Object.keys(rowFormulas).length ? { rowFormulas } : {}) })
   }
   const decisions = rows.map(row => {
@@ -229,10 +255,11 @@ export function proposeExcelPayrollSetup(batch: ExcelPayslipBatch, context: Payr
     return { rowId: row.id, matchedEmployeeId: matches.length === 1 ? matches[0].id : undefined, allowCreate: false }
   })
   const suggested = context.defaults
-  const fixedDays = periodIndex < 0 ? payslipAttendanceBasis(source, daysIndex < 0 ? undefined : daysIndex).fixedDays : undefined
+  const sharedDivisor = periodIndex < 0 ? sharedPayrollDivisor(source, daysIndex) : null
+  const fixedDays = periodIndex < 0 ? sharedDivisor?.days ?? payslipAttendanceBasis(source, daysIndex < 0 ? undefined : daysIndex).fixedDays : undefined
   const selectionKey = [...rowIds].sort().join('|').split('').reduce((value, char) => Math.imul(value ^ char.charCodeAt(0), 16777619) >>> 0, 2166136261).toString(16)
   const request: PayrollSetupRequest = { batchId: batch.id, rowIds: rows.map(r => r.id), templateName: `${(batch.clientName || 'Client').slice(0, 70)} ${batch.month} Excel ${batch.id.slice(0, 6)} ${selectionKey}`, effectiveFrom: `${batch.month}-01`,
-    payrollDaysColumnIndex: periodIndex, fixedPayrollDays: fixedDays, sourceColumnRoles: Object.fromEntries(source.columns.map(column => [column.columnIndex, column.kind])), payableDaysColumnIndex: daysIndex, workWeek: suggested?.workWeek || context.workWeeks.find(w => normalized(w.label) === 'SUNDAYOFF')?.value || context.workWeeks[0]?.value || 'Sunday off',
+    payrollDaysColumnIndex: periodIndex, fixedPayrollDays: fixedDays, payrollDaysCell: sharedDivisor?.cell, sourceColumnRoles: Object.fromEntries(source.columns.map(column => [column.columnIndex, column.kind])), payableDaysColumnIndex: daysIndex, workWeek: suggested?.workWeek || context.workWeeks.find(w => normalized(w.label) === 'SUNDAYOFF')?.value || context.workWeeks[0]?.value || 'Sunday off',
     attendanceCycleStartDay: suggested?.attendanceCycleStartDay ?? 1, attendanceCycleEndDay: suggested?.attendanceCycleEndDay ?? new Date(Number(batch.month.slice(0,4)), Number(batch.month.slice(5,7)), 0).getDate(), payrollReportGenerationDay: suggested?.payrollReportGenerationDay ?? 3, defaultDepartment: suggested?.department || '', defaultDesignation: suggested?.designation || '', defaultGrade: suggested?.grade || '', defaultWorkLocationName: context.workLocations.length === 1 ? context.workLocations[0].name : 'Head office', sourceWorkLocationColumnIndex: locationIndex, defaultWorkLocationState: suggested?.workLocationState || '', createMissingWorkLocations: true, createMissingDropdownValues: true, preserveExistingAttendancePolicies: true,
     components, employeeDecisions: decisions, editableDefaults: { leave: { status: 'Draft', quotaApproved: false, proposedAnnualPaidLeave: 0, active: false },
       holiday: { status: 'Draft', year: Number(batch.month.slice(0, 4)), dates: [] }, shift: { status: 'Draft', requiredForMonthlyTotals: false }, attendance: { mode: 'Monthly', payableDaysSource: 'Uploaded salary workbook' } } }

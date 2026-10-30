@@ -8,28 +8,49 @@ namespace Payroll.API.Services;
 // A separate reporting workspace. These routes never create employees or payroll runs.
 public static class ExcelPayslipEndpoints
 {
+    internal static bool CanReadMasterComparison(AuthUser user) => user.Id > 0 && user.IsActive && !user.MustChangePassword
+        && (user.Permissions.Any(p => p.Equals("employees.view", StringComparison.OrdinalIgnoreCase) || p.Equals("employees.manage", StringComparison.OrdinalIgnoreCase) || p.Equals("security.manage", StringComparison.OrdinalIgnoreCase))
+            || user.ClientId is > 0 && user.Permissions.Contains("client.users.manage", StringComparer.OrdinalIgnoreCase));
     public static void Map(WebApplication app, Func<HttpContext, bool> canRead,
         Func<HttpContext, bool> canManage, Func<HttpContext, int, bool> canAccessClient,
         Func<HttpContext, AuthUser> currentUser)
     {
         var routes = app.MapGroup("/api/excel-payslips").WithTags("Excel Payslips");
+        routes.MapGet("/employee-code-options", async (ExcelPayslipRepository repository, int clientId) =>
+            Results.Ok(await repository.GetEmployeeCodeOptionsAsync(clientId)))
+            .WithName("GetExcelPayslipEmployeeCodeOptions");
+        routes.MapPost("/employee-code-preview", async (ExcelPayslipRepository repository, int clientId, ExcelPayslipCodePreviewRequest request) =>
+            Results.Ok(await repository.PreviewEmployeeCodesAsync(clientId, request)))
+            .WithMetadata(new CodePreviewReadAccess(), new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(131072))
+            .WithName("PreviewExcelPayslipEmployeeCodes");
+        routes.MapGet("/employee-master-comparison", async (ExcelPayslipRepository repository, int clientId, string employeeCode, string? fields) =>
+            Results.Ok(await repository.GetEmployeeMasterComparisonAsync(clientId, employeeCode, fields)))
+            .WithMetadata(new MasterComparisonReadAccess()).WithName("GetExcelPayslipMasterComparison");
+        routes.MapPost("/employee-identity-preview",async(ExcelPayslipRepository repository,int clientId,ExcelPayslipIdentityPreviewRequest request)=>
+            Results.Ok(await repository.PreviewEmployeeIdentitiesAsync(clientId,request)))
+            .WithMetadata(new MasterComparisonReadAccess(),new CodePreviewReadAccess(),new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(2097152))
+            .WithName("PreviewExcelPayslipEmployeeIdentities");
         bool CanDelete(HttpContext context) => canManage(context) && currentUser(context).Permissions.Contains("settings.manage", StringComparer.OrdinalIgnoreCase);
         routes.AddEndpointFilter(async (invocation, next) =>
         {
             var context = invocation.HttpContext;
             context.Response.Headers.CacheControl = "no-store";
             if (!canRead(context)) return Results.StatusCode(403);
+            if (context.GetEndpoint()?.Metadata.GetMetadata<MasterComparisonReadAccess>() is not null && !CanReadMasterComparison(currentUser(context)))
+                return Results.StatusCode(403);
             if (context.GetEndpoint()?.Metadata.GetMetadata<OriginalWorkbookAccess>() is not null && !canManage(context))
                 return Results.StatusCode(403);
             if (context.GetEndpoint()?.Metadata.GetMetadata<DeleteBatchAccess>() is not null && !CanDelete(context))
                 return Results.StatusCode(403);
             var isExport = HttpMethods.IsPost(context.Request.Method)
                 && context.Request.Path.Value!.EndsWith("/pdf", StringComparison.OrdinalIgnoreCase);
-            if (!HttpMethods.IsGet(context.Request.Method) && !isExport && !canManage(context))
+            var isOverview = context.GetEndpoint()?.Metadata.GetMetadata<OverviewReadAccess>() is not null;
+            var isCodePreview = context.GetEndpoint()?.Metadata.GetMetadata<CodePreviewReadAccess>() is not null;
+            if (!HttpMethods.IsGet(context.Request.Method) && !isExport && !isOverview && !isCodePreview && !canManage(context))
                 return Results.StatusCode(403);
             var isOwnJobFeed = HttpMethods.IsGet(context.Request.Method)
                 && context.Request.Path.Equals(new PathString("/api/excel-payslips/mail-jobs"));
-            if (!context.Request.Path.Value!.EndsWith("/clients", StringComparison.OrdinalIgnoreCase) && !isOwnJobFeed)
+            if (!context.Request.Path.Value!.EndsWith("/clients", StringComparison.OrdinalIgnoreCase) && !isOwnJobFeed && !isOverview)
             {
                 if (!int.TryParse(context.Request.Query["clientId"], out var clientId) || clientId <= 0)
                     return Results.BadRequest(new { error = "Select an active client." });
@@ -52,6 +73,23 @@ public static class ExcelPayslipEndpoints
             var user = currentUser(context);
             return Results.Ok(await repository.GetOwnMailJobsAsync(user.Id, user.ClientId, clientId => canAccessClient(context, clientId)));
         }).WithName("GetMyExcelPayslipMailJobs").WithOpenApi();
+
+        routes.MapGet("/overview-scopes", async (ExcelPayslipRepository repository, HttpContext context) =>
+        {
+            var user = currentUser(context);
+            if (user.ClientId.HasValue && !canAccessClient(context, user.ClientId.Value)) return Results.StatusCode(403);
+            var clients = (await repository.ListClientsAsync(user.ClientId)).Where(c => canAccessClient(context, c.Id)).Select(c => c.Id).ToArray();
+            return Results.Ok(await repository.GetOverviewBatchesAsync(clients));
+        }).WithMetadata(new OverviewReadAccess()).WithName("GetExcelPayslipOverviewScopes");
+        routes.MapPost("/overview-preview", async (ExcelPayslipRepository repository, ExcelPayslipOverviewRequest request, HttpContext context) =>
+        {
+            ExcelPayslipOverviewService.Validate(request);
+            var user = currentUser(context);
+            if (request.Scopes.Any(s => user.ClientId.HasValue && s.ClientId != user.ClientId || !canAccessClient(context, s.ClientId)))
+                return Results.StatusCode(403);
+            // Read-only request: no selection is activated/persisted, no masters are initialized or changed.
+            return Results.Ok(await repository.GetOverviewAsync(request));
+        }).WithMetadata(new OverviewReadAccess()).WithName("PreviewExcelPayslipOverview");
 
         routes.MapGet("/batches/{id}/mail-jobs", async (ExcelPayslipRepository repository, int clientId, string id) =>
         {
@@ -175,7 +213,20 @@ public static class ExcelPayslipEndpoints
             !CanDelete(context) ? Results.StatusCode(403) : Results.Ok(await repository.ResolveCleanupAsync(clientId, id, request, currentUser(context).Email)))
             .WithMetadata(new DeleteBatchAccess()).WithName("ResolveExcelPayslipCleanupBlocker");
 
-        routes.MapGet("/batches", async (ExcelPayslipRepository repository, int clientId) => Results.Ok(await repository.ListAsync(clientId)))
+        routes.MapPost("/consolidation-preview", async (ExcelPayslipRepository repository,int clientId,ExcelPayslipConsolidationRequest request) =>
+            Results.Ok(await repository.PreviewConsolidationAsync(clientId,request)))
+            .WithMetadata(new DeleteBatchAccess()).WithName("PreviewExcelPayslipConsolidation");
+        routes.MapPost("/consolidations", async (ExcelPayslipRepository repository,int clientId,ExcelPayslipConsolidationApplyRequest request,HttpContext context) =>
+            Results.Ok(await repository.ApplyConsolidationAsync(clientId,request,currentUser(context).Email)))
+            .WithMetadata(new DeleteBatchAccess()).WithName("ApplyExcelPayslipConsolidation");
+        routes.MapGet("/batches/{id}/consolidation", async (ExcelPayslipRepository repository,int clientId,string id) =>
+            Results.Ok(await repository.GetConsolidationAsync(clientId,id)))
+            .WithName("GetExcelPayslipConsolidation");
+        routes.MapPost("/consolidations/{groupId}/undo", async (ExcelPayslipRepository repository,int clientId,string groupId,ExcelPayslipConsolidationUndoRequest request,HttpContext context) =>
+            Results.Ok(await repository.UndoConsolidationAsync(clientId,groupId,request,currentUser(context).Email)))
+            .WithMetadata(new DeleteBatchAccess()).WithName("UndoExcelPayslipConsolidation");
+
+        routes.MapGet("/batches", async (ExcelPayslipRepository repository, int clientId,bool? includeConsolidated) => Results.Ok(await repository.ListAsync(clientId,includeConsolidated==true)))
             .WithName("ListExcelPayslipBatches").WithOpenApi();
         routes.MapGet("/batches/{id}", async (ExcelPayslipRepository repository, int clientId, string id) =>
         {
@@ -239,4 +290,7 @@ public static class ExcelPayslipEndpoints
     private static bool ValidSignature(string value) => Regex.IsMatch(value, "^[a-fA-F0-9]{64}$", RegexOptions.CultureInvariant);
     private sealed record OriginalWorkbookAccess;
     private sealed record DeleteBatchAccess;
+    private sealed record OverviewReadAccess;
+    private sealed record CodePreviewReadAccess;
+    private sealed record MasterComparisonReadAccess;
 }

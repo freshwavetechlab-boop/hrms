@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from 'react'
+import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { Button, Dropdown, Modal, Pagination, Select, Space, Tag } from 'antd'
 import { ScissorOutlined, UndoOutlined } from '@ant-design/icons'
 import type { ImportPreviewSheet } from '../utils/importPreview'
@@ -7,6 +7,20 @@ import './SmartBulkUploadMapper.css'
 
 type PreviewNameSplit = Omit<MaterializedBulkImportNameSplit, 'sheet'>
 
+export type SourcePreviewAdapter = {
+  title: string; helpTitle: string; helpDescription: string
+  columns: { mapped: boolean; color: string; label: string }[]
+  rowNumbers: number[]
+  selectedColumn?: number
+  beforeTable?: ReactNode
+  renderMapping: (sourceIndex: number) => ReactNode
+  renderCell?: (rowIndex: number, sourceIndex: number, value: string) => ReactNode
+  cellTitle?: (rowIndex: number, sourceIndex: number, value: string) => string
+  cellClassName?: (rowIndex: number, sourceIndex: number) => string
+  onSelectCell?: (rowIndex: number, sourceIndex: number) => void
+  onSelectColumn?: (sourceIndex: number) => void
+}
+
 type Props = {
   open: boolean
   fileName: string
@@ -14,11 +28,12 @@ type Props = {
   definition: BulkImportDefinition
   mappings: BulkImportMapping
   split?: PreviewNameSplit
-  onMap: (sourceColumnIndex: number, targetCode: string) => void
-  onUnmapSource: (sourceColumnIndex: number) => void
-  onSplitColumn: (sourceColumnIndex: number, strategy: BulkImportNameSplitStrategy) => void
-  onSplitStrategyChange: (strategy: BulkImportNameSplitStrategy) => void
-  onUndoSplit: () => void
+  onMap?: (sourceColumnIndex: number, targetCode: string) => void
+  onUnmapSource?: (sourceColumnIndex: number) => void
+  onSplitColumn?: (sourceColumnIndex: number, strategy: BulkImportNameSplitStrategy) => void
+  onSplitStrategyChange?: (strategy: BulkImportNameSplitStrategy) => void
+  onUndoSplit?: () => void
+  adapter?: SourcePreviewAdapter
   onClose: () => void
 }
 
@@ -41,15 +56,15 @@ export default function SmartBulkSourcePreview(p: Props) {
     className="smart-bulk-source-preview-modal"
     width="min(1480px,98vw)"
     open={p.open}
-    title={<div className="smart-bulk-preview-title"><span>UPLOAD WORKING PREVIEW</span><b>{p.fileName}</b><small>{p.sheet.name} / {p.sheet.rows.length} data rows / {p.split ? `${p.sheet.headers.length - 1} original → ${p.sheet.headers.length} working columns` : `${p.sheet.headers.length} columns`}</small></div>}
+    title={<div className="smart-bulk-preview-title"><span>{p.adapter?.title || 'UPLOAD WORKING PREVIEW'}</span><b>{p.fileName}</b><small>{p.sheet.name} / {p.sheet.rows.length} data rows / {p.split ? `${p.sheet.headers.length - 1} original → ${p.sheet.headers.length} working columns` : `${p.sheet.headers.length} columns`}</small></div>}
     onCancel={p.onClose}
     footer={<Button type="primary" onClick={p.onClose}>Use mapped preview</Button>}
     afterOpenChange={open => { if (open) { setPage(1); setSelectedColumn(null) } }}
   >
-    <div className={`smart-bulk-source-preview${p.split ? ' has-split' : ''}`} data-testid="smart-bulk-source-preview">
+    <div className={`smart-bulk-source-preview${p.split ? ' has-split' : ''}${p.adapter ? ' has-adapter' : ''}`} data-testid="smart-bulk-source-preview">
       <div className="smart-bulk-source-preview-help">
-        <div><b>Split and map directly in this grid</b><span>Use Split name on a source column to create two real working columns. The values visible here are the values sent to the final import review.</span></div>
-        <Space wrap><Tag color="blue">{mappedSourceColumns.size} mapped</Tag><Tag>{Math.max(0, p.sheet.headers.length - mappedSourceColumns.size)} skipped</Tag></Space>
+        <div><b>{p.adapter?.helpTitle || 'Split and map directly in this grid'}</b><span>{p.adapter?.helpDescription || 'Use Split name on a source column to create two real working columns. The values visible here are the values sent to the final import review.'}</span></div>
+        <Space wrap><Tag color="blue">{p.adapter ? p.adapter.columns.filter(c => c.mapped).length : mappedSourceColumns.size} mapped</Tag><Tag>{Math.max(0, p.sheet.headers.length - (p.adapter ? p.adapter.columns.filter(c => c.mapped).length : mappedSourceColumns.size))} skipped</Tag></Space>
       </div>
 
       {p.split && <div className="smart-bulk-preview-split-summary" data-testid="smart-bulk-preview-split-summary">
@@ -65,24 +80,27 @@ export default function SmartBulkSourcePreview(p: Props) {
         </Space>
       </div>}
 
+      {p.adapter?.beforeTable}
       <div className="smart-bulk-source-preview-table" data-testid="smart-bulk-source-preview-table">
         <table>
           <thead><tr><th className="row-number">#</th>{p.sheet.headers.map((header, sourceIndex) => {
             const field = fieldForSource(sourceIndex)
+            const custom = p.adapter?.columns[sourceIndex]
+            const mapped = custom?.mapped ?? Boolean(field)
             const fieldIndex = field ? p.definition.fields.indexOf(field) : -1
-            const color = field ? bulkImportMappingColor(fieldIndex) : '#94a3b8'
+            const color = custom?.color || (field ? bulkImportMappingColor(fieldIndex) : '#94a3b8')
             const splitRole = p.split?.firstNameColumnIndex === sourceIndex ? 'First Name' : p.split?.lastNameColumnIndex === sourceIndex ? 'Last Name' : ''
-            const canSplit = !p.split && canSplitNameColumn(header, p.sheet.rows, sourceIndex)
+            const canSplit = !!p.onSplitColumn && !p.split && canSplitNameColumn(header, p.sheet.rows, sourceIndex)
             return <th
               key={`${sourceIndex}-${header}`}
-              className={`${field ? 'mapped' : 'unmapped'}${selectedColumn === sourceIndex ? ' selected' : ''}${splitRole ? ' split-derived' : ''}`}
+              className={`${mapped ? 'mapped' : 'unmapped'}${(p.adapter?.selectedColumn ?? selectedColumn) === sourceIndex ? ' selected' : ''}${splitRole ? ' split-derived' : ''}`}
               style={{ '--map-color': color } as CSSProperties}
               data-testid="smart-bulk-preview-column"
               data-source-column={header || `Column ${sourceIndex + 1}`}
-              data-mapped={Boolean(field)}
+              data-mapped={mapped}
               data-column-kind={splitRole ? 'split' : 'source'}
               data-split-source={splitRole ? p.split?.sourceHeader : undefined}
-              onClick={() => setSelectedColumn(sourceIndex)}
+              onClick={() => { setSelectedColumn(sourceIndex); p.adapter?.onSelectColumn?.(sourceIndex) }}
             >
               <div className="smart-bulk-preview-column-head">
                 <span title={header}>{header || `Unnamed column ${sourceIndex + 1}`}</span>
@@ -94,12 +112,12 @@ export default function SmartBulkSourcePreview(p: Props) {
                       { key: 'last-token', label: 'Last word = Last Name' },
                       { key: 'first-token', label: 'First word = First Name' }
                     ],
-                    onClick: info => { info.domEvent.stopPropagation(); p.onSplitColumn(sourceIndex, info.key as BulkImportNameSplitStrategy) }
+                    onClick: info => { info.domEvent.stopPropagation(); p.onSplitColumn?.(sourceIndex, info.key as BulkImportNameSplitStrategy) }
                   }}
                 >
                   <Button data-testid="smart-bulk-preview-split" data-source-column={header || `Column ${sourceIndex + 1}`} className="smart-bulk-preview-split-button" size="small" icon={<ScissorOutlined />} onClick={event => event.stopPropagation()}>Split name</Button>
                 </Dropdown>}
-                <Select
+                {p.adapter ? p.adapter.renderMapping(sourceIndex) : <Select
                   className="smart-bulk-preview-map-chip"
                   data-testid="smart-bulk-preview-map-select"
                   data-source-column={header || `Column ${sourceIndex + 1}`}
@@ -112,18 +130,21 @@ export default function SmartBulkSourcePreview(p: Props) {
                   filterOption={(input, option) => String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())}
                   options={groupedOptions}
                   onClick={event => event.stopPropagation()}
-                  onChange={targetCode => targetCode ? p.onMap(sourceIndex, targetCode) : p.onUnmapSource(sourceIndex)}
-                />
-                <small>{field ? `Mapped to ${field.label}` : splitRole ? `Created from ${p.split?.sourceHeader}; map independently` : 'Not mapped / will be skipped'}</small>
+                  disabled={!p.onMap}
+                  onChange={targetCode => targetCode ? p.onMap?.(sourceIndex, targetCode) : p.onUnmapSource?.(sourceIndex)}
+                />}
+                <small>{custom?.label || (field ? `Mapped to ${field.label}` : splitRole ? `Created from ${p.split?.sourceHeader}; map independently` : 'Not mapped / will be skipped')}</small>
               </div>
             </th>
           })}</tr></thead>
-          <tbody>{visibleRows.map((row, visibleIndex) => <tr key={pageStart + visibleIndex}><td className="row-number">{pageStart + visibleIndex + 2}</td>{p.sheet.headers.map((header, sourceIndex) => {
+          <tbody>{visibleRows.map((row, visibleIndex) => <tr key={pageStart + visibleIndex}><td className="row-number">{p.adapter?.rowNumbers[pageStart + visibleIndex] ?? pageStart + visibleIndex + 2}</td>{p.sheet.headers.map((header, sourceIndex) => {
             const field = fieldForSource(sourceIndex)
-            const color = field ? bulkImportMappingColor(p.definition.fields.indexOf(field)) : '#94a3b8'
+            const custom = p.adapter?.columns[sourceIndex]
+            const mapped = custom?.mapped ?? Boolean(field)
+            const color = custom?.color || (field ? bulkImportMappingColor(p.definition.fields.indexOf(field)) : '#94a3b8')
             const value = row[sourceIndex] ?? ''
             const splitRole = p.split?.firstNameColumnIndex === sourceIndex || p.split?.lastNameColumnIndex === sourceIndex
-            return <td key={`${sourceIndex}-${header}`} className={`${field ? 'mapped' : 'unmapped'}${selectedColumn === sourceIndex ? ' selected' : ''}${splitRole ? ' split-derived' : ''}`} style={{ '--map-color': color } as CSSProperties} title={value}>{value || <span className="empty-cell">Blank</span>}</td>
+            return <td key={`${sourceIndex}-${header}`} className={`${mapped ? 'mapped' : 'unmapped'}${(p.adapter?.selectedColumn ?? selectedColumn) === sourceIndex ? ' selected' : ''}${splitRole ? ' split-derived' : ''}${p.adapter?.cellClassName ? ' ' + p.adapter.cellClassName(pageStart + visibleIndex, sourceIndex) : ''}`} style={{ '--map-color': color } as CSSProperties} title={p.adapter?.cellTitle?.(pageStart + visibleIndex, sourceIndex, value) ?? value} onClick={() => { if (p.adapter) { setSelectedColumn(sourceIndex); p.adapter.onSelectCell?.(pageStart + visibleIndex, sourceIndex) } }}>{p.adapter?.renderCell ? p.adapter.renderCell(pageStart + visibleIndex, sourceIndex, value) : value || <span className="empty-cell">Blank</span>}</td>
           })}</tr>)}</tbody>
         </table>
       </div>

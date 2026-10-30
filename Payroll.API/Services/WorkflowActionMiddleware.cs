@@ -6,10 +6,35 @@ namespace Payroll.API.Services;
 
 public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActionMiddleware> logger)
 {
+    // Calculation endpoints must remain observational even if a generic POST
+    // workflow rule is configured. Authentication and ordinary request audit
+    // still run in the outer middleware.
+    internal static bool IsCalculationOnlyRequest(string method, string? path) =>
+        HttpMethods.IsPost(method) && (path?.TrimEnd('/').Equals("/api/payroll-calculation/simulate", StringComparison.OrdinalIgnoreCase) == true
+            || path?.TrimEnd('/').Equals("/api/excel-payroll-setup/preview", StringComparison.OrdinalIgnoreCase) == true
+            || path?.TrimEnd('/').Equals("/api/excel-payslips/employee-code-preview", StringComparison.OrdinalIgnoreCase) == true
+            || path?.TrimEnd('/').Equals("/api/excel-payslips/employee-identity-preview", StringComparison.OrdinalIgnoreCase) == true);
+
     public async Task InvokeAsync(HttpContext context, WorkflowRepository workflows, NotificationRepository notifications)
     {
+        if (IsCalculationOnlyRequest(context.Request.Method, context.Request.Path.Value))
+        {
+            await next(context);
+            return;
+        }
         var user = context.Items.TryGetValue("User", out var item) && item is AuthUser authUser ? authUser : null;
+        var requiresIsolatedProcessing = context.GetEndpoint()?.Metadata.GetMetadata<RequireIsolatedPayrollProcessing>() is not null;
+        // Deny inactive, client-scoped or otherwise unauthorized callers before
+        // reading workflow metadata, let alone starting any business handler.
+        if (requiresIsolatedProcessing && !SelectedPayRunAuthorization.CanRequest(user))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await context.Response.WriteAsJsonAsync(new { error = "An active authorized global payroll administrator is required. No processing was started." });
+            return;
+        }
+
         (WorkflowActionRule Rule, Dictionary<string, string> RouteValues)? match = null;
+        var lookupFailed = false;
         if (user is not null && IsMutation(context.Request.Method))
         {
             try
@@ -18,7 +43,20 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
             }
             catch (Exception exception)
             {
+                lookupFailed = true;
                 logger.LogError(exception, "Workflow action rule lookup failed for {Method} {Path}.", context.Request.Method, context.Request.Path.Value);
+            }
+        }
+
+        if (requiresIsolatedProcessing)
+        {
+            if (user is null || lookupFailed || match is not null)
+            {
+                context.Response.StatusCode = user is null ? StatusCodes.Status403Forbidden : StatusCodes.Status409Conflict;
+                await context.Response.WriteAsJsonAsync(new { error = lookupFailed
+                    ? "Workflow isolation could not be verified. No payroll processing was started."
+                    : "A configured workflow applies, or authentication is missing. Use its reviewed workflow; restricted processing cannot bypass it." });
+                return;
             }
         }
 
@@ -198,7 +236,7 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
         };
     }
 
-    static async Task<(WorkflowActionRule Rule, Dictionary<string, string> RouteValues)?> FindRuleAsync(WorkflowRepository workflows, string method, string path)
+    internal static async Task<(WorkflowActionRule Rule, Dictionary<string, string> RouteValues)?> FindRuleAsync(WorkflowRepository workflows, string method, string path)
     {
         var rules = await workflows.GetActionRulesAsync();
         foreach (var rule in rules.Where(rule => method.Equals(rule.HttpMethod, StringComparison.OrdinalIgnoreCase)))

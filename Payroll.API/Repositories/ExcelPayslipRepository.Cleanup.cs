@@ -84,15 +84,24 @@ WHERE client_id=@ClientId AND batch_id=@Id AND action_code IN ('supersede-legacy
                         : "This persisted source reference can be verified without altering either financial snapshot.",
                     validParent ? "verify-recorded-parent" : ""));
             }
-            preview.CandidateCount = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM excel_payslip_batches
+            // Keep JSON out of MySQL filesort: even an extracted JSON predicate can make the
+            // server carry the entire captured workbook through a sort. Read small keys without
+            // ORDER BY, order them in memory, then load metadata for only the first 100 IDs.
+            var candidateKeys = (await db.QueryAsync<ExcelPayslipLegacyCandidate>(@"SELECT id AS Id,created_at AS CreatedAtUtc FROM excel_payslip_batches
 WHERE client_id=@ClientId AND id<>@Id AND JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.month'))=@Month
-AND (created_at>@CreatedAtUtc OR (created_at=@CreatedAtUtc AND id>@Id))", new { ClientId = clientId, Id = id, batch.Month, batch.CreatedAtUtc }, tx);
-            preview.Candidates = (await db.QueryAsync<ExcelPayslipLegacyCandidate>(@"SELECT id AS Id,JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.month')) AS Month,
+AND (created_at>@CreatedAtUtc OR (created_at=@CreatedAtUtc AND id>@Id))", new { ClientId = clientId, Id = id, batch.Month, batch.CreatedAtUtc }, tx)).ToArray();
+            preview.CandidateCount = candidateKeys.Length;
+            var orderedKeys = candidateKeys.OrderByDescending(candidate => candidate.CreatedAtUtc)
+                .ThenByDescending(candidate => candidate.Id, StringComparer.Ordinal).Take(100).ToArray();
+            if (orderedKeys.Length > 0)
+            {
+                var candidates = (await db.QueryAsync<ExcelPayslipLegacyCandidate>(@"SELECT id AS Id,JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.month')) AS Month,
 JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.sourceFileName')) AS FileName,JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.sheetName')) AS SheetName,
 JSON_LENGTH(JSON_EXTRACT(batch_json,'$.rows')) AS RowCount,created_at AS CreatedAtUtc FROM excel_payslip_batches
-WHERE client_id=@ClientId AND id<>@Id AND JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.month'))=@Month
-AND (created_at>@CreatedAtUtc OR (created_at=@CreatedAtUtc AND id>@Id)) ORDER BY created_at DESC,id DESC LIMIT 100",
-                new { ClientId = clientId, Id = id, batch.Month, batch.CreatedAtUtc }, tx)).ToList();
+WHERE client_id=@ClientId AND id IN @Ids", new { ClientId = clientId, Ids = orderedKeys.Select(candidate => candidate.Id).ToArray() }, tx))
+                    .ToDictionary(candidate => candidate.Id, StringComparer.Ordinal);
+                preview.Candidates = orderedKeys.Select(candidate => candidates[candidate.Id]).ToList();
+            }
         }
         var queues = (await db.QueryAsync<CleanupObjectRow>(@"SELECT CAST(Id AS CHAR) AS Id,Status,EventCode AS Label FROM notification_queue
 WHERE ClientId=@ClientId AND ResourceType IN ('ExcelPayslipBatch','ExcelPayslipEmailRequest') AND (ResourceId=@Id OR ResourceId LIKE @Prefix) ORDER BY Id", p, tx)).ToArray();
@@ -121,18 +130,20 @@ AND (l.ResourceId=@Id OR l.ResourceId LIKE @Prefix) ORDER BY l.Id", p, tx);
             foreach (var request in requests) preview.Objects.Add(new("Request receipt", request.Key, "Retained", "Idempotency/coordinator delivery evidence. Only a proven never-queued paired job action can remove its own receipt."));
         if (hasReceiptTable)
         {
+            // The JSON-derived discard flag must not share a MySQL filesort with a large
+            // receipt payload. Keep the complete scoped read; order only its small DTOs.
             var receipts = await db.QueryAsync<CleanupObjectRow>(@"SELECT id AS Id,status AS Status,
  (BINARY status='Draft' AND JSON_TYPE(result_json)='OBJECT' AND JSON_LENGTH(result_json)=0) AS Discardable
-FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id ORDER BY id", p, tx);
-            foreach (var receipt in receipts) preview.Objects.Add(new("Master setup", receipt.Id, receipt.Status,
+FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id", p, tx);
+            foreach (var receipt in receipts.OrderBy(receipt => receipt.Id, StringComparer.Ordinal)) preview.Objects.Add(new("Master setup", receipt.Id, receipt.Status,
                 receipt.Discardable ? "Unapplied empty-result draft. Discarding removes this draft only; no employee/component/template is touched."
                     : "Applied or non-empty setup evidence must stay linked to master/payroll history. Review it in Master setup; no automatic rollback/unlink is offered.", receipt.Discardable ? "discard-draft" : ""));
         }
         var children = await db.QueryAsync<CleanupObjectRow>(@"SELECT b.id AS Id,JSON_UNQUOTE(JSON_EXTRACT(b.batch_json,'$.month')) AS Status,
 JSON_UNQUOTE(JSON_EXTRACT(b.batch_json,'$.sourceFileName')) AS Label FROM excel_payslip_batches b WHERE b.client_id=@ClientId AND b.id<>@Id
 AND (JSON_UNQUOTE(JSON_EXTRACT(b.batch_json,'$.parentBatchId'))=@Id OR EXISTS(SELECT 1 FROM excel_payslip_calculation_sources s
-WHERE s.client_id=b.client_id AND s.batch_id=b.id AND JSON_UNQUOTE(JSON_EXTRACT(s.source_json,'$.sourceBatchId'))=@Id)) ORDER BY b.id", p, tx);
-        foreach (var child in children) preview.Objects.Add(new("Dependent batch", child.Id, child.Status, "Inspect and independently resolve this dependent version first. No automatic reparenting or cascade is performed.", "inspect-batch", Label: child.Label));
+WHERE s.client_id=b.client_id AND s.batch_id=b.id AND JSON_UNQUOTE(JSON_EXTRACT(s.source_json,'$.sourceBatchId'))=@Id))", p, tx);
+        foreach (var child in children.OrderBy(child => child.Id, StringComparer.Ordinal)) preview.Objects.Add(new("Dependent batch", child.Id, child.Status, "Inspect and independently resolve this dependent version first. No automatic reparenting or cascade is performed.", "inspect-batch", Label: child.Label));
         var originals = await db.QueryAsync<CleanupObjectRow>(@"SELECT o.id AS Id,l.original_file_name AS Label,CASE WHEN a.is_deleted THEN 'Unavailable' ELSE 'Retained' END AS Status,
 (SELECT COUNT(*) FROM excel_payslip_batch_originals other WHERE other.client_id=l.client_id AND other.original_id=l.original_id AND other.batch_id<>l.batch_id) AS ReferenceCount
 FROM excel_payslip_batch_originals l JOIN excel_payslip_originals o ON o.client_id=l.client_id AND o.id=l.original_id

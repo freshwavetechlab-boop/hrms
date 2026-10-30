@@ -1,0 +1,18 @@
+.excel-payslip-grid-launch{margin:12px 0}.excel-payslip-grid-launch>span{font-size:12px;color:var(--hrms-muted)}
+.smart-bulk-source-preview.has-adapter{grid-template-rows:auto auto minmax(0,1fr) auto}
+.excel-payslip-grid-tools{min-width:0;display:grid;gap:6px}
+.excel-payslip-formula-bar{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(100px,180px);gap:6px;align-items:center}
+.excel-payslip-grid-column-options{font-size:12px}.excel-payslip-grid-column-options summary{cursor:pointer}.excel-payslip-grid-column-options>div{display:flex;flex-wrap:wrap;gap:8px;align-items:end;padding-top:6px}.excel-payslip-grid-column-options label{display:grid;gap:3px;min-width:0;flex:1 1 180px}.excel-payslip-grid-column-options .ant-select{width:100%}
+.excel-payslip-grid-fx{font-size:10px;font-weight:700;color:#6546e8;margin-right:6px}.excel-payslip-grid-error{color:#b42318}.excel-payslip-grid-excluded{opacity:.55}
+@media(max-width:760px){.excel-payslip-formula-bar{grid-template-columns:auto minmax(0,1fr)}.excel-payslip-formula-bar>:last-child{grid-column:1/-1}}
+@media(max-width:760px){
+  .smart-bulk-source-preview.has-adapter{gap:6px}
+  .smart-bulk-source-preview.has-adapter .smart-bulk-source-preview-help{flex-direction:row;align-items:center;gap:6px;padding:6px 8px}
+  .smart-bulk-source-preview.has-adapter .smart-bulk-source-preview-help>div>span{display:none}
+  .smart-bulk-source-preview.has-adapter .smart-bulk-source-preview-help .ant-space{display:flex;flex-wrap:nowrap}
+  .smart-bulk-source-preview.has-adapter .smart-bulk-source-preview-table th{height:82px}
+  .smart-bulk-source-preview.has-adapter .smart-bulk-preview-column-head>small{display:none}
+  .excel-payslip-code-preview-tools--compact .ant-space-item:has(>.excel-code-preview-explanation){display:none}
+  .excel-payslip-code-preview-tools--compact{margin-block:2px}
+  .excel-payslip-grid-tools{max-height:38dvh;overflow-y:auto}
+}

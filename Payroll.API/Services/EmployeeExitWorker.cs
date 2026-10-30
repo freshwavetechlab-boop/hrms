@@ -2,10 +2,11 @@ using Payroll.API.Repositories;
 
 namespace Payroll.API.Services;
 
-public sealed class EmployeeExitWorker(EmployeeRepository employees, ILogger<EmployeeExitWorker> logger) : BackgroundService
+public sealed class EmployeeExitWorker(EmployeeRepository employees, ILogger<EmployeeExitWorker> logger, IConfiguration configuration) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!configuration.GetValue("BackgroundWorkers:Enabled", true)) return;
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
         while (!stoppingToken.IsCancellationRequested)
         {

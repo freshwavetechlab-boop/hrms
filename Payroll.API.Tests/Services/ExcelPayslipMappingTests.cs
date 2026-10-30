@@ -122,4 +122,61 @@ public sealed class ExcelPayslipMappingTests
         Assert.Equal("Scoped", Assert.Single(examples).Columns[0].Label);
         Assert.Empty(ExcelPayslipRepository.ReadMappingExamples(["{\"not-a-signature\":{\"employeeName\":\"Do not retrieve salary rows\"}}"]));
     }
+
+    [Fact]
+    public void AttendanceLookupEvidenceIsRetainedForReviewWithoutPromotingDaysToPay()
+    {
+        var request = Request();
+        request.Columns[2].SourceHeader = "Payable days";
+        request.Columns[2].HasFormula = true;
+        request.Columns[2].FormulaFunctions = ["IFERROR", "VLOOKUP", "INDEX", "MATCH"];
+        request.Columns[2].CrossSheetDependencies = [new() { SheetIndex = 1, SourceType = "attendance", Status = "supplied", ColumnIndexes = [0, 1, 2, 3] }];
+        ExcelPayslipMappingService.ValidateRequest(request);
+        var before = JsonSerializer.Serialize(request);
+        var result = Apply("""{"columns":[{"columnIndex":2,"kind":"earning","confidence":1}]}""", request);
+        Assert.Equal("info", result.Columns[2].Kind);
+        Assert.Contains(2, result.ReviewColumnIndexes);
+        Assert.Equal(before, JsonSerializer.Serialize(request));
+        // Even an unchanged suggestion requires review of the linked attendance input.
+        Assert.Contains(2, Apply("""{"columns":[]} """, request).ReviewColumnIndexes);
+        var prompt = ExcelPayslipMappingService.BuildPrompt(request, null, []);
+        Assert.Contains("crossSheetDependencies", prompt);
+        Assert.Contains("attendance", prompt); Assert.Contains("VLOOKUP", prompt);
+        Assert.DoesNotContain("sourceRow", prompt); Assert.DoesNotContain("formulaText", prompt);
+    }
+
+    [Theory]
+    [InlineData("supplied", -1, "attendance", 3)]
+    [InlineData("missing", 1, "attendance", 3)]
+    [InlineData("resolved-by-cache", -1, "attendance", 3)]
+    [InlineData("missing", -1, "private@example.test", 3)]
+    [InlineData("missing", -1, "unknown", 512)]
+    public void DependencyMetadataCannotCarryUnboundedOrInventedResolution(string status, int sheet, string type, int column)
+    {
+        var request = Request();
+        request.Columns[1].CrossSheetDependencies = [new() { SheetIndex = sheet, Status = status, SourceType = type, ColumnIndexes = [column] }];
+        Assert.Throws<InvalidOperationException>(() => ExcelPayslipMappingService.ValidateRequest(request));
+    }
+
+    [Theory]
+    [InlineData("grossTotal", "earning")]
+    [InlineData("deductionTotal", "deduction")]
+    public void FormulaTotalsCannotBeAddedAgainAsPay(string baseline, string proposed)
+    {
+        var request = Request(); request.Columns[7].Kind = baseline; request.Columns[7].HasFormula = true;
+        var result = Apply($$"""{"columns":[{"columnIndex":7,"kind":"{{proposed}}","confidence":1}]}""", request);
+        Assert.Equal(baseline, result.Columns[7].Kind); Assert.Contains(7, result.ReviewColumnIndexes);
+    }
+
+    [Fact]
+    public void CrossSheetKnowledgeIsAlwaysRetrievedEvenWhenHeaderVocabularyRanksOtherPatternsHigher()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "FrevoPilot", "docs", "excel-payroll-mapping.md");
+        var request = Request();
+        request.Columns[1].CrossSheetDependencies = [new() { SheetIndex = -1, SourceType = "unknown", Status = "external-review", ColumnIndexes = [0] }];
+        ExcelPayslipMappingService.ValidateRequest(request);
+        var references = ExcelPayslipMappingService.Retrieve(request.Columns, File.ReadAllText(path), []);
+        Assert.Contains(references, r => r.Title.StartsWith("Cross-sheet formula inputs"));
+        Assert.Contains(1, Apply("""{"columns":[]} """, request).ReviewColumnIndexes);
+    }
 }

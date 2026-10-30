@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS employee_monthly_attendance (
     employee_id INT NOT NULL,
     attendance_month VARCHAR(7) NOT NULL,
     working_days DECIMAL(5,2) NOT NULL DEFAULT 0,
-    present_days DECIMAL(5,2) NOT NULL DEFAULT 0,
+    present_days DECIMAL(5,2) NULL DEFAULT 0,
     payable_days DECIMAL(5,2) NOT NULL DEFAULT 0,
     lop_days DECIMAL(5,2) NOT NULL DEFAULT 0,
     source_type VARCHAR(30) NOT NULL DEFAULT 'Monthly',
@@ -830,10 +830,7 @@ WHERE b.client_id=@ClientId
         if (!IsValidMonth(month)) return [];
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await EnsureColumnAsync(connection, "attendance_groups", "work_week", "VARCHAR(80) NOT NULL DEFAULT '' AFTER designation");
-        await EnsureColumnAsync(connection, "attendance_groups", "attendance_cycle_start_day", "INT NOT NULL DEFAULT 1 AFTER work_week");
-        await EnsureColumnAsync(connection, "attendance_groups", "attendance_cycle_end_day", "INT NOT NULL DEFAULT 25 AFTER attendance_cycle_start_day");
-        await EnsureColumnAsync(connection, "attendance_groups", "payroll_report_generation_day", "INT NOT NULL DEFAULT 28 AFTER attendance_cycle_end_day");
+        // Schema upgrades belong to explicit InitializeAsync/migrations, never this GET.
         var locationId = workLocationId.GetValueOrDefault();
         return await connection.QueryAsync<EmployeeMonthlyAttendance>(@"SELECT e.Id AS EmployeeId, e.EmployeeCode, CONCAT(e.FirstName, ' ', e.LastName) AS EmployeeName, e.Department, e.WorkLocationId,
 g.id AS AttendanceGroupId,
@@ -844,7 +841,7 @@ g.attendance_cycle_end_day AS AttendanceCycleEndDay,
 g.payroll_report_generation_day AS PayrollReportGenerationDay,
 @Month AS Month,
 COALESCE(a.working_days, 0) AS WorkingDays,
-COALESCE(a.present_days, 0) AS PresentDays,
+a.present_days AS PresentDays,
 COALESCE(a.payable_days, 0) AS PayableDays,
 COALESCE(a.lop_days, 0) AS LopDays,
 COALESCE(a.source_type, 'Monthly') AS SourceType,
@@ -870,13 +867,13 @@ ORDER BY e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = clientId, M
         if (error is not null) return (null, error);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        var employmentError = await EmployeeAttendanceEligibility.ValidateMonthlyAsync(connection, null, request.ClientId, request.Month, request.Rows.Select(row => (row.EmployeeId, row.PresentDays, row.PayableDays)));
+        var employmentError = await EmployeeAttendanceEligibility.ValidateMonthlyWithOptionalPresenceAsync(connection, null, request.ClientId, request.Month, request.Rows.Select(row => (row.EmployeeId, row.PresentDays, row.PayableDays)));
         if (employmentError is not null) return (null, employmentError);
         var validEmployeeIds = (await connection.QueryAsync<int>("SELECT e.Id FROM employees e WHERE e.ClientId=@ClientId AND " + EmployeeEmploymentRules.EligibleInMonth("e", "@Month"), new { request.ClientId, request.Month })).ToHashSet();
         var rows = request.Rows.Where(row => validEmployeeIds.Contains(row.EmployeeId)).Select(row =>
         {
             var working = Math.Max(0, row.WorkingDays);
-            var present = Math.Clamp(row.PresentDays, 0, working == 0 ? row.PresentDays : working);
+            var present = Math.Clamp(row.PresentDays!.Value, 0, working == 0 ? row.PresentDays.Value : working);
             var payable = Math.Clamp(row.PayableDays, 0, working == 0 ? row.PayableDays : working);
             return new { request.ClientId, request.Month, row.EmployeeId, WorkingDays = working, PresentDays = present, PayableDays = payable, LopDays = Math.Max(0, row.LopDays), Remarks = row.Remarks ?? string.Empty };
         }).ToList();
@@ -2097,6 +2094,7 @@ LIMIT 1;", new { ClientId = clientId, PolicyBatchId = policyBatchId, ExcludeGrou
         if (request.ClientId <= 0) return "Select a client.";
         if (!IsValidMonth(request.Month)) return "Select a valid attendance month.";
         if (request.Rows.Count == 0) return "No attendance rows were submitted.";
+        if (request.Rows.Any(row=>!row.PresentDays.HasValue)) return "Actual present days were not supplied. Enter verified actual presence before saving normal monthly attendance; unknown source-payable-only attendance cannot be changed into zero or payable days by assumption.";
         if (request.Rows.Any(row => row.WorkingDays < 0 || row.PresentDays < 0 || row.PayableDays < 0 || row.LopDays < 0)) return "Attendance values cannot be negative.";
         if (request.Rows.Any(row => row.WorkingDays > 31 || row.PresentDays > 31 || row.PayableDays > 31 || row.LopDays > 31)) return "Attendance values cannot exceed 31 days.";
         return null;

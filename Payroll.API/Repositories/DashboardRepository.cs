@@ -1,4 +1,5 @@
 using Dapper;
+using System.Globalization;
 using MySqlConnector;
 using Payroll.API.Models;
 
@@ -13,13 +14,24 @@ public class DashboardRepository(IConfiguration configuration)
         return new MySqlConnection(connectionString);
     }
 
-    public async Task<DashboardSnapshot> GetAsync(int clientId, AuthUser user)
+    internal static string ResolveMonth(string? selectedMonth, DateTime today)
     {
+        if (string.IsNullOrWhiteSpace(selectedMonth)) return today.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+        if (selectedMonth.Length != 7 || !DateOnly.TryParseExact(selectedMonth + "-01", "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+            throw new InvalidOperationException("Select a valid dashboard month in yyyy-MM format.");
+        return selectedMonth;
+    }
+
+    internal static int ResolveClientId(AuthUser user, int? requestedClientId) =>
+        user.ClientId ?? Math.Max(requestedClientId.GetValueOrDefault(), 0);
+
+    public async Task<DashboardSnapshot> GetAsync(int clientId, AuthUser user, string? selectedMonth = null)
+    {
+        var month = ResolveMonth(selectedMonth, DateTime.Today);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        var month = DateTime.Today.ToString("yyyy-MM");
-        var parameters = new { ClientId = clientId, Month = month, UserId = user.Id };
+        var parameters = new { ClientId = clientId, Month = month, ExplicitMonth = !string.IsNullOrWhiteSpace(selectedMonth), UserId = user.Id };
         var sections = DashboardAccess.For(user);
 
         var clients = (await connection.QueryAsync<DashboardClient>(@"
@@ -124,6 +136,7 @@ FROM payruns r
 LEFT JOIN clients c ON c.Id = r.ClientId
 LEFT JOIN payrunemployees e ON e.PayRunId = r.Id AND e.IsSkipped = FALSE
 WHERE (@ClientId = 0 OR r.ClientId = @ClientId)
+  AND (@ExplicitMonth = FALSE OR r.PayPeriod = @Month)
 GROUP BY r.Id, r.ClientId, r.ClientName, c.Name, r.PayPeriod, r.RunType, r.RunName, r.Status, r.NetPay, r.UpdatedAt
 ORDER BY r.UpdatedAt DESC, r.Id DESC
 LIMIT 5;", parameters)).ToList()
@@ -157,6 +170,7 @@ LIMIT 8;", parameters)).ToList()
 SELECT PayPeriod AS Month, COUNT(*) AS RunCount, COALESCE(SUM(PayrollCost), 0) AS PayrollCost, COALESCE(SUM(NetPay), 0) AS NetPay
 FROM payruns
 WHERE (@ClientId = 0 OR ClientId = @ClientId)
+  AND (@ExplicitMonth = FALSE OR PayPeriod <= @Month)
 GROUP BY PayPeriod
 ORDER BY PayPeriod DESC
 LIMIT 6;", parameters)).OrderBy(item => item.Month).ToList()

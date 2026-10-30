@@ -34,15 +34,17 @@ public sealed partial class ExcelPayslipRepository
         }
         var preview = await BuildDeletePreviewAsync(db, tx, clientId, id)
             ?? throw new InvalidOperationException("Batch not found for this client.");
-        if (!preview.CanDelete) throw new InvalidOperationException(string.Join(" ", preview.Blockers));
+        ExcelPayslipDeletionPolicy.RequireDeletionIntent(preview, request.DiscardUnusedLegacy);
         if (preview.Token != request.Token) throw new InvalidOperationException("Batch dependencies changed. Review a fresh deletion preview.");
+        var summary = JsonSerializer.SerializeToNode(preview, JsonOptions)!.AsObject();
+        summary["confirmedDisposition"] = request.DiscardUnusedLegacy ? "discard-unused-legacy-without-equivalence-claim" : "reviewed-unused-batch";
         // Keep only a bounded deletion receipt, never the financial/employee snapshot.
         await db.ExecuteAsync(@"INSERT INTO excel_payslip_deletions(client_id,batch_id,preview_token,actor,summary_json)
 VALUES(@ClientId,@Id,@Token,@Actor,CAST(@Summary AS JSON));
 DELETE FROM excel_payslip_batch_originals WHERE client_id=@ClientId AND batch_id=@Id;
 DELETE FROM excel_payslip_calculation_sources WHERE client_id=@ClientId AND batch_id=@Id;
 DELETE FROM excel_payslip_batches WHERE client_id=@ClientId AND id=@Id;",
-            new { ClientId = clientId, Id = id, preview.Token, Actor = Limit(actor, 190), Summary = JsonSerializer.Serialize(preview, JsonOptions) }, tx);
+            new { ClientId = clientId, Id = id, preview.Token, Actor = Limit(actor, 190), Summary = summary.ToJsonString(JsonOptions) }, tx);
         await tx.CommitAsync();
         return new(true, false);
     }
@@ -83,7 +85,9 @@ AND JSON_UNQUOTE(JSON_EXTRACT(s.source_json,'$.sourceBatchId'))=@Id))", paramete
         preview.OtherBatchOriginalLinks = originals.Length == 0 ? 0 : await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM excel_payslip_batch_originals
 WHERE client_id=@ClientId AND batch_id<>@Id AND original_id IN @Originals", new { ClientId = clientId, Id = id, Originals = originals }, tx);
         await AddCleanupDetailsAsync(db, tx, clientId, id, row, batch, preview, receiptTable > 0);
+        await AddConsolidationDeleteReferencesAsync(db, tx, clientId, id, preview);
         preview.Blockers = ExcelPayslipDeletionPolicy.Blockers(preview, batch.LifecycleVersion, unknownState);
+        preview.CanDiscardUnusedLegacy = ExcelPayslipDeletionPolicy.AllowsUnusedLegacyDiscard(preview, unknownState);
         preview.Token = DeletePreviewToken(row.BatchJson, row.StateJson, originals, preview);
         return preview;
     }
@@ -101,10 +105,14 @@ WHERE client_id=@ClientId AND batch_id<>@Id AND original_id IN @Originals", new 
     public async Task<IReadOnlyList<ExcelPayslipOriginal>> GetOriginalsAsync(int clientId, string batchId)
     {
         await using var db = Db(); await db.OpenAsync();
+        return await ReadLinkedOriginalsAsync(db,null,clientId,batchId);
+    }
+    internal static async Task<IReadOnlyList<ExcelPayslipOriginal>> ReadLinkedOriginalsAsync(MySqlConnector.MySqlConnection db,MySqlConnector.MySqlTransaction? tx,int clientId,string batchId)
+    {
         return (await db.QueryAsync<ExcelPayslipOriginal>(@"SELECT o.id AS Id,l.original_file_name AS FileName,a.file_size_bytes AS SizeBytes,
 a.sha256_hash AS Sha256,a.uploaded_at_utc AS UploadedAtUtc FROM excel_payslip_batch_originals l
 JOIN excel_payslip_originals o ON o.client_id=l.client_id AND o.id=l.original_id
 JOIN entity_attachments a ON a.id=o.attachment_id AND a.is_deleted=FALSE
-WHERE l.client_id=@ClientId AND l.batch_id=@BatchId ORDER BY l.original_id", new { ClientId = clientId, BatchId = batchId })).ToArray();
+WHERE l.client_id=@ClientId AND l.batch_id=@BatchId ORDER BY l.original_id", new { ClientId = clientId, BatchId = batchId },tx)).ToArray();
     }
 }

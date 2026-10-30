@@ -49,30 +49,68 @@ ORDER BY u.DisplayName,u.Email", new { ClientId = clientId });
         await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId FOR UPDATE", new { employee.ClientId }, tx);
         if (employee.Id > 0 && await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM employees WHERE Id=@Id FOR UPDATE", new { employee.Id }, tx) != employee.ClientId)
             throw new InvalidOperationException("Employee does not belong to the selected client. Use the employee transfer action to change its client.");
+        var personalOnly = employee.Id > 0 && NormalizeInfotypeCodes(infotypeCode)?.SetEquals(["0002"]) == true;
+        var bankOnly = employee.Id > 0 && NormalizeInfotypeCodes(infotypeCode)?.SetEquals(["0009"]) == true;
+        if (personalOnly)
+            employee = PersonalInfotypeState(await LoadEmployeeAsync(db, employee.Id, tx)
+                ?? throw new InvalidOperationException("Employee not found."), employee);
+        if (bankOnly)
+            employee = BankInfotypeState(await LoadEmployeeAsync(db, employee.Id, tx)
+                ?? throw new InvalidOperationException("Employee not found."), employee);
         var identity = (await PreviewRecruitmentAsync(employee, db, tx)).Rows.Single();
         if (identity.BlockingReasons.Count > 0) throw new InvalidOperationException(string.Join(" ", identity.BlockingReasons));
         if (identity.MatchedEmployeeId.HasValue && identity.MatchedEmployeeId != employee.Id)
             throw new InvalidOperationException($"This person matches employee {identity.MatchedEmployeeCode}. Edit the existing employee instead of creating a duplicate.");
-        var id = await SaveWithOpenConnectionAsync(db, employee, changedBy, infotypeCode, changeReason, tx);
+        var id = await SaveWithOpenConnectionAsync(db, employee, changedBy, infotypeCode, changeReason, tx,
+            synchronizeAttendancePolicies: !personalOnly && !bankOnly, personalOnly: personalOnly, bankOnly: bankOnly);
         await tx.CommitAsync();
         return id;
     }
 
-    private static async Task<int> SaveWithOpenConnectionAsync(MySqlConnection db, Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null, MySqlTransaction? tx = null, DateTime? effectiveDate = null, bool synchronizeAttendancePolicies = true)
+    private static async Task<int> SaveWithOpenConnectionAsync(MySqlConnection db, Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null, MySqlTransaction? tx = null, DateTime? effectiveDate = null, bool synchronizeAttendancePolicies = true, bool salaryOnly = false, bool personalOnly = false, bool bankOnly = false)
     {
+        if (salaryOnly) ValidateExcelSalaryOnlyScope(employee,infotypeCode,synchronizeAttendancePolicies);
         var wasNew = employee.Id == 0;
+        if (personalOnly && (wasNew || salaryOnly || bankOnly || synchronizeAttendancePolicies
+            || NormalizeInfotypeCodes(infotypeCode)?.SetEquals(["0002"]) != true))
+            throw new InvalidOperationException("A personal-data save requires one existing employee and only infotype0002.");
+        if (bankOnly && (wasNew || salaryOnly || personalOnly || synchronizeAttendancePolicies
+            || NormalizeInfotypeCodes(infotypeCode)?.SetEquals(["0009"]) != true))
+            throw new InvalidOperationException("A bank-data save requires one existing employee and only infotype0009.");
         var before = employee.Id > 0 ? await LoadEmployeeAsync(db, employee.Id, tx) : null;
         if (!wasNew && employee.IsActive && await db.ExecuteScalarAsync<bool>("SELECT COALESCE(" + EmployeeEmploymentRules.LatestAction("e", "@Today") + ", 'Rehire') IN ('Resign','Retire','Terminate') FROM employees e WHERE e.Id=@Id AND e.ClientId=@ClientId", new { employee.Id, employee.ClientId, Today = EmployeeEmploymentRules.Today }, tx))
             throw new InvalidOperationException("This employee has left. Use the Rehire action with an effective date instead of enabling Active in a master update.");
         var actionType = wasNew ? "Hire" : "Master Update";
-        if (employee.Id == 0) employee.Id = (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId,EmployeeCode,FirstName,LastName,Gender,DateOfJoining,WorkEmail,Department,Designation,Grade,WorkLocationId,ReportingManagerId,ReportingManagerUserId,PortalAccess,SalaryStructureId,AnnualCtc,SalaryJson,PersonalJson,PaymentJson,IsActive) VALUES (@ClientId,@EmployeeCode,@FirstName,@LastName,@Gender,@DateOfJoining,@WorkEmail,@Department,@Designation,@Grade,@WorkLocationId,@ReportingManagerId,@ReportingManagerUserId,@PortalAccess,@SalaryStructureId,@AnnualCtc,@SalaryJson,@PersonalJson,@PaymentJson,@IsActive); SELECT LAST_INSERT_ID();", employee, tx);
-        else await db.ExecuteAsync(@"UPDATE employees SET ClientId=@ClientId,EmployeeCode=@EmployeeCode,FirstName=@FirstName,LastName=@LastName,Gender=@Gender,DateOfJoining=@DateOfJoining,WorkEmail=@WorkEmail,Department=@Department,Designation=@Designation,Grade=@Grade,WorkLocationId=@WorkLocationId,ReportingManagerId=@ReportingManagerId,ReportingManagerUserId=@ReportingManagerUserId,PortalAccess=@PortalAccess,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,IsActive=@IsActive WHERE Id=@Id", employee, tx);
-        if (wasNew) await EnsureDefaultTaxProfileAsync(db, employee.Id, employee.ClientId, tx);
-        await PayrollDataTableStore.SyncEmployeeTablesAsync(db, employee, tx);
-        await db.ExecuteAsync("UPDATE employees SET SalaryJson=@SalaryJson,PersonalJson=@PersonalJson,PaymentJson=@PaymentJson WHERE Id=@Id", employee, tx);
-        var after = await LoadEmployeeAsync(db, employee.Id, tx) ?? employee;
+        if (salaryOnly)
+            await WriteExcelPayrollSalaryStateAsync(db,tx!,employee);
+        else if (personalOnly)
+        {
+            await db.ExecuteAsync(@"UPDATE employees SET FirstName=@FirstName,LastName=@LastName,Gender=@Gender,
+DateOfJoining=@DateOfJoining WHERE Id=@Id AND ClientId=@ClientId", employee, tx);
+            await PayrollDataTableStore.SyncEmployeePersonalOnlyAsync(db, employee, tx!);
+            await db.ExecuteAsync("UPDATE employees SET PersonalJson=@PersonalJson WHERE Id=@Id AND ClientId=@ClientId", employee, tx);
+        }
+        else if (bankOnly)
+        {
+            await PayrollDataTableStore.SyncEmployeePaymentOnlyAsync(db, employee, tx!);
+            await db.ExecuteAsync("UPDATE employees SET PaymentJson=@PaymentJson WHERE Id=@Id AND ClientId=@ClientId", employee, tx);
+        }
+        else
+        {
+            if (employee.Id == 0) employee.Id = (int)await db.ExecuteScalarAsync<long>(@"INSERT INTO employees (ClientId,EmployeeCode,FirstName,LastName,Gender,DateOfJoining,WorkEmail,Department,Designation,Grade,WorkLocationId,ReportingManagerId,ReportingManagerUserId,PortalAccess,SalaryStructureId,AnnualCtc,SalaryJson,PersonalJson,PaymentJson,IsActive) VALUES (@ClientId,@EmployeeCode,@FirstName,@LastName,@Gender,@DateOfJoining,@WorkEmail,@Department,@Designation,@Grade,@WorkLocationId,@ReportingManagerId,@ReportingManagerUserId,@PortalAccess,@SalaryStructureId,@AnnualCtc,@SalaryJson,@PersonalJson,@PaymentJson,@IsActive); SELECT LAST_INSERT_ID();", employee, tx);
+            else await db.ExecuteAsync(@"UPDATE employees SET ClientId=@ClientId,EmployeeCode=@EmployeeCode,FirstName=@FirstName,LastName=@LastName,Gender=@Gender,DateOfJoining=@DateOfJoining,WorkEmail=@WorkEmail,Department=@Department,Designation=@Designation,Grade=@Grade,WorkLocationId=@WorkLocationId,ReportingManagerId=@ReportingManagerId,ReportingManagerUserId=@ReportingManagerUserId,PortalAccess=@PortalAccess,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,IsActive=@IsActive WHERE Id=@Id", employee, tx);
+            if (wasNew) await EnsureDefaultTaxProfileAsync(db, employee.Id, employee.ClientId, tx);
+            await PayrollDataTableStore.SyncEmployeeTablesAsync(db, employee, tx);
+            await db.ExecuteAsync("UPDATE employees SET SalaryJson=@SalaryJson,PersonalJson=@PersonalJson,PaymentJson=@PaymentJson WHERE Id=@Id", employee, tx);
+        }
+        // A bank read overlays the still-active previous IT0009. Do not read that
+        // old value back over the reviewed correction before writing its new version.
+        var after = personalOnly || bankOnly ? employee : await LoadEmployeeAsync(db, employee.Id, tx) ?? employee;
         var reason = string.IsNullOrWhiteSpace(changeReason) ? wasNew ? "Employee hired" : "Infotype updated" : changeReason.Trim();
-        await WriteCurrentInfotypesAsync(db, after, actionType, effectiveDate ?? EffectiveDate(after), reason, changedBy, before, wasNew ? null : NormalizeInfotypeCodes(infotypeCode), tx);
+        if (bankOnly)
+            await WriteAuditRowsAsync(db, after, before, actionType, effectiveDate ?? EffectiveDate(after), changedBy ?? "", NormalizeInfotypeCodes(infotypeCode), tx);
+        else
+            await WriteCurrentInfotypesAsync(db, after, actionType, effectiveDate ?? EffectiveDate(after), reason, changedBy, before, wasNew ? null : NormalizeInfotypeCodes(infotypeCode), tx);
         if (synchronizeAttendancePolicies) await SyncAttendancePolicyMappingsAsync(db, after, before, tx);
         return employee.Id;
     }
@@ -323,7 +361,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         return (workbook, null);
     }
 
-    private async Task<EmployeeImportPreflightResult> BuildImportPreflightAsync(int clientId, EmployeeImportWorkbook workbook, string importMode, MySqlConnection? activeDb = null, MySqlTransaction? tx = null, bool validateConfigured = true)
+    private async Task<EmployeeImportPreflightResult> BuildImportPreflightAsync(int clientId, EmployeeImportWorkbook workbook, string importMode, MySqlConnection? activeDb = null, MySqlTransaction? tx = null, bool validateConfigured = true, bool identityOnly = false)
     {
         var token = Guid.NewGuid();
         var expiresAt = DateTime.UtcNow.Add(ImportReviewLifetime);
@@ -343,195 +381,9 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         if (activeDb is null) await db.OpenAsync();
         var existing = (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE ClientId=@clientId", new { clientId }, tx)).ToList();
         await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, existing, tx);
-        var byId = existing.ToDictionary(employee => employee.Id);
-        var byCode = BuildIdentityMap(existing, employee => NormalizeCode(employee.EmployeeCode));
-        var byEmail = BuildIdentityMap(existing, employee => employee.WorkEmail.Trim().ToLowerInvariant());
-        var byMobile = BuildIdentityMap(existing, employee => NormalizeMobile(employee.PersonalDetails?.Mobile));
-        var byAadhaar = BuildIdentityMap(existing, employee => NormalizeAadhaar(employee.PersonalDetails?.AadhaarNumber));
-        var byPan = BuildIdentityMap(existing, employee => NormalizePan(employee.PersonalDetails?.PanNumber));
-        var byBank = BuildIdentityMap(existing, employee => NormalizeBankAccount(employee.PaymentDetails?.BankAccountNo));
-
+        var resultRows = BuildImportIdentityPreflightRows(workbook, importMode, existing, includeFieldChanges: !identityOnly);
         var rows = GetEmployeeDataSheet(workbook);
-        var sheetName = GetEmployeeDataSheetName(workbook);
         var map = rows.Count > 0 ? HeaderMap(rows[0]) : new Dictionary<string, int>();
-        var resultRows = new List<EmployeeImportPreflightRow>();
-        var workbookIdentifiers = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
-
-        for (var index = 1; index < rows.Count; index++)
-        {
-            var source = rows[index];
-            if (Blank(source)) continue;
-            var rowNumber = index + 1;
-            var blocking = new List<string>();
-            var reasons = new List<string>();
-            var reviewCandidates = new Dictionary<int, (Employee Employee, List<string> Reasons)>();
-            var hardConflict = false;
-            var alternateIdentifierConflict = false;
-            Employee? stableMatch = null;
-
-            var idText = Cell(source, map, "Employee ID");
-            if (!string.IsNullOrWhiteSpace(idText))
-            {
-                if (!int.TryParse(idText, out var employeeId) || employeeId <= 0)
-                {
-                    blocking.Add("Employee ID must be a positive whole number.");
-                    hardConflict = true;
-                }
-                else if (!byId.TryGetValue(employeeId, out stableMatch))
-                {
-                    blocking.Add($"Employee ID {employeeId} does not belong to this client.");
-                    hardConflict = true;
-                }
-                else
-                {
-                    reasons.Add("Exact Employee ID");
-                    AddReviewCandidate(reviewCandidates, stableMatch, "Exact Employee ID");
-                }
-            }
-
-            var code = Cell(source, map, "Employee Code");
-            var codeMatches = LookupIdentity(byCode, NormalizeCode(code));
-            if (codeMatches.Count > 1)
-            {
-                blocking.Add($"Employee Code \"{code}\" is assigned to multiple employees.");
-                hardConflict = true;
-            }
-            foreach (var employee in codeMatches) AddReviewCandidate(reviewCandidates, employee, "Exact Employee Code");
-            var codeMatch = codeMatches.Count == 1 ? codeMatches[0] : null;
-            if (stableMatch is not null && codeMatch is not null && stableMatch.Id != codeMatch.Id)
-            {
-                blocking.Add($"Employee ID and Employee Code \"{code}\" identify different employees.");
-                hardConflict = true;
-            }
-            else if (stableMatch is not null && !string.IsNullOrWhiteSpace(code) && !string.Equals(stableMatch.EmployeeCode, code, StringComparison.OrdinalIgnoreCase))
-            {
-                blocking.Add($"Employee ID {stableMatch.Id} belongs to employee code \"{stableMatch.EmployeeCode}\", not \"{code}\".");
-                hardConflict = true;
-            }
-            else if (stableMatch is null && codeMatch is not null)
-            {
-                stableMatch = codeMatch;
-                reasons.Add("Exact Employee Code");
-            }
-
-            var identifierCandidates = new Dictionary<int, (Employee Employee, List<string> Reasons)>();
-            AddIdentifierMatches(identifierCandidates, LookupIdentity(byEmail, Cell(source, map, "Work Email").Trim().ToLowerInvariant()), "Work email");
-            AddIdentifierMatches(identifierCandidates, LookupIdentity(byMobile, NormalizeMobile(Cell(source, map, "Mobile"))), "Mobile");
-            AddIdentifierMatches(identifierCandidates, LookupIdentity(byAadhaar, NormalizeAadhaar(Cell(source, map, "Aadhaar"))), "Aadhaar");
-            AddIdentifierMatches(identifierCandidates, LookupIdentity(byPan, NormalizePan(Cell(source, map, "PAN"))), "PAN");
-            AddIdentifierMatches(identifierCandidates, LookupIdentity(byBank, NormalizeBankAccount(Cell(source, map, "Bank Account No"))), "Bank Account");
-            foreach (var candidate in identifierCandidates.Values)
-                foreach (var reason in candidate.Reasons)
-                    AddReviewCandidate(reviewCandidates, candidate.Employee, $"Exact {reason}");
-
-            if (identifierCandidates.Count > 1)
-            {
-                var detail = string.Join("; ", identifierCandidates.Values.Select(candidate =>
-                    $"{candidate.Employee.EmployeeCode}: {string.Join(", ", candidate.Reasons)}"));
-                blocking.Add($"Identifiers point to different employees ({detail}).");
-                alternateIdentifierConflict = true;
-            }
-            else if (identifierCandidates.Count == 1)
-            {
-                var identifierMatch = identifierCandidates.Values.Single();
-                if (stableMatch is not null && stableMatch.Id != identifierMatch.Employee.Id)
-                {
-                    blocking.Add($"{string.Join(", ", identifierMatch.Reasons)} belongs to employee {identifierMatch.Employee.EmployeeCode}, not {stableMatch.EmployeeCode}.");
-                    alternateIdentifierConflict = true;
-                }
-                else
-                {
-                    stableMatch ??= identifierMatch.Employee;
-                    reasons.AddRange(identifierMatch.Reasons.Select(reason => $"Exact {reason}"));
-                }
-            }
-
-            var matchStatus = stableMatch is null ? "New" : reasons.Any(reason => reason is "Exact Employee ID" or "Exact Employee Code")
-                ? reasons.Contains("Exact Employee ID") ? "MatchedByEmployeeId" : "MatchedByEmployeeCode"
-                : "MatchedByIdentifiers";
-
-            if (blocking.Count == 0 && stableMatch is null)
-            {
-                var probable = FindNameAddressMatches(existing, source, map);
-                if (probable.Count > 1)
-                {
-                    blocking.Add($"Name and address match multiple employees: {string.Join(", ", probable.Select(employee => employee.EmployeeCode))}.");
-                    hardConflict = true;
-                    foreach (var employee in probable) AddReviewCandidate(reviewCandidates, employee, "Same normalized name and address");
-                }
-                else if (probable.Count == 1)
-                {
-                    stableMatch = probable[0];
-                    matchStatus = "ProbableDuplicate";
-                    reasons.Add("Same normalized name and address; manual decision required");
-                    AddReviewCandidate(reviewCandidates, stableMatch, "Same normalized name and address");
-                }
-            }
-
-            if (importMode == InsertImportMode && stableMatch is not null && matchStatus != "ProbableDuplicate")
-            {
-                blocking.Add($"Employee {stableMatch.EmployeeCode} already exists. Insert mode accepts new employees only.");
-                hardConflict = true;
-            }
-            if (importMode == UpdateImportMode && stableMatch is null)
-            {
-                blocking.Add("No existing employee was identified. Update mode accepts existing employees only.");
-                if (!alternateIdentifierConflict) hardConflict = true;
-            }
-            if (stableMatch is null && string.IsNullOrWhiteSpace(code))
-            {
-                blocking.Add("Employee Code is required for a new employee. Generate or map a code before confirmation.");
-                if (!alternateIdentifierConflict) hardConflict = true;
-            }
-
-            var canResolveConflict = alternateIdentifierConflict && !hardConflict && importMode != InsertImportMode && reviewCandidates.Count > 0;
-            if (canResolveConflict) matchStatus = "IdentityConflict";
-            else if (blocking.Count > 0) matchStatus = "Blocked";
-            var displayedMatch = canResolveConflict ? null : stableMatch;
-            var changes = displayedMatch is null ? [] : BuildImportChanges(source, map, displayedMatch);
-            var candidateEmployees = reviewCandidates.Values.Select(candidate => new EmployeeImportCandidate(
-                candidate.Employee.Id,
-                candidate.Employee.EmployeeCode,
-                $"{candidate.Employee.FirstName} {candidate.Employee.LastName}".Trim(),
-                candidate.Reasons.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
-                BuildImportChanges(source, map, candidate.Employee))).ToList();
-            var identityEvidence = BuildIdentityEvidence(source, map, byId, byCode, byMobile, byAadhaar, byPan, byBank);
-            resultRows.Add(new EmployeeImportPreflightRow(
-                rowNumber,
-                sheetName,
-                displayedMatch?.EmployeeCode ?? code,
-                matchStatus,
-                displayedMatch?.Id,
-                displayedMatch?.EmployeeCode,
-                displayedMatch is null ? null : $"{displayedMatch.FirstName} {displayedMatch.LastName}".Trim(),
-                reasons.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
-                blocking.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
-                changes,
-                candidateEmployees,
-                identityEvidence,
-                canResolveConflict));
-            TrackWorkbookIdentifier(workbookIdentifiers, "Mobile", NormalizeMobile(Cell(source, map, "Mobile")), resultRows.Count - 1);
-            TrackWorkbookIdentifier(workbookIdentifiers, "Work email", Cell(source, map, "Work Email").Trim().ToLowerInvariant(), resultRows.Count - 1);
-            TrackWorkbookIdentifier(workbookIdentifiers, "Aadhaar", NormalizeAadhaar(Cell(source, map, "Aadhaar")), resultRows.Count - 1);
-            TrackWorkbookIdentifier(workbookIdentifiers, "PAN", NormalizePan(Cell(source, map, "PAN")), resultRows.Count - 1);
-            TrackWorkbookIdentifier(workbookIdentifiers, "Bank Account", NormalizeBankAccount(Cell(source, map, "Bank Account No")), resultRows.Count - 1);
-        }
-
-        foreach (var duplicate in workbookIdentifiers.Where(item => item.Value.Distinct().Count() > 1))
-        {
-            var separator = duplicate.Key.IndexOf(':');
-            var label = separator > 0 ? duplicate.Key[..separator] : "Identifier";
-            foreach (var rowIndex in duplicate.Value.Distinct())
-            {
-                var row = resultRows[rowIndex];
-                var otherRows = duplicate.Value.Distinct().Where(index => index != rowIndex).Select(index => resultRows[index].RowNumber);
-                var blockingReasons = row.BlockingReasons
-                    .Append($"{label} is also supplied on workbook row(s) {string.Join(", ", otherRows)}. One person must not be inserted or updated twice.")
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                resultRows[rowIndex] = row with { MatchStatus = "Blocked", BlockingReasons = blockingReasons, CanResolveConflict = false };
-            }
-        }
 
         if (validateConfigured)
         {
@@ -896,8 +748,15 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         var normalized = NormalizeAlphaNumeric(value);
         return Regex.IsMatch(normalized, @"^[A-Z]{5}[0-9]{4}[A-Z]$") ? normalized : "";
     }
+    // Scientific display text cannot establish an exact account number. Never
+    // expand an exponent or reconstruct digits that Excel may have rounded away.
+    internal const string UnreliableBankIdentityMessage = "Bank Account is stored in scientific notation; its exact digits are unreliable. Review the original text and Employee Master bank details before importing. No bank value was changed.";
+    internal static bool IsScientificBankAccount(string? value) =>
+        Regex.IsMatch((value ?? "").Trim().TrimStart('\'').Trim(), @"^[+-]?[0-9]+(?:[.][0-9]+)?[eE][+-]?[0-9]+$", RegexOptions.CultureInvariant);
+
     private static string NormalizeBankAccount(string? value)
     {
+        if (IsScientificBankAccount(value)) return "";
         var normalized = NormalizeAlphaNumeric(value);
         return normalized.Length >= 6 && !IsPlaceholder(normalized) ? normalized : "";
     }

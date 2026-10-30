@@ -18,6 +18,9 @@ internal static class EmployeeAttendanceEligibility
     }
 
     internal static async Task<string?> ValidateMonthlyAsync(MySqlConnection db, IDbTransaction? tx, int clientId, string month, IEnumerable<(int EmployeeId, decimal Present, decimal Payable)> rows, bool lockEmployees = true)
+        =>await ValidateMonthlyWithOptionalPresenceAsync(db,tx,clientId,month,rows.Select(row=>(row.EmployeeId,(decimal?)row.Present,row.Payable)),lockEmployees);
+
+    internal static async Task<string?> ValidateMonthlyWithOptionalPresenceAsync(MySqlConnection db, IDbTransaction? tx, int clientId, string month, IEnumerable<(int EmployeeId, decimal? Present, decimal Payable)> rows, bool lockEmployees = true)
     {
         var values = rows.Select(row => new { employeeId = row.EmployeeId, present = row.Present, payable = row.Payable }).ToArray();
         if (values.Length == 0) return null;
@@ -46,7 +49,7 @@ LEFT JOIN employees e ON e.Id=submitted.EmployeeId AND e.ClientId=@ClientId
 WHERE e.Id IS NULL OR NOT " + EmployeeEmploymentRules.EligibleInMonth("e", "@Month") + @"
 OR (EXISTS(SELECT 1 FROM employee_it0000_actions boundary WHERE boundary.EmployeeId=e.Id AND boundary.ClientId=e.ClientId
 AND boundary.Status IN ('Active','Historical') AND boundary.ActionType IN ('Resign','Retire','Terminate','Rehire') AND boundary.EffectiveFrom BETWEEN @Start AND @End)
-AND GREATEST(submitted.Present,submitted.Payable)>" + eligibleDays + ") LIMIT 1";
+AND GREATEST(COALESCE(submitted.Present,0),submitted.Payable)>" + eligibleDays + ") LIMIT 1";
         }
     }
 

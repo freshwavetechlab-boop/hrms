@@ -12,6 +12,7 @@ import ExcelPayslips from '../components/ExcelPayslips'
 import DataTable, { type Column } from '../components/DataTable'
 import SearchSelect from '../components/SearchSelect'
 import { downloadXlsx } from '../utils/xlsx'
+import { reportAttendanceValue } from '../utils/payrollAttendanceDisplay'
 import { workforceValue } from '../utils/employeeWorkforce'
 import { useAuthSession } from '../components/AuthGate'
 
@@ -194,7 +195,7 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   }, [clientId, activeReport, month, fromDate, toDate, payRunId, employeeId, componentCode, showMonth, showPeriod, showPayRun, showEmployee, showComponent, reportReloadKey, showClassifications, classificationFilters.employmentType, classificationFilters.skillCategory, filterScope, payRunsReady])
   const employeeByCode = useMemo(() => new Map(employees.filter(employee => employee.clientId === clientId).map(employee => [employee.employeeCode.toLowerCase(), employee])), [employees, clientId])
   const employeeForRow = (row: ReportRow) => employeeByCode.get(String(row['Employee Code'] ?? '').toLowerCase())
-  const reportColumns: Column<ReportRow>[] = [...result.columns.map(column => ({ key: column, label: column })), ...(isEmployeeMaster ? fieldExchange.fields.map(field => ({ key: field.code, label: field.field.label, value: (row: ReportRow) => fieldExchange.values[employeeForRow(row)?.id || 0]?.[field.code] || '' })) : [])]
+  const reportColumns: Column<ReportRow>[] = [...result.columns.map(column => ({ key: column, label: column, value: (row: ReportRow) => reportAttendanceValue(column, row[column]) })), ...(isEmployeeMaster ? fieldExchange.fields.map(field => ({ key: field.code, label: field.field.label, value: (row: ReportRow) => fieldExchange.values[employeeForRow(row)?.id || 0]?.[field.code] || '' })) : [])]
   const changeEmployeeExportGroups = (values: EmployeeExportGroup[]) => {
     const added = values.find(value => !employeeExportGroups.includes(value))
     let next = values
